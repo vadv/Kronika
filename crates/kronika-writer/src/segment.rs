@@ -1415,6 +1415,94 @@ mod tests {
     }
 
     #[test]
+    fn the_aggregate_list_bound_is_checked_before_retaining_the_next_part() {
+        use kronika_registry::pg_locks::PgLocksV2;
+
+        fn wide_lock(ts: i64, pid: i32) -> PgLocksV2 {
+            PgLocksV2 {
+                ts: Ts(ts),
+                pid,
+                blocked_by: vec![pid; 4_096],
+                depth: 0,
+                root_pid: pid,
+                datid: 16_384,
+                datname: StrId(1),
+                usename: Some(StrId(2)),
+                application_name: StrId(3),
+                client_addr: StrId(4),
+                backend_type: StrId(5),
+                state: Some(StrId(6)),
+                wait_event_type: None,
+                wait_event: None,
+                query: StrId(7),
+                backend_xid_age: None,
+                backend_xmin_age: None,
+                backend_start: Some(Ts(ts - 60)),
+                xact_start: Some(Ts(ts - 5)),
+                query_start: Some(Ts(ts - 1)),
+                state_change: Some(Ts(ts - 1)),
+                lock_locktype: None,
+                lock_mode: None,
+                lock_granted: None,
+                lock_database: None,
+                lock_relation: None,
+                lock_relname: None,
+                lock_page: None,
+                lock_tuple: None,
+                lock_virtualxid: None,
+                lock_transactionid: None,
+                lock_classid: None,
+                lock_objid: None,
+                lock_objsubid: None,
+                lock_fastpath: None,
+                lock_target: None,
+                waitstart: None,
+            }
+        }
+
+        fn append_lock_window(journal: &mut Journal, ts: i64, first_pid: i32) {
+            let mut buffers = SectionBuffers::new();
+            for row in 0..33 {
+                buffers
+                    .push(wide_lock(ts + i64::from(row), first_pid + row))
+                    .expect("lock row fits");
+            }
+            let part = buffers.flush(&[]).expect("encode").expect("a part");
+            journal
+                .append(address().id, &part)
+                .expect("append lock window");
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let owner = writer(&dir);
+        let journal_path = dir.path().join(ACTIVE_JOURNAL_NAME);
+        let segment_path = owner
+            .root()
+            .diagnostic_file_path(address(), kronika_layout::FileKind::Zms);
+        let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
+        append_lock_window(&mut journal, 1_000, 1);
+        append_lock_window(&mut journal, 2_000, 100);
+        let journal_before = std::fs::read(&journal_path).expect("snapshot journal");
+
+        let err = write_segment(&journal, &owner, address())
+            .expect_err("the aggregate list stream is rejected");
+
+        assert!(matches!(
+            err,
+            WriteError::Codec(kronika_registry::CodecError::TooManyListValues {
+                name: "blocked_by",
+                ..
+            })
+        ));
+        assert_eq!(
+            std::fs::read(&journal_path).expect("read journal"),
+            journal_before
+        );
+        assert_eq!(journal.parts().len(), 2);
+        assert!(!segment_path.exists());
+    }
+
+    #[test]
     fn writing_an_empty_journal_is_rejected() {
         let dir = tempfile::tempdir().expect("tempdir");
         let owner = writer(&dir);

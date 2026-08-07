@@ -51,6 +51,7 @@ pub mod os_softirq;
 pub mod os_stat;
 pub mod os_topology;
 pub mod os_vmstat;
+pub mod pg_locks;
 
 /// Maximum rows in one snapshot section.
 ///

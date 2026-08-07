@@ -72,8 +72,6 @@ pub enum EntryScope {
     },
     /// Direct child of a valid UTC day directory.
     Day(UtcDay),
-    /// Opaque child of the quarantine directory.
-    Quarantine,
 }
 
 /// Filesystem type observed without following a symbolic link.

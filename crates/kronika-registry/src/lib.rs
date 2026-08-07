@@ -59,12 +59,13 @@ pub use parquet_preflight::{
     validate_parquet_decode_work, validate_plain_parquet_decode_work,
 };
 // Only the in-crate derive and tests need the shared section-body entry points.
+pub use codec::pg_locks::{PgLocksV1, PgLocksV2};
 pub(crate) use codec::{check_row_cap, decode_batches, decode_section, encode_section};
 pub use codec::{
     instance_metadata, os_cgroup_cpu, os_cgroup_io, os_cgroup_mapping, os_cgroup_memory,
     os_cgroup_pids, os_cpu, os_diskstats, os_interrupts, os_kernel_limits, os_loadavg, os_meminfo,
     os_mountinfo, os_netdev, os_netstat, os_nfs, os_numa, os_process, os_process_status, os_psi,
-    os_snmp, os_snmp6, os_softirq, os_stat, os_topology, os_vmstat,
+    os_snmp, os_snmp6, os_softirq, os_stat, os_topology, os_vmstat, pg_locks,
 };
 pub use contract::{
     Column, ColumnClass, ColumnType, LintError, Semantics, StrId, Ts, TypeContract, Unit, lint,
@@ -137,6 +138,8 @@ pub const fn registry() -> &'static [TypeContract] {
         os_snmp6::OsSnmp6::CONTRACT,
         os_nfs::OsNfsClient::CONTRACT,
         os_nfs::OsNfsServer::CONTRACT,
+        PgLocksV1::CONTRACT,
+        PgLocksV2::CONTRACT,
     ]
 }
 

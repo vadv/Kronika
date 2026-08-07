@@ -11,9 +11,8 @@
 //! Every enforcement scan re-seeds the counter, folding in index sidecars
 //! the web process published since the previous scan; the hourly recount
 //! guarantees that sidecar growth is folded in even when the incremental
-//! counter alone never crosses the budget. Writer temporaries also count
-//! toward the budget and is re-enumerated each pass through the bounded
-//! quarantine scan.
+//! counter alone never crosses the budget. Writer temporaries count toward the
+//! budget too.
 //!
 //! One pass deletes against a deficit computed once at its start and counts
 //! every confirmed removal as reclaimed, because unlinked-but-open files

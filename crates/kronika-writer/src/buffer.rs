@@ -246,6 +246,7 @@ mod tests {
     use kronika_format::{crc32c, validate_part};
     use kronika_registry::instance_metadata::{Environment, InstanceMetadata};
     use kronika_registry::os_loadavg::OsLoadavg;
+    use kronika_registry::pg_locks::PgLocksV2;
     use kronika_registry::{Bytes, MAX_SECTION_ROWS, StrId, Ts, VerifiedSection, decode_any};
 
     use super::SectionBuffers;
@@ -348,6 +349,67 @@ mod tests {
         assert!(instance.body_bytes > 0);
         assert_eq!(instance.list_i32_child_value_count, 0);
         assert!(buffers.is_empty(), "flush clears the window");
+    }
+
+    fn lock_row(ts: i64, pid: i32, blocked_by: Vec<i32>) -> PgLocksV2 {
+        PgLocksV2 {
+            ts: Ts(ts),
+            pid,
+            blocked_by,
+            depth: 0,
+            root_pid: pid,
+            datid: 16_384,
+            datname: StrId(1),
+            usename: Some(StrId(2)),
+            application_name: StrId(3),
+            client_addr: StrId(4),
+            backend_type: StrId(5),
+            state: Some(StrId(6)),
+            wait_event_type: None,
+            wait_event: None,
+            query: StrId(7),
+            backend_xid_age: None,
+            backend_xmin_age: None,
+            backend_start: Some(Ts(ts - 60_000_000)),
+            xact_start: Some(Ts(ts - 5_000_000)),
+            query_start: Some(Ts(ts - 1_000_000)),
+            state_change: Some(Ts(ts - 1_000_000)),
+            lock_locktype: None,
+            lock_mode: None,
+            lock_granted: None,
+            lock_database: None,
+            lock_relation: None,
+            lock_relname: None,
+            lock_page: None,
+            lock_tuple: None,
+            lock_virtualxid: None,
+            lock_transactionid: None,
+            lock_classid: None,
+            lock_objid: None,
+            lock_objsubid: None,
+            lock_fastpath: None,
+            lock_target: None,
+            waitstart: None,
+        }
+    }
+
+    #[test]
+    fn flush_summary_counts_all_list_i32_child_values() {
+        let mut buffers = SectionBuffers::new();
+        buffers
+            .push(lock_row(1, 10, vec![1, 2, 3, 4]))
+            .expect("buffer not full");
+        buffers
+            .push(lock_row(2, 11, vec![5, 6, 7, 8, 9]))
+            .expect("buffer not full");
+
+        let flushed = buffers
+            .flush_with_summary(&[])
+            .expect("flush encodes rows")
+            .expect("rows produce a part");
+        assert_eq!(flushed.summary.sections.len(), 1);
+        assert_eq!(flushed.summary.sections[0].rows, 2);
+        assert_eq!(flushed.summary.sections[0].list_i32_child_value_count, 9);
     }
 
     #[test]
