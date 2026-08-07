@@ -1,0 +1,19 @@
+[package]
+name = "kronika-bdd"
+description = "BDD scenarios that run the collector binary and assert on what it wrote and logged"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = "1"
+cucumber = "0.21"
+nix = { version = "0.29", features = ["signal"] }
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time"] }
+
+[lints]
+workspace = true
