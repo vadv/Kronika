@@ -8,7 +8,7 @@ use crate::contract::TypeContract;
 /// A section type: its registry contract plus the Parquet codec for its rows.
 ///
 /// Closed to downstream impls; only this crate's derive can implement it.
-pub trait Section: crate::sealed::Sealed + Sized {
+pub trait Section: crate::private::Private + Sized {
     /// The registry contract for this type.
     const CONTRACT: TypeContract;
 

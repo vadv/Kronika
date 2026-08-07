@@ -18,94 +18,94 @@ pub struct OsVmstat {
     #[column(t)]
     pub ts: Ts,
     /// Pages paged in from disk.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub pgpgin: Option<i64>,
     /// Pages paged out to disk.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub pgpgout: Option<i64>,
     /// Swap pages swapped in.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub pswpin: Option<i64>,
     /// Swap pages swapped out.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub pswpout: Option<i64>,
     /// Minor page faults (no disk I/O needed).
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub pgfault: Option<i64>,
     /// Major page faults (disk I/O required).
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub pgmajfault: Option<i64>,
     /// Pages stolen by kswapd during reclaim.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub pgsteal_kswapd: Option<i64>,
     /// Pages stolen directly during reclaim.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub pgsteal_direct: Option<i64>,
     /// Pages scanned by kswapd.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub pgscan_kswapd: Option<i64>,
     /// Pages scanned directly.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub pgscan_direct: Option<i64>,
     /// OOM killer invocations.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub oom_kill: Option<i64>,
     /// Pages allocated from the normal zone.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub pgalloc_normal: Option<i64>,
     /// Pages moved to the inactive list on refill.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub pgrefill: Option<i64>,
     /// Pages promoted to the active list.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub pgactivate: Option<i64>,
     /// Pages demoted to the inactive list.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub pgdeactivate: Option<i64>,
     /// Pages scanned by khugepaged during reclaim.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub pgscan_khugepaged: Option<i64>,
     /// Pages stolen by khugepaged during reclaim.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub pgsteal_khugepaged: Option<i64>,
     /// Allocation stalls that had to enter direct reclaim.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub allocstall: Option<i64>,
     /// Allocation stalls that had to enter direct compaction.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub compact_stall: Option<i64>,
     /// Pages migrated between NUMA nodes by automatic balancing.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub numa_pages_migrated: Option<i64>,
     /// Page migrations that succeeded.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub pgmigrate_success: Option<i64>,
     /// Page migrations that failed.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub pgmigrate_fail: Option<i64>,
     /// Transparent huge pages allocated on fault.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub thp_fault_alloc: Option<i64>,
     /// Transparent huge pages built by khugepaged.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub thp_collapse_alloc: Option<i64>,
     /// Refaults of pages evicted while still in the working set.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub workingset_refault_file: Option<i64>,
     /// Refaults of anonymous pages evicted while still in the working set.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub workingset_refault_anon: Option<i64>,
     /// Refaulted pages restored to the active list.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub workingset_restore_file: Option<i64>,
     /// Shadow nodes reclaimed from the working-set tracker.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub workingset_nodereclaim: Option<i64>,
     /// Pages read ahead from swap.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub swap_ra: Option<i64>,
     /// Swap read-ahead pages that were used.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub swap_ra_hit: Option<i64>,
     /// Source scope (`0=host`). See `kronika_source_os::OsScope`.
     #[column(l)]

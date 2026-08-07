@@ -1,6 +1,6 @@
 [package]
 name = "kronika-collector"
-description = "Kronika collector daemon: snapshot Linux system metrics into sealed segments"
+description = "Kronika collector daemon: snapshot Linux system metrics into finished segments"
 publish = false
 version.workspace = true
 edition.workspace = true

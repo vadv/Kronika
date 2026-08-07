@@ -44,7 +44,7 @@ pub struct OsProcess {
     #[column(l)]
     pub state: u8,
     /// Thread count.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub num_threads: u32,
     /// Controlling terminal.
     #[column(l)]
@@ -55,11 +55,11 @@ pub struct OsProcess {
     /// Command line as a string dictionary reference; `None` when unavailable or empty.
     #[column(l)]
     pub cmdline: Option<StrId>,
-    /// User CPU time, ticks.
-    #[column(c)]
+    /// User CPU time.
+    #[column(c, unit = jiffies)]
     pub utime: i64,
-    /// System CPU time, ticks.
-    #[column(c)]
+    /// System CPU time.
+    #[column(c, unit = jiffies)]
     pub stime: i64,
     /// Nice value.
     #[column(l)]
@@ -74,55 +74,55 @@ pub struct OsProcess {
     #[column(l)]
     pub policy: u8,
     /// Last/current CPU.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub curcpu: i32,
-    /// Run-queue delay, nanoseconds.
-    #[column(c)]
+    /// Run-queue delay.
+    #[column(c, unit = nanoseconds)]
     pub rundelay_ns: i64,
-    /// Block I/O delay, ticks.
-    #[column(c)]
+    /// Block I/O delay.
+    #[column(c, unit = jiffies)]
     pub blkdelay_ticks: i64,
     /// Voluntary context switches.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub nvcsw: i64,
     /// Nonvoluntary context switches.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub nivcsw: i64,
     /// Minor page faults.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub minflt: i64,
     /// Major page faults.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub majflt: i64,
-    /// Virtual memory size, kB.
-    #[column(g)]
+    /// Virtual memory size.
+    #[column(g, unit = kib)]
     pub vmem_kb: i64,
-    /// Resident memory size, kB.
-    #[column(g)]
+    /// Resident memory size.
+    #[column(g, unit = kib)]
     pub rmem_kb: i64,
-    /// Swap used by process, kB.
-    #[column(g)]
+    /// Swap used by process.
+    #[column(g, unit = kib)]
     pub vswap_kb: i64,
     /// Read syscall count from `/proc/PID/io`.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub syscr: Option<i64>,
     /// Write syscall count from `/proc/PID/io`.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub syscw: Option<i64>,
     /// Characters read, including page-cache hits.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub rchar: Option<i64>,
     /// Characters written, including page-cache writes.
-    #[column(c)]
+    #[column(c, unit = pages)]
     pub wchar: Option<i64>,
     /// Bytes really read from storage.
-    #[column(c)]
+    #[column(c, unit = bytes)]
     pub read_bytes: Option<i64>,
     /// Bytes really written to storage.
-    #[column(c)]
+    #[column(c, unit = bytes)]
     pub write_bytes: Option<i64>,
     /// Cancelled write bytes.
-    #[column(c)]
+    #[column(c, unit = bytes)]
     pub cancelled_write_bytes: Option<i64>,
     /// Signal sent to the parent when the process exits.
     #[column(l)]

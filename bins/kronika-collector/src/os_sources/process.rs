@@ -1,7 +1,7 @@
 use super::{
     DueSet, Instant, Interner, OsCgroupMapping, OsSources, ProcFs, ProcessError, SourceKind, Ts,
     intern_str, log_cap_degraded, log_collection_finish, log_count_degraded, log_degraded,
-    os_max_procs, process_facts, read_process, snapshot_coverage,
+    os_max_procs, process_facts, read_process,
 };
 
 #[allow(
@@ -38,10 +38,6 @@ pub(super) fn collect_process_sections(
                     log_degraded(type_id, "process", &err);
                 }
             }
-            if hot_due {
-                os.snapshot_coverage
-                    .push(snapshot_coverage(ts, hot_type_id, 3, 2, 0, 0));
-            }
             return;
         }
     };
@@ -56,10 +52,6 @@ pub(super) fn collect_process_sections(
                 {
                     log_degraded(type_id, "process", &err);
                 }
-            }
-            if hot_due {
-                os.snapshot_coverage
-                    .push(snapshot_coverage(ts, hot_type_id, 3, 2, 0, 0));
             }
             return;
         }
@@ -163,26 +155,6 @@ pub(super) fn collect_process_sections(
     }
     if hot_due {
         log_collection_finish(hot_type_id, "procfs", os.processes.len(), started.elapsed());
-        let source_total = os
-            .processes
-            .len()
-            .saturating_add(skipped)
-            .saturating_add(dropped);
-        let read_state = if dropped > 0 {
-            1
-        } else if skipped > 0 {
-            4
-        } else {
-            0
-        };
-        os.snapshot_coverage.push(snapshot_coverage(
-            ts,
-            hot_type_id,
-            read_state,
-            u8::from(io_nulls > 0),
-            u64::try_from(source_total).unwrap_or(u64::MAX),
-            os.processes.len(),
-        ));
     }
     if status_due {
         log_collection_finish(

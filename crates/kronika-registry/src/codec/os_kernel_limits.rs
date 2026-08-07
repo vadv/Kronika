@@ -20,25 +20,25 @@ pub struct OsKernelLimits {
     #[column(t)]
     pub ts: Ts,
     /// Allocated file handles (`/proc/sys/fs/file-nr` field 1).
-    #[column(g)]
+    #[column(g, unit = count)]
     pub nr_file: Option<i64>,
     /// Allocated but unused file handles (`file-nr` field 2).
-    #[column(g)]
+    #[column(g, unit = count)]
     pub nr_free_file: Option<i64>,
     /// System-wide file handle ceiling (`file-nr` field 3).
-    #[column(g)]
+    #[column(g, unit = count)]
     pub max_file: Option<i64>,
     /// Allocated inodes (`/proc/sys/fs/inode-nr` field 1).
-    #[column(g)]
+    #[column(g, unit = count)]
     pub nr_inode: Option<i64>,
     /// Free inodes (`inode-nr` field 2).
-    #[column(g)]
+    #[column(g, unit = count)]
     pub nr_free_inode: Option<i64>,
     /// Allocated dentries (`/proc/sys/fs/dentry-state` field 1).
-    #[column(g)]
+    #[column(g, unit = count)]
     pub nr_dentry: Option<i64>,
     /// Unused dentries available for reclaim (`dentry-state` field 2).
-    #[column(g)]
+    #[column(g, unit = count)]
     pub nr_unused_dentry: Option<i64>,
     /// Source scope. See `kronika_source_os::OsScope`.
     #[column(l)]

@@ -86,8 +86,5 @@ pub(crate) fn push_os_sources(buffers: &mut SectionBuffers, os: &OsSources) -> R
     for row in &os.cgroup_pids {
         buffer_row(buffers, *row)?;
     }
-    for row in &os.snapshot_coverage {
-        buffer_row(buffers, *row)?;
-    }
     Ok(())
 }

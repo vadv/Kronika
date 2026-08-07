@@ -180,7 +180,7 @@ impl SectionBuffers {
             return Ok(None);
         }
 
-        // Dictionary-only parts use an empty interval; `seal` ignores it while
+        // Dictionary-only parts use an empty interval; `write_segment` ignores it while
         // folding the segment range.
         let lo = encoded
             .iter()

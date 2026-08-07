@@ -21,7 +21,7 @@ pub struct OsSoftirq {
     #[column(l)]
     pub vector: StrId,
     /// Softirqs of this vector since boot, summed across CPUs.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub count: i64,
     /// Source scope. See `kronika_source_os::OsScope`.
     #[column(l)]

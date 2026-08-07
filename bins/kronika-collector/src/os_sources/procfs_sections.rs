@@ -56,7 +56,7 @@ pub(super) fn collect_diskstats(
 /// Keep at most `KRONIKA_OS_MAX_DISKS` devices, ordered by `(major, minor)`.
 ///
 /// When the cap trims rows, a `collection_degraded` event with `reason=disk_cap`
-/// records how many devices were dropped so the gap is visible, not silent.
+/// records how many devices were dropped, so the number is visible.
 fn apply_disk_cap(rows: &mut Vec<diskstats::DiskstatsRow>, type_id: u32) {
     let cap = os_max_disks(type_id);
     let cap = usize::try_from(cap).unwrap_or(usize::MAX);

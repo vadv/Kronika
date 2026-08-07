@@ -17,13 +17,9 @@ pub use producer_status::{
     ProducerStatusError, RetentionStatus, read_producer_status, write_producer_status,
 };
 pub use root::{
-    ACTIVE_JOURNAL_NAME, DataRoot, EntryDiagnostic, EntryFileType, EntryScope, EvidenceFile,
-    EvidenceLocation, FileIdentity, FileKind, FilesystemUsage, ForeignEntry, ForeignEntryReason,
-    FreshJournalGeneration, IdxTemp, IndexOwner, JournalActivation, JournalRotation,
-    JournalRotationOutcome, JournalSlot, JournalSlotKind, LayoutLimits, LayoutSnapshot,
-    OVERVIEW_OWNER_LOCK_NAME, PathIdentity, PendingRootEntry, PendingRootKind,
-    QUARANTINE_DIRECTORY_NAME, QuarantineDirectoryState, QuarantineEntry, QuarantineFailure,
-    QuarantineFailureStage, QuarantineOutcome, QuarantineReason, QuarantineStatus,
+    ACTIVE_JOURNAL_NAME, DAMAGED_JOURNAL_NAME, DataRoot, EntryDiagnostic, EntryFileType,
+    EntryScope, FileIdentity, FileKind, FilesystemUsage, ForeignEntry, ForeignEntryReason, IdxTemp,
+    IndexOwner, LayoutLimits, LayoutSnapshot, OVERVIEW_OWNER_LOCK_NAME, PathIdentity,
     SegmentArtifacts, SegmentRemoval, TemporaryKind, TemporaryObject, WRITER_OWNER_LOCK_NAME,
     WriterLease, WriterOwner, ZmsTemp,
 };

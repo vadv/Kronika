@@ -20,22 +20,22 @@ pub struct OsNfsClient {
     #[column(t)]
     pub ts: Ts,
     /// RPC calls issued.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub rpc_calls: i64,
     /// RPC calls retransmitted.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub rpc_retrans: i64,
     /// Credential refreshes forced by an authentication failure.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub rpc_auth_refresh: i64,
     /// NFS `READ` operations.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub op_read: i64,
     /// NFS `WRITE` operations.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub op_write: i64,
     /// NFS `COMMIT` operations.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub op_commit: i64,
     /// Source scope. See `kronika_source_os::OsScope`.
     #[column(l)]
@@ -57,28 +57,28 @@ pub struct OsNfsServer {
     #[column(t)]
     pub ts: Ts,
     /// RPC calls served.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub rpc_calls: i64,
     /// RPC calls rejected as malformed.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub rpc_bad_calls: i64,
     /// Reply-cache hits.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub reply_cache_hits: i64,
     /// Reply-cache misses.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub reply_cache_misses: i64,
     /// Requests that were not cacheable.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub reply_cache_nocache: i64,
     /// Bytes read out of exported filesystems.
-    #[column(c)]
+    #[column(c, unit = bytes)]
     pub io_read_bytes: i64,
     /// Bytes written into exported filesystems.
-    #[column(c)]
+    #[column(c, unit = bytes)]
     pub io_write_bytes: i64,
     /// Packets received on the server's transports.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub net_count: i64,
     /// Source scope. See `kronika_source_os::OsScope`.
     #[column(l)]

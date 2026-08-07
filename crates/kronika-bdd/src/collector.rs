@@ -36,7 +36,14 @@ pub(crate) struct Run {
 impl Run {
     /// Spawn the collector over a fresh data root with `env` applied on top.
     pub(crate) fn spawn(env: &[(&str, String)]) -> Result<Self> {
-        let root = tempfile::tempdir().context("create a data root for the scenario")?;
+        Self::adopt(
+            tempfile::tempdir().context("create a data root for the scenario")?,
+            env,
+        )
+    }
+
+    /// Spawn the collector over a data root the scenario already populated.
+    pub(crate) fn adopt(root: tempfile::TempDir, env: &[(&str, String)]) -> Result<Self> {
         let out_dir = root.path().join("segments");
         std::fs::create_dir_all(&out_dir).context("create the segments directory")?;
         let log_path = root.path().join("collector.log");

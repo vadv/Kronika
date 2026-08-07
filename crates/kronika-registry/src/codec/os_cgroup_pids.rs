@@ -18,10 +18,10 @@ pub struct OsCgroupPids {
     #[column(l)]
     pub cgroup_path: StrId,
     /// Current number of processes in the cgroup.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub current: i64,
     /// Process limit; `None` means unlimited.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub max: Option<i64>,
     /// Source scope. See `kronika_source_os::OsScope`.
     #[column(l)]

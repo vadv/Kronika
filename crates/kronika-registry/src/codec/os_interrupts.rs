@@ -27,7 +27,7 @@ pub struct OsInterrupts {
     #[column(l)]
     pub device: Option<StrId>,
     /// Interrupts on this line since boot, summed across CPUs.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub count: i64,
     /// Source scope. See `kronika_source_os::OsScope`.
     #[column(l)]

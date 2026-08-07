@@ -37,10 +37,10 @@ pub struct OsMountinfo {
     #[column(l)]
     pub is_k8s_infra: bool,
     /// Total filesystem capacity in bytes; `None` when `statvfs` failed.
-    #[column(g)]
+    #[column(g, unit = bytes)]
     pub total_bytes: Option<i64>,
     /// Available bytes for unprivileged writes; `None` when `statvfs` failed.
-    #[column(g)]
+    #[column(g, unit = bytes)]
     pub free_bytes: Option<i64>,
     /// Source scope (`0=host`). See `kronika_source_os::OsScope`.
     #[column(l)]

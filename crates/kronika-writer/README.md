@@ -4,7 +4,7 @@
 
 `kronika-writer` turns one or more bounded collection windows into a durable
 ZMS segment. It owns in-memory section buffers, per-segment string interning,
-the version-1 `active.wal` journal, recovery, and sealing. Source queries,
+the version-1 `active.wal` journal, recovery, and writing. Source queries,
 format bytes, and the data-directory grammar remain in other crates.
 
 ## Collection window
@@ -25,10 +25,10 @@ self-contained ZMS part. Successful flush empties the row buffers.
 keeps full stored bytes under `DictLimits`. After the caller successfully
 writes a window, `flush_window` replaces those bytes with compact metadata
 needed for collision detection, deduplication, and final placement. Repeated
-SQL or plans therefore do not remain fully duplicated in memory until seal.
+SQL or plans therefore do not remain fully duplicated in memory until write.
 
 Interning is transactional on collision, placement conflict, or byte-cap
-failure: prior state remains valid. The caller seals or flushes when it receives
+failure: prior state remains valid. The caller writes or flushes when it receives
 `DictError::Full`.
 
 ## Journal
@@ -55,7 +55,7 @@ no alternate journal format or migration path.
 `JournalConfig::max_journal_len` caps the physical file, including the
 temporary 32-byte reset marker. Every append, including the first one, reserves
 space for that marker. A frame that would exceed the cap returns
-`JournalError::Full`, allowing the collector to seal first. Version 1 admits at
+`JournalError::Full`, allowing the collector to write first. Version 1 admits at
 most 1 GiB per journal, 1,000,000 frames per journal, and 64 MiB per ZMS part.
 Configuration may only lower those absolute limits.
 
@@ -69,9 +69,9 @@ second time. If the process exits after committing the marker, the next
 or a failure after marker commit poisons the open journal, so collection cannot
 continue through an indeterminate persistence state.
 
-## Sealing
+## Writing
 
-`seal(journal, owner, SegmentAddress)` validates every recorded part and reads
+`write_segment(journal, owner, SegmentAddress)` validates every recorded part and reads
 each body
 through its checked catalog range. For each registered data `type_id`, it
 decodes all journal bodies, combines their rows, applies the registry sort key
@@ -79,16 +79,16 @@ plus every remaining column as a deterministic total order, and emits one
 canonical Parquet body. Dictionary bodies are decoded and normalized into at
 most one `dict.strings` and one `dict.blobs` body. Exact repeated dictionary
 records are deduplicated; conflicting values, metadata, or placement fail the
-seal.
+write.
 
 Final bodies use Parquet 1.0, PLAIN values, RLE levels, and Zstd level 6, with
 dictionary encoding, statistics, and offset indexes disabled. Collector
 admission checks aggregate rows, `List<i32>` child values, dictionary rows and
 stored bytes, a one-page PLAIN value budget per physical column, and the 8 MiB
-encoded-body cap before append. Seal checks the same limits again while
+encoded-body cap before append. Write checks the same limits again while
 decoding and encoding.
 
-Seal writes the coalesced bodies and end catalog to a temporary file in the
+Write writes the coalesced bodies and end catalog to a temporary file in the
 segment's UTC day. ZMS publication synchronizes the file, adds the canonical
 `YYYY/MM/DD/N.zms` name with a hard link, synchronizes the day, removes the
 temporary name, and synchronizes the day again. An existing destination is
@@ -99,12 +99,12 @@ After acquiring the writer owner lock, collector startup removes only
 recognized stale ZMS publication temporaries. It leaves IDX and index-probe
 temporaries to the index owner.
 
-Seal never resets the journal, chooses the `SegmentId`, or implements
+Write never resets the journal, chooses the `SegmentId`, or implements
 retention; those lifecycle decisions belong to the collector.
 `SegmentAddress` derives the only valid path from the id, and the writer
 accepts only that strict calendar-tree address.
 
-Failures distinguish journal I/O/framing/full conditions from seal validation,
+Failures distinguish journal I/O/framing/full conditions from write validation,
 destination, and synchronization errors. See [`src/lib.rs`](src/lib.rs) for the
 canonical API, [`../kronika-format/`](../kronika-format/) for on-disk framing,
 and [`../kronika-layout/`](../kronika-layout/) for paths and ownership.

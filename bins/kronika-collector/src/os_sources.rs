@@ -1,6 +1,5 @@
 use crate::buffering::buffer_row;
 use crate::config::env_u64;
-use crate::coverage::snapshot_coverage;
 use crate::logging::{
     LogLevel, field, layout_id, log_collection_finish, log_count_degraded, log_event, section_name,
 };
@@ -31,7 +30,6 @@ use kronika_registry::os_softirq::OsSoftirq;
 use kronika_registry::os_stat::OsStat;
 use kronika_registry::os_topology::OsTopology;
 use kronika_registry::os_vmstat::OsVmstat;
-use kronika_registry::snapshot_coverage::SnapshotCoverageV1;
 use kronika_registry::{StrId, Ts};
 use kronika_source_os::proc::cpuinfo;
 use kronika_source_os::proc::loadavg::parse_loadavg;
@@ -93,7 +91,6 @@ pub(crate) struct OsSources {
     cgroup_io: Vec<OsCgroupIo>,
     cgroup_pids: Vec<OsCgroupPids>,
     mount_entries: Vec<MountEntry>,
-    snapshot_coverage: Vec<SnapshotCoverageV1>,
 }
 
 impl OsSources {
@@ -126,13 +123,7 @@ impl OsSources {
             cgroup_io: Vec::new(),
             cgroup_pids: Vec::new(),
             mount_entries: Vec::new(),
-            snapshot_coverage: Vec::new(),
         }
-    }
-
-    /// The completeness markers gathered alongside the sources.
-    pub(crate) fn snapshot_coverage_rows(&self) -> &[SnapshotCoverageV1] {
-        &self.snapshot_coverage
     }
 
     #[cfg(test)]

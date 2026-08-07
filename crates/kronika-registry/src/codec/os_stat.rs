@@ -18,32 +18,32 @@ pub struct OsStat {
     #[column(t)]
     pub ts: Ts,
     /// Context switches since boot.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub ctxt: i64,
     /// Processes forked since boot.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub processes: i64,
     /// Processes in runnable state at collection time.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub procs_running: i64,
     /// Processes blocked waiting for I/O at collection time.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub procs_blocked: i64,
     /// Kernel boot time, unix microseconds.
-    #[column(g)]
+    #[column(g, unit = microseconds)]
     pub btime: Ts,
     /// Hardware interrupts serviced since boot, all lines summed.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub intr_total: Option<i64>,
     /// Software interrupts serviced since boot, all vectors summed.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub softirq_total: Option<i64>,
-    /// Seconds since boot (`/proc/uptime` field 1), microseconds.
-    #[column(g)]
+    /// Seconds since boot (`/proc/uptime` field 1).
+    #[column(g, unit = microseconds)]
     pub uptime_us: Option<i64>,
     /// Cumulative idle time of all cores (`/proc/uptime` field 2),
     /// microseconds.
-    #[column(g)]
+    #[column(g, unit = microseconds)]
     pub idle_us: Option<i64>,
     /// Source scope (`0=host`). See `kronika_source_os::OsScope`.
     #[column(l)]

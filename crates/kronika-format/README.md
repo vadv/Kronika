@@ -23,7 +23,7 @@ kronika-writer builds a self-contained ZMS part
         v
 $KRONIKA_OUT_DIR/active.wal
         |
-        | seal()
+        | write_segment()
         v
 $KRONIKA_OUT_DIR/YYYY/MM/DD/N.zms
         |
@@ -61,7 +61,7 @@ does not own:
 
 - Linux and PostgreSQL semantics and section schemas: those belong to
   [`kronika-registry`](../kronika-registry/README.md);
-- Parquet encoding, buffering, journal I/O, and sealing: those belong to
+- Parquet encoding, buffering, journal I/O, and writing: those belong to
   [`kronika-writer`](../kronika-writer/README.md);
 - collection intervals, rotation, and source limits: those belong to
   [`kronika-collector`](../../bins/kronika-collector/README.md);
@@ -78,7 +78,7 @@ self-contained ZMS part, wraps it in a `ZMSP` frame, appends it to
 `active.wal`, and calls `sync_data`.
 
 The collector keeps appending windows until a size, age, forced-rotation, or
-journal-cap condition closes the segment. Sealing then:
+journal-cap condition closes the segment. Writing then:
 
 1. validates each recorded part catalog and every body range it reads;
 2. groups registered data sections by `type_id`, decodes their Parquet bodies,
@@ -93,7 +93,7 @@ journal-cap condition closes the segment. Sealing then:
    with a no-replace hard link;
 7. resets `active.wal` only after publication succeeds.
 
-Sealing therefore removes per-window Parquet framing, repeated catalog entries,
+Writing therefore removes per-window Parquet framing, repeated catalog entries,
 and repeated dictionary records. It does not copy journal section bodies into
 the finished ZMS.
 
@@ -144,7 +144,7 @@ Completing the segment removes the individual part framing:
 active.wal                         YYYY/MM/DD/N.zms
 
 ZMSP [part for window #1]             "ZMS1"
-ZMSP [part for window #2] -- seal() -> one canonical body per populated data type
+ZMSP [part for window #2] -- write_segment() -> one canonical body per populated data type
 ...                                  optional normalized dict.strings
                                      optional normalized dict.blobs
                                      one shared end catalog
@@ -155,7 +155,7 @@ The finished ZMS has no explicit window-boundary markers. Rows from all windows
 of one type share a canonical body, and their originating part is not recorded.
 The catalog describes physical sections, not window numbers.
 
-## Sealed ZMS v1 layout
+## Finished segment v1 layout
 
 All integers are little-endian. In canonical output from the current writer,
 fields are packed without alignment padding. For `N` catalog entries and `B`
@@ -209,7 +209,7 @@ windows are coalesced inside the one body for their type.
 | 16 | `entry_count` | `u32` | Number of 32-byte entries before this block. |
 | 20 | `format_version` | `u32` | Container layout version; current writers store `2`. |
 | 24 | `crc32c` | `u32` | CRC32C of entries and metadata with this field zeroed. |
-| 28 | `window_count` | `u32` | Collection windows coalesced into this container. `build_part` stores `1`; `seal` stores the exact number of journal parts; zero means unknown. |
+| 28 | `window_count` | `u32` | Collection windows coalesced into this container. `build_part` stores `1`; `write_segment` stores the exact number of journal parts; zero means unknown. |
 
 ### Tail index: 8 bytes
 
@@ -284,7 +284,7 @@ segments deliberately use different writer profiles:
 
 - a collection-window body uses Zstd level 3 and sorts snapshot rows by the
   registry key and dictionary rows by `str_id`;
-- a final sealed body uses Parquet 1.0, one row group, PLAIN values, RLE
+- a final final body uses Parquet 1.0, one row group, PLAIN values, RLE
   levels, and Zstd level 6; Parquet dictionary encoding, statistics, and offset
   indexes are disabled;
 - canonical data rows use the registry key followed by every remaining column
@@ -313,7 +313,7 @@ zstd_bound(n) = n + floor(n / 256)
 ```
 
 The 4 KiB term bounds each page header and column-chunk metadata; 64 KiB bounds
-Parquet file framing. Seal recomputes these bounds as it decodes each part and
+Parquet file framing. Write recomputes these bounds as it decodes each part and
 checks the actual encoded body against 8 MiB.
 
 Omitting the embedded Arrow schema removes a duplicate logical schema from
@@ -462,10 +462,10 @@ bytes. The current collector, however, creates a new interner for every
 collection cycle, so the journal can contain the same dictionary id in several
 parts.
 
-Seal extends normalization across the complete segment. For one `str_id`, an
+Write extends normalization across the complete segment. For one `str_id`, an
 exactly repeated value with the same metadata and placement is retained once.
 Different bytes or blob metadata, and any strings-versus-blobs placement
-conflict, fail sealing. The result is sorted by `str_id` and contains at most
+conflict, fail writing. The result is sorted by `str_id` and contains at most
 one physical record per id in at most one `dict.strings` and one `dict.blobs`
 body. Physical readers reject repeated dictionary section types, and dictionary
 decoding requires ids inside each body to be strictly increasing.
@@ -500,18 +500,18 @@ re-encoded bodies:
 
 ```text
 active_parts_bytes     = 36 + B_in + 32*N_in + 68*P
-sealed_zms_bytes       = B_out + 32*K + 52
-journal_minus_sealed   = (B_in - B_out) + 32*(N_in - K) + 68*P - 16
+finished_zms_bytes       = B_out + 32*K + 52
+journal_minus_finished   = (B_in - B_out) + 32*(N_in - K) + 68*P - 16
 ```
 
 Every final body is at most 8 MiB, so the container also has the bound:
 
 ```text
 B_out <= 8 MiB * K
-sealed_zms_bytes <= (8 MiB + 32) * K + 52
+finished_zms_bytes <= (8 MiB + 32) * K + 52
 ```
 
-`K` has no repeated `type_id`. Unlike a copy-only seal, the exact reduction
+`K` has no repeated `type_id`. Unlike a copy-only write, the exact reduction
 includes the changed Parquet encoding, removed per-window bodies, removed
 catalog entries, normalized dictionaries, and removed frame overhead.
 
@@ -556,9 +556,9 @@ bodies, not the 52-byte container constant or 32-byte catalog entries.
 
 | Mechanism | What is removed or compressed | Scope |
 | --- | --- | --- |
-| `StrId` and dictionaries | Repeated short text becomes a value in a `u64` column. | Parts are self-contained per window; seal normalizes exact repeats to one record for the segment. |
-| Section coalescing | Per-window Parquet headers, footers, and catalog entries are replaced by one body and entry per populated type. | All accepted windows in one sealed segment. |
-| Parquet and Zstd | Journal bodies use Zstd level 3; seal re-encodes PLAIN columns with Zstd level 6. | Compression is local to each final type body. |
+| `StrId` and dictionaries | Repeated short text becomes a value in a `u64` column. | Parts are self-contained per window; write normalizes exact repeats to one record for the segment. |
+| Section coalescing | Per-window Parquet headers, footers, and catalog entries are replaced by one body and entry per populated type. | All accepted windows in one finished segment. |
+| Parquet and Zstd | Journal bodies use Zstd level 3; write re-encodes PLAIN columns with Zstd level 6. | Compression is local to each final type body. |
 | Canonical sorting | Values with nearby keys become adjacent and output is deterministic. | Compression gain depends on the data and is not guaranteed. |
 | Narrow column types | For example, `pid` is stored as `i32`, not `i64`, and text labels move to dictionaries. | Each section contract fixes its column types. |
 | Omitted Arrow metadata | Each body omits a second logical Arrow schema and leaves `created_by` empty. | The physical schema and Parquet footer remain. |
@@ -576,15 +576,15 @@ These are admission limits, not compression:
 
 Segment age and size limits control how many accepted windows enter one
 coalescing unit. They change the ZMS count, final body compression, and how much
-per-window structure and dictionary repetition seal can remove. They do not
+per-window structure and dictionary repetition write can remove. They do not
 discard accepted rows.
 
-### How seal removes repetition across collection windows
+### How write removes repetition across collection windows
 
 Each collection window writes a separate Parquet body for every non-empty
 type. A one-row snapshot still pays for a Parquet schema, column metadata, and
 footer while it remains in `active.wal`. Dictionary sections are also emitted
-per window. For `postgres`, the logical contents before and after seal are:
+per window. For `postgres`, the logical contents before and after write are:
 
 ```text
 before completing the segment:
@@ -597,7 +597,7 @@ active.wal
            os_process body #2: pid=103, H
            dict.strings #2: H -> b"postgres"]
 
-after completing the segment (`seal`):
+after completing the segment (`write_segment`):
 
 "ZMS1"
 |-- one canonical os_process body:
@@ -609,7 +609,7 @@ after completing the segment (`seal`):
 3 StrId references | 1 unique H | 1 physical dictionary record
 ```
 
-Seal achieves this by decoding Parquet, combining bodies with the same
+Write achieves this by decoding Parquet, combining bodies with the same
 `type_id`, validating dictionary equality and placement, sorting rows into a
 canonical total order, and encoding again. Admission closes the accumulated
 segment before an incoming window would exceed a final row, list-value,
@@ -624,36 +624,9 @@ before journal append.
 | Higher final Parquet Zstd level | Pages inside one body may become smaller. | Costs more CPU; final bodies already use level 6, while collection-window bodies use level 3. |
 | Outer compression for the whole ZMS | One stream can see repeated dictionaries, footers, and similar windows. | Direct body access by `offset` is lost; this would replace ZMS access semantics and is outside this research. |
 
-Seal already removes structural repetition and dictionary duplicates. The
+Write already removes structural repetition and dictionary duplicates. The
 remaining approaches would change part self-containment, CPU cost, or direct
 section access.
-
-### Validated physical-reduction research
-
-The preliminary estimator is superseded. The current
-[physical ZMS reduction research](../../docs/superpowers/specs/2026-07-26-zms-size-reduction-research.md)
-writes complete reader-valid candidates, verifies exact canonical Arrow and
-dictionary equality, covers all 75 contracts registered at its frozen base,
-and records fault, resource, I/O, and separate ZMS-plus-IDX evidence.
-
-Three natural full 15-minute files produced candidates of 549,761, 524,989,
-and 522,016 bytes, for reductions of 35.343x, 37.091x, and 37.029x.
-Candidate size has an empirical nearest-rank p50 of 524,989 bytes and
-p95/worst of 549,761 bytes. A separate 62.52-second tail reduced 6.016x and is
-not part of that distribution. The full-segment sample contains only three
-files; it does not support an hourly retention projection.
-
-Those figures are prototype results, not measurements of this implementation.
-The separate
-[production base/candidate measurement](../../docs/qualification/zms-coalesced-sections-production.md)
-uses one byte-identical `active.wal`, covers the current 76 contracts, and
-records exact ZMS hashes, logical identity, timing, RSS, I/O, and restart
-evidence.
-
-The implemented contract applies that in-place replacement while keeping the
-ZMS name and `N.zms` path. There is one writer, one reader, and one canonical
-contract, with no legacy reader, migration, fallback, feature flag, or offline
-rewrite.
 
 ## Parameters that affect file size
 
@@ -666,14 +639,14 @@ amount and grouping of collected data through `kronika-collector`:
 | `KRONIKA_PG_MAX_TABLES`, `KRONIKA_PG_MAX_INDEXES`, `KRONIKA_PG_MAX_STATEMENTS`, `KRONIKA_PG_MAX_PLANS` | `500` | Lower values reduce high-cardinality rows and associated dictionary entries but omit lower-ranked objects. |
 | `KRONIKA_PG_MAX_PLAN_TEXT` | 32,768 bytes | Maximum stored text for one plan read. |
 | `KRONIKA_PG_PLAN_TEXT_BUDGET` | 8 MiB | Total plan-text budget per read; zero disables plan text. |
-| `KRONIKA_SEGMENT_MAX_BYTES` | 64 MiB | Seals after this many raw `active.wal` bytes; zero seals every window. It changes file granularity, not Parquet compression. |
+| `KRONIKA_SEGMENT_MAX_BYTES` | 64 MiB | Writes after this many raw `active.wal` bytes; zero writes every window. It changes file granularity, not Parquet compression. |
 | `KRONIKA_SEGMENT_MAX_AGE_S` | 900 s | Maximum age of an open segment. It mainly changes time span and file count. |
-| `KRONIKA_JOURNAL_MAX_BYTES` | 1 GiB | Hard physical `active.wal` limit, including the reserved 32-byte reset marker. Every frame must fit; exhaustion causes an early seal. It is not a target ZMS size. |
+| `KRONIKA_JOURNAL_MAX_BYTES` | 1 GiB | Hard physical `active.wal` limit, including the reserved 32-byte reset marker. Every frame must fit; exhaustion causes an early write. It is not a target ZMS size. |
 
 Changing source limits trades observability for disk use. Segment age and
-rotation size change how many windows seal coalesces, so they can affect final
+rotation size change how many windows write coalesces, so they can affect final
 compression and the amount of removable per-window structure without changing
-the sealing contract. See the
+the writing contract. See the
 [collector configuration](../../bins/kronika-collector/README.md)
 for every source interval and validation rule.
 
@@ -685,7 +658,7 @@ encryption.
 
 `kronika-format` validates framing, catalog length and checksum, section
 bounds, and section checksums for complete parts. Higher layers add policy:
-the current sealed reader accepts container version 1 and caps catalog,
+the current finished reader accepts container version 1 and caps catalog,
 section, row, and row-group sizes. An incompatible section schema receives a
 new `type_id`; changing the ZMS framing requires a new container version.
 
@@ -696,4 +669,4 @@ Sources of truth:
 - [`src/dictionary.rs`](src/dictionary.rs) for dictionary invariants;
 - [`kronika-registry`](../kronika-registry/README.md) for section schemas and
   Parquet limits;
-- [`kronika-writer`](../kronika-writer/README.md) for append and seal behavior.
+- [`kronika-writer`](../kronika-writer/README.md) for append and write behavior.

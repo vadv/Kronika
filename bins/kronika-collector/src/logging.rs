@@ -412,7 +412,7 @@ pub(crate) fn log_journal_append(
     journal_bytes_before: usize,
     journal_bytes_after: usize,
     elapsed: Duration,
-    retry_after_seal: bool,
+    retry_after_write: bool,
 ) {
     log_event(
         LogLevel::Debug,
@@ -425,7 +425,7 @@ pub(crate) fn log_journal_append(
             field("section_rows", summary_rows(summary)),
             field("journal_bytes_before", journal_bytes_before),
             field("journal_bytes_after", journal_bytes_after),
-            field("retry_after_seal", retry_after_seal),
+            field("retry_after_write", retry_after_write),
             field("elapsed_ms", duration_ms(elapsed)),
         ],
     );

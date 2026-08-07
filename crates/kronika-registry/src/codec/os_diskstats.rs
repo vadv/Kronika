@@ -28,55 +28,55 @@ pub struct OsDiskstats {
     #[column(l)]
     pub device: StrId,
     /// Reads completed successfully.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub reads: i64,
     /// Reads merged before submitting to the device.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub r_merged: i64,
     /// Sectors read (512-byte units).
-    #[column(c)]
+    #[column(c, unit = sectors)]
     pub read_sectors: i64,
-    /// Time spent reading, milliseconds.
-    #[column(c)]
+    /// Time spent reading.
+    #[column(c, unit = milliseconds)]
     pub read_time_ms: i64,
     /// Writes completed successfully.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub writes: i64,
     /// Writes merged before submitting to the device.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub w_merged: i64,
     /// Sectors written (512-byte units).
-    #[column(c)]
+    #[column(c, unit = sectors)]
     pub write_sectors: i64,
-    /// Time spent writing, milliseconds.
-    #[column(c)]
+    /// Time spent writing.
+    #[column(c, unit = milliseconds)]
     pub write_time_ms: i64,
     /// I/O operations currently in progress (instantaneous, not monotonic).
-    #[column(g)]
+    #[column(g, unit = count)]
     pub io_in_progress: i64,
-    /// Total time spent doing I/O, milliseconds.
-    #[column(c)]
+    /// Total time spent doing I/O.
+    #[column(c, unit = milliseconds)]
     pub io_time_ms: i64,
-    /// Weighted time spent doing I/O, milliseconds.
-    #[column(c)]
+    /// Weighted time spent doing I/O.
+    #[column(c, unit = milliseconds)]
     pub io_weighted_time_ms: i64,
     /// Discard operations completed (kernel >= 4.18; `None` on older kernels).
-    #[column(c)]
+    #[column(c, unit = count)]
     pub discards: Option<i64>,
     /// Discards merged (kernel >= 4.18; `None` on older kernels).
-    #[column(c)]
+    #[column(c, unit = count)]
     pub d_merged: Option<i64>,
     /// Sectors discarded (kernel >= 4.18; `None` on older kernels).
-    #[column(c)]
+    #[column(c, unit = sectors)]
     pub discard_sectors: Option<i64>,
     /// Time spent discarding, milliseconds (kernel >= 4.18; `None` on older kernels).
-    #[column(c)]
+    #[column(c, unit = milliseconds)]
     pub discard_time_ms: Option<i64>,
     /// Flush requests completed (kernel >= 5.5; `None` on older kernels).
-    #[column(c)]
+    #[column(c, unit = count)]
     pub flushes: Option<i64>,
     /// Time spent flushing, milliseconds (kernel >= 5.5; `None` on older kernels).
-    #[column(c)]
+    #[column(c, unit = milliseconds)]
     pub flush_time_ms: Option<i64>,
     /// Source scope (`0=host`). See `kronika_source_os::OsScope`.
     #[column(l)]

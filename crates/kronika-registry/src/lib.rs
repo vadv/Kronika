@@ -1,14 +1,14 @@
 //! Authoritative section type ids, contracts, and codecs.
 //!
 //! Each registered Rust row type defines one stable `type_id`, logical name,
-//! on-disk columns, sort and identity keys, collection semantics, and optional
-//! collection gates. Layout versions can share a logical name; readers use the
-//! contracts to union their columns without guessing from Parquet metadata.
+//! on-disk columns, sort and identity keys, and collection semantics. Layout
+//! versions can share a logical name; readers use the contracts to union their
+//! columns without guessing from Parquet metadata.
 //!
-//! The sealed [`Section`] trait couples a contract to its encoder, decoder, and
+//! The closed [`Section`] trait couples a contract to its encoder, decoder, and
 //! timestamp range. The internal `kronika-derive` macro generates those pieces
-//! from one annotated struct. [`lint`] and [`lint_references`] reject invalid
-//! ids, keys, column classes, and cross-section gate references.
+//! from one annotated struct. [`lint`] rejects invalid ids, keys, and column
+//! classes.
 //!
 //! Encoded and decoded sections are limited to [`MAX_SECTION_BYTES`],
 //! [`MAX_SECTION_ROWS`], and [`MAX_ROW_GROUPS`]. [`VerifiedSection`] requires a
@@ -38,21 +38,21 @@ mod type_id;
 
 // Closes `Section` to downstream impls while keeping the public trait usable as
 // a bound.
-mod sealed {
+mod private {
     #[allow(
         unnameable_types,
-        reason = "sealing Section means Sealed is reachable (as its supertrait) but deliberately not nameable downstream"
+        reason = "closing Section means Private is reachable (as its supertrait) but deliberately not nameable downstream"
     )]
-    pub trait Sealed {}
+    pub trait Private {}
 }
 
 pub use codec::{
-    CodecError, DecodeStats, DecodedSection, ListColumn, MAX_DECODED_SECTION_BYTES, MAX_ROW_GROUPS,
-    MAX_SECTION_BYTES, MAX_SECTION_ROWS, SEALED_DATA_PAGE_BYTES, SEALED_ZSTD_LEVEL,
-    SealedPlainColumnSize, VerifiedSection, arrow_schema, encode_sealed_batches, nullable_bool,
-    nullable_column, opt_bool, opt_primitive, read_list_i32, required_bool, required_column,
-    sealed_data_body_bound, sealed_plain_body_bound, write_bool, write_bool_nullable,
-    write_list_i32, write_nullable, write_required,
+    CodecError, DecodeStats, DecodedSection, FINAL_DATA_PAGE_BYTES, FINAL_ZSTD_LEVEL,
+    FinalPlainColumnSize, ListColumn, MAX_DECODED_SECTION_BYTES, MAX_ROW_GROUPS, MAX_SECTION_BYTES,
+    MAX_SECTION_ROWS, VerifiedSection, arrow_schema, encode_final_batches, final_data_body_bound,
+    final_plain_body_bound, nullable_bool, nullable_column, opt_bool, opt_primitive, read_list_i32,
+    required_bool, required_column, write_bool, write_bool_nullable, write_list_i32,
+    write_nullable, write_required,
 };
 pub use parquet_preflight::{
     ParquetDecodeProfile, parquet_decode_profile, plain_parquet_decode_profile,
@@ -61,15 +61,13 @@ pub use parquet_preflight::{
 // Only the in-crate derive and tests need the shared section-body entry points.
 pub(crate) use codec::{check_row_cap, decode_batches, decode_section, encode_section};
 pub use codec::{
-    collection_coverage, instance_metadata, os_cgroup_cpu, os_cgroup_io, os_cgroup_mapping,
-    os_cgroup_memory, os_cgroup_pids, os_cpu, os_diskstats, os_interrupts, os_kernel_limits,
-    os_loadavg, os_meminfo, os_mountinfo, os_netdev, os_netstat, os_nfs, os_numa, os_process,
-    os_process_status, os_psi, os_snmp, os_snmp6, os_softirq, os_stat, os_topology, os_vmstat,
-    snapshot_coverage,
+    instance_metadata, os_cgroup_cpu, os_cgroup_io, os_cgroup_mapping, os_cgroup_memory,
+    os_cgroup_pids, os_cpu, os_diskstats, os_interrupts, os_kernel_limits, os_loadavg, os_meminfo,
+    os_mountinfo, os_netdev, os_netstat, os_nfs, os_numa, os_process, os_process_status, os_psi,
+    os_snmp, os_snmp6, os_softirq, os_stat, os_topology, os_vmstat,
 };
 pub use contract::{
-    CollectionGate, Column, ColumnClass, ColumnType, LintError, RowGateOverride, SectionColumnRef,
-    Semantics, StrId, Ts, TypeContract, lint, lint_references,
+    Column, ColumnClass, ColumnType, LintError, Semantics, StrId, Ts, TypeContract, Unit, lint,
 };
 pub use generic::{Cell, Row, decode_rows};
 pub use pool::{BytesPool, PoolStats};
@@ -113,8 +111,6 @@ pub fn section_name(type_id: u32) -> Option<&'static str> {
 pub const fn registry() -> &'static [TypeContract] {
     &[
         instance_metadata::InstanceMetadata::CONTRACT,
-        collection_coverage::CollectionCoverageV1::CONTRACT,
-        snapshot_coverage::SnapshotCoverageV1::CONTRACT,
         os_process::OsProcess::CONTRACT,
         os_process_status::OsProcessStatus::CONTRACT,
         os_cpu::OsCpu::CONTRACT,
@@ -207,8 +203,7 @@ pub fn decode_pooled(
 ///
 /// Returns all linter errors found in registered contracts.
 pub fn lint_registry() -> Result<(), Vec<LintError>> {
-    lint(registry())?;
-    lint_references(registry())
+    lint(registry())
 }
 
 #[cfg(test)]

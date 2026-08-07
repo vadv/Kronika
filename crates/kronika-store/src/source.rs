@@ -9,13 +9,13 @@ use kronika_layout::{
 
 use crate::{CatalogDigest, CatalogSummary};
 
-/// A sealed `.zms` segment pinned to one filesystem identity.
+/// A finished `.zms` segment pinned to one filesystem identity.
 ///
 /// Discovery retains only a compact catalog summary. Consumers open the full
-/// catalog lazily after [`super::LocalDir::open_sealed`] verifies that the
+/// catalog lazily after [`super::LocalDir::open_finished`] verifies that the
 /// ZMS at the verified [`SegmentAddress`] still has this identity.
 #[derive(Debug, Clone)]
-pub struct SealedUnit {
+pub struct FinalUnit {
     /// Verified logical and physical address.
     pub address: SegmentAddress,
     /// Exact filesystem identity observed by the strict layout traversal and
@@ -44,7 +44,7 @@ pub struct ActivePart {
 /// A complete, internally consistent scan of `active.wal`.
 ///
 /// This value can be captured under a journal identity handshake and completed
-/// with a sealed-tree scan later via [`super::LocalDir::complete_scan`].
+/// with a finished-tree scan later via [`super::LocalDir::complete_scan`].
 #[derive(Debug, Clone)]
 pub struct JournalScan {
     /// Valid parts from `active.wal`, in journal order.
@@ -78,7 +78,7 @@ impl JournalScan {
 /// Result of scanning a [`super::LocalDir`].
 #[derive(Debug, Clone)]
 pub struct LocalScan {
-    /// Sealed segments, sorted by numeric [`SegmentId`].
+    /// Finished segments, sorted by numeric [`SegmentId`].
     ///
     /// The collection is shared so cloning a snapshot does not copy one entry
     /// per retained segment.
@@ -86,7 +86,7 @@ pub struct LocalScan {
         clippy::rc_buffer,
         reason = "Arc<Vec<_>> preserves the completed Vec allocation; Vec-to-Arc-slice would copy it"
     )]
-    pub sealed: Arc<Vec<SealedUnit>>,
+    pub finished: Arc<Vec<FinalUnit>>,
     /// Valid parts from `active.wal`, in journal order.
     #[expect(
         clippy::rc_buffer,
@@ -125,7 +125,7 @@ pub struct StoreWarning {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StoreObject {
-    /// One canonical sealed ZMS address.
+    /// One canonical finished segment address.
     Segment(SegmentAddress),
     /// The root-level `active.wal` journal.
     ActiveJournal,
@@ -137,9 +137,9 @@ pub enum StoreObject {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StoreWarningReason {
-    /// A stable sealed ZMS failed complete format validation and was excluded.
+    /// A stable finished segment failed complete format validation and was excluded.
     InvalidZms(InvalidZmsReason),
-    /// The live journal could not be admitted; sealed discovery continued.
+    /// The live journal could not be admitted; finished discovery continued.
     ActiveJournal(ActiveJournalWarningReason),
     /// One tree entry was excluded from the supported owned-store grammar.
     ForeignEntry(ForeignEntryReason),
@@ -171,7 +171,7 @@ impl StoreWarningReason {
     }
 }
 
-/// Why a strict live-journal scan degraded to sealed-only discovery.
+/// Why a strict live-journal scan degraded to finished-only discovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveJournalWarningReason {
     /// Journal framing or committed bytes were structurally invalid.
@@ -180,7 +180,7 @@ pub enum ActiveJournalWarningReason {
     Io,
 }
 
-/// Stable format failure observed for a sealed ZMS.
+/// Stable format failure observed for a finished segment.
 ///
 /// Variants deliberately omit corrupt bytes, raw decoder messages, untrusted
 /// numeric fields, checksums, and paths so callers can log or count them

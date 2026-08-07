@@ -7,7 +7,7 @@
 //! - **flushed entries**: compact records for ids already written to the
 //!   journal. Original bytes are not kept.
 //!
-//! At seal time, final dictionaries are rebuilt from journaled part dictionaries
+//! At write time, final dictionaries are rebuilt from journaled part dictionaries
 //! and the remaining window. Two cases need extra handling:
 //!
 //! - strict-hot values stay in memory and enter every window;
@@ -85,7 +85,7 @@ fn first16(digest: [u8; 32]) -> [u8; 16] {
 
 /// Data returned when the interner finishes a segment.
 #[derive(Debug)]
-pub struct SealedSegment {
+pub struct FinishedSegment {
     /// Values still in memory, not yet written to the journal.
     ///
     /// Segment completion merges this window with journal parts.
@@ -117,7 +117,7 @@ pub struct FlushedEntry {
 pub struct Interner {
     window: SegmentDicts,
     /// Identities of values already in the journal: ~48 bytes per distinct
-    /// id (plus map overhead) until `seal()`. The journal cap
+    /// id (plus map overhead) until `write_segment()`. The journal cap
     /// (`JournalError::Full`) forces a merge before the journal, and with it
     /// this map, can grow without limit.
     flushed: HashMap<StrId, Flushed>,
@@ -259,7 +259,7 @@ impl Interner {
     ///
     /// Returns the remaining window plus placement directives for values already
     /// flushed to the journal.
-    pub fn seal(&mut self) -> SealedSegment {
+    pub fn write_segment(&mut self) -> FinishedSegment {
         let limits = self.window.limits();
         let window = std::mem::replace(&mut self.window, SegmentDicts::new(limits));
         let flushed = std::mem::take(&mut self.flushed);
@@ -276,7 +276,7 @@ impl Interner {
             .collect();
         entries.sort_by_key(|entry| entry.str_id);
 
-        SealedSegment {
+        FinishedSegment {
             window,
             flushed: entries,
         }
@@ -381,7 +381,7 @@ impl Interner {
     }
 
     /// Keep the flushed record in sync with an accepted upgrade, so
-    /// [`Interner::seal`] can report the final directives even before the next
+    /// [`Interner::close`] can report the final directives even before the next
     /// flush writes the upgraded value again.
     fn record_flushed_bits(&mut self, id: StrId, merged: Request) {
         if let Some(entry) = self.flushed.get_mut(&id) {
@@ -476,24 +476,24 @@ mod tests {
             1,
             "the only copy of the bytes must survive a failed write"
         );
-        // A failed write must not create flushed records, or seal() would
+        // A failed write must not create flushed records, or write_segment() would
         // emit directives for values that exist nowhere in the journal.
-        let sealed = interner.seal();
-        assert!(sealed.flushed.is_empty());
-        assert_eq!(sealed.window.len(), 1);
+        let finished = interner.write_segment();
+        assert!(finished.flushed.is_empty());
+        assert_eq!(finished.window.len(), 1);
     }
 
     #[test]
-    fn seal_reports_upgrades_not_yet_flushed_again() {
-        // Blob upgrade after a flush, sealed before the next flush: the
+    fn close_reports_upgrades_not_yet_flushed_again() {
+        // Blob upgrade after a flush, finished before the next flush: the
         // directive must already carry the new placement, because the
         // merge takes placement from directives, not from part dicts.
         let mut interner = small_interner();
         let id = interner.intern(b"plan").expect("interns");
         flush_ok(&mut interner);
         interner.intern_blob(b"plan").expect("upgrade");
-        let sealed = interner.seal();
-        let entry = sealed
+        let finished = interner.write_segment();
+        let entry = finished
             .flushed
             .iter()
             .find(|entry| entry.str_id == id)
@@ -505,8 +505,8 @@ mod tests {
         let id = interner.intern(b"src/42").expect("interns");
         flush_ok(&mut interner);
         interner.intern_hot(b"src/42").expect("hot upgrade");
-        let sealed = interner.seal();
-        let entry = sealed
+        let finished = interner.write_segment();
+        let entry = finished
             .flushed
             .iter()
             .find(|entry| entry.str_id == id)
@@ -535,8 +535,8 @@ mod tests {
         let (_, hot) = interner.intern_hot_best_effort(b"note").expect("soft mark");
         assert!(hot);
         assert!(interner.window().is_empty());
-        let sealed = interner.seal();
-        let entry = sealed
+        let finished = interner.write_segment();
+        let entry = finished
             .flushed
             .iter()
             .find(|entry| entry.str_id == plain)
@@ -562,8 +562,8 @@ mod tests {
             interner.window().is_empty(),
             "soft hot on a blob must not reload the value"
         );
-        let sealed = interner.seal();
-        assert_eq!(sealed.flushed[0].hot, HotMark::None);
+        let finished = interner.write_segment();
+        assert_eq!(finished.flushed[0].hot, HotMark::None);
     }
 
     #[test]
@@ -606,8 +606,8 @@ mod tests {
         assert_eq!(flush_ok(&mut interner), 1);
 
         // After the next flush the directive remains in the flushed map.
-        let sealed = interner.seal();
-        let entry = sealed
+        let finished = interner.write_segment();
+        let entry = finished
             .flushed
             .iter()
             .find(|entry| entry.str_id == id)
@@ -646,18 +646,18 @@ mod tests {
     }
 
     #[test]
-    fn seal_returns_remaining_window_and_flushed_directives() {
+    fn close_returns_remaining_window_and_flushed_directives() {
         let mut interner = small_interner();
         let flushed_id = interner.intern(b"flushed").expect("interns");
         flush_ok(&mut interner);
         let window_id = interner.intern(b"window").expect("interns");
 
-        let sealed = interner.seal();
-        assert!(sealed.window.resolve(window_id).is_some());
-        assert!(sealed.window.resolve(flushed_id).is_none());
-        assert_eq!(sealed.flushed.len(), 1);
-        assert_eq!(sealed.flushed[0].str_id, flushed_id);
-        assert_eq!(sealed.flushed[0].placement, Placement::Strings);
+        let finished = interner.write_segment();
+        assert!(finished.window.resolve(window_id).is_some());
+        assert!(finished.window.resolve(flushed_id).is_none());
+        assert_eq!(finished.flushed.len(), 1);
+        assert_eq!(finished.flushed[0].str_id, flushed_id);
+        assert_eq!(finished.flushed[0].placement, Placement::Strings);
 
         // The interner starts the next segment empty.
         assert!(interner.window().is_empty());

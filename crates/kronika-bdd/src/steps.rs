@@ -23,8 +23,8 @@ fn is_utc_calendar_path(relative: &std::path::Path) -> bool {
             .all(|part| part.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
-#[given("a collector that seals on every tick")]
-fn seal_every_tick(world: &mut BddWorld) -> Result<()> {
+#[given("a collector that writes on every tick")]
+fn close_every_tick(world: &mut BddWorld) -> Result<()> {
     let mut env = world.env.clone();
     env.push(("KRONIKA_INTERVAL_S", "1".to_owned()));
     env.push(("KRONIKA_SEGMENT_MAX_BYTES", "0".to_owned()));
@@ -36,7 +36,7 @@ fn seal_every_tick(world: &mut BddWorld) -> Result<()> {
 fn keep_one_segment(world: &mut BddWorld) -> Result<()> {
     let mut env = world.env.clone();
     env.push(("KRONIKA_INTERVAL_S", "1".to_owned()));
-    // Caps far above anything a few ticks can reach, so nothing seals.
+    // Caps far above anything a few ticks can reach, so nothing writes.
     env.push(("KRONIKA_SEGMENT_MAX_BYTES", "1073741824".to_owned()));
     env.push(("KRONIKA_SEGMENT_MAX_AGE_S", "86400".to_owned()));
     world.run = Some(Run::spawn(&env)?);
@@ -116,12 +116,13 @@ fn journal_is_active_wal(world: &mut BddWorld) {
     );
 }
 
-#[then("the log has a segment_seal_finish line")]
-fn log_has_seal_line(world: &mut BddWorld) -> Result<()> {
+#[then("the log has a segment_write_finish line")]
+fn log_has_write_line(world: &mut BddWorld) -> Result<()> {
     let log = world.run.as_ref().expect("a collector was started").log()?;
     assert!(
-        log.lines().any(|line| line.contains("segment_seal_finish")),
-        "no seal line in:\n{log}"
+        log.lines()
+            .any(|line| line.contains("segment_write_finish")),
+        "no write line in:\n{log}"
     );
     Ok(())
 }
@@ -129,12 +130,12 @@ fn log_has_seal_line(world: &mut BddWorld) -> Result<()> {
 #[then(
     "that line names the segment path, the reason, the section count, the byte size, and the elapsed time"
 )]
-fn seal_line_is_complete(world: &mut BddWorld) -> Result<()> {
+fn write_line_is_complete(world: &mut BddWorld) -> Result<()> {
     let log = world.run.as_ref().expect("a collector was started").log()?;
     let line = log
         .lines()
-        .find(|line| line.contains("segment_seal_finish"))
-        .expect("a seal line");
+        .find(|line| line.contains("segment_write_finish"))
+        .expect("a write line");
     for field in [
         "segment_path=",
         "reason=",
@@ -159,9 +160,56 @@ fn log_reports_degraded_meminfo(world: &mut BddWorld) -> Result<()> {
     Ok(())
 }
 
-#[then("the log still reports a sealed segment")]
-fn log_still_seals(world: &mut BddWorld) -> Result<()> {
-    log_has_seal_line(world)
+#[then("the log still reports a segment written")]
+fn log_still_writes(world: &mut BddWorld) -> Result<()> {
+    log_has_write_line(world)
+}
+
+#[given("a data root whose journal is corrupt")]
+fn corrupt_journal(world: &mut BddWorld) -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let out_dir = root.path().join("segments");
+    std::fs::create_dir_all(&out_dir)?;
+    // A valid journal header magic followed by bytes that are not a frame.
+    std::fs::write(out_dir.join("active.wal"), b"PGKJNL1\0not-a-valid-header")?;
+    world.prepared_root = Some(root);
+    Ok(())
+}
+
+#[when(regex = r"^the collector runs for (\d+) seconds$")]
+fn collector_runs_for(world: &mut BddWorld, seconds: u64) -> Result<()> {
+    let root = world.prepared_root.take().expect("a prepared data root");
+    let mut env = world.env.clone();
+    env.push(("KRONIKA_INTERVAL_S", "1".to_owned()));
+    env.push(("KRONIKA_SEGMENT_MAX_BYTES", "0".to_owned()));
+    let mut run = Run::adopt(root, &env)?;
+    run.run_for_and_stop(Duration::from_secs(seconds))?;
+    world.run = Some(run);
+    Ok(())
+}
+
+#[then("the log reports the journal as damaged")]
+fn log_reports_damaged_journal(world: &mut BddWorld) -> Result<()> {
+    let log = world.run.as_ref().expect("a collector was started").log()?;
+    let line = log
+        .lines()
+        .find(|line| line.contains("journal_damaged"))
+        .unwrap_or("");
+    assert!(!line.is_empty(), "no journal_damaged line in:\n{log}");
+    assert!(line.contains("path="), "{line} names no path");
+    assert!(line.contains("reason="), "{line} names no reason");
+    Ok(())
+}
+
+#[then("the corrupt bytes are kept next to the journal")]
+fn damaged_bytes_are_kept(world: &mut BddWorld) {
+    let run = world.run.as_ref().expect("a collector was started");
+    let damaged = run.out_dir().join("active.wal.damaged");
+    assert!(
+        damaged.exists(),
+        "active.wal.damaged is missing from {:?}",
+        files_under(&run.out_dir())
+    );
 }
 
 #[then("the log has no error line")]

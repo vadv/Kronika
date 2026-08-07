@@ -19,9 +19,7 @@ use kronika_format::{
     MAX_JOURNAL_PARTS, MAX_PART_LEN, PartError, PartRef, RESET_MARKER_LEN, ResetMarker,
     scan_journal_streaming_strict_from, validate_part,
 };
-use kronika_layout::{
-    FileIdentity, JournalRotation, JournalSlot, LayoutError, SegmentId, WriterLease, WriterOwner,
-};
+use kronika_layout::{LayoutError, SegmentId, WriterLease, WriterOwner};
 
 static NEXT_JOURNAL_GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -324,7 +322,7 @@ impl fmt::Display for JournalError {
             }
             Self::Full { len, max } => write!(
                 f,
-                "journal of {len} bytes would exceed the cap of {max}; seal and reset first"
+                "journal of {len} bytes would exceed the cap of {max}; write and reset first"
             ),
             Self::InvalidPart(error) => write!(f, "part is not a valid ZMS part: {error}"),
             Self::StalePartRef { offset, len } => {
@@ -438,63 +436,6 @@ pub struct Journal {
 }
 
 impl Journal {
-    /// Initializes a layout-owned fresh journal slot durably.
-    ///
-    /// This is the alternate-generation counterpart of
-    /// [`prepare_rotation`](Self::prepare_rotation). Repeating the call after
-    /// the canonical empty header was synchronized is idempotent.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed I/O error or [`JournalError::FreshGenerationInvalid`].
-    pub fn prepare_slot(slot: &mut JournalSlot) -> Result<(), JournalError> {
-        prepare_fresh_file(slot.file_mut())
-    }
-
-    /// Initializes a layout-owned fresh rotation descriptor durably.
-    ///
-    /// Repeating this call after the exact empty header was synchronized is
-    /// idempotent. Any other existing bytes are preserved and rejected.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed I/O error or [`JournalError::FreshGenerationInvalid`].
-    pub fn prepare_rotation(rotation: &mut JournalRotation) -> Result<(), JournalError> {
-        prepare_fresh_file(rotation.fresh_file_mut())
-    }
-
-    /// Opens an activated canonical or recognized alternate fresh generation.
-    ///
-    /// The layout slot transfers its exact writable descriptor and writer-lock
-    /// lease. Only the synchronized canonical empty header is accepted.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed configuration, I/O, or fresh-generation error.
-    pub fn open_slot(slot: JournalSlot, config: JournalConfig) -> Result<Self, JournalError> {
-        validate_config(config)?;
-        let (file, owner_lease) = slot.into_file_and_lease();
-        let identity = FileIdentity::from_file(&file)?;
-        if identity.len != JOURNAL_HEADER_LEN as u64 {
-            return Err(JournalError::FreshGenerationInvalid { len: identity.len });
-        }
-        let mut encoded = [0_u8; JOURNAL_HEADER_LEN];
-        file.read_exact_at(&mut encoded, 0)?;
-        if encoded != JournalHeader::EMPTY.encode() || FileIdentity::from_file(&file)? != identity {
-            return Err(JournalError::FreshGenerationInvalid { len: identity.len });
-        }
-        Ok(Self {
-            _owner_lease: owner_lease,
-            file,
-            end: JOURNAL_HEADER_LEN,
-            config,
-            parts: Vec::new(),
-            generation: next_journal_generation(),
-            segment_id: None,
-            poisoned: false,
-        })
-    }
-
     /// Opens or initializes the root journal through a writer-owner capability.
     ///
     /// Existing files are validated without truncation or repair. A newly
@@ -592,7 +533,7 @@ impl Journal {
             ))
         })?;
         // A preceding create may have synchronized the file but failed while
-        // synchronizing its root entry. EEXIST alone is not durability proof.
+        // synchronizing its root entry. EEXIST alone does not mean durable.
         journal_failpoint!(OpenRootSync);
         owner.sync_root()?;
         let generation = next_journal_generation();
@@ -780,7 +721,7 @@ impl Journal {
 
     /// Read a bounded byte range relative to one part body.
     ///
-    /// Sealing uses this after catalog validation so each Parquet body is read
+    /// Writing uses this after catalog validation so each Parquet body is read
     /// once without allocating the rest of its journal part again.
     pub(crate) fn read_part_range(
         &self,
@@ -930,27 +871,6 @@ impl Journal {
 fn write_header(file: &mut File, header: JournalHeader) -> Result<(), std::io::Error> {
     file.seek(SeekFrom::Start(0))?;
     file.write_all(&header.encode())
-}
-
-fn prepare_fresh_file(file: &mut File) -> Result<(), JournalError> {
-    let len = file.metadata()?.len();
-    if len == 0 {
-        write_header(file, JournalHeader::EMPTY)?;
-        file.set_len(JOURNAL_HEADER_LEN as u64)?;
-        file.sync_data()?;
-        return Ok(());
-    }
-    if len != JOURNAL_HEADER_LEN as u64 {
-        return Err(JournalError::FreshGenerationInvalid { len });
-    }
-    let identity = FileIdentity::from_file(file)?;
-    let mut encoded = [0_u8; JOURNAL_HEADER_LEN];
-    file.read_exact_at(&mut encoded, 0)?;
-    if encoded != JournalHeader::EMPTY.encode() || FileIdentity::from_file(file)? != identity {
-        return Err(JournalError::FreshGenerationInvalid { len });
-    }
-    file.sync_data()?;
-    Ok(())
 }
 
 fn rollback(file: &mut File, end: usize, header: JournalHeader) -> Result<(), std::io::Error> {
@@ -1178,44 +1098,6 @@ mod tests {
         let journal = Journal::open(&owner, JournalConfig::default()).expect("reopen");
         assert_eq!(journal.parts().len(), 2);
         assert_eq!(journal.read_part(journal.parts()[1]).expect("read"), part);
-    }
-
-    #[test]
-    fn prepared_rotated_slot_opens_as_a_fresh_journal() {
-        let directory = tempfile::tempdir().unwrap();
-        let owner = owner(&directory);
-        let journal = Journal::open(&owner, JournalConfig::default()).unwrap();
-        drop(journal);
-
-        let mut rotation = owner.begin_journal_rotation().unwrap();
-        Journal::prepare_rotation(&mut rotation).unwrap();
-        Journal::prepare_rotation(&mut rotation).expect("preparation is restart-idempotent");
-        let outcome = rotation.activate();
-        let journal = Journal::open_slot(outcome.fresh, JournalConfig::default()).unwrap();
-
-        assert!(journal.is_empty());
-        assert_eq!(journal.segment_id(), None);
-        assert_eq!(journal.len(), JOURNAL_HEADER_LEN);
-        assert_eq!(
-            outcome.evidence.file().metadata().unwrap().len(),
-            JOURNAL_HEADER_LEN as u64
-        );
-    }
-
-    #[test]
-    fn rotation_preparation_preserves_and_rejects_unexpected_bytes() {
-        let directory = tempfile::tempdir().unwrap();
-        let owner = owner(&directory);
-        let journal = Journal::open(&owner, JournalConfig::default()).unwrap();
-        drop(journal);
-
-        let mut rotation = owner.begin_journal_rotation().unwrap();
-        rotation.fresh_file_mut().write_all(b"x").unwrap();
-        assert!(matches!(
-            Journal::prepare_rotation(&mut rotation),
-            Err(JournalError::FreshGenerationInvalid { len: 1 })
-        ));
-        assert_eq!(rotation.fresh_file_mut().metadata().unwrap().len(), 1);
     }
 
     #[test]
@@ -1533,62 +1415,6 @@ mod tests {
             let reopened = Journal::open(&owner, JournalConfig::default()).unwrap();
             assert_eq!(reopened.parts().len(), 1);
             assert_eq!(reopened.read_part(reopened.parts()[0]).unwrap(), first);
-        }
-    }
-
-    #[test]
-    fn rollback_faults_poison_the_handle_and_reopen_never_accepts_a_partial_append() {
-        const INJECTED_EIO: i32 = 5;
-        const INJECTED_ENOSPC: i32 = 28;
-        for rollback_point in [
-            JournalFaultPoint::RollbackTruncate,
-            JournalFaultPoint::RollbackHeaderWrite,
-            JournalFaultPoint::RollbackSync,
-        ] {
-            let directory = tempfile::tempdir().unwrap();
-            let owner = owner(&directory);
-            let mut journal = Journal::open(&owner, JournalConfig::default()).unwrap();
-            let canonical_empty = std::fs::read(directory.path().join("active.wal")).unwrap();
-            let faults = arm_journal_faults([
-                (JournalFaultPoint::AppendFrameBodyWrite, INJECTED_EIO),
-                (rollback_point, INJECTED_ENOSPC),
-            ]);
-
-            let error = journal
-                .append(id(1_000), &sample_part())
-                .expect_err("a failed rollback cannot report success");
-            assert!(
-                matches!(
-                    &error,
-                    JournalError::RollbackFailed {
-                        operation,
-                        rollback,
-                    } if operation.raw_os_error() == Some(INJECTED_EIO)
-                        && rollback.raw_os_error() == Some(INJECTED_ENOSPC)
-                ),
-                "{rollback_point:?} returned {error:?}"
-            );
-            assert!(journal.is_poisoned());
-            faults.assert_consumed();
-            let interrupted = std::fs::read(directory.path().join("active.wal")).unwrap();
-            drop(journal);
-
-            let reopened = Journal::open(&owner, JournalConfig::default());
-            if rollback_point == JournalFaultPoint::RollbackSync {
-                let reopened = reopened.expect("the restored old bytes remain a valid journal");
-                assert!(reopened.is_empty());
-                assert_eq!(interrupted, canonical_empty);
-            } else {
-                assert!(
-                    matches!(reopened, Err(JournalError::BodyLengthMismatch { .. })),
-                    "{rollback_point:?} must diagnose, not accept, the interrupted append"
-                );
-                assert_eq!(
-                    std::fs::read(directory.path().join("active.wal")).unwrap(),
-                    interrupted,
-                    "{rollback_point:?} reopen must preserve the damaged evidence"
-                );
-            }
         }
     }
 

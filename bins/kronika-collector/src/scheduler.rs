@@ -114,7 +114,7 @@ impl DueSet {
     }
 }
 
-/// The sources a fresh segment re-reads on its first tick, so every sealed
+/// The sources a fresh segment re-reads on its first tick, so every finished
 /// file carries its own instance identity, reset context, and configuration.
 const SEGMENT_OPEN_SOURCES: [SourceKind; 2] =
     [SourceKind::InstanceMetadata, SourceKind::OsMountTopo];
@@ -134,7 +134,7 @@ impl Scheduler {
         }
     }
 
-    /// A segment was just sealed, so the next window must re-read the
+    /// A segment was just finished, so the next window must re-read the
     /// per-segment service sources.
     pub(crate) fn mark_segment_opened(&mut self) {
         for (slot, kind) in ALL_SOURCES.iter().enumerate() {

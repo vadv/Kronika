@@ -17,26 +17,26 @@ pub struct OsCgroupCpu {
     /// Cgroup path as a string dictionary reference.
     #[column(l)]
     pub cgroup_path: StrId,
-    /// Total CPU usage, microseconds.
-    #[column(c)]
+    /// Total CPU usage.
+    #[column(c, unit = microseconds)]
     pub usage_usec: i64,
-    /// User CPU usage, microseconds.
-    #[column(c)]
+    /// User CPU usage.
+    #[column(c, unit = microseconds)]
     pub user_usec: i64,
-    /// System CPU usage, microseconds.
-    #[column(c)]
+    /// System CPU usage.
+    #[column(c, unit = microseconds)]
     pub system_usec: i64,
-    /// CPU throttled time, microseconds.
-    #[column(c)]
+    /// CPU throttled time.
+    #[column(c, unit = microseconds)]
     pub throttled_usec: i64,
     /// Number of CPU throttling events.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub nr_throttled: i64,
     /// CPU quota per period, microseconds (`-1` means unlimited).
-    #[column(g)]
+    #[column(g, unit = microseconds)]
     pub quota_usec: i64,
-    /// CPU quota period, microseconds.
-    #[column(g)]
+    /// CPU quota period.
+    #[column(g, unit = microseconds)]
     pub period_usec: i64,
     /// Source scope. See `kronika_source_os::OsScope`.
     #[column(l)]

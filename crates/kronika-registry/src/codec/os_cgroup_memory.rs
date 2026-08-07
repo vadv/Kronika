@@ -17,38 +17,38 @@ pub struct OsCgroupMemory {
     /// Cgroup path as a string dictionary reference.
     #[column(l)]
     pub cgroup_path: StrId,
-    /// Current memory usage, bytes.
-    #[column(g)]
+    /// Current memory usage.
+    #[column(g, unit = bytes)]
     pub current: i64,
     /// Memory limit, bytes; `None` means unlimited.
-    #[column(g)]
+    #[column(g, unit = bytes)]
     pub max: Option<i64>,
-    /// Anonymous memory, bytes.
-    #[column(g)]
+    /// Anonymous memory.
+    #[column(g, unit = bytes)]
     pub anon: i64,
-    /// File-backed memory, bytes.
-    #[column(g)]
+    /// File-backed memory.
+    #[column(g, unit = bytes)]
     pub file: i64,
-    /// Kernel memory, bytes.
-    #[column(g)]
+    /// Kernel memory.
+    #[column(g, unit = bytes)]
     pub kernel: i64,
-    /// Slab memory, bytes.
-    #[column(g)]
+    /// Slab memory.
+    #[column(g, unit = bytes)]
     pub slab: i64,
     /// `memory.events low`.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub low_events: i64,
     /// `memory.events high`.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub high_events: i64,
     /// `memory.events max` or v1 `memory.failcnt`.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub max_events: i64,
     /// `memory.events oom`.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub oom_events: i64,
     /// `memory.events oom_kill`.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub oom_kill: i64,
     /// Source scope. See `kronika_source_os::OsScope`.
     #[column(l)]

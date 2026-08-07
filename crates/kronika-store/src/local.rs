@@ -22,7 +22,7 @@ use kronika_layout::{DataRoot, FileIdentity, LayoutError, LayoutLimits, LimitKin
 
 use crate::catalog_summary::{CatalogDigest, CatalogSummary};
 use crate::source::{
-    ActiveJournalWarningReason, ActivePart, InvalidZmsReason, JournalScan, LocalScan, SealedUnit,
+    ActiveJournalWarningReason, ActivePart, FinalUnit, InvalidZmsReason, JournalScan, LocalScan,
     StoreError, StoreIoFailure, StoreIoOperation, StoreObject, StoreWarning, StoreWarningReason,
 };
 
@@ -39,7 +39,7 @@ std::thread_local! {
     };
 }
 
-/// A storage directory containing sealed `.zms` segments and an `active.wal`
+/// A storage directory containing finished `.zms` segments and an `active.wal`
 /// journal.
 #[derive(Debug, Clone)]
 pub struct LocalDir {
@@ -63,11 +63,11 @@ impl LocalDir {
         Ok(Self { root, limits })
     }
 
-    /// Scan the directory for sealed segments and active journal parts.
+    /// Scan the directory for finished segments and active journal parts.
     ///
-    /// Every admitted `.zms` is completely validated. Invalid sealed files and
+    /// Every admitted `.zms` is completely validated. Invalid finished files and
     /// an unavailable or corrupt `active.wal` journal are excluded with
-    /// typed warnings so valid sealed data remains queryable. The strict
+    /// typed warnings so valid final data remains queryable. The strict
     /// journal API remains available through [`scan_journal`](Self::scan_journal).
     ///
     /// # Errors
@@ -89,7 +89,7 @@ impl LocalDir {
     /// Scan only `active.wal`.
     ///
     /// The returned journal view is complete and can be captured inside a
-    /// short file-identity handshake. Sealed-tree traversal is deliberately
+    /// short file-identity handshake. Finished-tree traversal is deliberately
     /// deferred to [`complete_scan`](Self::complete_scan).
     ///
     /// # Errors
@@ -130,7 +130,7 @@ impl LocalDir {
     /// - size `< last_valid_len` or the file is gone: a reset;
     ///   `prev_active` is dropped and the journal is scanned from its v1 header.
     ///
-    /// Sealed `.zms` files are always re-listed. A journal that cannot provide
+    /// Finished `.zms` files are always re-listed. A journal that cannot provide
     /// an exact incremental view degrades to an empty live generation plus a
     /// typed warning; callers needing retry/fail semantics can invoke
     /// [`scan_journal_from`](Self::scan_journal_from) directly.
@@ -157,7 +157,7 @@ impl LocalDir {
     /// Incrementally scan only `active.wal`.
     ///
     /// This has the same journal resume semantics as [`scan_from`](Self::scan_from)
-    /// without traversing the sealed tree.
+    /// without traversing the finished tree.
     ///
     /// # Errors
     ///
@@ -187,28 +187,28 @@ impl LocalDir {
         )
     }
 
-    /// Complete a captured journal scan with one strict sealed-tree traversal.
+    /// Complete a captured journal scan with one strict finished-tree traversal.
     ///
-    /// The journal is not opened again. This keeps potentially long sealed
+    /// The journal is not opened again. This keeps potentially long finished
     /// traversal outside a journal identity handshake while retaining the
     /// exact journal state already validated by [`scan_journal`](Self::scan_journal).
     ///
     /// # Errors
     ///
-    /// Returns an I/O error if the owned tree or a sealed ZMS is invalid, or if
+    /// Returns an I/O error if the owned tree or a finished segment is invalid, or if
     /// directory plus active-result metadata exceed the shared layout budget.
     pub fn complete_scan(&self, journal: JournalScan) -> io::Result<LocalScan> {
         self.complete_scan_cached(journal, &[])
     }
 
-    /// Complete a journal scan while reusing unchanged sealed catalog summaries.
+    /// Complete a journal scan while reusing unchanged finished catalog summaries.
     ///
-    /// `previous_sealed` must be the sorted sealed result of an earlier scan of
+    /// `previous_finished` must be the sorted finished result of an earlier scan of
     /// this store. A summary is reused only when both its address and complete
     /// filesystem identity match the current strict layout result. All other
     /// ZMS catalogs are reopened and validated.
     ///
-    /// The merge is linear in the current and previous sealed counts and does
+    /// The merge is linear in the current and previous finished counts and does
     /// not build an auxiliary map.
     ///
     /// # Errors
@@ -219,9 +219,9 @@ impl LocalDir {
     pub fn complete_scan_cached(
         &self,
         journal: JournalScan,
-        previous_sealed: &[SealedUnit],
+        previous_finished: &[FinalUnit],
     ) -> io::Result<LocalScan> {
-        self.complete_scan_cached_with_warnings(journal, previous_sealed, &[])
+        self.complete_scan_cached_with_warnings(journal, previous_finished, &[])
     }
 
     #[expect(
@@ -231,7 +231,7 @@ impl LocalDir {
     fn complete_scan_cached_with_warnings(
         &self,
         journal: JournalScan,
-        previous_sealed: &[SealedUnit],
+        previous_finished: &[FinalUnit],
         initial_warnings: &[StoreWarning],
     ) -> io::Result<LocalScan> {
         let layout = self.root.scan(self.limits).map_err(layout_io)?;
@@ -239,7 +239,7 @@ impl LocalDir {
         ensure_scan_metadata_budget(
             layout.metadata_bytes,
             journal.metadata_bytes,
-            previous_sealed.len(),
+            previous_finished.len(),
             segment_count,
             0,
             self.limits.max_metadata_bytes,
@@ -247,13 +247,13 @@ impl LocalDir {
         let mut retained_during_build = accounted_scan_metadata_bytes(
             layout.metadata_bytes,
             journal.metadata_bytes,
-            previous_sealed.len(),
+            previous_finished.len(),
             segment_count,
             0,
         )
         .ok_or_else(|| metadata_limit_io(self.limits.max_metadata_bytes))?;
 
-        let mut sealed = Vec::with_capacity(segment_count);
+        let mut finished = Vec::with_capacity(segment_count);
         let mut warnings = Vec::new();
         for warning in initial_warnings {
             push_warning_bounded(
@@ -279,11 +279,11 @@ impl LocalDir {
         }
         let mut previous_at = 0_usize;
         for artifact in layout.segments {
-            advance_previous(previous_sealed, &mut previous_at, artifact.address);
-            if let Some(previous) = previous_sealed.get(previous_at).filter(|previous| {
+            advance_previous(previous_finished, &mut previous_at, artifact.address);
+            if let Some(previous) = previous_finished.get(previous_at).filter(|previous| {
                 (previous.address, previous.identity) == (artifact.address, artifact.zms_identity)
             }) {
-                sealed.push(previous.clone());
+                finished.push(previous.clone());
                 continue;
             }
 
@@ -328,7 +328,7 @@ impl LocalDir {
                     retained_during_build = retained_during_build
                         .checked_add(summary_allocation_bytes())
                         .ok_or_else(|| metadata_limit_io(self.limits.max_metadata_bytes))?;
-                    sealed.push(SealedUnit {
+                    finished.push(FinalUnit {
                         address: artifact.address,
                         identity: artifact.zms_identity,
                         summary: Arc::new(summary),
@@ -344,7 +344,7 @@ impl LocalDir {
         }
 
         Ok(LocalScan {
-            sealed: Arc::new(sealed),
+            finished: Arc::new(finished),
             active: journal.active,
             damages: journal.damages,
             warnings,
@@ -377,19 +377,19 @@ impl LocalDir {
         }
     }
 
-    /// Open a sealed segment file for raw byte access.
+    /// Open a finished segment file for raw byte access.
     ///
     /// # Errors
     ///
     /// Returns an I/O error if the file cannot be opened or no longer has the
     /// filesystem identity pinned by the scan.
-    pub fn open_sealed(&self, u: &SealedUnit) -> io::Result<File> {
+    pub fn open_finished(&self, u: &FinalUnit) -> io::Result<File> {
         let file = self.root.open_zms(u.address).map_err(layout_io)?;
-        self.validate_sealed_file(&file, u)?;
+        self.validate_finished_file(&file, u)?;
         Ok(file)
     }
 
-    /// Validate an already-open sealed ZMS against its pinned scan identity.
+    /// Validate an already-open finished segment against its pinned scan identity.
     ///
     /// Readers call this again after parsing the catalog so an in-place change
     /// during positional reads becomes a retryable stale-snapshot error without
@@ -401,9 +401,9 @@ impl LocalDir {
     /// names the exact file captured by `u`.
     #[expect(
         clippy::unused_self,
-        reason = "identity validation belongs to the LocalDir sealed-open contract"
+        reason = "identity validation belongs to the LocalDir finished-open contract"
     )]
-    pub fn validate_sealed_file(&self, file: &File, u: &SealedUnit) -> io::Result<()> {
+    pub fn validate_finished_file(&self, file: &File, u: &FinalUnit) -> io::Result<()> {
         require_file_identity(file, u.identity, u.address, "while it was open")
     }
 
@@ -453,7 +453,7 @@ impl LocalDir {
     /// A concurrent completed-segment publication followed by `Journal::reset`
     /// can shrink the journal during scanning. Such an
     /// `UnexpectedEof`/`NotFound` becomes a retryable `Interrupted` error; no
-    /// partial active or sealed set is returned. Other I/O errors propagate.
+    /// partial active or finished set is returned. Other I/O errors propagate.
     #[expect(
         clippy::rc_buffer,
         reason = "incremental append needs Arc::make_mut while unchanged scans retain the Vec allocation"
@@ -677,7 +677,7 @@ impl LocalDir {
                     io::ErrorKind::NotFound | io::ErrorKind::UnexpectedEof
                 ) =>
             {
-                return Err(stale_sealed_zms(address, "before it could be opened"));
+                return Err(stale_finished_zms(address, "before it could be opened"));
             }
             Err(LayoutError::Io(source)) if source.kind() == io::ErrorKind::OutOfMemory => {
                 return Err(source);
@@ -693,20 +693,20 @@ impl LocalDir {
                 | LayoutError::UnexpectedCalendarEntryType { .. }
                 | LayoutError::UnexpectedLeafEntryType { .. },
             ) => {
-                return Err(stale_sealed_zms(address, "before it could be opened"));
+                return Err(stale_finished_zms(address, "before it could be opened"));
             }
             Err(other) => return Err(layout_io(other)),
         };
         match FileIdentity::from_file(&file) {
             Ok(actual) if actual == expected => Ok(ZmsOpen::Open(file)),
-            Ok(_changed) => Err(stale_sealed_zms(address, "after opening it")),
+            Ok(_changed) => Err(stale_finished_zms(address, "after opening it")),
             Err(source)
                 if matches!(
                     source.kind(),
                     io::ErrorKind::NotFound | io::ErrorKind::UnexpectedEof
                 ) =>
             {
-                Err(stale_sealed_zms(address, "after opening it"))
+                Err(stale_finished_zms(address, "after opening it"))
             }
             Err(source) if source.kind() == io::ErrorKind::OutOfMemory => Err(source),
             Err(source) => Ok(ZmsOpen::Invalid(StoreIoFailure::from_error(
@@ -737,13 +737,13 @@ const fn invalid_zms_warning(
 }
 
 fn advance_previous(
-    previous: &[SealedUnit],
+    previous: &[FinalUnit],
     previous_at: &mut usize,
     current: kronika_layout::SegmentAddress,
 ) {
     while previous
         .get(*previous_at)
-        .is_some_and(|sealed| sealed.address < current)
+        .is_some_and(|finished| finished.address < current)
     {
         *previous_at += 1;
     }
@@ -832,18 +832,18 @@ fn accounted_scan_metadata_bytes(
     current_segments: usize,
     new_summaries: usize,
 ) -> Option<usize> {
-    let previous_capacity = previous_segments.checked_mul(size_of::<SealedUnit>())?;
-    let current_capacity = current_segments.checked_mul(size_of::<SealedUnit>())?;
+    let previous_capacity = previous_segments.checked_mul(size_of::<FinalUnit>())?;
+    let current_capacity = current_segments.checked_mul(size_of::<FinalUnit>())?;
     let collection_count = usize::from(previous_segments != 0).checked_add(1)?;
-    let sealed_collections = collection_count
-        .checked_mul(size_of::<Vec<SealedUnit>>().checked_add(ARC_ALLOCATION_OVERHEAD)?)?;
+    let finished_collections = collection_count
+        .checked_mul(size_of::<Vec<FinalUnit>>().checked_add(ARC_ALLOCATION_OVERHEAD)?)?;
     let unique_summaries = previous_segments.checked_add(new_summaries)?;
     let summary_allocations = unique_summaries.checked_mul(summary_allocation_bytes())?;
     layout_metadata
         .checked_add(journal_metadata)?
         .checked_add(previous_capacity)?
         .checked_add(current_capacity)?
-        .checked_add(sealed_collections)?
+        .checked_add(finished_collections)?
         .checked_add(summary_allocations)
 }
 
@@ -861,14 +861,14 @@ fn require_file_identity(
     if actual == expected {
         return Ok(());
     }
-    Err(stale_sealed_zms(address, phase))
+    Err(stale_finished_zms(address, phase))
 }
 
-fn stale_sealed_zms(address: kronika_layout::SegmentAddress, phase: &str) -> io::Error {
+fn stale_finished_zms(address: kronika_layout::SegmentAddress, phase: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::Interrupted,
         format!(
-            "sealed ZMS {} changed {phase}; retry the scan",
+            "finished segment {} changed {phase}; retry the scan",
             address.zms_name()
         ),
     )
@@ -1128,7 +1128,7 @@ fn active_journal_io(error: io::Error) -> io::Error {
 }
 
 /// Whether an error returned by [`LocalDir::scan`] originated while reading
-/// `active.wal`, rather than while listing or validating sealed segments.
+/// `active.wal`, rather than while listing or validating finished segments.
 #[must_use]
 pub fn is_active_journal_scan_error(error: &io::Error) -> bool {
     error
@@ -1164,7 +1164,7 @@ fn degradable_active_journal_error(error: &io::Error) -> bool {
 }
 
 /// Whether an I/O error means the live journal shrank or vanished under us
-/// (a concurrent seal + `Journal::reset`), rather than a real I/O failure.
+/// (a concurrent write + `Journal::reset`), rather than a real I/O failure.
 fn is_stale_journal(err: &io::Error) -> bool {
     matches!(
         err.kind(),
@@ -1519,7 +1519,7 @@ fn classify_zms_validation(
     match FileIdentity::from_file(file) {
         Ok(actual) if actual == expected => {}
         Ok(_changed) => {
-            return Err(stale_sealed_zms(address, "during complete validation"));
+            return Err(stale_finished_zms(address, "during complete validation"));
         }
         Err(source)
             if matches!(
@@ -1527,7 +1527,7 @@ fn classify_zms_validation(
                 io::ErrorKind::NotFound | io::ErrorKind::UnexpectedEof
             ) =>
         {
-            return Err(stale_sealed_zms(address, "during complete validation"));
+            return Err(stale_finished_zms(address, "during complete validation"));
         }
         Err(source) if source.kind() == io::ErrorKind::OutOfMemory => return Err(source),
         Err(source) => {
@@ -2167,13 +2167,16 @@ mod tests {
     // --- scan() behavioral tests ---
 
     #[test]
-    fn scan_lists_sealed_and_active_with_cheap_catalog() {
+    fn scan_lists_finished_and_active_with_cheap_catalog() {
         let dir = tempfile::tempdir().unwrap();
         write_segment(dir.path(), 1_000, part(1000));
         write_journal(dir.path(), 2_000, &[part(2000), part(3000)]);
         let scan = LocalDir::open(dir.path()).unwrap().scan().unwrap();
-        assert_eq!(scan.sealed.len(), 1, "one sealed segment");
-        assert_eq!(scan.sealed[0].summary.min_ts, 1000, "sealed summary min_ts");
+        assert_eq!(scan.finished.len(), 1, "one finished segment");
+        assert_eq!(
+            scan.finished[0].summary.min_ts, 1000,
+            "finished summary min_ts"
+        );
         assert_eq!(scan.active.len(), 2, "two active parts");
         assert_eq!(
             scan.active[1].catalog.min_ts, 3000,
@@ -2196,7 +2199,7 @@ mod tests {
 
         reset_catalog_summary_reads();
         let second = local
-            .complete_scan_cached(local.scan_journal().unwrap(), first.sealed.as_slice())
+            .complete_scan_cached(local.scan_journal().unwrap(), first.finished.as_slice())
             .unwrap();
 
         assert_eq!(
@@ -2205,13 +2208,13 @@ mod tests {
             "an identity-equal ZMS must not have its catalog reread"
         );
         assert!(Arc::ptr_eq(
-            &first.sealed[0].summary,
-            &second.sealed[0].summary
+            &first.finished[0].summary,
+            &second.finished[0].summary
         ));
         let cloned = second.clone();
         assert!(
-            Arc::ptr_eq(&second.sealed, &cloned.sealed),
-            "snapshot clone must share the sealed collection"
+            Arc::ptr_eq(&second.finished, &cloned.finished),
+            "snapshot clone must share the finished collection"
         );
     }
 
@@ -2222,8 +2225,8 @@ mod tests {
         fs::write(&path, part(1000)).unwrap();
         let local = LocalDir::open(dir.path()).unwrap();
         let first = local.scan().unwrap();
-        let pinned = first.sealed[0].clone();
-        let opened = local.open_sealed(&pinned).unwrap();
+        let pinned = first.finished[0].clone();
+        let opened = local.open_finished(&pinned).unwrap();
 
         fs::write(&path, part_with_body(1000, b"changed")).unwrap();
         let current_identity = FileIdentity::from_file(&File::open(&path).unwrap()).unwrap();
@@ -2232,26 +2235,26 @@ mod tests {
         assert_ne!(pinned.identity, current_identity);
         assert_eq!(
             local
-                .validate_sealed_file(&opened, &pinned)
+                .validate_finished_file(&opened, &pinned)
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::Interrupted
         );
         assert_eq!(
-            local.open_sealed(&pinned).unwrap_err().kind(),
+            local.open_finished(&pinned).unwrap_err().kind(),
             io::ErrorKind::Interrupted
         );
 
         reset_catalog_summary_reads();
         let second = local
-            .complete_scan_cached(local.scan_journal().unwrap(), first.sealed.as_slice())
+            .complete_scan_cached(local.scan_journal().unwrap(), first.finished.as_slice())
             .unwrap();
         assert_eq!(catalog_summary_reads(), 1);
         assert!(!Arc::ptr_eq(
-            &first.sealed[0].summary,
-            &second.sealed[0].summary
+            &first.finished[0].summary,
+            &second.finished[0].summary
         ));
-        assert_eq!(second.sealed[0].identity, current_identity);
+        assert_eq!(second.finished[0].identity, current_identity);
     }
 
     #[test]
@@ -2269,10 +2272,10 @@ mod tests {
         fs::write(path, corrupt).unwrap();
         reset_catalog_summary_reads();
         let scan = local
-            .complete_scan_cached(local.scan_journal().unwrap(), first.sealed.as_slice())
+            .complete_scan_cached(local.scan_journal().unwrap(), first.finished.as_slice())
             .unwrap();
 
-        assert!(scan.sealed.is_empty());
+        assert!(scan.finished.is_empty());
         assert_eq!(
             invalid_warning(&scan, 1_000).reason,
             StoreWarningReason::InvalidZms(InvalidZmsReason::Catalog)
@@ -2382,20 +2385,20 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_sealed_is_excluded_while_valid_segments_continue() {
+    fn corrupt_finished_is_excluded_while_valid_segments_continue() {
         let dir = tempfile::tempdir().unwrap();
         write_segment(dir.path(), 1_000, part(1000));
         write_segment(dir.path(), 2_000, b"not a zms");
         let local = LocalDir::open(dir.path()).unwrap();
         let scan = local.scan().unwrap();
 
-        assert_eq!(scan.sealed.len(), 1);
-        assert_eq!(scan.sealed[0].address.id.get(), 1_000);
+        assert_eq!(scan.finished.len(), 1);
+        assert_eq!(scan.finished[0].address.id.get(), 1_000);
         assert_eq!(
             invalid_warning(&scan, 2_000).reason,
             StoreWarningReason::InvalidZms(InvalidZmsReason::TailIndex)
         );
-        let opened = local.open_sealed(&scan.sealed[0]).unwrap();
+        let opened = local.open_finished(&scan.finished[0]).unwrap();
         assert_eq!(read_catalog(&opened).unwrap().min_ts, 1_000);
     }
 
@@ -2443,8 +2446,8 @@ mod tests {
 
         let first = LocalDir::open(dir.path()).unwrap().scan().unwrap();
         let restarted = LocalDir::open(dir.path()).unwrap().scan().unwrap();
-        assert_eq!(first.sealed.len(), 1);
-        assert_eq!(first.sealed[0].address.id.get(), 1_000);
+        assert_eq!(first.finished.len(), 1);
+        assert_eq!(first.finished[0].address.id.get(), 1_000);
         assert_eq!(first.warnings, restarted.warnings);
         for (raw_id, _bytes, reason) in cases {
             let warning = invalid_warning(&first, raw_id);
@@ -2485,7 +2488,7 @@ mod tests {
         fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
 
         let scan = LocalDir::open(dir.path()).unwrap().scan().unwrap();
-        assert_eq!(scan.sealed.len(), 1);
+        assert_eq!(scan.finished.len(), 1);
         let warning = invalid_warning(&scan, 2_000);
         assert_eq!(
             warning.reason,
@@ -2504,7 +2507,7 @@ mod tests {
         fs::write(dir.path().join(".nfs-private-name"), b"foreign-secret").unwrap();
 
         let scan = LocalDir::open(dir.path()).unwrap().scan().unwrap();
-        assert_eq!(scan.sealed.len(), 1);
+        assert_eq!(scan.finished.len(), 1);
         let foreign = scan
             .warnings
             .iter()
@@ -2529,13 +2532,13 @@ mod tests {
         write_segment(dir.path(), 1_000, part(1000));
         fs::write(dir.path().join("active.wal"), []).unwrap();
         let scan = LocalDir::open(dir.path()).unwrap().scan().unwrap();
-        assert_eq!(scan.sealed.len(), 1);
+        assert_eq!(scan.finished.len(), 1);
         assert!(scan.active.is_empty());
         assert!(scan.damages.is_empty());
     }
 
     #[test]
-    fn torn_active_journal_degrades_to_sealed_only_scan() {
+    fn torn_active_journal_degrades_to_finished_only_scan() {
         let dir = tempfile::tempdir().unwrap();
         write_segment(dir.path(), 1_000, part(1000));
         let unfinished_part = part(2000);
@@ -2552,7 +2555,7 @@ mod tests {
         bytes.extend_from_slice(&body);
         fs::write(dir.path().join("active.wal"), bytes).unwrap();
         let scan = LocalDir::open(dir.path()).unwrap().scan().unwrap();
-        assert_eq!(scan.sealed.len(), 1);
+        assert_eq!(scan.finished.len(), 1);
         assert!(scan.active.is_empty());
         assert!(scan.warnings.iter().any(|warning| {
             warning.affected == StoreObject::ActiveJournal
@@ -2604,7 +2607,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_error_origin_distinguishes_active_journal_from_sealed_zms() {
+    fn scan_error_origin_distinguishes_active_journal_from_finished_zms() {
         let active_dir = tempfile::tempdir().unwrap();
         fs::write(
             active_dir.path().join("active.wal"),
@@ -2617,10 +2620,10 @@ mod tests {
             .unwrap_err();
         assert!(is_active_journal_scan_error(&active_error));
 
-        let sealed_dir = tempfile::tempdir().unwrap();
-        write_segment(sealed_dir.path(), 2_000, b"stable malformed ZMS");
-        let scan = LocalDir::open(sealed_dir.path()).unwrap().scan().unwrap();
-        assert!(scan.sealed.is_empty());
+        let finished_dir = tempfile::tempdir().unwrap();
+        write_segment(finished_dir.path(), 2_000, b"stable malformed ZMS");
+        let scan = LocalDir::open(finished_dir.path()).unwrap().scan().unwrap();
+        assert!(scan.finished.is_empty());
         assert_eq!(
             invalid_warning(&scan, 2_000).reason,
             StoreWarningReason::InvalidZms(InvalidZmsReason::TailIndex)
@@ -2777,25 +2780,25 @@ mod tests {
     }
 
     #[test]
-    fn scan_from_discovers_new_sealed_segment() {
+    fn scan_from_discovers_new_finished_segment() {
         let dir = tempfile::tempdir().unwrap();
         let journal_path = dir.path().join("active.wal");
         fs::write(&journal_path, journal(1_000, &[part(1000)])).unwrap();
         let local = LocalDir::open(dir.path()).unwrap();
         let first = local.scan().unwrap();
-        assert_eq!(first.sealed.len(), 0);
+        assert_eq!(first.finished.len(), 0);
 
         write_segment(dir.path(), 500, part(500));
 
         let scan = local.scan_from(first.valid_len, first.active).unwrap();
-        assert_eq!(scan.sealed.len(), 1, "new sealed .zms is discovered");
-        assert_eq!(scan.sealed[0].summary.min_ts, 500);
+        assert_eq!(scan.finished.len(), 1, "new finished .zms is discovered");
+        assert_eq!(scan.finished[0].summary.min_ts, 500);
         assert_eq!(scan.active.len(), 1, "active part is preserved");
     }
 
     // A mock ReadAt that claims a large byte_len but returns UnexpectedEof on
     // body reads — simulating a file that was truncated between byte_len() and
-    // the first read_exact_at call (TOCTOU race with a concurrent seal/reset).
+    // the first read_exact_at call (TOCTOU race with a concurrent write and reset).
     struct TruncatedAfterHeader {
         data: Vec<u8>,
         /// Reported size is larger than `data.len()`, causing body reads to fail.

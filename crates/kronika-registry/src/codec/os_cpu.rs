@@ -22,34 +22,34 @@ pub struct OsCpu {
     #[column(l)]
     pub cpu_id: i32,
     /// Ticks in user mode.
-    #[column(c)]
+    #[column(c, unit = jiffies)]
     pub user: i64,
     /// Ticks in user mode with low priority (nice).
-    #[column(c)]
+    #[column(c, unit = jiffies)]
     pub nice: i64,
     /// Ticks in system (kernel) mode.
-    #[column(c)]
+    #[column(c, unit = jiffies)]
     pub system: i64,
     /// Ticks idle.
-    #[column(c)]
+    #[column(c, unit = jiffies)]
     pub idle: i64,
     /// Ticks waiting for I/O to complete.
-    #[column(c)]
+    #[column(c, unit = jiffies)]
     pub iowait: i64,
     /// Ticks serving hardware interrupts.
-    #[column(c)]
+    #[column(c, unit = jiffies)]
     pub irq: i64,
     /// Ticks serving software interrupts.
-    #[column(c)]
+    #[column(c, unit = jiffies)]
     pub softirq: i64,
     /// Ticks stolen by a hypervisor.
-    #[column(c)]
+    #[column(c, unit = jiffies)]
     pub steal: i64,
     /// Ticks spent running a virtual CPU for a guest OS.
-    #[column(c)]
+    #[column(c, unit = jiffies)]
     pub guest: i64,
     /// Ticks spent running a niced guest.
-    #[column(c)]
+    #[column(c, unit = jiffies)]
     pub guest_nice: i64,
     /// Source scope (`0=host`). See `kronika_source_os::OsScope`.
     #[column(l)]

@@ -17,7 +17,7 @@ const INSTANCE_METADATA_TYPE_ID: u32 = 1_021_001;
 /// # Errors
 ///
 /// Returns an error naming the `/proc` file that could not be read. The
-/// identity is what makes a sealed segment self-contained, so a failure here
+/// identity is what makes a finished segment self-contained, so a failure here
 /// is not a degraded section.
 pub(crate) fn collect_due_instance(due: &DueSet) -> Result<Option<OsInstanceFacts>> {
     if !due.has(SourceKind::InstanceMetadata) {

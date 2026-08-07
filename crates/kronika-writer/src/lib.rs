@@ -1,4 +1,4 @@
-//! Bounded writer state, journal recovery, and ZMS sealing.
+//! Bounded writer state, the journal, and segment writing.
 //!
 //! [`SectionBuffers`] accepts registered rows until the registry row cap,
 //! encodes one collection window, and places data sections before dictionary
@@ -9,35 +9,28 @@
 //! [`Journal`] appends self-contained ZMS parts as synchronized `ZMSP` frames
 //! after a checksummed version-1 header in `active.wal`. Opening validates
 //! the complete header and body without repairing or truncating damage.
-//! After layout atomically retains exact damaged evidence, [`JournalRecovery`]
-//! can inspect it with bounded streaming resynchronization and replay only
-//! complete verified frames through the normal [`Journal::append`] contract.
 //! [`JournalConfig::max_journal_len`] is the hard growth bound, reported as
-//! [`JournalError::Full`] so the collector can seal early.
+//! [`JournalError::Full`] so the collector can close the segment early.
 //!
-//! [`seal`] validates and decodes journal bodies, coalesces each registered
-//! type, normalizes dictionaries, and emits canonical Parquet 1.0 bodies with
-//! PLAIN values and Zstandard level 6. It writes a temporary file in the
-//! segment's UTC day and publishes without overwriting another identity.
-//! Recovery accepts an existing final file only after exact comparison. Seal
-//! never resets the journal, so the caller does so only after `Ok`.
+//! [`write_segment`] validates and decodes journal bodies, coalesces each
+//! registered type, normalizes dictionaries, and emits canonical Parquet 1.0
+//! bodies with PLAIN values and Zstandard level 6. It writes a temporary file
+//! in the segment's UTC day and publishes without overwriting another
+//! identity. A retry accepts an existing final file only after exact
+//! comparison. Writing never resets the journal, so the caller does so only
+//! after `Ok`.
 
 mod buffer;
 pub mod dict;
 mod interner;
 mod journal;
-mod recovery;
 mod segment;
 
 pub use buffer::{FlushSummary, FlushedPart, SectionBuffers, SectionFlushSummary};
-pub use interner::{FlushedEntry, Interner, SealedSegment};
+pub use interner::{FinishedSegment, FlushedEntry, Interner};
 pub use journal::{Journal, JournalConfig, JournalError, JournalPartRef};
 pub use kronika_format::{MAX_JOURNAL_LEN, MAX_JOURNAL_PARTS, MAX_PART_LEN};
-pub use recovery::{
-    JournalRecovery, JournalRecoveryError, JournalRecoveryReason, JournalRecoverySummary,
-    JournalReplaySummary,
-};
-pub use segment::{SealError, SealSummary, seal};
+pub use segment::{WriteError, WriteSummary, write_segment};
 
 #[cfg(test)]
 mod composition_tests {
@@ -63,7 +56,7 @@ mod composition_tests {
                 SectionInput {
                     type_id: 1_006_001,
                     rows: 2,
-                    body: b"bgwriter-section-body",
+                    body: b"loadavg-section-body",
                 },
                 SectionInput {
                     type_id: 1_021_001,

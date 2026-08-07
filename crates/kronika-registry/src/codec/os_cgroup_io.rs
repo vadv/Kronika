@@ -24,16 +24,16 @@ pub struct OsCgroupIo {
     #[column(l)]
     pub minor: u32,
     /// Bytes read.
-    #[column(c)]
+    #[column(c, unit = bytes)]
     pub rbytes: i64,
     /// Bytes written.
-    #[column(c)]
+    #[column(c, unit = bytes)]
     pub wbytes: i64,
     /// Read I/O operations.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub rios: i64,
     /// Write I/O operations.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub wios: i64,
     /// Source scope. See `kronika_source_os::OsScope`.
     #[column(l)]

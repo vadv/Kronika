@@ -22,7 +22,7 @@ use kronika_layout::{FileIdentity, LayoutError, SegmentAddress, SegmentId, Write
 use kronika_registry::{
     Bytes, CodecError, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, MAX_DECODED_SECTION_BYTES,
     MAX_ROW_GROUPS, MAX_SECTION_BYTES, MAX_SECTION_ROWS, VerifiedSection, decode_any,
-    encode_sealed_batches, sealed_data_body_bound, validate_plain_parquet_decode_work,
+    encode_final_batches, final_data_body_bound, validate_plain_parquet_decode_work,
 };
 use parquet::arrow::arrow_reader::{ArrowReaderOptions, ParquetRecordBatchReaderBuilder};
 
@@ -77,7 +77,7 @@ fn run_after_first_comparison_chunk() {
     }
 }
 
-macro_rules! seal_test_hook {
+macro_rules! write_test_hook {
     (AfterFirstComparisonChunk) => {
         #[cfg(test)]
         run_after_first_comparison_chunk();
@@ -86,7 +86,7 @@ macro_rules! seal_test_hook {
 
 /// What a completed segment contains, for the caller's metrics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SealSummary {
+pub struct WriteSummary {
     /// Number of catalog entries (sections) written.
     pub sections: usize,
     /// Total segment length, bytes.
@@ -97,9 +97,9 @@ pub struct SealSummary {
     pub max_ts: i64,
 }
 
-/// Why sealing a segment failed.
+/// Why writing a segment failed.
 #[derive(Debug)]
-pub enum SealError {
+pub enum WriteError {
     /// A filesystem operation failed.
     Io(io::Error),
     /// The typed data layout rejected publication.
@@ -110,7 +110,7 @@ pub enum SealError {
     Part(PartError),
     /// A registered or dictionary Parquet section was invalid.
     Codec(CodecError),
-    /// The journal holds no parts, so there is nothing to seal.
+    /// The journal holds no parts, so there is nothing to write.
     Empty,
     /// The journal and requested destination carry different identities.
     SegmentIdMismatch {
@@ -158,7 +158,7 @@ pub enum SealError {
         /// Quantity that overflowed.
         what: &'static str,
     },
-    /// The journal contains more section descriptors than sealing will retain.
+    /// The journal contains more section descriptors than writing will retain.
     TooManySections {
         /// Descriptor count encountered.
         sections: usize,
@@ -167,7 +167,7 @@ pub enum SealError {
     },
 }
 
-impl fmt::Display for SealError {
+impl fmt::Display for WriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(err) => write!(f, "segment io: {err}"),
@@ -175,7 +175,7 @@ impl fmt::Display for SealError {
             Self::Journal(err) => write!(f, "reading a journal part: {err}"),
             Self::Part(err) => write!(f, "invalid journal part: {err}"),
             Self::Codec(err) => write!(f, "invalid section: {err}"),
-            Self::Empty => write!(f, "the journal holds no parts to seal"),
+            Self::Empty => write!(f, "the journal holds no parts to write"),
             Self::SegmentIdMismatch {
                 journal,
                 destination,
@@ -227,7 +227,7 @@ impl fmt::Display for SealError {
     }
 }
 
-impl Error for SealError {
+impl Error for WriteError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io(err) => Some(err),
@@ -251,62 +251,62 @@ impl Error for SealError {
     }
 }
 
-impl From<io::Error> for SealError {
+impl From<io::Error> for WriteError {
     fn from(err: io::Error) -> Self {
         Self::Io(err)
     }
 }
 
-impl From<JournalError> for SealError {
+impl From<JournalError> for WriteError {
     fn from(err: JournalError) -> Self {
         Self::Journal(err)
     }
 }
 
-impl From<CodecError> for SealError {
+impl From<CodecError> for WriteError {
     fn from(err: CodecError) -> Self {
         Self::Codec(err)
     }
 }
 
-impl From<parquet::errors::ParquetError> for SealError {
+impl From<parquet::errors::ParquetError> for WriteError {
     fn from(err: parquet::errors::ParquetError) -> Self {
         Self::Codec(CodecError::Parquet(err))
     }
 }
 
-impl From<arrow_schema::ArrowError> for SealError {
+impl From<arrow_schema::ArrowError> for WriteError {
     fn from(err: arrow_schema::ArrowError) -> Self {
         Self::Codec(CodecError::Arrow(err))
     }
 }
 
-impl From<LayoutError> for SealError {
+impl From<LayoutError> for WriteError {
     fn from(err: LayoutError) -> Self {
         Self::Layout(err)
     }
 }
 
-/// Seal journal parts into the immutable segment at `address`.
+/// Write journal parts into the immutable segment at `address`.
 ///
 /// The final ZMS is never overwritten. Call `Journal::reset` only after `Ok`.
 ///
 /// # Errors
 ///
-/// Returns [`SealError`] when the journal is empty, a part is invalid, I/O
+/// Returns [`WriteError`] when the journal is empty, a part is invalid, I/O
 /// fails, or an existing final segment cannot be proven byte-identical.
-pub fn seal(
+pub fn write_segment(
     journal: &Journal,
     owner: &WriterOwner,
     address: SegmentAddress,
-) -> Result<SealSummary, SealError> {
+) -> Result<WriteSummary, WriteError> {
     if journal.parts().is_empty() {
-        return Err(SealError::Empty);
+        return Err(WriteError::Empty);
     }
     if let Some(segment_id) = journal.segment_id()
         && segment_id != address.id
     {
-        return Err(SealError::SegmentIdMismatch {
+        return Err(WriteError::SegmentIdMismatch {
             journal: segment_id,
             destination: address.id,
         });
@@ -315,7 +315,7 @@ pub fn seal(
     let summary = write_tmp(journal, &mut temporary)?;
     let generated = temporary.try_clone_file()?;
     if !validate_segment(&generated, summary)? {
-        return Err(SealError::GeneratedSegmentInvalid);
+        return Err(WriteError::GeneratedSegmentInvalid);
     }
     match temporary.publish() {
         Ok(()) => Ok(summary),
@@ -323,26 +323,26 @@ pub fn seal(
             let existing = owner.root().open_zms(address)?;
             let existing_identity = FileIdentity::from_file(&existing)?;
             if !validate_segment(&existing, summary)? {
-                return Err(SealError::ExistingSegmentInvalid);
+                return Err(WriteError::ExistingSegmentInvalid);
             }
             if !files_equal(&generated, &existing)? {
-                return Err(SealError::ExistingSegmentMismatch);
+                return Err(WriteError::ExistingSegmentMismatch);
             }
             if FileIdentity::from_file(&existing)? != existing_identity {
-                return Err(SealError::ExistingSegmentMismatch);
+                return Err(WriteError::ExistingSegmentMismatch);
             }
             let named_existing = owner.root().open_zms(address)?;
             if FileIdentity::from_file(&named_existing)? != existing_identity {
-                return Err(SealError::ExistingSegmentMismatch);
+                return Err(WriteError::ExistingSegmentMismatch);
             }
             temporary.discard()?;
             Ok(summary)
         }
-        Err(error) => Err(SealError::Layout(error)),
+        Err(error) => Err(WriteError::Layout(error)),
     }
 }
 
-fn validate_segment(file: &File, expected: SealSummary) -> Result<bool, io::Error> {
+fn validate_segment(file: &File, expected: WriteSummary) -> Result<bool, io::Error> {
     let length = file.metadata()?.len();
     if length != expected.bytes {
         return Ok(false);
@@ -428,7 +428,7 @@ fn files_equal(left: &File, right: &File) -> Result<bool, io::Error> {
         if left_buffer[..remaining] != right_buffer[..remaining] {
             return Ok(false);
         }
-        seal_test_hook!(AfterFirstComparisonChunk);
+        write_test_hook!(AfterFirstComparisonChunk);
         offset = offset
             .checked_add(remaining as u64)
             .expect("comparison offset is bounded by file length");
@@ -437,15 +437,15 @@ fn files_equal(left: &File, right: &File) -> Result<bool, io::Error> {
         && FileIdentity::from_file(right)? == right_identity)
 }
 
-fn checked_catalog_entries(current: usize, additional: usize) -> Result<usize, SealError> {
+fn checked_catalog_entries(current: usize, additional: usize) -> Result<usize, WriteError> {
     let attempted_entries = current
         .checked_add(additional)
-        .ok_or(SealError::CatalogTooLarge {
+        .ok_or(WriteError::CatalogTooLarge {
             attempted_entries: usize::MAX,
             max_entries: MAX_CATALOG_ENTRIES,
         })?;
     if attempted_entries > MAX_CATALOG_ENTRIES {
-        return Err(SealError::CatalogTooLarge {
+        return Err(WriteError::CatalogTooLarge {
             attempted_entries,
             max_entries: MAX_CATALOG_ENTRIES,
         });
@@ -470,7 +470,7 @@ struct SegmentPlan {
 /// Write the merged segment to `tmp` and flush the encoder.
 ///
 /// Publication synchronizes the file and its parent directories.
-fn write_tmp(journal: &Journal, temporary: &mut ZmsTemp<'_>) -> Result<SealSummary, SealError> {
+fn write_tmp(journal: &Journal, temporary: &mut ZmsTemp<'_>) -> Result<WriteSummary, WriteError> {
     let mut plan = plan_segment(journal)?;
     let strings = plan
         .by_type
@@ -493,41 +493,41 @@ fn write_tmp(journal: &Journal, temporary: &mut ZmsTemp<'_>) -> Result<SealSumma
         for descriptor in descriptors {
             let decoded = decode_any(type_id, read_verified_body(journal, descriptor)?)?;
             if decoded.stats.rows != descriptor.entry.rows as usize {
-                return Err(SealError::RowCountMismatch {
+                return Err(WriteError::RowCountMismatch {
                     type_id,
                     declared: descriptor.entry.rows,
                     decoded: decoded.stats.rows,
                 });
             }
             let projected_rows = decoded_rows.checked_add(decoded.stats.rows).ok_or(
-                SealError::ArithmeticOverflow {
+                WriteError::ArithmeticOverflow {
                     what: "decoded row count",
                 },
             )?;
             let projected_list_values = list_i32_child_values
                 .checked_add(decoded.stats.list_i32_child_values)
-                .ok_or(SealError::ArithmeticOverflow {
+                .ok_or(WriteError::ArithmeticOverflow {
                     what: "decoded ListI32 child count",
                 })?;
-            sealed_data_body_bound(type_id, projected_rows, projected_list_values)?;
+            final_data_body_bound(type_id, projected_rows, projected_list_values)?;
             decoded_rows = projected_rows;
             list_i32_child_values = projected_list_values;
             batches.extend(decoded.batches);
         }
         if decoded_rows != declared_rows {
-            return Err(SealError::RowCountMismatch {
+            return Err(WriteError::RowCountMismatch {
                 type_id,
                 declared: u32::try_from(declared_rows).unwrap_or(u32::MAX),
                 decoded: decoded_rows,
             });
         }
-        let body = encode_sealed_batches(type_id, batches)?;
+        let body = encode_final_batches(type_id, batches)?;
         write_section(
             &mut out,
             &mut entries,
             &mut offset,
             type_id,
-            u32::try_from(declared_rows).map_err(|_error| SealError::ArithmeticOverflow {
+            u32::try_from(declared_rows).map_err(|_error| WriteError::ArithmeticOverflow {
                 what: "section row count",
             })?,
             &body,
@@ -558,7 +558,7 @@ fn write_tmp(journal: &Journal, temporary: &mut ZmsTemp<'_>) -> Result<SealSumma
     let file = out.into_inner().map_err(io::IntoInnerError::into_error)?;
     let bytes = file.metadata()?.len();
     file.sync_all()?;
-    Ok(SealSummary {
+    Ok(WriteSummary {
         sections,
         bytes,
         min_ts: plan.min_ts,
@@ -566,22 +566,22 @@ fn write_tmp(journal: &Journal, temporary: &mut ZmsTemp<'_>) -> Result<SealSumma
     })
 }
 
-fn plan_segment(journal: &Journal) -> Result<SegmentPlan, SealError> {
+fn plan_segment(journal: &Journal) -> Result<SegmentPlan, WriteError> {
     let mut by_type = BTreeMap::<u32, Vec<SectionDescriptor>>::new();
     let mut section_count = 0_usize;
     let mut min_ts = i64::MAX;
     let mut max_ts = i64::MIN;
     let window_count =
-        u32::try_from(journal.parts().len()).map_err(|_error| SealError::ArithmeticOverflow {
+        u32::try_from(journal.parts().len()).map_err(|_error| WriteError::ArithmeticOverflow {
             what: "window count",
         })?;
     for &part_ref in journal.parts() {
         let part = journal.read_part(part_ref)?;
         // Recheck bodies immediately before publication. The journal may have
         // changed on disk after append even though its frame remained valid.
-        let catalog = validate_part_catalog(&part).map_err(SealError::Part)?;
+        let catalog = validate_part_catalog(&part).map_err(WriteError::Part)?;
         if catalog.format_version != FORMAT_VERSION {
-            return Err(SealError::UnsupportedFormat {
+            return Err(WriteError::UnsupportedFormat {
                 version: catalog.format_version,
             });
         }
@@ -590,11 +590,11 @@ fn plan_segment(journal: &Journal) -> Result<SegmentPlan, SealError> {
         for entry in catalog.entries {
             section_count = section_count
                 .checked_add(1)
-                .ok_or(SealError::ArithmeticOverflow {
+                .ok_or(WriteError::ArithmeticOverflow {
                     what: "section descriptor count",
                 })?;
             if section_count > MAX_SECTION_ROWS {
-                return Err(SealError::TooManySections {
+                return Err(WriteError::TooManySections {
                     sections: section_count,
                     max: MAX_SECTION_ROWS,
                 });
@@ -602,7 +602,7 @@ fn plan_segment(journal: &Journal) -> Result<SegmentPlan, SealError> {
             let descriptors = by_type.entry(entry.type_id).or_default();
             descriptors
                 .try_reserve(1)
-                .map_err(SealError::CatalogAllocation)?;
+                .map_err(WriteError::CatalogAllocation)?;
             descriptors.push(SectionDescriptor {
                 part: part_ref,
                 entry,
@@ -621,10 +621,10 @@ fn plan_segment(journal: &Journal) -> Result<SegmentPlan, SealError> {
     })
 }
 
-fn aggregate_rows(type_id: u32, descriptors: &[SectionDescriptor]) -> Result<usize, SealError> {
+fn aggregate_rows(type_id: u32, descriptors: &[SectionDescriptor]) -> Result<usize, WriteError> {
     let rows = descriptors.iter().try_fold(0_usize, |rows, descriptor| {
         rows.checked_add(descriptor.entry.rows as usize)
-            .ok_or(SealError::ArithmeticOverflow {
+            .ok_or(WriteError::ArithmeticOverflow {
                 what: "section row count",
             })
     })?;
@@ -644,19 +644,19 @@ fn aggregate_rows(type_id: u32, descriptors: &[SectionDescriptor]) -> Result<usi
 fn read_verified_body(
     journal: &Journal,
     descriptor: SectionDescriptor,
-) -> Result<VerifiedSection, SealError> {
+) -> Result<VerifiedSection, WriteError> {
     let start = usize::try_from(descriptor.entry.offset).map_err(|_error| {
-        SealError::ArithmeticOverflow {
+        WriteError::ArithmeticOverflow {
             what: "section offset",
         }
     })?;
     let len =
-        usize::try_from(descriptor.entry.len).map_err(|_error| SealError::ArithmeticOverflow {
+        usize::try_from(descriptor.entry.len).map_err(|_error| WriteError::ArithmeticOverflow {
             what: "section length",
         })?;
     let body = journal.read_part_range(descriptor.part, start, len)?;
     VerifiedSection::verify(Bytes::from(body), descriptor.entry.crc32c, crc32c)
-        .map_err(SealError::Codec)
+        .map_err(WriteError::Codec)
 }
 
 fn write_section(
@@ -666,15 +666,15 @@ fn write_section(
     type_id: u32,
     rows: u32,
     body: &[u8],
-) -> Result<(), SealError> {
+) -> Result<(), WriteError> {
     if entries.last().is_some_and(|entry| entry.type_id >= type_id) {
         return Err(CodecError::SchemaMismatch.into());
     }
     checked_catalog_entries(entries.len(), 1)?;
     entries
         .try_reserve(1)
-        .map_err(SealError::CatalogAllocation)?;
-    let len = u64::try_from(body.len()).map_err(|_error| SealError::ArithmeticOverflow {
+        .map_err(WriteError::CatalogAllocation)?;
+    let len = u64::try_from(body.len()).map_err(|_error| WriteError::ArithmeticOverflow {
         what: "section length",
     })?;
     out.write_all(body)?;
@@ -688,7 +688,7 @@ fn write_section(
     });
     *offset = offset
         .checked_add(len)
-        .ok_or(SealError::ArithmeticOverflow {
+        .ok_or(WriteError::ArithmeticOverflow {
             what: "segment offset",
         })?;
     Ok(())
@@ -715,11 +715,11 @@ struct NormalizedDictionary {
 }
 
 impl NormalizedDictionary {
-    fn insert(&mut self, str_id: StrId, value: DictionaryValue) -> Result<(), SealError> {
+    fn insert(&mut self, str_id: StrId, value: DictionaryValue) -> Result<(), WriteError> {
         match self.values.get(&str_id) {
             Some(existing) if existing == &value => return Ok(()),
             Some(_) => {
-                return Err(SealError::DictionaryConflict {
+                return Err(WriteError::DictionaryConflict {
                     str_id: str_id.get(),
                 });
             }
@@ -733,7 +733,7 @@ impl NormalizedDictionary {
                 (&mut self.blob_rows, &mut self.blob_bytes, bytes.len())
             }
         };
-        let next_rows = rows.checked_add(1).ok_or(SealError::ArithmeticOverflow {
+        let next_rows = rows.checked_add(1).ok_or(WriteError::ArithmeticOverflow {
             what: "dictionary row count",
         })?;
         if next_rows > MAX_SECTION_ROWS {
@@ -746,7 +746,7 @@ impl NormalizedDictionary {
         let next_bytes =
             stored_bytes
                 .checked_add(value_bytes)
-                .ok_or(SealError::ArithmeticOverflow {
+                .ok_or(WriteError::ArithmeticOverflow {
                     what: "dictionary stored bytes",
                 })?;
         if next_bytes > MAX_SECTION_BYTES {
@@ -762,7 +762,7 @@ impl NormalizedDictionary {
         Ok(())
     }
 
-    fn sections(&self) -> Result<Vec<crate::dict::DictSection>, SealError> {
+    fn sections(&self) -> Result<Vec<crate::dict::DictSection>, WriteError> {
         let snapshots = self.values.iter().map(|(&str_id, value)| {
             let (stored_bytes, full_len, truncated, full_sha256, placement) = match value {
                 DictionaryValue::String(bytes) => (
@@ -796,7 +796,7 @@ impl NormalizedDictionary {
                 blob_required: placement == Placement::Blobs,
             }
         });
-        crate::dict::encode_sealed_entries(snapshots).map_err(SealError::Codec)
+        crate::dict::encode_final_entries(snapshots).map_err(WriteError::Codec)
     }
 }
 
@@ -804,7 +804,7 @@ fn normalize_dictionary(
     journal: &Journal,
     strings: &[SectionDescriptor],
     blobs: &[SectionDescriptor],
-) -> Result<NormalizedDictionary, SealError> {
+) -> Result<NormalizedDictionary, WriteError> {
     let mut normalized = NormalizedDictionary::default();
     for &descriptor in strings.iter().chain(blobs) {
         decode_dictionary_body(journal, descriptor, &mut normalized)?;
@@ -820,7 +820,7 @@ fn decode_dictionary_body(
     journal: &Journal,
     descriptor: SectionDescriptor,
     normalized: &mut NormalizedDictionary,
-) -> Result<(), SealError> {
+) -> Result<(), WriteError> {
     let type_id = descriptor.entry.type_id;
     let is_blob = match type_id {
         DICT_STRINGS_TYPE_ID => false,
@@ -852,7 +852,7 @@ fn decode_dictionary_body(
         Err(_) => return Err(CodecError::InvalidRowCount { raw: claimed }.into()),
     };
     if claimed_rows != descriptor.entry.rows as usize {
-        return Err(SealError::RowCountMismatch {
+        return Err(WriteError::RowCountMismatch {
             type_id,
             declared: descriptor.entry.rows,
             decoded: claimed_rows,
@@ -869,7 +869,7 @@ fn decode_dictionary_body(
         decoded_rows =
             decoded_rows
                 .checked_add(batch.num_rows())
-                .ok_or(SealError::ArithmeticOverflow {
+                .ok_or(WriteError::ArithmeticOverflow {
                     what: "dictionary row count",
                 })?;
         let ids = required_u64(&batch, "str_id")?;
@@ -926,7 +926,7 @@ fn decode_dictionary_body(
         }
     }
     if decoded_rows != claimed_rows {
-        return Err(SealError::RowCountMismatch {
+        return Err(WriteError::RowCountMismatch {
             type_id,
             declared: descriptor.entry.rows,
             decoded: decoded_rows,
@@ -935,7 +935,7 @@ fn decode_dictionary_body(
     Ok(())
 }
 
-fn ordered_str_id(raw: u64, previous: &mut u64) -> Result<StrId, SealError> {
+fn ordered_str_id(raw: u64, previous: &mut u64) -> Result<StrId, WriteError> {
     let str_id = StrId::from_raw(raw).ok_or(CodecError::SchemaMismatch)?;
     if raw <= *previous {
         return Err(CodecError::SchemaMismatch.into());
@@ -1038,8 +1038,8 @@ mod tests {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
     use super::{
-        MAX_CATALOG_ENTRIES, SealError, arm_after_first_comparison_chunk, checked_catalog_entries,
-        required_binary, required_u64, seal,
+        MAX_CATALOG_ENTRIES, WriteError, arm_after_first_comparison_chunk, checked_catalog_entries,
+        required_binary, required_u64, write_segment,
     };
     use crate::{Interner, Journal, JournalConfig, SectionBuffers, dict};
 
@@ -1211,7 +1211,7 @@ mod tests {
     }
 
     #[test]
-    fn seals_journal_parts_into_a_readable_segment() {
+    fn writes_journal_parts_into_a_readable_segment() {
         let dir = tempfile::tempdir().expect("tempdir");
         let owner = writer(&dir);
         let segment_path = owner
@@ -1222,7 +1222,7 @@ mod tests {
         append_window(&mut journal, 1_000);
         append_window(&mut journal, 2_000);
 
-        let summary = seal(&journal, &owner, address()).expect("seal");
+        let summary = write_segment(&journal, &owner, address()).expect("write the segment");
         assert_eq!(summary.sections, 1, "one topology section per segment");
         assert_eq!((summary.min_ts, summary.max_ts), (1_000, 2_000));
 
@@ -1232,7 +1232,7 @@ mod tests {
         let catalog = validate_part(&segment).expect("segment validates");
         assert_eq!(catalog.window_count, 2, "both collection windows");
         let [entry] = catalog.entries.as_slice() else {
-            panic!("the sealed segment must coalesce to one section");
+            panic!("the finished segment must coalesce to one section");
         };
         assert_eq!(entry.type_id, 1_113_001);
         let start = usize::try_from(entry.offset).unwrap();
@@ -1247,7 +1247,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sealed_segment_carries_the_window_dictionary() {
+    fn a_finished_segment_carries_the_window_dictionary() {
         let dir = tempfile::tempdir().expect("tempdir");
         let owner = writer(&dir);
         let segment_path = owner
@@ -1270,7 +1270,7 @@ mod tests {
             .expect("a part");
         journal.append(address().id, &part).expect("append");
 
-        let summary = seal(&journal, &owner, address()).expect("seal");
+        let summary = write_segment(&journal, &owner, address()).expect("write the segment");
         assert_eq!(summary.sections, 2, "os_topology + dict.strings");
 
         let segment = std::fs::read(&segment_path).expect("read segment");
@@ -1292,7 +1292,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one end-to-end assertion keeps the two equivalent journals and all lossless fields together"
     )]
-    fn sealing_is_lossless_across_journal_order_and_partitioning() {
+    fn writing_is_lossless_across_journal_order_and_partitioning() {
         const NAN_1: u64 = 0x7ff8_0000_0000_0001;
         const NAN_2: u64 = 0x7ff8_0000_0000_0002;
         const NEGATIVE_ZERO: u64 = (-0.0_f64).to_bits();
@@ -1344,8 +1344,10 @@ mod tests {
         let second_path = second_owner
             .root()
             .diagnostic_file_path(address(), kronika_layout::FileKind::Zms);
-        let first_summary = seal(&first, &first_owner, address()).expect("seal first journal");
-        let second_summary = seal(&second, &second_owner, address()).expect("seal second journal");
+        let first_summary =
+            write_segment(&first, &first_owner, address()).expect("write first journal");
+        let second_summary =
+            write_segment(&second, &second_owner, address()).expect("write second journal");
         let segment = std::fs::read(&first_path).expect("read first segment");
         assert_eq!(first_summary, second_summary);
         assert_eq!(
@@ -1355,7 +1357,7 @@ mod tests {
         );
         assert_eq!((first_summary.min_ts, first_summary.max_ts), (42, 84));
 
-        let catalog = validate_part(&segment).expect("sealed ZMS validates");
+        let catalog = validate_part(&segment).expect("finished segment validates");
         assert_eq!(catalog.window_count, 2);
         let topology_entry = catalog
             .entries
@@ -1377,7 +1379,7 @@ mod tests {
                 Some(NAN_2),
                 None,
             ],
-            "raw float bits, canonical order, and duplicate rows survive sealing"
+            "raw float bits, canonical order, and duplicate rows survive writing"
         );
 
         let process_entry = catalog
@@ -1413,33 +1415,33 @@ mod tests {
     }
 
     #[test]
-    fn sealing_an_empty_journal_is_rejected() {
+    fn writing_an_empty_journal_is_rejected() {
         let dir = tempfile::tempdir().expect("tempdir");
         let owner = writer(&dir);
         let journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
         assert!(matches!(
-            seal(&journal, &owner, address()),
-            Err(SealError::Empty)
+            write_segment(&journal, &owner, address()),
+            Err(WriteError::Empty)
         ));
     }
 
     #[test]
-    fn resealing_the_same_journal_is_idempotent() {
+    fn rewriting_the_same_journal_is_idempotent() {
         let dir = tempfile::tempdir().expect("tempdir");
         let owner = writer(&dir);
         let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
         append_window(&mut journal, 1);
 
-        let first = seal(&journal, &owner, address()).expect("first seal");
+        let first = write_segment(&journal, &owner, address()).expect("first write");
         let path = owner
             .root()
             .diagnostic_file_path(address(), kronika_layout::FileKind::Zms);
         let bytes = std::fs::read(&path).expect("read first segment");
-        let second = seal(&journal, &owner, address()).expect("idempotent recovery");
+        let second = write_segment(&journal, &owner, address()).expect("idempotent recovery");
 
         assert_eq!(second, first);
         assert_eq!(std::fs::read(path).expect("read retry"), bytes);
-        assert_eq!(journal.parts().len(), 1, "seal never resets the journal");
+        assert_eq!(journal.parts().len(), 1, "write never resets the journal");
     }
 
     #[test]
@@ -1448,7 +1450,7 @@ mod tests {
         let owner = writer(&dir);
         let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
         append_window(&mut journal, 1);
-        seal(&journal, &owner, address()).expect("first seal");
+        write_segment(&journal, &owner, address()).expect("first write");
 
         let path = owner
             .root()
@@ -1462,8 +1464,8 @@ mod tests {
         file.sync_all().expect("persist conflicting bytes");
 
         assert!(matches!(
-            seal(&journal, &owner, address()),
-            Err(SealError::ExistingSegmentMismatch)
+            write_segment(&journal, &owner, address()),
+            Err(WriteError::ExistingSegmentMismatch)
         ));
     }
 
@@ -1493,8 +1495,8 @@ mod tests {
         journal_file.sync_all().expect("persist corruption");
 
         assert!(matches!(
-            seal(&journal, &owner, address()),
-            Err(SealError::Codec(
+            write_segment(&journal, &owner, address()),
+            Err(WriteError::Codec(
                 kronika_registry::CodecError::SectionCrcMismatch { .. }
             ))
         ));
@@ -1514,7 +1516,7 @@ mod tests {
         let owner = writer(&dir);
         let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
         append_window(&mut journal, 1);
-        seal(&journal, &owner, address()).expect("first seal");
+        write_segment(&journal, &owner, address()).expect("first write");
 
         let path = owner
             .root()
@@ -1550,8 +1552,8 @@ mod tests {
         });
 
         assert!(matches!(
-            seal(&journal, &owner, address()),
-            Err(SealError::ExistingSegmentMismatch)
+            write_segment(&journal, &owner, address()),
+            Err(WriteError::ExistingSegmentMismatch)
         ));
         hook.assert_consumed();
         assert_eq!(journal.parts().len(), 1, "journal must not be reset");
@@ -1563,7 +1565,7 @@ mod tests {
         let owner = writer(&dir);
         let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
         append_window(&mut journal, 1);
-        seal(&journal, &owner, address()).expect("first seal");
+        write_segment(&journal, &owner, address()).expect("first write");
 
         let path = owner
             .root()
@@ -1584,8 +1586,8 @@ mod tests {
         });
 
         assert!(matches!(
-            seal(&journal, &owner, address()),
-            Err(SealError::ExistingSegmentMismatch)
+            write_segment(&journal, &owner, address()),
+            Err(WriteError::ExistingSegmentMismatch)
         ));
         hook.assert_consumed();
         assert_eq!(journal.parts().len(), 1, "journal must not be reset");
@@ -1599,7 +1601,7 @@ mod tests {
         );
         assert!(matches!(
             checked_catalog_entries(MAX_CATALOG_ENTRIES, 1),
-            Err(SealError::CatalogTooLarge {
+            Err(WriteError::CatalogTooLarge {
                 attempted_entries,
                 max_entries
             }) if attempted_entries == MAX_CATALOG_ENTRIES + 1
@@ -1607,7 +1609,7 @@ mod tests {
         ));
         assert!(matches!(
             checked_catalog_entries(usize::MAX, 1),
-            Err(SealError::CatalogTooLarge {
+            Err(WriteError::CatalogTooLarge {
                 attempted_entries: usize::MAX,
                 ..
             })

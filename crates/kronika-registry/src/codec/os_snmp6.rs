@@ -18,73 +18,73 @@ pub struct OsSnmp6 {
     #[column(t)]
     pub ts: Ts,
     /// Datagrams received, including errors.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub ip6_in_receives: Option<i64>,
     /// Datagrams dropped for a bad header.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub ip6_in_hdr_errors: Option<i64>,
     /// Datagrams dropped because the destination was not local.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub ip6_in_addr_errors: Option<i64>,
     /// Datagrams dropped without a specific error.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub ip6_in_discards: Option<i64>,
     /// Datagrams delivered to an upper protocol.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub ip6_in_delivers: Option<i64>,
     /// Datagrams handed down by an upper protocol for transmission.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub ip6_out_requests: Option<i64>,
     /// Outgoing datagrams dropped without a specific error.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub ip6_out_discards: Option<i64>,
     /// Outgoing datagrams dropped for lack of a route.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub ip6_out_no_routes: Option<i64>,
     /// Fragments received that needed reassembly.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub ip6_reasm_reqds: Option<i64>,
     /// Datagrams successfully reassembled.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub ip6_reasm_oks: Option<i64>,
     /// Reassembly failures.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub ip6_reasm_fails: Option<i64>,
     /// Datagrams successfully fragmented.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub ip6_frag_oks: Option<i64>,
     /// Fragmentation failures.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub ip6_frag_fails: Option<i64>,
     /// `ICMPv6` messages received.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub icmp6_in_msgs: Option<i64>,
     /// `ICMPv6` messages received with errors.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub icmp6_in_errors: Option<i64>,
     /// `ICMPv6` messages sent.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub icmp6_out_msgs: Option<i64>,
     /// `ICMPv6` messages that could not be sent.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub icmp6_out_errors: Option<i64>,
     /// `UDPv6` datagrams delivered.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub udp6_in_datagrams: Option<i64>,
     /// `UDPv6` datagrams sent.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub udp6_out_datagrams: Option<i64>,
     /// `UDPv6` datagrams dropped for a receive error.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub udp6_in_errors: Option<i64>,
     /// `UDPv6` datagrams for a port with no listener.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub udp6_no_ports: Option<i64>,
     /// `UDPv6` datagrams dropped because the receive buffer was full.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub udp6_rcvbuf_errors: Option<i64>,
     /// `UDPv6` datagrams dropped because the send buffer was full.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub udp6_sndbuf_errors: Option<i64>,
     /// Source scope. See `kronika_source_os::OsScope`.
     #[column(l)]

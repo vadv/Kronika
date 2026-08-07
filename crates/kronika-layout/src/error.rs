@@ -150,7 +150,7 @@ pub enum LayoutError {
         /// Changed ZMS.
         id: SegmentId,
     },
-    /// No canonical active journal exists for exact-evidence rotation.
+    /// No canonical active journal exists.
     ActiveJournalMissing,
     /// Every bounded root recovery-name collision slot already exists.
     RecoverySlotsExhausted {

@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 pub(crate) struct Report {
     /// How long the collector ran, seconds.
     pub(crate) duration_s: u64,
-    /// Sealed segments found under the data root.
+    /// Finished segments found under the data root.
     pub(crate) segments: usize,
     /// Total bytes of those segments.
     pub(crate) segment_bytes: u64,
@@ -20,7 +20,7 @@ pub(crate) struct Report {
 }
 
 impl Report {
-    /// Mean bytes per sealed segment, or `0` when nothing was sealed.
+    /// Mean bytes per finished segment, or `0` when nothing was finished.
     pub(crate) const fn mean_segment_bytes(&self) -> u64 {
         if self.segments == 0 {
             0
@@ -92,7 +92,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_that_sealed_nothing_reports_a_zero_mean_rather_than_dividing() {
+    fn a_run_that_finished_nothing_reports_a_zero_mean_rather_than_dividing() {
         let empty = Report {
             segments: 0,
             segment_bytes: 0,

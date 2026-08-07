@@ -25,7 +25,6 @@ use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersi
 
 use crate::contract::{ColumnType, TypeContract};
 
-pub mod collection_coverage;
 pub mod instance_metadata;
 pub mod os_cgroup_cpu;
 pub mod os_cgroup_io;
@@ -52,7 +51,6 @@ pub mod os_softirq;
 pub mod os_stat;
 pub mod os_topology;
 pub mod os_vmstat;
-pub mod snapshot_coverage;
 
 /// Maximum rows in one snapshot section.
 ///
@@ -561,27 +559,27 @@ static WRITER_PROPS: LazyLock<WriterProperties> = LazyLock::new(|| {
         .build()
 });
 
-/// Zstandard level used for coalesced sections in a sealed ZMS.
-pub const SEALED_ZSTD_LEVEL: i32 = 6;
+/// Zstandard level used for coalesced sections in a finished segment.
+pub const FINAL_ZSTD_LEVEL: i32 = 6;
 
-/// Target data-page size for coalesced sealed sections.
-pub const SEALED_DATA_PAGE_BYTES: usize = 1024 * 1024;
+/// Target data-page size for coalesced final sections.
+pub const FINAL_DATA_PAGE_BYTES: usize = 1024 * 1024;
 
 /// Fixed allowance for one page header and its column-chunk metadata.
-const SEALED_PAGE_FRAMING_BOUND: usize = 4 * 1024;
+const FINAL_PAGE_FRAMING_BOUND: usize = 4 * 1024;
 
 /// Fixed allowance for the Parquet header, schema, row-group and file footer.
-const SEALED_FILE_FRAMING_BOUND: usize = 64 * 1024;
+const FINAL_FILE_FRAMING_BOUND: usize = 64 * 1024;
 
 /// PLAIN value and level bytes for one physical column before Zstandard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SealedPlainColumnSize {
+pub struct FinalPlainColumnSize {
     name: &'static str,
     value_bytes: usize,
     level_bytes: usize,
 }
 
-impl SealedPlainColumnSize {
+impl FinalPlainColumnSize {
     /// Describe one physical PLAIN column for final-body admission.
     #[must_use]
     pub const fn new(name: &'static str, value_bytes: usize, level_bytes: usize) -> Self {
@@ -607,16 +605,16 @@ impl SealedPlainColumnSize {
 /// Returns [`CodecError::PlainPageTooLarge`] when one value stream cannot stay
 /// on one page, or [`CodecError::SectionTooLarge`] when the conservative final
 /// body bound crosses [`MAX_SECTION_BYTES`].
-pub fn sealed_plain_body_bound(
-    columns: impl IntoIterator<Item = SealedPlainColumnSize>,
+pub fn final_plain_body_bound(
+    columns: impl IntoIterator<Item = FinalPlainColumnSize>,
 ) -> Result<usize, CodecError> {
-    let mut body = SEALED_FILE_FRAMING_BOUND;
+    let mut body = FINAL_FILE_FRAMING_BOUND;
     for column in columns {
-        if column.value_bytes >= SEALED_DATA_PAGE_BYTES {
+        if column.value_bytes >= FINAL_DATA_PAGE_BYTES {
             return Err(CodecError::PlainPageTooLarge {
                 name: column.name,
                 len: column.value_bytes,
-                max: SEALED_DATA_PAGE_BYTES - 1,
+                max: FINAL_DATA_PAGE_BYTES - 1,
             });
         }
         let page = column.value_bytes.checked_add(column.level_bytes).ok_or(
@@ -631,7 +629,7 @@ pub fn sealed_plain_body_bound(
         })?;
         body = body
             .checked_add(compressed)
-            .and_then(|bytes| bytes.checked_add(SEALED_PAGE_FRAMING_BOUND))
+            .and_then(|bytes| bytes.checked_add(FINAL_PAGE_FRAMING_BOUND))
             .ok_or(CodecError::SectionTooLarge {
                 len: usize::MAX,
                 max: MAX_SECTION_BYTES,
@@ -658,7 +656,7 @@ fn zstd_compress_bound(src_size: usize) -> Option<usize> {
         .and_then(|bytes| bytes.checked_add(small_input_margin))
 }
 
-/// Prove the page and final-body bounds for one registered sealed section.
+/// Prove the page and final-body bounds for one registered final section.
 ///
 /// `list_i32_child_values` is the aggregate child count reported by the
 /// generated section codec. Current contracts have at most one list column;
@@ -667,8 +665,8 @@ fn zstd_compress_bound(src_size: usize) -> Option<usize> {
 /// # Errors
 ///
 /// Returns [`CodecError`] for an unknown type, row/list overflow, a value page
-/// above [`SEALED_DATA_PAGE_BYTES`], or an 8 MiB final-body bound breach.
-pub fn sealed_data_body_bound(
+/// above [`FINAL_DATA_PAGE_BYTES`], or an 8 MiB final-body bound breach.
+pub fn final_data_body_bound(
     type_id: u32,
     rows: usize,
     list_i32_child_values: usize,
@@ -708,7 +706,7 @@ pub fn sealed_data_body_bound(
                     .ok_or(CodecError::PlainPageTooLarge {
                         name: column.name,
                         len: usize::MAX,
-                        max: SEALED_DATA_PAGE_BYTES - 1,
+                        max: FINAL_DATA_PAGE_BYTES - 1,
                     })?;
             let levels = rows
                 .checked_add(list_i32_child_values)
@@ -741,7 +739,7 @@ pub fn sealed_data_body_bound(
                 .ok_or(CodecError::PlainPageTooLarge {
                     name: column.name,
                     len: usize::MAX,
-                    max: SEALED_DATA_PAGE_BYTES - 1,
+                    max: FINAL_DATA_PAGE_BYTES - 1,
                 })?;
             let levels = if column.nullable {
                 rows.checked_mul(2)
@@ -755,24 +753,24 @@ pub fn sealed_data_body_bound(
             };
             (values, levels)
         };
-        columns.push(SealedPlainColumnSize::new(
+        columns.push(FinalPlainColumnSize::new(
             column.name,
             value_bytes,
             level_bytes,
         ));
     }
-    sealed_plain_body_bound(columns)
+    final_plain_body_bound(columns)
 }
 
 /// Parquet properties for the single final body of each populated type.
-static SEALED_WRITER_PROPS: LazyLock<WriterProperties> = LazyLock::new(|| {
+static FINAL_WRITER_PROPS: LazyLock<WriterProperties> = LazyLock::new(|| {
     WriterProperties::builder()
         .set_writer_version(WriterVersion::PARQUET_1_0)
         .set_compression(Compression::ZSTD(
-            ZstdLevel::try_new(SEALED_ZSTD_LEVEL).expect("zstd level 6 is valid"),
+            ZstdLevel::try_new(FINAL_ZSTD_LEVEL).expect("zstd level 6 is valid"),
         ))
         .set_max_row_group_size(MAX_SECTION_ROWS)
-        .set_data_page_size_limit(SEALED_DATA_PAGE_BYTES)
+        .set_data_page_size_limit(FINAL_DATA_PAGE_BYTES)
         .set_data_page_row_count_limit(MAX_SECTION_ROWS)
         .set_dictionary_enabled(false)
         .set_statistics_enabled(EnabledStatistics::None)
@@ -847,7 +845,7 @@ fn sort_by_sort_key(
 /// Returns [`CodecError`] for an unknown type, schema mismatch, aggregate row
 /// or list bounds, Arrow/Parquet failures, or an encoded body above the
 /// section byte cap.
-pub fn encode_sealed_batches(
+pub fn encode_final_batches(
     type_id: u32,
     mut batches: Vec<RecordBatch>,
 ) -> Result<Vec<u8>, CodecError> {
@@ -904,7 +902,7 @@ pub fn encode_sealed_batches(
                 max: MAX_LIST_I32_VALUES_PER_SECTION,
             })
     })?;
-    sealed_data_body_bound(type_id, rows, total_list_values)?;
+    final_data_body_bound(type_id, rows, total_list_values)?;
 
     let merged = if batches.is_empty() {
         RecordBatch::new_empty(Arc::clone(&schema))
@@ -917,7 +915,7 @@ pub fn encode_sealed_batches(
     };
     let canonical = sort_canonical(merged, contract)?;
     let options = ArrowWriterOptions::new()
-        .with_properties(SEALED_WRITER_PROPS.clone())
+        .with_properties(FINAL_WRITER_PROPS.clone())
         .with_skip_arrow_metadata(true);
     let mut body = Vec::with_capacity(ENCODE_BUF_HINT);
     let mut writer = ArrowWriter::try_new_with_options(&mut body, schema, options)?;
@@ -1046,13 +1044,13 @@ mod verified_section_tests {
 }
 
 #[cfg(test)]
-mod sealed_profile_tests {
+mod final_profile_tests {
     use bytes::Bytes;
     use parquet::basic::{Compression, Encoding};
     use parquet::column::page::Page;
     use parquet::file::reader::{FileReader, SerializedFileReader};
 
-    use super::{SEALED_ZSTD_LEVEL, VerifiedSection, encode_sealed_batches};
+    use super::{FINAL_ZSTD_LEVEL, VerifiedSection, encode_final_batches};
     use crate::os_loadavg::OsLoadavg;
     use crate::{Section, Ts, decode_any};
 
@@ -1079,7 +1077,7 @@ mod sealed_profile_tests {
     }
 
     #[test]
-    fn sealed_encoding_is_physical_and_boundary_deterministic() {
+    fn finished_encoding_is_physical_and_boundary_deterministic() {
         let rows = [
             row(f64::from_bits(0x7ff8_0000_0000_0002)),
             row(-0.0),
@@ -1094,20 +1092,20 @@ mod sealed_profile_tests {
             .flat_map(|row| decoded_batches(std::slice::from_ref(row)))
             .collect::<Vec<_>>();
         let type_id = OsLoadavg::CONTRACT.type_id.get();
-        let one = encode_sealed_batches(type_id, one_batch).expect("seal one batch");
+        let one = encode_final_batches(type_id, one_batch).expect("write one batch");
         let many =
-            encode_sealed_batches(type_id, many_reversed).expect("seal reversed one-row batches");
+            encode_final_batches(type_id, many_reversed).expect("write reversed one-row batches");
         assert_eq!(one, many, "partition and input order must not affect bytes");
 
         let decoded = decode_any(type_id, VerifiedSection::for_test(Bytes::from(one.clone())))
-            .expect("decode sealed section");
+            .expect("decode final section");
         assert_eq!(
             decoded.stats.rows,
             rows.len(),
             "duplicate rows are retained"
         );
         let typed = OsLoadavg::decode(VerifiedSection::for_test(Bytes::from(one.clone())))
-            .expect("decode typed sealed rows");
+            .expect("decode typed finished rows");
         assert_eq!(
             typed
                 .iter()
@@ -1122,7 +1120,7 @@ mod sealed_profile_tests {
             ],
             "canonical ordering preserves NaN payloads, signed zero, and duplicates"
         );
-        assert_eq!(SEALED_ZSTD_LEVEL, 6);
+        assert_eq!(FINAL_ZSTD_LEVEL, 6);
 
         let reader = SerializedFileReader::new(Bytes::from(one)).expect("open Parquet metadata");
         let metadata = reader.metadata();
@@ -1139,7 +1137,7 @@ mod sealed_profile_tests {
                     .encodings()
                     .iter()
                     .all(|encoding| matches!(encoding, Encoding::PLAIN | Encoding::RLE)),
-                "sealed columns use only PLAIN data and RLE levels"
+                "final columns use only PLAIN data and RLE levels"
             );
         }
         let group = reader.get_row_group(0).expect("row group");
@@ -1652,19 +1650,19 @@ mod hygiene_tests {
     struct Weird {
         #[column(t)]
         ts: Ts,
-        #[column(c)]
+        #[column(c, unit = count)]
         batch: i64,
-        #[column(c)]
+        #[column(c, unit = count)]
         out: i64,
-        #[column(c)]
+        #[column(c, unit = count)]
         i: i64,
-        #[column(c)]
+        #[column(c, unit = count)]
         rows: Option<i64>,
-        #[column(g)]
+        #[column(g, unit = count)]
         columns: bool,
         #[column(l)]
         label: StrId,
-        #[column(c)]
+        #[column(c, unit = count)]
         Ts: i64,
         #[column(l)]
         StrId: u64,

@@ -22,50 +22,50 @@ pub struct OsNuma {
     /// NUMA node index.
     #[column(l)]
     pub node_id: i32,
-    /// Total memory on the node, KiB.
-    #[column(g)]
+    /// Total memory on the node.
+    #[column(g, unit = kib)]
     pub mem_total: i64,
-    /// Free memory on the node, KiB.
-    #[column(g)]
+    /// Free memory on the node.
+    #[column(g, unit = kib)]
     pub mem_free: Option<i64>,
-    /// Used memory on the node, KiB.
-    #[column(g)]
+    /// Used memory on the node.
+    #[column(g, unit = kib)]
     pub mem_used: Option<i64>,
-    /// Page cache on the node, KiB.
-    #[column(g)]
+    /// Page cache on the node.
+    #[column(g, unit = kib)]
     pub file_pages: Option<i64>,
-    /// Dirty pages on the node, KiB.
-    #[column(g)]
+    /// Dirty pages on the node.
+    #[column(g, unit = kib)]
     pub dirty: Option<i64>,
-    /// Pages under writeback on the node, KiB.
-    #[column(g)]
+    /// Pages under writeback on the node.
+    #[column(g, unit = kib)]
     pub writeback: Option<i64>,
-    /// Anonymous pages on the node, KiB.
-    #[column(g)]
+    /// Anonymous pages on the node.
+    #[column(g, unit = kib)]
     pub anon_pages: Option<i64>,
-    /// Mapped file pages on the node, KiB.
-    #[column(g)]
+    /// Mapped file pages on the node.
+    #[column(g, unit = kib)]
     pub mapped: Option<i64>,
-    /// Shared memory on the node, KiB.
-    #[column(g)]
+    /// Shared memory on the node.
+    #[column(g, unit = kib)]
     pub shmem: Option<i64>,
-    /// Slab memory on the node, KiB.
-    #[column(g)]
+    /// Slab memory on the node.
+    #[column(g, unit = kib)]
     pub slab: Option<i64>,
-    /// Reclaimable slab on the node, KiB.
-    #[column(g)]
+    /// Reclaimable slab on the node.
+    #[column(g, unit = kib)]
     pub s_reclaimable: Option<i64>,
-    /// Unreclaimable slab on the node, KiB.
-    #[column(g)]
+    /// Unreclaimable slab on the node.
+    #[column(g, unit = kib)]
     pub s_unreclaim: Option<i64>,
-    /// Anonymous transparent huge pages on the node, KiB.
-    #[column(g)]
+    /// Anonymous transparent huge pages on the node.
+    #[column(g, unit = kib)]
     pub anon_huge_pages: Option<i64>,
     /// Total persistent huge pages on the node.
-    #[column(g)]
+    #[column(g, unit = pages)]
     pub huge_pages_total: Option<i64>,
     /// Free persistent huge pages on the node.
-    #[column(g)]
+    #[column(g, unit = pages)]
     pub huge_pages_free: Option<i64>,
     /// Source scope. See `kronika_source_os::OsScope`.
     #[column(l)]

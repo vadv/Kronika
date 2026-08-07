@@ -7,7 +7,7 @@
 //! age, journal pressure, or `SIGUSR2`.
 //!
 //! `SIGTERM` and `SIGINT` stop the loop without discarding the journal.
-//! Startup recovery seals valid frames left by the preceding process. A failed
+//! Startup recovery writes valid frames left by the preceding process. A failed
 //! source is logged and retried on its next interval; bad startup
 //! configuration, journal-open failures, and any persistence failure that
 //! poisons the journal terminate the process.
@@ -18,7 +18,6 @@
 
 mod buffering;
 mod config;
-mod coverage;
 mod logging;
 mod os_sources;
 mod producer_status;
@@ -28,9 +27,8 @@ mod segments;
 mod service_sections;
 
 use anyhow::{Context, Result};
-use buffering::push_snapshot_coverages;
 use config::Config;
-use kronika_layout::{DataRoot, LayoutLimits, QuarantineStatus, TemporaryKind, WriterOwner};
+use kronika_layout::{DataRoot, LayoutLimits, TemporaryKind, WriterOwner};
 use kronika_source_os::{OsScope, ProcFs, detect_container};
 use kronika_writer::{Interner, Journal, SectionBuffers};
 use logging::{LogLevel, field, log_event};
@@ -39,8 +37,8 @@ use producer_status::{ProducerStatusPublisher, retention_status};
 use rotation::Rotation;
 use scheduler::{DueSet, Scheduler};
 use segments::{
-    SegmentState, append_window_and_maybe_seal, encode_window, open_collector_journal,
-    quarantine_invalid_segments, seal_open_segment,
+    SegmentState, append_window_and_maybe_close, close_open_segment, encode_window,
+    open_collector_journal,
 };
 use service_sections::{collect_due_instance, push_instance_metadata};
 use std::io::Write as _;
@@ -77,29 +75,28 @@ fn timer_sleep_delay(
     delay
 }
 
-fn cleanup_writer_temporaries(owner: &WriterOwner, limits: LayoutLimits) -> Result<usize> {
+/// Delete temporaries a previous process left behind.
+///
+/// A temporary is a segment that was never published, so nothing reads it and
+/// nothing is lost by removing it.
+fn remove_writer_temporaries(owner: &WriterOwner, limits: LayoutLimits) -> Result<()> {
     let snapshot = owner
         .root()
         .scan(limits)
         .context("scan for stale writer temporaries")?;
-    let mut quarantined = 0_usize;
     for temporary in &snapshot.temporaries {
-        if temporary.kind == TemporaryKind::Zms {
-            let outcome = owner.quarantine_temporary(temporary);
+        if temporary.kind != TemporaryKind::Zms {
+            continue;
+        }
+        if let Err(error) = owner.remove_temporary(temporary) {
             log_event(
                 LogLevel::Warn,
-                "writer_temporary_quarantine",
-                &[
-                    field("reason", "stale_zms_temporary"),
-                    field("status", format!("{:?}", outcome.status)),
-                ],
+                "writer_temporary_remove_failed",
+                &[field("error", format!("{error}"))],
             );
-            if matches!(outcome.status, QuarantineStatus::Quarantined { .. }) {
-                quarantined += 1;
-            }
         }
     }
-    Ok(quarantined)
+    Ok(())
 }
 
 fn prepare_collector_storage(
@@ -107,8 +104,7 @@ fn prepare_collector_storage(
     limits: LayoutLimits,
     journal_max_bytes: u64,
 ) -> Result<(Journal, Option<PathBuf>)> {
-    quarantine_invalid_segments(owner, limits)?;
-    cleanup_writer_temporaries(owner, limits)?;
+    remove_writer_temporaries(owner, limits)?;
     open_collector_journal(owner, journal_max_bytes)
 }
 
@@ -128,14 +124,14 @@ fn start_up(config: &Config) -> Result<(WriterOwner, ProducerStatusPublisher, Jo
     )
     .context("publish collector startup status")?;
 
-    // The journal lives next to sealed segments so windows survive restarts.
+    // The journal lives next to finished segments so windows survive restarts.
     let (journal, recovered) = prepare_collector_storage(
         &writer_owner,
         LayoutLimits::default(),
         config.journal_max_bytes,
     )?;
     if let Some(dest) = recovered {
-        announce(&format!("sealed {} reason=recovered", dest.display()));
+        announce(&format!("wrote {} reason=recovered", dest.display()));
     }
     Ok((writer_owner, producer_status, journal))
 }
@@ -196,31 +192,31 @@ async fn main() -> Result<()> {
             _ = sigint.recv() => break,
         };
         let due = sched.plan(Instant::now(), forced);
-        let mut sealed_this_tick: Vec<PathBuf> = Vec::new();
+        let mut written_this_tick: Vec<PathBuf> = Vec::new();
         // The age valve runs before collection: a tick whose sources fail or
         // return no rows must still close an expired segment.
         let age = Duration::from_secs(config.segment_max_age_secs);
         if segment.age_expired(Instant::now(), age) {
-            match seal_open_segment(&mut journal, &writer_owner, &mut segment, "age") {
+            match close_open_segment(&mut journal, &writer_owner, &mut segment, "age") {
                 Ok(dest) => {
                     sched.mark_segment_opened();
-                    announce(&format!("sealed {} reason=age", dest.display()));
-                    sealed_this_tick.push(dest);
+                    announce(&format!("wrote {} reason=age", dest.display()));
+                    written_this_tick.push(dest);
                 }
                 Err(err) => log_event(
                     LogLevel::Error,
-                    "segment_seal_failure",
+                    "segment_write_failure",
                     &[field("reason", "age"), field("error", format!("{err:#}"))],
                 ),
             }
             stop_if_persistence_unhealthy(&journal, &segment)?;
         }
         if due.is_empty() {
-            run_rotation(&mut rotation, &writer_owner, &journal, &sealed_this_tick);
+            run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
             heartbeat_best_effort(&mut producer_status);
             continue;
         }
-        sealed_this_tick.extend(run_collection_cycle(
+        written_this_tick.extend(run_collection_cycle(
             &mut journal,
             &writer_owner,
             &config,
@@ -229,7 +225,7 @@ async fn main() -> Result<()> {
             &mut sched,
         ));
         stop_if_persistence_unhealthy(&journal, &segment)?;
-        run_rotation(&mut rotation, &writer_owner, &journal, &sealed_this_tick);
+        run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
         heartbeat_best_effort(&mut producer_status);
     }
     if let Err(err) = unix_now_us().and_then(|at_us| {
@@ -248,7 +244,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// One collection cycle: read the due sources, append a window, and seal when
+/// One collection cycle: read the due sources, append a window, and write when
 /// the segment is full. Failures log and leave the daemon running.
 fn run_collection_cycle(
     journal: &mut Journal,
@@ -302,8 +298,7 @@ fn run_collection_cycle(
         if let Some(facts) = instance.as_ref() {
             push_instance_metadata(&mut buffers, &mut interner, facts, in_container, ts)?;
         }
-        push_os_sources(&mut buffers, &os)?;
-        push_snapshot_coverages(&mut buffers, os.snapshot_coverage_rows())
+        push_os_sources(&mut buffers, &os)
     })();
     if let Err(err) = buffered {
         log_event(
@@ -328,7 +323,7 @@ fn run_collection_cycle(
             return Vec::new();
         }
     };
-    match append_window_and_maybe_seal(
+    match append_window_and_maybe_close(
         journal,
         writer_owner,
         config,
@@ -338,11 +333,11 @@ fn run_collection_cycle(
         &flushed,
         &interner,
     ) {
-        Ok(sealed) => {
-            let mut dests = Vec::with_capacity(sealed.len());
-            for (dest, reason) in sealed {
+        Ok(finished) => {
+            let mut dests = Vec::with_capacity(finished.len());
+            for (dest, reason) in finished {
                 sched.mark_segment_opened();
-                announce(&format!("sealed {} reason={reason}", dest.display()));
+                announce(&format!("wrote {} reason={reason}", dest.display()));
                 dests.push(dest);
             }
             dests
@@ -389,12 +384,12 @@ fn run_rotation(
     rotation: &mut Option<Rotation>,
     writer_owner: &WriterOwner,
     journal: &Journal,
-    sealed: &[PathBuf],
+    finished: &[PathBuf],
 ) {
     let Some(rotation) = rotation.as_mut() else {
         return;
     };
-    for dest in sealed {
+    for dest in finished {
         match std::fs::metadata(dest) {
             Ok(metadata) => rotation.record_publication(metadata.len()),
             // An uncounted publication under-counts the tree until the next
@@ -413,7 +408,7 @@ fn run_rotation(
     rotation.maybe_enforce(
         writer_owner,
         journal_bytes,
-        !sealed.is_empty(),
+        !finished.is_empty(),
         Instant::now(),
     );
 }

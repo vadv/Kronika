@@ -20,28 +20,28 @@ pub struct OsPsi {
     #[column(l)]
     pub resource: u8,
     /// Fraction of time tasks stalled (some) over the last 10 s.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub some_avg10: f64,
     /// Fraction of time tasks stalled (some) over the last 60 s.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub some_avg60: f64,
     /// Fraction of time tasks stalled (some) over the last 300 s.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub some_avg300: f64,
-    /// Cumulative stall time (some), microseconds.
-    #[column(c)]
+    /// Cumulative stall time (some).
+    #[column(c, unit = microseconds)]
     pub some_total: i64,
     /// Fraction of time tasks stalled (full) over the last 10 s. `None` for cpu.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub full_avg10: Option<f64>,
     /// Fraction of time tasks stalled (full) over the last 60 s. `None` for cpu.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub full_avg60: Option<f64>,
     /// Fraction of time tasks stalled (full) over the last 300 s. `None` for cpu.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub full_avg300: Option<f64>,
     /// Cumulative stall time (full), microseconds. `None` for cpu.
-    #[column(c)]
+    #[column(c, unit = microseconds)]
     pub full_total: Option<i64>,
     /// Source scope (`0=host`). See `kronika_source_os::OsScope`.
     #[column(l)]

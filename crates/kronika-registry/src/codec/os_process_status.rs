@@ -21,37 +21,37 @@ pub struct OsProcessStatus {
     #[column(l)]
     pub starttime: Ts,
     /// Data segment size, kB.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub vm_data: i64,
     /// Stack size, kB.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub vm_stk: i64,
     /// Shared library size, kB.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub vm_lib: i64,
     /// Locked memory, kB.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub vm_lck: i64,
     /// Page table memory, kB.
-    #[column(g)]
+    #[column(g, unit = pages)]
     pub vm_pte: i64,
     /// Peak virtual memory, kB.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub vm_peak: i64,
     /// Peak resident set size, kB.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub vm_hwm: i64,
     /// Thread count from `status`.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub threads: u32,
     /// Allocated file descriptor table size.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub fdsize: u32,
     /// Voluntary context switches.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub voluntary_ctxt_switches: i64,
     /// Nonvoluntary context switches.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub nonvoluntary_ctxt_switches: i64,
     /// Source scope. See `kronika_source_os::OsScope`.
     #[column(l)]

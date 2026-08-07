@@ -3,7 +3,7 @@
 //! Rotation keeps the whole data tree inside a fixed byte budget or a partition
 //! used-fraction target by deleting the oldest replaceable data. It runs after
 //! every ZMS publication and on a periodic tick, never deletes the active
-//! journal or the newest sealed segment, and emits a degradation event when
+//! journal or the newest finished segment, and emits a degradation event when
 //! only that non-deletable minimum remains. The tree size is tracked
 //! incrementally: a full scan seeds it once at startup, publications and
 //! deletions adjust it, and the per-tick check stays scan-free (a scan happens
@@ -11,7 +11,7 @@
 //! Every enforcement scan re-seeds the counter, folding in index sidecars
 //! the web process published since the previous scan; the hourly recount
 //! guarantees that sidecar growth is folded in even when the incremental
-//! counter alone never crosses the budget. Quarantined evidence also counts
+//! counter alone never crosses the budget. Writer temporaries also count
 //! toward the budget and is re-enumerated each pass through the bounded
 //! quarantine scan.
 //!
@@ -24,10 +24,7 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use kronika_layout::{
-    EntryFileType, LayoutLimits, LayoutSnapshot, QUARANTINE_DIRECTORY_NAME, QuarantineEntry,
-    SegmentAddress, TemporaryKind, WriterOwner,
-};
+use kronika_layout::{LayoutLimits, LayoutSnapshot, SegmentAddress, TemporaryKind, WriterOwner};
 
 use crate::config::RetentionConfig;
 use crate::logging::{LogLevel, field, log_event};
@@ -70,17 +67,15 @@ enum Victim {
     Temporary(kronika_layout::TemporaryObject),
     /// An index sidecar with no sibling ZMS.
     OrphanIndex(SegmentAddress),
-    /// A quarantined evidence object.
-    Quarantine(QuarantineEntry),
-    /// A sealed segment (its ZMS and sibling IDX).
+    /// A finished segment (its ZMS and sibling IDX).
     Segment(SegmentAddress),
 }
 
 impl Victim {
     /// Whether this victim's bytes are part of the incremental tree counter.
     ///
-    /// Quarantined evidence is re-enumerated each pass and orphan indexs
-    /// carry no scanned size, so neither may adjust the counter on removal.
+    /// Orphan indexes carry no scanned size, so they may not adjust the
+    /// counter on removal.
     const fn counted_in_tree(&self) -> bool {
         matches!(self, Self::Temporary(_) | Self::Segment(_))
     }
@@ -89,7 +84,6 @@ impl Victim {
         match self {
             Self::Temporary(_) => "temporary",
             Self::OrphanIndex(_) => "orphan_index",
-            Self::Quarantine(_) => "quarantine_evidence",
             Self::Segment(_) => "segment",
         }
     }
@@ -100,18 +94,14 @@ impl Victim {
                 format!("{}/{}", temporary.address.day, temporary.file_name())
             }
             Self::OrphanIndex(address) => format!("{}/{}", address.day, address.idx_name()),
-            Self::Quarantine(entry) => {
-                format!("{QUARANTINE_DIRECTORY_NAME}/{}", entry.file_name())
-            }
             Self::Segment(address) => format!("{}/{}", address.day, address.zms_name()),
         }
     }
 
-    const fn segment_id(&self) -> Option<i64> {
+    const fn segment_id(&self) -> i64 {
         match self {
-            Self::Temporary(temporary) => Some(temporary.address.id.get()),
-            Self::OrphanIndex(address) | Self::Segment(address) => Some(address.id.get()),
-            Self::Quarantine(_) => None,
+            Self::Temporary(temporary) => temporary.address.id.get(),
+            Self::OrphanIndex(address) | Self::Segment(address) => address.id.get(),
         }
     }
 }
@@ -204,20 +194,9 @@ impl Rotation {
     /// The first removal error ends the pass: the tree state is ambiguous
     /// after a partial mutation, and the next pass rescans from scratch.
     fn enforce(&mut self, owner: &WriterOwner, journal_bytes: u64, now: Instant) -> Result<()> {
-        let mut quarantine = owner
-            .root()
-            .scan_quarantine(self.limits)
-            .context("scan quarantined evidence")?;
-        quarantine.retain(|entry| entry.identity().file_type == EntryFileType::RegularFile);
-        sort_quarantine_oldest_first(&mut quarantine);
-        let quarantine_bytes = quarantine
-            .iter()
-            .map(|entry| entry.identity().file.len)
-            .fold(0_u64, u64::saturating_add);
-
         let recount_due = matches!(self.config, RetentionConfig::Fixed(_))
             && now.saturating_duration_since(self.last_recount) >= RECOUNT_PERIOD;
-        let (current, threshold) = self.target(owner, journal_bytes, quarantine_bytes)?;
+        let (current, threshold) = self.target(owner, journal_bytes)?;
         if current <= threshold && !recount_due {
             return Ok(());
         }
@@ -230,7 +209,7 @@ impl Rotation {
         // per-victim subtraction below stays consistent with the snapshot.
         self.non_journal_bytes = countable_bytes(&snapshot);
         self.last_recount = now;
-        let (current, threshold) = self.target(owner, journal_bytes, quarantine_bytes)?;
+        let (current, threshold) = self.target(owner, journal_bytes)?;
         let mut deficit = current.saturating_sub(threshold);
         if deficit == 0 {
             return Ok(());
@@ -238,7 +217,7 @@ impl Rotation {
 
         let mut freed_total: u64 = 0;
         let mut aborted = false;
-        for victim in plan_victims(&snapshot, quarantine) {
+        for victim in plan_victims(&snapshot) {
             if deficit == 0 {
                 break;
             }
@@ -284,20 +263,13 @@ impl Rotation {
     /// Current size figure and its threshold under the configured target.
     ///
     /// `Fixed` compares the incremental tree counter (journal, segments,
-    /// temporaries, quarantine) against the byte budget. `auto` compares the
+    /// temporaries) against the byte budget. `auto` compares the
     /// partition's used bytes, less the reclaim still pending physical
     /// release, against the percentage threshold; each observation first
     /// credits any physical drop against that pending figure.
-    fn target(
-        &mut self,
-        owner: &WriterOwner,
-        journal_bytes: u64,
-        quarantine_bytes: u64,
-    ) -> Result<(u64, u64)> {
+    fn target(&mut self, owner: &WriterOwner, journal_bytes: u64) -> Result<(u64, u64)> {
         match self.config {
-            RetentionConfig::Fixed(budget) => {
-                Ok((self.tree_bytes(journal_bytes, quarantine_bytes), budget))
-            }
+            RetentionConfig::Fixed(budget) => Ok((self.tree_bytes(journal_bytes), budget)),
             RetentionConfig::Auto(percent) => {
                 let usage = owner
                     .root()
@@ -317,10 +289,8 @@ impl Rotation {
         }
     }
 
-    const fn tree_bytes(&self, journal_bytes: u64, quarantine_bytes: u64) -> u64 {
-        self.non_journal_bytes
-            .saturating_add(journal_bytes)
-            .saturating_add(quarantine_bytes)
+    const fn tree_bytes(&self, journal_bytes: u64) -> u64 {
+        self.non_journal_bytes.saturating_add(journal_bytes)
     }
 
     fn log_deletion(&self, victim: &Victim, freed: u64, current: u64, threshold: u64) {
@@ -332,7 +302,8 @@ impl Rotation {
             field("current_bytes", current),
             field("threshold_bytes", threshold),
         ];
-        if let Some(segment_id) = victim.segment_id() {
+        {
+            let segment_id = victim.segment_id();
             fields.push(field("segment_id", segment_id));
         }
         log_event(LogLevel::Info, "rotation_delete", &fields);
@@ -362,12 +333,11 @@ impl Rotation {
     }
 }
 
-/// Selects deletion candidates in the fixed spec order: writer temporaries,
-/// then orphan indexs, then quarantined evidence oldest-first (damaged
-/// data is worth less than intact segments), then sealed segments
-/// oldest-first. The newest sealed segment is never a candidate; together
-/// with the active journal it is the non-deletable minimum.
-fn plan_victims(snapshot: &LayoutSnapshot, quarantine: Vec<QuarantineEntry>) -> Vec<Victim> {
+/// Selects deletion candidates in a fixed order: writer temporaries, then
+/// orphan indexes, then finished segments oldest-first. The newest finished
+/// segment is never a candidate; together with the active journal it is the
+/// non-deletable minimum.
+fn plan_victims(snapshot: &LayoutSnapshot) -> Vec<Victim> {
     let mut victims = Vec::new();
     for temporary in &snapshot.temporaries {
         if temporary.kind == TemporaryKind::Zms {
@@ -376,9 +346,6 @@ fn plan_victims(snapshot: &LayoutSnapshot, quarantine: Vec<QuarantineEntry>) -> 
     }
     for orphan in &snapshot.orphan_indexs {
         victims.push(Victim::OrphanIndex(*orphan));
-    }
-    for entry in quarantine {
-        victims.push(Victim::Quarantine(entry));
     }
     let deletable_segments = snapshot.segments.len().saturating_sub(1);
     for segment in snapshot.segments.iter().take(deletable_segments) {
@@ -400,17 +367,14 @@ fn remove_victim(owner: &WriterOwner, victim: &Victim) -> Result<u64> {
         Victim::OrphanIndex(address) => owner
             .remove_orphan_index(*address)
             .context("remove an orphan index"),
-        Victim::Quarantine(entry) => owner
-            .remove_quarantine_entry(entry)
-            .context("remove quarantined evidence"),
         Victim::Segment(address) => Ok(owner
-            .remove_sealed_segment(*address)
-            .context("remove a sealed segment")?
+            .remove_finished_segment(*address)
+            .context("remove a finished segment")?
             .total_bytes()),
     }
 }
 
-/// Bytes of every sized file the scan reports: sealed segments and writer
+/// Bytes of every sized file the scan reports: finished segments and writer
 /// temporaries. The active journal is excluded (its size is supplied live by
 /// the writer's own byte counter), and orphan indexs are excluded because
 /// the scan reports no size for them.
@@ -430,25 +394,6 @@ fn countable_bytes(snapshot: &LayoutSnapshot) -> u64 {
         .map(|temporary| temporary.identity.len)
         .fold(0_u64, u64::saturating_add);
     segments.saturating_add(temporaries)
-}
-
-/// Orders quarantined evidence oldest first by the preserved modification
-/// time; rename into quarantine keeps the source mtime, so it tracks the age
-/// of the evidence.
-fn sort_quarantine_oldest_first(entries: &mut [QuarantineEntry]) {
-    entries.sort_by(|first, second| {
-        let first_key = (
-            first.identity().file.mtime_seconds,
-            first.identity().file.mtime_nanoseconds,
-        );
-        let second_key = (
-            second.identity().file.mtime_seconds,
-            second.identity().file.mtime_nanoseconds,
-        );
-        first_key
-            .cmp(&second_key)
-            .then_with(|| first.file_name().cmp(second.file_name()))
-    });
 }
 
 /// Shrinks the pending logical reclaim by the physical drop the partition has
@@ -476,7 +421,7 @@ const fn reason_label(config: RetentionConfig) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kronika_layout::{FileIdentity, QuarantineDirectoryState, SegmentArtifacts, SegmentId};
+    use kronika_layout::{FileIdentity, SegmentArtifacts, SegmentId};
 
     const MICROS_PER_DAY: i64 = 86_400_000_000;
 
@@ -508,8 +453,6 @@ mod tests {
             orphan_indexs: orphans,
             temporaries: Vec::new(),
             foreign_entries: Vec::new(),
-            pending_root_entries: Vec::new(),
-            quarantine_directory: QuarantineDirectoryState::Absent,
             visited_entries: 0,
             metadata_bytes: 0,
         }
@@ -615,7 +558,7 @@ mod tests {
     #[test]
     fn tree_bytes_saturates_instead_of_overflowing() {
         let rotation = bare_rotation(RetentionConfig::Fixed(0), u64::MAX, Instant::now());
-        assert_eq!(rotation.tree_bytes(1, 1), u64::MAX);
+        assert_eq!(rotation.tree_bytes(1), u64::MAX);
     }
 
     #[test]
@@ -646,7 +589,7 @@ mod tests {
             ],
             Vec::new(),
         );
-        let victims = plan_victims(&snap, Vec::new());
+        let victims = plan_victims(&snap);
         let ids: Vec<i64> = victims
             .iter()
             .filter_map(|v| match v {
@@ -661,7 +604,7 @@ mod tests {
     fn plan_keeps_a_lone_segment() {
         let snap = snapshot(vec![segment(1, 10, None)], Vec::new());
         assert!(
-            !plan_victims(&snap, Vec::new())
+            !plan_victims(&snap)
                 .iter()
                 .any(|v| matches!(v, Victim::Segment(_))),
             "a single segment is the non-deletable minimum"
@@ -674,10 +617,10 @@ mod tests {
             vec![segment(1, 10, None), segment(2, 10, None)],
             vec![address(MICROS_PER_DAY)],
         );
-        let victims = plan_victims(&snap, Vec::new());
+        let victims = plan_victims(&snap);
         assert!(
             matches!(victims.first(), Some(Victim::OrphanIndex(_))),
-            "orphan indexs are reclaimed before sealed segments"
+            "orphan indexs are reclaimed before finished segments"
         );
     }
 
@@ -685,7 +628,7 @@ mod tests {
     fn only_segments_and_temporaries_adjust_the_tree_counter() {
         assert!(
             Victim::Segment(address(1)).counted_in_tree(),
-            "sealed segments are seeded and their removal adjusts the counter"
+            "finished segments are seeded and their removal adjusts the counter"
         );
         assert!(
             !Victim::OrphanIndex(address(1)).counted_in_tree(),
@@ -732,109 +675,6 @@ mod tests {
             "the counter matches a full recount after deleting a segment with a post-seed sidecar"
         );
         assert_eq!(recount, b"ZMSBODY".len() as u64, "only the newest survives");
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn plan_from_a_real_scan_orders_all_victim_kinds_and_skips_foreign_temporaries() {
-        let directory = tempfile::tempdir().expect("create a tempdir");
-        let root = kronika_layout::DataRoot::open(directory.path()).expect("open the root");
-        let owner = root
-            .acquire_writer(LayoutLimits::default())
-            .expect("acquire the writer");
-        let oldest = address(1);
-        let newest = address(2);
-        for item in [oldest, newest] {
-            let mut temp = owner.create_zms_temp(item).expect("create a temporary");
-            std::io::Write::write_all(temp.file_mut(), b"ZMSBODY").expect("write the body");
-            temp.publish().expect("publish the segment");
-        }
-        let day = directory.path().join(oldest.day.to_string());
-        // A stale writer temporary, an index temporary that belongs to the
-        // web publisher, and an index sidecar with no sibling ZMS.
-        std::fs::write(day.join("1.zms.999.0.tmp"), b"TMP").expect("write the ZMS temporary");
-        std::fs::write(day.join("1.idx.999.0.tmp"), b"IDXTMP").expect("write the IDX temporary");
-        std::fs::write(day.join(address(3).idx_name()), b"ORPHAN").expect("write the orphan");
-        // Two foreign files with distinct ages and sizes become quarantined
-        // evidence; the size difference pins the planned order below.
-        for (name, body, age_seconds) in [
-            ("junk-new.bin", b"NEW".as_slice(), 100_u64),
-            ("junk-old.bin", b"OLD-EVIDENCE".as_slice(), 200_u64),
-        ] {
-            let path = directory.path().join(name);
-            std::fs::write(&path, body).expect("write a foreign file");
-            let file = std::fs::OpenOptions::new()
-                .write(true)
-                .open(&path)
-                .expect("reopen the foreign file");
-            let mtime = std::time::SystemTime::now()
-                .checked_sub(Duration::from_secs(age_seconds))
-                .expect("the fixture age fits the clock");
-            file.set_times(std::fs::FileTimes::new().set_modified(mtime))
-                .expect("age the foreign file");
-        }
-        let discovery = root
-            .scan(LayoutLimits::default())
-            .expect("discover the foreign files");
-        assert_eq!(discovery.foreign_entries.len(), 2);
-        for foreign in &discovery.foreign_entries {
-            let outcome = owner.quarantine_foreign(foreign);
-            assert!(
-                matches!(
-                    outcome.status,
-                    kronika_layout::QuarantineStatus::Quarantined { .. }
-                ),
-                "the fixture entry must reach quarantine, got {:?}",
-                outcome.status
-            );
-        }
-
-        let snap = root.scan(LayoutLimits::default()).expect("scan the tree");
-        let mut quarantine = root
-            .scan_quarantine(LayoutLimits::default())
-            .expect("scan quarantine");
-        sort_quarantine_oldest_first(&mut quarantine);
-        let victims = plan_victims(&snap, quarantine);
-        let order: Vec<&str> = victims
-            .iter()
-            .map(|v| match v {
-                Victim::Temporary(_) => "temporary",
-                Victim::OrphanIndex(_) => "orphan",
-                Victim::Quarantine(_) => "quarantine",
-                Victim::Segment(_) => "segment",
-            })
-            .collect();
-        assert_eq!(
-            order,
-            vec!["temporary", "orphan", "quarantine", "quarantine", "segment"],
-            "each kind in spec order; the IDX temporary is not ours to delete"
-        );
-        let quarantined_sizes: Vec<u64> = victims
-            .iter()
-            .filter_map(|v| match v {
-                Victim::Quarantine(entry) => Some(entry.identity().file.len),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            quarantined_sizes,
-            vec![b"OLD-EVIDENCE".len() as u64, b"NEW".len() as u64],
-            "quarantined evidence is planned oldest first by preserved mtime"
-        );
-        assert!(
-            matches!(victims.last(), Some(Victim::Segment(a)) if a.id == oldest.id),
-            "only the oldest segment is a candidate, the newest is kept"
-        );
-        let temporary_bytes: u64 = snap
-            .temporaries
-            .iter()
-            .map(|temporary| temporary.identity.len)
-            .sum();
-        assert_eq!(
-            countable_bytes(&snap),
-            2 * b"ZMSBODY".len() as u64 + temporary_bytes,
-            "the counter seed covers segments and temporaries; orphans have no scanned size"
-        );
     }
 
     #[test]
@@ -908,7 +748,7 @@ mod tests {
         );
         let seed = countable_bytes(&before);
 
-        let published = 150_u64; // a new segment sealed
+        let published = 150_u64; // a new segment finished
         let deleted = 100_u64; // the oldest segment removed
         let incremental = seed.saturating_add(published).saturating_sub(deleted);
 

@@ -3,9 +3,8 @@
 //! `#[derive(Section)]` accepts a named-field struct with one
 //! `#[section(id = ..., name = ..., semantics = ..., sort_key(...),
 //! identity(...))]` attribute. Every field needs `#[column(class)]`; a column
-//! may also declare a collection gate and row-specific gate overrides.
 //!
-//! The generated sealed `kronika_registry::Section` implementation exposes
+//! The generated finished `kronika_registry::Section` implementation exposes
 //! one `TypeContract`, encodes at most `MAX_SECTION_ROWS`, decodes only a
 //! CRC-verified section, and derives its timestamp range from a field named
 //! `ts`. Registry linting validates references and semantic invariants across
@@ -62,18 +61,8 @@ struct ColumnDef {
     /// decoded value back into it.
     wrapper: Option<Ident>,
     nullable: bool,
-    gate: Option<GateDef>,
-}
-
-struct GateDef {
-    default: (String, String),
-    overrides: Vec<GateOverrideDef>,
-}
-
-struct GateOverrideDef {
-    column: String,
-    value: String,
-    gate: (String, String),
+    /// Declared unit, or `None` for a label or timestamp column.
+    unit: Option<Ident>,
 }
 
 fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
@@ -109,7 +98,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let list_i32_child_value_count = build_list_i32_child_value_count(&columns);
 
     Ok(quote! {
-        impl ::kronika_registry::sealed::Sealed for #struct_name {}
+        impl ::kronika_registry::private::Private for #struct_name {}
 
         impl ::kronika_registry::Section for #struct_name {
             #contract
@@ -202,7 +191,7 @@ fn parse_column(field: &syn::Field) -> syn::Result<ColumnDef> {
         .ok_or_else(|| syn::Error::new(field.span(), "field needs a #[column(class)] attribute"))?;
     let args: ColumnArgs = class_attr.parse_args()?;
     let column_class = column_class(&args.class)?;
-    let gate = args.gate;
+    let unit = args.unit;
 
     let (inner, nullable) = unwrap_option(&field.ty);
 
@@ -218,7 +207,7 @@ fn parse_column(field: &syn::Field) -> syn::Result<ColumnDef> {
             arrow_type: None,
             wrapper: None,
             nullable: false,
-            gate,
+            unit,
         });
     }
 
@@ -233,97 +222,71 @@ fn parse_column(field: &syn::Field) -> syn::Result<ColumnDef> {
         arrow_type,
         wrapper,
         nullable,
-        gate,
+        unit,
     })
 }
 
 /// Arguments of `#[column(...)]`.
 struct ColumnArgs {
     class: Ident,
-    gate: Option<GateDef>,
+    unit: Option<Ident>,
 }
 
 impl syn::parse::Parse for ColumnArgs {
     fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
         let class: Ident = input.parse()?;
-        let mut default = None;
-        let mut overrides = Vec::new();
+        let mut unit = None;
         while input.peek(syn::Token![,]) {
             input.parse::<syn::Token![,]>()?;
             let key: Ident = input.parse()?;
             input.parse::<syn::Token![=]>()?;
-            let value: LitStr = input.parse()?;
-            if key == "gated_by" {
-                if default.is_some() {
-                    return Err(syn::Error::new(key.span(), "duplicate `gated_by`"));
-                }
-                default = Some(parse_section_ref(&value, "gated_by")?);
-            } else if key == "gate_override" {
-                overrides.push(parse_gate_override(&value)?);
-            } else {
-                return Err(syn::Error::new(
-                    key.span(),
-                    "expected `gated_by` or `gate_override`",
-                ));
+            if key != "unit" {
+                return Err(syn::Error::new(key.span(), "expected `unit`"));
             }
+            if unit.is_some() {
+                return Err(syn::Error::new(key.span(), "duplicate `unit`"));
+            }
+            let value: Ident = input.parse()?;
+            unit = Some(unit_variant(&value)?);
         }
-        let gate = match default {
-            Some(default) => Some(GateDef { default, overrides }),
-            None if overrides.is_empty() => None,
-            None => {
-                return Err(syn::Error::new(
-                    class.span(),
-                    "`gate_override` requires `gated_by`",
-                ));
-            }
-        };
-        Ok(Self { class, gate })
+        // A counter or gauge without a declared unit is a number nobody can
+        // read, so the macro refuses it rather than defaulting.
+        if matches!(class.to_string().as_str(), "c" | "g") && unit.is_none() {
+            return Err(syn::Error::new(
+                class.span(),
+                "a counter or gauge column must declare `unit = ...`; write `unit = none` when it counts bare occurrences",
+            ));
+        }
+        Ok(Self { class, unit })
     }
 }
 
-fn parse_section_ref(value: &LitStr, key: &str) -> syn::Result<(String, String)> {
-    let raw = value.value();
-    let Some((section, column)) = raw.split_once('.') else {
-        return Err(syn::Error::new(
-            value.span(),
-            format!("{key} must be \"section.column\""),
-        ));
+/// Maps the attribute spelling of a unit to its `Unit` variant.
+fn unit_variant(value: &Ident) -> syn::Result<Ident> {
+    let name = match value.to_string().as_str() {
+        "none" => "None",
+        "count" => "Count",
+        "bytes" => "Bytes",
+        "kib" => "Kib",
+        "pages" => "Pages",
+        "sectors" => "Sectors",
+        "seconds" => "Seconds",
+        "milliseconds" => "Milliseconds",
+        "microseconds" => "Microseconds",
+        "nanoseconds" => "Nanoseconds",
+        "jiffies" => "Jiffies",
+        "hertz" => "Hertz",
+        "megabits_per_second" => "MegabitsPerSecond",
+        "percent" => "Percent",
+        "celsius" => "Celsius",
+        other => {
+            return Err(syn::Error::new(
+                value.span(),
+                format!("unknown unit `{other}`"),
+            ));
+        }
     };
-    if section.is_empty() || column.is_empty() || column.contains('.') {
-        return Err(syn::Error::new(
-            value.span(),
-            format!("{key} must be \"section.column\""),
-        ));
-    }
-    Ok((section.to_owned(), column.to_owned()))
-}
-
-fn parse_gate_override(value: &LitStr) -> syn::Result<GateOverrideDef> {
-    let raw = value.value();
-    let Some((selector, gate)) = raw.split_once("=>") else {
-        return Err(syn::Error::new(
-            value.span(),
-            "gate_override must be \"column=value=>section.column\"",
-        ));
-    };
-    let Some((column, expected)) = selector.split_once('=') else {
-        return Err(syn::Error::new(
-            value.span(),
-            "gate_override must be \"column=value=>section.column\"",
-        ));
-    };
-    if column.is_empty() || expected.is_empty() || column.contains('.') {
-        return Err(syn::Error::new(
-            value.span(),
-            "gate_override must be \"column=value=>section.column\"",
-        ));
-    }
-    let gate_lit = LitStr::new(gate, value.span());
-    Ok(GateOverrideDef {
-        column: column.to_owned(),
-        value: expected.to_owned(),
-        gate: parse_section_ref(&gate_lit, "gate_override")?,
-    })
+    Ok(Ident::new(name, value.span()))
 }
 
 fn column_class(ident: &Ident) -> syn::Result<Ident> {
@@ -446,35 +409,9 @@ fn build_contract(header: &Header, columns: &[ColumnDef]) -> TokenStream2 {
         let ty = &c.column_type;
         let class = &c.column_class;
         let nullable = c.nullable;
-        let gated_by = c.gate.as_ref().map_or_else(
+        let unit = c.unit.as_ref().map_or_else(
             || quote! { ::core::option::Option::None },
-            |gate| {
-                let (section, column) = &gate.default;
-                let overrides = gate.overrides.iter().map(|rule| {
-                    let selector = &rule.column;
-                    let value = &rule.value;
-                    let (gate_section, gate_column) = &rule.gate;
-                    quote! {
-                        ::kronika_registry::RowGateOverride {
-                            column: #selector,
-                            value: #value,
-                            gate: ::kronika_registry::SectionColumnRef {
-                                section: #gate_section,
-                                column: #gate_column,
-                            },
-                        }
-                    }
-                });
-                quote! {
-                    ::core::option::Option::Some(::kronika_registry::CollectionGate {
-                        default: ::kronika_registry::SectionColumnRef {
-                            section: #section,
-                            column: #column,
-                        },
-                        overrides: &[ #( #overrides ),* ],
-                    })
-                }
-            },
+            |unit| quote! { ::core::option::Option::Some(::kronika_registry::Unit::#unit) },
         );
         quote! {
             ::kronika_registry::Column {
@@ -482,7 +419,7 @@ fn build_contract(header: &Header, columns: &[ColumnDef]) -> TokenStream2 {
                 ty: ::kronika_registry::ColumnType::#ty,
                 class: ::kronika_registry::ColumnClass::#class,
                 nullable: #nullable,
-                gated_by: #gated_by,
+                unit: #unit,
             }
         }
     });

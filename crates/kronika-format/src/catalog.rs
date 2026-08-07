@@ -706,8 +706,8 @@ mod tests {
         )]);
         assert!(validate_catalog_layout(&oversized, 4 + MAX_PHYSICAL_SECTION_BYTES + 1).is_err());
 
-        let gap = layout_catalog(vec![layout_entry(1_006_001, 5, 1)]);
-        assert!(validate_catalog_layout(&gap, 6).is_err());
+        let short = layout_catalog(vec![layout_entry(1_006_001, 5, 1)]);
+        assert!(validate_catalog_layout(&short, 6).is_err());
 
         let trailing = layout_catalog(vec![layout_entry(1_006_001, 4, 1)]);
         assert!(validate_catalog_layout(&trailing, 6).is_err());

@@ -14,19 +14,19 @@ use crate::scheduler::Intervals;
 
 /// The validated daemon contract.
 pub(crate) struct Config {
-    /// Data root: the journal, the sealed segments, and the writer lock.
+    /// Data root: the journal, the finished segments, and the writer lock.
     pub(crate) out_dir: PathBuf,
     /// Base tick of the internal timer, seconds; `0` disables the timer and
     /// leaves collection to signals only.
     pub(crate) tick_secs: u64,
     /// Per-source read intervals.
     pub(crate) intervals: Intervals,
-    /// Seal the segment when the journal holds at least this many raw bytes;
-    /// `0` seals on every tick.
+    /// Write the segment when the journal holds at least this many raw bytes;
+    /// `0` writes on every tick.
     pub(crate) segment_max_bytes: u64,
-    /// Seal an open segment at this age even if the byte cap was not reached.
+    /// Write an open segment at this age even if the byte cap was not reached.
     pub(crate) segment_max_age_secs: u64,
-    /// Hard cap of the on-disk journal file; reaching it seals the open
+    /// Hard cap of the on-disk journal file; reaching it writes the open
     /// segment early instead of failing the append.
     pub(crate) journal_max_bytes: u64,
     /// Storage-rotation target for the whole output tree; `None` keeps every
@@ -97,7 +97,7 @@ pub(crate) fn parse_retention(raw: &str) -> Result<RetentionConfig> {
 /// to rotate.
 ///
 /// The floor is `2 × KRONIKA_SEGMENT_MAX_BYTES`: the active journal and the
-/// newest sealed segment are never deleted, so a smaller budget could never
+/// newest finished segment are never deleted, so a smaller budget could never
 /// converge. `auto` targets a live partition fraction and has no such bound.
 ///
 /// # Errors

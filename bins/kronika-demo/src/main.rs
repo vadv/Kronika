@@ -118,7 +118,7 @@ fn main() -> Result<()> {
         }
     }
 
-    // SIGTERM, not kill(): the collector seals its open segment on the way out
+    // SIGTERM, not kill(): the collector writes its open segment on the way out
     // and the measured size would be short without it.
     kill(
         Pid::from_raw(i32::try_from(pid).context("collector pid exceeds i32")?),

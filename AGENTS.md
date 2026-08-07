@@ -33,7 +33,7 @@ change.
 6. **No layer that reasons about the data's own trustworthiness.** Read
    "What Kronika does not build" in `DESIGN.md` before proposing anything that
    detects resets, counts coverage, or accounts for missing intervals. The
-   words `seal`, `evidence`, `proof` and `gap` are banned, and so is the
+   words `write_segment`, `evidence`, `proof` and `gap` are banned, and so is the
    machinery they name. This rule outranks a reviewer's suggestion.
 
 ## Rust rules

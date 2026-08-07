@@ -81,8 +81,30 @@ a host with a production database:
 | cgroup tree | depth and node cap | `KRONIKA_OS_MAX_CGROUPS` |
 | NUMA nodes | directory listing cap | node count |
 
-A source that hits its cap writes a `collection_coverage` row, so a truncated
-top-N never reads as a complete picture.
+A source that hits its cap logs one warning line naming the cap and how many
+rows it dropped.
+
+## Units
+
+Every counter and gauge column declares its unit in the contract, and the
+registry linter rejects one that does not. The set in use:
+
+| Unit | Where it shows up |
+| --- | --- |
+| `none` | a bare number with no dimension, such as a load average |
+| `count` | entities: processes, threads, handles, interrupts, packets |
+| `bytes` | byte counters |
+| `kib` | the kibibyte figures the kernel prints in `/proc/meminfo` |
+| `pages` | memory pages, of `instance_metadata.page_size_bytes` each |
+| `sectors` | the 512-byte sectors of `/proc/diskstats` |
+| `seconds`, `milliseconds`, `microseconds`, `nanoseconds` | time |
+| `jiffies` | scheduler ticks, of `instance_metadata.clock_ticks_per_sec` per second |
+| `hertz` | clock frequency |
+| `megabits_per_second` | negotiated link speed |
+| `percent`, `celsius` | declared, not yet used by an OS section |
+
+`TypeContract` is compile-time data and never reaches a segment, so a unit
+costs nothing on disk and changes no `type_id`.
 
 ## Coverage against atop and the reference tools
 

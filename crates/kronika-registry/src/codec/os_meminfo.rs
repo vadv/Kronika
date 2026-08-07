@@ -17,119 +17,119 @@ pub struct OsMeminfo {
     /// Collection timestamp, unix microseconds.
     #[column(t)]
     pub ts: Ts,
-    /// Total usable RAM, KiB.
-    #[column(g)]
+    /// Total usable RAM.
+    #[column(g, unit = kib)]
     pub mem_total: i64,
-    /// Free (completely unused) RAM, KiB.
-    #[column(g)]
+    /// Free (completely unused) RAM.
+    #[column(g, unit = kib)]
     pub mem_free: Option<i64>,
-    /// Estimate of available RAM for new allocations, KiB.
-    #[column(g)]
+    /// Estimate of available RAM for new allocations.
+    #[column(g, unit = kib)]
     pub mem_available: Option<i64>,
-    /// In-memory block device cache (buffers), KiB.
-    #[column(g)]
+    /// In-memory block device cache (buffers).
+    #[column(g, unit = kib)]
     pub buffers: Option<i64>,
-    /// Page cache (excluding `SwapCached`), KiB.
-    #[column(g)]
+    /// Page cache (excluding `SwapCached`).
+    #[column(g, unit = kib)]
     pub cached: Option<i64>,
-    /// Total swap space, KiB.
-    #[column(g)]
+    /// Total swap space.
+    #[column(g, unit = kib)]
     pub swap_total: Option<i64>,
-    /// Unused swap space, KiB.
-    #[column(g)]
+    /// Unused swap space.
+    #[column(g, unit = kib)]
     pub swap_free: Option<i64>,
-    /// Active (recently used) memory, KiB.
-    #[column(g)]
+    /// Active (recently used) memory.
+    #[column(g, unit = kib)]
     pub active: Option<i64>,
-    /// Inactive (candidate for reclaim) memory, KiB.
-    #[column(g)]
+    /// Inactive (candidate for reclaim) memory.
+    #[column(g, unit = kib)]
     pub inactive: Option<i64>,
-    /// Dirty pages waiting to be written back, KiB.
-    #[column(g)]
+    /// Dirty pages waiting to be written back.
+    #[column(g, unit = kib)]
     pub dirty: Option<i64>,
-    /// Pages currently being written back, KiB.
-    #[column(g)]
+    /// Pages currently being written back.
+    #[column(g, unit = kib)]
     pub writeback: Option<i64>,
-    /// Total slab memory (reclaimable + unreclaimable), KiB.
-    #[column(g)]
+    /// Total slab memory (reclaimable + unreclaimable).
+    #[column(g, unit = kib)]
     pub slab: Option<i64>,
-    /// Slab memory reclaimable under pressure, KiB.
-    #[column(g)]
+    /// Slab memory reclaimable under pressure.
+    #[column(g, unit = kib)]
     pub s_reclaimable: Option<i64>,
-    /// Slab memory not reclaimable, KiB.
-    #[column(g)]
+    /// Slab memory not reclaimable.
+    #[column(g, unit = kib)]
     pub s_unreclaim: Option<i64>,
-    /// Non-file-backed pages mapped into page tables, KiB.
-    #[column(g)]
+    /// Non-file-backed pages mapped into page tables.
+    #[column(g, unit = kib)]
     pub anon_pages: Option<i64>,
-    /// Files mapped into memory, KiB.
-    #[column(g)]
+    /// Files mapped into memory.
+    #[column(g, unit = kib)]
     pub mapped: Option<i64>,
-    /// Memory used by shared memory (`tmpfs`), KiB.
-    #[column(g)]
+    /// Memory used by shared memory (`tmpfs`).
+    #[column(g, unit = kib)]
     pub shmem: Option<i64>,
-    /// Memory used by page tables, KiB.
-    #[column(g)]
+    /// Memory used by page tables.
+    #[column(g, unit = kib)]
     pub page_tables: Option<i64>,
-    /// Upper limit of committed virtual memory, KiB.
-    #[column(g)]
+    /// Upper limit of committed virtual memory.
+    #[column(g, unit = kib)]
     pub commit_limit: Option<i64>,
-    /// Total committed virtual memory, KiB.
-    #[column(g)]
+    /// Total committed virtual memory.
+    #[column(g, unit = kib)]
     pub committed_as: Option<i64>,
     /// Total huge pages in the pool.
-    #[column(g)]
+    #[column(g, unit = pages)]
     pub huge_pages_total: Option<i64>,
     /// Free huge pages in the pool.
-    #[column(g)]
+    #[column(g, unit = pages)]
     pub huge_pages_free: Option<i64>,
-    /// Size of one huge page, KiB.
-    #[column(g)]
+    /// Size of one huge page.
+    #[column(g, unit = kib)]
     pub hugepagesize: Option<i64>,
-    /// Swap pages also held in RAM, KiB.
-    #[column(g)]
+    /// Swap pages also held in RAM.
+    #[column(g, unit = kib)]
     pub swap_cached: Option<i64>,
-    /// Unevictable pages, KiB.
-    #[column(g)]
+    /// Unevictable pages.
+    #[column(g, unit = kib)]
     pub unevictable: Option<i64>,
-    /// Pages locked into RAM by `mlock`, KiB.
-    #[column(g)]
+    /// Pages locked into RAM by `mlock`.
+    #[column(g, unit = kib)]
     pub mlocked: Option<i64>,
-    /// Anonymous transparent huge pages, KiB.
-    #[column(g)]
+    /// Anonymous transparent huge pages.
+    #[column(g, unit = kib)]
     pub anon_huge_pages: Option<i64>,
-    /// Shared memory backed by huge pages, KiB.
-    #[column(g)]
+    /// Shared memory backed by huge pages.
+    #[column(g, unit = kib)]
     pub shmem_huge_pages: Option<i64>,
-    /// Kernel stacks, KiB.
-    #[column(g)]
+    /// Kernel stacks.
+    #[column(g, unit = kib)]
     pub kernel_stack: Option<i64>,
-    /// Per-CPU allocator memory, KiB.
-    #[column(g)]
+    /// Per-CPU allocator memory.
+    #[column(g, unit = kib)]
     pub percpu: Option<i64>,
-    /// Block-device bounce buffers, KiB.
-    #[column(g)]
+    /// Block-device bounce buffers.
+    #[column(g, unit = kib)]
     pub bounce: Option<i64>,
-    /// NFS pages written to the server but not yet committed, KiB.
-    #[column(g)]
+    /// NFS pages written to the server but not yet committed.
+    #[column(g, unit = kib)]
     pub nfs_unstable: Option<i64>,
-    /// Writeback pages held on FUSE temporary storage, KiB.
-    #[column(g)]
+    /// Writeback pages held on FUSE temporary storage.
+    #[column(g, unit = kib)]
     pub writeback_tmp: Option<i64>,
     /// Huge pages reserved but not yet allocated.
-    #[column(g)]
+    #[column(g, unit = pages)]
     pub huge_pages_rsvd: Option<i64>,
     /// Huge pages above the configured pool size.
-    #[column(g)]
+    #[column(g, unit = pages)]
     pub huge_pages_surp: Option<i64>,
-    /// Compressed swap pool footprint, KiB.
-    #[column(g)]
+    /// Compressed swap pool footprint.
+    #[column(g, unit = kib)]
     pub zswap: Option<i64>,
-    /// Original size of the pages held in the compressed swap pool, KiB.
-    #[column(g)]
+    /// Original size of the pages held in the compressed swap pool.
+    #[column(g, unit = kib)]
     pub zswapped: Option<i64>,
-    /// Used vmalloc area, KiB.
-    #[column(g)]
+    /// Used vmalloc area.
+    #[column(g, unit = kib)]
     pub vmalloc_used: Option<i64>,
     /// Source scope (`0=host`). See `kronika_source_os::OsScope`.
     #[column(l)]

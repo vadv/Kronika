@@ -10,8 +10,8 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema};
 use kronika_format::{DictLimits, EntrySnapshot, Placement, SegmentDicts};
 use kronika_registry::{
-    CodecError, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, MAX_SECTION_BYTES, MAX_SECTION_ROWS,
-    SEALED_DATA_PAGE_BYTES, SealedPlainColumnSize, sealed_plain_body_bound,
+    CodecError, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, FINAL_DATA_PAGE_BYTES,
+    FinalPlainColumnSize, MAX_SECTION_BYTES, MAX_SECTION_ROWS, final_plain_body_bound,
 };
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_writer::ArrowWriterOptions;
@@ -30,13 +30,13 @@ static DICT_WRITER_PROPS: LazyLock<WriterProperties> = LazyLock::new(|| {
         .build()
 });
 
-/// Final sealed-dictionary properties. Journal windows retain their cheap
-/// append profile; normalization uses this profile exactly once at seal.
-static SEALED_DICT_WRITER_PROPS: LazyLock<WriterProperties> = LazyLock::new(|| {
+/// Final finished-dictionary properties. Journal windows retain their cheap
+/// append profile; normalization uses this profile exactly once at write.
+static FINAL_DICT_WRITER_PROPS: LazyLock<WriterProperties> = LazyLock::new(|| {
     WriterProperties::builder()
         .set_writer_version(WriterVersion::PARQUET_1_0)
         .set_compression(Compression::ZSTD(
-            ZstdLevel::try_new(kronika_registry::SEALED_ZSTD_LEVEL).expect("zstd level 6 is valid"),
+            ZstdLevel::try_new(kronika_registry::FINAL_ZSTD_LEVEL).expect("zstd level 6 is valid"),
         ))
         .set_max_row_group_size(MAX_SECTION_ROWS)
         .set_data_page_size_limit(1024 * 1024)
@@ -68,12 +68,12 @@ pub fn encode(window: &SegmentDicts) -> Result<Vec<DictSection>, CodecError> {
     encode_entries_with_properties(window.entries(), &DICT_WRITER_PROPS)
 }
 
-/// Encode one normalized segment dictionary with the sealed ZMS profile.
+/// Encode one normalized segment dictionary with the finished segment profile.
 #[allow(
     single_use_lifetimes,
     reason = "the named lifetime is required in this impl-Trait associated item on Rust 1.96"
 )]
-pub(crate) fn encode_sealed_entries<'a>(
+pub(crate) fn encode_final_entries<'a>(
     entries: impl IntoIterator<Item = EntrySnapshot<'a>>,
 ) -> Result<Vec<DictSection>, CodecError> {
     let entries = entries.into_iter().collect::<Vec<_>>();
@@ -106,23 +106,23 @@ pub(crate) fn encode_sealed_entries<'a>(
         }
     }
     if string_rows != 0 {
-        sealed_dictionary_body_bound(Placement::Strings, string_rows, string_bytes, 0)?;
+        final_dictionary_body_bound(Placement::Strings, string_rows, string_bytes, 0)?;
     }
     if blob_rows != 0 {
-        sealed_dictionary_body_bound(Placement::Blobs, blob_rows, blob_bytes, truncated_blobs)?;
+        final_dictionary_body_bound(Placement::Blobs, blob_rows, blob_bytes, truncated_blobs)?;
     }
-    encode_entries_with_properties(entries, &SEALED_DICT_WRITER_PROPS)
+    encode_entries_with_properties(entries, &FINAL_DICT_WRITER_PROPS)
 }
 
-/// Proves that every value the limits admit can also be sealed.
+/// Proves that every value the limits admit can also be finished.
 ///
 /// # Errors
 ///
 /// Returns [`CodecError::PlainPageTooLarge`] when `truncate_limit` admits a
-/// single stored value that cannot fit the sealed one-page budget.
-pub fn validate_dict_limits_for_seal(limits: DictLimits) -> Result<(), CodecError> {
-    sealed_dictionary_body_bound(Placement::Strings, 1, limits.truncate_limit(), 0)?;
-    sealed_dictionary_body_bound(Placement::Blobs, 1, limits.truncate_limit(), 1).map(drop)
+/// single stored value that cannot fit the finished one-page budget.
+pub fn validate_dict_limits_for_write(limits: DictLimits) -> Result<(), CodecError> {
+    final_dictionary_body_bound(Placement::Strings, 1, limits.truncate_limit(), 0)?;
+    final_dictionary_body_bound(Placement::Blobs, 1, limits.truncate_limit(), 1).map(drop)
 }
 
 /// Prove one normalized dictionary body's PLAIN page and encoded-size bounds.
@@ -132,7 +132,7 @@ pub fn validate_dict_limits_for_seal(limits: DictLimits) -> Result<(), CodecErro
 /// Returns [`CodecError`] when row arithmetic overflows, one physical value
 /// stream cannot remain below the 1 MiB page target, or the conservative body
 /// bound crosses 8 MiB.
-pub fn sealed_dictionary_body_bound(
+pub fn final_dictionary_body_bound(
     placement: Placement,
     rows: usize,
     stored_bytes: usize,
@@ -145,7 +145,7 @@ pub fn sealed_dictionary_body_bound(
     let too_large = |name| CodecError::PlainPageTooLarge {
         name,
         len: usize::MAX,
-        max: SEALED_DATA_PAGE_BYTES - 1,
+        max: FINAL_DATA_PAGE_BYTES - 1,
     };
     let ids = rows.checked_mul(8).ok_or_else(|| too_large("str_id"))?;
     let binary = rows
@@ -153,8 +153,8 @@ pub fn sealed_dictionary_body_bound(
         .and_then(|offsets| offsets.checked_add(stored_bytes))
         .ok_or_else(|| too_large("stored_bytes"))?;
     let mut columns = vec![
-        SealedPlainColumnSize::new("str_id", ids, 0),
-        SealedPlainColumnSize::new(
+        FinalPlainColumnSize::new("str_id", ids, 0),
+        FinalPlainColumnSize::new(
             if placement == Placement::Strings {
                 "bytes"
             } else {
@@ -177,12 +177,12 @@ pub fn sealed_dictionary_body_bound(
                 max: MAX_SECTION_BYTES,
             })?;
         columns.extend([
-            SealedPlainColumnSize::new("full_len", full_len, 0),
-            SealedPlainColumnSize::new("truncated", rows, 0),
-            SealedPlainColumnSize::new("full_sha256", sha, sha_levels),
+            FinalPlainColumnSize::new("full_len", full_len, 0),
+            FinalPlainColumnSize::new("truncated", rows, 0),
+            FinalPlainColumnSize::new("full_sha256", sha, sha_levels),
         ]);
     }
-    sealed_plain_body_bound(columns)
+    final_plain_body_bound(columns)
 }
 
 #[allow(
@@ -321,13 +321,13 @@ mod tests {
     use crate::Interner;
 
     #[test]
-    fn seal_compatible_limits_are_validated_at_configuration() {
-        use super::validate_dict_limits_for_seal;
+    fn write_compatible_limits_are_validated_at_configuration() {
+        use super::validate_dict_limits_for_write;
 
-        validate_dict_limits_for_seal(DictLimits::new(4096, 64 * 1024).expect("collector limits"))
-            .expect("collector limits fit the sealed page budget");
-        let oversized = DictLimits::new(4096, 1024 * 1024).expect("valid but unsealable limits");
-        assert!(validate_dict_limits_for_seal(oversized).is_err());
+        validate_dict_limits_for_write(DictLimits::new(4096, 64 * 1024).expect("collector limits"))
+            .expect("collector limits fit the final page budget");
+        let oversized = DictLimits::new(4096, 1024 * 1024).expect("valid but unwritable limits");
+        assert!(validate_dict_limits_for_write(oversized).is_err());
     }
 
     #[test]

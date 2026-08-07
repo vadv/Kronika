@@ -4,12 +4,12 @@ use super::{LogLevel, field, parse_log_level_value, push_log_value, render_log_l
 fn a_line_starts_with_the_binary_and_level() {
     let line = render_log_line(
         LogLevel::Info,
-        "segment_sealed",
+        "segment_written",
         &[field("bytes", 4_096_u64)],
     );
     assert_eq!(
         line,
-        "kronika-collector level=info action=segment_sealed bytes=4096"
+        "kronika-collector level=info action=segment_written bytes=4096"
     );
 }
 

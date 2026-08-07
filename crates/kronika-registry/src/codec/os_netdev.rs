@@ -20,56 +20,56 @@ pub struct OsNetdev {
     #[column(l)]
     pub iface: StrId,
     /// Bytes received.
-    #[column(c)]
+    #[column(c, unit = bytes)]
     pub rx_bytes: i64,
     /// Packets received.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub rx_packets: i64,
     /// Receive errors.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub rx_errs: i64,
     /// Receive drops.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub rx_drop: i64,
     /// Receive FIFO errors.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub rx_fifo: i64,
     /// Receive frame errors.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub rx_frame: i64,
     /// Compressed packets received.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub rx_compressed: i64,
     /// Multicast frames received.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub rx_multicast: i64,
     /// Bytes transmitted.
-    #[column(c)]
+    #[column(c, unit = bytes)]
     pub tx_bytes: i64,
     /// Packets transmitted.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub tx_packets: i64,
     /// Transmit errors.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub tx_errs: i64,
     /// Transmit drops.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub tx_drop: i64,
     /// Transmit FIFO errors.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub tx_fifo: i64,
     /// Collisions.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub tx_colls: i64,
     /// Carrier losses.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub tx_carrier: i64,
     /// Compressed packets transmitted.
-    #[column(c)]
+    #[column(c, unit = count)]
     pub tx_compressed: i64,
     /// Negotiated link speed in Mbit/s from sysfs; `None` for a virtual or
     /// down interface where the kernel reports none.
-    #[column(g)]
+    #[column(g, unit = count)]
     pub speed_mbit: Option<i64>,
     /// `0` unknown, `1` half, `2` full, from sysfs `duplex`.
     #[column(l)]

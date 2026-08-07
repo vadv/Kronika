@@ -32,6 +32,7 @@ use cucumber::World as _;
 struct BddWorld {
     env: Vec<(&'static str, String)>,
     fixture: Option<tempfile::TempDir>,
+    prepared_root: Option<tempfile::TempDir>,
     run: Option<Run>,
 }
 

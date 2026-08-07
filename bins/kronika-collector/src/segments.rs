@@ -3,31 +3,20 @@ use crate::logging::{
     LogLevel, duration_ms, field, log_event, log_flush_summary, log_journal_append, summary_rows,
 };
 use anyhow::{Context, Result};
-use kronika_format::{
-    Catalog, Crc32c, EntrySnapshot, FORMAT_VERSION, MAGIC, Placement, StrId, TAIL_INDEX_LEN,
-    TailIndex, validate_catalog_layout,
-};
-use kronika_layout::{
-    FileKind, JournalRotationOutcome, LayoutError, LayoutLimits, PendingRootKind, QuarantineReason,
-    SegmentAddress, SegmentId, WriterOwner,
-};
+use kronika_format::{EntrySnapshot, Placement, StrId};
+use kronika_layout::{FileKind, LayoutError, SegmentAddress, SegmentId, WriterOwner};
 use kronika_registry::{
-    CodecError, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, MAX_SECTION_ROWS, sealed_data_body_bound,
+    CodecError, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, MAX_SECTION_ROWS, final_data_body_bound,
 };
 use kronika_writer::{
-    FlushSummary, FlushedPart, Interner, Journal, JournalConfig, JournalError, JournalRecovery,
-    SectionBuffers, dict, seal,
+    FlushSummary, FlushedPart, Interner, Journal, JournalConfig, JournalError, SectionBuffers,
+    dict, write_segment,
 };
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
-use std::fs::File;
-use std::os::unix::fs::FileExt as _;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-
-const MAX_CATALOG_BYTES: u64 = 64 * 1024 * 1024;
-const ZMS_CRC_CHUNK_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AdmissionDictionaryValue {
@@ -140,7 +129,7 @@ impl fmt::Display for AdmissionError {
                 max,
             } => write!(
                 f,
-                "window would grow {resource} to {projected}, above the sealed ZMS limit of {max}"
+                "window would grow {resource} to {projected}, above the finished segment limit of {max}"
             ),
             Self::DictionaryConflict { str_id } => {
                 write!(f, "dictionary id {str_id} maps to conflicting values")
@@ -149,9 +138,12 @@ impl fmt::Display for AdmissionError {
                 write!(f, "dictionary id {str_id} occurs in both strings and blobs")
             }
             Self::ArithmeticOverflow { resource } => {
-                write!(f, "{resource} overflow while checking sealed ZMS admission")
+                write!(
+                    f,
+                    "{resource} overflow while checking finished segment admission"
+                )
             }
-            Self::Codec(err) => write!(f, "sealed ZMS admission: {err}"),
+            Self::Codec(err) => write!(f, "finished segment admission: {err}"),
         }
     }
 }
@@ -266,7 +258,7 @@ impl SegmentAdmission {
                 .ok_or(AdmissionError::ArithmeticOverflow {
                     resource: "ListI32 child values",
                 })?;
-            sealed_data_body_bound(type_id, rows, list_i32_child_values)?;
+            final_data_body_bound(type_id, rows, list_i32_child_values)?;
         }
         Ok(())
     }
@@ -317,7 +309,7 @@ impl SegmentAdmission {
                         .ok_or(AdmissionError::ArithmeticOverflow {
                             resource: "dictionary bytes",
                         })?;
-                    dict::sealed_dictionary_body_bound(
+                    dict::final_dictionary_body_bound(
                         Placement::Strings,
                         string_rows,
                         string_stored_bytes,
@@ -351,7 +343,7 @@ impl SegmentAdmission {
                         .ok_or(AdmissionError::ArithmeticOverflow {
                             resource: "dictionary bytes",
                         })?;
-                    dict::sealed_dictionary_body_bound(
+                    dict::final_dictionary_body_bound(
                         Placement::Blobs,
                         blob_rows,
                         blob_stored_bytes,
@@ -390,7 +382,7 @@ impl SegmentAdmission {
     }
 }
 
-/// The open (not yet sealed) segment: its file name comes from the first
+/// The open (not yet finished) segment: its file name comes from the first
 /// window's timestamp, its age from the moment that window was appended.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct SegmentState {
@@ -440,12 +432,12 @@ impl SegmentState {
     }
 }
 
-/// Why the open segment must seal now, or `None` to keep collecting.
+/// Why the open segment must write now, or `None` to keep collecting.
 ///
-/// Forced ticks seal immediately, `max_bytes = 0` selects one segment per
+/// Forced ticks write immediately, `max_bytes = 0` selects one segment per
 /// collection window, and otherwise the raw journal size or segment age closes
 /// the segment.
-pub(crate) const fn seal_reason(
+pub(crate) const fn close_reason(
     forced: bool,
     journal_bytes: usize,
     max_bytes: u64,
@@ -479,18 +471,18 @@ pub(crate) fn encode_window(
     Ok(flushed)
 }
 
-/// Seal the open segment into its first window's canonical UTC path and reset
+/// Write the open segment into its first window's canonical UTC path and reset
 /// the journal.
-pub(crate) fn seal_open_segment(
+pub(crate) fn close_open_segment(
     journal: &mut Journal,
     owner: &WriterOwner,
     segment: &mut SegmentState,
     reason: &'static str,
 ) -> Result<PathBuf> {
-    seal_open_segment_with_reset(journal, owner, segment, reason, Journal::reset)
+    close_open_segment_with_reset(journal, owner, segment, reason, Journal::reset)
 }
 
-pub(crate) fn seal_open_segment_with_reset<F>(
+pub(crate) fn close_open_segment_with_reset<F>(
     journal: &mut Journal,
     owner: &WriterOwner,
     segment: &mut SegmentState,
@@ -502,16 +494,16 @@ where
 {
     let segment_id = segment
         .first_id
-        .context("sealing an open segment requires an appended window")?;
+        .context("writing an open segment requires an appended window")?;
     let address = SegmentAddress::new(segment_id).context("derive the segment UTC address")?;
     let dest = owner.root().diagnostic_file_path(address, FileKind::Zms);
     let journal_bytes = journal.bytes();
     let journal_parts = journal.parts().len();
     let started = Instant::now();
-    let summary = seal(journal, owner, address).context("seal the segment")?;
+    let summary = write_segment(journal, owner, address).context("write the segment")?;
     log_event(
         LogLevel::Info,
-        "segment_seal_finish",
+        "segment_write_finish",
         &[
             field("segment_path", dest.display()),
             field("segment_id", segment_id.get()),
@@ -525,124 +517,19 @@ where
             field("elapsed_ms", duration_ms(started.elapsed())),
         ],
     );
-    // Leave active.wal intact if seal() fails.
+    // Leave active.wal intact if write_segment() fails.
     segment.published_pending_reset = true;
-    reset(journal).context("reset the journal after seal")?;
+    reset(journal).context("reset the journal after the segment write")?;
     *segment = SegmentState::default();
     Ok(dest)
 }
 
-/// Fully validates canonical ZMS files and quarantines only damaged segments.
+/// Open the journal under the output directory and write out windows a
+/// previous process left behind, so a restart loses no collected data.
 ///
-/// Traversal and global resource failures remain fatal. A stable invalid ZMS
-/// is excluded without blocking valid segments or future collection.
-pub(crate) fn quarantine_invalid_segments(
-    owner: &WriterOwner,
-    limits: LayoutLimits,
-) -> Result<usize> {
-    let snapshot = owner
-        .root()
-        .scan(limits)
-        .context("scan existing segments before journal recovery")?;
-    let mut valid = 0_usize;
-    for segment in &snapshot.segments {
-        let file = owner
-            .root()
-            .open_zms(segment.address)
-            .with_context(|| format!("open existing segment {}", segment.address.id))?;
-        match validate_existing_segment(&file) {
-            Ok(()) => valid += 1,
-            Err(error) => {
-                let outcome = owner.quarantine_invalid_zms(*segment);
-                log_event(
-                    LogLevel::Error,
-                    "segment_quarantine",
-                    &[
-                        field("segment_id", segment.address.id.get()),
-                        field("reason", "invalid_zms"),
-                        field("status", format!("{:?}", outcome.status)),
-                        field("error", format!("{error:#}")),
-                    ],
-                );
-            }
-        }
-    }
-    Ok(valid)
-}
-
-fn validate_existing_segment(file: &File) -> Result<()> {
-    let file_len = file.metadata().context("stat ZMS")?.len();
-    let tail_at = file_len
-        .checked_sub(TAIL_INDEX_LEN as u64)
-        .context("ZMS is shorter than its tail index")?;
-    let mut tail_bytes = [0_u8; TAIL_INDEX_LEN];
-    file.read_exact_at(&mut tail_bytes, tail_at)
-        .context("read ZMS tail index")?;
-    let tail = TailIndex::decode(tail_bytes).context("decode ZMS tail index")?;
-    let catalog_len = u64::from(tail.catalog_len);
-    anyhow::ensure!(
-        catalog_len <= MAX_CATALOG_BYTES,
-        "ZMS catalog exceeds the {MAX_CATALOG_BYTES}-byte validation limit"
-    );
-    let catalog_at = tail_at
-        .checked_sub(catalog_len)
-        .context("ZMS catalog length exceeds the file body")?;
-    anyhow::ensure!(
-        catalog_at >= MAGIC.len() as u64,
-        "ZMS catalog overlaps the file magic"
-    );
-
-    let mut magic = [0_u8; MAGIC.len()];
-    file.read_exact_at(&mut magic, 0)
-        .context("read ZMS magic")?;
-    anyhow::ensure!(magic == MAGIC, "invalid ZMS magic");
-
-    let catalog_size = usize::try_from(catalog_len).context("ZMS catalog does not fit memory")?;
-    let mut catalog_bytes = vec![0_u8; catalog_size];
-    file.read_exact_at(&mut catalog_bytes, catalog_at)
-        .context("read ZMS catalog")?;
-    let catalog = Catalog::view(&catalog_bytes).context("decode ZMS catalog")?;
-    anyhow::ensure!(
-        catalog.format_version == FORMAT_VERSION,
-        "unsupported ZMS format version {}",
-        catalog.format_version
-    );
-    let catalog = Catalog {
-        entries: catalog.entries().collect(),
-        min_ts: catalog.min_ts,
-        max_ts: catalog.max_ts,
-        format_version: catalog.format_version,
-        window_count: catalog.window_count,
-    };
-    validate_catalog_layout(&catalog, catalog_at).context("validate ZMS section layout")?;
-
-    let mut buffer = [0_u8; ZMS_CRC_CHUNK_BYTES];
-    for entry in &catalog.entries {
-        let mut checksum = Crc32c::new();
-        let mut offset = entry.offset;
-        let mut remaining = entry.len;
-        while remaining != 0 {
-            let chunk_len = usize::try_from(remaining.min(ZMS_CRC_CHUNK_BYTES as u64))
-                .context("ZMS checksum chunk length does not fit memory")?;
-            file.read_exact_at(&mut buffer[..chunk_len], offset)
-                .with_context(|| format!("read ZMS section {}", entry.type_id))?;
-            checksum.update(&buffer[..chunk_len]);
-            offset = offset
-                .checked_add(chunk_len as u64)
-                .context("ZMS checksum offset overflow")?;
-            remaining -= chunk_len as u64;
-        }
-        anyhow::ensure!(
-            checksum.finalize() == entry.crc32c,
-            "ZMS section {} crc32c mismatch",
-            entry.type_id
-        );
-    }
-    Ok(())
-}
-
-/// Open the journal under the output directory and seal windows a previous
-/// process left behind, so a restart loses no collected data.
+/// A journal this build cannot read is moved aside and a fresh one takes its
+/// place. Collection continues; the damaged bytes stay on disk for an operator
+/// to look at.
 pub(crate) fn open_collector_journal(
     owner: &WriterOwner,
     journal_max_bytes: u64,
@@ -652,40 +539,44 @@ pub(crate) fn open_collector_journal(
             .context("KRONIKA_JOURNAL_MAX_BYTES exceeds usize")?,
         ..JournalConfig::default()
     };
-    let (mut journal, mut recovered) = match Journal::open(owner, config) {
-        Ok(journal) if journal.parts().is_empty() => (journal, None),
-        Ok(mut journal) => match seal_recovered_journal(&mut journal, owner) {
-            Ok(dest) => (journal, dest),
+    match Journal::open(owner, config) {
+        Ok(journal) if journal.parts().is_empty() => Ok((journal, None)),
+        Ok(mut journal) => match write_recovered_journal(&mut journal, owner) {
+            Ok(dest) => Ok((journal, dest)),
             Err(error) => {
                 drop(journal);
-                log_event(
-                    LogLevel::Error,
-                    "journal_recovery_seal_failure",
-                    &[field("error", format!("{error:#}"))],
-                );
-                recover_active_journal(owner, config)
-                    .context("preserve a journal whose recovery seal failed")?
+                Ok((
+                    set_aside_and_reopen(owner, config, &error.to_string())?,
+                    None,
+                ))
             }
         },
-        Err(error) if localized_journal_error(&error) => {
-            log_event(
-                LogLevel::Error,
-                "journal_recovery_open_failure",
-                &[
-                    field("reason", "localized_damage"),
-                    field("error", format!("{error}")),
-                ],
-            );
-            recover_active_journal(owner, config).context("recover the damaged active journal")?
-        }
-        Err(error) => return Err(error).context("open the journal"),
-    };
-
-    let pending_recovered = recover_pending_journals(owner, config, &mut journal)?;
-    if pending_recovered.is_some() {
-        recovered = pending_recovered;
+        Err(error) if localized_journal_error(&error) => Ok((
+            set_aside_and_reopen(owner, config, &error.to_string())?,
+            None,
+        )),
+        Err(error) => Err(error).context("open the journal"),
     }
-    Ok((journal, recovered))
+}
+
+/// Move the unreadable journal aside, log one line, and open a fresh one.
+fn set_aside_and_reopen(
+    owner: &WriterOwner,
+    config: JournalConfig,
+    reason: &str,
+) -> Result<Journal> {
+    let path = owner
+        .set_aside_damaged_journal()
+        .context("move the damaged journal aside")?;
+    log_event(
+        LogLevel::Warn,
+        "journal_damaged",
+        &[
+            field("path", path.display().to_string()),
+            field("reason", reason),
+        ],
+    );
+    Journal::open(owner, config).context("open a fresh journal")
 }
 
 const fn localized_journal_error(error: &JournalError) -> bool {
@@ -711,230 +602,12 @@ const fn localized_journal_error(error: &JournalError) -> bool {
     )
 }
 
-fn recover_active_journal(
-    owner: &WriterOwner,
-    config: JournalConfig,
-) -> Result<(Journal, Option<PathBuf>)> {
-    match owner.begin_journal_rotation() {
-        Ok(mut rotation) => {
-            Journal::prepare_rotation(&mut rotation).context("initialize fresh journal")?;
-            recover_rotation(owner, config, rotation.activate())
-        }
-        Err(rotation_error) => {
-            let source = owner
-                .root()
-                .open_active_journal()
-                .context("open retained active journal evidence")?;
-            let mut journal = create_alternate_journal(owner, config)?;
-            let recovered = match source.as_ref() {
-                Some(source) => {
-                    match recover_evidence(source, &mut journal, owner, config, "retained") {
-                        Ok(recovered) => recovered,
-                        Err(error) => {
-                            log_event(
-                                LogLevel::Error,
-                                "journal_recovery_failure",
-                                &[field("error", format!("{error:#}"))],
-                            );
-                            if !journal.parts().is_empty() {
-                                journal
-                                    .reset()
-                                    .context("reset partial retained journal recovery")?;
-                            }
-                            None
-                        }
-                    }
-                }
-                None => None,
-            };
-            log_event(
-                LogLevel::Error,
-                "journal_rotation_degraded",
-                &[
-                    field("status", "retained"),
-                    field("error", format!("{rotation_error}")),
-                ],
-            );
-            Ok((journal, recovered))
-        }
-    }
-}
-
-fn recover_rotation(
-    owner: &WriterOwner,
-    config: JournalConfig,
-    mut rotation: JournalRotationOutcome,
-) -> Result<(Journal, Option<PathBuf>)> {
-    let mut journal = Journal::open_slot(rotation.fresh, config)
-        .context("open activated fresh journal generation")?;
-    let recovered = recover_evidence(
-        rotation.evidence.file(),
-        &mut journal,
-        owner,
-        config,
-        "rotated",
-    )
-    .unwrap_or_else(|error| {
-        log_event(
-            LogLevel::Error,
-            "journal_recovery_failure",
-            &[field("error", format!("{error:#}"))],
-        );
-        None
-    });
-    if !journal.parts().is_empty() {
-        journal
-            .reset()
-            .context("reset partial journal recovery before collection")?;
-    }
-    let quarantine = owner.quarantine_evidence(
-        &mut rotation.evidence,
-        QuarantineReason::CorruptActiveJournal,
-    );
-    log_event(
-        LogLevel::Warn,
-        "journal_quarantine",
-        &[
-            field("activation", format!("{:?}", rotation.activation)),
-            field("status", format!("{:?}", quarantine.status)),
-            field("diagnostics", rotation.diagnostics.len()),
-        ],
-    );
-    Ok((journal, recovered))
-}
-
-fn create_alternate_journal(owner: &WriterOwner, config: JournalConfig) -> Result<Journal> {
-    let mut generation = owner
-        .create_journal_generation()
-        .context("create alternate journal generation")?;
-    Journal::prepare_slot(&mut generation.slot).context("initialize alternate journal")?;
-    if let Some(diagnostic) = generation.diagnostic {
-        log_event(
-            LogLevel::Warn,
-            "journal_generation_degraded",
-            &[field("diagnostic", format!("{diagnostic:?}"))],
-        );
-    }
-    Journal::open_slot(generation.slot, config).context("open alternate journal generation")
-}
-
-fn recover_evidence(
-    source: &File,
-    journal: &mut Journal,
-    owner: &WriterOwner,
-    config: JournalConfig,
-    source_kind: &'static str,
-) -> Result<Option<PathBuf>> {
-    let recovery =
-        JournalRecovery::inspect(source, config).context("inspect journal recovery evidence")?;
-    let summary = recovery.summary();
-    log_event(
-        LogLevel::Warn,
-        "journal_recovery_scan",
-        &[
-            field("source_kind", source_kind),
-            field("reason", format!("{:?}", summary.reason)),
-            field("evidence_bytes", summary.evidence_bytes),
-            field("verified_frames", summary.verified_frames),
-            field("verified_rows", summary.verified_rows),
-            field("verified_part_bytes", summary.verified_part_bytes),
-            field("discarded_bytes", summary.discarded_bytes),
-        ],
-    );
-    if summary.verified_frames == 0 {
-        return Ok(None);
-    }
-    let replay = recovery
-        .replay_into(journal)
-        .context("replay verified journal frames")?;
-    match seal_recovered_journal(journal, owner) {
-        Ok(dest) => {
-            log_event(
-                LogLevel::Info,
-                "journal_recovery_finish",
-                &[
-                    field("recovered_frames", replay.frames),
-                    field("recovered_rows", replay.rows),
-                    field("recovered_part_bytes", replay.part_bytes),
-                ],
-            );
-            Ok(dest)
-        }
-        Err(error) => {
-            log_event(
-                LogLevel::Error,
-                "journal_recovery_seal_failure",
-                &[
-                    field("recovered_frames", replay.frames),
-                    field("error", format!("{error:#}")),
-                ],
-            );
-            journal
-                .reset()
-                .context("reset an unsealable recovered journal")?;
-            Ok(None)
-        }
-    }
-}
-
-fn recover_pending_journals(
-    owner: &WriterOwner,
-    config: JournalConfig,
-    journal: &mut Journal,
-) -> Result<Option<PathBuf>> {
-    let snapshot = owner
-        .root()
-        .scan(LayoutLimits::default())
-        .context("scan pending journal recovery entries")?;
-    let mut recovered = None;
-    for pending in &snapshot.pending_root_entries {
-        let source = match owner.root().open_pending_root(pending) {
-            Ok(source) => source,
-            Err(error) => {
-                log_event(
-                    LogLevel::Warn,
-                    "journal_pending_open_failure",
-                    &[field("error", format!("{error}"))],
-                );
-                continue;
-            }
-        };
-        let source_kind = match pending.kind() {
-            PendingRootKind::Evidence => "pending_evidence",
-            PendingRootKind::JournalGeneration => "pending_generation",
-        };
-        match recover_evidence(&source, journal, owner, config, source_kind) {
-            Ok(Some(path)) => recovered = Some(path),
-            Ok(None) => {}
-            Err(error) => {
-                log_event(
-                    LogLevel::Error,
-                    "journal_pending_recovery_failure",
-                    &[field("error", format!("{error:#}"))],
-                );
-                if !journal.parts().is_empty() {
-                    journal
-                        .reset()
-                        .context("reset partial pending journal recovery")?;
-                }
-            }
-        }
-        let outcome = owner.quarantine_pending_root(pending, QuarantineReason::PendingEvidence);
-        log_event(
-            LogLevel::Warn,
-            "journal_pending_quarantine",
-            &[field("status", format!("{:?}", outcome.status))],
-        );
-    }
-    Ok(recovered)
-}
-
-/// Seal recovered windows under the exact identity persisted in journal v1.
+/// Write recovered windows under the exact identity persisted in journal v1.
 ///
 /// Parts without a data timestamp hold no rows (a dictionary needs a data
 /// section to be referenced from), so a journal made only of those is reset
 /// without producing a segment.
-fn seal_recovered_journal(journal: &mut Journal, owner: &WriterOwner) -> Result<Option<PathBuf>> {
+fn write_recovered_journal(journal: &mut Journal, owner: &WriterOwner) -> Result<Option<PathBuf>> {
     let segment_id = journal
         .segment_id()
         .context("an active journal must carry SegmentId")?;
@@ -972,10 +645,10 @@ fn seal_recovered_journal(journal: &mut Journal, owner: &WriterOwner) -> Result<
     let journal_bytes = journal.bytes();
     let journal_parts = journal.parts().len();
     let started = Instant::now();
-    let summary = seal(journal, owner, address).context("seal the recovered segment")?;
+    let summary = write_segment(journal, owner, address).context("write the recovered segment")?;
     log_event(
         LogLevel::Info,
-        "segment_seal_finish",
+        "segment_write_finish",
         &[
             field("segment_path", dest.display()),
             field("segment_id", segment_id.get()),
@@ -991,7 +664,7 @@ fn seal_recovered_journal(journal: &mut Journal, owner: &WriterOwner) -> Result<
     );
     journal
         .reset()
-        .context("reset the journal after the recovery seal")?;
+        .context("reset the journal after the recovered segment write")?;
     Ok(Some(dest))
 }
 
@@ -1001,7 +674,7 @@ fn prepare_window_admission(
     segment: &mut SegmentState,
     flushed: &FlushedPart,
     interner: &Interner,
-    sealed: &mut Vec<(PathBuf, &'static str)>,
+    finished: &mut Vec<(PathBuf, &'static str)>,
 ) -> Result<AdmissionDelta> {
     match segment.admission.assess(&flushed.summary, interner) {
         Ok(delta) => Ok(delta),
@@ -1011,7 +684,7 @@ fn prepare_window_admission(
             // inadmissible window must leave active.wal untouched.
             let fresh = SegmentAdmission::default()
                 .assess(&flushed.summary, interner)
-                .context("one collection window exceeds sealed ZMS limits")?;
+                .context("one collection window exceeds finished segment limits")?;
             log_event(
                 LogLevel::Warn,
                 "segment_admission_full",
@@ -1021,8 +694,8 @@ fn prepare_window_admission(
                     field("error", &err),
                 ],
             );
-            sealed.push((
-                seal_open_segment(journal, owner, segment, "format-limit")?,
+            finished.push((
+                close_open_segment(journal, owner, segment, "format-limit")?,
                 "format-limit",
             ));
             Ok(fresh)
@@ -1033,9 +706,9 @@ fn prepare_window_admission(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "one transaction keeps admission, journal append, early seal, and SegmentId state synchronized"
+    reason = "one transaction keeps admission, journal append, early write, and SegmentId state synchronized"
 )]
-pub(crate) fn append_window_and_maybe_seal(
+pub(crate) fn append_window_and_maybe_close(
     journal: &mut Journal,
     owner: &WriterOwner,
     config: &Config,
@@ -1046,9 +719,9 @@ pub(crate) fn append_window_and_maybe_seal(
     interner: &Interner,
 ) -> Result<Vec<(PathBuf, &'static str)>> {
     segment.ensure_append_allowed()?;
-    let mut sealed = Vec::new();
+    let mut finished = Vec::new();
     let mut admission =
-        prepare_window_admission(journal, owner, segment, flushed, interner, &mut sealed)?;
+        prepare_window_admission(journal, owner, segment, flushed, interner, &mut finished)?;
     let segment_id = match segment.first_id {
         Some(segment_id) => segment_id,
         None => SegmentId::new(ts).context("collection timestamp is outside the layout range")?,
@@ -1068,7 +741,7 @@ pub(crate) fn append_window_and_maybe_seal(
         Err(JournalError::Full { len, max }) if segment.first_id.is_some() => {
             let fresh = SegmentAdmission::default()
                 .assess(&flushed.summary, interner)
-                .context("one collection window exceeds sealed ZMS limits")?;
+                .context("one collection window exceeds finished segment limits")?;
             log_event(
                 LogLevel::Warn,
                 "journal_full",
@@ -1080,8 +753,8 @@ pub(crate) fn append_window_and_maybe_seal(
                     field("section_rows", summary_rows(&flushed.summary)),
                 ],
             );
-            sealed.push((
-                seal_open_segment(journal, owner, segment, "journal-full")?,
+            finished.push((
+                close_open_segment(journal, owner, segment, "journal-full")?,
                 "journal-full",
             ));
             admission = fresh;
@@ -1093,7 +766,7 @@ pub(crate) fn append_window_and_maybe_seal(
                         .context("collection timestamp is outside the layout range")?,
                     &flushed.body,
                 )
-                .context("append the window after an early seal")?;
+                .context("append the window after an early close")?;
             log_journal_append(
                 &flushed.summary,
                 part_ref.offset(),
@@ -1127,15 +800,15 @@ pub(crate) fn append_window_and_maybe_seal(
         .context("a successful journal append must persist SegmentId")?;
     segment.on_window_appended(active_id, now);
     let age = Duration::from_secs(config.segment_max_age_secs);
-    if let Some(reason) = seal_reason(
+    if let Some(reason) = close_reason(
         forced,
         journal.bytes(),
         config.segment_max_bytes,
         segment.age_expired(now, age),
     ) {
-        sealed.push((seal_open_segment(journal, owner, segment, reason)?, reason));
+        finished.push((close_open_segment(journal, owner, segment, reason)?, reason));
     }
-    Ok(sealed)
+    Ok(finished)
 }
 
 #[cfg(test)]
@@ -1152,7 +825,7 @@ mod admission_tests {
     };
     use kronika_registry::os_loadavg::OsLoadavg;
     use kronika_registry::{
-        CodecError, MAX_SECTION_ROWS, SEALED_DATA_PAGE_BYTES, Section, Ts, sealed_data_body_bound,
+        CodecError, FINAL_DATA_PAGE_BYTES, MAX_SECTION_ROWS, Section, Ts, final_data_body_bound,
     };
     use kronika_writer::{
         FlushSummary, FlushedPart, Interner, Journal, JournalConfig, SectionBuffers,
@@ -1164,7 +837,7 @@ mod admission_tests {
 
     use super::{
         AdmissionError, DataAdmission, SegmentAdmission, SegmentState,
-        append_window_and_maybe_seal, seal_recovered_journal,
+        append_window_and_maybe_close, write_recovered_journal,
     };
 
     fn data_summary(type_id: u32, rows: usize, list_i32_child_value_count: usize) -> FlushSummary {
@@ -1254,15 +927,15 @@ mod admission_tests {
         let mut high = MAX_SECTION_ROWS + 1;
         while low + 1 < high {
             let middle = low + (high - low) / 2;
-            if sealed_data_body_bound(type_id, middle, 0).is_ok() {
+            if final_data_body_bound(type_id, middle, 0).is_ok() {
                 low = middle;
             } else {
                 high = middle;
             }
         }
         assert!(low > 0, "the test type admits at least one row");
-        assert!(sealed_data_body_bound(type_id, low, 0).is_ok());
-        assert!(sealed_data_body_bound(type_id, low + 1, 0).is_err());
+        assert!(final_data_body_bound(type_id, low, 0).is_ok());
+        assert!(final_data_body_bound(type_id, low + 1, 0).is_err());
         low
     }
 
@@ -1314,7 +987,7 @@ mod admission_tests {
     fn dictionary_plain_budgets_are_independent_per_placement() {
         let mut admission = SegmentAdmission {
             string_rows: 1,
-            string_stored_bytes: SEALED_DATA_PAGE_BYTES - 5,
+            string_stored_bytes: FINAL_DATA_PAGE_BYTES - 5,
             ..SegmentAdmission::default()
         };
         let summary = FlushSummary {
@@ -1356,7 +1029,7 @@ mod admission_tests {
     }
 
     #[test]
-    fn format_capacity_crossing_seals_accumulated_segment_before_append() {
+    fn format_capacity_crossing_writes_accumulated_segment_before_append() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (owner, mut journal) =
             open_journal(dir.path(), JournalConfig::default().max_journal_len);
@@ -1367,7 +1040,7 @@ mod admission_tests {
         let incoming = flushed_window(200);
 
         assert!(
-            append_window_and_maybe_seal(
+            append_window_and_maybe_close(
                 &mut journal,
                 &owner,
                 &config,
@@ -1388,7 +1061,7 @@ mod admission_tests {
             .expect("first row was admitted")
             .rows = max_admitted_rows(type_id);
 
-        let sealed = append_window_and_maybe_seal(
+        let finished = append_window_and_maybe_close(
             &mut journal,
             &owner,
             &config,
@@ -1398,11 +1071,11 @@ mod admission_tests {
             &incoming,
             &interner,
         )
-        .expect("capacity crossing seals and retries");
+        .expect("capacity crossing writes and retries");
 
-        assert_eq!(sealed.len(), 1);
-        assert_eq!(sealed[0].1, "format-limit");
-        let old = fs::read(&sealed[0].0).expect("read sealed old segment");
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].1, "format-limit");
+        let old = fs::read(&finished[0].0).expect("read finished old segment");
         let old_catalog = validate_part(&old).expect("old segment is canonical");
         assert_eq!(old_catalog.entries.len(), 1);
         assert_eq!(old_catalog.entries[0].rows, 1);
@@ -1433,7 +1106,7 @@ mod admission_tests {
         let interner = empty_interner();
         let mut segment = SegmentState::default();
         let first = flushed_window(100);
-        append_window_and_maybe_seal(
+        append_window_and_maybe_close(
             &mut journal,
             &owner,
             &config,
@@ -1450,7 +1123,7 @@ mod admission_tests {
         oversized.summary.sections[0].rows =
             u32::try_from(MAX_SECTION_ROWS + 1).expect("row count fits u32");
 
-        let err = append_window_and_maybe_seal(
+        let err = append_window_and_maybe_close(
             &mut journal,
             &owner,
             &config,
@@ -1461,7 +1134,9 @@ mod admission_tests {
             &interner,
         )
         .expect_err("one oversized window is rejected");
-        assert!(format!("{err:#}").contains("one collection window exceeds sealed ZMS limits"));
+        assert!(
+            format!("{err:#}").contains("one collection window exceeds finished segment limits")
+        );
         assert_eq!(fs::read(&path).expect("read active.wal"), bytes_before);
         assert_eq!(segment, state_before);
         assert_eq!(journal.parts().len(), 1);
@@ -1477,7 +1152,7 @@ mod admission_tests {
         let first = flushed_window(100);
         let incoming = flushed_window(200);
         let (owner, mut journal) = open_journal(dir.path(), one_part_journal_cap(first.body.len()));
-        append_window_and_maybe_seal(
+        append_window_and_maybe_close(
             &mut journal,
             &owner,
             &config,
@@ -1489,7 +1164,7 @@ mod admission_tests {
         )
         .expect("the first frame is exempt from the journal cap");
 
-        let sealed = append_window_and_maybe_seal(
+        let finished = append_window_and_maybe_close(
             &mut journal,
             &owner,
             &config,
@@ -1499,10 +1174,10 @@ mod admission_tests {
             &incoming,
             &interner,
         )
-        .expect("full journal seals and retries");
+        .expect("full journal writes and retries");
 
-        assert_eq!(sealed.len(), 1);
-        assert_eq!(sealed[0].1, "journal-full");
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].1, "journal-full");
         assert_eq!(journal.parts().len(), 1);
         assert_eq!(segment.first_ts(), Some(200));
         assert_eq!(segment.admission.descriptors, 1);
@@ -1526,7 +1201,7 @@ mod admission_tests {
         let mut segment = SegmentState::default();
         let first = flushed_window(100);
         let (owner, mut journal) = open_journal(dir.path(), one_part_journal_cap(first.body.len()));
-        append_window_and_maybe_seal(
+        append_window_and_maybe_close(
             &mut journal,
             &owner,
             &config,
@@ -1544,7 +1219,7 @@ mod admission_tests {
             summary: flushed_window(200).summary,
         };
 
-        append_window_and_maybe_seal(
+        append_window_and_maybe_close(
             &mut journal,
             &owner,
             &config,
@@ -1554,7 +1229,7 @@ mod admission_tests {
             &invalid,
             &interner,
         )
-        .expect_err("invalid incoming part is rejected before a full-journal seal");
+        .expect_err("invalid incoming part is rejected before a full-journal write");
 
         assert_eq!(fs::read(&path).expect("read active.wal"), bytes_before);
         assert_eq!(segment, state_before);
@@ -1585,7 +1260,7 @@ mod admission_tests {
             .expect("append structurally valid part");
         let bytes_before = fs::read(&path).expect("snapshot active.wal");
 
-        let err = seal_recovered_journal(&mut journal, &owner)
+        let err = write_recovered_journal(&mut journal, &owner)
             .expect_err("populated sentinel-timestamp part is not empty");
 
         assert!(format!("{err:#}").contains("active.wal is preserved"));
