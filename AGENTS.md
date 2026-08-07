@@ -16,20 +16,21 @@ invent a rule and proceed.
 These come out of `DESIGN.md` and get violated most often. Check them on every
 change.
 
-1. **Memory has a bound.** Every new code path needs an answer to: what is the
-   peak memory, and what enforces the bound? A config limit, a format constant,
-   or the size of an input the caller already holds are bounds. "Usually small"
-   is not. The collector shares a host with a production database.
+1. **The collector holds a collection in memory, and says what it cost.** On an
+   ordinary host that is under 20 MB, and every segment write logs `rss_kib`, so
+   the number is on record rather than guessed at. There are no per-source row
+   caps: a host with thirty thousand processes yields thirty thousand rows, and
+   if that does not fit, the collector dies and the operator can see why. Logs
+   are the exception — a log file can be gigabytes, so it is read through a
+   fixed buffer and never held whole.
 2. **A metric's fields change, its id changes.** No optional columns added to
    keep an id stable.
-3. **The collector fits in 20 MB.** Peak RSS above that is a defect, whatever
-   it bought.
-4. **The collector never guesses its environment.** VM or container is decided
+3. **The collector never guesses its environment.** VM or container is decided
    at collection time and recorded in the `instance_metadata` section of every
    segment.
-5. **A missing metric stays missing.** The collector logs the failure, web
+4. **A missing metric stays missing.** The collector logs the failure, web
    shows `null`. One warning line and a `null` are the whole treatment.
-6. **No layer that reasons about the data's own trustworthiness.** Read
+5. **No layer that reasons about the data's own trustworthiness.** Read
    "What Kronika does not build" in `DESIGN.md` before proposing anything that
    detects resets, counts coverage, or accounts for missing intervals. The
    banned words are listed in `DESIGN.md`, and so is the machinery they name.

@@ -33,8 +33,12 @@ Concrete consequences:
   must not wake the heavy paths.
 - The collector shares a host with a production database. An out-of-memory kill
   there costs more than a lost segment.
-- **The collector's peak RSS stays under 20 MB.** This is a limit, not a target
-  to approach. Today a run collecting every OS section sits around 13 MB.
+- **The collector's peak RSS stays under 20 MB on an ordinary host**, and each
+  segment write logs it as `rss_kib`. A host with thirty thousand processes is
+  a host already in trouble; the collector reads all of them and is allowed to
+  die trying rather than report a fraction. Log files are the exception: their
+  size is set by someone else's software and they are read through a fixed
+  buffer.
 
 ## Storage format
 
@@ -190,5 +194,6 @@ Web:
 3. Log events.
 4. PostgreSQL metrics.
 5. ClickHouse, CockroachDB, MySQL.
+6. A dumper: what a segment's size is made of.
 
 Work the list in order. Moving a step needs the owner's agreement.
