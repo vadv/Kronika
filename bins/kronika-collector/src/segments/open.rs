@@ -2,19 +2,18 @@
 
 use super::prefix::{ReadablePrefix, readable_prefix};
 use super::{
-    Context, FileKind, Instant, Journal, JournalConfig, JournalError, LayoutError, LogLevel,
-    PathBuf, Result, SegmentAddress, SegmentId, WriterOwner, duration_ms, field, log_event,
-    write_segment,
+    Context, FileKind, Instant, Journal, JournalConfig, LogLevel, PathBuf, Result, SegmentAddress,
+    SegmentId, WriterOwner, duration_ms, field, log_event, write_segment,
 };
 use kronika_format::ReadAt as _;
 
 /// Open the journal under the output directory and write out windows a
 /// previous process left behind, so a restart loses no collected data.
 ///
-/// A journal this build cannot read is read up to its first bad frame; those
-/// windows are written out, the file is moved aside, and a fresh one takes its
-/// place. Collection continues and the damaged bytes stay on disk for an
-/// operator to look at.
+/// A journal that does not open, whatever the reason, is read up to its first
+/// bad frame; those windows are written out, the file is moved aside, and a
+/// fresh one takes its place. What the operating system or the format said is
+/// logged verbatim. Collection continues and the bytes stay on disk.
 pub(crate) fn open_collector_journal(
     owner: &WriterOwner,
     journal_max_bytes: u64,
@@ -30,13 +29,10 @@ pub(crate) fn open_collector_journal(
             Ok(dest) => Ok((journal, dest)),
             Err(error) => {
                 drop(journal);
-                salvage_and_reopen(owner, config, &error.to_string())
+                salvage_and_reopen(owner, config, &format!("{error:#}"))
             }
         },
-        Err(error) if localized_journal_error(&error) => {
-            salvage_and_reopen(owner, config, &error.to_string())
-        }
-        Err(error) => Err(error).context("open the journal"),
+        Err(error) => salvage_and_reopen(owner, config, &format!("{error}")),
     }
 }
 
@@ -66,6 +62,7 @@ fn salvage_and_reopen(
         &[
             field("path", path.display().to_string()),
             field("reason", reason),
+            field("salvaged_parts", prefix.parts.len()),
         ],
     );
 
@@ -88,29 +85,6 @@ fn salvage_and_reopen(
     }
     let dest = write_recovered_journal(&mut journal, owner)?;
     Ok((journal, dest))
-}
-
-pub(super) const fn localized_journal_error(error: &JournalError) -> bool {
-    matches!(
-        error,
-        JournalError::JournalTooLarge { .. }
-            | JournalError::TooManyParts { .. }
-            | JournalError::UnsupportedJournalFormat
-            | JournalError::TornHeader { .. }
-            | JournalError::InvalidHeader(_)
-            | JournalError::BodyLengthMismatch { .. }
-            | JournalError::EmptyWithFrames { .. }
-            | JournalError::ActiveWithoutFirstFrame
-            | JournalError::DamagedBody { .. }
-            | JournalError::InvalidSegmentId(_)
-            | JournalError::InvalidPart(_)
-            | JournalError::Layout(
-                LayoutError::SymlinkNotAllowed { .. }
-                    | LayoutError::UnexpectedRootEntryType { .. }
-                    | LayoutError::UnexpectedRootEntry { .. }
-                    | LayoutError::ActiveJournalMissing
-            )
-    )
 }
 
 /// Write recovered windows under the exact identity persisted in journal v1.

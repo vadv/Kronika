@@ -87,7 +87,6 @@ impl LocalDir {
             }
             return Ok(JournalScan {
                 active: Arc::new(Vec::new()),
-                damages: Vec::new(),
                 valid_len: plan.valid_len,
                 committed_reset: false,
                 metadata_bytes: ACTIVE_ARC_ALLOCATION_BYTES,
@@ -134,9 +133,7 @@ impl LocalDir {
         {
             return Err(metadata_limit_io(self.limits.max_metadata_bytes));
         }
-        if !report.damages.is_empty()
-            || u64::try_from(report.valid_len).unwrap_or(u64::MAX) != plan.scan_len
-        {
+        if u64::try_from(report.valid_len).unwrap_or(u64::MAX) != plan.scan_len {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
@@ -233,7 +230,6 @@ impl LocalDir {
 
         Ok(JournalScan {
             active,
-            damages: Vec::new(),
             valid_len: plan.valid_len,
             committed_reset: plan.committed_reset,
             metadata_bytes: previous_active_metadata
@@ -364,7 +360,6 @@ impl LocalDir {
         Ok(LocalScan {
             finished: Arc::new(finished),
             active: journal.active,
-            damages: journal.damages,
             warnings,
             valid_len: journal.valid_len,
             committed_reset: journal.committed_reset,

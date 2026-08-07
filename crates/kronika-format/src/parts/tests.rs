@@ -216,6 +216,11 @@ fn build_part_accepts_no_sections() {
     assert!(catalog.entries.is_empty());
 }
 
+/// The journal scanner over an in-memory buffer.
+fn scan(bytes: &[u8]) -> ScanReport {
+    scan_journal_streaming_strict_from(&bytes, 0, small_limits(), 64).expect("a buffer reads")
+}
+
 #[test]
 fn a_built_part_passes_the_journal_scan() {
     let part = build_part(
@@ -229,8 +234,7 @@ fn a_built_part_passes_the_journal_scan() {
             max_ts: 2,
         },
     );
-    let report = scan_journal(&frame(&part), small_limits());
-    assert!(report.is_clean());
+    let report = scan(&frame(&part));
     assert_eq!(report.parts.len(), 1);
 }
 
@@ -241,8 +245,7 @@ fn clean_journal_scans_clean() {
     journal.extend_from_slice(&frame(&part));
     journal.extend_from_slice(&frame(&part));
 
-    let report = scan_journal(&journal, small_limits());
-    assert!(report.is_clean());
+    let report = scan(&journal);
     assert_eq!(report.parts.len(), 2);
     assert_eq!(report.valid_len, journal.len());
     for part_ref in &report.parts {
@@ -258,10 +261,8 @@ fn incomplete_final_frame_keeps_the_valid_prefix() {
     let full = frame(&part);
     journal.extend_from_slice(&full[..full.len() - 3]);
 
-    let report = scan_journal(&journal, small_limits());
+    let report = scan(&journal);
     assert_eq!(report.parts.len(), 1);
-    assert_eq!(report.damages.len(), 1);
-    assert_eq!(report.damages[0].kind, DamageKind::TornTail);
     assert_eq!(
         report.valid_len,
         frame(&part).len(),
@@ -270,127 +271,39 @@ fn incomplete_final_frame_keeps_the_valid_prefix() {
 }
 
 #[test]
-fn middle_corruption_resyncs_and_keeps_both_sides() {
+fn a_corrupt_frame_ends_the_scan_even_with_valid_frames_behind_it() {
     let part = sample_part();
     let one = frame(&part);
     let mut journal = Vec::new();
     journal.extend_from_slice(&one);
     journal.extend_from_slice(&one);
     journal.extend_from_slice(&one);
-    // Corrupt a byte inside the second frame's part body.
-    let target = one.len() + FRAME_HEADER_LEN + 5;
-    journal[target] ^= 0x01;
+    journal[one.len()] ^= 0xFF;
 
-    let report = scan_journal(&journal, small_limits());
-    assert_eq!(report.parts.len(), 2, "first and third parts survive");
-    assert_eq!(report.damages.len(), 1);
-    assert!(matches!(
-        report.damages[0].kind,
-        DamageKind::Middle { resumed_at } if resumed_at == 2 * one.len()
-    ));
-}
-
-#[test]
-fn corrupted_final_header_is_reported_without_truncation() {
-    let part = sample_part();
-    let one = frame(&part);
-    let mut journal = Vec::new();
-    journal.extend_from_slice(&one);
-    journal.extend_from_slice(&one);
-    // Corrupt the second frame's header magic: recovery cannot know where
-    // that frame ends, and nothing valid follows it.
-    let target = one.len();
-    journal[target] ^= 0xFF;
-
-    let report = scan_journal(&journal, small_limits());
+    let report = scan(&journal);
     assert_eq!(report.parts.len(), 1);
-    assert_eq!(report.damages.len(), 1);
-    assert_eq!(report.damages[0].kind, DamageKind::DamagedTail);
     assert_eq!(report.valid_len, one.len());
 }
 
 #[test]
-fn corrupted_final_body_with_intact_header_is_recoverable() {
+fn a_corrupt_part_body_under_an_intact_header_ends_the_scan() {
     let part = sample_part();
     let one = frame(&part);
     let mut journal = Vec::new();
     journal.extend_from_slice(&one);
     journal.extend_from_slice(&one);
-    // The header is intact and the frame ends exactly at the buffer end,
-    // but the body is invalid. Treat it like an interrupted write and
-    // keep only the valid prefix.
-    let target = one.len() + FRAME_HEADER_LEN + 5;
-    journal[target] ^= 0x01;
+    journal[one.len() + FRAME_HEADER_LEN + 5] ^= 0x01;
 
-    let report = scan_journal(&journal, small_limits());
+    let report = scan(&journal);
     assert_eq!(report.parts.len(), 1);
-    assert_eq!(report.damages.len(), 1);
-    assert_eq!(report.damages[0].kind, DamageKind::TornTail);
     assert_eq!(report.valid_len, one.len());
 }
 
 #[test]
-fn resync_prefers_the_header_implied_boundary_over_embedded_frames() {
-    // The embedded frame is legitimate section data, not a journal frame.
-    let inner = frame(&sample_part());
-    let mut tricky = Vec::new();
-    tricky.extend_from_slice(&MAGIC);
-    tricky.extend_from_slice(&inner);
-    let catalog = Catalog {
-        entries: vec![Entry {
-            type_id: 1_000_001,
-            flags: 0,
-            offset: 4,
-            len: inner.len() as u64,
-            rows: 1,
-            crc32c: crc32c(&inner),
-        }],
-        min_ts: 1,
-        max_ts: 2,
-        format_version: crate::FORMAT_VERSION,
-        window_count: 1,
-    };
-    tricky.extend_from_slice(&catalog.encode());
-
-    let plain = sample_part();
-    let mut journal = Vec::new();
-    journal.extend_from_slice(&frame(&tricky));
-    journal.extend_from_slice(&frame(&plain));
-    // Corrupt one byte of the outer catalog of the tricky part, past
-    // the embedded frame.
-    let target = FRAME_HEADER_LEN + 4 + inner.len() + 3;
-    journal[target] ^= 0x01;
-
-    let report = scan_journal(&journal, small_limits());
-    assert_eq!(report.parts.len(), 1, "only the real second part");
-    let recovered = &journal[report.parts[0].offset..report.parts[0].offset + report.parts[0].len];
-    assert_eq!(recovered, plain.as_slice());
-    assert!(matches!(
-        report.damages[0].kind,
-        DamageKind::Middle { resumed_at } if resumed_at == FRAME_HEADER_LEN + tricky.len()
-    ));
-}
-
-#[test]
-fn resync_searches_to_the_end_of_the_buffer() {
-    // A long damaged region followed by a valid frame: the search must
-    // not give up early, or later appends would be lost on reopen.
+fn oversized_length_claim_ends_the_scan() {
     let part = sample_part();
     let mut journal = frame(&part);
-    journal.extend_from_slice(&[0xAB_u8; 2048]);
-    journal.extend_from_slice(&frame(&part));
-
-    let report = scan_journal(&journal, small_limits());
-    assert_eq!(report.parts.len(), 2);
-    assert!(matches!(report.damages[0].kind, DamageKind::Middle { .. }));
-}
-
-#[test]
-fn oversized_length_claim_is_final_damage() {
-    let part = sample_part();
-    let mut journal = frame(&part);
-    // A frame claiming a part over the configured limit, with a
-    // valid CRC: damaged by definition, and nothing valid follows.
+    // A frame claiming a part over the configured limit, with a valid CRC.
     journal.extend_from_slice(
         &FrameHeader {
             part_len: small_limits().max_part_len + 1,
@@ -398,8 +311,7 @@ fn oversized_length_claim_is_final_damage() {
         .encode(),
     );
 
-    let report = scan_journal(&journal, small_limits());
+    let report = scan(&journal);
     assert_eq!(report.parts.len(), 1);
-    assert_eq!(report.damages.len(), 1);
-    assert_eq!(report.damages[0].kind, DamageKind::DamagedTail);
+    assert_eq!(report.valid_len, frame(&part).len());
 }

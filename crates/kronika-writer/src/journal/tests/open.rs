@@ -83,7 +83,7 @@ fn damaged_frame_is_rejected_and_preserved_on_open() {
 
     assert!(matches!(
         Journal::open(&owner, JournalConfig::default()),
-        Err(JournalError::DamagedBody { .. })
+        Err(JournalError::DamagedBody)
     ));
     assert_eq!(std::fs::read(path).expect("read preserved journal"), before);
 }

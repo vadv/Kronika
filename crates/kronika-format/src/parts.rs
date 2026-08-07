@@ -24,8 +24,7 @@ pub use header::{
     JournalHeader, JournalHeaderError, JournalState, ResetHeaderTransition, ResetMarker,
 };
 pub use scan::{
-    DamageKind, DamageRegion, JournalLimits, JournalScanError, PartRef, ScanReport, scan_journal,
-    scan_journal_streaming_strict_from,
+    JournalLimits, JournalScanError, PartRef, ScanReport, scan_journal_streaming_strict_from,
 };
 
 /// Magic bytes opening every journal frame.

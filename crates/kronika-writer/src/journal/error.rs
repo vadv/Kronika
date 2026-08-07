@@ -1,9 +1,6 @@
 //! What can go wrong while appending to or opening the journal.
 
-use super::{
-    DamageRegion, Error, JournalHeaderError, JournalScanError, LayoutError, PartError, SegmentId,
-    fmt,
-};
+use super::{Error, JournalHeaderError, JournalScanError, LayoutError, PartError, SegmentId, fmt};
 
 /// Error returned by a journal operation.
 #[derive(Debug)]
@@ -75,10 +72,7 @@ pub enum JournalError {
     /// An active header has no complete first frame.
     ActiveWithoutFirstFrame,
     /// A version-1 body contains torn or damaged frame bytes.
-    DamagedBody {
-        /// Damage reported by the bounded frame scanner.
-        damages: Vec<DamageRegion>,
-    },
+    DamagedBody,
     /// The stored raw identity cannot be represented by the calendar layout.
     InvalidSegmentId(LayoutError),
     /// An append attempted to mix two segment identities.
@@ -182,11 +176,7 @@ impl fmt::Display for JournalError {
             Self::ActiveWithoutFirstFrame => {
                 f.write_str("active active.wal has no complete first frame")
             }
-            Self::DamagedBody { damages } => write!(
-                f,
-                "active.wal contains {} damaged frame region(s)",
-                damages.len()
-            ),
+            Self::DamagedBody => f.write_str("active.wal contains torn or damaged frames"),
             Self::InvalidSegmentId(error) => {
                 write!(f, "active.wal stores an invalid segment id: {error}")
             }

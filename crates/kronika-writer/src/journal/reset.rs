@@ -77,7 +77,6 @@ pub(super) fn recover_committed_reset(
     )
     .map_err(map_scan_error)?;
     if scan.parts.is_empty()
-        || !scan.damages.is_empty()
         || u64::try_from(scan.valid_len).unwrap_or(u64::MAX) != marker.previous_len
     {
         return Ok(false);

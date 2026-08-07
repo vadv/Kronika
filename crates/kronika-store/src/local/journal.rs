@@ -297,7 +297,6 @@ pub(super) fn empty_journal_scan(metadata_limit: usize) -> io::Result<JournalSca
     }
     Ok(JournalScan {
         active: Arc::new(Vec::new()),
-        damages: Vec::new(),
         valid_len: 0,
         committed_reset: false,
         metadata_bytes: ACTIVE_ARC_ALLOCATION_BYTES,

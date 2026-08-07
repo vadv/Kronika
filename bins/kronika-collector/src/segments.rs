@@ -4,7 +4,7 @@ use crate::logging::{
 };
 use anyhow::{Context, Result};
 use kronika_format::{EntrySnapshot, Placement, StrId};
-use kronika_layout::{FileKind, LayoutError, SegmentAddress, SegmentId, WriterOwner};
+use kronika_layout::{FileKind, SegmentAddress, SegmentId, WriterOwner};
 use kronika_registry::{
     CodecError, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, MAX_SECTION_ROWS, final_data_body_bound,
 };

@@ -70,12 +70,12 @@ fn sample_part() -> Vec<u8> {
     )
 }
 #[test]
-fn streaming_matches_buffer_on_clean_journal() {
+fn a_clean_journal_reads_to_its_end() {
     let p = sample_part();
     let buf = framed(&[&p, &p]);
-    let want = scan_journal(&buf, JournalLimits::default());
-    let got = scan_streaming(&buf, 0).unwrap();
-    assert_eq!(got, want);
+    let report = scan_streaming(&buf, 0).unwrap();
+    assert_eq!(report.parts.len(), 2);
+    assert_eq!(report.valid_len, buf.len());
 }
 
 #[test]
@@ -88,17 +88,18 @@ fn bounded_streaming_scan_stops_before_exceeding_the_part_limit() {
     ));
 }
 #[test]
-fn streaming_matches_buffer_on_torn_tail() {
+fn a_frame_header_without_its_body_ends_the_scan() {
     let p = sample_part();
     let mut buf = framed(&[&p]);
+    let first_frame_len = buf.len();
     buf.extend_from_slice(&FrameHeader { part_len: 999 }.encode()); // header for absent body
-    let want = scan_journal(&buf, JournalLimits::default());
-    let got = scan_streaming(&buf, 0).unwrap();
-    assert_eq!(got, want);
+    let report = scan_streaming(&buf, 0).unwrap();
+    assert_eq!(report.parts.len(), 1);
+    assert_eq!(report.valid_len, first_frame_len);
 }
 
 #[test]
-fn strict_streaming_stops_at_middle_corruption_without_resyncing() {
+fn corruption_between_two_valid_frames_ends_the_scan() {
     let p = sample_part();
     let mut buf = framed(&[&p]);
     let first_frame_len = buf.len();
@@ -107,13 +108,6 @@ fn strict_streaming_stops_at_middle_corruption_without_resyncing() {
     let report = scan_streaming(&buf, 0).unwrap();
     assert_eq!(report.parts.len(), 1);
     assert_eq!(report.valid_len, first_frame_len);
-    assert_eq!(
-        report.damages,
-        vec![DamageRegion {
-            from: first_frame_len,
-            kind: DamageKind::DamagedTail,
-        }]
-    );
 }
 
 #[test]
@@ -138,7 +132,6 @@ fn streaming_from_valid_len_scans_only_the_tail() {
         buf.len(),
         "valid_len spans the whole file"
     );
-    assert!(report.is_clean());
 }
 
 #[test]
@@ -149,7 +142,6 @@ fn streaming_from_end_of_journal_is_empty() {
     let buf = framed(&[&p, &p]);
     let report = scan_streaming(&buf, buf.len() as u64).unwrap();
     assert!(report.parts.is_empty(), "no parts past the end");
-    assert!(report.damages.is_empty(), "no damage past the end");
     assert_eq!(
         report.valid_len,
         buf.len(),

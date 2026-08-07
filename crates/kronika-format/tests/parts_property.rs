@@ -5,8 +5,8 @@
 //! damaged region.
 
 use kronika_format::{
-    Catalog, DamageKind, Entry, FORMAT_VERSION, FrameHeader, JournalLimits, MAGIC, crc32c,
-    scan_journal,
+    Catalog, Entry, FORMAT_VERSION, FrameHeader, JournalLimits, MAGIC, crc32c,
+    scan_journal_streaming_strict_from,
 };
 use proptest::prelude::*;
 
@@ -76,12 +76,16 @@ fn journal_strategy() -> impl Strategy<Value = (Vec<u8>, Vec<usize>)> {
     })
 }
 
+/// The journal scanner over an in-memory buffer.
+fn scan(bytes: &[u8]) -> kronika_format::ScanReport {
+    scan_journal_streaming_strict_from(&bytes, 0, limits(), 1024).expect("a buffer reads")
+}
+
 proptest! {
-    /// A clean journal yields every part and no damaged regions.
+    /// A clean journal yields every part and reads to its end.
     #[test]
     fn clean_journal_round_trips((journal, boundaries) in journal_strategy()) {
-        let report = scan_journal(&journal, limits());
-        prop_assert!(report.is_clean());
+        let report = scan(&journal);
         prop_assert_eq!(report.parts.len(), boundaries.len());
         prop_assert_eq!(report.valid_len, journal.len());
     }
@@ -93,25 +97,19 @@ proptest! {
         cut in any::<proptest::sample::Index>(),
     ) {
         let cut = cut.index(journal.len());
-        let report = scan_journal(&journal[..cut], limits());
+        let report = scan(&journal[..cut]);
 
         let full_frames_before = boundaries.iter().filter(|&&b| b <= cut).count();
         prop_assert_eq!(report.parts.len(), full_frames_before);
-
-        let cut_is_a_boundary = cut == 0 || boundaries.contains(&cut);
-        if cut_is_a_boundary {
-            prop_assert!(report.is_clean());
-        } else {
-            prop_assert_eq!(report.damages.len(), 1);
-            prop_assert_eq!(report.damages[0].kind, DamageKind::TornTail);
-        }
+        prop_assert_eq!(
+            report.valid_len,
+            boundaries.iter().filter(|&&b| b <= cut).copied().last().unwrap_or(0)
+        );
     }
 
-    /// Flipping one byte either keeps all parts visible or reports damage.
-    ///
-    /// Parts before the corrupted byte must still be recovered.
+    /// Flipping one byte never hides a frame that precedes it.
     #[test]
-    fn single_byte_corruption_is_reported(
+    fn single_byte_corruption_keeps_the_prefix(
         (journal, boundaries) in journal_strategy(),
         position in any::<proptest::sample::Index>(),
         flip in 1_u8..=255,
@@ -120,21 +118,10 @@ proptest! {
         let mut corrupted = journal;
         corrupted[position] ^= flip;
 
-        let report = scan_journal(&corrupted, limits());
+        let report = scan(&corrupted);
 
-        if report.parts.len() < boundaries.len() {
-            prop_assert!(
-                !report.damages.is_empty(),
-                "a part disappeared without reported damage"
-            );
-        }
-
-        // Frames strictly before the corrupted byte are intact and must
-        // all be recovered regardless of what happens after.
         let intact_before = boundaries.iter().filter(|&&b| b <= position).count();
         prop_assert!(report.parts.len() >= intact_before);
-
-        // A single flipped byte damages at most one frame.
-        prop_assert!(report.parts.len() + 1 >= boundaries.len());
+        prop_assert!(report.parts.len() <= boundaries.len());
     }
 }

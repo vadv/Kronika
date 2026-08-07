@@ -113,7 +113,6 @@ fn zero_length_active_journal_reads_as_empty() {
     let scan = LocalDir::open(dir.path()).unwrap().scan().unwrap();
     assert_eq!(scan.finished.len(), 1);
     assert!(scan.active.is_empty());
-    assert!(scan.damages.is_empty());
 }
 
 #[test]
@@ -165,7 +164,6 @@ fn committed_reset_phases_are_logically_empty_after_validating_the_old_body() {
             bytes.len() as u64,
             "the complete committed state is a valid logical reset boundary"
         );
-        assert!(scan.damages.is_empty());
     }
 }
 
@@ -316,7 +314,6 @@ fn scan_from_missing_journal_resets_to_empty() {
         "removed journal empties the live set"
     );
     assert_eq!(scan.valid_len, 0, "valid_len resets to zero");
-    assert!(scan.damages.is_empty());
 }
 
 #[test]

@@ -94,12 +94,8 @@ impl Journal {
                     config.max_parts,
                 )
                 .map_err(map_scan_error)?;
-                if !scan.damages.is_empty()
-                    || u64::try_from(scan.valid_len).unwrap_or(u64::MAX) != file_len
-                {
-                    return Err(JournalError::DamagedBody {
-                        damages: scan.damages,
-                    });
+                if u64::try_from(scan.valid_len).unwrap_or(u64::MAX) != file_len {
+                    return Err(JournalError::DamagedBody);
                 }
                 if scan.parts.is_empty() {
                     return Err(JournalError::ActiveWithoutFirstFrame);

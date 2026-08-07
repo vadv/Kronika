@@ -201,13 +201,6 @@ pub(super) fn scan_report_metadata_bytes(report: &ScanReport) -> io::Result<usiz
         .parts
         .capacity()
         .checked_mul(size_of::<PartRef>())
-        .and_then(|parts| {
-            report
-                .damages
-                .capacity()
-                .checked_mul(size_of::<kronika_format::DamageRegion>())
-                .and_then(|damages| parts.checked_add(damages))
-        })
         .ok_or_else(metadata_size_overflow)
 }
 

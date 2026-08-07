@@ -14,9 +14,9 @@ use std::os::unix::fs::FileExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use kronika_format::{
-    DamageRegion, FRAME_HEADER_LEN, FrameHeader, JOURNAL_HEADER_LEN, JournalHeader,
-    JournalHeaderError, JournalLimits, JournalScanError, JournalState, MAX_JOURNAL_LEN,
-    MAX_JOURNAL_PARTS, MAX_PART_LEN, PartError, PartRef, RESET_MARKER_LEN, ResetMarker,
+    FRAME_HEADER_LEN, FrameHeader, JOURNAL_HEADER_LEN, JournalHeader, JournalHeaderError,
+    JournalLimits, JournalScanError, JournalState, MAX_JOURNAL_LEN, MAX_JOURNAL_PARTS,
+    MAX_PART_LEN, PartError, PartRef, RESET_MARKER_LEN, ResetMarker,
     scan_journal_streaming_strict_from, validate_part,
 };
 use kronika_layout::{LayoutError, SegmentId, WriterLease};

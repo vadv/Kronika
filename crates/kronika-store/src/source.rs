@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use kronika_format::{Catalog, DamageRegion, PartRef};
+use kronika_format::{Catalog, PartRef};
 use kronika_layout::{
     FileIdentity, ForeignEntryReason, LayoutError, PathIdentity, SegmentAddress, SegmentId,
 };
@@ -53,9 +53,6 @@ pub struct JournalScan {
         reason = "incremental readers must share an unchanged active baseline without copying catalogs"
     )]
     pub active: Arc<Vec<ActivePart>>,
-    /// Journal damage diagnostics. A successful strict v1 scan leaves this
-    /// empty.
-    pub damages: Vec<DamageRegion>,
     /// Byte offset of the end of the complete physical journal state.
     pub valid_len: u64,
     /// Whether the journal contains a committed reset marker.
@@ -93,9 +90,6 @@ pub struct LocalScan {
         reason = "snapshot clones and unchanged refreshes share the validated active baseline"
     )]
     pub active: Arc<Vec<ActivePart>>,
-    /// Journal damage diagnostics. A successful strict v1 scan leaves this
-    /// empty.
-    pub damages: Vec<DamageRegion>,
     /// Non-fatal scan diagnostics. A successful strict owned-tree scan leaves
     /// this empty.
     pub warnings: Vec<StoreWarning>,
