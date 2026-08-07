@@ -177,20 +177,6 @@ fn some_segment_holds_sections(world: &mut BddWorld, step: &Step) -> Result<()> 
     Ok(())
 }
 
-#[then(regex = r"^section (\d+) holds at most (\d+) rows in every segment$")]
-fn section_row_cap(world: &mut BddWorld, id: u32, cap: u32) -> Result<()> {
-    for segment in segments(world)? {
-        if let Some(rows) = segment.rows_of(id) {
-            anyhow::ensure!(
-                rows <= cap,
-                "{} holds {rows} rows of section {id}, over the cap of {cap}",
-                segment.path.display()
-            );
-        }
-    }
-    Ok(())
-}
-
 #[then("every segment records these instance facts")]
 fn instance_facts(world: &mut BddWorld, step: &Step) -> Result<()> {
     let wanted = table_rows(step, &["column", "value"])?;

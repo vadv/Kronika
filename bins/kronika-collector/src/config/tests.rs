@@ -50,16 +50,16 @@ fn the_journal_cap_must_fit_the_format() {
 #[test]
 fn a_value_that_is_not_a_number_names_itself_in_the_refusal() {
     let error =
-        super::parse_env_number::<u64>("KRONIKA_OS_MAX_PROCS", "many").expect_err("a refusal");
+        super::parse_env_number::<u64>("KRONIKA_INTERVAL_S", "often").expect_err("a refusal");
     assert_eq!(
         error.to_string(),
-        r#"KRONIKA_OS_MAX_PROCS="many" is not a whole number"#
+        r#"KRONIKA_INTERVAL_S="often" is not a whole number"#
     );
 }
 
 #[test]
 fn a_negative_count_is_not_a_whole_number() {
-    assert!(super::parse_env_number::<usize>("KRONIKA_OS_MAX_DISKS", "-1").is_err());
+    assert!(super::parse_env_number::<u64>("KRONIKA_SEGMENT_MAX_AGE_S", "-1").is_err());
 }
 
 #[test]

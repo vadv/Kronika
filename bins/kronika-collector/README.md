@@ -10,6 +10,9 @@ Every variable below is read and parsed once, before the first collection. A
 value that does not parse stops the daemon with a message naming the variable
 and what it was given; nothing falls back to a default silently.
 
+There is no per-source row cap. A source returns what the machine has, and the
+`segment_write_finish` line reports what the collection cost.
+
 `KRONIKA_OUT_DIR` is the only required variable.
 
 ### Where the data goes
@@ -39,21 +42,6 @@ fraction early leaves the interval unelapsed.
 | `KRONIKA_OS_PROCESS_STATUS_INTERVAL_S` | 30 | `1_101`. |
 | `KRONIKA_OS_CGROUP_INTERVAL_S` | 10 | `1_201`–`1_204`. |
 | `KRONIKA_OS_CGROUP_MAPPING_INTERVAL_S` | 30 | `1_200`. |
-
-### How much each source may read
-
-Every path that walks a directory has a ceiling, because the collector shares a
-host with a production database. A source that hits its ceiling logs one
-`collection_degraded` line naming the ceiling and how many rows it dropped.
-
-| Variable | Default | Meaning |
-| --- | ---: | --- |
-| `KRONIKA_OS_MAX_PROCS` | 4096 | Processes read per tick, ordered by pid. |
-| `KRONIKA_OS_MAX_CGROUPS` | 1024 | cgroup nodes read per tick. |
-| `KRONIKA_OS_MAX_CGROUP_IO_ROWS` | 4096 | `io.stat` rows across all cgroups. |
-| `KRONIKA_OS_CGROUP_MAX_DEPTH` | 8 | Depth of the cgroup tree walk below the root. |
-| `KRONIKA_OS_MAX_DISKS` | 256 | Devices kept from `/proc/diskstats`, lowest `(major, minor)` first. |
-| `KRONIKA_OS_MAX_IRQ_ROWS` | 512 | Lines kept from `/proc/interrupts`. |
 
 ### Everything else
 

@@ -11,10 +11,6 @@ pub struct CgroupCollection {
     pub io: Vec<CgroupIoRow>,
     /// PIDs rows.
     pub pids: Vec<CgroupPidsRow>,
-    /// Cgroup directories skipped because `max_cgroups` fired.
-    pub dropped_cgroups: usize,
-    /// Cgroup I/O rows skipped because `max_io_rows` fired.
-    pub dropped_io_rows: usize,
 }
 
 /// CPU metrics for one cgroup.

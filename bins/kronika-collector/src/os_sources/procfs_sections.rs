@@ -1,19 +1,16 @@
 use super::{
-    Instant, Interner, LogLevel, MountEntry, OsDiskstats, OsInterrupts, OsKernelLimits,
-    OsMountinfo, OsNetdev, OsNuma, OsSoftirq, OsSources, OsTopology, ProcFs, SysFs, Ts,
-    container_device_set, cpuinfo, diskstats, field, intern_str, interrupts, kernel_limits,
-    layout_id, log_collection_finish, log_degraded, log_event, mount_row, net_dev, net_netstat,
-    net_snmp, net_snmp6, nfs, node_id_from_dir, parse_dev_pair, parse_mountinfo,
-    parse_node_meminfo, read_optional_os_file, section_name, statvfs,
+    Instant, Interner, MountEntry, OsDiskstats, OsInterrupts, OsKernelLimits, OsMountinfo,
+    OsNetdev, OsNuma, OsSoftirq, OsSources, OsTopology, ProcFs, SysFs, Ts, container_device_set,
+    cpuinfo, diskstats, intern_str, interrupts, kernel_limits, log_collection_finish, log_degraded,
+    mount_row, net_dev, net_netstat, net_snmp, net_snmp6, nfs, node_id_from_dir, parse_dev_pair,
+    parse_mountinfo, parse_node_meminfo, read_optional_os_file, statvfs,
 };
 
 /// Read and parse `/proc/diskstats`, interning device names into rows.
 ///
 /// Inside a container the pod's real backing devices are the only ones charged
 /// to it: `/proc/diskstats` reports the whole node, so rows are filtered to the
-/// mountinfo-derived device set. Over `KRONIKA_OS_MAX_DISKS` rows the lowest
-/// `(major, minor)` devices are kept and the overflow is logged, not dropped
-/// silently.
+/// mountinfo-derived device set.
 pub(super) fn collect_diskstats(
     fs: &ProcFs,
     interner: &mut Interner,
@@ -21,7 +18,6 @@ pub(super) fn collect_diskstats(
     ts: i64,
     in_container: bool,
     mounts: &[MountEntry],
-    max_disks: usize,
 ) -> Vec<OsDiskstats> {
     let type_id = 1_108_001_u32;
     let started = Instant::now();
@@ -41,8 +37,6 @@ pub(super) fn collect_diskstats(
         rows.retain(|row| devices.contains(&(row.major, row.minor)));
     }
 
-    apply_disk_cap(&mut rows, type_id, max_disks);
-
     let built: Vec<OsDiskstats> = rows
         .iter()
         .filter_map(|row| {
@@ -52,43 +46,6 @@ pub(super) fn collect_diskstats(
         .collect();
     log_collection_finish(type_id, "procfs", built.len(), started.elapsed());
     built
-}
-
-/// Keep at most `KRONIKA_OS_MAX_DISKS` devices, ordered by `(major, minor)`.
-///
-/// When the cap trims rows, a `collection_degraded` event with `reason=disk_cap`
-/// records how many devices were dropped, so the number is visible.
-fn apply_disk_cap(rows: &mut Vec<diskstats::DiskstatsRow>, type_id: u32, cap: usize) {
-    let dropped = cap_disks(rows, cap);
-    if dropped == 0 {
-        return;
-    }
-    log_event(
-        LogLevel::Warn,
-        "collection_degraded",
-        &[
-            field("collection", section_name(type_id)),
-            field("type_id", type_id),
-            field("layout_id", layout_id(type_id)),
-            field("source", "diskstats"),
-            field("reason", "disk_cap"),
-            field("dropped", dropped),
-            field("cap", cap),
-        ],
-    );
-}
-
-/// Trim `rows` to the `cap` lowest `(major, minor)` devices in place.
-///
-/// Returns the number of devices dropped (`0` when already within the cap).
-pub(crate) fn cap_disks(rows: &mut Vec<diskstats::DiskstatsRow>, cap: usize) -> usize {
-    if rows.len() <= cap {
-        return 0;
-    }
-    rows.sort_by_key(|row| (row.major, row.minor));
-    let dropped = rows.len() - cap;
-    rows.truncate(cap);
-    dropped
 }
 
 /// Read and parse `/proc/net/dev`, interning interface names into rows.
@@ -176,10 +133,6 @@ pub(crate) fn net_link_facts(sys: &SysFs, iface: &str) -> (Option<i64>, u8) {
 }
 
 /// Read the interrupt, softirq, kernel-limit, IPv6, and NFS singletons.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "five procfs singletons share one scope and interner pass"
-)]
 pub(super) fn collect_kernel_singletons(
     fs: &ProcFs,
     interner: &mut Interner,
@@ -187,13 +140,12 @@ pub(super) fn collect_kernel_singletons(
     net_scope: u8,
     ts: i64,
     cpu_count: usize,
-    max_irq_rows: usize,
     os: &mut OsSources,
 ) {
     let irq_type_id = 1_114_001_u32;
     let started = Instant::now();
     if let Some(content) = read_optional_os_file(fs, "interrupts", irq_type_id) {
-        let parsed = interrupts::parse_interrupts(&content, cpu_count, max_irq_rows);
+        let parsed = interrupts::parse_interrupts(&content, cpu_count);
         os.interrupts = parsed
             .iter()
             .filter_map(|row| {

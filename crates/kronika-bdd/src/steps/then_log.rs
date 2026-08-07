@@ -50,27 +50,6 @@ fn degraded_collections(world: &mut BddWorld, step: &Step) -> Result<()> {
     Ok(())
 }
 
-#[then(regex = r"^the log reports (\S+) dropping rows over a cap of (\d+)$")]
-fn cap_reported(world: &mut BddWorld, collection: String, cap: u32) -> Result<()> {
-    let text = log(world)?;
-    let line = text
-        .lines()
-        .find(|line| {
-            line.contains("action=collection_degraded")
-                && line.contains(&format!("collection={collection} "))
-                && line.contains(&format!("cap={cap}"))
-        })
-        .with_context(|| format!("no line reports {collection} against cap={cap} in:\n{text}"))?;
-    let dropped: u32 = line
-        .split_whitespace()
-        .find_map(|field| field.strip_prefix("dropped="))
-        .context("the cap line names no dropped count")?
-        .parse()
-        .context("the dropped count is not a number")?;
-    anyhow::ensure!(dropped > 0, "{line} reports the cap but drops nothing");
-    Ok(())
-}
-
 #[then("the log reports the journal as damaged")]
 fn journal_damaged(world: &mut BddWorld) -> Result<()> {
     let text = log(world)?;

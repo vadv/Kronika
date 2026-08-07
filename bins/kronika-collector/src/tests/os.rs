@@ -1,18 +1,7 @@
-use crate::config::OsLimits;
-use crate::os_sources::{
-    cap_disks, collect_mountinfo, collect_os_sources, cpu_max_mhz, resolve_major_zero,
-};
+use crate::os_sources::{collect_mountinfo, collect_os_sources, cpu_max_mhz, resolve_major_zero};
 use crate::scheduler::{DueSet, SourceKind};
-use kronika_source_os::proc::diskstats;
 use kronika_source_os::{MountEntry, ProcFs, SysFs};
 use kronika_writer::Interner;
-
-fn disk_row(major: i32, minor: i32) -> diskstats::DiskstatsRow {
-    let line = format!("{major} {minor} dev{minor} 1 0 8 2 3 0 24 4 0 6 6\n");
-    diskstats::parse(&line)
-        .expect("valid diskstats line")
-        .remove(0)
-}
 
 fn mount_entry(major: i32, minor: i32, source: &str) -> MountEntry {
     MountEntry {
@@ -27,26 +16,6 @@ fn mount_entry(major: i32, minor: i32, source: &str) -> MountEntry {
         deleted: false,
         is_k8s_infra: false,
     }
-}
-
-#[test]
-fn cap_disks_keeps_lowest_devices_and_reports_drop() {
-    let mut rows = vec![disk_row(8, 5), disk_row(8, 0), disk_row(259, 0)];
-    let dropped = cap_disks(&mut rows, 2);
-    assert_eq!(dropped, 1);
-    // Kept devices are the two lowest (major, minor) pairs.
-    assert_eq!(
-        rows.iter().map(|r| (r.major, r.minor)).collect::<Vec<_>>(),
-        vec![(8, 0), (8, 5)]
-    );
-}
-
-#[test]
-fn cap_disks_is_a_noop_within_the_cap() {
-    let mut rows = vec![disk_row(8, 0), disk_row(8, 1)];
-    assert_eq!(cap_disks(&mut rows, 2), 0);
-    assert_eq!(cap_disks(&mut rows, 5), 0);
-    assert_eq!(rows.len(), 2);
 }
 
 #[test]
@@ -147,7 +116,7 @@ fn collect_os_sources_no_diskstats_on_mount_topo_only_tick() {
     let mut interner = Interner::new(kronika_format::DictLimits::default());
     let due = DueSet::for_test(vec![SourceKind::OsMountTopo]);
 
-    let os = collect_os_sources(&fs, &mut interner, 0, 0, false, &due, &OsLimits::default());
+    let os = collect_os_sources(&fs, &mut interner, 0, 0, false, &due);
 
     assert!(
         os.diskstats_empty(),

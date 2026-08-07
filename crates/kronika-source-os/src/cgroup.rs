@@ -27,25 +27,11 @@ const BLKIO_V1_DIRS: &[&str] = &["blkio", ""];
 
 /// Collect cgroup v2 or v1 rows from `KRONIKA_SYS_ROOT/fs/cgroup`.
 #[must_use]
-pub fn collect(
-    sys: &SysFs,
-    ts: i64,
-    clock_ticks_per_sec: i64,
-    max_cgroups: usize,
-    max_io_rows: usize,
-    max_depth: usize,
-) -> CgroupCollection {
+pub fn collect(sys: &SysFs, ts: i64, clock_ticks_per_sec: i64) -> CgroupCollection {
     if is_v2(sys) {
-        collect_v2(sys, ts, max_cgroups, max_io_rows, max_depth)
+        collect_v2(sys, ts)
     } else {
-        collect_v1(
-            sys,
-            ts,
-            clock_ticks_per_sec,
-            max_cgroups,
-            max_io_rows,
-            max_depth,
-        )
+        collect_v1(sys, ts, clock_ticks_per_sec)
     }
 }
 
@@ -56,18 +42,9 @@ fn is_v2(sys: &SysFs) -> bool {
         || sys.read(&rel("/", "io.stat")).is_ok()
 }
 
-fn collect_v2(
-    sys: &SysFs,
-    ts: i64,
-    max_cgroups: usize,
-    max_io_rows: usize,
-    max_depth: usize,
-) -> CgroupCollection {
-    let (paths, dropped_cgroups) = discover_v2_paths(sys, max_cgroups, max_depth);
-    let mut out = CgroupCollection {
-        dropped_cgroups,
-        ..CgroupCollection::default()
-    };
+fn collect_v2(sys: &SysFs, ts: i64) -> CgroupCollection {
+    let paths = discover_v2_paths(sys);
+    let mut out = CgroupCollection::default();
     for path in paths {
         if let Some(cpu) = read_cpu_v2(sys, ts, &path) {
             out.cpu.push(cpu);
@@ -79,30 +56,15 @@ fn collect_v2(
             out.pids.push(pids);
         }
         if let Ok(content) = sys.read(&rel(&path, "io.stat")) {
-            push_io_rows(
-                &mut out.io,
-                &mut out.dropped_io_rows,
-                max_io_rows,
-                parse_io_stat(&content, ts, &path),
-            );
+            out.io.extend(parse_io_stat(&content, ts, &path));
         }
     }
     out
 }
 
-fn collect_v1(
-    sys: &SysFs,
-    ts: i64,
-    clock_ticks_per_sec: i64,
-    max_cgroups: usize,
-    max_io_rows: usize,
-    max_depth: usize,
-) -> CgroupCollection {
-    let (paths, dropped_cgroups) = discover_v1_paths(sys, max_cgroups, max_depth);
-    let mut out = CgroupCollection {
-        dropped_cgroups,
-        ..CgroupCollection::default()
-    };
+fn collect_v1(sys: &SysFs, ts: i64, clock_ticks_per_sec: i64) -> CgroupCollection {
+    let paths = discover_v1_paths(sys);
+    let mut out = CgroupCollection::default();
     for path in paths {
         if let Some(cpu) = read_cpu_v1(sys, ts, &path, clock_ticks_per_sec) {
             out.cpu.push(cpu);
@@ -118,17 +80,12 @@ fn collect_v1(
         let ops = read_first_v1(sys, BLKIO_V1_DIRS, &path, "blkio.throttle.io_serviced")
             .or_else(|| read_first_v1(sys, BLKIO_V1_DIRS, &path, "blkio.io_serviced"));
         if bytes.is_some() || ops.is_some() {
-            push_io_rows(
-                &mut out.io,
-                &mut out.dropped_io_rows,
-                max_io_rows,
-                parse_blkio_service_stats(
-                    bytes.as_deref().unwrap_or_default(),
-                    ops.as_deref().unwrap_or_default(),
-                    ts,
-                    &path,
-                ),
-            );
+            out.io.extend(parse_blkio_service_stats(
+                bytes.as_deref().unwrap_or_default(),
+                ops.as_deref().unwrap_or_default(),
+                ts,
+                &path,
+            ));
         }
     }
     out
@@ -286,13 +243,12 @@ fn read_pids_v1(sys: &SysFs, ts: i64, path: &str) -> Option<CgroupPidsRow> {
     })
 }
 
-fn discover_v2_paths(sys: &SysFs, max_cgroups: usize, max_depth: usize) -> (Vec<String>, usize) {
-    discover_tree(sys, CGROUP_ROOT, "/", max_cgroups, max_depth)
+fn discover_v2_paths(sys: &SysFs) -> Vec<String> {
+    discover_tree(sys, CGROUP_ROOT, "/")
 }
 
-fn discover_v1_paths(sys: &SysFs, max_cgroups: usize, max_depth: usize) -> (Vec<String>, usize) {
+fn discover_v1_paths(sys: &SysFs) -> Vec<String> {
     let mut paths = BTreeSet::new();
-    let mut dropped = 0_usize;
     for controller in [
         "cpu,cpuacct",
         "cpuacct,cpu",
@@ -302,81 +258,46 @@ fn discover_v1_paths(sys: &SysFs, max_cgroups: usize, max_depth: usize) -> (Vec<
         "pids",
         "blkio",
     ] {
-        let base = format!("{CGROUP_ROOT}/{controller}");
-        let (found, local_dropped) = discover_tree(sys, &base, "/", max_cgroups, max_depth);
-        dropped = dropped.saturating_add(local_dropped);
-        for path in found {
-            if paths.len() < max_cgroups {
-                paths.insert(path);
-            } else if !paths.contains(&path) {
-                dropped = dropped.saturating_add(1);
-            }
-        }
+        // One cgroup appears under every controller mounted for it, and must
+        // still produce one row.
+        paths.extend(discover_tree(
+            sys,
+            &format!("{CGROUP_ROOT}/{controller}"),
+            "/",
+        ));
     }
     if paths.is_empty()
         && ["cpuacct.usage", "memory.usage_in_bytes", "pids.current"]
             .iter()
             .any(|file| sys.read(&format!("{CGROUP_ROOT}/{file}")).is_ok())
-        && max_cgroups > 0
     {
         paths.insert("/".to_owned());
     }
-    (paths.into_iter().collect(), dropped)
+    paths.into_iter().collect()
 }
 
-fn discover_tree(
-    sys: &SysFs,
-    base_rel: &str,
-    root_path: &str,
-    max_cgroups: usize,
-    max_depth: usize,
-) -> (Vec<String>, usize) {
+fn discover_tree(sys: &SysFs, base_rel: &str, root_path: &str) -> Vec<String> {
     let Ok(root_children) = sys.read_dir(base_rel) else {
-        return (Vec::new(), 0);
+        return Vec::new();
     };
-    if max_cgroups == 0 {
-        return (Vec::new(), 1);
-    }
 
-    let mut out = Vec::new();
-    let mut dropped = 0_usize;
-    out.push(normalize_path(root_path, ""));
-
-    let mut queue = VecDeque::new();
-    if max_depth > 0 {
-        for child in root_children.into_iter().filter(|entry| entry.is_dir) {
-            queue.push_back((child.name, 1_usize));
-        }
-    }
-    while let Some((relative, depth)) = queue.pop_front() {
-        let path = normalize_path(root_path, &relative);
-        if out.len() < max_cgroups {
-            out.push(path);
-        } else {
-            dropped = dropped.saturating_add(1);
-            continue;
-        }
-        if depth >= max_depth {
-            continue;
-        }
-        let rel = if relative.is_empty() {
-            base_rel.to_owned()
-        } else {
-            format!("{base_rel}/{relative}")
-        };
+    let mut out = vec![normalize_path(root_path, "")];
+    let mut queue: VecDeque<String> = root_children
+        .into_iter()
+        .filter(|entry| entry.is_dir)
+        .map(|entry| entry.name)
+        .collect();
+    while let Some(relative) = queue.pop_front() {
+        out.push(normalize_path(root_path, &relative));
+        let rel = format!("{base_rel}/{relative}");
         let Ok(children) = sys.read_dir(&rel) else {
             continue;
         };
         for child in children.into_iter().filter(|entry| entry.is_dir) {
-            let child_rel = if relative.is_empty() {
-                child.name
-            } else {
-                format!("{relative}/{}", child.name)
-            };
-            queue.push_back((child_rel, depth + 1));
+            queue.push_back(format!("{relative}/{}", child.name));
         }
     }
-    (out, dropped)
+    out
 }
 
 fn normalize_path(root_path: &str, relative: &str) -> String {
@@ -412,21 +333,6 @@ fn read_first_v1(sys: &SysFs, dirs: &[&str], path: &str, file: &str) -> Option<S
         }
     }
     None
-}
-
-fn push_io_rows(
-    rows: &mut Vec<CgroupIoRow>,
-    dropped: &mut usize,
-    max_rows: usize,
-    incoming: Vec<CgroupIoRow>,
-) {
-    for row in incoming {
-        if rows.len() < max_rows {
-            rows.push(row);
-        } else {
-            *dropped = dropped.saturating_add(1);
-        }
-    }
 }
 
 #[cfg(test)]

@@ -60,13 +60,9 @@ sets it per source; the intervals and their defaults are listed in the
 
 ## Bounds
 
-Every path that walks a directory has a ceiling, because the collector shares
-a host with a production database. A single procfs read is capped at 4 MiB by
-a format constant; the row and depth ceilings are configurable and listed with
-their defaults in the [collector README](../../bins/kronika-collector/README.md).
-
-A source that hits its cap logs one warning line naming the cap and how many
-rows it dropped.
+A single procfs read is capped at 4 MiB by a format constant. There is no row
+cap on a source: a host with thirty thousand processes produces thirty thousand
+rows, and what that cost is reported by the `segment_write_finish` line.
 
 ## Units
 

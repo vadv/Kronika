@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn collect_v2_reads_controller_files_and_applies_io_cap() {
+fn collect_v2_reads_every_controller_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path().join("fs/cgroup");
     let workload = root.join("workload");
@@ -36,13 +36,11 @@ fn collect_v2_reads_controller_files_and_applies_io_cap() {
     .expect("write io.stat");
 
     let sys = SysFs::new(dir.path().to_path_buf());
-    let rows = collect(&sys, 99, 100, 10, 1, 3);
+    let rows = collect(&sys, 99, 100);
 
-    assert_eq!(rows.dropped_cgroups, 0);
-    assert_eq!(rows.dropped_io_rows, 1);
     assert_eq!(rows.cpu.len(), 1);
     assert_eq!(rows.memory.len(), 1);
-    assert_eq!(rows.io.len(), 1);
+    assert_eq!(rows.io.len(), 2);
     assert_eq!(rows.pids.len(), 1);
 
     let cpu = &rows.cpu[0];
@@ -77,7 +75,7 @@ fn collect_v2_reads_controller_files_and_applies_io_cap() {
 }
 
 #[test]
-fn collect_v1_reads_controller_files_and_applies_io_cap() {
+fn collect_v1_reads_every_controller_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path().join("fs/cgroup");
     let cpu = root.join("cpu,cpuacct/workload");
@@ -121,14 +119,12 @@ fn collect_v1_reads_controller_files_and_applies_io_cap() {
     .expect("write blkio ops");
 
     let sys = SysFs::new(dir.path().to_path_buf());
-    let rows = collect(&sys, 123, 100, 10, 1, 3);
+    let rows = collect(&sys, 123, 100);
 
-    assert_eq!(rows.dropped_cgroups, 0);
-    assert_eq!(rows.dropped_io_rows, 1);
     assert_eq!(rows.cpu.len(), 1);
     assert_eq!(rows.memory.len(), 1);
     assert_eq!(rows.pids.len(), 1);
-    assert_eq!(rows.io.len(), 1);
+    assert_eq!(rows.io.len(), 2);
 
     let cpu = &rows.cpu[0];
     assert_eq!(cpu.cgroup_path, "/workload");

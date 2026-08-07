@@ -19,7 +19,7 @@ const SOFTIRQS: &str = "\
 
 #[test]
 fn sums_per_cpu_counts_and_keeps_the_device_text() {
-    let rows = parse_interrupts(INTERRUPTS, 2, 64);
+    let rows = parse_interrupts(INTERRUPTS, 2);
     assert_eq!(rows.len(), 5);
     assert_eq!(rows[0].irq, "0");
     assert_eq!(rows[0].count, 31);
@@ -33,7 +33,7 @@ fn sums_per_cpu_counts_and_keeps_the_device_text() {
 
 #[test]
 fn a_synthetic_line_keeps_its_description_and_a_bare_one_has_none() {
-    let rows = parse_interrupts(INTERRUPTS, 2, 64);
+    let rows = parse_interrupts(INTERRUPTS, 2);
     let nmi = rows.iter().find(|row| row.irq == "NMI").expect("NMI line");
     assert_eq!(nmi.count, 15);
     assert_eq!(nmi.device.as_deref(), Some("Non-maskable interrupts"));
@@ -43,21 +43,14 @@ fn a_synthetic_line_keeps_its_description_and_a_bare_one_has_none() {
 }
 
 #[test]
-fn row_cap_truncates_rather_than_growing_without_bound() {
-    let rows = parse_interrupts(INTERRUPTS, 2, 2);
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[1].irq, "9");
-}
-
-#[test]
 fn a_line_without_counters_is_skipped() {
-    let rows = parse_interrupts("  CPU0\nMIS: not-a-number\n", 1, 64);
+    let rows = parse_interrupts("  CPU0\nMIS: not-a-number\n", 1);
     assert!(rows.is_empty());
 }
 
 #[test]
 fn the_header_line_is_never_a_row() {
-    let rows = parse_interrupts("           CPU0       CPU1\n", 2, 64);
+    let rows = parse_interrupts("           CPU0       CPU1\n", 2);
     assert!(rows.is_empty());
 }
 

@@ -1,7 +1,7 @@
 use super::{
-    DueSet, Instant, Interner, OsCgroupMapping, OsLimits, OsSources, ProcFs, ProcessError,
-    SourceKind, Ts, intern_str, log_cap_degraded, log_collection_finish, log_count_degraded,
-    log_degraded, process_facts, read_process,
+    DueSet, Instant, Interner, OsCgroupMapping, OsSources, ProcFs, ProcessError, SourceKind, Ts,
+    intern_str, log_collection_finish, log_count_degraded, log_degraded, process_facts,
+    read_process,
 };
 
 #[allow(
@@ -14,7 +14,6 @@ pub(super) fn collect_process_sections(
     scope: u8,
     ts: i64,
     due: &DueSet,
-    limits: &OsLimits,
     os: &mut OsSources,
 ) {
     let hot_due = due.has(SourceKind::OsProcesses);
@@ -42,9 +41,8 @@ pub(super) fn collect_process_sections(
             return;
         }
     };
-    let max_procs = limits.max_procs;
-    let capped = match fs.pid_dirs_capped(max_procs) {
-        Ok(capped) => capped,
+    let pids = match fs.pid_dirs() {
+        Ok(pids) => pids,
         Err(err) => {
             for type_id in [hot_type_id, status_type_id, mapping_type_id] {
                 if (type_id == hot_type_id && hot_due)
@@ -57,22 +55,10 @@ pub(super) fn collect_process_sections(
             return;
         }
     };
-    let dropped = capped.dropped;
-    if dropped > 0 {
-        for type_id in [hot_type_id, status_type_id, mapping_type_id] {
-            if (type_id == hot_type_id && hot_due)
-                || (type_id == status_type_id && status_due)
-                || (type_id == mapping_type_id && mapping_due)
-            {
-                log_cap_degraded(type_id, "process", "process_cap", dropped, max_procs);
-            }
-        }
-    }
-
     let mut skipped = 0_usize;
     let mut io_nulls = 0_usize;
     let mut mapping_nulls = 0_usize;
-    for pid in capped.pids {
+    for pid in pids {
         let read = match read_process(fs, pid, facts, ts) {
             Ok(read) => read,
             Err(ProcessError::Gone(_)) => continue,

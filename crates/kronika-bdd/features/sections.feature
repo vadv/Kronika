@@ -46,16 +46,3 @@ Feature: Which sections reach the segment, and how many rows they may hold
     And every segment holds these sections
       | type_id | section      | min rows |
       | 3001001 | dict.strings | 1        |
-
-  Scenario: A row cap trims the section and the log says how much it dropped
-    Given a collector with these settings
-      | variable                             | value |
-      | KRONIKA_INTERVAL_S                   | 1     |
-      | KRONIKA_SEGMENT_MAX_BYTES            | 0     |
-      | KRONIKA_OS_PROCESS_INTERVAL_S        | 0     |
-      | KRONIKA_OS_PROCESS_STATUS_INTERVAL_S | 0     |
-      | KRONIKA_OS_MAX_PROCS                 | 2     |
-    When it runs for 3 seconds
-    Then section 1100001 holds at most 2 rows in every segment
-    And section 1101001 holds at most 2 rows in every segment
-    And the log reports os_process dropping rows over a cap of 2

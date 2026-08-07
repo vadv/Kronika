@@ -21,16 +21,10 @@ pub struct InterruptRow {
 /// matters when chasing IRQ affinity. Lines whose counters do not parse are
 /// skipped: the file mixes numeric IRQs with architecture-specific rows whose
 /// shape varies by kernel, and one odd row must not lose the rest.
-///
-/// `max_rows` bounds the result. The file has one line per IRQ, which grows
-/// with device and queue count, so the caller sets the ceiling.
 #[must_use]
-pub fn parse_interrupts(content: &str, cpu_count: usize, max_rows: usize) -> Vec<InterruptRow> {
+pub fn parse_interrupts(content: &str, cpu_count: usize) -> Vec<InterruptRow> {
     let mut rows = Vec::new();
     for line in content.lines().skip(1) {
-        if rows.len() >= max_rows {
-            break;
-        }
         let Some((name, rest)) = line.split_once(':') else {
             continue;
         };

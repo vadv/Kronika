@@ -3,7 +3,6 @@
 //!
 //! Also provides [`statvfs`] for filesystem capacity queries.
 
-use std::collections::BinaryHeap;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 
@@ -14,15 +13,6 @@ pub struct FsSpace {
     pub total_bytes: i64,
     /// Available bytes for unprivileged writes (`f_bavail * f_frsize`).
     pub free_bytes: i64,
-}
-
-/// Bounded list of numeric `/proc` directories.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CappedPids {
-    /// PID numbers retained by the cap, sorted ascending.
-    pub pids: Vec<i32>,
-    /// Numeric PID directories skipped because the cap was reached.
-    pub dropped: usize,
 }
 
 /// One child directory under a configured filesystem root.
@@ -162,13 +152,12 @@ impl ProcFs {
         Ok(content)
     }
 
-    /// Return the lowest numeric `/proc` directory names, bounded by `max`.
+    /// Every numeric `/proc` directory name, sorted ascending.
     ///
     /// # Errors
     /// Returns the underlying `read_dir` error for the proc root.
-    pub fn pid_dirs_capped(&self, max: usize) -> io::Result<CappedPids> {
-        let mut kept = BinaryHeap::new();
-        let mut dropped = 0_usize;
+    pub fn pid_dirs(&self) -> io::Result<Vec<i32>> {
+        let mut pids = Vec::new();
         for entry in std::fs::read_dir(&self.root)? {
             let Ok(entry) = entry else {
                 continue;
@@ -176,29 +165,17 @@ impl ProcFs {
             if !entry.file_type().is_ok_and(|ft| ft.is_dir()) {
                 continue;
             }
-            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse().ok())
+            else {
                 continue;
             };
-            let Ok(pid) = name.parse::<i32>() else {
-                continue;
-            };
-            if max == 0 {
-                dropped = dropped.saturating_add(1);
-                continue;
-            }
-            if kept.len() < max {
-                kept.push(pid);
-            } else if kept.peek().is_some_and(|highest| pid < *highest) {
-                kept.pop();
-                kept.push(pid);
-                dropped = dropped.saturating_add(1);
-            } else {
-                dropped = dropped.saturating_add(1);
-            }
+            pids.push(pid);
         }
-        let mut pids = kept.into_vec();
         pids.sort_unstable();
-        Ok(CappedPids { pids, dropped })
+        Ok(pids)
     }
 }
 

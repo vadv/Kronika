@@ -1,5 +1,4 @@
 use crate::buffering::buffer_row;
-use crate::config::OsLimits;
 use crate::logging::{
     LogLevel, field, layout_id, log_collection_finish, log_count_degraded, log_event, section_name,
 };
@@ -59,9 +58,7 @@ mod singletons;
 pub(crate) use buffering::push_os_sources;
 pub(crate) use procfs_sections::collect_mountinfo;
 #[cfg(test)]
-pub(crate) use procfs_sections::{
-    cap_disks, cpu_max_mhz, cpu_numa_node, net_link_facts, resolve_major_zero,
-};
+pub(crate) use procfs_sections::{cpu_max_mhz, cpu_numa_node, net_link_facts, resolve_major_zero};
 
 /// OS procfs sections collected synchronously in the read phase.
 pub(crate) struct OsSources {
@@ -184,7 +181,6 @@ pub(crate) fn collect_os_sources(
     ts: i64,
     in_container: bool,
     due: &DueSet,
-    limits: &OsLimits,
 ) -> OsSources {
     if !due.has(SourceKind::OsCore)
         && !due.has(SourceKind::OsMountTopo)
@@ -211,15 +207,8 @@ pub(crate) fn collect_os_sources(
         // Counters: disk and network. Network sections carry the pod's
         // network-namespace scope inside a container, not the host scope.
         let net_scope_id = net_scope(fs).as_u8();
-        os.diskstats = procfs_sections::collect_diskstats(
-            fs,
-            interner,
-            scope,
-            ts,
-            in_container,
-            &mounts,
-            limits.max_disks,
-        );
+        os.diskstats =
+            procfs_sections::collect_diskstats(fs, interner, scope, ts, in_container, &mounts);
         let sys = SysFs::from_env();
         os.netdev = procfs_sections::collect_netdev(fs, &sys, interner, net_scope_id, ts);
         procfs_sections::collect_net_singletons(fs, net_scope_id, ts, &mut os);
@@ -230,7 +219,6 @@ pub(crate) fn collect_os_sources(
             net_scope_id,
             ts,
             os.cpu.len().saturating_sub(1),
-            limits.max_irq_rows,
             &mut os,
         );
         os.numa = procfs_sections::collect_numa(&sys, scope, ts);
@@ -243,7 +231,7 @@ pub(crate) fn collect_os_sources(
     }
 
     let entity_scope = os_entity_scope(in_container);
-    process::collect_process_sections(fs, interner, entity_scope, ts, due, limits, &mut os);
+    process::collect_process_sections(fs, interner, entity_scope, ts, due, &mut os);
     cgroups::collect_cgroup_sections(
         &SysFs::from_env(),
         interner,
@@ -251,7 +239,6 @@ pub(crate) fn collect_os_sources(
         ts,
         fs,
         due,
-        limits,
         &mut os,
     );
 
@@ -296,28 +283,6 @@ fn log_degraded(type_id: u32, source: &'static str, reason: &dyn std::fmt::Displ
             field("layout_id", layout_id(type_id)),
             field("source", source),
             field("reason", reason),
-        ],
-    );
-}
-
-fn log_cap_degraded(
-    type_id: u32,
-    source: &'static str,
-    reason: &'static str,
-    dropped: usize,
-    cap: usize,
-) {
-    log_event(
-        LogLevel::Warn,
-        "collection_degraded",
-        &[
-            field("collection", section_name(type_id)),
-            field("type_id", type_id),
-            field("layout_id", layout_id(type_id)),
-            field("source", source),
-            field("reason", reason),
-            field("dropped", dropped),
-            field("cap", cap),
         ],
     );
 }

@@ -19,8 +19,8 @@ pub mod cgroup;
 
 mod fs;
 pub use fs::{
-    CappedPids, DirEntryName, FsSpace, MAX_PROC_FILE_BYTES, ProcFs, SysFs, parse_dev_pair,
-    space_from_raw, statvfs,
+    DirEntryName, FsSpace, MAX_PROC_FILE_BYTES, ProcFs, SysFs, parse_dev_pair, space_from_raw,
+    statvfs,
 };
 
 mod instance;
