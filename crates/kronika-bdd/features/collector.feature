@@ -35,3 +35,12 @@ Feature: What the collector writes and what it tells the operator
     Then the log reports the journal as damaged
     And the corrupt bytes are kept next to the journal
     And a segment exists under a YYYY/MM/DD directory
+
+  Scenario: Windows written before the damage still reach a segment
+    Given a collector that keeps one open segment
+    When it runs for 3 seconds
+    And its journal is cut short
+    And the collector runs again for 3 seconds
+    Then the log reports the journal as damaged
+    And a segment exists under a YYYY/MM/DD directory
+    And that segment was written from the salvaged windows

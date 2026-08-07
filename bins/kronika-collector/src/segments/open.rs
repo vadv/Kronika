@@ -1,16 +1,20 @@
 //! Opening the journal at startup and moving a damaged one aside.
 
+use super::prefix::{ReadablePrefix, readable_prefix};
 use super::{
     Context, FileKind, Instant, Journal, JournalConfig, JournalError, LayoutError, LogLevel,
-    PathBuf, Result, SegmentAddress, WriterOwner, duration_ms, field, log_event, write_segment,
+    PathBuf, Result, SegmentAddress, SegmentId, WriterOwner, duration_ms, field, log_event,
+    write_segment,
 };
+use kronika_format::ReadAt as _;
 
 /// Open the journal under the output directory and write out windows a
 /// previous process left behind, so a restart loses no collected data.
 ///
-/// A journal this build cannot read is moved aside and a fresh one takes its
-/// place. Collection continues; the damaged bytes stay on disk for an operator
-/// to look at.
+/// A journal this build cannot read is read up to its first bad frame; those
+/// windows are written out, the file is moved aside, and a fresh one takes its
+/// place. Collection continues and the damaged bytes stay on disk for an
+/// operator to look at.
 pub(crate) fn open_collector_journal(
     owner: &WriterOwner,
     journal_max_bytes: u64,
@@ -26,26 +30,33 @@ pub(crate) fn open_collector_journal(
             Ok(dest) => Ok((journal, dest)),
             Err(error) => {
                 drop(journal);
-                Ok((
-                    set_aside_and_reopen(owner, config, &error.to_string())?,
-                    None,
-                ))
+                salvage_and_reopen(owner, config, &error.to_string())
             }
         },
-        Err(error) if localized_journal_error(&error) => Ok((
-            set_aside_and_reopen(owner, config, &error.to_string())?,
-            None,
-        )),
+        Err(error) if localized_journal_error(&error) => {
+            salvage_and_reopen(owner, config, &error.to_string())
+        }
         Err(error) => Err(error).context("open the journal"),
     }
 }
 
-/// Move the unreadable journal aside, log one line, and open a fresh one.
-pub(super) fn set_aside_and_reopen(
+/// Keep the windows that read, move the rest aside, and open a fresh journal.
+///
+/// The descriptor is opened before the rename and stays valid after it, so the
+/// salvaged part bodies are copied one at a time rather than held in memory.
+fn salvage_and_reopen(
     owner: &WriterOwner,
     config: JournalConfig,
     reason: &str,
-) -> Result<Journal> {
+) -> Result<(Journal, Option<PathBuf>)> {
+    let damaged = owner
+        .root()
+        .open_active_journal()
+        .context("open the damaged journal")?;
+    let prefix = match damaged.as_ref() {
+        Some(file) => readable_prefix(file).context("read the journal's intact prefix")?,
+        None => ReadablePrefix::default(),
+    };
     let path = owner
         .set_aside_damaged_journal()
         .context("move the damaged journal aside")?;
@@ -57,7 +68,26 @@ pub(super) fn set_aside_and_reopen(
             field("reason", reason),
         ],
     );
-    Journal::open(owner, config).context("open a fresh journal")
+
+    let mut journal = Journal::open(owner, config).context("open a fresh journal")?;
+    let (Some(raw_id), Some(file)) = (prefix.segment_id, damaged.as_ref()) else {
+        return Ok((journal, None));
+    };
+    let segment_id = SegmentId::new(raw_id).context("the salvaged segment id is out of range")?;
+    let mut body = Vec::new();
+    for part in prefix.parts {
+        body.resize(part.len, 0);
+        file.read_exact_at(&mut body, part.offset as u64)
+            .context("read a salvaged part")?;
+        journal
+            .append(segment_id, &body)
+            .context("append a salvaged part")?;
+    }
+    if journal.parts().is_empty() {
+        return Ok((journal, None));
+    }
+    let dest = write_recovered_journal(&mut journal, owner)?;
+    Ok((journal, dest))
 }
 
 pub(super) const fn localized_journal_error(error: &JournalError) -> bool {

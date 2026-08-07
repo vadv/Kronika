@@ -222,3 +222,42 @@ fn log_has_no_error(world: &mut BddWorld) -> Result<()> {
     assert!(errors.is_empty(), "unexpected error lines: {errors:?}");
     Ok(())
 }
+
+#[when("its journal is cut short")]
+fn cut_the_journal_short(world: &mut BddWorld) -> Result<()> {
+    let run = world.run.take().expect("a collector was started");
+    let journal = run.out_dir().join("active.wal");
+    let len = std::fs::metadata(&journal)?.len();
+    assert!(len > 512, "the journal is too small to cut: {len} bytes");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&journal)?
+        .set_len(len - 200)?;
+    world.prepared_root = Some(run.into_root());
+    Ok(())
+}
+
+#[when(regex = r"^the collector runs again for (\d+) seconds$")]
+fn collector_runs_again(world: &mut BddWorld, seconds: u64) -> Result<()> {
+    collector_runs_for(world, seconds)
+}
+
+#[then("that segment was written from the salvaged windows")]
+fn segment_came_from_salvage(world: &mut BddWorld) -> Result<()> {
+    let log = world.run.as_ref().expect("a collector was started").log()?;
+    let line = log
+        .lines()
+        .find(|line| line.contains("segment_write_finish") && line.contains("reason=recovered"))
+        .unwrap_or("");
+    assert!(
+        !line.is_empty(),
+        "no segment was written from the journal in:\n{log}"
+    );
+    let parts = line
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("journal_parts="))
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    assert!(parts > 0, "{line} carries no salvaged window");
+    Ok(())
+}

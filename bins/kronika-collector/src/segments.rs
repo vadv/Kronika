@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 mod admission;
 mod open;
+mod prefix;
 
 use admission::{AdmissionDelta, SegmentAdmission};
 pub(crate) use open::open_collector_journal;

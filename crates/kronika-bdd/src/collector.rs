@@ -28,7 +28,7 @@ fn binary() -> Result<PathBuf> {
 /// One collector run: its data root, its log, and the process while it lives.
 #[derive(Debug)]
 pub(crate) struct Run {
-    root: tempfile::TempDir,
+    root: Option<tempfile::TempDir>,
     log_path: PathBuf,
     child: Option<Child>,
 }
@@ -62,7 +62,7 @@ impl Run {
             .spawn()
             .context("spawn the collector")?;
         Ok(Self {
-            root,
+            root: Some(root),
             log_path,
             child: Some(child),
         })
@@ -70,7 +70,11 @@ impl Run {
 
     /// The collector's data root.
     pub(crate) fn out_dir(&self) -> PathBuf {
-        self.root.path().join("segments")
+        self.root
+            .as_ref()
+            .expect("the data root outlives the run")
+            .path()
+            .join("segments")
     }
 
     /// Let the collector run, then stop it the way an operator would.
@@ -97,6 +101,12 @@ impl Run {
         }
         self.child = None;
         Ok(())
+    }
+
+    /// Hand back the data root so a scenario can restart over it.
+    pub(crate) fn into_root(mut self) -> tempfile::TempDir {
+        self.child = None;
+        self.root.take().expect("the data root outlives the run")
     }
 
     /// Everything the collector wrote to stdout and stderr.
