@@ -30,14 +30,17 @@ RUN set -eu; \
         grep -q 'proc-macro = true' "$crate/Cargo.toml" \
             || echo 'fn main() {}' > "$crate/src/main.rs"; \
     done; \
-    cargo build --workspace --locked; \
+    cargo build --workspace --locked --release; \
     rm -rf crates/*/src bins/*/src; \
     find target -name 'kronika*' -o -name 'libkronika*' | xargs -r rm -rf
 
 FROM deps AS bdd
 WORKDIR /work
 COPY . .
-RUN cargo build --locked -p kronika-collector -p kronika-bdd
-ENV KRONIKA_COLLECTOR_BIN=/work/target/x86_64-unknown-linux-gnu/debug/kronika-collector
+# Release, because one scenario holds the collector to its peak-RSS limit and
+# a debug build carries megabytes the shipped binary does not.
+RUN cargo build --locked --release -p kronika-collector -p kronika-bdd
+ENV KRONIKA_COLLECTOR_BIN=/work/target/x86_64-unknown-linux-gnu/release/kronika-collector
 ENV KRONIKA_FEATURES=/work/crates/kronika-bdd/features
-CMD ["/work/target/x86_64-unknown-linux-gnu/debug/kronika-bdd"]
+ENV KRONIKA_FIXTURES=/work/crates/kronika-bdd/fixtures
+CMD ["/work/target/x86_64-unknown-linux-gnu/release/kronika-bdd"]

@@ -1,12 +1,14 @@
 //! BDD runner for the collector.
 //!
 //! Every scenario spawns the real binary over a temporary data root and reads
-//! back the two artifacts an operator sees: the files on disk and the log
-//! lines. Nothing is mocked.
+//! back the artifacts an operator sees: the segments on disk, decoded through
+//! `kronika-format` and `kronika-registry`, and the log lines. Nothing is
+//! mocked and nothing goes through the store.
 //!
 //! The runner is meant to be executed inside the cached BDD image, where
-//! `KRONIKA_COLLECTOR_BIN` points at the compiled collector. From a checkout it
-//! falls back to the binary next to itself.
+//! `KRONIKA_COLLECTOR_BIN` points at the compiled collector and
+//! `KRONIKA_FEATURES`/`KRONIKA_FIXTURES` point at this crate's data. From a
+//! checkout it falls back to the paths beside itself.
 #![allow(
     clippy::trivial_regex,
     reason = "cucumber step phrases are literal English, matched as plain text, not real regexes"
@@ -19,18 +21,23 @@
     clippy::needless_pass_by_ref_mut,
     reason = "cucumber passes &mut World to every step by contract, even read-only ones"
 )]
+#![allow(
+    clippy::needless_pass_by_value,
+    reason = "cucumber builds a step's captured parameters by value; a borrow does not bind"
+)]
 
 mod collector;
+mod segment;
 mod steps;
 
 use collector::Run;
 use cucumber::World as _;
 
-/// One scenario's state: the environment it built up, the fixture root that
-/// backs it, and the run under test.
+/// One scenario's state: the settings it declared, the fixture and data root
+/// that back them, and the run under test.
 #[derive(Debug, Default, cucumber::World)]
 struct BddWorld {
-    env: Vec<(&'static str, String)>,
+    env: Vec<(String, String)>,
     fixture: Option<tempfile::TempDir>,
     prepared_root: Option<tempfile::TempDir>,
     run: Option<Run>,
@@ -38,7 +45,7 @@ struct BddWorld {
 
 #[tokio::main]
 async fn main() {
-    let features = std::env::var("KRONIKA_FEATURES").unwrap_or_else(|_| "features".to_owned());
+    let features = std::env::var("KRONIKA_FEATURES").unwrap_or_else(|_unset| "features".to_owned());
     BddWorld::cucumber()
         .fail_on_skipped()
         .run_and_exit(features)

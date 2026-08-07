@@ -79,10 +79,17 @@ something, and do not enumerate the ways a number can be wrong.
 BDD tests come first. Feature files describe observable behavior, and the steps
 assert it against a real artifact, not a mock.
 
+A step holds no values of its own. Settings, thresholds, caps and the lists a
+scenario expects belong in the `.feature` file, as a table or a parameter; the
+step only runs the thing and compares. Read a feature file top to bottom and
+you know what it asserts without opening a step definition.
+
+Assert on the artifact wherever there is one. A segment on disk decoded back
+through the format is worth more than the line the collector logged about
+writing it.
+
 BDD runs inside a cached Docker image so the environment is reproducible and CI
-does not rebuild the world on every run. Parsing collector log messages is the
-reference case: write the feature against the log output an operator would
-read.
+does not rebuild the world on every run.
 
 Pure functions get unit tests in the same change. Put tests in their own files
 rather than growing the module they cover.

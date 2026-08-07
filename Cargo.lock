@@ -961,6 +961,8 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "cucumber",
+ "kronika-format",
+ "kronika-registry",
  "nix",
  "tempfile",
  "tokio",

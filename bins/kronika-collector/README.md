@@ -25,7 +25,9 @@ and what it was given; nothing falls back to a default silently.
 ### How often each source is read
 
 The base tick is `KRONIKA_INTERVAL_S`; each source runs on its own multiple of
-it. A source whose interval is shorter than the tick runs once per tick.
+it. A source interval of `0` reads on every tick. An interval equal to the tick
+reads on most ticks but not reliably every one, because a wake that lands a
+fraction early leaves the interval unelapsed.
 
 | Variable | Default, s | Sections |
 | --- | ---: | --- |
