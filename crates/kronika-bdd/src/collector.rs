@@ -74,13 +74,17 @@ impl Run {
 
     /// Let the collector run, then stop it the way an operator would.
     ///
-    /// Peak RSS is sampled while the process is still alive; after the exit
-    /// `/proc/<pid>` is gone.
+    /// A collector that already refused startup is simply reaped. Peak RSS is
+    /// sampled while a process is still alive; after exit `/proc/<pid>` is gone.
     pub(crate) fn run_for_and_stop(&mut self, duration: Duration) -> Result<()> {
         std::thread::sleep(duration);
         let Some(child) = self.child.as_mut() else {
             return Ok(());
         };
+        if child.try_wait().context("reap the collector")?.is_some() {
+            self.child = None;
+            return Ok(());
+        }
         let pid = child.id();
         self.peak_rss_kib = read_peak_rss_kib(pid);
         kill(

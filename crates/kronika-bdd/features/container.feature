@@ -8,8 +8,7 @@ Feature: What the collector records about the container it runs in
     Given a collector with these settings
       | variable                    | value |
       | KRONIKA_INTERVAL_S          | 1     |
-      | KRONIKA_SEGMENT_MAX_BYTES   | 0     |
-      | KRONIKA_INSTANCE_INTERVAL_S | 0     |
+      | KRONIKA_SEGMENT_MAX_BYTES   | 1     |
     When it runs for 3 seconds
     Then every segment records these instance facts
       | column      | value |
@@ -19,7 +18,7 @@ Feature: What the collector records about the container it runs in
     Given a collector with these settings
       | variable                             | value |
       | KRONIKA_INTERVAL_S                   | 1     |
-      | KRONIKA_SEGMENT_MAX_BYTES            | 0     |
+      | KRONIKA_SEGMENT_MAX_BYTES            | 1     |
       | KRONIKA_OS_CGROUP_INTERVAL_S         | 0     |
       | KRONIKA_OS_CGROUP_MAPPING_INTERVAL_S | 0     |
     When it runs for 3 seconds
@@ -35,7 +34,7 @@ Feature: What the collector records about the container it runs in
     Given a collector with these settings
       | variable                     | value |
       | KRONIKA_INTERVAL_S           | 1     |
-      | KRONIKA_SEGMENT_MAX_BYTES    | 0     |
+      | KRONIKA_SEGMENT_MAX_BYTES    | 1     |
       | KRONIKA_OS_CGROUP_INTERVAL_S | 0     |
     When it runs for 3 seconds
     Then some segment records a cgroup CPU limit of 2 cores
@@ -44,8 +43,7 @@ Feature: What the collector records about the container it runs in
     Given a collector with these settings
       | variable                             | value |
       | KRONIKA_INTERVAL_S                   | 1     |
-      | KRONIKA_SEGMENT_MAX_BYTES            | 0     |
-      | KRONIKA_INSTANCE_INTERVAL_S          | 0     |
+      | KRONIKA_SEGMENT_MAX_BYTES            | 1     |
       | KRONIKA_OS_CORE_INTERVAL_S           | 0     |
       | KRONIKA_OS_MOUNTTOPO_INTERVAL_S      | 0     |
       | KRONIKA_OS_PROCESS_INTERVAL_S        | 0     |

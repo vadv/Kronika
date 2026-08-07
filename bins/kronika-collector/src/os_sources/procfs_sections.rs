@@ -3,7 +3,7 @@ use super::{
     OsNetdev, OsNuma, OsSoftirq, OsSources, OsTopology, ProcFs, SysFs, Ts, container_device_set,
     cpuinfo, diskstats, intern_str, interrupts, kernel_limits, log_collection_finish, log_degraded,
     mount_row, net_dev, net_netstat, net_snmp, net_snmp6, nfs, node_id_from_dir, parse_dev_pair,
-    parse_mountinfo, parse_node_meminfo, read_optional_os_file, statvfs,
+    parse_mountinfo, parse_node_meminfo, read_optional_os_file,
 };
 
 /// Read and parse `/proc/diskstats`, interning device names into rows.
@@ -315,8 +315,9 @@ pub(crate) fn resolve_major_zero(sys: &SysFs, entries: &mut [MountEntry]) {
 /// Build one `os_mountinfo` row per parsed mount entry.
 ///
 /// Mount point, fstype, and source strings are interned here. Filesystem
-/// capacity is nullable because `statvfs` can fail for pseudo-filesystems or
-/// mounts that vanish during collection.
+/// capacity is collected only for the local-filesystem allowlist. It remains
+/// nullable for skipped mounts, failed calls, and calls unfinished at the
+/// capacity pass deadline.
 pub(crate) fn collect_mountinfo(
     interner: &mut Interner,
     scope: u8,
@@ -325,12 +326,9 @@ pub(crate) fn collect_mountinfo(
 ) -> Vec<OsMountinfo> {
     let type_id = 1_112_001_u32;
     let started = Instant::now();
-    if entries.is_empty() {
-        return Vec::new();
-    }
-
+    let capacities = crate::capacity::collect(entries);
     let mut rows = Vec::new();
-    for entry in entries {
+    for (entry, space) in entries.iter().zip(capacities) {
         let (Some(mount_point), Some(fstype), Some(source)) = (
             intern_str(interner, type_id, "self/mountinfo", &entry.mount_point),
             intern_str(interner, type_id, "self/mountinfo", &entry.fstype),
@@ -338,7 +336,6 @@ pub(crate) fn collect_mountinfo(
         ) else {
             continue;
         };
-        let space = statvfs(&entry.mount_point);
         rows.push(mount_row(
             entry,
             space,

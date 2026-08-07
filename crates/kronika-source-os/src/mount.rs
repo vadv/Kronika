@@ -206,7 +206,8 @@ pub fn display_path(paths: &[String]) -> Option<&str> {
 /// capacity snapshot.
 ///
 /// The caller interns `entry.mount_point`, `entry.fstype`, and `entry.source`
-/// and passes the resulting [`StrId`]s. `space` is `None` when `statvfs` failed.
+/// and passes the resulting [`StrId`]s. `space` is `None` when capacity was
+/// skipped or unavailable.
 #[must_use]
 pub fn mount_row(
     entry: &MountEntry,

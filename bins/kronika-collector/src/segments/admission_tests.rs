@@ -8,7 +8,8 @@ use kronika_format::{
 use kronika_layout::{DataRoot, FileKind, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
 use kronika_registry::os_loadavg::OsLoadavg;
 use kronika_registry::{
-    CodecError, FINAL_DATA_PAGE_BYTES, MAX_SECTION_ROWS, Section, Ts, final_data_body_bound,
+    CodecError, DICT_STRINGS_TYPE_ID, FINAL_DATA_PAGE_BYTES, MAX_SECTION_ROWS, Section, Ts,
+    final_data_body_bound,
 };
 use kronika_writer::{
     FlushSummary, FlushedPart, Interner, Journal, JournalConfig, SectionBuffers,
@@ -18,9 +19,9 @@ use kronika_writer::{
 use crate::config::Config;
 use crate::scheduler::Intervals;
 
-use super::admission::{AdmissionError, DataAdmission, SegmentAdmission};
-use super::open::write_recovered_journal;
-use super::{SegmentState, append_window_and_maybe_close};
+use super::admission::{AdmissionError, SegmentAdmission};
+use super::open::{open_collector_journal, write_recovered_journal};
+use super::{SegmentState, append_window_and_maybe_close, close_open_segment, encode_window};
 
 fn data_summary(type_id: u32, rows: usize, list_i32_child_value_count: usize) -> FlushSummary {
     FlushSummary {
@@ -214,7 +215,6 @@ fn format_capacity_crossing_writes_accumulated_segment_before_append() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (owner, mut journal) = open_journal(dir.path(), JournalConfig::default().max_journal_len);
     let config = test_config(dir.path());
-    let interner = empty_interner();
     let mut segment = SegmentState::default();
     let first = flushed_window(100);
     let incoming = flushed_window(200);
@@ -228,7 +228,6 @@ fn format_capacity_crossing_writes_accumulated_segment_before_append() {
             100,
             false,
             &first,
-            &interner,
         )
         .expect("append first")
         .is_empty()
@@ -249,9 +248,8 @@ fn format_capacity_crossing_writes_accumulated_segment_before_append() {
         200,
         false,
         &incoming,
-        &interner,
     )
-    .expect("capacity crossing writes and retries");
+    .expect("capacity crossing writes the accumulated segment");
 
     assert_eq!(finished.len(), 1);
     assert_eq!(finished[0].1, "format-limit");
@@ -260,20 +258,12 @@ fn format_capacity_crossing_writes_accumulated_segment_before_append() {
     assert_eq!(old_catalog.entries.len(), 1);
     assert_eq!(old_catalog.entries[0].rows, 1);
     assert_eq!(old_catalog.min_ts, 100);
-    assert_eq!(journal.parts().len(), 1, "incoming window is active");
-    let current = journal
-        .read_part(journal.parts()[0])
-        .expect("read current part");
-    let current_catalog = validate_part(&current).expect("current part is valid");
-    assert_eq!(current_catalog.min_ts, 200);
-    assert_eq!(segment.first_ts(), Some(200));
-    assert_eq!(
-        segment.admission.data_by_type.get(&type_id),
-        Some(&DataAdmission {
-            rows: 1,
-            list_i32_child_values: 0,
-        })
+    assert!(
+        journal.parts().is_empty(),
+        "the next cycle opens a new segment"
     );
+    assert_eq!(segment.first_ts(), None);
+    assert_eq!(segment.admission, SegmentAdmission::default());
 }
 
 #[test]
@@ -282,7 +272,6 @@ fn intrinsically_oversized_window_preserves_active_journal_and_admission() {
     let path = dir.path().join("active.wal");
     let (owner, mut journal) = open_journal(dir.path(), JournalConfig::default().max_journal_len);
     let config = test_config(dir.path());
-    let interner = empty_interner();
     let mut segment = SegmentState::default();
     let first = flushed_window(100);
     append_window_and_maybe_close(
@@ -293,11 +282,12 @@ fn intrinsically_oversized_window_preserves_active_journal_and_admission() {
         100,
         false,
         &first,
-        &interner,
     )
     .expect("append first");
     let bytes_before = fs::read(&path).expect("snapshot active.wal");
-    let state_before = segment.clone();
+    let first_before = segment.first_ts();
+    let admission_before = segment.admission.clone();
+    let dictionary_before = segment.interner.stats();
     let mut oversized = flushed_window(200);
     oversized.summary.sections[0].rows =
         u32::try_from(MAX_SECTION_ROWS + 1).expect("row count fits u32");
@@ -310,21 +300,21 @@ fn intrinsically_oversized_window_preserves_active_journal_and_admission() {
         200,
         false,
         &oversized,
-        &interner,
     )
     .expect_err("one oversized window is rejected");
     assert!(format!("{err:#}").contains("one collection window exceeds finished segment limits"));
     assert_eq!(fs::read(&path).expect("read active.wal"), bytes_before);
-    assert_eq!(segment, state_before);
+    assert_eq!(segment.first_ts(), first_before);
+    assert_eq!(segment.admission, admission_before);
+    assert_eq!(segment.interner.stats(), dictionary_before);
     assert_eq!(journal.parts().len(), 1);
     assert!(!segment_path(&owner, 100).exists());
 }
 
 #[test]
-fn journal_full_retry_keeps_only_the_incoming_admission() {
+fn journal_full_writes_accumulated_segment_and_defers_window() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = test_config(dir.path());
-    let interner = empty_interner();
     let mut segment = SegmentState::default();
     let first = flushed_window(100);
     let incoming = flushed_window(200);
@@ -337,7 +327,6 @@ fn journal_full_retry_keeps_only_the_incoming_admission() {
         100,
         false,
         &first,
-        &interner,
     )
     .expect("the first frame is exempt from the journal cap");
 
@@ -349,24 +338,14 @@ fn journal_full_retry_keeps_only_the_incoming_admission() {
         200,
         false,
         &incoming,
-        &interner,
     )
-    .expect("full journal writes and retries");
+    .expect("full journal writes the accumulated segment");
 
     assert_eq!(finished.len(), 1);
     assert_eq!(finished[0].1, "journal-full");
-    assert_eq!(journal.parts().len(), 1);
-    assert_eq!(segment.first_ts(), Some(200));
-    assert_eq!(segment.admission.descriptors, 1);
-    assert_eq!(
-        segment
-            .admission
-            .data_by_type
-            .values()
-            .map(|data| data.rows)
-            .sum::<usize>(),
-        1
-    );
+    assert!(journal.parts().is_empty());
+    assert_eq!(segment.first_ts(), None);
+    assert_eq!(segment.admission, SegmentAdmission::default());
 }
 
 #[test]
@@ -374,7 +353,6 @@ fn invalid_part_at_journal_cap_is_transactional() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("active.wal");
     let config = test_config(dir.path());
-    let interner = empty_interner();
     let mut segment = SegmentState::default();
     let first = flushed_window(100);
     let (owner, mut journal) = open_journal(dir.path(), one_part_journal_cap(first.body.len()));
@@ -386,11 +364,12 @@ fn invalid_part_at_journal_cap_is_transactional() {
         100,
         false,
         &first,
-        &interner,
     )
     .expect("append first");
     let bytes_before = fs::read(&path).expect("snapshot active.wal");
-    let state_before = segment.clone();
+    let first_before = segment.first_ts();
+    let admission_before = segment.admission.clone();
+    let dictionary_before = segment.interner.stats();
     let invalid = FlushedPart {
         body: b"not a ZMS part".to_vec(),
         summary: flushed_window(200).summary,
@@ -404,14 +383,153 @@ fn invalid_part_at_journal_cap_is_transactional() {
         200,
         false,
         &invalid,
-        &interner,
     )
     .expect_err("invalid incoming part is rejected before a full-journal write");
 
     assert_eq!(fs::read(&path).expect("read active.wal"), bytes_before);
-    assert_eq!(segment, state_before);
+    assert_eq!(segment.first_ts(), first_before);
+    assert_eq!(segment.admission, admission_before);
+    assert_eq!(segment.interner.stats(), dictionary_before);
     assert_eq!(journal.parts().len(), 1);
     assert!(!segment_path(&owner, 100).exists());
+}
+
+#[test]
+fn persistent_interner_writes_only_new_dictionary_entries_to_each_part() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = test_config(dir.path());
+    let (owner, mut journal) = open_journal(dir.path(), JournalConfig::default().max_journal_len);
+    let mut segment = SegmentState::default();
+
+    segment
+        .interner_mut()
+        .intern(b"shared-value")
+        .expect("intern first value");
+    let mut first_buffers = SectionBuffers::new();
+    first_buffers.push(loadavg(100)).expect("buffer first row");
+    let first = encode_window(first_buffers, segment.interner()).expect("encode first window");
+    append_window_and_maybe_close(
+        &mut journal,
+        &owner,
+        &config,
+        &mut segment,
+        100,
+        false,
+        &first,
+    )
+    .expect("append first window");
+
+    segment
+        .interner_mut()
+        .intern(b"shared-value")
+        .expect("re-intern shared value");
+    let mut second_buffers = SectionBuffers::new();
+    second_buffers
+        .push(loadavg(200))
+        .expect("buffer second row");
+    let second = encode_window(second_buffers, segment.interner()).expect("encode second window");
+    append_window_and_maybe_close(
+        &mut journal,
+        &owner,
+        &config,
+        &mut segment,
+        200,
+        false,
+        &second,
+    )
+    .expect("append second window");
+
+    let first_part = journal
+        .read_part(journal.parts()[0])
+        .expect("read first WAL part");
+    let first_catalog = validate_part(&first_part).expect("validate first WAL part");
+    assert!(
+        first_catalog
+            .entries
+            .iter()
+            .any(|entry| entry.type_id == DICT_STRINGS_TYPE_ID)
+    );
+    let second_part = journal
+        .read_part(journal.parts()[1])
+        .expect("read second WAL part");
+    let second_catalog = validate_part(&second_part).expect("validate second WAL part");
+    assert!(
+        second_catalog
+            .entries
+            .iter()
+            .all(|entry| entry.type_id != DICT_STRINGS_TYPE_ID)
+    );
+
+    let dest = close_open_segment(&mut journal, &owner, &mut segment, "test")
+        .expect("write reconstructed segment");
+    let finished = fs::read(dest).expect("read reconstructed segment");
+    let finished_catalog = validate_part(&finished).expect("validate reconstructed segment");
+    assert_eq!(
+        finished_catalog
+            .entries
+            .iter()
+            .find(|entry| entry.type_id == DICT_STRINGS_TYPE_ID)
+            .map(|entry| entry.rows),
+        Some(1)
+    );
+    assert_eq!(
+        finished_catalog
+            .entries
+            .iter()
+            .find(|entry| entry.type_id == OsLoadavg::CONTRACT.type_id.get())
+            .map(|entry| entry.rows),
+        Some(2)
+    );
+}
+
+#[test]
+fn recovery_preserves_an_unreadable_journal_at_its_canonical_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("active.wal");
+    let bytes = b"not a valid journal";
+    fs::write(&path, bytes).expect("write unreadable journal");
+    let root = DataRoot::open(dir.path()).expect("open test data root");
+    let owner = root
+        .acquire_writer(LayoutLimits::default())
+        .expect("acquire test writer");
+    let journal_max_bytes =
+        u64::try_from(JournalConfig::default().max_journal_len).expect("journal cap fits u64");
+
+    let err = open_collector_journal(&owner, journal_max_bytes)
+        .expect_err("an unreadable journal stops recovery");
+
+    assert!(format!("{err:#}").contains("existing file is preserved"));
+    assert_eq!(fs::read(&path).expect("read preserved journal"), bytes);
+    assert!(!dir.path().join("active.wal.damaged").exists());
+}
+
+#[test]
+fn recovery_publication_failure_keeps_the_readable_journal_canonical() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("active.wal");
+    let (owner, mut journal) = open_journal(dir.path(), JournalConfig::default().max_journal_len);
+    let part = flushed_window(100);
+    journal
+        .append(
+            SegmentId::new(100).expect("valid recovery identity"),
+            &part.body,
+        )
+        .expect("append readable part");
+    let bytes_before = fs::read(&path).expect("snapshot active.wal");
+    let destination = segment_path(&owner, 100);
+    fs::create_dir_all(destination.parent().expect("segment has a parent"))
+        .expect("create segment day");
+    fs::write(&destination, b"conflicting segment").expect("write conflicting segment");
+
+    write_recovered_journal(&mut journal, &owner)
+        .expect_err("a conflicting destination stops recovery");
+
+    assert_eq!(fs::read(&path).expect("read active.wal"), bytes_before);
+    assert_eq!(
+        fs::read(destination).expect("read existing segment"),
+        b"conflicting segment"
+    );
+    assert_eq!(journal.parts().len(), 1);
 }
 
 #[test]
@@ -437,7 +555,7 @@ fn recovery_preserves_a_populated_part_without_a_timestamp() {
     let bytes_before = fs::read(&path).expect("snapshot active.wal");
 
     let err = write_recovered_journal(&mut journal, &owner)
-        .expect_err("populated sentinel-timestamp part is not empty");
+        .expect_err("populated sentinel-timestamp part is not publishable");
 
     assert!(format!("{err:#}").contains("active.wal is preserved"));
     assert_eq!(fs::read(&path).expect("read active.wal"), bytes_before);
@@ -449,5 +567,71 @@ fn recovery_preserves_a_populated_part_without_a_timestamp() {
                 entry.expect("directory entry").path().extension()
                     != Some(std::ffi::OsStr::new("zms"))
             })
+    );
+}
+
+#[test]
+fn recovery_publishes_a_readable_journal_without_sections() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("active.wal");
+    let (owner, mut journal) = open_journal(dir.path(), JournalConfig::default().max_journal_len);
+    let part = build_part(
+        &[],
+        PartMeta {
+            min_ts: i64::MAX,
+            max_ts: i64::MIN,
+        },
+    );
+    journal
+        .append(SegmentId::new(100).expect("valid recovery identity"), &part)
+        .expect("append empty but structurally valid part");
+
+    let dest = write_recovered_journal(&mut journal, &owner)
+        .expect("publish the readable journal")
+        .expect("a nonempty journal gets a publication attempt");
+
+    let recovered = fs::read(dest).expect("read recovered segment");
+    let catalog = validate_part(&recovered).expect("recovered segment is valid");
+    assert!(catalog.entries.is_empty());
+    assert_eq!((catalog.min_ts, catalog.max_ts), (0, 0));
+    assert!(journal.parts().is_empty());
+    assert_eq!(
+        fs::metadata(path).expect("stat reset journal").len(),
+        JOURNAL_HEADER_LEN as u64
+    );
+}
+
+#[test]
+fn recovery_publishes_a_valid_dictionary_only_journal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (owner, mut journal) = open_journal(dir.path(), JournalConfig::default().max_journal_len);
+    let mut interner = empty_interner();
+    interner.intern(b"dict").expect("intern dictionary value");
+    let dictionary = kronika_writer::dict::encode(interner.window()).expect("encode dictionary");
+    let part = SectionBuffers::new()
+        .flush_with_summary(&dictionary)
+        .expect("encode dictionary-only part")
+        .expect("dictionary yields a part");
+    journal
+        .append(
+            SegmentId::new(100).expect("valid recovery identity"),
+            &part.body,
+        )
+        .expect("append dictionary-only part");
+
+    let dest = write_recovered_journal(&mut journal, &owner)
+        .expect("publish dictionary-only journal")
+        .expect("a nonempty journal gets a publication attempt");
+
+    let recovered = fs::read(dest).expect("read recovered segment");
+    let catalog = validate_part(&recovered).expect("recovered segment is valid");
+    assert_eq!((catalog.min_ts, catalog.max_ts), (0, 0));
+    assert_eq!(
+        catalog
+            .entries
+            .iter()
+            .find(|entry| entry.type_id == DICT_STRINGS_TYPE_ID)
+            .map(|entry| entry.rows),
+        Some(1)
     );
 }

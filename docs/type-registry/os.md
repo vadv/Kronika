@@ -39,7 +39,7 @@ The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 | `1_109_001` | `/proc/net/dev` plus sysfs link facts | `snapshot_full` | `(iface, ts)` |
 | `1_110_001` | `/proc/net/snmp` | `snapshot_full` | `(ts)` |
 | `1_111_001` | `/proc/net/netstat` | `snapshot_full` | `(ts)` |
-| `1_112_001` | `mountinfo` plus `statvfs` | `on_change` | `(major, minor, mount_point, ts)` |
+| `1_112_001` | `mountinfo` plus bounded local-filesystem `statvfs` | `on_change` | `(major, minor, mount_point, ts)` |
 | `1_113_001` | `/proc/cpuinfo` plus sysfs topology | `on_change` | `(cpu_id, ts)` |
 | `1_114_001` | `/proc/interrupts` | `snapshot_full` | `(irq, ts)` |
 | `1_115_001` | `/proc/softirqs` | `snapshot_full` | `(vector, ts)` |
@@ -148,6 +148,12 @@ recorded. `✓` means the data is in a section above.
 | Mount points, filesystem type, source | — | ✓ | ✓ | ✓ `1_112` |
 | Filesystem total and free bytes | — | ✓ | ✓ | ✓ `1_112` |
 | File handles, inodes, dentries | — | — | ✓ | ✓ `1_116` |
+
+Filesystem capacity is populated only for the explicit local allowlist:
+`ext2`, `ext3`, `ext4`, `xfs`, `btrfs`, `f2fs`, `zfs`, `tmpfs`, and `overlay`.
+Network, FUSE/userspace, `autofs`, and unknown types remain null. The entire
+capacity pass has one one-second deadline; results completed before it are
+retained.
 
 ### Network
 

@@ -21,22 +21,77 @@ use std::time::{Duration, Instant};
 
 mod admission;
 mod open;
-mod prefix;
 
 use admission::{AdmissionDelta, SegmentAdmission};
 pub(crate) use open::open_collector_journal;
 
+/// Failure while admitting, appending, or closing one collection window.
+#[derive(Debug)]
+pub(crate) enum AppendWindowError {
+    /// The segment could not be written or its journal could not be reset.
+    Close(anyhow::Error),
+    /// The incoming window could not be admitted or appended safely.
+    Other(anyhow::Error),
+}
+
+impl AppendWindowError {
+    /// Split the failure into its fatal-close classification and full error.
+    pub(crate) fn into_parts(self) -> (bool, anyhow::Error) {
+        match self {
+            Self::Close(error) => (true, error),
+            Self::Other(error) => (false, error),
+        }
+    }
+}
+
+impl fmt::Display for AppendWindowError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Close(error) | Self::Other(error) => fmt::Display::fmt(error, f),
+        }
+    }
+}
+
+impl From<anyhow::Error> for AppendWindowError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::Other(error)
+    }
+}
+
 /// The open (not yet finished) segment: its file name comes from the first
 /// window's timestamp, its age from the moment that window was appended.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct SegmentState {
     first_id: Option<SegmentId>,
     opened_at: Option<Instant>,
     admission: SegmentAdmission,
-    published_pending_reset: bool,
+    interner: Interner,
+}
+
+impl Default for SegmentState {
+    fn default() -> Self {
+        Self {
+            first_id: None,
+            opened_at: None,
+            admission: SegmentAdmission::default(),
+            interner: Interner::new(kronika_format::DictLimits::default()),
+        }
+    }
 }
 
 impl SegmentState {
+    pub(crate) const fn is_empty(&self) -> bool {
+        self.first_id.is_none()
+    }
+
+    pub(crate) const fn interner(&self) -> &Interner {
+        &self.interner
+    }
+
+    pub(crate) const fn interner_mut(&mut self) -> &mut Interner {
+        &mut self.interner
+    }
+
     /// Register the appended window; the first one opens the segment.
     pub(crate) const fn on_window_appended(&mut self, id: SegmentId, now: Instant) {
         if self.first_id.is_none() {
@@ -55,18 +110,6 @@ impl SegmentState {
         Some(max_age.saturating_sub(now.saturating_duration_since(self.opened_at?)))
     }
 
-    pub(crate) fn ensure_append_allowed(&self) -> Result<()> {
-        anyhow::ensure!(
-            !self.published_pending_reset,
-            "a ZMS was published but active.wal was not reset; restart recovery is required"
-        );
-        Ok(())
-    }
-
-    pub(crate) const fn requires_restart(&self) -> bool {
-        self.published_pending_reset
-    }
-
     #[cfg(test)]
     pub(crate) const fn first_ts(&self) -> Option<i64> {
         match self.first_id {
@@ -78,9 +121,8 @@ impl SegmentState {
 
 /// Why the open segment must write now, or `None` to keep collecting.
 ///
-/// Forced ticks write immediately, `max_bytes = 0` selects one segment per
-/// collection window, and otherwise the raw journal size or segment age closes
-/// the segment.
+/// Forced ticks write immediately; otherwise the raw journal size or segment
+/// age closes the segment.
 pub(crate) const fn close_reason(
     forced: bool,
     journal_bytes: usize,
@@ -89,8 +131,6 @@ pub(crate) const fn close_reason(
 ) -> Option<&'static str> {
     if forced {
         Some("forced")
-    } else if max_bytes == 0 {
-        Some("tick")
     } else if journal_bytes as u64 >= max_bytes {
         Some("size")
     } else if age_expired {
@@ -123,19 +163,6 @@ pub(crate) fn close_open_segment(
     segment: &mut SegmentState,
     reason: &'static str,
 ) -> Result<PathBuf> {
-    close_open_segment_with_reset(journal, owner, segment, reason, Journal::reset)
-}
-
-pub(crate) fn close_open_segment_with_reset<F>(
-    journal: &mut Journal,
-    owner: &WriterOwner,
-    segment: &mut SegmentState,
-    reason: &'static str,
-    reset: F,
-) -> Result<PathBuf>
-where
-    F: FnOnce(&mut Journal) -> Result<(), JournalError>,
-{
     let segment_id = segment
         .first_id
         .context("writing an open segment requires an appended window")?;
@@ -144,7 +171,22 @@ where
     let journal_bytes = journal.bytes();
     let journal_parts = journal.parts().len();
     let started = Instant::now();
-    let summary = write_segment(journal, owner, address).context("write the segment")?;
+    let summary = match write_segment(journal, owner, address) {
+        Ok(summary) => summary,
+        Err(error) => {
+            log_close_failure(
+                &dest,
+                segment_id,
+                reason,
+                "write",
+                journal_bytes,
+                journal_parts,
+                started.elapsed(),
+                &error,
+            );
+            return Err(anyhow::Error::new(error).context("write the segment"));
+        }
+    };
     log_event(
         LogLevel::Info,
         "segment_write_finish",
@@ -162,11 +204,51 @@ where
             field("rss_kib", peak_rss_kib()),
         ],
     );
-    // Leave active.wal intact if write_segment() fails.
-    segment.published_pending_reset = true;
-    reset(journal).context("reset the journal after the segment write")?;
+    if let Err(error) = journal.reset() {
+        log_close_failure(
+            &dest,
+            segment_id,
+            reason,
+            "journal-reset",
+            journal_bytes,
+            journal_parts,
+            started.elapsed(),
+            &error,
+        );
+        return Err(anyhow::Error::new(error).context("reset the journal after the segment write"));
+    }
     *segment = SegmentState::default();
     Ok(dest)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one close-failure record carries the segment identity, cost, stage, and operating error"
+)]
+fn log_close_failure(
+    dest: &std::path::Path,
+    segment_id: SegmentId,
+    reason: &'static str,
+    stage: &'static str,
+    journal_bytes: usize,
+    journal_parts: usize,
+    elapsed: Duration,
+    error: &dyn fmt::Display,
+) {
+    log_event(
+        LogLevel::Error,
+        "segment_close_failure",
+        &[
+            field("segment_path", dest.display()),
+            field("segment_id", segment_id.get()),
+            field("reason", reason),
+            field("stage", stage),
+            field("journal_bytes", journal_bytes),
+            field("journal_parts", journal_parts),
+            field("elapsed_ms", duration_ms(elapsed)),
+            field("error", error),
+        ],
+    );
 }
 
 fn prepare_window_admission(
@@ -174,17 +256,19 @@ fn prepare_window_admission(
     owner: &WriterOwner,
     segment: &mut SegmentState,
     flushed: &FlushedPart,
-    interner: &Interner,
     finished: &mut Vec<(PathBuf, &'static str)>,
-) -> Result<AdmissionDelta> {
-    match segment.admission.assess(&flushed.summary, interner) {
-        Ok(delta) => Ok(delta),
+) -> Result<Option<AdmissionDelta>, AppendWindowError> {
+    match segment
+        .admission
+        .assess(&flushed.summary, &segment.interner)
+    {
+        Ok(delta) => Ok(Some(delta)),
         Err(err) if err.is_capacity() && segment.first_id.is_some() => {
             // Prove that the incoming window fits by itself before publishing
-            // and resetting the accumulated journal. An intrinsically
-            // inadmissible window must leave active.wal untouched.
-            let fresh = SegmentAdmission::default()
-                .assess(&flushed.summary, interner)
+            // the accumulated journal. The caller recollects it immediately
+            // with the new segment's dictionary and metadata.
+            SegmentAdmission::default()
+                .assess(&flushed.summary, &segment.interner)
                 .context("one collection window exceeds finished segment limits")?;
             log_event(
                 LogLevel::Warn,
@@ -196,19 +280,18 @@ fn prepare_window_admission(
                 ],
             );
             finished.push((
-                close_open_segment(journal, owner, segment, "format-limit")?,
+                close_open_segment(journal, owner, segment, "format-limit")
+                    .map_err(AppendWindowError::Close)?,
                 "format-limit",
             ));
-            Ok(fresh)
+            Ok(None)
         }
-        Err(err) => Err(err).context("reject the window before journal append"),
+        Err(err) => Err(anyhow::Error::new(err)
+            .context("reject the window before journal append")
+            .into()),
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one transaction keeps admission, journal append, early write, and SegmentId state synchronized"
-)]
 pub(crate) fn append_window_and_maybe_close(
     journal: &mut Journal,
     owner: &WriterOwner,
@@ -217,31 +300,41 @@ pub(crate) fn append_window_and_maybe_close(
     ts: i64,
     forced: bool,
     flushed: &FlushedPart,
-    interner: &Interner,
-) -> Result<Vec<(PathBuf, &'static str)>> {
-    segment.ensure_append_allowed()?;
+) -> Result<Vec<(PathBuf, &'static str)>, AppendWindowError> {
     let mut finished = Vec::new();
-    let mut admission =
-        prepare_window_admission(journal, owner, segment, flushed, interner, &mut finished)?;
+    let Some(admission) =
+        prepare_window_admission(journal, owner, segment, flushed, &mut finished)?
+    else {
+        return Ok(finished);
+    };
     let segment_id = match segment.first_id {
         Some(segment_id) => segment_id,
         None => SegmentId::new(ts).context("collection timestamp is outside the layout range")?,
     };
     let append_started = Instant::now();
     let journal_bytes_before = journal.bytes();
-    match journal.append(segment_id, &flushed.body) {
-        Ok(part_ref) => log_journal_append(
-            &flushed.summary,
-            part_ref.offset(),
-            part_ref.len(),
-            journal_bytes_before,
-            journal.bytes(),
-            append_started.elapsed(),
-            false,
-        ),
+    let mut appended = None;
+    let append_result = segment.interner.flush_window(|_window| {
+        journal.append(segment_id, &flushed.body).map(|part_ref| {
+            appended = Some(part_ref);
+        })
+    });
+    match append_result {
+        Ok(_flushed_entries) => {
+            let part_ref = appended.context("a successful journal append must return its part")?;
+            log_journal_append(
+                &flushed.summary,
+                part_ref.offset(),
+                part_ref.len(),
+                journal_bytes_before,
+                journal.bytes(),
+                append_started.elapsed(),
+                false,
+            );
+        }
         Err(JournalError::Full { len, max }) if segment.first_id.is_some() => {
-            let fresh = SegmentAdmission::default()
-                .assess(&flushed.summary, interner)
+            SegmentAdmission::default()
+                .assess(&flushed.summary, &segment.interner)
                 .context("one collection window exceeds finished segment limits")?;
             log_event(
                 LogLevel::Warn,
@@ -255,28 +348,11 @@ pub(crate) fn append_window_and_maybe_close(
                 ],
             );
             finished.push((
-                close_open_segment(journal, owner, segment, "journal-full")?,
+                close_open_segment(journal, owner, segment, "journal-full")
+                    .map_err(AppendWindowError::Close)?,
                 "journal-full",
             ));
-            admission = fresh;
-            let retry_started = Instant::now();
-            let journal_bytes_before = journal.bytes();
-            let part_ref = journal
-                .append(
-                    SegmentId::new(ts)
-                        .context("collection timestamp is outside the layout range")?,
-                    &flushed.body,
-                )
-                .context("append the window after an early close")?;
-            log_journal_append(
-                &flushed.summary,
-                part_ref.offset(),
-                part_ref.len(),
-                journal_bytes_before,
-                journal.bytes(),
-                retry_started.elapsed(),
-                true,
-            );
+            return Ok(finished);
         }
         Err(other) => {
             log_event(
@@ -291,7 +367,9 @@ pub(crate) fn append_window_and_maybe_close(
                     field("elapsed_ms", duration_ms(append_started.elapsed())),
                 ],
             );
-            return Err(anyhow::Error::new(other).context("append the part to the journal"));
+            return Err(anyhow::Error::new(other)
+                .context("append the part to the journal")
+                .into());
         }
     }
     segment.admission.commit(admission);
@@ -307,7 +385,11 @@ pub(crate) fn append_window_and_maybe_close(
         config.segment_max_bytes,
         segment.age_expired(now, age),
     ) {
-        finished.push((close_open_segment(journal, owner, segment, reason)?, reason));
+        finished.push((
+            close_open_segment(journal, owner, segment, reason)
+                .map_err(AppendWindowError::Close)?,
+            reason,
+        ));
     }
     Ok(finished)
 }

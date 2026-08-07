@@ -7,7 +7,7 @@ Feature: Where a segment lands and what it says about itself
     Given a collector with these settings
       | variable                  | value |
       | KRONIKA_INTERVAL_S        | 1     |
-      | KRONIKA_SEGMENT_MAX_BYTES | 0     |
+      | KRONIKA_SEGMENT_MAX_BYTES | 1     |
     When it runs for 3 seconds
     Then a segment exists under a YYYY/MM/DD directory
     And every published segment file ends in .zms
@@ -17,7 +17,7 @@ Feature: Where a segment lands and what it says about itself
     Given a collector with these settings
       | variable                  | value |
       | KRONIKA_INTERVAL_S        | 1     |
-      | KRONIKA_SEGMENT_MAX_BYTES | 0     |
+      | KRONIKA_SEGMENT_MAX_BYTES | 1     |
     When it runs for 3 seconds
     Then the log has a segment_write_finish line naming these fields
       | field         |
@@ -39,7 +39,6 @@ Feature: Where a segment lands and what it says about itself
       | KRONIKA_INTERVAL_S          | 1          |
       | KRONIKA_SEGMENT_MAX_BYTES   | 1073741824 |
       | KRONIKA_SEGMENT_MAX_AGE_S   | 3          |
-      | KRONIKA_INSTANCE_INTERVAL_S | 0          |
       | KRONIKA_OS_CORE_INTERVAL_S  | 0          |
     When it runs for 6 seconds
     Then every segment covers at least 3 windows

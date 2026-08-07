@@ -93,13 +93,15 @@ fn journal_is_active_wal(world: &mut BddWorld) -> Result<()> {
     Ok(())
 }
 
-#[then("the damaged journal is kept as active.wal.damaged")]
-fn damaged_journal_is_kept(world: &mut BddWorld) -> Result<()> {
+#[then("no segment exists under a YYYY/MM/DD directory")]
+fn no_segment_on_calendar_path(world: &mut BddWorld) -> Result<()> {
     let run = world.run.as_ref().context("a collector was started")?;
+    let files = files_under(&run.out_dir());
     anyhow::ensure!(
-        run.out_dir().join("active.wal.damaged").exists(),
-        "active.wal.damaged is missing from {:?}",
-        files_under(&run.out_dir())
+        files
+            .iter()
+            .all(|path| path.extension().is_none_or(|ext| ext != "zms")),
+        "unexpected segment under the data root: {files:?}"
     );
     Ok(())
 }
@@ -182,6 +184,12 @@ fn instance_facts(world: &mut BddWorld, step: &Step) -> Result<()> {
     let wanted = table_rows(step, &["column", "value"])?;
     for segment in segments(world)? {
         let rows = segment.decode(INSTANCE_METADATA)?;
+        anyhow::ensure!(
+            rows.len() == 1,
+            "{} carries {} instance_metadata rows, expected exactly one",
+            segment.path.display(),
+            rows.len()
+        );
         let row = rows.first().with_context(|| {
             format!(
                 "{} carries no instance_metadata row",

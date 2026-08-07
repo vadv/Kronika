@@ -50,16 +50,13 @@ fn degraded_collections(world: &mut BddWorld, step: &Step) -> Result<()> {
     Ok(())
 }
 
-#[then("the log reports the journal as damaged")]
-fn journal_damaged(world: &mut BddWorld) -> Result<()> {
+#[then("the log reports that active.wal was preserved")]
+fn journal_was_preserved(world: &mut BddWorld) -> Result<()> {
     let text = log(world)?;
-    let line = text
-        .lines()
-        .find(|line| line.contains("action=journal_damaged"))
-        .with_context(|| format!("no journal_damaged line in:\n{text}"))?;
-    for field in ["path=", "reason=", "salvaged_parts="] {
-        anyhow::ensure!(line.contains(field), "{field} is missing from {line}");
-    }
+    anyhow::ensure!(
+        text.contains("open active.wal") && text.contains("existing file is preserved"),
+        "no preserved active.wal startup error in:\n{text}"
+    );
     Ok(())
 }
 

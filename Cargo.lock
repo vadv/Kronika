@@ -978,6 +978,7 @@ dependencies = [
  "kronika-registry",
  "kronika-source-os",
  "kronika-writer",
+ "rustix",
  "tempfile",
  "tokio",
 ]
@@ -1016,8 +1017,6 @@ name = "kronika-layout"
 version = "0.0.0"
 dependencies = [
  "rustix",
- "serde",
- "serde_json",
  "tempfile",
 ]
 

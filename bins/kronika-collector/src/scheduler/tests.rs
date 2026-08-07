@@ -4,7 +4,6 @@ use super::{Intervals, Scheduler, SourceKind};
 
 fn intervals() -> Intervals {
     Intervals {
-        instance_metadata: 60,
         os_core: 10,
         os_mount_topo: 60,
         os_processes: 5,
@@ -20,7 +19,6 @@ fn the_first_tick_reads_every_source() {
     let due = scheduler.plan(Instant::now(), false);
     assert!(due.has(SourceKind::OsCore));
     assert!(due.has(SourceKind::OsMountTopo));
-    assert!(due.has(SourceKind::InstanceMetadata));
 }
 
 #[test]
@@ -56,15 +54,32 @@ fn a_forced_tick_reads_everything_regardless_of_intervals() {
 }
 
 #[test]
-fn opening_a_segment_re_reads_the_per_segment_sources() {
+fn opening_a_segment_re_reads_mount_topology() {
     let mut scheduler = Scheduler::new(intervals());
     let start = Instant::now();
     scheduler.plan(start, false);
     scheduler.mark_segment_opened();
     let next = scheduler.plan(start + Duration::from_secs(1), false);
-    assert!(next.has(SourceKind::InstanceMetadata), "segment identity");
     assert!(next.has(SourceKind::OsMountTopo), "mount and topology");
     assert!(!next.has(SourceKind::OsCore), "ordinary counters wait");
+}
+
+#[test]
+fn immediate_recollection_includes_and_records_segment_open_sources() {
+    let mut scheduler = Scheduler::new(intervals());
+    let start = Instant::now();
+    scheduler.plan(start, false);
+    scheduler.mark_segment_opened();
+    let original = super::DueSet::for_test(vec![SourceKind::OsCore]);
+
+    let recollection = scheduler.recollection_due(&original, start + Duration::from_secs(1));
+
+    assert!(recollection.has(SourceKind::OsCore));
+    assert!(recollection.has(SourceKind::OsMountTopo));
+    assert!(!recollection.has(SourceKind::OsProcesses));
+    let next = scheduler.plan(start + Duration::from_secs(2), false);
+    assert!(!next.has(SourceKind::OsCore));
+    assert!(!next.has(SourceKind::OsMountTopo));
 }
 
 #[test]

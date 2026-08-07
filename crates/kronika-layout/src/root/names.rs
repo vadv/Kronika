@@ -18,7 +18,6 @@ use super::scan::ParsedLeaf;
 use super::{
     ACTIVE_JOURNAL_NAME, DataRoot, FileIdentity, INDEX_OWNER_LOCK_NAME, WRITER_OWNER_LOCK_NAME,
 };
-use crate::producer_status::{PRODUCER_STATUS_NAME, PRODUCER_STATUS_TEMP_NAME};
 
 pub(super) const fn validate_limit(
     kind: LimitKind,
@@ -39,11 +38,7 @@ pub(super) const fn validate_limit(
 pub(super) fn is_control_name(name: &str) -> bool {
     matches!(
         name,
-        ACTIVE_JOURNAL_NAME
-            | WRITER_OWNER_LOCK_NAME
-            | INDEX_OWNER_LOCK_NAME
-            | PRODUCER_STATUS_NAME
-            | PRODUCER_STATUS_TEMP_NAME
+        ACTIVE_JOURNAL_NAME | WRITER_OWNER_LOCK_NAME | INDEX_OWNER_LOCK_NAME
     )
 }
 

@@ -9,8 +9,7 @@ Feature: What happens to a metric the host will not give up
     And a collector with these settings
       | variable                    | value |
       | KRONIKA_INTERVAL_S          | 1     |
-      | KRONIKA_SEGMENT_MAX_BYTES   | 0     |
-      | KRONIKA_INSTANCE_INTERVAL_S | 0     |
+      | KRONIKA_SEGMENT_MAX_BYTES   | 1     |
       | KRONIKA_OS_CORE_INTERVAL_S  | 0     |
     When it runs for 3 seconds
     Then the log reports these collections as degraded
@@ -25,8 +24,7 @@ Feature: What happens to a metric the host will not give up
     And a collector with these settings
       | variable                    | value |
       | KRONIKA_INTERVAL_S          | 1     |
-      | KRONIKA_SEGMENT_MAX_BYTES   | 0     |
-      | KRONIKA_INSTANCE_INTERVAL_S | 0     |
+      | KRONIKA_SEGMENT_MAX_BYTES   | 1     |
       | KRONIKA_OS_CORE_INTERVAL_S  | 0     |
     When it runs for 3 seconds
     Then no segment holds these sections
@@ -41,8 +39,7 @@ Feature: What happens to a metric the host will not give up
     And a collector with these settings
       | variable                    | value |
       | KRONIKA_INTERVAL_S          | 1     |
-      | KRONIKA_SEGMENT_MAX_BYTES   | 0     |
-      | KRONIKA_INSTANCE_INTERVAL_S | 0     |
+      | KRONIKA_SEGMENT_MAX_BYTES   | 1     |
       | KRONIKA_OS_CORE_INTERVAL_S  | 0     |
     When it runs for 3 seconds
     Then every segment holds these sections

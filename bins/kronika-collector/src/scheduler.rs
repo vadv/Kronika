@@ -1,8 +1,8 @@
 //! Per-source pacing for collection ticks.
 //!
 //! Each source has its own interval. A forced tick (`SIGUSR2`, and the first
-//! timer tick after start) reads every source, so the first segment after
-//! restart is self-contained and signal-driven collection keeps its contract.
+//! timer tick after start) reads every paced source, so signal-driven collection
+//! keeps its contract.
 //! Positive intervals can pull the next timer wake forward; explicit zero
 //! intervals run on every timer wake.
 
@@ -10,8 +10,11 @@ use std::time::{Duration, Instant};
 
 /// One independently paced source group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    clippy::enum_variant_names,
+    reason = "the names match the public OS section groups and their configuration"
+)]
 pub(crate) enum SourceKind {
-    InstanceMetadata,
     OsCore,
     OsMountTopo,
     OsProcesses,
@@ -21,8 +24,7 @@ pub(crate) enum SourceKind {
 }
 
 /// All source kinds, in collection order.
-pub(crate) const ALL_SOURCES: [SourceKind; 7] = [
-    SourceKind::InstanceMetadata,
+pub(crate) const ALL_SOURCES: [SourceKind; 6] = [
     SourceKind::OsCore,
     SourceKind::OsMountTopo,
     SourceKind::OsProcesses,
@@ -33,8 +35,11 @@ pub(crate) const ALL_SOURCES: [SourceKind; 7] = [
 
 /// Per-source intervals, in seconds.
 #[derive(Debug, Clone, Copy)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the names match the documented OS interval configuration"
+)]
 pub(crate) struct Intervals {
-    pub instance_metadata: u64,
     pub os_core: u64,
     pub os_mount_topo: u64,
     pub os_processes: u64,
@@ -46,7 +51,6 @@ pub(crate) struct Intervals {
 impl Default for Intervals {
     fn default() -> Self {
         Self {
-            instance_metadata: 60,
             os_core: 10,
             os_mount_topo: 60,
             os_processes: 5,
@@ -60,7 +64,6 @@ impl Default for Intervals {
 impl Intervals {
     const fn of(&self, kind: SourceKind) -> u64 {
         match kind {
-            SourceKind::InstanceMetadata => self.instance_metadata,
             SourceKind::OsCore => self.os_core,
             SourceKind::OsMountTopo => self.os_mount_topo,
             SourceKind::OsProcesses => self.os_processes,
@@ -114,10 +117,8 @@ impl DueSet {
     }
 }
 
-/// The sources a fresh segment re-reads on its first tick, so every finished
-/// file carries its own instance identity, reset context, and configuration.
-const SEGMENT_OPEN_SOURCES: [SourceKind; 2] =
-    [SourceKind::InstanceMetadata, SourceKind::OsMountTopo];
+/// The paced sources a fresh segment re-reads on its first tick.
+const SEGMENT_OPEN_SOURCES: [SourceKind; 1] = [SourceKind::OsMountTopo];
 
 /// Decides which sources each tick reads, one entry per source.
 #[derive(Debug)]
@@ -144,11 +145,31 @@ impl Scheduler {
         }
     }
 
+    /// Build the due set for an immediate fresh-segment recollection.
+    ///
+    /// It preserves the triggering window's sources, adds the paced sources
+    /// required at segment open, and records all of them as read at `now`.
+    pub(crate) fn recollection_due(&mut self, due: &DueSet, now: Instant) -> DueSet {
+        let kinds: Vec<SourceKind> = ALL_SOURCES
+            .iter()
+            .copied()
+            .filter(|kind| due.has(*kind) || SEGMENT_OPEN_SOURCES.contains(kind))
+            .collect();
+        for (slot, kind) in ALL_SOURCES.iter().enumerate() {
+            if kinds.contains(kind) {
+                self.last_read[slot] = Some(now);
+            }
+        }
+        DueSet {
+            kinds,
+            forced: due.forced,
+        }
+    }
+
     /// Time until the next positive source interval elapses.
     ///
-    /// Sources with no previous read, deferred sources, and explicit zero
-    /// intervals are read on the next timer wake; they do not pull the wake
-    /// forward by themselves.
+    /// Sources with no previous read and explicit zero intervals are read on
+    /// the next timer wake; they do not pull the wake forward by themselves.
     pub(crate) fn next_elapsed_due_in(&self, now: Instant) -> Option<Duration> {
         ALL_SOURCES
             .iter()

@@ -23,16 +23,14 @@ pub(crate) struct Config {
     pub(crate) tick_secs: u64,
     /// Per-source read intervals.
     pub(crate) intervals: Intervals,
-    /// Write the segment when the journal holds at least this many raw bytes;
-    /// `0` writes on every tick.
+    /// Write the segment when the journal holds at least this many raw bytes.
     pub(crate) segment_max_bytes: u64,
     /// Write an open segment at this age even if the byte cap was not reached.
     pub(crate) segment_max_age_secs: u64,
     /// Hard cap of the on-disk journal file; reaching it writes the open
     /// segment early instead of failing the append.
     pub(crate) journal_max_bytes: u64,
-    /// Storage-rotation target for the whole output tree; `None` keeps every
-    /// segment.
+    /// Storage-rotation target for the whole output tree.
     pub(crate) retention: Option<RetentionConfig>,
 }
 
@@ -57,6 +55,8 @@ fn parse_env_number<T: std::str::FromStr>(key: &str, raw: &str) -> Result<T> {
 
 /// Used-fraction target of the `auto` mode when no percentage is given.
 const DEFAULT_AUTO_PERCENT: u8 = 80;
+/// Fixed rotation target when `KRONIKA_RETENTION` is unset.
+const DEFAULT_RETENTION_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Rotation target for the whole `KRONIKA_OUT_DIR` tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +142,7 @@ impl Config {
         validate_log_level()?;
         let tick_secs = env_u64("KRONIKA_INTERVAL_S", 5)?;
         let segment_max_bytes = env_u64("KRONIKA_SEGMENT_MAX_BYTES", 64 * 1024 * 1024)?;
+        validate_segment_max_bytes(segment_max_bytes)?;
         let segment_max_age_secs = env_u64("KRONIKA_SEGMENT_MAX_AGE_S", 900)?;
         let journal_max_bytes = env_u64("KRONIKA_JOURNAL_MAX_BYTES", MAX_JOURNAL_LEN as u64)?;
         validate_journal_max_bytes(journal_max_bytes)?;
@@ -159,11 +160,10 @@ impl Config {
         let retention = std::env::var("KRONIKA_RETENTION")
             .ok()
             .map(|raw| parse_retention(&raw))
-            .transpose()?;
-        if let Some(retention) = retention {
-            validate_retention(retention, segment_max_bytes)?;
-            log_retention_config(retention);
-        }
+            .transpose()?
+            .unwrap_or(RetentionConfig::Fixed(DEFAULT_RETENTION_BYTES));
+        validate_retention(retention, segment_max_bytes)?;
+        log_retention_config(retention);
         Ok(Self {
             out_dir,
             tick_secs,
@@ -171,7 +171,7 @@ impl Config {
             segment_max_bytes,
             segment_max_age_secs,
             journal_max_bytes,
-            retention,
+            retention: Some(retention),
         })
     }
 }
@@ -210,11 +210,19 @@ pub(crate) fn validate_journal_max_bytes(value: u64) -> Result<()> {
     );
     Ok(())
 }
+
+pub(crate) fn validate_segment_max_bytes(value: u64) -> Result<()> {
+    anyhow::ensure!(
+        value > 0,
+        "KRONIKA_SEGMENT_MAX_BYTES must be greater than zero"
+    );
+    Ok(())
+}
+
 /// Read the per-source intervals, falling back to the built-in defaults.
 fn intervals_from_env() -> Result<Intervals> {
     let defaults = Intervals::default();
     Ok(Intervals {
-        instance_metadata: env_u64("KRONIKA_INSTANCE_INTERVAL_S", defaults.instance_metadata)?,
         os_core: env_u64("KRONIKA_OS_CORE_INTERVAL_S", defaults.os_core)?,
         os_mount_topo: env_u64("KRONIKA_OS_MOUNTTOPO_INTERVAL_S", defaults.os_mount_topo)?,
         os_processes: env_u64("KRONIKA_OS_PROCESS_INTERVAL_S", defaults.os_processes)?,

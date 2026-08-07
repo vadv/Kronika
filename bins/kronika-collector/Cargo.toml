@@ -14,6 +14,7 @@ kronika-layout = { path = "../../crates/kronika-layout" }
 kronika-registry = { path = "../../crates/kronika-registry" }
 kronika-source-os = { path = "../../crates/kronika-source-os" }
 kronika-writer = { path = "../../crates/kronika-writer" }
+rustix = { version = "1", features = ["fs"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
 anyhow = "1"
 

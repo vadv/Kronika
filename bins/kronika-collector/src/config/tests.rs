@@ -1,4 +1,7 @@
-use super::{RetentionConfig, parse_retention, validate_journal_max_bytes, validate_retention};
+use super::{
+    RetentionConfig, parse_retention, validate_journal_max_bytes, validate_retention,
+    validate_segment_max_bytes,
+};
 use kronika_format::{JOURNAL_HEADER_LEN, MAX_JOURNAL_LEN};
 
 #[test]
@@ -45,6 +48,12 @@ fn the_journal_cap_must_fit_the_format() {
     assert!(validate_journal_max_bytes(MAX_JOURNAL_LEN as u64).is_ok());
     assert!(validate_journal_max_bytes(JOURNAL_HEADER_LEN as u64 - 1).is_err());
     assert!(validate_journal_max_bytes(MAX_JOURNAL_LEN as u64 + 1).is_err());
+}
+
+#[test]
+fn the_segment_cap_must_be_positive() {
+    assert!(validate_segment_max_bytes(1).is_ok());
+    assert!(validate_segment_max_bytes(0).is_err());
 }
 
 #[test]

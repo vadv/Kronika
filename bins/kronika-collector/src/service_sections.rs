@@ -2,7 +2,6 @@
 
 use crate::buffering::buffer_row;
 use crate::logging::{log_collection_failure, log_collection_finish, log_collection_start};
-use crate::scheduler::{DueSet, SourceKind};
 use anyhow::{Context, Result};
 use kronika_registry::instance_metadata::{Environment, InstanceMetadata};
 use kronika_registry::{StrId, Ts};
@@ -12,23 +11,20 @@ use std::time::Instant;
 
 const INSTANCE_METADATA_TYPE_ID: u32 = 1_021_001;
 
-/// Read the host identity when the scheduler says it is due.
+/// Read the host identity for a new segment.
 ///
 /// # Errors
 ///
 /// Returns an error naming the `/proc` file that could not be read. The
 /// identity is what makes a finished segment self-contained, so a failure here
 /// is not a degraded section.
-pub(crate) fn collect_due_instance(due: &DueSet) -> Result<Option<OsInstanceFacts>> {
-    if !due.has(SourceKind::InstanceMetadata) {
-        return Ok(None);
-    }
+pub(crate) fn collect_instance() -> Result<OsInstanceFacts> {
     let started = Instant::now();
     log_collection_start(INSTANCE_METADATA_TYPE_ID, "procfs");
     match collect_os_instance_facts() {
         Ok(facts) => {
             log_collection_finish(INSTANCE_METADATA_TYPE_ID, "procfs", 1, started.elapsed());
-            Ok(Some(facts))
+            Ok(facts)
         }
         Err(err) => {
             log_collection_failure(INSTANCE_METADATA_TYPE_ID, "procfs", &err, started.elapsed());

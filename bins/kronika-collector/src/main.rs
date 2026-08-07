@@ -17,10 +17,10 @@
 )]
 
 mod buffering;
+mod capacity;
 mod config;
 mod logging;
 mod os_sources;
-mod producer_status;
 mod rotation;
 mod scheduler;
 mod segments;
@@ -30,17 +30,16 @@ use anyhow::{Context, Result};
 use config::Config;
 use kronika_layout::{DataRoot, LayoutLimits, TemporaryKind, WriterOwner};
 use kronika_source_os::{OsScope, ProcFs, detect_container};
-use kronika_writer::{Interner, Journal, SectionBuffers};
+use kronika_writer::{Journal, SectionBuffers};
 use logging::{LogLevel, field, log_event};
 use os_sources::{collect_os_sources, push_os_sources};
-use producer_status::{ProducerStatusPublisher, retention_status};
 use rotation::Rotation;
 use scheduler::{DueSet, Scheduler};
 use segments::{
     SegmentState, append_window_and_maybe_close, close_open_segment, encode_window,
     open_collector_journal,
 };
-use service_sections::{collect_due_instance, push_instance_metadata};
+use service_sections::{collect_instance, push_instance_metadata};
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -110,20 +109,12 @@ fn prepare_collector_storage(
 
 /// Take exclusive ownership of the data root and recover what the previous
 /// process left behind.
-fn start_up(config: &Config) -> Result<(WriterOwner, ProducerStatusPublisher, Journal)> {
+fn start_up(config: &Config) -> Result<(WriterOwner, Journal)> {
     std::fs::create_dir_all(&config.out_dir).context("create the output directory")?;
     let data_root = DataRoot::open(&config.out_dir).context("open the data root")?;
     let writer_owner = data_root
         .acquire_writer(LayoutLimits::default())
         .context("acquire exclusive writer ownership")?;
-    let producer_status = ProducerStatusPublisher::start(
-        &config.out_dir,
-        std::process::id(),
-        unix_now_us()?,
-        retention_status(config.retention).context("map retention status")?,
-    )
-    .context("publish collector startup status")?;
-
     // The journal lives next to finished segments so windows survive restarts.
     let (journal, recovered) = prepare_collector_storage(
         &writer_owner,
@@ -133,13 +124,20 @@ fn start_up(config: &Config) -> Result<(WriterOwner, ProducerStatusPublisher, Jo
     if let Some(dest) = recovered {
         announce(&format!("wrote {} reason=recovered", dest.display()));
     }
-    Ok((writer_owner, producer_status, journal))
+    Ok((writer_owner, journal))
+}
+
+fn main() -> Result<()> {
+    if capacity::is_helper_invocation() {
+        return capacity::run_helper();
+    }
+    run_collector()
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn run_collector() -> Result<()> {
     let config = Config::from_env()?;
-    let (writer_owner, mut producer_status, mut journal) = start_up(&config)?;
+    let (writer_owner, mut journal) = start_up(&config)?;
 
     let mut sigusr2 = signal(SignalKind::user_defined2()).context("install the SIGUSR2 handler")?;
     let mut sigterm = signal(SignalKind::terminate()).context("install the SIGTERM handler")?;
@@ -183,7 +181,6 @@ async fn main() -> Result<()> {
                 // rotation's; collection stays strictly signal-driven.
                 if config.tick_secs == 0 {
                     run_rotation(&mut rotation, &writer_owner, &journal, &[]);
-                    heartbeat_best_effort(&mut producer_status);
                     continue;
                 }
                 false
@@ -197,23 +194,14 @@ async fn main() -> Result<()> {
         // return no rows must still close an expired segment.
         let age = Duration::from_secs(config.segment_max_age_secs);
         if segment.age_expired(Instant::now(), age) {
-            match close_open_segment(&mut journal, &writer_owner, &mut segment, "age") {
-                Ok(dest) => {
-                    sched.mark_segment_opened();
-                    announce(&format!("wrote {} reason=age", dest.display()));
-                    written_this_tick.push(dest);
-                }
-                Err(err) => log_event(
-                    LogLevel::Error,
-                    "segment_write_failure",
-                    &[field("reason", "age"), field("error", format!("{err:#}"))],
-                ),
-            }
-            stop_if_persistence_unhealthy(&journal, &segment)?;
+            let dest = close_open_segment(&mut journal, &writer_owner, &mut segment, "age")?;
+            sched.mark_segment_opened();
+            announce(&format!("wrote {} reason=age", dest.display()));
+            written_this_tick.push(dest);
+            stop_if_persistence_unhealthy(&journal)?;
         }
         if due.is_empty() {
             run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
-            heartbeat_best_effort(&mut producer_status);
             continue;
         }
         written_this_tick.extend(run_collection_cycle(
@@ -223,29 +211,16 @@ async fn main() -> Result<()> {
             &due,
             &mut segment,
             &mut sched,
-        ));
-        stop_if_persistence_unhealthy(&journal, &segment)?;
+        )?);
+        stop_if_persistence_unhealthy(&journal)?;
         run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
-        heartbeat_best_effort(&mut producer_status);
-    }
-    if let Err(err) = unix_now_us().and_then(|at_us| {
-        producer_status
-            .stop(at_us)
-            .context("publish collector terminal status")
-    }) {
-        // A missing terminal marker degrades the status file to a stale
-        // heartbeat, which consumers already treat as an unhealthy producer.
-        log_event(
-            LogLevel::Warn,
-            "producer_status_stop_failure",
-            &[field("error", format!("{err:#}"))],
-        );
     }
     Ok(())
 }
 
 /// One collection cycle: read the due sources, append a window, and write when
-/// the segment is full. Failures log and leave the daemon running.
+/// the segment is full. Source, encoding, and recoverable append failures skip
+/// the window; segment-close failures terminate the daemon.
 fn run_collection_cycle(
     journal: &mut Journal,
     writer_owner: &WriterOwner,
@@ -253,66 +228,97 @@ fn run_collection_cycle(
     due: &DueSet,
     segment: &mut SegmentState,
     sched: &mut Scheduler,
-) -> Vec<PathBuf> {
-    let ts = match unix_now_us() {
-        Ok(ts) => ts,
-        Err(err) => {
-            log_event(
-                LogLevel::Error,
-                "collection_failed",
-                &[field("reason", "clock"), field("error", format!("{err:#}"))],
-            );
-            return Vec::new();
-        }
+) -> Result<Vec<PathBuf>> {
+    let first = collect_and_append_window(journal, writer_owner, config, due, segment, sched)?;
+    let mut written = first.written;
+    if first.recollect {
+        let recollection_due = sched.recollection_due(due, Instant::now());
+        let second = collect_and_append_window(
+            journal,
+            writer_owner,
+            config,
+            &recollection_due,
+            segment,
+            sched,
+        )?;
+        anyhow::ensure!(
+            !second.recollect,
+            "a fresh segment unexpectedly requested another pre-append close"
+        );
+        written.extend(second.written);
+    }
+    Ok(written)
+}
+
+#[derive(Default)]
+struct CollectionOutcome {
+    written: Vec<PathBuf>,
+    recollect: bool,
+}
+
+fn collect_and_append_window(
+    journal: &mut Journal,
+    writer_owner: &WriterOwner,
+    config: &Config,
+    due: &DueSet,
+    segment: &mut SegmentState,
+    sched: &mut Scheduler,
+) -> Result<CollectionOutcome> {
+    let Some(ts) = collection_timestamp() else {
+        return Ok(CollectionOutcome::default());
     };
     let fs = ProcFs::from_env();
     let in_container = detect_container(&fs);
-    let mut interner = Interner::new(kronika_format::DictLimits::default());
     let mut buffers = SectionBuffers::new();
 
-    let instance = match collect_due_instance(due) {
-        Ok(instance) => instance,
-        Err(err) => {
-            log_event(
-                LogLevel::Error,
-                "collection_failed",
-                &[
-                    field("collection", "instance_metadata"),
-                    field("error", format!("{err:#}")),
-                ],
-            );
-            None
+    let instance = if segment.is_empty() {
+        match collect_instance() {
+            Ok(instance) => Some(instance),
+            Err(_logged) => return Ok(CollectionOutcome::default()),
         }
+    } else {
+        None
     };
+
+    if let Some(facts) = instance.as_ref()
+        && let Err(err) = push_instance_metadata(
+            &mut buffers,
+            segment.interner_mut(),
+            facts,
+            in_container,
+            ts,
+        )
+    {
+        log_event(
+            LogLevel::Error,
+            "window_buffer_failure",
+            &[field("error", format!("{err:#}"))],
+        );
+        return Ok(CollectionOutcome::default());
+    }
 
     let os = collect_os_sources(
         &fs,
-        &mut interner,
+        segment.interner_mut(),
         OsScope::Host.as_u8(),
         ts,
         in_container,
         due,
     );
 
-    let buffered = (|| -> Result<()> {
-        if let Some(facts) = instance.as_ref() {
-            push_instance_metadata(&mut buffers, &mut interner, facts, in_container, ts)?;
-        }
-        push_os_sources(&mut buffers, &os)
-    })();
-    if let Err(err) = buffered {
+    if let Err(err) = push_os_sources(&mut buffers, &os) {
         log_event(
             LogLevel::Error,
             "window_buffer_failure",
             &[field("error", format!("{err:#}"))],
         );
-        return Vec::new();
+        return Ok(CollectionOutcome::default());
     }
     if buffers.is_empty() {
-        return Vec::new();
+        return Ok(CollectionOutcome::default());
     }
 
-    let flushed = match encode_window(buffers, &interner) {
+    let flushed = match encode_window(buffers, segment.interner()) {
         Ok(flushed) => flushed,
         Err(err) => {
             log_event(
@@ -320,7 +326,7 @@ fn run_collection_cycle(
                 "window_encode_failure",
                 &[field("error", format!("{err:#}"))],
             );
-            return Vec::new();
+            return Ok(CollectionOutcome::default());
         }
     };
     match append_window_and_maybe_close(
@@ -331,41 +337,49 @@ fn run_collection_cycle(
         ts,
         due.forced(),
         &flushed,
-        &interner,
     ) {
         Ok(finished) => {
+            let recollect = finished
+                .iter()
+                .any(|(_, reason)| matches!(*reason, "format-limit" | "journal-full"));
             let mut dests = Vec::with_capacity(finished.len());
             for (dest, reason) in finished {
                 sched.mark_segment_opened();
                 announce(&format!("wrote {} reason={reason}", dest.display()));
                 dests.push(dest);
             }
-            dests
+            Ok(CollectionOutcome {
+                written: dests,
+                recollect,
+            })
         }
-        Err(err) => {
+        Err(failure) => {
+            let (close_failed, err) = failure.into_parts();
             log_event(
                 LogLevel::Error,
                 "window_append_failure",
                 &[field("error", format!("{err:#}"))],
             );
-            Vec::new()
+            if close_failed {
+                Err(err.context("close the segment for the collection window"))
+            } else {
+                Ok(CollectionOutcome::default())
+            }
         }
     }
 }
 
-/// Auxiliary status publication never gates collection: a stale status file is
-/// itself the designed "producer unhealthy" signal.
-fn heartbeat_best_effort(producer_status: &mut ProducerStatusPublisher) {
-    if let Err(err) = unix_now_us().and_then(|at_us| {
-        producer_status
-            .heartbeat(at_us)
-            .context("publish collector heartbeat")
-    }) {
-        log_event(
-            LogLevel::Warn,
-            "producer_status_heartbeat_failure",
-            &[field("error", format!("{err:#}"))],
-        );
+fn collection_timestamp() -> Option<i64> {
+    match unix_now_us() {
+        Ok(ts) => Some(ts),
+        Err(err) => {
+            log_event(
+                LogLevel::Error,
+                "collection_failed",
+                &[field("reason", "clock"), field("error", format!("{err:#}"))],
+            );
+            None
+        }
     }
 }
 
@@ -413,12 +427,7 @@ fn run_rotation(
     );
 }
 
-fn stop_if_persistence_unhealthy(journal: &Journal, segment: &SegmentState) -> Result<()> {
-    if segment.requires_restart() {
-        anyhow::bail!(
-            "a segment was published but active.wal was not reset; stop before appending and recover on restart"
-        );
-    }
+fn stop_if_persistence_unhealthy(journal: &Journal) -> Result<()> {
     if journal.is_poisoned() {
         anyhow::bail!(
             "active.wal entered an indeterminate persistence state; stop and recover it on restart"

@@ -9,8 +9,7 @@ Feature: Which sections reach the segment, and how many rows they may hold
     Given a collector with these settings
       | variable                             | value |
       | KRONIKA_INTERVAL_S                   | 1     |
-      | KRONIKA_SEGMENT_MAX_BYTES            | 0     |
-      | KRONIKA_INSTANCE_INTERVAL_S          | 0     |
+      | KRONIKA_SEGMENT_MAX_BYTES            | 1     |
       | KRONIKA_OS_CORE_INTERVAL_S           | 0     |
       | KRONIKA_OS_MOUNTTOPO_INTERVAL_S      | 0     |
       | KRONIKA_OS_PROCESS_INTERVAL_S        | 0     |

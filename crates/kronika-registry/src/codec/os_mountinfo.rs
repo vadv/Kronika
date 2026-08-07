@@ -5,8 +5,9 @@ use crate::{Section, StrId, Ts};
 /// One `/proc/self/mountinfo` entry with optional filesystem capacity.
 ///
 /// Emitted `on_change`; one row per mount point per collection segment.
-/// `total_bytes`/`free_bytes` are `None` when `statvfs(2)` failed for
-/// the mount point (pseudo-filesystems, vanished mounts, permission denied).
+/// `total_bytes`/`free_bytes` are `None` outside the collector's local
+/// filesystem allowlist or when the bounded capacity pass did not complete
+/// the mount point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Section)]
 #[section(
     id = 1_112_001,
@@ -36,10 +37,10 @@ pub struct OsMountinfo {
     /// Whether this is a Kubernetes infrastructure bind-mount.
     #[column(l)]
     pub is_k8s_infra: bool,
-    /// Total filesystem capacity in bytes; `None` when `statvfs` failed.
+    /// Total filesystem capacity in bytes; `None` when skipped or unavailable.
     #[column(g, unit = bytes)]
     pub total_bytes: Option<i64>,
-    /// Available bytes for unprivileged writes; `None` when `statvfs` failed.
+    /// Available bytes for unprivileged writes; `None` when skipped or unavailable.
     #[column(g, unit = bytes)]
     pub free_bytes: Option<i64>,
     /// Source scope (`0=host`). See `kronika_source_os::OsScope`.
