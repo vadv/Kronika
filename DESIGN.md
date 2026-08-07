@@ -33,6 +33,8 @@ Concrete consequences:
   must not wake the heavy paths.
 - The collector shares a host with a production database. An out-of-memory kill
   there costs more than a lost segment.
+- **The collector's peak RSS stays under 20 MB.** This is a limit, not a target
+  to approach. Today a run collecting every OS section sits around 13 MB.
 
 ## Storage format
 
@@ -123,8 +125,8 @@ damaged and gets set aside. Two snapshots an hour apart are two snapshots.
 ## Where the collector is running
 
 The collector decides at collection time whether it is on a VM or inside a
-container, and writes the answer into the segment header. It does not guess,
-and web does not re-derive it.
+container, and records the answer in the `instance_metadata` section that every
+segment carries. It does not guess, and web does not re-derive it.
 
 This matters because the numbers differ. A pod has a CPU limit; a VM has a
 physical CPU count. Health is computed against the CPU limit inside a

@@ -22,12 +22,11 @@ change.
    is not. The collector shares a host with a production database.
 2. **A metric's fields change, its id changes.** No optional columns added to
    keep an id stable.
-3. **A framing change comes with numbers.** Any change to segment framing,
-   encoding, or the string dictionary is measured for size on demo data, and
-   the PR reports before and after. A framing change without a size benchmark
-   is not reviewable.
+3. **The collector fits in 20 MB.** Peak RSS above that is a defect, whatever
+   it bought.
 4. **The collector never guesses its environment.** VM or container is decided
-   at collection time and written into the segment header.
+   at collection time and recorded in the `instance_metadata` section of every
+   segment.
 5. **A missing metric stays missing.** The collector logs the failure, web
    shows `null`. One warning line and a `null` are the whole treatment.
 6. **No layer that reasons about the data's own trustworthiness.** Read
