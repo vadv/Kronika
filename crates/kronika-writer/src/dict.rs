@@ -1,0 +1,314 @@
+//! `dict.strings` / `dict.blobs` section encoders.
+//!
+//! Encode `dict.strings` and `dict.blobs` section bodies.
+
+use std::sync::{Arc, LazyLock};
+
+use arrow_array::{
+    ArrayRef, BinaryArray, BooleanArray, FixedSizeBinaryArray, RecordBatch, UInt64Array,
+};
+use arrow_schema::{DataType, Field, Schema};
+use kronika_format::{DictLimits, EntrySnapshot, Placement, SegmentDicts};
+use kronika_registry::{
+    CodecError, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, FINAL_DATA_PAGE_BYTES,
+    FinalPlainColumnSize, MAX_SECTION_BYTES, MAX_SECTION_ROWS, final_plain_body_bound,
+};
+use parquet::arrow::ArrowWriter;
+use parquet::arrow::arrow_writer::ArrowWriterOptions;
+use parquet::basic::{Compression, ZstdLevel};
+use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersion};
+
+/// Parquet writer properties shared by dictionary sections.
+static DICT_WRITER_PROPS: LazyLock<WriterProperties> = LazyLock::new(|| {
+    WriterProperties::builder()
+        .set_compression(Compression::ZSTD(
+            ZstdLevel::try_new(3).expect("zstd level 3 is valid"),
+        ))
+        .set_max_row_group_size(MAX_SECTION_ROWS)
+        .set_dictionary_enabled(false)
+        .set_created_by(String::new())
+        .build()
+});
+
+/// Final finished-dictionary properties. Journal windows retain their cheap
+/// append profile; normalization uses this profile exactly once at write.
+static FINAL_DICT_WRITER_PROPS: LazyLock<WriterProperties> = LazyLock::new(|| {
+    WriterProperties::builder()
+        .set_writer_version(WriterVersion::PARQUET_1_0)
+        .set_compression(Compression::ZSTD(
+            ZstdLevel::try_new(kronika_registry::FINAL_ZSTD_LEVEL).expect("zstd level 6 is valid"),
+        ))
+        .set_max_row_group_size(MAX_SECTION_ROWS)
+        .set_data_page_size_limit(1024 * 1024)
+        .set_data_page_row_count_limit(MAX_SECTION_ROWS)
+        .set_dictionary_enabled(false)
+        .set_statistics_enabled(EnabledStatistics::None)
+        .set_offset_index_disabled(true)
+        .set_created_by(String::new())
+        .build()
+});
+
+/// One encoded dictionary section: its type id, row count, and Parquet body.
+#[derive(Debug, Clone)]
+pub struct DictSection {
+    /// [`DICT_STRINGS_TYPE_ID`] or [`DICT_BLOBS_TYPE_ID`].
+    pub type_id: u32,
+    /// Number of dictionary entries in the body.
+    pub rows: u32,
+    /// The Parquet section body.
+    pub body: Vec<u8>,
+}
+
+/// Encode a dictionary window into section bodies.
+///
+/// # Errors
+///
+/// Returns [`CodecError`] when row caps or Parquet encoding fail.
+pub fn encode(window: &SegmentDicts) -> Result<Vec<DictSection>, CodecError> {
+    encode_entries_with_properties(window.entries(), &DICT_WRITER_PROPS)
+}
+
+/// Encode one normalized segment dictionary with the finished segment profile.
+#[allow(
+    single_use_lifetimes,
+    reason = "the named lifetime is required in this impl-Trait associated item on Rust 1.96"
+)]
+pub(crate) fn encode_final_entries<'a>(
+    entries: impl IntoIterator<Item = EntrySnapshot<'a>>,
+) -> Result<Vec<DictSection>, CodecError> {
+    let entries = entries.into_iter().collect::<Vec<_>>();
+    let mut string_rows = 0_usize;
+    let mut string_bytes = 0_usize;
+    let mut blob_rows = 0_usize;
+    let mut blob_bytes = 0_usize;
+    let mut truncated_blobs = 0_usize;
+    for entry in &entries {
+        match entry.placement {
+            Placement::Strings => {
+                string_rows += 1;
+                string_bytes = string_bytes.checked_add(entry.stored_bytes.len()).ok_or(
+                    CodecError::SectionTooLarge {
+                        len: usize::MAX,
+                        max: MAX_SECTION_BYTES,
+                    },
+                )?;
+            }
+            Placement::Blobs => {
+                blob_rows += 1;
+                blob_bytes = blob_bytes.checked_add(entry.stored_bytes.len()).ok_or(
+                    CodecError::SectionTooLarge {
+                        len: usize::MAX,
+                        max: MAX_SECTION_BYTES,
+                    },
+                )?;
+                truncated_blobs += usize::from(entry.truncated);
+            }
+        }
+    }
+    if string_rows != 0 {
+        final_dictionary_body_bound(Placement::Strings, string_rows, string_bytes, 0)?;
+    }
+    if blob_rows != 0 {
+        final_dictionary_body_bound(Placement::Blobs, blob_rows, blob_bytes, truncated_blobs)?;
+    }
+    encode_entries_with_properties(entries, &FINAL_DICT_WRITER_PROPS)
+}
+
+/// Proves that every value the limits admit can also be finished.
+///
+/// # Errors
+///
+/// Returns [`CodecError::PlainPageTooLarge`] when `truncate_limit` admits a
+/// single stored value that cannot fit the finished one-page budget.
+pub fn validate_dict_limits_for_write(limits: DictLimits) -> Result<(), CodecError> {
+    final_dictionary_body_bound(Placement::Strings, 1, limits.truncate_limit(), 0)?;
+    final_dictionary_body_bound(Placement::Blobs, 1, limits.truncate_limit(), 1).map(drop)
+}
+
+/// Prove one normalized dictionary body's PLAIN page and encoded-size bounds.
+///
+/// # Errors
+///
+/// Returns [`CodecError`] when row arithmetic overflows, one physical value
+/// stream cannot remain below the 1 MiB page target, or the conservative body
+/// bound crosses 8 MiB.
+pub fn final_dictionary_body_bound(
+    placement: Placement,
+    rows: usize,
+    stored_bytes: usize,
+    truncated_rows: usize,
+) -> Result<usize, CodecError> {
+    check_dict_rows(rows)?;
+    if truncated_rows > rows || (placement == Placement::Strings && truncated_rows != 0) {
+        return Err(CodecError::SchemaMismatch);
+    }
+    let too_large = |name| CodecError::PlainPageTooLarge {
+        name,
+        len: usize::MAX,
+        max: FINAL_DATA_PAGE_BYTES - 1,
+    };
+    let ids = rows.checked_mul(8).ok_or_else(|| too_large("str_id"))?;
+    let binary = rows
+        .checked_mul(4)
+        .and_then(|offsets| offsets.checked_add(stored_bytes))
+        .ok_or_else(|| too_large("stored_bytes"))?;
+    let mut columns = vec![
+        FinalPlainColumnSize::new("str_id", ids, 0),
+        FinalPlainColumnSize::new(
+            if placement == Placement::Strings {
+                "bytes"
+            } else {
+                "stored_bytes"
+            },
+            binary,
+            0,
+        ),
+    ];
+    if placement == Placement::Blobs {
+        let full_len = rows.checked_mul(8).ok_or_else(|| too_large("full_len"))?;
+        let sha = truncated_rows
+            .checked_mul(32)
+            .ok_or_else(|| too_large("full_sha256"))?;
+        let sha_levels = rows
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(8))
+            .ok_or(CodecError::SectionTooLarge {
+                len: usize::MAX,
+                max: MAX_SECTION_BYTES,
+            })?;
+        columns.extend([
+            FinalPlainColumnSize::new("full_len", full_len, 0),
+            FinalPlainColumnSize::new("truncated", rows, 0),
+            FinalPlainColumnSize::new("full_sha256", sha, sha_levels),
+        ]);
+    }
+    final_plain_body_bound(columns)
+}
+
+#[allow(
+    single_use_lifetimes,
+    reason = "the named lifetime is required in this impl-Trait associated item on Rust 1.96"
+)]
+fn encode_entries_with_properties<'a>(
+    entries: impl IntoIterator<Item = EntrySnapshot<'a>>,
+    properties: &WriterProperties,
+) -> Result<Vec<DictSection>, CodecError> {
+    let mut strings: Vec<EntrySnapshot<'_>> = Vec::new();
+    let mut blobs: Vec<EntrySnapshot<'_>> = Vec::new();
+    for entry in entries {
+        match entry.placement {
+            Placement::Strings => strings.push(entry),
+            Placement::Blobs => blobs.push(entry),
+        }
+    }
+
+    let mut sections = Vec::new();
+    if !strings.is_empty() {
+        sections.push(encode_strings(&mut strings, properties)?);
+    }
+    if !blobs.is_empty() {
+        sections.push(encode_blobs(&mut blobs, properties)?);
+    }
+    Ok(sections)
+}
+
+/// Reject an over-cap dictionary section before Arrow arrays are built.
+const fn check_dict_rows(rows: usize) -> Result<(), CodecError> {
+    if rows > MAX_SECTION_ROWS {
+        Err(CodecError::TooManyRows {
+            rows,
+            max: MAX_SECTION_ROWS,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+/// `dict.strings`: `str_id u64, bytes binary`, sorted by `str_id`.
+fn encode_strings(
+    entries: &mut [EntrySnapshot<'_>],
+    properties: &WriterProperties,
+) -> Result<DictSection, CodecError> {
+    check_dict_rows(entries.len())?;
+    entries.sort_unstable_by_key(|entry| entry.str_id.get());
+    let ids = UInt64Array::from_iter_values(entries.iter().map(|entry| entry.str_id.get()));
+    let bytes = BinaryArray::from_iter_values(entries.iter().map(|entry| entry.stored_bytes));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("str_id", DataType::UInt64, false),
+        Field::new("bytes", DataType::Binary, false),
+    ]));
+    let batch = RecordBatch::try_new(schema, vec![Arc::new(ids), Arc::new(bytes)])?;
+    section(DICT_STRINGS_TYPE_ID, &batch, properties)
+}
+
+/// `dict.blobs`: `str_id`, `stored_bytes`, `full_len`, `truncated`, and the
+/// optional `full_sha256` present only for truncated values.
+fn encode_blobs(
+    entries: &mut [EntrySnapshot<'_>],
+    properties: &WriterProperties,
+) -> Result<DictSection, CodecError> {
+    check_dict_rows(entries.len())?;
+    entries.sort_unstable_by_key(|entry| entry.str_id.get());
+    let ids = UInt64Array::from_iter_values(entries.iter().map(|entry| entry.str_id.get()));
+    let stored = BinaryArray::from_iter_values(entries.iter().map(|entry| entry.stored_bytes));
+    let full_len = UInt64Array::from_iter_values(entries.iter().map(|entry| entry.full_len));
+    let truncated: BooleanArray = entries.iter().map(|entry| Some(entry.truncated)).collect();
+    let sha = FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+        entries.iter().map(|entry| entry.full_sha256),
+        32,
+    )?;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("str_id", DataType::UInt64, false),
+        Field::new("stored_bytes", DataType::Binary, false),
+        Field::new("full_len", DataType::UInt64, false),
+        Field::new("truncated", DataType::Boolean, false),
+        Field::new("full_sha256", DataType::FixedSizeBinary(32), true),
+    ]));
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(ids),
+        Arc::new(stored),
+        Arc::new(full_len),
+        Arc::new(truncated),
+        Arc::new(sha),
+    ];
+    let batch = RecordBatch::try_new(schema, columns)?;
+    section(DICT_BLOBS_TYPE_ID, &batch, properties)
+}
+
+/// Write `batch` to a capped zstd Parquet body.
+fn section(
+    type_id: u32,
+    batch: &RecordBatch,
+    properties: &WriterProperties,
+) -> Result<DictSection, CodecError> {
+    if batch.num_rows() > MAX_SECTION_ROWS {
+        return Err(CodecError::TooManyRows {
+            rows: batch.num_rows(),
+            max: MAX_SECTION_ROWS,
+        });
+    }
+
+    let options = ArrowWriterOptions::new()
+        .with_properties(properties.clone())
+        .with_skip_arrow_metadata(true);
+    let mut body = Vec::new();
+    let mut writer = ArrowWriter::try_new_with_options(&mut body, batch.schema(), options)?;
+    writer.write(batch)?;
+    writer.close()?;
+
+    if body.len() > MAX_SECTION_BYTES {
+        return Err(CodecError::SectionTooLarge {
+            len: body.len(),
+            max: MAX_SECTION_BYTES,
+        });
+    }
+    Ok(DictSection {
+        type_id,
+        rows: u32::try_from(batch.num_rows()).unwrap_or(u32::MAX),
+        body,
+    })
+}
+
+#[cfg(test)]
+mod tests;

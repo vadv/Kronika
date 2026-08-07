@@ -1,0 +1,25 @@
+[package]
+name = "kronika-collector"
+description = "Kronika collector daemon: snapshot Linux system metrics into finished segments"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kronika-format = { path = "../../crates/kronika-format" }
+kronika-layout = { path = "../../crates/kronika-layout" }
+kronika-registry = { path = "../../crates/kronika-registry" }
+kronika-source-os = { path = "../../crates/kronika-source-os" }
+kronika-writer = { path = "../../crates/kronika-writer" }
+rustix = { version = "1", features = ["fs"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

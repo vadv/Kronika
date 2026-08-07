@@ -1,0 +1,46 @@
+# syntax=docker/dockerfile:1.7
+
+# Two layers on purpose. The dependency layer is keyed on the manifests and the
+# lockfile alone, so a source-only change reuses it and CI does not rebuild the
+# crates.io graph on every run.
+ARG BDD_BASE=docker.io/library/rust:1.96.0-slim-bookworm
+
+FROM ${BDD_BASE} AS deps
+# .cargo/config.toml pins musl for release binaries; the image has no musl std,
+# so everything here builds for the host gnu target instead.
+ENV CARGO_BUILD_TARGET=x86_64-unknown-linux-gnu
+WORKDIR /work
+COPY Cargo.toml Cargo.lock clippy.toml rustfmt.toml ./
+COPY crates/kronika-layout/Cargo.toml crates/kronika-layout/
+COPY crates/kronika-format/Cargo.toml crates/kronika-format/
+COPY crates/kronika-derive/Cargo.toml crates/kronika-derive/
+COPY crates/kronika-registry/Cargo.toml crates/kronika-registry/
+COPY crates/kronika-writer/Cargo.toml crates/kronika-writer/
+COPY crates/kronika-store/Cargo.toml crates/kronika-store/
+COPY crates/kronika-source-os/Cargo.toml crates/kronika-source-os/
+COPY crates/kronika-bdd/Cargo.toml crates/kronika-bdd/
+COPY bins/kronika-collector/Cargo.toml bins/kronika-collector/
+COPY bins/kronika-demo/Cargo.toml bins/kronika-demo/
+# Placeholder sources let cargo resolve and compile the dependency graph. A
+# proc-macro crate gets no bin target: cargo rejects one.
+RUN set -eu; \
+    for crate in crates/* bins/*; do \
+        mkdir -p "$crate/src"; \
+        : > "$crate/src/lib.rs"; \
+        grep -q 'proc-macro = true' "$crate/Cargo.toml" \
+            || echo 'fn main() {}' > "$crate/src/main.rs"; \
+    done; \
+    cargo build --workspace --locked --release; \
+    rm -rf crates/*/src bins/*/src; \
+    find target -name 'kronika*' -o -name 'libkronika*' | xargs -r rm -rf
+
+FROM deps AS bdd
+WORKDIR /work
+COPY . .
+# Release, because one scenario holds the collector to its peak-RSS limit and
+# a debug build carries megabytes the shipped binary does not.
+RUN cargo build --locked --release -p kronika-collector -p kronika-bdd
+ENV KRONIKA_COLLECTOR_BIN=/work/target/x86_64-unknown-linux-gnu/release/kronika-collector
+ENV KRONIKA_FEATURES=/work/crates/kronika-bdd/features
+ENV KRONIKA_FIXTURES=/work/crates/kronika-bdd/fixtures
+CMD ["/work/target/x86_64-unknown-linux-gnu/release/kronika-bdd"]
