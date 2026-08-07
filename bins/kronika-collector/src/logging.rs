@@ -420,5 +420,22 @@ pub(crate) fn log_journal_append(
     );
 }
 
+/// Peak resident set size of this process, kibibytes.
+///
+/// `VmHWM` is the kernel's own watermark, so it needs no sampling of our own.
+/// A kernel that does not report it leaves the field at zero rather than
+/// making the caller decide what to print.
+pub(crate) fn peak_rss_kib() -> u64 {
+    let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
+        return 0;
+    };
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmHWM:"))
+        .and_then(|value| value.split_whitespace().next())
+        .and_then(|kib| kib.parse().ok())
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests;

@@ -31,6 +31,7 @@ Feature: Where a segment lands and what it says about itself
       | min_ts        |
       | max_ts        |
       | elapsed_ms    |
+      | rss_kib       |
 
   Scenario: An open segment closes on age and carries every window it collected
     Given a collector with these settings

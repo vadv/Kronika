@@ -3,7 +3,7 @@
 use super::prefix::{ReadablePrefix, readable_prefix};
 use super::{
     Context, FileKind, Instant, Journal, JournalConfig, LogLevel, PathBuf, Result, SegmentAddress,
-    SegmentId, WriterOwner, duration_ms, field, log_event, write_segment,
+    SegmentId, WriterOwner, duration_ms, field, log_event, peak_rss_kib, write_segment,
 };
 use kronika_format::ReadAt as _;
 
@@ -148,6 +148,7 @@ pub(super) fn write_recovered_journal(
             field("min_ts", summary.min_ts),
             field("max_ts", summary.max_ts),
             field("elapsed_ms", duration_ms(started.elapsed())),
+            field("rss_kib", peak_rss_kib()),
         ],
     );
     journal

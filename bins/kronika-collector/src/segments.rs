@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::logging::{
-    LogLevel, duration_ms, field, log_event, log_flush_summary, log_journal_append, summary_rows,
+    LogLevel, duration_ms, field, log_event, log_flush_summary, log_journal_append, peak_rss_kib,
+    summary_rows,
 };
 use anyhow::{Context, Result};
 use kronika_format::{EntrySnapshot, Placement, StrId};
@@ -158,6 +159,7 @@ where
             field("min_ts", summary.min_ts),
             field("max_ts", summary.max_ts),
             field("elapsed_ms", duration_ms(started.elapsed())),
+            field("rss_kib", peak_rss_kib()),
         ],
     );
     // Leave active.wal intact if write_segment() fails.

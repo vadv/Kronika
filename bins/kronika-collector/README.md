@@ -10,8 +10,9 @@ Every variable below is read and parsed once, before the first collection. A
 value that does not parse stops the daemon with a message naming the variable
 and what it was given; nothing falls back to a default silently.
 
-There is no per-source row cap. A source returns what the machine has, and the
-`segment_write_finish` line reports what the collection cost.
+There is no per-source row cap. A source returns what the machine has, and each
+`segment_write_finish` line carries `rss_kib`, the process's peak resident set
+size, so the cost of a collection is on record rather than guessed at.
 
 `KRONIKA_OUT_DIR` is the only required variable.
 
