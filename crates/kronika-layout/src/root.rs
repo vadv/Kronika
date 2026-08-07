@@ -50,7 +50,7 @@ pub const WRITER_OWNER_LOCK_NAME: &str = ".kronika-writer.owner.lock";
 /// continue. At most one exists at a time.
 pub const DAMAGED_JOURNAL_NAME: &str = "active.wal.damaged";
 /// Permanent process-ownership lock for index publication and GC.
-pub const OVERVIEW_OWNER_LOCK_NAME: &str = ".kronika-index.owner.lock";
+pub const INDEX_OWNER_LOCK_NAME: &str = ".kronika-index.owner.lock";
 const HARD_MAX_VISITED_ENTRIES: usize = 4_000_000;
 const HARD_MAX_ENTRIES_PER_DAY: usize = 1_000_000;
 const HARD_MAX_SEGMENTS: usize = 2_000_000;
@@ -323,7 +323,7 @@ impl DataRoot {
     /// [`LayoutError::OwnerContended`].
     pub fn acquire_index(&self, limits: LayoutLimits) -> Result<IndexOwner, LayoutError> {
         self.scan(limits)?;
-        let lock = self.acquire_lock(OVERVIEW_OWNER_LOCK_NAME, OwnerKind::Index)?;
+        let lock = self.acquire_lock(INDEX_OWNER_LOCK_NAME, OwnerKind::Index)?;
         self.scan(limits)?;
         Ok(IndexOwner {
             root: self.clone(),

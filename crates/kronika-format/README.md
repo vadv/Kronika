@@ -476,7 +476,7 @@ decoding requires ids inside each body to be strictly increasing.
 Journal version 1 starts with a checksummed 36-byte header:
 
 ```text
-"PGKJNL1\0" | version: u32 | state: u8 | id_present: u8 | reserved: u16
+"KRNJNL1\0" | version: u32 | state: u8 | id_present: u8 | reserved: u16
              | segment_id: i64 | body_len: u64 | header_crc32c: u32
 ```
 

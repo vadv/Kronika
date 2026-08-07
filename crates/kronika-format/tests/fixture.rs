@@ -11,7 +11,7 @@
 //!  0..4   magic "ZMS1"
 //!  4..8   section body 01 02 03 04 (opaque to the container)
 //!  8..40  catalog entry: type_id 1_006_001, offset 4, len 4, rows 1
-//! 40..72  catalog meta: ts 1_000_000..2_000_000, 1 entry, version 2
+//! 40..72  catalog meta: ts 1_000_000..2_000_000, 1 entry, version 1
 //! 72..80  tail index: catalog_len 64, magic "ZMS1"
 //! ```
 
@@ -54,7 +54,7 @@ fn fixture_decodes_to_expected_catalog() {
             }],
             min_ts: 1_000_000,
             max_ts: 2_000_000,
-            format_version: 2,
+            format_version: 1,
             window_count: 0,
         }
     );

@@ -18,8 +18,8 @@ pub use producer_status::{
 };
 pub use root::{
     ACTIVE_JOURNAL_NAME, DAMAGED_JOURNAL_NAME, DataRoot, EntryDiagnostic, EntryFileType,
-    EntryScope, FileIdentity, FileKind, FilesystemUsage, ForeignEntry, ForeignEntryReason, IdxTemp,
-    IndexOwner, LayoutLimits, LayoutSnapshot, OVERVIEW_OWNER_LOCK_NAME, PathIdentity,
+    EntryScope, FileIdentity, FileKind, FilesystemUsage, ForeignEntry, ForeignEntryReason,
+    INDEX_OWNER_LOCK_NAME, IdxTemp, IndexOwner, LayoutLimits, LayoutSnapshot, PathIdentity,
     SegmentArtifacts, SegmentRemoval, TemporaryKind, TemporaryObject, WRITER_OWNER_LOCK_NAME,
     WriterLease, WriterOwner, ZmsTemp,
 };

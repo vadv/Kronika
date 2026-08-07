@@ -1,6 +1,6 @@
 [package]
 name = "kronika-writer"
-description = "Writer-side segment state and active.parts journal"
+description = "Writer-side segment state and the active.wal journal"
 publish = false
 version.workspace = true
 edition.workspace = true

@@ -16,7 +16,7 @@ use super::entry::{EntryFileType, EntryParent, ForeignEntryReason, PathIdentity,
 use super::fsops::stat_no_follow;
 use super::scan::ParsedLeaf;
 use super::{
-    ACTIVE_JOURNAL_NAME, DataRoot, FileIdentity, OVERVIEW_OWNER_LOCK_NAME, WRITER_OWNER_LOCK_NAME,
+    ACTIVE_JOURNAL_NAME, DataRoot, FileIdentity, INDEX_OWNER_LOCK_NAME, WRITER_OWNER_LOCK_NAME,
 };
 use crate::producer_status::{PRODUCER_STATUS_NAME, PRODUCER_STATUS_TEMP_NAME};
 
@@ -41,7 +41,7 @@ pub(super) fn is_control_name(name: &str) -> bool {
         name,
         ACTIVE_JOURNAL_NAME
             | WRITER_OWNER_LOCK_NAME
-            | OVERVIEW_OWNER_LOCK_NAME
+            | INDEX_OWNER_LOCK_NAME
             | PRODUCER_STATUS_NAME
             | PRODUCER_STATUS_TEMP_NAME
     )

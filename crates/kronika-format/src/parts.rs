@@ -32,7 +32,7 @@ pub use scan::{
 pub const FRAME_MAGIC: [u8; 4] = *b"ZMSP";
 
 /// File signature for the only supported active-journal header format.
-pub const JOURNAL_MAGIC: [u8; 8] = *b"PGKJNL1\0";
+pub const JOURNAL_MAGIC: [u8; 8] = *b"KRNJNL1\0";
 
 /// Current active-journal format version.
 pub const JOURNAL_VERSION: u32 = 1;
@@ -41,7 +41,7 @@ pub const JOURNAL_VERSION: u32 = 1;
 pub const JOURNAL_HEADER_LEN: usize = 36;
 
 /// Magic bytes opening a committed journal-reset marker.
-pub const RESET_MARKER_MAGIC: [u8; 8] = *b"PGKRST1\0";
+pub const RESET_MARKER_MAGIC: [u8; 8] = *b"KRNRST1\0";
 
 /// Size of a committed journal-reset marker.
 pub const RESET_MARKER_LEN: usize = 32;

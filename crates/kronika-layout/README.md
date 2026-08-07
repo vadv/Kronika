@@ -38,7 +38,7 @@ its `SegmentId` falls. Time-range queries still use the catalog's `min_ts` and
 from its ZMS.
 
 `active.wal` stays at the root. The first supported journal format is
-version 1, with magic `PGKJNL1\0`; its header stores the active `SegmentId`.
+version 1, with magic `KRNJNL1\0`; its header stores the active `SegmentId`.
 `kronika-layout` controls access to the file, while `kronika-format` defines
 its bytes and `kronika-writer` implements its lifecycle. Kronika has not had
 a public release, so version 1 is also the only journal format; there is no

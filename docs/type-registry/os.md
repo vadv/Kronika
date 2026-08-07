@@ -109,12 +109,12 @@ costs nothing on disk and changes no `type_id`.
 ## Coverage against atop and the reference tools
 
 The target for this registry is the union of what `atop` records, what the
-predecessor project (PgKronika) recorded, and what an internal reference tool
+predecessor project recorded, and what an internal reference tool
 recorded. `✓` means the data is in a section above.
 
 ### CPU
 
-| Metric | atop | PgKronika | internal | Kronika |
+| Metric | atop | predecessor | internal | Kronika |
 | --- | :-: | :-: | :-: | :-: |
 | Per-CPU and total user/nice/system/idle/iowait/irq/softirq/steal/guest | ✓ | ✓ | ✓ | ✓ `1_102` |
 | Context switches, forks, run and blocked queue | ✓ | ✓ | ✓ | ✓ `1_103` |
@@ -129,7 +129,7 @@ recorded. `✓` means the data is in a section above.
 
 ### Memory and swap
 
-| Metric | atop | PgKronika | internal | Kronika |
+| Metric | atop | predecessor | internal | Kronika |
 | --- | :-: | :-: | :-: | :-: |
 | Total, free, available, buffers, cache, slab | ✓ | ✓ | ✓ | ✓ `1_104` |
 | Dirty, writeback, anon, mapped, shmem, page tables | ✓ | ✓ | — | ✓ `1_104` |
@@ -153,13 +153,13 @@ recorded. `✓` means the data is in a section above.
 
 ### Pressure stall
 
-| Metric | atop | PgKronika | internal | Kronika |
+| Metric | atop | predecessor | internal | Kronika |
 | --- | :-: | :-: | :-: | :-: |
 | CPU, memory, IO: some and full, avg10/60/300 and total | ✓ | ✓ | ✓ | ✓ `1_107` |
 
 ### Storage
 
-| Metric | atop | PgKronika | internal | Kronika |
+| Metric | atop | predecessor | internal | Kronika |
 | --- | :-: | :-: | :-: | :-: |
 | Reads, writes, sectors, merges, service and queue time | ✓ | ✓ | ✓ | ✓ `1_108` |
 | Discards and flushes | ✓ | ✓ | — | ✓ `1_108` |
@@ -171,7 +171,7 @@ recorded. `✓` means the data is in a section above.
 
 ### Network
 
-| Metric | atop | PgKronika | internal | Kronika |
+| Metric | atop | predecessor | internal | Kronika |
 | --- | :-: | :-: | :-: | :-: |
 | Per-interface bytes, packets, errors, drops, fifo, frame, carrier, collisions | ✓ | ✓ | ✓ | ✓ `1_109` |
 | Link speed and duplex | ✓ | — | — | ✓ `1_109` |
@@ -189,7 +189,7 @@ recorded. `✓` means the data is in a section above.
 
 ### Processes
 
-| Metric | atop | PgKronika | internal | Kronika |
+| Metric | atop | predecessor | internal | Kronika |
 | --- | :-: | :-: | :-: | :-: |
 | Identity: pid, ppid, uid, gid, name, command line, start time | ✓ | ✓ | ✓ | ✓ `1_100` |
 | State, threads, priority, nice, policy, real-time priority, current CPU | ✓ | ✓ | ✓ | ✓ `1_100` |
@@ -206,7 +206,7 @@ recorded. `✓` means the data is in a section above.
 
 ### cgroup and container
 
-| Metric | atop | PgKronika | internal | Kronika |
+| Metric | atop | predecessor | internal | Kronika |
 | --- | :-: | :-: | :-: | :-: |
 | CPU usage, user, system, throttling, quota, period | ✓ | ✓ | ✓ | ✓ `1_201` |
 | Memory current, max, anon, file, kernel, slab, events, OOM | ✓ | ✓ | ✓ | ✓ `1_202` |

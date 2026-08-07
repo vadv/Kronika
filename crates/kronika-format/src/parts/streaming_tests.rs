@@ -9,7 +9,7 @@ fn scan_streaming(bytes: &[u8], start_at: u64) -> Result<ScanReport, JournalScan
 #[test]
 fn journal_v1_header_has_the_initial_magic_and_version() {
     let bytes = JournalHeader::EMPTY.encode();
-    assert_eq!(&bytes[..8], b"PGKJNL1\0");
+    assert_eq!(&bytes[..8], b"KRNJNL1\0");
     assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 1);
     assert_eq!(JournalHeader::decode(bytes), Ok(JournalHeader::EMPTY));
 }

@@ -38,7 +38,7 @@ through a capability from `kronika-layout`. A new journal is initialized as a
 durable 36-byte version-1 empty header; it is never represented by a zero-length
 file.
 
-Journal version 1 uses the magic `PGKJNL1\0`. Its checksummed header records
+Journal version 1 uses the magic `KRNJNL1\0`. Its checksummed header records
 whether the journal is empty or active, the active [`SegmentId`][layout], and
 the exact number of following frame bytes. `append(segment_id, part)` validates
 the ZMS part and writes its `ZMSP` frame. The first append makes the segment id

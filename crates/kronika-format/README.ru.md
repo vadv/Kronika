@@ -465,7 +465,7 @@ Write распространяет нормализацию на весь сег
 Журнал версии 1 начинается с 36-байтного заголовка с контрольной суммой:
 
 ```text
-"PGKJNL1\0" | version: u32 | state: u8 | id_present: u8 | reserved: u16
+"KRNJNL1\0" | version: u32 | state: u8 | id_present: u8 | reserved: u16
              | segment_id: i64 | body_len: u64 | header_crc32c: u32
 ```
 

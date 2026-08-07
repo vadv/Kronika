@@ -171,7 +171,7 @@ fn corrupt_journal(world: &mut BddWorld) -> Result<()> {
     let out_dir = root.path().join("segments");
     std::fs::create_dir_all(&out_dir)?;
     // A valid journal header magic followed by bytes that are not a frame.
-    std::fs::write(out_dir.join("active.wal"), b"PGKJNL1\0not-a-valid-header")?;
+    std::fs::write(out_dir.join("active.wal"), b"KRNJNL1\0not-a-valid-header")?;
     world.prepared_root = Some(root);
     Ok(())
 }

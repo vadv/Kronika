@@ -126,7 +126,7 @@ fn journal_keeps_writer_ownership_after_the_original_owner_is_dropped() {
 fn fabricated_v2_journal_identities_are_rejected_without_mutation() {
     let canonical = JournalHeader::EMPTY.encode();
     let mut magic_v2 = canonical;
-    magic_v2[..8].copy_from_slice(b"PGKJNL2\0");
+    magic_v2[..8].copy_from_slice(b"KRNJNL2\0");
     let magic_v2_crc = crc32c(&magic_v2[..32]);
     magic_v2[32..].copy_from_slice(&magic_v2_crc.to_le_bytes());
 

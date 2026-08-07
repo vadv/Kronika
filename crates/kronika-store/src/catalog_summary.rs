@@ -5,8 +5,8 @@ use kronika_format::TAIL_INDEX_LEN;
 use kronika_format::{Catalog, DecodeError, Entry, FORMAT_VERSION, MAGIC};
 use sha2::{Digest as _, Sha256};
 
-const LOGICAL_DIGEST_DOMAIN: &[u8] = b"pgk-index-catalog-v2\0";
-const LAYOUT_DIGEST_DOMAIN: &[u8] = b"pgk-zms-catalog-layout-v2\0";
+const LOGICAL_DIGEST_DOMAIN: &[u8] = b"krn-index-catalog-v1\0";
+const LAYOUT_DIGEST_DOMAIN: &[u8] = b"krn-zms-catalog-layout-v1\0";
 const TYPE_BLOOM_WORDS: usize = 8;
 const TYPE_BLOOM_HASHES: usize = 8;
 const TYPE_BLOOM_BITS: u64 = 512;
