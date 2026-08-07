@@ -8,6 +8,7 @@ members = [
     "crates/kronika-writer",
     "crates/kronika-store",
     "crates/kronika-source-os",
+    "bins/kronika-collector",
 ]
 
 [workspace.package]
