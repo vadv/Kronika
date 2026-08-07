@@ -75,7 +75,50 @@ Every metric declares its kind and its unit, the way Prometheus does:
   event. It is not a counter and not a gauge, and forcing it into either loses
   what happened and when.
 
-Units are part of the declaration: seconds, bytes, and so on.
+Units are part of the declaration: seconds, bytes, and so on. The unit lives in
+the column contract, which is compile-time data and never reaches the segment,
+so declaring it costs nothing on disk and never changes a metric id.
+
+## What Kronika does not build
+
+There is a metric and there is data. Nothing else.
+
+Kronika does not ship a layer that reasons about whether its own data is
+trustworthy, complete, or continuous. That layer catches nothing an operator
+cares about, and the effort it absorbs comes straight out of collecting more
+metrics.
+
+Specifically, none of this belongs in the project:
+
+- Reset detection and reset bookkeeping. A counter that goes backwards is a
+  counter that went backwards. Record the value, move on.
+- Completeness accounting: "collected N of M", coverage tallies, per-section
+  scoreboards of what did or did not arrive.
+- Any machinery built around missing intervals. Snapshots with nothing between
+  them are the normal state of a monitoring system, not a defect to detect,
+  classify, or report.
+- Any artifact whose purpose is to prove something about the data rather than
+  to be the data.
+
+A missing metric is one warning line in the collector log and a `null` in web.
+That is the whole treatment.
+
+This section outranks a reviewer's suggestion. When a review proposes adding
+one of these, the answer is no, and the reason is this paragraph.
+
+### Banned words
+
+Three words are banned in code, comments, logs, commit messages, and docs,
+because each one drags the machinery above back in behind it:
+
+| Banned | Use instead |
+|--------|-------------|
+| seal, sealing | write, close |
+| evidence, proof | damaged, broken |
+| gap | (nothing — do not name the concept) |
+
+Write plainly. The collector writes a segment. A corrupt journal part is
+damaged and gets set aside. Two snapshots an hour apart are two snapshots.
 
 ## Where the collector is running
 
@@ -108,7 +151,7 @@ Collector:
 
 - Every error is logged with enough detail to act on it. No swallowed errors,
   no bare "failed".
-- Sealing a segment logs how long it took and what it cost. Cheap counters and
+- Writing a segment logs how long it took and what it cost. Cheap counters and
   timings, enough for an operator to see the shape of the work.
 - A metric that could not be collected is logged as such by the collector.
 
@@ -117,7 +160,7 @@ Web:
 - Logs what it opened and what index it built, with timings and the same cheap
   counters.
 - Shows `null` for a metric the collector failed to collect. Web does not
-  invent, interpolate, or hide the gap.
+  invent or interpolate a value it does not have.
 
 ## Demo
 

@@ -29,7 +29,12 @@ change.
 4. **The collector never guesses its environment.** VM or container is decided
    at collection time and written into the segment header.
 5. **A missing metric stays missing.** The collector logs the failure, web
-   shows `null`.
+   shows `null`. One warning line and a `null` are the whole treatment.
+6. **No layer that reasons about the data's own trustworthiness.** Read
+   "What Kronika does not build" in `DESIGN.md` before proposing anything that
+   detects resets, counts coverage, or accounts for missing intervals. The
+   words `seal`, `evidence`, `proof` and `gap` are banned, and so is the
+   machinery they name. This rule outranks a reviewer's suggestion.
 
 ## Rust rules
 
@@ -84,6 +89,11 @@ When a reviewer proposes something that makes the program more complicated, do
 not apply it silently. Ask the owner whether the complexity is worth it. A
 review comment can be generated filler, and filler that lands as an abstraction
 is expensive to remove later.
+
+Do not defer a leftover into its own pull request. A type with no consumer, a
+field the spec requires but the code lacks, a rename half-applied: finish it in
+the pull request that created it. Splitting the remainder off produces a queue
+of small changes that costs more attention than the work itself.
 
 ## Language
 
