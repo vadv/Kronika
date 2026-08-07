@@ -428,11 +428,9 @@ Under the current collector limits, placement works as follows:
 | `/proc/PID/cmdline`, 80 KiB | `dict.blobs` | The first 64 KiB, `full_len=81,920`, `truncated=true`, and SHA-256 of the original 80 KiB. |
 
 A truncated value's `StrId` is computed over all original bytes, not the stored
-prefix. The discarded suffix cannot be recovered from the ZMS. Plan text
-defaults to `KRONIKA_PG_MAX_PLAN_TEXT=32,768`, so it can enter `dict.blobs` but
-does not reach the truncation threshold under default settings. Even the
-allowed 64 KiB plan maximum is byte-capped by the source before interning, so
-the dictionary treats the bytes it receives as the complete value.
+prefix. The discarded suffix cannot be recovered from the ZMS. A source that
+caps a value's length does so before interning, so the dictionary treats the
+bytes it receives as the complete value.
 
 The reusable model and the collector intentionally use different limits:
 
@@ -633,15 +631,15 @@ section access.
 The format layout itself has no compression knobs. Operators control the
 amount and grouping of collected data through `kronika-collector`:
 
-| Control | Default | What it changes |
-| --- | ---: | --- |
-| Per-source `*_INTERVAL_S` variables | 1-3600 s, depending on source | Raising an interval produces fewer snapshots and Parquet footers, at the cost of time resolution. `KRONIKA_INTERVAL_S=5` is only the scheduler tick. |
-| `KRONIKA_PG_MAX_TABLES`, `KRONIKA_PG_MAX_INDEXES`, `KRONIKA_PG_MAX_STATEMENTS`, `KRONIKA_PG_MAX_PLANS` | `500` | Lower values reduce high-cardinality rows and associated dictionary entries but omit lower-ranked objects. |
-| `KRONIKA_PG_MAX_PLAN_TEXT` | 32,768 bytes | Maximum stored text for one plan read. |
-| `KRONIKA_PG_PLAN_TEXT_BUDGET` | 8 MiB | Total plan-text budget per read; zero disables plan text. |
-| `KRONIKA_SEGMENT_MAX_BYTES` | 64 MiB | Writes after this many raw `active.wal` bytes; zero writes every window. It changes file granularity, not Parquet compression. |
-| `KRONIKA_SEGMENT_MAX_AGE_S` | 900 s | Maximum age of an open segment. It mainly changes time span and file count. |
-| `KRONIKA_JOURNAL_MAX_BYTES` | 1 GiB | Hard physical `active.wal` limit, including the reserved 32-byte reset marker. Every frame must fit; exhaustion causes an early write. It is not a target ZMS size. |
+| Control | What it changes |
+| --- | --- |
+| Per-source read intervals | A longer interval produces fewer snapshots and Parquet footers, at the cost of time resolution. |
+| Per-source row ceilings | Lower ceilings reduce high-cardinality rows and the dictionary entries behind them, at the cost of the rows past the cut. |
+| Segment size and age | They change file granularity and the time span one file covers, not Parquet compression. |
+| Journal size | A hard physical `active.wal` limit; exhaustion causes an early write. It is not a target ZMS size. |
+
+The variables behind these controls, with their defaults, are listed in the
+[collector README](../../bins/kronika-collector/README.md).
 
 Changing source limits trades observability for disk use. Segment age and
 rotation size change how many windows write coalesces, so they can affect final

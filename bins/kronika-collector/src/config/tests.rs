@@ -46,3 +46,26 @@ fn the_journal_cap_must_fit_the_format() {
     assert!(validate_journal_max_bytes(JOURNAL_HEADER_LEN as u64 - 1).is_err());
     assert!(validate_journal_max_bytes(MAX_JOURNAL_LEN as u64 + 1).is_err());
 }
+
+#[test]
+fn a_value_that_is_not_a_number_names_itself_in_the_refusal() {
+    let error =
+        super::parse_env_number::<u64>("KRONIKA_OS_MAX_PROCS", "many").expect_err("a refusal");
+    assert_eq!(
+        error.to_string(),
+        r#"KRONIKA_OS_MAX_PROCS="many" is not a whole number"#
+    );
+}
+
+#[test]
+fn a_negative_count_is_not_a_whole_number() {
+    assert!(super::parse_env_number::<usize>("KRONIKA_OS_MAX_DISKS", "-1").is_err());
+}
+
+#[test]
+fn surrounding_whitespace_is_not_a_refusal() {
+    assert_eq!(
+        super::parse_env_number::<u64>("KRONIKA_INTERVAL_S", " 30 ").expect("a number"),
+        30
+    );
+}

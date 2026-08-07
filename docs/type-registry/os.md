@@ -55,31 +55,15 @@ The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 | `1_204_001` | cgroup: pids | `snapshot_full` | `(cgroup_path, ts)` |
 
 The collection period is not part of a `type_id`. The collector's scheduler
-sets it:
-
-| Variable | Sections | Default |
-| --- | --- | ---: |
-| `KRONIKA_OS_CORE_INTERVAL_S` | `1_102`–`1_111`, `1_114`–`1_120` | 10 s |
-| `KRONIKA_OS_MOUNTTOPO_INTERVAL_S` | `1_112`, `1_113` | 60 s |
-| `KRONIKA_OS_PROCESS_INTERVAL_S` | `1_100` | 5 s |
-| `KRONIKA_OS_PROCESS_STATUS_INTERVAL_S` | `1_101` | 30 s |
-| `KRONIKA_OS_CGROUP_INTERVAL_S` | `1_201`–`1_204` | 10 s |
-| `KRONIKA_OS_CGROUP_MAPPING_INTERVAL_S` | `1_200` | 30 s |
+sets it per source; the intervals and their defaults are listed in the
+[collector README](../../bins/kronika-collector/README.md).
 
 ## Bounds
 
 Every path that walks a directory has a ceiling, because the collector shares
-a host with a production database:
-
-| Path | Bound | Variable |
-| --- | --- | --- |
-| Any single procfs read | 4 MiB | format constant |
-| Process rows | top-N by CPU and RSS | `KRONIKA_OS_MAX_PROCESSES` |
-| Interrupt lines | row cap | `KRONIKA_OS_MAX_IRQ_ROWS` |
-| Disk rows | row cap | `KRONIKA_OS_MAX_DISKS` |
-| Mount rows | row cap | `KRONIKA_OS_MAX_MOUNTS` |
-| cgroup tree | depth and node cap | `KRONIKA_OS_MAX_CGROUPS` |
-| NUMA nodes | directory listing cap | node count |
+a host with a production database. A single procfs read is capped at 4 MiB by
+a format constant; the row and depth ceilings are configurable and listed with
+their defaults in the [collector README](../../bins/kronika-collector/README.md).
 
 A source that hits its cap logs one warning line naming the cap and how many
 rows it dropped.

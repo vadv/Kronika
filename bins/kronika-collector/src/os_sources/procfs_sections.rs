@@ -1,10 +1,10 @@
 use super::{
     Instant, Interner, LogLevel, MountEntry, OsDiskstats, OsInterrupts, OsKernelLimits,
     OsMountinfo, OsNetdev, OsNuma, OsSoftirq, OsSources, OsTopology, ProcFs, SysFs, Ts,
-    container_device_set, cpuinfo, diskstats, env_u64, field, intern_str, interrupts,
-    kernel_limits, layout_id, log_collection_finish, log_degraded, log_event, mount_row, net_dev,
-    net_netstat, net_snmp, net_snmp6, nfs, node_id_from_dir, os_cap_from_env, parse_dev_pair,
-    parse_mountinfo, parse_node_meminfo, read_optional_os_file, section_name, statvfs,
+    container_device_set, cpuinfo, diskstats, field, intern_str, interrupts, kernel_limits,
+    layout_id, log_collection_finish, log_degraded, log_event, mount_row, net_dev, net_netstat,
+    net_snmp, net_snmp6, nfs, node_id_from_dir, parse_dev_pair, parse_mountinfo,
+    parse_node_meminfo, read_optional_os_file, section_name, statvfs,
 };
 
 /// Read and parse `/proc/diskstats`, interning device names into rows.
@@ -21,6 +21,7 @@ pub(super) fn collect_diskstats(
     ts: i64,
     in_container: bool,
     mounts: &[MountEntry],
+    max_disks: usize,
 ) -> Vec<OsDiskstats> {
     let type_id = 1_108_001_u32;
     let started = Instant::now();
@@ -40,7 +41,7 @@ pub(super) fn collect_diskstats(
         rows.retain(|row| devices.contains(&(row.major, row.minor)));
     }
 
-    apply_disk_cap(&mut rows, type_id);
+    apply_disk_cap(&mut rows, type_id, max_disks);
 
     let built: Vec<OsDiskstats> = rows
         .iter()
@@ -57,9 +58,7 @@ pub(super) fn collect_diskstats(
 ///
 /// When the cap trims rows, a `collection_degraded` event with `reason=disk_cap`
 /// records how many devices were dropped, so the number is visible.
-fn apply_disk_cap(rows: &mut Vec<diskstats::DiskstatsRow>, type_id: u32) {
-    let cap = os_max_disks(type_id);
-    let cap = usize::try_from(cap).unwrap_or(usize::MAX);
+fn apply_disk_cap(rows: &mut Vec<diskstats::DiskstatsRow>, type_id: u32, cap: usize) {
     let dropped = cap_disks(rows, cap);
     if dropped == 0 {
         return;
@@ -77,27 +76,6 @@ fn apply_disk_cap(rows: &mut Vec<diskstats::DiskstatsRow>, type_id: u32) {
             field("cap", cap),
         ],
     );
-}
-
-fn os_max_disks(type_id: u32) -> u64 {
-    match env_u64("KRONIKA_OS_MAX_DISKS", 256) {
-        Ok(cap) => cap,
-        Err(err) => {
-            log_event(
-                LogLevel::Warn,
-                "collection_degraded",
-                &[
-                    field("collection", section_name(type_id)),
-                    field("type_id", type_id),
-                    field("layout_id", layout_id(type_id)),
-                    field("source", "KRONIKA_OS_MAX_DISKS"),
-                    field("reason", &err),
-                    field("cap", 256_u64),
-                ],
-            );
-            256
-        }
-    }
 }
 
 /// Trim `rows` to the `cap` lowest `(major, minor)` devices in place.
@@ -198,6 +176,10 @@ pub(crate) fn net_link_facts(sys: &SysFs, iface: &str) -> (Option<i64>, u8) {
 }
 
 /// Read the interrupt, softirq, kernel-limit, IPv6, and NFS singletons.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "five procfs singletons share one scope and interner pass"
+)]
 pub(super) fn collect_kernel_singletons(
     fs: &ProcFs,
     interner: &mut Interner,
@@ -205,15 +187,13 @@ pub(super) fn collect_kernel_singletons(
     net_scope: u8,
     ts: i64,
     cpu_count: usize,
+    max_irq_rows: usize,
     os: &mut OsSources,
 ) {
     let irq_type_id = 1_114_001_u32;
     let started = Instant::now();
     if let Some(content) = read_optional_os_file(fs, "interrupts", irq_type_id) {
-        let max_rows =
-            usize::try_from(os_cap_from_env(irq_type_id, "KRONIKA_OS_MAX_IRQ_ROWS", 512))
-                .unwrap_or(usize::MAX);
-        let parsed = interrupts::parse_interrupts(&content, cpu_count, max_rows);
+        let parsed = interrupts::parse_interrupts(&content, cpu_count, max_irq_rows);
         os.interrupts = parsed
             .iter()
             .filter_map(|row| {

@@ -1,3 +1,4 @@
+use crate::config::OsLimits;
 use crate::os_sources::{
     cap_disks, collect_mountinfo, collect_os_sources, cpu_max_mhz, resolve_major_zero,
 };
@@ -146,7 +147,7 @@ fn collect_os_sources_no_diskstats_on_mount_topo_only_tick() {
     let mut interner = Interner::new(kronika_format::DictLimits::default());
     let due = DueSet::for_test(vec![SourceKind::OsMountTopo]);
 
-    let os = collect_os_sources(&fs, &mut interner, 0, 0, false, &due);
+    let os = collect_os_sources(&fs, &mut interner, 0, 0, false, &due, &OsLimits::default());
 
     assert!(
         os.diskstats_empty(),

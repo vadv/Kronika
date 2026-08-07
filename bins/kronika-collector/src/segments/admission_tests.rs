@@ -15,7 +15,7 @@ use kronika_writer::{
     SectionFlushSummary,
 };
 
-use crate::config::Config;
+use crate::config::{Config, OsLimits};
 use crate::scheduler::Intervals;
 
 use super::admission::{AdmissionError, DataAdmission, SegmentAdmission};
@@ -74,6 +74,7 @@ fn test_config(out_dir: &Path) -> Config {
         segment_max_age_secs: u64::MAX,
         journal_max_bytes: u64::MAX,
         retention: None,
+        os_limits: OsLimits::default(),
     }
 }
 

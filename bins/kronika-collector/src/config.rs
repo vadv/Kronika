@@ -1,15 +1,17 @@
 //! Environment-only configuration for the collector daemon.
 //!
 //! `KRONIKA_OUT_DIR` is the one required variable. Everything else has a
-//! default that is safe on a host that also runs a database, and every
-//! variable that bounds memory or disk is validated here rather than at the
-//! point of use.
+//! default that is safe on a host that also runs a database. Every variable
+//! is read and parsed here, before any collection starts; a value that does
+//! not parse stops the daemon instead of falling back to the default.
+//!
+//! The full list with defaults is in `bins/kronika-collector/README.md`.
 
 use anyhow::{Context, Result};
 use kronika_format::{JOURNAL_HEADER_LEN, MAX_JOURNAL_LEN};
 use std::path::PathBuf;
 
-use crate::logging::{LogLevel, field, log_event};
+use crate::logging::{LogLevel, field, log_event, log_level_from_env};
 use crate::scheduler::Intervals;
 
 /// The validated daemon contract.
@@ -32,13 +34,87 @@ pub(crate) struct Config {
     /// Storage-rotation target for the whole output tree; `None` keeps every
     /// segment.
     pub(crate) retention: Option<RetentionConfig>,
+    /// Row and depth ceilings for the OS collections.
+    pub(crate) os_limits: OsLimits,
 }
 
-pub(crate) fn env_u64(key: &str, default: u64) -> Result<u64> {
-    std::env::var(key).map_or_else(
-        |_| Ok(default),
-        |v| v.parse().with_context(|| format!("{key} is not a u64")),
-    )
+/// Read a numeric variable, or refuse to start naming what was given.
+fn env_number<T: std::str::FromStr>(key: &str, default: T) -> Result<T> {
+    match std::env::var(key) {
+        Ok(raw) => parse_env_number(key, &raw),
+        Err(_unset) => Ok(default),
+    }
+}
+
+/// Parse one numeric variable's value.
+///
+/// # Errors
+///
+/// Returns an error naming the variable and the value it was given.
+fn parse_env_number<T: std::str::FromStr>(key: &str, raw: &str) -> Result<T> {
+    raw.trim()
+        .parse()
+        .map_err(|_parse| anyhow::anyhow!("{key}={raw:?} is not a whole number"))
+}
+
+fn env_u64(key: &str, default: u64) -> Result<u64> {
+    env_number(key, default)
+}
+
+/// Row and depth ceilings for the OS collections.
+///
+/// Every path that walks a directory has one, because the collector shares a
+/// host with a production database. A source that hits its ceiling logs how
+/// many rows it dropped.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OsLimits {
+    /// Processes read per tick, ordered by pid.
+    pub(crate) max_procs: usize,
+    /// cgroup nodes read per tick.
+    pub(crate) max_cgroups: usize,
+    /// `io.stat` rows read per tick across all cgroups.
+    pub(crate) max_cgroup_io_rows: usize,
+    /// Depth of the cgroup tree walk below the root.
+    pub(crate) cgroup_max_depth: usize,
+    /// Block devices kept from `/proc/diskstats`, lowest `(major, minor)` first.
+    pub(crate) max_disks: usize,
+    /// Lines kept from `/proc/interrupts`.
+    pub(crate) max_irq_rows: usize,
+}
+
+impl Default for OsLimits {
+    fn default() -> Self {
+        Self {
+            max_procs: 4096,
+            max_cgroups: 1024,
+            max_cgroup_io_rows: 4096,
+            cgroup_max_depth: 8,
+            max_disks: 256,
+            max_irq_rows: 512,
+        }
+    }
+}
+
+impl OsLimits {
+    /// Read every OS ceiling, or refuse to start.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the first variable that does not parse.
+    fn from_env() -> Result<Self> {
+        let defaults = Self::default();
+        Ok(Self {
+            max_procs: env_number("KRONIKA_OS_MAX_PROCS", defaults.max_procs)?,
+            max_cgroups: env_number("KRONIKA_OS_MAX_CGROUPS", defaults.max_cgroups)?,
+            max_cgroup_io_rows: env_number(
+                "KRONIKA_OS_MAX_CGROUP_IO_ROWS",
+                defaults.max_cgroup_io_rows,
+            )?,
+            cgroup_max_depth: env_number("KRONIKA_OS_CGROUP_MAX_DEPTH", defaults.cgroup_max_depth)?,
+            max_disks: env_number("KRONIKA_OS_MAX_DISKS", defaults.max_disks)?,
+            max_irq_rows: env_number("KRONIKA_OS_MAX_IRQ_ROWS", defaults.max_irq_rows)?,
+        })
+    }
 }
 
 /// Used-fraction target of the `auto` mode when no percentage is given.
@@ -119,12 +195,13 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// Returns an error when `KRONIKA_OUT_DIR` is unset, a numeric variable
-    /// does not parse, or a bound fails validation.
+    /// Returns an error when `KRONIKA_OUT_DIR` is unset, a variable does not
+    /// parse, or a bound fails validation.
     pub(crate) fn from_env() -> Result<Self> {
         let out_dir: PathBuf = std::env::var("KRONIKA_OUT_DIR")
             .context("KRONIKA_OUT_DIR is not set")?
             .into();
+        validate_log_level()?;
         let tick_secs = env_u64("KRONIKA_INTERVAL_S", 5)?;
         let segment_max_bytes = env_u64("KRONIKA_SEGMENT_MAX_BYTES", 64 * 1024 * 1024)?;
         let segment_max_age_secs = env_u64("KRONIKA_SEGMENT_MAX_AGE_S", 900)?;
@@ -157,6 +234,7 @@ impl Config {
             segment_max_age_secs,
             journal_max_bytes,
             retention,
+            os_limits: OsLimits::from_env()?,
         })
     }
 }
@@ -178,6 +256,16 @@ fn log_retention_config(retention: RetentionConfig) {
         ),
     }
 }
+/// Refuse to start on a log level nothing can print.
+fn validate_log_level() -> Result<()> {
+    anyhow::ensure!(
+        log_level_from_env().is_some(),
+        "KRONIKA_LOG_LEVEL={:?} is not one of error, warn, info, debug, trace",
+        std::env::var("KRONIKA_LOG_LEVEL").unwrap_or_default()
+    );
+    Ok(())
+}
+
 pub(crate) fn validate_journal_max_bytes(value: u64) -> Result<()> {
     anyhow::ensure!(
         (JOURNAL_HEADER_LEN as u64..=MAX_JOURNAL_LEN as u64).contains(&value),

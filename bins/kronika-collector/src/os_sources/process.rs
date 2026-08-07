@@ -1,7 +1,7 @@
 use super::{
-    DueSet, Instant, Interner, OsCgroupMapping, OsSources, ProcFs, ProcessError, SourceKind, Ts,
-    intern_str, log_cap_degraded, log_collection_finish, log_count_degraded, log_degraded,
-    os_max_procs, process_facts, read_process,
+    DueSet, Instant, Interner, OsCgroupMapping, OsLimits, OsSources, ProcFs, ProcessError,
+    SourceKind, Ts, intern_str, log_cap_degraded, log_collection_finish, log_count_degraded,
+    log_degraded, process_facts, read_process,
 };
 
 #[allow(
@@ -14,6 +14,7 @@ pub(super) fn collect_process_sections(
     scope: u8,
     ts: i64,
     due: &DueSet,
+    limits: &OsLimits,
     os: &mut OsSources,
 ) {
     let hot_due = due.has(SourceKind::OsProcesses);
@@ -41,7 +42,7 @@ pub(super) fn collect_process_sections(
             return;
         }
     };
-    let max_procs = usize::try_from(os_max_procs(hot_type_id)).unwrap_or(usize::MAX);
+    let max_procs = limits.max_procs;
     let capped = match fs.pid_dirs_capped(max_procs) {
         Ok(capped) => capped,
         Err(err) => {

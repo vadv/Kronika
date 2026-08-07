@@ -150,31 +150,20 @@ impl IntoLogValue<'static> for usize {
 
 fn current_log_level() -> LogLevel {
     static LOG_LEVEL: OnceLock<LogLevel> = OnceLock::new();
-    *LOG_LEVEL.get_or_init(|| {
-        let Ok(value) = std::env::var("KRONIKA_LOG_LEVEL") else {
-            return LogLevel::Info;
-        };
-        let value = value.trim();
-        let Some(level) = parse_log_level_value(value) else {
-            emit_log_event(
-                LogLevel::Warn,
-                "invalid_log_level",
-                &[
-                    field("env", "KRONIKA_LOG_LEVEL"),
-                    field("value", value),
-                    field("fallback", LogLevel::Info.as_str()),
-                ],
-            );
-            return LogLevel::Info;
-        };
-        level
-    })
+    *LOG_LEVEL.get_or_init(|| log_level_from_env().unwrap_or(LogLevel::Info))
+}
+
+/// The level named by `KRONIKA_LOG_LEVEL`, or `None` when it names nothing
+/// known. An unset variable reads as [`LogLevel::Info`].
+pub(crate) fn log_level_from_env() -> Option<LogLevel> {
+    let Ok(value) = std::env::var("KRONIKA_LOG_LEVEL") else {
+        return Some(LogLevel::Info);
+    };
+    parse_log_level_value(&value)
 }
 
 fn parse_log_level_value(value: &str) -> Option<LogLevel> {
-    let value = value.trim();
-    let value = value.to_ascii_lowercase();
-    LogLevel::parse(&value)
+    LogLevel::parse(&value.trim().to_ascii_lowercase())
 }
 
 fn log_enabled(level: LogLevel) -> bool {

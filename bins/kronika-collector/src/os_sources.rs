@@ -1,5 +1,5 @@
 use crate::buffering::buffer_row;
-use crate::config::env_u64;
+use crate::config::OsLimits;
 use crate::logging::{
     LogLevel, field, layout_id, log_collection_finish, log_count_degraded, log_event, section_name,
 };
@@ -184,6 +184,7 @@ pub(crate) fn collect_os_sources(
     ts: i64,
     in_container: bool,
     due: &DueSet,
+    limits: &OsLimits,
 ) -> OsSources {
     if !due.has(SourceKind::OsCore)
         && !due.has(SourceKind::OsMountTopo)
@@ -210,8 +211,15 @@ pub(crate) fn collect_os_sources(
         // Counters: disk and network. Network sections carry the pod's
         // network-namespace scope inside a container, not the host scope.
         let net_scope_id = net_scope(fs).as_u8();
-        os.diskstats =
-            procfs_sections::collect_diskstats(fs, interner, scope, ts, in_container, &mounts);
+        os.diskstats = procfs_sections::collect_diskstats(
+            fs,
+            interner,
+            scope,
+            ts,
+            in_container,
+            &mounts,
+            limits.max_disks,
+        );
         let sys = SysFs::from_env();
         os.netdev = procfs_sections::collect_netdev(fs, &sys, interner, net_scope_id, ts);
         procfs_sections::collect_net_singletons(fs, net_scope_id, ts, &mut os);
@@ -222,6 +230,7 @@ pub(crate) fn collect_os_sources(
             net_scope_id,
             ts,
             os.cpu.len().saturating_sub(1),
+            limits.max_irq_rows,
             &mut os,
         );
         os.numa = procfs_sections::collect_numa(&sys, scope, ts);
@@ -234,7 +243,7 @@ pub(crate) fn collect_os_sources(
     }
 
     let entity_scope = os_entity_scope(in_container);
-    process::collect_process_sections(fs, interner, entity_scope, ts, due, &mut os);
+    process::collect_process_sections(fs, interner, entity_scope, ts, due, limits, &mut os);
     cgroups::collect_cgroup_sections(
         &SysFs::from_env(),
         interner,
@@ -242,6 +251,7 @@ pub(crate) fn collect_os_sources(
         ts,
         fs,
         due,
+        limits,
         &mut os,
     );
 
@@ -310,41 +320,4 @@ fn log_cap_degraded(
             field("cap", cap),
         ],
     );
-}
-
-fn os_max_procs(type_id: u32) -> u64 {
-    os_cap_from_env(type_id, "KRONIKA_OS_MAX_PROCS", 4096)
-}
-
-fn os_max_cgroups(type_id: u32) -> u64 {
-    os_cap_from_env(type_id, "KRONIKA_OS_MAX_CGROUPS", 1024)
-}
-
-fn os_max_cgroup_io_rows(type_id: u32) -> u64 {
-    os_cap_from_env(type_id, "KRONIKA_OS_MAX_CGROUP_IO_ROWS", 4096)
-}
-
-fn os_cgroup_max_depth(type_id: u32) -> u64 {
-    os_cap_from_env(type_id, "KRONIKA_OS_CGROUP_MAX_DEPTH", 8)
-}
-
-fn os_cap_from_env(type_id: u32, key: &'static str, default: u64) -> u64 {
-    match env_u64(key, default) {
-        Ok(cap) => cap,
-        Err(err) => {
-            log_event(
-                LogLevel::Warn,
-                "collection_degraded",
-                &[
-                    field("collection", section_name(type_id)),
-                    field("type_id", type_id),
-                    field("layout_id", layout_id(type_id)),
-                    field("source", key),
-                    field("reason", &err),
-                    field("cap", default),
-                ],
-            );
-            default
-        }
-    }
 }

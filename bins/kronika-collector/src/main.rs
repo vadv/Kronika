@@ -292,6 +292,7 @@ fn run_collection_cycle(
         ts,
         in_container,
         due,
+        &config.os_limits,
     );
 
     let buffered = (|| -> Result<()> {
