@@ -37,6 +37,51 @@ pub struct OsNetstat {
     /// SYN retransmissions since boot.
     #[column(c)]
     pub tcp_syn_retrans: i64,
+    /// Retransmissions the sender later found unnecessary.
+    #[column(c)]
+    pub tcp_lost_retransmit: i64,
+    /// Connections reset after a retransmission timeout.
+    #[column(c)]
+    pub tcp_abort_on_timeout: i64,
+    /// Connections reset because data was still queued at close.
+    #[column(c)]
+    pub tcp_abort_on_close: i64,
+    /// Connections reset under socket memory pressure.
+    #[column(c)]
+    pub tcp_abort_on_memory: i64,
+    /// Connections reset because unread data arrived after shutdown.
+    #[column(c)]
+    pub tcp_abort_on_data: i64,
+    /// Resets that could not be sent for lack of memory.
+    #[column(c)]
+    pub tcp_abort_failed: i64,
+    /// Times the TCP stack entered memory pressure.
+    #[column(c)]
+    pub tcp_memory_pressures: i64,
+    /// Packets dropped because the socket backlog was full.
+    #[column(c)]
+    pub tcp_backlog_drop: i64,
+    /// Out-of-order packets dropped for lack of memory.
+    #[column(c)]
+    pub tcp_ofo_drop: i64,
+    /// Packets pruned from the receive queue under memory pressure.
+    #[column(c)]
+    pub tcp_rcv_pruned: i64,
+    /// Times receive-queue pruning was invoked.
+    #[column(c)]
+    pub tcp_prune_called: i64,
+    /// Acknowledgements deferred by the delayed-ACK timer.
+    #[column(c)]
+    pub delayed_acks: i64,
+    /// Sockets that left `TIME_WAIT` normally.
+    #[column(c)]
+    pub time_wait: i64,
+    /// Payload octets received (`IpExt: InOctets`).
+    #[column(c)]
+    pub ip_in_octets: i64,
+    /// Payload octets sent (`IpExt: OutOctets`).
+    #[column(c)]
+    pub ip_out_octets: i64,
     /// Source scope (`0=host`). See `kronika_source_os::OsScope`.
     #[column(l)]
     pub scope: u8,
@@ -57,6 +102,21 @@ mod tests {
             tcp_slow_start_retrans: 50,
             tcp_ofo_queue: 60,
             tcp_syn_retrans: 70,
+            tcp_lost_retransmit: 80,
+            tcp_abort_on_timeout: 90,
+            tcp_abort_on_close: 100,
+            tcp_abort_on_memory: 110,
+            tcp_abort_on_data: 120,
+            tcp_abort_failed: 130,
+            tcp_memory_pressures: 140,
+            tcp_backlog_drop: 150,
+            tcp_ofo_drop: 160,
+            tcp_rcv_pruned: 170,
+            tcp_prune_called: 180,
+            delayed_acks: 190,
+            time_wait: 200,
+            ip_in_octets: 210,
+            ip_out_octets: 220,
             scope: 0,
         }
     }

@@ -43,6 +43,10 @@ pub struct NetDevRow {
     pub tx_carrier: i64,
     /// Compressed packets transmitted.
     pub tx_compressed: i64,
+    /// Negotiated link speed in Mbit/s, filled from sysfs by the collector.
+    pub speed_mbit: Option<i64>,
+    /// `0` unknown, `1` half, `2` full, filled from sysfs by the collector.
+    pub duplex: u8,
 }
 
 fn parse_i64(s: &str, pos: usize) -> Result<i64, ParseError> {
@@ -118,6 +122,8 @@ pub fn parse(content: &str) -> Result<Vec<NetDevRow>, ParseError> {
             tx_colls,
             tx_carrier,
             tx_compressed,
+            speed_mbit: None,
+            duplex: 0,
         });
     }
     Ok(rows)
@@ -147,6 +153,8 @@ impl NetDevRow {
             tx_colls: self.tx_colls,
             tx_carrier: self.tx_carrier,
             tx_compressed: self.tx_compressed,
+            speed_mbit: self.speed_mbit,
+            duplex: self.duplex,
             scope,
         }
     }

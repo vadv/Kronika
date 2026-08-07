@@ -50,6 +50,63 @@ pub struct OsVmstat {
     /// OOM killer invocations.
     #[column(c)]
     pub oom_kill: Option<i64>,
+    /// Pages allocated from the normal zone.
+    #[column(c)]
+    pub pgalloc_normal: Option<i64>,
+    /// Pages moved to the inactive list on refill.
+    #[column(c)]
+    pub pgrefill: Option<i64>,
+    /// Pages promoted to the active list.
+    #[column(c)]
+    pub pgactivate: Option<i64>,
+    /// Pages demoted to the inactive list.
+    #[column(c)]
+    pub pgdeactivate: Option<i64>,
+    /// Pages scanned by khugepaged during reclaim.
+    #[column(c)]
+    pub pgscan_khugepaged: Option<i64>,
+    /// Pages stolen by khugepaged during reclaim.
+    #[column(c)]
+    pub pgsteal_khugepaged: Option<i64>,
+    /// Allocation stalls that had to enter direct reclaim.
+    #[column(c)]
+    pub allocstall: Option<i64>,
+    /// Allocation stalls that had to enter direct compaction.
+    #[column(c)]
+    pub compact_stall: Option<i64>,
+    /// Pages migrated between NUMA nodes by automatic balancing.
+    #[column(c)]
+    pub numa_pages_migrated: Option<i64>,
+    /// Page migrations that succeeded.
+    #[column(c)]
+    pub pgmigrate_success: Option<i64>,
+    /// Page migrations that failed.
+    #[column(c)]
+    pub pgmigrate_fail: Option<i64>,
+    /// Transparent huge pages allocated on fault.
+    #[column(c)]
+    pub thp_fault_alloc: Option<i64>,
+    /// Transparent huge pages built by khugepaged.
+    #[column(c)]
+    pub thp_collapse_alloc: Option<i64>,
+    /// Refaults of pages evicted while still in the working set.
+    #[column(c)]
+    pub workingset_refault_file: Option<i64>,
+    /// Refaults of anonymous pages evicted while still in the working set.
+    #[column(c)]
+    pub workingset_refault_anon: Option<i64>,
+    /// Refaulted pages restored to the active list.
+    #[column(c)]
+    pub workingset_restore_file: Option<i64>,
+    /// Shadow nodes reclaimed from the working-set tracker.
+    #[column(c)]
+    pub workingset_nodereclaim: Option<i64>,
+    /// Pages read ahead from swap.
+    #[column(c)]
+    pub swap_ra: Option<i64>,
+    /// Swap read-ahead pages that were used.
+    #[column(c)]
+    pub swap_ra_hit: Option<i64>,
     /// Source scope (`0=host`). See `kronika_source_os::OsScope`.
     #[column(l)]
     pub scope: u8,
@@ -74,6 +131,25 @@ mod tests {
             pgscan_kswapd: Some(768_000),
             pgscan_direct: Some(8192),
             oom_kill: Some(0),
+            pgalloc_normal: Some(9_000_000),
+            pgrefill: Some(1_000),
+            pgactivate: Some(2_000),
+            pgdeactivate: Some(3_000),
+            pgscan_khugepaged: Some(0),
+            pgsteal_khugepaged: Some(0),
+            allocstall: Some(7),
+            compact_stall: Some(1),
+            numa_pages_migrated: Some(0),
+            pgmigrate_success: Some(11),
+            pgmigrate_fail: Some(0),
+            thp_fault_alloc: Some(5),
+            thp_collapse_alloc: Some(2),
+            workingset_refault_file: Some(100),
+            workingset_refault_anon: Some(0),
+            workingset_restore_file: Some(20),
+            workingset_nodereclaim: Some(0),
+            swap_ra: Some(0),
+            swap_ra_hit: Some(0),
             scope: 0,
         }
     }
@@ -92,6 +168,25 @@ mod tests {
             pgscan_kswapd: None,
             pgscan_direct: None,
             oom_kill: None,
+            pgalloc_normal: None,
+            pgrefill: None,
+            pgactivate: None,
+            pgdeactivate: None,
+            pgscan_khugepaged: None,
+            pgsteal_khugepaged: None,
+            allocstall: None,
+            compact_stall: None,
+            numa_pages_migrated: None,
+            pgmigrate_success: None,
+            pgmigrate_fail: None,
+            thp_fault_alloc: None,
+            thp_collapse_alloc: None,
+            workingset_refault_file: None,
+            workingset_refault_anon: None,
+            workingset_restore_file: None,
+            workingset_nodereclaim: None,
+            swap_ra: None,
+            swap_ra_hit: None,
             scope: 0,
         }
     }

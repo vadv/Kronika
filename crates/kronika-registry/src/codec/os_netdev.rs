@@ -67,6 +67,13 @@ pub struct OsNetdev {
     /// Compressed packets transmitted.
     #[column(c)]
     pub tx_compressed: i64,
+    /// Negotiated link speed in Mbit/s from sysfs; `None` for a virtual or
+    /// down interface where the kernel reports none.
+    #[column(g)]
+    pub speed_mbit: Option<i64>,
+    /// `0` unknown, `1` half, `2` full, from sysfs `duplex`.
+    #[column(l)]
+    pub duplex: u8,
     /// Source scope (`0=host`). See `kronika_source_os::OsScope`.
     #[column(l)]
     pub scope: u8,
@@ -97,6 +104,8 @@ mod tests {
             tx_colls: 10,
             tx_carrier: 11,
             tx_compressed: 12,
+            speed_mbit: Some(10_000),
+            duplex: 2,
             scope: 0,
         }
     }

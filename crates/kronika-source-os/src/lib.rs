@@ -32,6 +32,9 @@ pub use mount::{
     parse_mountinfo,
 };
 
+pub mod numa;
+pub use numa::{node_id_from_dir, parse_node_meminfo};
+
 pub mod proc;
 pub use proc::stat::{CpuRow, ParseError, parse_cpu};
 

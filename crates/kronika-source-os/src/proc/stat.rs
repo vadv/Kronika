@@ -141,6 +141,14 @@ pub struct StatMiscRow {
     pub procs_blocked: i64,
     /// Kernel boot time, unix microseconds (`btime_secs * 1_000_000`).
     pub btime: i64,
+    /// Hardware interrupts since boot, summed over every line.
+    pub intr_total: Option<i64>,
+    /// Software interrupts since boot, summed over every vector.
+    pub softirq_total: Option<i64>,
+    /// Seconds since boot from `/proc/uptime`, microseconds.
+    pub uptime_us: Option<i64>,
+    /// Cumulative core idle time from `/proc/uptime`, microseconds.
+    pub idle_us: Option<i64>,
 }
 
 /// Parse the misc singleton lines from `/proc/stat` content.
@@ -158,8 +166,18 @@ pub fn parse_stat_misc(content: &str, ts: i64) -> Result<StatMiscRow, ParseError
     let mut procs_running: Option<i64> = None;
     let mut procs_blocked: Option<i64> = None;
     let mut btime: Option<i64> = None;
+    let mut intr_total: Option<i64> = None;
+    let mut softirq_total: Option<i64> = None;
 
     for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("intr ") {
+            intr_total = rest.split_whitespace().next().and_then(|v| v.parse().ok());
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("softirq ") {
+            softirq_total = rest.split_whitespace().next().and_then(|v| v.parse().ok());
+            continue;
+        }
         if let Some(rest) = line.strip_prefix("ctxt ") {
             ctxt = Some(rest.trim().parse::<i64>()?);
         } else if let Some(rest) = line.strip_prefix("btime ") {
@@ -188,7 +206,37 @@ pub fn parse_stat_misc(content: &str, ts: i64) -> Result<StatMiscRow, ParseError
         procs_running: require(procs_running, "procs_running")?,
         procs_blocked: require(procs_blocked, "procs_blocked")?,
         btime: require(btime, "btime")?,
+        intr_total,
+        softirq_total,
+        uptime_us: None,
+        idle_us: None,
     })
+}
+
+/// Parse `/proc/uptime` into `(uptime, idle)` microseconds.
+///
+/// Both fields are non-negative seconds with two decimals. Returns `None` when
+/// the file is empty or either token is unparsable; the caller leaves the
+/// columns null rather than guessing. Parsed as fixed point rather than
+/// through `f64` so a long-running host keeps microsecond precision.
+#[must_use]
+pub fn parse_uptime(content: &str) -> Option<(i64, i64)> {
+    fn seconds_to_us(token: &str) -> Option<i64> {
+        let (whole, frac) = token.split_once('.').unwrap_or((token, "0"));
+        let seconds = whole.parse::<i64>().ok()?;
+        if seconds < 0 {
+            return None;
+        }
+        // The kernel prints hundredths; accept anything up to microseconds.
+        let mut digits = frac.as_bytes().to_vec();
+        digits.resize(6, b'0');
+        let micros: i64 = std::str::from_utf8(&digits[..6]).ok()?.parse().ok()?;
+        seconds.checked_mul(1_000_000)?.checked_add(micros)
+    }
+    let mut fields = content.split_whitespace();
+    let uptime = seconds_to_us(fields.next()?)?;
+    let idle = seconds_to_us(fields.next()?)?;
+    Some((uptime, idle))
 }
 
 impl StatMiscRow {
@@ -202,6 +250,10 @@ impl StatMiscRow {
             procs_running: self.procs_running,
             procs_blocked: self.procs_blocked,
             btime: Ts(self.btime),
+            intr_total: self.intr_total,
+            softirq_total: self.softirq_total,
+            uptime_us: self.uptime_us,
+            idle_us: self.idle_us,
             scope,
         }
     }
@@ -248,7 +300,7 @@ mod tests {
         assert_eq!(rows[0].cpu_id, -1);
     }
 
-    use super::parse_stat_misc;
+    use super::{parse_stat_misc, parse_uptime};
 
     const STAT_SAMPLE: &str = "cpu  100 20 30 400 5 6 7 8 9 10\n\
                                cpu0 50 10 15 200 2 3 3 4 4 5\n\
@@ -303,5 +355,47 @@ mod tests {
         assert_eq!(section.procs_running, 3);
         assert_eq!(section.procs_blocked, 1);
         assert_eq!(section.scope, 0);
+    }
+
+    #[test]
+    fn interrupt_totals_come_from_the_first_token_of_their_line() {
+        let content = "ctxt 1\nbtime 2\nprocesses 3\nprocs_running 0\nprocs_blocked 0\n\
+intr 900 1 2 3 4\nsoftirq 800 5 6 7\n";
+        let row = parse_stat_misc(content, 1).expect("parse");
+        assert_eq!(row.intr_total, Some(900));
+        assert_eq!(row.softirq_total, Some(800));
+    }
+
+    #[test]
+    fn a_kernel_without_interrupt_lines_leaves_the_totals_null() {
+        let bare = "ctxt 1\nbtime 2\nprocesses 3\nprocs_running 0\nprocs_blocked 0\n";
+        let row = parse_stat_misc(bare, 1).expect("parse");
+        assert_eq!(row.intr_total, None);
+        assert_eq!(row.softirq_total, None);
+    }
+
+    #[test]
+    fn the_sample_totals_match_its_intr_and_softirq_lines() {
+        let row = parse_stat_misc(STAT_SAMPLE, 1).expect("parse");
+        assert_eq!(row.intr_total, Some(999));
+        assert_eq!(row.softirq_total, Some(100));
+    }
+
+    #[test]
+    fn uptime_is_exact_at_hundredth_second_resolution() {
+        assert_eq!(
+            parse_uptime("3600.25 28000.50\n"),
+            Some((3_600_250_000, 28_000_500_000))
+        );
+        assert_eq!(parse_uptime("0.00 0.00\n"), Some((0, 0)));
+        assert_eq!(parse_uptime("12 34\n"), Some((12_000_000, 34_000_000)));
+    }
+
+    #[test]
+    fn uptime_rejects_a_short_or_garbled_file() {
+        assert_eq!(parse_uptime(""), None);
+        assert_eq!(parse_uptime("3600.25\n"), None);
+        assert_eq!(parse_uptime("nope 1.0\n"), None);
+        assert_eq!(parse_uptime("-1.0 2.0\n"), None);
     }
 }

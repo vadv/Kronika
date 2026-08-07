@@ -6,7 +6,7 @@ use kronika_registry::os_meminfo::OsMeminfo;
 use super::stat::ParseError;
 
 /// Parsed fields from a single `/proc/meminfo` snapshot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MeminfoRow {
     /// Collection timestamp, unix microseconds.
     pub ts: i64,
@@ -56,6 +56,36 @@ pub struct MeminfoRow {
     pub huge_pages_free: Option<i64>,
     /// Size of one huge page, KiB.
     pub hugepagesize: Option<i64>,
+    /// Swap pages also held in RAM, KiB.
+    pub swap_cached: Option<i64>,
+    /// Unevictable pages, KiB.
+    pub unevictable: Option<i64>,
+    /// Pages locked into RAM by `mlock`, KiB.
+    pub mlocked: Option<i64>,
+    /// Anonymous transparent huge pages, KiB.
+    pub anon_huge_pages: Option<i64>,
+    /// Shared memory backed by huge pages, KiB.
+    pub shmem_huge_pages: Option<i64>,
+    /// Kernel stacks, KiB.
+    pub kernel_stack: Option<i64>,
+    /// Per-CPU allocator memory, KiB.
+    pub percpu: Option<i64>,
+    /// Block-device bounce buffers, KiB.
+    pub bounce: Option<i64>,
+    /// NFS pages written but not yet committed, KiB.
+    pub nfs_unstable: Option<i64>,
+    /// FUSE writeback temporary storage, KiB.
+    pub writeback_tmp: Option<i64>,
+    /// Huge pages reserved but not allocated.
+    pub huge_pages_rsvd: Option<i64>,
+    /// Huge pages above the configured pool size.
+    pub huge_pages_surp: Option<i64>,
+    /// Compressed swap pool footprint, KiB.
+    pub zswap: Option<i64>,
+    /// Original size of pages in the compressed swap pool, KiB.
+    pub zswapped: Option<i64>,
+    /// Used vmalloc area, KiB.
+    pub vmalloc_used: Option<i64>,
 }
 
 /// Parse `/proc/meminfo` content into a [`MeminfoRow`].
@@ -69,29 +99,11 @@ pub struct MeminfoRow {
 /// Returns [`ParseError`] when `MemTotal` is absent or any present value
 /// cannot be parsed as `i64`.
 pub fn parse_meminfo(content: &str, ts: i64) -> Result<MeminfoRow, ParseError> {
-    let mut mem_total: Option<i64> = None;
-    let mut mem_free: Option<i64> = None;
-    let mut mem_available: Option<i64> = None;
-    let mut buffers: Option<i64> = None;
-    let mut cached: Option<i64> = None;
-    let mut swap_total: Option<i64> = None;
-    let mut swap_free: Option<i64> = None;
-    let mut active: Option<i64> = None;
-    let mut inactive: Option<i64> = None;
-    let mut dirty: Option<i64> = None;
-    let mut writeback: Option<i64> = None;
-    let mut slab: Option<i64> = None;
-    let mut s_reclaimable: Option<i64> = None;
-    let mut s_unreclaim: Option<i64> = None;
-    let mut anon_pages: Option<i64> = None;
-    let mut mapped: Option<i64> = None;
-    let mut shmem: Option<i64> = None;
-    let mut page_tables: Option<i64> = None;
-    let mut commit_limit: Option<i64> = None;
-    let mut committed_as: Option<i64> = None;
-    let mut huge_pages_total: Option<i64> = None;
-    let mut huge_pages_free: Option<i64> = None;
-    let mut hugepagesize: Option<i64> = None;
+    let mut row = MeminfoRow {
+        ts,
+        ..MeminfoRow::default()
+    };
+    let mut seen_total = false;
 
     for line in content.lines() {
         let Some((key, rest)) = line.split_once(':') else {
@@ -99,73 +111,69 @@ pub fn parse_meminfo(content: &str, ts: i64) -> Result<MeminfoRow, ParseError> {
         };
         // Value is the first whitespace-separated token after the colon (the
         // trailing `kB` unit token is intentionally ignored).
-        let value_str = rest.split_whitespace().next().unwrap_or("");
-        if value_str.is_empty() {
+        let Some(value_str) = rest.split_whitespace().next() else {
+            continue;
+        };
+        let value = value_str
+            .parse::<i64>()
+            .map_err(|e| ParseError(format!("/proc/meminfo {key:?}: {e}")))?;
+        if key == "MemTotal" {
+            row.mem_total = value;
+            seen_total = true;
             continue;
         }
-        let parse = || {
-            value_str
-                .parse::<i64>()
-                .map_err(|e| ParseError(format!("/proc/meminfo {key:?}: {e}")))
-        };
-        match key {
-            "MemTotal" => mem_total = Some(parse()?),
-            "MemFree" => mem_free = Some(parse()?),
-            "MemAvailable" => mem_available = Some(parse()?),
-            "Buffers" => buffers = Some(parse()?),
-            "Cached" => cached = Some(parse()?),
-            "SwapTotal" => swap_total = Some(parse()?),
-            "SwapFree" => swap_free = Some(parse()?),
-            "Active" => active = Some(parse()?),
-            "Inactive" => inactive = Some(parse()?),
-            "Dirty" => dirty = Some(parse()?),
-            "Writeback" => writeback = Some(parse()?),
-            "Slab" => slab = Some(parse()?),
-            "SReclaimable" => s_reclaimable = Some(parse()?),
-            "SUnreclaim" => s_unreclaim = Some(parse()?),
-            "AnonPages" => anon_pages = Some(parse()?),
-            "Mapped" => mapped = Some(parse()?),
-            "Shmem" => shmem = Some(parse()?),
-            "PageTables" => page_tables = Some(parse()?),
-            "CommitLimit" => commit_limit = Some(parse()?),
-            "Committed_AS" => committed_as = Some(parse()?),
-            "HugePages_Total" => huge_pages_total = Some(parse()?),
-            "HugePages_Free" => huge_pages_free = Some(parse()?),
-            "Hugepagesize" => hugepagesize = Some(parse()?),
-            _ => {}
-        }
+        assign(&mut row, key, value);
     }
 
-    let mem_total = mem_total.ok_or_else(|| {
-        ParseError("/proc/meminfo: missing required field \"MemTotal\"".to_owned())
-    })?;
+    if seen_total {
+        Ok(row)
+    } else {
+        Err(ParseError("/proc/meminfo: missing MemTotal".to_owned()))
+    }
+}
 
-    Ok(MeminfoRow {
-        ts,
-        mem_total,
-        mem_free,
-        mem_available,
-        buffers,
-        cached,
-        swap_total,
-        swap_free,
-        active,
-        inactive,
-        dirty,
-        writeback,
-        slab,
-        s_reclaimable,
-        s_unreclaim,
-        anon_pages,
-        mapped,
-        shmem,
-        page_tables,
-        commit_limit,
-        committed_as,
-        huge_pages_total,
-        huge_pages_free,
-        hugepagesize,
-    })
+/// Store one `/proc/meminfo` value; keys this build does not read are ignored.
+fn assign(row: &mut MeminfoRow, key: &str, value: i64) {
+    match key {
+        "MemFree" => row.mem_free = Some(value),
+        "MemAvailable" => row.mem_available = Some(value),
+        "Buffers" => row.buffers = Some(value),
+        "Cached" => row.cached = Some(value),
+        "SwapTotal" => row.swap_total = Some(value),
+        "SwapFree" => row.swap_free = Some(value),
+        "Active" => row.active = Some(value),
+        "Inactive" => row.inactive = Some(value),
+        "Dirty" => row.dirty = Some(value),
+        "Writeback" => row.writeback = Some(value),
+        "Slab" => row.slab = Some(value),
+        "SReclaimable" => row.s_reclaimable = Some(value),
+        "SUnreclaim" => row.s_unreclaim = Some(value),
+        "AnonPages" => row.anon_pages = Some(value),
+        "Mapped" => row.mapped = Some(value),
+        "Shmem" => row.shmem = Some(value),
+        "PageTables" => row.page_tables = Some(value),
+        "CommitLimit" => row.commit_limit = Some(value),
+        "Committed_AS" => row.committed_as = Some(value),
+        "HugePages_Total" => row.huge_pages_total = Some(value),
+        "HugePages_Free" => row.huge_pages_free = Some(value),
+        "Hugepagesize" => row.hugepagesize = Some(value),
+        "SwapCached" => row.swap_cached = Some(value),
+        "Unevictable" => row.unevictable = Some(value),
+        "Mlocked" => row.mlocked = Some(value),
+        "AnonHugePages" => row.anon_huge_pages = Some(value),
+        "ShmemHugePages" => row.shmem_huge_pages = Some(value),
+        "KernelStack" => row.kernel_stack = Some(value),
+        "Percpu" => row.percpu = Some(value),
+        "Bounce" => row.bounce = Some(value),
+        "NFS_Unstable" => row.nfs_unstable = Some(value),
+        "WritebackTmp" => row.writeback_tmp = Some(value),
+        "HugePages_Rsvd" => row.huge_pages_rsvd = Some(value),
+        "HugePages_Surp" => row.huge_pages_surp = Some(value),
+        "Zswap" => row.zswap = Some(value),
+        "Zswapped" => row.zswapped = Some(value),
+        "VmallocUsed" => row.vmalloc_used = Some(value),
+        _ => {}
+    }
 }
 
 impl MeminfoRow {
@@ -197,6 +205,21 @@ impl MeminfoRow {
             huge_pages_total: self.huge_pages_total,
             huge_pages_free: self.huge_pages_free,
             hugepagesize: self.hugepagesize,
+            swap_cached: self.swap_cached,
+            unevictable: self.unevictable,
+            mlocked: self.mlocked,
+            anon_huge_pages: self.anon_huge_pages,
+            shmem_huge_pages: self.shmem_huge_pages,
+            kernel_stack: self.kernel_stack,
+            percpu: self.percpu,
+            bounce: self.bounce,
+            nfs_unstable: self.nfs_unstable,
+            writeback_tmp: self.writeback_tmp,
+            huge_pages_rsvd: self.huge_pages_rsvd,
+            huge_pages_surp: self.huge_pages_surp,
+            zswap: self.zswap,
+            zswapped: self.zswapped,
+            vmalloc_used: self.vmalloc_used,
             scope,
         }
     }

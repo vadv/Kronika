@@ -59,6 +59,66 @@ pub struct OsSnmp {
     /// UDP datagrams received to a port with no listener.
     #[column(c)]
     pub udp_no_ports: i64,
+    /// IPv4 datagrams received, including errors.
+    #[column(c)]
+    pub ip_in_receives: Option<i64>,
+    /// IPv4 datagrams dropped for a bad header.
+    #[column(c)]
+    pub ip_in_hdr_errors: Option<i64>,
+    /// IPv4 datagrams dropped because the destination was not local.
+    #[column(c)]
+    pub ip_in_addr_errors: Option<i64>,
+    /// IPv4 datagrams forwarded to another host.
+    #[column(c)]
+    pub ip_forw_datagrams: Option<i64>,
+    /// IPv4 datagrams for an unsupported upper protocol.
+    #[column(c)]
+    pub ip_in_unknown_protos: Option<i64>,
+    /// Incoming IPv4 datagrams dropped without a specific error.
+    #[column(c)]
+    pub ip_in_discards: Option<i64>,
+    /// IPv4 datagrams delivered to an upper protocol.
+    #[column(c)]
+    pub ip_in_delivers: Option<i64>,
+    /// IPv4 datagrams handed down for transmission.
+    #[column(c)]
+    pub ip_out_requests: Option<i64>,
+    /// Outgoing IPv4 datagrams dropped without a specific error.
+    #[column(c)]
+    pub ip_out_discards: Option<i64>,
+    /// Outgoing IPv4 datagrams dropped for lack of a route.
+    #[column(c)]
+    pub ip_out_no_routes: Option<i64>,
+    /// IPv4 fragments received that needed reassembly.
+    #[column(c)]
+    pub ip_reasm_reqds: Option<i64>,
+    /// IPv4 datagrams successfully reassembled.
+    #[column(c)]
+    pub ip_reasm_oks: Option<i64>,
+    /// IPv4 reassembly failures.
+    #[column(c)]
+    pub ip_reasm_fails: Option<i64>,
+    /// IPv4 datagrams successfully fragmented.
+    #[column(c)]
+    pub ip_frag_oks: Option<i64>,
+    /// IPv4 fragmentation failures.
+    #[column(c)]
+    pub ip_frag_fails: Option<i64>,
+    /// IPv4 fragments generated.
+    #[column(c)]
+    pub ip_frag_creates: Option<i64>,
+    /// ICMP messages received.
+    #[column(c)]
+    pub icmp_in_msgs: Option<i64>,
+    /// ICMP messages received with errors.
+    #[column(c)]
+    pub icmp_in_errors: Option<i64>,
+    /// ICMP messages sent.
+    #[column(c)]
+    pub icmp_out_msgs: Option<i64>,
+    /// ICMP messages that could not be sent.
+    #[column(c)]
+    pub icmp_out_errors: Option<i64>,
     /// Source scope (`0=host`). See `kronika_source_os::OsScope`.
     #[column(l)]
     pub scope: u8,
@@ -86,6 +146,26 @@ mod tests {
             udp_out_datagrams: 600,
             udp_in_errors: 2,
             udp_no_ports: 4,
+            ip_in_receives: Some(1_000),
+            ip_in_hdr_errors: Some(0),
+            ip_in_addr_errors: Some(0),
+            ip_forw_datagrams: Some(0),
+            ip_in_unknown_protos: Some(0),
+            ip_in_discards: Some(0),
+            ip_in_delivers: Some(990),
+            ip_out_requests: Some(980),
+            ip_out_discards: Some(0),
+            ip_out_no_routes: Some(0),
+            ip_reasm_reqds: Some(0),
+            ip_reasm_oks: Some(0),
+            ip_reasm_fails: Some(0),
+            ip_frag_oks: Some(0),
+            ip_frag_fails: Some(0),
+            ip_frag_creates: Some(0),
+            icmp_in_msgs: Some(12),
+            icmp_in_errors: Some(0),
+            icmp_out_msgs: Some(12),
+            icmp_out_errors: Some(0),
             scope: 0,
         }
     }

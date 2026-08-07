@@ -62,9 +62,10 @@ pub use parquet_preflight::{
 pub(crate) use codec::{check_row_cap, decode_batches, decode_section, encode_section};
 pub use codec::{
     collection_coverage, instance_metadata, os_cgroup_cpu, os_cgroup_io, os_cgroup_mapping,
-    os_cgroup_memory, os_cgroup_pids, os_cpu, os_diskstats, os_loadavg, os_meminfo, os_mountinfo,
-    os_netdev, os_netstat, os_process, os_process_status, os_psi, os_snmp, os_stat, os_topology,
-    os_vmstat, snapshot_coverage,
+    os_cgroup_memory, os_cgroup_pids, os_cpu, os_diskstats, os_interrupts, os_kernel_limits,
+    os_loadavg, os_meminfo, os_mountinfo, os_netdev, os_netstat, os_nfs, os_numa, os_process,
+    os_process_status, os_psi, os_snmp, os_snmp6, os_softirq, os_stat, os_topology, os_vmstat,
+    snapshot_coverage,
 };
 pub use contract::{
     CollectionGate, Column, ColumnClass, ColumnType, LintError, RowGateOverride, SectionColumnRef,
@@ -133,6 +134,13 @@ pub const fn registry() -> &'static [TypeContract] {
         os_cgroup_memory::OsCgroupMemory::CONTRACT,
         os_cgroup_io::OsCgroupIo::CONTRACT,
         os_cgroup_pids::OsCgroupPids::CONTRACT,
+        os_interrupts::OsInterrupts::CONTRACT,
+        os_softirq::OsSoftirq::CONTRACT,
+        os_kernel_limits::OsKernelLimits::CONTRACT,
+        os_numa::OsNuma::CONTRACT,
+        os_snmp6::OsSnmp6::CONTRACT,
+        os_nfs::OsNfsClient::CONTRACT,
+        os_nfs::OsNfsServer::CONTRACT,
     ]
 }
 

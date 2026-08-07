@@ -18,6 +18,8 @@ pub struct CpuinfoRow {
     pub core_id: i32,
     /// Physical socket (`physical id`); `-1` when absent.
     pub socket_id: i32,
+    /// NUMA node, filled from sysfs by the collector; `-1` when unknown.
+    pub numa_node: i32,
 }
 
 impl CpuinfoRow {
@@ -31,6 +33,7 @@ impl CpuinfoRow {
             mhz_max: self.mhz_max,
             core_id: self.core_id,
             socket_id: self.socket_id,
+            numa_node: self.numa_node,
             scope,
         }
     }
@@ -87,6 +90,7 @@ pub fn parse(content: &str) -> Result<Vec<CpuinfoRow>, ParseError> {
                 mhz_max: None,
                 core_id,
                 socket_id,
+                numa_node: -1,
             });
         }
     }

@@ -32,6 +32,19 @@ pub struct OsStat {
     /// Kernel boot time, unix microseconds.
     #[column(g)]
     pub btime: Ts,
+    /// Hardware interrupts serviced since boot, all lines summed.
+    #[column(c)]
+    pub intr_total: Option<i64>,
+    /// Software interrupts serviced since boot, all vectors summed.
+    #[column(c)]
+    pub softirq_total: Option<i64>,
+    /// Seconds since boot (`/proc/uptime` field 1), microseconds.
+    #[column(g)]
+    pub uptime_us: Option<i64>,
+    /// Cumulative idle time of all cores (`/proc/uptime` field 2),
+    /// microseconds.
+    #[column(g)]
+    pub idle_us: Option<i64>,
     /// Source scope (`0=host`). See `kronika_source_os::OsScope`.
     #[column(l)]
     pub scope: u8,
@@ -50,6 +63,10 @@ mod tests {
             procs_running: 3,
             procs_blocked: 1,
             btime: Ts(1_700_000_000_000_000),
+            intr_total: Some(9_000_000),
+            softirq_total: Some(8_000_000),
+            uptime_us: Some(3_600_000_000),
+            idle_us: Some(28_000_000_000),
             scope: 0,
         }
     }

@@ -86,6 +86,51 @@ pub struct OsMeminfo {
     /// Size of one huge page, KiB.
     #[column(g)]
     pub hugepagesize: Option<i64>,
+    /// Swap pages also held in RAM, KiB.
+    #[column(g)]
+    pub swap_cached: Option<i64>,
+    /// Unevictable pages, KiB.
+    #[column(g)]
+    pub unevictable: Option<i64>,
+    /// Pages locked into RAM by `mlock`, KiB.
+    #[column(g)]
+    pub mlocked: Option<i64>,
+    /// Anonymous transparent huge pages, KiB.
+    #[column(g)]
+    pub anon_huge_pages: Option<i64>,
+    /// Shared memory backed by huge pages, KiB.
+    #[column(g)]
+    pub shmem_huge_pages: Option<i64>,
+    /// Kernel stacks, KiB.
+    #[column(g)]
+    pub kernel_stack: Option<i64>,
+    /// Per-CPU allocator memory, KiB.
+    #[column(g)]
+    pub percpu: Option<i64>,
+    /// Block-device bounce buffers, KiB.
+    #[column(g)]
+    pub bounce: Option<i64>,
+    /// NFS pages written to the server but not yet committed, KiB.
+    #[column(g)]
+    pub nfs_unstable: Option<i64>,
+    /// Writeback pages held on FUSE temporary storage, KiB.
+    #[column(g)]
+    pub writeback_tmp: Option<i64>,
+    /// Huge pages reserved but not yet allocated.
+    #[column(g)]
+    pub huge_pages_rsvd: Option<i64>,
+    /// Huge pages above the configured pool size.
+    #[column(g)]
+    pub huge_pages_surp: Option<i64>,
+    /// Compressed swap pool footprint, KiB.
+    #[column(g)]
+    pub zswap: Option<i64>,
+    /// Original size of the pages held in the compressed swap pool, KiB.
+    #[column(g)]
+    pub zswapped: Option<i64>,
+    /// Used vmalloc area, KiB.
+    #[column(g)]
+    pub vmalloc_used: Option<i64>,
     /// Source scope (`0=host`). See `kronika_source_os::OsScope`.
     #[column(l)]
     pub scope: u8,
@@ -122,6 +167,21 @@ mod tests {
             huge_pages_total: Some(0),
             huge_pages_free: Some(0),
             hugepagesize: Some(2048),
+            swap_cached: Some(4_096),
+            unevictable: Some(0),
+            mlocked: Some(0),
+            anon_huge_pages: Some(2_097_152),
+            shmem_huge_pages: Some(0),
+            kernel_stack: Some(16_384),
+            percpu: Some(8_192),
+            bounce: Some(0),
+            nfs_unstable: Some(0),
+            writeback_tmp: Some(0),
+            huge_pages_rsvd: Some(0),
+            huge_pages_surp: Some(0),
+            zswap: Some(0),
+            zswapped: Some(0),
+            vmalloc_used: Some(65_536),
             scope: 0,
         }
     }
@@ -152,6 +212,21 @@ mod tests {
             huge_pages_total: None,
             huge_pages_free: None,
             hugepagesize: None,
+            swap_cached: None,
+            unevictable: None,
+            mlocked: None,
+            anon_huge_pages: None,
+            shmem_huge_pages: None,
+            kernel_stack: None,
+            percpu: None,
+            bounce: None,
+            nfs_unstable: None,
+            writeback_tmp: None,
+            huge_pages_rsvd: None,
+            huge_pages_surp: None,
+            zswap: None,
+            zswapped: None,
+            vmalloc_used: None,
             scope: 0,
         }
     }

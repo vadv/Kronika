@@ -32,6 +32,9 @@ pub struct OsTopology {
     /// Physical socket (`physical id`); `-1` when absent.
     #[column(l)]
     pub socket_id: i32,
+    /// NUMA node this CPU belongs to; `-1` when sysfs exposes no node.
+    #[column(l)]
+    pub numa_node: i32,
     /// Source scope (`0=host`). See `kronika_source_os::OsScope`.
     #[column(l)]
     pub scope: u8,
@@ -50,6 +53,7 @@ mod tests {
             mhz_max: Some(3600.0),
             core_id: 0,
             socket_id: 0,
+            numa_node: 0,
             scope: 0,
         }
     }

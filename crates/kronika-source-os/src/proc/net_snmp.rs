@@ -39,6 +39,46 @@ pub struct NetSnmpRow {
     pub udp_in_errors: i64,
     /// UDP datagrams received to a port with no listener.
     pub udp_no_ports: i64,
+    /// IPv4 datagrams received, including errors.
+    pub ip_in_receives: Option<i64>,
+    /// IPv4 datagrams dropped for a bad header.
+    pub ip_in_hdr_errors: Option<i64>,
+    /// IPv4 datagrams whose destination was not local.
+    pub ip_in_addr_errors: Option<i64>,
+    /// IPv4 datagrams forwarded to another host.
+    pub ip_forw_datagrams: Option<i64>,
+    /// IPv4 datagrams for an unsupported protocol.
+    pub ip_in_unknown_protos: Option<i64>,
+    /// Incoming IPv4 datagrams dropped without an error.
+    pub ip_in_discards: Option<i64>,
+    /// IPv4 datagrams delivered to an upper protocol.
+    pub ip_in_delivers: Option<i64>,
+    /// IPv4 datagrams handed down for transmission.
+    pub ip_out_requests: Option<i64>,
+    /// Outgoing IPv4 datagrams dropped without an error.
+    pub ip_out_discards: Option<i64>,
+    /// Outgoing IPv4 datagrams dropped for lack of a route.
+    pub ip_out_no_routes: Option<i64>,
+    /// IPv4 fragments that needed reassembly.
+    pub ip_reasm_reqds: Option<i64>,
+    /// IPv4 datagrams successfully reassembled.
+    pub ip_reasm_oks: Option<i64>,
+    /// IPv4 reassembly failures.
+    pub ip_reasm_fails: Option<i64>,
+    /// IPv4 datagrams successfully fragmented.
+    pub ip_frag_oks: Option<i64>,
+    /// IPv4 fragmentation failures.
+    pub ip_frag_fails: Option<i64>,
+    /// IPv4 fragments generated.
+    pub ip_frag_creates: Option<i64>,
+    /// ICMP messages received.
+    pub icmp_in_msgs: Option<i64>,
+    /// ICMP messages received with errors.
+    pub icmp_in_errors: Option<i64>,
+    /// ICMP messages sent.
+    pub icmp_out_msgs: Option<i64>,
+    /// ICMP messages that could not be sent.
+    pub icmp_out_errors: Option<i64>,
 }
 
 /// Parse `/proc/net/snmp` content into a singleton [`NetSnmpRow`].
@@ -80,6 +120,17 @@ pub fn parse(content: &str) -> Result<NetSnmpRow, ParseError> {
         })
     };
 
+    // The IP and ICMP groups arrived after the TCP and UDP ones, so a counter
+    // the kernel does not print stays null rather than reading as no traffic.
+    let optional = |proto: &str, key: &str| -> Option<i64> {
+        let headers = header_lines.get(proto).copied()?;
+        let values = value_lines.get(proto).copied()?;
+        headers
+            .split_whitespace()
+            .zip(values.split_whitespace())
+            .find_map(|(name, value)| (name == key).then(|| value.parse().ok()))?
+    };
+
     Ok(NetSnmpRow {
         tcp_active_opens: lookup("Tcp", "ActiveOpens")?,
         tcp_passive_opens: lookup("Tcp", "PassiveOpens")?,
@@ -95,6 +146,26 @@ pub fn parse(content: &str) -> Result<NetSnmpRow, ParseError> {
         udp_out_datagrams: lookup("Udp", "OutDatagrams")?,
         udp_in_errors: lookup("Udp", "InErrors")?,
         udp_no_ports: lookup("Udp", "NoPorts")?,
+        ip_in_receives: optional("Ip", "InReceives"),
+        ip_in_hdr_errors: optional("Ip", "InHdrErrors"),
+        ip_in_addr_errors: optional("Ip", "InAddrErrors"),
+        ip_forw_datagrams: optional("Ip", "ForwDatagrams"),
+        ip_in_unknown_protos: optional("Ip", "InUnknownProtos"),
+        ip_in_discards: optional("Ip", "InDiscards"),
+        ip_in_delivers: optional("Ip", "InDelivers"),
+        ip_out_requests: optional("Ip", "OutRequests"),
+        ip_out_discards: optional("Ip", "OutDiscards"),
+        ip_out_no_routes: optional("Ip", "OutNoRoutes"),
+        ip_reasm_reqds: optional("Ip", "ReasmReqds"),
+        ip_reasm_oks: optional("Ip", "ReasmOKs"),
+        ip_reasm_fails: optional("Ip", "ReasmFails"),
+        ip_frag_oks: optional("Ip", "FragOKs"),
+        ip_frag_fails: optional("Ip", "FragFails"),
+        ip_frag_creates: optional("Ip", "FragCreates"),
+        icmp_in_msgs: optional("Icmp", "InMsgs"),
+        icmp_in_errors: optional("Icmp", "InErrors"),
+        icmp_out_msgs: optional("Icmp", "OutMsgs"),
+        icmp_out_errors: optional("Icmp", "OutErrors"),
     })
 }
 
@@ -118,6 +189,26 @@ impl NetSnmpRow {
             udp_out_datagrams: self.udp_out_datagrams,
             udp_in_errors: self.udp_in_errors,
             udp_no_ports: self.udp_no_ports,
+            ip_in_receives: self.ip_in_receives,
+            ip_in_hdr_errors: self.ip_in_hdr_errors,
+            ip_in_addr_errors: self.ip_in_addr_errors,
+            ip_forw_datagrams: self.ip_forw_datagrams,
+            ip_in_unknown_protos: self.ip_in_unknown_protos,
+            ip_in_discards: self.ip_in_discards,
+            ip_in_delivers: self.ip_in_delivers,
+            ip_out_requests: self.ip_out_requests,
+            ip_out_discards: self.ip_out_discards,
+            ip_out_no_routes: self.ip_out_no_routes,
+            ip_reasm_reqds: self.ip_reasm_reqds,
+            ip_reasm_oks: self.ip_reasm_oks,
+            ip_reasm_fails: self.ip_reasm_fails,
+            ip_frag_oks: self.ip_frag_oks,
+            ip_frag_fails: self.ip_frag_fails,
+            ip_frag_creates: self.ip_frag_creates,
+            icmp_in_msgs: self.icmp_in_msgs,
+            icmp_in_errors: self.icmp_in_errors,
+            icmp_out_msgs: self.icmp_out_msgs,
+            icmp_out_errors: self.icmp_out_errors,
             scope,
         }
     }

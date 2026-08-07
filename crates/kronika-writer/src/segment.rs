@@ -1064,6 +1064,7 @@ mod tests {
             mhz_max: Some(3_600.0),
             core_id: 0,
             socket_id: 0,
+            numa_node: 0,
             scope: 0,
         }
     }
@@ -1108,6 +1109,7 @@ mod tests {
             mhz_max: present.then(|| f64::from_bits(mhz_bits)),
             core_id: 0,
             socket_id: 0,
+            numa_node: 0,
             scope: 0,
         }
     }

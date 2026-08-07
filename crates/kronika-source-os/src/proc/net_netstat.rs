@@ -25,6 +25,36 @@ pub struct NetNetstatRow {
     pub tcp_ofo_queue: i64,
     /// SYN retransmissions since boot.
     pub tcp_syn_retrans: i64,
+    /// Retransmissions later found unnecessary.
+    pub tcp_lost_retransmit: i64,
+    /// Connections reset after a retransmission timeout.
+    pub tcp_abort_on_timeout: i64,
+    /// Connections reset with data still queued at close.
+    pub tcp_abort_on_close: i64,
+    /// Connections reset under socket memory pressure.
+    pub tcp_abort_on_memory: i64,
+    /// Connections reset by unread data after shutdown.
+    pub tcp_abort_on_data: i64,
+    /// Resets that could not be sent for lack of memory.
+    pub tcp_abort_failed: i64,
+    /// Times the TCP stack entered memory pressure.
+    pub tcp_memory_pressures: i64,
+    /// Packets dropped because the socket backlog was full.
+    pub tcp_backlog_drop: i64,
+    /// Out-of-order packets dropped for lack of memory.
+    pub tcp_ofo_drop: i64,
+    /// Packets pruned from the receive queue.
+    pub tcp_rcv_pruned: i64,
+    /// Times receive-queue pruning was invoked.
+    pub tcp_prune_called: i64,
+    /// Acknowledgements deferred by the delayed-ACK timer.
+    pub delayed_acks: i64,
+    /// Sockets that left `TIME_WAIT` normally.
+    pub time_wait: i64,
+    /// Payload octets received.
+    pub ip_in_octets: i64,
+    /// Payload octets sent.
+    pub ip_out_octets: i64,
 }
 
 /// Parse `/proc/net/netstat` content into a singleton [`NetNetstatRow`].
@@ -53,19 +83,24 @@ pub fn parse(content: &str) -> Result<NetNetstatRow, ParseError> {
         }
     }
 
-    let headers = header_lines.get("TcpExt").copied().unwrap_or("");
-    let values = value_lines.get("TcpExt").copied().unwrap_or("");
-    let map: HashMap<&str, &str> = headers
-        .split_whitespace()
-        .zip(values.split_whitespace())
-        .collect();
+    let group = |name: &str| -> HashMap<&str, &str> {
+        let headers = header_lines.get(name).copied().unwrap_or("");
+        let values = value_lines.get(name).copied().unwrap_or("");
+        headers
+            .split_whitespace()
+            .zip(values.split_whitespace())
+            .collect()
+    };
+    let tcp_ext = group("TcpExt");
+    let ip_ext = group("IpExt");
 
-    let get = |key: &str| -> Result<i64, ParseError> {
+    let read = |map: &HashMap<&str, &str>, group: &str, key: &str| -> Result<i64, ParseError> {
         map.get(key).map_or(Ok(0), |v| {
             v.parse::<i64>()
-                .map_err(|e| ParseError(format!("TcpExt/{key}: {e}")))
+                .map_err(|e| ParseError(format!("{group}/{key}: {e}")))
         })
     };
+    let get = |key: &str| read(&tcp_ext, "TcpExt", key);
 
     Ok(NetNetstatRow {
         listen_overflows: get("ListenOverflows")?,
@@ -75,6 +110,21 @@ pub fn parse(content: &str) -> Result<NetNetstatRow, ParseError> {
         tcp_slow_start_retrans: get("TCPSlowStartRetrans")?,
         tcp_ofo_queue: get("TCPOFOQueue")?,
         tcp_syn_retrans: get("TCPSynRetrans")?,
+        tcp_lost_retransmit: get("TCPLostRetransmit")?,
+        tcp_abort_on_timeout: get("TCPAbortOnTimeout")?,
+        tcp_abort_on_close: get("TCPAbortOnClose")?,
+        tcp_abort_on_memory: get("TCPAbortOnMemory")?,
+        tcp_abort_on_data: get("TCPAbortOnData")?,
+        tcp_abort_failed: get("TCPAbortFailed")?,
+        tcp_memory_pressures: get("TCPMemoryPressures")?,
+        tcp_backlog_drop: get("TCPBacklogDrop")?,
+        tcp_ofo_drop: get("TCPOFODrop")?,
+        tcp_rcv_pruned: get("RcvPruned")?,
+        tcp_prune_called: get("PruneCalled")?,
+        delayed_acks: get("DelayedACKs")?,
+        time_wait: get("TW")?,
+        ip_in_octets: read(&ip_ext, "IpExt", "InOctets")?,
+        ip_out_octets: read(&ip_ext, "IpExt", "OutOctets")?,
     })
 }
 
@@ -91,6 +141,21 @@ impl NetNetstatRow {
             tcp_slow_start_retrans: self.tcp_slow_start_retrans,
             tcp_ofo_queue: self.tcp_ofo_queue,
             tcp_syn_retrans: self.tcp_syn_retrans,
+            tcp_lost_retransmit: self.tcp_lost_retransmit,
+            tcp_abort_on_timeout: self.tcp_abort_on_timeout,
+            tcp_abort_on_close: self.tcp_abort_on_close,
+            tcp_abort_on_memory: self.tcp_abort_on_memory,
+            tcp_abort_on_data: self.tcp_abort_on_data,
+            tcp_abort_failed: self.tcp_abort_failed,
+            tcp_memory_pressures: self.tcp_memory_pressures,
+            tcp_backlog_drop: self.tcp_backlog_drop,
+            tcp_ofo_drop: self.tcp_ofo_drop,
+            tcp_rcv_pruned: self.tcp_rcv_pruned,
+            tcp_prune_called: self.tcp_prune_called,
+            delayed_acks: self.delayed_acks,
+            time_wait: self.time_wait,
+            ip_in_octets: self.ip_in_octets,
+            ip_out_octets: self.ip_out_octets,
             scope,
         }
     }
