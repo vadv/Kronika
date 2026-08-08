@@ -12,7 +12,9 @@ use std::{error::Error, fmt};
 use anyhow::{Context as _, Result};
 use futures_util::TryStreamExt as _;
 use tokio_postgres::types::{BorrowToSql, Type};
-use tokio_postgres::{Client, Row, RowStream, SimpleQueryMessage, SimpleQueryStream};
+use tokio_postgres::{
+    CancelToken, Client, NoTls, Row, RowStream, SimpleQueryMessage, SimpleQueryStream,
+};
 
 /// Target row count for one collector-side `PostgreSQL` batch.
 pub const BATCH_ROWS: usize = 256;
@@ -25,6 +27,9 @@ pub const TEXT_PREFIX_CHARS: usize = 65_536;
 
 /// Cumulative deadline for opening and consuming one bounded row stream.
 pub const QUERY_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum time spent sending a best-effort `PostgreSQL` `CancelRequest`.
+pub const CANCEL_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Measurements made while one SQL statement is consumed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -207,6 +212,10 @@ impl<'a> Session<'a> {
         self.generation
     }
 
+    fn cancel_token(self) -> CancelToken {
+        self.client.cancel_token()
+    }
+
     /// Start a one-shot unnamed typed Extended Protocol query.
     ///
     /// # Errors
@@ -240,6 +249,50 @@ impl<'a> Session<'a> {
         stats.sent(sql, 0);
         self.client.simple_query_raw(sql).await
     }
+}
+
+/// Run a query future with a client-side deadline.
+///
+/// On timeout, this sends one bounded `PostgreSQL` `CancelRequest` while the
+/// connection driver is still alive. The caller must close the original
+/// connection after receiving the timeout.
+///
+/// # Errors
+///
+/// Returns an elapsed-deadline error after the bounded cancellation attempt.
+pub async fn timeout<T>(
+    session: Session<'_>,
+    duration: Duration,
+    future: impl Future<Output = T>,
+) -> Result<T, tokio::time::error::Elapsed> {
+    timeout_at(session, tokio::time::Instant::now() + duration, future).await
+}
+
+async fn timeout_at<T>(
+    session: Session<'_>,
+    deadline: tokio::time::Instant,
+    future: impl Future<Output = T>,
+) -> Result<T, tokio::time::error::Elapsed> {
+    let cancel = session.cancel_token();
+    timeout_at_with_cancel(deadline, future, send_cancel(cancel)).await
+}
+
+async fn timeout_at_with_cancel<T>(
+    deadline: tokio::time::Instant,
+    future: impl Future<Output = T>,
+    cancel: impl Future<Output = ()>,
+) -> Result<T, tokio::time::error::Elapsed> {
+    match tokio::time::timeout_at(deadline, future).await {
+        Ok(value) => Ok(value),
+        Err(elapsed) => {
+            cancel.await;
+            Err(elapsed)
+        }
+    }
+}
+
+async fn send_cancel(token: CancelToken) {
+    let _result = tokio::time::timeout(CANCEL_REQUEST_TIMEOUT, token.cancel_query(NoTls)).await;
 }
 
 /// Consume a typed query into memory for a known-small result.
@@ -364,7 +417,8 @@ where
     I: IntoIterator<Item = (P, Type)>,
 {
     let mut deadline = tokio::time::Instant::now() + QUERY_FETCH_TIMEOUT;
-    let stream = tokio::time::timeout_at(
+    let stream = timeout_at(
+        session,
         deadline,
         session.typed_stream(sql, params, parameter_bytes, stats),
     )
@@ -373,7 +427,7 @@ where
     .map_err(BatchError::PostgreSql)?;
     let mut stream = pin!(stream);
     let mut pending = PendingBatch::new();
-    while let Some(row) = tokio::time::timeout_at(deadline, stream.try_next())
+    while let Some(row) = timeout_at(session, deadline, stream.try_next())
         .await
         .map_err(|_elapsed| BatchError::Timeout)?
         .map_err(BatchError::PostgreSql)?
@@ -414,15 +468,6 @@ impl<T> PendingBatch<T> {
     }
 
     fn push(&mut self, row: T, logical_bytes: usize) -> Option<Batch<T>> {
-        if !self.rows.is_empty()
-            && (self.rows.len() >= BATCH_ROWS
-                || self.logical_bytes.saturating_add(logical_bytes) > BATCH_LOGICAL_BYTES)
-        {
-            let batch = self.take();
-            self.logical_bytes = logical_bytes;
-            self.rows.push(row);
-            return Some(batch);
-        }
         self.logical_bytes = self.logical_bytes.saturating_add(logical_bytes);
         self.rows.push(row);
         batch_limit_reached(self.rows.len(), self.logical_bytes).then(|| self.take())
@@ -570,15 +615,18 @@ const fn usize_to_u64(value: usize) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
     use tokio_postgres::{Config, NoTls};
 
     use super::{
-        BATCH_LOGICAL_BYTES, BATCH_ROWS, Batch, BatchError, BatchWrite, PendingBatch,
-        QUERY_FETCH_TIMEOUT, QueryStats, Session, batch_limit_reached, deliver_batch,
-        extend_fetch_deadline, read_batched,
+        BATCH_LOGICAL_BYTES, BATCH_ROWS, Batch, BatchError, BatchWrite, CANCEL_REQUEST_TIMEOUT,
+        PendingBatch, QUERY_FETCH_TIMEOUT, QueryStats, Session, TEXT_PREFIX_CHARS,
+        batch_limit_reached, deliver_batch, extend_fetch_deadline, read_batched,
+        timeout_at_with_cancel,
     };
 
     #[test]
@@ -589,6 +637,11 @@ mod tests {
         ));
         assert!(batch_limit_reached(BATCH_ROWS, 1));
         assert!(batch_limit_reached(1, BATCH_LOGICAL_BYTES));
+    }
+
+    #[test]
+    fn one_maximum_utf8_text_field_is_smaller_than_the_batch_byte_target() {
+        assert!(TEXT_PREFIX_CHARS.saturating_mul(4) < BATCH_LOGICAL_BYTES);
     }
 
     #[test]
@@ -615,6 +668,18 @@ mod tests {
             .push("large", BATCH_LOGICAL_BYTES + 1)
             .expect("the payload bound emits immediately");
         assert_eq!(batch.rows, ["large"]);
+        assert_eq!(batch.logical_bytes, BATCH_LOGICAL_BYTES + 1);
+        assert!(pending.finish().is_none());
+    }
+
+    #[test]
+    fn payload_boundary_row_is_delivered_before_another_row_is_fetched() {
+        let mut pending = PendingBatch::new();
+        assert!(pending.push("first", BATCH_LOGICAL_BYTES - 1).is_none());
+        let batch = pending
+            .push("boundary", 2)
+            .expect("the boundary row completes the current batch");
+        assert_eq!(batch.rows, ["first", "boundary"]);
         assert_eq!(batch.logical_bytes, BATCH_LOGICAL_BYTES + 1);
         assert!(pending.finish().is_none());
     }
@@ -703,6 +768,24 @@ mod tests {
     #[test]
     fn the_cumulative_fetch_deadline_is_thirty_seconds() {
         assert_eq!(QUERY_FETCH_TIMEOUT, Duration::from_secs(30));
+        assert_eq!(CANCEL_REQUEST_TIMEOUT, Duration::from_secs(1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_query_timeout_runs_the_cancel_step_before_returning() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mark = Arc::clone(&cancelled);
+        let result = timeout_at_with_cancel(
+            tokio::time::Instant::now() + Duration::from_secs(30),
+            std::future::pending::<()>(),
+            async move {
+                mark.store(true, Ordering::SeqCst);
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(cancelled.load(Ordering::SeqCst));
     }
 
     #[tokio::test(start_paused = true)]

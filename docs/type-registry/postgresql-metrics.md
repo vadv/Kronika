@@ -28,6 +28,11 @@ collector reads one usable installation of each and does not duplicate shared
 rows. An extension may be created, dropped, or moved to another database or
 schema; the next discovery selects its new location. If no supported
 installation is present, its sections are absent.
+Each readable info view is selected independently of the main extension reader.
+When installations expose different layouts, the collector chooses the newest
+`pg_stat_statements` layout. `pg_store_plans` implementations are not ranked:
+the current database wins when usable, otherwise database name is the
+deterministic tie-break.
 
 The `pg_stat_statements` layout follows its extension version. The
 `pg_store_plans` family is selected by function signatures and result columns,
@@ -39,10 +44,13 @@ getter.
 Small administrative reads use Simple Query Protocol. Typed metric reads use
 one-shot unnamed Extended Protocol queries. Queries run sequentially without
 named prepared statements or pipelining. Large results are streamed in batches
-of at most 256 rows or an estimated 512 KiB of decoded application data; a
-batch reaches the WAL before the collector fetches another row. Statement and
-plan text is limited in SQL to 65,536 characters per field. The collector does
-not select a top-N subset or apply a shared text budget.
+of at most 256 rows, targeting approximately 512 KiB of decoded application
+data. The final SQL-bounded row may exceed the byte target. A batch reaches the
+WAL before the collector fetches another row. Statement and plan text is
+limited in SQL to 65,536 characters per field. The collector does not select a
+top-N subset or apply a shared text budget.
+A timed-out query gets one bounded PostgreSQL CancelRequest before its
+connection is closed.
 
 ## Native server views
 
@@ -82,8 +90,10 @@ not select a top-N subset or apply a shared text budget.
 the first PostgreSQL release listed above. PostgreSQL 17 and 18 changed
 `pg_stat_progress_vacuum`, so those layouts have separate `type_id` values.
 `pg_settings` is read on each PostgreSQL cycle and emitted on its first
-successful read, when it changes, and when a new segment first receives
-PostgreSQL rows.
+successful read, when it changes, and in every new segment. The latest
+successful snapshot is reused when another source opens a segment between
+PostgreSQL cycles.
+The `primary_conninfo` row is excluded because its value may contain a password.
 
 ## Extension views
 

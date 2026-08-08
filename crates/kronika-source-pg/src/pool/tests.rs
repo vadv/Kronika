@@ -3,7 +3,9 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio_postgres::{Config, NoTls};
 
-use super::{CONNECT_TIMEOUT, ConnectError, Open, Pool};
+use super::{
+    CONNECT_TIMEOUT, ConnectError, Open, Pool, application_name, collector_application_name,
+};
 
 /// A DSN nothing listens on; these tests never open a connection.
 const UNUSED: &str = "host=/nonexistent dbname=kronika";
@@ -72,6 +74,19 @@ fn labels_use_neutral_defaults_until_the_generation_probe_resolves_them() {
         pool.config
             .get_application_name()
             .is_some_and(|name| name.starts_with("kronika-collector-"))
+    );
+}
+
+#[test]
+fn application_name_is_process_stable_and_changes_with_process_identity() {
+    assert_eq!(collector_application_name(), collector_application_name());
+    assert_ne!(
+        application_name(7, Duration::from_nanos(11)),
+        application_name(7, Duration::from_nanos(12))
+    );
+    assert_ne!(
+        application_name(7, Duration::from_nanos(11)),
+        application_name(8, Duration::from_nanos(11))
     );
 }
 

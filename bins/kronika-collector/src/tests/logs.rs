@@ -160,6 +160,7 @@ fn assert_retained_batch_moves_to_fresh_segment(pressure: Pressure) {
         &config,
         &DueSet::logs(),
         &log_rows(),
+        &[settings_row()],
         200,
         &mut segment,
         &mut scheduler,
@@ -175,8 +176,8 @@ fn assert_retained_batch_moves_to_fresh_segment(pressure: Pressure) {
         old_catalog
             .entries
             .iter()
-            .all(|entry| entry.type_id != PGBOUNCER_TYPE_ID),
-        "the pending row was not written to the old segment"
+            .all(|entry| !matches!(entry.type_id, PGBOUNCER_TYPE_ID | PG_SETTINGS_TYPE_ID)),
+        "the pending rows were not written to the old segment"
     );
 
     assert_eq!(journal.parts().len(), 1, "one retained batch is appended");
@@ -200,6 +201,15 @@ fn assert_retained_batch_moves_to_fresh_segment(pressure: Pressure) {
             .map(|entry| entry.rows),
         Some(1),
         "a fresh segment gets exactly one metadata row"
+    );
+    assert_eq!(
+        fresh_catalog
+            .entries
+            .iter()
+            .find(|entry| entry.type_id == PG_SETTINGS_TYPE_ID)
+            .map(|entry| entry.rows),
+        Some(1),
+        "the cached settings follow the retained window into the fresh segment"
     );
 }
 
@@ -331,6 +341,7 @@ fn postgres_batch_is_not_repeated_in_incremental_log_windows() {
             &config,
             &DueSet::logs(),
             &log_rows(),
+            &[],
             ts,
             &mut segment,
             &mut scheduler,
@@ -373,42 +384,33 @@ fn postgres_batch_is_not_repeated_in_incremental_log_windows() {
 }
 
 #[test]
-fn cached_settings_are_added_once_when_postgres_enters_an_os_opened_segment() {
+fn cached_settings_are_added_once_when_logs_open_a_segment() {
     let dir = tempfile::tempdir().expect("tempdir");
     let owner = owner(dir.path());
     let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
     let config = config(dir.path(), JournalConfig::default().max_journal_len as u64);
     let mut segment = SegmentState::default();
     let mut scheduler = Scheduler::new(Intervals::default());
-    let first = first_window(&segment);
-    append_window_and_maybe_close(
-        &mut journal,
-        &owner,
-        &config,
-        &mut segment,
-        100,
-        false,
-        &first,
-    )
-    .expect("append OS window");
     let settings = [settings_row()];
 
     for ts in [200, 201] {
-        append_pending_pg_batch(
+        let outcome = append_pending_window(
             &mut journal,
             &owner,
             &config,
-            &archiver_batch(),
+            &DueSet::logs(),
+            &log_rows(),
             &settings,
             ts,
             &mut segment,
             &mut scheduler,
         )
-        .expect("append PostgreSQL batch");
+        .expect("append log window");
+        assert!(outcome.accepted);
     }
 
-    assert_eq!(journal.parts().len(), 3);
-    for (index, part) in journal.parts().iter().enumerate().skip(1) {
+    assert_eq!(journal.parts().len(), 2);
+    for (index, part) in journal.parts().iter().enumerate() {
         let bytes = journal.read_part(*part).expect("read WAL part");
         let catalog = validate_part(&bytes).expect("valid WAL part");
         let settings_rows = catalog
@@ -417,6 +419,6 @@ fn cached_settings_are_added_once_when_postgres_enters_an_os_opened_segment() {
             .filter(|entry| entry.type_id == PG_SETTINGS_TYPE_ID)
             .map(|entry| entry.rows)
             .sum::<u32>();
-        assert_eq!(settings_rows, u32::from(index == 1));
+        assert_eq!(settings_rows, u32::from(index == 0));
     }
 }

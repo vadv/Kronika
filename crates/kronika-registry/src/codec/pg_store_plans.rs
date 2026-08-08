@@ -284,6 +284,7 @@ mod tests {
     id = 1_003_001,
     name = "pg_store_plans_ossc",
     semantics = conditional_full,
+    identity("userid", "dbid", "queryid", "planid"),
     sort_key("dbid", "userid", "queryid", "planid")
 )]
 pub struct PgStorePlansOsscV1 {
@@ -401,6 +402,7 @@ pub struct PgStorePlansOsscV1 {
     id = 1_018_001,
     name = "pg_store_plans_datasentinel",
     semantics = conditional_full,
+    identity("userid", "dbid", "queryid", "planid"),
     sort_key("dbid", "userid", "queryid", "planid")
 )]
 pub struct PgStorePlansDatasentinelV1 {
@@ -559,6 +561,7 @@ mod ossc_tests {
         let c = PgStorePlansOsscV1::CONTRACT;
         assert_eq!(c.type_id.get(), 1_003_001);
         assert_eq!(c.columns.len(), 33);
+        assert_eq!(c.identity, ["userid", "dbid", "queryid", "planid"]);
         assert_eq!(c.sort_key, ["dbid", "userid", "queryid", "planid"]);
         assert_eq!(
             c.column("shared_blks_read").and_then(|col| col.unit),
@@ -663,6 +666,7 @@ mod datasentinel_tests {
         let contract = PgStorePlansDatasentinelV1::CONTRACT;
         assert_eq!(contract.type_id.get(), 1_018_001);
         assert_eq!(contract.columns.len(), 35);
+        assert_eq!(contract.identity, ["userid", "dbid", "queryid", "planid"]);
         assert_eq!(contract.sort_key, ["dbid", "userid", "queryid", "planid"]);
         assert_eq!(
             contract.column("relids").map(|col| col.nullable),

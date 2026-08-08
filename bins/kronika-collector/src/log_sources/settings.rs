@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result};
 use futures_util::TryStreamExt as _;
 use kronika_source_pg::Session;
-use kronika_source_pg::query::QueryStats;
+use kronika_source_pg::query::{self, QueryStats};
 use tokio_postgres::config::Host;
 use tokio_postgres::{Config, NoTls, SimpleQueryMessage};
 
@@ -242,9 +242,11 @@ pub(super) async fn postgres(
     let driver = tokio::spawn(connection);
     let mut facts_stats = QueryStats::default();
     let facts_started = Instant::now();
-    let facts = tokio::time::timeout(
+    let session = Session::new(&client, 0);
+    let facts = query::timeout(
+        session,
         QUERY_TIMEOUT,
-        read_log_facts(Session::new(&client, 0), &mut facts_stats),
+        read_log_facts(session, &mut facts_stats),
     )
     .await;
     let facts = match facts {
@@ -300,9 +302,11 @@ pub(super) async fn postgres(
         } else {
             let mut stats = QueryStats::default();
             let started = Instant::now();
-            let identity = tokio::time::timeout(
+            let session = Session::new(&client, 0);
+            let identity = query::timeout(
+                session,
                 QUERY_TIMEOUT,
-                read_system_identifier(Session::new(&client, 0), &mut stats),
+                read_system_identifier(session, &mut stats),
             )
             .await;
             match identity {
@@ -498,9 +502,11 @@ pub(super) async fn pgbouncer(
     let driver = tokio::spawn(connection);
     let mut stats = QueryStats::default();
     let started = Instant::now();
-    let read = tokio::time::timeout(
+    let session = Session::new(&client, 0);
+    let read = query::timeout(
+        session,
         QUERY_TIMEOUT,
-        read_pgbouncer_settings(Session::new(&client, 0), &mut stats),
+        read_pgbouncer_settings(session, &mut stats),
     )
     .await;
     drop(client);

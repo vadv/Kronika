@@ -119,7 +119,7 @@ fn push_locks(
     Ok(())
 }
 
-fn push_settings(
+pub(crate) fn push_settings(
     buffers: &mut SectionBuffers,
     interner: &mut Interner,
     rows: &[SettingsRow],

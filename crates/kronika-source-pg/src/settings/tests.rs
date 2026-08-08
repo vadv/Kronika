@@ -1,4 +1,4 @@
-use super::{SettingsRow, to_section};
+use super::{SETTINGS_QUERY, SettingsRow, to_section};
 use kronika_registry::{StrId, Ts};
 
 fn row() -> SettingsRow {
@@ -60,4 +60,11 @@ fn a_value_set_from_a_file_carries_the_file_and_the_line() {
 fn an_interner_that_fails_fails_the_row() {
     let built = to_section(&row(), |_bytes| Err("dictionary is full"));
     assert_eq!(built.map(|_row| ()), Err("dictionary is full"));
+}
+
+#[test]
+fn primary_conninfo_is_excluded_before_its_value_crosses_the_connection() {
+    assert!(SETTINGS_QUERY.contains("WHERE name <> 'primary_conninfo'"));
+    assert!(!SETTINGS_QUERY.contains("regexp"));
+    assert!(!SETTINGS_QUERY.contains("replace("));
 }

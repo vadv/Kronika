@@ -143,7 +143,7 @@ const INVENTORY_QUERY: &str = marked!(
      ) \
      SELECT i.extname, i.extversion, i.schema_name, \
             pg_catalog.has_schema_privilege(i.schema_oid, 'USAGE') AS schema_usable, \
-            pg_catalog.pg_has_role('pg_read_all_stats', 'member') AS full_visibility, \
+            pg_catalog.pg_has_role('pg_read_all_stats', 'USAGE') AS full_visibility, \
             coalesce((SELECT bool_or(pg_catalog.has_table_privilege(c.oid, 'SELECT') \
                                     AND EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a \
                                                 WHERE a.attrelid = c.oid AND a.attname = 'dealloc' \
@@ -286,7 +286,7 @@ pub struct InventoryEntry {
     pub schema: ExtensionSchema,
     /// Whether the current role has `USAGE` on the installation schema.
     pub schema_usable: bool,
-    /// Whether the current role belongs to `pg_read_all_stats`.
+    /// Whether the current role can immediately use `pg_read_all_stats`.
     pub full_visibility: bool,
     /// Whether an exact readable `pg_stat_statements_info` view exists.
     pub statements_info: bool,

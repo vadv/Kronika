@@ -56,6 +56,7 @@ fn inventory_is_one_marked_catalog_query_with_exact_capability_checks() {
     assert!(INVENTORY_QUERY.contains("actual.function_oid = f.function_oid"));
     assert!(INVENTORY_QUERY.contains("has_schema_privilege"));
     assert!(INVENTORY_QUERY.contains("has_function_privilege"));
+    assert!(INVENTORY_QUERY.contains("pg_has_role('pg_read_all_stats', 'USAGE')"));
     assert!(INVENTORY_QUERY.contains("'26 26 20 20'"));
     assert!(INVENTORY_QUERY.contains("queryid_stat_statements"));
     assert!(INVENTORY_QUERY.contains("store_plans_ossc_columns"));

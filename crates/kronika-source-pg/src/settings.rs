@@ -1,8 +1,9 @@
 //! `pg_settings` for section `1_019_001`.
 //!
-//! One query returns every parameter of the running server, and the layout has
-//! been stable since PG 10. Rows arrive ordered by `name`, which is the section
-//! sort key, so interning in arrival order keeps that order meaningful.
+//! One query returns every parameter except `primary_conninfo`, whose value may
+//! contain a password. The layout has been stable since PG 10. Rows arrive
+//! ordered by `name`, which is the section sort key, so interning in arrival
+//! order keeps that order meaningful.
 
 use anyhow::{Context as _, Result};
 use kronika_registry::{PgSettings, StrId, Ts};
@@ -25,6 +26,19 @@ macro_rules! marked {
         )
     };
 }
+
+const SETTINGS_QUERY: &str = marked!(
+    "SELECT \
+         (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us, \
+         name, left(setting, 65536) AS setting, unit, source, \
+         left(sourcefile, 65536) AS sourcefile, sourceline, \
+         pending_restart, context, vartype, \
+         left(boot_val, 65536) AS boot_val, \
+         left(reset_val, 65536) AS reset_val \
+     FROM pg_settings \
+     WHERE name <> 'primary_conninfo' \
+     ORDER BY name"
+);
 
 /// One `pg_settings` row as the server sent it, before interning.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,17 +77,7 @@ pub struct SettingsRow {
 pub async fn collect(session: Session<'_>, stats: &mut QueryStats) -> Result<Vec<SettingsRow>> {
     query::read_all(
         session,
-        marked!(
-            "SELECT \
-                 (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us, \
-                 name, left(setting, 65536) AS setting, unit, source, \
-                 left(sourcefile, 65536) AS sourcefile, sourceline, \
-                 pending_restart, context, vartype, \
-                 left(boot_val, 65536) AS boot_val, \
-                 left(reset_val, 65536) AS reset_val \
-             FROM pg_settings \
-             ORDER BY name"
-        ),
+        SETTINGS_QUERY,
         std::iter::empty::<(String, Type)>(),
         0,
         stats,

@@ -7,7 +7,8 @@
 use std::error::Error;
 use std::fmt;
 use std::net::IpAddr;
-use std::time::Duration;
+use std::sync::OnceLock;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result};
 use tokio_postgres::config::Host;
@@ -18,6 +19,7 @@ use crate::Session;
 /// Maximum time allowed for opening a `PostgreSQL` connection.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_PORT: u16 = 5432;
+static APPLICATION_NAME: OnceLock<String> = OnceLock::new();
 
 /// Failure to open a `PostgreSQL` connection.
 #[derive(Debug)]
@@ -84,7 +86,7 @@ impl Pool {
     /// connection URL.
     pub fn new(dsn: &str) -> Result<Self> {
         let mut config: Config = dsn.parse().context("parse the PostgreSQL DSN")?;
-        config.application_name(format!("kronika-collector-{}", std::process::id()));
+        config.application_name(collector_application_name());
         Ok(Self::from_config(config))
     }
 
@@ -211,6 +213,21 @@ impl Pool {
             generation,
         })
     }
+}
+
+fn collector_application_name() -> &'static str {
+    APPLICATION_NAME.get_or_init(|| {
+        application_name(
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO),
+        )
+    })
+}
+
+fn application_name(process_id: u32, started: Duration) -> String {
+    format!("kronika-collector-{process_id}-{}", started.as_nanos())
 }
 
 fn connection_label(config: &Config, user: Option<&str>, source_index: usize) -> String {

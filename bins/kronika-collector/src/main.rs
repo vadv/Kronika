@@ -38,7 +38,7 @@ use log_sources::{LogRows, LogSources, push_log_sources};
 use logging::{LogLevel, field, log_event};
 use os_sources::{collect_os_sources, push_os_sources};
 use pg_sources::telemetry::PgTelemetry;
-use pg_sources::{PgBatch, PgSources, push_pg_batch};
+use pg_sources::{PgBatch, PgSources, push_pg_batch, push_pg_settings};
 use rotation::Rotation;
 use scheduler::{DueSet, Scheduler, SourceKind};
 use segments::{
@@ -235,6 +235,7 @@ async fn run_collector() -> Result<()> {
             )
             .await?;
             written_this_tick.extend(pg_outcome.written);
+            let opening_settings = pg.last_settings();
             let collection_due = if pg_outcome.opening_os_collected && !segment.is_empty() {
                 due.without(SourceKind::OsMountTopo)
             } else {
@@ -245,6 +246,7 @@ async fn run_collector() -> Result<()> {
                 &writer_owner,
                 &config,
                 &collection_due,
+                opening_settings.as_deref().unwrap_or(&[]),
                 &mut segment,
                 &mut sched,
                 &mut logs,
@@ -503,6 +505,7 @@ fn run_collection_cycle(
     writer_owner: &WriterOwner,
     config: &Config,
     due: &DueSet,
+    opening_settings: &[kronika_source_pg::settings::SettingsRow],
     segment: &mut SegmentState,
     sched: &mut Scheduler,
     logs: &mut LogSources,
@@ -532,6 +535,7 @@ fn run_collection_cycle(
             config,
             &batch_due,
             rows,
+            opening_settings,
             ts,
             segment,
             sched,
@@ -553,6 +557,7 @@ fn run_collection_cycle(
             config,
             due,
             &LogRows::default(),
+            opening_settings,
             ts,
             segment,
             sched,
@@ -588,6 +593,7 @@ fn append_pending_window(
     config: &Config,
     due: &DueSet,
     log_rows: &LogRows,
+    opening_settings: &[kronika_source_pg::settings::SettingsRow],
     ts: i64,
     segment: &mut SegmentState,
     sched: &mut Scheduler,
@@ -595,7 +601,8 @@ fn append_pending_window(
     let mut outcome = PendingWindowOutcome::default();
     let mut attempt_due = due_for_window(segment, due, sched);
     for attempt in 0..2 {
-        let buffers = match buffer_window(segment, &attempt_due, log_rows, ts) {
+        let includes_settings = segment.needs_pg_settings() && !opening_settings.is_empty();
+        let buffers = match buffer_window(segment, &attempt_due, log_rows, opening_settings, ts) {
             Ok(Some(buffers)) => buffers,
             Ok(None) => {
                 outcome.accepted = true;
@@ -642,6 +649,9 @@ fn append_pending_window(
                     attempt_due = sched.recollection_due(due, Instant::now());
                     continue;
                 }
+                if includes_settings && !segment.is_empty() {
+                    segment.mark_pg_settings_present();
+                }
                 outcome.accepted = true;
                 outcome.appended = true;
                 return Ok(outcome);
@@ -679,6 +689,7 @@ fn buffer_window(
     segment: &mut SegmentState,
     due: &DueSet,
     log_rows: &LogRows,
+    opening_settings: &[kronika_source_pg::settings::SettingsRow],
     ts: i64,
 ) -> std::result::Result<Option<SectionBuffers>, BufferFailure> {
     let fs = ProcFs::from_env();
@@ -709,7 +720,13 @@ fn buffer_window(
         in_container,
         due,
     );
-    if let Err(err) = push_os_sources(&mut buffers, &os)
+    let settings = if segment.needs_pg_settings() {
+        opening_settings
+    } else {
+        &[]
+    };
+    if let Err(err) = push_pg_settings(&mut buffers, segment.interner_mut(), settings)
+        .and_then(|()| push_os_sources(&mut buffers, &os))
         .and_then(|()| push_log_sources(&mut buffers, segment.interner_mut(), log_rows))
     {
         log_buffer_failure(&err);

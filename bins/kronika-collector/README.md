@@ -74,14 +74,20 @@ layout per column set. `pg_store_plans` is identified by its callable interface
 and result columns rather than `extversion`: the collector keeps separate OSSC
 and Datasentinel layouts for their zero-argument readers, and recognizes the
 vadv boolean reader with its four-key plan getter. It also discovers the exact
-readable `pg_stat_statements_info` and `pg_store_plans_info` views. The complete
+readable `pg_stat_statements_info` and `pg_store_plans_info` views. Each info
+view is selected independently of its main statistics reader. The complete
 layout map is in
 [PostgreSQL metric types](../../docs/type-registry/postgresql-metrics.md).
+When several databases expose different layouts, the collector chooses the
+newest `pg_stat_statements` layout. `pg_store_plans` implementations are not
+ranked: the current database wins when usable, otherwise database name is the
+deterministic tie-break.
 
 `pg_settings` is read on each PostgreSQL collection. The collector writes a
-full snapshot after the first successful read, when a setting changes, and when
-a new segment first receives PostgreSQL rows. It reuses the latest successful
-snapshot when opening that segment.
+full snapshot after the first successful read, when a setting changes, and in
+every new segment. It reuses the latest successful snapshot when OS metrics or
+log rows open a segment between PostgreSQL collections.
+The `primary_conninfo` row is omitted because its value may contain a password.
 
 ### PostgreSQL query execution
 
@@ -89,17 +95,22 @@ Small administrative reads use PostgreSQL's Simple Query Protocol. Typed metric
 reads use one-shot unnamed Extended Protocol queries. The collector sends one
 query at a time on each connection: it creates no named prepared statements and
 does not pipeline requests.
+All persistent metric sessions from one collector process share one unique
+`application_name`; activity and lock reads omit that exact name.
 
-Potentially large results are consumed in batches of at most 256 rows or an
-estimated 512 KiB of decoded application data. Each batch is encoded and
-appended to the WAL before the next row is fetched. There is no top-N plan
-selection or shared plan-text budget. Each statement or plan text is limited in
-SQL to 65,536 characters before it crosses the connection.
+Potentially large results are consumed in batches of at most 256 rows, targeting
+approximately 512 KiB of decoded application data. The byte target may be
+exceeded by the final SQL-bounded row. Each batch is encoded and appended to the
+WAL before the next row is fetched. There is no top-N plan selection or shared
+plan-text budget. Each statement or plan text is limited in SQL to 65,536
+characters before it crosses the connection.
 
 If a stream fails after earlier batches reached the WAL, those batches remain.
 The collector logs the error, skips the rest of that read, and continues with
 independent sources. A connection or query timeout closes that connection; a
-later collection reconnects.
+later collection reconnects. Before closing after a query timeout, the
+collector makes one PostgreSQL CancelRequest attempt with a one-second
+deadline.
 
 Every SQL query produces a `pg_query_finish` event at debug level with its
 timings and counters. Fetches longer than 500 ms also produce a
