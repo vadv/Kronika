@@ -65,8 +65,9 @@ while the marker and frame body are still present. Only after that
 synchronization does it truncate the file to 36 bytes and call `sync_data` a
 second time. If the process exits after committing the marker, the next
 `Journal::open` validates that marker and completes the reset. A failed rollback
-or a failure after marker commit marks the open journal unusable, so collection
-cannot continue with an indeterminate persistence state.
+or a failure after marker commit poisons the open journal: every further
+operation fails, the daemon exits, and the next open completes the reset from
+the committed marker.
 
 ## Writing
 

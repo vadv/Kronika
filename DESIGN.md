@@ -167,6 +167,20 @@ Web:
 - Shows `null` for a metric the collector failed to collect. Web does not
   invent or interpolate a value it does not have.
 
+## Fail fast
+
+A component that cannot return to a known durable state fails immediately and
+visibly: the log carries the full error, and the daemon exits. The next start
+finishes the interrupted operation.
+
+Startup recovery is the only recovery path. A crash and a deliberate stop run
+the same code, and the tests exercise it. The journal's poisoned state is this
+rule applied: a reset that cannot complete or roll back refuses further use
+until reopen.
+
+A segment is published before the journal is reset, so a failed reset stops
+without risking collected data.
+
 ## Demo
 
 The repository demo runs the project against live PostgreSQL and OS containers.
