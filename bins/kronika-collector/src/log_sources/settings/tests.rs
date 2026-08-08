@@ -118,6 +118,15 @@ fn missing_user_is_labelled_as_the_server_default() {
 }
 
 #[test]
+fn server_reported_user_replaces_the_default_label() {
+    let parsed = target("host=db.example port=6543");
+    assert_eq!(
+        parsed.label_for_user("postgres"),
+        "postgres@db.example:6543"
+    );
+}
+
+#[test]
 fn malformed_and_structurally_invalid_inputs_return_opaque_errors() {
     let raw = "host='unterminated MALFORMED_SECRET";
     let error = ConnectionTarget::parse(raw, 0).expect_err("reject malformed connection");

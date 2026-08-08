@@ -26,7 +26,8 @@ const POSTGRES_LOG_FACTS_QUERY: &str = concat!(
     "/* kronika:",
     env!("CARGO_PKG_VERSION"),
     " bins/kronika-collector/src/log_sources/settings.rs */ ",
-    "SELECT current_setting('log_line_prefix') AS line_prefix, ",
+    "SELECT session_user AS user_name, current_database() AS database_name, ",
+    "current_setting('log_line_prefix') AS line_prefix, ",
     "current_setting('data_directory') AS data_directory, ",
     "pg_current_logfile() AS log_path"
 );
@@ -65,6 +66,10 @@ impl ConnectionTarget {
         self.config.get_dbname().unwrap_or("postgresql")
     }
 
+    fn label_for_user(&self, user: &str) -> String {
+        connection_label_for_user(&self.config, user)
+    }
+
     pub(super) const fn source_index(&self) -> usize {
         self.source_index
     }
@@ -97,7 +102,10 @@ fn validate_endpoints(config: &Config) -> Result<(), InvalidConnection> {
 }
 
 fn connection_label(config: &Config) -> String {
-    let user = config.get_user();
+    connection_label_for_user(config, config.get_user().unwrap_or("default"))
+}
+
+fn connection_label_for_user(config: &Config, user: &str) -> String {
     let ports = config.get_ports();
     if config.get_hosts().is_empty() {
         return config
@@ -132,8 +140,8 @@ fn port_at(ports: &[u16], index: usize) -> u16 {
     }
 }
 
-fn endpoint(user: Option<&str>, host: &str, port: u16) -> String {
-    format!("{}@{host}:{port}", user.unwrap_or("default"))
+fn endpoint(user: &str, host: &str, port: u16) -> String {
+    format!("{user}@{host}:{port}")
 }
 
 fn tcp_label(host: &str) -> String {
@@ -174,6 +182,15 @@ pub(super) struct PgBouncerServer {
     /// Empty when `logfile` is unset, which means the pooler writes to stderr
     /// and there is no file to follow.
     pub(super) log_path: Option<String>,
+}
+
+#[derive(Debug)]
+struct LogFacts {
+    user_name: String,
+    database_name: String,
+    line_prefix: String,
+    data_directory: String,
+    log_path: Option<String>,
 }
 
 /// Ask `PostgreSQL` for its log file, its line layout and its identity.
@@ -226,24 +243,14 @@ pub(super) async fn postgres(
         read_log_facts(Session::new(&client, 0), &mut facts_stats),
     )
     .await;
-    let (line_prefix, data_directory, logfile) = match facts {
-        Ok(Ok(facts)) => {
-            observe_query(
-                observe,
-                target,
-                "postgres_log_facts",
-                facts_started,
-                facts_stats,
-                QueryOutcome::Success,
-                None,
-            );
-            facts
-        }
+    let facts = match facts {
+        Ok(Ok(facts)) => facts,
         Ok(Err(error)) => {
             observe_query(
                 observe,
-                target,
                 "postgres_log_facts",
+                target.label(),
+                target.database_label(),
                 facts_started,
                 facts_stats,
                 QueryOutcome::Error,
@@ -256,8 +263,9 @@ pub(super) async fn postgres(
         Err(elapsed) => {
             observe_query(
                 observe,
-                target,
                 "postgres_log_facts",
+                target.label(),
+                target.database_label(),
                 facts_started,
                 facts_stats,
                 QueryOutcome::Timeout,
@@ -271,6 +279,17 @@ pub(super) async fn postgres(
             return Err(elapsed).context("read PostgreSQL log facts timed out");
         }
     };
+    let connection_label = target.label_for_user(&facts.user_name);
+    observe_query(
+        observe,
+        "postgres_log_facts",
+        &connection_label,
+        &facts.database_name,
+        facts_started,
+        facts_stats,
+        QueryOutcome::Success,
+        None,
+    );
     let (system_identifier, identity_unavailable) = match cached_system_identifier {
         Some(identifier) => (Some(identifier), false),
         None => {
@@ -285,8 +304,9 @@ pub(super) async fn postgres(
                 Ok(Ok(identifier)) => {
                     observe_query(
                         observe,
-                        target,
                         "postgres_system_identifier",
+                        &connection_label,
+                        &facts.database_name,
                         started,
                         stats,
                         QueryOutcome::Success,
@@ -297,8 +317,9 @@ pub(super) async fn postgres(
                 Ok(Err(error)) => {
                     observe_query(
                         observe,
-                        target,
                         "postgres_system_identifier",
+                        &connection_label,
+                        &facts.database_name,
                         started,
                         stats,
                         QueryOutcome::Error,
@@ -309,8 +330,9 @@ pub(super) async fn postgres(
                 Err(_elapsed) => {
                     observe_query(
                         observe,
-                        target,
                         "postgres_system_identifier",
+                        &connection_label,
+                        &facts.database_name,
                         started,
                         stats,
                         QueryOutcome::Timeout,
@@ -327,8 +349,10 @@ pub(super) async fn postgres(
     drop(client);
     driver.abort();
     Ok(PostgresServer {
-        log_path: logfile.map(|name| absolute(&data_directory, &name)),
-        line_prefix,
+        log_path: facts
+            .log_path
+            .map(|name| absolute(&facts.data_directory, &name)),
+        line_prefix: facts.line_prefix,
         system_identifier,
         identity_unavailable,
     })
@@ -336,8 +360,9 @@ pub(super) async fn postgres(
 
 fn observe_query(
     observe: &mut (dyn FnMut(PgObservation) + Send),
-    target: &ConnectionTarget,
     query_name: &'static str,
+    connection: &str,
+    database: &str,
     started: Instant,
     stats: QueryStats,
     outcome: QueryOutcome,
@@ -345,8 +370,8 @@ fn observe_query(
 ) {
     observe(PgObservation::Query(QueryObservation {
         query_name,
-        connection: target.label().to_owned(),
-        database: target.database_label().to_owned(),
+        connection: connection.to_owned(),
+        database: database.to_owned(),
         elapsed: started.elapsed(),
         stats,
         outcome,
@@ -354,10 +379,7 @@ fn observe_query(
     }));
 }
 
-async fn read_log_facts(
-    session: Session<'_>,
-    stats: &mut QueryStats,
-) -> Result<(String, String, Option<String>)> {
+async fn read_log_facts(session: Session<'_>, stats: &mut QueryStats) -> Result<LogFacts> {
     let stream = session
         .simple_stream(POSTGRES_LOG_FACTS_QUERY, stats)
         .await
@@ -371,6 +393,14 @@ async fn read_log_facts(
         }
     }
     let row = row.context("PostgreSQL log settings returned no row")?;
+    let user_name = row
+        .get("user_name")
+        .context("PostgreSQL log settings omitted user_name")?
+        .to_owned();
+    let database_name = row
+        .get("database_name")
+        .context("PostgreSQL log settings omitted database_name")?
+        .to_owned();
     let line_prefix = row
         .get("line_prefix")
         .context("PostgreSQL log settings omitted line_prefix")?
@@ -380,7 +410,13 @@ async fn read_log_facts(
         .context("PostgreSQL log settings omitted data_directory")?
         .to_owned();
     let log_path = row.get("log_path").map(str::to_owned);
-    Ok((line_prefix, data_directory, log_path))
+    Ok(LogFacts {
+        user_name,
+        database_name,
+        line_prefix,
+        data_directory,
+        log_path,
+    })
 }
 
 async fn read_system_identifier(session: Session<'_>, stats: &mut QueryStats) -> Result<u64> {
@@ -465,8 +501,9 @@ pub(super) async fn pgbouncer(
         Ok(Ok(settings)) => {
             observe_query(
                 observe,
-                target,
                 "pgbouncer_show_config",
+                target.label(),
+                target.database_label(),
                 started,
                 stats,
                 QueryOutcome::Success,
@@ -477,8 +514,9 @@ pub(super) async fn pgbouncer(
         Ok(Err(error)) => {
             observe_query(
                 observe,
-                target,
                 "pgbouncer_show_config",
+                target.label(),
+                target.database_label(),
                 started,
                 stats,
                 QueryOutcome::Error,
@@ -489,8 +527,9 @@ pub(super) async fn pgbouncer(
         Err(elapsed) => {
             observe_query(
                 observe,
-                target,
                 "pgbouncer_show_config",
+                target.label(),
+                target.database_label(),
                 started,
                 stats,
                 QueryOutcome::Timeout,
