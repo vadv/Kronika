@@ -1142,7 +1142,9 @@ name = "kronika-index"
 version = "0.0.0"
 dependencies = [
  "kronika-format",
+ "kronika-reader",
  "kronika-registry",
+ "tempfile",
 ]
 
 [[package]]

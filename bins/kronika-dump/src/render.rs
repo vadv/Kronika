@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-use kronika_index::{INSTANCE_METADATA_TYPE_ID, OS_PSI_TYPE_ID, points};
+use kronika_index::Value as IndexValue;
 use kronika_reader::{Cell, Dictionary, Resolved, Segment, StoreWarning};
 use kronika_registry::{DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, section_name};
 use serde_json::{Map, Value, json};
@@ -113,22 +113,22 @@ pub(crate) fn sizes(
     Ok(())
 }
 
-/// The health points an index would hold for this segment.
+/// The index this segment would get: its health line, and the objects each
+/// section saw.
 ///
 /// # Errors
 ///
-/// Returns the reader's error when metadata or pressure rows cannot be decoded.
+/// Returns the reader's error when a section or the dictionary cannot be
+/// decoded.
 pub(crate) fn index(
     output: &mut impl Write,
     json_output: bool,
     segment: &Segment,
 ) -> Result<(), DumpError> {
-    let metadata_rows = segment.rows(INSTANCE_METADATA_TYPE_ID)?;
-    let pressure_rows = segment.rows(OS_PSI_TYPE_ID)?;
-    let points = points(&metadata_rows, &pressure_rows);
+    let built = kronika_index::build(segment, 0)?;
+    let path = segment.path().display().to_string();
     if json_output {
-        let path = segment.path().display().to_string();
-        for point in &points {
+        for point in &built.points {
             say(
                 output,
                 &json!({
@@ -139,22 +139,56 @@ pub(crate) fn index(
                 }),
             )?;
         }
+        for section in &built.objects {
+            for object in &section.objects {
+                say(
+                    output,
+                    &json!({
+                        "kind": "object",
+                        "path": path,
+                        "type_id": section.type_id,
+                        "section": section_name(section.type_id).unwrap_or("unknown"),
+                        "labels": object.labels,
+                        "values": object.values.iter().map(index_value).collect::<Vec<_>>(),
+                    }),
+                )?;
+            }
+        }
         return Ok(());
     }
     writeln!(
         output,
-        "{}  points={}  idx_bytes={}",
-        segment.path().display(),
-        points.len(),
-        kronika_index::HEADER_LEN + points.len() * kronika_index::POINT_LEN
+        "{path}  points={}  objects={}  idx_bytes={}",
+        built.points.len(),
+        built.objects.iter().map(|s| s.objects.len()).sum::<usize>(),
+        built.encode().len()
     )?;
-    for point in &points {
+    for point in &built.points {
         match point.health {
             Some(health) => writeln!(output, "  {:<20} {health}", point.ts)?,
             None => writeln!(output, "  {:<20} -", point.ts)?,
         }
     }
+    for section in &built.objects {
+        writeln!(
+            output,
+            "  {:<9} {:<22} objects={}",
+            section.type_id,
+            section_name(section.type_id).unwrap_or("unknown"),
+            section.objects.len()
+        )?;
+    }
     Ok(())
+}
+
+/// One index value as JSON. A value the segment gave nothing to reduce is
+/// null, the same as an absent cell.
+fn index_value(value: &IndexValue) -> Value {
+    match value {
+        IndexValue::Int(number) => json!(number),
+        IndexValue::Float(number) => json!(number),
+        IndexValue::Null => Value::Null,
+    }
 }
 
 /// The rows of one section, with dictionary ids resolved to what they hold.
