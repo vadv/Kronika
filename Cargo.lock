@@ -1203,6 +1203,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kronika-source-pg"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "tokio",
+ "tokio-postgres",
+]
+
+[[package]]
 name = "kronika-store"
 version = "0.0.0"
 dependencies = [

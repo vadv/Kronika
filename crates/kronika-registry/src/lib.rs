@@ -64,13 +64,14 @@ pub use codec::pg_log::{
     PgLogAutovacuum, PgLogCheckpoints, PgLogErrors, PgLogLifecycle, PgLogLockWaits,
     PgLogSlowQueries, PgLogTempFiles,
 };
+pub use codec::pg_settings::PgSettings;
 pub use codec::pgbouncer_events::PgBouncerEvents;
 pub(crate) use codec::{check_row_cap, decode_batches, decode_section, encode_section};
 pub use codec::{
     instance_metadata, os_cgroup_cpu, os_cgroup_io, os_cgroup_mapping, os_cgroup_memory,
     os_cgroup_pids, os_cpu, os_diskstats, os_interrupts, os_kernel_limits, os_loadavg, os_meminfo,
     os_mountinfo, os_netdev, os_netstat, os_nfs, os_numa, os_process, os_process_status, os_psi,
-    os_snmp, os_snmp6, os_softirq, os_stat, os_topology, os_vmstat, pg_locks, pg_log,
+    os_snmp, os_snmp6, os_softirq, os_stat, os_topology, os_vmstat, pg_locks, pg_log, pg_settings,
     pgbouncer_events,
 };
 pub use contract::{
