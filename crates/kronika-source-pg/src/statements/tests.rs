@@ -84,6 +84,7 @@ fn sample_row() -> StatementsRow {
 
 #[test]
 fn the_extension_version_selects_the_layout() {
+    assert_eq!(layout("1.5"), Some(StatementsVersion::V1));
     assert_eq!(layout("1.6"), Some(StatementsVersion::V1));
     assert_eq!(layout("1.7"), Some(StatementsVersion::V1));
     assert_eq!(layout("1.8"), Some(StatementsVersion::V2));
@@ -94,8 +95,8 @@ fn the_extension_version_selects_the_layout() {
 }
 
 #[test]
-fn an_extension_too_old_or_unknown_is_not_collected() {
-    assert_eq!(layout("1.5"), None);
+fn an_extension_below_the_supported_floor_or_unknown_is_not_collected() {
+    assert_eq!(layout("1.4"), None);
     assert_eq!(layout("2.0"), None);
 }
 
@@ -106,8 +107,38 @@ fn a_later_release_of_the_same_line_keeps_the_newest_layout() {
 
 #[test]
 fn a_query_asks_only_for_columns_its_extension_has() {
-    assert!(statements_query(StatementsVersion::V1).contains("s.total_time"));
-    assert!(!statements_query(StatementsVersion::V1).contains("s.plans"));
+    // The official 1.4 SQL declaration has these 22 non-text columns; the
+    // official 1.4-to-1.5 update changes only reset privileges. Kronika omits
+    // its query-text column and enriches the remaining exact 1.5 shape.
+    let v1 = statements_query(StatementsVersion::V1);
+    for column in [
+        "s.userid",
+        "s.dbid",
+        "s.queryid",
+        "s.calls",
+        "s.total_time",
+        "s.min_time",
+        "s.max_time",
+        "s.mean_time",
+        "s.stddev_time",
+        "s.rows",
+        "s.shared_blks_hit",
+        "s.shared_blks_read",
+        "s.shared_blks_dirtied",
+        "s.shared_blks_written",
+        "s.local_blks_hit",
+        "s.local_blks_read",
+        "s.local_blks_dirtied",
+        "s.local_blks_written",
+        "s.temp_blks_read",
+        "s.temp_blks_written",
+        "s.blk_read_time",
+        "s.blk_write_time",
+    ] {
+        assert!(v1.contains(column), "missing {column}: {v1}");
+    }
+    assert!(!v1.contains("s.query,"), "{v1}");
+    assert!(!v1.contains("s.plans"), "{v1}");
     assert!(statements_query(StatementsVersion::V2).contains("s.total_plan_time"));
     assert!(!statements_query(StatementsVersion::V2).contains("s.toplevel"));
     assert!(statements_query(StatementsVersion::V3).contains("s.toplevel"));
@@ -157,7 +188,7 @@ fn to_v6_maps_every_column_and_leaves_the_text_out() {
     assert!((r.shared_blk_read_time - 33.0).abs() < f64::EPSILON);
     assert_eq!(r.wal_buffers_full, 12);
     assert_eq!(r.parallel_workers_launched, 6);
-    assert_eq!(r.stats_since.map(|ts| ts.0), Some(1_000));
+    assert_eq!(r.stats_since.0, 1_000);
 }
 
 #[test]

@@ -59,8 +59,8 @@ fn sample_row() -> UserTablesRow {
         toast_n_live_tup: Some(20),
         toast_n_dead_tup: Some(2),
         toast_last_autovacuum: Some(1_700),
-        xid_age: 150_000_000,
-        mxid_age: 5_000_000,
+        xid_age: Some(150_000_000),
+        mxid_age: Some(5_000_000),
         reltuples: 9_900,
         heap_blks_read: 300,
         heap_blks_hit: 90_000,
@@ -127,7 +127,9 @@ fn every_query_carries_the_marker_and_the_views_it_needs() {
         assert!(sql.contains("pg_stat_user_tables"), "{sql}");
         assert!(sql.contains("pg_statio_user_tables"), "{sql}");
         assert!(sql.contains("reltoastrelid"), "{sql}");
+        assert!(sql.contains("CASE WHEN c.relkind = 'p' THEN NULL"), "{sql}");
         assert!(sql.contains("age(c.relfrozenxid)"), "{sql}");
+        assert!(sql.contains("mxid_age(c.relminmxid)"), "{sql}");
     }
 }
 
@@ -144,7 +146,7 @@ fn to_v4_maps_every_column_and_interns_the_names() {
     assert_eq!(r.last_autovacuum.map(|ts| ts.0), Some(1_200));
     assert!((r.total_autovacuum_time - 410.0).abs() < f64::EPSILON);
     assert_eq!(r.toast_bytes, Some(65_536));
-    assert_eq!(r.xid_age, 150_000_000);
+    assert_eq!(r.xid_age, Some(150_000_000));
     assert_eq!(r.tidx_blks_hit, Some(60));
 }
 
@@ -156,6 +158,23 @@ fn a_table_without_indexes_or_toast_keeps_its_nulls() {
     assert_eq!(r.toast_bytes, None);
     assert_eq!(r.toast_last_autovacuum, None);
     assert_eq!(r.tidx_blks_read, None);
+}
+
+#[test]
+fn a_partitioned_parent_keeps_null_transaction_ages_in_every_layout() {
+    let row = UserTablesRow {
+        xid_age: None,
+        mxid_age: None,
+        ..sample_row()
+    };
+    let v1 = to_v1(&row, fake_intern).expect("intern");
+    let v2 = to_v2(&row, fake_intern).expect("intern");
+    let v3 = to_v3(&row, fake_intern).expect("intern");
+    let v4 = to_v4(&row, fake_intern).expect("intern");
+    assert_eq!((v1.xid_age, v1.mxid_age), (None, None));
+    assert_eq!((v2.xid_age, v2.mxid_age), (None, None));
+    assert_eq!((v3.xid_age, v3.mxid_age), (None, None));
+    assert_eq!((v4.xid_age, v4.mxid_age), (None, None));
 }
 
 #[test]

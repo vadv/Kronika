@@ -61,10 +61,11 @@ fn ossc_row() -> OsscRow {
 fn vadv_row() -> VadvRow {
     VadvRow {
         ts: 2_000,
-        queryid_stat_statements: -7,
-        planid: 991,
         userid: 10,
         dbid: 16_400,
+        queryid: 42,
+        planid: 991,
+        queryid_stat_statements: -7,
         datname: Some("appdb".to_owned()),
         usename: Some("app".to_owned()),
         plan: Some("Index Scan using orders_pkey".to_owned()),
@@ -99,6 +100,7 @@ fn vadv_row() -> VadvRow {
 
 #[test]
 fn the_major_version_tells_the_two_extensions_apart() {
+    assert_eq!(installed("1.9"), Some(Flavour::Ossc));
     assert_eq!(installed("1.10"), Some(Flavour::Ossc));
     assert_eq!(installed("1.11"), Some(Flavour::Ossc));
     assert_eq!(installed("2.0"), Some(Flavour::Vadv));
@@ -106,8 +108,8 @@ fn the_major_version_tells_the_two_extensions_apart() {
 }
 
 #[test]
-fn an_extension_without_the_split_io_timing_is_not_collected() {
-    assert_eq!(installed("1.9"), None);
+fn an_extension_below_the_supported_ossc_layout_is_not_collected() {
+    assert_eq!(installed("1.8"), None);
     assert_eq!(installed("3.0"), None);
 }
 
@@ -118,6 +120,10 @@ fn each_flavour_asks_for_the_columns_it_has() {
     assert!(ossc.contains("s.shared_blk_read_time"), "{ossc}");
     assert!(!ossc.contains("slow_log_calls"), "{ossc}");
     assert!(vadv.contains("s.blk_read_time"), "{vadv}");
+    assert!(
+        vadv.contains("s.userid, s.dbid, s.queryid, s.planid, s.queryid_stat_statements"),
+        "{vadv}"
+    );
     assert!(vadv.contains("slow_log_calls"), "{vadv}");
     assert!(vadv.contains("total_plan_time"), "{vadv}");
 }
@@ -181,6 +187,7 @@ fn to_ossc_maps_every_column() {
 #[test]
 fn to_vadv_maps_every_column_including_the_planning_times() {
     let r = to_vadv(&vadv_row(), fake_intern).expect("intern");
+    assert_eq!(r.queryid, 42);
     assert_eq!(r.queryid_stat_statements, -7);
     assert_eq!(r.slow_log_calls, 4);
     assert!((r.total_plan_time - 30.0).abs() < f64::EPSILON);

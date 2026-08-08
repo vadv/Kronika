@@ -109,7 +109,7 @@ pub struct PgStatStatementsV6 {
     #[column(c, unit = count)]
     pub shared_blks_hit: i64,
     /// Shared blocks read.
-    #[column(c, unit = bytes)]
+    #[column(c, unit = count)]
     pub shared_blks_read: i64,
     /// Shared blocks dirtied.
     #[column(c, unit = count)]
@@ -202,11 +202,11 @@ pub struct PgStatStatementsV6 {
     #[column(c, unit = count)]
     pub parallel_workers_launched: i64,
     /// Time the statistics for this row began accumulating; extension 1.11+.
-    #[column(g, unit = count)]
-    pub stats_since: Option<Ts>,
+    #[column(g, unit = microseconds)]
+    pub stats_since: Ts,
     /// Time the min/max statistics for this row were last reset; extension 1.11+.
-    #[column(g, unit = count)]
-    pub minmax_stats_since: Option<Ts>,
+    #[column(g, unit = microseconds)]
+    pub minmax_stats_since: Ts,
 }
 
 /// Type `1_002_005`: `pg_stat_statements` on extension 1.11 (PG17).
@@ -289,7 +289,7 @@ pub struct PgStatStatementsV5 {
     #[column(c, unit = count)]
     pub shared_blks_hit: i64,
     /// Shared blocks read.
-    #[column(c, unit = bytes)]
+    #[column(c, unit = count)]
     pub shared_blks_read: i64,
     /// Shared blocks dirtied.
     #[column(c, unit = count)]
@@ -373,11 +373,11 @@ pub struct PgStatStatementsV5 {
     #[column(c, unit = milliseconds)]
     pub jit_deform_time: f64,
     /// Time the statistics for this row began accumulating.
-    #[column(g, unit = count)]
-    pub stats_since: Option<Ts>,
+    #[column(g, unit = microseconds)]
+    pub stats_since: Ts,
     /// Time the min/max statistics for this row were last reset.
-    #[column(g, unit = count)]
-    pub minmax_stats_since: Option<Ts>,
+    #[column(g, unit = microseconds)]
+    pub minmax_stats_since: Ts,
 }
 
 /// Type `1_002_004`: `pg_stat_statements` on extension 1.10 (PG15-16).
@@ -462,7 +462,7 @@ pub struct PgStatStatementsV4 {
     #[column(c, unit = count)]
     pub shared_blks_hit: i64,
     /// Shared blocks read.
-    #[column(c, unit = bytes)]
+    #[column(c, unit = count)]
     pub shared_blks_read: i64,
     /// Shared blocks dirtied.
     #[column(c, unit = count)]
@@ -615,7 +615,7 @@ pub struct PgStatStatementsV3 {
     #[column(c, unit = count)]
     pub shared_blks_hit: i64,
     /// Shared blocks read.
-    #[column(c, unit = bytes)]
+    #[column(c, unit = count)]
     pub shared_blks_read: i64,
     /// Shared blocks dirtied.
     #[column(c, unit = count)]
@@ -735,7 +735,7 @@ pub struct PgStatStatementsV2 {
     #[column(c, unit = count)]
     pub shared_blks_hit: i64,
     /// Shared blocks read.
-    #[column(c, unit = bytes)]
+    #[column(c, unit = count)]
     pub shared_blks_read: i64,
     /// Shared blocks dirtied.
     #[column(c, unit = count)]
@@ -778,7 +778,7 @@ pub struct PgStatStatementsV2 {
     pub wal_bytes: i64,
 }
 
-/// Type `1_002_001`: `pg_stat_statements` on extension 1.6/1.7 (PG10-12).
+/// Type `1_002_001`: `pg_stat_statements` on extension 1.5-1.7 (PG10-12).
 ///
 /// The legacy layout: the timing columns keep their unqualified names
 /// (`total_time`/`min_time`/`max_time`/`mean_time`/`stddev_time`), and there are
@@ -839,7 +839,7 @@ pub struct PgStatStatementsV1 {
     #[column(c, unit = count)]
     pub shared_blks_hit: i64,
     /// Shared blocks read.
-    #[column(c, unit = bytes)]
+    #[column(c, unit = count)]
     pub shared_blks_read: i64,
     /// Shared blocks dirtied.
     #[column(c, unit = count)]
@@ -879,7 +879,22 @@ mod tests {
         PgStatStatementsV1, PgStatStatementsV2, PgStatStatementsV3, PgStatStatementsV4,
         PgStatStatementsV5, PgStatStatementsV6,
     };
-    use crate::{Section, StrId, Ts, VerifiedSection, lint};
+    use crate::{Section, StrId, Ts, Unit, VerifiedSection, lint};
+
+    fn assert_shared_block_unit(c: crate::TypeContract) {
+        assert_eq!(
+            c.column("shared_blks_read").and_then(|column| column.unit),
+            Some(Unit::Count)
+        );
+    }
+
+    fn assert_stats_timestamp_units(c: crate::TypeContract) {
+        for name in ["stats_since", "minmax_stats_since"] {
+            let column = c.column(name).expect("statistics timestamp");
+            assert_eq!(column.unit, Some(Unit::Microseconds));
+            assert!(!column.nullable);
+        }
+    }
 
     fn v6_row(ts: i64, dbid: u32, userid: u32, queryid: Option<i64>) -> PgStatStatementsV6 {
         PgStatStatementsV6 {
@@ -936,8 +951,8 @@ mod tests {
             jit_deform_time: 0.0,
             parallel_workers_to_launch: 4,
             parallel_workers_launched: 3,
-            stats_since: Some(Ts(ts - 100)),
-            minmax_stats_since: Some(Ts(ts - 50)),
+            stats_since: Ts(ts - 100),
+            minmax_stats_since: Ts(ts - 50),
         }
     }
 
@@ -959,7 +974,9 @@ mod tests {
         assert!(c.column("shared_blk_read_time").is_some());
         assert!(c.column("local_blk_read_time").is_some());
         assert!(c.column("jit_deform_time").is_some());
-        assert_eq!(c.column("stats_since").map(|col| col.nullable), Some(true));
+        assert_eq!(c.column("stats_since").map(|col| col.nullable), Some(false));
+        assert_shared_block_unit(c);
+        assert_stats_timestamp_units(c);
         // No legacy names on the newest layout.
         assert!(c.column("total_time").is_none());
         assert!(c.column("blk_read_time").is_none());
@@ -977,7 +994,7 @@ mod tests {
         assert_eq!(decoded[0].queryid, None);
         assert_eq!(decoded[0].query, None);
         assert!((decoded[0].total_exec_time - 1_234.5).abs() < f64::EPSILON);
-        assert_eq!(decoded[0].stats_since, Some(Ts(900)));
+        assert_eq!(decoded[0].stats_since, Ts(900));
     }
 
     #[test]
@@ -1051,8 +1068,8 @@ mod tests {
             jit_emission_time: 0.0,
             jit_deform_count: 0,
             jit_deform_time: 0.0,
-            stats_since: Some(Ts(ts - 100)),
-            minmax_stats_since: Some(Ts(ts - 50)),
+            stats_since: Ts(ts - 100),
+            minmax_stats_since: Ts(ts - 50),
         }
     }
 
@@ -1064,12 +1081,14 @@ mod tests {
         assert!(c.column("shared_blk_read_time").is_some());
         assert!(c.column("local_blk_write_time").is_some());
         assert!(c.column("jit_deform_count").is_some());
-        assert!(c.column("stats_since").is_some());
+        assert_eq!(c.column("stats_since").map(|col| col.nullable), Some(false));
         // 1.11 renamed away the unqualified block-timing names and has no 1.12
         // columns.
         assert!(c.column("blk_read_time").is_none());
         assert!(c.column("wal_buffers_full").is_none());
         assert!(c.column("parallel_workers_launched").is_none());
+        assert_shared_block_unit(c);
+        assert_stats_timestamp_units(c);
         assert_eq!(lint(&[c]), Ok(()));
     }
 
@@ -1143,6 +1162,7 @@ mod tests {
         assert!(c.column("local_blk_read_time").is_none());
         assert!(c.column("jit_deform_count").is_none());
         assert!(c.column("stats_since").is_none());
+        assert_shared_block_unit(c);
         assert_eq!(lint(&[c]), Ok(()));
     }
 
@@ -1202,6 +1222,7 @@ mod tests {
         assert!(c.column("wal_bytes").is_some());
         assert!(c.column("temp_blk_read_time").is_none());
         assert!(c.column("jit_functions").is_none());
+        assert_shared_block_unit(c);
         assert_eq!(lint(&[c]), Ok(()));
     }
 
@@ -1261,6 +1282,7 @@ mod tests {
         assert!(c.column("wal_records").is_some());
         assert!(c.column("toplevel").is_none());
         assert!(c.column("temp_blk_read_time").is_none());
+        assert_shared_block_unit(c);
         assert_eq!(lint(&[c]), Ok(()));
     }
 
@@ -1313,6 +1335,7 @@ mod tests {
         assert!(c.column("total_plan_time").is_none());
         assert!(c.column("wal_records").is_none());
         assert!(c.column("toplevel").is_none());
+        assert_shared_block_unit(c);
         assert_eq!(lint(&[c]), Ok(()));
     }
 

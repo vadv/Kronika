@@ -39,7 +39,9 @@ fn sample_row() -> UserIndexesRow {
         indisexclusion: false,
         indisready: true,
         amname: "btree".to_owned(),
-        indexdef: "CREATE UNIQUE INDEX orders_pkey ON public.orders USING btree (id)".to_owned(),
+        indexdef: Some(
+            "CREATE UNIQUE INDEX orders_pkey ON public.orders USING btree (id)".to_owned(),
+        ),
         idx_blks_read: 40,
         idx_blks_hit: 9_000,
     }
@@ -92,6 +94,13 @@ fn to_v2_maps_every_column_and_interns_the_names() {
     assert_eq!(r.idx_scan, 120);
     assert_eq!(r.main_fork_bytes, 16_384);
     assert_eq!(r.last_idx_scan.map(|ts| ts.0), Some(1_900));
+    assert_eq!(
+        r.indexdef,
+        Some(
+            fake_intern(b"CREATE UNIQUE INDEX orders_pkey ON public.orders USING btree (id)")
+                .unwrap()
+        )
+    );
     assert!(r.indisprimary);
     assert!(!r.indisexclusion);
     assert_eq!(r.idx_blks_hit, 9_000);
@@ -105,6 +114,16 @@ fn an_index_never_scanned_keeps_its_null() {
         to_v2(&row, fake_intern).expect("intern").last_idx_scan,
         None
     );
+}
+
+#[test]
+fn a_concurrently_dropped_index_keeps_a_null_definition_in_both_layouts() {
+    let row = UserIndexesRow {
+        indexdef: None,
+        ..sample_row()
+    };
+    assert_eq!(to_v1(&row, fake_intern).expect("intern").indexdef, None);
+    assert_eq!(to_v2(&row, fake_intern).expect("intern").indexdef, None);
 }
 
 #[test]

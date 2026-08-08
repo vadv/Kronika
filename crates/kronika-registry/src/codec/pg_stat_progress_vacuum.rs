@@ -1,20 +1,20 @@
-//! Type `1_012_001`: `pg_stat_progress_vacuum`.
+//! Types `1_012_001` through `1_012_003`: `pg_stat_progress_vacuum`.
 //!
-//! One row per backend running `VACUUM`; absence means no active rows.
+//! One row per backend running `VACUUM`; absence means no active rows. The
+//! view changed incompatibly in PG17 and PG18, so each exact server shape has
+//! its own codec.
 
 use crate::{Section, StrId, Ts};
 
-/// Type `1_012_001`: `pg_stat_progress_vacuum`.
-///
-/// Nullable columns preserve `PostgreSQL` catalog-era differences.
-#[derive(Debug, Clone, Copy, PartialEq, Section)]
+/// Type `1_012_001`: `pg_stat_progress_vacuum`, PG10-16 layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Section)]
 #[section(
     id = 1_012_001,
     name = "pg_stat_progress_vacuum",
     semantics = conditional_full,
     sort_key("ts", "pid")
 )]
-pub struct PgStatProgressVacuum {
+pub struct PgStatProgressVacuumV1 {
     /// Snapshot time, unix microseconds; one value for all rows of a snapshot.
     #[column(t)]
     pub ts: Ts,
@@ -48,39 +48,170 @@ pub struct PgStatProgressVacuum {
     /// Completed index-vacuum cycles.
     #[column(g, unit = count)]
     pub index_vacuum_count: i64,
-    /// Dead-tuple capacity (PG10-16).
+    /// Dead-tuple capacity.
     #[column(g, unit = count)]
-    pub max_dead_tuples: Option<i64>,
-    /// Dead tuples collected in the current cycle (PG10-16).
+    pub max_dead_tuples: i64,
+    /// Dead tuples collected in the current cycle.
     #[column(g, unit = count)]
-    pub num_dead_tuples: Option<i64>,
-    /// Dead-tuple TID store capacity, bytes (PG17+).
+    pub num_dead_tuples: i64,
+}
+
+/// Type `1_012_002`: `pg_stat_progress_vacuum`, PG17 layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Section)]
+#[section(
+    id = 1_012_002,
+    name = "pg_stat_progress_vacuum",
+    semantics = conditional_full,
+    sort_key("ts", "pid")
+)]
+pub struct PgStatProgressVacuumV2 {
+    /// Snapshot time, unix microseconds; one value for all rows of a snapshot.
+    #[column(t)]
+    pub ts: Ts,
+    /// Process id of the backend running this vacuum.
+    #[column(l)]
+    pub pid: i32,
+    /// OID of the database being vacuumed.
+    #[column(l)]
+    pub datid: u32,
+    /// Database being vacuumed, interned in the segment dictionary.
+    #[column(l)]
+    pub datname: StrId,
+    /// OID of the table being vacuumed.
+    #[column(l)]
+    pub relid: u32,
+    /// Whether the backend is an autovacuum worker.
+    #[column(l)]
+    pub is_autovacuum: bool,
+    /// Current vacuum phase, such as `scanning heap`, interned.
+    #[column(l)]
+    pub phase: StrId,
+    /// Heap blocks in the table at scan start.
+    #[column(g, unit = count)]
+    pub heap_blks_total: i64,
+    /// Heap blocks scanned so far.
+    #[column(g, unit = count)]
+    pub heap_blks_scanned: i64,
+    /// Heap blocks vacuumed so far.
+    #[column(g, unit = count)]
+    pub heap_blks_vacuumed: i64,
+    /// Completed index-vacuum cycles.
+    #[column(g, unit = count)]
+    pub index_vacuum_count: i64,
+    /// Dead-tuple TID store capacity, bytes.
     #[column(g, unit = bytes)]
-    pub max_dead_tuple_bytes: Option<i64>,
-    /// Dead-tuple TID store usage, bytes (PG17+).
+    pub max_dead_tuple_bytes: i64,
+    /// Dead-tuple TID store usage, bytes.
     #[column(g, unit = bytes)]
-    pub dead_tuple_bytes: Option<i64>,
-    /// Dead item identifiers collected (PG17+).
+    pub dead_tuple_bytes: i64,
+    /// Dead item identifiers collected.
     #[column(g, unit = count)]
-    pub num_dead_item_ids: Option<i64>,
-    /// Indexes to process in this cycle (PG17+).
+    pub num_dead_item_ids: i64,
+    /// Indexes to process in this cycle.
     #[column(g, unit = count)]
-    pub indexes_total: Option<i64>,
-    /// Indexes processed in this cycle (PG17+).
+    pub indexes_total: i64,
+    /// Indexes processed in this cycle.
     #[column(g, unit = count)]
-    pub indexes_processed: Option<i64>,
-    /// Cost-delay sleep time, ms (PG18+).
+    pub indexes_processed: i64,
+}
+
+/// Type `1_012_003`: `pg_stat_progress_vacuum`, PG18+ layout.
+#[derive(Debug, Clone, Copy, PartialEq, Section)]
+#[section(
+    id = 1_012_003,
+    name = "pg_stat_progress_vacuum",
+    semantics = conditional_full,
+    sort_key("ts", "pid")
+)]
+pub struct PgStatProgressVacuumV3 {
+    /// Snapshot time, unix microseconds; one value for all rows of a snapshot.
+    #[column(t)]
+    pub ts: Ts,
+    /// Process id of the backend running this vacuum.
+    #[column(l)]
+    pub pid: i32,
+    /// OID of the database being vacuumed.
+    #[column(l)]
+    pub datid: u32,
+    /// Database being vacuumed, interned in the segment dictionary.
+    #[column(l)]
+    pub datname: StrId,
+    /// OID of the table being vacuumed.
+    #[column(l)]
+    pub relid: u32,
+    /// Whether the backend is an autovacuum worker.
+    #[column(l)]
+    pub is_autovacuum: bool,
+    /// Current vacuum phase, such as `scanning heap`, interned.
+    #[column(l)]
+    pub phase: StrId,
+    /// Heap blocks in the table at scan start.
+    #[column(g, unit = count)]
+    pub heap_blks_total: i64,
+    /// Heap blocks scanned so far.
+    #[column(g, unit = count)]
+    pub heap_blks_scanned: i64,
+    /// Heap blocks vacuumed so far.
+    #[column(g, unit = count)]
+    pub heap_blks_vacuumed: i64,
+    /// Completed index-vacuum cycles.
+    #[column(g, unit = count)]
+    pub index_vacuum_count: i64,
+    /// Dead-tuple TID store capacity, bytes.
+    #[column(g, unit = bytes)]
+    pub max_dead_tuple_bytes: i64,
+    /// Dead-tuple TID store usage, bytes.
+    #[column(g, unit = bytes)]
+    pub dead_tuple_bytes: i64,
+    /// Dead item identifiers collected.
+    #[column(g, unit = count)]
+    pub num_dead_item_ids: i64,
+    /// Indexes to process in this cycle.
+    #[column(g, unit = count)]
+    pub indexes_total: i64,
+    /// Indexes processed in this cycle.
+    #[column(g, unit = count)]
+    pub indexes_processed: i64,
+    /// Cost-delay sleep time, milliseconds.
     #[column(g, unit = milliseconds)]
-    pub delay_time: Option<f64>,
+    pub delay_time: f64,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::PgStatProgressVacuum;
-    use crate::{Section, Semantics, StrId, Ts, VerifiedSection, lint};
+    use super::{PgStatProgressVacuumV1, PgStatProgressVacuumV2, PgStatProgressVacuumV3};
+    use crate::{ColumnType, Section, Semantics, StrId, Ts, TypeContract, Unit, lint};
 
-    fn pre17_row(ts: i64, pid: i32) -> PgStatProgressVacuum {
-        PgStatProgressVacuum {
+    const COMMON: [(&str, ColumnType); 11] = [
+        ("ts", ColumnType::Ts),
+        ("pid", ColumnType::I32),
+        ("datid", ColumnType::U32),
+        ("datname", ColumnType::StrId),
+        ("relid", ColumnType::U32),
+        ("is_autovacuum", ColumnType::Bool),
+        ("phase", ColumnType::StrId),
+        ("heap_blks_total", ColumnType::I64),
+        ("heap_blks_scanned", ColumnType::I64),
+        ("heap_blks_vacuumed", ColumnType::I64),
+        ("index_vacuum_count", ColumnType::I64),
+    ];
+
+    fn assert_contract(contract: TypeContract, type_id: u32, tail: &[(&str, ColumnType)]) {
+        assert_eq!(contract.type_id.get(), type_id);
+        assert_eq!(contract.semantics, Semantics::ConditionalFull);
+        assert_eq!(contract.sort_key, ["ts", "pid"]);
+        let expected = COMMON.iter().chain(tail).copied().collect::<Vec<_>>();
+        let actual = contract
+            .columns
+            .iter()
+            .map(|column| (column.name, column.ty))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+        assert!(contract.columns.iter().all(|column| !column.nullable));
+    }
+
+    fn v1_row(ts: i64, pid: i32) -> PgStatProgressVacuumV1 {
+        PgStatProgressVacuumV1 {
             ts: Ts(ts),
             pid,
             datid: 16_385,
@@ -92,88 +223,117 @@ mod tests {
             heap_blks_scanned: 4_200,
             heap_blks_vacuumed: 4_000,
             index_vacuum_count: 1,
-            max_dead_tuples: Some(291_271),
-            num_dead_tuples: Some(120_000),
-            max_dead_tuple_bytes: None,
-            dead_tuple_bytes: None,
-            num_dead_item_ids: None,
-            indexes_total: None,
-            indexes_processed: None,
-            delay_time: None,
+            max_dead_tuples: 291_271,
+            num_dead_tuples: 120_000,
         }
     }
 
-    fn pg17_row(ts: i64, pid: i32) -> PgStatProgressVacuum {
-        PgStatProgressVacuum {
-            max_dead_tuples: None,
-            num_dead_tuples: None,
-            max_dead_tuple_bytes: Some(67_108_864),
-            dead_tuple_bytes: Some(2_500_000),
-            num_dead_item_ids: Some(120_000),
-            indexes_total: Some(3),
-            indexes_processed: Some(1),
-            ..pre17_row(ts, pid)
+    fn v2_row(ts: i64, pid: i32) -> PgStatProgressVacuumV2 {
+        PgStatProgressVacuumV2 {
+            ts: Ts(ts),
+            pid,
+            datid: 16_385,
+            datname: StrId(7),
+            relid: 16_384,
+            is_autovacuum: false,
+            phase: StrId(9),
+            heap_blks_total: 10_000,
+            heap_blks_scanned: 4_200,
+            heap_blks_vacuumed: 4_000,
+            index_vacuum_count: 1,
+            max_dead_tuple_bytes: 67_108_864,
+            dead_tuple_bytes: 2_500_000,
+            num_dead_item_ids: 120_000,
+            indexes_total: 3,
+            indexes_processed: 1,
         }
     }
 
-    fn pg18_row(ts: i64, pid: i32) -> PgStatProgressVacuum {
-        PgStatProgressVacuum {
-            delay_time: Some(1234.5),
-            ..pg17_row(ts, pid)
+    fn v3_row(ts: i64, pid: i32) -> PgStatProgressVacuumV3 {
+        PgStatProgressVacuumV3 {
+            ts: Ts(ts),
+            pid,
+            datid: 16_385,
+            datname: StrId(7),
+            relid: 16_384,
+            is_autovacuum: false,
+            phase: StrId(9),
+            heap_blks_total: 10_000,
+            heap_blks_scanned: 4_200,
+            heap_blks_vacuumed: 4_000,
+            index_vacuum_count: 1,
+            max_dead_tuple_bytes: 67_108_864,
+            dead_tuple_bytes: 2_500_000,
+            num_dead_item_ids: 120_000,
+            indexes_total: 3,
+            indexes_processed: 1,
+            delay_time: 1234.5,
         }
     }
 
     #[test]
-    fn contract_passes_the_linter() {
-        assert_eq!(lint(&[PgStatProgressVacuum::CONTRACT]), Ok(()));
+    fn contracts_pass_the_linter() {
+        assert_eq!(
+            lint(&[
+                PgStatProgressVacuumV1::CONTRACT,
+                PgStatProgressVacuumV2::CONTRACT,
+                PgStatProgressVacuumV3::CONTRACT,
+            ]),
+            Ok(())
+        );
     }
 
     #[test]
-    fn contract_shape_matches_the_source() {
-        let c = PgStatProgressVacuum::CONTRACT;
-        assert_eq!(c.type_id.get(), 1_012_001);
-        assert_eq!(c.semantics, Semantics::ConditionalFull);
-        assert_eq!(c.columns.len(), 19);
-        assert_eq!(c.sort_key, ["ts", "pid"]);
-        assert_eq!(c.column("pid").map(|col| col.nullable), Some(false));
-        assert_eq!(c.column("datid").map(|col| col.nullable), Some(false));
-        assert_eq!(
-            c.column("is_autovacuum").map(|col| col.nullable),
-            Some(false)
+    fn contracts_match_the_three_official_view_shapes() {
+        assert_contract(
+            PgStatProgressVacuumV1::CONTRACT,
+            1_012_001,
+            &[
+                ("max_dead_tuples", ColumnType::I64),
+                ("num_dead_tuples", ColumnType::I64),
+            ],
+        );
+        assert_contract(
+            PgStatProgressVacuumV2::CONTRACT,
+            1_012_002,
+            &[
+                ("max_dead_tuple_bytes", ColumnType::I64),
+                ("dead_tuple_bytes", ColumnType::I64),
+                ("num_dead_item_ids", ColumnType::I64),
+                ("indexes_total", ColumnType::I64),
+                ("indexes_processed", ColumnType::I64),
+            ],
+        );
+        assert_contract(
+            PgStatProgressVacuumV3::CONTRACT,
+            1_012_003,
+            &[
+                ("max_dead_tuple_bytes", ColumnType::I64),
+                ("dead_tuple_bytes", ColumnType::I64),
+                ("num_dead_item_ids", ColumnType::I64),
+                ("indexes_total", ColumnType::I64),
+                ("indexes_processed", ColumnType::I64),
+                ("delay_time", ColumnType::F64),
+            ],
         );
         assert_eq!(
-            c.column("heap_blks_total").map(|col| col.nullable),
-            Some(false)
-        );
-        // The dead-tuple era columns and delay_time are version-specific.
-        assert_eq!(
-            c.column("num_dead_tuples").map(|col| col.nullable),
-            Some(true)
+            PgStatProgressVacuumV2::CONTRACT
+                .column("dead_tuple_bytes")
+                .and_then(|column| column.unit),
+            Some(Unit::Bytes)
         );
         assert_eq!(
-            c.column("dead_tuple_bytes").map(|col| col.nullable),
-            Some(true)
+            PgStatProgressVacuumV3::CONTRACT
+                .column("delay_time")
+                .and_then(|column| column.unit),
+            Some(Unit::Milliseconds)
         );
-        assert_eq!(c.column("delay_time").map(|col| col.nullable), Some(true));
     }
 
     #[test]
-    fn roundtrip_preserves_values_and_nulls() {
-        // One section may hold rows from all three eras.
-        crate::assert_roundtrips(&[
-            pre17_row(1_000_000, 100),
-            pg17_row(1_000_000, 200),
-            pg18_row(1_000_000, 300),
-        ]);
-    }
-
-    #[test]
-    fn nulls_survive_distinct_from_zero() {
-        // A pre-PG17 row must keep the byte-era columns NULL, not Some(0).
-        let bytes = PgStatProgressVacuum::encode(&[pre17_row(5, 1)]).expect("encode");
-        let decoded =
-            PgStatProgressVacuum::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
-        assert_eq!(decoded[0].dead_tuple_bytes, None);
-        assert_eq!(decoded[0].delay_time, None);
+    fn each_layout_roundtrips() {
+        crate::assert_roundtrips(&[v1_row(1_000_000, 100)]);
+        crate::assert_roundtrips(&[v2_row(1_000_000, 200)]);
+        crate::assert_roundtrips(&[v3_row(1_000_000, 300)]);
     }
 }

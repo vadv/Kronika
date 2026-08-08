@@ -10,7 +10,8 @@
 //! `pg_class` wraparound ages (`xid_age`, `mxid_age`) into the same row. `idx_*`
 //! columns are `None` when the table has no indexes; `toast_*` columns are
 //! `None` when it has no TOAST relation; `last_*` timestamps are `None` when the
-//! event never happened.
+//! event never happened. `xid_age` and `mxid_age` are `None` for partitioned
+//! parents, whose invalid xid/mxid sentinels have no meaningful age.
 
 use crate::{Section, StrId, Ts};
 
@@ -103,22 +104,22 @@ pub struct PgStatUserTablesV4 {
     #[column(c, unit = count)]
     pub autoanalyze_count: i64,
     /// Last manual vacuum; `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_vacuum: Option<Ts>,
     /// Last autovacuum; `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_autovacuum: Option<Ts>,
     /// Last manual analyze; `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_analyze: Option<Ts>,
     /// Last autoanalyze; `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_autoanalyze: Option<Ts>,
     /// Last sequential scan (PG16+); `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_seq_scan: Option<Ts>,
     /// Last index scan (PG16+); `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_idx_scan: Option<Ts>,
     /// Cumulative manual-vacuum time in milliseconds (PG18+).
     #[column(c, unit = milliseconds)]
@@ -145,14 +146,14 @@ pub struct PgStatUserTablesV4 {
     #[column(g, unit = count)]
     pub toast_n_dead_tup: Option<i64>,
     /// Last TOAST autovacuum; `None` when no TOAST relation or never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub toast_last_autovacuum: Option<Ts>,
-    /// Age of `relfrozenxid` in transactions (wraparound proximity).
+    /// Age of `relfrozenxid` in transactions; `None` for partitioned parents.
     #[column(g, unit = count)]
-    pub xid_age: i64,
-    /// Age of `relminmxid` in multixacts (multixact wraparound proximity).
+    pub xid_age: Option<i64>,
+    /// Age of `relminmxid` in multixacts; `None` for partitioned parents.
     #[column(g, unit = count)]
-    pub mxid_age: i64,
+    pub mxid_age: Option<i64>,
     /// Planner row estimate (`pg_class.reltuples`); `-1` means never analyzed (PG14+).
     #[column(g, unit = count)]
     pub reltuples: i64,
@@ -270,22 +271,22 @@ pub struct PgStatUserTablesV3 {
     #[column(c, unit = count)]
     pub autoanalyze_count: i64,
     /// Last manual vacuum; `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_vacuum: Option<Ts>,
     /// Last autovacuum; `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_autovacuum: Option<Ts>,
     /// Last manual analyze; `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_analyze: Option<Ts>,
     /// Last autoanalyze; `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_autoanalyze: Option<Ts>,
     /// Last sequential scan (PG16+); `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_seq_scan: Option<Ts>,
     /// Last index scan (PG16+); `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_idx_scan: Option<Ts>,
     /// Main-fork size in bytes (`pg_relation_size`).
     #[column(g, unit = bytes)]
@@ -300,14 +301,14 @@ pub struct PgStatUserTablesV3 {
     #[column(g, unit = count)]
     pub toast_n_dead_tup: Option<i64>,
     /// Last TOAST autovacuum; `None` when no TOAST relation or never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub toast_last_autovacuum: Option<Ts>,
-    /// Age of `relfrozenxid` in transactions (wraparound proximity).
+    /// Age of `relfrozenxid` in transactions; `None` for partitioned parents.
     #[column(g, unit = count)]
-    pub xid_age: i64,
-    /// Age of `relminmxid` in multixacts (multixact wraparound proximity).
+    pub xid_age: Option<i64>,
+    /// Age of `relminmxid` in multixacts; `None` for partitioned parents.
     #[column(g, unit = count)]
-    pub mxid_age: i64,
+    pub mxid_age: Option<i64>,
     /// Planner row estimate (`pg_class.reltuples`); `-1` means never analyzed (PG14+).
     #[column(g, unit = count)]
     pub reltuples: i64,
@@ -419,16 +420,16 @@ pub struct PgStatUserTablesV2 {
     #[column(c, unit = count)]
     pub autoanalyze_count: i64,
     /// Last manual vacuum; `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_vacuum: Option<Ts>,
     /// Last autovacuum; `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_autovacuum: Option<Ts>,
     /// Last manual analyze; `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_analyze: Option<Ts>,
     /// Last autoanalyze; `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_autoanalyze: Option<Ts>,
     /// Main-fork size in bytes (`pg_relation_size`).
     #[column(g, unit = bytes)]
@@ -443,14 +444,14 @@ pub struct PgStatUserTablesV2 {
     #[column(g, unit = count)]
     pub toast_n_dead_tup: Option<i64>,
     /// Last TOAST autovacuum; `None` when no TOAST relation or never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub toast_last_autovacuum: Option<Ts>,
-    /// Age of `relfrozenxid` in transactions (wraparound proximity).
+    /// Age of `relfrozenxid` in transactions; `None` for partitioned parents.
     #[column(g, unit = count)]
-    pub xid_age: i64,
-    /// Age of `relminmxid` in multixacts (multixact wraparound proximity).
+    pub xid_age: Option<i64>,
+    /// Age of `relminmxid` in multixacts; `None` for partitioned parents.
     #[column(g, unit = count)]
-    pub mxid_age: i64,
+    pub mxid_age: Option<i64>,
     /// Planner row estimate (`pg_class.reltuples`); `-1` means never analyzed (PG14+).
     #[column(g, unit = count)]
     pub reltuples: i64,
@@ -559,16 +560,16 @@ pub struct PgStatUserTablesV1 {
     #[column(c, unit = count)]
     pub autoanalyze_count: i64,
     /// Last manual vacuum; `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_vacuum: Option<Ts>,
     /// Last autovacuum; `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_autovacuum: Option<Ts>,
     /// Last manual analyze; `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_analyze: Option<Ts>,
     /// Last autoanalyze; `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_autoanalyze: Option<Ts>,
     /// Main-fork size in bytes (`pg_relation_size`).
     #[column(g, unit = bytes)]
@@ -583,14 +584,14 @@ pub struct PgStatUserTablesV1 {
     #[column(g, unit = count)]
     pub toast_n_dead_tup: Option<i64>,
     /// Last TOAST autovacuum; `None` when no TOAST relation or never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub toast_last_autovacuum: Option<Ts>,
-    /// Age of `relfrozenxid` in transactions (wraparound proximity).
+    /// Age of `relfrozenxid` in transactions; `None` for partitioned parents.
     #[column(g, unit = count)]
-    pub xid_age: i64,
-    /// Age of `relminmxid` in multixacts (multixact wraparound proximity).
+    pub xid_age: Option<i64>,
+    /// Age of `relminmxid` in multixacts; `None` for partitioned parents.
     #[column(g, unit = count)]
-    pub mxid_age: i64,
+    pub mxid_age: Option<i64>,
     /// Planner row estimate (`pg_class.reltuples`); `-1` means never analyzed (PG14+).
     #[column(g, unit = count)]
     pub reltuples: i64,
@@ -623,7 +624,35 @@ pub struct PgStatUserTablesV1 {
 #[cfg(test)]
 mod tests {
     use super::{PgStatUserTablesV1, PgStatUserTablesV2, PgStatUserTablesV3, PgStatUserTablesV4};
-    use crate::{Section, StrId, Ts, VerifiedSection, lint};
+    use crate::{Section, StrId, Ts, Unit, VerifiedSection, lint};
+
+    fn assert_common_contract(c: crate::TypeContract) {
+        assert_eq!(
+            c.column("xid_age").map(|column| column.nullable),
+            Some(true)
+        );
+        assert_eq!(
+            c.column("mxid_age").map(|column| column.nullable),
+            Some(true)
+        );
+        for name in [
+            "last_vacuum",
+            "last_autovacuum",
+            "last_analyze",
+            "last_autoanalyze",
+            "toast_last_autovacuum",
+        ] {
+            assert_eq!(
+                c.column(name).and_then(|column| column.unit),
+                Some(Unit::Microseconds)
+            );
+        }
+        for name in ["last_seq_scan", "last_idx_scan"] {
+            if let Some(column) = c.column(name) {
+                assert_eq!(column.unit, Some(Unit::Microseconds));
+            }
+        }
+    }
 
     fn v4_row(ts: i64, datid: u32, relid: u32) -> PgStatUserTablesV4 {
         PgStatUserTablesV4 {
@@ -666,8 +695,8 @@ mod tests {
             toast_n_live_tup: None,
             toast_n_dead_tup: None,
             toast_last_autovacuum: None,
-            xid_age: 100_000_000,
-            mxid_age: 5_000_000,
+            xid_age: Some(100_000_000),
+            mxid_age: Some(5_000_000),
             reltuples: 900,
             heap_blks_read: 400,
             heap_blks_hit: 90_000,
@@ -695,6 +724,7 @@ mod tests {
         assert!(c.column("total_autoanalyze_time").is_some());
         assert!(c.column("main_fork_bytes").is_some());
         assert!(c.column("size_bytes").is_none());
+        assert_common_contract(c);
         assert_eq!(lint(&[c]), Ok(()));
     }
 
@@ -705,7 +735,10 @@ mod tests {
 
     #[test]
     fn v4_roundtrip_preserves_timing_and_nulls() {
-        let bytes = PgStatUserTablesV4::encode(&[v4_row(5, 5, 16_384)]).expect("encode");
+        let mut row = v4_row(5, 5, 16_384);
+        row.xid_age = None;
+        row.mxid_age = None;
+        let bytes = PgStatUserTablesV4::encode(&[row]).expect("encode");
         let decoded =
             PgStatUserTablesV4::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
         assert!((decoded[0].total_autovacuum_time - 340.0).abs() < f64::EPSILON);
@@ -713,6 +746,8 @@ mod tests {
         assert_eq!(decoded[0].toast_bytes, None);
         assert_eq!(decoded[0].last_autovacuum, None);
         assert_eq!(decoded[0].main_fork_bytes, 8_192);
+        assert_eq!(decoded[0].xid_age, None);
+        assert_eq!(decoded[0].mxid_age, None);
     }
 
     #[test]
@@ -729,6 +764,7 @@ mod tests {
         assert_eq!(c.column("last_vacuum").map(|col| col.nullable), Some(true));
         assert!(c.column("n_tup_newpage_upd").is_some());
         assert!(c.column("last_seq_scan").is_some());
+        assert_common_contract(c);
         assert_eq!(lint(&[c]), Ok(()));
     }
 
@@ -740,6 +776,7 @@ mod tests {
         assert!(c.column("n_ins_since_vacuum").is_some());
         assert!(c.column("n_tup_newpage_upd").is_none());
         assert!(c.column("last_seq_scan").is_none());
+        assert_common_contract(c);
         assert_eq!(lint(&[c]), Ok(()));
     }
 
@@ -749,6 +786,7 @@ mod tests {
         assert_eq!(c.type_id.get(), 1_013_001);
         assert_eq!(c.columns.len(), 42);
         assert!(c.column("n_ins_since_vacuum").is_none());
+        assert_common_contract(c);
         assert_eq!(lint(&[c]), Ok(()));
     }
 
@@ -789,8 +827,8 @@ mod tests {
             toast_n_live_tup: None,
             toast_n_dead_tup: None,
             toast_last_autovacuum: None,
-            xid_age: 100_000_000,
-            mxid_age: 5_000_000,
+            xid_age: Some(100_000_000),
+            mxid_age: Some(5_000_000),
             reltuples: 900,
             heap_blks_read: 400,
             heap_blks_hit: 90_000,

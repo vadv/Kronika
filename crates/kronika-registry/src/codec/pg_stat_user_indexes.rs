@@ -8,7 +8,7 @@
 //! Each layout merges `pg_statio_user_indexes` (the buffer-I/O counters), the
 //! `pg_index` flags (`indisunique`/`indisprimary`/`indisvalid`/`indisexclusion`/
 //! `indisready`), the access method name from `pg_am`, and `pg_get_indexdef` into
-//! the same row.
+//! the same row. `indexdef` can be `None` if the index is dropped concurrently.
 
 use crate::{Section, StrId, Ts};
 
@@ -70,7 +70,7 @@ pub struct PgStatUserIndexesV2 {
     #[column(g, unit = bytes)]
     pub main_fork_bytes: i64,
     /// Last index scan (PG16+); `None` if never.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub last_idx_scan: Option<Ts>,
     /// Whether the index enforces uniqueness.
     #[column(l)]
@@ -90,9 +90,9 @@ pub struct PgStatUserIndexesV2 {
     /// Access method name (`btree`, `hash`, `gin`, ...).
     #[column(l)]
     pub amname: StrId,
-    /// `pg_get_indexdef` reconstruction of the index definition.
+    /// `pg_get_indexdef` reconstruction; `None` after a concurrent index drop.
     #[column(l)]
-    pub indexdef: StrId,
+    pub indexdef: Option<StrId>,
     /// Shared-buffer misses for index blocks.
     #[column(c, unit = count)]
     pub idx_blks_read: i64,
@@ -174,9 +174,9 @@ pub struct PgStatUserIndexesV1 {
     /// Access method name (`btree`, `hash`, `gin`, ...).
     #[column(l)]
     pub amname: StrId,
-    /// `pg_get_indexdef` reconstruction of the index definition.
+    /// `pg_get_indexdef` reconstruction; `None` after a concurrent index drop.
     #[column(l)]
-    pub indexdef: StrId,
+    pub indexdef: Option<StrId>,
     /// Shared-buffer misses for index blocks.
     #[column(c, unit = count)]
     pub idx_blks_read: i64,
@@ -188,7 +188,7 @@ pub struct PgStatUserIndexesV1 {
 #[cfg(test)]
 mod tests {
     use super::{PgStatUserIndexesV1, PgStatUserIndexesV2};
-    use crate::{Section, StrId, Ts, VerifiedSection, lint};
+    use crate::{Section, StrId, Ts, Unit, VerifiedSection, lint};
 
     fn v2_row(ts: i64, datid: u32, indexrelid: u32) -> PgStatUserIndexesV2 {
         PgStatUserIndexesV2 {
@@ -212,7 +212,7 @@ mod tests {
             indisexclusion: false,
             indisready: true,
             amname: StrId(5),
-            indexdef: StrId(6),
+            indexdef: Some(StrId(6)),
             idx_blks_read: 40,
             idx_blks_hit: 9_000,
         }
@@ -240,7 +240,11 @@ mod tests {
         );
         assert_eq!(c.column("indisready").map(|col| col.nullable), Some(false));
         assert!(c.column("amname").is_some());
-        assert!(c.column("indexdef").is_some());
+        assert_eq!(c.column("indexdef").map(|col| col.nullable), Some(true));
+        assert_eq!(
+            c.column("last_idx_scan").and_then(|col| col.unit),
+            Some(Unit::Microseconds)
+        );
         assert_eq!(lint(&[c]), Ok(()));
     }
 
@@ -255,6 +259,7 @@ mod tests {
         assert!(c.column("idx_blks_hit").is_some());
         assert!(c.column("indisexclusion").is_some());
         assert!(c.column("indisready").is_some());
+        assert_eq!(c.column("indexdef").map(|col| col.nullable), Some(true));
         assert_eq!(lint(&[c]), Ok(()));
     }
 
@@ -286,6 +291,7 @@ mod tests {
     fn v2_roundtrip_preserves_never_scanned_null() {
         let mut row = v2_row(5, 5, 16_384);
         row.last_idx_scan = None;
+        row.indexdef = None;
         let bytes = PgStatUserIndexesV2::encode(&[row]).expect("encode");
         let decoded =
             PgStatUserIndexesV2::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
@@ -294,5 +300,6 @@ mod tests {
         assert!(decoded[0].indisprimary);
         assert!(!decoded[0].indisexclusion);
         assert!(decoded[0].indisready);
+        assert_eq!(decoded[0].indexdef, None);
     }
 }

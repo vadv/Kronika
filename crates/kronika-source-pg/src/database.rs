@@ -190,9 +190,9 @@ pub struct DatabaseRow {
     pub blk_write_time: f64,
     /// Last statistics reset, unix microseconds; `None` if never.
     pub stats_reset: Option<i64>,
-    /// Checksum failures (V2+).
+    /// Checksum failures; `None` in V1 or when data checksums are disabled.
     pub checksum_failures: Option<i64>,
-    /// Last checksum failure, unix microseconds (V2+).
+    /// Last checksum failure, unix microseconds; `None` in V1 or if never.
     pub checksum_last_failure: Option<i64>,
     /// Session time, ms (V3+).
     pub session_time: Option<f64>,
@@ -264,7 +264,7 @@ pub fn to_v4<E>(
         blk_read_time: row.blk_read_time,
         blk_write_time: row.blk_write_time,
         stats_reset: row.stats_reset.map(Ts),
-        checksum_failures: row.checksum_failures.unwrap_or(0),
+        checksum_failures: row.checksum_failures,
         checksum_last_failure: row.checksum_last_failure.map(Ts),
         session_time: row.session_time.unwrap_or(0.0),
         active_time: row.active_time.unwrap_or(0.0),
@@ -312,7 +312,7 @@ pub fn to_v3<E>(
         blk_read_time: row.blk_read_time,
         blk_write_time: row.blk_write_time,
         stats_reset: row.stats_reset.map(Ts),
-        checksum_failures: row.checksum_failures.unwrap_or(0),
+        checksum_failures: row.checksum_failures,
         checksum_last_failure: row.checksum_last_failure.map(Ts),
         session_time: row.session_time.unwrap_or(0.0),
         active_time: row.active_time.unwrap_or(0.0),
@@ -358,7 +358,7 @@ pub fn to_v2<E>(
         blk_read_time: row.blk_read_time,
         blk_write_time: row.blk_write_time,
         stats_reset: row.stats_reset.map(Ts),
-        checksum_failures: row.checksum_failures.unwrap_or(0),
+        checksum_failures: row.checksum_failures,
         checksum_last_failure: row.checksum_last_failure.map(Ts),
         frozen_xid_age: row.frozen_xid_age,
         min_mxid_age: row.min_mxid_age,
@@ -486,7 +486,9 @@ pub async fn collect_database<E>(
 
 #[cfg(test)]
 mod tests {
-    use super::{DatabaseRow, DatabaseVersion, database_query, database_version, to_v1, to_v4};
+    use super::{
+        DatabaseRow, DatabaseVersion, database_query, database_version, to_v1, to_v2, to_v3, to_v4,
+    };
     use kronika_registry::StrId;
     use std::convert::Infallible;
 
@@ -589,7 +591,7 @@ mod tests {
         assert_eq!(r.datname, Some(fake_intern(b"appdb").unwrap()));
         assert_eq!(r.numbackends, Some(4));
         assert!((r.blk_read_time - 12.5).abs() < f64::EPSILON);
-        assert_eq!(r.checksum_failures, 0);
+        assert_eq!(r.checksum_failures, Some(0));
         assert_eq!(r.checksum_last_failure, None);
         assert_eq!(r.parallel_workers_launched, 8);
         assert_eq!(r.frozen_xid_age, Some(150_000_000));
@@ -610,6 +612,26 @@ mod tests {
         assert_eq!(r.datconnlimit, None);
         assert_eq!(r.datallowconn, None);
         assert_eq!(r.datistemplate, None);
+    }
+
+    #[test]
+    fn disabled_checksums_stay_null_in_every_checksum_layout() {
+        let row = DatabaseRow {
+            checksum_failures: None,
+            ..sample_row(5)
+        };
+        assert_eq!(
+            to_v2(&row, fake_intern).expect("intern").checksum_failures,
+            None
+        );
+        assert_eq!(
+            to_v3(&row, fake_intern).expect("intern").checksum_failures,
+            None
+        );
+        assert_eq!(
+            to_v4(&row, fake_intern).expect("intern").checksum_failures,
+            None
+        );
     }
 
     #[test]

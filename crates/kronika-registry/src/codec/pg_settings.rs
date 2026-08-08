@@ -13,7 +13,12 @@ use crate::{Section, StrId, Ts};
 /// plus reload) takes effect only after a server restart — the stored
 /// `setting` still shows the running value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Section)]
-#[section(id = 1_019_001, name = "pg_settings", semantics = on_change, sort_key("name"))]
+#[section(
+    id = 1_019_001,
+    name = "pg_settings",
+    semantics = snapshot_full,
+    sort_key("name")
+)]
 pub struct PgSettings {
     /// Collection time, unix microseconds; one value for all rows of a read.
     #[column(t)]
@@ -56,7 +61,7 @@ pub struct PgSettings {
 #[cfg(test)]
 mod tests {
     use super::PgSettings;
-    use crate::{Section, StrId, Ts, lint};
+    use crate::{Section, Semantics, StrId, Ts, lint};
 
     fn row(name: u64) -> PgSettings {
         PgSettings {
@@ -85,6 +90,7 @@ mod tests {
         let c = PgSettings::CONTRACT;
         assert_eq!(c.type_id.get(), 1_019_001);
         assert_eq!(c.columns.len(), 12);
+        assert_eq!(c.semantics, Semantics::SnapshotFull);
         assert_eq!(c.sort_key, ["name"]);
         assert_eq!(c.column("name").map(|col| col.nullable), Some(false));
         assert_eq!(c.column("unit").map(|col| col.nullable), Some(true));

@@ -7,7 +7,7 @@ use kronika_source_pg::archiver;
 use kronika_source_pg::database::{self, DatabaseRow, DatabaseVersion};
 use kronika_source_pg::io::{self, IoRow, IoVersion};
 use kronika_source_pg::prepared_xacts;
-use kronika_source_pg::progress_vacuum;
+use kronika_source_pg::progress_vacuum::{self, ProgressVacuumRow};
 use kronika_source_pg::settings::{self, SettingsRow};
 use kronika_source_pg::statements::{self, StatementsRow, StatementsVersion};
 use kronika_source_pg::store_plans;
@@ -53,10 +53,17 @@ pub(crate) fn push_pg_batch(
         PgBatch::Activity(version, rows) => push_activity(buffers, interner, *version, rows),
         PgBatch::ProgressVacuum(rows) => {
             for row in rows {
-                buffer_row(
-                    buffers,
-                    progress_vacuum::to_progress_vacuum(row, intern(interner))?,
-                )?;
+                match row {
+                    ProgressVacuumRow::V1(row) => {
+                        buffer_row(buffers, progress_vacuum::to_v1(row, intern(interner))?)?;
+                    }
+                    ProgressVacuumRow::V2(row) => {
+                        buffer_row(buffers, progress_vacuum::to_v2(row, intern(interner))?)?;
+                    }
+                    ProgressVacuumRow::V3(row) => {
+                        buffer_row(buffers, progress_vacuum::to_v3(row, intern(interner))?)?;
+                    }
+                }
             }
             Ok(())
         }

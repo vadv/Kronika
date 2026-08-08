@@ -84,8 +84,10 @@ const COMMON_COLUMNS: &str = "st.relid, \
      tst.n_live_tup AS toast_n_live_tup, \
      tst.n_dead_tup AS toast_n_dead_tup, \
      (extract(epoch from tst.last_autovacuum) * 1e6)::int8 AS toast_last_autovacuum_us, \
-     age(c.relfrozenxid)::int8 AS xid_age, \
-     mxid_age(c.relminmxid)::int8 AS mxid_age, \
+     CASE WHEN c.relkind = 'p' THEN NULL \
+          ELSE age(c.relfrozenxid)::int8 END AS xid_age, \
+     CASE WHEN c.relkind = 'p' THEN NULL \
+          ELSE mxid_age(c.relminmxid)::int8 END AS mxid_age, \
      c.reltuples::int8 AS reltuples, \
      coalesce(sio.heap_blks_read, 0) AS heap_blks_read, \
      coalesce(sio.heap_blks_hit, 0) AS heap_blks_hit, \
@@ -229,10 +231,10 @@ pub struct UserTablesRow {
     pub toast_n_dead_tup: Option<i64>,
     /// Last TOAST autovacuum, unix microseconds; `None` when never.
     pub toast_last_autovacuum: Option<i64>,
-    /// Age of `relfrozenxid` in transactions.
-    pub xid_age: i64,
-    /// Age of `relminmxid` in multixacts.
-    pub mxid_age: i64,
+    /// Age of `relfrozenxid` in transactions; `None` for a partitioned parent.
+    pub xid_age: Option<i64>,
+    /// Age of `relminmxid` in multixacts; `None` for a partitioned parent.
+    pub mxid_age: Option<i64>,
     /// Planner row estimate.
     pub reltuples: i64,
     /// Heap block reads.

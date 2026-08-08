@@ -38,7 +38,7 @@ pub const EXTENSION: &str = "pg_stat_statements";
 /// The `pg_stat_statements` layout selected by the extension version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatementsVersion {
-    /// Extension 1.6-1.7: type `1_002_001`.
+    /// Extension 1.5-1.7: type `1_002_001`.
     V1,
     /// Extension 1.8: type `1_002_002` (planning columns, WAL columns).
     V2,
@@ -56,15 +56,20 @@ pub enum StatementsVersion {
 
 /// Select the layout for an installed extension version.
 ///
-/// A version below 1.6 is not collected: it lacks `queryid`, which every row
-/// of this section is identified by.
+/// `PostgreSQL` 10's official `pg_stat_statements--1.4.sql` declares the V1
+/// 23-column output: user/database/query ids, query text, calls, five execution
+/// timings, rows, ten block counters, and two block timings. Its official
+/// `pg_stat_statements--1.4--1.5.sql` update changes only
+/// `pg_stat_statements_reset` privileges, so 1.5 has that exact layout. Version
+/// 1.4 remains only as an upgrade source below the supported extension floor:
+/// `PostgreSQL` 10's `pg_stat_statements.control` sets `default_version = '1.5'`.
 #[must_use]
 pub const fn statements_version(extension: ExtensionVersion) -> Option<StatementsVersion> {
     if extension.major != 1 {
         return None;
     }
     match extension.minor {
-        6 | 7 => Some(StatementsVersion::V1),
+        5..=7 => Some(StatementsVersion::V1),
         8 => Some(StatementsVersion::V2),
         9 => Some(StatementsVersion::V3),
         10 => Some(StatementsVersion::V4),
@@ -277,9 +282,9 @@ pub struct StatementsRow {
     pub parallel_workers_to_launch: Option<i64>,
     /// Parallel workers launched (V6).
     pub parallel_workers_launched: Option<i64>,
-    /// Start of this row's statistics, unix microseconds (V5+).
+    /// Start of this row's statistics, unix microseconds; `None` before V5.
     pub stats_since: Option<i64>,
-    /// Last min/max reset, unix microseconds (V5+).
+    /// Last min/max reset, unix microseconds; `None` before V5.
     pub minmax_stats_since: Option<i64>,
 }
 
@@ -356,8 +361,8 @@ pub fn to_v6<E>(
         jit_deform_time: row.jit_deform_time.unwrap_or(0.0),
         parallel_workers_to_launch: row.parallel_workers_to_launch.unwrap_or(0),
         parallel_workers_launched: row.parallel_workers_launched.unwrap_or(0),
-        stats_since: row.stats_since.map(Ts),
-        minmax_stats_since: row.minmax_stats_since.map(Ts),
+        stats_since: Ts(row.stats_since.unwrap_or(0)),
+        minmax_stats_since: Ts(row.minmax_stats_since.unwrap_or(0)),
     })
 }
 
@@ -420,8 +425,8 @@ pub fn to_v5<E>(
         jit_emission_time: row.jit_emission_time.unwrap_or(0.0),
         jit_deform_count: row.jit_deform_count.unwrap_or(0),
         jit_deform_time: row.jit_deform_time.unwrap_or(0.0),
-        stats_since: row.stats_since.map(Ts),
-        minmax_stats_since: row.minmax_stats_since.map(Ts),
+        stats_since: Ts(row.stats_since.unwrap_or(0)),
+        minmax_stats_since: Ts(row.minmax_stats_since.unwrap_or(0)),
     })
 }
 
@@ -578,7 +583,7 @@ pub fn to_v2<E>(
     })
 }
 
-/// Build a `1_002_001` row (extension 1.6/1.7 layout, no planning columns).
+/// Build a `1_002_001` row (extension 1.5-1.7 layout, no planning columns).
 ///
 /// # Errors
 /// Returns the interner's error.

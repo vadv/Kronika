@@ -136,12 +136,23 @@ pub struct UserIndexesRow {
     pub indisready: bool,
     /// Access method name.
     pub amname: String,
-    /// Reconstructed index definition.
-    pub indexdef: String,
+    /// Reconstructed definition; `None` if `pg_get_indexdef` saw a concurrent drop.
+    pub indexdef: Option<String>,
     /// Shared-buffer misses for index blocks.
     pub idx_blks_read: i64,
     /// Shared-buffer hits for index blocks.
     pub idx_blks_hit: i64,
+}
+
+/// Intern an optional string, preserving `None`.
+fn opt<E>(
+    intern: &mut impl FnMut(&[u8]) -> Result<StrId, E>,
+    value: Option<&str>,
+) -> Result<Option<StrId>, E> {
+    match value {
+        Some(text) => Ok(Some(intern(text.as_bytes())?)),
+        None => Ok(None),
+    }
 }
 
 /// Build a `1_014_002` row (PG16+ layout), interning every string.
@@ -173,7 +184,7 @@ pub fn to_v2<E>(
         indisexclusion: row.indisexclusion,
         indisready: row.indisready,
         amname: intern(row.amname.as_bytes())?,
-        indexdef: intern(row.indexdef.as_bytes())?,
+        indexdef: opt(&mut intern, row.indexdef.as_deref())?,
         idx_blks_read: row.idx_blks_read,
         idx_blks_hit: row.idx_blks_hit,
     })
@@ -207,7 +218,7 @@ pub fn to_v1<E>(
         indisexclusion: row.indisexclusion,
         indisready: row.indisready,
         amname: intern(row.amname.as_bytes())?,
-        indexdef: intern(row.indexdef.as_bytes())?,
+        indexdef: opt(&mut intern, row.indexdef.as_deref())?,
         idx_blks_read: row.idx_blks_read,
         idx_blks_hit: row.idx_blks_hit,
     })

@@ -105,11 +105,11 @@ pub struct PgStatDatabaseV4 {
     /// Whether the database is a template; `None` for the shared-objects row.
     #[column(l)]
     pub datistemplate: Option<bool>,
-    /// Data-page checksum failures.
+    /// Data-page checksum failures; `None` when data checksums are disabled.
     #[column(c, unit = count)]
-    pub checksum_failures: i64,
+    pub checksum_failures: Option<i64>,
     /// Time of the last checksum failure; `None` if there has been none.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub checksum_last_failure: Option<Ts>,
     /// Time spent by sessions, ms.
     #[column(c, unit = milliseconds)]
@@ -227,11 +227,11 @@ pub struct PgStatDatabaseV3 {
     /// Whether the database is a template; `None` for the shared-objects row.
     #[column(l)]
     pub datistemplate: Option<bool>,
-    /// Data-page checksum failures.
+    /// Data-page checksum failures; `None` when data checksums are disabled.
     #[column(c, unit = count)]
-    pub checksum_failures: i64,
+    pub checksum_failures: Option<i64>,
     /// Time of the last checksum failure; `None` if there has been none.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub checksum_last_failure: Option<Ts>,
     /// Time spent by sessions, ms.
     #[column(c, unit = milliseconds)]
@@ -343,11 +343,11 @@ pub struct PgStatDatabaseV2 {
     /// Whether the database is a template; `None` for the shared-objects row.
     #[column(l)]
     pub datistemplate: Option<bool>,
-    /// Data-page checksum failures.
+    /// Data-page checksum failures; `None` when data checksums are disabled.
     #[column(c, unit = count)]
-    pub checksum_failures: i64,
+    pub checksum_failures: Option<i64>,
     /// Time of the last checksum failure; `None` if there has been none.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub checksum_last_failure: Option<Ts>,
 }
 
@@ -443,7 +443,19 @@ pub struct PgStatDatabaseV1 {
 #[cfg(test)]
 mod tests {
     use super::{PgStatDatabaseV1, PgStatDatabaseV2, PgStatDatabaseV3, PgStatDatabaseV4};
-    use crate::{Section, StrId, Ts, VerifiedSection, lint};
+    use crate::{Section, StrId, Ts, Unit, VerifiedSection, lint};
+
+    fn assert_checksum_contract(c: crate::TypeContract) {
+        assert_eq!(
+            c.column("checksum_failures").map(|column| column.nullable),
+            Some(true)
+        );
+        assert_eq!(
+            c.column("checksum_last_failure")
+                .and_then(|column| column.unit),
+            Some(Unit::Microseconds)
+        );
+    }
 
     fn v4_row(ts: i64, datid: u32) -> PgStatDatabaseV4 {
         PgStatDatabaseV4 {
@@ -471,7 +483,7 @@ mod tests {
             blk_read_time: 12.5,
             blk_write_time: 3.0,
             stats_reset: Some(Ts(ts - 5)),
-            checksum_failures: 0,
+            checksum_failures: Some(0),
             checksum_last_failure: None,
             session_time: 1_000.0,
             active_time: 250.0,
@@ -517,6 +529,7 @@ mod tests {
         );
         assert_eq!(c.column("datconnlimit").map(|col| col.nullable), Some(true));
         assert_eq!(c.column("datallowconn").map(|col| col.nullable), Some(true));
+        assert_checksum_contract(c);
     }
 
     #[test]
@@ -549,6 +562,16 @@ mod tests {
         assert_eq!(decoded[0].datistemplate, None);
     }
 
+    #[test]
+    fn v4_roundtrip_preserves_checksum_disabled_null() {
+        let mut row = v4_row(5, 1);
+        row.checksum_failures = None;
+        let bytes = PgStatDatabaseV4::encode(&[row]).expect("encode");
+        let decoded =
+            PgStatDatabaseV4::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
+        assert_eq!(decoded[0].checksum_failures, None);
+    }
+
     fn v3_row(ts: i64, datid: u32) -> PgStatDatabaseV3 {
         PgStatDatabaseV3 {
             ts: Ts(ts),
@@ -571,7 +594,7 @@ mod tests {
             blk_read_time: 12.5,
             blk_write_time: 3.0,
             stats_reset: Some(Ts(ts - 5)),
-            checksum_failures: 0,
+            checksum_failures: Some(0),
             checksum_last_failure: Some(Ts(ts - 1)),
             session_time: 1_000.0,
             active_time: 250.0,
@@ -595,12 +618,15 @@ mod tests {
         assert_eq!(c.columns.len(), 34);
         assert!(c.column("session_time").is_some());
         assert!(c.column("parallel_workers_launched").is_none());
+        assert_checksum_contract(c);
         assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]
     fn v3_roundtrip() {
-        crate::assert_roundtrips(&[v3_row(1_000, 1), v3_row(1_000, 2)]);
+        let mut checksum_disabled = v3_row(1_000, 2);
+        checksum_disabled.checksum_failures = None;
+        crate::assert_roundtrips(&[v3_row(1_000, 1), checksum_disabled]);
     }
 
     fn v2_row(ts: i64, datid: u32) -> PgStatDatabaseV2 {
@@ -625,7 +651,7 @@ mod tests {
             blk_read_time: 12.5,
             blk_write_time: 3.0,
             stats_reset: Some(Ts(ts - 5)),
-            checksum_failures: 0,
+            checksum_failures: Some(0),
             checksum_last_failure: None,
             frozen_xid_age: Some(150_000_000),
             min_mxid_age: Some(5_000_000),
@@ -642,12 +668,15 @@ mod tests {
         assert_eq!(c.columns.len(), 27);
         assert!(c.column("checksum_failures").is_some());
         assert!(c.column("session_time").is_none());
+        assert_checksum_contract(c);
         assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]
     fn v2_roundtrip() {
-        crate::assert_roundtrips(&[v2_row(1_000, 1), v2_row(1_000, 2)]);
+        let mut checksum_disabled = v2_row(1_000, 2);
+        checksum_disabled.checksum_failures = None;
+        crate::assert_roundtrips(&[v2_row(1_000, 1), checksum_disabled]);
     }
 
     fn v1_row(ts: i64, datid: u32) -> PgStatDatabaseV1 {

@@ -2,8 +2,9 @@
 //!
 //! Two extensions share a name and little else. The ossc upstream keys an entry
 //! by the core query id and carries the plan text in the view; the vadv fork
-//! keys by the plan alone and hands out plan text through a function. They are
-//! collected as two sections rather than one with holes in it.
+//! exposes both its internal query id and its last `pg_stat_statements` query id,
+//! and hands out plan text through a function. They are collected as two
+//! sections rather than one with holes in it.
 //!
 //! A read takes the costliest plans and stops fetching plan text once it has
 //! taken enough of it. A plan text runs to kilobytes, and an instance can hold
@@ -51,12 +52,12 @@ pub enum Flavour {
 /// Select the flavour from the installed extension version.
 ///
 /// The fork carries the major version 2 precisely so the two can be told
-/// apart; anything below 1.10 lacks the split I/O timing columns and is not
-/// collected.
+/// apart. The ossc 1.9 view has the split shared/local/temp I/O timing columns
+/// used by its current layout.
 #[must_use]
 pub const fn flavour(extension: ExtensionVersion) -> Option<Flavour> {
     match extension.major {
-        1 if extension.minor >= 10 => Some(Flavour::Ossc),
+        1 if extension.minor >= 9 => Some(Flavour::Ossc),
         2 => Some(Flavour::Vadv),
         _ => None,
     }
@@ -78,8 +79,8 @@ pub fn store_plans_query(flavour: Flavour) -> String {
              s.temp_blk_read_time, s.temp_blk_write_time"
         }
         Flavour::Vadv => {
-            "s.queryid AS queryid_stat_statements, s.planid, s.userid, s.dbid, \
-             left(pg_store_plans_get_plan(s.planid), 65536) AS plan, \
+            "s.userid, s.dbid, s.queryid, s.planid, s.queryid_stat_statements, \
+             left(pg_store_plans_get_plan(s.userid, s.dbid, s.queryid, s.planid), 65536) AS plan, \
              s.calls, s.slow_log_calls, \
              s.total_time, s.min_time, s.max_time, s.mean_time, s.stddev_time, s.rows, \
              s.shared_blks_hit, s.shared_blks_read, s.shared_blks_dirtied, s.shared_blks_written, \
@@ -183,14 +184,16 @@ pub struct OsscRow {
 pub struct VadvRow {
     /// Collection time, unix microseconds.
     pub ts: i64,
-    /// Query id of the last statement that ran this plan.
-    pub queryid_stat_statements: i64,
-    /// Plan id.
-    pub planid: i64,
     /// Role oid.
     pub userid: u32,
     /// Database oid.
     pub dbid: u32,
+    /// Internal query id, part of the extension entry key.
+    pub queryid: i64,
+    /// Plan id.
+    pub planid: i64,
+    /// `pg_stat_statements` query id of the last statement that ran this plan.
+    pub queryid_stat_statements: i64,
     /// Database name resolved from `dbid`.
     pub datname: Option<String>,
     /// Role name resolved from `userid`.
@@ -317,10 +320,11 @@ pub fn to_vadv<E>(
 ) -> Result<PgStorePlansVadvV1, E> {
     Ok(PgStorePlansVadvV1 {
         ts: Ts(row.ts),
-        queryid_stat_statements: row.queryid_stat_statements,
-        planid: row.planid,
         userid: row.userid,
         dbid: row.dbid,
+        queryid: row.queryid,
+        planid: row.planid,
+        queryid_stat_statements: row.queryid_stat_statements,
         datname: opt(&mut intern, row.datname.as_deref())?,
         usename: opt(&mut intern, row.usename.as_deref())?,
         plan: opt(&mut intern, row.plan.as_deref())?,
@@ -408,10 +412,11 @@ fn vadv_row_from_pg(row: &tokio_postgres::Row, left: &mut usize) -> VadvRow {
     let plan: Option<String> = row.get("plan");
     VadvRow {
         ts: row.get("ts_us"),
-        queryid_stat_statements: row.get("queryid_stat_statements"),
-        planid: row.get("planid"),
         userid: row.get("userid"),
         dbid: row.get("dbid"),
+        queryid: row.get("queryid"),
+        planid: row.get("planid"),
+        queryid_stat_statements: row.get("queryid_stat_statements"),
         datname: row.get("datname"),
         usename: row.get("usename"),
         plan: plan.filter(|text| afford(left, text.len())),

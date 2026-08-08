@@ -67,16 +67,16 @@ pub struct PgStatActivityV3 {
     #[column(g, unit = count)]
     pub backend_xmin_age: Option<i64>,
     /// Backend start time.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub backend_start: Ts,
     /// Current transaction start; `None` outside a transaction.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub xact_start: Option<Ts>,
     /// Current query start; `None` for background backends.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub query_start: Option<Ts>,
     /// Last state change; `None` for background backends.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub state_change: Option<Ts>,
 }
 
@@ -134,16 +134,16 @@ pub struct PgStatActivityV2 {
     #[column(g, unit = count)]
     pub backend_xmin_age: Option<i64>,
     /// Backend start time.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub backend_start: Ts,
     /// Current transaction start; `None` outside a transaction.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub xact_start: Option<Ts>,
     /// Current query start; `None` for background backends.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub query_start: Option<Ts>,
     /// Last state change; `None` for background backends.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub state_change: Option<Ts>,
 }
 
@@ -198,23 +198,32 @@ pub struct PgStatActivityV1 {
     #[column(g, unit = count)]
     pub backend_xmin_age: Option<i64>,
     /// Backend start time.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub backend_start: Ts,
     /// Current transaction start; `None` outside a transaction.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub xact_start: Option<Ts>,
     /// Current query start; `None` for background backends.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub query_start: Option<Ts>,
     /// Last state change; `None` for background backends.
-    #[column(g, unit = count)]
+    #[column(g, unit = microseconds)]
     pub state_change: Option<Ts>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::{PgStatActivityV1, PgStatActivityV2, PgStatActivityV3};
-    use crate::{Section, StrId, Ts, VerifiedSection, lint};
+    use crate::{Section, StrId, Ts, Unit, VerifiedSection, lint};
+
+    fn assert_timestamp_units(c: crate::TypeContract) {
+        for name in ["backend_start", "xact_start", "query_start", "state_change"] {
+            assert_eq!(
+                c.column(name).and_then(|column| column.unit),
+                Some(Unit::Microseconds)
+            );
+        }
+    }
 
     /// Client backend with every nullable field filled.
     fn v3_client(ts: i64, pid: i32) -> PgStatActivityV3 {
@@ -298,6 +307,7 @@ mod tests {
             c.column("backend_type").map(|col| col.nullable),
             Some(false)
         );
+        assert_timestamp_units(c);
     }
 
     #[test]
@@ -382,6 +392,7 @@ mod tests {
         assert_eq!(c.sort_key, ["ts", "pid"]);
         assert!(c.column("leader_pid").is_some());
         assert!(c.column("query_id").is_none());
+        assert_timestamp_units(c);
     }
 
     #[test]
@@ -425,6 +436,7 @@ mod tests {
         assert_eq!(c.sort_key, ["ts", "pid"]);
         assert!(c.column("leader_pid").is_none());
         assert!(c.column("query_id").is_none());
+        assert_timestamp_units(c);
     }
 
     #[test]
