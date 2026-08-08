@@ -4,8 +4,14 @@
     reason = "tokio-postgres pulls duplicate transitive versions outside this crate"
 )]
 
+pub mod activity;
+pub mod archiver;
+pub mod database;
+pub mod io;
 mod pool;
-mod settings;
+pub mod prepared_xacts;
+pub mod progress_vacuum;
+pub mod settings;
+pub mod wal;
 
 pub use pool::{MAX_AGE, Pool};
-pub use settings::{SettingsRow, collect as collect_settings, to_section as settings_to_section};
