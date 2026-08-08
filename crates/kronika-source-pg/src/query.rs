@@ -71,6 +71,21 @@ impl QueryStats {
         self.attempted_batch(elapsed);
     }
 
+    /// Account for one message returned by Simple Protocol.
+    pub fn received_simple(&mut self, message: &SimpleQueryMessage) {
+        let SimpleQueryMessage::Row(row) = message else {
+            return;
+        };
+        self.rows = self.rows.saturating_add(1);
+        let bytes = (0..row.len())
+            .filter_map(|index| row.get(index))
+            .map(str::len)
+            .fold(0_usize, usize::saturating_add);
+        self.application_payload_from_postgres_bytes = self
+            .application_payload_from_postgres_bytes
+            .saturating_add(usize_to_u64(bytes));
+    }
+
     fn received(&mut self, row: &Row) -> usize {
         let bytes = logical_row_bytes(row);
         self.rows = self.rows.saturating_add(1);

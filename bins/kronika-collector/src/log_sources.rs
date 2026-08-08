@@ -147,7 +147,7 @@ impl LogSources {
         }
         self.next_scan = Some(now + RESCAN);
         self.rescan_postgres(observe).await;
-        self.rescan_pgbouncer().await;
+        self.rescan_pgbouncer(observe).await;
     }
 
     async fn rescan_postgres(&mut self, observe: &mut (dyn FnMut(PgObservation) + Send)) {
@@ -240,10 +240,10 @@ impl LogSources {
         }
     }
 
-    async fn rescan_pgbouncer(&mut self) {
+    async fn rescan_pgbouncer(&mut self, observe: &mut (dyn FnMut(PgObservation) + Send)) {
         let mut wanted: Vec<PathBuf> = Vec::new();
         for target in &self.pgbouncer_dsns {
-            match settings::pgbouncer(target).await {
+            match settings::pgbouncer(target, observe).await {
                 Ok(server) => {
                     let Some(path) = server.log_path else {
                         log_source_absent(

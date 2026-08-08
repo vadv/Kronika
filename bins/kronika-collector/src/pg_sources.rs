@@ -6,6 +6,7 @@
 //! concurrent query task is created.
 
 mod buffering;
+pub(crate) mod telemetry;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -37,7 +38,7 @@ use kronika_source_pg::wal::{self, WalSnapshot};
 use kronika_source_pg::{Pool, Session};
 
 use crate::config::Config;
-use crate::logging::{LogLevel, duration_ms, field, log_event};
+use crate::logging::{LogLevel, field, log_event};
 use crate::scheduler::{DueSet, SourceKind};
 
 pub(crate) use buffering::push_pg_batch;
@@ -63,19 +64,23 @@ pub(crate) enum PgObservation {
 #[derive(Debug)]
 pub(crate) struct QueryObservation {
     pub(crate) query_name: &'static str,
+    pub(crate) connection: String,
     pub(crate) database: String,
     pub(crate) elapsed: Duration,
     pub(crate) stats: query::QueryStats,
     pub(crate) outcome: QueryOutcome,
+    pub(crate) error: Option<String>,
 }
 
 /// One failed connection attempt.
 #[derive(Debug)]
 pub(crate) struct ConnectionObservation {
+    pub(crate) connection: String,
     pub(crate) database: String,
     pub(crate) elapsed: Duration,
     pub(crate) timeout: bool,
     pub(crate) closed: bool,
+    pub(crate) error: String,
 }
 
 /// Stable query completion classification.
@@ -85,64 +90,6 @@ pub(crate) enum QueryOutcome {
     Error,
     Timeout,
     SinkError,
-}
-
-/// Emit the per-query diagnostic event while leaving interval aggregation to
-/// the collector's canonical telemetry owner.
-pub(crate) fn log_pg_observation(observation: PgObservation) {
-    match observation {
-        PgObservation::Query(observation) => {
-            let fetch_elapsed = observation.stats.fetch_elapsed(observation.elapsed);
-            let level = if fetch_elapsed > Duration::from_millis(500)
-                || observation.outcome != QueryOutcome::Success
-            {
-                LogLevel::Warn
-            } else {
-                LogLevel::Debug
-            };
-            let outcome = match observation.outcome {
-                QueryOutcome::Success => "success",
-                QueryOutcome::Error => "error",
-                QueryOutcome::Timeout => "timeout",
-                QueryOutcome::SinkError => "sink_error",
-            };
-            log_event(
-                level,
-                "pg_query",
-                &[
-                    field("query_name", observation.query_name),
-                    field("database", observation.database),
-                    field("outcome", outcome),
-                    field("elapsed_ms", duration_ms(observation.elapsed)),
-                    field("fetch_ms", duration_ms(fetch_elapsed)),
-                    field("rows", observation.stats.rows),
-                    field(
-                        "application_payload_from_postgres_bytes",
-                        observation.stats.application_payload_from_postgres_bytes,
-                    ),
-                    field(
-                        "application_payload_to_postgres_bytes",
-                        observation.stats.application_payload_to_postgres_bytes,
-                    ),
-                    field("batches", observation.stats.batches),
-                    field("encode_ms", duration_ms(observation.stats.encode_elapsed)),
-                    field("append_ms", duration_ms(observation.stats.append_elapsed)),
-                    field("encoded_bytes", observation.stats.encoded_bytes),
-                    field("wal_bytes_appended", observation.stats.wal_bytes_appended),
-                ],
-            );
-        }
-        PgObservation::Connection(observation) => log_event(
-            LogLevel::Warn,
-            "pg_connection_failure",
-            &[
-                field("database", observation.database),
-                field("elapsed_ms", duration_ms(observation.elapsed)),
-                field("timeout", observation.timeout),
-                field("closed", observation.closed),
-            ],
-        ),
-    }
 }
 
 struct QueryMeasurement<'a> {
@@ -159,28 +106,39 @@ impl QueryMeasurement<'_> {
     }
 
     fn success(self) {
-        self.finish(QueryOutcome::Success);
+        self.finish(QueryOutcome::Success, None);
     }
 
-    fn error(self) {
-        self.finish(QueryOutcome::Error);
+    fn error(self, error: &(dyn std::fmt::Display + '_)) {
+        self.finish(QueryOutcome::Error, Some(error.to_string()));
     }
 
     fn timeout(self) {
-        self.finish(QueryOutcome::Timeout);
+        self.finish(
+            QueryOutcome::Timeout,
+            Some(format!(
+                "query timed out after {} seconds",
+                QUERY_TIMEOUT.as_secs()
+            )),
+        );
     }
 
     fn sink_error(self) {
-        self.finish(QueryOutcome::SinkError);
+        self.finish(
+            QueryOutcome::SinkError,
+            Some("write query batch to the journal failed".to_owned()),
+        );
     }
 
-    fn finish(self, outcome: QueryOutcome) {
+    fn finish(self, outcome: QueryOutcome, error: Option<String>) {
         (self.observe)(PgObservation::Query(QueryObservation {
             query_name: self.query_name,
+            connection: self.database.clone(),
             database: self.database,
             elapsed: self.started.elapsed(),
             stats: self.stats,
             outcome,
+            error,
         }));
     }
 }
@@ -1499,10 +1457,12 @@ async fn open_session<'a>(
         Err(error) => {
             let timeout = error.is_timeout();
             observe(PgObservation::Connection(ConnectionObservation {
+                connection: database.clone(),
                 database,
                 elapsed: started.elapsed(),
                 timeout,
                 closed: false,
+                error: error.to_string(),
             }));
             if timeout {
                 Err(QueryFailure::Timeout)
@@ -1521,10 +1481,12 @@ fn session_for_generation<'a>(
     let database = pool.database_label().to_owned();
     let Some(session) = pool.session_for_generation(expected) else {
         observe(PgObservation::Connection(ConnectionObservation {
+            connection: database.clone(),
             database,
             elapsed: Duration::ZERO,
             timeout: false,
             closed: true,
+            error: "connection closed before the query started".to_owned(),
         }));
         return Err(QueryFailure::Connection);
     };
@@ -1541,7 +1503,7 @@ fn finish_query<T>(
             Ok(value)
         }
         Ok(Err(error)) => {
-            measured.error();
+            measured.error(&error);
             if postgres_connection_error(&error) {
                 Err(QueryFailure::Connection)
             } else {
@@ -1565,7 +1527,7 @@ fn finish_failed<T>(
             QueryCompletion::Complete
         }
         Ok(Err(error)) => {
-            measured.error();
+            measured.error(&error);
             if postgres_connection_error(&error) {
                 QueryCompletion::ConnectionFailed
             } else {
@@ -1601,16 +1563,16 @@ fn finish_batched_kind<E>(
             Ok(QueryCompletion::Complete)
         }
         Err(BatchError::PostgreSql(error)) => {
-            measured.error();
-            if error.is_closed() {
+            measured.error(&error);
+            if postgres_stream_connection_error(&error) {
                 pool.close();
                 Ok(QueryCompletion::ConnectionFailed)
             } else {
                 Ok(QueryCompletion::SourceFailed)
             }
         }
-        Err(BatchError::Decode(_error)) => {
-            measured.error();
+        Err(BatchError::Decode(error)) => {
+            measured.error(&error);
             Ok(QueryCompletion::SourceFailed)
         }
         Err(BatchError::Sink(error)) => {
@@ -1626,6 +1588,10 @@ fn finish_batched_kind<E>(
             Ok(QueryCompletion::TimedOut)
         }
     }
+}
+
+fn postgres_stream_connection_error(error: &tokio_postgres::Error) -> bool {
+    error.is_closed() || error.as_db_error().is_none()
 }
 
 fn postgres_connection_error(error: &anyhow::Error) -> bool {

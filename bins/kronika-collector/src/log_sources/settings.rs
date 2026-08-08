@@ -61,6 +61,10 @@ impl ConnectionTarget {
         &self.label
     }
 
+    pub(super) fn database_label(&self) -> &str {
+        self.config.get_dbname().unwrap_or("postgresql")
+    }
+
     pub(super) const fn source_index(&self) -> usize {
         self.source_index
     }
@@ -129,10 +133,7 @@ fn port_at(ports: &[u16], index: usize) -> u16 {
 }
 
 fn endpoint(user: Option<&str>, host: &str, port: u16) -> String {
-    user.map_or_else(
-        || format!("{host}:{port}"),
-        |user| format!("{user}@{host}:{port}"),
-    )
+    format!("{}@{host}:{port}", user.unwrap_or("default"))
 }
 
 fn tcp_label(host: &str) -> String {
@@ -192,19 +193,26 @@ pub(super) async fn postgres(
         Ok(Ok(connected)) => connected,
         Ok(Err(error)) => {
             observe(PgObservation::Connection(ConnectionObservation {
-                database: target.label().to_owned(),
+                connection: target.label().to_owned(),
+                database: target.database_label().to_owned(),
                 elapsed: connect_started.elapsed(),
                 timeout: false,
                 closed: false,
+                error: error.to_string(),
             }));
             return Err(error).context("connect to PostgreSQL");
         }
         Err(elapsed) => {
             observe(PgObservation::Connection(ConnectionObservation {
-                database: target.label().to_owned(),
+                connection: target.label().to_owned(),
+                database: target.database_label().to_owned(),
                 elapsed: connect_started.elapsed(),
                 timeout: true,
                 closed: false,
+                error: format!(
+                    "connect to PostgreSQL timed out after {} seconds",
+                    CONNECT_TIMEOUT.as_secs()
+                ),
             }));
             return Err(elapsed).context("connect to PostgreSQL timed out");
         }
@@ -227,6 +235,7 @@ pub(super) async fn postgres(
                 facts_started,
                 facts_stats,
                 QueryOutcome::Success,
+                None,
             );
             facts
         }
@@ -238,6 +247,7 @@ pub(super) async fn postgres(
                 facts_started,
                 facts_stats,
                 QueryOutcome::Error,
+                Some(format!("{error:#}")),
             );
             drop(client);
             driver.abort();
@@ -251,6 +261,10 @@ pub(super) async fn postgres(
                 facts_started,
                 facts_stats,
                 QueryOutcome::Timeout,
+                Some(format!(
+                    "query timed out after {} seconds",
+                    QUERY_TIMEOUT.as_secs()
+                )),
             );
             drop(client);
             driver.abort();
@@ -276,10 +290,11 @@ pub(super) async fn postgres(
                         started,
                         stats,
                         QueryOutcome::Success,
+                        None,
                     );
                     (Some(identifier), false)
                 }
-                Ok(Err(_error)) => {
+                Ok(Err(error)) => {
                     observe_query(
                         observe,
                         target,
@@ -287,6 +302,7 @@ pub(super) async fn postgres(
                         started,
                         stats,
                         QueryOutcome::Error,
+                        Some(format!("{error:#}")),
                     );
                     (None, true)
                 }
@@ -298,6 +314,10 @@ pub(super) async fn postgres(
                         started,
                         stats,
                         QueryOutcome::Timeout,
+                        Some(format!(
+                            "query timed out after {} seconds",
+                            QUERY_TIMEOUT.as_secs()
+                        )),
                     );
                     (None, true)
                 }
@@ -321,13 +341,16 @@ fn observe_query(
     started: Instant,
     stats: QueryStats,
     outcome: QueryOutcome,
+    error: Option<String>,
 ) {
     observe(PgObservation::Query(QueryObservation {
         query_name,
-        database: target.label().to_owned(),
+        connection: target.label().to_owned(),
+        database: target.database_label().to_owned(),
         elapsed: started.elapsed(),
         stats,
         outcome,
+        error,
     }));
 }
 
@@ -342,6 +365,7 @@ async fn read_log_facts(
     let mut stream = std::pin::pin!(stream);
     let mut row = None;
     while let Some(message) = stream.try_next().await? {
+        stats.received_simple(&message);
         if let SimpleQueryMessage::Row(found) = message {
             row = Some(found);
         }
@@ -367,6 +391,7 @@ async fn read_system_identifier(session: Session<'_>, stats: &mut QueryStats) ->
     let mut stream = std::pin::pin!(stream);
     let mut row = None;
     while let Some(message) = stream.try_next().await? {
+        stats.received_simple(&message);
         if let SimpleQueryMessage::Row(found) = message {
             row = Some(found);
         }
@@ -392,32 +417,111 @@ async fn read_system_identifier(session: Session<'_>, stats: &mut QueryStats) ->
 /// # Errors
 ///
 /// Returns an error when the connection cannot be made or the query fails.
-pub(super) async fn pgbouncer(target: &ConnectionTarget) -> Result<PgBouncerServer> {
-    let (client, connection) = target
-        .config
-        .connect(NoTls)
-        .await
-        .context("connect to PgBouncer")?;
-    let driver = tokio::spawn(connection);
-    let read = async {
-        // The admin console speaks the protocol but not the extended query
-        // path, so this is a simple query and the rows come back as text.
-        let rows = client
-            .simple_query("SHOW CONFIG")
-            .await
-            .context("read SHOW CONFIG from PgBouncer")?;
-        let mut settings = Settings::default();
-        for row in &rows {
-            if let SimpleQueryMessage::Row(row) = row {
-                settings.take(row.get("key"), row.get("value"));
-            }
+pub(super) async fn pgbouncer(
+    target: &ConnectionTarget,
+    observe: &mut (dyn FnMut(PgObservation) + Send),
+) -> Result<PgBouncerServer> {
+    let connect_started = Instant::now();
+    let connected = tokio::time::timeout(CONNECT_TIMEOUT, target.config.connect(NoTls)).await;
+    let (client, connection) = match connected {
+        Ok(Ok(connected)) => connected,
+        Ok(Err(error)) => {
+            observe(PgObservation::Connection(ConnectionObservation {
+                connection: target.label().to_owned(),
+                database: target.database_label().to_owned(),
+                elapsed: connect_started.elapsed(),
+                timeout: false,
+                closed: false,
+                error: error.to_string(),
+            }));
+            return Err(error).context("connect to PgBouncer");
         }
-        Ok::<_, anyhow::Error>(settings.finish())
-    }
+        Err(elapsed) => {
+            observe(PgObservation::Connection(ConnectionObservation {
+                connection: target.label().to_owned(),
+                database: target.database_label().to_owned(),
+                elapsed: connect_started.elapsed(),
+                timeout: true,
+                closed: false,
+                error: format!(
+                    "connect to PgBouncer timed out after {} seconds",
+                    CONNECT_TIMEOUT.as_secs()
+                ),
+            }));
+            return Err(elapsed).context("connect to PgBouncer timed out");
+        }
+    };
+    let driver = tokio::spawn(connection);
+    let mut stats = QueryStats::default();
+    let started = Instant::now();
+    let read = tokio::time::timeout(
+        QUERY_TIMEOUT,
+        read_pgbouncer_settings(Session::new(&client, 0), &mut stats),
+    )
     .await;
     drop(client);
     driver.abort();
-    read
+    match read {
+        Ok(Ok(settings)) => {
+            observe_query(
+                observe,
+                target,
+                "pgbouncer_show_config",
+                started,
+                stats,
+                QueryOutcome::Success,
+                None,
+            );
+            Ok(settings)
+        }
+        Ok(Err(error)) => {
+            observe_query(
+                observe,
+                target,
+                "pgbouncer_show_config",
+                started,
+                stats,
+                QueryOutcome::Error,
+                Some(format!("{error:#}")),
+            );
+            Err(error)
+        }
+        Err(elapsed) => {
+            observe_query(
+                observe,
+                target,
+                "pgbouncer_show_config",
+                started,
+                stats,
+                QueryOutcome::Timeout,
+                Some(format!(
+                    "query timed out after {} seconds",
+                    QUERY_TIMEOUT.as_secs()
+                )),
+            );
+            Err(elapsed).context("read SHOW CONFIG from PgBouncer timed out")
+        }
+    }
+}
+
+async fn read_pgbouncer_settings(
+    session: Session<'_>,
+    stats: &mut QueryStats,
+) -> Result<PgBouncerServer> {
+    // The admin console speaks the protocol but not the extended query path.
+    let stream = session
+        .simple_stream("SHOW CONFIG", stats)
+        .await
+        .context("read SHOW CONFIG from PgBouncer")?;
+    let mut stream = std::pin::pin!(stream);
+    let mut settings = Settings::default();
+    while let Some(message) = stream.try_next().await? {
+        stats.received_simple(&message);
+        if let SimpleQueryMessage::Row(row) = message {
+            settings.take(row.get("key"), row.get("value"));
+        }
+    }
+    Ok(settings.finish())
 }
 
 /// The one `SHOW CONFIG` key worth keeping.

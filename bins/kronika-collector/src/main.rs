@@ -37,7 +37,8 @@ use kronika_writer::{Journal, SectionBuffers};
 use log_sources::{LogRows, LogSources, push_log_sources};
 use logging::{LogLevel, field, log_event};
 use os_sources::{collect_os_sources, push_os_sources};
-use pg_sources::{PgBatch, PgSources, log_pg_observation, push_pg_batch};
+use pg_sources::telemetry::PgTelemetry;
+use pg_sources::{PgBatch, PgSources, push_pg_batch};
 use rotation::Rotation;
 use scheduler::{DueSet, Scheduler, SourceKind};
 use segments::{
@@ -145,6 +146,7 @@ async fn run_collector() -> Result<()> {
     let (writer_owner, mut journal) = start_up(&config)?;
     let mut logs = LogSources::open(&config).context("open the configured log files")?;
     let mut pg = PgSources::open(&config);
+    let mut pg_telemetry = PgTelemetry::new(Instant::now());
 
     let mut sigusr2 = signal(SignalKind::user_defined2()).context("install the SIGUSR2 handler")?;
     let mut sigterm = signal(SignalKind::terminate()).context("install the SIGTERM handler")?;
@@ -163,6 +165,7 @@ async fn run_collector() -> Result<()> {
     announce("ready");
 
     loop {
+        pg_telemetry.maybe_emit(Instant::now());
         let sleep = if first_timer_tick {
             first_timer_tick = false;
             Some(Duration::ZERO)
@@ -211,7 +214,8 @@ async fn run_collector() -> Result<()> {
             run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
             continue;
         }
-        logs.rescan(&mut log_pg_observation).await;
+        logs.rescan(&mut |observation| pg_telemetry.observe(observation))
+            .await;
         // PostgreSQL batches reach the WAL before the query stream fetches
         // another batch. They never ride on the incremental log windows.
         let pg_outcome = run_pg_collection_cycle(
@@ -222,6 +226,7 @@ async fn run_collector() -> Result<()> {
             &due,
             &mut segment,
             &mut sched,
+            &mut pg_telemetry,
         )
         .await?;
         written_this_tick.extend(pg_outcome.written);
@@ -243,6 +248,7 @@ async fn run_collector() -> Result<()> {
         stop_if_persistence_unhealthy(&journal)?;
         run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
     }
+    pg_telemetry.shutdown(Instant::now());
     Ok(())
 }
 
@@ -272,30 +278,35 @@ async fn run_pg_collection_cycle(
     due: &DueSet,
     segment: &mut SegmentState,
     sched: &mut Scheduler,
+    telemetry: &mut PgTelemetry,
 ) -> Result<PgCollectionOutcome> {
     let mut outcome = PgCollectionOutcome::default();
     let mut last_ts = None;
     let result = pg
-        .collect(due, &mut log_pg_observation, |batch, settings| {
-            let Some(ts) = collection_timestamp_after(last_ts) else {
-                return Err(PgAppendError::Rejected);
-            };
-            last_ts = Some(ts);
-            let admitted = append_pending_pg_batch(
-                journal,
-                writer_owner,
-                config,
-                &batch,
-                settings.as_deref().unwrap_or(&[]),
-                ts,
-                segment,
-                sched,
-            )?;
-            outcome.written.extend(admitted.written);
-            outcome.appended = true;
-            outcome.opening_os_collected |= admitted.opening_os_collected;
-            Ok(admitted.write)
-        })
+        .collect(
+            due,
+            &mut |observation| telemetry.observe(observation),
+            |batch, settings| {
+                let Some(ts) = collection_timestamp_after(last_ts) else {
+                    return Err(PgAppendError::Rejected);
+                };
+                last_ts = Some(ts);
+                let admitted = append_pending_pg_batch(
+                    journal,
+                    writer_owner,
+                    config,
+                    &batch,
+                    settings.as_deref().unwrap_or(&[]),
+                    ts,
+                    segment,
+                    sched,
+                )?;
+                outcome.written.extend(admitted.written);
+                outcome.appended = true;
+                outcome.opening_os_collected |= admitted.opening_os_collected;
+                Ok(admitted.write)
+            },
+        )
         .await;
     match result {
         Ok(()) | Err(PgAppendError::Rejected) => Ok(outcome),
