@@ -83,11 +83,29 @@ struct PostgresFacts {
     line_prefix: Option<String>,
 }
 
+/// One configured server and the facts that survive a failed refresh.
+#[derive(Debug)]
+struct PostgresTarget {
+    connection: settings::ConnectionTarget,
+    system_identifier: Option<u64>,
+    last_log: Option<(PathBuf, String)>,
+}
+
+impl PostgresTarget {
+    const fn new(connection: settings::ConnectionTarget) -> Self {
+        Self {
+            connection,
+            system_identifier: None,
+            last_log: None,
+        }
+    }
+}
+
 /// The configured logs and where each of them was left off.
 #[derive(Debug)]
 pub(crate) struct LogSources {
     offsets: Offsets,
-    pg_dsns: Vec<settings::ConnectionTarget>,
+    pg_dsns: Vec<PostgresTarget>,
     pg_logs: Vec<String>,
     pgbouncer_dsns: Vec<settings::ConnectionTarget>,
     pgbouncer_logs: Vec<String>,
@@ -107,7 +125,10 @@ impl LogSources {
         let offsets = Offsets::load(&config.out_dir)?;
         Ok(Self {
             offsets,
-            pg_dsns: parse_connections("postgresql", &config.pg_dsns),
+            pg_dsns: parse_connections("postgresql", &config.pg_dsns)
+                .into_iter()
+                .map(PostgresTarget::new)
+                .collect(),
             pg_logs: config.pg_logs.clone(),
             pgbouncer_dsns: parse_connections("pgbouncer", &config.pgbouncer_dsns),
             pgbouncer_logs: config.pgbouncer_logs.clone(),
@@ -131,32 +152,67 @@ impl LogSources {
 
     async fn rescan_postgres(&mut self, observe: &mut (dyn FnMut(PgObservation) + Send)) {
         let mut wanted: BTreeMap<PathBuf, PostgresFacts> = BTreeMap::new();
-        for target in &self.pg_dsns {
-            match settings::postgres(target, observe).await {
+        for target in &mut self.pg_dsns {
+            match settings::postgres(
+                &target.connection,
+                target.system_identifier,
+                observe,
+            )
+            .await
+            {
                 Ok(server) => {
+                    if let Some(identifier) = server.system_identifier {
+                        target.system_identifier = Some(identifier);
+                    }
+                    if server.identity_unavailable {
+                        log_source_identity_unavailable(
+                            target.connection.label(),
+                            target.connection.source_index(),
+                        );
+                    }
                     let Some(path) = server.log_path else {
+                        target.last_log = None;
                         log_source_absent(
-                            target.label(),
-                            target.source_index(),
+                            target.connection.label(),
+                            target.connection.source_index(),
                             "logging_collector is off, so there is no log file",
                         );
                         continue;
                     };
                     let path = PathBuf::from(path);
                     if !path.is_file() {
-                        log_source_unreadable(&path, target.label(), target.source_index());
+                        target.last_log = None;
+                        log_source_unreadable(
+                            &path,
+                            target.connection.label(),
+                            target.connection.source_index(),
+                        );
                         continue;
                     }
+                    target.last_log = Some((path.clone(), server.line_prefix.clone()));
                     wanted.insert(
                         path,
                         PostgresFacts {
-                            system_identifier: Some(server.system_identifier),
+                            system_identifier: target.system_identifier,
                             line_prefix: Some(server.line_prefix),
                         },
                     );
                 }
                 Err(_error) => {
-                    log_source_unreachable("postgresql", target.label(), target.source_index());
+                    log_source_unreachable(
+                        "postgresql",
+                        target.connection.label(),
+                        target.connection.source_index(),
+                    );
+                    if let Some((path, line_prefix)) = &target.last_log {
+                        wanted.insert(
+                            path.clone(),
+                            PostgresFacts {
+                                system_identifier: target.system_identifier,
+                                line_prefix: Some(line_prefix.clone()),
+                            },
+                        );
+                    }
                 }
             }
         }
@@ -473,6 +529,19 @@ fn log_source_unreachable(kind: &str, connection: &str, source_index: usize) {
             field("connection", connection),
             field("source_index", source_index),
             field("reason", "connection_or_discovery_failed"),
+        ],
+    );
+}
+
+fn log_source_identity_unavailable(connection: &str, source_index: usize) {
+    log_event(
+        LogLevel::Warn,
+        "log_source_identity_unavailable",
+        &[
+            field("kind", "postgresql"),
+            field("connection", connection),
+            field("source_index", source_index),
+            field("reason", "pg_control_system_query_failed"),
         ],
     );
 }
