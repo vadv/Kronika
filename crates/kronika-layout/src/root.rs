@@ -51,6 +51,10 @@ pub const WRITER_OWNER_LOCK_NAME: &str = ".kronika-writer.owner.lock";
 pub const DAMAGED_JOURNAL_NAME: &str = "active.wal.damaged";
 /// Permanent process-ownership lock for index publication and GC.
 pub const INDEX_OWNER_LOCK_NAME: &str = ".kronika-index.owner.lock";
+/// Where the collector keeps the offset each followed log file was read to.
+pub const LOG_OFFSETS_NAME: &str = "log.offsets";
+/// The temporary the offsets file is renamed from.
+pub const LOG_OFFSETS_TEMP_NAME: &str = "log.tmp";
 const HARD_MAX_VISITED_ENTRIES: usize = 4_000_000;
 const HARD_MAX_ENTRIES_PER_DAY: usize = 1_000_000;
 const HARD_MAX_SEGMENTS: usize = 2_000_000;

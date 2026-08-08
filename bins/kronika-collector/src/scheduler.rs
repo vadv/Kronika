@@ -21,16 +21,18 @@ pub(crate) enum SourceKind {
     OsProcessStatus,
     OsCgroup,
     OsCgroupMapping,
+    Logs,
 }
 
 /// All source kinds, in collection order.
-pub(crate) const ALL_SOURCES: [SourceKind; 6] = [
+pub(crate) const ALL_SOURCES: [SourceKind; 7] = [
     SourceKind::OsCore,
     SourceKind::OsMountTopo,
     SourceKind::OsProcesses,
     SourceKind::OsProcessStatus,
     SourceKind::OsCgroup,
     SourceKind::OsCgroupMapping,
+    SourceKind::Logs,
 ];
 
 /// Per-source intervals, in seconds.
@@ -46,6 +48,7 @@ pub(crate) struct Intervals {
     pub os_process_status: u64,
     pub os_cgroup: u64,
     pub os_cgroup_mapping: u64,
+    pub logs: u64,
 }
 
 impl Default for Intervals {
@@ -57,6 +60,7 @@ impl Default for Intervals {
             os_process_status: 30,
             os_cgroup: 10,
             os_cgroup_mapping: 30,
+            logs: 10,
         }
     }
 }
@@ -70,6 +74,7 @@ impl Intervals {
             SourceKind::OsProcessStatus => self.os_process_status,
             SourceKind::OsCgroup => self.os_cgroup,
             SourceKind::OsCgroupMapping => self.os_cgroup_mapping,
+            SourceKind::Logs => self.logs,
         }
     }
 }
@@ -96,6 +101,14 @@ impl DueSet {
     /// scheduler ignore their own deadline too.
     pub(crate) const fn forced(&self) -> bool {
         self.forced
+    }
+
+    /// A non-forced set for one incremental log batch.
+    pub(crate) fn logs() -> Self {
+        Self {
+            kinds: vec![SourceKind::Logs],
+            forced: false,
+        }
     }
 
     /// A set with every source due (forced tick).

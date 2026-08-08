@@ -1,8 +1,10 @@
 //! Driving the run: letting it collect, damaging its journal, restarting it.
 
+use super::table_rows;
 use crate::BddWorld;
 use crate::collector::Run;
 use anyhow::{Context as _, Result};
+use cucumber::gherkin::Step;
 use cucumber::when;
 use std::time::Duration;
 
@@ -40,5 +42,35 @@ fn restart_over_the_same_root(world: &mut BddWorld, seconds: u64) -> Result<()> 
     let mut run = Run::spawn(root, &world.env)?;
     run.run_for_and_stop(Duration::from_secs(seconds))?;
     world.run = Some(run);
+    Ok(())
+}
+
+#[when("these statements run against PostgreSQL")]
+fn statements_run(world: &mut BddWorld, step: &Step) -> Result<()> {
+    let postgres = world
+        .postgres
+        .as_ref()
+        .context("a PostgreSQL was started")?;
+    for row in table_rows(step, &["statement"])? {
+        let [statement] = row.as_slice() else {
+            anyhow::bail!("a statement row holds one statement, got {row:?}");
+        };
+        postgres.statement(statement)?;
+    }
+    Ok(())
+}
+
+#[when("these clients connect through PgBouncer")]
+fn clients_connect(world: &mut BddWorld, step: &Step) -> Result<()> {
+    let pgbouncer = world
+        .pgbouncer
+        .as_ref()
+        .context("a PgBouncer was started")?;
+    for row in table_rows(step, &["database"])? {
+        let [database] = row.as_slice() else {
+            anyhow::bail!("a client row holds one database, got {row:?}");
+        };
+        pgbouncer.connect_to(database)?;
+    }
     Ok(())
 }

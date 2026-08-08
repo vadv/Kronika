@@ -32,6 +32,41 @@ pub(crate) struct Config {
     pub(crate) journal_max_bytes: u64,
     /// Storage-rotation target for the whole output tree.
     pub(crate) retention: Option<RetentionConfig>,
+    /// Where to ask `PostgreSQL` which log it writes and who it is.
+    pub(crate) pg_dsns: Vec<String>,
+    /// `PostgreSQL` logs named outright, as paths or globs.
+    pub(crate) pg_logs: Vec<String>,
+    /// Where to ask `PgBouncer` which log it writes and who it is.
+    pub(crate) pgbouncer_dsns: Vec<String>,
+    /// `PgBouncer` logs named outright, as paths or globs.
+    pub(crate) pgbouncer_logs: Vec<String>,
+}
+
+/// Read a `;`-separated list, or an empty one when the variable is unset.
+fn env_list(key: &str) -> Result<Vec<String>> {
+    match std::env::var(key) {
+        Ok(raw) => parse_env_list(key, &raw),
+        Err(_unset) => Ok(Vec::new()),
+    }
+}
+
+/// Parse one list variable's value. An element that is blank after trimming is
+/// a typo, not an empty list, so it stops the daemon.
+///
+/// # Errors
+///
+/// Returns an error naming the variable when one of its elements is blank.
+fn parse_env_list(key: &str, raw: &str) -> Result<Vec<String>> {
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    raw.split(';')
+        .map(|element| {
+            let value = element.trim();
+            anyhow::ensure!(!value.is_empty(), "{key} has an empty element");
+            Ok(value.to_owned())
+        })
+        .collect()
 }
 
 /// Read a numeric variable, or refuse to start naming what was given.
@@ -172,6 +207,10 @@ impl Config {
             segment_max_age_secs,
             journal_max_bytes,
             retention: Some(retention),
+            pg_dsns: env_list("KRONIKA_PG_DSNS")?,
+            pg_logs: env_list("KRONIKA_PG_LOGS")?,
+            pgbouncer_dsns: env_list("KRONIKA_PGBOUNCER_DSNS")?,
+            pgbouncer_logs: env_list("KRONIKA_PGBOUNCER_LOGS")?,
         })
     }
 }
@@ -235,6 +274,7 @@ fn intervals_from_env() -> Result<Intervals> {
             "KRONIKA_OS_CGROUP_MAPPING_INTERVAL_S",
             defaults.os_cgroup_mapping,
         )?,
+        logs: env_u64("KRONIKA_LOG_INTERVAL_S", defaults.logs)?,
     })
 }
 

@@ -6,6 +6,13 @@
 ARG BDD_BASE=docker.io/library/rust:1.96.0-slim-bookworm
 
 FROM ${BDD_BASE} AS deps
+# The log scenarios run a real PostgreSQL and a real PgBouncer, so they are
+# installed here, in the layer keyed on the manifests, and not rebuilt on a
+# source change. The PostgreSQL package also creates the `postgres` user the
+# server tools require.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends postgresql pgbouncer \
+    && rm -rf /var/lib/apt/lists/*
 # .cargo/config.toml pins musl for release binaries; the image has no musl std,
 # so everything here builds for the host gnu target instead.
 ENV CARGO_BUILD_TARGET=x86_64-unknown-linux-gnu
@@ -18,6 +25,7 @@ COPY crates/kronika-registry/Cargo.toml crates/kronika-registry/
 COPY crates/kronika-writer/Cargo.toml crates/kronika-writer/
 COPY crates/kronika-store/Cargo.toml crates/kronika-store/
 COPY crates/kronika-source-os/Cargo.toml crates/kronika-source-os/
+COPY crates/kronika-source-log/Cargo.toml crates/kronika-source-log/
 COPY crates/kronika-bdd/Cargo.toml crates/kronika-bdd/
 COPY bins/kronika-collector/Cargo.toml bins/kronika-collector/
 COPY bins/kronika-demo/Cargo.toml bins/kronika-demo/

@@ -19,6 +19,7 @@
 mod buffering;
 mod capacity;
 mod config;
+mod log_sources;
 mod logging;
 mod os_sources;
 mod rotation;
@@ -31,6 +32,7 @@ use config::Config;
 use kronika_layout::{DataRoot, LayoutLimits, TemporaryKind, WriterOwner};
 use kronika_source_os::{OsScope, ProcFs, detect_container};
 use kronika_writer::{Journal, SectionBuffers};
+use log_sources::{LogRows, LogSources, push_log_sources};
 use logging::{LogLevel, field, log_event};
 use os_sources::{collect_os_sources, push_os_sources};
 use rotation::Rotation;
@@ -138,6 +140,7 @@ fn main() -> Result<()> {
 async fn run_collector() -> Result<()> {
     let config = Config::from_env()?;
     let (writer_owner, mut journal) = start_up(&config)?;
+    let mut logs = LogSources::open(&config).context("open the configured log files")?;
 
     let mut sigusr2 = signal(SignalKind::user_defined2()).context("install the SIGUSR2 handler")?;
     let mut sigterm = signal(SignalKind::terminate()).context("install the SIGTERM handler")?;
@@ -204,6 +207,7 @@ async fn run_collector() -> Result<()> {
             run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
             continue;
         }
+        logs.rescan().await;
         written_this_tick.extend(run_collection_cycle(
             &mut journal,
             &writer_owner,
@@ -211,6 +215,7 @@ async fn run_collector() -> Result<()> {
             &due,
             &mut segment,
             &mut sched,
+            &mut logs,
         )?);
         stop_if_persistence_unhealthy(&journal)?;
         run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
@@ -218,9 +223,13 @@ async fn run_collector() -> Result<()> {
     Ok(())
 }
 
-/// One collection cycle: read the due sources, append a window, and write when
-/// the segment is full. Source, encoding, and recoverable append failures skip
-/// the window; segment-close failures terminate the daemon.
+/// One collection cycle: read the due sources, append bounded windows, and
+/// write when the segment is full. Log input is acknowledged only after its
+/// exact window reaches the WAL.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one cycle needs the journal, the owner, the config, the due set, and the state each source keeps between ticks"
+)]
 fn run_collection_cycle(
     journal: &mut Journal,
     writer_owner: &WriterOwner,
@@ -228,73 +237,200 @@ fn run_collection_cycle(
     due: &DueSet,
     segment: &mut SegmentState,
     sched: &mut Scheduler,
+    logs: &mut LogSources,
 ) -> Result<Vec<PathBuf>> {
-    let first = collect_and_append_window(journal, writer_owner, config, due, segment, sched)?;
-    let mut written = first.written;
-    if first.recollect {
-        let recollection_due = sched.recollection_due(due, Instant::now());
-        let second = collect_and_append_window(
+    let Some(parse_now) = collection_timestamp() else {
+        return Ok(Vec::new());
+    };
+    let mut first_window = true;
+    let mut last_ts = None;
+    let mut written = Vec::new();
+    let mut appended = false;
+    let completed = logs.collect(due, parse_now, |rows| {
+        let batch_due = if first_window {
+            first_window = false;
+            due.clone()
+        } else {
+            DueSet::logs()
+        };
+        let Some(ts) = collection_timestamp_after(last_ts) else {
+            return Ok(false);
+        };
+        last_ts = Some(ts);
+        let outcome = append_pending_window(
             journal,
             writer_owner,
             config,
-            &recollection_due,
+            &batch_due,
+            rows,
+            ts,
             segment,
             sched,
         )?;
-        anyhow::ensure!(
-            !second.recollect,
-            "a fresh segment unexpectedly requested another pre-append close"
-        );
-        written.extend(second.written);
+        written.extend(outcome.written);
+        appended |= outcome.appended;
+        Ok(outcome.accepted)
+    })?;
+
+    // No log batch carried the original due set, so collect the OS snapshot as
+    // its own ordinary window.
+    if first_window {
+        let Some(ts) = collection_timestamp_after(last_ts) else {
+            return Ok(written);
+        };
+        let outcome = append_pending_window(
+            journal,
+            writer_owner,
+            config,
+            due,
+            &LogRows::default(),
+            ts,
+            segment,
+            sched,
+        )?;
+        written.extend(outcome.written);
+        appended |= outcome.appended;
+    }
+
+    // A forced cycle closes once, after all of its incremental log batches.
+    if completed && appended && due.forced() && !segment.is_empty() {
+        let dest = close_open_segment(journal, writer_owner, segment, "forced")?;
+        sched.mark_segment_opened();
+        announce(&format!("wrote {} reason=forced", dest.display()));
+        written.push(dest);
     }
     Ok(written)
 }
 
 #[derive(Default)]
-struct CollectionOutcome {
+struct PendingWindowOutcome {
     written: Vec<PathBuf>,
-    recollect: bool,
+    accepted: bool,
+    appended: bool,
 }
 
-fn collect_and_append_window(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a retained window needs the journal, owner, limits, due sources, timestamp, and segment state"
+)]
+fn append_pending_window(
     journal: &mut Journal,
     writer_owner: &WriterOwner,
     config: &Config,
     due: &DueSet,
+    log_rows: &LogRows,
+    ts: i64,
     segment: &mut SegmentState,
     sched: &mut Scheduler,
-) -> Result<CollectionOutcome> {
-    let Some(ts) = collection_timestamp() else {
-        return Ok(CollectionOutcome::default());
-    };
+) -> Result<PendingWindowOutcome> {
+    let mut outcome = PendingWindowOutcome::default();
+    let mut attempt_due = due_for_window(segment, due, sched);
+    for attempt in 0..2 {
+        let buffers = match buffer_window(segment, &attempt_due, log_rows, ts) {
+            Ok(Some(buffers)) => buffers,
+            Ok(None) => {
+                outcome.accepted = true;
+                return Ok(outcome);
+            }
+            Err(BufferFailure) => return Ok(outcome),
+        };
+        let flushed = match encode_window(buffers, segment.interner()) {
+            Ok(flushed) => flushed,
+            Err(err) => {
+                log_event(
+                    LogLevel::Error,
+                    "window_encode_failure",
+                    &[field("error", format!("{err:#}"))],
+                );
+                return Ok(outcome);
+            }
+        };
+        match append_window_and_maybe_close(
+            journal,
+            writer_owner,
+            config,
+            segment,
+            ts,
+            false,
+            &flushed,
+        ) {
+            Ok(finished) => {
+                let retry = finished
+                    .iter()
+                    .any(|(_, reason)| matches!(*reason, "format-limit" | "journal-full"));
+                for (dest, reason) in finished {
+                    sched.mark_segment_opened();
+                    announce(&format!("wrote {} reason={reason}", dest.display()));
+                    outcome.written.push(dest);
+                }
+                if retry {
+                    anyhow::ensure!(
+                        attempt == 0,
+                        "a fresh segment unexpectedly requested another pre-append close"
+                    );
+                    // Rebuild from owned logical rows. Section buffers and
+                    // dictionary ids belong to the segment that just closed.
+                    attempt_due = sched.recollection_due(due, Instant::now());
+                    continue;
+                }
+                outcome.accepted = true;
+                outcome.appended = true;
+                return Ok(outcome);
+            }
+            Err(failure) => {
+                let (close_failed, err) = failure.into_parts();
+                log_event(
+                    LogLevel::Error,
+                    "window_append_failure",
+                    &[field("error", format!("{err:#}"))],
+                );
+                if close_failed {
+                    return Err(err.context("close the segment for the collection window"));
+                }
+                return Ok(outcome);
+            }
+        }
+    }
+    anyhow::bail!("a retained collection window exhausted its append attempts")
+}
+
+fn due_for_window(segment: &SegmentState, due: &DueSet, sched: &mut Scheduler) -> DueSet {
+    if segment.is_empty() {
+        sched.recollection_due(due, Instant::now())
+    } else {
+        due.clone()
+    }
+}
+
+#[derive(Debug)]
+struct BufferFailure;
+
+/// Read the selected OS sources and add the retained log rows to one window.
+fn buffer_window(
+    segment: &mut SegmentState,
+    due: &DueSet,
+    log_rows: &LogRows,
+    ts: i64,
+) -> std::result::Result<Option<SectionBuffers>, BufferFailure> {
     let fs = ProcFs::from_env();
     let in_container = detect_container(&fs);
     let mut buffers = SectionBuffers::new();
 
-    let instance = if segment.is_empty() {
-        match collect_instance() {
-            Ok(instance) => Some(instance),
-            Err(_logged) => return Ok(CollectionOutcome::default()),
-        }
-    } else {
-        None
-    };
-
-    if let Some(facts) = instance.as_ref()
-        && let Err(err) = push_instance_metadata(
+    if segment.is_empty() {
+        let facts = collect_instance().map_err(|err| {
+            log_buffer_failure(&err);
+            BufferFailure
+        })?;
+        if let Err(err) = push_instance_metadata(
             &mut buffers,
             segment.interner_mut(),
-            facts,
+            &facts,
             in_container,
             ts,
-        )
-    {
-        log_event(
-            LogLevel::Error,
-            "window_buffer_failure",
-            &[field("error", format!("{err:#}"))],
-        );
-        return Ok(CollectionOutcome::default());
+        ) {
+            log_buffer_failure(&err);
+            return Err(BufferFailure);
+        }
     }
 
     let os = collect_os_sources(
@@ -305,68 +441,24 @@ fn collect_and_append_window(
         in_container,
         due,
     );
-
-    if let Err(err) = push_os_sources(&mut buffers, &os) {
-        log_event(
-            LogLevel::Error,
-            "window_buffer_failure",
-            &[field("error", format!("{err:#}"))],
-        );
-        return Ok(CollectionOutcome::default());
+    if let Err(err) = push_os_sources(&mut buffers, &os)
+        .and_then(|()| push_log_sources(&mut buffers, segment.interner_mut(), log_rows))
+    {
+        log_buffer_failure(&err);
+        return Err(BufferFailure);
     }
     if buffers.is_empty() {
-        return Ok(CollectionOutcome::default());
+        return Ok(None);
     }
+    Ok(Some(buffers))
+}
 
-    let flushed = match encode_window(buffers, segment.interner()) {
-        Ok(flushed) => flushed,
-        Err(err) => {
-            log_event(
-                LogLevel::Error,
-                "window_encode_failure",
-                &[field("error", format!("{err:#}"))],
-            );
-            return Ok(CollectionOutcome::default());
-        }
-    };
-    match append_window_and_maybe_close(
-        journal,
-        writer_owner,
-        config,
-        segment,
-        ts,
-        due.forced(),
-        &flushed,
-    ) {
-        Ok(finished) => {
-            let recollect = finished
-                .iter()
-                .any(|(_, reason)| matches!(*reason, "format-limit" | "journal-full"));
-            let mut dests = Vec::with_capacity(finished.len());
-            for (dest, reason) in finished {
-                sched.mark_segment_opened();
-                announce(&format!("wrote {} reason={reason}", dest.display()));
-                dests.push(dest);
-            }
-            Ok(CollectionOutcome {
-                written: dests,
-                recollect,
-            })
-        }
-        Err(failure) => {
-            let (close_failed, err) = failure.into_parts();
-            log_event(
-                LogLevel::Error,
-                "window_append_failure",
-                &[field("error", format!("{err:#}"))],
-            );
-            if close_failed {
-                Err(err.context("close the segment for the collection window"))
-            } else {
-                Ok(CollectionOutcome::default())
-            }
-        }
-    }
+fn log_buffer_failure(err: &anyhow::Error) {
+    log_event(
+        LogLevel::Error,
+        "window_buffer_failure",
+        &[field("error", format!("{err:#}"))],
+    );
 }
 
 fn collection_timestamp() -> Option<i64> {
@@ -381,6 +473,13 @@ fn collection_timestamp() -> Option<i64> {
             None
         }
     }
+}
+
+fn collection_timestamp_after(previous: Option<i64>) -> Option<i64> {
+    let now = collection_timestamp()?;
+    previous.map_or(Some(now), |previous| {
+        previous.checked_add(1).map(|next| now.max(next))
+    })
 }
 
 fn unix_now_us() -> Result<i64> {

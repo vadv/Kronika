@@ -43,6 +43,47 @@ source interval of `0` reads on every timer cycle.
 | `KRONIKA_OS_PROCESS_STATUS_INTERVAL_S` | 30 | `1_101`. |
 | `KRONIKA_OS_CGROUP_INTERVAL_S` | 10 | `1_201`–`1_204`. |
 | `KRONIKA_OS_CGROUP_MAPPING_INTERVAL_S` | 30 | `1_200`. |
+| `KRONIKA_LOG_INTERVAL_S` | 10 | `2_001`–`2_007`, `2_100`. |
+
+### Which logs to follow
+
+A source is named one of two ways. A DSN, and the server itself says which
+file it writes, in which format, and who it is. A path or glob, and the file is
+read for what it holds while nothing is known about the writer. Both may be
+given at once; a file reached both ways is followed once, with what the server
+said attached to it.
+
+Every variable holds a `;`-separated list, so a host running several clusters
+or several poolers names them all in one place. Nothing is followed unless one
+of the four is set.
+
+| Variable | Default | Meaning |
+| --- | ---: | --- |
+| `KRONIKA_PG_DSNS` | unset | Where to ask `PostgreSQL` for `pg_current_logfile()`, `log_line_prefix` and its `system_identifier`. |
+| `KRONIKA_PG_LOGS` | unset | `PostgreSQL` logs named outright. An entry with `*` or `?` in its last component is a pattern matched against that directory. |
+| `KRONIKA_PGBOUNCER_DSNS` | unset | Where to ask `PgBouncer` for `SHOW CONFIG`, which carries `logfile`. The account needs to be in `stats_users`; no administrative right beyond that. |
+| `KRONIKA_PGBOUNCER_LOGS` | unset | `PgBouncer` logs named outright, paths or patterns. |
+
+A log file's size is set by someone else's software, so it is read through a
+fixed buffer and never held whole; a file that grows faster than the collector
+reads it is read at 4 MiB per tick until it catches up.
+
+Every way a source can be missing gets the same treatment: the server is down,
+`logging_collector` is off, `logfile` is unset, the file is not there yet, a
+new instance appeared. One line in the log, and the whole set is worked out
+again five minutes later. The collector keeps running either way, because its
+first job is the operating system.
+
+A DSN that reaches a server on another host reports a path that does not exist
+here. That is one line naming the path, and the hint it carries is the answer:
+mount the directory and name the file in `KRONIKA_PG_LOGS`.
+
+What ends up in a row depends on how the source was named. From a DSN, a
+`PostgreSQL` row carries the `system_identifier` that survives restarts and
+renames. From a path, that column is null, the format is decided by reading the
+first record, and a `stderr` prefix cannot be parsed at all, so a record keeps
+its time and its text and nothing else. Every row carries the file it was read
+from.
 
 ### Other settings
 

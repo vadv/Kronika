@@ -132,6 +132,8 @@ pub enum Unit {
     Hertz,
     /// Megabits per second.
     MegabitsPerSecond,
+    /// Megabytes per second, as `PostgreSQL` prints autovacuum I/O rates.
+    MegabytesPerSecond,
     /// A percentage, 0 to 100.
     Percent,
     /// Degrees Celsius.

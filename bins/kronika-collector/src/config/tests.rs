@@ -78,3 +78,28 @@ fn surrounding_whitespace_is_not_a_refusal() {
         30
     );
 }
+
+#[test]
+fn an_empty_element_in_a_list_is_a_refusal_naming_the_variable() {
+    let error = super::parse_env_list("KRONIKA_PG_LOGS", "/var/log/a.log;;/var/log/b.log")
+        .expect_err("a refusal");
+
+    assert_eq!(error.to_string(), "KRONIKA_PG_LOGS has an empty element");
+}
+
+#[test]
+fn a_list_is_split_on_semicolons_and_trimmed() {
+    let entries = super::parse_env_list("KRONIKA_PG_LOGS", " /var/log/a.log ; /var/log/b.log ")
+        .expect("a list");
+
+    assert_eq!(entries, ["/var/log/a.log", "/var/log/b.log"]);
+}
+
+#[test]
+fn a_blank_list_is_empty_rather_than_one_blank_element() {
+    assert!(
+        super::parse_env_list("KRONIKA_PGBOUNCER_LOGS", "   ")
+            .expect("a list")
+            .is_empty()
+    );
+}

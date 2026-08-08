@@ -52,6 +52,8 @@ pub mod os_stat;
 pub mod os_topology;
 pub mod os_vmstat;
 pub mod pg_locks;
+pub mod pg_log;
+pub mod pgbouncer_events;
 
 mod bounds;
 mod columns;

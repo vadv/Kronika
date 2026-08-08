@@ -16,7 +16,8 @@ use super::entry::{EntryFileType, EntryParent, ForeignEntryReason, PathIdentity,
 use super::fsops::stat_no_follow;
 use super::scan::ParsedLeaf;
 use super::{
-    ACTIVE_JOURNAL_NAME, DataRoot, FileIdentity, INDEX_OWNER_LOCK_NAME, WRITER_OWNER_LOCK_NAME,
+    ACTIVE_JOURNAL_NAME, DataRoot, FileIdentity, INDEX_OWNER_LOCK_NAME, LOG_OFFSETS_NAME,
+    LOG_OFFSETS_TEMP_NAME, WRITER_OWNER_LOCK_NAME,
 };
 
 pub(super) const fn validate_limit(
@@ -38,7 +39,11 @@ pub(super) const fn validate_limit(
 pub(super) fn is_control_name(name: &str) -> bool {
     matches!(
         name,
-        ACTIVE_JOURNAL_NAME | WRITER_OWNER_LOCK_NAME | INDEX_OWNER_LOCK_NAME
+        ACTIVE_JOURNAL_NAME
+            | WRITER_OWNER_LOCK_NAME
+            | INDEX_OWNER_LOCK_NAME
+            | LOG_OFFSETS_NAME
+            | LOG_OFFSETS_TEMP_NAME
     )
 }
 

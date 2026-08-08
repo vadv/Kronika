@@ -117,6 +117,11 @@ impl SegmentState {
             None => None,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) const fn force_format_limit(&mut self) {
+        self.admission.descriptors = MAX_SECTION_ROWS;
+    }
 }
 
 /// Why the open segment must write now, or `None` to keep collecting.
