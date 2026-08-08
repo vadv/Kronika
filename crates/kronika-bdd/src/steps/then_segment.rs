@@ -421,6 +421,7 @@ fn peak_rss(world: &mut BddWorld, limit_mb: u64) -> Result<()> {
 }
 
 #[then("some segment records these log events")]
+#[then("some segment records these rows")]
 fn log_events_recorded(world: &mut BddWorld, step: &Step) -> Result<()> {
     let wanted = table_rows(step, &["type_id", "column", "value"])?;
     for expected in &wanted {
