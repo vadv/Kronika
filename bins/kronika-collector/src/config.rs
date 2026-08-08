@@ -275,6 +275,8 @@ fn intervals_from_env() -> Result<Intervals> {
             defaults.os_cgroup_mapping,
         )?,
         logs: env_u64("KRONIKA_LOG_INTERVAL_S", defaults.logs)?,
+        pg: env_u64("KRONIKA_PG_INTERVAL_S", defaults.pg)?,
+        pg_relations: env_u64("KRONIKA_PG_RELATIONS_INTERVAL_S", defaults.pg_relations)?,
     })
 }
 

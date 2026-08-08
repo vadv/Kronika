@@ -22,10 +22,12 @@ pub(crate) enum SourceKind {
     OsCgroup,
     OsCgroupMapping,
     Logs,
+    Pg,
+    PgRelations,
 }
 
 /// All source kinds, in collection order.
-pub(crate) const ALL_SOURCES: [SourceKind; 7] = [
+pub(crate) const ALL_SOURCES: [SourceKind; 9] = [
     SourceKind::OsCore,
     SourceKind::OsMountTopo,
     SourceKind::OsProcesses,
@@ -33,6 +35,8 @@ pub(crate) const ALL_SOURCES: [SourceKind; 7] = [
     SourceKind::OsCgroup,
     SourceKind::OsCgroupMapping,
     SourceKind::Logs,
+    SourceKind::Pg,
+    SourceKind::PgRelations,
 ];
 
 /// Per-source intervals, in seconds.
@@ -49,6 +53,8 @@ pub(crate) struct Intervals {
     pub os_cgroup: u64,
     pub os_cgroup_mapping: u64,
     pub logs: u64,
+    pub pg: u64,
+    pub pg_relations: u64,
 }
 
 impl Default for Intervals {
@@ -61,6 +67,8 @@ impl Default for Intervals {
             os_cgroup: 10,
             os_cgroup_mapping: 30,
             logs: 10,
+            pg: 30,
+            pg_relations: 300,
         }
     }
 }
@@ -75,6 +83,8 @@ impl Intervals {
             SourceKind::OsCgroup => self.os_cgroup,
             SourceKind::OsCgroupMapping => self.os_cgroup_mapping,
             SourceKind::Logs => self.logs,
+            SourceKind::Pg => self.pg,
+            SourceKind::PgRelations => self.pg_relations,
         }
     }
 }

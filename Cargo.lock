@@ -1085,6 +1085,7 @@ dependencies = [
  "kronika-registry",
  "kronika-source-log",
  "kronika-source-os",
+ "kronika-source-pg",
  "kronika-writer",
  "rustix",
  "tempfile",

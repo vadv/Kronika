@@ -22,6 +22,7 @@ mod config;
 mod log_sources;
 mod logging;
 mod os_sources;
+mod pg_sources;
 mod rotation;
 mod scheduler;
 mod segments;
@@ -35,6 +36,7 @@ use kronika_writer::{Journal, SectionBuffers};
 use log_sources::{LogRows, LogSources, push_log_sources};
 use logging::{LogLevel, field, log_event};
 use os_sources::{collect_os_sources, push_os_sources};
+use pg_sources::{PgRows, PgSources, push_pg_sources};
 use rotation::Rotation;
 use scheduler::{DueSet, Scheduler};
 use segments::{
@@ -141,6 +143,7 @@ async fn run_collector() -> Result<()> {
     let config = Config::from_env()?;
     let (writer_owner, mut journal) = start_up(&config)?;
     let mut logs = LogSources::open(&config).context("open the configured log files")?;
+    let mut pg = PgSources::open(&config);
 
     let mut sigusr2 = signal(SignalKind::user_defined2()).context("install the SIGUSR2 handler")?;
     let mut sigterm = signal(SignalKind::terminate()).context("install the SIGTERM handler")?;
@@ -208,6 +211,9 @@ async fn run_collector() -> Result<()> {
             continue;
         }
         logs.rescan().await;
+        // The server is asked before the window is built: it is the one source
+        // that waits on the network, and the window build stays synchronous.
+        let pg_rows = pg.collect(&due).await;
         written_this_tick.extend(run_collection_cycle(
             &mut journal,
             &writer_owner,
@@ -216,6 +222,8 @@ async fn run_collector() -> Result<()> {
             &mut segment,
             &mut sched,
             &mut logs,
+            &pg_rows,
+            pg.last_settings(),
         )?);
         stop_if_persistence_unhealthy(&journal)?;
         run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
@@ -238,6 +246,8 @@ fn run_collection_cycle(
     segment: &mut SegmentState,
     sched: &mut Scheduler,
     logs: &mut LogSources,
+    pg_rows: &PgRows,
+    pg_settings: &[kronika_source_pg::settings::SettingsRow],
 ) -> Result<Vec<PathBuf>> {
     let Some(parse_now) = collection_timestamp() else {
         return Ok(Vec::new());
@@ -263,6 +273,8 @@ fn run_collection_cycle(
             config,
             &batch_due,
             rows,
+            pg_rows,
+            pg_settings,
             ts,
             segment,
             sched,
@@ -284,6 +296,8 @@ fn run_collection_cycle(
             config,
             due,
             &LogRows::default(),
+            pg_rows,
+            pg_settings,
             ts,
             segment,
             sched,
@@ -319,6 +333,8 @@ fn append_pending_window(
     config: &Config,
     due: &DueSet,
     log_rows: &LogRows,
+    pg_rows: &PgRows,
+    pg_settings: &[kronika_source_pg::settings::SettingsRow],
     ts: i64,
     segment: &mut SegmentState,
     sched: &mut Scheduler,
@@ -326,7 +342,8 @@ fn append_pending_window(
     let mut outcome = PendingWindowOutcome::default();
     let mut attempt_due = due_for_window(segment, due, sched);
     for attempt in 0..2 {
-        let buffers = match buffer_window(segment, &attempt_due, log_rows, ts) {
+        let buffers = match buffer_window(segment, &attempt_due, log_rows, pg_rows, pg_settings, ts)
+        {
             Ok(Some(buffers)) => buffers,
             Ok(None) => {
                 outcome.accepted = true;
@@ -410,11 +427,16 @@ fn buffer_window(
     segment: &mut SegmentState,
     due: &DueSet,
     log_rows: &LogRows,
+    pg_rows: &PgRows,
+    pg_settings: &[kronika_source_pg::settings::SettingsRow],
     ts: i64,
 ) -> std::result::Result<Option<SectionBuffers>, BufferFailure> {
     let fs = ProcFs::from_env();
     let in_container = detect_container(&fs);
     let mut buffers = SectionBuffers::new();
+    // Every segment carries the server's running configuration, so a segment
+    // read on its own says what the numbers in it were produced under.
+    let opening = segment.is_empty();
 
     if segment.is_empty() {
         let facts = collect_instance().map_err(|err| {
@@ -441,8 +463,10 @@ fn buffer_window(
         in_container,
         due,
     );
+    let settings = if opening { pg_settings } else { &[] };
     if let Err(err) = push_os_sources(&mut buffers, &os)
         .and_then(|()| push_log_sources(&mut buffers, segment.interner_mut(), log_rows))
+        .and_then(|()| push_pg_sources(&mut buffers, segment.interner_mut(), pg_rows, settings))
     {
         log_buffer_failure(&err);
         return Err(BufferFailure);

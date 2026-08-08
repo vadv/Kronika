@@ -9,6 +9,7 @@ use kronika_writer::{Journal, JournalConfig, SectionBuffers};
 
 use crate::config::Config;
 use crate::log_sources::{LogRows, PgBouncerBatch};
+use crate::pg_sources::PgRows;
 use crate::scheduler::{DueSet, Intervals};
 use crate::segments::{SegmentState, append_window_and_maybe_close, encode_window};
 use crate::{append_pending_window, scheduler::Scheduler};
@@ -125,6 +126,8 @@ fn assert_retained_batch_moves_to_fresh_segment(pressure: Pressure) {
         &config,
         &DueSet::logs(),
         &log_rows(),
+        &PgRows::default(),
+        &[],
         200,
         &mut segment,
         &mut scheduler,

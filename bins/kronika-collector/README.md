@@ -44,6 +44,29 @@ source interval of `0` reads on every timer cycle.
 | `KRONIKA_OS_CGROUP_INTERVAL_S` | 10 | `1_201`–`1_204`. |
 | `KRONIKA_OS_CGROUP_MAPPING_INTERVAL_S` | 30 | `1_200`. |
 | `KRONIKA_LOG_INTERVAL_S` | 10 | `2_001`–`2_007`, `2_100`. |
+| `KRONIKA_PG_INTERVAL_S` | 30 | `1_001`–`1_009`, `1_012`, `1_019`. |
+| `KRONIKA_PG_RELATIONS_INTERVAL_S` | 300 | `1_013`, `1_014`. |
+
+### Which server to ask for metrics
+
+The first entry of `KRONIKA_PG_DSNS` is also where the `PostgreSQL` metric
+sections come from. A metric row carries no column naming the server that
+produced it, so a second DSN is followed for its log only, and starting with
+more than one is one line in the log saying which was chosen.
+
+Per-table and per-index statistics exist only inside the database that produced
+them, so the collector opens one connection per database and replaces every
+connection once it reaches an hour. The database list is read on each of those
+cycles: a database created since the last one starts being collected, one that
+was dropped stops.
+
+`pg_stat_statements` and `pg_store_plans` are collected where they are
+installed, in whichever release is installed; a server without them simply
+produces nothing for those sections. A read takes the costliest 500 plans and
+up to a mebibyte of plan text.
+
+Every segment carries a full `pg_settings` snapshot, so a segment read on its
+own says what the numbers in it were produced under.
 
 ### Which logs to follow
 
