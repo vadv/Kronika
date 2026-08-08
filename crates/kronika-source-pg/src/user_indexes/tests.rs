@@ -72,6 +72,17 @@ fn every_query_carries_the_marker_and_the_views_it_needs() {
 }
 
 #[test]
+fn every_query_bounds_an_individual_index_definition() {
+    for version in [UserIndexesVersion::V1, UserIndexesVersion::V2] {
+        let sql = user_indexes_query(version);
+        assert!(
+            sql.contains("left(pg_get_indexdef(si.indexrelid), 65536) AS indexdef"),
+            "{sql}"
+        );
+    }
+}
+
+#[test]
 fn to_v2_maps_every_column_and_interns_the_names() {
     let r = to_v2(&sample_row(), fake_intern).expect("infallible intern");
     assert_eq!(r.ts.0, 2_000);

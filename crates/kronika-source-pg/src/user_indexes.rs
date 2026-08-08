@@ -8,9 +8,11 @@
 
 use kronika_registry::pg_stat_user_indexes::{PgStatUserIndexesV1, PgStatUserIndexesV2};
 use kronika_registry::{StrId, Ts};
-use tokio_postgres::Client;
+use tokio_postgres::types::Type;
 
+use crate::Session;
 use crate::databases::Database;
+use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
 
 /// Prefix a query literal with the kronika marker (SQL-transparency rule).
 macro_rules! marked {
@@ -54,7 +56,7 @@ const COMMON_COLUMNS: &str = "si.indexrelid, si.relid, \
      coalesce(pg_relation_size(si.indexrelid), 0) AS main_fork_bytes, \
      i.indisunique, i.indisprimary, i.indisvalid, i.indisexclusion, i.indisready, \
      am.amname::text AS amname, \
-     pg_get_indexdef(si.indexrelid) AS indexdef, \
+     left(pg_get_indexdef(si.indexrelid), 65536) AS indexdef, \
      coalesce(sio.idx_blks_read, 0) AS idx_blks_read, \
      coalesce(sio.idx_blks_hit, 0) AS idx_blks_hit, \
      (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us";
@@ -251,18 +253,24 @@ fn row_from_pg(
 ///
 /// # Errors
 /// Returns the [`tokio_postgres::Error`] if the query fails.
-pub async fn collect_user_indexes(
-    client: &Client,
+pub async fn collect_user_indexes<E>(
+    session: Session<'_>,
     database: &Database,
     major: u32,
-) -> Result<(UserIndexesVersion, Vec<UserIndexesRow>), tokio_postgres::Error> {
+    stats: &mut QueryStats,
+    sink: impl FnMut(Batch<UserIndexesRow>) -> Result<BatchWrite, E>,
+) -> Result<(), BatchError<E>> {
     let version = user_indexes_version(major);
-    let rows = client.query(&user_indexes_query(version), &[]).await?;
-    let parsed = rows
-        .iter()
-        .map(|row| row_from_pg(row, database, version))
-        .collect();
-    Ok((version, parsed))
+    query::read_batched(
+        session,
+        &user_indexes_query(version),
+        std::iter::empty::<(String, Type)>(),
+        0,
+        stats,
+        |row| row_from_pg(row, database, version),
+        sink,
+    )
+    .await
 }
 
 #[cfg(test)]

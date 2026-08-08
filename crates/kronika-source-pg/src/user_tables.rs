@@ -11,9 +11,11 @@ use kronika_registry::pg_stat_user_tables::{
     PgStatUserTablesV1, PgStatUserTablesV2, PgStatUserTablesV3, PgStatUserTablesV4,
 };
 use kronika_registry::{StrId, Ts};
-use tokio_postgres::Client;
+use tokio_postgres::types::Type;
 
+use crate::Session;
 use crate::databases::Database;
+use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
 
 /// Prefix a query literal with the kronika marker (SQL-transparency rule).
 macro_rules! marked {
@@ -556,18 +558,24 @@ fn row_from_pg(
 ///
 /// # Errors
 /// Returns the [`tokio_postgres::Error`] if the query fails.
-pub async fn collect_user_tables(
-    client: &Client,
+pub async fn collect_user_tables<E>(
+    session: Session<'_>,
     database: &Database,
     major: u32,
-) -> Result<(UserTablesVersion, Vec<UserTablesRow>), tokio_postgres::Error> {
+    stats: &mut QueryStats,
+    sink: impl FnMut(Batch<UserTablesRow>) -> Result<BatchWrite, E>,
+) -> Result<(), BatchError<E>> {
     let version = user_tables_version(major);
-    let rows = client.query(&user_tables_query(version), &[]).await?;
-    let parsed = rows
-        .iter()
-        .map(|row| row_from_pg(row, database, version))
-        .collect();
-    Ok((version, parsed))
+    query::read_batched(
+        session,
+        &user_tables_query(version),
+        std::iter::empty::<(String, Type)>(),
+        0,
+        stats,
+        |row| row_from_pg(row, database, version),
+        sink,
+    )
+    .await
 }
 
 #[cfg(test)]

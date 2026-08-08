@@ -6,7 +6,10 @@
 //! release rather than the server major.
 
 use anyhow::{Context as _, Result};
-use tokio_postgres::Client;
+use tokio_postgres::types::Type;
+
+use crate::Session;
+use crate::query::{self, QueryStats};
 
 /// Prefix a query literal with the kronika marker (SQL-transparency rule).
 macro_rules! marked {
@@ -54,19 +57,22 @@ fn digits(text: &str) -> Option<u32> {
 /// # Errors
 ///
 /// Returns the error of the query.
-pub async fn installed(client: &Client, name: &str) -> Result<Option<ExtensionVersion>> {
-    let row = client
-        .query_opt(
-            marked!("SELECT extversion FROM pg_extension WHERE extname = $1"),
-            &[&name],
-        )
-        .await
-        .with_context(|| format!("look for the {name} extension"))?;
-    Ok(row
-        .as_ref()
-        .map(|row| row.get::<_, String>("extversion"))
-        .as_deref()
-        .and_then(parse_version))
+pub async fn installed(
+    session: Session<'_>,
+    name: &str,
+    stats: &mut QueryStats,
+) -> Result<Option<ExtensionVersion>> {
+    let row = query::read_optional(
+        session,
+        marked!("SELECT extversion FROM pg_extension WHERE extname = $1"),
+        std::iter::once((name.to_owned(), Type::TEXT)),
+        name.len(),
+        stats,
+        |row| row.get::<_, String>("extversion"),
+    )
+    .await
+    .with_context(|| format!("look for the {name} extension"))?;
+    Ok(row.as_deref().and_then(parse_version))
 }
 
 #[cfg(test)]

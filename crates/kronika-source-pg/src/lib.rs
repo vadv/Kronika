@@ -13,6 +13,7 @@ pub mod io;
 mod pool;
 pub mod prepared_xacts;
 pub mod progress_vacuum;
+pub mod query;
 pub mod settings;
 pub mod statements;
 pub mod store_plans;
@@ -20,4 +21,5 @@ pub mod user_indexes;
 pub mod user_tables;
 pub mod wal;
 
-pub use pool::{MAX_AGE, Pool};
+pub use pool::{CONNECT_TIMEOUT, ConnectError, Pool};
+pub use query::Session;

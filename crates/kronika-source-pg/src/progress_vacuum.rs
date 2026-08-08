@@ -6,7 +6,10 @@
 
 use kronika_registry::pg_stat_progress_vacuum::PgStatProgressVacuum;
 use kronika_registry::{StrId, Ts};
-use tokio_postgres::Client;
+use tokio_postgres::types::Type;
+
+use crate::Session;
+use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
 
 /// SQL transparency marker for collector queries.
 macro_rules! marked {
@@ -182,17 +185,27 @@ fn row_from_pg(row: &tokio_postgres::Row, version: ProgressVacuumVersion) -> Pro
     }
 }
 
-/// Collect every in-progress vacuum, or an empty vector when none runs.
+/// Stream every in-progress vacuum in bounded batches.
 ///
 /// # Errors
-/// Returns `PostgreSQL` query errors.
-pub async fn collect_progress_vacuum(
-    client: &Client,
+/// Returns the `PostgreSQL` stream error or the batch sink error.
+pub async fn collect_progress_vacuum<E>(
+    session: Session<'_>,
     major: u32,
-) -> Result<Vec<ProgressVacuumRow>, tokio_postgres::Error> {
+    stats: &mut QueryStats,
+    sink: impl FnMut(Batch<ProgressVacuumRow>) -> Result<BatchWrite, E>,
+) -> Result<(), BatchError<E>> {
     let version = progress_vacuum_version(major);
-    let rows = client.query(progress_vacuum_query(version), &[]).await?;
-    Ok(rows.iter().map(|row| row_from_pg(row, version)).collect())
+    query::read_batched(
+        session,
+        progress_vacuum_query(version),
+        std::iter::empty::<(String, Type)>(),
+        0,
+        stats,
+        |row| row_from_pg(row, version),
+        sink,
+    )
+    .await
 }
 
 #[cfg(test)]

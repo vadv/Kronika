@@ -8,9 +8,10 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context as _, Result};
-use tokio_postgres::Client;
+use tokio_postgres::types::Type;
 
-use crate::Pool;
+use crate::query::QueryStats;
+use crate::{Pool, Session, query};
 
 /// Prefix a query literal with the kronika marker (SQL-transparency rule).
 macro_rules! marked {
@@ -41,34 +42,33 @@ pub struct Database {
 /// # Errors
 ///
 /// Returns the error of the query.
-pub async fn enumerate(client: &Client) -> Result<Vec<Database>> {
-    let rows = client
-        .query(
-            marked!(
-                "SELECT oid, datname::text AS datname \
-                 FROM pg_database \
-                 WHERE datallowconn AND NOT datistemplate \
-                 ORDER BY datname"
-            ),
-            &[],
-        )
-        .await
-        .context("list the databases to collect")?;
-    Ok(rows
-        .iter()
-        .map(|row| Database {
+pub async fn enumerate(session: Session<'_>, stats: &mut QueryStats) -> Result<Vec<Database>> {
+    query::read_all(
+        session,
+        marked!(
+            "SELECT oid, datname::text AS datname \
+             FROM pg_database \
+             WHERE datallowconn AND NOT datistemplate \
+             ORDER BY datname"
+        ),
+        std::iter::empty::<(String, Type)>(),
+        0,
+        stats,
+        |row| Database {
             oid: row.get("oid"),
             name: row.get("datname"),
-        })
-        .collect())
+        },
+    )
+    .await
+    .context("list the databases to collect")
 }
 
 /// Bring `pools` in line with `found`, using `primary` as the connection
 /// template.
 ///
 /// A database that appeared gets a pool; one that disappeared has its pool
-/// dropped, which closes the connection. Pools that stay keep their age, so a
-/// tick does not restart every connection.
+/// dropped, which closes the connection. Pools that stay keep their healthy
+/// session, so a tick does not restart every connection.
 pub fn refresh(pools: &mut BTreeMap<String, Pool>, found: &[Database], primary: &Pool) {
     pools.retain(|name, _pool| found.iter().any(|database| &database.name == name));
     for database in found {

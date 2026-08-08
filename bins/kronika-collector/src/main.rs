@@ -32,13 +32,14 @@ use anyhow::{Context, Result};
 use config::Config;
 use kronika_layout::{DataRoot, LayoutLimits, TemporaryKind, WriterOwner};
 use kronika_source_os::{OsScope, ProcFs, detect_container};
+use kronika_source_pg::query::BatchWrite;
 use kronika_writer::{Journal, SectionBuffers};
 use log_sources::{LogRows, LogSources, push_log_sources};
 use logging::{LogLevel, field, log_event};
 use os_sources::{collect_os_sources, push_os_sources};
-use pg_sources::{PgRows, PgSources, push_pg_sources};
+use pg_sources::{PgBatch, PgSources, log_pg_observation, push_pg_batch};
 use rotation::Rotation;
-use scheduler::{DueSet, Scheduler};
+use scheduler::{DueSet, Scheduler, SourceKind};
 use segments::{
     SegmentState, append_window_and_maybe_close, close_open_segment, encode_window,
     open_collector_journal,
@@ -210,25 +211,257 @@ async fn run_collector() -> Result<()> {
             run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
             continue;
         }
-        logs.rescan().await;
-        // The server is asked before the window is built: it is the one source
-        // that waits on the network, and the window build stays synchronous.
-        let pg_rows = pg.collect(&due).await;
-        written_this_tick.extend(run_collection_cycle(
+        logs.rescan(&mut log_pg_observation).await;
+        // PostgreSQL batches reach the WAL before the query stream fetches
+        // another batch. They never ride on the incremental log windows.
+        let pg_outcome = run_pg_collection_cycle(
+            &mut pg,
             &mut journal,
             &writer_owner,
             &config,
             &due,
             &mut segment,
             &mut sched,
+        )
+        .await?;
+        written_this_tick.extend(pg_outcome.written);
+        let collection_due = if pg_outcome.opening_os_collected && !segment.is_empty() {
+            due.without(SourceKind::OsMountTopo)
+        } else {
+            due.clone()
+        };
+        written_this_tick.extend(run_collection_cycle(
+            &mut journal,
+            &writer_owner,
+            &config,
+            &collection_due,
+            &mut segment,
+            &mut sched,
             &mut logs,
-            &pg_rows,
-            pg.last_settings(),
+            pg_outcome.appended,
         )?);
         stop_if_persistence_unhealthy(&journal)?;
         run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
     }
     Ok(())
+}
+
+#[derive(Default)]
+struct PgCollectionOutcome {
+    written: Vec<PathBuf>,
+    appended: bool,
+    opening_os_collected: bool,
+}
+
+#[derive(Debug)]
+enum PgAppendError {
+    Rejected,
+    Fatal(anyhow::Error),
+}
+
+/// Stream due `PostgreSQL` sources into independently admitted WAL parts.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the PostgreSQL stream needs the same durable segment state as ordinary collection"
+)]
+async fn run_pg_collection_cycle(
+    pg: &mut PgSources,
+    journal: &mut Journal,
+    writer_owner: &WriterOwner,
+    config: &Config,
+    due: &DueSet,
+    segment: &mut SegmentState,
+    sched: &mut Scheduler,
+) -> Result<PgCollectionOutcome> {
+    let mut outcome = PgCollectionOutcome::default();
+    let mut last_ts = None;
+    let result = pg
+        .collect(due, &mut log_pg_observation, |batch, settings| {
+            let Some(ts) = collection_timestamp_after(last_ts) else {
+                return Err(PgAppendError::Rejected);
+            };
+            last_ts = Some(ts);
+            let admitted = append_pending_pg_batch(
+                journal,
+                writer_owner,
+                config,
+                &batch,
+                settings.as_deref().unwrap_or(&[]),
+                ts,
+                segment,
+                sched,
+            )?;
+            outcome.written.extend(admitted.written);
+            outcome.appended = true;
+            outcome.opening_os_collected |= admitted.opening_os_collected;
+            Ok(admitted.write)
+        })
+        .await;
+    match result {
+        Ok(()) | Err(PgAppendError::Rejected) => Ok(outcome),
+        Err(PgAppendError::Fatal(error)) => Err(error),
+    }
+}
+
+struct PgPendingOutcome {
+    written: Vec<PathBuf>,
+    write: BatchWrite,
+    opening_os_collected: bool,
+}
+
+/// Retain one `PostgreSQL` batch through a pre-append close and encode it once
+/// more against the new segment dictionary before the stream may advance.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a retained batch needs the journal, owner, limits, timestamp, and segment state"
+)]
+fn append_pending_pg_batch(
+    journal: &mut Journal,
+    writer_owner: &WriterOwner,
+    config: &Config,
+    batch: &PgBatch,
+    opening_settings: &[kronika_source_pg::settings::SettingsRow],
+    ts: i64,
+    segment: &mut SegmentState,
+    sched: &mut Scheduler,
+) -> std::result::Result<PgPendingOutcome, PgAppendError> {
+    let mut written = Vec::new();
+    let mut encode_elapsed = Duration::ZERO;
+    let mut append_elapsed = Duration::ZERO;
+    for attempt in 0..2 {
+        let opening_due = segment
+            .is_empty()
+            .then(|| sched.segment_open_due(Instant::now()));
+        let includes_settings = matches!(batch, PgBatch::Settings(_))
+            || (segment.needs_pg_settings() && !opening_settings.is_empty());
+        let buffers = buffer_pg_batch(segment, batch, opening_settings, opening_due.as_ref(), ts)
+            .map_err(|()| PgAppendError::Rejected)?;
+        let encode_started = Instant::now();
+        let flushed = match encode_window(buffers, segment.interner()) {
+            Ok(flushed) => flushed,
+            Err(err) => {
+                log_event(
+                    LogLevel::Error,
+                    "window_encode_failure",
+                    &[field("error", format!("{err:#}"))],
+                );
+                return Err(PgAppendError::Rejected);
+            }
+        };
+        encode_elapsed = encode_elapsed.saturating_add(encode_started.elapsed());
+        let encoded_bytes = u64::try_from(flushed.summary.part_bytes).unwrap_or(u64::MAX);
+        let append_started = Instant::now();
+        let finished = match append_window_and_maybe_close(
+            journal,
+            writer_owner,
+            config,
+            segment,
+            ts,
+            false,
+            &flushed,
+        ) {
+            Ok(finished) => finished,
+            Err(failure) => {
+                let (close_failed, err) = failure.into_parts();
+                log_event(
+                    LogLevel::Error,
+                    "window_append_failure",
+                    &[field("error", format!("{err:#}"))],
+                );
+                return if close_failed {
+                    Err(PgAppendError::Fatal(
+                        err.context("close the segment for a PostgreSQL batch"),
+                    ))
+                } else {
+                    Err(PgAppendError::Rejected)
+                };
+            }
+        };
+        append_elapsed = append_elapsed.saturating_add(append_started.elapsed());
+        let retry = finished
+            .iter()
+            .any(|(_, reason)| matches!(*reason, "format-limit" | "journal-full"));
+        for (dest, reason) in finished {
+            sched.mark_segment_opened();
+            announce(&format!("wrote {} reason={reason}", dest.display()));
+            written.push(dest);
+        }
+        if retry {
+            if attempt != 0 {
+                return Err(PgAppendError::Fatal(anyhow::anyhow!(
+                    "a fresh segment unexpectedly requested another pre-append close"
+                )));
+            }
+            continue;
+        }
+        if includes_settings && !segment.is_empty() {
+            segment.mark_pg_settings_present();
+        }
+        let frame_bytes = encoded_bytes
+            .saturating_add(u64::try_from(kronika_format::FRAME_HEADER_LEN).unwrap_or(u64::MAX));
+        return Ok(PgPendingOutcome {
+            written,
+            opening_os_collected: opening_due.is_some(),
+            write: BatchWrite {
+                encode_elapsed,
+                append_elapsed,
+                encoded_bytes,
+                wal_bytes_appended: frame_bytes,
+            },
+        });
+    }
+    Err(PgAppendError::Fatal(anyhow::anyhow!(
+        "a retained PostgreSQL batch exhausted its append attempts"
+    )))
+}
+
+fn buffer_pg_batch(
+    segment: &mut SegmentState,
+    batch: &PgBatch,
+    opening_settings: &[kronika_source_pg::settings::SettingsRow],
+    opening_due: Option<&DueSet>,
+    ts: i64,
+) -> std::result::Result<SectionBuffers, ()> {
+    let fs = ProcFs::from_env();
+    let in_container = detect_container(&fs);
+    let mut buffers = SectionBuffers::new();
+    if segment.is_empty() {
+        let facts = collect_instance().map_err(|err| {
+            log_buffer_failure(&err);
+        })?;
+        push_instance_metadata(
+            &mut buffers,
+            segment.interner_mut(),
+            &facts,
+            in_container,
+            ts,
+        )
+        .map_err(|err| {
+            log_buffer_failure(&err);
+        })?;
+    }
+    let settings = if segment.needs_pg_settings() {
+        opening_settings
+    } else {
+        &[]
+    };
+    if let Some(due) = opening_due {
+        let os = collect_os_sources(
+            &fs,
+            segment.interner_mut(),
+            OsScope::Host.as_u8(),
+            ts,
+            in_container,
+            due,
+        );
+        push_os_sources(&mut buffers, &os).map_err(|err| {
+            log_buffer_failure(&err);
+        })?;
+    }
+    push_pg_batch(&mut buffers, segment.interner_mut(), batch, settings).map_err(|err| {
+        log_buffer_failure(&err);
+    })?;
+    Ok(buffers)
 }
 
 /// One collection cycle: read the due sources, append bounded windows, and
@@ -246,8 +479,7 @@ fn run_collection_cycle(
     segment: &mut SegmentState,
     sched: &mut Scheduler,
     logs: &mut LogSources,
-    pg_rows: &PgRows,
-    pg_settings: &[kronika_source_pg::settings::SettingsRow],
+    already_appended: bool,
 ) -> Result<Vec<PathBuf>> {
     let Some(parse_now) = collection_timestamp() else {
         return Ok(Vec::new());
@@ -255,7 +487,7 @@ fn run_collection_cycle(
     let mut first_window = true;
     let mut last_ts = None;
     let mut written = Vec::new();
-    let mut appended = false;
+    let mut appended = already_appended;
     let completed = logs.collect(due, parse_now, |rows| {
         let batch_due = if first_window {
             first_window = false;
@@ -273,8 +505,6 @@ fn run_collection_cycle(
             config,
             &batch_due,
             rows,
-            pg_rows,
-            pg_settings,
             ts,
             segment,
             sched,
@@ -296,8 +526,6 @@ fn run_collection_cycle(
             config,
             due,
             &LogRows::default(),
-            pg_rows,
-            pg_settings,
             ts,
             segment,
             sched,
@@ -333,8 +561,6 @@ fn append_pending_window(
     config: &Config,
     due: &DueSet,
     log_rows: &LogRows,
-    pg_rows: &PgRows,
-    pg_settings: &[kronika_source_pg::settings::SettingsRow],
     ts: i64,
     segment: &mut SegmentState,
     sched: &mut Scheduler,
@@ -342,8 +568,7 @@ fn append_pending_window(
     let mut outcome = PendingWindowOutcome::default();
     let mut attempt_due = due_for_window(segment, due, sched);
     for attempt in 0..2 {
-        let buffers = match buffer_window(segment, &attempt_due, log_rows, pg_rows, pg_settings, ts)
-        {
+        let buffers = match buffer_window(segment, &attempt_due, log_rows, ts) {
             Ok(Some(buffers)) => buffers,
             Ok(None) => {
                 outcome.accepted = true;
@@ -427,17 +652,11 @@ fn buffer_window(
     segment: &mut SegmentState,
     due: &DueSet,
     log_rows: &LogRows,
-    pg_rows: &PgRows,
-    pg_settings: &[kronika_source_pg::settings::SettingsRow],
     ts: i64,
 ) -> std::result::Result<Option<SectionBuffers>, BufferFailure> {
     let fs = ProcFs::from_env();
     let in_container = detect_container(&fs);
     let mut buffers = SectionBuffers::new();
-    // Every segment carries the server's running configuration, so a segment
-    // read on its own says what the numbers in it were produced under.
-    let opening = segment.is_empty();
-
     if segment.is_empty() {
         let facts = collect_instance().map_err(|err| {
             log_buffer_failure(&err);
@@ -463,10 +682,8 @@ fn buffer_window(
         in_container,
         due,
     );
-    let settings = if opening { pg_settings } else { &[] };
     if let Err(err) = push_os_sources(&mut buffers, &os)
         .and_then(|()| push_log_sources(&mut buffers, segment.interner_mut(), log_rows))
-        .and_then(|()| push_pg_sources(&mut buffers, segment.interner_mut(), pg_rows, settings))
     {
         log_buffer_failure(&err);
         return Err(BufferFailure);

@@ -14,9 +14,11 @@ use kronika_registry::pg_stat_statements::{
     PgStatStatementsV5, PgStatStatementsV6,
 };
 use kronika_registry::{StrId, Ts};
-use tokio_postgres::Client;
+use tokio_postgres::types::Type;
 
+use crate::Session;
 use crate::extension::ExtensionVersion;
+use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
 
 /// Prefix a query literal with the kronika marker (SQL-transparency rule).
 macro_rules! marked {
@@ -692,12 +694,22 @@ fn row_from_pg(row: &tokio_postgres::Row, version: StatementsVersion) -> Stateme
 ///
 /// # Errors
 /// Returns the [`tokio_postgres::Error`] if the query fails.
-pub async fn collect_statements(
-    client: &Client,
+pub async fn collect_statements<E>(
+    session: Session<'_>,
     version: StatementsVersion,
-) -> Result<Vec<StatementsRow>, tokio_postgres::Error> {
-    let rows = client.query(&statements_query(version), &[]).await?;
-    Ok(rows.iter().map(|row| row_from_pg(row, version)).collect())
+    stats: &mut QueryStats,
+    sink: impl FnMut(Batch<StatementsRow>) -> Result<BatchWrite, E>,
+) -> Result<(), BatchError<E>> {
+    query::read_batched(
+        session,
+        &statements_query(version),
+        std::iter::empty::<(String, Type)>(),
+        0,
+        stats,
+        |row| row_from_pg(row, version),
+        sink,
+    )
+    .await
 }
 
 #[cfg(test)]

@@ -121,6 +121,18 @@ impl DueSet {
         }
     }
 
+    pub(crate) fn without(&self, excluded: SourceKind) -> Self {
+        Self {
+            kinds: self
+                .kinds
+                .iter()
+                .copied()
+                .filter(|kind| *kind != excluded)
+                .collect(),
+            forced: self.forced,
+        }
+    }
+
     /// A set with every source due (forced tick).
     fn all() -> Self {
         Self {
@@ -187,6 +199,11 @@ impl Scheduler {
             kinds,
             forced: due.forced,
         }
+    }
+
+    /// Record and return only the service sources required by a new segment.
+    pub(crate) fn segment_open_due(&mut self, now: Instant) -> DueSet {
+        self.recollection_due(&DueSet::default(), now)
     }
 
     /// Time until the next positive source interval elapses.

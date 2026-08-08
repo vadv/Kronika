@@ -12,9 +12,11 @@
 
 use kronika_registry::pg_store_plans::{PgStorePlansOsscV1, PgStorePlansVadvV1};
 use kronika_registry::{StrId, Ts};
-use tokio_postgres::Client;
+use tokio_postgres::types::Type;
 
+use crate::Session;
 use crate::extension::ExtensionVersion;
+use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
 
 /// Prefix a query literal with the kronika marker (SQL-transparency rule).
 macro_rules! marked {
@@ -62,10 +64,11 @@ pub const fn flavour(extension: ExtensionVersion) -> Option<Flavour> {
 
 /// The statistics query for one flavour, costliest plans first.
 #[must_use]
-pub fn store_plans_query(flavour: Flavour, limit: i64) -> String {
+pub fn store_plans_query(flavour: Flavour) -> String {
     let columns = match flavour {
         Flavour::Ossc => {
-            "s.queryid, s.planid, s.userid, s.dbid, s.plan, \
+            "s.queryid, s.planid, s.userid, s.dbid, \
+             left(s.plan, 65536) AS plan, \
              s.calls, s.total_time, s.min_time, s.max_time, s.mean_time, s.stddev_time, s.rows, \
              s.shared_blks_hit, s.shared_blks_read, s.shared_blks_dirtied, s.shared_blks_written, \
              s.local_blks_hit, s.local_blks_read, s.local_blks_dirtied, s.local_blks_written, \
@@ -76,6 +79,7 @@ pub fn store_plans_query(flavour: Flavour, limit: i64) -> String {
         }
         Flavour::Vadv => {
             "s.queryid AS queryid_stat_statements, s.planid, s.userid, s.dbid, \
+             left(pg_store_plans_get_plan(s.planid), 65536) AS plan, \
              s.calls, s.slow_log_calls, \
              s.total_time, s.min_time, s.max_time, s.mean_time, s.stddev_time, s.rows, \
              s.shared_blks_hit, s.shared_blks_read, s.shared_blks_dirtied, s.shared_blks_written, \
@@ -94,14 +98,10 @@ pub fn store_plans_query(flavour: Flavour, limit: i64) -> String {
          FROM pg_store_plans s \
          LEFT JOIN pg_database d ON d.oid = s.dbid \
          LEFT JOIN pg_roles r ON r.oid = s.userid \
-         ORDER BY s.total_time DESC LIMIT {limit}",
+         ORDER BY s.total_time DESC LIMIT $1",
         marked!("SELECT ")
     )
 }
-
-/// The plan-text query of the vadv fork, which keeps the text behind a
-/// function instead of a column.
-const PLAN_TEXT_QUERY: &str = marked!("SELECT pg_store_plans_get_plan($1) AS plan");
 
 /// One raw ossc row.
 ///
@@ -404,7 +404,8 @@ fn ossc_row_from_pg(row: &tokio_postgres::Row, left: &mut usize) -> OsscRow {
     }
 }
 
-fn vadv_row_from_pg(row: &tokio_postgres::Row) -> VadvRow {
+fn vadv_row_from_pg(row: &tokio_postgres::Row, left: &mut usize) -> VadvRow {
+    let plan: Option<String> = row.get("plan");
     VadvRow {
         ts: row.get("ts_us"),
         queryid_stat_statements: row.get("queryid_stat_statements"),
@@ -413,7 +414,7 @@ fn vadv_row_from_pg(row: &tokio_postgres::Row) -> VadvRow {
         dbid: row.get("dbid"),
         datname: row.get("datname"),
         usename: row.get("usename"),
-        plan: None,
+        plan: plan.filter(|text| afford(left, text.len())),
         calls: row.get("calls"),
         slow_log_calls: row.get("slow_log_calls"),
         total_time: row.get("total_time"),
@@ -447,47 +448,49 @@ fn vadv_row_from_pg(row: &tokio_postgres::Row) -> VadvRow {
 ///
 /// # Errors
 /// Returns the [`tokio_postgres::Error`] if the query fails.
-pub async fn collect_ossc(
-    client: &Client,
+pub async fn collect_ossc<E>(
+    session: Session<'_>,
     limit: i64,
     plan_text_budget: usize,
-) -> Result<Vec<OsscRow>, tokio_postgres::Error> {
-    let rows = client
-        .query(&store_plans_query(Flavour::Ossc, limit), &[])
-        .await?;
+    stats: &mut QueryStats,
+    sink: impl FnMut(Batch<OsscRow>) -> Result<BatchWrite, E>,
+) -> Result<(), BatchError<E>> {
     let mut left = plan_text_budget;
-    Ok(rows
-        .iter()
-        .map(|row| ossc_row_from_pg(row, &mut left))
-        .collect())
+    query::read_batched(
+        session,
+        &store_plans_query(Flavour::Ossc),
+        std::iter::once((limit, Type::INT8)),
+        size_of::<i64>(),
+        stats,
+        |row| ossc_row_from_pg(row, &mut left),
+        sink,
+    )
+    .await
 }
 
-/// Collect the costliest vadv-fork plan entries, then their plan texts while
-/// the budget lasts.
+/// Collect the costliest vadv-fork plan entries and their bounded plan text in
+/// the same natural view query.
 ///
 /// # Errors
 /// Returns the [`tokio_postgres::Error`] if a query fails.
-pub async fn collect_vadv(
-    client: &Client,
+pub async fn collect_vadv<E>(
+    session: Session<'_>,
     limit: i64,
     plan_text_budget: usize,
-) -> Result<Vec<VadvRow>, tokio_postgres::Error> {
-    let queried = client
-        .query(&store_plans_query(Flavour::Vadv, limit), &[])
-        .await?;
-    let mut rows: Vec<VadvRow> = queried.iter().map(vadv_row_from_pg).collect();
+    stats: &mut QueryStats,
+    sink: impl FnMut(Batch<VadvRow>) -> Result<BatchWrite, E>,
+) -> Result<(), BatchError<E>> {
     let mut left = plan_text_budget;
-    for row in &mut rows {
-        if left == 0 {
-            break;
-        }
-        let text: Option<String> = client
-            .query_one(PLAN_TEXT_QUERY, &[&row.planid])
-            .await?
-            .get("plan");
-        row.plan = text.filter(|text| afford(&mut left, text.len()));
-    }
-    Ok(rows)
+    query::read_batched(
+        session,
+        &store_plans_query(Flavour::Vadv),
+        std::iter::once((limit, Type::INT8)),
+        size_of::<i64>(),
+        stats,
+        |row| vadv_row_from_pg(row, &mut left),
+        sink,
+    )
+    .await
 }
 
 #[cfg(test)]

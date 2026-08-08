@@ -1,7 +1,9 @@
-use super::{ConnectionTarget, InvalidConnection};
+use super::{
+    CACHED_POSTGRES_FACTS_QUERY, ConnectionTarget, INITIAL_POSTGRES_FACTS_QUERY, InvalidConnection,
+};
 
 fn target(raw: &str) -> ConnectionTarget {
-    ConnectionTarget::parse(raw).expect("parse connection")
+    ConnectionTarget::parse(raw, 7).expect("parse connection")
 }
 
 #[test]
@@ -118,7 +120,7 @@ fn missing_user_has_no_prefix() {
 #[test]
 fn malformed_and_structurally_invalid_inputs_return_opaque_errors() {
     let raw = "host='unterminated MALFORMED_SECRET";
-    let error = ConnectionTarget::parse(raw).expect_err("reject malformed connection");
+    let error = ConnectionTarget::parse(raw, 0).expect_err("reject malformed connection");
     assert_eq!(error, InvalidConnection);
     let rendered = format!("{error:?}");
     assert!(!rendered.contains("MALFORMED_SECRET"));
@@ -130,8 +132,30 @@ fn malformed_and_structurally_invalid_inputs_return_opaque_errors() {
         "host=one,two port=6000,6001,6002",
         "host=db.example passfile=PASSFILE_SECRET",
     ] {
-        let error = ConnectionTarget::parse(invalid).expect_err("reject invalid connection");
+        let error = ConnectionTarget::parse(invalid, 0).expect_err("reject invalid connection");
         assert_eq!(error, InvalidConnection);
         assert!(!format!("{error:?}").contains("PASSFILE_SECRET"));
     }
+}
+
+#[test]
+fn successful_system_identifier_is_reused_for_later_rescans() {
+    let parsed = target("host=db.example user=monitor");
+
+    assert_eq!(parsed.source_index(), 7);
+    assert_eq!(parsed.postgres_facts_query(), INITIAL_POSTGRES_FACTS_QUERY);
+    assert!(
+        parsed
+            .postgres_facts_query()
+            .contains("pg_control_system()")
+    );
+
+    assert_eq!(parsed.remember_system_identifier(42), 42);
+    assert_eq!(parsed.remember_system_identifier(84), 42);
+    assert_eq!(parsed.postgres_facts_query(), CACHED_POSTGRES_FACTS_QUERY);
+    assert!(
+        !parsed
+            .postgres_facts_query()
+            .contains("pg_control_system()")
+    );
 }

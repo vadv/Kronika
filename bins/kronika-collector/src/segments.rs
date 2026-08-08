@@ -66,6 +66,7 @@ pub(crate) struct SegmentState {
     opened_at: Option<Instant>,
     admission: SegmentAdmission,
     interner: Interner,
+    pg_settings_present: bool,
 }
 
 impl Default for SegmentState {
@@ -75,6 +76,7 @@ impl Default for SegmentState {
             opened_at: None,
             admission: SegmentAdmission::default(),
             interner: Interner::new(kronika_format::DictLimits::default()),
+            pg_settings_present: false,
         }
     }
 }
@@ -90,6 +92,14 @@ impl SegmentState {
 
     pub(crate) const fn interner_mut(&mut self) -> &mut Interner {
         &mut self.interner
+    }
+
+    pub(crate) const fn needs_pg_settings(&self) -> bool {
+        !self.pg_settings_present
+    }
+
+    pub(crate) const fn mark_pg_settings_present(&mut self) {
+        self.pg_settings_present = true;
     }
 
     /// Register the appended window; the first one opens the segment.

@@ -6,7 +6,10 @@
 
 use anyhow::{Context as _, Result};
 use kronika_registry::{PgSettings, StrId, Ts};
-use tokio_postgres::Client;
+use tokio_postgres::types::Type;
+
+use crate::Session;
+use crate::query::{self, QueryStats};
 
 /// Prefix a query with a marker naming who is asking.
 ///
@@ -57,24 +60,24 @@ pub struct SettingsRow {
 /// # Errors
 ///
 /// Returns the error of the query.
-pub async fn collect(client: &Client) -> Result<Vec<SettingsRow>> {
-    let rows = client
-        .query(
-            marked!(
-                "SELECT \
-                     (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us, \
-                     name, setting, unit, source, sourcefile, sourceline, \
-                     pending_restart, context, vartype, boot_val, reset_val \
-                 FROM pg_settings \
-                 ORDER BY name"
-            ),
-            &[],
-        )
-        .await
-        .context("read pg_settings")?;
-    Ok(rows
-        .iter()
-        .map(|row| SettingsRow {
+pub async fn collect(session: Session<'_>, stats: &mut QueryStats) -> Result<Vec<SettingsRow>> {
+    query::read_all(
+        session,
+        marked!(
+            "SELECT \
+                 (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us, \
+                 name, left(setting, 65536) AS setting, unit, source, \
+                 left(sourcefile, 65536) AS sourcefile, sourceline, \
+                 pending_restart, context, vartype, \
+                 left(boot_val, 65536) AS boot_val, \
+                 left(reset_val, 65536) AS reset_val \
+             FROM pg_settings \
+             ORDER BY name"
+        ),
+        std::iter::empty::<(String, Type)>(),
+        0,
+        stats,
+        |row| SettingsRow {
             ts: row.get("ts_us"),
             name: row.get("name"),
             setting: row.get("setting"),
@@ -87,8 +90,10 @@ pub async fn collect(client: &Client) -> Result<Vec<SettingsRow>> {
             vartype: row.get("vartype"),
             boot_val: row.get("boot_val"),
             reset_val: row.get("reset_val"),
-        })
-        .collect())
+        },
+    )
+    .await
+    .context("read pg_settings")
 }
 
 /// Intern the row's strings and build the section row.

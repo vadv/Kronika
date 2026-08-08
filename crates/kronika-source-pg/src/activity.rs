@@ -6,11 +6,10 @@
 
 use kronika_registry::pg_stat_activity::{PgStatActivityV1, PgStatActivityV2, PgStatActivityV3};
 use kronika_registry::{StrId, Ts};
-use tokio_postgres::Client;
+use tokio_postgres::types::Type;
 
-/// Source-side all-or-nothing ceiling for one activity snapshot.
-pub const MAX_ACTIVITY_ROWS: usize = 4_096;
-const ACTIVITY_FETCH_ROWS: i64 = 4_097;
+use crate::Session;
+use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
 
 /// Add the collector marker required by the SQL-transparency rule.
 macro_rules! marked {
@@ -63,7 +62,8 @@ pub const fn activity_query(version: ActivityVersion) -> &'static str {
             "SELECT pid, datname::text AS datname, usename::text AS usename, \
              coalesce(application_name, '') AS application_name, \
              coalesce(host(client_addr), '') AS client_addr, \
-             backend_type, state, wait_event_type, wait_event, query, \
+             backend_type, state, wait_event_type, wait_event, \
+             left(query, 65536) AS query, \
              age(backend_xid)::int8 AS backend_xid_age, \
              age(backend_xmin)::int8 AS backend_xmin_age, \
              (extract(epoch from backend_start) * 1e6)::int8 AS backend_start_us, \
@@ -78,7 +78,8 @@ pub const fn activity_query(version: ActivityVersion) -> &'static str {
             "SELECT pid, leader_pid, datname::text AS datname, usename::text AS usename, \
              coalesce(application_name, '') AS application_name, \
              coalesce(host(client_addr), '') AS client_addr, \
-             backend_type, state, wait_event_type, wait_event, query, \
+             backend_type, state, wait_event_type, wait_event, \
+             left(query, 65536) AS query, \
              age(backend_xid)::int8 AS backend_xid_age, \
              age(backend_xmin)::int8 AS backend_xmin_age, \
              (extract(epoch from backend_start) * 1e6)::int8 AS backend_start_us, \
@@ -93,7 +94,8 @@ pub const fn activity_query(version: ActivityVersion) -> &'static str {
             "SELECT pid, leader_pid, datname::text AS datname, usename::text AS usename, \
              coalesce(application_name, '') AS application_name, \
              coalesce(host(client_addr), '') AS client_addr, \
-             backend_type, state, wait_event_type, wait_event, query, query_id, \
+             backend_type, state, wait_event_type, wait_event, \
+             left(query, 65536) AS query, query_id, \
              age(backend_xid)::int8 AS backend_xid_age, \
              age(backend_xmin)::int8 AS backend_xmin_age, \
              (extract(epoch from backend_start) * 1e6)::int8 AS backend_start_us, \
@@ -105,10 +107,6 @@ pub const fn activity_query(version: ActivityVersion) -> &'static str {
              FROM pg_stat_activity"
         ),
     }
-}
-
-fn bounded_activity_query(version: ActivityVersion) -> String {
-    format!("{} ORDER BY pid LIMIT $1", activity_query(version))
 }
 
 /// Raw `pg_stat_activity` row before string interning.
@@ -155,22 +153,6 @@ pub struct ActivityRow {
     pub query_start: Option<i64>,
     /// Last state change, unix microseconds.
     pub state_change: Option<i64>,
-}
-
-/// One bounded activity read and the provenance needed by snapshot-wide
-/// consumers. Rows are empty when `truncated` is true.
-#[derive(Debug, Clone)]
-pub struct ActivityRead {
-    /// Durable activity layout selected for the server major version.
-    pub version: ActivityVersion,
-    /// Parsed rows, empty when the source-side bound was exceeded.
-    pub rows: Vec<ActivityRow>,
-    /// Rows returned by the bounded read, including its possible guard row.
-    pub source_rows: usize,
-    /// Whether the guard row proved that the snapshot exceeded the bound.
-    pub truncated: bool,
-    /// Whether activity fields for all sessions were visible to the collector.
-    pub full_visibility: bool,
 }
 
 /// Intern an optional string, preserving `None`.
@@ -305,49 +287,33 @@ fn row_from_pg(row: &tokio_postgres::Row, version: ActivityVersion) -> ActivityR
     }
 }
 
-/// Collect a bounded `pg_stat_activity` snapshot.
-///
-/// The source fetches at most one row beyond the ceiling. If that row exists,
-/// it returns no rows and sets the truncation flag; consumers must treat the
-/// snapshot as unavailable.
+/// Stream the complete `pg_stat_activity` snapshot in bounded batches.
 ///
 /// # Errors
-/// Returns the [`tokio_postgres::Error`] if the query fails.
-pub async fn collect_activity(
-    client: &Client,
+/// Returns the `PostgreSQL` stream error or the batch sink error.
+pub async fn collect_activity<E>(
+    session: Session<'_>,
     major: u32,
-) -> Result<ActivityRead, tokio_postgres::Error> {
+    stats: &mut QueryStats,
+    sink: impl FnMut(Batch<ActivityRow>) -> Result<BatchWrite, E>,
+) -> Result<(), BatchError<E>> {
     let version = activity_version(major);
-    let query = bounded_activity_query(version);
-    let rows = client.query(&query, &[&ACTIVITY_FETCH_ROWS]).await?;
-    let source_rows = rows.len();
-    let full_visibility = rows
-        .first()
-        .is_some_and(|row| row.get::<_, bool>("full_visibility"));
-    if rows.len() > MAX_ACTIVITY_ROWS {
-        return Ok(ActivityRead {
-            version,
-            rows: Vec::new(),
-            source_rows,
-            truncated: true,
-            full_visibility,
-        });
-    }
-    let parsed = rows.iter().map(|row| row_from_pg(row, version)).collect();
-    Ok(ActivityRead {
-        version,
-        rows: parsed,
-        source_rows,
-        truncated: false,
-        full_visibility,
-    })
+    query::read_batched(
+        session,
+        &format!("{} ORDER BY pid", activity_query(version)),
+        std::iter::empty::<(String, Type)>(),
+        0,
+        stats,
+        |row| row_from_pg(row, version),
+        sink,
+    )
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ACTIVITY_FETCH_ROWS, ActivityRow, ActivityVersion, MAX_ACTIVITY_ROWS, activity_query,
-        activity_version, bounded_activity_query, to_v1, to_v2, to_v3,
+        ActivityRow, ActivityVersion, activity_query, activity_version, to_v1, to_v2, to_v3,
     };
     use kronika_registry::StrId;
     use std::convert::Infallible;
@@ -418,13 +384,10 @@ mod tests {
     }
 
     #[test]
-    fn collector_query_has_a_deterministic_source_side_guard_row() {
-        let query = bounded_activity_query(ActivityVersion::V3);
-        assert!(query.ends_with(" FROM pg_stat_activity ORDER BY pid LIMIT $1"));
-        assert_eq!(
-            ACTIVITY_FETCH_ROWS,
-            i64::try_from(MAX_ACTIVITY_ROWS).unwrap() + 1
-        );
+    fn query_bounds_individual_activity_text_without_a_row_ceiling() {
+        let query = activity_query(ActivityVersion::V3);
+        assert!(query.contains("left(query, 65536) AS query"));
+        assert!(!query.contains("LIMIT"));
     }
 
     #[test]

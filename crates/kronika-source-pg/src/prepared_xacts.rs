@@ -9,7 +9,10 @@
 
 use kronika_registry::pg_prepared_xacts::PgPreparedXacts;
 use kronika_registry::{StrId, Ts};
-use tokio_postgres::Client;
+use tokio_postgres::types::Type;
+
+use crate::Session;
+use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
 
 /// Prefix a query literal with the kronika marker (SQL-transparency rule).
 macro_rules! marked {
@@ -66,35 +69,37 @@ pub fn to_prepared_xacts<E>(
 /// query's `clock_timestamp()`, shared with the wall-clock age calculation.
 ///
 /// # Errors
-/// Returns the [`tokio_postgres::Error`] if the query fails.
-pub async fn collect_prepared_xacts(
-    client: &Client,
-) -> Result<Vec<PreparedXactsRow>, tokio_postgres::Error> {
-    let rows = client
-        .query(
-            marked!(
-                "WITH snap AS (SELECT clock_timestamp() AS ts) \
-                 SELECT database::text AS datname, \
-                 count(*)::int8 AS prepared_count, \
-                 greatest(0::int8, (extract(epoch from (snap.ts - min(prepared))) * 1e6)::int8) \
-                 AS max_age_us, \
-                 max(age(transaction))::int8 AS max_xid_age_tx, \
-                 (extract(epoch from snap.ts) * 1e6)::int8 AS ts_us \
-                 FROM pg_prepared_xacts, snap GROUP BY database, snap.ts"
-            ),
-            &[],
-        )
-        .await?;
-    Ok(rows
-        .iter()
-        .map(|row| PreparedXactsRow {
+/// Returns the `PostgreSQL` stream error or the batch sink error.
+pub async fn collect_prepared_xacts<E>(
+    session: Session<'_>,
+    stats: &mut QueryStats,
+    sink: impl FnMut(Batch<PreparedXactsRow>) -> Result<BatchWrite, E>,
+) -> Result<(), BatchError<E>> {
+    query::read_batched(
+        session,
+        marked!(
+            "WITH snap AS (SELECT clock_timestamp() AS ts) \
+             SELECT database::text AS datname, \
+             count(*)::int8 AS prepared_count, \
+             greatest(0::int8, (extract(epoch from (snap.ts - min(prepared))) * 1e6)::int8) \
+             AS max_age_us, \
+             max(age(transaction))::int8 AS max_xid_age_tx, \
+             (extract(epoch from snap.ts) * 1e6)::int8 AS ts_us \
+             FROM pg_prepared_xacts, snap GROUP BY database, snap.ts"
+        ),
+        std::iter::empty::<(String, Type)>(),
+        0,
+        stats,
+        |row| PreparedXactsRow {
             ts: row.get("ts_us"),
             datname: row.get("datname"),
             prepared_count: row.get("prepared_count"),
             max_age_us: row.get("max_age_us"),
             max_xid_age_tx: row.get("max_xid_age_tx"),
-        })
-        .collect())
+        },
+        sink,
+    )
+    .await
 }
 
 #[cfg(test)]

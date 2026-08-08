@@ -5,7 +5,10 @@
 
 use kronika_registry::Ts;
 use kronika_registry::pg_stat_wal::{PgStatWalV1, PgStatWalV2};
-use tokio_postgres::Client;
+use tokio_postgres::types::Type;
+
+use crate::Session;
+use crate::query::{self, QueryStats};
 
 /// SQL transparency marker for collector queries.
 macro_rules! marked {
@@ -105,17 +108,26 @@ fn v2_from_pg(row: &tokio_postgres::Row) -> PgStatWalV2 {
 /// # Errors
 /// Returns `PostgreSQL` query errors.
 pub async fn collect_wal(
-    client: &Client,
+    session: Session<'_>,
     major: u32,
-) -> Result<Option<WalSnapshot>, tokio_postgres::Error> {
+    stats: &mut QueryStats,
+) -> anyhow::Result<Option<WalSnapshot>> {
     let Some(version) = wal_version(major) else {
         return Ok(None);
     };
-    let row = client.query_one(wal_query(version), &[]).await?;
-    Ok(Some(match version {
-        WalVersion::V1 => WalSnapshot::V1(v1_from_pg(&row)),
-        WalVersion::V2 => WalSnapshot::V2(v2_from_pg(&row)),
-    }))
+    query::read_one(
+        session,
+        wal_query(version),
+        std::iter::empty::<(String, Type)>(),
+        0,
+        stats,
+        |row| match version {
+            WalVersion::V1 => WalSnapshot::V1(v1_from_pg(row)),
+            WalVersion::V2 => WalSnapshot::V2(v2_from_pg(row)),
+        },
+    )
+    .await
+    .map(Some)
 }
 
 #[cfg(test)]

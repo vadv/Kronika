@@ -113,8 +113,8 @@ fn an_extension_without_the_split_io_timing_is_not_collected() {
 
 #[test]
 fn each_flavour_asks_for_the_columns_it_has() {
-    let ossc = store_plans_query(Flavour::Ossc, 10);
-    let vadv = store_plans_query(Flavour::Vadv, 10);
+    let ossc = store_plans_query(Flavour::Ossc);
+    let vadv = store_plans_query(Flavour::Vadv);
     assert!(ossc.contains("s.shared_blk_read_time"), "{ossc}");
     assert!(!ossc.contains("slow_log_calls"), "{ossc}");
     assert!(vadv.contains("s.blk_read_time"), "{vadv}");
@@ -123,19 +123,24 @@ fn each_flavour_asks_for_the_columns_it_has() {
 }
 
 #[test]
-fn a_read_is_bounded_and_takes_the_costliest_plans_first() {
+fn a_read_is_parameter_bounded_and_takes_the_costliest_plans_first() {
     for flavour in [Flavour::Ossc, Flavour::Vadv] {
-        let sql = store_plans_query(flavour, 42);
+        let sql = store_plans_query(flavour);
         assert!(sql.contains("kronika:"), "{sql}");
         assert!(sql.contains("ORDER BY s.total_time DESC"), "{sql}");
-        assert!(sql.ends_with("LIMIT 42"), "{sql}");
+        assert!(sql.ends_with("LIMIT $1"), "{sql}");
     }
 }
 
 #[test]
-fn only_the_fork_needs_a_second_query_for_the_plan_text() {
-    assert!(store_plans_query(Flavour::Ossc, 10).contains("s.plan"));
-    assert!(!store_plans_query(Flavour::Vadv, 10).contains("s.plan,"));
+fn each_flavour_bounds_plan_text_in_its_natural_query() {
+    let ossc = store_plans_query(Flavour::Ossc);
+    let vadv = store_plans_query(Flavour::Vadv);
+    assert!(ossc.contains("left(s.plan, 65536) AS plan"), "{ossc}");
+    assert!(
+        vadv.contains("left(pg_store_plans_get_plan(s.planid), 65536) AS plan"),
+        "{vadv}"
+    );
 }
 
 #[test]

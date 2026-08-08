@@ -1,101 +1,221 @@
-//! Asking a `PostgreSQL` server for its statistics.
+//! Sequential `PostgreSQL` statistics collection.
 //!
-//! One server is collected: the sections carry no column saying which instance
-//! a row came from, so two servers would write into each other's rows. The
-//! first entry of `KRONIKA_PG_DSNS` is the one that is asked.
-//!
-//! A read happens before the window is built, because it is the only source
-//! that has to wait on the network. A source that fails is one log line and no
-//! rows for that section; the rest of the read continues.
+//! Every database keeps one healthy connection across collection cycles. A
+//! failed or timed-out connection is closed and reopened on a later cycle.
+//! Queries on every connection are awaited one at a time; no pipeline or
+//! concurrent query task is created.
 
 mod buffering;
 
 use std::collections::BTreeMap;
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use kronika_registry::Section as _;
-use kronika_registry::pg_prepared_xacts::PgPreparedXacts;
-use kronika_registry::pg_settings::PgSettings;
-use kronika_registry::pg_stat_activity::PgStatActivityV1;
-use kronika_registry::pg_stat_archiver::PgStatArchiver;
-use kronika_registry::pg_stat_database::PgStatDatabaseV1;
-use kronika_registry::pg_stat_io::PgStatIoV1;
-use kronika_registry::pg_stat_progress_vacuum::PgStatProgressVacuum;
-use kronika_registry::pg_stat_statements::PgStatStatementsV1;
-use kronika_registry::pg_stat_user_indexes::PgStatUserIndexesV1;
-use kronika_registry::pg_stat_user_tables::PgStatUserTablesV1;
-use kronika_registry::pg_stat_wal::PgStatWalV1;
-use kronika_registry::pg_store_plans::PgStorePlansOsscV1;
-use kronika_source_pg::activity::ActivityRead;
+use kronika_source_pg::activity::{self, ActivityRow, ActivityVersion};
 use kronika_source_pg::archiver::ArchiverRow;
-use kronika_source_pg::database::{DatabaseRow, DatabaseVersion};
+use kronika_source_pg::database::{self, DatabaseRow, DatabaseVersion};
 use kronika_source_pg::databases;
 use kronika_source_pg::extension;
-use kronika_source_pg::io::{IoRow, IoVersion};
-use kronika_source_pg::prepared_xacts::PreparedXactsRow;
-use kronika_source_pg::progress_vacuum::ProgressVacuumRow;
-use kronika_source_pg::settings::SettingsRow;
-use kronika_source_pg::statements::{StatementsRow, StatementsVersion, statements_version};
+use kronika_source_pg::io::{self, IoRow, IoVersion};
+use kronika_source_pg::prepared_xacts::{self, PreparedXactsRow};
+use kronika_source_pg::progress_vacuum::{self, ProgressVacuumRow};
+use kronika_source_pg::query::{self, BatchError, BatchWrite};
+use kronika_source_pg::settings::{self, SettingsRow};
+use kronika_source_pg::statements::{self, StatementsRow, StatementsVersion};
 use kronika_source_pg::store_plans::{self, Flavour, OsscRow, VadvRow};
-use kronika_source_pg::user_indexes::{UserIndexesRow, UserIndexesVersion};
-use kronika_source_pg::user_tables::{UserTablesRow, UserTablesVersion};
-use kronika_source_pg::wal::WalSnapshot;
-use kronika_source_pg::{
-    MAX_AGE, Pool, activity, archiver, database, io, prepared_xacts, progress_vacuum, settings,
-    statements, user_indexes, user_tables, wal,
-};
-use tokio_postgres::Client;
+use kronika_source_pg::user_indexes::{self, UserIndexesRow, UserIndexesVersion};
+use kronika_source_pg::user_tables::{self, UserTablesRow, UserTablesVersion};
+use kronika_source_pg::wal::{self, WalSnapshot};
+use kronika_source_pg::{Pool, Session};
 
 use crate::config::Config;
-use crate::logging::{
-    LogLevel, field, log_collection_failure, log_collection_finish, log_collection_start, log_event,
-};
+use crate::logging::{LogLevel, duration_ms, field, log_event};
 use crate::scheduler::{DueSet, SourceKind};
 
-pub(crate) use buffering::push_pg_sources;
+pub(crate) use buffering::push_pg_batch;
 
-/// Section ids, for the collection log lines. Taken from the registry rather
-/// than written out: a hand-copied id names the wrong section in the log and
-/// nothing else notices.
-const SETTINGS: u32 = PgSettings::CONTRACT.type_id.get();
-const ARCHIVER: u32 = PgStatArchiver::CONTRACT.type_id.get();
-const WAL: u32 = PgStatWalV1::CONTRACT.type_id.get();
-const PREPARED_XACTS: u32 = PgPreparedXacts::CONTRACT.type_id.get();
-const DATABASE: u32 = PgStatDatabaseV1::CONTRACT.type_id.get();
-const IO: u32 = PgStatIoV1::CONTRACT.type_id.get();
-const ACTIVITY: u32 = PgStatActivityV1::CONTRACT.type_id.get();
-const PROGRESS_VACUUM: u32 = PgStatProgressVacuum::CONTRACT.type_id.get();
-const STATEMENTS: u32 = PgStatStatementsV1::CONTRACT.type_id.get();
-const STORE_PLANS: u32 = PgStorePlansOsscV1::CONTRACT.type_id.get();
-const USER_TABLES: u32 = PgStatUserTablesV1::CONTRACT.type_id.get();
-const USER_INDEXES: u32 = PgStatUserIndexesV1::CONTRACT.type_id.get();
+const SERVER_MAJOR_SQL: &str = "/* kronika: */ SELECT current_setting('server_version_num')::int4";
+const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// What one read of the server produced.
-#[derive(Debug, Default)]
-pub(crate) struct PgRows {
-    /// The running configuration, written once per segment.
-    pub(crate) settings: Vec<SettingsRow>,
-    pub(crate) archiver: Option<ArchiverRow>,
-    pub(crate) wal: Option<WalSnapshot>,
-    pub(crate) prepared_xacts: Vec<PreparedXactsRow>,
-    pub(crate) database: Option<(DatabaseVersion, Vec<DatabaseRow>)>,
-    pub(crate) io: Option<(IoVersion, Vec<IoRow>)>,
-    pub(crate) activity: Option<ActivityRead>,
-    pub(crate) progress_vacuum: Vec<ProgressVacuumRow>,
-    pub(crate) statements: Option<(StatementsVersion, Vec<StatementsRow>)>,
-    pub(crate) store_plans_ossc: Vec<OsscRow>,
-    pub(crate) store_plans_vadv: Vec<VadvRow>,
-    pub(crate) user_tables: Option<(UserTablesVersion, Vec<UserTablesRow>)>,
-    pub(crate) user_indexes: Option<(UserIndexesVersion, Vec<UserIndexesRow>)>,
+/// A low-cardinality measurement hook for the canonical collector telemetry.
+#[derive(Debug)]
+pub(crate) enum PgObservation {
+    Query(QueryObservation),
+    Connection(ConnectionObservation),
 }
 
-/// The configured server, its per-database connections, and the last
-/// configuration snapshot a new segment needs.
+/// One completed or interrupted SQL statement.
+#[derive(Debug)]
+pub(crate) struct QueryObservation {
+    pub(crate) query_name: &'static str,
+    pub(crate) database: String,
+    pub(crate) elapsed: Duration,
+    pub(crate) stats: query::QueryStats,
+    pub(crate) outcome: QueryOutcome,
+}
+
+/// One failed connection attempt.
+#[derive(Debug)]
+pub(crate) struct ConnectionObservation {
+    pub(crate) database: String,
+    pub(crate) elapsed: Duration,
+    pub(crate) timeout: bool,
+    pub(crate) closed: bool,
+}
+
+/// Stable query completion classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QueryOutcome {
+    Success,
+    Error,
+    Timeout,
+    SinkError,
+}
+
+/// Emit the per-query diagnostic event while leaving interval aggregation to
+/// the collector's canonical telemetry owner.
+pub(crate) fn log_pg_observation(observation: PgObservation) {
+    match observation {
+        PgObservation::Query(observation) => {
+            let fetch_elapsed = observation.stats.fetch_elapsed(observation.elapsed);
+            let level = if fetch_elapsed > Duration::from_millis(500)
+                || observation.outcome != QueryOutcome::Success
+            {
+                LogLevel::Warn
+            } else {
+                LogLevel::Debug
+            };
+            let outcome = match observation.outcome {
+                QueryOutcome::Success => "success",
+                QueryOutcome::Error => "error",
+                QueryOutcome::Timeout => "timeout",
+                QueryOutcome::SinkError => "sink_error",
+            };
+            log_event(
+                level,
+                "pg_query",
+                &[
+                    field("query_name", observation.query_name),
+                    field("database", observation.database),
+                    field("outcome", outcome),
+                    field("elapsed_ms", duration_ms(observation.elapsed)),
+                    field("fetch_ms", duration_ms(fetch_elapsed)),
+                    field("rows", observation.stats.rows),
+                    field(
+                        "application_payload_from_postgres_bytes",
+                        observation.stats.application_payload_from_postgres_bytes,
+                    ),
+                    field(
+                        "application_payload_to_postgres_bytes",
+                        observation.stats.application_payload_to_postgres_bytes,
+                    ),
+                    field("batches", observation.stats.batches),
+                    field("encode_ms", duration_ms(observation.stats.encode_elapsed)),
+                    field("append_ms", duration_ms(observation.stats.append_elapsed)),
+                    field("encoded_bytes", observation.stats.encoded_bytes),
+                    field("wal_bytes_appended", observation.stats.wal_bytes_appended),
+                ],
+            );
+        }
+        PgObservation::Connection(observation) => log_event(
+            LogLevel::Warn,
+            "pg_connection_failure",
+            &[
+                field("database", observation.database),
+                field("elapsed_ms", duration_ms(observation.elapsed)),
+                field("timeout", observation.timeout),
+                field("closed", observation.closed),
+            ],
+        ),
+    }
+}
+
+struct QueryMeasurement<'a> {
+    observe: &'a mut (dyn FnMut(PgObservation) + Send),
+    query_name: &'static str,
+    database: String,
+    started: Instant,
+    stats: query::QueryStats,
+}
+
+impl QueryMeasurement<'_> {
+    const fn stats_mut(&mut self) -> &mut query::QueryStats {
+        &mut self.stats
+    }
+
+    fn success(self) {
+        self.finish(QueryOutcome::Success);
+    }
+
+    fn error(self) {
+        self.finish(QueryOutcome::Error);
+    }
+
+    fn timeout(self) {
+        self.finish(QueryOutcome::Timeout);
+    }
+
+    fn sink_error(self) {
+        self.finish(QueryOutcome::SinkError);
+    }
+
+    fn finish(self, outcome: QueryOutcome) {
+        (self.observe)(PgObservation::Query(QueryObservation {
+            query_name: self.query_name,
+            database: self.database,
+            elapsed: self.started.elapsed(),
+            stats: self.stats,
+            outcome,
+        }));
+    }
+}
+
+fn measure<'a>(
+    observe: &'a mut (dyn FnMut(PgObservation) + Send),
+    query_name: &'static str,
+    database: &str,
+) -> QueryMeasurement<'a> {
+    QueryMeasurement {
+        observe,
+        query_name,
+        database: database.to_owned(),
+        started: Instant::now(),
+        stats: query::QueryStats::default(),
+    }
+}
+
+/// One bounded `PostgreSQL` batch retained until it reaches the WAL.
+#[derive(Debug)]
+pub(crate) enum PgBatch {
+    Settings(Arc<[SettingsRow]>),
+    Archiver(ArchiverRow),
+    Wal(WalSnapshot),
+    PreparedXacts(Vec<PreparedXactsRow>),
+    Database(DatabaseVersion, Vec<DatabaseRow>),
+    Io(IoVersion, Vec<IoRow>),
+    Activity(ActivityVersion, Vec<ActivityRow>),
+    ProgressVacuum(Vec<ProgressVacuumRow>),
+    Statements(StatementsVersion, Vec<StatementsRow>),
+    StorePlansOssc(Vec<OsscRow>),
+    StorePlansVadv(Vec<VadvRow>),
+    UserTables(UserTablesVersion, Vec<UserTablesRow>),
+    UserIndexes(UserIndexesVersion, Vec<UserIndexesRow>),
+}
+
+#[derive(Debug)]
+struct CachedSettings {
+    generation: u64,
+    rows: Arc<[SettingsRow]>,
+}
+
+/// The primary connection, persistent per-database connections, and caches
+/// tied to the primary connection generation.
 #[derive(Debug)]
 pub(crate) struct PgSources {
     server: Option<Pool>,
     databases: BTreeMap<String, Pool>,
-    settings: Vec<SettingsRow>,
+    settings: Option<CachedSettings>,
+    server_major: Option<(u64, u32)>,
 }
 
 impl PgSources {
@@ -117,17 +237,21 @@ impl PgSources {
                 ],
             );
         }
-        match Pool::new(dsn, MAX_AGE) {
+        match Pool::new(dsn) {
             Ok(server) => Self {
                 server: Some(server),
                 databases: BTreeMap::new(),
-                settings: Vec::new(),
+                settings: None,
+                server_major: None,
             },
-            Err(error) => {
+            Err(_error) => {
                 log_event(
                     LogLevel::Warn,
                     "pg_metrics_configuration_invalid",
-                    &[field("error", format!("{error:#}"))],
+                    &[
+                        field("source_index", 0_usize),
+                        field("reason", "invalid_connection_configuration"),
+                    ],
                 );
                 Self::disabled()
             }
@@ -138,294 +262,891 @@ impl PgSources {
         Self {
             server: None,
             databases: BTreeMap::new(),
-            settings: Vec::new(),
+            settings: None,
+            server_major: None,
         }
     }
 
-    /// The configuration snapshot a segment opening now should carry.
-    pub(crate) fn last_settings(&self) -> &[SettingsRow] {
-        &self.settings
+    /// Configuration rows safe to attach to a newly opened segment.
+    pub(crate) fn last_settings(&self) -> Option<Arc<[SettingsRow]>> {
+        let generation = self.server.as_ref().and_then(Pool::generation)?;
+        cached_settings_for_generation(self.settings.as_ref(), generation)
     }
 
-    /// Read the due sections. A server that cannot be reached produces no rows
-    /// and one log line.
-    pub(crate) async fn collect(&mut self, due: &DueSet) -> PgRows {
+    /// Read due sections and synchronously admit each bounded batch before the
+    /// query stream fetches another row.
+    pub(crate) async fn collect<E>(
+        &mut self,
+        due: &DueSet,
+        observe: &mut (dyn FnMut(PgObservation) + Send),
+        mut admit: impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
+    ) -> Result<(), E> {
         let instance = due.has(SourceKind::Pg);
         let relations = due.has(SourceKind::PgRelations);
         if !instance && !relations {
-            return PgRows::default();
+            return Ok(());
         }
-        let Some(server) = self.server.as_mut() else {
-            return PgRows::default();
+        let Some((major, generation)) = self.read_server_major(observe).await else {
+            return Ok(());
         };
-        let major = match server_major(server).await {
-            Ok(major) => major,
-            Err(error) => {
-                log_event(
-                    LogLevel::Warn,
-                    "pg_server_unreachable",
-                    &[field("error", format!("{error:#}"))],
-                );
-                return PgRows::default();
+        if self.settings.as_ref().map(|cached| cached.generation) != Some(generation) {
+            self.settings = None;
+            let settings_result = match self.server.as_mut() {
+                Some(server) => read_settings(server, generation, observe, &mut admit).await,
+                None => Ok(None),
+            };
+            match settings_result {
+                Ok(Some(rows)) => {
+                    self.settings = Some(CachedSettings { generation, rows });
+                }
+                Ok(None) => {
+                    self.clear_primary_connection();
+                    return Ok(());
+                }
+                Err(error) => {
+                    self.clear_primary_cache_if_closed();
+                    return Err(error);
+                }
             }
-        };
-        let mut rows = PgRows::default();
+        }
+        let cached_settings = self.last_settings();
         if instance {
-            collect_instance_wide(server, major, &mut rows).await;
-            if !rows.settings.is_empty() {
-                self.settings.clone_from(&rows.settings);
+            match self
+                .collect_instance(
+                    major,
+                    generation,
+                    observe,
+                    cached_settings.as_ref(),
+                    &mut admit,
+                )
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.clear_primary_connection();
+                    return Ok(());
+                }
+                Err(error) => {
+                    self.clear_primary_cache_if_closed();
+                    return Err(error);
+                }
             }
         }
         if relations {
-            self.collect_relations(major, &mut rows).await;
+            self.collect_relations(
+                major,
+                generation,
+                observe,
+                cached_settings.as_ref(),
+                &mut admit,
+            )
+            .await?;
         }
-        rows
+        Ok(())
     }
 
-    /// Visit every database for the sections that only exist inside one.
-    async fn collect_relations(&mut self, major: u32, rows: &mut PgRows) {
-        let Some(server) = self.server.as_mut() else {
-            return;
-        };
-        let found = match server.client().await {
-            Ok(client) => match databases::enumerate(client).await {
-                Ok(found) => found,
-                Err(error) => {
-                    log_event(
-                        LogLevel::Warn,
-                        "pg_databases_unreadable",
-                        &[field("error", format!("{error:#}"))],
-                    );
-                    return;
-                }
-            },
-            Err(error) => {
-                log_event(
-                    LogLevel::Warn,
-                    "pg_server_unreachable",
-                    &[field("error", format!("{error:#}"))],
-                );
-                return;
+    async fn read_server_major(
+        &mut self,
+        observe: &mut (dyn FnMut(PgObservation) + Send),
+    ) -> Option<(u32, u64)> {
+        let cached = self.server_major;
+        let server = self.server.as_mut()?;
+        let database = server.database_label().to_owned();
+        let session = match open_session(server, observe).await {
+            Ok(session) => session,
+            Err(_failure) => {
+                self.clear_primary_connection();
+                return None;
             }
         };
+        let generation = session.generation();
+        if let Some((cached_generation, major)) = cached
+            && cached_generation == generation
+        {
+            return Some((major, generation));
+        }
+        let result = {
+            let mut measured = measure(observe, "server_major", &database);
+            let result = tokio::time::timeout(
+                QUERY_TIMEOUT,
+                query::read_simple_i32(session, SERVER_MAJOR_SQL, measured.stats_mut()),
+            )
+            .await;
+            finish_query(measured, result)
+        };
+        match result {
+            Ok(num) => {
+                let major = u32::try_from(num).unwrap_or(0) / 10_000;
+                self.server_major = Some((generation, major));
+                Some((major, generation))
+            }
+            Err(_failure) => {
+                self.clear_primary_connection();
+                None
+            }
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the sequential pass keeps each query and failure boundary visible"
+    )]
+    async fn collect_instance<E>(
+        &mut self,
+        major: u32,
+        generation: u64,
+        observe: &mut (dyn FnMut(PgObservation) + Send),
+        cached_settings: Option<&Arc<[SettingsRow]>>,
+        admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
+    ) -> Result<bool, E> {
+        let Some(server) = self.server.as_mut() else {
+            return Ok(false);
+        };
+        let database = server.database_label().to_owned();
+
+        let archiver = {
+            let session = match session_for_generation(server, generation, observe) {
+                Ok(session) => session,
+                Err(_failure) => return Ok(false),
+            };
+            let mut measured = measure(observe, "pg_stat_archiver", &database);
+            let result = tokio::time::timeout(
+                QUERY_TIMEOUT,
+                kronika_source_pg::archiver::collect_archiver(session, measured.stats_mut()),
+            )
+            .await;
+            match result {
+                Ok(Ok(row)) => {
+                    measured = deliver(
+                        measured,
+                        admit,
+                        PgBatch::Archiver(row),
+                        cached_settings.cloned(),
+                    )?;
+                    measured.success();
+                    Some(())
+                }
+                other => {
+                    finish_failed(measured, other);
+                    None
+                }
+            }
+        };
+        if archiver.is_none() {
+            self.clear_primary_connection();
+            return Ok(false);
+        }
+
+        if wal::wal_version(major).is_some() {
+            let result = {
+                let session = match session_for_generation(server, generation, observe) {
+                    Ok(session) => session,
+                    Err(_failure) => return Ok(false),
+                };
+                let mut measured = measure(observe, "pg_stat_wal", &database);
+                let result = tokio::time::timeout(
+                    QUERY_TIMEOUT,
+                    wal::collect_wal(session, major, measured.stats_mut()),
+                )
+                .await;
+                match result {
+                    Ok(Ok(Some(row))) => {
+                        measured =
+                            deliver(measured, admit, PgBatch::Wal(row), cached_settings.cloned())?;
+                        measured.success();
+                        true
+                    }
+                    Ok(Ok(None)) => {
+                        measured.success();
+                        true
+                    }
+                    other => {
+                        finish_failed(measured, other);
+                        false
+                    }
+                }
+            };
+            if !result {
+                self.clear_primary_connection();
+                return Ok(false);
+            }
+        }
+
+        if !collect_prepared(
+            server,
+            generation,
+            observe,
+            &database,
+            cached_settings,
+            admit,
+        )
+        .await?
+        {
+            self.clear_primary_connection();
+            return Ok(false);
+        }
+        if !collect_database(
+            server,
+            generation,
+            major,
+            observe,
+            &database,
+            cached_settings,
+            admit,
+        )
+        .await?
+        {
+            self.clear_primary_connection();
+            return Ok(false);
+        }
+        if io::io_version(major).is_some()
+            && !collect_io(
+                server,
+                generation,
+                major,
+                observe,
+                &database,
+                cached_settings,
+                admit,
+            )
+            .await?
+        {
+            self.clear_primary_connection();
+            return Ok(false);
+        }
+        if !collect_activity(
+            server,
+            generation,
+            major,
+            observe,
+            &database,
+            cached_settings,
+            admit,
+        )
+        .await?
+        {
+            self.clear_primary_connection();
+            return Ok(false);
+        }
+        if !collect_progress(
+            server,
+            generation,
+            major,
+            observe,
+            &database,
+            cached_settings,
+            admit,
+        )
+        .await?
+        {
+            self.clear_primary_connection();
+            return Ok(false);
+        }
+        if !collect_extensions(
+            server,
+            generation,
+            observe,
+            &database,
+            cached_settings,
+            admit,
+        )
+        .await?
+        {
+            self.clear_primary_connection();
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    async fn collect_relations<E>(
+        &mut self,
+        major: u32,
+        generation: u64,
+        observe: &mut (dyn FnMut(PgObservation) + Send),
+        cached_settings: Option<&Arc<[SettingsRow]>>,
+        admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
+    ) -> Result<(), E> {
+        let found = {
+            let Some(server) = self.server.as_mut() else {
+                return Ok(());
+            };
+            let database = server.database_label().to_owned();
+            let session = match session_for_generation(server, generation, observe) {
+                Ok(session) => session,
+                Err(_failure) => {
+                    self.clear_primary_connection();
+                    return Ok(());
+                }
+            };
+            let mut measured = measure(observe, "databases", &database);
+            let result = tokio::time::timeout(
+                QUERY_TIMEOUT,
+                databases::enumerate(session, measured.stats_mut()),
+            )
+            .await;
+            match finish_query(measured, result) {
+                Ok(found) => found,
+                Err(_failure) => {
+                    self.clear_primary_connection();
+                    return Ok(());
+                }
+            }
+        };
+        let Some(server) = self.server.as_ref() else {
+            return Ok(());
+        };
         databases::refresh(&mut self.databases, &found, server);
-        let mut tables = Vec::new();
-        let mut indexes = Vec::new();
+
         for database in &found {
             let Some(pool) = self.databases.get_mut(&database.name) else {
                 continue;
             };
-            let client = match pool.client().await {
-                Ok(client) => client,
+            let result =
+                collect_relation_database(pool, database, major, observe, cached_settings, admit)
+                    .await;
+            match result {
                 Err(error) => {
-                    log_database_unreachable(&database.name, &error);
-                    continue;
+                    return Err(error);
                 }
-            };
-            let started = Instant::now();
-            log_collection_start(USER_TABLES, &database.name);
-            match user_tables::collect_user_tables(client, database, major).await {
-                Ok((_version, mut collected)) => {
-                    log_collection_finish(
-                        USER_TABLES,
-                        &database.name,
-                        collected.len(),
-                        started.elapsed(),
-                    );
-                    tables.append(&mut collected);
-                }
-                Err(error) => {
-                    log_collection_failure(USER_TABLES, &database.name, &error, started.elapsed());
-                }
-            }
-            let started = Instant::now();
-            log_collection_start(USER_INDEXES, &database.name);
-            match user_indexes::collect_user_indexes(client, database, major).await {
-                Ok((_version, mut collected)) => {
-                    log_collection_finish(
-                        USER_INDEXES,
-                        &database.name,
-                        collected.len(),
-                        started.elapsed(),
-                    );
-                    indexes.append(&mut collected);
-                }
-                Err(error) => {
-                    log_collection_failure(USER_INDEXES, &database.name, &error, started.elapsed());
+                Ok(RelationResult::Complete) => {}
+                Ok(RelationResult::Failed) => pool.close(),
+                Ok(RelationResult::TimedOut) => {
+                    pool.close();
+                    break;
                 }
             }
         }
-        if !tables.is_empty() {
-            rows.user_tables = Some((user_tables::user_tables_version(major), tables));
+        Ok(())
+    }
+
+    fn clear_primary_connection(&mut self) {
+        if let Some(server) = self.server.as_mut() {
+            server.close();
         }
-        if !indexes.is_empty() {
-            rows.user_indexes = Some((user_indexes::user_indexes_version(major), indexes));
+        self.settings = None;
+        self.server_major = None;
+    }
+
+    fn clear_primary_cache_if_closed(&mut self) {
+        if self.server.as_ref().and_then(Pool::generation).is_none() {
+            self.settings = None;
+            self.server_major = None;
         }
     }
 }
 
-/// The server major version, which selects most of the layouts.
-async fn server_major(server: &mut Pool) -> anyhow::Result<u32> {
-    let client = server.client().await?;
-    let row = client
-        .query_one(
-            "/* kronika: */ SELECT current_setting('server_version_num')::int4 AS num",
-            &[],
-        )
-        .await?;
-    let num: i32 = row.get("num");
-    Ok(u32::try_from(num).unwrap_or(0) / 10_000)
+fn cached_settings_for_generation(
+    settings: Option<&CachedSettings>,
+    generation: u64,
+) -> Option<Arc<[SettingsRow]>> {
+    settings
+        .filter(|cached| cached.generation == generation)
+        .map(|cached| Arc::clone(&cached.rows))
 }
 
-/// Read the sections one connection to one database can answer for the whole
-/// instance.
-async fn collect_instance_wide(server: &mut Pool, major: u32, rows: &mut PgRows) {
-    let client = match server.client().await {
-        Ok(client) => client,
-        Err(error) => {
-            log_event(
-                LogLevel::Warn,
-                "pg_server_unreachable",
-                &[field("error", format!("{error:#}"))],
-            );
-            return;
+async fn read_settings<E>(
+    server: &mut Pool,
+    generation: u64,
+    observe: &mut (dyn FnMut(PgObservation) + Send),
+    admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
+) -> Result<Option<Arc<[SettingsRow]>>, E> {
+    let database = server.database_label().to_owned();
+    let session = match session_for_generation(server, generation, observe) {
+        Ok(session) => session,
+        Err(_failure) => return Ok(None),
+    };
+    let mut measured = measure(observe, "pg_settings", &database);
+    let result = tokio::time::timeout(
+        QUERY_TIMEOUT,
+        settings::collect(session, measured.stats_mut()),
+    )
+    .await;
+    match result {
+        Ok(Ok(rows)) => {
+            let rows: Arc<[SettingsRow]> = Arc::from(rows);
+            measured = deliver(measured, admit, PgBatch::Settings(Arc::clone(&rows)), None)?;
+            measured.success();
+            Ok(Some(rows))
+        }
+        other => {
+            finish_failed(measured, other);
+            Ok(None)
+        }
+    }
+}
+
+async fn collect_prepared<E>(
+    pool: &mut Pool,
+    generation: u64,
+    observe: &mut (dyn FnMut(PgObservation) + Send),
+    database: &str,
+    settings: Option<&Arc<[SettingsRow]>>,
+    admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
+) -> Result<bool, E> {
+    let session = match session_for_generation(pool, generation, observe) {
+        Ok(session) => session,
+        Err(_failure) => return Ok(false),
+    };
+    let mut measured = measure(observe, "pg_prepared_xacts", database);
+    let result = prepared_xacts::collect_prepared_xacts(session, measured.stats_mut(), |batch| {
+        admit(PgBatch::PreparedXacts(batch.rows), settings.cloned())
+    })
+    .await;
+    finish_batched(pool, measured, result)
+}
+
+async fn collect_database<E>(
+    pool: &mut Pool,
+    generation: u64,
+    major: u32,
+    observe: &mut (dyn FnMut(PgObservation) + Send),
+    database_label: &str,
+    settings: Option<&Arc<[SettingsRow]>>,
+    admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
+) -> Result<bool, E> {
+    let session = match session_for_generation(pool, generation, observe) {
+        Ok(session) => session,
+        Err(_failure) => return Ok(false),
+    };
+    let version = database::database_version(major);
+    let mut measured = measure(observe, "pg_stat_database", database_label);
+    let result = database::collect_database(session, major, measured.stats_mut(), |batch| {
+        admit(PgBatch::Database(version, batch.rows), settings.cloned())
+    })
+    .await;
+    finish_batched(pool, measured, result)
+}
+
+async fn collect_io<E>(
+    pool: &mut Pool,
+    generation: u64,
+    major: u32,
+    observe: &mut (dyn FnMut(PgObservation) + Send),
+    database: &str,
+    settings: Option<&Arc<[SettingsRow]>>,
+    admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
+) -> Result<bool, E> {
+    let session = match session_for_generation(pool, generation, observe) {
+        Ok(session) => session,
+        Err(_failure) => return Ok(false),
+    };
+    let Some(version) = io::io_version(major) else {
+        return Ok(true);
+    };
+    let mut measured = measure(observe, "pg_stat_io", database);
+    let result = io::collect_io(session, major, measured.stats_mut(), |batch| {
+        admit(PgBatch::Io(version, batch.rows), settings.cloned())
+    })
+    .await;
+    finish_batched(pool, measured, result)
+}
+
+async fn collect_activity<E>(
+    pool: &mut Pool,
+    generation: u64,
+    major: u32,
+    observe: &mut (dyn FnMut(PgObservation) + Send),
+    database: &str,
+    settings: Option<&Arc<[SettingsRow]>>,
+    admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
+) -> Result<bool, E> {
+    let session = match session_for_generation(pool, generation, observe) {
+        Ok(session) => session,
+        Err(_failure) => return Ok(false),
+    };
+    let version = activity::activity_version(major);
+    let mut measured = measure(observe, "pg_stat_activity", database);
+    let result = activity::collect_activity(session, major, measured.stats_mut(), |batch| {
+        admit(PgBatch::Activity(version, batch.rows), settings.cloned())
+    })
+    .await;
+    finish_batched(pool, measured, result)
+}
+
+async fn collect_progress<E>(
+    pool: &mut Pool,
+    generation: u64,
+    major: u32,
+    observe: &mut (dyn FnMut(PgObservation) + Send),
+    database: &str,
+    settings: Option<&Arc<[SettingsRow]>>,
+    admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
+) -> Result<bool, E> {
+    let session = match session_for_generation(pool, generation, observe) {
+        Ok(session) => session,
+        Err(_failure) => return Ok(false),
+    };
+    let mut measured = measure(observe, "pg_stat_progress_vacuum", database);
+    let result =
+        progress_vacuum::collect_progress_vacuum(session, major, measured.stats_mut(), |batch| {
+            admit(PgBatch::ProgressVacuum(batch.rows), settings.cloned())
+        })
+        .await;
+    finish_batched(pool, measured, result)
+}
+
+async fn collect_extensions<E>(
+    pool: &mut Pool,
+    generation: u64,
+    observe: &mut (dyn FnMut(PgObservation) + Send),
+    database: &str,
+    settings: Option<&Arc<[SettingsRow]>>,
+    admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
+) -> Result<bool, E> {
+    let statements_version = {
+        let session = match session_for_generation(pool, generation, observe) {
+            Ok(session) => session,
+            Err(_failure) => return Ok(false),
+        };
+        let mut measured = measure(observe, "pg_stat_statements_extension", database);
+        let result = tokio::time::timeout(
+            QUERY_TIMEOUT,
+            extension::installed(session, statements::EXTENSION, measured.stats_mut()),
+        )
+        .await;
+        match finish_query(measured, result) {
+            Ok(version) => version.and_then(statements::statements_version),
+            Err(_failure) => return Ok(false),
         }
     };
-    rows.settings = read(SETTINGS, settings::collect(client), Vec::len)
-        .await
-        .unwrap_or_default();
-    rows.archiver = read(ARCHIVER, archiver::collect_archiver(client), |_row| 1).await;
-    rows.wal = read(WAL, wal::collect_wal(client, major), |found| {
-        usize::from(found.is_some())
-    })
-    .await
-    .flatten();
-    rows.prepared_xacts = read(
-        PREPARED_XACTS,
-        prepared_xacts::collect_prepared_xacts(client),
-        Vec::len,
-    )
-    .await
-    .unwrap_or_default();
-    rows.database = read(
-        DATABASE,
-        database::collect_database(client, major),
-        |(_version, collected)| collected.len(),
-    )
-    .await;
-    rows.io = read(IO, io::collect_io(client, major), |found| {
-        found.as_ref().map_or(0, |(_version, rows)| rows.len())
-    })
-    .await
-    .flatten();
-    rows.activity = read(
-        ACTIVITY,
-        activity::collect_activity(client, major),
-        |read| read.rows.len(),
-    )
-    .await;
-    rows.progress_vacuum = read(
-        PROGRESS_VACUUM,
-        progress_vacuum::collect_progress_vacuum(client, major),
-        Vec::len,
-    )
-    .await
-    .unwrap_or_default();
-    collect_extensions(client, rows).await;
-}
-
-/// The two extensions, each collected only where it is installed.
-async fn collect_extensions(client: &Client, rows: &mut PgRows) {
-    match extension::installed(client, statements::EXTENSION).await {
-        Ok(Some(version)) => {
-            if let Some(layout) = statements_version(version)
-                && let Some(collected) = read(
-                    STATEMENTS,
-                    statements::collect_statements(client, layout),
-                    Vec::len,
-                )
-                .await
-            {
-                rows.statements = Some((layout, collected));
-            }
+    if let Some(version) = statements_version {
+        let session = match session_for_generation(pool, generation, observe) {
+            Ok(session) => session,
+            Err(_failure) => return Ok(false),
+        };
+        let mut measured = measure(observe, "pg_stat_statements", database);
+        let result =
+            statements::collect_statements(session, version, measured.stats_mut(), |batch| {
+                admit(PgBatch::Statements(version, batch.rows), settings.cloned())
+            })
+            .await;
+        if !finish_batched(pool, measured, result)? {
+            return Ok(false);
         }
-        Ok(None) => {}
-        Err(error) => log_extension_unreadable(statements::EXTENSION, &error),
     }
-    match extension::installed(client, store_plans::EXTENSION).await {
-        Ok(Some(version)) => match store_plans::flavour(version) {
-            Some(Flavour::Ossc) => {
-                rows.store_plans_ossc = read(
-                    STORE_PLANS,
-                    store_plans::collect_ossc(
-                        client,
-                        store_plans::TOP_N,
-                        store_plans::PLAN_TEXT_BUDGET,
-                    ),
-                    Vec::len,
-                )
-                .await
-                .unwrap_or_default();
-            }
-            Some(Flavour::Vadv) => {
-                rows.store_plans_vadv = read(
-                    STORE_PLANS,
-                    store_plans::collect_vadv(
-                        client,
-                        store_plans::TOP_N,
-                        store_plans::PLAN_TEXT_BUDGET,
-                    ),
-                    Vec::len,
-                )
-                .await
-                .unwrap_or_default();
-            }
-            None => {}
-        },
-        Ok(None) => {}
-        Err(error) => log_extension_unreadable(store_plans::EXTENSION, &error),
+
+    let plans_flavour = {
+        let session = match session_for_generation(pool, generation, observe) {
+            Ok(session) => session,
+            Err(_failure) => return Ok(false),
+        };
+        let mut measured = measure(observe, "pg_store_plans_extension", database);
+        let result = tokio::time::timeout(
+            QUERY_TIMEOUT,
+            extension::installed(session, store_plans::EXTENSION, measured.stats_mut()),
+        )
+        .await;
+        match finish_query(measured, result) {
+            Ok(version) => version.and_then(store_plans::flavour),
+            Err(_failure) => return Ok(false),
+        }
+    };
+    match plans_flavour {
+        Some(Flavour::Ossc) => {
+            let session = match session_for_generation(pool, generation, observe) {
+                Ok(session) => session,
+                Err(_failure) => return Ok(false),
+            };
+            let mut measured = measure(observe, "pg_store_plans_ossc", database);
+            let result = store_plans::collect_ossc(
+                session,
+                store_plans::TOP_N,
+                store_plans::PLAN_TEXT_BUDGET,
+                measured.stats_mut(),
+                |batch| admit(PgBatch::StorePlansOssc(batch.rows), settings.cloned()),
+            )
+            .await;
+            finish_batched(pool, measured, result)
+        }
+        Some(Flavour::Vadv) => {
+            let session = match session_for_generation(pool, generation, observe) {
+                Ok(session) => session,
+                Err(_failure) => return Ok(false),
+            };
+            let mut measured = measure(observe, "pg_store_plans_vadv", database);
+            let result = store_plans::collect_vadv(
+                session,
+                store_plans::TOP_N,
+                store_plans::PLAN_TEXT_BUDGET,
+                measured.stats_mut(),
+                |batch| admit(PgBatch::StorePlansVadv(batch.rows), settings.cloned()),
+            )
+            .await;
+            finish_batched(pool, measured, result)
+        }
+        None => Ok(true),
     }
 }
 
-/// Run one section's read, logging its start, what it produced, and its
-/// failure. `count` says how many rows the read is worth in the log line.
-async fn read<T, E: std::fmt::Display>(
-    type_id: u32,
-    collecting: impl Future<Output = Result<T, E>>,
-    count: impl FnOnce(&T) -> usize,
-) -> Option<T> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelationResult {
+    Complete,
+    Failed,
+    TimedOut,
+}
+
+async fn collect_relation_database<E>(
+    pool: &mut Pool,
+    database: &databases::Database,
+    major: u32,
+    observe: &mut (dyn FnMut(PgObservation) + Send),
+    settings: Option<&Arc<[SettingsRow]>>,
+    admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
+) -> Result<RelationResult, E> {
+    let session = match open_session(pool, observe).await {
+        Ok(session) => session,
+        Err(QueryFailure::Timeout) => return Ok(RelationResult::TimedOut),
+        Err(QueryFailure::Error) => return Ok(RelationResult::Failed),
+    };
+    let generation = session.generation();
+    let table_version = user_tables::user_tables_version(major);
+    let mut measured = measure(observe, "pg_stat_user_tables", &database.name);
+    let result =
+        user_tables::collect_user_tables(session, database, major, measured.stats_mut(), |batch| {
+            admit(
+                PgBatch::UserTables(table_version, batch.rows),
+                settings.cloned(),
+            )
+        })
+        .await;
+    match finish_batched_kind(pool, measured, result)? {
+        QueryCompletion::Complete => {}
+        QueryCompletion::Failed => return Ok(RelationResult::Failed),
+        QueryCompletion::TimedOut => return Ok(RelationResult::TimedOut),
+    }
+
+    let session = match session_for_generation(pool, generation, observe) {
+        Ok(session) => session,
+        Err(QueryFailure::Timeout) => return Ok(RelationResult::TimedOut),
+        Err(QueryFailure::Error) => return Ok(RelationResult::Failed),
+    };
+    let index_version = user_indexes::user_indexes_version(major);
+    let mut measured = measure(observe, "pg_stat_user_indexes", &database.name);
+    let result = user_indexes::collect_user_indexes(
+        session,
+        database,
+        major,
+        measured.stats_mut(),
+        |batch| {
+            admit(
+                PgBatch::UserIndexes(index_version, batch.rows),
+                settings.cloned(),
+            )
+        },
+    )
+    .await;
+    Ok(match finish_batched_kind(pool, measured, result)? {
+        QueryCompletion::Complete => RelationResult::Complete,
+        QueryCompletion::Failed => RelationResult::Failed,
+        QueryCompletion::TimedOut => RelationResult::TimedOut,
+    })
+}
+
+fn deliver<'a, E>(
+    mut measured: QueryMeasurement<'a>,
+    admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
+    batch: PgBatch,
+    settings: Option<Arc<[SettingsRow]>>,
+) -> Result<QueryMeasurement<'a>, E> {
     let started = Instant::now();
-    log_collection_start(type_id, "postgresql");
-    match collecting.await {
-        Ok(collected) => {
-            log_collection_finish(type_id, "postgresql", count(&collected), started.elapsed());
-            Some(collected)
+    match admit(batch, settings) {
+        Ok(write) => {
+            measured
+                .stats_mut()
+                .record_batch_write(started.elapsed(), write);
+            Ok(measured)
         }
         Err(error) => {
-            log_collection_failure(type_id, "postgresql", &error, started.elapsed());
-            None
+            measured.stats_mut().record_failed_batch(started.elapsed());
+            measured.sink_error();
+            Err(error)
         }
     }
 }
 
-fn log_database_unreachable(name: &str, error: &(dyn std::fmt::Display + '_)) {
-    log_event(
-        LogLevel::Warn,
-        "pg_database_unreachable",
-        &[
-            field("database", name),
-            field("error", format!("{error:#}")),
-        ],
-    );
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueryFailure {
+    Error,
+    Timeout,
 }
 
-fn log_extension_unreadable(name: &str, error: &(dyn std::fmt::Display + '_)) {
-    log_event(
-        LogLevel::Warn,
-        "pg_extension_unreadable",
-        &[
-            field("extension", name),
-            field("error", format!("{error:#}")),
-        ],
-    );
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueryCompletion {
+    Complete,
+    Failed,
+    TimedOut,
+}
+
+async fn open_session<'a>(
+    pool: &'a mut Pool,
+    observe: &mut (dyn FnMut(PgObservation) + Send),
+) -> Result<Session<'a>, QueryFailure> {
+    let database = pool.database_label().to_owned();
+    let started = Instant::now();
+    match pool.session().await {
+        Ok(session) => Ok(session),
+        Err(error) => {
+            let timeout = error.is_timeout();
+            observe(PgObservation::Connection(ConnectionObservation {
+                database,
+                elapsed: started.elapsed(),
+                timeout,
+                closed: false,
+            }));
+            if timeout {
+                Err(QueryFailure::Timeout)
+            } else {
+                Err(QueryFailure::Error)
+            }
+        }
+    }
+}
+
+fn session_for_generation<'a>(
+    pool: &'a mut Pool,
+    expected: u64,
+    observe: &mut (dyn FnMut(PgObservation) + Send),
+) -> Result<Session<'a>, QueryFailure> {
+    let database = pool.database_label().to_owned();
+    let Some(session) = pool.session_for_generation(expected) else {
+        observe(PgObservation::Connection(ConnectionObservation {
+            database,
+            elapsed: Duration::ZERO,
+            timeout: false,
+            closed: true,
+        }));
+        return Err(QueryFailure::Error);
+    };
+    Ok(session)
+}
+
+fn finish_query<T, E>(
+    measured: QueryMeasurement<'_>,
+    result: Result<Result<T, E>, tokio::time::error::Elapsed>,
+) -> Result<T, QueryFailure> {
+    match result {
+        Ok(Ok(value)) => {
+            measured.success();
+            Ok(value)
+        }
+        Ok(Err(_error)) => {
+            measured.error();
+            Err(QueryFailure::Error)
+        }
+        Err(_elapsed) => {
+            measured.timeout();
+            Err(QueryFailure::Timeout)
+        }
+    }
+}
+
+fn finish_failed<T, E>(
+    measured: QueryMeasurement<'_>,
+    result: Result<Result<T, E>, tokio::time::error::Elapsed>,
+) {
+    match result {
+        Ok(Ok(_value)) => measured.success(),
+        Ok(Err(_error)) => measured.error(),
+        Err(_elapsed) => measured.timeout(),
+    }
+}
+
+fn finish_batched<E>(
+    pool: &mut Pool,
+    measured: QueryMeasurement<'_>,
+    result: Result<(), BatchError<E>>,
+) -> Result<bool, E> {
+    Ok(matches!(
+        finish_batched_kind(pool, measured, result)?,
+        QueryCompletion::Complete
+    ))
+}
+
+fn finish_batched_kind<E>(
+    pool: &mut Pool,
+    measured: QueryMeasurement<'_>,
+    result: Result<(), BatchError<E>>,
+) -> Result<QueryCompletion, E> {
+    match result {
+        Ok(()) => {
+            measured.success();
+            Ok(QueryCompletion::Complete)
+        }
+        Err(BatchError::PostgreSql(_error)) => {
+            measured.error();
+            pool.close();
+            Ok(QueryCompletion::Failed)
+        }
+        Err(BatchError::Sink(error)) => {
+            measured.sink_error();
+            // Dropping an unconsumed RowStream leaves a response in flight.
+            // Closing prevents a later query from being written behind it.
+            pool.close();
+            Err(error)
+        }
+        Err(BatchError::Timeout) => {
+            measured.timeout();
+            pool.close();
+            Ok(QueryCompletion::TimedOut)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::{
+        CachedSettings, PgObservation, QueryFailure, QueryOutcome, cached_settings_for_generation,
+        measure, session_for_generation,
+    };
+    use kronika_source_pg::Pool;
+
+    #[test]
+    fn settings_cache_is_scoped_to_one_connection_generation() {
+        let cached = Some(CachedSettings {
+            generation: 7,
+            rows: Arc::from([]),
+        });
+        assert!(cached_settings_for_generation(cached.as_ref(), 7).is_some());
+        assert!(cached_settings_for_generation(cached.as_ref(), 8).is_none());
+    }
+
+    #[test]
+    fn timeout_observation_retains_partial_query_accounting() {
+        let mut observations = Vec::new();
+        let mut observe = |observation| observations.push(observation);
+        let mut measured = measure(&mut observe, "probe", "postgres");
+        measured.stats_mut().rows = 9;
+        measured.timeout();
+
+        let PgObservation::Query(observation) = observations.pop().expect("one observation") else {
+            panic!("expected a query observation");
+        };
+        assert_eq!(observation.outcome, QueryOutcome::Timeout);
+        assert_eq!(observation.stats.rows, 9);
+    }
+
+    #[test]
+    fn unavailable_session_is_accounted_as_a_closed_connection() {
+        let mut pool = Pool::new("host=127.0.0.1 dbname=metrics")
+            .expect("syntactically valid connection settings");
+        let mut observations = Vec::new();
+        {
+            let mut observe = |observation| observations.push(observation);
+            assert!(matches!(
+                session_for_generation(&mut pool, 1, &mut observe),
+                Err(QueryFailure::Error)
+            ));
+        }
+
+        let PgObservation::Connection(observation) =
+            observations.pop().expect("one connection observation")
+        else {
+            panic!("expected a connection observation");
+        };
+        assert_eq!(observation.database, "metrics");
+        assert!(observation.closed);
+        assert!(!observation.timeout);
+    }
 }

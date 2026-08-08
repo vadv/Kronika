@@ -4,7 +4,10 @@
 
 use kronika_registry::pg_stat_archiver::PgStatArchiver;
 use kronika_registry::{StrId, Ts};
-use tokio_postgres::Client;
+use tokio_postgres::types::Type;
+
+use crate::Session;
+use crate::query::{self, QueryStats};
 
 /// SQL transparency marker for collector queries.
 macro_rules! marked {
@@ -84,18 +87,28 @@ pub fn to_archiver<E>(
 ///
 /// # Errors
 /// Returns `PostgreSQL` query errors.
-pub async fn collect_archiver(client: &Client) -> Result<ArchiverRow, tokio_postgres::Error> {
-    let row = client.query_one(QUERY, &[]).await?;
-    Ok(ArchiverRow {
-        ts: row.get("ts_us"),
-        archived_count: row.get("archived_count"),
-        last_archived_wal: row.get("last_archived_wal"),
-        last_archived_time: row.get("last_archived_time_us"),
-        failed_count: row.get("failed_count"),
-        last_failed_wal: row.get("last_failed_wal"),
-        last_failed_time: row.get("last_failed_time_us"),
-        stats_reset: row.get("stats_reset_us"),
-    })
+pub async fn collect_archiver(
+    session: Session<'_>,
+    stats: &mut QueryStats,
+) -> anyhow::Result<ArchiverRow> {
+    query::read_one(
+        session,
+        QUERY,
+        std::iter::empty::<(String, Type)>(),
+        0,
+        stats,
+        |row| ArchiverRow {
+            ts: row.get("ts_us"),
+            archived_count: row.get("archived_count"),
+            last_archived_wal: row.get("last_archived_wal"),
+            last_archived_time: row.get("last_archived_time_us"),
+            failed_count: row.get("failed_count"),
+            last_failed_wal: row.get("last_failed_wal"),
+            last_failed_time: row.get("last_failed_time_us"),
+            stats_reset: row.get("stats_reset_us"),
+        },
+    )
+    .await
 }
 
 #[cfg(test)]

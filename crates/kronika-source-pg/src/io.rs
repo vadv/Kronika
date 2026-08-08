@@ -1,14 +1,17 @@
 //! `pg_stat_io` collection for types `1_009_001` / `1_009_002`.
 //!
-//! The view exists from PG16; on PG 10-15 there is no source and collection
-//! returns `None`. PG18 changed the schema non-additively (byte counters added,
-//! `op_bytes` removed), so the major version selects both the SQL and the layout.
-//! Collection returns raw owned rows; the caller interns the label strings. The
+//! The view exists from PG16; on PG 10-15 collection emits no batches. PG18
+//! changed the schema non-additively (byte counters added, `op_bytes` removed),
+//! so the major version selects both the SQL and the layout. Collection streams
+//! bounded batches of raw owned rows; the caller interns the label strings. The
 //! typed layout lives in `kronika-registry` (`PgStatIoV1` / `PgStatIoV2`).
 
 use kronika_registry::pg_stat_io::{PgStatIoV1, PgStatIoV2};
 use kronika_registry::{StrId, Ts};
-use tokio_postgres::Client;
+use tokio_postgres::types::Type;
+
+use crate::Session;
+use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
 
 /// Prefix a query literal with the kronika marker (SQL-transparency rule).
 macro_rules! marked {
@@ -219,26 +222,30 @@ fn row_from_pg(row: &tokio_postgres::Row, version: IoVersion) -> IoRow {
     }
 }
 
-/// Collect a full `pg_stat_io` snapshot, or `None` before PG16 where the view
-/// does not exist. Returns the layout version and raw rows; the caller interns
-/// the labels and builds the typed rows.
-///
-/// `pg_stat_io` is a small fixed matrix (`backend_type` × `object` × `context`,
-/// roughly 30-50 rows), so materializing the whole result with one `query` is
-/// bounded by the catalog shape, not by workload — no streaming or cap needed.
+/// Stream a full `pg_stat_io` snapshot in bounded batches. Before PG16, where
+/// the view does not exist, this returns successfully without calling `sink`.
 ///
 /// # Errors
-/// Returns the [`tokio_postgres::Error`] if the query fails.
-pub async fn collect_io(
-    client: &Client,
+/// Returns the `PostgreSQL` stream error or the batch sink error.
+pub async fn collect_io<E>(
+    session: Session<'_>,
     major: u32,
-) -> Result<Option<(IoVersion, Vec<IoRow>)>, tokio_postgres::Error> {
+    stats: &mut QueryStats,
+    sink: impl FnMut(Batch<IoRow>) -> Result<BatchWrite, E>,
+) -> Result<(), BatchError<E>> {
     let Some(version) = io_version(major) else {
-        return Ok(None);
+        return Ok(());
     };
-    let rows = client.query(io_query(version), &[]).await?;
-    let parsed = rows.iter().map(|row| row_from_pg(row, version)).collect();
-    Ok(Some((version, parsed)))
+    query::read_batched(
+        session,
+        io_query(version),
+        std::iter::empty::<(String, Type)>(),
+        0,
+        stats,
+        |row| row_from_pg(row, version),
+        sink,
+    )
+    .await
 }
 
 #[cfg(test)]

@@ -7,30 +7,73 @@
 use std::fmt;
 use std::net::IpAddr;
 use std::str::FromStr as _;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
+use kronika_source_pg::Session;
+use kronika_source_pg::query::{self, QueryStats};
 use tokio_postgres::config::Host;
+use tokio_postgres::types::Type;
 use tokio_postgres::{Config, NoTls};
 
+use crate::pg_sources::{ConnectionObservation, PgObservation, QueryObservation, QueryOutcome};
+
 const DEFAULT_PORT: u16 = 5432;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
+
+const INITIAL_POSTGRES_FACTS_QUERY: &str = "/* kronika: */ SELECT control.system_identifier, \
+    current_setting('log_line_prefix') AS log_line_prefix, \
+    current_setting('data_directory') AS data_directory, \
+    pg_current_logfile() AS current_logfile \
+    FROM pg_control_system() AS control";
+
+const CACHED_POSTGRES_FACTS_QUERY: &str = "/* kronika: */ SELECT NULL::bigint AS system_identifier, \
+    current_setting('log_line_prefix') AS log_line_prefix, \
+    current_setting('data_directory') AS data_directory, \
+    pg_current_logfile() AS current_logfile";
 
 /// A parsed connection and the only identity safe to put in a log line.
 pub(super) struct ConnectionTarget {
     config: Config,
     label: String,
+    source_index: usize,
+    system_identifier: OnceLock<u64>,
 }
 
 impl ConnectionTarget {
     /// Parse one configured connection without retaining its original text.
-    pub(super) fn parse(raw: &str) -> Result<Self, InvalidConnection> {
+    pub(super) fn parse(raw: &str, source_index: usize) -> Result<Self, InvalidConnection> {
         let config = Config::from_str(raw).map_err(|_error| InvalidConnection)?;
         validate_endpoints(&config)?;
         let label = connection_label(&config);
-        Ok(Self { config, label })
+        Ok(Self {
+            config,
+            label,
+            source_index,
+            system_identifier: OnceLock::new(),
+        })
     }
 
     pub(super) fn label(&self) -> &str {
         &self.label
+    }
+
+    pub(super) const fn source_index(&self) -> usize {
+        self.source_index
+    }
+
+    fn postgres_facts_query(&self) -> &'static str {
+        if self.system_identifier.get().is_some() {
+            CACHED_POSTGRES_FACTS_QUERY
+        } else {
+            INITIAL_POSTGRES_FACTS_QUERY
+        }
+    }
+
+    fn remember_system_identifier(&self, identifier: u64) -> u64 {
+        *self.system_identifier.get_or_init(|| identifier)
     }
 }
 
@@ -146,50 +189,115 @@ pub(super) struct PgBouncerServer {
 /// # Errors
 ///
 /// Returns an error when the connection cannot be made or a query fails.
-pub(super) async fn postgres(target: &ConnectionTarget) -> Result<PostgresServer> {
-    let (client, connection) = target
-        .config
-        .connect(NoTls)
-        .await
-        .context("connect to PostgreSQL")?;
+pub(super) async fn postgres(
+    target: &ConnectionTarget,
+    observe: &mut (dyn FnMut(PgObservation) + Send),
+) -> Result<PostgresServer> {
+    let connect_started = Instant::now();
+    let connected = tokio::time::timeout(CONNECT_TIMEOUT, target.config.connect(NoTls)).await;
+    let (client, connection) = match connected {
+        Ok(Ok(connected)) => connected,
+        Ok(Err(error)) => {
+            observe(PgObservation::Connection(ConnectionObservation {
+                database: target.label().to_owned(),
+                elapsed: connect_started.elapsed(),
+                timeout: false,
+                closed: false,
+            }));
+            return Err(error).context("connect to PostgreSQL");
+        }
+        Err(elapsed) => {
+            observe(PgObservation::Connection(ConnectionObservation {
+                database: target.label().to_owned(),
+                elapsed: connect_started.elapsed(),
+                timeout: true,
+                closed: false,
+            }));
+            return Err(elapsed).context("connect to PostgreSQL timed out");
+        }
+    };
     // The connection drives the protocol and ends when the client is dropped.
     let driver = tokio::spawn(connection);
-    let read = async {
-        let identity = client
-            .query_one("SELECT system_identifier FROM pg_control_system()", &[])
-            .await
-            .context("read system_identifier from pg_control_system()")?;
-        let prefix = client
-            .query_one(
-                "SELECT setting FROM pg_settings WHERE name = 'log_line_prefix'",
-                &[],
-            )
-            .await
-            .context("read log_line_prefix from pg_settings")?;
-        let current = client
-            .query_one(
-                "SELECT current_setting('data_directory'), pg_current_logfile()",
-                &[],
-            )
-            .await
-            .context("read the current log file")?;
-        let data_directory: String = current.get(0);
-        let logfile: Option<String> = current.get(1);
-        let identifier: i64 = identity.get(0);
+    let mut stats = QueryStats::default();
+    let query_started = Instant::now();
+    let read = tokio::time::timeout(QUERY_TIMEOUT, async {
+        let facts = query::read_one(
+            Session::new(&client, 0),
+            target.postgres_facts_query(),
+            std::iter::empty::<(String, Type)>(),
+            0,
+            &mut stats,
+            |row| PostgresFacts {
+                system_identifier: row.get("system_identifier"),
+                line_prefix: row.get("log_line_prefix"),
+                data_directory: row.get("data_directory"),
+                logfile: row.get("current_logfile"),
+            },
+        )
+        .await
+        .context("read PostgreSQL log facts")?;
+        let identifier = facts
+            .system_identifier
+            .map(|identifier| {
+                #[expect(
+                    clippy::cast_sign_loss,
+                    reason = "the server reports the identifier as its signed bit pattern"
+                )]
+                let identifier = identifier as u64;
+                target.remember_system_identifier(identifier)
+            })
+            .or_else(|| target.system_identifier.get().copied())
+            .context("PostgreSQL log facts omitted system_identifier before it was cached")?;
         Ok::<_, anyhow::Error>(PostgresServer {
-            log_path: logfile.map(|name| absolute(&data_directory, &name)),
-            line_prefix: prefix.get(0),
-            #[expect(
-                clippy::cast_sign_loss,
-                reason = "the server reports the identifier as its signed bit pattern"
-            )]
-            system_identifier: identifier as u64,
+            log_path: facts
+                .logfile
+                .map(|name| absolute(&facts.data_directory, &name)),
+            line_prefix: facts.line_prefix,
+            system_identifier: identifier,
         })
-    }
+    })
     .await;
     drop(client);
     driver.abort();
-    read
+    match read {
+        Ok(Ok(server)) => {
+            observe(PgObservation::Query(QueryObservation {
+                query_name: "postgres_log_facts",
+                database: target.label().to_owned(),
+                elapsed: query_started.elapsed(),
+                stats,
+                outcome: QueryOutcome::Success,
+            }));
+            Ok(server)
+        }
+        Ok(Err(error)) => {
+            observe(PgObservation::Query(QueryObservation {
+                query_name: "postgres_log_facts",
+                database: target.label().to_owned(),
+                elapsed: query_started.elapsed(),
+                stats,
+                outcome: QueryOutcome::Error,
+            }));
+            Err(error)
+        }
+        Err(elapsed) => {
+            observe(PgObservation::Query(QueryObservation {
+                query_name: "postgres_log_facts",
+                database: target.label().to_owned(),
+                elapsed: query_started.elapsed(),
+                stats,
+                outcome: QueryOutcome::Timeout,
+            }));
+            Err(elapsed).context("read PostgreSQL log facts timed out")
+        }
+    }
+}
+
+struct PostgresFacts {
+    system_identifier: Option<i64>,
+    line_prefix: String,
+    data_directory: String,
+    logfile: Option<String>,
 }
 
 /// Ask `PgBouncer` for its log file and where it listens.
@@ -201,13 +309,12 @@ pub(super) async fn postgres(target: &ConnectionTarget) -> Result<PostgresServer
 ///
 /// Returns an error when the connection cannot be made or the query fails.
 pub(super) async fn pgbouncer(target: &ConnectionTarget) -> Result<PgBouncerServer> {
-    let (client, connection) = target
-        .config
-        .connect(NoTls)
+    let (client, connection) = tokio::time::timeout(CONNECT_TIMEOUT, target.config.connect(NoTls))
         .await
+        .context("connect to PgBouncer timed out")?
         .context("connect to PgBouncer")?;
     let driver = tokio::spawn(connection);
-    let read = async {
+    let read = tokio::time::timeout(QUERY_TIMEOUT, async {
         // The admin console speaks the protocol but not the extended query
         // path, so this is a simple query and the rows come back as text.
         let rows = client
@@ -221,11 +328,12 @@ pub(super) async fn pgbouncer(target: &ConnectionTarget) -> Result<PgBouncerServ
             }
         }
         Ok::<_, anyhow::Error>(settings.finish())
-    }
-    .await;
+    })
+    .await
+    .context("read SHOW CONFIG from PgBouncer timed out");
     drop(client);
     driver.abort();
-    read
+    read?
 }
 
 /// The one `SHOW CONFIG` key worth keeping.

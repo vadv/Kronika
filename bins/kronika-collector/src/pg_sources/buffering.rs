@@ -1,77 +1,89 @@
-//! Interning the strings of a `PostgreSQL` read and buffering its rows.
+//! Interning and buffering one retained `PostgreSQL` batch.
 
 use anyhow::Result;
 use kronika_registry::StrId;
-use kronika_source_pg::activity::{self, ActivityVersion};
+use kronika_source_pg::activity::{self, ActivityRow, ActivityVersion};
 use kronika_source_pg::archiver;
-use kronika_source_pg::database::{self, DatabaseVersion};
-use kronika_source_pg::io::{self, IoVersion};
+use kronika_source_pg::database::{self, DatabaseRow, DatabaseVersion};
+use kronika_source_pg::io::{self, IoRow, IoVersion};
 use kronika_source_pg::prepared_xacts;
 use kronika_source_pg::progress_vacuum;
 use kronika_source_pg::settings::{self, SettingsRow};
-use kronika_source_pg::statements::{self, StatementsVersion};
+use kronika_source_pg::statements::{self, StatementsRow, StatementsVersion};
 use kronika_source_pg::store_plans;
-use kronika_source_pg::user_indexes::{self, UserIndexesVersion};
-use kronika_source_pg::user_tables::{self, UserTablesVersion};
+use kronika_source_pg::user_indexes::{self, UserIndexesRow, UserIndexesVersion};
+use kronika_source_pg::user_tables::{self, UserTablesRow, UserTablesVersion};
 use kronika_source_pg::wal::WalSnapshot;
 use kronika_writer::{Interner, SectionBuffers};
 
-use super::PgRows;
+use super::PgBatch;
 use crate::buffering::buffer_row;
-use crate::logging::{LogLevel, field, log_event};
 
-/// Move one read of the server into the window.
+/// Move one retained `PostgreSQL` batch into a window.
 ///
-/// `settings` is the running configuration and is buffered only when a segment
-/// is opening: it changes rarely, and every segment has to carry it to be
-/// readable on its own.
-///
-/// # Errors
-///
-/// Returns an error when a string cannot be interned or a section buffer is
-/// full.
-pub(crate) fn push_pg_sources(
+/// `opening_settings` is included only when this batch opens a segment. A
+/// settings batch carries the same rows itself and is never duplicated.
+pub(crate) fn push_pg_batch(
     buffers: &mut SectionBuffers,
     interner: &mut Interner,
-    rows: &PgRows,
-    settings: &[SettingsRow],
+    batch: &PgBatch,
+    opening_settings: &[SettingsRow],
 ) -> Result<()> {
-    push_settings(buffers, interner, settings)?;
-    if let Some(row) = &rows.archiver {
-        buffer_row(buffers, archiver::to_archiver(row, intern(interner))?)?;
+    if !matches!(batch, PgBatch::Settings(_)) {
+        push_settings(buffers, interner, opening_settings)?;
     }
-    match rows.wal {
-        Some(WalSnapshot::V1(row)) => buffer_row(buffers, row)?,
-        Some(WalSnapshot::V2(row)) => buffer_row(buffers, row)?,
-        None => {}
+    match batch {
+        PgBatch::Settings(rows) => push_settings(buffers, interner, rows),
+        PgBatch::Archiver(row) => {
+            buffer_row(buffers, archiver::to_archiver(row, intern(interner))?)
+        }
+        PgBatch::Wal(WalSnapshot::V1(row)) => buffer_row(buffers, *row),
+        PgBatch::Wal(WalSnapshot::V2(row)) => buffer_row(buffers, *row),
+        PgBatch::PreparedXacts(rows) => {
+            for row in rows {
+                buffer_row(
+                    buffers,
+                    prepared_xacts::to_prepared_xacts(row, intern(interner))?,
+                )?;
+            }
+            Ok(())
+        }
+        PgBatch::Database(version, rows) => push_database(buffers, interner, *version, rows),
+        PgBatch::Io(version, rows) => push_io(buffers, interner, *version, rows),
+        PgBatch::Activity(version, rows) => push_activity(buffers, interner, *version, rows),
+        PgBatch::ProgressVacuum(rows) => {
+            for row in rows {
+                buffer_row(
+                    buffers,
+                    progress_vacuum::to_progress_vacuum(row, intern(interner))?,
+                )?;
+            }
+            Ok(())
+        }
+        PgBatch::Statements(version, rows) => push_statements(buffers, interner, *version, rows),
+        PgBatch::StorePlansOssc(rows) => {
+            for row in rows {
+                buffer_row(buffers, store_plans::to_ossc(row, intern(interner))?)?;
+            }
+            Ok(())
+        }
+        PgBatch::StorePlansVadv(rows) => {
+            for row in rows {
+                buffer_row(buffers, store_plans::to_vadv(row, intern(interner))?)?;
+            }
+            Ok(())
+        }
+        PgBatch::UserTables(version, rows) => push_user_tables(buffers, interner, *version, rows),
+        PgBatch::UserIndexes(version, rows) => push_user_indexes(buffers, interner, *version, rows),
     }
-    for row in &rows.prepared_xacts {
-        buffer_row(
-            buffers,
-            prepared_xacts::to_prepared_xacts(row, intern(interner))?,
-        )?;
-    }
-    push_database(buffers, interner, rows)?;
-    push_io(buffers, interner, rows)?;
-    push_activity(buffers, interner, rows)?;
-    for row in &rows.progress_vacuum {
-        buffer_row(
-            buffers,
-            progress_vacuum::to_progress_vacuum(row, intern(interner))?,
-        )?;
-    }
-    push_statements(buffers, interner, rows)?;
-    push_store_plans(buffers, interner, rows)?;
-    push_user_tables(buffers, interner, rows)?;
-    push_user_indexes(buffers, interner, rows)
 }
 
 fn push_settings(
     buffers: &mut SectionBuffers,
     interner: &mut Interner,
-    settings: &[SettingsRow],
+    rows: &[SettingsRow],
 ) -> Result<()> {
-    for row in settings {
+    for row in rows {
         buffer_row(buffers, settings::to_section(row, intern(interner))?)?;
     }
     Ok(())
@@ -80,12 +92,10 @@ fn push_settings(
 fn push_database(
     buffers: &mut SectionBuffers,
     interner: &mut Interner,
-    rows: &PgRows,
+    version: DatabaseVersion,
+    rows: &[DatabaseRow],
 ) -> Result<()> {
-    let Some((version, collected)) = &rows.database else {
-        return Ok(());
-    };
-    for row in collected {
+    for row in rows {
         match version {
             DatabaseVersion::V1 => buffer_row(buffers, database::to_v1(row, intern(interner))?)?,
             DatabaseVersion::V2 => buffer_row(buffers, database::to_v2(row, intern(interner))?)?,
@@ -96,11 +106,13 @@ fn push_database(
     Ok(())
 }
 
-fn push_io(buffers: &mut SectionBuffers, interner: &mut Interner, rows: &PgRows) -> Result<()> {
-    let Some((version, collected)) = &rows.io else {
-        return Ok(());
-    };
-    for row in collected {
+fn push_io(
+    buffers: &mut SectionBuffers,
+    interner: &mut Interner,
+    version: IoVersion,
+    rows: &[IoRow],
+) -> Result<()> {
+    for row in rows {
         match version {
             IoVersion::V1 => buffer_row(buffers, io::to_v1(row, intern(interner))?)?,
             IoVersion::V2 => buffer_row(buffers, io::to_v2(row, intern(interner))?)?,
@@ -109,26 +121,14 @@ fn push_io(buffers: &mut SectionBuffers, interner: &mut Interner, rows: &PgRows)
     Ok(())
 }
 
-/// A read the server could not answer in full is dropped, not written short:
-/// half an activity snapshot would read as an idle server.
 fn push_activity(
     buffers: &mut SectionBuffers,
     interner: &mut Interner,
-    rows: &PgRows,
+    version: ActivityVersion,
+    rows: &[ActivityRow],
 ) -> Result<()> {
-    let Some(read) = &rows.activity else {
-        return Ok(());
-    };
-    if read.truncated {
-        log_event(
-            LogLevel::Warn,
-            "pg_activity_truncated",
-            &[field("source_rows", read.source_rows)],
-        );
-        return Ok(());
-    }
-    for row in &read.rows {
-        match read.version {
+    for row in rows {
+        match version {
             ActivityVersion::V1 => buffer_row(buffers, activity::to_v1(row, intern(interner))?)?,
             ActivityVersion::V2 => buffer_row(buffers, activity::to_v2(row, intern(interner))?)?,
             ActivityVersion::V3 => buffer_row(buffers, activity::to_v3(row, intern(interner))?)?,
@@ -140,12 +140,10 @@ fn push_activity(
 fn push_statements(
     buffers: &mut SectionBuffers,
     interner: &mut Interner,
-    rows: &PgRows,
+    version: StatementsVersion,
+    rows: &[StatementsRow],
 ) -> Result<()> {
-    let Some((version, collected)) = &rows.statements else {
-        return Ok(());
-    };
-    for row in collected {
+    for row in rows {
         match version {
             StatementsVersion::V1 => {
                 buffer_row(buffers, statements::to_v1(row, intern(interner))?)?;
@@ -170,29 +168,13 @@ fn push_statements(
     Ok(())
 }
 
-fn push_store_plans(
-    buffers: &mut SectionBuffers,
-    interner: &mut Interner,
-    rows: &PgRows,
-) -> Result<()> {
-    for row in &rows.store_plans_ossc {
-        buffer_row(buffers, store_plans::to_ossc(row, intern(interner))?)?;
-    }
-    for row in &rows.store_plans_vadv {
-        buffer_row(buffers, store_plans::to_vadv(row, intern(interner))?)?;
-    }
-    Ok(())
-}
-
 fn push_user_tables(
     buffers: &mut SectionBuffers,
     interner: &mut Interner,
-    rows: &PgRows,
+    version: UserTablesVersion,
+    rows: &[UserTablesRow],
 ) -> Result<()> {
-    let Some((version, collected)) = &rows.user_tables else {
-        return Ok(());
-    };
-    for row in collected {
+    for row in rows {
         match version {
             UserTablesVersion::V1 => {
                 buffer_row(buffers, user_tables::to_v1(row, intern(interner))?)?;
@@ -214,12 +196,10 @@ fn push_user_tables(
 fn push_user_indexes(
     buffers: &mut SectionBuffers,
     interner: &mut Interner,
-    rows: &PgRows,
+    version: UserIndexesVersion,
+    rows: &[UserIndexesRow],
 ) -> Result<()> {
-    let Some((version, collected)) = &rows.user_indexes else {
-        return Ok(());
-    };
-    for row in collected {
+    for row in rows {
         match version {
             UserIndexesVersion::V1 => {
                 buffer_row(buffers, user_indexes::to_v1(row, intern(interner))?)?;
@@ -232,7 +212,6 @@ fn push_user_indexes(
     Ok(())
 }
 
-/// The interner in the shape every `to_*` builder expects.
 fn intern(interner: &mut Interner) -> impl FnMut(&[u8]) -> Result<StrId> + '_ {
     move |value: &[u8]| {
         interner

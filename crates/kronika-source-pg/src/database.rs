@@ -3,14 +3,18 @@
 //! In PG 10-18 the `pg_stat_database` column set only grows: checksum columns
 //! arrive in PG12, session statistics in PG14, and parallel-worker counters in
 //! PG18. The major version selects both the SQL and the layout. Collection
-//! returns owned rows; the caller interns `datname` into the segment dictionary.
-//! The typed layout lives in `kronika-registry` (`PgStatDatabaseV1`..`V4`).
+//! streams bounded batches of owned rows; the caller interns `datname` into the
+//! segment dictionary. The typed layout lives in `kronika-registry`
+//! (`PgStatDatabaseV1`..`V4`).
 
 use kronika_registry::pg_stat_database::{
     PgStatDatabaseV1, PgStatDatabaseV2, PgStatDatabaseV3, PgStatDatabaseV4,
 };
 use kronika_registry::{StrId, Ts};
-use tokio_postgres::Client;
+use tokio_postgres::types::Type;
+
+use crate::Session;
+use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
 
 /// Prefix a query literal with the kronika marker (SQL-transparency rule).
 macro_rules! marked {
@@ -457,19 +461,27 @@ fn row_from_pg(row: &tokio_postgres::Row, version: DatabaseVersion) -> DatabaseR
     }
 }
 
-/// Collect a full `pg_stat_database` snapshot. Returns the layout version and
-/// raw rows; the caller interns `datname` and builds the typed rows.
+/// Stream a full `pg_stat_database` snapshot in bounded batches.
 ///
 /// # Errors
-/// Returns the [`tokio_postgres::Error`] if the query fails.
-pub async fn collect_database(
-    client: &Client,
+/// Returns the `PostgreSQL` stream error or the batch sink error.
+pub async fn collect_database<E>(
+    session: Session<'_>,
     major: u32,
-) -> Result<(DatabaseVersion, Vec<DatabaseRow>), tokio_postgres::Error> {
+    stats: &mut QueryStats,
+    sink: impl FnMut(Batch<DatabaseRow>) -> Result<BatchWrite, E>,
+) -> Result<(), BatchError<E>> {
     let version = database_version(major);
-    let rows = client.query(database_query(version), &[]).await?;
-    let parsed = rows.iter().map(|row| row_from_pg(row, version)).collect();
-    Ok((version, parsed))
+    query::read_batched(
+        session,
+        database_query(version),
+        std::iter::empty::<(String, Type)>(),
+        0,
+        stats,
+        |row| row_from_pg(row, version),
+        sink,
+    )
+    .await
 }
 
 #[cfg(test)]
