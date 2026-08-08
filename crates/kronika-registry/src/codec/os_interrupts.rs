@@ -14,7 +14,8 @@ use crate::{Section, StrId, Ts};
     id = 1_114_001,
     name = "os_interrupts",
     semantics = snapshot_full,
-    sort_key("irq", "ts")
+    sort_key("irq", "ts"),
+    identity("irq")
 )]
 pub struct OsInterrupts {
     /// Collection timestamp, unix microseconds.

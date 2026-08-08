@@ -8,7 +8,8 @@ use crate::{Section, Ts};
     id = 1_101_001,
     name = "os_process_status",
     semantics = snapshot_full,
-    sort_key("pid", "starttime", "ts")
+    sort_key("pid", "starttime", "ts"),
+    identity("pid", "starttime")
 )]
 pub struct OsProcessStatus {
     /// Collection timestamp, unix microseconds.
@@ -93,6 +94,7 @@ mod tests {
         let c = OsProcessStatus::CONTRACT;
         assert_eq!(c.type_id.get(), 1_101_001);
         assert_eq!(c.sort_key, ["pid", "starttime", "ts"]);
+        assert_eq!(c.identity, ["pid", "starttime"]);
     }
 
     #[test]

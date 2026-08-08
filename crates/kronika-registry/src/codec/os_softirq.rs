@@ -11,7 +11,8 @@ use crate::{Section, StrId, Ts};
     id = 1_115_001,
     name = "os_softirq",
     semantics = snapshot_full,
-    sort_key("vector", "ts")
+    sort_key("vector", "ts"),
+    identity("vector")
 )]
 pub struct OsSoftirq {
     /// Collection timestamp, unix microseconds.

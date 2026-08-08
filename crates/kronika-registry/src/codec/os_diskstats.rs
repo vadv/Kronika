@@ -12,7 +12,8 @@ use crate::{Section, StrId, Ts};
     id = 1_108_001,
     name = "os_diskstats",
     semantics = snapshot_full,
-    sort_key("major", "minor", "ts")
+    sort_key("major", "minor", "ts"),
+    identity("major", "minor")
 )]
 pub struct OsDiskstats {
     /// Collection timestamp, unix microseconds.
@@ -152,6 +153,7 @@ mod tests {
         let c = OsDiskstats::CONTRACT;
         assert_eq!(c.type_id.get(), 1_108_001);
         assert_eq!(c.sort_key, ["major", "minor", "ts"]);
+        assert_eq!(c.identity, ["major", "minor"]);
     }
 
     #[test]

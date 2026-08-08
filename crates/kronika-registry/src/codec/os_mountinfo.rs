@@ -13,7 +13,8 @@ use crate::{Section, StrId, Ts};
     id = 1_112_001,
     name = "os_mountinfo",
     semantics = on_change,
-    sort_key("major", "minor", "mount_point", "ts")
+    sort_key("major", "minor", "mount_point", "ts"),
+    identity("major", "minor", "mount_point")
 )]
 pub struct OsMountinfo {
     /// Collection timestamp, unix microseconds.
@@ -93,6 +94,7 @@ mod tests {
         let c = OsMountinfo::CONTRACT;
         assert_eq!(c.type_id.get(), 1_112_001);
         assert_eq!(c.sort_key, ["major", "minor", "mount_point", "ts"]);
+        assert_eq!(c.identity, ["major", "minor", "mount_point"]);
     }
 
     #[test]
