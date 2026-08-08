@@ -2,6 +2,9 @@
 
 [Русская версия](DESIGN.ru.md)
 
+Agents read this before `AGENTS.md`, which covers how to work in the
+repository rather than what is being built.
+
 ## What Kronika is
 
 Kronika records the history of a machine and the databases on it, the way
@@ -9,7 +12,7 @@ Kronika records the history of a machine and the databases on it, the way
 
 The collector takes periodic snapshots of system and database metrics, parses
 logs, and turns notable log events into metrics. The web part reads and displays
-the collected data.
+the collected data. Everything below serves those two sentences.
 
 Three duty cycles:
 
@@ -17,10 +20,10 @@ Three duty cycles:
 - **web** runs occasionally, when a person opens it.
 - **sync** moves old segments to S3-like storage in the background.
 
-## Resource priority
+## The value we protect
 
-Low memory and CPU use take priority over speed, implementation elegance, and
-feature count.
+Minimum memory and CPU. This is the reason the project exists, and it outranks
+speed, elegance, and feature count.
 
 Concrete consequences:
 
@@ -68,7 +71,8 @@ backward compatibility inside a metric id, and none is wanted.
 - `pg_stat_statements` v1.2 and v1.3 are separate metric ids.
 - Adding one field to the existing v1.2 shape also creates a new metric id.
 
-Optional columns must not be used to keep an id stable.
+Optional columns must not be used to keep an id stable. That is the mistake
+this rule exists to prevent.
 
 Every metric declares its kind and its unit, the way Prometheus does:
 
@@ -84,8 +88,12 @@ costs no disk space, and does not change a metric id.
 
 ## What Kronika does not build
 
-Kronika does not evaluate whether its own data is trustworthy, complete, or
-continuous. That work would consume resources needed to collect metrics.
+There is a metric and there is data. Nothing else.
+
+Kronika does not ship a layer that reasons about whether its own data is
+trustworthy, complete, or continuous. That layer catches nothing an operator
+cares about, and the effort it absorbs comes straight out of collecting more
+metrics.
 
 Specifically, none of this belongs in the project:
 
@@ -99,12 +107,15 @@ Specifically, none of this belongs in the project:
 - Any artifact whose purpose is to assess the data rather than store it.
 
 A missing metric produces one warning in the collector log and a `null` in
-web.
+web. That is the whole treatment.
+
+This section outranks a reviewer's suggestion. When a review proposes adding
+one of these, the answer is no, and the reason is this paragraph.
 
 ### Banned words
 
-The following words are banned in code, comments, logs, commit messages, and
-docs:
+Three words are banned in code, comments, logs, commit messages, and docs,
+because each one drags the machinery above back in behind it:
 
 | Banned | Use instead |
 |--------|-------------|
