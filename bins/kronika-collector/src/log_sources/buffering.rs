@@ -38,23 +38,28 @@ fn push_errors(
     interner: &mut Interner,
     rows: &LogRows,
 ) -> Result<()> {
-    for group in &rows.postgres.errors {
-        let row = PgLogErrors {
-            ts: Ts(group.ts),
-            severity: group.severity.code(),
-            category: group.category.code(),
-            sqlstate: option(interner, group.sqlstate.as_deref())?,
-            pattern: intern(interner, &group.pattern)?,
-            count: group.count,
-            sample: intern(interner, &group.sample)?,
-            detail: option(interner, group.detail.as_deref())?,
-            hint: option(interner, group.hint.as_deref())?,
-            context: option(interner, group.context.as_deref())?,
-            statement: option(interner, group.statement.as_deref())?,
-            database: option(interner, group.database.as_deref())?,
-            username: option(interner, group.username.as_deref())?,
-        };
-        buffer_row(buffers, row)?;
+    for batch in &rows.postgres {
+        let source_file = intern(interner, &batch.source_file)?;
+        for group in &batch.events.errors {
+            let row = PgLogErrors {
+                ts: Ts(group.ts),
+                system_identifier: batch.system_identifier,
+                source_file,
+                severity: group.severity.code(),
+                category: group.category.code(),
+                sqlstate: option(interner, group.sqlstate.as_deref())?,
+                pattern: intern(interner, &group.pattern)?,
+                count: group.count,
+                sample: intern(interner, &group.sample)?,
+                detail: option(interner, group.detail.as_deref())?,
+                hint: option(interner, group.hint.as_deref())?,
+                context: option(interner, group.context.as_deref())?,
+                statement: option(interner, group.statement.as_deref())?,
+                database: option(interner, group.database.as_deref())?,
+                username: option(interner, group.username.as_deref())?,
+            };
+            buffer_row(buffers, row)?;
+        }
     }
     Ok(())
 }
@@ -64,26 +69,31 @@ fn push_checkpoints(
     interner: &mut Interner,
     rows: &LogRows,
 ) -> Result<()> {
-    for event in &rows.postgres.checkpoints {
-        let row = PgLogCheckpoints {
-            ts: Ts(event.ts),
-            phase: event.phase.code(),
-            reason: option(interner, event.reason.as_deref())?,
-            seconds_apart: event.seconds_apart,
-            buffers_written: event.buffers_written,
-            write_ms: event.write_ms,
-            sync_ms: event.sync_ms,
-            total_ms: event.total_ms,
-            distance_kb: event.distance_kb,
-            estimate_kb: event.estimate_kb,
-            wal_added: event.wal_added,
-            wal_removed: event.wal_removed,
-            wal_recycled: event.wal_recycled,
-            sync_files: event.sync_files,
-            longest_sync_ms: event.longest_sync_ms,
-            average_sync_ms: event.average_sync_ms,
-        };
-        buffer_row(buffers, row)?;
+    for batch in &rows.postgres {
+        let source_file = intern(interner, &batch.source_file)?;
+        for event in &batch.events.checkpoints {
+            let row = PgLogCheckpoints {
+                ts: Ts(event.ts),
+                system_identifier: batch.system_identifier,
+                source_file,
+                phase: event.phase.code(),
+                reason: option(interner, event.reason.as_deref())?,
+                seconds_apart: event.seconds_apart,
+                buffers_written: event.buffers_written,
+                write_ms: event.write_ms,
+                sync_ms: event.sync_ms,
+                total_ms: event.total_ms,
+                distance_kb: event.distance_kb,
+                estimate_kb: event.estimate_kb,
+                wal_added: event.wal_added,
+                wal_removed: event.wal_removed,
+                wal_recycled: event.wal_recycled,
+                sync_files: event.sync_files,
+                longest_sync_ms: event.longest_sync_ms,
+                average_sync_ms: event.average_sync_ms,
+            };
+            buffer_row(buffers, row)?;
+        }
     }
     Ok(())
 }
@@ -93,30 +103,35 @@ fn push_autovacuum(
     interner: &mut Interner,
     rows: &LogRows,
 ) -> Result<()> {
-    for event in &rows.postgres.autovacuum {
-        let row = PgLogAutovacuum {
-            ts: Ts(event.ts),
-            kind: event.kind.code(),
-            relation: option(interner, event.relation.as_deref())?,
-            index_scans: event.index_scans,
-            pages_removed: event.pages_removed,
-            pages_remaining: event.pages_remaining,
-            tuples_removed: event.tuples_removed,
-            tuples_remaining: event.tuples_remaining,
-            tuples_dead_not_removable: event.tuples_dead_not_removable,
-            elapsed_ms: event.elapsed_ms,
-            buffer_hits: event.buffer_hits,
-            buffer_misses: event.buffer_misses,
-            buffer_dirtied: event.buffer_dirtied,
-            avg_read_rate_mbs: event.avg_read_rate_mbs,
-            avg_write_rate_mbs: event.avg_write_rate_mbs,
-            cpu_user_ms: event.cpu_user_ms,
-            cpu_system_ms: event.cpu_system_ms,
-            wal_records: event.wal_records,
-            wal_fpi: event.wal_fpi,
-            wal_bytes: event.wal_bytes,
-        };
-        buffer_row(buffers, row)?;
+    for batch in &rows.postgres {
+        let source_file = intern(interner, &batch.source_file)?;
+        for event in &batch.events.autovacuum {
+            let row = PgLogAutovacuum {
+                ts: Ts(event.ts),
+                system_identifier: batch.system_identifier,
+                source_file,
+                kind: event.kind.code(),
+                relation: option(interner, event.relation.as_deref())?,
+                index_scans: event.index_scans,
+                pages_removed: event.pages_removed,
+                pages_remaining: event.pages_remaining,
+                tuples_removed: event.tuples_removed,
+                tuples_remaining: event.tuples_remaining,
+                tuples_dead_not_removable: event.tuples_dead_not_removable,
+                elapsed_ms: event.elapsed_ms,
+                buffer_hits: event.buffer_hits,
+                buffer_misses: event.buffer_misses,
+                buffer_dirtied: event.buffer_dirtied,
+                avg_read_rate_mbs: event.avg_read_rate_mbs,
+                avg_write_rate_mbs: event.avg_write_rate_mbs,
+                cpu_user_ms: event.cpu_user_ms,
+                cpu_system_ms: event.cpu_system_ms,
+                wal_records: event.wal_records,
+                wal_fpi: event.wal_fpi,
+                wal_bytes: event.wal_bytes,
+            };
+            buffer_row(buffers, row)?;
+        }
     }
     Ok(())
 }
@@ -126,16 +141,21 @@ fn push_slow_queries(
     interner: &mut Interner,
     rows: &LogRows,
 ) -> Result<()> {
-    for query in &rows.postgres.slow_queries {
-        let row = PgLogSlowQueries {
-            ts: Ts(query.ts),
-            pattern: intern(interner, &query.pattern)?,
-            sample: intern(interner, &query.sample)?,
-            count: query.count,
-            max_duration_ms: query.max_duration_ms,
-            total_duration_ms: query.total_duration_ms,
-        };
-        buffer_row(buffers, row)?;
+    for batch in &rows.postgres {
+        let source_file = intern(interner, &batch.source_file)?;
+        for query in &batch.events.slow_queries {
+            let row = PgLogSlowQueries {
+                ts: Ts(query.ts),
+                system_identifier: batch.system_identifier,
+                source_file,
+                pattern: intern(interner, &query.pattern)?,
+                sample: intern(interner, &query.sample)?,
+                count: query.count,
+                max_duration_ms: query.max_duration_ms,
+                total_duration_ms: query.total_duration_ms,
+            };
+            buffer_row(buffers, row)?;
+        }
     }
     Ok(())
 }
@@ -145,19 +165,24 @@ fn push_lock_waits(
     interner: &mut Interner,
     rows: &LogRows,
 ) -> Result<()> {
-    for wait in &rows.postgres.lock_waits {
-        let row = PgLogLockWaits {
-            ts: Ts(wait.ts),
-            kind: wait.kind.code(),
-            pid: wait.pid,
-            lock_mode: option(interner, wait.lock_mode.as_deref())?,
-            lock_target: option(interner, wait.lock_target.as_deref())?,
-            duration_ms: wait.duration_ms,
-            detail: option(interner, wait.detail.as_deref())?,
-            context: option(interner, wait.context.as_deref())?,
-            statement: option(interner, wait.statement.as_deref())?,
-        };
-        buffer_row(buffers, row)?;
+    for batch in &rows.postgres {
+        let source_file = intern(interner, &batch.source_file)?;
+        for wait in &batch.events.lock_waits {
+            let row = PgLogLockWaits {
+                ts: Ts(wait.ts),
+                system_identifier: batch.system_identifier,
+                source_file,
+                kind: wait.kind.code(),
+                pid: wait.pid,
+                lock_mode: option(interner, wait.lock_mode.as_deref())?,
+                lock_target: option(interner, wait.lock_target.as_deref())?,
+                duration_ms: wait.duration_ms,
+                detail: option(interner, wait.detail.as_deref())?,
+                context: option(interner, wait.context.as_deref())?,
+                statement: option(interner, wait.statement.as_deref())?,
+            };
+            buffer_row(buffers, row)?;
+        }
     }
     Ok(())
 }
@@ -167,17 +192,22 @@ fn push_lifecycle(
     interner: &mut Interner,
     rows: &LogRows,
 ) -> Result<()> {
-    for event in &rows.postgres.lifecycle {
-        let row = PgLogLifecycle {
-            ts: Ts(event.ts),
-            kind: event.kind.code(),
-            pid: event.pid,
-            signal: event.signal,
-            shutdown_mode: option(interner, event.shutdown_mode.as_deref())?,
-            message: intern(interner, &event.message)?,
-            query_detail: option(interner, event.query_detail.as_deref())?,
-        };
-        buffer_row(buffers, row)?;
+    for batch in &rows.postgres {
+        let source_file = intern(interner, &batch.source_file)?;
+        for event in &batch.events.lifecycle {
+            let row = PgLogLifecycle {
+                ts: Ts(event.ts),
+                system_identifier: batch.system_identifier,
+                source_file,
+                kind: event.kind.code(),
+                pid: event.pid,
+                signal: event.signal,
+                shutdown_mode: option(interner, event.shutdown_mode.as_deref())?,
+                message: intern(interner, &event.message)?,
+                query_detail: option(interner, event.query_detail.as_deref())?,
+            };
+            buffer_row(buffers, row)?;
+        }
     }
     Ok(())
 }
@@ -187,14 +217,19 @@ fn push_temp_files(
     interner: &mut Interner,
     rows: &LogRows,
 ) -> Result<()> {
-    for file in &rows.postgres.temp_files {
-        let row = PgLogTempFiles {
-            ts: Ts(file.ts),
-            path: option(interner, file.path.as_deref())?,
-            size_bytes: file.size_bytes,
-            statement: option(interner, file.statement.as_deref())?,
-        };
-        buffer_row(buffers, row)?;
+    for batch in &rows.postgres {
+        let source_file = intern(interner, &batch.source_file)?;
+        for file in &batch.events.temp_files {
+            let row = PgLogTempFiles {
+                ts: Ts(file.ts),
+                system_identifier: batch.system_identifier,
+                source_file,
+                path: option(interner, file.path.as_deref())?,
+                size_bytes: file.size_bytes,
+                statement: option(interner, file.statement.as_deref())?,
+            };
+            buffer_row(buffers, row)?;
+        }
     }
     Ok(())
 }
@@ -204,16 +239,20 @@ fn push_pgbouncer(
     interner: &mut Interner,
     rows: &LogRows,
 ) -> Result<()> {
-    for event in &rows.pgbouncer {
-        let row = PgBouncerEvents {
-            ts: Ts(event.ts),
-            level: event.level.code(),
-            database: option(interner, event.database.as_deref())?,
-            username: option(interner, event.username.as_deref())?,
-            host: option(interner, event.host.as_deref())?,
-            text: intern(interner, &event.text)?,
-        };
-        buffer_row(buffers, row)?;
+    for batch in &rows.pgbouncer {
+        let source_file = intern(interner, &batch.source_file)?;
+        for event in &batch.events {
+            let row = PgBouncerEvents {
+                ts: Ts(event.ts),
+                source_file,
+                level: event.level.code(),
+                database: option(interner, event.database.as_deref())?,
+                username: option(interner, event.username.as_deref())?,
+                host: option(interner, event.host.as_deref())?,
+                text: intern(interner, &event.text)?,
+            };
+            buffer_row(buffers, row)?;
+        }
     }
     Ok(())
 }

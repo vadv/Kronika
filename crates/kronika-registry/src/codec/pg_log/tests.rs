@@ -9,6 +9,8 @@ const TS: i64 = 1_780_000_000_000_000;
 fn error(ts: i64, severity: u8, pattern: u64) -> PgLogErrors {
     PgLogErrors {
         ts: Ts(ts),
+        system_identifier: Some(7_000_000_000_000_000_001),
+        source_file: StrId(9),
         severity,
         category: 9,
         sqlstate: Some(StrId(1)),
@@ -27,6 +29,8 @@ fn error(ts: i64, severity: u8, pattern: u64) -> PgLogErrors {
 fn checkpoint(ts: i64, phase: u8) -> PgLogCheckpoints {
     PgLogCheckpoints {
         ts: Ts(ts),
+        system_identifier: Some(7_000_000_000_000_000_001),
+        source_file: StrId(9),
         phase,
         reason: Some(StrId(1)),
         seconds_apart: None,
@@ -48,6 +52,8 @@ fn checkpoint(ts: i64, phase: u8) -> PgLogCheckpoints {
 fn autovacuum(ts: i64, kind: u8) -> PgLogAutovacuum {
     PgLogAutovacuum {
         ts: Ts(ts),
+        system_identifier: Some(7_000_000_000_000_000_001),
+        source_file: StrId(9),
         kind,
         relation: Some(StrId(1)),
         index_scans: Some(1),
@@ -73,6 +79,8 @@ fn autovacuum(ts: i64, kind: u8) -> PgLogAutovacuum {
 fn slow_query(ts: i64, pattern: u64) -> PgLogSlowQueries {
     PgLogSlowQueries {
         ts: Ts(ts),
+        system_identifier: Some(7_000_000_000_000_000_001),
+        source_file: StrId(9),
         pattern: StrId(pattern),
         sample: StrId(2),
         count: 4,
@@ -84,6 +92,8 @@ fn slow_query(ts: i64, pattern: u64) -> PgLogSlowQueries {
 fn lock_wait(ts: i64, kind: u8, pid: i32) -> PgLogLockWaits {
     PgLogLockWaits {
         ts: Ts(ts),
+        system_identifier: Some(7_000_000_000_000_000_001),
+        source_file: StrId(9),
         kind,
         pid: Some(pid),
         lock_mode: Some(StrId(1)),
@@ -98,6 +108,8 @@ fn lock_wait(ts: i64, kind: u8, pid: i32) -> PgLogLockWaits {
 fn lifecycle(ts: i64, kind: u8) -> PgLogLifecycle {
     PgLogLifecycle {
         ts: Ts(ts),
+        system_identifier: Some(7_000_000_000_000_000_001),
+        source_file: StrId(9),
         kind,
         pid: Some(4242),
         signal: Some(9),
@@ -110,6 +122,8 @@ fn lifecycle(ts: i64, kind: u8) -> PgLogLifecycle {
 fn temp_file(ts: i64, size_bytes: i64) -> PgLogTempFiles {
     PgLogTempFiles {
         ts: Ts(ts),
+        system_identifier: Some(7_000_000_000_000_000_001),
+        source_file: StrId(9),
         path: Some(StrId(1)),
         size_bytes,
         statement: Some(StrId(2)),
@@ -136,7 +150,7 @@ fn contracts_pass_the_linter() {
 fn contract_shapes() {
     let errors = PgLogErrors::CONTRACT;
     assert_eq!(errors.type_id.get(), 2_001_001);
-    assert_eq!(errors.columns.len(), 13);
+    assert_eq!(errors.columns.len(), 15);
     assert_eq!(errors.sort_key, ["severity", "category", "pattern", "ts"]);
     assert_eq!(
         errors.column("pattern").map(|column| column.nullable),
@@ -147,12 +161,12 @@ fn contract_shapes() {
         Some(true)
     );
 
-    assert_eq!(PgLogCheckpoints::CONTRACT.columns.len(), 16);
-    assert_eq!(PgLogAutovacuum::CONTRACT.columns.len(), 20);
-    assert_eq!(PgLogSlowQueries::CONTRACT.columns.len(), 6);
-    assert_eq!(PgLogLockWaits::CONTRACT.columns.len(), 9);
-    assert_eq!(PgLogLifecycle::CONTRACT.columns.len(), 7);
-    assert_eq!(PgLogTempFiles::CONTRACT.columns.len(), 4);
+    assert_eq!(PgLogCheckpoints::CONTRACT.columns.len(), 18);
+    assert_eq!(PgLogAutovacuum::CONTRACT.columns.len(), 22);
+    assert_eq!(PgLogSlowQueries::CONTRACT.columns.len(), 8);
+    assert_eq!(PgLogLockWaits::CONTRACT.columns.len(), 11);
+    assert_eq!(PgLogLifecycle::CONTRACT.columns.len(), 9);
+    assert_eq!(PgLogTempFiles::CONTRACT.columns.len(), 6);
 }
 
 #[test]

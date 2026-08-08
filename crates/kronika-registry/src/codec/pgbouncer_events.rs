@@ -18,6 +18,10 @@ pub struct PgBouncerEvents {
     /// Line time, unix microseconds.
     #[column(t)]
     pub ts: Ts,
+    /// The file the line was read from, which is the only identity a pooler
+    /// has when it was named outright rather than asked.
+    #[column(l)]
+    pub source_file: StrId,
     /// `0` fatal, `1` error, `2` warning, `3` log, `4` debug, `5` noise.
     #[column(l)]
     pub level: u8,

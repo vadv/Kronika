@@ -207,7 +207,7 @@ async fn run_collector() -> Result<()> {
             run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
             continue;
         }
-        logs.refresh_prefix().await;
+        logs.rescan().await;
         written_this_tick.extend(run_collection_cycle(
             &mut journal,
             &writer_owner,

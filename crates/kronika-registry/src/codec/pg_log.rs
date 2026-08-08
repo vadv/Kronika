@@ -25,6 +25,13 @@ pub struct PgLogErrors {
     /// Time of the first occurrence, unix microseconds.
     #[column(t)]
     pub ts: Ts,
+    /// The cluster that wrote the line, from `pg_control_system()`. Null when
+    /// the log was named outright and no server was asked.
+    #[column(l)]
+    pub system_identifier: Option<u64>,
+    /// The file the line was read from.
+    #[column(l)]
+    pub source_file: StrId,
     /// `0` error, `1` fatal, `2` panic, `3` warning, `4` log.
     #[column(l)]
     pub severity: u8,
@@ -76,6 +83,13 @@ pub struct PgLogCheckpoints {
     /// Record time, unix microseconds.
     #[column(t)]
     pub ts: Ts,
+    /// The cluster that wrote the line, from `pg_control_system()`. Null when
+    /// the log was named outright and no server was asked.
+    #[column(l)]
+    pub system_identifier: Option<u64>,
+    /// The file the line was read from.
+    #[column(l)]
+    pub source_file: StrId,
     /// `0` starting, `1` complete, `2` too frequent.
     #[column(l)]
     pub phase: u8,
@@ -138,6 +152,13 @@ pub struct PgLogAutovacuum {
     /// Record time, unix microseconds.
     #[column(t)]
     pub ts: Ts,
+    /// The cluster that wrote the line, from `pg_control_system()`. Null when
+    /// the log was named outright and no server was asked.
+    #[column(l)]
+    pub system_identifier: Option<u64>,
+    /// The file the line was read from.
+    #[column(l)]
+    pub source_file: StrId,
     /// `0` vacuum, `1` analyze.
     #[column(l)]
     pub kind: u8,
@@ -210,6 +231,13 @@ pub struct PgLogSlowQueries {
     /// Time of the slowest occurrence, unix microseconds.
     #[column(t)]
     pub ts: Ts,
+    /// The cluster that wrote the line, from `pg_control_system()`. Null when
+    /// the log was named outright and no server was asked.
+    #[column(l)]
+    pub system_identifier: Option<u64>,
+    /// The file the line was read from.
+    #[column(l)]
+    pub source_file: StrId,
     /// The normalized statement the group is keyed on.
     #[column(l)]
     pub pattern: StrId,
@@ -242,6 +270,13 @@ pub struct PgLogLockWaits {
     /// Record time, unix microseconds.
     #[column(t)]
     pub ts: Ts,
+    /// The cluster that wrote the line, from `pg_control_system()`. Null when
+    /// the log was named outright and no server was asked.
+    #[column(l)]
+    pub system_identifier: Option<u64>,
+    /// The file the line was read from.
+    #[column(l)]
+    pub source_file: StrId,
     /// `0` still waiting, `1` acquired.
     #[column(l)]
     pub kind: u8,
@@ -280,6 +315,13 @@ pub struct PgLogLifecycle {
     /// Record time, unix microseconds.
     #[column(t)]
     pub ts: Ts,
+    /// The cluster that wrote the line, from `pg_control_system()`. Null when
+    /// the log was named outright and no server was asked.
+    #[column(l)]
+    pub system_identifier: Option<u64>,
+    /// The file the line was read from.
+    #[column(l)]
+    pub source_file: StrId,
     /// `0` crash, `1` shutdown, `2` ready.
     #[column(l)]
     pub kind: u8,
@@ -312,6 +354,13 @@ pub struct PgLogTempFiles {
     /// Record time, unix microseconds.
     #[column(t)]
     pub ts: Ts,
+    /// The cluster that wrote the line, from `pg_control_system()`. Null when
+    /// the log was named outright and no server was asked.
+    #[column(l)]
+    pub system_identifier: Option<u64>,
+    /// The file the line was read from.
+    #[column(l)]
+    pub source_file: StrId,
     /// The file the server wrote.
     #[column(l)]
     pub path: Option<StrId>,

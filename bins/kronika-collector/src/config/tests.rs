@@ -80,18 +80,26 @@ fn surrounding_whitespace_is_not_a_refusal() {
 }
 
 #[test]
-fn an_empty_log_path_is_a_refusal_naming_the_variable() {
-    let error = super::parse_env_path("KRONIKA_PG_LOG", "  ").expect_err("a refusal");
+fn an_empty_element_in_a_list_is_a_refusal_naming_the_variable() {
+    let error = super::parse_env_list("KRONIKA_PG_LOGS", "/var/log/a.log;;/var/log/b.log")
+        .expect_err("a refusal");
 
-    assert_eq!(error.to_string(), "KRONIKA_PG_LOG is set to an empty path");
+    assert_eq!(error.to_string(), "KRONIKA_PG_LOGS has an empty element");
 }
 
 #[test]
-fn surrounding_whitespace_is_not_part_of_a_log_path() {
-    assert_eq!(
-        super::parse_env_path("KRONIKA_PG_LOG", " /var/log/postgresql.log ")
-            .expect("a path")
-            .as_os_str(),
-        "/var/log/postgresql.log"
+fn a_list_is_split_on_semicolons_and_trimmed() {
+    let entries = super::parse_env_list("KRONIKA_PG_LOGS", " /var/log/a.log ; /var/log/b.log ")
+        .expect("a list");
+
+    assert_eq!(entries, ["/var/log/a.log", "/var/log/b.log"]);
+}
+
+#[test]
+fn a_blank_list_is_empty_rather_than_one_blank_element() {
+    assert!(
+        super::parse_env_list("KRONIKA_PGBOUNCER_LOGS", "   ")
+            .expect("a list")
+            .is_empty()
     );
 }

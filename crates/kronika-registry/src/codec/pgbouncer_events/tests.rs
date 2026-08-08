@@ -6,6 +6,7 @@ const TS: i64 = 1_780_000_000_000_000;
 fn event(ts: i64, level: u8, text: u64) -> PgBouncerEvents {
     PgBouncerEvents {
         ts: Ts(ts),
+        source_file: StrId(9),
         level,
         database: Some(StrId(1)),
         username: Some(StrId(2)),
@@ -24,7 +25,7 @@ fn contract_shape() {
     let contract = PgBouncerEvents::CONTRACT;
     assert_eq!(contract.type_id.get(), 2_100_001);
     assert_eq!(contract.name, "pgbouncer_events");
-    assert_eq!(contract.columns.len(), 6);
+    assert_eq!(contract.columns.len(), 7);
     assert_eq!(contract.sort_key, ["ts", "level", "text"]);
     assert!(
         contract.column("kind").is_none(),

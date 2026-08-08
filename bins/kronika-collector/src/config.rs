@@ -32,38 +32,41 @@ pub(crate) struct Config {
     pub(crate) journal_max_bytes: u64,
     /// Storage-rotation target for the whole output tree.
     pub(crate) retention: Option<RetentionConfig>,
-    /// The `PostgreSQL` log to follow; the file name decides which of the three
-    /// formats it is read as.
-    pub(crate) pg_log: Option<PathBuf>,
-    /// The `PgBouncer` log to follow.
-    pub(crate) pgbouncer_log: Option<PathBuf>,
-    /// How to reach `PostgreSQL` to read `log_line_prefix`, which is what a
-    /// `stderr` record's database and user come from.
-    pub(crate) pg_dsn: Option<String>,
+    /// Where to ask `PostgreSQL` which log it writes and who it is.
+    pub(crate) pg_dsns: Vec<String>,
+    /// `PostgreSQL` logs named outright, as paths or globs.
+    pub(crate) pg_logs: Vec<String>,
+    /// Where to ask `PgBouncer` which log it writes and who it is.
+    pub(crate) pgbouncer_dsns: Vec<String>,
+    /// `PgBouncer` logs named outright, as paths or globs.
+    pub(crate) pgbouncer_logs: Vec<String>,
 }
 
-/// Read a path variable. An empty value is a variable the operator meant to
-/// set and did not, so it stops the daemon instead of turning into "unset".
+/// Read a `;`-separated list, or an empty one when the variable is unset.
+fn env_list(key: &str) -> Result<Vec<String>> {
+    match std::env::var(key) {
+        Ok(raw) => parse_env_list(key, &raw),
+        Err(_unset) => Ok(Vec::new()),
+    }
+}
+
+/// Parse one list variable's value. An element that is blank after trimming is
+/// a typo, not an empty list, so it stops the daemon.
 ///
 /// # Errors
 ///
-/// Returns an error naming the variable when its value is empty.
-fn env_path(key: &str) -> Result<Option<PathBuf>> {
-    std::env::var(key)
-        .ok()
-        .map(|raw| parse_env_path(key, &raw))
-        .transpose()
-}
-
-/// Parse one path variable's value.
-///
-/// # Errors
-///
-/// Returns an error naming the variable when its value is blank.
-fn parse_env_path(key: &str, raw: &str) -> Result<PathBuf> {
-    let value = raw.trim();
-    anyhow::ensure!(!value.is_empty(), "{key} is set to an empty path");
-    Ok(PathBuf::from(value))
+/// Returns an error naming the variable when one of its elements is blank.
+fn parse_env_list(key: &str, raw: &str) -> Result<Vec<String>> {
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    raw.split(';')
+        .map(|element| {
+            let value = element.trim();
+            anyhow::ensure!(!value.is_empty(), "{key} has an empty element");
+            Ok(value.to_owned())
+        })
+        .collect()
 }
 
 /// Read a numeric variable, or refuse to start naming what was given.
@@ -204,9 +207,10 @@ impl Config {
             segment_max_age_secs,
             journal_max_bytes,
             retention: Some(retention),
-            pg_log: env_path("KRONIKA_PG_LOG")?,
-            pgbouncer_log: env_path("KRONIKA_PGBOUNCER_LOG")?,
-            pg_dsn: std::env::var("KRONIKA_PG_DSN").ok(),
+            pg_dsns: env_list("KRONIKA_PG_DSNS")?,
+            pg_logs: env_list("KRONIKA_PG_LOGS")?,
+            pgbouncer_dsns: env_list("KRONIKA_PGBOUNCER_DSNS")?,
+            pgbouncer_logs: env_list("KRONIKA_PGBOUNCER_LOGS")?,
         })
     }
 }

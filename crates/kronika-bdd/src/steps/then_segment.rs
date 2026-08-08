@@ -291,11 +291,38 @@ fn log_events_recorded(world: &mut BddWorld, step: &Step) -> Result<()> {
             segments
                 .iter()
                 .any(|segment| holds_value(segment, id, column, value).unwrap_or(false)),
-            "none of the {} segments records {column}={value} in {id}",
-            segments.len()
+            "none of the {} segments records {column}={value} in {id}; \
+             the segments hold {:?}",
+            segments.len(),
+            seen_values(&segments, id, column)
         );
     }
     Ok(())
+}
+
+/// Every value the segments carry in one column, for a failure message that
+/// says what is there instead of only what is not.
+fn seen_values(segments: &[Segment], type_id: u32, column: &str) -> Vec<String> {
+    let mut seen: Vec<String> = segments
+        .iter()
+        .filter_map(|segment| {
+            let strings = segment.strings().ok()?;
+            let rows = segment.decode(type_id).ok()?;
+            Some(
+                rows.iter()
+                    .filter_map(|row| row.get(column))
+                    .map(|cell| match cell {
+                        Cell::StrId(id) => strings.get(id).cloned().unwrap_or_else(|| render(cell)),
+                        other => render(other),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .flatten()
+        .collect();
+    seen.sort();
+    seen.dedup();
+    seen
 }
 
 #[then("some segment records these log events exactly once")]

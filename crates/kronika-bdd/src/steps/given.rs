@@ -65,25 +65,38 @@ fn prepared_corrupt_journal(world: &mut BddWorld, trailer: String) -> Result<()>
 
 #[given(regex = r"^a PostgreSQL writing its log as (\S+)$")]
 fn postgres_writing_its_log(world: &mut BddWorld, destination: String) -> Result<()> {
-    let postgres = Postgres::start(&destination)?;
-    world.env.push((
-        "KRONIKA_PG_LOG".to_owned(),
-        postgres.log_path.to_string_lossy().into_owned(),
-    ));
-    world
-        .env
-        .push(("KRONIKA_PG_DSN".to_owned(), postgres.dsn.clone()));
-    world.postgres = Some(postgres);
+    world.postgres = Some(Postgres::start(&destination)?);
     Ok(())
 }
 
 #[given("a PgBouncer in front of it")]
 fn pgbouncer_in_front(world: &mut BddWorld) -> Result<()> {
-    let pgbouncer = PgBouncer::start()?;
-    world.env.push((
-        "KRONIKA_PGBOUNCER_LOG".to_owned(),
-        pgbouncer.log_path.to_string_lossy().into_owned(),
-    ));
-    world.pgbouncer = Some(pgbouncer);
+    world.pgbouncer = Some(PgBouncer::start()?);
     Ok(())
+}
+
+#[given("the collector reaches PostgreSQL by DSN")]
+fn postgres_by_dsn(world: &mut BddWorld) {
+    let dsn = world.postgres.as_ref().expect("a server").dsn.clone();
+    world.env.push(("KRONIKA_PG_DSNS".to_owned(), dsn));
+}
+
+#[given("the collector is told the PostgreSQL log path")]
+fn postgres_by_path(world: &mut BddWorld) {
+    let path = world.postgres.as_ref().expect("a server").log_path.clone();
+    world.env.push((
+        "KRONIKA_PG_LOGS".to_owned(),
+        path.to_string_lossy().into_owned(),
+    ));
+}
+
+#[given("the collector reaches PgBouncer by DSN")]
+fn pgbouncer_by_dsn(world: &mut BddWorld) {
+    let dsn = world.pgbouncer.as_ref().expect("a pooler").dsn.clone();
+    world.env.push(("KRONIKA_PGBOUNCER_DSNS".to_owned(), dsn));
+}
+
+#[given(regex = "^the collector is told the PgBouncer logs as (.+)$")]
+fn pgbouncer_by_path(world: &mut BddWorld, entry: String) {
+    world.env.push(("KRONIKA_PGBOUNCER_LOGS".to_owned(), entry));
 }

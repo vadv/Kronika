@@ -5,12 +5,16 @@
 Every line below was read out of the `PgBouncer` sources, not out of its
 documentation.
 
-The log to follow is `KRONIKA_PGBOUNCER_LOG`. The collector does not connect to
-the admin console: no `SHOW POOLS`, no `SHOW STATS`, no `SHOW CLIENTS`.
+A pooler is named either by `KRONIKA_PGBOUNCER_DSNS`, and then `SHOW CONFIG`
+says where its `logfile` is, or by `KRONIKA_PGBOUNCER_LOGS`, which takes paths
+and patterns. `SHOW CONFIG` needs the account in `stats_users`; nothing else is
+asked of the console, and `SHOW POOLS`, `SHOW STATS` and `SHOW CLIENTS` are not
+read at all.
 
 **`logfile` is empty by default.** `PgBouncer` then writes to stderr, and under
 systemd that goes to the journal without the line layout below. The section
-works when `pgbouncer.ini` sets `logfile = <path>`.
+works when `pgbouncer.ini` sets `logfile = <path>`; a pooler asked over its
+console says so outright, which is one line in the log rather than a guess.
 
 ## `pgbouncer_events`
 
@@ -19,6 +23,7 @@ One row per recognized line.
 | Column | Class | Nullable | Meaning |
 |---|---|---|---|
 | `ts` | t | no | Line time |
+| `source_file` | l | no | The file the line was read from, which is the only identity a pooler has |
 | `level` | l | no | `0` fatal, `1` error, `2` warning, `3` log, `4` debug, `5` noise |
 | `database` | l | yes | The `pgbouncer.ini` section name |
 | `username` | l | yes | The login user |

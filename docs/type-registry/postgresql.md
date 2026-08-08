@@ -5,7 +5,10 @@ Log events occupy `2_001_001`–`2_099_999`. The schemas are declared in
 this file says what the sections are for, which lines produce them, and what
 the collector cannot see.
 
-The log to follow is `KRONIKA_PG_LOG`. Nothing is followed unless it is set.
+A cluster is named either by `KRONIKA_PG_DSNS`, and then the server says which
+file it writes through `pg_current_logfile()`, or by `KRONIKA_PG_LOGS`, which
+takes paths and patterns. Both may be given; a file reached both ways is
+followed once.
 
 ## Registered types
 
@@ -36,10 +39,16 @@ value are escaped, so a record never spans lines.
 
 **`stderr`** has no fixed shape: what precedes `SEVERITY:` is whatever
 `log_line_prefix` says. The setting is read from `pg_settings` over
-`KRONIKA_PG_DSN`, because it is the server's setting and declaring it a second
+`KRONIKA_PG_DSNS`, because it is the server's setting and declaring it a second
 time in the collector's environment would be a second place to get it wrong.
-Without a connection the time, severity and message are still read; the
-database and user, which only the prefix carries, are `NULL`.
+A log named through `KRONIKA_PG_LOGS` alone has no prefix to go by: the time,
+severity and message are still read, and the database and user, which only the
+prefix carries, are `NULL`.
+
+Every section carries two more columns. `system_identifier` comes from
+`pg_control_system()` and names the cluster whatever its log is called today;
+it is `NULL` for a log named outright, because no server was asked.
+`source_file` is the file the record was read from.
 
 A `stderr` record's `DETAIL:`, `HINT:`, `CONTEXT:`, `STATEMENT:` and `QUERY:`
 lines are separate lines carrying the prefix again. A line the server wrapped

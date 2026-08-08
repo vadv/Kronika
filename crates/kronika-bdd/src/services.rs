@@ -7,6 +7,8 @@
 use anyhow::{Context as _, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU16, Ordering};
 
 /// Where `PostgreSQL` keeps its cluster and its log.
 const PG_DATA: &str = "/tmp/kronika-pgdata";
@@ -15,7 +17,16 @@ const PGB_DIR: &str = "/tmp/kronika-pgbouncer";
 /// The unix user `PostgreSQL` runs as; it refuses to run as root.
 const PG_USER: &str = "postgres";
 const PG_PORT: &str = "5432";
-const PGB_PORT: &str = "6432";
+/// Each pooler binds its own port, so a scenario never waits for the last
+/// one's socket to be released. The base is keyed on the process so parallel
+/// runs of the suite stay apart.
+fn next_pgb_port() -> u16 {
+    static NEXT: AtomicU16 = AtomicU16::new(0);
+    static BASE: OnceLock<u16> = OnceLock::new();
+    let base =
+        *BASE.get_or_init(|| 20_000 + u16::try_from(std::process::id() % 20_000).unwrap_or(0));
+    base + NEXT.fetch_add(1, Ordering::Relaxed)
+}
 
 /// One started `PostgreSQL`.
 #[derive(Debug)]
@@ -31,8 +42,8 @@ pub(crate) struct Postgres {
 /// One started `PgBouncer`.
 #[derive(Debug)]
 pub(crate) struct PgBouncer {
-    /// The log file the collector is pointed at.
-    pub(crate) log_path: PathBuf,
+    /// How to reach the admin console, which is what `SHOW CONFIG` needs.
+    pub(crate) dsn: String,
     /// The `psql` invocation a client connects through, minus its database.
     psql: String,
 }
@@ -148,6 +159,7 @@ impl PgBouncer {
         let dir = Path::new(PGB_DIR);
         stop_previous_pooler(dir);
         reset_directory(dir)?;
+        let port = next_pgb_port();
         std::fs::write(dir.join("users.txt"), format!("\"{PG_USER}\" \"\"\n"))
             .context("write the auth file")?;
         std::fs::write(
@@ -157,9 +169,10 @@ impl PgBouncer {
                  {PG_USER} = host=127.0.0.1 port={PG_PORT} dbname={PG_USER}\n\
                  [pgbouncer]\n\
                  listen_addr = 127.0.0.1\n\
-                 listen_port = {PGB_PORT}\n\
+                 listen_port = {port}\n\
                  auth_type = trust\n\
                  auth_file = {PGB_DIR}/users.txt\n\
+                 stats_users = {PG_USER}\n\
                  logfile = {PGB_DIR}/pgbouncer.log\n\
                  pidfile = {PGB_DIR}/pgbouncer.pid\n\
                  pool_mode = transaction\n"
@@ -169,10 +182,28 @@ impl PgBouncer {
         // PgBouncer refuses to run as root, so it runs as the same unix user
         // the server does.
         as_postgres(&format!("pgbouncer -d {PGB_DIR}/pgbouncer.ini"))?;
+        // `-d` returns before the listener is up, and a client that arrives
+        // first is refused by the kernel and leaves nothing in the log.
+        let ready = format!(
+            "{}/psql --host=127.0.0.1 --port={port} --username={PG_USER} \
+             --dbname=pgbouncer --command 'show version'",
+            pg_bin()?
+        );
+        let mut answered = false;
+        for _attempt in 0..100 {
+            if as_postgres(&ready).is_ok() {
+                answered = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        anyhow::ensure!(answered, "the pooler never answered on its admin console");
         Ok(Self {
-            log_path: dir.join("pgbouncer.log"),
+            // SHOW CONFIG needs the account in stats_users, which the
+            // configuration above grants; no administrative right beyond that.
+            dsn: format!("host=127.0.0.1 port={port} user={PG_USER} dbname=pgbouncer"),
             psql: format!(
-                "{}/psql --host=127.0.0.1 --port={PGB_PORT} --username={PG_USER}",
+                "{}/psql --host=127.0.0.1 --port={port} --username={PG_USER}",
                 pg_bin()?
             ),
         })
@@ -212,11 +243,11 @@ fn stop_previous(bin: &str) {
 }
 
 fn stop_previous_pooler(dir: &Path) {
-    let Ok(pid) = std::fs::read_to_string(dir.join("pgbouncer.pid")) else {
-        return;
-    };
-    let _killed = run(Command::new("kill").args(["-TERM", pid.trim()]));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Each pooler owns its port, so this only stops the last one from writing
+    // into a directory the next scenario is about to reset.
+    if let Ok(pid) = std::fs::read_to_string(dir.join("pgbouncer.pid")) {
+        let _killed = run(Command::new("kill").args(["-TERM", pid.trim()]));
+    }
 }
 
 /// Start from an empty directory, so a second scenario is not a resumption of

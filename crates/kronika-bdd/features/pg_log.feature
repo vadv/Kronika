@@ -9,10 +9,11 @@ Feature: What a PostgreSQL log carries reaches the segment
 
   Scenario Outline: A live server's log becomes typed events
     Given a PostgreSQL writing its log as <destination>
+    And the collector reaches PostgreSQL by DSN
     And a collector with these settings
       | variable                             | value |
       | KRONIKA_INTERVAL_S                   | 1     |
-      | KRONIKA_SEGMENT_MAX_BYTES            | 0     |
+      | KRONIKA_SEGMENT_MAX_BYTES            | 1     |
       | KRONIKA_LOG_INTERVAL_S               | 0     |
       | KRONIKA_INSTANCE_INTERVAL_S          | 0     |
       | KRONIKA_OS_CORE_INTERVAL_S           | 3600  |
@@ -49,3 +50,29 @@ Feature: What a PostgreSQL log carries reaches the segment
       | stderr      |
       | csvlog      |
       | jsonlog     |
+
+  Scenario: A log named outright is read without asking the server
+    Given a PostgreSQL writing its log as csvlog
+    And the collector is told the PostgreSQL log path
+    And a collector with these settings
+      | variable                             | value |
+      | KRONIKA_INTERVAL_S                   | 1     |
+      | KRONIKA_SEGMENT_MAX_BYTES            | 1     |
+      | KRONIKA_LOG_INTERVAL_S               | 0     |
+      | KRONIKA_INSTANCE_INTERVAL_S          | 0     |
+      | KRONIKA_OS_CORE_INTERVAL_S           | 3600  |
+      | KRONIKA_OS_MOUNTTOPO_INTERVAL_S      | 3600  |
+      | KRONIKA_OS_PROCESS_INTERVAL_S        | 3600  |
+      | KRONIKA_OS_PROCESS_STATUS_INTERVAL_S | 3600  |
+      | KRONIKA_OS_CGROUP_INTERVAL_S         | 3600  |
+      | KRONIKA_OS_CGROUP_MAPPING_INTERVAL_S | 3600  |
+    When these statements run against PostgreSQL
+      | statement                   |
+      | select * from missing_table |
+    And it runs for 4 seconds
+    Then some segment holds these sections
+      | type_id | section       | min rows |
+      | 2001001 | pg_log_errors | 1        |
+    And some segment records these log events
+      | type_id | column            | value |
+      | 2001001 | system_identifier | null  |
