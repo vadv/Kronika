@@ -99,8 +99,8 @@ replaces `N.idx` only after checking the input ZMS descriptor again.
 
 Local publication supports Linux with ext4 or XFS. Descriptor-bound ZMS
 publication resolves the already-open temporary through `/proc/self/fd`, so
-containers and sandboxes must mount procfs. Other operating systems and network
-filesystems are unsupported.
+containers and sandboxes must mount procfs. Equivalent durability and lock
+behavior are not claimed for other operating systems or network filesystems.
 
 A backup must preserve the complete directory hierarchy. Use a stopped
 collector and web process or a filesystem snapshot with equivalent

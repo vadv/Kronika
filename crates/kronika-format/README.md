@@ -547,6 +547,13 @@ rows by source.
 See the [collector configuration](../../bins/kronika-collector/README.md) for
 the variables and defaults.
 
+### Approaches not implemented
+
+| Approach | Source of the saving | Constraint |
+| --- | --- | --- |
+| Higher final Parquet Zstd level | Pages inside one body may become smaller. | Costs more CPU; final bodies already use level 6, while collection-window bodies use level 3. |
+| Outer compression for the whole ZMS | One stream can see repeated dictionaries, footers, and similar windows. | Direct body access by `offset` is lost; that would replace ZMS access semantics. |
+
 ## Integrity and limits
 
 CRC32C covers every section body, the catalog, and each `ZMSP` header. It
