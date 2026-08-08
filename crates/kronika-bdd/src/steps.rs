@@ -4,6 +4,7 @@
 //! expected list comes from the `.feature` file. What a step contributes is
 //! the mechanics — spawn, wait, read the file back, compare.
 
+mod dump;
 mod given;
 mod then_dump;
 mod then_log;

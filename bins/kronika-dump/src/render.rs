@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 
 use kronika_index::{Index, OS_PSI_TYPE_ID, points, stalls};
-use kronika_reader::{Cell, Dictionary, ReaderError, Resolved, Segment};
+use kronika_reader::{Cell, Dictionary, ReaderError, Resolved, Segment, StoreWarning};
 use kronika_registry::section_name;
 
 /// Where the output goes, and in which shape.
@@ -22,13 +22,35 @@ impl Output {
     }
 }
 
+/// A file the scan would not admit.
+///
+/// It goes to the same stream as everything else under `--json`: a caller that
+/// only reads stdout still learns that something was left out.
+pub(crate) fn warning(out: &Output, warning: &StoreWarning) {
+    if out.json {
+        println!(
+            r#"{{"kind":"warning","detail":{}}}"#,
+            quote(&format!("{warning:?}"))
+        );
+    } else {
+        eprintln!("kronika-dump: set aside {warning:?}");
+    }
+}
+
 /// What each section of the segment costs.
 pub(crate) fn sizes(out: &Output, segment: &Segment) {
     let total: u64 = segment.sections().map(|(_id, section)| section.bytes).sum();
     if out.json {
+        println!(
+            r#"{{"kind":"segment","path":{},"min_ts":{},"max_ts":{},"windows":{},"section_bytes":{total}}}"#,
+            quote(&segment.path().display().to_string()),
+            segment.min_ts(),
+            segment.max_ts(),
+            segment.window_count()
+        );
         for (type_id, section) in segment.sections() {
             println!(
-                r#"{{"segment":{},"type_id":{type_id},"section":{},"rows":{},"bytes":{}}}"#,
+                r#"{{"kind":"section","path":{},"type_id":{type_id},"section":{},"rows":{},"bytes":{}}}"#,
                 quote(&segment.path().display().to_string()),
                 quote(section_name(type_id).unwrap_or("unknown")),
                 section.rows,
@@ -68,7 +90,7 @@ pub(crate) fn index(out: &Output, segment: &Segment) -> Result<(), ReaderError> 
     if out.json {
         for point in &built.points {
             println!(
-                r#"{{"segment":{},"ts":{},"health":{}}}"#,
+                r#"{{"kind":"point","path":{},"ts":{},"health":{}}}"#,
                 quote(&segment.path().display().to_string()),
                 point.ts,
                 point

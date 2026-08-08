@@ -1069,7 +1069,6 @@ dependencies = [
  "anyhow",
  "cucumber",
  "kronika-format",
- "kronika-reader",
  "nix",
  "tempfile",
  "tokio",

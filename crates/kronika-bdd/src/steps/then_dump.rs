@@ -1,43 +1,11 @@
 //! Assertions on what the dumper prints and on the index it builds.
 
+use super::dump::{dump, lines, of_kind};
+use super::table_rows;
 use crate::BddWorld;
 use anyhow::{Context as _, Result};
 use cucumber::gherkin::Step;
 use cucumber::then;
-use std::path::PathBuf;
-use std::process::Command;
-
-use super::table_rows;
-
-/// The dumper under test, found the way the collector is.
-fn binary() -> Result<PathBuf> {
-    if let Ok(path) = std::env::var("KRONIKA_DUMP_BIN") {
-        return Ok(PathBuf::from(path));
-    }
-    let here = std::env::current_exe().context("locate the BDD binary")?;
-    let dir = here
-        .parent()
-        .context("the BDD binary has no parent directory")?;
-    Ok(dir.join("kronika-dump"))
-}
-
-/// Run the dumper over the run's data root and return what it printed.
-fn dump(world: &BddWorld, flags: &[&str]) -> Result<String> {
-    let run = world.run.as_ref().context("a collector was started")?;
-    let root = run.out_dir();
-    let output = Command::new(binary()?)
-        .arg(&root)
-        .args(flags)
-        .output()
-        .with_context(|| format!("run the dumper over {}", root.display()))?;
-    anyhow::ensure!(
-        output.status.success(),
-        "the dumper failed over {}: {}",
-        root.display(),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
 
 #[then("the dumper reports these sections with a size")]
 fn dumper_reports_sections(world: &mut BddWorld, step: &Step) -> Result<()> {
@@ -104,12 +72,12 @@ fn dumper_resolves_dictionary(
 
 #[then("the dumper builds one health point per pressure snapshot")]
 fn dumper_builds_points(world: &mut BddWorld) -> Result<()> {
-    let snapshots = dump(world, &["--section", "1107001", "--limit", "0", "--json"])?
-        .lines()
-        .filter_map(|line| line.split(r#""ts":"#).nth(1).map(str::to_owned))
-        .filter_map(|tail| tail.split(',').next().map(str::to_owned))
-        .collect::<std::collections::BTreeSet<_>>();
-    let points = dump(world, &["--index", "--json"])?.lines().count();
+    let printed = dump(world, &["--section", "1107001", "--limit", "0", "--json"])?;
+    let snapshots: std::collections::BTreeSet<i64> = lines(&printed)
+        .iter()
+        .filter_map(|row| row.number("ts"))
+        .collect();
+    let points = of_kind(&dump(world, &["--index", "--json"])?, "point").len();
     anyhow::ensure!(
         points == snapshots.len(),
         "the dumper built {points} points for {} pressure snapshots",
@@ -120,20 +88,17 @@ fn dumper_builds_points(world: &mut BddWorld) -> Result<()> {
 
 #[then("every health point the dumper builds is null or between 0 and 100")]
 fn dumper_points_are_in_range(world: &mut BddWorld) -> Result<()> {
-    let printed = dump(world, &["--index", "--json"])?;
-    for line in printed.lines() {
-        let value = line
-            .split(r#""health":"#)
-            .nth(1)
-            .and_then(|tail| tail.split('}').next())
-            .context("an index line without a health field")?;
+    for point in of_kind(&dump(world, &["--index", "--json"])?, "point") {
+        let value = point
+            .get("health")
+            .context("an index point without a health field")?;
         if value == "null" {
             continue;
         }
         let health: u32 = value
             .parse()
             .with_context(|| format!("{value:?} is not a health value"))?;
-        anyhow::ensure!(health <= 100, "health {health} is above 100 in:\n{line}");
+        anyhow::ensure!(health <= 100, "health {health} is above 100");
     }
     Ok(())
 }

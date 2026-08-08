@@ -6,6 +6,7 @@
 mod args;
 mod render;
 
+use std::ops::Bound;
 use std::process::ExitCode;
 
 use kronika_reader::Reader;
@@ -31,11 +32,16 @@ fn main() -> ExitCode {
 
 fn run(args: &args::Args) -> Result<(), String> {
     let reader = Reader::open(&args.root).map_err(|error| format!("{error:#}"))?;
-    let listing = reader.segments(..).map_err(|error| format!("{error:#}"))?;
-    for warning in &listing.warnings {
-        eprintln!("kronika-dump: set aside {warning:?}");
-    }
+    let listing = reader
+        .segments((
+            args.from.map_or(Bound::Unbounded, Bound::Included),
+            args.to.map_or(Bound::Unbounded, Bound::Included),
+        ))
+        .map_err(|error| format!("{error:#}"))?;
     let out = render::Output::new(args.json);
+    for warning in &listing.warnings {
+        render::warning(&out, warning);
+    }
     for reference in &listing.segments {
         let segment = reader
             .open_segment(reference)
