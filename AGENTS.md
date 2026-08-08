@@ -89,6 +89,13 @@ Assert on the artifact wherever there is one. A segment on disk decoded back
 through the format is worth more than the line the collector logged about
 writing it.
 
+A step reaches the artifact through the crate the product ships, never through
+a reading path written for tests. A segment is opened with `kronika-reader`,
+the same call web makes. A helper that re-reads what a product crate already
+reads is a defect: it passes while the shipped path is broken, and it drifts
+the moment the format moves. What a scenario needs and the crate does not
+expose is a missing feature of the crate.
+
 BDD runs inside a cached Docker image so the environment is reproducible and CI
 does not rebuild the world on every run.
 

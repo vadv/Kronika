@@ -27,7 +27,6 @@
 )]
 
 mod collector;
-mod segment;
 mod services;
 mod steps;
 

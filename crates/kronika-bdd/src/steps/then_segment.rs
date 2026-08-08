@@ -3,10 +3,10 @@
 use super::{count, table_rows, type_id};
 use crate::BddWorld;
 use crate::collector::files_under;
-use crate::segment::{Segment, segments_under};
 use anyhow::{Context as _, Result};
 use cucumber::gherkin::Step;
 use cucumber::then;
+use kronika_reader::{Reader, Segment};
 use kronika_registry::Cell;
 use std::path::Path;
 
@@ -32,10 +32,28 @@ fn is_utc_calendar_path(relative: &Path) -> bool {
             .all(|part| part.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
-/// Every segment the run published, oldest first.
+/// Every segment the run published, oldest first, read the way web reads.
 fn segments(world: &BddWorld) -> Result<Vec<Segment>> {
     let run = world.run.as_ref().context("a collector was started")?;
-    segments_under(&run.out_dir())
+    let out_dir = run.out_dir();
+    let reader = Reader::open(&out_dir)?;
+    let listing = reader.segments(..)?;
+    anyhow::ensure!(
+        listing.warnings.is_empty(),
+        "the scan set aside files under {}: {:?}",
+        out_dir.display(),
+        listing.warnings
+    );
+    anyhow::ensure!(
+        !listing.segments.is_empty(),
+        "no segment was published under {}",
+        out_dir.display()
+    );
+    listing
+        .segments
+        .iter()
+        .map(|unit| reader.open_segment(unit).map_err(Into::into))
+        .collect()
 }
 
 /// One decoded cell as the text a scenario writes for it.
@@ -118,19 +136,14 @@ fn every_segment_holds_sections(world: &mut BddWorld, step: &Step) -> Result<()>
             let rows = segment.rows_of(id).with_context(|| {
                 format!(
                     "{} carries no {name} ({id}); it has {:?}",
-                    segment.path.display(),
-                    segment
-                        .catalog
-                        .entries
-                        .iter()
-                        .map(|e| e.type_id)
-                        .collect::<Vec<_>>()
+                    segment.path().display(),
+                    segment.type_ids().collect::<Vec<_>>()
                 )
             })?;
             anyhow::ensure!(
                 rows >= count(min)?,
                 "{} holds {rows} rows of {name} ({id}), fewer than {min}",
-                segment.path.display()
+                segment.path().display()
             );
         }
     }
@@ -150,7 +163,7 @@ fn no_segment_holds_sections(world: &mut BddWorld, step: &Step) -> Result<()> {
                 segment.rows_of(id).is_none(),
                 "{} carries {name} ({id}) with {:?} rows; the source was unreadable, so the \
                  section belongs nowhere in the segment",
-                segment.path.display(),
+                segment.path().display(),
                 segment.rows_of(id)
             );
         }
@@ -183,17 +196,17 @@ fn some_segment_holds_sections(world: &mut BddWorld, step: &Step) -> Result<()> 
 fn instance_facts(world: &mut BddWorld, step: &Step) -> Result<()> {
     let wanted = table_rows(step, &["column", "value"])?;
     for segment in segments(world)? {
-        let rows = segment.decode(INSTANCE_METADATA)?;
+        let rows = segment.rows(INSTANCE_METADATA)?;
         anyhow::ensure!(
             rows.len() == 1,
             "{} carries {} instance_metadata rows, expected exactly one",
-            segment.path.display(),
+            segment.path().display(),
             rows.len()
         );
         let row = rows.first().with_context(|| {
             format!(
                 "{} carries no instance_metadata row",
-                segment.path.display()
+                segment.path().display()
             )
         })?;
         for expected in &wanted {
@@ -206,7 +219,7 @@ fn instance_facts(world: &mut BddWorld, step: &Step) -> Result<()> {
             anyhow::ensure!(
                 render(cell) == *value,
                 "{} records {column}={}, not {value}",
-                segment.path.display(),
+                segment.path().display(),
                 render(cell)
             );
         }
@@ -218,7 +231,7 @@ fn instance_facts(world: &mut BddWorld, step: &Step) -> Result<()> {
 fn cgroup_cpu_limit(world: &mut BddWorld, cores: i64) -> Result<()> {
     let mut seen = Vec::new();
     for segment in segments(world)? {
-        for row in segment.decode(OS_CGROUP_CPU)? {
+        for row in segment.rows(OS_CGROUP_CPU)? {
             let (Some(&Cell::I64(quota)), Some(&Cell::I64(period))) =
                 (row.get("quota_usec"), row.get("period_usec"))
             else {
@@ -239,10 +252,10 @@ fn cgroup_cpu_limit(world: &mut BddWorld, cores: i64) -> Result<()> {
 fn window_count(world: &mut BddWorld, least: u32) -> Result<()> {
     for segment in segments(world)? {
         anyhow::ensure!(
-            segment.catalog.window_count >= least,
+            segment.window_count() >= least,
             "{} covers {} windows, fewer than {least}",
-            segment.path.display(),
-            segment.catalog.window_count
+            segment.path().display(),
+            segment.window_count()
         );
     }
     Ok(())
@@ -252,11 +265,11 @@ fn window_count(world: &mut BddWorld, least: u32) -> Result<()> {
 fn segment_time_span(world: &mut BddWorld) -> Result<()> {
     for segment in segments(world)? {
         anyhow::ensure!(
-            segment.catalog.max_ts > segment.catalog.min_ts,
+            segment.max_ts() > segment.min_ts(),
             "{} spans no time: min_ts {} equals max_ts {}",
-            segment.path.display(),
-            segment.catalog.min_ts,
-            segment.catalog.max_ts
+            segment.path().display(),
+            segment.min_ts(),
+            segment.max_ts()
         );
     }
     Ok(())
@@ -307,12 +320,14 @@ fn seen_values(segments: &[Segment], type_id: u32, column: &str) -> Vec<String> 
         .iter()
         .filter_map(|segment| {
             let strings = segment.strings().ok()?;
-            let rows = segment.decode(type_id).ok()?;
+            let rows = segment.rows(type_id).ok()?;
             Some(
                 rows.iter()
                     .filter_map(|row| row.get(column))
                     .map(|cell| match cell {
-                        Cell::StrId(id) => strings.get(id).cloned().unwrap_or_else(|| render(cell)),
+                        Cell::StrId(id) => {
+                            strings.get(*id).map_or_else(|| render(cell), str::to_owned)
+                        }
                         other => render(other),
                     })
                     .collect::<Vec<_>>(),
@@ -356,11 +371,11 @@ fn log_events_recorded_once(world: &mut BddWorld, step: &Step) -> Result<()> {
 fn matching_rows(segment: &Segment, type_id: u32, column: &str, value: &str) -> Result<usize> {
     let strings = segment.strings()?;
     let render_cell = |cell: &Cell| match cell {
-        Cell::StrId(id) => strings.get(id).cloned().unwrap_or_else(|| render(cell)),
+        Cell::StrId(id) => strings.get(*id).map_or_else(|| render(cell), str::to_owned),
         other => render(other),
     };
     Ok(segment
-        .decode(type_id)?
+        .rows(type_id)?
         .iter()
         .filter(|row| {
             row.get(column)

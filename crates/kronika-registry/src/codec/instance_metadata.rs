@@ -11,9 +11,8 @@ use crate::{Section, StrId, Ts};
 
 /// Where the collector was running when it took the snapshot.
 ///
-/// Stored as the `environment` `u8` column. The distinction changes how a
-/// reader normalizes CPU: a container is bounded by its cgroup quota, a
-/// VM by its CPU count.
+/// Stored as the `environment` `u8` column. The distinction says which
+/// pressure and cgroup rows describe the collector itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Environment {
     /// Bare metal or a virtual machine: the host's own resources.

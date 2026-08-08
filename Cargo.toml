@@ -7,6 +7,7 @@ members = [
     "crates/kronika-registry",
     "crates/kronika-writer",
     "crates/kronika-store",
+    "crates/kronika-reader",
     "crates/kronika-source-os",
     "crates/kronika-source-log",
     "crates/kronika-bdd",

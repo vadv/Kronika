@@ -132,21 +132,101 @@ The collector decides at collection time whether it is on a VM or inside a
 container, and records the answer in the `instance_metadata` section that every
 segment carries. It does not guess, and web does not re-derive it.
 
-A pod has a CPU limit; a VM has a physical CPU count. Health uses the CPU limit
-inside a container and the CPU count on a VM.
+Where it runs decides which pressure files describe it: a machine by
+`/proc/pressure`, a container by its own cgroup. The collector reads the ones
+that describe itself and records the scope on every `os_psi` row.
 
-## Health and index files
+## Health
+
+Health is one number per snapshot, from 0 to 100: the share of the interval in
+which nothing was waiting for the most contended resource.
+
+```
+health = 100 - max(cpu, memory, io)
+```
+
+Each term is the delta of the `some` counter in `os_psi` over the delta of the
+timestamp. That counter is already scaled by how much of the machine the
+waiting covers, so one task waiting among sixteen busy CPUs reports about a
+sixteenth of the interval rather than all of it. Each CPU is weighted by its
+non-idle time, so idle CPUs neither dilute nor inflate it. A reader scales
+nothing further, by CPU count or by cgroup quota.
+
+`some` rather than `full`, because the question is whether anyone lost time,
+not whether everything stopped. `full` is undefined for CPU and always reads
+zero, so the three resources would not be measured the same way.
+
+The counters rather than `avg10`: a kernel average is sampled at read time and
+lags. On a sixteen-core host, five seconds of contention that the counters put
+at 62% read back from `avg10` as 19%.
+
+No thresholds and no weights. The worst resource decides, because an average
+hides a saturated disk behind an idle CPU.
+
+Health is null when it cannot be computed: the first snapshot of a segment has
+nothing to subtract from, and a counter that went backwards yields no stall
+time to put over the interval.
+
+A container on cgroup v1 has no `*.pressure` files and so no health. The host's
+pressure belongs to the node, and standing in with it would report someone
+else's numbers.
+
+A kernel built with `CONFIG_PSI_DEFAULT_DISABLED` and booted without `psi=1`
+has no health either: `/proc/pressure` is absent, or the files are there and
+reading one returns `EOPNOTSUPP`. The collector handles both and says `psi=1`
+in the log line, because that is the whole fix.
+
+An OOM kill, a filesystem at zero free and cgroup throttling are not a share of
+time. They stay out of the formula and are shown alongside the line. Folding
+them in would need weights, and weights need tuning.
+
+## Reading
+
+One crate reads segments: `kronika-reader`. It takes a data directory and a
+time range and returns rows, and everything that reads goes through it. A
+second reading path would be a second set of bugs, and the one the tests
+exercise would not be the one that ships.
+
+## Index files
 
 Web builds `.idx` files next to the segments for fast dashboard access. An
-`.idx` holds what a dashboard needs without reopening every segment: critical
-values extracted from logs, and health.
+`.idx` holds what a dashboard needs without reopening every segment.
 
-Health is a computed metric derived from other metrics, load average among
-them.
+Today that is health, and nothing else. A host with no database configured is
+the case that has to work first, and health is the whole of what such a host
+shows. Values pulled out of PostgreSQL and PgBouncer logs come once those
+sources are wired to the API.
+
+An `.idx` records the sources that were enabled when it was built. A different
+set means a different file, and web rebuilds it under the same rule as a
+version it does not know.
 
 `.idx` files are derived data. Deleting one is safe; web rebuilds it from the
 `.zms`. When web finds an `.idx` written by an incompatible version, it
 rebuilds it instead of failing.
+
+## Web
+
+Rust for the API, static JavaScript for the interface. The API comes first and
+is tested on its own; the interface is written against an API that already
+works.
+
+Which sources are enabled is declared by whoever starts web, not deduced from
+what the segments happen to contain. A source that is enabled but has no data
+is drawn empty. A misconfigured DSN is a line in the collector's log, not a
+change in the interface.
+
+Requests carry HTTP basic authentication. Other schemes come later, and the
+check sits in one place so that adding one does not touch the handlers.
+
+### Standby
+
+Web is not a resident service. Between requests it holds nothing: buffers,
+decoded sections and open segments are all released, and the next request pays
+to open what it needs.
+
+This is why the index files exist. A dashboard opening a day reads `.idx` and
+not every segment of that day, so starting from nothing stays cheap.
 
 ## Logging
 
