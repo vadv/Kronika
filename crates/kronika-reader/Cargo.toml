@@ -15,5 +15,11 @@ kronika-store = { path = "../kronika-store" }
 arrow-array = "55"
 parquet = { version = "55", default-features = false, features = ["arrow", "zstd"] }
 
+[dev-dependencies]
+kronika-layout = { path = "../kronika-layout" }
+kronika-writer = { path = "../kronika-writer" }
+sha2 = "0.10"
+tempfile = "3"
+
 [lints]
 workspace = true

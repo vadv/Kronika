@@ -9,7 +9,8 @@ use kronika_format::{JOURNAL_HEADER_LEN, MAX_PART_LEN, ReadAt};
 use kronika_layout::{DataRoot, FileIdentity, LayoutError, LayoutLimits};
 
 use crate::source::{
-    ActivePart, FinalUnit, JournalScan, LocalScan, StoreError, StoreIoFailure, StoreIoOperation,
+    ActivePart, ActiveSnapshot, FinalUnit, JournalScan, LocalScan, StoreError, StoreIoFailure,
+    StoreIoOperation,
 };
 
 mod budget;
@@ -17,14 +18,19 @@ mod journal;
 mod scan;
 mod segment;
 
-use budget::{layout_io, require_file_identity};
+use budget::{
+    layout_io, push_warning_bounded, require_file_identity, retained_metadata_with_warnings,
+};
 pub use journal::is_active_journal_scan_error;
 use journal::{
     active_journal_io, degradable_active_journal_error, empty_journal_scan,
-    validate_active_part_reference,
+    validate_active_part_reference, validate_active_snapshot,
 };
 pub use segment::read_catalog;
-use segment::{ZmsOpen, stale_finished_zms};
+use segment::{
+    FinishedValidation, ZmsOpen, classify_zms_validation, invalid_zms_warning, read_zms_summary,
+    stale_finished_zms,
+};
 
 /// Upper bound on the catalog block size; guards against corrupt tail indices.
 const MAX_CATALOG_BYTES: u64 = 64 * 1024 * 1024;
@@ -80,7 +86,44 @@ impl LocalDir {
             Err(error) if degradable_active_journal_error(&error) => {
                 let warning = self.active_journal_warning(&error);
                 let journal = empty_journal_scan(self.limits.max_metadata_bytes)?;
-                self.complete_scan_cached_with_warnings(journal, &[], &[warning])
+                self.complete_scan_cached_with_warnings(
+                    journal,
+                    &[],
+                    &[warning],
+                    FinishedValidation::Complete,
+                )
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Scan the directory while reading only finished-segment catalogs.
+    ///
+    /// This is the discovery path for range readers. Section bodies remain
+    /// unread until the caller selects a segment and invokes
+    /// [`validate_finished`](Self::validate_finished).
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error only when bounded root traversal or a global
+    /// resource limit prevents a safe result.
+    pub fn scan_catalogs(&self) -> io::Result<LocalScan> {
+        match self.scan_journal() {
+            Ok(journal) => self.complete_scan_cached_with_warnings(
+                journal,
+                &[],
+                &[],
+                FinishedValidation::Catalog,
+            ),
+            Err(error) if degradable_active_journal_error(&error) => {
+                let warning = self.active_journal_warning(&error);
+                let journal = empty_journal_scan(self.limits.max_metadata_bytes)?;
+                self.complete_scan_cached_with_warnings(
+                    journal,
+                    &[],
+                    &[warning],
+                    FinishedValidation::Catalog,
+                )
             }
             Err(error) => Err(error),
         }
@@ -148,7 +191,12 @@ impl LocalDir {
             Err(error) if degradable_active_journal_error(&error) => {
                 let warning = self.active_journal_warning(&error);
                 let journal = empty_journal_scan(self.limits.max_metadata_bytes)?;
-                self.complete_scan_cached_with_warnings(journal, &[], &[warning])
+                self.complete_scan_cached_with_warnings(
+                    journal,
+                    &[],
+                    &[warning],
+                    FinishedValidation::Complete,
+                )
             }
             Err(error) => Err(error),
         }
@@ -221,7 +269,73 @@ impl LocalDir {
         journal: JournalScan,
         previous_finished: &[FinalUnit],
     ) -> io::Result<LocalScan> {
-        self.complete_scan_cached_with_warnings(journal, previous_finished, &[])
+        self.complete_scan_cached_with_warnings(
+            journal,
+            previous_finished,
+            &[],
+            FinishedValidation::Complete,
+        )
+    }
+
+    /// Verify every section body of one catalog-discovered finished segment.
+    ///
+    /// Returns `true` for a valid segment. A stable invalid file returns
+    /// `false` and appends its normal bounded warning to `scan`. A file that
+    /// changes under validation returns a retryable I/O error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the discovered file changed or a global
+    /// resource limit prevents validation.
+    pub fn validate_finished(&self, scan: &mut LocalScan, unit: &FinalUnit) -> io::Result<bool> {
+        let retained_metadata = scan.metadata_bytes;
+        let validation_retained =
+            retained_metadata_with_warnings(retained_metadata, scan.warnings.capacity())
+                .ok_or_else(|| budget::metadata_limit_io(self.limits.max_metadata_bytes))?;
+        let file = match self.open_pinned_zms(unit.address, unit.identity)? {
+            ZmsOpen::Open(file) => file,
+            ZmsOpen::Invalid(failure) => {
+                push_warning_bounded(
+                    &mut scan.warnings,
+                    invalid_zms_warning(
+                        unit.address,
+                        unit.identity,
+                        crate::InvalidZmsReason::Io,
+                        Some(failure),
+                    ),
+                    retained_metadata,
+                    self.limits.max_metadata_bytes,
+                )?;
+                return Ok(false);
+            }
+        };
+        let validation = read_zms_summary(
+            &file,
+            validation_retained,
+            self.limits.max_metadata_bytes,
+            FinishedValidation::Complete,
+        );
+        match classify_zms_validation(&file, unit.identity, unit.address, validation)? {
+            Ok(summary) if summary == *unit.summary => Ok(true),
+            Ok(_changed) => Err(stale_finished_zms(
+                unit.address,
+                "while its sections were validated",
+            )),
+            Err(invalid) => {
+                push_warning_bounded(
+                    &mut scan.warnings,
+                    invalid_zms_warning(
+                        unit.address,
+                        unit.identity,
+                        invalid.reason,
+                        invalid.failure,
+                    ),
+                    retained_metadata,
+                    self.limits.max_metadata_bytes,
+                )?;
+                Ok(false)
+            }
+        }
     }
 
     /// Open a finished segment file for raw byte access.
@@ -262,6 +376,34 @@ impl LocalDir {
     /// Returns an error when the existing journal is unsafe or unreadable.
     pub fn open_active(&self) -> io::Result<Option<File>> {
         self.root.open_active_journal().map_err(layout_io)
+    }
+
+    /// Open the exact active prefix described by `scan`.
+    ///
+    /// Later appends to the same generation are allowed but remain outside the
+    /// snapshot. A reset or generation change makes subsequent reads stale.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the captured generation is no longer readable.
+    pub fn open_active_snapshot(
+        &self,
+        scan: &LocalScan,
+    ) -> Result<Option<ActiveSnapshot>, StoreError> {
+        let Some(first) = scan.active.first() else {
+            return Ok(None);
+        };
+        let file = self
+            .root
+            .open_active_journal()?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "active.wal is absent"))?;
+        validate_active_snapshot(&file, first.segment_id, scan.valid_len)?;
+        Ok(Some(ActiveSnapshot {
+            file: Arc::new(file),
+            active: Arc::clone(&scan.active),
+            valid_len: scan.valid_len,
+            segment_id: first.segment_id,
+        }))
     }
 
     /// Read the bytes of one active part from the journal.
@@ -351,6 +493,79 @@ impl LocalDir {
                 &source,
             ))),
         }
+    }
+}
+
+impl ActiveSnapshot {
+    /// Identity of the logical segment captured from the journal header.
+    #[must_use]
+    pub const fn segment_id(&self) -> kronika_layout::SegmentId {
+        self.segment_id
+    }
+
+    /// Valid journal parts in captured order.
+    #[must_use]
+    pub fn parts(&self) -> &[ActivePart] {
+        &self.active
+    }
+
+    /// Read a byte range relative to one captured part.
+    ///
+    /// The range is bounded by both the part and the captured journal prefix.
+    /// Later appends are ignored. A reset or generation change makes the read
+    /// stale instead of mixing generations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::OutOfBounds`] for a range outside the captured
+    /// part, or an I/O error when the journal generation changed.
+    pub fn read_part_range(
+        &self,
+        part_index: usize,
+        offset: u64,
+        len: u64,
+    ) -> Result<Vec<u8>, StoreError> {
+        let part = self.active.get(part_index).ok_or(StoreError::OutOfBounds)?;
+        if part.segment_id != self.segment_id {
+            return Err(StoreError::OutOfBounds);
+        }
+        let part_len = u64::try_from(part.part.len).unwrap_or(u64::MAX);
+        if part_len > MAX_PART_LEN {
+            return Err(StoreError::ActivePartTooLarge {
+                len: part.part.len,
+                max: MAX_PART_LEN,
+            });
+        }
+        let relative_end = offset.checked_add(len).ok_or(StoreError::OutOfBounds)?;
+        if relative_end > part_len {
+            return Err(StoreError::OutOfBounds);
+        }
+        let part_offset = u64::try_from(part.part.offset).map_err(|_overflow| {
+            StoreError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "active part offset does not fit u64",
+            ))
+        })?;
+        let absolute_offset = part_offset
+            .checked_add(offset)
+            .ok_or(StoreError::OutOfBounds)?;
+        let absolute_end = absolute_offset
+            .checked_add(len)
+            .ok_or(StoreError::OutOfBounds)?;
+        if absolute_end > self.valid_len {
+            return Err(StoreError::OutOfBounds);
+        }
+        let buffer_len = usize::try_from(len).map_err(|_overflow| {
+            StoreError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "active range length does not fit usize",
+            ))
+        })?;
+        validate_active_snapshot(self.file.as_ref(), self.segment_id, self.valid_len)?;
+        let mut buffer = vec![0_u8; buffer_len];
+        self.file.read_exact_at(&mut buffer, absolute_offset)?;
+        validate_active_snapshot(self.file.as_ref(), self.segment_id, self.valid_len)?;
+        Ok(buffer)
     }
 }
 

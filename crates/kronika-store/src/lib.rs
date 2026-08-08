@@ -35,6 +35,7 @@ pub use catalog_summary::{
 };
 pub use local::{LocalDir, is_active_journal_scan_error, read_catalog};
 pub use source::{
-    ActiveJournalWarningReason, ActivePart, FinalUnit, InvalidZmsReason, JournalScan, LocalScan,
-    StoreError, StoreIoFailure, StoreIoOperation, StoreObject, StoreWarning, StoreWarningReason,
+    ActiveJournalWarningReason, ActivePart, ActiveSnapshot, FinalUnit, InvalidZmsReason,
+    JournalScan, LocalScan, StoreError, StoreIoFailure, StoreIoOperation, StoreObject,
+    StoreWarning, StoreWarningReason,
 };

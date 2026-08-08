@@ -19,10 +19,6 @@ pub enum ReaderError {
         /// What the codec said.
         source: CodecError,
     },
-    /// The string dictionary section could not be read as Parquet.
-    Dictionary(parquet::errors::ParquetError),
-    /// The string dictionary decoded, but without the columns a dictionary has.
-    DictionaryShape(&'static str),
 }
 
 impl fmt::Display for ReaderError {
@@ -31,8 +27,6 @@ impl fmt::Display for ReaderError {
             Self::Io(error) => write!(f, "read the data directory: {error}"),
             Self::Store(error) => write!(f, "open the segment: {error}"),
             Self::Section { type_id, source } => write!(f, "decode section {type_id}: {source}"),
-            Self::Dictionary(error) => write!(f, "read the string dictionary: {error}"),
-            Self::DictionaryShape(what) => write!(f, "the string dictionary has {what}"),
         }
     }
 }
@@ -43,8 +37,6 @@ impl std::error::Error for ReaderError {
             Self::Io(error) => Some(error),
             Self::Store(error) => Some(error),
             Self::Section { source, .. } => Some(source),
-            Self::Dictionary(error) => Some(error),
-            Self::DictionaryShape(_what) => None,
         }
     }
 }

@@ -27,7 +27,8 @@ use super::journal::{
     scan_journal_frames,
 };
 use super::segment::{
-    ZmsInvalid, ZmsOpen, classify_zms_validation, invalid_zms_warning, read_validated_zms_summary,
+    FinishedValidation, ZmsInvalid, ZmsOpen, classify_zms_validation, invalid_zms_warning,
+    read_zms_summary,
 };
 use super::{ACTIVE_ARC_ALLOCATION_BYTES, LocalDir};
 
@@ -247,6 +248,7 @@ impl LocalDir {
         journal: JournalScan,
         previous_finished: &[FinalUnit],
         initial_warnings: &[StoreWarning],
+        validation: FinishedValidation,
     ) -> io::Result<LocalScan> {
         let layout = self.root.scan(self.limits).map_err(layout_io)?;
         let segment_count = layout.segments.len();
@@ -321,17 +323,14 @@ impl LocalDir {
             let validation_retained =
                 retained_metadata_with_warnings(retained_during_build, warnings.capacity())
                     .ok_or_else(|| metadata_limit_io(self.limits.max_metadata_bytes))?;
-            let validation = read_validated_zms_summary(
+            let summary = read_zms_summary(
                 &file,
                 validation_retained,
                 self.limits.max_metadata_bytes,
-            );
-            match classify_zms_validation(
-                &file,
-                artifact.zms_identity,
-                artifact.address,
                 validation,
-            )? {
+            );
+            match classify_zms_validation(&file, artifact.zms_identity, artifact.address, summary)?
+            {
                 Ok(summary) => {
                     ensure_retained_metadata(
                         retained_during_build,
@@ -357,12 +356,28 @@ impl LocalDir {
             }
         }
 
+        let metadata_bytes = accounted_scan_metadata_bytes(
+            0,
+            journal.metadata_bytes,
+            0,
+            finished.capacity(),
+            finished.len(),
+        )
+        .ok_or_else(|| metadata_limit_io(self.limits.max_metadata_bytes))?;
+        ensure_retained_metadata(
+            metadata_bytes,
+            0,
+            warnings.capacity(),
+            self.limits.max_metadata_bytes,
+        )?;
+
         Ok(LocalScan {
             finished: Arc::new(finished),
             active: journal.active,
             warnings,
             valid_len: journal.valid_len,
             committed_reset: journal.committed_reset,
+            metadata_bytes,
         })
     }
 

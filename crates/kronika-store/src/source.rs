@@ -1,5 +1,6 @@
 //! Storage unit types returned by the store scan.
 
+use std::fs::File;
 use std::sync::Arc;
 
 use kronika_format::{Catalog, PartRef};
@@ -100,6 +101,24 @@ pub struct LocalScan {
     pub valid_len: u64,
     /// Whether the captured journal state is a committed reset marker phase.
     pub committed_reset: bool,
+    /// Retained scan metadata other than the warning vector allocation.
+    pub(crate) metadata_bytes: usize,
+}
+
+/// One captured, append-only prefix of `active.wal`.
+///
+/// The validated parts and prefix length come from one [`LocalScan`]. Later
+/// appends to the same journal generation are deliberately outside this view.
+#[derive(Debug, Clone)]
+pub struct ActiveSnapshot {
+    pub(crate) file: Arc<File>,
+    #[expect(
+        clippy::rc_buffer,
+        reason = "the snapshot shares the exact validated LocalScan allocation"
+    )]
+    pub(crate) active: Arc<Vec<ActivePart>>,
+    pub(crate) valid_len: u64,
+    pub(crate) segment_id: SegmentId,
 }
 
 /// A non-fatal storage diagnostic retained in the scan API.

@@ -187,6 +187,10 @@ time range and returns rows, and everything that reads goes through it. A
 second reading path would be a second set of bugs, and the one the tests
 exercise would not be the one that ships.
 
+A read includes finished `.zms` segments and the current logical segment from
+the valid prefix of `active.wal`. Finished segments are immutable and
+browser-cacheable; web refreshes only the append-only active tail.
+
 ## Index files
 
 Web builds `.idx` files next to the segments for fast dashboard access. An

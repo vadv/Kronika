@@ -2,8 +2,8 @@
 //!
 //! Every scenario spawns the real binary over a temporary data root and reads
 //! back the artifacts an operator sees: the segments on disk, decoded through
-//! `kronika-format` and `kronika-registry`, and the log lines. Nothing is
-//! mocked and nothing goes through the store.
+//! `kronika-reader` by the same path web uses, and the log lines. Nothing is
+//! mocked.
 //!
 //! The runner is meant to be executed inside the cached BDD image, where
 //! `KRONIKA_COLLECTOR_BIN` points at the compiled collector and

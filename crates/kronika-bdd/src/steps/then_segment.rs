@@ -6,8 +6,7 @@ use crate::collector::files_under;
 use anyhow::{Context as _, Result};
 use cucumber::gherkin::Step;
 use cucumber::then;
-use kronika_reader::{Reader, Segment};
-use kronika_registry::Cell;
+use kronika_reader::{Cell, Reader, Resolved, Segment};
 use std::path::Path;
 
 /// `type_id` of `instance_metadata`.
@@ -91,7 +90,7 @@ fn window_returns_its_segment(world: &mut BddWorld) -> Result<()> {
         anyhow::ensure!(
             found
                 .iter()
-                .any(|unit| unit.summary.min_ts == min_ts && unit.summary.max_ts == max_ts),
+                .any(|unit| unit.min_ts() == min_ts && unit.max_ts() == max_ts),
             "reading {min_ts}..={max_ts} returned {} segments, none of them that one",
             found.len()
         );
@@ -109,7 +108,7 @@ fn window_excludes_the_others(world: &mut BddWorld) -> Result<()> {
     );
     let found = reader.segments(first.0..=first.1)?.segments;
     anyhow::ensure!(
-        !found.iter().any(|unit| unit.summary.min_ts == last.0),
+        !found.iter().any(|unit| unit.min_ts() == last.0),
         "reading {}..={} returned the segment starting at {}",
         first.0,
         first.1,
@@ -251,7 +250,7 @@ fn every_segment_holds_sections(world: &mut BddWorld, step: &Step) -> Result<()>
                 )
             })?;
             anyhow::ensure!(
-                rows >= count(min)?,
+                rows >= u64::from(count(min)?),
                 "{} holds {rows} rows of {name} ({id}), fewer than {min}",
                 segment.path().display()
             );
@@ -292,9 +291,9 @@ fn some_segment_holds_sections(world: &mut BddWorld, step: &Step) -> Result<()> 
         let id = type_id(id)?;
         let floor = count(min)?;
         anyhow::ensure!(
-            segments
-                .iter()
-                .any(|segment| segment.rows_of(id).is_some_and(|rows| rows >= floor)),
+            segments.iter().any(|segment| segment
+                .rows_of(id)
+                .is_some_and(|rows| rows >= u64::from(floor))),
             "none of the {} segments holds {min} rows of {name} ({id})",
             segments.len()
         );
@@ -429,15 +428,15 @@ fn seen_values(segments: &[Segment], type_id: u32, column: &str) -> Vec<String> 
     let mut seen: Vec<String> = segments
         .iter()
         .filter_map(|segment| {
-            let strings = segment.strings().ok()?;
+            let dictionary = segment.dictionary().ok()?;
             let rows = segment.rows(type_id).ok()?;
             Some(
                 rows.iter()
                     .filter_map(|row| row.get(column))
                     .map(|cell| match cell {
-                        Cell::StrId(id) => {
-                            strings.get(*id).map_or_else(|| render(cell), str::to_owned)
-                        }
+                        Cell::StrId(id) => dictionary
+                            .resolve(*id)
+                            .map_or_else(|| render(cell), resolved_text),
                         other => render(other),
                     })
                     .collect::<Vec<_>>(),
@@ -479,9 +478,11 @@ fn log_events_recorded_once(world: &mut BddWorld, step: &Step) -> Result<()> {
 /// A dictionary column is compared against the text the segment interned, not
 /// against the id it was interned under.
 fn matching_rows(segment: &Segment, type_id: u32, column: &str, value: &str) -> Result<usize> {
-    let strings = segment.strings()?;
+    let dictionary = segment.dictionary()?;
     let render_cell = |cell: &Cell| match cell {
-        Cell::StrId(id) => strings.get(*id).map_or_else(|| render(cell), str::to_owned),
+        Cell::StrId(id) => dictionary
+            .resolve(*id)
+            .map_or_else(|| render(cell), resolved_text),
         other => render(other),
     };
     Ok(segment
@@ -492,6 +493,14 @@ fn matching_rows(segment: &Segment, type_id: u32, column: &str, value: &str) -> 
                 .is_some_and(|cell| render_cell(cell) == value)
         })
         .count())
+}
+
+fn resolved_text(value: Resolved<'_>) -> String {
+    let bytes = match value {
+        Resolved::Str(bytes) => bytes,
+        Resolved::Blob(blob) => blob.stored_bytes,
+    };
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 fn holds_value(segment: &Segment, type_id: u32, column: &str, value: &str) -> Result<bool> {
