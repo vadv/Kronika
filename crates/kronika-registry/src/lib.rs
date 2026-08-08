@@ -65,6 +65,7 @@ pub use codec::pg_log::{
     PgLogSlowQueries, PgLogTempFiles,
 };
 pub use codec::pg_settings::PgSettings;
+pub use codec::pg_stat_archiver::PgStatArchiver;
 pub use codec::pgbouncer_events::PgBouncerEvents;
 pub(crate) use codec::{check_row_cap, decode_batches, decode_section, encode_section};
 pub use codec::{
@@ -72,7 +73,7 @@ pub use codec::{
     os_cgroup_pids, os_cpu, os_diskstats, os_interrupts, os_kernel_limits, os_loadavg, os_meminfo,
     os_mountinfo, os_netdev, os_netstat, os_nfs, os_numa, os_process, os_process_status, os_psi,
     os_snmp, os_snmp6, os_softirq, os_stat, os_topology, os_vmstat, pg_locks, pg_log, pg_settings,
-    pgbouncer_events,
+    pg_stat_archiver, pgbouncer_events,
 };
 pub use contract::{
     Column, ColumnClass, ColumnType, LintError, Semantics, StrId, Ts, TypeContract, Unit, lint,
@@ -145,6 +146,8 @@ pub const fn registry() -> &'static [TypeContract] {
         os_snmp6::OsSnmp6::CONTRACT,
         os_nfs::OsNfsClient::CONTRACT,
         os_nfs::OsNfsServer::CONTRACT,
+        PgSettings::CONTRACT,
+        PgStatArchiver::CONTRACT,
         PgLocksV1::CONTRACT,
         PgLocksV2::CONTRACT,
         PgLogErrors::CONTRACT,

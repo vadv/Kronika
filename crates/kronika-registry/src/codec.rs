@@ -54,6 +54,7 @@ pub mod os_vmstat;
 pub mod pg_locks;
 pub mod pg_log;
 pub mod pg_settings;
+pub mod pg_stat_archiver;
 pub mod pgbouncer_events;
 
 mod bounds;
