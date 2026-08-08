@@ -8,7 +8,7 @@ mod file;
 mod health;
 mod objects;
 
-pub use build::{INSTANCE_METADATA_TYPE_ID, OS_PSI_TYPE_ID, points};
+pub use build::{INSTANCE_METADATA_TYPE_ID, OS_PSI_TYPE_ID, objects, points};
 pub use file::{ENTRY_LEN, HEADER_LEN, Index, IndexError, MAGIC, POINT_LEN, Point};
 pub use health::{Stall, health};
 pub use objects::{Object, SectionObjects, Value};

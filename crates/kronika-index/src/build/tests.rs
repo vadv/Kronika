@@ -168,3 +168,127 @@ fn points_come_out_oldest_first_whatever_row_order_was_read() {
         vec![SECOND, 2 * SECOND]
     );
 }
+
+mod objects {
+    use kronika_registry::os_cgroup_cpu::OsCgroupCpu;
+    use kronika_registry::os_meminfo::OsMeminfo;
+    use kronika_registry::{Cell, Row, Section};
+
+    use crate::build::objects;
+    use crate::objects::Value;
+
+    /// One `os_cgroup_cpu` row: identity `cgroup_path`, five counters, two
+    /// gauges, and the scope label.
+    fn cgroup(ts: i64, path: u64, usage: i64, quota: i64) -> Row {
+        Row::new(
+            &OsCgroupCpu::CONTRACT,
+            vec![
+                Cell::Ts(ts),
+                Cell::StrId(path),
+                Cell::I64(usage),
+                Cell::I64(usage / 2),
+                Cell::I64(usage / 2),
+                Cell::I64(0),
+                Cell::I64(0),
+                Cell::I64(quota),
+                Cell::I64(100_000),
+                Cell::U32(0),
+            ],
+        )
+    }
+
+    fn names(id: u64) -> Option<String> {
+        match id {
+            1 => Some("/system.slice/postgresql.service".to_owned()),
+            2 => Some("/user.slice".to_owned()),
+            _unknown => None,
+        }
+    }
+
+    #[test]
+    fn a_counter_becomes_its_delta_and_a_gauge_its_last_reading() {
+        let built = objects(
+            &[
+                cgroup(1_000, 1, 100, 200_000),
+                cgroup(2_000, 1, 450, 400_000),
+            ],
+            names,
+        )
+        .expect("the section declares an identity");
+        assert_eq!(built.type_id, 1_201_001);
+        assert_eq!(built.objects.len(), 1);
+        assert_eq!(built.objects[0].values[0], Value::Int(350));
+        assert_eq!(built.objects[0].values[5], Value::Int(400_000));
+    }
+
+    #[test]
+    fn one_object_per_identity_no_matter_how_many_snapshots() {
+        let built = objects(
+            &[
+                cgroup(1_000, 1, 100, 0),
+                cgroup(1_000, 2, 10, 0),
+                cgroup(2_000, 1, 200, 0),
+                cgroup(2_000, 2, 20, 0),
+                cgroup(3_000, 1, 300, 0),
+            ],
+            names,
+        )
+        .expect("identity");
+        assert_eq!(built.objects.len(), 2);
+        assert_eq!(built.objects[0].values[0], Value::Int(200));
+        assert_eq!(built.objects[1].values[0], Value::Int(10));
+    }
+
+    #[test]
+    fn a_counter_that_went_backwards_has_no_delta() {
+        let built = objects(&[cgroup(1_000, 1, 900, 0), cgroup(2_000, 1, 100, 0)], names)
+            .expect("identity");
+        assert_eq!(built.objects[0].values[0], Value::Null);
+    }
+
+    #[test]
+    fn one_snapshot_gives_a_zero_delta_and_the_reading_it_had() {
+        let built = objects(&[cgroup(1_000, 1, 900, 5)], names).expect("identity");
+        assert_eq!(built.objects[0].values[0], Value::Int(0));
+        assert_eq!(built.objects[0].values[5], Value::Int(5));
+    }
+
+    #[test]
+    fn a_label_comes_out_as_the_segment_interned_it() {
+        let built = objects(&[cgroup(1_000, 1, 0, 0)], names).expect("identity");
+        assert_eq!(built.label_count, 2);
+        assert_eq!(
+            built.objects[0].labels[0],
+            "/system.slice/postgresql.service"
+        );
+        assert_eq!(built.objects[0].labels[1], "0");
+    }
+
+    #[test]
+    fn an_id_the_dictionary_does_not_hold_says_so_rather_than_going_blank() {
+        let built = objects(&[cgroup(1_000, 7, 0, 0)], names).expect("identity");
+        assert_eq!(built.objects[0].labels[0], "<str 7>");
+    }
+
+    #[test]
+    fn objects_are_ordered_by_their_identity() {
+        let built =
+            objects(&[cgroup(1_000, 2, 0, 0), cgroup(1_000, 1, 0, 0)], names).expect("identity");
+        assert_eq!(
+            built.objects[0].labels[0],
+            "/system.slice/postgresql.service"
+        );
+        assert_eq!(built.objects[1].labels[0], "/user.slice");
+    }
+
+    #[test]
+    fn a_section_with_one_row_per_snapshot_has_no_objects_to_reduce() {
+        let row = Row::new(&OsMeminfo::CONTRACT, vec![Cell::Ts(1_000)]);
+        assert!(objects(&[row], names).is_none());
+    }
+
+    #[test]
+    fn nothing_to_read_is_nothing_to_build() {
+        assert!(objects(&[], names).is_none());
+    }
+}
