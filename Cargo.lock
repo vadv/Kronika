@@ -1035,6 +1035,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kronika-source-log"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "memchr",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "kronika-source-os"
 version = "0.0.0"
 dependencies = [
