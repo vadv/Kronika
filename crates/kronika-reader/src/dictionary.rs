@@ -29,21 +29,14 @@ impl Dictionary {
     #[must_use]
     pub fn resolve(&self, raw_id: u64) -> Option<Resolved<'_>> {
         let str_id = StrId::from_raw(raw_id)?;
-        match self.by_id.get(&str_id)? {
-            Value::String(bytes) => Some(Resolved::Str(bytes)),
-            Value::Blob {
-                stored_bytes,
-                full_len,
-                truncated,
-                full_sha256,
-            } => Some(Resolved::Blob(BlobEntry {
-                str_id,
-                stored_bytes,
-                full_len: *full_len,
-                truncated: *truncated,
-                full_sha256: *full_sha256,
-            })),
-        }
+        Some(resolved(str_id, self.by_id.get(&str_id)?))
+    }
+
+    /// Iterate all string and blob entries in unspecified order.
+    pub fn entries(&self) -> impl Iterator<Item = (u64, Resolved<'_>)> + '_ {
+        self.by_id
+            .iter()
+            .map(|(&str_id, value)| (str_id.get(), resolved(str_id, value)))
     }
 
     pub(crate) fn decode(
@@ -97,6 +90,24 @@ impl Dictionary {
             }
         }
         Ok(())
+    }
+}
+
+fn resolved(str_id: StrId, value: &Value) -> Resolved<'_> {
+    match value {
+        Value::String(bytes) => Resolved::Str(bytes),
+        Value::Blob {
+            stored_bytes,
+            full_len,
+            truncated,
+            full_sha256,
+        } => Resolved::Blob(BlobEntry {
+            str_id,
+            stored_bytes,
+            full_len: *full_len,
+            truncated: *truncated,
+            full_sha256: *full_sha256,
+        }),
     }
 }
 

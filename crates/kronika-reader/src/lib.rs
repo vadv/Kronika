@@ -22,7 +22,7 @@ pub use error::ReaderError;
 pub use kronika_format::{BlobEntry, Resolved};
 pub use kronika_registry::{Cell, Row};
 pub use kronika_store::StoreWarning;
-pub use segment::Segment;
+pub use segment::{Section, Segment};
 
 #[derive(Debug, Clone)]
 enum SegmentSource {
@@ -41,6 +41,7 @@ pub struct SegmentRef {
     segment_id: i64,
     min_ts: i64,
     max_ts: i64,
+    captured_bytes: u64,
 }
 
 impl SegmentRef {
@@ -140,6 +141,7 @@ impl Reader {
                 segment_id: unit.address.id.get(),
                 min_ts: unit.summary.min_ts,
                 max_ts: unit.summary.max_ts,
+                captured_bytes: unit.identity.len,
             });
         }
         if let Some((snapshot, min_ts, max_ts)) = active {
@@ -149,6 +151,7 @@ impl Reader {
                 provenance: Arc::clone(&self.provenance),
                 min_ts,
                 max_ts,
+                captured_bytes: scan.valid_len,
             });
         }
         segments.sort_by_key(|segment| segment.segment_id);

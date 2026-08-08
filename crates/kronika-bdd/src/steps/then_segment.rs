@@ -1,12 +1,15 @@
 //! Assertions against the files the collector published.
+//!
+//! Everything a segment is asked comes back through `kronika-dump`. A scenario
+//! that checked a segment some other way would be checking a path nobody runs.
 
+use super::dump::{Line, dump, lines, strict_lines};
 use super::{count, table_rows, type_id};
 use crate::BddWorld;
 use crate::collector::files_under;
 use anyhow::{Context as _, Result};
 use cucumber::gherkin::Step;
 use cucumber::then;
-use kronika_reader::{Cell, Reader, Resolved, Segment};
 use std::path::Path;
 
 /// `type_id` of `instance_metadata`.
@@ -31,45 +34,76 @@ fn is_utc_calendar_path(relative: &Path) -> bool {
             .all(|part| part.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
-/// A reader over what the run published.
-fn reader(world: &BddWorld) -> Result<Reader> {
-    let run = world.run.as_ref().context("a collector was started")?;
-    Ok(Reader::open(&run.out_dir())?)
+/// A listing allowed to contain no segment or scan warnings.
+///
+/// Range and set-aside scenarios exercise exactly those outcomes. Ordinary
+/// listing assertions go through `listing` instead.
+fn permissive_listing(world: &BddWorld, range: &[&str]) -> Result<Vec<Line>> {
+    let mut flags = vec!["--json"];
+    flags.extend_from_slice(range);
+    lines(&dump(world, &flags)?)
 }
 
-/// Every segment the run published, oldest first, read the way web reads.
-fn segments(world: &BddWorld) -> Result<Vec<Segment>> {
-    let out_dir = world
-        .run
-        .as_ref()
-        .context("a collector was started")?
-        .out_dir();
-    let reader = reader(world)?;
-    let listing = reader.segments(..)?;
+/// A complete listing with at least one admitted segment and no scan warning.
+fn listing(world: &BddWorld) -> Result<Vec<Line>> {
+    let printed = dump(world, &["--json"])?;
+    let listed = strict_lines(&printed, "the full listing")?;
     anyhow::ensure!(
-        listing.warnings.is_empty(),
-        "the scan set aside files under {}: {:?}",
-        out_dir.display(),
-        listing.warnings
+        listed.iter().any(|line| line.holds("kind", "segment")),
+        "the full listing admitted no segments"
     );
-    anyhow::ensure!(
-        !listing.segments.is_empty(),
-        "no segment was published under {}",
-        out_dir.display()
-    );
-    listing
-        .segments
-        .iter()
-        .map(|unit| reader.open_segment(unit).map_err(Into::into))
-        .collect()
+    Ok(listed)
+}
+
+/// One line per published segment: its window, its span, what it cost.
+fn segments(world: &BddWorld) -> Result<Vec<Line>> {
+    Ok(listing(world)?
+        .into_iter()
+        .filter(|line| line.holds("kind", "segment"))
+        .collect())
+}
+
+/// Segments selected by a range, including an intentionally empty result.
+fn segments_in_range(world: &BddWorld, range: &[&str]) -> Result<Vec<Line>> {
+    Ok(permissive_listing(world, range)?
+        .into_iter()
+        .filter(|line| line.holds("kind", "segment"))
+        .collect())
+}
+
+/// One line per section of every published segment.
+fn sections(world: &BddWorld) -> Result<Vec<Line>> {
+    Ok(listing(world)?
+        .into_iter()
+        .filter(|line| line.holds("kind", "section"))
+        .collect())
+}
+
+/// The rows of one section across every published segment.
+fn rows(world: &BddWorld, type_id: u32) -> Result<Vec<Line>> {
+    let printed = dump(
+        world,
+        &["--json", "--limit", "0", "--section", &type_id.to_string()],
+    )?;
+    let listed = strict_lines(&printed, "the row listing")?;
+    Ok(listed
+        .into_iter()
+        .filter(|line| {
+            line.holds("kind", "row") && line.number("type_id") == Some(i64::from(type_id))
+        })
+        .collect())
 }
 
 /// The window every published segment covers, oldest first.
 fn windows(world: &BddWorld) -> Result<Vec<(i64, i64)>> {
-    Ok(segments(world)?
+    segments(world)?
         .iter()
-        .map(|segment| (segment.min_ts(), segment.max_ts()))
-        .collect())
+        .map(|line| {
+            let min_ts = line.number("min_ts").context("a segment without min_ts")?;
+            let max_ts = line.number("max_ts").context("a segment without max_ts")?;
+            Ok((min_ts, max_ts))
+        })
+        .collect()
 }
 
 #[then(regex = r"^at least (\d+) segments were published$")]
@@ -84,14 +118,17 @@ fn several_segments(world: &mut BddWorld, least: usize) -> Result<()> {
 
 #[then("reading each segment's own window returns that segment")]
 fn window_returns_its_segment(world: &mut BddWorld) -> Result<()> {
-    let reader = reader(world)?;
     for (min_ts, max_ts) in windows(world)? {
-        let found = reader.segments(min_ts..=max_ts)?.segments;
+        let found = segments_in_range(
+            world,
+            &["--from", &min_ts.to_string(), "--to", &max_ts.to_string()],
+        )?;
         anyhow::ensure!(
             found
                 .iter()
-                .any(|unit| unit.min_ts() == min_ts && unit.max_ts() == max_ts),
-            "reading {min_ts}..={max_ts} returned {} segments, none of them that one",
+                .any(|line| line.number("min_ts") == Some(min_ts)
+                    && line.number("max_ts") == Some(max_ts)),
+            "reading {min_ts}..{max_ts} returned {} segments, none of them that one",
             found.len()
         );
     }
@@ -100,16 +137,18 @@ fn window_returns_its_segment(world: &mut BddWorld) -> Result<()> {
 
 #[then("reading the first segment's window leaves out the last segment")]
 fn window_excludes_the_others(world: &mut BddWorld) -> Result<()> {
-    let reader = reader(world)?;
     let windows = windows(world)?;
-    let (first, last) = (
-        *windows.first().context("no segment was published")?,
-        *windows.last().context("no segment was published")?,
-    );
-    let found = reader.segments(first.0..=first.1)?.segments;
+    let first = *windows.first().context("no segment was published")?;
+    let last = *windows.last().context("no segment was published")?;
+    let found = segments_in_range(
+        world,
+        &["--from", &first.0.to_string(), "--to", &first.1.to_string()],
+    )?;
     anyhow::ensure!(
-        !found.iter().any(|unit| unit.min_ts() == last.0),
-        "reading {}..={} returned the segment starting at {}",
+        !found
+            .iter()
+            .any(|line| line.number("min_ts") == Some(last.0)),
+        "reading {}..{} returned the segment starting at {}",
         first.0,
         first.1,
         last.0
@@ -119,16 +158,16 @@ fn window_excludes_the_others(world: &mut BddWorld) -> Result<()> {
 
 #[then("reading the time before the first segment returns nothing")]
 fn nothing_before_the_first(world: &mut BddWorld) -> Result<()> {
-    let reader = reader(world)?;
     let first = windows(world)?
         .first()
         .copied()
         .context("no segment was published")?
         .0;
-    let found = reader.segments(..first)?.segments;
+    let found = segments_in_range(world, &["--to", &(first - 1).to_string()])?;
     anyhow::ensure!(
         found.is_empty(),
-        "reading up to {first} returned {} segments",
+        "reading up to {} returned {} segments",
+        first - 1,
         found.len()
     );
     Ok(())
@@ -136,17 +175,16 @@ fn nothing_before_the_first(world: &mut BddWorld) -> Result<()> {
 
 #[then("reading the time after the last segment returns nothing")]
 fn nothing_after_the_last(world: &mut BddWorld) -> Result<()> {
-    let reader = reader(world)?;
     let last = windows(world)?
         .last()
         .copied()
         .context("no segment was published")?
         .1;
-    let found = reader.segments(last.saturating_add(1)..)?.segments;
+    let found = segments_in_range(world, &["--from", &(last + 1).to_string()])?;
     anyhow::ensure!(
         found.is_empty(),
         "reading from {} returned {} segments",
-        last.saturating_add(1),
+        last + 1,
         found.len()
     );
     Ok(())
@@ -154,30 +192,16 @@ fn nothing_after_the_last(world: &mut BddWorld) -> Result<()> {
 
 #[then(regex = r"^the reader sets aside (\d+) files?$")]
 fn reader_sets_aside(world: &mut BddWorld, expected: usize) -> Result<()> {
-    let reader = reader(world)?;
-    let listing = reader.segments(..)?;
+    let listed = permissive_listing(world, &[])?;
+    let warnings = listed
+        .iter()
+        .filter(|line| line.holds("kind", "warning"))
+        .count();
     anyhow::ensure!(
-        listing.warnings.len() == expected,
-        "the scan set aside {} files, not {expected}: {:?}",
-        listing.warnings.len(),
-        listing.warnings
+        warnings == expected,
+        "the scan set aside {warnings} files, not {expected}",
     );
     Ok(())
-}
-
-/// One decoded cell as the text a scenario writes for it.
-fn render(cell: &Cell) -> String {
-    match cell {
-        Cell::I16(value) => value.to_string(),
-        Cell::I32(value) => value.to_string(),
-        Cell::I64(value) | Cell::Ts(value) => value.to_string(),
-        Cell::U32(value) => value.to_string(),
-        Cell::U64(value) | Cell::StrId(value) => value.to_string(),
-        Cell::F64(value) => value.to_string(),
-        Cell::Bool(value) => value.to_string(),
-        Cell::ListI32(values) => format!("{values:?}"),
-        Cell::Null => "null".to_owned(),
-    }
 }
 
 #[then("a segment exists under a YYYY/MM/DD directory")]
@@ -236,23 +260,23 @@ fn no_segment_on_calendar_path(world: &mut BddWorld) -> Result<()> {
 #[then("every segment holds these sections")]
 fn every_segment_holds_sections(world: &mut BddWorld, step: &Step) -> Result<()> {
     let wanted = table_rows(step, &["type_id", "section", "min rows"])?;
-    for segment in segments(world)? {
+    let sections = sections(world)?;
+    for path in paths(&segments(world)?) {
         for row in &wanted {
             let [id, name, min] = row.as_slice() else {
                 anyhow::bail!("a section row needs a type_id, a name and a row floor, got {row:?}");
             };
             let id = type_id(id)?;
-            let rows = segment.rows_of(id).with_context(|| {
-                format!(
-                    "{} carries no {name} ({id}); it has {:?}",
-                    segment.path().display(),
-                    segment.type_ids().collect::<Vec<_>>()
-                )
-            })?;
+            let held = sections
+                .iter()
+                .find(|line| {
+                    line.holds("path", &path) && line.number("type_id") == Some(i64::from(id))
+                })
+                .with_context(|| format!("{path} carries no {name} ({id})"))?;
+            let rows = held.number("rows").unwrap_or_default();
             anyhow::ensure!(
-                rows >= u64::from(count(min)?),
-                "{} holds {rows} rows of {name} ({id}), fewer than {min}",
-                segment.path().display()
+                rows >= i64::from(count(min)?),
+                "{path} holds {rows} rows of {name} ({id}), fewer than {min}"
             );
         }
     }
@@ -262,20 +286,19 @@ fn every_segment_holds_sections(world: &mut BddWorld, step: &Step) -> Result<()>
 #[then("no segment holds these sections")]
 fn no_segment_holds_sections(world: &mut BddWorld, step: &Step) -> Result<()> {
     let unwanted = table_rows(step, &["type_id", "section"])?;
-    for segment in segments(world)? {
-        for row in &unwanted {
-            let [id, name] = row.as_slice() else {
-                anyhow::bail!("a section row needs a type_id and a name, got {row:?}");
-            };
-            let id = type_id(id)?;
-            anyhow::ensure!(
-                segment.rows_of(id).is_none(),
-                "{} carries {name} ({id}) with {:?} rows; the source was unreadable, so the \
-                 section belongs nowhere in the segment",
-                segment.path().display(),
-                segment.rows_of(id)
-            );
-        }
+    let sections = sections(world)?;
+    for row in &unwanted {
+        let [id, name] = row.as_slice() else {
+            anyhow::bail!("a section row needs a type_id and a name, got {row:?}");
+        };
+        let id = type_id(id)?;
+        anyhow::ensure!(
+            !sections
+                .iter()
+                .any(|line| line.number("type_id") == Some(i64::from(id))),
+            "a segment carries {name} ({id}); the source was unreadable, so the section \
+             belongs nowhere in the segment"
+        );
     }
     Ok(())
 }
@@ -283,19 +306,19 @@ fn no_segment_holds_sections(world: &mut BddWorld, step: &Step) -> Result<()> {
 #[then("some segment holds these sections")]
 fn some_segment_holds_sections(world: &mut BddWorld, step: &Step) -> Result<()> {
     let wanted = table_rows(step, &["type_id", "section", "min rows"])?;
-    let segments = segments(world)?;
+    let sections = sections(world)?;
     for row in &wanted {
         let [id, name, min] = row.as_slice() else {
             anyhow::bail!("a section row needs a type_id, a name and a row floor, got {row:?}");
         };
         let id = type_id(id)?;
-        let floor = count(min)?;
+        let floor = i64::from(count(min)?);
         anyhow::ensure!(
-            segments.iter().any(|segment| segment
-                .rows_of(id)
-                .is_some_and(|rows| rows >= u64::from(floor))),
-            "none of the {} segments holds {min} rows of {name} ({id})",
-            segments.len()
+            sections.iter().any(|line| {
+                line.number("type_id") == Some(i64::from(id))
+                    && line.number("rows").unwrap_or_default() >= floor
+            }),
+            "no segment holds {min} rows of {name} ({id})"
         );
     }
     Ok(())
@@ -304,32 +327,35 @@ fn some_segment_holds_sections(world: &mut BddWorld, step: &Step) -> Result<()> 
 #[then("every segment records these instance facts")]
 fn instance_facts(world: &mut BddWorld, step: &Step) -> Result<()> {
     let wanted = table_rows(step, &["column", "value"])?;
-    for segment in segments(world)? {
-        let rows = segment.rows(INSTANCE_METADATA)?;
+    let recorded = rows(world, INSTANCE_METADATA)?;
+    let published = paths(&segments(world)?);
+    anyhow::ensure!(
+        recorded.len() == published.len(),
+        "{} instance_metadata rows across {} segments, expected one each",
+        recorded.len(),
+        published.len()
+    );
+    for path in published {
+        let per_segment: Vec<&Line> = recorded
+            .iter()
+            .filter(|row| row.holds("path", &path))
+            .collect();
         anyhow::ensure!(
-            rows.len() == 1,
-            "{} carries {} instance_metadata rows, expected exactly one",
-            segment.path().display(),
-            rows.len()
+            per_segment.len() == 1,
+            "{path} has {} instance_metadata rows, expected one",
+            per_segment.len()
         );
-        let row = rows.first().with_context(|| {
-            format!(
-                "{} carries no instance_metadata row",
-                segment.path().display()
-            )
-        })?;
+        let row = per_segment[0];
         for expected in &wanted {
             let [column, value] = expected.as_slice() else {
                 anyhow::bail!("an instance-fact row needs a column and a value, got {expected:?}");
             };
-            let cell = row
-                .get(column)
-                .with_context(|| format!("instance_metadata has no column {column}"))?;
+            let held = row
+                .row_get(column)
+                .with_context(|| format!("{path} instance_metadata has no column {column}"))?;
             anyhow::ensure!(
-                render(cell) == *value,
-                "{} records {column}={}, not {value}",
-                segment.path().display(),
-                render(cell)
+                held == *value,
+                "{path} records {column}={held}, not {value}"
             );
         }
     }
@@ -339,18 +365,16 @@ fn instance_facts(world: &mut BddWorld, step: &Step) -> Result<()> {
 #[then(regex = r"^some segment records a cgroup CPU limit of (\d+) cores$")]
 fn cgroup_cpu_limit(world: &mut BddWorld, cores: i64) -> Result<()> {
     let mut seen = Vec::new();
-    for segment in segments(world)? {
-        for row in segment.rows(OS_CGROUP_CPU)? {
-            let (Some(&Cell::I64(quota)), Some(&Cell::I64(period))) =
-                (row.get("quota_usec"), row.get("period_usec"))
-            else {
-                continue;
-            };
-            if period > 0 && quota > 0 {
-                seen.push(quota / period);
-                if quota == cores * period {
-                    return Ok(());
-                }
+    for row in rows(world, OS_CGROUP_CPU)? {
+        let (Some(quota), Some(period)) =
+            (row.row_number("quota_usec"), row.row_number("period_usec"))
+        else {
+            continue;
+        };
+        if period > 0 && quota > 0 {
+            seen.push(quota / period);
+            if quota == cores * period {
+                return Ok(());
             }
         }
     }
@@ -358,13 +382,14 @@ fn cgroup_cpu_limit(world: &mut BddWorld, cores: i64) -> Result<()> {
 }
 
 #[then(regex = r"^every segment covers at least (\d+) windows$")]
-fn window_count(world: &mut BddWorld, least: u32) -> Result<()> {
-    for segment in segments(world)? {
+fn window_count(world: &mut BddWorld, least: i64) -> Result<()> {
+    for line in segments(world)? {
+        let windows = line
+            .number("windows")
+            .context("a segment without windows")?;
         anyhow::ensure!(
-            segment.window_count() >= least,
-            "{} covers {} windows, fewer than {least}",
-            segment.path().display(),
-            segment.window_count()
+            windows >= least,
+            "a segment coalesced {windows} windows, fewer than {least}"
         );
     }
     Ok(())
@@ -372,13 +397,10 @@ fn window_count(world: &mut BddWorld, least: u32) -> Result<()> {
 
 #[then("every segment ends later than it starts")]
 fn segment_time_span(world: &mut BddWorld) -> Result<()> {
-    for segment in segments(world)? {
+    for (min_ts, max_ts) in windows(world)? {
         anyhow::ensure!(
-            segment.max_ts() > segment.min_ts(),
-            "{} spans no time: min_ts {} equals max_ts {}",
-            segment.path().display(),
-            segment.min_ts(),
-            segment.max_ts()
+            max_ts > min_ts,
+            "a segment spans {min_ts}..{max_ts}, which is not a span"
         );
     }
     Ok(())
@@ -389,11 +411,11 @@ fn peak_rss(world: &mut BddWorld, limit_mb: u64) -> Result<()> {
     let run = world.run.as_ref().context("a collector was started")?;
     let peak = run
         .peak_rss_kib()
-        .context("the run recorded no VmHWM; the process was gone before it was sampled")?;
+        .context("the run recorded no peak RSS; it may not have been stopped")?;
     let limit_kib = limit_mb * 1024;
     anyhow::ensure!(
         peak <= limit_kib,
-        "peak RSS was {peak} KiB, over the {limit_mb} MB limit ({limit_kib} KiB)"
+        "peak RSS was {peak} KiB, above the {limit_kib} KiB the scenario allows"
     );
     Ok(())
 }
@@ -401,108 +423,57 @@ fn peak_rss(world: &mut BddWorld, limit_mb: u64) -> Result<()> {
 #[then("some segment records these log events")]
 fn log_events_recorded(world: &mut BddWorld, step: &Step) -> Result<()> {
     let wanted = table_rows(step, &["type_id", "column", "value"])?;
-    let segments = segments(world)?;
     for expected in &wanted {
         let [id, column, value] = expected.as_slice() else {
             anyhow::bail!(
                 "a log-event row needs a type_id, a column and a value, got {expected:?}"
             );
         };
-        let id = type_id(id)?;
+        let recorded = rows(world, type_id(id)?)?;
         anyhow::ensure!(
-            segments
-                .iter()
-                .any(|segment| holds_value(segment, id, column, value).unwrap_or(false)),
-            "none of the {} segments records {column}={value} in {id}; \
-             the segments hold {:?}",
-            segments.len(),
-            seen_values(&segments, id, column)
+            recorded.iter().any(|row| row.row_holds(column, value)),
+            "no segment records {column}={value} in {id}; the segments hold {:?}",
+            seen_values(&recorded, column)
         );
     }
     Ok(())
-}
-
-/// Every value the segments carry in one column, for a failure message that
-/// says what is there instead of only what is not.
-fn seen_values(segments: &[Segment], type_id: u32, column: &str) -> Vec<String> {
-    let mut seen: Vec<String> = segments
-        .iter()
-        .filter_map(|segment| {
-            let dictionary = segment.dictionary().ok()?;
-            let rows = segment.rows(type_id).ok()?;
-            Some(
-                rows.iter()
-                    .filter_map(|row| row.get(column))
-                    .map(|cell| match cell {
-                        Cell::StrId(id) => dictionary
-                            .resolve(*id)
-                            .map_or_else(|| render(cell), resolved_text),
-                        other => render(other),
-                    })
-                    .collect::<Vec<_>>(),
-            )
-        })
-        .flatten()
-        .collect();
-    seen.sort();
-    seen.dedup();
-    seen
 }
 
 #[then("some segment records these log events exactly once")]
 fn log_events_recorded_once(world: &mut BddWorld, step: &Step) -> Result<()> {
     let wanted = table_rows(step, &["type_id", "column", "value"])?;
-    let segments = segments(world)?;
     for expected in &wanted {
         let [id, column, value] = expected.as_slice() else {
             anyhow::bail!(
                 "a log-event row needs a type_id, a column and a value, got {expected:?}"
             );
         };
-        let id = type_id(id)?;
-        let mut seen = 0_usize;
-        for segment in &segments {
-            seen += matching_rows(segment, id, column, value)?;
-        }
+        let recorded = rows(world, type_id(id)?)?;
+        let seen = recorded
+            .iter()
+            .filter(|row| row.row_holds(column, value))
+            .count();
         anyhow::ensure!(
             seen == 1,
-            "{id} records {column}={value} {seen} times across {} segments, not once",
-            segments.len()
+            "{id} records {column}={value} {seen} times, not once"
         );
     }
     Ok(())
 }
 
-/// How many rows of `type_id` carry `value` in `column`.
-///
-/// A dictionary column is compared against the text the segment interned, not
-/// against the id it was interned under.
-fn matching_rows(segment: &Segment, type_id: u32, column: &str, value: &str) -> Result<usize> {
-    let dictionary = segment.dictionary()?;
-    let render_cell = |cell: &Cell| match cell {
-        Cell::StrId(id) => dictionary
-            .resolve(*id)
-            .map_or_else(|| render(cell), resolved_text),
-        other => render(other),
-    };
-    Ok(segment
-        .rows(type_id)?
+/// Every value one column holds, for a failure message that says what is there
+/// instead of only what is not.
+fn seen_values(rows: &[Line], column: &str) -> Vec<String> {
+    let mut seen: Vec<String> = rows.iter().filter_map(|row| row.row_get(column)).collect();
+    seen.sort();
+    seen.dedup();
+    seen
+}
+
+/// The path of every segment a listing named.
+fn paths(segments: &[Line]) -> Vec<String> {
+    segments
         .iter()
-        .filter(|row| {
-            row.get(column)
-                .is_some_and(|cell| render_cell(cell) == value)
-        })
-        .count())
-}
-
-fn resolved_text(value: Resolved<'_>) -> String {
-    let bytes = match value {
-        Resolved::Str(bytes) => bytes,
-        Resolved::Blob(blob) => blob.stored_bytes,
-    };
-    String::from_utf8_lossy(bytes).into_owned()
-}
-
-fn holds_value(segment: &Segment, type_id: u32, column: &str, value: &str) -> Result<bool> {
-    matching_rows(segment, type_id, column, value).map(|rows| rows > 0)
+        .filter_map(|line| line.get("path"))
+        .collect()
 }

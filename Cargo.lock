@@ -1069,8 +1069,8 @@ dependencies = [
  "anyhow",
  "cucumber",
  "kronika-format",
- "kronika-reader",
  "nix",
+ "serde_json",
  "tempfile",
  "tokio",
 ]
@@ -1113,6 +1113,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kronika-dump"
+version = "0.0.0"
+dependencies = [
+ "kronika-format",
+ "kronika-index",
+ "kronika-layout",
+ "kronika-reader",
+ "kronika-registry",
+ "kronika-writer",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "kronika-format"
 version = "0.0.0"
 dependencies = [
@@ -1121,6 +1135,14 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "xxhash-rust",
+]
+
+[[package]]
+name = "kronika-index"
+version = "0.0.0"
+dependencies = [
+ "kronika-format",
+ "kronika-registry",
 ]
 
 [[package]]

@@ -159,6 +159,9 @@ fn active_read_keeps_its_prefix_and_next_read_gets_later_deltas() {
     let address = address(SEGMENT_ID);
     let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
     let first_id = append_text_window(&mut journal, address.id, 100, b"first");
+    let first_prefix_bytes = std::fs::metadata(directory.path().join("active.wal"))
+        .expect("active journal metadata")
+        .len();
 
     let reader = Reader::open(directory.path()).expect("open reader");
     let first_listing = reader.segments(..).expect("capture first prefix");
@@ -182,6 +185,7 @@ fn active_read_keeps_its_prefix_and_next_read_gets_later_deltas() {
     let first = reader
         .open_segment(&first_listing.segments[0])
         .expect("open captured prefix after append");
+    assert_eq!(first.captured_bytes(), first_prefix_bytes);
     assert_eq!(
         first
             .rows(OsTopology::CONTRACT.type_id.get())
@@ -238,6 +242,12 @@ fn finished_segment_wins_over_the_same_active_generation() {
         Some("zms")
     );
     assert_eq!(
+        segment.captured_bytes(),
+        std::fs::metadata(segment.path())
+            .expect("finished segment metadata")
+            .len()
+    );
+    assert_eq!(
         segment
             .rows(OsTopology::CONTRACT.type_id.get())
             .expect("rows")
@@ -282,6 +292,7 @@ fn complete_dictionary_preserves_boundary_and_truncated_blob_metadata() {
     let reader = Reader::open(directory.path()).expect("open reader");
     let segment = one_segment(&reader);
     let dictionary = segment.dictionary().expect("decode complete dictionary");
+    assert_eq!(dictionary.entries().count(), 3);
     assert_eq!(
         dictionary.resolve(small_id.get()),
         Some(Resolved::Str(&small))

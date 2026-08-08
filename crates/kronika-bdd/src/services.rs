@@ -49,7 +49,7 @@ pub(crate) struct PgBouncer {
 }
 
 /// Run a command, failing with what it printed.
-fn run(command: &mut Command) -> Result<String> {
+pub(crate) fn run(command: &mut Command) -> Result<String> {
     let output = command
         .output()
         .with_context(|| format!("run {}", command.get_program().display()))?;

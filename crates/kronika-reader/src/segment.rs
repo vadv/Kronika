@@ -30,8 +30,21 @@ pub struct Segment {
     source: Source,
     min_ts: i64,
     max_ts: i64,
+    captured_bytes: u64,
     window_count: u32,
-    section_rows: BTreeMap<u32, u64>,
+    section_rows: BTreeMap<u32, Section>,
+}
+
+/// What one section type occupies in a segment.
+///
+/// A current segment coalesces several parts, so both figures are the sum over
+/// the parts that carry the type.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Section {
+    /// Rows the catalogs recorded.
+    pub rows: u64,
+    /// Encoded body bytes, before the container's own framing.
+    pub bytes: u64,
 }
 
 impl Segment {
@@ -51,6 +64,7 @@ impl Segment {
                     source: Source::Finished { file, catalog },
                     min_ts: unit.min_ts,
                     max_ts: unit.max_ts,
+                    captured_bytes: unit.captured_bytes,
                     window_count: finished.summary.window_count,
                     section_rows,
                 })
@@ -68,6 +82,7 @@ impl Segment {
                     source: Source::Active(snapshot.clone()),
                     min_ts: unit.min_ts,
                     max_ts: unit.max_ts,
+                    captured_bytes: unit.captured_bytes,
                     window_count,
                     section_rows,
                 })
@@ -93,6 +108,12 @@ impl Segment {
         self.max_ts
     }
 
+    /// Bytes in the finished file or captured current-journal prefix.
+    #[must_use]
+    pub const fn captured_bytes(&self) -> u64 {
+        self.captured_bytes
+    }
+
     /// Collection windows coalesced into the logical segment.
     #[must_use]
     pub const fn window_count(&self) -> u32 {
@@ -107,7 +128,17 @@ impl Segment {
     /// Rows recorded for `type_id`, or `None` when the section is absent.
     #[must_use]
     pub fn rows_of(&self, type_id: u32) -> Option<u64> {
-        self.section_rows.get(&type_id).copied()
+        self.section_rows.get(&type_id).map(|section| section.rows)
+    }
+
+    /// Every section the segment carries, in numeric order, with what it cost.
+    ///
+    /// This is what a size report is built from: the bodies are the segment
+    /// minus its catalog and framing.
+    pub fn sections(&self) -> impl Iterator<Item = (u32, Section)> + '_ {
+        self.section_rows
+            .iter()
+            .map(|(type_id, section)| (*type_id, *section))
     }
 
     /// Decode every section of `type_id` into column-addressable rows.
@@ -171,14 +202,16 @@ impl Segment {
     single_use_lifetimes,
     reason = "the named lifetime is required in this impl-Trait associated item on Rust 1.96"
 )]
-fn rows_by_type<'a>(catalogs: impl IntoIterator<Item = &'a Catalog>) -> BTreeMap<u32, u64> {
-    let mut rows = BTreeMap::new();
+fn rows_by_type<'a>(catalogs: impl IntoIterator<Item = &'a Catalog>) -> BTreeMap<u32, Section> {
+    let mut sections: BTreeMap<u32, Section> = BTreeMap::new();
     for catalog in catalogs {
         for entry in &catalog.entries {
-            *rows.entry(entry.type_id).or_default() += u64::from(entry.rows);
+            let section = sections.entry(entry.type_id).or_default();
+            section.rows += u64::from(entry.rows);
+            section.bytes += entry.len;
         }
     }
-    rows
+    sections
 }
 
 fn decode_section_rows(type_id: u32, section: VerifiedSection) -> Result<Vec<Row>, ReaderError> {
