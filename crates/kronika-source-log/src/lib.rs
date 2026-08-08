@@ -18,6 +18,6 @@ mod timestamp;
 pub mod pgbouncer;
 pub mod postgres;
 
-pub use offsets::{OFFSETS_FILE_NAME, Offsets};
+pub use offsets::{OFFSETS_FILE_NAME, OFFSETS_TEMP_FILE_NAME, Offsets};
 pub use tail::{Continues, MAX_LINE_BYTES, MAX_READ_BYTES, Position, Record, Tail};
 pub use text::{MAX_PATTERN_BYTES, MAX_TEXT_BYTES};

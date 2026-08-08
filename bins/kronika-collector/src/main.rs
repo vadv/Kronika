@@ -19,6 +19,7 @@
 mod buffering;
 mod capacity;
 mod config;
+mod log_sources;
 mod logging;
 mod os_sources;
 mod rotation;
@@ -31,6 +32,7 @@ use config::Config;
 use kronika_layout::{DataRoot, LayoutLimits, TemporaryKind, WriterOwner};
 use kronika_source_os::{OsScope, ProcFs, detect_container};
 use kronika_writer::{Journal, SectionBuffers};
+use log_sources::{LogSources, push_log_sources};
 use logging::{LogLevel, field, log_event};
 use os_sources::{collect_os_sources, push_os_sources};
 use rotation::Rotation;
@@ -138,6 +140,7 @@ fn main() -> Result<()> {
 async fn run_collector() -> Result<()> {
     let config = Config::from_env()?;
     let (writer_owner, mut journal) = start_up(&config)?;
+    let mut logs = LogSources::open(&config).context("open the configured log files")?;
 
     let mut sigusr2 = signal(SignalKind::user_defined2()).context("install the SIGUSR2 handler")?;
     let mut sigterm = signal(SignalKind::terminate()).context("install the SIGTERM handler")?;
@@ -204,6 +207,7 @@ async fn run_collector() -> Result<()> {
             run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
             continue;
         }
+        logs.refresh_prefix().await;
         written_this_tick.extend(run_collection_cycle(
             &mut journal,
             &writer_owner,
@@ -211,6 +215,7 @@ async fn run_collector() -> Result<()> {
             &due,
             &mut segment,
             &mut sched,
+            &mut logs,
         )?);
         stop_if_persistence_unhealthy(&journal)?;
         run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
@@ -221,6 +226,10 @@ async fn run_collector() -> Result<()> {
 /// One collection cycle: read the due sources, append a window, and write when
 /// the segment is full. Source, encoding, and recoverable append failures skip
 /// the window; segment-close failures terminate the daemon.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one cycle needs the journal, the owner, the config, the due set, and the state each source keeps between ticks"
+)]
 fn run_collection_cycle(
     journal: &mut Journal,
     writer_owner: &WriterOwner,
@@ -228,8 +237,10 @@ fn run_collection_cycle(
     due: &DueSet,
     segment: &mut SegmentState,
     sched: &mut Scheduler,
+    logs: &mut LogSources,
 ) -> Result<Vec<PathBuf>> {
-    let first = collect_and_append_window(journal, writer_owner, config, due, segment, sched)?;
+    let first =
+        collect_and_append_window(journal, writer_owner, config, due, segment, sched, logs)?;
     let mut written = first.written;
     if first.recollect {
         let recollection_due = sched.recollection_due(due, Instant::now());
@@ -240,6 +251,7 @@ fn run_collection_cycle(
             &recollection_due,
             segment,
             sched,
+            logs,
         )?;
         anyhow::ensure!(
             !second.recollect,
@@ -256,6 +268,10 @@ struct CollectionOutcome {
     recollect: bool,
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one window needs the journal, the owner, the config, the due set, and the state each source keeps between ticks"
+)]
 fn collect_and_append_window(
     journal: &mut Journal,
     writer_owner: &WriterOwner,
@@ -263,6 +279,7 @@ fn collect_and_append_window(
     due: &DueSet,
     segment: &mut SegmentState,
     sched: &mut Scheduler,
+    logs: &mut LogSources,
 ) -> Result<CollectionOutcome> {
     let Some(ts) = collection_timestamp() else {
         return Ok(CollectionOutcome::default());
@@ -305,8 +322,11 @@ fn collect_and_append_window(
         in_container,
         due,
     );
+    let log_rows = logs.collect(due, ts);
 
-    if let Err(err) = push_os_sources(&mut buffers, &os) {
+    let buffered = push_os_sources(&mut buffers, &os)
+        .and_then(|()| push_log_sources(&mut buffers, segment.interner_mut(), &log_rows));
+    if let Err(err) = buffered {
         log_event(
             LogLevel::Error,
             "window_buffer_failure",

@@ -14,8 +14,8 @@ pub use error::{LayoutError, LimitKind, OwnerKind};
 pub use root::{
     ACTIVE_JOURNAL_NAME, DAMAGED_JOURNAL_NAME, DataRoot, EntryDiagnostic, EntryFileType,
     EntryScope, FileIdentity, FileKind, FilesystemUsage, ForeignEntry, ForeignEntryReason,
-    INDEX_OWNER_LOCK_NAME, IdxTemp, IndexOwner, LayoutLimits, LayoutSnapshot, PathIdentity,
-    SegmentArtifacts, SegmentRemoval, TemporaryKind, TemporaryObject, WRITER_OWNER_LOCK_NAME,
-    WriterLease, WriterOwner, ZmsTemp,
+    INDEX_OWNER_LOCK_NAME, IdxTemp, IndexOwner, LOG_OFFSETS_NAME, LOG_OFFSETS_TEMP_NAME,
+    LayoutLimits, LayoutSnapshot, PathIdentity, SegmentArtifacts, SegmentRemoval, TemporaryKind,
+    TemporaryObject, WRITER_OWNER_LOCK_NAME, WriterLease, WriterOwner, ZmsTemp,
 };
 pub use time::{SegmentAddress, SegmentId, UtcDay};

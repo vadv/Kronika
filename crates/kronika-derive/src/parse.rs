@@ -152,6 +152,7 @@ pub(super) fn unit_variant(value: &Ident) -> syn::Result<Ident> {
         "jiffies" => "Jiffies",
         "hertz" => "Hertz",
         "megabits_per_second" => "MegabitsPerSecond",
+        "megabytes_per_second" => "MegabytesPerSecond",
         "percent" => "Percent",
         "celsius" => "Celsius",
         other => {

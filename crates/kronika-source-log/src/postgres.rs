@@ -173,6 +173,17 @@ impl PgLog {
         }
     }
 
+    /// Whether the server's `log_line_prefix` is known.
+    #[must_use]
+    pub const fn has_prefix(&self) -> bool {
+        self.prefix.is_some()
+    }
+
+    /// Use `prefix` for the records read from now on.
+    pub fn set_prefix(&mut self, prefix: LinePrefix) {
+        self.prefix = Some(prefix);
+    }
+
     /// The format this file is being read as.
     #[must_use]
     pub const fn format(&self) -> Format {

@@ -78,3 +78,20 @@ fn surrounding_whitespace_is_not_a_refusal() {
         30
     );
 }
+
+#[test]
+fn an_empty_log_path_is_a_refusal_naming_the_variable() {
+    let error = super::parse_env_path("KRONIKA_PG_LOG", "  ").expect_err("a refusal");
+
+    assert_eq!(error.to_string(), "KRONIKA_PG_LOG is set to an empty path");
+}
+
+#[test]
+fn surrounding_whitespace_is_not_part_of_a_log_path() {
+    assert_eq!(
+        super::parse_env_path("KRONIKA_PG_LOG", " /var/log/postgresql.log ")
+            .expect("a path")
+            .as_os_str(),
+        "/var/log/postgresql.log"
+    );
+}

@@ -75,6 +75,9 @@ fn test_config(out_dir: &Path) -> Config {
         segment_max_age_secs: u64::MAX,
         journal_max_bytes: u64::MAX,
         retention: None,
+        pg_log: None,
+        pgbouncer_log: None,
+        pg_dsn: None,
     }
 }
 

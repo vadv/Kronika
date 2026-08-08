@@ -32,6 +32,38 @@ pub(crate) struct Config {
     pub(crate) journal_max_bytes: u64,
     /// Storage-rotation target for the whole output tree.
     pub(crate) retention: Option<RetentionConfig>,
+    /// The `PostgreSQL` log to follow; the file name decides which of the three
+    /// formats it is read as.
+    pub(crate) pg_log: Option<PathBuf>,
+    /// The `PgBouncer` log to follow.
+    pub(crate) pgbouncer_log: Option<PathBuf>,
+    /// How to reach `PostgreSQL` to read `log_line_prefix`, which is what a
+    /// `stderr` record's database and user come from.
+    pub(crate) pg_dsn: Option<String>,
+}
+
+/// Read a path variable. An empty value is a variable the operator meant to
+/// set and did not, so it stops the daemon instead of turning into "unset".
+///
+/// # Errors
+///
+/// Returns an error naming the variable when its value is empty.
+fn env_path(key: &str) -> Result<Option<PathBuf>> {
+    std::env::var(key)
+        .ok()
+        .map(|raw| parse_env_path(key, &raw))
+        .transpose()
+}
+
+/// Parse one path variable's value.
+///
+/// # Errors
+///
+/// Returns an error naming the variable when its value is blank.
+fn parse_env_path(key: &str, raw: &str) -> Result<PathBuf> {
+    let value = raw.trim();
+    anyhow::ensure!(!value.is_empty(), "{key} is set to an empty path");
+    Ok(PathBuf::from(value))
 }
 
 /// Read a numeric variable, or refuse to start naming what was given.
@@ -172,6 +204,9 @@ impl Config {
             segment_max_age_secs,
             journal_max_bytes,
             retention: Some(retention),
+            pg_log: env_path("KRONIKA_PG_LOG")?,
+            pgbouncer_log: env_path("KRONIKA_PGBOUNCER_LOG")?,
+            pg_dsn: std::env::var("KRONIKA_PG_DSN").ok(),
         })
     }
 }
@@ -235,6 +270,7 @@ fn intervals_from_env() -> Result<Intervals> {
             "KRONIKA_OS_CGROUP_MAPPING_INTERVAL_S",
             defaults.os_cgroup_mapping,
         )?,
+        logs: env_u64("KRONIKA_LOG_INTERVAL_S", defaults.logs)?,
     })
 }
 

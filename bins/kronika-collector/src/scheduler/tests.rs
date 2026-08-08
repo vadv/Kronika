@@ -10,6 +10,7 @@ fn intervals() -> Intervals {
         os_process_status: 30,
         os_cgroup: 10,
         os_cgroup_mapping: 30,
+        logs: 10,
     }
 }
 

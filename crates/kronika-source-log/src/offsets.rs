@@ -11,6 +11,9 @@ use crate::tail::Position;
 /// Name of the file the collector keeps its log offsets in.
 pub const OFFSETS_FILE_NAME: &str = "log.offsets";
 
+/// The temporary the offsets file is renamed from.
+pub const OFFSETS_TEMP_FILE_NAME: &str = "log.tmp";
+
 /// Every followed file's resume point, keyed by source name.
 ///
 /// One line per source, `name dev inode offset`. A line that does not parse is
@@ -60,7 +63,7 @@ impl Offsets {
     /// Returns the operating system's error for writing, syncing or renaming
     /// the file.
     pub fn save(&self) -> io::Result<()> {
-        let temp = self.path.with_extension("tmp");
+        let temp = self.path.with_file_name(OFFSETS_TEMP_FILE_NAME);
         let mut file = fs::File::create(&temp)?;
         file.write_all(render(&self.positions).as_bytes())?;
         file.sync_all()?;
