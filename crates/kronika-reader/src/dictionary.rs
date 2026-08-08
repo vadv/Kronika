@@ -1,0 +1,135 @@
+//! Resolving the dictionary ids carried by row cells.
+
+use std::collections::HashMap;
+
+use arrow_array::{Array as _, BinaryArray, BooleanArray, FixedSizeBinaryArray, UInt64Array};
+use kronika_format::{BlobEntry, Resolved, StrId};
+use kronika_registry::{CodecError, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, VerifiedSection};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+#[derive(Debug, Clone)]
+enum Value {
+    String(Vec<u8>),
+    Blob {
+        stored_bytes: Vec<u8>,
+        full_len: u64,
+        truncated: bool,
+        full_sha256: Option<[u8; 32]>,
+    },
+}
+
+/// One segment's complete `dict.strings` and `dict.blobs` dictionary.
+#[derive(Debug, Default, Clone)]
+pub struct Dictionary {
+    by_id: HashMap<StrId, Value>,
+}
+
+impl Dictionary {
+    /// Resolve a raw [`crate::Cell::StrId`] value.
+    #[must_use]
+    pub fn resolve(&self, raw_id: u64) -> Option<Resolved<'_>> {
+        let str_id = StrId::from_raw(raw_id)?;
+        match self.by_id.get(&str_id)? {
+            Value::String(bytes) => Some(Resolved::Str(bytes)),
+            Value::Blob {
+                stored_bytes,
+                full_len,
+                truncated,
+                full_sha256,
+            } => Some(Resolved::Blob(BlobEntry {
+                str_id,
+                stored_bytes,
+                full_len: *full_len,
+                truncated: *truncated,
+                full_sha256: *full_sha256,
+            })),
+        }
+    }
+
+    pub(crate) fn decode(
+        &mut self,
+        type_id: u32,
+        section: VerifiedSection,
+    ) -> Result<(), CodecError> {
+        let reader = ParquetRecordBatchReaderBuilder::try_new(section.into_bytes())?.build()?;
+        for batch in reader {
+            let batch = batch?;
+            let ids = required_array::<UInt64Array>(&batch, "str_id")?;
+            match type_id {
+                DICT_STRINGS_TYPE_ID => {
+                    let bytes = required_array::<BinaryArray>(&batch, "bytes")?;
+                    for row in 0..batch.num_rows() {
+                        let id =
+                            StrId::from_raw(ids.value(row)).ok_or(CodecError::SchemaMismatch)?;
+                        self.by_id
+                            .insert(id, Value::String(bytes.value(row).to_vec()));
+                    }
+                }
+                DICT_BLOBS_TYPE_ID => {
+                    let stored = required_array::<BinaryArray>(&batch, "stored_bytes")?;
+                    let full_len = required_array::<UInt64Array>(&batch, "full_len")?;
+                    let truncated = required_array::<BooleanArray>(&batch, "truncated")?;
+                    let hash = nullable_hash_array(&batch)?;
+                    for row in 0..batch.num_rows() {
+                        let id =
+                            StrId::from_raw(ids.value(row)).ok_or(CodecError::SchemaMismatch)?;
+                        let full_sha256 = if hash.is_null(row) {
+                            None
+                        } else {
+                            Some(
+                                hash.value(row)
+                                    .try_into()
+                                    .map_err(|_error| CodecError::SchemaMismatch)?,
+                            )
+                        };
+                        self.by_id.insert(
+                            id,
+                            Value::Blob {
+                                stored_bytes: stored.value(row).to_vec(),
+                                full_len: full_len.value(row),
+                                truncated: truncated.value(row),
+                                full_sha256,
+                            },
+                        );
+                    }
+                }
+                _ => return Err(CodecError::UnknownType { type_id }),
+            }
+        }
+        Ok(())
+    }
+}
+
+fn required_array<'a, A: arrow_array::Array + 'static>(
+    batch: &'a arrow_array::RecordBatch,
+    name: &'static str,
+) -> Result<&'a A, CodecError> {
+    let array = batch
+        .column_by_name(name)
+        .ok_or(CodecError::MissingColumn { name })?
+        .as_any()
+        .downcast_ref::<A>()
+        .ok_or(CodecError::ColumnType { name })?;
+    if array.null_count() == 0 {
+        Ok(array)
+    } else {
+        Err(CodecError::NullInRequiredColumn { name })
+    }
+}
+
+fn nullable_hash_array(
+    batch: &arrow_array::RecordBatch,
+) -> Result<&FixedSizeBinaryArray, CodecError> {
+    const NAME: &str = "full_sha256";
+    let array = batch
+        .column_by_name(NAME)
+        .ok_or(CodecError::MissingColumn { name: NAME })?
+        .as_any()
+        .downcast_ref::<FixedSizeBinaryArray>()
+        .ok_or(CodecError::ColumnType { name: NAME })?;
+    if array.value_length() == 32 {
+        Ok(array)
+    } else {
+        Err(CodecError::ColumnType { name: NAME })
+    }
+}

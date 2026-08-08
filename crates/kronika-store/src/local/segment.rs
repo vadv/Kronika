@@ -28,6 +28,12 @@ pub(super) enum ZmsOpen {
     Invalid(StoreIoFailure),
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) enum FinishedValidation {
+    Catalog,
+    Complete,
+}
+
 pub(super) const fn invalid_zms_warning(
     address: kronika_layout::SegmentAddress,
     identity: FileIdentity,
@@ -103,10 +109,25 @@ pub(super) fn read_encoded_catalog<R: ReadAt>(
     })
 }
 
+#[cfg(test)]
 pub(super) fn read_validated_zms_summary<R: ReadAt>(
     reader: &R,
     retained_metadata: usize,
     metadata_limit: usize,
+) -> Result<CatalogSummary, StoreError> {
+    read_zms_summary(
+        reader,
+        retained_metadata,
+        metadata_limit,
+        FinishedValidation::Complete,
+    )
+}
+
+pub(super) fn read_zms_summary<R: ReadAt>(
+    reader: &R,
+    retained_metadata: usize,
+    metadata_limit: usize,
+    validation: FinishedValidation,
 ) -> Result<CatalogSummary, StoreError> {
     #[cfg(test)]
     CATALOG_SUMMARY_READS.with(|reads| reads.set(reads.get().saturating_add(1)));
@@ -139,7 +160,9 @@ pub(super) fn read_validated_zms_summary<R: ReadAt>(
         });
     }
     validate_catalog_layout(&catalog, encoded.body_end).map_err(StoreError::SectionLayout)?;
-    validate_section_checksums(reader, &catalog)?;
+    if matches!(validation, FinishedValidation::Complete) {
+        validate_section_checksums(reader, &catalog)?;
+    }
     let catalog_len =
         u32::try_from(encoded.bytes.len()).map_err(|_overflow| StoreError::BadCatalogLen)?;
     Ok(CatalogSummary::from_catalog(&catalog, catalog_len))

@@ -1067,12 +1067,10 @@ name = "kronika-bdd"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "arrow-array",
  "cucumber",
  "kronika-format",
- "kronika-registry",
+ "kronika-reader",
  "nix",
- "parquet",
  "tempfile",
  "tokio",
 ]
@@ -1130,6 +1128,21 @@ name = "kronika-layout"
 version = "0.0.0"
 dependencies = [
  "rustix",
+ "tempfile",
+]
+
+[[package]]
+name = "kronika-reader"
+version = "0.0.0"
+dependencies = [
+ "arrow-array",
+ "kronika-format",
+ "kronika-layout",
+ "kronika-registry",
+ "kronika-store",
+ "kronika-writer",
+ "parquet",
+ "sha2 0.10.9",
  "tempfile",
 ]
 

@@ -67,6 +67,53 @@ fn read_active_part_ignores_an_uncommitted_append_tail() {
 }
 
 #[test]
+fn active_snapshot_reads_only_its_prefix_after_a_later_append() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = part(1000);
+    let later = part(2000);
+    write_journal(dir.path(), 1_000, std::slice::from_ref(&first));
+    let journal_path = dir.path().join("active.wal");
+    let local = LocalDir::open(dir.path()).unwrap();
+    let scan = local.scan_catalogs().unwrap();
+    let snapshot = local
+        .open_active_snapshot(&scan)
+        .unwrap()
+        .expect("active prefix");
+
+    append_journal_part(&journal_path, 1_000, &later);
+
+    assert_eq!(
+        snapshot.read_part_range(0, 0, first.len() as u64).unwrap(),
+        first
+    );
+    assert!(matches!(
+        snapshot.read_part_range(0, 0, first.len() as u64 + 1),
+        Err(StoreError::OutOfBounds)
+    ));
+    assert_eq!(local.scan_catalogs().unwrap().active.len(), 2);
+}
+
+#[test]
+fn active_snapshot_rejects_a_new_journal_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = part(1000);
+    write_journal(dir.path(), 1_000, std::slice::from_ref(&first));
+    let local = LocalDir::open(dir.path()).unwrap();
+    let scan = local.scan_catalogs().unwrap();
+    let snapshot = local
+        .open_active_snapshot(&scan)
+        .unwrap()
+        .expect("active prefix");
+
+    write_journal(dir.path(), 2_000, &[part(2000)]);
+
+    assert!(matches!(
+        snapshot.read_part_range(0, 0, first.len() as u64),
+        Err(StoreError::Io(source)) if source.kind() == io::ErrorKind::NotFound
+    ));
+}
+
+#[test]
 fn journal_above_the_v1_physical_limit_is_rejected_before_scanning() {
     let dir = tempfile::tempdir().unwrap();
     let journal_path = dir.path().join("active.wal");

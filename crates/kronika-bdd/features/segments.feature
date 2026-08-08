@@ -54,3 +54,24 @@ Feature: Where a segment lands and what it says about itself
     When it runs for 3 seconds
     Then the raw journal is named active.wal
     And the log has no error line
+
+  Scenario: A time range selects only the segments it overlaps
+    Given a collector with these settings
+      | variable                  | value |
+      | KRONIKA_INTERVAL_S        | 1     |
+      | KRONIKA_SEGMENT_MAX_BYTES | 1     |
+    When it runs for 4 seconds
+    Then at least 2 segments were published
+    And reading each segment's own window returns that segment
+    And reading the first segment's window leaves out the last segment
+    And reading the time before the first segment returns nothing
+    And reading the time after the last segment returns nothing
+
+  Scenario: A segment the reader will not admit is set aside
+    Given a collector with these settings
+      | variable                  | value |
+      | KRONIKA_INTERVAL_S        | 1     |
+      | KRONIKA_SEGMENT_MAX_BYTES | 1     |
+    When it runs for 4 seconds
+    And the oldest published segment is cut down to 200 bytes
+    Then the reader sets aside 1 file

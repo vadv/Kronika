@@ -200,6 +200,61 @@ fn full_zms_validation_classifies_catalog_geometry_and_section_crc() {
 }
 
 #[test]
+fn catalog_scan_defers_body_checksums_until_selected_validation() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut damaged_body = part_with_body(2_000, b"body whose CRC will no longer match");
+    damaged_body[MAGIC.len()] ^= 0xff;
+    write_segment(dir.path(), 2_000, damaged_body);
+    let local = LocalDir::open(dir.path()).unwrap();
+
+    let mut discovered = local.scan_catalogs().unwrap();
+    assert_eq!(discovered.finished.len(), 1);
+    assert!(discovered.warnings.is_empty());
+
+    let selected = discovered.finished[0].clone();
+    assert!(!local.validate_finished(&mut discovered, &selected).unwrap());
+    let warning = discovered
+        .warnings
+        .last()
+        .expect("selected body is invalid");
+    assert_eq!(
+        warning.reason,
+        StoreWarningReason::InvalidZms(InvalidZmsReason::SectionChecksum)
+    );
+
+    let strict = local.scan().unwrap();
+    assert!(strict.finished.is_empty());
+    assert_eq!(
+        invalid_warning(&strict, 2_000).reason,
+        StoreWarningReason::InvalidZms(InvalidZmsReason::SectionChecksum)
+    );
+}
+
+#[test]
+fn selected_validation_counts_the_retained_catalog_scan_against_the_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    write_segment(dir.path(), 2_000, part_with_body(2_000, b"selected body"));
+    let mut local = LocalDir::open(dir.path()).unwrap();
+    let mut discovered = local.scan_catalogs().unwrap();
+    let selected = discovered.finished[0].clone();
+
+    local.limits.max_metadata_bytes = discovered.metadata_bytes;
+    let error = local
+        .validate_finished(&mut discovered, &selected)
+        .unwrap_err();
+    let store_error = error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<StoreError>());
+    assert!(matches!(
+        store_error,
+        Some(StoreError::Layout(LayoutError::TraversalLimitExceeded {
+            kind: LimitKind::MetadataBytes,
+            ..
+        }))
+    ));
+}
+
+#[test]
 fn identity_change_during_invalid_validation_is_interrupted_not_excluded() {
     let dir = tempfile::tempdir().unwrap();
     let path = segment_path(dir.path(), 2_000);

@@ -171,6 +171,37 @@ pub(super) fn validate_active_part_reference<R: ReadAt>(
     Ok(())
 }
 
+pub(super) fn validate_active_snapshot<R: ReadAt>(
+    reader: &R,
+    expected_segment_id: SegmentId,
+    valid_len: u64,
+) -> io::Result<()> {
+    let file_len = reader.byte_len()?;
+    validate_journal_len(file_len)?;
+    if file_len < valid_len || file_len < JOURNAL_HEADER_LEN as u64 {
+        return Err(stale_active_generation());
+    }
+    let mut header_bytes = [0_u8; JOURNAL_HEADER_LEN];
+    reader.read_exact_at(&mut header_bytes, 0)?;
+    if committed_reset_plan(reader, file_len, header_bytes)?.is_some() {
+        return Err(stale_active_generation());
+    }
+    let header = JournalHeader::decode(header_bytes).map_err(journal_header_io)?;
+    let JournalState::Active { segment_id } = header.state else {
+        return Err(stale_active_generation());
+    };
+    if segment_id != expected_segment_id.get() {
+        return Err(stale_active_generation());
+    }
+    let committed_end = (JOURNAL_HEADER_LEN as u64)
+        .checked_add(header.body_len)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "journal length overflow"))?;
+    if committed_end < valid_len {
+        return Err(stale_active_generation());
+    }
+    Ok(())
+}
+
 pub(super) fn stale_active_generation() -> io::Error {
     io::Error::new(
         io::ErrorKind::NotFound,
