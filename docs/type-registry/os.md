@@ -1,9 +1,11 @@
 # Class 1: operating system and cgroup
 
+[Русская версия](os.ru.md)
+
 OS sources occupy `1_100_001`–`1_299_999`. The schemas and semantics are
-declared in [`crates/kronika-registry/src/codec`](../../crates/kronika-registry/src/codec);
-this file says what the sections are for, where they come from, and what the
-collector cannot see.
+declared in
+[`crates/kronika-registry/src/codec`](../../crates/kronika-registry/src/codec).
+This reference lists each section's purpose, source, and collection limits.
 
 Every row carries `scope`:
 
@@ -16,8 +18,8 @@ Every row carries `scope`:
 | `4` | undetermined |
 
 CPU, memory, disks, mount points, and topology describe the node even when the
-collector runs inside a container. Network sections get `pod_net` once the
-container environment is proven through cgroup. Processes and cgroups get
+collector runs inside a container. Network sections get `pod_net` once cgroup
+data identifies the container environment. Processes and cgroups get
 `container` inside a container, `host` otherwise.
 
 The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
@@ -62,7 +64,7 @@ sets it per source; the intervals and their defaults are listed in the
 
 A single procfs read is capped at 4 MiB by a format constant. There is no row
 cap on a source: a host with thirty thousand processes produces thirty thousand
-rows, and what that cost is reported by the `segment_write_finish` line.
+rows. The `segment_write_finish` log record reports peak RSS as `rss_kib`.
 
 ## Units
 
@@ -81,12 +83,12 @@ registry linter rejects one that does not. The set in use:
 | `jiffies` | scheduler ticks, of `instance_metadata.clock_ticks_per_sec` per second |
 | `hertz` | clock frequency |
 | `megabits_per_second` | negotiated link speed |
-| `percent`, `celsius` | declared, not yet used by an OS section |
+| `percent`, `celsius` | declared and unused by OS sections |
 
 `TypeContract` is compile-time data and never reaches a segment, so a unit
 costs nothing on disk and changes no `type_id`.
 
-## Coverage against atop and the reference tools
+## Coverage
 
 The target for this registry is the union of what `atop` records, what the
 predecessor project recorded, and what an internal reference tool
@@ -105,7 +107,7 @@ recorded. `✓` means the data is in a section above.
 | Per-softirq-vector counts | ✓ | — | ✓ | ✓ `1_115` |
 | Model, core, socket, max frequency | ✓ | ✓ | — | ✓ `1_113` |
 | NUMA node per CPU | ✓ | — | — | ✓ `1_113` |
-| Instructions and cycles (`perf`) | ✓ | — | — | — (see gaps) |
+| Instructions and cycles (`perf`) | ✓ | — | — | — (not collected) |
 
 ### Memory and swap
 
@@ -129,7 +131,7 @@ recorded. `✓` means the data is in a section above.
 | Swap read-ahead and hits | — | — | — | ✓ `1_106` |
 | OOM kills | ✓ | ✓ | ✓ | ✓ `1_106` |
 | Per-NUMA-node memory | ✓ | — | — | ✓ `1_117` |
-| KSM sharing, ZFS ARC, balloon | ✓ | — | — | — (see gaps) |
+| KSM sharing, ZFS ARC, balloon | ✓ | — | — | — (not collected) |
 
 ### Pressure stall
 
@@ -151,8 +153,8 @@ recorded. `✓` means the data is in a section above.
 
 Filesystem capacity is populated only for the explicit local allowlist:
 `ext2`, `ext3`, `ext4`, `xfs`, `btrfs`, `f2fs`, `zfs`, `tmpfs`, and `overlay`.
-Network, FUSE/userspace, `autofs`, and unknown types remain null. The entire
-capacity pass has one one-second deadline; results completed before it are
+Network, FUSE/userspace, `autofs`, and unknown types remain `null`. The entire
+capacity pass has a single one-second deadline; results completed before it are
 retained.
 
 ### Network
@@ -171,7 +173,7 @@ retained.
 | IPv6 and ICMPv6 and UDPv6 | ✓ | — | — | ✓ `1_118` |
 | NFS client RPC and operations | ✓ | — | — | ✓ `1_119` |
 | NFS server RPC, reply cache, I/O | ✓ | — | — | ✓ `1_120` |
-| Per-process network I/O | ✓ | — | — | — (see gaps) |
+| Per-process network I/O | ✓ | — | — | — (not collected) |
 
 ### Processes
 
@@ -188,7 +190,7 @@ retained.
 | Data, stack, library, locked, page-table, peak, high-water footprint | ✓ | ✓ | ✓ | ✓ `1_101` |
 | File descriptor table size | — | — | — | ✓ `1_101` |
 | cgroup of a process | ✓ | ✓ | ✓ | ✓ `1_200` |
-| Per-thread rows, `wchan`, proportional set size | ✓ | — | — | — (see gaps) |
+| Per-thread rows, `wchan`, proportional set size | ✓ | — | — | — (not collected) |
 
 ### cgroup and container
 
@@ -200,19 +202,18 @@ retained.
 | PIDs current and max | ✓ | ✓ | ✓ | ✓ `1_204` |
 | cgroup v1 and v2 layouts | ✓ | ✓ | ✓ | ✓ |
 
-## Known gaps
+## Not collected
 
-These are not collected, and the reason is the same in each case: the data
-needs a privilege, a kernel module, or hardware that a collector sharing a host
-with a production database should not assume.
+The collector omits sources that require extra privileges, kernel modules,
+vendor hardware, or more CPU and memory than its host budget allows.
 
-| Missing | Where it lives | Why not |
+| Missing | Source | Why not |
 | --- | --- | --- |
 | Instructions, cycles, and other PMU counters | `perf_event_open` | Needs `CAP_PERFMON` or a permissive `perf_event_paranoid`, and opens one event per CPU. |
 | GPU utilization and memory | NVML through a helper daemon | Needs a vendor library and a second process; `atop` ships a separate daemon for it. |
 | Per-process network I/O | `netatop` kernel module | Needs an out-of-tree module loaded on the monitored host. |
-| Infiniband port counters | `/sys/class/infiniband` | Plain sysfs reads; not yet implemented. |
-| Last-level cache occupancy and memory bandwidth | `/sys/fs/resctrl` | Needs `resctrl` mounted and Intel RDT; not yet implemented. |
+| Infiniband port counters | `/sys/class/infiniband` | Plain sysfs reads; not implemented. |
+| Last-level cache occupancy and memory bandwidth | `/sys/fs/resctrl` | Needs `resctrl` mounted and Intel RDT; not implemented. |
 | Per-thread rows and `wchan` | `/proc/PID/task/*` | One directory walk per process per snapshot; the cost does not fit the memory and CPU budget. |
 | Proportional set size | `/proc/PID/smaps_rollup` | Walks the whole address space per process; measurably expensive on a large shared-buffers backend. |
 | KSM, ZFS ARC, hypervisor balloon | `/sys/kernel/mm/ksm`, ZFS module state | Each needs a subsystem that is absent on a plain database host. |

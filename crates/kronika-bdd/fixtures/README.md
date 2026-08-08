@@ -1,8 +1,9 @@
 # BDD fixtures
 
-Each directory here is a procfs root a scenario points `KRONIKA_PROC_ROOT` at.
-The files are the real thing a scenario reads, so what a fixture does and does
-not provide is visible in a diff.
+[Русская версия](README.ru.md)
+
+Each directory is a procfs root that a scenario selects through
+`KRONIKA_PROC_ROOT`. A fixture contains the files that the scenario reads.
 
 `procfs-without-meminfo` holds the minimum the collector needs to start and
-write a segment. `meminfo` and `vmstat` are deliberately absent.
+write a segment. It omits `meminfo` and `vmstat`.
