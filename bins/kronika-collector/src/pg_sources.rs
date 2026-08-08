@@ -307,8 +307,10 @@ impl PgSources {
         let Some(probe) = self.read_probe(refresh_probe, observe).await else {
             return Ok(());
         };
-        if discovery_due(self.last_discovery, now, due.forced()) {
-            self.discover(&probe, now, observe).await;
+        if discovery_due(self.last_discovery, now, due.forced())
+            && !self.discover(&probe, now, observe).await
+        {
+            return Ok(());
         }
         if instance {
             let current = self.settings.as_ref().map(|cached| cached.rows.as_ref());
@@ -615,8 +617,7 @@ impl PgSources {
         }
         let _ = server;
         self.collect_extensions_dynamic(probe, observe, cached_settings, admit)
-            .await?;
-        Ok(true)
+            .await
     }
 
     #[allow(
@@ -629,7 +630,7 @@ impl PgSources {
         observe: &mut (dyn FnMut(PgObservation) + Send),
         settings: Option<&Arc<[SettingsRow]>>,
         admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
-    ) -> Result<(), E> {
+    ) -> Result<bool, E> {
         let mut unavailable_databases = BTreeSet::new();
         if let Some((database, capability)) =
             selected_statements(&self.capabilities, self.server_database.as_deref())
@@ -670,6 +671,10 @@ impl PgSources {
                     self.invalidate_statements(&database);
                 }
                 QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut => {
+                    if is_current {
+                        self.clear_primary_connection();
+                        return Ok(false);
+                    }
                     unavailable_databases.insert(database);
                 }
             }
@@ -728,6 +733,10 @@ impl PgSources {
                 completion,
                 QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut
             ) {
+                if is_current {
+                    self.clear_primary_connection();
+                    return Ok(false);
+                }
                 if let Some(pool) = self.database_pool_mut(&database) {
                     pool.close();
                 }
@@ -803,6 +812,10 @@ impl PgSources {
                     self.invalidate_store_plans(&database);
                 }
                 QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut => {
+                    if is_current {
+                        self.clear_primary_connection();
+                        return Ok(false);
+                    }
                     unavailable_databases.insert(database);
                 }
             }
@@ -860,6 +873,10 @@ impl PgSources {
                 completion,
                 QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut
             ) {
+                if is_current {
+                    self.clear_primary_connection();
+                    return Ok(false);
+                }
                 if let Some(pool) = self.database_pool_mut(&database) {
                     pool.close();
                 }
@@ -867,7 +884,7 @@ impl PgSources {
                 self.invalidate_store_plans_info(&database);
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     async fn collect_relations<E>(
@@ -916,18 +933,18 @@ impl PgSources {
         probe: &GenerationProbe,
         now: Instant,
         observe: &mut (dyn FnMut(PgObservation) + Send),
-    ) {
+    ) -> bool {
         self.last_discovery = Some(now);
         let found = {
             let Some(server) = self.server.as_mut() else {
-                return;
+                return false;
             };
             let connection = server.connection_label(0);
             let session = match session_for_generation(server, probe.generation, observe) {
                 Ok(session) => session,
                 Err(_failure) => {
                     self.clear_primary_connection();
-                    return;
+                    return false;
                 }
             };
             let mut measured = measure(observe, "databases", &connection, &probe.database);
@@ -941,10 +958,10 @@ impl PgSources {
                 Ok(found) => found,
                 Err(QueryFailure::Timeout | QueryFailure::Connection) => {
                     self.clear_primary_connection();
-                    return;
+                    return false;
                 }
                 Err(QueryFailure::Source) => {
-                    return;
+                    return true;
                 }
             }
         };
@@ -975,6 +992,10 @@ impl PgSources {
                 Ok(session) => session,
                 Err(QueryFailure::Timeout | QueryFailure::Connection) => {
                     pool.close();
+                    if database.is_current {
+                        self.clear_primary_connection();
+                        return false;
+                    }
                     if let Some(previous) = previous {
                         capabilities.insert(database.name.clone(), previous);
                     }
@@ -1003,6 +1024,10 @@ impl PgSources {
                 }
                 Err(QueryFailure::Timeout | QueryFailure::Connection) => {
                     pool.close();
+                    if database.is_current {
+                        self.clear_primary_connection();
+                        return false;
+                    }
                     if let Some(previous) = previous {
                         capabilities.insert(database.name.clone(), previous);
                     }
@@ -1016,6 +1041,7 @@ impl PgSources {
         }
         self.discovered = found;
         self.capabilities = capabilities;
+        true
     }
 
     fn database_pool_mut(&mut self, database: &str) -> Option<&mut Pool> {
@@ -1058,6 +1084,7 @@ impl PgSources {
         if let Some(server) = self.server.as_mut() {
             server.close();
         }
+        self.close_secondary_connections();
         self.settings = None;
         self.probe = None;
         self.server_database = None;
@@ -1068,19 +1095,26 @@ impl PgSources {
 
     fn clear_primary_cache_if_closed(&mut self) {
         if self.server.as_ref().and_then(Pool::generation).is_none() {
-            self.settings = None;
-            self.probe = None;
+            self.clear_primary_connection();
         }
     }
 
     fn update_probe_cache(&mut self, probe: GenerationProbe, same_generation: bool) {
         if !same_generation {
+            self.close_secondary_connections();
             self.settings = None;
             self.capabilities.clear();
             self.discovered.clear();
             self.last_discovery = None;
         }
         self.probe = Some(probe);
+    }
+
+    fn close_secondary_connections(&mut self) {
+        for pool in self.databases.values_mut() {
+            pool.close();
+        }
+        self.databases.clear();
     }
 }
 

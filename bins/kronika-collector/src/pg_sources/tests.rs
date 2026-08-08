@@ -3,15 +3,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use kronika_source_pg::Pool;
+use kronika_source_pg::databases::Database;
 use kronika_source_pg::extension::ExtensionSchema;
 use kronika_source_pg::statements::{StatementsCapability, StatementsVersion};
 use kronika_source_pg::store_plans::{Flavour, StorePlansCapability};
 
 use super::{
-    CachedSettings, DISCOVERY_INTERVAL, DatabaseCapabilities, GenerationProbe, PgObservation,
-    PgSources, QueryFailure, QueryOutcome, SERVER_PROBE_SQL, cached_settings_for_generation,
-    capability_sqlstate, discovery_due, measure, selected_statements, selected_statements_info,
-    selected_store_plans, selected_store_plans_info, session_for_generation,
+    BatchWrite, CachedSettings, DISCOVERY_INTERVAL, DatabaseCapabilities, GenerationProbe,
+    PgObservation, PgSources, QueryFailure, QueryOutcome, SERVER_PROBE_SQL,
+    cached_settings_for_generation, capability_sqlstate, discovery_due, measure,
+    selected_statements, selected_statements_info, selected_store_plans, selected_store_plans_info,
+    session_for_generation,
 };
 
 fn statements(version: StatementsVersion) -> StatementsCapability {
@@ -253,6 +255,69 @@ fn visibility_refresh_on_the_same_connection_keeps_generation_scoped_state() {
             .as_ref()
             .is_some_and(|probe| probe.full_visibility)
     );
+}
+
+#[test]
+fn a_new_primary_generation_discards_secondary_pools() {
+    let mut sources = PgSources::disabled();
+    sources.databases.insert(
+        "other".to_owned(),
+        Pool::new("host=127.0.0.1 dbname=other").expect("the DSN parses"),
+    );
+
+    sources.update_probe_cache(
+        GenerationProbe {
+            generation: 8,
+            major: 18,
+            user: "monitor".to_owned(),
+            database: "app".to_owned(),
+            full_visibility: true,
+        },
+        false,
+    );
+
+    assert!(sources.databases.is_empty());
+}
+
+#[tokio::test]
+async fn losing_the_primary_during_extension_collection_ends_the_cycle() {
+    let mut sources = PgSources::disabled();
+    sources.server = Some(Pool::new("host=127.0.0.1 dbname=app").expect("the primary DSN parses"));
+    sources.server_database = Some("app".to_owned());
+    sources.databases.insert(
+        "other".to_owned(),
+        Pool::new("host=127.0.0.1 dbname=other").expect("the DSN parses"),
+    );
+    sources.discovered.push(Database {
+        oid: 7,
+        name: "other".to_owned(),
+        is_current: false,
+    });
+    sources.capabilities.insert(
+        "app".to_owned(),
+        capabilities(Some(statements(StatementsVersion::V6)), None),
+    );
+    let probe = GenerationProbe {
+        generation: 7,
+        major: 18,
+        user: "monitor".to_owned(),
+        database: "app".to_owned(),
+        full_visibility: true,
+    };
+    let mut admitted = false;
+    let continued = sources
+        .collect_extensions_dynamic(&probe, &mut |_observation| {}, None, &mut |_, _| {
+            admitted = true;
+            Ok::<_, ()>(BatchWrite::default())
+        })
+        .await
+        .expect("no collector sink error");
+
+    assert!(!continued);
+    assert!(!admitted);
+    assert!(sources.databases.is_empty());
+    assert!(sources.discovered.is_empty());
+    assert!(sources.capabilities.is_empty());
 }
 
 #[test]
