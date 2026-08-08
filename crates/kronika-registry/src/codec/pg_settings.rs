@@ -16,7 +16,7 @@ use crate::{Section, StrId, Ts};
 #[section(
     id = 1_019_001,
     name = "pg_settings",
-    semantics = snapshot_full,
+    semantics = on_change,
     sort_key("name")
 )]
 pub struct PgSettings {
@@ -90,7 +90,7 @@ mod tests {
         let c = PgSettings::CONTRACT;
         assert_eq!(c.type_id.get(), 1_019_001);
         assert_eq!(c.columns.len(), 12);
-        assert_eq!(c.semantics, Semantics::SnapshotFull);
+        assert_eq!(c.semantics, Semantics::OnChange);
         assert_eq!(c.sort_key, ["name"]);
         assert_eq!(c.column("name").map(|col| col.nullable), Some(false));
         assert_eq!(c.column("unit").map(|col| col.nullable), Some(true));

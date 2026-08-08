@@ -5,9 +5,9 @@
 //! ran. The layout follows the extension version rather than the server major,
 //! because the extension can be pinned independently.
 //!
-//! The query text is not collected: `pg_stat_statements(false)` returns the
-//! numbers without it, and a statement text is the most expensive and the most
-//! sensitive column in the view.
+//! Query text is capped in SQL before it crosses the connection. Rows whose
+//! `queryid` is privilege-masked are omitted because they have no usable
+//! identity.
 
 use kronika_registry::pg_stat_statements::{
     PgStatStatementsV1, PgStatStatementsV2, PgStatStatementsV3, PgStatStatementsV4,
@@ -104,7 +104,7 @@ const fn since_v5(version: StatementsVersion) -> bool {
 }
 
 /// The columns every layout shares.
-const COMMON_COLUMNS: &str = "s.queryid, s.userid, s.dbid, \
+const COMMON_COLUMNS: &str = "s.queryid, s.userid, s.dbid, left(s.query, 65536) AS query, \
      d.datname::text AS datname, r.rolname::text AS usename, \
      s.calls, s.rows, \
      s.shared_blks_hit, s.shared_blks_read, s.shared_blks_dirtied, s.shared_blks_written, \
@@ -119,8 +119,6 @@ pub struct StatementsCapability {
     pub version: StatementsVersion,
     /// Schema containing the discovered reader function.
     pub schema: ExtensionSchema,
-    /// Whether the current role belongs to `pg_read_all_stats`.
-    pub full_visibility: bool,
 }
 
 /// Select a statement interface only after catalog discovery proved it usable.
@@ -133,7 +131,6 @@ pub fn capability(entry: &InventoryEntry) -> Option<StatementsCapability> {
     Some(StatementsCapability {
         version,
         schema: entry.schema.clone(),
-        full_visibility: entry.full_visibility,
     })
 }
 
@@ -187,10 +184,16 @@ pub fn statements_query(version: StatementsVersion, schema: &ExtensionSchema) ->
         );
     }
     let source = schema.qualify(EXTENSION);
+    let order = if since_v3(version) {
+        "s.dbid, s.userid, s.queryid, s.toplevel"
+    } else {
+        "s.dbid, s.userid, s.queryid"
+    };
     format!(
-        "{}{columns} FROM {source}(false) s \
+        "{}{columns} FROM {source}(true) s \
          LEFT JOIN pg_catalog.pg_database d ON d.oid = s.dbid \
-         LEFT JOIN pg_catalog.pg_roles r ON r.oid = s.userid",
+         LEFT JOIN pg_catalog.pg_roles r ON r.oid = s.userid \
+         WHERE s.queryid IS NOT NULL ORDER BY {order}",
         marked!("SELECT ")
     )
 }
@@ -216,6 +219,8 @@ pub struct StatementsRow {
     pub datname: Option<String>,
     /// Role name resolved from `userid`.
     pub usename: Option<String>,
+    /// Statement text, bounded in SQL; `None` when PostgreSQL masks it.
+    pub query: Option<String>,
     /// Executions.
     pub calls: i64,
     /// Rows retrieved or affected.
@@ -339,7 +344,7 @@ pub fn to_v6<E>(
         toplevel: row.toplevel.unwrap_or(true),
         datname: opt(&mut intern, row.datname.as_deref())?,
         usename: opt(&mut intern, row.usename.as_deref())?,
-        query: None,
+        query: opt(&mut intern, row.query.as_deref())?,
         calls: row.calls,
         rows: row.rows,
         plans: row.plans.unwrap_or(0),
@@ -406,7 +411,7 @@ pub fn to_v5<E>(
         toplevel: row.toplevel.unwrap_or(true),
         datname: opt(&mut intern, row.datname.as_deref())?,
         usename: opt(&mut intern, row.usename.as_deref())?,
-        query: None,
+        query: opt(&mut intern, row.query.as_deref())?,
         calls: row.calls,
         rows: row.rows,
         plans: row.plans.unwrap_or(0),
@@ -470,7 +475,7 @@ pub fn to_v4<E>(
         toplevel: row.toplevel.unwrap_or(true),
         datname: opt(&mut intern, row.datname.as_deref())?,
         usename: opt(&mut intern, row.usename.as_deref())?,
-        query: None,
+        query: opt(&mut intern, row.query.as_deref())?,
         calls: row.calls,
         rows: row.rows,
         plans: row.plans.unwrap_or(0),
@@ -528,7 +533,7 @@ pub fn to_v3<E>(
         toplevel: row.toplevel.unwrap_or(true),
         datname: opt(&mut intern, row.datname.as_deref())?,
         usename: opt(&mut intern, row.usename.as_deref())?,
-        query: None,
+        query: opt(&mut intern, row.query.as_deref())?,
         calls: row.calls,
         rows: row.rows,
         plans: row.plans.unwrap_or(0),
@@ -575,7 +580,7 @@ pub fn to_v2<E>(
         dbid: row.dbid,
         datname: opt(&mut intern, row.datname.as_deref())?,
         usename: opt(&mut intern, row.usename.as_deref())?,
-        query: None,
+        query: opt(&mut intern, row.query.as_deref())?,
         calls: row.calls,
         rows: row.rows,
         plans: row.plans.unwrap_or(0),
@@ -622,7 +627,7 @@ pub fn to_v1<E>(
         dbid: row.dbid,
         datname: opt(&mut intern, row.datname.as_deref())?,
         usename: opt(&mut intern, row.usename.as_deref())?,
-        query: None,
+        query: opt(&mut intern, row.query.as_deref())?,
         calls: row.calls,
         rows: row.rows,
         total_time: row.total_exec_time,
@@ -662,6 +667,7 @@ fn row_from_pg(
         toplevel: since_v3(version).then(|| row.get("toplevel")),
         datname: row.get("datname"),
         usename: row.get("usename"),
+        query: row.get("query"),
         calls: row.get("calls"),
         rows: row.get("rows"),
         plans: planning.then(|| row.get("plans")),
@@ -721,23 +727,6 @@ fn row_from_pg(
             None
         },
     }
-}
-
-const fn visible_queryid(queryid: Option<i64>, masked_rows: &mut usize) -> Option<i64> {
-    let Some(queryid) = queryid else {
-        *masked_rows = masked_rows.saturating_add(1);
-        return None;
-    };
-    Some(queryid)
-}
-
-/// One statement read, excluding rows whose identity was privilege-masked.
-#[derive(Debug, Clone)]
-pub struct StatementsRead {
-    /// Rows whose query identity was visible.
-    pub rows: Vec<StatementsRow>,
-    /// Rows skipped because `PostgreSQL` masked their query id.
-    pub masked_rows: usize,
 }
 
 /// Collect every visible statement the extension is holding counters for.

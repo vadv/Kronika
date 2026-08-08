@@ -1,6 +1,6 @@
 use super::{
     StatementsRow, StatementsVersion, capability, statements_query, statements_version, to_v1,
-    to_v2, to_v4, to_v6, visible_queryid,
+    to_v2, to_v4, to_v6,
 };
 use crate::extension::{ExtensionSchema, InventoryEntry, parse_version};
 use kronika_registry::StrId;
@@ -36,6 +36,8 @@ fn inventory(extversion: &str, reader: bool) -> InventoryEntry {
         store_plans_key_getter: false,
         store_plans_ossc_columns: false,
         store_plans_vadv_columns: false,
+        statements_info: false,
+        store_plans_info: false,
     }
 }
 
@@ -48,6 +50,7 @@ fn sample_row() -> StatementsRow {
         toplevel: Some(true),
         datname: Some("appdb".to_owned()),
         usename: Some("app".to_owned()),
+        query: Some("select 1".to_owned()),
         calls: 1_000,
         rows: 25_000,
         plans: Some(900),
@@ -147,7 +150,7 @@ fn the_block_timing_columns_are_asked_for_under_the_name_that_release_uses() {
 }
 
 #[test]
-fn every_query_carries_the_marker_and_asks_for_no_statement_text() {
+fn every_query_carries_the_marker_and_bounds_statement_text() {
     let schema = ExtensionSchema::new("metrics\"schema");
     for version in [
         StatementsVersion::V1,
@@ -159,8 +162,9 @@ fn every_query_carries_the_marker_and_asks_for_no_statement_text() {
     ] {
         let sql = statements_query(version, &schema);
         assert!(sql.contains("kronika:"), "{sql}");
-        assert!(!sql.contains("s.query,"), "{sql}");
-        assert!(sql.contains("\"metrics\"\"schema\".\"pg_stat_statements\"(false)"));
+        assert!(sql.contains("left(s.query, 65536) AS query"), "{sql}");
+        assert!(sql.contains("\"metrics\"\"schema\".\"pg_stat_statements\"(true)"));
+        assert!(sql.contains("WHERE s.queryid IS NOT NULL"), "{sql}");
     }
 }
 
@@ -174,19 +178,19 @@ fn catalog_capabilities_not_version_alone_enable_collection() {
 }
 
 #[test]
-fn to_v6_maps_every_column_and_leaves_the_text_out() {
+fn to_v6_maps_every_column_including_bounded_text() {
     let r = to_v6(&sample_row(), fake_intern).expect("infallible intern");
     assert_eq!(r.ts.0, 2_000);
     assert_eq!(r.queryid, Some(-42));
     assert_eq!(r.datname, Some(fake_intern(b"appdb").unwrap()));
-    assert_eq!(r.query, None);
+    assert_eq!(r.query, Some(fake_intern(b"select 1").unwrap()));
     assert!(r.toplevel);
     assert_eq!(r.calls, 1_000);
     assert!((r.total_exec_time - 4_200.5).abs() < f64::EPSILON);
     assert!((r.shared_blk_read_time - 33.0).abs() < f64::EPSILON);
     assert_eq!(r.wal_buffers_full, 12);
     assert_eq!(r.parallel_workers_launched, 6);
-    assert_eq!(r.stats_since.map(|ts| ts.0), Some(1_000));
+    assert_eq!(r.stats_since.0, 1_000);
 }
 
 #[test]
@@ -194,15 +198,6 @@ fn a_masked_query_id_stays_absent() {
     let mut row = sample_row();
     row.queryid = None;
     assert_eq!(to_v6(&row, fake_intern).expect("intern").queryid, None);
-}
-
-#[test]
-fn a_masked_query_id_is_skipped_and_counted() {
-    let mut masked_rows = 0;
-    assert_eq!(visible_queryid(None, &mut masked_rows), None);
-    assert_eq!(masked_rows, 1);
-    assert_eq!(visible_queryid(Some(-42), &mut masked_rows), Some(-42));
-    assert_eq!(masked_rows, 1);
 }
 
 #[test]

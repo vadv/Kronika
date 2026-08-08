@@ -2,7 +2,10 @@
 
 use kronika_registry::Ts;
 use kronika_registry::pg_stat_bgwriter::{PgStatBgwriterV1, PgStatBgwriterV2};
-use tokio_postgres::Client;
+use tokio_postgres::types::Type;
+
+use crate::Session;
+use crate::query::{self, QueryStats};
 
 macro_rules! marked {
     ($sql:literal) => {
@@ -70,34 +73,42 @@ pub enum BgwriterSnapshot {
 ///
 /// Returns `PostgreSQL` protocol or row-decoding errors.
 pub async fn collect_bgwriter(
-    client: &Client,
+    session: Session<'_>,
     major: u32,
-) -> Result<BgwriterSnapshot, tokio_postgres::Error> {
+    stats: &mut QueryStats,
+) -> anyhow::Result<BgwriterSnapshot> {
     let version = bgwriter_version(major);
-    let row = client.query_typed_one(bgwriter_query(version), &[]).await?;
-    Ok(match version {
-        BgwriterVersion::V1 => BgwriterSnapshot::V1(PgStatBgwriterV1 {
-            ts: Ts(row.try_get("ts_us")?),
-            checkpoints_timed: row.try_get("checkpoints_timed")?,
-            checkpoints_req: row.try_get("checkpoints_req")?,
-            checkpoint_write_time: row.try_get("checkpoint_write_time")?,
-            checkpoint_sync_time: row.try_get("checkpoint_sync_time")?,
-            buffers_checkpoint: row.try_get("buffers_checkpoint")?,
-            buffers_clean: row.try_get("buffers_clean")?,
-            maxwritten_clean: row.try_get("maxwritten_clean")?,
-            buffers_backend: row.try_get("buffers_backend")?,
-            buffers_backend_fsync: row.try_get("buffers_backend_fsync")?,
-            buffers_alloc: row.try_get("buffers_alloc")?,
-            stats_reset: row.try_get::<_, Option<i64>>("stats_reset_us")?.map(Ts),
-        }),
-        BgwriterVersion::V2 => BgwriterSnapshot::V2(PgStatBgwriterV2 {
-            ts: Ts(row.try_get("ts_us")?),
-            buffers_clean: row.try_get("buffers_clean")?,
-            maxwritten_clean: row.try_get("maxwritten_clean")?,
-            buffers_alloc: row.try_get("buffers_alloc")?,
-            stats_reset: row.try_get::<_, Option<i64>>("stats_reset_us")?.map(Ts),
-        }),
-    })
+    query::read_one(
+        session,
+        bgwriter_query(version),
+        std::iter::empty::<(String, Type)>(),
+        0,
+        stats,
+        |row| match version {
+            BgwriterVersion::V1 => BgwriterSnapshot::V1(PgStatBgwriterV1 {
+                ts: Ts(row.get("ts_us")),
+                checkpoints_timed: row.get("checkpoints_timed"),
+                checkpoints_req: row.get("checkpoints_req"),
+                checkpoint_write_time: row.get("checkpoint_write_time"),
+                checkpoint_sync_time: row.get("checkpoint_sync_time"),
+                buffers_checkpoint: row.get("buffers_checkpoint"),
+                buffers_clean: row.get("buffers_clean"),
+                maxwritten_clean: row.get("maxwritten_clean"),
+                buffers_backend: row.get("buffers_backend"),
+                buffers_backend_fsync: row.get("buffers_backend_fsync"),
+                buffers_alloc: row.get("buffers_alloc"),
+                stats_reset: row.get::<_, Option<i64>>("stats_reset_us").map(Ts),
+            }),
+            BgwriterVersion::V2 => BgwriterSnapshot::V2(PgStatBgwriterV2 {
+                ts: Ts(row.get("ts_us")),
+                buffers_clean: row.get("buffers_clean"),
+                maxwritten_clean: row.get("maxwritten_clean"),
+                buffers_alloc: row.get("buffers_alloc"),
+                stats_reset: row.get::<_, Option<i64>>("stats_reset_us").map(Ts),
+            }),
+        },
+    )
+    .await
 }
 
 #[cfg(test)]

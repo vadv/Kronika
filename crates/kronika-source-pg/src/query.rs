@@ -17,7 +17,7 @@ use tokio_postgres::{Client, Row, RowStream, SimpleQueryMessage, SimpleQueryStre
 pub const BATCH_ROWS: usize = 256;
 
 /// Target decoded payload size for one collector-side `PostgreSQL` batch.
-pub const BATCH_LOGICAL_BYTES: usize = 1_048_576;
+pub const BATCH_LOGICAL_BYTES: usize = 512 * 1024;
 
 /// Maximum characters retained from a potentially unbounded text value.
 pub const TEXT_PREFIX_CHARS: usize = 65_536;
@@ -80,6 +80,17 @@ impl QueryStats {
         bytes
     }
 
+    fn received_simple(&mut self, row: &tokio_postgres::SimpleQueryRow) {
+        let bytes = (0..row.len())
+            .filter_map(|index| row.get(index))
+            .map(str::len)
+            .fold(0_usize, usize::saturating_add);
+        self.rows = self.rows.saturating_add(1);
+        self.application_payload_from_postgres_bytes = self
+            .application_payload_from_postgres_bytes
+            .saturating_add(usize_to_u64(bytes));
+    }
+
     const fn wrote_batch(&mut self, elapsed: Duration, write: BatchWrite) {
         self.attempted_batch(elapsed);
         self.encode_elapsed = self.encode_elapsed.saturating_add(write.encode_elapsed);
@@ -125,6 +136,8 @@ pub enum BatchError<E> {
     Timeout,
     /// The `PostgreSQL` protocol or row stream failed.
     PostgreSql(tokio_postgres::Error),
+    /// A returned row did not match the source's declared shape.
+    Decode(anyhow::Error),
     /// The collector could not consume the current retained batch.
     Sink(E),
 }
@@ -281,6 +294,52 @@ pub async fn read_batched<P, I, T, E>(
     parameter_bytes: usize,
     stats: &mut QueryStats,
     mut decode: impl FnMut(&Row) -> T,
+    sink: impl FnMut(Batch<T>) -> Result<BatchWrite, E>,
+) -> Result<(), BatchError<E>>
+where
+    P: BorrowToSql,
+    I: IntoIterator<Item = (P, Type)>,
+{
+    read_batched_inner(
+        session,
+        sql,
+        params,
+        parameter_bytes,
+        stats,
+        |row| Ok(decode(row)),
+        sink,
+    )
+    .await
+}
+
+/// Decode and deliver bounded batches with a fallible row decoder.
+///
+/// # Errors
+///
+/// Returns the same errors as [`read_batched`] plus [`BatchError::Decode`].
+pub async fn read_batched_fallible<P, I, T, E>(
+    session: Session<'_>,
+    sql: &str,
+    params: I,
+    parameter_bytes: usize,
+    stats: &mut QueryStats,
+    decode: impl FnMut(&Row) -> Result<T>,
+    sink: impl FnMut(Batch<T>) -> Result<BatchWrite, E>,
+) -> Result<(), BatchError<E>>
+where
+    P: BorrowToSql,
+    I: IntoIterator<Item = (P, Type)>,
+{
+    read_batched_inner(session, sql, params, parameter_bytes, stats, decode, sink).await
+}
+
+async fn read_batched_inner<P, I, T, E>(
+    session: Session<'_>,
+    sql: &str,
+    params: I,
+    parameter_bytes: usize,
+    stats: &mut QueryStats,
+    mut decode: impl FnMut(&Row) -> Result<T>,
     mut sink: impl FnMut(Batch<T>) -> Result<BatchWrite, E>,
 ) -> Result<(), BatchError<E>>
 where
@@ -303,7 +362,8 @@ where
         .map_err(BatchError::PostgreSql)?
     {
         let bytes = stats.received(&row);
-        if let Some(batch) = pending.push(decode(&row), bytes) {
+        let decoded = decode(&row).map_err(BatchError::Decode)?;
+        if let Some(batch) = pending.push(decoded, bytes) {
             extend_fetch_deadline(&mut deadline, deliver_batch(batch, stats, &mut sink)?);
         }
     }
@@ -337,6 +397,15 @@ impl<T> PendingBatch<T> {
     }
 
     fn push(&mut self, row: T, logical_bytes: usize) -> Option<Batch<T>> {
+        if !self.rows.is_empty()
+            && (self.rows.len() >= BATCH_ROWS
+                || self.logical_bytes.saturating_add(logical_bytes) > BATCH_LOGICAL_BYTES)
+        {
+            let batch = self.take();
+            self.logical_bytes = logical_bytes;
+            self.rows.push(row);
+            return Some(batch);
+        }
         self.logical_bytes = self.logical_bytes.saturating_add(logical_bytes);
         self.rows.push(row);
         batch_limit_reached(self.rows.len(), self.logical_bytes).then(|| self.take())
@@ -402,6 +471,29 @@ pub async fn read_simple_i32(
         }
     }
     value.context("PostgreSQL returned no scalar row")
+}
+
+/// Consume the row messages from one known-small Simple Protocol query.
+///
+/// # Errors
+///
+/// Returns a protocol error or the decoder's error.
+pub async fn read_simple_rows<T>(
+    session: Session<'_>,
+    sql: &str,
+    stats: &mut QueryStats,
+    mut decode: impl FnMut(&tokio_postgres::SimpleQueryRow) -> Result<T>,
+) -> Result<Vec<T>> {
+    let stream = session.simple_stream(sql, stats).await?;
+    let mut stream = pin!(stream);
+    let mut rows = Vec::new();
+    while let Some(message) = stream.try_next().await? {
+        if let SimpleQueryMessage::Row(row) = message {
+            stats.received_simple(&row);
+            rows.push(decode(&row)?);
+        }
+    }
+    Ok(rows)
 }
 
 fn logical_row_bytes(row: &Row) -> usize {

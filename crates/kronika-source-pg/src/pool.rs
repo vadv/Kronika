@@ -6,15 +6,18 @@
 
 use std::error::Error;
 use std::fmt;
+use std::net::IpAddr;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
+use tokio_postgres::config::Host;
 use tokio_postgres::{Config, NoTls};
 
 use crate::Session;
 
 /// Maximum time allowed for opening a `PostgreSQL` connection.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_PORT: u16 = 5432;
 
 /// Failure to open a `PostgreSQL` connection.
 #[derive(Debug)]
@@ -106,6 +109,18 @@ impl Pool {
         self.config.get_dbname().unwrap_or("postgresql")
     }
 
+    /// Safe endpoint label with the configured user, or a source placeholder.
+    #[must_use]
+    pub fn configured_connection_label(&self, source_index: usize) -> String {
+        connection_label(&self.config, self.config.get_user(), source_index)
+    }
+
+    /// Safe endpoint label with the server-resolved login role.
+    #[must_use]
+    pub fn connection_label(&self, user: &str, source_index: usize) -> String {
+        connection_label(&self.config, Some(user), source_index)
+    }
+
     /// Return the healthy current session, connecting when necessary.
     ///
     /// # Errors
@@ -175,6 +190,67 @@ impl Pool {
             driver,
             generation,
         })
+    }
+}
+
+fn connection_label(config: &Config, user: Option<&str>, source_index: usize) -> String {
+    let user = user.unwrap_or("server-default");
+    let ports = config.get_ports();
+    let endpoints = if config.get_hosts().is_empty() {
+        config
+            .get_hostaddrs()
+            .iter()
+            .enumerate()
+            .map(|(index, host)| endpoint(user, &ip_label(*host), port_at(ports, index)))
+            .collect::<Vec<_>>()
+    } else {
+        config
+            .get_hosts()
+            .iter()
+            .enumerate()
+            .map(|(index, host)| {
+                let host = match host {
+                    Host::Tcp(host) => tcp_label(host),
+                    #[cfg(unix)]
+                    Host::Unix(path) => format!("unix:{}", path.display()),
+                };
+                endpoint(user, &host, port_at(ports, index))
+            })
+            .collect::<Vec<_>>()
+    };
+    if endpoints.is_empty() {
+        format!("{user}@source[{source_index}]")
+    } else {
+        endpoints.join(",")
+    }
+}
+
+fn port_at(ports: &[u16], index: usize) -> u16 {
+    match ports {
+        [] => DEFAULT_PORT,
+        [port] => *port,
+        many => many.get(index).copied().unwrap_or(DEFAULT_PORT),
+    }
+}
+
+fn endpoint(user: &str, host: &str, port: u16) -> String {
+    format!("{user}@{host}:{port}")
+}
+
+fn tcp_label(host: &str) -> String {
+    if host.starts_with('[') && host.ends_with(']') {
+        host.to_owned()
+    } else if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    }
+}
+
+fn ip_label(host: IpAddr) -> String {
+    match host {
+        IpAddr::V4(host) => host.to_string(),
+        IpAddr::V6(host) => format!("[{host}]"),
     }
 }
 

@@ -1,9 +1,9 @@
 use super::{Database, ENUMERATE_QUERY, refresh};
-use crate::{MAX_AGE, Pool};
+use crate::Pool;
 use std::collections::BTreeMap;
 
 fn primary() -> Pool {
-    Pool::new("host=/nonexistent dbname=postgres", MAX_AGE).expect("the DSN parses")
+    Pool::new("host=/nonexistent dbname=postgres").expect("the DSN parses")
 }
 
 fn found(names: &[&str]) -> Vec<Database> {
@@ -45,7 +45,7 @@ fn a_database_that_was_dropped_loses_its_connection() {
 #[test]
 fn a_database_that_stayed_keeps_the_connection_it_had() {
     let mut pools = BTreeMap::new();
-    let kept = Pool::new("host=/nonexistent dbname=sentinel", MAX_AGE).expect("the DSN parses");
+    let kept = Pool::new("host=/nonexistent dbname=sentinel").expect("the DSN parses");
     pools.insert("payments".to_owned(), kept);
     refresh(&mut pools, &found(&["appdb", "payments"]), &primary());
     let survivor = format!(

@@ -27,7 +27,7 @@ macro_rules! marked {
 }
 
 /// One `pg_settings` row as the server sent it, before interning.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsRow {
     /// Collection time, unix microseconds.
     pub ts: i64,

@@ -4,7 +4,7 @@
 //! catalog query in every database and caches the result outside this module.
 
 use anyhow::{Context as _, Result};
-use tokio_postgres::{SimpleQueryMessage, SimpleQueryRow};
+use tokio_postgres::SimpleQueryRow;
 
 use crate::Session;
 use crate::query::QueryStats;
@@ -142,6 +142,42 @@ const INVENTORY_QUERY: &str = marked!(
      SELECT i.extname, i.extversion, i.schema_name, \
             pg_catalog.has_schema_privilege(i.schema_oid, 'USAGE') AS schema_usable, \
             pg_catalog.pg_has_role('pg_read_all_stats', 'member') AS full_visibility, \
+            coalesce((SELECT bool_or(pg_catalog.has_table_privilege(c.oid, 'SELECT') \
+                                    AND EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a \
+                                                WHERE a.attrelid = c.oid AND a.attname = 'dealloc' \
+                                                  AND a.atttypid = 'pg_catalog.int8'::pg_catalog.regtype \
+                                                  AND NOT a.attisdropped) \
+                                    AND EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a \
+                                                WHERE a.attrelid = c.oid AND a.attname = 'stats_reset' \
+                                                  AND a.atttypid = 'pg_catalog.timestamptz'::pg_catalog.regtype \
+                                                  AND NOT a.attisdropped)) \
+                      FROM pg_catalog.pg_depend d \
+                      JOIN pg_catalog.pg_class c ON c.oid = d.objid \
+                      WHERE d.refclassid = 'pg_catalog.pg_extension'::pg_catalog.regclass \
+                        AND d.refobjid = i.extension_oid \
+                        AND d.classid = 'pg_catalog.pg_class'::pg_catalog.regclass \
+                        AND d.deptype = 'e' \
+                        AND c.relnamespace = i.schema_oid \
+                        AND c.relname = 'pg_stat_statements_info'), false) \
+                AS statements_info, \
+            coalesce((SELECT bool_or(pg_catalog.has_table_privilege(c.oid, 'SELECT') \
+                                    AND EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a \
+                                                WHERE a.attrelid = c.oid AND a.attname = 'dealloc' \
+                                                  AND a.atttypid = 'pg_catalog.int8'::pg_catalog.regtype \
+                                                  AND NOT a.attisdropped) \
+                                    AND EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a \
+                                                WHERE a.attrelid = c.oid AND a.attname = 'stats_reset' \
+                                                  AND a.atttypid = 'pg_catalog.timestamptz'::pg_catalog.regtype \
+                                                  AND NOT a.attisdropped)) \
+                      FROM pg_catalog.pg_depend d \
+                      JOIN pg_catalog.pg_class c ON c.oid = d.objid \
+                      WHERE d.refclassid = 'pg_catalog.pg_extension'::pg_catalog.regclass \
+                        AND d.refobjid = i.extension_oid \
+                        AND d.classid = 'pg_catalog.pg_class'::pg_catalog.regclass \
+                        AND d.deptype = 'e' \
+                        AND c.relnamespace = i.schema_oid \
+                        AND c.relname = 'pg_store_plans_info'), false) \
+                AS store_plans_info, \
             coalesce((SELECT bool_or(f.can_execute AND f.proretset \
                                     AND f.prorettype = 'pg_catalog.record'::pg_catalog.regtype \
                                     AND f.proargtypes = '16'::pg_catalog.oidvector) \
@@ -237,6 +273,10 @@ pub struct InventoryEntry {
     pub schema_usable: bool,
     /// Whether the current role belongs to `pg_read_all_stats`.
     pub full_visibility: bool,
+    /// Whether an exact readable `pg_stat_statements_info` view exists.
+    pub statements_info: bool,
+    /// Whether an exact readable `pg_store_plans_info` view exists.
+    pub store_plans_info: bool,
     /// Whether the executable boolean `pg_stat_statements` reader exists.
     pub statements_reader: bool,
     /// Whether the executable zero-argument plan reader exists.
@@ -303,6 +343,8 @@ fn entry_from_row(row: &SimpleQueryRow) -> Result<InventoryEntry> {
         schema: ExtensionSchema::new(column(row, "schema_name")?),
         schema_usable: boolean(row, "schema_usable")?,
         full_visibility: boolean(row, "full_visibility")?,
+        statements_info: boolean(row, "statements_info")?,
+        store_plans_info: boolean(row, "store_plans_info")?,
         statements_reader: boolean(row, "statements_reader")?,
         store_plans_zero_arg: boolean(row, "store_plans_zero_arg")?,
         store_plans_bool_arg: boolean(row, "store_plans_bool_arg")?,
@@ -323,18 +365,9 @@ pub async fn inventory(
     session: Session<'_>,
     stats: &mut QueryStats,
 ) -> Result<Vec<InventoryEntry>> {
-    let stream = session
-        .simple_stream(INVENTORY_QUERY, stats)
+    crate::query::read_simple_rows(session, INVENTORY_QUERY, stats, entry_from_row)
         .await
-        .context("inventory PostgreSQL extensions")?;
-    let mut stream = std::pin::pin!(stream);
-    let mut inventory = Vec::new();
-    while let Some(message) = futures_util::TryStreamExt::try_next(&mut stream).await? {
-        if let SimpleQueryMessage::Row(row) = message {
-            inventory.push(entry_from_row(&row)?);
-        }
-    }
-    Ok(inventory)
+        .context("inventory PostgreSQL extensions")
 }
 
 #[cfg(test)]

@@ -2,7 +2,10 @@
 
 use kronika_registry::Ts;
 use kronika_registry::pg_stat_checkpointer::{PgStatCheckpointerV1, PgStatCheckpointerV2};
-use tokio_postgres::Client;
+use tokio_postgres::types::Type;
+
+use crate::Session;
+use crate::query::{self, QueryStats};
 
 macro_rules! marked {
     ($sql:literal) => {
@@ -73,43 +76,50 @@ pub enum CheckpointerSnapshot {
 ///
 /// Returns `PostgreSQL` protocol or row-decoding errors.
 pub async fn collect_checkpointer(
-    client: &Client,
+    session: Session<'_>,
     major: u32,
-) -> Result<Option<CheckpointerSnapshot>, tokio_postgres::Error> {
+    stats: &mut QueryStats,
+) -> anyhow::Result<Option<CheckpointerSnapshot>> {
     let Some(version) = checkpointer_version(major) else {
         return Ok(None);
     };
-    let row = client
-        .query_typed_one(checkpointer_query(version), &[])
-        .await?;
-    Ok(Some(match version {
-        CheckpointerVersion::V1 => CheckpointerSnapshot::V1(PgStatCheckpointerV1 {
-            ts: Ts(row.try_get("ts_us")?),
-            num_timed: row.try_get("num_timed")?,
-            num_requested: row.try_get("num_requested")?,
-            restartpoints_timed: row.try_get("restartpoints_timed")?,
-            restartpoints_req: row.try_get("restartpoints_req")?,
-            restartpoints_done: row.try_get("restartpoints_done")?,
-            write_time: row.try_get("write_time")?,
-            sync_time: row.try_get("sync_time")?,
-            buffers_written: row.try_get("buffers_written")?,
-            stats_reset: row.try_get::<_, Option<i64>>("stats_reset_us")?.map(Ts),
-        }),
-        CheckpointerVersion::V2 => CheckpointerSnapshot::V2(PgStatCheckpointerV2 {
-            ts: Ts(row.try_get("ts_us")?),
-            num_timed: row.try_get("num_timed")?,
-            num_requested: row.try_get("num_requested")?,
-            num_done: row.try_get("num_done")?,
-            restartpoints_timed: row.try_get("restartpoints_timed")?,
-            restartpoints_req: row.try_get("restartpoints_req")?,
-            restartpoints_done: row.try_get("restartpoints_done")?,
-            write_time: row.try_get("write_time")?,
-            sync_time: row.try_get("sync_time")?,
-            buffers_written: row.try_get("buffers_written")?,
-            slru_written: row.try_get("slru_written")?,
-            stats_reset: row.try_get::<_, Option<i64>>("stats_reset_us")?.map(Ts),
-        }),
-    }))
+    query::read_one(
+        session,
+        checkpointer_query(version),
+        std::iter::empty::<(String, Type)>(),
+        0,
+        stats,
+        |row| match version {
+            CheckpointerVersion::V1 => CheckpointerSnapshot::V1(PgStatCheckpointerV1 {
+                ts: Ts(row.get("ts_us")),
+                num_timed: row.get("num_timed"),
+                num_requested: row.get("num_requested"),
+                restartpoints_timed: row.get("restartpoints_timed"),
+                restartpoints_req: row.get("restartpoints_req"),
+                restartpoints_done: row.get("restartpoints_done"),
+                write_time: row.get("write_time"),
+                sync_time: row.get("sync_time"),
+                buffers_written: row.get("buffers_written"),
+                stats_reset: row.get::<_, Option<i64>>("stats_reset_us").map(Ts),
+            }),
+            CheckpointerVersion::V2 => CheckpointerSnapshot::V2(PgStatCheckpointerV2 {
+                ts: Ts(row.get("ts_us")),
+                num_timed: row.get("num_timed"),
+                num_requested: row.get("num_requested"),
+                num_done: row.get("num_done"),
+                restartpoints_timed: row.get("restartpoints_timed"),
+                restartpoints_req: row.get("restartpoints_req"),
+                restartpoints_done: row.get("restartpoints_done"),
+                write_time: row.get("write_time"),
+                sync_time: row.get("sync_time"),
+                buffers_written: row.get("buffers_written"),
+                slru_written: row.get("slru_written"),
+                stats_reset: row.get::<_, Option<i64>>("stats_reset_us").map(Ts),
+            }),
+        },
+    )
+    .await
+    .map(Some)
 }
 
 #[cfg(test)]

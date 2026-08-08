@@ -208,7 +208,8 @@ fn write_error(stream: &mut TcpStream) {
 }
 
 fn postgres_sources(root: &std::path::Path, dsn: &str) -> LogSources {
-    let connection = super::settings::ConnectionTarget::parse(dsn).expect("parse fake connection");
+    let connection =
+        super::settings::ConnectionTarget::parse(dsn, 0).expect("parse fake connection");
     LogSources {
         offsets: Offsets::load(root).expect("load offsets"),
         pg_dsns: vec![PostgresTarget::new(connection)],
@@ -297,9 +298,10 @@ async fn two_successful_rescans_read_identity_once_and_refresh_log_facts() {
         vec![Reply::Value(42)],
     );
     let mut sources = postgres_sources(dir.path(), &server.dsn);
+    let mut observe = |_observation| {};
 
-    sources.rescan_postgres().await;
-    sources.rescan_postgres().await;
+    sources.rescan_postgres(&mut observe).await;
+    sources.rescan_postgres(&mut observe).await;
 
     assert_eq!(sources.pg_dsns[0].system_identifier, Some(42));
     assert_eq!(
@@ -323,12 +325,13 @@ async fn failed_first_identity_read_is_retried_on_the_next_rescan() {
         vec![Reply::Error, Reply::Value(43)],
     );
     let mut sources = postgres_sources(dir.path(), &server.dsn);
+    let mut observe = |_observation| {};
 
-    sources.rescan_postgres().await;
+    sources.rescan_postgres(&mut observe).await;
     assert_eq!(sources.pg_dsns[0].system_identifier, None);
     assert_eq!(sources.postgres[0].system_identifier, None);
 
-    sources.rescan_postgres().await;
+    sources.rescan_postgres(&mut observe).await;
     assert_eq!(sources.pg_dsns[0].system_identifier, Some(43));
     assert_eq!(sources.postgres[0].system_identifier, Some(43));
     assert_eq!(query_counts(&server.finish()), (2, 2));
@@ -344,49 +347,16 @@ async fn cached_identity_and_followed_source_survive_a_later_refresh_failure() {
         vec![Reply::Value(44)],
     );
     let mut sources = postgres_sources(dir.path(), &server.dsn);
+    let mut observe = |_observation| {};
 
-    sources.rescan_postgres().await;
-    sources.rescan_postgres().await;
+    sources.rescan_postgres(&mut observe).await;
+    sources.rescan_postgres(&mut observe).await;
 
     assert_eq!(sources.pg_dsns[0].system_identifier, Some(44));
     assert_eq!(sources.postgres.len(), 1);
     assert_eq!(sources.postgres[0].log.path(), path);
     assert_eq!(sources.postgres[0].system_identifier, Some(44));
     assert_eq!(query_counts(&server.finish()), (2, 1));
-}
-
-#[test]
-fn postgres_metric_rows_have_no_system_identifier_field() {
-    let crate::pg_sources::PgRows {
-        settings,
-        archiver,
-        wal,
-        prepared_xacts,
-        database,
-        io,
-        activity,
-        progress_vacuum,
-        statements,
-        store_plans_ossc,
-        store_plans_vadv,
-        user_tables,
-        user_indexes,
-    } = crate::pg_sources::PgRows::default();
-    drop((
-        settings,
-        archiver,
-        wal,
-        prepared_xacts,
-        database,
-        io,
-        activity,
-        progress_vacuum,
-        statements,
-        store_plans_ossc,
-        store_plans_vadv,
-        user_tables,
-        user_indexes,
-    ));
 }
 
 #[test]

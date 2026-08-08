@@ -1,13 +1,14 @@
-//! `pg_locks` wait-tree collection for types `1_011_001` / `1_011_002`.
+//! Direct `pg_locks` wait-graph collection for types `1_011_001` / `1_011_002`.
 //!
 //! The query returns one row per backend in a blocking component, not one row
 //! per held lock. Its size is therefore bounded by the server's backend count.
 
-use futures_util::{TryStreamExt, pin_mut};
 use kronika_registry::pg_locks::{PgLocksV1, PgLocksV2};
 use kronika_registry::{StrId, Ts};
-use tokio_postgres::Client;
-use tokio_postgres::types::{ToSql, Type};
+use tokio_postgres::types::Type;
+
+use crate::Session;
+use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
 
 const MARKER: &str = concat!(
     "/* kronika:",
@@ -34,88 +35,69 @@ pub const fn locks_version(major: u32) -> LocksVersion {
     }
 }
 
-/// Build the wait-tree query for one layout.
+/// Build the direct wait-graph query for one layout.
 #[must_use]
 pub fn locks_query(version: LocksVersion) -> String {
     let waitstart = match version {
         LocksVersion::V1 => "",
-        LocksVersion::V2 => ", (extract(epoch from l.waitstart) * 1e6)::int8 AS waitstart_us",
+        LocksVersion::V2 => ", (extract(epoch from w.waitstart) * 1e6)::int8 AS waitstart_us",
     };
     format!(
-        "{MARKER}WITH RECURSIVE activity AS (\
-           SELECT a.*, ARRAY(\
-             SELECT DISTINCT b.blocker FROM unnest(pg_blocking_pids(a.pid)) AS b(blocker) \
-             ORDER BY b.blocker\
-           )::int4[] AS blocked_by \
-           FROM pg_stat_activity a WHERE a.pid <> pg_backend_pid()\
-         ), involved_ids(pid) AS (\
-           SELECT pid FROM activity WHERE cardinality(blocked_by) > 0 \
-           UNION \
-           SELECT b.blocker FROM involved_ids i \
-           JOIN activity a ON a.pid = i.pid \
-           CROSS JOIN LATERAL unnest(a.blocked_by) AS b(blocker) \
-           WHERE b.blocker > 0\
-         ), involved AS (\
-           SELECT a.* FROM activity a JOIN involved_ids i ON i.pid = a.pid\
-         ), roots(root_pid) AS (\
-           SELECT pid FROM involved WHERE cardinality(blocked_by) = 0 \
-           UNION ALL \
-           SELECT 0 WHERE EXISTS (SELECT 1 FROM involved WHERE 0 = ANY(blocked_by))\
-         ), walk(root_pid, pid, depth, path) AS (\
-           SELECT root_pid, root_pid, 0, ARRAY[root_pid]::int4[] FROM roots \
-           UNION ALL \
-           SELECT w.root_pid, n.pid, w.depth + 1, w.path || n.pid \
-           FROM walk w JOIN involved n ON w.pid = ANY(n.blocked_by) \
-           WHERE NOT n.pid = ANY(w.path)\
-         ), placement AS (\
-           SELECT DISTINCT ON (pid) pid, root_pid, depth FROM walk WHERE pid <> 0 \
-           ORDER BY pid, depth, root_pid\
+        "{MARKER}WITH raw_waiters AS (\
+           SELECT DISTINCT ON (l.pid) l.* FROM pg_catalog.pg_locks l \
+           WHERE NOT l.granted AND l.pid IS NOT NULL \
+             AND l.pid <> pg_catalog.pg_backend_pid() \
+           ORDER BY l.pid, l.locktype, l.database, l.relation, l.page, l.tuple, \
+                    l.virtualxid, l.transactionid, l.classid, l.objid, l.objsubid\
+         ), waiters AS (\
+           SELECT l.*, ARRAY(\
+             SELECT DISTINCT b.pid \
+             FROM unnest(pg_catalog.pg_blocking_pids(l.pid)) AS b(pid) \
+             WHERE b.pid <> pg_catalog.pg_backend_pid() ORDER BY b.pid\
+           )::int4[] AS blocked_by FROM raw_waiters l\
+         ), involved(pid) AS (\
+           SELECT pid FROM waiters UNION \
+           SELECT b.pid FROM waiters w \
+           CROSS JOIN LATERAL unnest(w.blocked_by) AS b(pid) WHERE b.pid > 0\
          ) \
          SELECT (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us, \
-         n.pid, n.blocked_by, p.depth, p.root_pid, coalesce(n.datid, 0::oid) AS datid, \
-         coalesce(n.datname::text, '') AS datname, n.usename::text AS usename, \
-         coalesce(n.application_name, '') AS application_name, \
-         coalesce(n.client_addr::text, '') AS client_addr, \
-         coalesce(n.backend_type, '') AS backend_type, n.state, n.wait_event_type, n.wait_event, \
-         left(coalesce(n.query, ''), 65536) AS query, \
-         age(n.backend_xid)::int8 AS backend_xid_age, \
-         age(n.backend_xmin)::int8 AS backend_xmin_age, \
-         (extract(epoch from n.backend_start) * 1e6)::int8 AS backend_start_us, \
-         (extract(epoch from n.xact_start) * 1e6)::int8 AS xact_start_us, \
-         (extract(epoch from n.query_start) * 1e6)::int8 AS query_start_us, \
-         (extract(epoch from n.state_change) * 1e6)::int8 AS state_change_us, \
-         l.locktype AS lock_locktype, l.mode AS lock_mode, l.granted AS lock_granted, \
-         l.database AS lock_database, l.relation AS lock_relation, c.relname::text AS lock_relname, \
-         l.page AS lock_page, l.tuple AS lock_tuple, l.virtualxid::text AS lock_virtualxid, \
-         l.transactionid::text::int8 AS lock_transactionid, l.classid AS lock_classid, \
-         l.objid AS lock_objid, l.objsubid AS lock_objsubid, l.fastpath AS lock_fastpath, \
+         i.pid, coalesce(w.blocked_by, ARRAY[]::int4[]) AS blocked_by, \
+         coalesce(a.datid, 0::oid) AS datid, coalesce(a.datname::text, '') AS datname, \
+         a.usename::text AS usename, coalesce(a.application_name, '') AS application_name, \
+         coalesce(a.client_addr::text, '') AS client_addr, \
+         coalesce(a.backend_type, '') AS backend_type, a.state, a.wait_event_type, a.wait_event, \
+         left(coalesce(a.query, ''), 65536) AS query, \
+         age(a.backend_xid)::int8 AS backend_xid_age, \
+         age(a.backend_xmin)::int8 AS backend_xmin_age, \
+         (extract(epoch from a.backend_start) * 1e6)::int8 AS backend_start_us, \
+         (extract(epoch from a.xact_start) * 1e6)::int8 AS xact_start_us, \
+         (extract(epoch from a.query_start) * 1e6)::int8 AS query_start_us, \
+         (extract(epoch from a.state_change) * 1e6)::int8 AS state_change_us, \
+         w.locktype AS lock_locktype, w.mode AS lock_mode, \
+         w.database AS lock_database, w.relation AS lock_relation, c.relname::text AS lock_relname, \
+         w.page AS lock_page, w.tuple AS lock_tuple, w.virtualxid::text AS lock_virtualxid, \
+         w.transactionid::text::int8 AS lock_transactionid, w.classid AS lock_classid, \
+         w.objid AS lock_objid, w.objsubid AS lock_objsubid, \
          CASE WHEN c.oid IS NOT NULL THEN c.relname::text \
-              WHEN l.transactionid IS NOT NULL THEN 'transaction ' || l.transactionid::text \
-              WHEN l.virtualxid IS NOT NULL THEN 'virtualxid ' || l.virtualxid \
-              WHEN l.classid IS NOT NULL THEN 'object ' || l.classid::text || '/' || l.objid::text \
-              ELSE l.locktype END AS lock_target{waitstart} \
-         FROM involved n JOIN placement p ON p.pid = n.pid \
-         LEFT JOIN LATERAL (\
-           SELECT held.* FROM pg_locks held \
-           WHERE held.pid = n.pid AND NOT held.granted \
-           ORDER BY held.locktype, held.database, held.relation, held.page, held.tuple, \
-                    held.virtualxid, held.transactionid, held.classid, held.objid, held.objsubid \
-           LIMIT 1\
-         ) l ON true \
-         LEFT JOIN pg_class c ON c.oid = l.relation \
-           AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database()) \
-         ORDER BY p.root_pid, p.depth, n.pid"
+              WHEN w.transactionid IS NOT NULL THEN 'transaction ' || w.transactionid::text \
+              WHEN w.virtualxid IS NOT NULL THEN 'virtualxid ' || w.virtualxid \
+              WHEN w.classid IS NOT NULL THEN 'object ' || w.classid::text || '/' || w.objid::text \
+              ELSE w.locktype END AS lock_target{waitstart} \
+         FROM involved i LEFT JOIN pg_catalog.pg_stat_activity a ON a.pid = i.pid \
+         LEFT JOIN waiters w ON w.pid = i.pid \
+         LEFT JOIN pg_catalog.pg_class c ON c.oid = w.relation \
+           AND w.database = (SELECT oid FROM pg_catalog.pg_database \
+                             WHERE datname = pg_catalog.current_database()) \
+         ORDER BY i.pid"
     )
 }
 
-/// One wait-tree row before string interning.
+/// One direct wait-graph row before string interning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockRow {
     ts: i64,
     pid: i32,
     blocked_by: Vec<i32>,
-    depth: i32,
-    root_pid: i32,
     datid: u32,
     datname: String,
     usename: Option<String>,
@@ -134,7 +116,6 @@ pub struct LockRow {
     state_change: Option<i64>,
     lock_locktype: Option<String>,
     lock_mode: Option<String>,
-    lock_granted: Option<bool>,
     lock_database: Option<u32>,
     lock_relation: Option<u32>,
     lock_relname: Option<String>,
@@ -145,7 +126,6 @@ pub struct LockRow {
     lock_classid: Option<u32>,
     lock_objid: Option<u32>,
     lock_objsubid: Option<i16>,
-    lock_fastpath: Option<bool>,
     lock_target: Option<String>,
     waitstart: Option<i64>,
 }
@@ -170,8 +150,6 @@ pub fn to_v1<E>(
         ts: Ts(row.ts),
         pid: row.pid,
         blocked_by: row.blocked_by.clone(),
-        depth: row.depth,
-        root_pid: row.root_pid,
         datid: row.datid,
         datname: intern(row.datname.as_bytes())?,
         usename: opt(&mut intern, row.usename.as_deref())?,
@@ -190,7 +168,6 @@ pub fn to_v1<E>(
         state_change: row.state_change.map(Ts),
         lock_locktype: opt(&mut intern, row.lock_locktype.as_deref())?,
         lock_mode: opt(&mut intern, row.lock_mode.as_deref())?,
-        lock_granted: row.lock_granted,
         lock_database: row.lock_database,
         lock_relation: row.lock_relation,
         lock_relname: opt(&mut intern, row.lock_relname.as_deref())?,
@@ -201,7 +178,6 @@ pub fn to_v1<E>(
         lock_classid: row.lock_classid,
         lock_objid: row.lock_objid,
         lock_objsubid: row.lock_objsubid,
-        lock_fastpath: row.lock_fastpath,
         lock_target: opt(&mut intern, row.lock_target.as_deref())?,
     })
 }
@@ -220,8 +196,6 @@ pub fn to_v2<E>(
         ts: base.ts,
         pid: base.pid,
         blocked_by: base.blocked_by,
-        depth: base.depth,
-        root_pid: base.root_pid,
         datid: base.datid,
         datname: base.datname,
         usename: base.usename,
@@ -240,7 +214,6 @@ pub fn to_v2<E>(
         state_change: base.state_change,
         lock_locktype: base.lock_locktype,
         lock_mode: base.lock_mode,
-        lock_granted: base.lock_granted,
         lock_database: base.lock_database,
         lock_relation: base.lock_relation,
         lock_relname: base.lock_relname,
@@ -251,7 +224,6 @@ pub fn to_v2<E>(
         lock_classid: base.lock_classid,
         lock_objid: base.lock_objid,
         lock_objsubid: base.lock_objsubid,
-        lock_fastpath: base.lock_fastpath,
         lock_target: base.lock_target,
         waitstart: row.waitstart.map(Ts),
     })
@@ -265,8 +237,6 @@ fn from_pg(
         ts: row.try_get("ts_us")?,
         pid: row.try_get("pid")?,
         blocked_by: row.try_get("blocked_by")?,
-        depth: row.try_get("depth")?,
-        root_pid: row.try_get("root_pid")?,
         datid: row.try_get("datid")?,
         datname: row.try_get("datname")?,
         usename: row.try_get("usename")?,
@@ -285,7 +255,6 @@ fn from_pg(
         state_change: row.try_get("state_change_us")?,
         lock_locktype: row.try_get("lock_locktype")?,
         lock_mode: row.try_get("lock_mode")?,
-        lock_granted: row.try_get("lock_granted")?,
         lock_database: row.try_get("lock_database")?,
         lock_relation: row.try_get("lock_relation")?,
         lock_relname: row.try_get("lock_relname")?,
@@ -296,7 +265,6 @@ fn from_pg(
         lock_classid: row.try_get("lock_classid")?,
         lock_objid: row.try_get("lock_objid")?,
         lock_objsubid: row.try_get("lock_objsubid")?,
-        lock_fastpath: row.try_get("lock_fastpath")?,
         lock_target: row.try_get("lock_target")?,
         waitstart: if matches!(version, LocksVersion::V2) {
             row.try_get("waitstart_us")?
@@ -306,28 +274,29 @@ fn from_pg(
     })
 }
 
-/// Stream one wait-tree snapshot into `on_row` using one unnamed statement.
+/// Stream one wait graph into bounded batches using one unnamed statement.
 ///
 /// # Errors
 ///
 /// Returns `PostgreSQL` protocol or row-decoding errors.
-pub async fn collect_locks(
-    client: &Client,
+pub async fn collect_locks<E>(
+    session: Session<'_>,
     major: u32,
-    mut on_row: impl FnMut(LockRow),
-) -> Result<usize, tokio_postgres::Error> {
+    stats: &mut QueryStats,
+    sink: impl FnMut(Batch<LockRow>) -> Result<BatchWrite, E>,
+) -> Result<(), BatchError<E>> {
     let version = locks_version(major);
     let sql = locks_query(version);
-    let stream = client
-        .query_typed_raw(&sql, std::iter::empty::<(&(dyn ToSql + Sync), Type)>())
-        .await?;
-    pin_mut!(stream);
-    let mut count = 0;
-    while let Some(row) = stream.try_next().await? {
-        on_row(from_pg(&row, version)?);
-        count += 1;
-    }
-    Ok(count)
+    query::read_batched_fallible(
+        session,
+        &sql,
+        std::iter::empty::<(String, Type)>(),
+        0,
+        stats,
+        |row| from_pg(row, version).map_err(anyhow::Error::new),
+        sink,
+    )
+    .await
 }
 
 #[cfg(test)]

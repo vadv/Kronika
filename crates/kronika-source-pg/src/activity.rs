@@ -70,8 +70,7 @@ pub const fn activity_query(version: ActivityVersion) -> &'static str {
              (extract(epoch from xact_start) * 1e6)::int8 AS xact_start_us, \
              (extract(epoch from query_start) * 1e6)::int8 AS query_start_us, \
              (extract(epoch from state_change) * 1e6)::int8 AS state_change_us, \
-             (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us, \
-             pg_has_role('pg_read_all_stats', 'member') AS full_visibility \
+             (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us \
              FROM pg_catalog.pg_stat_activity \
              WHERE pid <> pg_catalog.pg_backend_pid()"
         ),
@@ -87,8 +86,7 @@ pub const fn activity_query(version: ActivityVersion) -> &'static str {
              (extract(epoch from xact_start) * 1e6)::int8 AS xact_start_us, \
              (extract(epoch from query_start) * 1e6)::int8 AS query_start_us, \
              (extract(epoch from state_change) * 1e6)::int8 AS state_change_us, \
-             (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us, \
-             pg_has_role('pg_read_all_stats', 'member') AS full_visibility \
+             (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us \
              FROM pg_catalog.pg_stat_activity \
              WHERE pid <> pg_catalog.pg_backend_pid()"
         ),
@@ -104,8 +102,7 @@ pub const fn activity_query(version: ActivityVersion) -> &'static str {
              (extract(epoch from xact_start) * 1e6)::int8 AS xact_start_us, \
              (extract(epoch from query_start) * 1e6)::int8 AS query_start_us, \
              (extract(epoch from state_change) * 1e6)::int8 AS state_change_us, \
-             (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us, \
-             pg_has_role('pg_read_all_stats', 'member') AS full_visibility \
+             (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us \
              FROM pg_catalog.pg_stat_activity \
              WHERE pid <> pg_catalog.pg_backend_pid()"
         ),

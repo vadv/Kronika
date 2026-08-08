@@ -17,8 +17,6 @@ fn row() -> LockRow {
         ts: 2_000_000,
         pid: 20,
         blocked_by: vec![10, 0],
-        depth: 1,
-        root_pid: 10,
         datid: 16_384,
         datname: "app".to_owned(),
         usename: Some("monitor".to_owned()),
@@ -37,7 +35,6 @@ fn row() -> LockRow {
         state_change: Some(1_750_000),
         lock_locktype: Some("transactionid".to_owned()),
         lock_mode: Some("ShareLock".to_owned()),
-        lock_granted: Some(false),
         lock_database: Some(16_384),
         lock_relation: None,
         lock_relname: None,
@@ -48,7 +45,6 @@ fn row() -> LockRow {
         lock_classid: None,
         lock_objid: None,
         lock_objsubid: None,
-        lock_fastpath: Some(false),
         lock_target: Some("transaction 42".to_owned()),
         waitstart: Some(1_900_000),
     }
@@ -67,8 +63,13 @@ fn query_builds_a_bounded_backend_graph() {
     let v1 = locks_query(LocksVersion::V1);
     let v2 = locks_query(LocksVersion::V2);
     assert!(v1.contains("pg_blocking_pids"));
-    assert!(v1.contains("a.pid <> pg_backend_pid()"));
-    assert!(v1.contains("SELECT DISTINCT ON (pid)"));
+    assert_eq!(v1.matches("pg_blocking_pids").count(), 1);
+    assert!(v1.contains("NOT l.granted"));
+    assert!(v1.contains("l.pid <> pg_catalog.pg_backend_pid()"));
+    assert!(v1.contains("SELECT DISTINCT ON (l.pid)"));
+    assert!(!v1.contains("WITH RECURSIVE"));
+    assert!(!v1.contains("root_pid"));
+    assert!(!v1.contains("depth"));
     assert!(!v1.contains("waitstart_us"));
     assert!(v2.contains("waitstart_us"));
     assert!(v2.contains("kronika:"));
@@ -80,7 +81,6 @@ fn converters_preserve_edges_and_versioned_waitstart() {
     let v1 = to_v1(&raw, intern).expect("infallible intern");
     let v2 = to_v2(&raw, intern).expect("infallible intern");
     assert_eq!(v1.blocked_by, [10, 0]);
-    assert_eq!(v1.root_pid, 10);
     assert_eq!(v1.lock_transactionid, Some(42));
     assert_eq!(v2.blocked_by, [10, 0]);
     assert_eq!(v2.waitstart.map(|ts| ts.0), Some(1_900_000));

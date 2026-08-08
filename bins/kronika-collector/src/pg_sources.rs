@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use anyhow::Context as _;
 use kronika_registry::pg_stat_statements_info::PgStatStatementsInfo;
 use kronika_registry::pg_store_plans_info::PgStorePlansInfo;
 use kronika_source_pg::activity::{self, ActivityRow, ActivityVersion};
@@ -41,8 +42,15 @@ use crate::scheduler::{DueSet, SourceKind};
 
 pub(crate) use buffering::push_pg_batch;
 
-const SERVER_MAJOR_SQL: &str = "/* kronika: */ SELECT current_setting('server_version_num')::int4";
+const SERVER_PROBE_SQL: &str = concat!(
+    "/* kronika:",
+    env!("CARGO_PKG_VERSION"),
+    " bins/kronika-collector/src/pg_sources.rs */ ",
+    "SELECT current_setting('server_version_num'), session_user::text, ",
+    "current_database()::text, pg_catalog.pg_has_role('pg_read_all_stats', 'member')"
+);
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
+const DISCOVERY_INTERVAL: Duration = Duration::from_mins(5);
 
 /// A low-cardinality measurement hook for the canonical collector telemetry.
 #[derive(Debug)]
@@ -220,14 +228,35 @@ struct CachedSettings {
     rows: Arc<[SettingsRow]>,
 }
 
+#[derive(Debug, Clone)]
+struct GenerationProbe {
+    generation: u64,
+    major: u32,
+    user: String,
+    database: String,
+    full_visibility: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DatabaseCapabilities {
+    statements: Option<statements::StatementsCapability>,
+    store_plans: Option<store_plans::StorePlansCapability>,
+    statements_info: Option<extension::ExtensionSchema>,
+    store_plans_info: Option<extension::ExtensionSchema>,
+}
+
 /// The primary connection, persistent per-database connections, and caches
 /// tied to the primary connection generation.
 #[derive(Debug)]
 pub(crate) struct PgSources {
     server: Option<Pool>,
+    server_database: Option<String>,
     databases: BTreeMap<String, Pool>,
+    discovered: Vec<databases::Database>,
+    capabilities: BTreeMap<String, DatabaseCapabilities>,
+    last_discovery: Option<Instant>,
     settings: Option<CachedSettings>,
-    server_major: Option<(u64, u32)>,
+    probe: Option<GenerationProbe>,
 }
 
 impl PgSources {
@@ -252,9 +281,13 @@ impl PgSources {
         match Pool::new(dsn) {
             Ok(server) => Self {
                 server: Some(server),
+                server_database: None,
                 databases: BTreeMap::new(),
+                discovered: Vec::new(),
+                capabilities: BTreeMap::new(),
+                last_discovery: None,
                 settings: None,
-                server_major: None,
+                probe: None,
             },
             Err(_error) => {
                 log_event(
@@ -273,9 +306,13 @@ impl PgSources {
     const fn disabled() -> Self {
         Self {
             server: None,
+            server_database: None,
             databases: BTreeMap::new(),
+            discovered: Vec::new(),
+            capabilities: BTreeMap::new(),
+            last_discovery: None,
             settings: None,
-            server_major: None,
+            probe: None,
         }
     }
 
@@ -298,39 +335,36 @@ impl PgSources {
         if !instance && !relations {
             return Ok(());
         }
-        let Some((major, generation)) = self.read_server_major(observe).await else {
+        let Some(probe) = self.read_probe(observe).await else {
             return Ok(());
         };
-        if self.settings.as_ref().map(|cached| cached.generation) != Some(generation) {
-            self.settings = None;
+        let now = Instant::now();
+        if discovery_due(self.last_discovery, now, due.forced()) {
+            self.discover(&probe, now, observe).await;
+        }
+        if instance {
+            let current = self.settings.as_ref().map(|cached| cached.rows.as_ref());
             let settings_result = match self.server.as_mut() {
-                Some(server) => read_settings(server, generation, observe, &mut admit).await,
+                Some(server) => {
+                    read_settings(server, probe.generation, current, observe, &mut admit).await
+                }
                 None => Ok(None),
             };
             match settings_result {
                 Ok(Some(rows)) => {
-                    self.settings = Some(CachedSettings { generation, rows });
+                    self.settings = Some(CachedSettings {
+                        generation: probe.generation,
+                        rows,
+                    });
                 }
-                Ok(None) => {
-                    self.clear_primary_connection();
-                    return Ok(());
-                }
-                Err(error) => {
-                    self.clear_primary_cache_if_closed();
-                    return Err(error);
-                }
+                Ok(None) => {}
+                Err(error) => return Err(error),
             }
         }
         let cached_settings = self.last_settings();
         if instance {
             match self
-                .collect_instance(
-                    major,
-                    generation,
-                    observe,
-                    cached_settings.as_ref(),
-                    &mut admit,
-                )
+                .collect_instance(&probe, observe, cached_settings.as_ref(), &mut admit)
                 .await
             {
                 Ok(true) => {}
@@ -345,23 +379,17 @@ impl PgSources {
             }
         }
         if relations {
-            self.collect_relations(
-                major,
-                generation,
-                observe,
-                cached_settings.as_ref(),
-                &mut admit,
-            )
-            .await?;
+            self.collect_relations(&probe, observe, cached_settings.as_ref(), &mut admit)
+                .await?;
         }
         Ok(())
     }
 
-    async fn read_server_major(
+    async fn read_probe(
         &mut self,
         observe: &mut (dyn FnMut(PgObservation) + Send),
-    ) -> Option<(u32, u64)> {
-        let cached = self.server_major;
+    ) -> Option<GenerationProbe> {
+        let cached = self.probe.clone();
         let server = self.server.as_mut()?;
         let database = server.database_label().to_owned();
         let session = match open_session(server, observe).await {
@@ -372,25 +400,29 @@ impl PgSources {
             }
         };
         let generation = session.generation();
-        if let Some((cached_generation, major)) = cached
-            && cached_generation == generation
+        if let Some(cached) = cached
+            && cached.generation == generation
         {
-            return Some((major, generation));
+            return Some(cached);
         }
         let result = {
-            let mut measured = measure(observe, "server_major", &database);
+            let mut measured = measure(observe, "server_probe", &database);
             let result = tokio::time::timeout(
                 QUERY_TIMEOUT,
-                query::read_simple_i32(session, SERVER_MAJOR_SQL, measured.stats_mut()),
+                read_generation_probe(session, generation, measured.stats_mut()),
             )
             .await;
             finish_query(measured, result)
         };
         match result {
-            Ok(num) => {
-                let major = u32::try_from(num).unwrap_or(0) / 10_000;
-                self.server_major = Some((generation, major));
-                Some((major, generation))
+            Ok(probe) => {
+                self.settings = None;
+                self.capabilities.clear();
+                self.discovered.clear();
+                self.last_discovery = None;
+                self.server_database = Some(probe.database.clone());
+                self.probe = Some(probe.clone());
+                Some(probe)
             }
             Err(_failure) => {
                 self.clear_primary_connection();
@@ -405,8 +437,7 @@ impl PgSources {
     )]
     async fn collect_instance<E>(
         &mut self,
-        major: u32,
-        generation: u64,
+        probe: &GenerationProbe,
         observe: &mut (dyn FnMut(PgObservation) + Send),
         cached_settings: Option<&Arc<[SettingsRow]>>,
         admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
@@ -414,7 +445,9 @@ impl PgSources {
         let Some(server) = self.server.as_mut() else {
             return Ok(false);
         };
-        let database = server.database_label().to_owned();
+        let database = probe.database.clone();
+        let major = probe.major;
+        let generation = probe.generation;
 
         let archiver = {
             let session = match session_for_generation(server, generation, observe) {
@@ -438,13 +471,43 @@ impl PgSources {
                     measured.success();
                     Some(())
                 }
-                other => {
-                    finish_failed(measured, other);
-                    None
-                }
+                other => match finish_failed(measured, other) {
+                    QueryCompletion::SourceFailed => Some(()),
+                    QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut => None,
+                    QueryCompletion::Complete => unreachable!("success handled above"),
+                },
             }
         };
         if archiver.is_none() {
+            self.clear_primary_connection();
+            return Ok(false);
+        }
+
+        if !collect_bgwriter(
+            server,
+            generation,
+            major,
+            observe,
+            &database,
+            cached_settings,
+            admit,
+        )
+        .await?
+        {
+            self.clear_primary_connection();
+            return Ok(false);
+        }
+        if !collect_checkpointer(
+            server,
+            generation,
+            major,
+            observe,
+            &database,
+            cached_settings,
+            admit,
+        )
+        .await?
+        {
             self.clear_primary_connection();
             return Ok(false);
         }
@@ -472,10 +535,10 @@ impl PgSources {
                         measured.success();
                         true
                     }
-                    other => {
-                        finish_failed(measured, other);
-                        false
-                    }
+                    other => matches!(
+                        finish_failed(measured, other),
+                        QueryCompletion::SourceFailed
+                    ),
                 }
             };
             if !result {
@@ -526,71 +589,333 @@ impl PgSources {
             self.clear_primary_connection();
             return Ok(false);
         }
-        if !collect_activity(
-            server,
-            generation,
-            major,
-            observe,
-            &database,
-            cached_settings,
-            admit,
-        )
-        .await?
-        {
-            self.clear_primary_connection();
-            return Ok(false);
+        if probe.full_visibility {
+            if !collect_activity(
+                server,
+                generation,
+                major,
+                observe,
+                &database,
+                cached_settings,
+                admit,
+            )
+            .await?
+                || !collect_locks(
+                    server,
+                    generation,
+                    major,
+                    observe,
+                    &database,
+                    cached_settings,
+                    admit,
+                )
+                .await?
+                || !collect_progress(
+                    server,
+                    generation,
+                    major,
+                    observe,
+                    &database,
+                    cached_settings,
+                    admit,
+                )
+                .await?
+            {
+                self.clear_primary_connection();
+                return Ok(false);
+            }
+        } else {
+            log_event(
+                LogLevel::Warn,
+                "pg_stats_visibility_required",
+                &[
+                    field("database", &database),
+                    field("reason", "pg_read_all_stats_required"),
+                ],
+            );
         }
-        if !collect_progress(
-            server,
-            generation,
-            major,
-            observe,
-            &database,
-            cached_settings,
-            admit,
-        )
-        .await?
-        {
-            self.clear_primary_connection();
-            return Ok(false);
-        }
-        if !collect_extensions(
-            server,
-            generation,
-            observe,
-            &database,
-            cached_settings,
-            admit,
-        )
-        .await?
-        {
-            self.clear_primary_connection();
-            return Ok(false);
-        }
+        let _ = server;
+        self.collect_extensions_dynamic(probe, observe, cached_settings, admit)
+            .await?;
         Ok(true)
+    }
+
+    async fn collect_extensions_dynamic<E>(
+        &mut self,
+        probe: &GenerationProbe,
+        observe: &mut (dyn FnMut(PgObservation) + Send),
+        settings: Option<&Arc<[SettingsRow]>>,
+        admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
+    ) -> Result<(), E> {
+        if let Some((database, capability)) =
+            selected_statements(&self.capabilities, self.server_database.as_deref())
+        {
+            let info = self
+                .capabilities
+                .get(&database)
+                .and_then(|entry| entry.statements_info.clone());
+            let is_current = self.server_database.as_deref() == Some(&database);
+            let completion = {
+                let Some(pool) = self.database_pool_mut(&database) else {
+                    self.invalidate_statements(&database);
+                    return Ok(());
+                };
+                let session = if is_current {
+                    session_for_generation(pool, probe.generation, observe)
+                } else {
+                    open_session(pool, observe).await
+                };
+                let session = match session {
+                    Ok(session) => session,
+                    Err(QueryFailure::Timeout | QueryFailure::Connection) => {
+                        pool.close();
+                        self.invalidate_statements(&database);
+                        return Ok(());
+                    }
+                    Err(QueryFailure::Source) => return Ok(()),
+                };
+                let version = capability.version;
+                let mut measured = measure(observe, "pg_stat_statements", &database);
+                let result = statements::collect_statements(
+                    session,
+                    &capability,
+                    measured.stats_mut(),
+                    |batch| admit(PgBatch::Statements(version, batch.rows), settings.cloned()),
+                )
+                .await;
+                finish_batched_kind(pool, measured, result)?
+            };
+            match completion {
+                QueryCompletion::Complete | QueryCompletion::SourceFailed => {}
+                QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut => {
+                    self.invalidate_statements(&database);
+                    return Ok(());
+                }
+            }
+            if let Some(schema) = info {
+                let is_current = self.server_database.as_deref() == Some(&database);
+                let completion = {
+                    let Some(pool) = self.database_pool_mut(&database) else {
+                        self.invalidate_statements(&database);
+                        return Ok(());
+                    };
+                    let session = if is_current {
+                        session_for_generation(pool, probe.generation, observe)
+                    } else {
+                        open_session(pool, observe).await
+                    };
+                    let session = match session {
+                        Ok(session) => session,
+                        Err(QueryFailure::Timeout | QueryFailure::Connection) => {
+                            pool.close();
+                            self.invalidate_statements(&database);
+                            return Ok(());
+                        }
+                        Err(QueryFailure::Source) => return Ok(()),
+                    };
+                    let mut measured = measure(observe, "pg_stat_statements_info", &database);
+                    let result = tokio::time::timeout(
+                        QUERY_TIMEOUT,
+                        statements_info::collect(
+                            session,
+                            &schema.qualify("pg_stat_statements_info"),
+                            measured.stats_mut(),
+                        ),
+                    )
+                    .await;
+                    match result {
+                        Ok(Ok(row)) => {
+                            measured = deliver(
+                                measured,
+                                admit,
+                                PgBatch::StatementsInfo(row),
+                                settings.cloned(),
+                            )?;
+                            measured.success();
+                            QueryCompletion::Complete
+                        }
+                        other => finish_failed(measured, other),
+                    }
+                };
+                if matches!(
+                    completion,
+                    QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut
+                ) {
+                    self.invalidate_statements(&database);
+                }
+            }
+        }
+
+        if let Some((database, capability)) =
+            selected_store_plans(&self.capabilities, self.server_database.as_deref())
+        {
+            let info = self
+                .capabilities
+                .get(&database)
+                .and_then(|entry| entry.store_plans_info.clone());
+            let is_current = self.server_database.as_deref() == Some(&database);
+            let completion = {
+                let Some(pool) = self.database_pool_mut(&database) else {
+                    self.invalidate_store_plans(&database);
+                    return Ok(());
+                };
+                let session = if is_current {
+                    session_for_generation(pool, probe.generation, observe)
+                } else {
+                    open_session(pool, observe).await
+                };
+                let session = match session {
+                    Ok(session) => session,
+                    Err(QueryFailure::Timeout | QueryFailure::Connection) => {
+                        pool.close();
+                        self.invalidate_store_plans(&database);
+                        return Ok(());
+                    }
+                    Err(QueryFailure::Source) => return Ok(()),
+                };
+                let mut measured = measure(observe, "pg_store_plans", &database);
+                let result = match capability.flavour {
+                    Flavour::OsscCompatible => {
+                        store_plans::collect_ossc(
+                            session,
+                            &capability,
+                            measured.stats_mut(),
+                            |batch| admit(PgBatch::StorePlansOssc(batch.rows), settings.cloned()),
+                        )
+                        .await
+                    }
+                    Flavour::Vadv => {
+                        store_plans::collect_vadv(
+                            session,
+                            &capability,
+                            measured.stats_mut(),
+                            |batch| admit(PgBatch::StorePlansVadv(batch.rows), settings.cloned()),
+                        )
+                        .await
+                    }
+                };
+                finish_batched_kind(pool, measured, result)?
+            };
+            match completion {
+                QueryCompletion::Complete | QueryCompletion::SourceFailed => {}
+                QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut => {
+                    self.invalidate_store_plans(&database);
+                    return Ok(());
+                }
+            }
+            if let Some(schema) = info {
+                let is_current = self.server_database.as_deref() == Some(&database);
+                let completion = {
+                    let Some(pool) = self.database_pool_mut(&database) else {
+                        self.invalidate_store_plans(&database);
+                        return Ok(());
+                    };
+                    let session = if is_current {
+                        session_for_generation(pool, probe.generation, observe)
+                    } else {
+                        open_session(pool, observe).await
+                    };
+                    let session = match session {
+                        Ok(session) => session,
+                        Err(QueryFailure::Timeout | QueryFailure::Connection) => {
+                            pool.close();
+                            self.invalidate_store_plans(&database);
+                            return Ok(());
+                        }
+                        Err(QueryFailure::Source) => return Ok(()),
+                    };
+                    let mut measured = measure(observe, "pg_store_plans_info", &database);
+                    let result = tokio::time::timeout(
+                        QUERY_TIMEOUT,
+                        store_plans_info::collect(
+                            session,
+                            &schema.qualify("pg_store_plans_info"),
+                            measured.stats_mut(),
+                        ),
+                    )
+                    .await;
+                    match result {
+                        Ok(Ok(row)) => {
+                            measured = deliver(
+                                measured,
+                                admit,
+                                PgBatch::StorePlansInfo(row),
+                                settings.cloned(),
+                            )?;
+                            measured.success();
+                            QueryCompletion::Complete
+                        }
+                        other => finish_failed(measured, other),
+                    }
+                };
+                if matches!(
+                    completion,
+                    QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut
+                ) {
+                    self.invalidate_store_plans(&database);
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn collect_relations<E>(
         &mut self,
-        major: u32,
-        generation: u64,
+        probe: &GenerationProbe,
         observe: &mut (dyn FnMut(PgObservation) + Send),
         cached_settings: Option<&Arc<[SettingsRow]>>,
         admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
     ) -> Result<(), E> {
+        let found = self.discovered.clone();
+        for database in &found {
+            let Some(pool) = self.database_pool_mut(&database.name) else {
+                continue;
+            };
+            let result = collect_relation_database(
+                pool,
+                database,
+                probe.major,
+                observe,
+                cached_settings,
+                admit,
+            )
+            .await;
+            match result {
+                Err(error) => {
+                    return Err(error);
+                }
+                Ok(RelationResult::Complete) => {}
+                Ok(RelationResult::SourceFailed) => {}
+                Ok(RelationResult::ConnectionFailed) => pool.close(),
+                Ok(RelationResult::TimedOut) => {
+                    pool.close();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Refresh the connectable database list and one capability map entry per
+    /// database. A failed inventory never leaves a stale capability behind.
+    async fn discover(
+        &mut self,
+        probe: &GenerationProbe,
+        now: Instant,
+        observe: &mut (dyn FnMut(PgObservation) + Send),
+    ) {
+        self.last_discovery = Some(now);
         let found = {
             let Some(server) = self.server.as_mut() else {
-                return Ok(());
+                return;
             };
-            let database = server.database_label().to_owned();
-            let session = match session_for_generation(server, generation, observe) {
+            let session = match session_for_generation(server, probe.generation, observe) {
                 Ok(session) => session,
                 Err(_failure) => {
                     self.clear_primary_connection();
-                    return Ok(());
+                    return;
                 }
             };
-            let mut measured = measure(observe, "databases", &database);
+            let mut measured = measure(observe, "databases", &probe.database);
             let result = tokio::time::timeout(
                 QUERY_TIMEOUT,
                 databases::enumerate(session, measured.stats_mut()),
@@ -598,37 +923,85 @@ impl PgSources {
             .await;
             match finish_query(measured, result) {
                 Ok(found) => found,
-                Err(_failure) => {
+                Err(QueryFailure::Timeout) => {
                     self.clear_primary_connection();
-                    return Ok(());
+                    return;
+                }
+                Err(QueryFailure::Source | QueryFailure::Connection) => {
+                    self.discovered.clear();
+                    self.capabilities.clear();
+                    self.databases.clear();
+                    return;
                 }
             }
         };
-        let Some(server) = self.server.as_ref() else {
-            return Ok(());
-        };
-        databases::refresh(&mut self.databases, &found, server);
+        self.server_database = found
+            .iter()
+            .find(|database| database.is_current)
+            .map(|database| database.name.clone());
+        if let Some(server) = self.server.as_ref() {
+            databases::refresh(&mut self.databases, &found, server);
+        }
 
+        let mut capabilities = BTreeMap::new();
         for database in &found {
-            let Some(pool) = self.databases.get_mut(&database.name) else {
+            let Some(pool) = self.database_pool_mut(&database.name) else {
                 continue;
             };
-            let result =
-                collect_relation_database(pool, database, major, observe, cached_settings, admit)
-                    .await;
-            match result {
-                Err(error) => {
-                    return Err(error);
-                }
-                Ok(RelationResult::Complete) => {}
-                Ok(RelationResult::Failed) => pool.close(),
-                Ok(RelationResult::TimedOut) => {
+            let session = if database.is_current {
+                session_for_generation(pool, probe.generation, observe)
+            } else {
+                open_session(pool, observe).await
+            };
+            let session = match session {
+                Ok(session) => session,
+                Err(QueryFailure::Timeout) => {
                     pool.close();
-                    break;
+                    continue;
                 }
+                Err(QueryFailure::Source | QueryFailure::Connection) => continue,
+            };
+            let mut measured = measure(observe, "extension_inventory", &database.name);
+            let result = tokio::time::timeout(
+                QUERY_TIMEOUT,
+                extension::inventory(session, measured.stats_mut()),
+            )
+            .await;
+            match finish_query(measured, result) {
+                Ok(inventory) => {
+                    capabilities.insert(
+                        database.name.clone(),
+                        capabilities_from_inventory(&inventory),
+                    );
+                }
+                Err(QueryFailure::Timeout) => pool.close(),
+                Err(QueryFailure::Source | QueryFailure::Connection) => {}
             }
         }
-        Ok(())
+        self.discovered = found;
+        self.capabilities = capabilities;
+    }
+
+    fn database_pool_mut(&mut self, database: &str) -> Option<&mut Pool> {
+        if self.server_database.as_deref() == Some(database) {
+            self.server.as_mut()
+        } else {
+            self.databases.get_mut(database)
+        }
+    }
+
+    fn invalidate_statements(&mut self, database: &str) {
+        if let Some(capability) = self.capabilities.get_mut(database) {
+            capability.statements = None;
+            capability.statements_info = None;
+        }
+    }
+
+    fn invalidate_store_plans(&mut self, database: &str) {
+        if let Some(capability) = self.capabilities.get_mut(database) {
+            capability.store_plans = None;
+            capability.store_plans_info = None;
+        }
     }
 
     fn clear_primary_connection(&mut self) {
@@ -636,15 +1009,121 @@ impl PgSources {
             server.close();
         }
         self.settings = None;
-        self.server_major = None;
+        self.probe = None;
+        self.server_database = None;
+        self.capabilities.clear();
+        self.discovered.clear();
+        self.last_discovery = None;
     }
 
     fn clear_primary_cache_if_closed(&mut self) {
         if self.server.as_ref().and_then(Pool::generation).is_none() {
             self.settings = None;
-            self.server_major = None;
+            self.probe = None;
         }
     }
+}
+
+async fn read_generation_probe(
+    session: Session<'_>,
+    generation: u64,
+    stats: &mut query::QueryStats,
+) -> anyhow::Result<GenerationProbe> {
+    let mut rows = query::read_simple_rows(session, SERVER_PROBE_SQL, stats, |row| {
+        let version = row
+            .get(0)
+            .context("server probe omitted server_version_num")?;
+        let user = row.get(1).context("server probe omitted session_user")?;
+        let database = row
+            .get(2)
+            .context("server probe omitted current_database")?;
+        let visibility = row
+            .get(3)
+            .context("server probe omitted pg_read_all_stats membership")?;
+        let version = version
+            .parse::<u32>()
+            .context("parse server_version_num from server probe")?;
+        let full_visibility = match visibility {
+            "t" => true,
+            "f" => false,
+            other => anyhow::bail!("server probe returned {other:?} for visibility"),
+        };
+        Ok(GenerationProbe {
+            generation,
+            major: version / 10_000,
+            user: user.to_owned(),
+            database: database.to_owned(),
+            full_visibility,
+        })
+    })
+    .await?;
+    anyhow::ensure!(rows.len() == 1, "server probe returned {} rows", rows.len());
+    Ok(rows.remove(0))
+}
+
+fn discovery_due(last: Option<Instant>, now: Instant, forced: bool) -> bool {
+    forced || last.is_none_or(|last| now.saturating_duration_since(last) >= DISCOVERY_INTERVAL)
+}
+
+fn capabilities_from_inventory(inventory: &[extension::InventoryEntry]) -> DatabaseCapabilities {
+    let statements_entry = inventory
+        .iter()
+        .find(|entry| entry.name == statements::EXTENSION);
+    let store_plans_entry = inventory
+        .iter()
+        .find(|entry| entry.name == store_plans::EXTENSION);
+    DatabaseCapabilities {
+        statements: statements_entry.and_then(statements::capability),
+        store_plans: store_plans_entry.and_then(store_plans::capability),
+        statements_info: statements_entry
+            .filter(|entry| entry.schema_usable && entry.statements_info)
+            .map(|entry| entry.schema.clone()),
+        store_plans_info: store_plans_entry
+            .filter(|entry| entry.schema_usable && entry.store_plans_info)
+            .map(|entry| entry.schema.clone()),
+    }
+}
+
+fn selected_capability<T: Clone>(
+    capabilities: &BTreeMap<String, DatabaseCapabilities>,
+    current_database: Option<&str>,
+    get: impl Fn(&DatabaseCapabilities) -> Option<&T>,
+) -> Option<(String, T)> {
+    if let Some(current) = current_database
+        && let Some(capability) = capabilities.get(current).and_then(&get)
+    {
+        return Some((current.to_owned(), capability.clone()));
+    }
+    capabilities.iter().find_map(|(database, capabilities)| {
+        get(capabilities).map(|capability| (database.clone(), capability.clone()))
+    })
+}
+
+fn selected_statements(
+    capabilities: &BTreeMap<String, DatabaseCapabilities>,
+    current_database: Option<&str>,
+) -> Option<(String, statements::StatementsCapability)> {
+    selected_capability(capabilities, current_database, |entry| {
+        entry.statements.as_ref()
+    })
+}
+
+fn selected_store_plans(
+    capabilities: &BTreeMap<String, DatabaseCapabilities>,
+    current_database: Option<&str>,
+) -> Option<(String, store_plans::StorePlansCapability)> {
+    selected_capability(capabilities, current_database, |entry| {
+        entry.store_plans.as_ref()
+    })
+}
+
+fn settings_equal_ignoring_ts(left: &[SettingsRow], right: &[SettingsRow]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| {
+            let mut normalized = left.clone();
+            normalized.ts = right.ts;
+            &normalized == right
+        })
 }
 
 fn cached_settings_for_generation(
@@ -659,6 +1138,7 @@ fn cached_settings_for_generation(
 async fn read_settings<E>(
     server: &mut Pool,
     generation: u64,
+    cached: Option<&[SettingsRow]>,
     observe: &mut (dyn FnMut(PgObservation) + Send),
     admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
 ) -> Result<Option<Arc<[SettingsRow]>>, E> {
@@ -676,15 +1156,120 @@ async fn read_settings<E>(
     match result {
         Ok(Ok(rows)) => {
             let rows: Arc<[SettingsRow]> = Arc::from(rows);
-            measured = deliver(measured, admit, PgBatch::Settings(Arc::clone(&rows)), None)?;
+            if cached.is_none_or(|cached| !settings_equal_ignoring_ts(cached, &rows)) {
+                measured = deliver(measured, admit, PgBatch::Settings(Arc::clone(&rows)), None)?;
+            }
             measured.success();
             Ok(Some(rows))
         }
         other => {
-            finish_failed(measured, other);
+            if matches!(
+                finish_failed(measured, other),
+                QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut
+            ) {
+                server.close();
+            }
             Ok(None)
         }
     }
+}
+
+async fn collect_bgwriter<E>(
+    pool: &mut Pool,
+    generation: u64,
+    major: u32,
+    observe: &mut (dyn FnMut(PgObservation) + Send),
+    database: &str,
+    settings: Option<&Arc<[SettingsRow]>>,
+    admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
+) -> Result<bool, E> {
+    let session = match session_for_generation(pool, generation, observe) {
+        Ok(session) => session,
+        Err(_failure) => return Ok(false),
+    };
+    let mut measured = measure(observe, "pg_stat_bgwriter", database);
+    let result = tokio::time::timeout(
+        QUERY_TIMEOUT,
+        bgwriter::collect_bgwriter(session, major, measured.stats_mut()),
+    )
+    .await;
+    match result {
+        Ok(Ok(row)) => {
+            measured = deliver(measured, admit, PgBatch::Bgwriter(row), settings.cloned())?;
+            measured.success();
+            Ok(true)
+        }
+        other => Ok(matches!(
+            finish_failed(measured, other),
+            QueryCompletion::SourceFailed
+        )),
+    }
+}
+
+async fn collect_checkpointer<E>(
+    pool: &mut Pool,
+    generation: u64,
+    major: u32,
+    observe: &mut (dyn FnMut(PgObservation) + Send),
+    database: &str,
+    settings: Option<&Arc<[SettingsRow]>>,
+    admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
+) -> Result<bool, E> {
+    let Some(_version) = checkpointer::checkpointer_version(major) else {
+        return Ok(true);
+    };
+    let session = match session_for_generation(pool, generation, observe) {
+        Ok(session) => session,
+        Err(_failure) => return Ok(false),
+    };
+    let mut measured = measure(observe, "pg_stat_checkpointer", database);
+    let result = tokio::time::timeout(
+        QUERY_TIMEOUT,
+        checkpointer::collect_checkpointer(session, major, measured.stats_mut()),
+    )
+    .await;
+    match result {
+        Ok(Ok(Some(row))) => {
+            measured = deliver(
+                measured,
+                admit,
+                PgBatch::Checkpointer(row),
+                settings.cloned(),
+            )?;
+            measured.success();
+            Ok(true)
+        }
+        Ok(Ok(None)) => {
+            measured.success();
+            Ok(true)
+        }
+        other => Ok(matches!(
+            finish_failed(measured, other),
+            QueryCompletion::SourceFailed
+        )),
+    }
+}
+
+async fn collect_locks<E>(
+    pool: &mut Pool,
+    generation: u64,
+    major: u32,
+    observe: &mut (dyn FnMut(PgObservation) + Send),
+    database: &str,
+    settings: Option<&Arc<[SettingsRow]>>,
+    admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
+) -> Result<bool, E> {
+    let session = match session_for_generation(pool, generation, observe) {
+        Ok(session) => session,
+        Err(_failure) => return Ok(false),
+    };
+    let version = locks::locks_version(major);
+    let mut measured = measure(observe, "pg_locks", database);
+    let result = locks::collect_locks(session, major, measured.stats_mut(), |batch| {
+        admit(PgBatch::Locks(version, batch.rows), settings.cloned())
+    })
+    .await;
+    finish_batched(pool, measured, result)
 }
 
 async fn collect_prepared<E>(
@@ -797,103 +1382,11 @@ async fn collect_progress<E>(
     finish_batched(pool, measured, result)
 }
 
-async fn collect_extensions<E>(
-    pool: &mut Pool,
-    generation: u64,
-    observe: &mut (dyn FnMut(PgObservation) + Send),
-    database: &str,
-    settings: Option<&Arc<[SettingsRow]>>,
-    admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
-) -> Result<bool, E> {
-    let statements_version = {
-        let session = match session_for_generation(pool, generation, observe) {
-            Ok(session) => session,
-            Err(_failure) => return Ok(false),
-        };
-        let mut measured = measure(observe, "pg_stat_statements_extension", database);
-        let result = tokio::time::timeout(
-            QUERY_TIMEOUT,
-            extension::installed(session, statements::EXTENSION, measured.stats_mut()),
-        )
-        .await;
-        match finish_query(measured, result) {
-            Ok(version) => version.and_then(statements::statements_version),
-            Err(_failure) => return Ok(false),
-        }
-    };
-    if let Some(version) = statements_version {
-        let session = match session_for_generation(pool, generation, observe) {
-            Ok(session) => session,
-            Err(_failure) => return Ok(false),
-        };
-        let mut measured = measure(observe, "pg_stat_statements", database);
-        let result =
-            statements::collect_statements(session, version, measured.stats_mut(), |batch| {
-                admit(PgBatch::Statements(version, batch.rows), settings.cloned())
-            })
-            .await;
-        if !finish_batched(pool, measured, result)? {
-            return Ok(false);
-        }
-    }
-
-    let plans_flavour = {
-        let session = match session_for_generation(pool, generation, observe) {
-            Ok(session) => session,
-            Err(_failure) => return Ok(false),
-        };
-        let mut measured = measure(observe, "pg_store_plans_extension", database);
-        let result = tokio::time::timeout(
-            QUERY_TIMEOUT,
-            extension::installed(session, store_plans::EXTENSION, measured.stats_mut()),
-        )
-        .await;
-        match finish_query(measured, result) {
-            Ok(version) => version.and_then(store_plans::flavour),
-            Err(_failure) => return Ok(false),
-        }
-    };
-    match plans_flavour {
-        Some(Flavour::Ossc) => {
-            let session = match session_for_generation(pool, generation, observe) {
-                Ok(session) => session,
-                Err(_failure) => return Ok(false),
-            };
-            let mut measured = measure(observe, "pg_store_plans_ossc", database);
-            let result = store_plans::collect_ossc(
-                session,
-                store_plans::TOP_N,
-                store_plans::PLAN_TEXT_BUDGET,
-                measured.stats_mut(),
-                |batch| admit(PgBatch::StorePlansOssc(batch.rows), settings.cloned()),
-            )
-            .await;
-            finish_batched(pool, measured, result)
-        }
-        Some(Flavour::Vadv) => {
-            let session = match session_for_generation(pool, generation, observe) {
-                Ok(session) => session,
-                Err(_failure) => return Ok(false),
-            };
-            let mut measured = measure(observe, "pg_store_plans_vadv", database);
-            let result = store_plans::collect_vadv(
-                session,
-                store_plans::TOP_N,
-                store_plans::PLAN_TEXT_BUDGET,
-                measured.stats_mut(),
-                |batch| admit(PgBatch::StorePlansVadv(batch.rows), settings.cloned()),
-            )
-            .await;
-            finish_batched(pool, measured, result)
-        }
-        None => Ok(true),
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RelationResult {
     Complete,
-    Failed,
+    SourceFailed,
+    ConnectionFailed,
     TimedOut,
 }
 
@@ -908,7 +1401,8 @@ async fn collect_relation_database<E>(
     let session = match open_session(pool, observe).await {
         Ok(session) => session,
         Err(QueryFailure::Timeout) => return Ok(RelationResult::TimedOut),
-        Err(QueryFailure::Error) => return Ok(RelationResult::Failed),
+        Err(QueryFailure::Source) => return Ok(RelationResult::SourceFailed),
+        Err(QueryFailure::Connection) => return Ok(RelationResult::ConnectionFailed),
     };
     let generation = session.generation();
     let table_version = user_tables::user_tables_version(major);
@@ -923,14 +1417,16 @@ async fn collect_relation_database<E>(
         .await;
     match finish_batched_kind(pool, measured, result)? {
         QueryCompletion::Complete => {}
-        QueryCompletion::Failed => return Ok(RelationResult::Failed),
+        QueryCompletion::SourceFailed => return Ok(RelationResult::SourceFailed),
+        QueryCompletion::ConnectionFailed => return Ok(RelationResult::ConnectionFailed),
         QueryCompletion::TimedOut => return Ok(RelationResult::TimedOut),
     }
 
     let session = match session_for_generation(pool, generation, observe) {
         Ok(session) => session,
         Err(QueryFailure::Timeout) => return Ok(RelationResult::TimedOut),
-        Err(QueryFailure::Error) => return Ok(RelationResult::Failed),
+        Err(QueryFailure::Source) => return Ok(RelationResult::SourceFailed),
+        Err(QueryFailure::Connection) => return Ok(RelationResult::ConnectionFailed),
     };
     let index_version = user_indexes::user_indexes_version(major);
     let mut measured = measure(observe, "pg_stat_user_indexes", &database.name);
@@ -949,7 +1445,8 @@ async fn collect_relation_database<E>(
     .await;
     Ok(match finish_batched_kind(pool, measured, result)? {
         QueryCompletion::Complete => RelationResult::Complete,
-        QueryCompletion::Failed => RelationResult::Failed,
+        QueryCompletion::SourceFailed => RelationResult::SourceFailed,
+        QueryCompletion::ConnectionFailed => RelationResult::ConnectionFailed,
         QueryCompletion::TimedOut => RelationResult::TimedOut,
     })
 }
@@ -978,14 +1475,16 @@ fn deliver<'a, E>(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QueryFailure {
-    Error,
+    Source,
+    Connection,
     Timeout,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QueryCompletion {
     Complete,
-    Failed,
+    SourceFailed,
+    ConnectionFailed,
     TimedOut,
 }
 
@@ -1008,7 +1507,7 @@ async fn open_session<'a>(
             if timeout {
                 Err(QueryFailure::Timeout)
             } else {
-                Err(QueryFailure::Error)
+                Err(QueryFailure::Connection)
             }
         }
     }
@@ -1027,23 +1526,27 @@ fn session_for_generation<'a>(
             timeout: false,
             closed: true,
         }));
-        return Err(QueryFailure::Error);
+        return Err(QueryFailure::Connection);
     };
     Ok(session)
 }
 
-fn finish_query<T, E>(
+fn finish_query<T>(
     measured: QueryMeasurement<'_>,
-    result: Result<Result<T, E>, tokio::time::error::Elapsed>,
+    result: Result<anyhow::Result<T>, tokio::time::error::Elapsed>,
 ) -> Result<T, QueryFailure> {
     match result {
         Ok(Ok(value)) => {
             measured.success();
             Ok(value)
         }
-        Ok(Err(_error)) => {
+        Ok(Err(error)) => {
             measured.error();
-            Err(QueryFailure::Error)
+            if postgres_connection_error(&error) {
+                Err(QueryFailure::Connection)
+            } else {
+                Err(QueryFailure::Source)
+            }
         }
         Err(_elapsed) => {
             measured.timeout();
@@ -1052,14 +1555,27 @@ fn finish_query<T, E>(
     }
 }
 
-fn finish_failed<T, E>(
+fn finish_failed<T>(
     measured: QueryMeasurement<'_>,
-    result: Result<Result<T, E>, tokio::time::error::Elapsed>,
-) {
+    result: Result<anyhow::Result<T>, tokio::time::error::Elapsed>,
+) -> QueryCompletion {
     match result {
-        Ok(Ok(_value)) => measured.success(),
-        Ok(Err(_error)) => measured.error(),
-        Err(_elapsed) => measured.timeout(),
+        Ok(Ok(_value)) => {
+            measured.success();
+            QueryCompletion::Complete
+        }
+        Ok(Err(error)) => {
+            measured.error();
+            if postgres_connection_error(&error) {
+                QueryCompletion::ConnectionFailed
+            } else {
+                QueryCompletion::SourceFailed
+            }
+        }
+        Err(_elapsed) => {
+            measured.timeout();
+            QueryCompletion::TimedOut
+        }
     }
 }
 
@@ -1070,7 +1586,7 @@ fn finish_batched<E>(
 ) -> Result<bool, E> {
     Ok(matches!(
         finish_batched_kind(pool, measured, result)?,
-        QueryCompletion::Complete
+        QueryCompletion::Complete | QueryCompletion::SourceFailed
     ))
 }
 
@@ -1084,10 +1600,18 @@ fn finish_batched_kind<E>(
             measured.success();
             Ok(QueryCompletion::Complete)
         }
-        Err(BatchError::PostgreSql(_error)) => {
+        Err(BatchError::PostgreSql(error)) => {
             measured.error();
-            pool.close();
-            Ok(QueryCompletion::Failed)
+            if error.is_closed() {
+                pool.close();
+                Ok(QueryCompletion::ConnectionFailed)
+            } else {
+                Ok(QueryCompletion::SourceFailed)
+            }
+        }
+        Err(BatchError::Decode(_error)) => {
+            measured.error();
+            Ok(QueryCompletion::SourceFailed)
         }
         Err(BatchError::Sink(error)) => {
             measured.sink_error();
@@ -1102,6 +1626,14 @@ fn finish_batched_kind<E>(
             Ok(QueryCompletion::TimedOut)
         }
     }
+}
+
+fn postgres_connection_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<tokio_postgres::Error>()
+            .is_some_and(tokio_postgres::Error::is_closed)
+    })
 }
 
 #[cfg(test)]
@@ -1148,7 +1680,7 @@ mod tests {
             let mut observe = |observation| observations.push(observation);
             assert!(matches!(
                 session_for_generation(&mut pool, 1, &mut observe),
-                Err(QueryFailure::Error)
+                Err(QueryFailure::Connection)
             ));
         }
 

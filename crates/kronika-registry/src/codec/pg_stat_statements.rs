@@ -18,11 +18,9 @@
 //!   `jit_deform_time`, and the `stats_since`/`minmax_stats_since` timestamps;
 //! - 1.12 (PG18) added `wal_buffers_full` and the parallel-worker counters.
 //!
-//! `queryid` and `query` are nullable. `queryid` is `NULL` when `PostgreSQL`
-//! masks another role's identity. The numeric production collector calls
-//! `pg_stat_statements(false)` and always writes `query` as `NULL`; the
-//! nullable field remains part of the section schema. Timing columns are
-//! `f64`, so the layouts derive `PartialEq` but not `Eq`.
+//! `queryid` and `query` are nullable in the format. The collector omits rows
+//! whose `queryid` is privilege-masked and bounds query text in SQL. Timing
+//! columns are `f64`, so the layouts derive `PartialEq` but not `Eq`.
 
 use crate::{Section, StrId, Ts};
 
@@ -37,8 +35,8 @@ use crate::{Section, StrId, Ts};
 #[section(
     id = 1_002_006,
     name = "pg_stat_statements",
-    semantics = snapshot_full,
-    sort_key("dbid", "userid", "ts"),
+    semantics = conditional_full,
+    sort_key("dbid", "userid", "queryid", "toplevel", "ts"),
     identity("queryid", "userid", "dbid", "toplevel")
 )]
 pub struct PgStatStatementsV6 {
@@ -217,8 +215,8 @@ pub struct PgStatStatementsV6 {
 #[section(
     id = 1_002_005,
     name = "pg_stat_statements",
-    semantics = snapshot_full,
-    sort_key("dbid", "userid", "ts"),
+    semantics = conditional_full,
+    sort_key("dbid", "userid", "queryid", "toplevel", "ts"),
     identity("queryid", "userid", "dbid", "toplevel")
 )]
 pub struct PgStatStatementsV5 {
@@ -390,8 +388,8 @@ pub struct PgStatStatementsV5 {
 #[section(
     id = 1_002_004,
     name = "pg_stat_statements",
-    semantics = snapshot_full,
-    sort_key("dbid", "userid", "ts"),
+    semantics = conditional_full,
+    sort_key("dbid", "userid", "queryid", "toplevel", "ts"),
     identity("queryid", "userid", "dbid", "toplevel")
 )]
 pub struct PgStatStatementsV4 {
@@ -543,8 +541,8 @@ pub struct PgStatStatementsV4 {
 #[section(
     id = 1_002_003,
     name = "pg_stat_statements",
-    semantics = snapshot_full,
-    sort_key("dbid", "userid", "ts"),
+    semantics = conditional_full,
+    sort_key("dbid", "userid", "queryid", "toplevel", "ts"),
     identity("queryid", "userid", "dbid", "toplevel")
 )]
 pub struct PgStatStatementsV3 {
@@ -666,8 +664,8 @@ pub struct PgStatStatementsV3 {
 #[section(
     id = 1_002_002,
     name = "pg_stat_statements",
-    semantics = snapshot_full,
-    sort_key("dbid", "userid", "ts"),
+    semantics = conditional_full,
+    sort_key("dbid", "userid", "queryid", "ts"),
     identity("queryid", "userid", "dbid")
 )]
 pub struct PgStatStatementsV2 {
@@ -788,8 +786,8 @@ pub struct PgStatStatementsV2 {
 #[section(
     id = 1_002_001,
     name = "pg_stat_statements",
-    semantics = snapshot_full,
-    sort_key("dbid", "userid", "ts"),
+    semantics = conditional_full,
+    sort_key("dbid", "userid", "queryid", "ts"),
     identity("queryid", "userid", "dbid")
 )]
 pub struct PgStatStatementsV1 {

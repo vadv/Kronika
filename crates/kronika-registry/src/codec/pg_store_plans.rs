@@ -21,7 +21,7 @@ use crate::{Section, StrId, Ts};
 
 /// Type `1_004_001`: `pg_store_plans` (vadv fork, extension 2.x).
 ///
-/// One row per plan entry of `pg_store_plans(false)`, top-N by `total_time`;
+/// One row per visible plan entry of `pg_store_plans(false)`;
 /// the row identity is `(userid, dbid, queryid, planid)`, matching the
 /// extension's `EntryKey` and SQL function output.
 /// The `*_blk_*_time` columns are `0` when `track_io_timing` is off — an
@@ -31,7 +31,7 @@ use crate::{Section, StrId, Ts};
 #[section(
     id = 1_004_001,
     name = "pg_store_plans_vadv",
-    semantics = snapshot_full,
+    semantics = conditional_full,
     sort_key("dbid", "userid", "queryid", "planid"),
     identity("userid", "dbid", "queryid", "planid")
 )]
@@ -65,8 +65,7 @@ pub struct PgStorePlansVadvV1 {
     /// `pg_roles` row.
     #[column(l)]
     pub usename: Option<StrId>,
-    /// Plan text fetched via `pg_store_plans_get_plan`; `None` when the
-    /// per-cycle plan-text budget was exhausted before this row.
+    /// Plan text fetched via `pg_store_plans_get_plan`; `None` when unavailable.
     #[column(l)]
     pub plan: Option<StrId>,
     /// Executions accumulated for this plan entry.
@@ -284,7 +283,7 @@ mod tests {
 #[section(
     id = 1_003_001,
     name = "pg_store_plans_ossc",
-    semantics = snapshot_full,
+    semantics = conditional_full,
     sort_key("dbid", "userid", "queryid", "planid")
 )]
 pub struct PgStorePlansOsscV1 {

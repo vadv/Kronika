@@ -1,5 +1,5 @@
 use super::{
-    CACHED_POSTGRES_FACTS_QUERY, ConnectionTarget, INITIAL_POSTGRES_FACTS_QUERY, InvalidConnection,
+    ConnectionTarget, InvalidConnection, POSTGRES_LOG_FACTS_QUERY, POSTGRES_SYSTEM_IDENTIFIER_QUERY,
 };
 
 fn target(raw: &str) -> ConnectionTarget {
@@ -139,23 +139,15 @@ fn malformed_and_structurally_invalid_inputs_return_opaque_errors() {
 }
 
 #[test]
-fn successful_system_identifier_is_reused_for_later_rescans() {
+fn log_facts_and_identity_are_separate_marked_queries() {
     let parsed = target("host=db.example user=monitor");
 
     assert_eq!(parsed.source_index(), 7);
-    assert_eq!(parsed.postgres_facts_query(), INITIAL_POSTGRES_FACTS_QUERY);
-    assert!(
-        parsed
-            .postgres_facts_query()
-            .contains("pg_control_system()")
-    );
-
-    assert_eq!(parsed.remember_system_identifier(42), 42);
-    assert_eq!(parsed.remember_system_identifier(84), 42);
-    assert_eq!(parsed.postgres_facts_query(), CACHED_POSTGRES_FACTS_QUERY);
-    assert!(
-        !parsed
-            .postgres_facts_query()
-            .contains("pg_control_system()")
-    );
+    assert!(POSTGRES_LOG_FACTS_QUERY.contains("pg_current_logfile()"));
+    assert!(!POSTGRES_LOG_FACTS_QUERY.contains("pg_control_system()"));
+    assert!(POSTGRES_SYSTEM_IDENTIFIER_QUERY.contains("pg_control_system()"));
+    for sql in [POSTGRES_LOG_FACTS_QUERY, POSTGRES_SYSTEM_IDENTIFIER_QUERY] {
+        assert!(sql.contains(env!("CARGO_PKG_VERSION")), "{sql}");
+        assert!(sql.contains("log_sources/settings.rs"), "{sql}");
+    }
 }

@@ -1080,6 +1080,7 @@ name = "kronika-collector"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "futures-util",
  "kronika-format",
  "kronika-layout",
  "kronika-registry",

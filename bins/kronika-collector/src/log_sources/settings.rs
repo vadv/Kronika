@@ -22,12 +22,20 @@ const DEFAULT_PORT: u16 = 5432;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 
-const POSTGRES_LOG_FACTS_QUERY: &str = "/* kronika: */ SELECT \
-    current_setting('log_line_prefix') AS line_prefix, \
-    current_setting('data_directory') AS data_directory, \
-    pg_current_logfile() AS log_path";
-const POSTGRES_SYSTEM_IDENTIFIER_QUERY: &str =
-    "/* kronika: */ SELECT system_identifier::text AS system_identifier FROM pg_control_system()";
+const POSTGRES_LOG_FACTS_QUERY: &str = concat!(
+    "/* kronika:",
+    env!("CARGO_PKG_VERSION"),
+    " bins/kronika-collector/src/log_sources/settings.rs */ ",
+    "SELECT current_setting('log_line_prefix') AS line_prefix, ",
+    "current_setting('data_directory') AS data_directory, ",
+    "pg_current_logfile() AS log_path"
+);
+const POSTGRES_SYSTEM_IDENTIFIER_QUERY: &str = concat!(
+    "/* kronika:",
+    env!("CARGO_PKG_VERSION"),
+    " bins/kronika-collector/src/log_sources/settings.rs */ ",
+    "SELECT system_identifier::text AS system_identifier FROM pg_control_system()"
+);
 
 /// A parsed connection and the only identity safe to put in a log line.
 pub(super) struct ConnectionTarget {

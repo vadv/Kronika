@@ -153,13 +153,7 @@ impl LogSources {
     async fn rescan_postgres(&mut self, observe: &mut (dyn FnMut(PgObservation) + Send)) {
         let mut wanted: BTreeMap<PathBuf, PostgresFacts> = BTreeMap::new();
         for target in &mut self.pg_dsns {
-            match settings::postgres(
-                &target.connection,
-                target.system_identifier,
-                observe,
-            )
-            .await
-            {
+            match settings::postgres(&target.connection, target.system_identifier, observe).await {
                 Ok(server) => {
                     if let Some(identifier) = server.system_identifier {
                         target.system_identifier = Some(identifier);

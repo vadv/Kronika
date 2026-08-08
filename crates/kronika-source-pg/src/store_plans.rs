@@ -47,8 +47,6 @@ pub struct StorePlansCapability {
     pub flavour: Flavour,
     /// Schema containing the discovered functions.
     pub schema: ExtensionSchema,
-    /// Whether the current role belongs to `pg_read_all_stats`.
-    pub full_visibility: bool,
 }
 
 /// Select the SQL interface from catalog capabilities, never from extversion.
@@ -70,7 +68,6 @@ pub fn capability(entry: &InventoryEntry) -> Option<StorePlansCapability> {
     Some(StorePlansCapability {
         flavour,
         schema: entry.schema.clone(),
-        full_visibility: entry.full_visibility,
     })
 }
 
@@ -116,7 +113,8 @@ pub fn store_plans_query(capability: &StorePlansCapability) -> String {
          (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us \
          FROM {source} s \
          LEFT JOIN pg_catalog.pg_database d ON d.oid = s.dbid \
-         LEFT JOIN pg_catalog.pg_roles r ON r.oid = s.userid",
+         LEFT JOIN pg_catalog.pg_roles r ON r.oid = s.userid \
+         ORDER BY s.dbid, s.userid, s.queryid, s.planid",
         marked!("SELECT ")
     )
 }

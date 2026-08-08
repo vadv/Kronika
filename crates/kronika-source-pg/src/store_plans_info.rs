@@ -2,21 +2,16 @@
 
 use kronika_registry::Ts;
 use kronika_registry::pg_store_plans_info::PgStorePlansInfo;
-use tokio_postgres::Client;
+use tokio_postgres::types::Type;
 
-use crate::extension::ExtensionVersion;
+use crate::Session;
+use crate::query::{self, QueryStats};
 
 const MARKER: &str = concat!(
     "/* kronika:",
     env!("CARGO_PKG_VERSION"),
     " crates/kronika-source-pg/src/store_plans_info.rs */ "
 );
-
-/// Whether this is the known OSSC 1.10 view shape.
-#[must_use]
-pub const fn supported(version: ExtensionVersion) -> bool {
-    version.major == 1 && version.minor == 10
-}
 
 /// Build the one-row query for a safely qualified view supplied by discovery.
 #[must_use]
@@ -35,15 +30,23 @@ pub fn query(qualified_view: &str) -> String {
 ///
 /// Returns `PostgreSQL` protocol or row-decoding errors.
 pub async fn collect(
-    client: &Client,
+    session: Session<'_>,
     qualified_view: &str,
-) -> Result<PgStorePlansInfo, tokio_postgres::Error> {
-    let row = client.query_typed_one(&query(qualified_view), &[]).await?;
-    Ok(PgStorePlansInfo {
-        ts: Ts(row.try_get("ts_us")?),
-        dealloc: row.try_get("dealloc")?,
-        stats_reset: Ts(row.try_get("stats_reset_us")?),
-    })
+    stats: &mut QueryStats,
+) -> anyhow::Result<PgStorePlansInfo> {
+    query::read_one(
+        session,
+        &query(qualified_view),
+        std::iter::empty::<(String, Type)>(),
+        0,
+        stats,
+        |row| PgStorePlansInfo {
+            ts: Ts(row.get("ts_us")),
+            dealloc: row.get("dealloc"),
+            stats_reset: Ts(row.get("stats_reset_us")),
+        },
+    )
+    .await
 }
 
 #[cfg(test)]
