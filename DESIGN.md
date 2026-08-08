@@ -86,6 +86,12 @@ Units are part of the declaration: seconds, bytes, and so on. The column
 contract stores the unit as compile-time data. It never reaches the segment,
 costs no disk space, and does not change a metric id.
 
+A section whose snapshot holds more than one row declares the columns that
+identify one object across snapshots. Without that declaration a section is a
+list of rows and nothing can ask what one disk, one interface or one table did
+over time. Where rows of one section can come from more than one source, the
+identity names the source too, or two sources write over each other's objects.
+
 ## What Kronika does not build
 
 There is a metric and there is data. Nothing else.
@@ -212,6 +218,11 @@ The grain of the index is the segment. Over a day that is ninety-six columns,
 which is what a heatmap draws. Over an hour it is four, and the request reads
 the four segments themselves.
 
+The file is a header, a table of what it contains, and the blocks themselves.
+A block states its kind, its offset and its length, so a request that wants the
+health line does not decode the object rows. Offsets, lengths and the checksum
+belong to the file; what a block holds belongs to the block.
+
 An `.idx` records the sources that were enabled when it was built. A different
 set means a different file, and web rebuilds it under the same rule as a
 version it does not know.
@@ -277,7 +288,14 @@ object. It stays inside the server; a request filters on whatever label columns
 it names.
 
 The server returns codes and numbers: unit and class names, section and column
-names, unix microseconds. Wording and formatting belong to the interface.
+names, unix microseconds. It reads no `Accept-Language`, translates nothing and
+formats nothing. The interface holds the words for both languages it ships and
+decides how a number and a time are written. Data is not translated at all: a
+table name, a database name, a statement and a log line are another server's
+facts and go out as they were recorded.
+
+Four routes need no framework. The API is served over hyper, which the runtime
+the collector already uses comes with.
 
 ### Browser caching
 
