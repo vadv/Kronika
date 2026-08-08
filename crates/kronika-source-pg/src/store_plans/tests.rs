@@ -1,5 +1,8 @@
-use super::{Flavour, OsscRow, VadvRow, afford, flavour, store_plans_query, to_ossc, to_vadv};
-use crate::extension::parse_version;
+use super::{
+    Flavour, OsscRow, StorePlansCapability, VadvRow, afford, capability, plan_identity,
+    store_plans_query, to_ossc, to_vadv,
+};
+use crate::extension::{ExtensionSchema, InventoryEntry};
 use kronika_registry::StrId;
 use std::convert::Infallible;
 
@@ -16,8 +19,36 @@ fn fake_intern(bytes: &[u8]) -> Result<StrId, Infallible> {
     Ok(StrId(h | 1))
 }
 
-fn installed(extversion: &str) -> Option<Flavour> {
-    parse_version(extversion).and_then(flavour)
+fn inventory(extversion: &str) -> InventoryEntry {
+    InventoryEntry {
+        name: "pg_store_plans".to_owned(),
+        extversion: extversion.to_owned(),
+        schema: ExtensionSchema::new("plans schema"),
+        schema_usable: true,
+        full_visibility: true,
+        statements_reader: false,
+        store_plans_zero_arg: false,
+        store_plans_bool_arg: false,
+        store_plans_key_getter: false,
+        store_plans_ossc_columns: false,
+        store_plans_vadv_columns: false,
+    }
+}
+
+fn ossc_capability() -> StorePlansCapability {
+    StorePlansCapability {
+        flavour: Flavour::OsscCompatible,
+        schema: ExtensionSchema::new("plans schema"),
+        full_visibility: true,
+    }
+}
+
+fn vadv_capability() -> StorePlansCapability {
+    StorePlansCapability {
+        flavour: Flavour::Vadv,
+        schema: ExtensionSchema::new("plans schema"),
+        full_visibility: true,
+    }
 }
 
 fn ossc_row() -> OsscRow {
@@ -63,9 +94,9 @@ fn vadv_row() -> VadvRow {
         ts: 2_000,
         userid: 10,
         dbid: 16_400,
-        queryid: 42,
+        queryid: 123_456,
         planid: 991,
-        queryid_stat_statements: -7,
+        queryid_stat_statements: Some(-7),
         datname: Some("appdb".to_owned()),
         usename: Some("app".to_owned()),
         plan: Some("Index Scan using orders_pkey".to_owned()),
@@ -99,54 +130,94 @@ fn vadv_row() -> VadvRow {
 }
 
 #[test]
-fn the_major_version_tells_the_two_extensions_apart() {
-    assert_eq!(installed("1.9"), Some(Flavour::Ossc));
-    assert_eq!(installed("1.10"), Some(Flavour::Ossc));
-    assert_eq!(installed("1.11"), Some(Flavour::Ossc));
-    assert_eq!(installed("2.0"), Some(Flavour::Vadv));
-    assert_eq!(installed("2.3"), Some(Flavour::Vadv));
+fn exact_catalog_capabilities_not_extversion_select_the_interface() {
+    let mut datasentinel = inventory("2.0");
+    datasentinel.store_plans_zero_arg = true;
+    datasentinel.store_plans_ossc_columns = true;
+    assert_eq!(
+        capability(&datasentinel).map(|found| found.flavour),
+        Some(Flavour::OsscCompatible)
+    );
+
+    let mut ossc_1_9 = inventory("1.9");
+    ossc_1_9.store_plans_zero_arg = true;
+    ossc_1_9.store_plans_ossc_columns = true;
+    assert_eq!(
+        capability(&ossc_1_9).map(|found| found.flavour),
+        Some(Flavour::OsscCompatible)
+    );
+
+    let mut vadv = inventory("1.9");
+    vadv.store_plans_bool_arg = true;
+    vadv.store_plans_key_getter = true;
+    vadv.store_plans_vadv_columns = true;
+    assert_eq!(
+        capability(&vadv).map(|found| found.flavour),
+        Some(Flavour::Vadv)
+    );
 }
 
 #[test]
-fn an_extension_below_the_supported_ossc_layout_is_not_collected() {
-    assert_eq!(installed("1.8"), None);
-    assert_eq!(installed("3.0"), None);
+fn an_incomplete_or_inaccessible_interface_is_not_selected() {
+    let mut incomplete = inventory("2.0");
+    incomplete.store_plans_zero_arg = true;
+    assert!(capability(&incomplete).is_none());
+    incomplete.store_plans_ossc_columns = true;
+    incomplete.schema_usable = false;
+    assert!(capability(&incomplete).is_none());
 }
 
 #[test]
-fn each_flavour_asks_for_the_columns_it_has() {
-    let ossc = store_plans_query(Flavour::Ossc);
-    let vadv = store_plans_query(Flavour::Vadv);
+fn each_interface_asks_only_for_the_columns_it_has() {
+    let ossc = store_plans_query(&ossc_capability(), 10);
+    let vadv = store_plans_query(&vadv_capability(), 10);
     assert!(ossc.contains("s.shared_blk_read_time"), "{ossc}");
     assert!(!ossc.contains("slow_log_calls"), "{ossc}");
     assert!(vadv.contains("s.blk_read_time"), "{vadv}");
-    assert!(
-        vadv.contains("s.userid, s.dbid, s.queryid, s.planid, s.queryid_stat_statements"),
-        "{vadv}"
-    );
+    assert!(vadv.contains("s.queryid_stat_statements"), "{vadv}");
     assert!(vadv.contains("slow_log_calls"), "{vadv}");
     assert!(vadv.contains("total_plan_time"), "{vadv}");
+    assert!(
+        ossc.contains("s.temp_blk_write_time, s.first_call, s.last_call"),
+        "{ossc}"
+    );
+    assert!(
+        vadv.contains("s.blk_write_time, s.first_call, s.last_call"),
+        "{vadv}"
+    );
 }
 
 #[test]
-fn a_read_is_parameter_bounded_and_takes_the_costliest_plans_first() {
-    for flavour in [Flavour::Ossc, Flavour::Vadv] {
-        let sql = store_plans_query(flavour);
+fn a_read_is_bounded_schema_qualified_and_costliest_first() {
+    for capability in [ossc_capability(), vadv_capability()] {
+        let sql = store_plans_query(&capability, 42);
         assert!(sql.contains("kronika:"), "{sql}");
         assert!(sql.contains("ORDER BY s.total_time DESC"), "{sql}");
-        assert!(sql.ends_with("LIMIT $1"), "{sql}");
+        assert!(sql.contains("LIMIT 42"), "{sql}");
+        assert!(sql.contains("\"plans schema\".\"pg_store_plans\""), "{sql}");
     }
 }
 
 #[test]
-fn each_flavour_bounds_plan_text_in_its_natural_query() {
-    let ossc = store_plans_query(Flavour::Ossc);
-    let vadv = store_plans_query(Flavour::Vadv);
-    assert!(ossc.contains("left(s.plan, 65536) AS plan"), "{ossc}");
+fn vadv_uses_one_query_and_the_exact_four_key_plan_getter() {
+    let sql = store_plans_query(&vadv_capability(), 10);
+    assert!(sql.contains("\"pg_store_plans\"(false)"), "{sql}");
     assert!(
-        vadv.contains("left(pg_store_plans_get_plan(s.planid), 65536) AS plan"),
-        "{vadv}"
+        sql.contains(
+            "\"pg_store_plans_get_plan\"(s.userid, s.dbid, s.queryid, s.planid) END AS plan"
+        ),
+        "{sql}"
     );
+    assert!(sql.contains("s.queryid IS NOT NULL"), "{sql}");
+    assert!(sql.contains("s.planid IS NOT NULL"), "{sql}");
+    assert!(!sql.contains("pg_store_plans_get_plan($1)"), "{sql}");
+}
+
+#[test]
+fn ossc_and_datasentinel_use_the_proved_zero_argument_interface() {
+    let sql = store_plans_query(&ossc_capability(), 10);
+    assert!(sql.contains("\"pg_store_plans\"()"), "{sql}");
+    assert!(!sql.contains("pg_store_plans_get_plan"), "{sql}");
 }
 
 #[test]
@@ -173,6 +244,16 @@ fn a_budget_of_nothing_takes_no_plan_text() {
 }
 
 #[test]
+fn a_masked_query_or_plan_identity_is_skipped() {
+    assert_eq!(plan_identity(None, Some(2), Some(3), Some(4)), None);
+    assert_eq!(plan_identity(Some(1), None, Some(3), Some(4)), None);
+    assert_eq!(
+        plan_identity(Some(1), Some(2), Some(3), Some(4)),
+        Some((1, 2, 3, 4))
+    );
+}
+
+#[test]
 fn to_ossc_maps_every_column() {
     let r = to_ossc(&ossc_row(), fake_intern).expect("infallible intern");
     assert_eq!(r.ts.0, 2_000);
@@ -185,13 +266,27 @@ fn to_ossc_maps_every_column() {
 }
 
 #[test]
-fn to_vadv_maps_every_column_including_the_planning_times() {
-    let r = to_vadv(&vadv_row(), fake_intern).expect("intern");
-    assert_eq!(r.queryid, 42);
-    assert_eq!(r.queryid_stat_statements, -7);
-    assert_eq!(r.slow_log_calls, 4);
-    assert!((r.total_plan_time - 30.0).abs() < f64::EPSILON);
-    assert!((r.blk_read_time - 12.0).abs() < f64::EPSILON);
+fn vadv_source_row_keeps_both_query_ids() {
+    let row = vadv_row();
+    assert_eq!(row.queryid, 123_456);
+    assert_eq!(row.queryid_stat_statements, Some(-7));
+    let encoded = to_vadv(&row, fake_intern).expect("intern");
+    assert_eq!(encoded.queryid_stat_statements, -7);
+    assert_eq!(encoded.slow_log_calls, 4);
+    assert!((encoded.total_plan_time - 30.0).abs() < f64::EPSILON);
+    assert!((encoded.blk_read_time - 12.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn a_missing_best_effort_pgss_query_id_maps_to_zero() {
+    let mut row = vadv_row();
+    row.queryid_stat_statements = None;
+    assert_eq!(
+        to_vadv(&row, fake_intern)
+            .expect("infallible intern")
+            .queryid_stat_statements,
+        0
+    );
 }
 
 #[test]

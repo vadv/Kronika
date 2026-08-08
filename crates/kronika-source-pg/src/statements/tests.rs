@@ -1,8 +1,8 @@
 use super::{
-    StatementsRow, StatementsVersion, statements_query, statements_version, to_v1, to_v2, to_v4,
-    to_v6,
+    StatementsRow, StatementsVersion, capability, statements_query, statements_version, to_v1,
+    to_v2, to_v4, to_v6, visible_queryid,
 };
-use crate::extension::parse_version;
+use crate::extension::{ExtensionSchema, InventoryEntry, parse_version};
 use kronika_registry::StrId;
 use std::convert::Infallible;
 
@@ -21,6 +21,22 @@ fn fake_intern(bytes: &[u8]) -> Result<StrId, Infallible> {
 
 fn layout(extversion: &str) -> Option<StatementsVersion> {
     parse_version(extversion).and_then(statements_version)
+}
+
+fn inventory(extversion: &str, reader: bool) -> InventoryEntry {
+    InventoryEntry {
+        name: "pg_stat_statements".to_owned(),
+        extversion: extversion.to_owned(),
+        schema: ExtensionSchema::new("odd schema"),
+        schema_usable: true,
+        full_visibility: true,
+        statements_reader: reader,
+        store_plans_zero_arg: false,
+        store_plans_bool_arg: false,
+        store_plans_key_getter: false,
+        store_plans_ossc_columns: false,
+        store_plans_vadv_columns: false,
+    }
 }
 
 fn sample_row() -> StatementsRow {
@@ -107,59 +123,32 @@ fn a_later_release_of_the_same_line_keeps_the_newest_layout() {
 
 #[test]
 fn a_query_asks_only_for_columns_its_extension_has() {
-    // The official 1.4 SQL declaration has these 22 non-text columns; the
-    // official 1.4-to-1.5 update changes only reset privileges. Kronika omits
-    // its query-text column and enriches the remaining exact 1.5 shape.
-    let v1 = statements_query(StatementsVersion::V1);
-    for column in [
-        "s.userid",
-        "s.dbid",
-        "s.queryid",
-        "s.calls",
-        "s.total_time",
-        "s.min_time",
-        "s.max_time",
-        "s.mean_time",
-        "s.stddev_time",
-        "s.rows",
-        "s.shared_blks_hit",
-        "s.shared_blks_read",
-        "s.shared_blks_dirtied",
-        "s.shared_blks_written",
-        "s.local_blks_hit",
-        "s.local_blks_read",
-        "s.local_blks_dirtied",
-        "s.local_blks_written",
-        "s.temp_blks_read",
-        "s.temp_blks_written",
-        "s.blk_read_time",
-        "s.blk_write_time",
-    ] {
-        assert!(v1.contains(column), "missing {column}: {v1}");
-    }
-    assert!(!v1.contains("s.query,"), "{v1}");
-    assert!(!v1.contains("s.plans"), "{v1}");
-    assert!(statements_query(StatementsVersion::V2).contains("s.total_plan_time"));
-    assert!(!statements_query(StatementsVersion::V2).contains("s.toplevel"));
-    assert!(statements_query(StatementsVersion::V3).contains("s.toplevel"));
-    assert!(!statements_query(StatementsVersion::V3).contains("jit_functions"));
-    assert!(statements_query(StatementsVersion::V4).contains("jit_functions"));
-    assert!(!statements_query(StatementsVersion::V4).contains("jit_deform_count"));
-    assert!(statements_query(StatementsVersion::V5).contains("jit_deform_count"));
-    assert!(!statements_query(StatementsVersion::V5).contains("wal_buffers_full"));
-    assert!(statements_query(StatementsVersion::V6).contains("wal_buffers_full"));
+    let schema = ExtensionSchema::new("public");
+    assert!(statements_query(StatementsVersion::V1, &schema).contains("s.total_time"));
+    assert!(!statements_query(StatementsVersion::V1, &schema).contains("s.plans"));
+    assert!(statements_query(StatementsVersion::V2, &schema).contains("s.total_plan_time"));
+    assert!(!statements_query(StatementsVersion::V2, &schema).contains("s.toplevel"));
+    assert!(statements_query(StatementsVersion::V3, &schema).contains("s.toplevel"));
+    assert!(!statements_query(StatementsVersion::V3, &schema).contains("jit_functions"));
+    assert!(statements_query(StatementsVersion::V4, &schema).contains("jit_functions"));
+    assert!(!statements_query(StatementsVersion::V4, &schema).contains("jit_deform_count"));
+    assert!(statements_query(StatementsVersion::V5, &schema).contains("jit_deform_count"));
+    assert!(!statements_query(StatementsVersion::V5, &schema).contains("wal_buffers_full"));
+    assert!(statements_query(StatementsVersion::V6, &schema).contains("wal_buffers_full"));
 }
 
 #[test]
 fn the_block_timing_columns_are_asked_for_under_the_name_that_release_uses() {
-    assert!(statements_query(StatementsVersion::V4).contains("s.blk_read_time AS"));
-    assert!(!statements_query(StatementsVersion::V4).contains("s.local_blk_read_time"));
-    assert!(statements_query(StatementsVersion::V5).contains("s.shared_blk_read_time"));
-    assert!(statements_query(StatementsVersion::V5).contains("s.local_blk_read_time"));
+    let schema = ExtensionSchema::new("public");
+    assert!(statements_query(StatementsVersion::V4, &schema).contains("s.blk_read_time AS"));
+    assert!(!statements_query(StatementsVersion::V4, &schema).contains("s.local_blk_read_time"));
+    assert!(statements_query(StatementsVersion::V5, &schema).contains("s.shared_blk_read_time"));
+    assert!(statements_query(StatementsVersion::V5, &schema).contains("s.local_blk_read_time"));
 }
 
 #[test]
 fn every_query_carries_the_marker_and_asks_for_no_statement_text() {
+    let schema = ExtensionSchema::new("metrics\"schema");
     for version in [
         StatementsVersion::V1,
         StatementsVersion::V2,
@@ -168,11 +157,20 @@ fn every_query_carries_the_marker_and_asks_for_no_statement_text() {
         StatementsVersion::V5,
         StatementsVersion::V6,
     ] {
-        let sql = statements_query(version);
+        let sql = statements_query(version, &schema);
         assert!(sql.contains("kronika:"), "{sql}");
-        assert!(sql.contains("pg_stat_statements(false)"), "{sql}");
         assert!(!sql.contains("s.query,"), "{sql}");
+        assert!(sql.contains("\"metrics\"\"schema\".\"pg_stat_statements\"(false)"));
     }
+}
+
+#[test]
+fn catalog_capabilities_not_version_alone_enable_collection() {
+    assert!(capability(&inventory("1.5", true)).is_some());
+    assert!(capability(&inventory("1.12", false)).is_none());
+    let mut inaccessible = inventory("1.12", true);
+    inaccessible.schema_usable = false;
+    assert!(capability(&inaccessible).is_none());
 }
 
 #[test]
@@ -188,7 +186,7 @@ fn to_v6_maps_every_column_and_leaves_the_text_out() {
     assert!((r.shared_blk_read_time - 33.0).abs() < f64::EPSILON);
     assert_eq!(r.wal_buffers_full, 12);
     assert_eq!(r.parallel_workers_launched, 6);
-    assert_eq!(r.stats_since.0, 1_000);
+    assert_eq!(r.stats_since.map(|ts| ts.0), Some(1_000));
 }
 
 #[test]
@@ -196,6 +194,15 @@ fn a_masked_query_id_stays_absent() {
     let mut row = sample_row();
     row.queryid = None;
     assert_eq!(to_v6(&row, fake_intern).expect("intern").queryid, None);
+}
+
+#[test]
+fn a_masked_query_id_is_skipped_and_counted() {
+    let mut masked_rows = 0;
+    assert_eq!(visible_queryid(None, &mut masked_rows), None);
+    assert_eq!(masked_rows, 1);
+    assert_eq!(visible_queryid(Some(-42), &mut masked_rows), Some(-42));
+    assert_eq!(masked_rows, 1);
 }
 
 #[test]

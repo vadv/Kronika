@@ -2,8 +2,8 @@
 //!
 //! `pg_stat_user_tables` and its neighbours only ever report the database the
 //! connection is attached to, so those sections need one connection per
-//! database. The list is asked for on every tick: a database created between
-//! ticks starts being collected, and one that was dropped stops.
+//! database. Discovery refreshes the list periodically: a database created
+//! between scans starts being collected, and one that was dropped stops.
 
 use std::collections::BTreeMap;
 
@@ -25,6 +25,16 @@ macro_rules! marked {
     };
 }
 
+const ENUMERATE_QUERY: &str = marked!(
+    "SELECT oid, datname::text AS datname, \
+            datname = pg_catalog.current_database() AS is_current \
+     FROM pg_catalog.pg_database \
+     WHERE datname = pg_catalog.current_database() \
+        OR (datallowconn AND NOT datistemplate \
+            AND pg_catalog.has_database_privilege(oid, 'CONNECT')) \
+     ORDER BY datname"
+);
+
 /// A database this collector can connect to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Database {
@@ -32,11 +42,14 @@ pub struct Database {
     pub oid: u32,
     /// Database name, which is also the key of its connection.
     pub name: String,
+    /// Whether the bootstrap connection is already attached to this database.
+    pub is_current: bool,
 }
 
-/// Every database that accepts connections, ordered by name.
+/// Every database this role can use for collection, ordered by name.
 ///
-/// Templates are left out: connecting to one blocks `CREATE DATABASE`, and a
+/// Templates are left out unless the bootstrap connection is already using
+/// one: opening another session to a template blocks `CREATE DATABASE`, and a
 /// template holds no workload worth recording.
 ///
 /// # Errors
@@ -45,18 +58,14 @@ pub struct Database {
 pub async fn enumerate(session: Session<'_>, stats: &mut QueryStats) -> Result<Vec<Database>> {
     query::read_all(
         session,
-        marked!(
-            "SELECT oid, datname::text AS datname \
-             FROM pg_database \
-             WHERE datallowconn AND NOT datistemplate \
-             ORDER BY datname"
-        ),
+        ENUMERATE_QUERY,
         std::iter::empty::<(String, Type)>(),
         0,
         stats,
         |row| Database {
             oid: row.get("oid"),
             name: row.get("datname"),
+            is_current: row.get("is_current"),
         },
     )
     .await
@@ -68,10 +77,15 @@ pub async fn enumerate(session: Session<'_>, stats: &mut QueryStats) -> Result<V
 ///
 /// A database that appeared gets a pool; one that disappeared has its pool
 /// dropped, which closes the connection. Pools that stay keep their healthy
-/// session, so a tick does not restart every connection.
+/// session, so a tick does not restart every connection. The current database
+/// keeps using the bootstrap pool rather than opening a duplicate connection.
 pub fn refresh(pools: &mut BTreeMap<String, Pool>, found: &[Database], primary: &Pool) {
-    pools.retain(|name, _pool| found.iter().any(|database| &database.name == name));
-    for database in found {
+    pools.retain(|name, _pool| {
+        found
+            .iter()
+            .any(|database| !database.is_current && &database.name == name)
+    });
+    for database in found.iter().filter(|database| !database.is_current) {
         pools
             .entry(database.name.clone())
             .or_insert_with(|| primary.on_database(&database.name));

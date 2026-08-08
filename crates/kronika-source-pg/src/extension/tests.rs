@@ -1,4 +1,4 @@
-use super::{ExtensionVersion, InstalledExtension, parse_version};
+use super::{ExtensionSchema, ExtensionVersion, INVENTORY_QUERY, parse_version};
 
 const fn version(major: u32, minor: u32) -> ExtensionVersion {
     ExtensionVersion { major, minor }
@@ -35,13 +35,30 @@ fn versions_order_by_major_before_minor() {
 }
 
 #[test]
-fn extension_objects_are_schema_qualified_and_quoted() {
-    let installed = InstalledExtension {
-        version: version(1, 10),
-        schema: "metrics\"schema".to_owned(),
-    };
+fn schema_qualification_quotes_every_identifier_boundary() {
+    let schema = ExtensionSchema::new("odd\"schema; DROP SCHEMA public; --");
     assert_eq!(
-        installed.object("pg_store_plans_info"),
-        "\"metrics\"\"schema\".\"pg_store_plans_info\""
+        schema.qualify("pg_stat_statements"),
+        "\"odd\"\"schema; DROP SCHEMA public; --\".\"pg_stat_statements\""
     );
+    assert_eq!(schema.name(), "odd\"schema; DROP SCHEMA public; --");
+}
+
+#[test]
+fn inventory_is_one_marked_catalog_query_with_exact_capability_checks() {
+    assert!(INVENTORY_QUERY.contains("kronika:"));
+    assert!(INVENTORY_QUERY.contains("pg_catalog.pg_extension"));
+    assert!(INVENTORY_QUERY.contains("pg_catalog.pg_depend"));
+    assert!(INVENTORY_QUERY.contains("p.proallargtypes"));
+    assert!(INVENTORY_QUERY.contains("p.proargmodes"));
+    assert!(INVENTORY_QUERY.contains("p.proargnames"));
+    assert!(INVENTORY_QUERY.contains("pg_catalog.generate_subscripts"));
+    assert!(INVENTORY_QUERY.contains("actual.function_oid = f.function_oid"));
+    assert!(INVENTORY_QUERY.contains("has_schema_privilege"));
+    assert!(INVENTORY_QUERY.contains("has_function_privilege"));
+    assert!(INVENTORY_QUERY.contains("'26 26 20 20'"));
+    assert!(INVENTORY_QUERY.contains("queryid_stat_statements"));
+    assert!(INVENTORY_QUERY.contains("store_plans_ossc_columns"));
+    assert!(!INVENTORY_QUERY.contains("pg_catalog.pg_attribute"));
+    assert!(!INVENTORY_QUERY.contains("$1"));
 }

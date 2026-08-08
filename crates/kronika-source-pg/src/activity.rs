@@ -72,7 +72,8 @@ pub const fn activity_query(version: ActivityVersion) -> &'static str {
              (extract(epoch from state_change) * 1e6)::int8 AS state_change_us, \
              (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us, \
              pg_has_role('pg_read_all_stats', 'member') AS full_visibility \
-             FROM pg_stat_activity"
+             FROM pg_catalog.pg_stat_activity \
+             WHERE pid <> pg_catalog.pg_backend_pid()"
         ),
         ActivityVersion::V2 => marked!(
             "SELECT pid, leader_pid, datname::text AS datname, usename::text AS usename, \
@@ -88,7 +89,8 @@ pub const fn activity_query(version: ActivityVersion) -> &'static str {
              (extract(epoch from state_change) * 1e6)::int8 AS state_change_us, \
              (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us, \
              pg_has_role('pg_read_all_stats', 'member') AS full_visibility \
-             FROM pg_stat_activity"
+             FROM pg_catalog.pg_stat_activity \
+             WHERE pid <> pg_catalog.pg_backend_pid()"
         ),
         ActivityVersion::V3 => marked!(
             "SELECT pid, leader_pid, datname::text AS datname, usename::text AS usename, \
@@ -104,7 +106,8 @@ pub const fn activity_query(version: ActivityVersion) -> &'static str {
              (extract(epoch from state_change) * 1e6)::int8 AS state_change_us, \
              (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us, \
              pg_has_role('pg_read_all_stats', 'member') AS full_visibility \
-             FROM pg_stat_activity"
+             FROM pg_catalog.pg_stat_activity \
+             WHERE pid <> pg_catalog.pg_backend_pid()"
         ),
     }
 }
@@ -384,9 +387,10 @@ mod tests {
     }
 
     #[test]
-    fn query_bounds_individual_activity_text_without_a_row_ceiling() {
+    fn query_bounds_text_excludes_self_and_has_no_row_ceiling() {
         let query = activity_query(ActivityVersion::V3);
         assert!(query.contains("left(query, 65536) AS query"));
+        assert!(query.contains("WHERE pid <> pg_catalog.pg_backend_pid()"));
         assert!(!query.contains("LIMIT"));
     }
 
@@ -399,6 +403,7 @@ mod tests {
         ] {
             let query = activity_query(version);
             assert!(query.contains("pg_has_role('pg_read_all_stats', 'member')"));
+            assert!(query.contains("pid <> pg_catalog.pg_backend_pid()"));
         }
     }
 

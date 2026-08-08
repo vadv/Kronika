@@ -17,7 +17,7 @@ use kronika_registry::{StrId, Ts};
 use tokio_postgres::types::Type;
 
 use crate::Session;
-use crate::extension::ExtensionVersion;
+use crate::extension::{ExtensionSchema, ExtensionVersion, InventoryEntry, parse_version};
 use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
 
 /// Prefix a query literal with the kronika marker (SQL-transparency rule).
@@ -112,16 +112,34 @@ const COMMON_COLUMNS: &str = "s.queryid, s.userid, s.dbid, \
      s.temp_blks_read, s.temp_blks_written, \
      (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us";
 
-/// The joins every layout shares.
-///
-/// `false` asks for the counters without the statement text.
-const COMMON_FROM: &str = " FROM pg_stat_statements(false) s \
-     LEFT JOIN pg_database d ON d.oid = s.dbid \
-     LEFT JOIN pg_roles r ON r.oid = s.userid";
+/// A discovered, usable `pg_stat_statements` interface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatementsCapability {
+    /// Registry layout selected from the extension version.
+    pub version: StatementsVersion,
+    /// Schema containing the discovered reader function.
+    pub schema: ExtensionSchema,
+    /// Whether the current role belongs to `pg_read_all_stats`.
+    pub full_visibility: bool,
+}
+
+/// Select a statement interface only after catalog discovery proved it usable.
+#[must_use]
+pub fn capability(entry: &InventoryEntry) -> Option<StatementsCapability> {
+    if entry.name != EXTENSION || !entry.schema_usable || !entry.statements_reader {
+        return None;
+    }
+    let version = parse_version(&entry.extversion).and_then(statements_version)?;
+    Some(StatementsCapability {
+        version,
+        schema: entry.schema.clone(),
+        full_visibility: entry.full_visibility,
+    })
+}
 
 /// The SQL for one layout.
 #[must_use]
-pub fn statements_query(version: StatementsVersion) -> String {
+pub fn statements_query(version: StatementsVersion, schema: &ExtensionSchema) -> String {
     let mut columns = String::from(COMMON_COLUMNS);
     if since_v2(version) {
         columns.push_str(
@@ -168,7 +186,13 @@ pub fn statements_query(version: StatementsVersion) -> String {
             ", s.wal_buffers_full, s.parallel_workers_to_launch, s.parallel_workers_launched",
         );
     }
-    format!("{}{columns}{COMMON_FROM}", marked!("SELECT "))
+    let source = schema.qualify(EXTENSION);
+    format!(
+        "{}{columns} FROM {source}(false) s \
+         LEFT JOIN pg_catalog.pg_database d ON d.oid = s.dbid \
+         LEFT JOIN pg_catalog.pg_roles r ON r.oid = s.userid",
+        marked!("SELECT ")
+    )
 }
 
 /// One raw `pg_stat_statements` row, a version-agnostic superset.
@@ -622,13 +646,17 @@ pub fn to_v1<E>(
 }
 
 /// Read a raw row using the layout's column set.
-fn row_from_pg(row: &tokio_postgres::Row, version: StatementsVersion) -> StatementsRow {
+fn row_from_pg(
+    row: &tokio_postgres::Row,
+    version: StatementsVersion,
+    queryid: i64,
+) -> StatementsRow {
     let planning = since_v2(version);
     let jit = since_v4(version);
     let renamed = since_v5(version);
     StatementsRow {
         ts: row.get("ts_us"),
-        queryid: row.get("queryid"),
+        queryid: Some(queryid),
         userid: row.get("userid"),
         dbid: row.get("dbid"),
         toplevel: since_v3(version).then(|| row.get("toplevel")),
@@ -695,23 +723,41 @@ fn row_from_pg(row: &tokio_postgres::Row, version: StatementsVersion) -> Stateme
     }
 }
 
-/// Collect every statement the extension is holding counters for.
+const fn visible_queryid(queryid: Option<i64>, masked_rows: &mut usize) -> Option<i64> {
+    let Some(queryid) = queryid else {
+        *masked_rows = masked_rows.saturating_add(1);
+        return None;
+    };
+    Some(queryid)
+}
+
+/// One statement read, excluding rows whose identity was privilege-masked.
+#[derive(Debug, Clone)]
+pub struct StatementsRead {
+    /// Rows whose query identity was visible.
+    pub rows: Vec<StatementsRow>,
+    /// Rows skipped because `PostgreSQL` masked their query id.
+    pub masked_rows: usize,
+}
+
+/// Collect every visible statement the extension is holding counters for.
 ///
 /// # Errors
 /// Returns the [`tokio_postgres::Error`] if the query fails.
 pub async fn collect_statements<E>(
     session: Session<'_>,
-    version: StatementsVersion,
+    capability: &StatementsCapability,
     stats: &mut QueryStats,
     sink: impl FnMut(Batch<StatementsRow>) -> Result<BatchWrite, E>,
 ) -> Result<(), BatchError<E>> {
+    let version = capability.version;
     query::read_batched(
         session,
-        &statements_query(version),
+        &statements_query(version, &capability.schema),
         std::iter::empty::<(String, Type)>(),
         0,
         stats,
-        |row| row_from_pg(row, version),
+        |row| row_from_pg(row, version, row.get("queryid")),
         sink,
     )
     .await

@@ -1,22 +1,19 @@
 //! `pg_store_plans` collection for types `1_003_001` and `1_004_001`.
 //!
-//! Two extensions share a name and little else. The ossc upstream keys an entry
-//! by the core query id and carries the plan text in the view; the vadv fork
-//! exposes both its internal query id and its last `pg_stat_statements` query id,
-//! and hands out plan text through a function. They are collected as two
-//! sections rather than one with holes in it.
+//! Several extensions share a name and two query interfaces. The OSSC and
+//! Datasentinel-compatible interface carries plan text in its zero-argument
+//! result. The vadv interface carries an internal query id plus a separate
+//! `pg_stat_statements` id and exposes plan text through a four-key function.
 //!
-//! A read takes the costliest plans and stops fetching plan text once it has
-//! taken enough of it. A plan text runs to kilobytes, and an instance can hold
-//! thousands of entries, so an unbounded read would cost more than the
-//! statistics it collects.
+//! Rows are streamed in bounded collector batches. PostgreSQL truncates each
+//! plan text before it crosses the connection.
 
 use kronika_registry::pg_store_plans::{PgStorePlansOsscV1, PgStorePlansVadvV1};
 use kronika_registry::{StrId, Ts};
 use tokio_postgres::types::Type;
 
 use crate::Session;
-use crate::extension::ExtensionVersion;
+use crate::extension::{ExtensionSchema, InventoryEntry};
 use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
 
 /// Prefix a query literal with the kronika marker (SQL-transparency rule).
@@ -34,72 +31,92 @@ macro_rules! marked {
 /// The extension name to look for.
 pub const EXTENSION: &str = "pg_store_plans";
 
-/// How many plan entries one read takes, costliest first.
-pub const TOP_N: i64 = 500;
-
-/// How many bytes of plan text one read takes before it stops asking for more.
-pub const PLAN_TEXT_BUDGET: usize = 1 << 20;
-
 /// Which `pg_store_plans` is installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flavour {
-    /// The ossc upstream (extension 1.x): type `1_003_001`.
-    Ossc,
-    /// The vadv fork (extension 2.x): type `1_004_001`.
+    /// The OSSC or Datasentinel interface with an inline plan column.
+    OsscCompatible,
+    /// The vadv interface with two query ids and a keyed plan getter.
     Vadv,
 }
 
-/// Select the flavour from the installed extension version.
-///
-/// The fork carries the major version 2 precisely so the two can be told
-/// apart. The ossc 1.9 view has the split shared/local/temp I/O timing columns
-/// used by its current layout.
-#[must_use]
-pub const fn flavour(extension: ExtensionVersion) -> Option<Flavour> {
-    match extension.major {
-        1 if extension.minor >= 9 => Some(Flavour::Ossc),
-        2 => Some(Flavour::Vadv),
-        _ => None,
-    }
+/// A discovered, usable `pg_store_plans` interface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorePlansCapability {
+    /// Catalog-selected interface semantics.
+    pub flavour: Flavour,
+    /// Schema containing the discovered functions.
+    pub schema: ExtensionSchema,
+    /// Whether the current role belongs to `pg_read_all_stats`.
+    pub full_visibility: bool,
 }
 
-/// The statistics query for one flavour, costliest plans first.
+/// Select the SQL interface from catalog capabilities, never from extversion.
 #[must_use]
-pub fn store_plans_query(flavour: Flavour) -> String {
-    let columns = match flavour {
-        Flavour::Ossc => {
-            "s.queryid, s.planid, s.userid, s.dbid, \
-             left(s.plan, 65536) AS plan, \
+pub fn capability(entry: &InventoryEntry) -> Option<StorePlansCapability> {
+    if entry.name != EXTENSION || !entry.schema_usable || !entry.full_visibility {
+        return None;
+    }
+    let flavour = if entry.store_plans_bool_arg
+        && entry.store_plans_key_getter
+        && entry.store_plans_vadv_columns
+    {
+        Flavour::Vadv
+    } else if entry.store_plans_zero_arg && entry.store_plans_ossc_columns {
+        Flavour::OsscCompatible
+    } else {
+        return None;
+    };
+    Some(StorePlansCapability {
+        flavour,
+        schema: entry.schema.clone(),
+        full_visibility: entry.full_visibility,
+    })
+}
+
+/// The statistics query for one discovered interface.
+#[must_use]
+pub fn store_plans_query(capability: &StorePlansCapability) -> String {
+    let (columns, source, plan) = match capability.flavour {
+        Flavour::OsscCompatible => (
+            "s.queryid, s.planid, s.userid, s.dbid, left(s.plan, 65536) AS plan, \
              s.calls, s.total_time, s.min_time, s.max_time, s.mean_time, s.stddev_time, s.rows, \
              s.shared_blks_hit, s.shared_blks_read, s.shared_blks_dirtied, s.shared_blks_written, \
              s.local_blks_hit, s.local_blks_read, s.local_blks_dirtied, s.local_blks_written, \
              s.temp_blks_read, s.temp_blks_written, \
              s.shared_blk_read_time, s.shared_blk_write_time, \
              s.local_blk_read_time, s.local_blk_write_time, \
-             s.temp_blk_read_time, s.temp_blk_write_time"
-        }
-        Flavour::Vadv => {
+             s.temp_blk_read_time, s.temp_blk_write_time, \
+             s.first_call, s.last_call",
+            format!("{}()", capability.schema.qualify(EXTENSION)),
+            String::new(),
+        ),
+        Flavour::Vadv => (
             "s.userid, s.dbid, s.queryid, s.planid, s.queryid_stat_statements, \
-             left(pg_store_plans_get_plan(s.userid, s.dbid, s.queryid, s.planid), 65536) AS plan, \
              s.calls, s.slow_log_calls, \
              s.total_time, s.min_time, s.max_time, s.mean_time, s.stddev_time, s.rows, \
              s.shared_blks_hit, s.shared_blks_read, s.shared_blks_dirtied, s.shared_blks_written, \
              s.local_blks_hit, s.local_blks_read, s.local_blks_dirtied, s.local_blks_written, \
              s.temp_blks_read, s.temp_blks_written, \
              s.blk_read_time, s.blk_write_time, \
-             s.total_plan_time, s.min_plan_time, s.max_plan_time, s.mean_plan_time"
-        }
+             s.first_call, s.last_call, \
+             s.total_plan_time, s.min_plan_time, s.max_plan_time, s.mean_plan_time",
+            format!("{}(false)", capability.schema.qualify(EXTENSION)),
+            format!(
+                ", left({}(s.userid, s.dbid, s.queryid, s.planid), 65536) AS plan",
+                capability.schema.qualify("pg_store_plans_get_plan")
+            ),
+        ),
     };
     format!(
-        "{}{columns}, \
+        "{}{columns}{plan}, \
          d.datname::text AS datname, r.rolname::text AS usename, \
          (extract(epoch from s.first_call) * 1e6)::int8 AS first_call_us, \
          (extract(epoch from s.last_call) * 1e6)::int8 AS last_call_us, \
          (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us \
-         FROM pg_store_plans s \
-         LEFT JOIN pg_database d ON d.oid = s.dbid \
-         LEFT JOIN pg_roles r ON r.oid = s.userid \
-         ORDER BY s.total_time DESC LIMIT $1",
+         FROM {source} s \
+         LEFT JOIN pg_catalog.pg_database d ON d.oid = s.dbid \
+         LEFT JOIN pg_catalog.pg_roles r ON r.oid = s.userid",
         marked!("SELECT ")
     )
 }
@@ -123,7 +140,7 @@ pub struct OsscRow {
     pub datname: Option<String>,
     /// Role name resolved from `userid`.
     pub usename: Option<String>,
-    /// Plan text; `None` once the plan-text budget is spent.
+    /// Server-truncated plan text.
     pub plan: Option<String>,
     /// Executions.
     pub calls: i64,
@@ -188,17 +205,17 @@ pub struct VadvRow {
     pub userid: u32,
     /// Database oid.
     pub dbid: u32,
-    /// Internal query id, part of the extension entry key.
+    /// Internal query id, part of the vadv entry key.
     pub queryid: i64,
     /// Plan id.
     pub planid: i64,
-    /// `pg_stat_statements` query id of the last statement that ran this plan.
+    /// Query id of the last statement that ran this plan.
     pub queryid_stat_statements: i64,
     /// Database name resolved from `dbid`.
     pub datname: Option<String>,
     /// Role name resolved from `userid`.
     pub usename: Option<String>,
-    /// Plan text; `None` once the plan-text budget is spent.
+    /// Server-truncated plan text.
     pub plan: Option<String>,
     /// Executions.
     pub calls: i64,
@@ -318,6 +335,8 @@ pub fn to_vadv<E>(
     row: &VadvRow,
     mut intern: impl FnMut(&[u8]) -> Result<StrId, E>,
 ) -> Result<PgStorePlansVadvV1, E> {
+    // The registry/schema commit adds the internal key field. Keeping both ids
+    // in the source row makes that integration a local mapping-only change.
     Ok(PgStorePlansVadvV1 {
         ts: Ts(row.ts),
         userid: row.userid,
@@ -357,20 +376,7 @@ pub fn to_vadv<E>(
     })
 }
 
-/// Whether a plan text of `len` bytes still fits the budget, spending it.
-///
-/// The budget is checked before the text is taken rather than after, so one
-/// enormous plan cannot push a read past the limit.
-const fn afford(left: &mut usize, len: usize) -> bool {
-    if len > *left {
-        return false;
-    }
-    *left -= len;
-    true
-}
-
-fn ossc_row_from_pg(row: &tokio_postgres::Row, left: &mut usize) -> OsscRow {
-    let plan: Option<String> = row.get("plan");
+fn ossc_row_from_pg(row: &tokio_postgres::Row) -> OsscRow {
     OsscRow {
         ts: row.get("ts_us"),
         queryid: row.get("queryid"),
@@ -379,7 +385,7 @@ fn ossc_row_from_pg(row: &tokio_postgres::Row, left: &mut usize) -> OsscRow {
         dbid: row.get("dbid"),
         datname: row.get("datname"),
         usename: row.get("usename"),
-        plan: plan.filter(|text| afford(left, text.len())),
+        plan: row.get("plan"),
         calls: row.get("calls"),
         total_time: row.get("total_time"),
         min_time: row.get("min_time"),
@@ -408,8 +414,7 @@ fn ossc_row_from_pg(row: &tokio_postgres::Row, left: &mut usize) -> OsscRow {
     }
 }
 
-fn vadv_row_from_pg(row: &tokio_postgres::Row, left: &mut usize) -> VadvRow {
-    let plan: Option<String> = row.get("plan");
+fn vadv_row_from_pg(row: &tokio_postgres::Row) -> VadvRow {
     VadvRow {
         ts: row.get("ts_us"),
         userid: row.get("userid"),
@@ -419,7 +424,7 @@ fn vadv_row_from_pg(row: &tokio_postgres::Row, left: &mut usize) -> VadvRow {
         queryid_stat_statements: row.get("queryid_stat_statements"),
         datname: row.get("datname"),
         usename: row.get("usename"),
-        plan: plan.filter(|text| afford(left, text.len())),
+        plan: row.get("plan"),
         calls: row.get("calls"),
         slow_log_calls: row.get("slow_log_calls"),
         total_time: row.get("total_time"),
@@ -449,50 +454,45 @@ fn vadv_row_from_pg(row: &tokio_postgres::Row, left: &mut usize) -> VadvRow {
     }
 }
 
-/// Collect the costliest ossc plan entries.
+/// Collect every OSSC-compatible plan entry.
 ///
 /// # Errors
 /// Returns the [`tokio_postgres::Error`] if the query fails.
 pub async fn collect_ossc<E>(
     session: Session<'_>,
-    limit: i64,
-    plan_text_budget: usize,
+    capability: &StorePlansCapability,
     stats: &mut QueryStats,
     sink: impl FnMut(Batch<OsscRow>) -> Result<BatchWrite, E>,
 ) -> Result<(), BatchError<E>> {
-    let mut left = plan_text_budget;
     query::read_batched(
         session,
-        &store_plans_query(Flavour::Ossc),
-        std::iter::once((limit, Type::INT8)),
-        size_of::<i64>(),
+        &store_plans_query(capability),
+        std::iter::empty::<(String, Type)>(),
+        0,
         stats,
-        |row| ossc_row_from_pg(row, &mut left),
+        ossc_row_from_pg,
         sink,
     )
     .await
 }
 
-/// Collect the costliest vadv-fork plan entries and their bounded plan text in
-/// the same natural view query.
+/// Collect every vadv entry and its bounded plan text in one set-based query.
 ///
 /// # Errors
 /// Returns the [`tokio_postgres::Error`] if a query fails.
 pub async fn collect_vadv<E>(
     session: Session<'_>,
-    limit: i64,
-    plan_text_budget: usize,
+    capability: &StorePlansCapability,
     stats: &mut QueryStats,
     sink: impl FnMut(Batch<VadvRow>) -> Result<BatchWrite, E>,
 ) -> Result<(), BatchError<E>> {
-    let mut left = plan_text_budget;
     query::read_batched(
         session,
-        &store_plans_query(Flavour::Vadv),
-        std::iter::once((limit, Type::INT8)),
-        size_of::<i64>(),
+        &store_plans_query(capability),
+        std::iter::empty::<(String, Type)>(),
+        0,
         stats,
-        |row| vadv_row_from_pg(row, &mut left),
+        vadv_row_from_pg,
         sink,
     )
     .await
