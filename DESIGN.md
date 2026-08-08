@@ -227,11 +227,11 @@ check sits in one place so that adding one does not touch the handlers.
 
 Web retains no in-memory segment or index cache between requests. A finished
 segment is immutable, and web serves one deterministic HTTP representation per
-finished segment with `Cache-Control: private, immutable`. The browser stores
+finished segment with `Cache-Control: private, max-age=31536000, immutable`. The browser stores
 that representation as immutable in its private cache.
 
 Each finished per-segment index has one stable URL. Web serves its response with
-`Cache-Control: private`; the browser stores it and uses ordinary `ETag`
+`Cache-Control: private, no-cache`; the browser stores it and uses ordinary `ETag`
 revalidation because the index is derived from the segment and may be rebuilt.
 An unchanged index returns `304 Not Modified` with no body; rebuilt content has
 a different `ETag`. Because requests use the HTTP `Basic` authentication
