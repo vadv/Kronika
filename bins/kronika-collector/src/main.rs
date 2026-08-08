@@ -284,59 +284,9 @@ fn collect_and_append_window(
     let Some(ts) = collection_timestamp() else {
         return Ok(CollectionOutcome::default());
     };
-    let fs = ProcFs::from_env();
-    let in_container = detect_container(&fs);
-    let mut buffers = SectionBuffers::new();
-
-    let instance = if segment.is_empty() {
-        match collect_instance() {
-            Ok(instance) => Some(instance),
-            Err(_logged) => return Ok(CollectionOutcome::default()),
-        }
-    } else {
-        None
+    let Some(buffers) = buffer_window(segment, due, logs, ts) else {
+        return Ok(CollectionOutcome::default());
     };
-
-    if let Some(facts) = instance.as_ref()
-        && let Err(err) = push_instance_metadata(
-            &mut buffers,
-            segment.interner_mut(),
-            facts,
-            in_container,
-            ts,
-        )
-    {
-        log_event(
-            LogLevel::Error,
-            "window_buffer_failure",
-            &[field("error", format!("{err:#}"))],
-        );
-        return Ok(CollectionOutcome::default());
-    }
-
-    let os = collect_os_sources(
-        &fs,
-        segment.interner_mut(),
-        OsScope::Host.as_u8(),
-        ts,
-        in_container,
-        due,
-    );
-    let log_rows = logs.collect(due, ts);
-
-    let buffered = push_os_sources(&mut buffers, &os)
-        .and_then(|()| push_log_sources(&mut buffers, segment.interner_mut(), &log_rows));
-    if let Err(err) = buffered {
-        log_event(
-            LogLevel::Error,
-            "window_buffer_failure",
-            &[field("error", format!("{err:#}"))],
-        );
-        return Ok(CollectionOutcome::default());
-    }
-    if buffers.is_empty() {
-        return Ok(CollectionOutcome::default());
-    }
 
     let flushed = match encode_window(buffers, segment.interner()) {
         Ok(flushed) => flushed,
@@ -387,6 +337,62 @@ fn collect_and_append_window(
             }
         }
     }
+}
+
+/// Read the due sources into a window, or `None` when the window is empty or a
+/// source failed. Failures are logged where they happen.
+fn buffer_window(
+    segment: &mut SegmentState,
+    due: &DueSet,
+    logs: &mut LogSources,
+    ts: i64,
+) -> Option<SectionBuffers> {
+    let fs = ProcFs::from_env();
+    let in_container = detect_container(&fs);
+    let mut buffers = SectionBuffers::new();
+
+    if segment.is_empty() {
+        let facts = collect_instance().ok()?;
+        if let Err(err) = push_instance_metadata(
+            &mut buffers,
+            segment.interner_mut(),
+            &facts,
+            in_container,
+            ts,
+        ) {
+            log_buffer_failure(&err);
+            return None;
+        }
+    }
+
+    let os = collect_os_sources(
+        &fs,
+        segment.interner_mut(),
+        OsScope::Host.as_u8(),
+        ts,
+        in_container,
+        due,
+    );
+    let log_rows = logs.collect(due, ts);
+
+    if let Err(err) = push_os_sources(&mut buffers, &os)
+        .and_then(|()| push_log_sources(&mut buffers, segment.interner_mut(), &log_rows))
+    {
+        log_buffer_failure(&err);
+        return None;
+    }
+    if buffers.is_empty() {
+        return None;
+    }
+    Some(buffers)
+}
+
+fn log_buffer_failure(err: &anyhow::Error) {
+    log_event(
+        LogLevel::Error,
+        "window_buffer_failure",
+        &[field("error", format!("{err:#}"))],
+    );
 }
 
 fn collection_timestamp() -> Option<i64> {
