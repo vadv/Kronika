@@ -199,6 +199,10 @@ struct LogFacts {
 ///
 /// Returns an error when the connection or the refresh query fails. A failed
 /// first identity query leaves the identity empty so the next rescan retries it.
+#[allow(
+    clippy::too_many_lines,
+    reason = "connection, fact-query, and optional identity-query outcomes are reported together"
+)]
 pub(super) async fn postgres(
     target: &ConnectionTarget,
     cached_system_identifier: Option<u64>,
@@ -290,9 +294,10 @@ pub(super) async fn postgres(
         QueryOutcome::Success,
         None,
     );
-    let (system_identifier, identity_unavailable) = match cached_system_identifier {
-        Some(identifier) => (Some(identifier), false),
-        None => {
+    let (system_identifier, identity_unavailable) =
+        if let Some(identifier) = cached_system_identifier {
+            (Some(identifier), false)
+        } else {
             let mut stats = QueryStats::default();
             let started = Instant::now();
             let identity = tokio::time::timeout(
@@ -344,8 +349,7 @@ pub(super) async fn postgres(
                     (None, true)
                 }
             }
-        }
-    };
+        };
     drop(client);
     driver.abort();
     Ok(PostgresServer {
@@ -358,6 +362,10 @@ pub(super) async fn postgres(
     })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the observation keeps query identity, timing, counters, outcome, and error separate"
+)]
 fn observe_query(
     observe: &mut (dyn FnMut(PgObservation) + Send),
     query_name: &'static str,

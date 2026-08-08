@@ -147,7 +147,7 @@ pub enum BatchError<E> {
     Sink(E),
 }
 
-/// A typed row failed to decode after PostgreSQL returned it successfully.
+/// A typed row failed to decode after `PostgreSQL` returned it successfully.
 #[derive(Debug)]
 pub struct DecodeError(anyhow::Error);
 
@@ -168,7 +168,7 @@ impl Error for DecodeError {
 pub struct StreamError(tokio_postgres::Error);
 
 impl StreamError {
-    /// The underlying PostgreSQL error used for failure classification.
+    /// The underlying `PostgreSQL` error used for failure classification.
     #[must_use]
     pub const fn postgres(&self) -> &tokio_postgres::Error {
         &self.0

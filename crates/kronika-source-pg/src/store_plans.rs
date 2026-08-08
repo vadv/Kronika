@@ -7,7 +7,7 @@
 //! interface carries an internal query id plus a separate `pg_stat_statements`
 //! id and exposes plan text through a four-key function.
 //!
-//! Rows are streamed in bounded collector batches. PostgreSQL truncates each
+//! Rows are streamed in bounded collector batches. `PostgreSQL` truncates each
 //! plan text before it crosses the connection.
 
 use kronika_registry::pg_store_plans::{
@@ -218,7 +218,7 @@ pub struct OsscRow {
 pub struct DatasentinelRow {
     /// The shared zero-argument-interface fields.
     base: OsscRow,
-    /// Relation OIDs as bounded PostgreSQL `oid[]` text.
+    /// Relation OIDs as bounded `PostgreSQL` `oid[]` text.
     relids: Option<String>,
     /// Command type reported by the extension.
     cmd_type: Option<String>,

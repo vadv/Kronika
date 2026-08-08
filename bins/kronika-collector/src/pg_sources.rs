@@ -617,6 +617,10 @@ impl PgSources {
         Ok(true)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "statement and plan reads share one ordered dynamic-capability workflow"
+    )]
     async fn collect_extensions_dynamic<E>(
         &mut self,
         probe: &GenerationProbe,
@@ -892,8 +896,7 @@ impl PgSources {
                 Err(error) => {
                     return Err(error);
                 }
-                Ok(RelationResult::Complete) => {}
-                Ok(RelationResult::SourceFailed) => {}
+                Ok(RelationResult::Complete | RelationResult::SourceFailed) => {}
                 Ok(RelationResult::ConnectionFailed) => pool.close(),
                 Ok(RelationResult::TimedOut) => {
                     pool.close();
@@ -905,6 +908,10 @@ impl PgSources {
 
     /// Refresh the connectable database list and one capability map entry per
     /// database. A failed inventory never leaves a stale capability behind.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "database enumeration and per-database inventory form one atomic refresh"
+    )]
     async fn discover(
         &mut self,
         probe: &GenerationProbe,
@@ -932,11 +939,7 @@ impl PgSources {
             .await;
             match finish_query(measured, result) {
                 Ok(found) => found,
-                Err(QueryFailure::Timeout) => {
-                    self.clear_primary_connection();
-                    return;
-                }
-                Err(QueryFailure::Connection) => {
+                Err(QueryFailure::Timeout | QueryFailure::Connection) => {
                     self.clear_primary_connection();
                     return;
                 }
@@ -970,14 +973,7 @@ impl PgSources {
             };
             let session = match session {
                 Ok(session) => session,
-                Err(QueryFailure::Timeout) => {
-                    pool.close();
-                    if let Some(previous) = previous {
-                        capabilities.insert(database.name.clone(), previous);
-                    }
-                    continue;
-                }
-                Err(QueryFailure::Connection) => {
+                Err(QueryFailure::Timeout | QueryFailure::Connection) => {
                     pool.close();
                     if let Some(previous) = previous {
                         capabilities.insert(database.name.clone(), previous);
@@ -1707,7 +1703,10 @@ fn postgres_stream_capability_changed(error: &tokio_postgres::Error) -> bool {
 }
 
 fn postgres_connection_error(error: &anyhow::Error) -> bool {
-    if error.chain().any(|cause| cause.is::<query::DecodeError>()) {
+    if error
+        .chain()
+        .any(<dyn std::error::Error>::is::<query::DecodeError>)
+    {
         return false;
     }
     if let Some(stream) = error
@@ -1724,7 +1723,10 @@ fn postgres_connection_error(error: &anyhow::Error) -> bool {
 }
 
 fn postgres_capability_changed(error: &anyhow::Error) -> bool {
-    if error.chain().any(|cause| cause.is::<query::DecodeError>()) {
+    if error
+        .chain()
+        .any(<dyn std::error::Error>::is::<query::DecodeError>)
+    {
         return false;
     }
     if let Some(stream) = error

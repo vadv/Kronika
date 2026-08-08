@@ -7,7 +7,7 @@ use kronika_source_pg::query::QueryStats;
 use super::{ConnectionObservation, PgObservation, QueryObservation, QueryOutcome};
 use crate::logging::{LogField, LogLevel, duration_ms, field, log_event, peak_rss_kib};
 
-const REPORT_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const REPORT_INTERVAL: Duration = Duration::from_mins(5);
 const SLOW_QUERY: Duration = Duration::from_millis(500);
 const MIB: u128 = 1_048_576;
 const DECIMAL_PLACES: u128 = 1_000_000;

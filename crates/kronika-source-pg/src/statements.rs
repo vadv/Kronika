@@ -219,7 +219,7 @@ pub struct StatementsRow {
     pub datname: Option<String>,
     /// Role name resolved from `userid`.
     pub usename: Option<String>,
-    /// Statement text, bounded in SQL; `None` when PostgreSQL masks it.
+    /// Statement text, bounded in SQL; `None` when `PostgreSQL` masks it.
     pub query: Option<String>,
     /// Executions.
     pub calls: i64,

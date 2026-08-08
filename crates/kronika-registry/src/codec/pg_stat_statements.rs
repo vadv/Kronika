@@ -959,10 +959,7 @@ mod tests {
         let c = PgStatStatementsV6::CONTRACT;
         assert_eq!(c.type_id.get(), 1_002_006);
         assert_eq!(c.columns.len(), 55);
-        assert_eq!(
-            c.sort_key,
-            ["dbid", "userid", "queryid", "toplevel", "ts"]
-        );
+        assert_eq!(c.sort_key, ["dbid", "userid", "queryid", "toplevel", "ts"]);
         assert_eq!(c.column("ts").map(|col| col.nullable), Some(false));
         assert_eq!(c.column("dbid").map(|col| col.nullable), Some(false));
         assert_eq!(c.column("userid").map(|col| col.nullable), Some(false));

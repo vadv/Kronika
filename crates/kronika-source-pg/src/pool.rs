@@ -90,7 +90,7 @@ impl Pool {
 
     /// Build a lazy pool from an already parsed configuration.
     #[must_use]
-    pub fn from_config(config: Config) -> Self {
+    pub const fn from_config(config: Config) -> Self {
         Self {
             config,
             resolved_user: None,
@@ -119,7 +119,7 @@ impl Pool {
     pub fn database_label(&self) -> &str {
         self.resolved_database
             .as_deref()
-            .or(self.config.get_dbname())
+            .or_else(|| self.config.get_dbname())
             .unwrap_or("server-default")
     }
 
@@ -128,7 +128,9 @@ impl Pool {
     pub fn connection_label(&self, source_index: usize) -> String {
         connection_label(
             &self.config,
-            self.resolved_user.as_deref().or(self.config.get_user()),
+            self.resolved_user
+                .as_deref()
+                .or_else(|| self.config.get_user()),
             source_index,
         )
     }

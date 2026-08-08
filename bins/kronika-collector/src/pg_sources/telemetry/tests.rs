@@ -75,7 +75,11 @@ fn periodic_report_waits_for_five_minutes() {
     );
     telemetry.active = true;
 
-    telemetry.maybe_emit(started + REPORT_INTERVAL - Duration::from_millis(1));
+    telemetry.maybe_emit(
+        (started + REPORT_INTERVAL)
+            .checked_sub(Duration::from_millis(1))
+            .expect("one millisecond fits inside the report interval"),
+    );
     assert_eq!(telemetry.totals.query_count, 1);
     telemetry.maybe_emit(started + REPORT_INTERVAL);
     assert_eq!(telemetry.totals.query_count, 0);

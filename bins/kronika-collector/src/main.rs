@@ -141,6 +141,10 @@ fn main() -> Result<()> {
 }
 
 #[tokio::main]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the top-level signal and persistence loop must share shutdown telemetry"
+)]
 async fn run_collector() -> Result<()> {
     let config = Config::from_env()?;
     let (writer_owner, mut journal) = start_up(&config)?;

@@ -394,7 +394,7 @@ pub struct PgStorePlansOsscV1 {
 /// Type `1_018_001`: Datasentinel `pg_store_plans` 2.x.
 ///
 /// This interface extends the OSSC-compatible counters with the relation OIDs
-/// and command type. `relids` keeps PostgreSQL's lossless `oid[]` text because
+/// and command type. `relids` keeps `PostgreSQL`'s lossless `oid[]` text because
 /// the segment codec has no unsigned-integer list type.
 #[derive(Debug, Clone, Copy, PartialEq, Section)]
 #[section(
@@ -428,7 +428,7 @@ pub struct PgStorePlansDatasentinelV1 {
     /// Server-truncated plan text.
     #[column(l)]
     pub plan: Option<StrId>,
-    /// Relation OIDs in PostgreSQL `oid[]` text form, at most 48 elements.
+    /// Relation OIDs in `PostgreSQL` `oid[]` text form, at most 48 elements.
     #[column(l)]
     pub relids: Option<StrId>,
     /// Command type reported by the extension.
