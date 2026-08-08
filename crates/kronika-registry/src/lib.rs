@@ -68,6 +68,8 @@ pub use codec::pg_prepared_xacts::PgPreparedXacts;
 pub use codec::pg_settings::PgSettings;
 pub use codec::pg_stat_activity::{PgStatActivityV1, PgStatActivityV2, PgStatActivityV3};
 pub use codec::pg_stat_archiver::PgStatArchiver;
+pub use codec::pg_stat_bgwriter::{PgStatBgwriterV1, PgStatBgwriterV2};
+pub use codec::pg_stat_checkpointer::{PgStatCheckpointerV1, PgStatCheckpointerV2};
 pub use codec::pg_stat_database::{
     PgStatDatabaseV1, PgStatDatabaseV2, PgStatDatabaseV3, PgStatDatabaseV4,
 };
@@ -79,12 +81,14 @@ pub use codec::pg_stat_statements::{
     PgStatStatementsV1, PgStatStatementsV2, PgStatStatementsV3, PgStatStatementsV4,
     PgStatStatementsV5, PgStatStatementsV6,
 };
+pub use codec::pg_stat_statements_info::PgStatStatementsInfo;
 pub use codec::pg_stat_user_indexes::{PgStatUserIndexesV1, PgStatUserIndexesV2};
 pub use codec::pg_stat_user_tables::{
     PgStatUserTablesV1, PgStatUserTablesV2, PgStatUserTablesV3, PgStatUserTablesV4,
 };
 pub use codec::pg_stat_wal::{PgStatWalV1, PgStatWalV2};
 pub use codec::pg_store_plans::{PgStorePlansOsscV1, PgStorePlansVadvV1};
+pub use codec::pg_store_plans_info::PgStorePlansInfo;
 pub use codec::pgbouncer_events::PgBouncerEvents;
 pub(crate) use codec::{check_row_cap, decode_batches, decode_section, encode_section};
 pub use codec::{
@@ -92,9 +96,10 @@ pub use codec::{
     os_cgroup_pids, os_cpu, os_diskstats, os_interrupts, os_kernel_limits, os_loadavg, os_meminfo,
     os_mountinfo, os_netdev, os_netstat, os_nfs, os_numa, os_process, os_process_status, os_psi,
     os_snmp, os_snmp6, os_softirq, os_stat, os_topology, os_vmstat, pg_locks, pg_log,
-    pg_prepared_xacts, pg_settings, pg_stat_activity, pg_stat_archiver, pg_stat_database,
-    pg_stat_io, pg_stat_progress_vacuum, pg_stat_statements, pg_stat_user_indexes,
-    pg_stat_user_tables, pg_stat_wal, pg_store_plans, pgbouncer_events,
+    pg_prepared_xacts, pg_settings, pg_stat_activity, pg_stat_archiver, pg_stat_bgwriter,
+    pg_stat_checkpointer, pg_stat_database, pg_stat_io, pg_stat_progress_vacuum,
+    pg_stat_statements, pg_stat_statements_info, pg_stat_user_indexes, pg_stat_user_tables,
+    pg_stat_wal, pg_store_plans, pg_store_plans_info, pgbouncer_events,
 };
 pub use contract::{
     Column, ColumnClass, ColumnType, LintError, Semantics, StrId, Ts, TypeContract, Unit, lint,
@@ -169,6 +174,8 @@ pub const fn registry() -> &'static [TypeContract] {
         os_nfs::OsNfsServer::CONTRACT,
         PgSettings::CONTRACT,
         PgStatArchiver::CONTRACT,
+        PgStatBgwriterV1::CONTRACT,
+        PgStatBgwriterV2::CONTRACT,
         PgPreparedXacts::CONTRACT,
         PgStatDatabaseV4::CONTRACT,
         PgStatDatabaseV3::CONTRACT,
@@ -190,6 +197,10 @@ pub const fn registry() -> &'static [TypeContract] {
         PgStatUserTablesV1::CONTRACT,
         PgStorePlansVadvV1::CONTRACT,
         PgStorePlansOsscV1::CONTRACT,
+        PgStatStatementsInfo::CONTRACT,
+        PgStorePlansInfo::CONTRACT,
+        PgStatCheckpointerV1::CONTRACT,
+        PgStatCheckpointerV2::CONTRACT,
         PgStatStatementsV6::CONTRACT,
         PgStatStatementsV5::CONTRACT,
         PgStatStatementsV4::CONTRACT,

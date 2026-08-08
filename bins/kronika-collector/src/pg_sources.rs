@@ -11,18 +11,25 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use kronika_registry::pg_stat_statements_info::PgStatStatementsInfo;
+use kronika_registry::pg_store_plans_info::PgStorePlansInfo;
 use kronika_source_pg::activity::{self, ActivityRow, ActivityVersion};
 use kronika_source_pg::archiver::ArchiverRow;
+use kronika_source_pg::bgwriter::{self, BgwriterSnapshot};
+use kronika_source_pg::checkpointer::{self, CheckpointerSnapshot};
 use kronika_source_pg::database::{self, DatabaseRow, DatabaseVersion};
 use kronika_source_pg::databases;
 use kronika_source_pg::extension;
 use kronika_source_pg::io::{self, IoRow, IoVersion};
+use kronika_source_pg::locks::{self, LockRow, LocksVersion};
 use kronika_source_pg::prepared_xacts::{self, PreparedXactsRow};
 use kronika_source_pg::progress_vacuum::{self, ProgressVacuumRow};
 use kronika_source_pg::query::{self, BatchError, BatchWrite};
 use kronika_source_pg::settings::{self, SettingsRow};
 use kronika_source_pg::statements::{self, StatementsRow, StatementsVersion};
+use kronika_source_pg::statements_info;
 use kronika_source_pg::store_plans::{self, Flavour, OsscRow, VadvRow};
+use kronika_source_pg::store_plans_info;
 use kronika_source_pg::user_indexes::{self, UserIndexesRow, UserIndexesVersion};
 use kronika_source_pg::user_tables::{self, UserTablesRow, UserTablesVersion};
 use kronika_source_pg::wal::{self, WalSnapshot};
@@ -189,15 +196,20 @@ fn measure<'a>(
 pub(crate) enum PgBatch {
     Settings(Arc<[SettingsRow]>),
     Archiver(ArchiverRow),
+    Bgwriter(BgwriterSnapshot),
+    Checkpointer(CheckpointerSnapshot),
     Wal(WalSnapshot),
     PreparedXacts(Vec<PreparedXactsRow>),
     Database(DatabaseVersion, Vec<DatabaseRow>),
     Io(IoVersion, Vec<IoRow>),
     Activity(ActivityVersion, Vec<ActivityRow>),
+    Locks(LocksVersion, Vec<LockRow>),
     ProgressVacuum(Vec<ProgressVacuumRow>),
     Statements(StatementsVersion, Vec<StatementsRow>),
+    StatementsInfo(PgStatStatementsInfo),
     StorePlansOssc(Vec<OsscRow>),
     StorePlansVadv(Vec<VadvRow>),
+    StorePlansInfo(PgStorePlansInfo),
     UserTables(UserTablesVersion, Vec<UserTablesRow>),
     UserIndexes(UserIndexesVersion, Vec<UserIndexesRow>),
 }

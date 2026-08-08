@@ -32,6 +32,27 @@ pub struct ExtensionVersion {
     pub minor: u32,
 }
 
+/// One extension installation in the connected database.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledExtension {
+    /// Installed extension version.
+    pub version: ExtensionVersion,
+    /// Schema that owns the extension objects.
+    pub schema: String,
+}
+
+impl InstalledExtension {
+    /// A safely quoted extension object name.
+    #[must_use]
+    pub fn object(&self, name: &str) -> String {
+        format!("{}.{}", quote_ident(&self.schema), quote_ident(name))
+    }
+}
+
+fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
 /// Read `major.minor` from an `extversion` string.
 ///
 /// Anything after the second component is ignored: no extension this collector
@@ -61,18 +82,29 @@ pub async fn installed(
     session: Session<'_>,
     name: &str,
     stats: &mut QueryStats,
-) -> Result<Option<ExtensionVersion>> {
+) -> Result<Option<InstalledExtension>> {
     let row = query::read_optional(
         session,
-        marked!("SELECT extversion FROM pg_extension WHERE extname = $1"),
+        marked!(
+            "SELECT e.extversion, n.nspname::text AS schema_name \
+             FROM pg_extension e \
+             JOIN pg_namespace n ON n.oid = e.extnamespace \
+             WHERE e.extname = $1"
+        ),
         std::iter::once((name.to_owned(), Type::TEXT)),
         name.len(),
         stats,
-        |row| row.get::<_, String>("extversion"),
+        |row| {
+            let version = parse_version(&row.get::<_, String>("extversion"));
+            version.map(|version| InstalledExtension {
+                version,
+                schema: row.get("schema_name"),
+            })
+        },
     )
     .await
     .with_context(|| format!("look for the {name} extension"))?;
-    Ok(row.as_deref().and_then(parse_version))
+    Ok(row.flatten())
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-use super::{ExtensionVersion, parse_version};
+use super::{ExtensionVersion, InstalledExtension, parse_version};
 
 const fn version(major: u32, minor: u32) -> ExtensionVersion {
     ExtensionVersion { major, minor }
@@ -32,4 +32,16 @@ fn something_that_is_not_a_version_is_rejected() {
 fn versions_order_by_major_before_minor() {
     assert!(parse_version("1.12") > parse_version("1.9"));
     assert!(parse_version("2.0") > parse_version("1.12"));
+}
+
+#[test]
+fn extension_objects_are_schema_qualified_and_quoted() {
+    let installed = InstalledExtension {
+        version: version(1, 10),
+        schema: "metrics\"schema".to_owned(),
+    };
+    assert_eq!(
+        installed.object("pg_store_plans_info"),
+        "\"metrics\"\"schema\".\"pg_store_plans_info\""
+    );
 }

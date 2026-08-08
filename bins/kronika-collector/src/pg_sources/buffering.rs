@@ -4,8 +4,11 @@ use anyhow::Result;
 use kronika_registry::StrId;
 use kronika_source_pg::activity::{self, ActivityRow, ActivityVersion};
 use kronika_source_pg::archiver;
+use kronika_source_pg::bgwriter::BgwriterSnapshot;
+use kronika_source_pg::checkpointer::CheckpointerSnapshot;
 use kronika_source_pg::database::{self, DatabaseRow, DatabaseVersion};
 use kronika_source_pg::io::{self, IoRow, IoVersion};
+use kronika_source_pg::locks::{self, LockRow, LocksVersion};
 use kronika_source_pg::prepared_xacts;
 use kronika_source_pg::progress_vacuum::{self, ProgressVacuumRow};
 use kronika_source_pg::settings::{self, SettingsRow};
@@ -37,6 +40,10 @@ pub(crate) fn push_pg_batch(
         PgBatch::Archiver(row) => {
             buffer_row(buffers, archiver::to_archiver(row, intern(interner))?)
         }
+        PgBatch::Bgwriter(BgwriterSnapshot::V1(row)) => buffer_row(buffers, *row),
+        PgBatch::Bgwriter(BgwriterSnapshot::V2(row)) => buffer_row(buffers, *row),
+        PgBatch::Checkpointer(CheckpointerSnapshot::V1(row)) => buffer_row(buffers, *row),
+        PgBatch::Checkpointer(CheckpointerSnapshot::V2(row)) => buffer_row(buffers, *row),
         PgBatch::Wal(WalSnapshot::V1(row)) => buffer_row(buffers, *row),
         PgBatch::Wal(WalSnapshot::V2(row)) => buffer_row(buffers, *row),
         PgBatch::PreparedXacts(rows) => {
@@ -51,6 +58,7 @@ pub(crate) fn push_pg_batch(
         PgBatch::Database(version, rows) => push_database(buffers, interner, *version, rows),
         PgBatch::Io(version, rows) => push_io(buffers, interner, *version, rows),
         PgBatch::Activity(version, rows) => push_activity(buffers, interner, *version, rows),
+        PgBatch::Locks(version, rows) => push_locks(buffers, interner, *version, rows),
         PgBatch::ProgressVacuum(rows) => {
             for row in rows {
                 match row {
@@ -68,6 +76,7 @@ pub(crate) fn push_pg_batch(
             Ok(())
         }
         PgBatch::Statements(version, rows) => push_statements(buffers, interner, *version, rows),
+        PgBatch::StatementsInfo(row) => buffer_row(buffers, *row),
         PgBatch::StorePlansOssc(rows) => {
             for row in rows {
                 buffer_row(buffers, store_plans::to_ossc(row, intern(interner))?)?;
@@ -80,9 +89,25 @@ pub(crate) fn push_pg_batch(
             }
             Ok(())
         }
+        PgBatch::StorePlansInfo(row) => buffer_row(buffers, *row),
         PgBatch::UserTables(version, rows) => push_user_tables(buffers, interner, *version, rows),
         PgBatch::UserIndexes(version, rows) => push_user_indexes(buffers, interner, *version, rows),
     }
+}
+
+fn push_locks(
+    buffers: &mut SectionBuffers,
+    interner: &mut Interner,
+    version: LocksVersion,
+    rows: &[LockRow],
+) -> Result<()> {
+    for row in rows {
+        match version {
+            LocksVersion::V1 => buffer_row(buffers, locks::to_v1(row, intern(interner))?)?,
+            LocksVersion::V2 => buffer_row(buffers, locks::to_v2(row, intern(interner))?)?,
+        }
+    }
+    Ok(())
 }
 
 fn push_settings(

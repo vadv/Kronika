@@ -57,14 +57,18 @@ pub mod pg_prepared_xacts;
 pub mod pg_settings;
 pub mod pg_stat_activity;
 pub mod pg_stat_archiver;
+pub mod pg_stat_bgwriter;
+pub mod pg_stat_checkpointer;
 pub mod pg_stat_database;
 pub mod pg_stat_io;
 pub mod pg_stat_progress_vacuum;
 pub mod pg_stat_statements;
+pub mod pg_stat_statements_info;
 pub mod pg_stat_user_indexes;
 pub mod pg_stat_user_tables;
 pub mod pg_stat_wal;
 pub mod pg_store_plans;
+pub mod pg_store_plans_info;
 pub mod pgbouncer_events;
 
 mod bounds;
