@@ -1,4 +1,4 @@
-//! OSSC `pg_store_plans_info` collection for type `1_016_001`.
+//! Discovered `pg_store_plans_info` collection for type `1_016_001`.
 
 use kronika_registry::Ts;
 use kronika_registry::pg_store_plans_info::PgStorePlansInfo;

@@ -16,13 +16,14 @@ invent a rule and proceed.
 These come out of `DESIGN.md` and get violated most often. Check them on every
 change.
 
-1. **The collector holds a collection in memory, and says what it cost.** On an
-   ordinary host that is under 20 MB, and every segment write logs `rss_kib`, so
-   the number is on record rather than guessed at. There are no per-source row
-   caps: a host with thirty thousand processes yields thirty thousand rows, and
-   if that does not fit, the collector dies and the operator can see why. Logs
-   are the exception — a log file can be gigabytes, so it is read through a
-   fixed buffer and never held whole.
+1. **The collector bounds memory and says what collection cost.** On an ordinary
+   host its peak RSS stays under 20 MB, and every segment write logs `rss_kib`,
+   so the number is recorded rather than guessed at. Ordinary OS snapshots have
+   no row cap: a host with thirty thousand processes yields thirty thousand
+   rows, and if that does not fit, the collector dies and the operator can see
+   why. Logs and potentially large PostgreSQL query results are streamed through
+   fixed buffers. A PostgreSQL batch limits retained memory, not source rows;
+   the collector appends each batch to the WAL before fetching the next one.
 2. **A metric's fields change, its id changes.** No optional columns added to
    keep an id stable.
 3. **The collector never guesses its environment.** VM or container is decided

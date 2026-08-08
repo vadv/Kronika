@@ -2,9 +2,9 @@
 
 [Русская версия](README.ru.md)
 
-`kronika-collector` reads operating-system metrics at configured intervals and
-writes Kronika segments. It has no public command-line interface; environment
-variables provide its configuration.
+`kronika-collector` reads operating-system and PostgreSQL metrics, follows
+PostgreSQL and PgBouncer logs, and writes Kronika segments. It has no public
+command-line interface; environment variables provide its configuration.
 
 ## Configuration
 
@@ -12,9 +12,10 @@ Every variable below is read and parsed once, before the first collection. A
 value that does not parse stops the daemon with a message naming the variable
 and the invalid value. The daemon does not substitute a default.
 
-There is no per-source row cap. A source returns every available row. Each
-`segment_write_finish` log record includes `rss_kib`, the process's peak
-resident set size.
+There is no per-source row cap. Ordinary snapshots retain all rows for one
+source. Large PostgreSQL results are streamed in bounded batches without
+dropping rows. Each `segment_write_finish` log record includes `rss_kib`, the
+process's peak resident set size.
 
 `KRONIKA_OUT_DIR` is the only required variable.
 
@@ -44,8 +45,8 @@ source interval of `0` reads on every timer cycle.
 | `KRONIKA_OS_CGROUP_INTERVAL_S` | 10 | `1_201`–`1_204`. |
 | `KRONIKA_OS_CGROUP_MAPPING_INTERVAL_S` | 30 | `1_200`. |
 | `KRONIKA_LOG_INTERVAL_S` | 10 | `2_001`–`2_007`, `2_100`. |
-| `KRONIKA_PG_INTERVAL_S` | 30 | `1_001`–`1_010`, `1_012`, `1_019`. |
-| `KRONIKA_PG_RELATIONS_INTERVAL_S` | 300 | `1_013`, `1_014`. |
+| `KRONIKA_PG_INTERVAL_S` | 30 | `1_001`–`1_012`, `1_015`–`1_017`, `1_019`. |
+| `KRONIKA_PG_RELATIONS_INTERVAL_S` | 300 | `1_013`, `1_014`; database and extension discovery. |
 
 ### Which server to ask for metrics
 
@@ -55,19 +56,58 @@ produced it, so a second DSN is followed for its log only, and starting with
 more than one is one line in the log saying which was chosen.
 
 Per-table and per-index statistics exist only inside the database that produced
-them, so the collector opens one connection per database and replaces every
-connection once it reaches an hour. The database list is read on each of those
-cycles: a database created since the last one starts being collected, one that
-was dropped stops.
+them. The collector keeps one connection to each connectable database and
+reuses it while it remains healthy. The five-minute discovery pass adds a
+connection when a database appears and removes it when the database disappears.
+A connection is reopened after a connection, protocol, or query deadline
+failure; age alone does not replace it.
 
-`pg_stat_statements` is collected from extension version 1.5 onward. For
-`pg_store_plans`, the collector supports OSSC version 1.9 onward and the vadv
-2.x fork. A server without a supported version simply produces nothing for
-those sections. A read takes the costliest 500 plans and up to a mebibyte of
-plan text.
+Extensions are database-local even when their statistics are instance-wide.
+The same discovery pass runs one compact inventory query in every database and
+caches the database, schema, and usable interfaces of each installation. The
+collector selects one usable installation of each extension, so shared rows are
+not duplicated. Creating, dropping, or moving an extension changes the selected
+installation on the next pass.
 
-Every segment carries a full `pg_settings` snapshot, so a segment read on its
-own says what the numbers in it were produced under.
+`pg_stat_statements` is collected from extension version 1.5 onward, with one
+layout per column set. `pg_store_plans` is identified by its callable interface
+and result columns rather than `extversion`: the collector keeps separate OSSC
+and Datasentinel layouts for their zero-argument readers, and recognizes the
+vadv boolean reader with its four-key plan getter. It also discovers the exact
+readable `pg_stat_statements_info` and `pg_store_plans_info` views. The complete
+layout map is in
+[PostgreSQL metric types](../../docs/type-registry/postgresql-metrics.md).
+
+`pg_settings` is read on each PostgreSQL collection. The collector writes a
+full snapshot after the first successful read, when a setting changes, and when
+a new segment first receives PostgreSQL rows. It reuses the latest successful
+snapshot when opening that segment.
+
+### PostgreSQL query execution
+
+Small administrative reads use PostgreSQL's Simple Query Protocol. Typed metric
+reads use one-shot unnamed Extended Protocol queries. The collector sends one
+query at a time on each connection: it creates no named prepared statements and
+does not pipeline requests.
+
+Potentially large results are consumed in batches of at most 256 rows or an
+estimated 512 KiB of decoded application data. Each batch is encoded and
+appended to the WAL before the next row is fetched. There is no top-N plan
+selection or shared plan-text budget. Each statement or plan text is limited in
+SQL to 65,536 characters before it crosses the connection.
+
+If a stream fails after earlier batches reached the WAL, those batches remain.
+The collector logs the error, skips the rest of that read, and continues with
+independent sources. A connection or query timeout closes that connection; a
+later collection reconnects.
+
+Every SQL query produces a `pg_query_finish` event at debug level with its
+timings and counters. Fetches longer than 500 ms also produce a
+`pg_query_slow` warning. About every five minutes, and once at shutdown,
+`pg_query_summary` reports the query count and rate, rows, estimated logical
+application bytes read and written, errors, timeouts, slow queries, fetch,
+encoding and WAL append time, encoded and appended bytes, and `peak_rss_kib`.
+Connection labels use `user@host:port`; raw DSNs are never logged.
 
 ### Which logs to follow
 
@@ -83,20 +123,22 @@ of the four is set.
 
 | Variable | Default | Meaning |
 | --- | ---: | --- |
-| `KRONIKA_PG_DSNS` | unset | Where to ask `PostgreSQL` for `pg_current_logfile()`, `log_line_prefix` and its `system_identifier`. |
+| `KRONIKA_PG_DSNS` | unset | PostgreSQL metric and log-discovery connections. Every entry supplies log location and format; only the first supplies metric rows. |
 | `KRONIKA_PG_LOGS` | unset | `PostgreSQL` logs named outright. An entry with `*` or `?` in its last component is a pattern matched against that directory. |
 | `KRONIKA_PGBOUNCER_DSNS` | unset | Where to ask `PgBouncer` for `SHOW CONFIG`, which carries `logfile`. The account needs to be in `stats_users`; no administrative right beyond that. |
 | `KRONIKA_PGBOUNCER_LOGS` | unset | `PgBouncer` logs named outright, paths or patterns. |
 
 A log file's size is set by someone else's software, so it is read through a
-fixed buffer and never held whole; a file that grows faster than the collector
-reads it is read at 4 MiB per tick until it catches up.
+4 MiB buffer and never held whole. One collection reads at most 256 MiB from
+each file.
 
 Every way a source can be missing gets the same treatment: the server is down,
 `logging_collector` is off, `logfile` is unset, the file is not there yet, a
 new instance appeared. One line in the log, and the whole set is worked out
 again five minutes later. The collector keeps running either way, because its
-first job is the operating system.
+first job is the operating system. Log discovery refreshes the path, format,
+and `log_line_prefix` on each pass. It queries `system_identifier` until the
+first successful result, then keeps that value for the lifetime of the process.
 
 A DSN that reaches a server on another host reports a path that does not exist
 here. That is one line naming the path, and the hint it carries is the answer:

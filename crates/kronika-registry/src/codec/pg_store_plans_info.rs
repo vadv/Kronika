@@ -2,7 +2,7 @@
 
 use crate::{Section, Ts};
 
-/// Type `1_016_001`: module-level OSSC `pg_store_plans` counters.
+/// Type `1_016_001`: module-level counters from the discovered info view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Section)]
 #[section(
     id = 1_016_001,
