@@ -1,113 +1,155 @@
 //! Printing a segment as a table or as JSON.
 
-use kronika_index::{Index, OS_PSI_TYPE_ID, points, stalls};
+use std::io::Write;
+
+use kronika_index::{INSTANCE_METADATA_TYPE_ID, OS_PSI_TYPE_ID, points};
 use kronika_reader::{Cell, Dictionary, ReaderError, Resolved, Segment, StoreWarning};
-use kronika_registry::section_name;
+use kronika_registry::{DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, section_name};
 use serde_json::{Map, Value, json};
-
-/// Where the output goes, and in which shape.
-///
-/// JSON is one object per line rather than one array, so a long dump streams
-/// and a reader can stop early.
-#[derive(Debug)]
-pub(crate) struct Output {
-    json: bool,
-}
-
-impl Output {
-    /// Start an output in the requested shape.
-    pub(crate) const fn new(json: bool) -> Self {
-        Self { json }
-    }
-}
 
 /// A file the scan would not admit.
 ///
 /// It goes to the same stream as everything else under `--json`: a caller that
 /// only reads stdout still learns that something was left out.
-pub(crate) fn warning(out: &Output, warning: &StoreWarning) {
-    if out.json {
-        say(&json!({"kind": "warning", "detail": format!("{warning:?}")}));
+pub(crate) fn warning(
+    output: &mut impl Write,
+    json_output: bool,
+    warning: &StoreWarning,
+) -> Result<(), ReaderError> {
+    if json_output {
+        say(
+            output,
+            &json!({"kind": "warning", "detail": format!("{warning:?}")}),
+        )?;
     } else {
         eprintln!("kronika-dump: set aside {warning:?}");
     }
+    Ok(())
 }
 
 /// What each section of the segment costs.
-pub(crate) fn sizes(out: &Output, segment: &Segment) {
-    let total: u64 = segment.sections().map(|(_id, section)| section.bytes).sum();
-    if out.json {
+pub(crate) fn sizes(
+    output: &mut impl Write,
+    json_output: bool,
+    segment: &Segment,
+) -> Result<(), ReaderError> {
+    let section_bytes: u64 = segment.sections().map(|(_id, section)| section.bytes).sum();
+    let captured_bytes = segment.captured_bytes();
+    let overhead_bytes = captured_bytes.checked_sub(section_bytes).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("section bodies use {section_bytes} bytes in a {captured_bytes}-byte segment"),
+        )
+    })?;
+    if json_output {
         let path = segment.path().display().to_string();
-        say(&json!({
-            "kind": "segment",
-            "path": path,
-            "min_ts": segment.min_ts(),
-            "max_ts": segment.max_ts(),
-            "windows": segment.window_count(),
-            "section_bytes": total,
-        }));
-        for (type_id, section) in segment.sections() {
-            say(&json!({
-                "kind": "section",
+        say(
+            output,
+            &json!({
+                "kind": "segment",
                 "path": path,
-                "type_id": type_id,
-                "section": section_name(type_id).unwrap_or("unknown"),
-                "rows": section.rows,
-                "bytes": section.bytes,
-            }));
+                "min_ts": segment.min_ts(),
+                "max_ts": segment.max_ts(),
+                "windows": segment.window_count(),
+                "captured_bytes": captured_bytes,
+                "section_bytes": section_bytes,
+                "overhead_bytes": overhead_bytes,
+            }),
+        )?;
+        for (type_id, section) in segment.sections() {
+            say(
+                output,
+                &json!({
+                    "kind": "section",
+                    "path": path,
+                    "type_id": type_id,
+                    "section": section_name(type_id).unwrap_or("unknown"),
+                    "rows": section.rows,
+                    "bytes": section.bytes,
+                    "share_percent": percent(section.bytes, captured_bytes),
+                }),
+            )?;
         }
-        return;
+        say(
+            output,
+            &json!({
+                "kind": "overhead",
+                "path": path,
+                "bytes": overhead_bytes,
+                "share_percent": percent(overhead_bytes, captured_bytes),
+            }),
+        )?;
+        return Ok(());
     }
-    println!(
-        "{}  ts={}..{}  windows={}  section_bytes={total}",
+    writeln!(
+        output,
+        "{}  ts={}..{}  windows={}  captured_bytes={captured_bytes}  section_bytes={section_bytes}  overhead_bytes={overhead_bytes}",
         segment.path().display(),
         segment.min_ts(),
         segment.max_ts(),
         segment.window_count()
-    );
+    )?;
     for (type_id, section) in segment.sections() {
-        println!(
+        writeln!(
+            output,
             "  {type_id:<9} {:<22} rows={:<8} bytes={:<10} {}%",
             section_name(type_id).unwrap_or("unknown"),
             section.rows,
             section.bytes,
-            percent(section.bytes, total)
-        );
+            percent(section.bytes, captured_bytes)
+        )?;
     }
+    writeln!(
+        output,
+        "  {:<9} {:<22} rows={:<8} bytes={:<10} {}%",
+        "-",
+        "physical overhead",
+        "-",
+        overhead_bytes,
+        percent(overhead_bytes, captured_bytes)
+    )?;
+    Ok(())
 }
 
 /// The health points an index would hold for this segment.
 ///
 /// # Errors
 ///
-/// Returns the reader's error when the pressure section cannot be decoded.
-pub(crate) fn index(out: &Output, segment: &Segment) -> Result<(), ReaderError> {
-    let built = Index {
-        sources: 0,
-        points: points(&stalls(&segment.rows(OS_PSI_TYPE_ID)?)),
-    };
-    if out.json {
+/// Returns the reader's error when metadata or pressure rows cannot be decoded.
+pub(crate) fn index(
+    output: &mut impl Write,
+    json_output: bool,
+    segment: &Segment,
+) -> Result<(), ReaderError> {
+    let metadata_rows = segment.rows(INSTANCE_METADATA_TYPE_ID)?;
+    let pressure_rows = segment.rows(OS_PSI_TYPE_ID)?;
+    let points = points(&metadata_rows, &pressure_rows);
+    if json_output {
         let path = segment.path().display().to_string();
-        for point in &built.points {
-            say(&json!({
-                "kind": "point",
-                "path": path,
-                "ts": point.ts,
-                "health": point.health,
-            }));
+        for point in &points {
+            say(
+                output,
+                &json!({
+                    "kind": "point",
+                    "path": path,
+                    "ts": point.ts,
+                    "health": point.health,
+                }),
+            )?;
         }
         return Ok(());
     }
-    println!(
+    writeln!(
+        output,
         "{}  points={}  idx_bytes={}",
         segment.path().display(),
-        built.points.len(),
-        kronika_index::HEADER_LEN + built.points.len() * kronika_index::POINT_LEN
-    );
-    for point in &built.points {
+        points.len(),
+        kronika_index::HEADER_LEN + points.len() * kronika_index::POINT_LEN
+    )?;
+    for point in &points {
         match point.health {
-            Some(health) => println!("  {:<20} {health}", point.ts),
-            None => println!("  {:<20} -", point.ts),
+            Some(health) => writeln!(output, "  {:<20} {health}", point.ts)?,
+            None => writeln!(output, "  {:<20} -", point.ts)?,
         }
     }
     Ok(())
@@ -120,50 +162,141 @@ pub(crate) fn index(out: &Output, segment: &Segment) -> Result<(), ReaderError> 
 /// Returns the reader's error when the section or the dictionary cannot be
 /// decoded.
 pub(crate) fn section(
-    out: &Output,
+    output: &mut impl Write,
+    json_output: bool,
     segment: &Segment,
     type_id: u32,
     limit: usize,
 ) -> Result<(), ReaderError> {
-    let rows = segment.rows(type_id)?;
     let dictionary = segment.dictionary()?;
-    if !out.json {
-        println!(
+    if matches!(type_id, DICT_STRINGS_TYPE_ID | DICT_BLOBS_TYPE_ID) {
+        return dictionary_section(output, json_output, segment, type_id, limit, &dictionary);
+    }
+
+    let rows = segment.rows(type_id)?;
+    if !json_output {
+        writeln!(
+            output,
             "{}  {} ({type_id})  rows={}",
             segment.path().display(),
             section_name(type_id).unwrap_or("unknown"),
             rows.len()
-        );
+        )?;
     }
     for row in rows
         .iter()
         .take(if limit == 0 { rows.len() } else { limit })
     {
-        let mut fields = Vec::new();
-        for (name, cell) in row.iter() {
-            fields.push((name, show(cell, &dictionary)));
-        }
-        if out.json {
+        if json_output {
             let object: Map<String, Value> = row
                 .iter()
                 .map(|(name, cell)| ((*name).to_owned(), json_cell(cell, &dictionary)))
                 .collect();
-            say(&Value::Object(object));
+            write_json_row(output, segment.path(), type_id, &Value::Object(object))?;
         } else {
-            let body: Vec<String> = fields
+            let body: Vec<String> = row
                 .iter()
-                .map(|(name, value)| {
+                .map(|(name, cell)| {
+                    let value = show(cell, &dictionary);
                     let shown = value.as_deref().unwrap_or("null");
                     format!("{name}={shown}")
                 })
                 .collect();
-            println!("  {}", body.join(" "));
+            writeln!(output, "  {}", body.join(" "))?;
         }
     }
-    if !out.json && limit != 0 && rows.len() > limit {
-        println!("  … {} more rows", rows.len() - limit);
+    if !json_output && limit != 0 && rows.len() > limit {
+        writeln!(output, "  … {} more rows", rows.len() - limit)?;
     }
     Ok(())
+}
+
+fn dictionary_section(
+    output: &mut impl Write,
+    json_output: bool,
+    segment: &Segment,
+    type_id: u32,
+    limit: usize,
+    dictionary: &Dictionary,
+) -> Result<(), ReaderError> {
+    let mut entries: Vec<_> = dictionary
+        .entries()
+        .filter(|(_id, resolved)| belongs_to(type_id, *resolved))
+        .collect();
+    entries.sort_unstable_by_key(|(id, _resolved)| *id);
+    if !json_output {
+        writeln!(
+            output,
+            "{}  {} ({type_id})  rows={}",
+            segment.path().display(),
+            section_name(type_id).unwrap_or("unknown"),
+            entries.len()
+        )?;
+    }
+    let shown = if limit == 0 { entries.len() } else { limit };
+    for (id, resolved) in entries.iter().take(shown) {
+        if json_output {
+            let row = dictionary_json(*id, *resolved);
+            write_json_row(output, segment.path(), type_id, &row)?;
+        } else {
+            match resolved {
+                Resolved::Str(bytes) => {
+                    writeln!(output, "  str_id={id} bytes={bytes:?}")?;
+                }
+                Resolved::Blob(blob) => {
+                    writeln!(
+                        output,
+                        "  str_id={id} stored_bytes={:?} full_len={} truncated={} full_sha256={:?}",
+                        blob.stored_bytes, blob.full_len, blob.truncated, blob.full_sha256
+                    )?;
+                }
+            }
+        }
+    }
+    if !json_output && limit != 0 && entries.len() > limit {
+        writeln!(output, "  … {} more rows", entries.len() - limit)?;
+    }
+    Ok(())
+}
+
+const fn belongs_to(type_id: u32, resolved: Resolved<'_>) -> bool {
+    matches!(
+        (type_id, resolved),
+        (DICT_STRINGS_TYPE_ID, Resolved::Str(_)) | (DICT_BLOBS_TYPE_ID, Resolved::Blob(_))
+    )
+}
+
+fn dictionary_json(id: u64, resolved: Resolved<'_>) -> Value {
+    match resolved {
+        Resolved::Str(bytes) => json!({
+            "str_id": id,
+            "bytes": bytes,
+        }),
+        Resolved::Blob(blob) => json!({
+            "str_id": id,
+            "stored_bytes": blob.stored_bytes,
+            "full_len": blob.full_len,
+            "truncated": blob.truncated,
+            "full_sha256": blob.full_sha256,
+        }),
+    }
+}
+
+fn write_json_row(
+    output: &mut impl Write,
+    path: &std::path::Path,
+    type_id: u32,
+    row: &Value,
+) -> std::io::Result<()> {
+    say(
+        output,
+        &json!({
+            "kind": "row",
+            "path": path.display().to_string(),
+            "type_id": type_id,
+            "row": row,
+        }),
+    )
 }
 
 /// One cell as text. A dictionary id becomes what the segment interned under
@@ -181,19 +314,16 @@ fn show(cell: &Cell, dictionary: &Dictionary) -> Option<String> {
         Cell::ListI32(v) => Some(format!("{v:?}")),
         Cell::StrId(id) => Some(match dictionary.resolve(*id) {
             Some(Resolved::Str(bytes)) => String::from_utf8_lossy(bytes).into_owned(),
-            Some(Resolved::Blob(blob)) => blob_text(&blob),
+            Some(Resolved::Blob(blob)) => {
+                let text = String::from_utf8_lossy(blob.stored_bytes);
+                if blob.truncated {
+                    format!("{text}… (cut, {} bytes in full)", blob.full_len)
+                } else {
+                    text.into_owned()
+                }
+            }
             None => format!("<str {id}>"),
         }),
-    }
-}
-
-/// A blob, saying how much of it the segment kept.
-fn blob_text(blob: &kronika_reader::BlobEntry<'_>) -> String {
-    let text = String::from_utf8_lossy(blob.stored_bytes);
-    if blob.truncated {
-        format!("{text}… (cut, {} bytes in full)", blob.full_len)
-    } else {
-        text.into_owned()
     }
 }
 
@@ -229,8 +359,8 @@ fn json_cell(cell: &Cell, dictionary: &Dictionary) -> Value {
 }
 
 /// One JSON document per line, so a long dump streams.
-fn say(value: &Value) {
-    println!("{value}");
+fn say(output: &mut impl Write, value: &Value) -> std::io::Result<()> {
+    writeln!(output, "{value}")
 }
 
 #[cfg(test)]

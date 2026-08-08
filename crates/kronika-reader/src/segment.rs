@@ -30,6 +30,7 @@ pub struct Segment {
     source: Source,
     min_ts: i64,
     max_ts: i64,
+    captured_bytes: u64,
     window_count: u32,
     section_rows: BTreeMap<u32, Section>,
 }
@@ -63,6 +64,7 @@ impl Segment {
                     source: Source::Finished { file, catalog },
                     min_ts: unit.min_ts,
                     max_ts: unit.max_ts,
+                    captured_bytes: unit.captured_bytes,
                     window_count: finished.summary.window_count,
                     section_rows,
                 })
@@ -80,6 +82,7 @@ impl Segment {
                     source: Source::Active(snapshot.clone()),
                     min_ts: unit.min_ts,
                     max_ts: unit.max_ts,
+                    captured_bytes: unit.captured_bytes,
                     window_count,
                     section_rows,
                 })
@@ -103,6 +106,12 @@ impl Segment {
     #[must_use]
     pub const fn max_ts(&self) -> i64 {
         self.max_ts
+    }
+
+    /// Bytes in the finished file or captured current-journal prefix.
+    #[must_use]
+    pub const fn captured_bytes(&self) -> u64 {
+        self.captured_bytes
     }
 
     /// Collection windows coalesced into the logical segment.

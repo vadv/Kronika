@@ -56,7 +56,7 @@ fn a_zero_or_negative_interval_has_no_health() {
 
 #[test]
 fn stalling_longer_than_the_interval_is_zero_not_below() {
-    // Several tasks waiting at once bill more microseconds than elapsed.
+    // Cap a counter delta that exceeds the elapsed interval defensively.
     let after = stall(0, 0, 5 * SECOND);
     assert_eq!(health(ZERO, 0, after, SECOND), Some(0));
 }

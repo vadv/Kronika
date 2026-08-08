@@ -53,26 +53,41 @@ pub(crate) fn parse<I: IntoIterator<Item = String>>(arguments: I) -> Result<Args
     let mut root = None;
     let mut want = Want::Sizes;
     let mut json = false;
-    let mut limit = 20;
+    let mut limit = None;
     let mut from = None;
     let mut to = None;
     let mut rest = arguments.into_iter();
     while let Some(argument) = rest.next() {
         match argument.as_str() {
             "--json" => json = true,
-            "--index" => want = Want::Index,
+            "--index" => {
+                if matches!(want, Want::Section(_)) {
+                    return Err("--index and --section are mutually exclusive".to_owned());
+                }
+                want = Want::Index;
+            }
             "--section" => {
                 let value = rest.next().ok_or("--section needs a type_id")?;
                 let type_id = value
                     .parse()
                     .map_err(|_bad| format!("{value:?} is not a type_id"))?;
-                want = Want::Section(type_id);
+                match want {
+                    Want::Index => {
+                        return Err("--index and --section are mutually exclusive".to_owned());
+                    }
+                    Want::Section(_) => {
+                        return Err("--section may be specified only once".to_owned());
+                    }
+                    Want::Sizes => want = Want::Section(type_id),
+                }
             }
             "--limit" => {
                 let value = rest.next().ok_or("--limit needs a row count")?;
-                limit = value
-                    .parse()
-                    .map_err(|_bad| format!("{value:?} is not a row count"))?;
+                limit = Some(
+                    value
+                        .parse()
+                        .map_err(|_bad| format!("{value:?} is not a row count"))?,
+                );
             }
             "--from" | "--to" => {
                 let value = rest
@@ -92,11 +107,14 @@ pub(crate) fn parse<I: IntoIterator<Item = String>>(arguments: I) -> Result<Args
             extra => return Err(format!("unexpected argument {extra:?}")),
         }
     }
+    if limit.is_some() && !matches!(want, Want::Section(_)) {
+        return Err("--limit requires --section".to_owned());
+    }
     Ok(Args {
         root: root.ok_or("a data directory is required")?,
         want,
         json,
-        limit,
+        limit: limit.unwrap_or(20),
         from,
         to,
     })

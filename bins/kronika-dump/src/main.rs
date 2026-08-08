@@ -9,7 +9,7 @@ mod render;
 use std::ops::Bound;
 use std::process::ExitCode;
 
-use kronika_reader::Reader;
+use kronika_reader::{Reader, ReaderError};
 
 use crate::args::{USAGE, Want};
 
@@ -21,8 +21,13 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match run(&parsed) {
+    let stdout = std::io::stdout();
+    let mut output = stdout.lock();
+    match run(&parsed, &mut output) {
         Ok(()) => ExitCode::SUCCESS,
+        Err(ReaderError::Io(problem)) if problem.kind() == std::io::ErrorKind::BrokenPipe => {
+            ExitCode::SUCCESS
+        }
         Err(problem) => {
             eprintln!("kronika-dump: {problem}");
             ExitCode::FAILURE
@@ -30,28 +35,22 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(args: &args::Args) -> Result<(), String> {
-    let reader = Reader::open(&args.root).map_err(|error| format!("{error:#}"))?;
-    let listing = reader
-        .segments((
-            args.from.map_or(Bound::Unbounded, Bound::Included),
-            args.to.map_or(Bound::Unbounded, Bound::Included),
-        ))
-        .map_err(|error| format!("{error:#}"))?;
-    let out = render::Output::new(args.json);
+fn run(args: &args::Args, output: &mut impl std::io::Write) -> Result<(), ReaderError> {
+    let reader = Reader::open(&args.root)?;
+    let listing = reader.segments((
+        args.from.map_or(Bound::Unbounded, Bound::Included),
+        args.to.map_or(Bound::Unbounded, Bound::Included),
+    ))?;
     for warning in &listing.warnings {
-        render::warning(&out, warning);
+        render::warning(output, args.json, warning)?;
     }
     for reference in &listing.segments {
-        let segment = reader
-            .open_segment(reference)
-            .map_err(|error| format!("{error:#}"))?;
+        let segment = reader.open_segment(reference)?;
         match args.want {
-            Want::Sizes => render::sizes(&out, &segment),
-            Want::Index => render::index(&out, &segment).map_err(|error| format!("{error:#}"))?,
+            Want::Sizes => render::sizes(output, args.json, &segment)?,
+            Want::Index => render::index(output, args.json, &segment)?,
             Want::Section(type_id) => {
-                render::section(&out, &segment, type_id, args.limit)
-                    .map_err(|error| format!("{error:#}"))?;
+                render::section(output, args.json, &segment, type_id, args.limit)?;
             }
         }
     }

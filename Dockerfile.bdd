@@ -52,7 +52,6 @@ COPY . .
 # a debug build carries megabytes the shipped binary does not.
 RUN cargo build --locked --release -p kronika-collector -p kronika-dump -p kronika-bdd
 ENV KRONIKA_COLLECTOR_BIN=/work/target/x86_64-unknown-linux-gnu/release/kronika-collector
-ENV KRONIKA_DUMP_BIN=/work/target/x86_64-unknown-linux-gnu/release/kronika-dump
 ENV KRONIKA_FEATURES=/work/crates/kronika-bdd/features
 ENV KRONIKA_FIXTURES=/work/crates/kronika-bdd/fixtures
 CMD ["/work/target/x86_64-unknown-linux-gnu/release/kronika-bdd"]

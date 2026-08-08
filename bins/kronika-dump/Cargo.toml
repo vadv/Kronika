@@ -14,5 +14,11 @@ kronika-reader = { path = "../../crates/kronika-reader" }
 kronika-registry = { path = "../../crates/kronika-registry" }
 serde_json = "1"
 
+[dev-dependencies]
+kronika-format = { path = "../../crates/kronika-format" }
+kronika-layout = { path = "../../crates/kronika-layout" }
+kronika-writer = { path = "../../crates/kronika-writer" }
+tempfile = "3"
+
 [lints]
 workspace = true

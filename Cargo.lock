@@ -1116,10 +1116,14 @@ dependencies = [
 name = "kronika-dump"
 version = "0.0.0"
 dependencies = [
+ "kronika-format",
  "kronika-index",
+ "kronika-layout",
  "kronika-reader",
  "kronika-registry",
+ "kronika-writer",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

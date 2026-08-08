@@ -4,38 +4,24 @@
 //! the reader, so a scenario checks the thing an operator runs.
 
 use crate::BddWorld;
+use crate::services::run;
 use anyhow::{Context as _, Result};
 use std::path::PathBuf;
 use std::process::Command;
 
 /// The dumper under test, found the way the collector is.
 fn binary() -> Result<PathBuf> {
-    if let Ok(path) = std::env::var("KRONIKA_DUMP_BIN") {
-        return Ok(PathBuf::from(path));
-    }
     let here = std::env::current_exe().context("locate the BDD binary")?;
-    let dir = here
-        .parent()
-        .context("the BDD binary has no parent directory")?;
-    Ok(dir.join("kronika-dump"))
+    Ok(here.with_file_name("kronika-dump"))
 }
 
 /// Run the dumper over the run's data root and return what it printed.
 pub(crate) fn dump(world: &BddWorld, flags: &[&str]) -> Result<String> {
-    let run = world.run.as_ref().context("a collector was started")?;
-    let root = run.out_dir();
-    let output = Command::new(binary()?)
-        .arg(&root)
-        .args(flags)
-        .output()
-        .with_context(|| format!("run the dumper over {}", root.display()))?;
-    anyhow::ensure!(
-        output.status.success(),
-        "the dumper failed over {}: {}",
-        root.display(),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    let collector = world.run.as_ref().context("a collector was started")?;
+    let root = collector.out_dir();
+    let mut command = Command::new(binary()?);
+    command.arg(&root).args(flags);
+    run(&mut command).with_context(|| format!("run the dumper over {}", root.display()))
 }
 
 /// One line of `--json` output.
@@ -48,37 +34,55 @@ impl Line {
     /// A number reads as the digits it was printed with, so a scenario can
     /// compare against what a `.feature` table holds without knowing the type.
     pub(crate) fn get(&self, field: &str) -> Option<String> {
-        match self.0.get(field)? {
-            serde_json::Value::String(text) => Some(text.clone()),
-            serde_json::Value::Null => Some("null".to_owned()),
-            other => Some(other.to_string()),
-        }
+        self.0.get(field).map(value_as_text)
     }
 
-    /// Whether the line carries `field` equal to `value`.
+    /// The value of `field` inside a section row's `row` object.
+    pub(crate) fn row_get(&self, field: &str) -> Option<String> {
+        self.0.get("row")?.get(field).map(value_as_text)
+    }
+
+    /// Whether the line carries top-level `field` equal to `value`.
     pub(crate) fn holds(&self, field: &str, value: &str) -> bool {
         self.get(field).as_deref() == Some(value)
     }
 
-    /// A numeric field.
+    /// Whether a section row carries `field` equal to `value`.
+    pub(crate) fn row_holds(&self, field: &str, value: &str) -> bool {
+        self.row_get(field).as_deref() == Some(value)
+    }
+
+    /// A top-level numeric field.
     pub(crate) fn number(&self, field: &str) -> Option<i64> {
         self.0.get(field)?.as_i64()
+    }
+
+    /// A numeric field inside a section row's `row` object.
+    pub(crate) fn row_number(&self, field: &str) -> Option<i64> {
+        self.0.get("row")?.get(field)?.as_i64()
+    }
+}
+
+fn value_as_text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Null => "null".to_owned(),
+        other => other.to_string(),
     }
 }
 
 /// Parse the dumper's `--json` output, one object per line.
-pub(crate) fn lines(printed: &str) -> Vec<Line> {
+pub(crate) fn lines(printed: &str) -> Result<Vec<Line>> {
     printed
         .lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .map(Line)
+        .enumerate()
+        .map(|(line_number, line)| {
+            serde_json::from_str(line)
+                .map(Line)
+                .with_context(|| format!("parse dumper JSON line {}", line_number + 1))
+        })
         .collect()
 }
 
-/// Every line whose `kind` is `kind`.
-pub(crate) fn of_kind(printed: &str, kind: &str) -> Vec<Line> {
-    lines(printed)
-        .into_iter()
-        .filter(|line| line.holds("kind", kind))
-        .collect()
-}
+#[cfg(test)]
+mod tests;

@@ -1,92 +1,172 @@
-use std::collections::BTreeMap;
+use kronika_registry::instance_metadata::{Environment, InstanceMetadata};
+use kronika_registry::os_psi::OsPsi;
+use kronika_registry::{Cell, Row, Section};
 
 use super::points;
 use crate::file::Point;
-use crate::health::Stall;
 
 /// One second, in the microseconds the counters use.
 const SECOND: i64 = 1_000_000;
 
-fn snapshots(readings: &[(i64, i64, i64, i64)]) -> BTreeMap<i64, Stall> {
-    readings
-        .iter()
-        .map(|&(ts, cpu, memory, io)| (ts, Stall { cpu, memory, io }))
-        .collect()
+const HOST: u32 = 0;
+const POD: u32 = 1;
+const CONTAINER: u32 = 3;
+
+fn metadata(environment: Environment) -> Row {
+    metadata_raw(u32::from(environment.as_u8()))
 }
 
-#[test]
-fn no_snapshots_give_no_points() {
-    assert_eq!(points(&BTreeMap::new()), Vec::new());
+fn metadata_raw(environment: u32) -> Row {
+    Row::new(
+        &InstanceMetadata::CONTRACT,
+        vec![
+            Cell::Ts(0),
+            Cell::StrId(1),
+            Cell::StrId(2),
+            Cell::U32(environment),
+        ],
+    )
 }
 
-#[test]
-fn the_first_snapshot_has_nothing_to_subtract_from() {
-    let only = snapshots(&[(SECOND, 0, 0, 0)]);
-    assert_eq!(
-        points(&only),
-        vec![Point {
-            ts: SECOND,
-            health: None
-        }]
-    );
+fn psi(ts: i64, resource: u32, total: i64, scope: u32) -> Row {
+    Row::new(
+        &OsPsi::CONTRACT,
+        vec![
+            Cell::Ts(ts),
+            Cell::U32(resource),
+            Cell::F64(0.0),
+            Cell::F64(0.0),
+            Cell::F64(0.0),
+            Cell::I64(total),
+            Cell::Null,
+            Cell::Null,
+            Cell::Null,
+            Cell::Null,
+            Cell::U32(scope),
+        ],
+    )
 }
 
-#[test]
-fn every_later_point_covers_the_interval_since_the_one_before() {
-    let three = snapshots(&[
-        (0, 0, 0, 0),
-        (SECOND, SECOND / 4, 0, 0),
-        (2 * SECOND, SECOND / 4, 0, 0),
+fn snapshot(rows: &mut Vec<Row>, ts: i64, cpu: i64, memory: i64, io: i64, scope: u32) {
+    rows.extend([
+        psi(ts, 0, cpu, scope),
+        psi(ts, 1, memory, scope),
+        psi(ts, 2, io, scope),
     ]);
+}
+
+#[test]
+fn no_pressure_snapshots_give_no_points() {
+    assert_eq!(points(&[metadata(Environment::Machine)], &[]), Vec::new());
+}
+
+#[test]
+fn machine_health_uses_adjacent_complete_host_snapshots() {
+    let mut rows = Vec::new();
+    snapshot(&mut rows, 0, 0, 0, 0, HOST);
+    snapshot(&mut rows, SECOND, SECOND / 4, 0, 0, HOST);
+    snapshot(&mut rows, 2 * SECOND, SECOND / 4, 0, 0, HOST);
+
     assert_eq!(
-        points(&three),
+        points(&[metadata(Environment::Machine)], &rows),
         vec![
             Point {
                 ts: 0,
-                health: None
+                health: None,
             },
             Point {
                 ts: SECOND,
-                health: Some(75)
+                health: Some(75),
             },
             Point {
                 ts: 2 * SECOND,
-                health: Some(100)
+                health: Some(100),
             },
         ]
     );
 }
 
 #[test]
-fn a_point_is_emitted_even_where_health_cannot_be_computed() {
-    // The counters restarted between the second and third snapshot.
-    let restarted = snapshots(&[(0, 0, 0, 0), (SECOND, SECOND, 0, 0), (2 * SECOND, 0, 0, 0)]);
-    let built = points(&restarted);
-    assert_eq!(built.len(), 3, "a snapshot always gets a point");
-    assert_eq!(built[1].health, Some(0));
-    assert_eq!(built[2].health, None, "the counter went backwards");
+fn container_host_pressure_keeps_timestamps_but_has_no_health() {
+    let mut rows = Vec::new();
+    snapshot(&mut rows, 0, 0, 0, 0, HOST);
+    snapshot(&mut rows, SECOND, SECOND / 2, 0, 0, HOST);
+
+    assert_eq!(
+        points(&[metadata(Environment::Container)], &rows),
+        vec![
+            Point {
+                ts: 0,
+                health: None,
+            },
+            Point {
+                ts: SECOND,
+                health: None,
+            },
+        ]
+    );
 }
 
 #[test]
-fn points_come_out_oldest_first_whatever_order_they_went_in() {
-    let mut out_of_order = BTreeMap::new();
-    out_of_order.insert(
-        2 * SECOND,
-        Stall {
-            cpu: 0,
-            memory: 0,
-            io: 0,
-        },
-    );
-    out_of_order.insert(
-        SECOND,
-        Stall {
-            cpu: 0,
-            memory: 0,
-            io: 0,
-        },
-    );
-    let built = points(&out_of_order);
+fn container_own_cgroup_pressure_can_produce_health() {
+    for scope in [POD, CONTAINER] {
+        let mut rows = Vec::new();
+        snapshot(&mut rows, 0, 0, 0, 0, scope);
+        snapshot(&mut rows, SECOND, 0, SECOND / 2, 0, scope);
+
+        assert_eq!(
+            points(&[metadata(Environment::Container)], &rows)[1].health,
+            Some(50)
+        );
+    }
+}
+
+#[test]
+fn missing_or_unknown_environment_keeps_timestamps_but_has_no_health() {
+    let mut rows = Vec::new();
+    snapshot(&mut rows, 0, 0, 0, 0, HOST);
+    snapshot(&mut rows, SECOND, SECOND / 2, 0, 0, HOST);
+
+    for metadata_rows in [&[][..], &[metadata_raw(9)][..]] {
+        assert_eq!(
+            points(metadata_rows, &rows),
+            vec![
+                Point {
+                    ts: 0,
+                    health: None,
+                },
+                Point {
+                    ts: SECOND,
+                    health: None,
+                },
+            ]
+        );
+    }
+}
+
+#[test]
+fn a_missing_resource_resets_the_baseline_until_two_complete_snapshots() {
+    let mut rows = Vec::new();
+    snapshot(&mut rows, 0, 0, 0, 0, HOST);
+    rows.extend([psi(SECOND, 0, SECOND / 4, HOST), psi(SECOND, 1, 0, HOST)]);
+    snapshot(&mut rows, 2 * SECOND, SECOND / 2, 0, 0, HOST);
+    snapshot(&mut rows, 3 * SECOND, 3 * SECOND / 4, 0, 0, HOST);
+
+    let built = points(&[metadata(Environment::Machine)], &rows);
+    assert_eq!(built.len(), 4, "every observed timestamp gets a point");
+    assert_eq!(built[0].health, None, "the first snapshot is a baseline");
+    assert_eq!(built[1].health, None, "io is absent");
+    assert_eq!(built[2].health, None, "io reappears and starts a baseline");
+    assert_eq!(built[3].health, Some(75));
+}
+
+#[test]
+fn points_come_out_oldest_first_whatever_row_order_was_read() {
+    let mut rows = Vec::new();
+    snapshot(&mut rows, 2 * SECOND, 0, 0, 0, HOST);
+    snapshot(&mut rows, SECOND, 0, 0, 0, HOST);
+
+    let built = points(&[metadata(Environment::Machine)], &rows);
     assert_eq!(
         built.iter().map(|point| point.ts).collect::<Vec<_>>(),
         vec![SECOND, 2 * SECOND]

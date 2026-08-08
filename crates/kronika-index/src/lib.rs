@@ -7,6 +7,6 @@ mod build;
 mod file;
 mod health;
 
-pub use build::{OS_PSI_TYPE_ID, points, stalls};
-pub use file::{FORMAT_VERSION, HEADER_LEN, Index, IndexError, MAGIC, POINT_LEN, Point};
+pub use build::{INSTANCE_METADATA_TYPE_ID, OS_PSI_TYPE_ID, points};
+pub use file::{HEADER_LEN, Index, IndexError, MAGIC, POINT_LEN, Point};
 pub use health::{Stall, health};

@@ -1,25 +1,24 @@
 //! The `.idx` file: health points, and the checksum a browser revalidates on.
 
-use kronika_format::crc32c;
+use kronika_format::Crc32c;
 
 /// Magic of an index file.
 pub const MAGIC: [u8; 8] = *b"KRNIDX1\0";
 
-/// Format version. A file written by another version is deleted and rebuilt,
-/// never migrated.
-pub const FORMAT_VERSION: u32 = 1;
-
-/// Bytes before the first point: magic, version, sources, checksum.
+/// Bytes before the first point: magic, sources, checksum.
 ///
 /// The point count is not stored. It follows from the body length, and a
 /// second statement of the same number could only ever disagree with the first.
-pub const HEADER_LEN: usize = 20;
+pub const HEADER_LEN: usize = 16;
 
 /// Bytes per point: the timestamp and its health.
 pub const POINT_LEN: usize = 9;
 
 /// Health of a point that could not be computed.
 const NO_HEALTH: u8 = 0xFF;
+
+/// The checksum starts here and is the only file field it does not cover.
+const CHECKSUM_AT: usize = 12;
 
 /// Health at one snapshot, `None` where the interval before it gave nothing to
 /// divide.
@@ -51,9 +50,7 @@ pub enum IndexError {
     Truncated,
     /// The first eight bytes are not [`MAGIC`].
     BadMagic,
-    /// Written by a version this build does not read.
-    UnsupportedVersion(u32),
-    /// The points do not match the checksum in the header.
+    /// The magic, sources, or points do not match the checksum in the header.
     BadChecksum,
 }
 
@@ -62,12 +59,6 @@ impl std::fmt::Display for IndexError {
         match self {
             Self::Truncated => write!(f, "the index file is truncated"),
             Self::BadMagic => write!(f, "the index file does not start with its magic"),
-            Self::UnsupportedVersion(version) => {
-                write!(
-                    f,
-                    "the index file is version {version}, not {FORMAT_VERSION}"
-                )
-            }
             Self::BadChecksum => write!(f, "the index file does not match its checksum"),
         }
     }
@@ -86,9 +77,9 @@ impl Index {
         }
         let mut bytes = Vec::with_capacity(HEADER_LEN + points.len());
         bytes.extend_from_slice(&MAGIC);
-        bytes.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
         bytes.extend_from_slice(&self.sources.to_le_bytes());
-        bytes.extend_from_slice(&crc32c(&points).to_le_bytes());
+        let checksum = semantic_checksum(&bytes, &points);
+        bytes.extend_from_slice(&checksum.to_le_bytes());
         bytes.extend_from_slice(&points);
         bytes
     }
@@ -100,31 +91,22 @@ impl Index {
     /// Returns the reason the file is unusable. Every reason is answered the
     /// same way: build it again.
     pub fn decode(bytes: &[u8]) -> Result<Self, IndexError> {
-        let header = bytes.get(..HEADER_LEN).ok_or(IndexError::Truncated)?;
-        if header[..8] != MAGIC {
-            return Err(IndexError::BadMagic);
-        }
-        let version = u32_at(header, 8);
-        if version != FORMAT_VERSION {
-            return Err(IndexError::UnsupportedVersion(version));
-        }
-        let sources = u32_at(header, 12);
-        let expected_crc = u32_at(header, 16);
-        let body = bytes.get(HEADER_LEN..).ok_or(IndexError::Truncated)?;
-        if body.len() % POINT_LEN != 0 {
+        let header = valid_header(bytes)?;
+        let sources = u32_at(header, 8);
+        let expected_crc = u32_at(header, CHECKSUM_AT);
+        let body = &bytes[HEADER_LEN..];
+        if !body.len().is_multiple_of(POINT_LEN) {
             return Err(IndexError::Truncated);
         }
-        if crc32c(body) != expected_crc {
+        if semantic_checksum(&header[..CHECKSUM_AT], body) != expected_crc {
             return Err(IndexError::BadChecksum);
         }
         let points = body
             .chunks_exact(POINT_LEN)
             .map(|chunk| Point {
-                ts: i64::from_le_bytes(
-                    chunk[..8]
-                        .try_into()
-                        .unwrap_or_else(|_never| [0; 8].to_owned()),
-                ),
+                ts: i64::from_le_bytes([
+                    chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+                ]),
                 health: Some(chunk[8]).filter(|health| *health != NO_HEALTH),
             })
             .collect();
@@ -140,16 +122,23 @@ impl Index {
     ///
     /// Returns the reason the header is unusable.
     pub fn checksum_of(bytes: &[u8]) -> Result<u32, IndexError> {
-        let header = bytes.get(..HEADER_LEN).ok_or(IndexError::Truncated)?;
-        if header[..8] != MAGIC {
-            return Err(IndexError::BadMagic);
-        }
-        let version = u32_at(header, 8);
-        if version != FORMAT_VERSION {
-            return Err(IndexError::UnsupportedVersion(version));
-        }
-        Ok(u32_at(header, 16))
+        Ok(u32_at(valid_header(bytes)?, CHECKSUM_AT))
     }
+}
+
+fn valid_header(bytes: &[u8]) -> Result<&[u8], IndexError> {
+    let header = bytes.get(..HEADER_LEN).ok_or(IndexError::Truncated)?;
+    if header[..MAGIC.len()] != MAGIC {
+        return Err(IndexError::BadMagic);
+    }
+    Ok(header)
+}
+
+const fn semantic_checksum(prefix: &[u8], points: &[u8]) -> u32 {
+    let mut checksum = Crc32c::new();
+    checksum.update(prefix);
+    checksum.update(points);
+    checksum.finalize()
 }
 
 fn u32_at(bytes: &[u8], at: usize) -> u32 {

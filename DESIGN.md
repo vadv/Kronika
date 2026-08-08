@@ -132,9 +132,13 @@ The collector decides at collection time whether it is on a VM or inside a
 container, and records the answer in the `instance_metadata` section that every
 segment carries. It does not guess, and web does not re-derive it.
 
-Where it runs decides which pressure files describe it: a machine by
-`/proc/pressure`, a container by its own cgroup. The collector reads the ones
-that describe itself and records the scope on every `os_psi` row.
+Where it runs decides which pressure rows describe it: host-scoped
+`/proc/pressure` for a machine, and pressure from its own cgroup for a
+container. Every `os_psi` row records that scope. The current procfs collector
+produces host-scoped rows; when it runs in a container, their timestamps remain
+visible but health is null. Node pressure must not stand in for container
+pressure. Future rows from the container's own cgroup can be used without
+changing the formula.
 
 ## Health
 
@@ -142,30 +146,32 @@ Health is one number per snapshot, from 0 to 100: the share of the interval in
 which nothing was waiting for the most contended resource.
 
 ```
-health = 100 - max(cpu, memory, io)
+health = 100 * (1 - max(cpu, memory, io))
 ```
 
-Each term is the delta of the `some` counter in `os_psi` over the delta of the
-timestamp. That counter is already scaled by how much of the machine the
-waiting covers, so one task waiting among sixteen busy CPUs reports about a
-sixteenth of the interval rather than all of it. Each CPU is weighted by its
-non-idle time, so idle CPUs neither dilute nor inflate it. A reader scales
-nothing further, by CPU count or by cgroup quota.
+Each term is `delta(some_total) / elapsed wall time` for that resource.
+`some_total` accumulates wall-clock microseconds during which at least one task
+in the recorded scope was stalled. One stalled task and several stalled tasks
+count the same instant once. The counter is not weighted by task or CPU count,
+and a reader does not divide it by CPU count or by a cgroup quota.
 
 `some` rather than `full`, because the question is whether anyone lost time,
 not whether everything stopped. `full` is undefined for CPU and always reads
 zero, so the three resources would not be measured the same way.
 
-The counters rather than `avg10`: a kernel average is sampled at read time and
-lags. On a sixteen-core host, five seconds of contention that the counters put
-at 62% read back from `avg10` as 19%.
+The counters rather than `avg10`: a kernel rolling average is sampled at read
+time and lags, so it does not describe exactly the interval between two
+snapshots.
 
 No thresholds and no weights. The worst resource decides, because an average
 hides a saturated disk behind an idle CPU.
 
 Health is null when it cannot be computed: the first snapshot of a segment has
-nothing to subtract from, and a counter that went backwards yields no stall
-time to put over the interval.
+nothing to subtract from; a counter that went backwards yields no stall time
+to put over the interval; the pressure scope does not describe the recorded
+environment; or either adjacent snapshot lacks a usable counter for CPU,
+memory, or IO. When a missing resource reappears, that complete snapshot starts
+a new baseline.
 
 A container on cgroup v1 has no `*.pressure` files and so no health. The host's
 pressure belongs to the node, and standing in with it would report someone

@@ -20,19 +20,13 @@ pub struct Stall {
 /// The value is the share of the interval in which nothing was waiting for the
 /// most contended resource. `None` where it cannot be computed: the interval is
 /// not positive, or a counter went backwards.
-///
-/// The counters are already scaled by how much of the machine the waiting
-/// covers, so nothing here divides by CPU count or by a cgroup quota.
 #[must_use]
 pub fn health(before: Stall, before_ts: i64, after: Stall, after_ts: i64) -> Option<u8> {
     let elapsed = after_ts.checked_sub(before_ts).filter(|span| *span > 0)?;
-    let worst = [
-        stalled(before.cpu, after.cpu)?,
-        stalled(before.memory, after.memory)?,
-        stalled(before.io, after.io)?,
-    ]
-    .into_iter()
-    .max()?;
+    let cpu = stalled(before.cpu, after.cpu)?;
+    let memory = stalled(before.memory, after.memory)?;
+    let io = stalled(before.io, after.io)?;
+    let worst = cpu.max(memory).max(io);
     Some(percent_left(worst, elapsed))
 }
 
@@ -45,8 +39,8 @@ fn stalled(before: i64, after: i64) -> Option<i64> {
 /// `100` minus the share `stalled` takes of `elapsed`, rounded to the nearest
 /// whole percent.
 ///
-/// A resource can stall for longer than the interval when several tasks wait at
-/// once, so the share is capped at one rather than allowed to go negative.
+/// The share is capped defensively rather than allowed to go negative when an
+/// input exceeds the elapsed interval.
 fn percent_left(stalled: i64, elapsed: i64) -> u8 {
     let capped = stalled.min(elapsed);
     let half = elapsed / 2;

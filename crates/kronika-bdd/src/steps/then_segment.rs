@@ -3,7 +3,7 @@
 //! Everything a segment is asked comes back through `kronika-dump`. A scenario
 //! that checked a segment some other way would be checking a path nobody runs.
 
-use super::dump::{dump, of_kind};
+use super::dump::{Line, dump, lines};
 use super::{count, table_rows, type_id};
 use crate::BddWorld;
 use crate::collector::files_under;
@@ -34,32 +34,84 @@ fn is_utc_calendar_path(relative: &Path) -> bool {
             .all(|part| part.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
-/// One line per published segment: its window, its span, what it cost.
-fn segments(world: &BddWorld, range: &[&str]) -> Result<Vec<super::dump::Line>> {
+/// A listing allowed to contain no segment or scan warnings.
+///
+/// Range and set-aside scenarios exercise exactly those outcomes. Ordinary
+/// listing assertions go through `listing` instead.
+fn permissive_listing(world: &BddWorld, range: &[&str]) -> Result<Vec<Line>> {
     let mut flags = vec!["--json"];
     flags.extend_from_slice(range);
-    let printed = dump(world, &flags)?;
-    Ok(of_kind(&printed, "segment"))
+    lines(&dump(world, &flags)?)
+}
+
+/// A complete listing with at least one admitted segment and no scan warning.
+fn listing(world: &BddWorld) -> Result<Vec<Line>> {
+    let listed = permissive_listing(world, &[])?;
+    let warnings = listed
+        .iter()
+        .filter(|line| line.holds("kind", "warning"))
+        .count();
+    anyhow::ensure!(
+        warnings == 0,
+        "the full listing reported {warnings} warnings"
+    );
+    anyhow::ensure!(
+        listed.iter().any(|line| line.holds("kind", "segment")),
+        "the full listing admitted no segments"
+    );
+    Ok(listed)
+}
+
+/// One line per published segment: its window, its span, what it cost.
+fn segments(world: &BddWorld) -> Result<Vec<Line>> {
+    Ok(listing(world)?
+        .into_iter()
+        .filter(|line| line.holds("kind", "segment"))
+        .collect())
+}
+
+/// Segments selected by a range, including an intentionally empty result.
+fn segments_in_range(world: &BddWorld, range: &[&str]) -> Result<Vec<Line>> {
+    Ok(permissive_listing(world, range)?
+        .into_iter()
+        .filter(|line| line.holds("kind", "segment"))
+        .collect())
 }
 
 /// One line per section of every published segment.
-fn sections(world: &BddWorld) -> Result<Vec<super::dump::Line>> {
-    let printed = dump(world, &["--json"])?;
-    Ok(of_kind(&printed, "section"))
+fn sections(world: &BddWorld) -> Result<Vec<Line>> {
+    Ok(listing(world)?
+        .into_iter()
+        .filter(|line| line.holds("kind", "section"))
+        .collect())
 }
 
 /// The rows of one section across every published segment.
-fn rows(world: &BddWorld, type_id: u32) -> Result<Vec<super::dump::Line>> {
+fn rows(world: &BddWorld, type_id: u32) -> Result<Vec<Line>> {
     let printed = dump(
         world,
         &["--json", "--limit", "0", "--section", &type_id.to_string()],
     )?;
-    Ok(super::dump::lines(&printed))
+    let listed = lines(&printed)?;
+    let warnings = listed
+        .iter()
+        .filter(|line| line.holds("kind", "warning"))
+        .count();
+    anyhow::ensure!(
+        warnings == 0,
+        "the row listing reported {warnings} warnings"
+    );
+    Ok(listed
+        .into_iter()
+        .filter(|line| {
+            line.holds("kind", "row") && line.number("type_id") == Some(i64::from(type_id))
+        })
+        .collect())
 }
 
 /// The window every published segment covers, oldest first.
 fn windows(world: &BddWorld) -> Result<Vec<(i64, i64)>> {
-    segments(world, &[])?
+    segments(world)?
         .iter()
         .map(|line| {
             let min_ts = line.number("min_ts").context("a segment without min_ts")?;
@@ -71,7 +123,7 @@ fn windows(world: &BddWorld) -> Result<Vec<(i64, i64)>> {
 
 #[then(regex = r"^at least (\d+) segments were published$")]
 fn several_segments(world: &mut BddWorld, least: usize) -> Result<()> {
-    let published = segments(world, &[])?.len();
+    let published = segments(world)?.len();
     anyhow::ensure!(
         published >= least,
         "the run published {published} segments, fewer than {least}"
@@ -82,7 +134,7 @@ fn several_segments(world: &mut BddWorld, least: usize) -> Result<()> {
 #[then("reading each segment's own window returns that segment")]
 fn window_returns_its_segment(world: &mut BddWorld) -> Result<()> {
     for (min_ts, max_ts) in windows(world)? {
-        let found = segments(
+        let found = segments_in_range(
             world,
             &["--from", &min_ts.to_string(), "--to", &max_ts.to_string()],
         )?;
@@ -103,7 +155,7 @@ fn window_excludes_the_others(world: &mut BddWorld) -> Result<()> {
     let windows = windows(world)?;
     let first = *windows.first().context("no segment was published")?;
     let last = *windows.last().context("no segment was published")?;
-    let found = segments(
+    let found = segments_in_range(
         world,
         &["--from", &first.0.to_string(), "--to", &first.1.to_string()],
     )?;
@@ -126,7 +178,7 @@ fn nothing_before_the_first(world: &mut BddWorld) -> Result<()> {
         .copied()
         .context("no segment was published")?
         .0;
-    let found = segments(world, &["--to", &(first - 1).to_string()])?;
+    let found = segments_in_range(world, &["--to", &(first - 1).to_string()])?;
     anyhow::ensure!(
         found.is_empty(),
         "reading up to {} returned {} segments",
@@ -143,7 +195,7 @@ fn nothing_after_the_last(world: &mut BddWorld) -> Result<()> {
         .copied()
         .context("no segment was published")?
         .1;
-    let found = segments(world, &["--from", &(last + 1).to_string()])?;
+    let found = segments_in_range(world, &["--from", &(last + 1).to_string()])?;
     anyhow::ensure!(
         found.is_empty(),
         "reading from {} returned {} segments",
@@ -155,12 +207,14 @@ fn nothing_after_the_last(world: &mut BddWorld) -> Result<()> {
 
 #[then(regex = r"^the reader sets aside (\d+) files?$")]
 fn reader_sets_aside(world: &mut BddWorld, expected: usize) -> Result<()> {
-    let printed = dump(world, &["--json"])?;
-    let warnings = of_kind(&printed, "warning");
+    let listed = permissive_listing(world, &[])?;
+    let warnings = listed
+        .iter()
+        .filter(|line| line.holds("kind", "warning"))
+        .count();
     anyhow::ensure!(
-        warnings.len() == expected,
-        "the scan set aside {} files, not {expected}",
-        warnings.len()
+        warnings == expected,
+        "the scan set aside {warnings} files, not {expected}",
     );
     Ok(())
 }
@@ -222,7 +276,7 @@ fn no_segment_on_calendar_path(world: &mut BddWorld) -> Result<()> {
 fn every_segment_holds_sections(world: &mut BddWorld, step: &Step) -> Result<()> {
     let wanted = table_rows(step, &["type_id", "section", "min rows"])?;
     let sections = sections(world)?;
-    for path in paths(&segments(world, &[])?) {
+    for path in paths(&segments(world)?) {
         for row in &wanted {
             let [id, name, min] = row.as_slice() else {
                 anyhow::bail!("a section row needs a type_id, a name and a row floor, got {row:?}");
@@ -289,23 +343,34 @@ fn some_segment_holds_sections(world: &mut BddWorld, step: &Step) -> Result<()> 
 fn instance_facts(world: &mut BddWorld, step: &Step) -> Result<()> {
     let wanted = table_rows(step, &["column", "value"])?;
     let recorded = rows(world, INSTANCE_METADATA)?;
-    let published = segments(world, &[])?.len();
+    let published = paths(&segments(world)?);
     anyhow::ensure!(
-        recorded.len() == published,
-        "{} instance_metadata rows across {published} segments, expected one each",
-        recorded.len()
+        recorded.len() == published.len(),
+        "{} instance_metadata rows across {} segments, expected one each",
+        recorded.len(),
+        published.len()
     );
-    for row in &recorded {
+    for path in published {
+        let per_segment: Vec<&Line> = recorded
+            .iter()
+            .filter(|row| row.holds("path", &path))
+            .collect();
+        anyhow::ensure!(
+            per_segment.len() == 1,
+            "{path} has {} instance_metadata rows, expected one",
+            per_segment.len()
+        );
+        let row = per_segment[0];
         for expected in &wanted {
             let [column, value] = expected.as_slice() else {
                 anyhow::bail!("an instance-fact row needs a column and a value, got {expected:?}");
             };
             let held = row
-                .get(column)
-                .with_context(|| format!("instance_metadata has no column {column}"))?;
+                .row_get(column)
+                .with_context(|| format!("{path} instance_metadata has no column {column}"))?;
             anyhow::ensure!(
                 held == *value,
-                "a segment records {column}={held}, not {value}"
+                "{path} records {column}={held}, not {value}"
             );
         }
     }
@@ -316,7 +381,8 @@ fn instance_facts(world: &mut BddWorld, step: &Step) -> Result<()> {
 fn cgroup_cpu_limit(world: &mut BddWorld, cores: i64) -> Result<()> {
     let mut seen = Vec::new();
     for row in rows(world, OS_CGROUP_CPU)? {
-        let (Some(quota), Some(period)) = (row.number("quota_usec"), row.number("period_usec"))
+        let (Some(quota), Some(period)) =
+            (row.row_number("quota_usec"), row.row_number("period_usec"))
         else {
             continue;
         };
@@ -332,7 +398,7 @@ fn cgroup_cpu_limit(world: &mut BddWorld, cores: i64) -> Result<()> {
 
 #[then(regex = r"^every segment covers at least (\d+) windows$")]
 fn window_count(world: &mut BddWorld, least: i64) -> Result<()> {
-    for line in segments(world, &[])? {
+    for line in segments(world)? {
         let windows = line
             .number("windows")
             .context("a segment without windows")?;
@@ -380,7 +446,7 @@ fn log_events_recorded(world: &mut BddWorld, step: &Step) -> Result<()> {
         };
         let recorded = rows(world, type_id(id)?)?;
         anyhow::ensure!(
-            recorded.iter().any(|row| row.holds(column, value)),
+            recorded.iter().any(|row| row.row_holds(column, value)),
             "no segment records {column}={value} in {id}; the segments hold {:?}",
             seen_values(&recorded, column)
         );
@@ -400,7 +466,7 @@ fn log_events_recorded_once(world: &mut BddWorld, step: &Step) -> Result<()> {
         let recorded = rows(world, type_id(id)?)?;
         let seen = recorded
             .iter()
-            .filter(|row| row.holds(column, value))
+            .filter(|row| row.row_holds(column, value))
             .count();
         anyhow::ensure!(
             seen == 1,
@@ -412,15 +478,15 @@ fn log_events_recorded_once(world: &mut BddWorld, step: &Step) -> Result<()> {
 
 /// Every value one column holds, for a failure message that says what is there
 /// instead of only what is not.
-fn seen_values(rows: &[super::dump::Line], column: &str) -> Vec<String> {
-    let mut seen: Vec<String> = rows.iter().filter_map(|row| row.get(column)).collect();
+fn seen_values(rows: &[Line], column: &str) -> Vec<String> {
+    let mut seen: Vec<String> = rows.iter().filter_map(|row| row.row_get(column)).collect();
     seen.sort();
     seen.dedup();
     seen
 }
 
 /// The path of every segment a listing named.
-fn paths(segments: &[super::dump::Line]) -> Vec<String> {
+fn paths(segments: &[Line]) -> Vec<String> {
     segments
         .iter()
         .filter_map(|line| line.get("path"))

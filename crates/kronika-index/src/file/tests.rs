@@ -60,6 +60,15 @@ fn a_rebuild_that_changes_a_value_changes_the_checksum() {
 }
 
 #[test]
+fn a_rebuild_that_changes_sources_changes_the_checksum() {
+    let before = Index::checksum_of(&sample().encode()).expect("before");
+    let mut changed = sample();
+    changed.sources ^= 0b100;
+    let after = Index::checksum_of(&changed.encode()).expect("after");
+    assert_ne!(before, after);
+}
+
+#[test]
 fn a_rebuild_that_changes_nothing_keeps_the_checksum() {
     assert_eq!(
         Index::checksum_of(&sample().encode()),
@@ -76,21 +85,18 @@ fn a_flipped_point_byte_fails_the_checksum() {
 }
 
 #[test]
+fn a_flipped_source_byte_fails_the_checksum() {
+    let mut bytes = sample().encode();
+    bytes[8] ^= 0x01;
+    assert_eq!(Index::decode(&bytes), Err(IndexError::BadChecksum));
+}
+
+#[test]
 fn a_foreign_file_is_rejected_by_its_magic() {
     let mut bytes = sample().encode();
     bytes[0] = b'X';
     assert_eq!(Index::decode(&bytes), Err(IndexError::BadMagic));
     assert_eq!(Index::checksum_of(&bytes), Err(IndexError::BadMagic));
-}
-
-#[test]
-fn another_version_is_named_rather_than_guessed_at() {
-    let mut bytes = sample().encode();
-    bytes[8] = 7;
-    assert_eq!(
-        Index::decode(&bytes),
-        Err(IndexError::UnsupportedVersion(7))
-    );
 }
 
 #[test]

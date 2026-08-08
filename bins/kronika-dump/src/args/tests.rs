@@ -33,18 +33,25 @@ fn flags_may_come_before_the_directory() {
 }
 
 #[test]
-fn the_last_of_two_wants_is_the_one_that_counts() {
-    assert_eq!(
-        args(&["/data", "--index", "--section", "5"])
-            .expect("parse")
-            .want,
-        Want::Section(5)
-    );
+fn conflicting_selectors_are_refused_in_either_order() {
+    assert!(args(&["/data", "--index", "--section", "5"]).is_err());
+    assert!(args(&["/data", "--section", "5", "--index"]).is_err());
 }
 
 #[test]
 fn a_limit_of_zero_means_every_row() {
-    assert_eq!(args(&["/data", "--limit", "0"]).expect("parse").limit, 0);
+    assert_eq!(
+        args(&["/data", "--section", "5", "--limit", "0"])
+            .expect("parse")
+            .limit,
+        0
+    );
+}
+
+#[test]
+fn a_limit_without_a_section_is_refused() {
+    assert!(args(&["/data", "--limit", "1"]).is_err());
+    assert!(args(&["/data", "--index", "--limit", "1"]).is_err());
 }
 
 #[test]
