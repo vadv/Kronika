@@ -1,10 +1,9 @@
 //! Printing a segment as a table or as JSON.
 
-use std::fmt::Write as _;
-
 use kronika_index::{Index, OS_PSI_TYPE_ID, points, stalls};
 use kronika_reader::{Cell, Dictionary, ReaderError, Resolved, Segment, StoreWarning};
 use kronika_registry::section_name;
+use serde_json::{Map, Value, json};
 
 /// Where the output goes, and in which shape.
 ///
@@ -28,10 +27,7 @@ impl Output {
 /// only reads stdout still learns that something was left out.
 pub(crate) fn warning(out: &Output, warning: &StoreWarning) {
     if out.json {
-        println!(
-            r#"{{"kind":"warning","detail":{}}}"#,
-            quote(&format!("{warning:?}"))
-        );
+        say(&json!({"kind": "warning", "detail": format!("{warning:?}")}));
     } else {
         eprintln!("kronika-dump: set aside {warning:?}");
     }
@@ -41,21 +37,24 @@ pub(crate) fn warning(out: &Output, warning: &StoreWarning) {
 pub(crate) fn sizes(out: &Output, segment: &Segment) {
     let total: u64 = segment.sections().map(|(_id, section)| section.bytes).sum();
     if out.json {
-        println!(
-            r#"{{"kind":"segment","path":{},"min_ts":{},"max_ts":{},"windows":{},"section_bytes":{total}}}"#,
-            quote(&segment.path().display().to_string()),
-            segment.min_ts(),
-            segment.max_ts(),
-            segment.window_count()
-        );
+        let path = segment.path().display().to_string();
+        say(&json!({
+            "kind": "segment",
+            "path": path,
+            "min_ts": segment.min_ts(),
+            "max_ts": segment.max_ts(),
+            "windows": segment.window_count(),
+            "section_bytes": total,
+        }));
         for (type_id, section) in segment.sections() {
-            println!(
-                r#"{{"kind":"section","path":{},"type_id":{type_id},"section":{},"rows":{},"bytes":{}}}"#,
-                quote(&segment.path().display().to_string()),
-                quote(section_name(type_id).unwrap_or("unknown")),
-                section.rows,
-                section.bytes
-            );
+            say(&json!({
+                "kind": "section",
+                "path": path,
+                "type_id": type_id,
+                "section": section_name(type_id).unwrap_or("unknown"),
+                "rows": section.rows,
+                "bytes": section.bytes,
+            }));
         }
         return;
     }
@@ -88,15 +87,14 @@ pub(crate) fn index(out: &Output, segment: &Segment) -> Result<(), ReaderError> 
         points: points(&stalls(&segment.rows(OS_PSI_TYPE_ID)?)),
     };
     if out.json {
+        let path = segment.path().display().to_string();
         for point in &built.points {
-            println!(
-                r#"{{"kind":"point","path":{},"ts":{},"health":{}}}"#,
-                quote(&segment.path().display().to_string()),
-                point.ts,
-                point
-                    .health
-                    .map_or_else(|| "null".to_owned(), |v| v.to_string())
-            );
+            say(&json!({
+                "kind": "point",
+                "path": path,
+                "ts": point.ts,
+                "health": point.health,
+            }));
         }
         return Ok(());
     }
@@ -146,11 +144,11 @@ pub(crate) fn section(
             fields.push((name, show(cell, &dictionary)));
         }
         if out.json {
-            let body: Vec<String> = row
+            let object: Map<String, Value> = row
                 .iter()
-                .map(|(name, cell)| format!("{}:{}", quote(name), json_cell(cell, &dictionary)))
+                .map(|(name, cell)| ((*name).to_owned(), json_cell(cell, &dictionary)))
                 .collect();
-            println!("{{{}}}", body.join(","));
+            say(&Value::Object(object));
         } else {
             let body: Vec<String> = fields
                 .iter()
@@ -215,50 +213,24 @@ fn percent(part: u64, whole: u64) -> u8 {
 
 /// One cell as JSON. Numbers stay numbers so a dump can be filtered on them;
 /// a dictionary id becomes the text it stands for.
-fn json_cell(cell: &Cell, dictionary: &Dictionary) -> String {
+fn json_cell(cell: &Cell, dictionary: &Dictionary) -> Value {
     match cell {
-        Cell::Null => "null".to_owned(),
-        Cell::I16(v) => v.to_string(),
-        Cell::I32(v) => v.to_string(),
-        Cell::I64(v) | Cell::Ts(v) => v.to_string(),
-        Cell::U32(v) => v.to_string(),
-        Cell::U64(v) => v.to_string(),
-        Cell::F64(v) => v.to_string(),
-        Cell::Bool(v) => v.to_string(),
-        Cell::ListI32(v) => format!(
-            "[{}]",
-            v.iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-        Cell::StrId(_id) => {
-            show(cell, dictionary).map_or_else(|| "null".to_owned(), |text| quote(&text))
-        }
+        Cell::Null => Value::Null,
+        Cell::I16(v) => json!(v),
+        Cell::I32(v) => json!(v),
+        Cell::I64(v) | Cell::Ts(v) => json!(v),
+        Cell::U32(v) => json!(v),
+        Cell::U64(v) => json!(v),
+        Cell::F64(v) => json!(v),
+        Cell::Bool(v) => json!(v),
+        Cell::ListI32(v) => json!(v),
+        Cell::StrId(_id) => show(cell, dictionary).map_or(Value::Null, Value::String),
     }
 }
 
-/// A JSON string. The characters JSON forbids raw, U+0000 to U+001F along with
-/// the quote and the backslash, go out as escapes so one bad log line cannot
-/// break the whole dump.
-fn quote(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 2);
-    out.push('"');
-    for character in text.chars() {
-        match character {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            other if (other as u32) < 0x20 => {
-                let _written = write!(out, "\\u{:04x}", other as u32);
-            }
-            other => out.push(other),
-        }
-    }
-    out.push('"');
-    out
+/// One JSON document per line, so a long dump streams.
+fn say(value: &Value) {
+    println!("{value}");
 }
 
 #[cfg(test)]
