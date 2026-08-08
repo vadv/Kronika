@@ -13,6 +13,19 @@ mod buffering;
 use std::collections::BTreeMap;
 use std::time::Instant;
 
+use kronika_registry::Section as _;
+use kronika_registry::pg_prepared_xacts::PgPreparedXacts;
+use kronika_registry::pg_settings::PgSettings;
+use kronika_registry::pg_stat_activity::PgStatActivityV1;
+use kronika_registry::pg_stat_archiver::PgStatArchiver;
+use kronika_registry::pg_stat_database::PgStatDatabaseV1;
+use kronika_registry::pg_stat_io::PgStatIoV1;
+use kronika_registry::pg_stat_progress_vacuum::PgStatProgressVacuum;
+use kronika_registry::pg_stat_statements::PgStatStatementsV1;
+use kronika_registry::pg_stat_user_indexes::PgStatUserIndexesV1;
+use kronika_registry::pg_stat_user_tables::PgStatUserTablesV1;
+use kronika_registry::pg_stat_wal::PgStatWalV1;
+use kronika_registry::pg_store_plans::PgStorePlansOsscV1;
 use kronika_source_pg::activity::ActivityRead;
 use kronika_source_pg::archiver::ArchiverRow;
 use kronika_source_pg::database::{DatabaseRow, DatabaseVersion};
@@ -41,19 +54,21 @@ use crate::scheduler::{DueSet, SourceKind};
 
 pub(crate) use buffering::push_pg_sources;
 
-/// Section ids, for the collection log lines.
-const SETTINGS: u32 = 1_019_001;
-const ARCHIVER: u32 = 1_008_001;
-const WAL: u32 = 1_009_001;
-const PREPARED_XACTS: u32 = 1_007_001;
-const DATABASE: u32 = 1_005_001;
-const IO: u32 = 1_006_001;
-const ACTIVITY: u32 = 1_001_001;
-const PROGRESS_VACUUM: u32 = 1_012_001;
-const STATEMENTS: u32 = 1_002_001;
-const STORE_PLANS: u32 = 1_003_001;
-const USER_TABLES: u32 = 1_013_001;
-const USER_INDEXES: u32 = 1_014_001;
+/// Section ids, for the collection log lines. Taken from the registry rather
+/// than written out: a hand-copied id names the wrong section in the log and
+/// nothing else notices.
+const SETTINGS: u32 = PgSettings::CONTRACT.type_id.get();
+const ARCHIVER: u32 = PgStatArchiver::CONTRACT.type_id.get();
+const WAL: u32 = PgStatWalV1::CONTRACT.type_id.get();
+const PREPARED_XACTS: u32 = PgPreparedXacts::CONTRACT.type_id.get();
+const DATABASE: u32 = PgStatDatabaseV1::CONTRACT.type_id.get();
+const IO: u32 = PgStatIoV1::CONTRACT.type_id.get();
+const ACTIVITY: u32 = PgStatActivityV1::CONTRACT.type_id.get();
+const PROGRESS_VACUUM: u32 = PgStatProgressVacuum::CONTRACT.type_id.get();
+const STATEMENTS: u32 = PgStatStatementsV1::CONTRACT.type_id.get();
+const STORE_PLANS: u32 = PgStorePlansOsscV1::CONTRACT.type_id.get();
+const USER_TABLES: u32 = PgStatUserTablesV1::CONTRACT.type_id.get();
+const USER_INDEXES: u32 = PgStatUserIndexesV1::CONTRACT.type_id.get();
 
 /// What one read of the server produced.
 #[derive(Debug, Default)]

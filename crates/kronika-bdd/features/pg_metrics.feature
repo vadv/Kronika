@@ -36,7 +36,7 @@ Feature: What a PostgreSQL server reports reaches the segment
       | type_id | section                | min rows |
       | 1019001 | pg_settings            | 100      |
       | 1008001 | pg_stat_archiver       | 1        |
-      | 1009001 | pg_stat_wal            | 1        |
+      | 1007001 | pg_stat_wal            | 1        |
       | 1005003 | pg_stat_database       | 1        |
       | 1001003 | pg_stat_activity       | 1        |
       | 1013002 | pg_stat_user_tables    | 1        |
@@ -57,7 +57,7 @@ Feature: What a PostgreSQL server reports reaches the segment
       | KRONIKA_SEGMENT_MAX_BYTES       | 1     |
       | KRONIKA_PG_INTERVAL_S           | 0     |
       | KRONIKA_PG_RELATIONS_INTERVAL_S | 0     |
-    And it runs for 3 seconds
+    When it runs for 3 seconds
     Then no segment holds these sections
       | type_id | section             |
       | 1019001 | pg_settings         |
