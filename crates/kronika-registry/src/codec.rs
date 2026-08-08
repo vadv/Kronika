@@ -53,8 +53,11 @@ pub mod os_topology;
 pub mod os_vmstat;
 pub mod pg_locks;
 pub mod pg_log;
+pub mod pg_prepared_xacts;
 pub mod pg_settings;
 pub mod pg_stat_archiver;
+pub mod pg_stat_database;
+pub mod pg_stat_io;
 pub mod pg_stat_wal;
 pub mod pgbouncer_events;
 
