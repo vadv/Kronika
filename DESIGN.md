@@ -202,10 +202,15 @@ browser-cacheable; web refreshes only the append-only active tail.
 Web builds `.idx` files next to the segments for fast dashboard access. An
 `.idx` holds what a dashboard needs without reopening every segment.
 
-Today that is health, and nothing else. A host with no database configured is
-the case that has to work first, and health is the whole of what such a host
-shows. Values pulled out of PostgreSQL and PgBouncer logs come once those
-sources are wired to the API.
+An `.idx` holds the health line of its segment and one row per object of every
+section that declares an identity: a cumulative column as its delta over the
+segment, a gauge as its last value. That is what the top and heatmap requests
+read, and they read nothing else, so a dashboard over a day opens ninety-six
+index files instead of ninety-six segments.
+
+The grain of the index is the segment. Over a day that is ninety-six columns,
+which is what a heatmap draws. Over an hour it is four, and the request reads
+the four segments themselves.
 
 An `.idx` records the sources that were enabled when it was built. A different
 set means a different file, and web rebuilds it under the same rule as a
@@ -232,6 +237,47 @@ change in the interface.
 
 Requests carry HTTP basic authentication. Other schemes come later, and the
 check sits in one place so that adding one does not touch the handlers.
+
+### The API
+
+Four handles answer everything the interface asks:
+
+- `/api/health` — the health line, from `.idx`.
+- `/api/top` — the objects of one section over a window, ordered by one column.
+  `buckets=N` splits the window into N columns and turns the same answer into a
+  heatmap.
+- `/api/series` — one column of one object over time.
+- `/api/rows` — the rows of one section over an interval, as recorded.
+
+`/api/top` reads index files only. `/api/series` is the one handle that opens a
+segment, and it opens it for a single object.
+
+The API describes nothing about itself. The interface ships in the same binary
+as the server, so a handle listing the sections and their columns would be a
+second statement of what the registry already holds, and the two would part
+company in the first commit that touched one of them. For the same reason the
+API carries no version and keeps no deprecated field: no client ships
+separately from the server it talks to.
+
+A response states its class and its unit once, in the envelope. A series is one
+column of one object and has one class and one unit for its whole length, so
+repeating them per point would say nothing. `/api/rows` is the exception and
+carries a column header, because its rows are heterogeneous; that header
+describes the response, not the catalogue.
+
+The server does the arithmetic the column's class calls for. A cumulative
+column comes back as a rate per second, computed from the point before the
+window so the first point of the answer is a rate rather than a hole, and its
+unit gains `/s`. A gauge comes back as recorded. Where the difference between
+two readings of a counter is negative the value is `null`: the rate over that
+interval is not defined, and nothing is concluded about why.
+
+The registry's `identity` is what groups rows from different snapshots into one
+object. It stays inside the server; a request filters on whatever label columns
+it names.
+
+The server returns codes and numbers: unit and class names, section and column
+names, unix microseconds. Wording and formatting belong to the interface.
 
 ### Browser caching
 
