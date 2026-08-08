@@ -5,6 +5,7 @@
 //! the mechanics — spawn, wait, read the file back, compare.
 
 mod given;
+mod then_dump;
 mod then_log;
 mod then_segment;
 mod when;

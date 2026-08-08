@@ -1,0 +1,17 @@
+[package]
+name = "kronika-dump"
+description = "Read a data directory back and print what is in it"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kronika-index = { path = "../../crates/kronika-index" }
+kronika-reader = { path = "../../crates/kronika-reader" }
+kronika-registry = { path = "../../crates/kronika-registry" }
+
+[lints]
+workspace = true

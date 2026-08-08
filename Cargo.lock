@@ -1113,6 +1113,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kronika-dump"
+version = "0.0.0"
+dependencies = [
+ "kronika-index",
+ "kronika-reader",
+ "kronika-registry",
+]
+
+[[package]]
 name = "kronika-format"
 version = "0.0.0"
 dependencies = [
@@ -1121,6 +1130,14 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "xxhash-rust",
+]
+
+[[package]]
+name = "kronika-index"
+version = "0.0.0"
+dependencies = [
+ "kronika-format",
+ "kronika-registry",
 ]
 
 [[package]]

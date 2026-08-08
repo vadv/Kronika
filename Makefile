@@ -5,7 +5,7 @@ CARGO_BUILD = cargo +$(RUST_TOOLCHAIN) build --locked --target $(TARGET)
 .PHONY: build collector demo fmt lint test check test-bdd demo-run
 
 build: ## Build every binary for the selected target.
-	@$(CARGO_BUILD) -p kronika-collector -p kronika-demo
+	@$(CARGO_BUILD) -p kronika-collector -p kronika-dump -p kronika-demo
 
 collector: ## Build kronika-collector.
 	@$(CARGO_BUILD) -p kronika-collector

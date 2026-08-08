@@ -22,7 +22,7 @@ pub use error::ReaderError;
 pub use kronika_format::{BlobEntry, Resolved};
 pub use kronika_registry::{Cell, Row};
 pub use kronika_store::StoreWarning;
-pub use segment::Segment;
+pub use segment::{Section, Segment};
 
 #[derive(Debug, Clone)]
 enum SegmentSource {

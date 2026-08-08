@@ -27,8 +27,10 @@ COPY crates/kronika-store/Cargo.toml crates/kronika-store/
 COPY crates/kronika-reader/Cargo.toml crates/kronika-reader/
 COPY crates/kronika-source-os/Cargo.toml crates/kronika-source-os/
 COPY crates/kronika-source-log/Cargo.toml crates/kronika-source-log/
+COPY crates/kronika-index/Cargo.toml crates/kronika-index/
 COPY crates/kronika-bdd/Cargo.toml crates/kronika-bdd/
 COPY bins/kronika-collector/Cargo.toml bins/kronika-collector/
+COPY bins/kronika-dump/Cargo.toml bins/kronika-dump/
 COPY bins/kronika-demo/Cargo.toml bins/kronika-demo/
 # Placeholder sources let cargo resolve and compile the dependency graph. A
 # proc-macro crate gets no bin target: cargo rejects one.
@@ -48,8 +50,9 @@ WORKDIR /work
 COPY . .
 # Release, because one scenario holds the collector to its peak-RSS limit and
 # a debug build carries megabytes the shipped binary does not.
-RUN cargo build --locked --release -p kronika-collector -p kronika-bdd
+RUN cargo build --locked --release -p kronika-collector -p kronika-dump -p kronika-bdd
 ENV KRONIKA_COLLECTOR_BIN=/work/target/x86_64-unknown-linux-gnu/release/kronika-collector
+ENV KRONIKA_DUMP_BIN=/work/target/x86_64-unknown-linux-gnu/release/kronika-dump
 ENV KRONIKA_FEATURES=/work/crates/kronika-bdd/features
 ENV KRONIKA_FIXTURES=/work/crates/kronika-bdd/fixtures
 CMD ["/work/target/x86_64-unknown-linux-gnu/release/kronika-bdd"]

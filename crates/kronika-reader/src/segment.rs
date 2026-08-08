@@ -31,7 +31,19 @@ pub struct Segment {
     min_ts: i64,
     max_ts: i64,
     window_count: u32,
-    section_rows: BTreeMap<u32, u64>,
+    section_rows: BTreeMap<u32, Section>,
+}
+
+/// What one section type occupies in a segment.
+///
+/// A current segment coalesces several parts, so both figures are the sum over
+/// the parts that carry the type.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Section {
+    /// Rows the catalogs recorded.
+    pub rows: u64,
+    /// Encoded body bytes, before the container's own framing.
+    pub bytes: u64,
 }
 
 impl Segment {
@@ -107,7 +119,17 @@ impl Segment {
     /// Rows recorded for `type_id`, or `None` when the section is absent.
     #[must_use]
     pub fn rows_of(&self, type_id: u32) -> Option<u64> {
-        self.section_rows.get(&type_id).copied()
+        self.section_rows.get(&type_id).map(|section| section.rows)
+    }
+
+    /// Every section the segment carries, in numeric order, with what it cost.
+    ///
+    /// This is what a size report is built from: the bodies are the segment
+    /// minus its catalog and framing.
+    pub fn sections(&self) -> impl Iterator<Item = (u32, Section)> + '_ {
+        self.section_rows
+            .iter()
+            .map(|(type_id, section)| (*type_id, *section))
     }
 
     /// Decode every section of `type_id` into column-addressable rows.
@@ -171,14 +193,16 @@ impl Segment {
     single_use_lifetimes,
     reason = "the named lifetime is required in this impl-Trait associated item on Rust 1.96"
 )]
-fn rows_by_type<'a>(catalogs: impl IntoIterator<Item = &'a Catalog>) -> BTreeMap<u32, u64> {
-    let mut rows = BTreeMap::new();
+fn rows_by_type<'a>(catalogs: impl IntoIterator<Item = &'a Catalog>) -> BTreeMap<u32, Section> {
+    let mut sections: BTreeMap<u32, Section> = BTreeMap::new();
     for catalog in catalogs {
         for entry in &catalog.entries {
-            *rows.entry(entry.type_id).or_default() += u64::from(entry.rows);
+            let section = sections.entry(entry.type_id).or_default();
+            section.rows += u64::from(entry.rows);
+            section.bytes += entry.len;
         }
     }
-    rows
+    sections
 }
 
 fn decode_section_rows(type_id: u32, section: VerifiedSection) -> Result<Vec<Row>, ReaderError> {
