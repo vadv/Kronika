@@ -2,12 +2,12 @@
 
 [Русская версия](README.ru.md)
 
-`kronika-layout` defines the only supported local data-directory grammar for
-Kronika. It maps a stable segment identity to its UTC calendar directory,
-performs strict bounded discovery, opens files relative to verified directory
-descriptors, and grants the two mutation roles through process-wide locks.
-ZMS framing and journal bytes remain in `kronika-format`; section encoding and
-finalization remain in `kronika-writer`.
+`kronika-layout` defines Kronika's local data-directory grammar. It maps a
+stable segment identity to a UTC calendar directory, discovers entries within
+fixed bounds, and opens files relative to verified directory descriptors.
+Process-wide locks allow one collector to change `active.wal` and ZMS files and
+one web process to change IDX files. `kronika-format` defines ZMS framing and
+journal bytes; `kronika-writer` encodes sections and writes final segments.
 
 ## On-disk layout
 
@@ -33,30 +33,24 @@ A segment that remains open across UTC midnight stays under the day on which
 its `SegmentId` falls. Time-range queries still use the catalog's `min_ts` and
 `max_ts`; the directory is a physical bucket, not a query index.
 
-`N.zms` is the immutable source segment. When derived index facts exist,
-`N.idx` is its replaceable sibling with the same stem. An IDX can be rebuilt
-from its ZMS.
+`N.zms` is the immutable source segment. `N.idx` contains replaceable derived
+data and uses the same stem. An IDX can be rebuilt from its ZMS.
 
-`active.wal` stays at the root. The first supported journal format is
-version 1, with magic `KRNJNL1\0`; its header stores the active `SegmentId`.
+`active.wal` stays at the root. Journal format version 1 uses magic
+`KRNJNL1\0`. Its header stores the active `SegmentId`.
 `kronika-layout` controls access to the file, while `kronika-format` defines
-its bytes and `kronika-writer` implements its lifecycle. Kronika has not had
-a public release, so version 1 is also the only journal format; there is no
-alternate format or migration mechanism.
+its bytes and `kronika-writer` implements its lifecycle.
 
 ## Closed grammar
 
-The data root is Kronika-owned. At its top level, a strict scan accepts only
-the journal, the two owner-lock files, and four-digit year directories. The
-calendar tree must use two-digit valid months and days. Day directories accept
-only canonical final files and recognized Kronika publication temporaries.
-Symbolic links, unknown entries, misplaced segment ids, and root-level `.zms`
-or `.idx` files fail the complete scan; no partial result is returned.
-
-This is the first supported layout. The project has not shipped an earlier
-public layout, so there is no compatibility reader, flat-layout fallback, or
-migration mode. Recreate any pre-release development or test data that does
-not follow this tree.
+The data root is Kronika-owned. Its grammar contains the journal, two owner-lock
+files, four-digit year directories, two-digit valid months and days, canonical
+final files, and recognized Kronika publication temporaries. The scanner
+follows only verified calendar directories. It records symbolic links, unknown
+entries, misplaced segment ids, and root-level `.zms` or `.idx` files in
+`LayoutSnapshot::foreign_entries` without traversing them. Valid entries remain
+in the returned inventory. Exhausted limits and errors while reading the
+verified tree fail the scan.
 
 ## Types and access
 
@@ -65,10 +59,10 @@ not follow this tree.
 - `UtcDay` validates and formats one `YYYY/MM/DD` bucket.
 - `SegmentAddress` binds one id to the only valid UTC day and returns the
   canonical `N.zms` and `N.idx` names.
-- `DataRoot` holds an open root descriptor, performs strict discovery, and
-  opens final files without following symbolic links.
-- `FileIdentity` pins a ZMS by device, inode, length, `mtime`, and `ctime`;
-  store and reader code recheck it on the opened file descriptor.
+- `DataRoot` holds an open root descriptor, classifies entries against the
+  closed grammar, and opens final files without following symbolic links.
+- `FileIdentity` identifies a ZMS by device, inode, length, `mtime`, and
+  `ctime`; store and reader code check it again on the opened file descriptor.
 - `WriterOwner` is the sole capability for `active.wal` and ZMS publication.
   One collector can hold it for a data root.
 - `IndexOwner` is the sole capability for IDX publication and cleanup. One
@@ -90,10 +84,10 @@ process currently holds a lock.
 
 Every value must be non-zero and no greater than its hard maximum. Exceeding a
 runtime bound fails the scan instead of returning an incomplete inventory.
-The store's sizing regression covers five 365-day years with one segment every
-15 minutes: both cold discovery and an unchanged cached refresh fit the default
-128 MiB cap. A wholesale same-name replacement is rejected before both complete
-sets of summaries can be retained.
+The default 128 MiB cap covers five 365-day years with one segment every
+15 minutes for both cold discovery and an unchanged cached refresh. A wholesale
+same-name replacement is rejected before both complete sets of summaries can
+be retained.
 
 ## Publication and backup
 
@@ -101,19 +95,18 @@ ZMS publication creates and synchronizes a temporary file inside the target
 day, adds the final `N.zms` name without overwriting an existing segment,
 synchronizes the day, removes the temporary name, and synchronizes the day
 again. IDX publication synchronizes a same-day temporary and atomically
-replaces `N.idx` only after rechecking the input ZMS descriptor.
+replaces `N.idx` only after checking the input ZMS descriptor again.
 
-The initial local-filesystem contract targets Linux with ext4 or XFS.
-Descriptor-bound ZMS publication resolves the already-open temporary through
-`/proc/self/fd`, so production containers and sandboxes must mount procfs.
-Equivalent durability and lock behavior is not claimed for non-Linux or
-network filesystems.
+Local publication supports Linux with ext4 or XFS. Descriptor-bound ZMS
+publication resolves the already-open temporary through `/proc/self/fd`, so
+containers and sandboxes must mount procfs. Equivalent durability and lock
+behavior are not claimed for other operating systems or network filesystems.
 
 A backup must preserve the complete directory hierarchy. Use a stopped
 collector and web process or a filesystem snapshot with equivalent
 consistency. IDX files may be rebuilt, but `active.wal` and ZMS files are
-source data. PostgreSQL log-tail state is deliberately outside `DATA_ROOT`; if
+source data. PostgreSQL log-tail state is outside `DATA_ROOT`; if
 it is needed for recovery, capture it separately at the same consistency
 point.
 
-The canonical API and error variants are in [`src/lib.rs`](src/lib.rs).
+The public API and error variants are in [`src/lib.rs`](src/lib.rs).

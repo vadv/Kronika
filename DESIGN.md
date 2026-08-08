@@ -1,8 +1,9 @@
 # Kronika design
 
-What the project is and how its pieces fit. Agents read this before
-`AGENTS.md`, which covers how to work in the repository rather than what is
-being built.
+[Русская версия](DESIGN.ru.md)
+
+Agents read this before `AGENTS.md`, which covers how to work in the
+repository rather than what is being built.
 
 ## What Kronika is
 
@@ -10,8 +11,8 @@ Kronika records the history of a machine and the databases on it, the way
 `atop` records system history, and replays it later.
 
 The collector takes periodic snapshots of system and database metrics, parses
-logs, and turns notable log events into metrics. The web part reads what the
-collector wrote and shows it. Everything below serves those two sentences.
+logs, and turns notable log events into metrics. The web part reads and displays
+the collected data. Everything below serves those two sentences.
 
 Three duty cycles:
 
@@ -51,8 +52,8 @@ file, no external schema, no registry lookup at runtime.
 
 Segments are optimized for size above everything else:
 
-- The segment carries no description of how to interpret or unpack itself. This
-  project is the only consumer and it already knows.
+- The segment stores no schema description. Kronika readers use the compiled
+  registry to decode it.
 - Strings are the main cost. Normalize repeated strings to a `sha256` and store
   references.
 - Small strings are stored as-is. Compressing them costs more than it saves.
@@ -81,9 +82,9 @@ Every metric declares its kind and its unit, the way Prometheus does:
   event. It is not a counter and not a gauge, and forcing it into either loses
   what happened and when.
 
-Units are part of the declaration: seconds, bytes, and so on. The unit lives in
-the column contract, which is compile-time data and never reaches the segment,
-so declaring it costs nothing on disk and never changes a metric id.
+Units are part of the declaration: seconds, bytes, and so on. The column
+contract stores the unit as compile-time data. It never reaches the segment,
+costs no disk space, and does not change a metric id.
 
 ## What Kronika does not build
 
@@ -103,11 +104,10 @@ Specifically, none of this belongs in the project:
 - Any machinery built around missing intervals. Snapshots with nothing between
   them are the normal state of a monitoring system, not a defect to detect,
   classify, or report.
-- Any artifact whose purpose is to prove something about the data rather than
-  to be the data.
+- Any artifact whose purpose is to assess the data rather than store it.
 
-A missing metric is one warning line in the collector log and a `null` in web.
-That is the whole treatment.
+A missing metric produces one warning in the collector log and a `null` in
+web. That is the whole treatment.
 
 This section outranks a reviewer's suggestion. When a review proposes adding
 one of these, the answer is no, and the reason is this paragraph.
@@ -132,9 +132,8 @@ The collector decides at collection time whether it is on a VM or inside a
 container, and records the answer in the `instance_metadata` section that every
 segment carries. It does not guess, and web does not re-derive it.
 
-This matters because the numbers differ. A pod has a CPU limit; a VM has a
-physical CPU count. Health is computed against the CPU limit inside a
-container and against the CPU count on a VM.
+A pod has a CPU limit; a VM has a physical CPU count. Health uses the CPU limit
+inside a container and the CPU count on a VM.
 
 ## Health and index files
 
@@ -151,14 +150,14 @@ rebuilds it instead of failing.
 
 ## Logging
 
-Logs are the product's second output, and carry the same weight as metrics.
+Logs are part of the product output and carry the same weight as metrics.
 
 Collector:
 
 - Every error is logged with enough detail to act on it. No swallowed errors,
   no bare "failed".
-- Writing a segment logs how long it took and what it cost. Cheap counters and
-  timings, enough for an operator to see the shape of the work.
+- Writing a segment logs elapsed time, segment and journal bytes, section and
+  journal-part counts, timestamps, and peak RSS.
 - A metric that could not be collected is logged as such by the collector.
 
 Web:
@@ -168,14 +167,26 @@ Web:
 - Shows `null` for a metric the collector failed to collect. Web does not
   invent or interpolate a value it does not have.
 
+## Fail fast
+
+A component that cannot return to a known durable state fails immediately and
+visibly: the log carries the full error, and the daemon exits. The next start
+finishes the interrupted operation.
+
+Startup recovery is the only recovery path. A crash and a deliberate stop run
+the same code, and the tests exercise it. The journal's poisoned state is this
+rule applied: a reset that cannot complete or roll back refuses further use
+until reopen.
+
+A segment is published before the journal is reset, so a failed reset stops
+without risking collected data.
+
 ## Demo
 
-The repository ships a demo that runs the project against a live PostgreSQL and
-OS container, and it shows the stages of the project as they land.
+The repository demo runs the project against live PostgreSQL and OS containers.
 
-When the collector becomes runnable, the demo runs it and reports segment size,
-RSS, and CPU consumed. Every later stage extends the same demo. The demo is
-also the data source for the segment size benchmarks required by `AGENTS.md`.
+The demo reports segment size, RSS, and CPU use. It also supplies data for
+segment-size benchmarks.
 
 ## Roadmap
 

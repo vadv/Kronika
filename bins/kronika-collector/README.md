@@ -1,22 +1,24 @@
 # kronika-collector
 
-A daemon that reads the operating system on a tick and writes the result as
-Kronika segments. It has no public command-line interface: configuration comes
-from the environment.
+[Русская версия](README.ru.md)
+
+`kronika-collector` reads operating-system metrics at configured intervals and
+writes Kronika segments. It has no public command-line interface; environment
+variables provide its configuration.
 
 ## Configuration
 
 Every variable below is read and parsed once, before the first collection. A
 value that does not parse stops the daemon with a message naming the variable
-and what it was given; nothing falls back to a default silently.
+and the invalid value. The daemon does not substitute a default.
 
-There is no per-source row cap. A source returns what the machine has, and each
-`segment_write_finish` line carries `rss_kib`, the process's peak resident set
-size, so the cost of a collection is on record rather than guessed at.
+There is no per-source row cap. A source returns every available row. Each
+`segment_write_finish` log record includes `rss_kib`, the process's peak
+resident set size.
 
 `KRONIKA_OUT_DIR` is the only required variable.
 
-### Where the data goes
+### Storage
 
 | Variable | Default | Meaning |
 | --- | ---: | --- |
@@ -26,16 +28,15 @@ size, so the cost of a collection is on record rather than guessed at.
 | `KRONIKA_JOURNAL_MAX_BYTES` | 1 GiB | Hard cap of `active.wal`. Reaching it writes the open segment early rather than failing the append. |
 | `KRONIKA_RETENTION` | 2 GiB | Rotation target for the whole tree: a byte budget, `auto` (= `auto:80`), or `auto:P` for a used-fraction target of the backing partition. |
 
-### How often each source is read
+### Collection intervals
 
-The base tick is `KRONIKA_INTERVAL_S`; each source runs on its own multiple of
-it. A source interval of `0` reads on every tick. An interval equal to the tick
-reads on most ticks but not reliably every one, because a wake that lands a
-fraction early leaves the interval unelapsed.
+The scheduler tracks each source interval independently. The timer sleeps for
+at most `KRONIKA_INTERVAL_S` and wakes earlier when a source becomes due. A
+source interval of `0` reads on every timer cycle.
 
 | Variable | Default, s | Sections |
 | --- | ---: | --- |
-| `KRONIKA_INTERVAL_S` | 5 | The scheduler tick itself; `0` disables the timer and leaves collection to signals. |
+| `KRONIKA_INTERVAL_S` | 5 | Maximum timer sleep; `0` disables the timer and leaves collection to signals. |
 | `KRONIKA_OS_CORE_INTERVAL_S` | 10 | `1_102`–`1_111`, `1_114`–`1_120`. |
 | `KRONIKA_OS_MOUNTTOPO_INTERVAL_S` | 60 | `1_112`, `1_113`. |
 | `KRONIKA_OS_PROCESS_INTERVAL_S` | 5 | `1_100`. |
@@ -43,7 +44,7 @@ fraction early leaves the interval unelapsed.
 | `KRONIKA_OS_CGROUP_INTERVAL_S` | 10 | `1_201`–`1_204`. |
 | `KRONIKA_OS_CGROUP_MAPPING_INTERVAL_S` | 30 | `1_200`. |
 
-### Everything else
+### Other settings
 
 | Variable | Default | Meaning |
 | --- | ---: | --- |
@@ -58,12 +59,12 @@ Filesystem capacity is queried only for `ext2`, `ext3`, `ext4`, `xfs`,
 helper process handles the allowlisted mounts under a single one-second
 deadline so a blocked capacity query cannot stop later snapshots.
 
-## Running it
+## Run the collector
 
 ```sh
 KRONIKA_OUT_DIR=/var/lib/kronika kronika-collector
 ```
 
 `SIGTERM` and `SIGINT` stop the loop and leave the journal in place, so a
-restart loses no collected data. `SIGUSR2` collects one window immediately
-without waiting for the tick.
+restart can recover the collected data. `SIGUSR2` collects one window
+immediately without waiting for the next timer tick.
