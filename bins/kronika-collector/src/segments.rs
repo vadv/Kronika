@@ -4,7 +4,7 @@ use crate::logging::{
     summary_rows,
 };
 use anyhow::{Context, Result};
-use kronika_format::{EntrySnapshot, Placement, StrId};
+use kronika_format::{DictStats, Placement};
 use kronika_layout::{FileKind, SegmentAddress, SegmentId, WriterOwner};
 use kronika_registry::{
     CodecError, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, MAX_SECTION_ROWS, final_data_body_bound,
@@ -181,6 +181,9 @@ pub(crate) fn close_open_segment(
     let segment_id = segment
         .first_id
         .context("writing an open segment requires an appended window")?;
+    // The journal is the durable input to this fatal operation and startup
+    // recovery. Drop the in-memory dictionaries before final bodies are built.
+    *segment = SegmentState::default();
     let address = SegmentAddress::new(segment_id).context("derive the segment UTC address")?;
     let dest = owner.root().diagnostic_file_path(address, FileKind::Zms);
     let journal_bytes = journal.bytes();
@@ -232,7 +235,6 @@ pub(crate) fn close_open_segment(
         );
         return Err(anyhow::Error::new(error).context("reset the journal after the segment write"));
     }
-    *segment = SegmentState::default();
     Ok(dest)
 }
 
@@ -282,8 +284,7 @@ fn prepare_window_admission(
             // Prove that the incoming window fits by itself before publishing
             // the accumulated journal. The caller recollects it immediately
             // with the new segment's dictionary and metadata.
-            SegmentAdmission::default()
-                .assess(&flushed.summary, &segment.interner)
+            SegmentAdmission::assess_window(&flushed.summary, &segment.interner)
                 .context("one collection window exceeds finished segment limits")?;
             log_event(
                 LogLevel::Warn,
@@ -348,8 +349,7 @@ pub(crate) fn append_window_and_maybe_close(
             );
         }
         Err(JournalError::Full { len, max }) if segment.first_id.is_some() => {
-            SegmentAdmission::default()
-                .assess(&flushed.summary, &segment.interner)
+            SegmentAdmission::assess_window(&flushed.summary, &segment.interner)
                 .context("one collection window exceeds finished segment limits")?;
             log_event(
                 LogLevel::Warn,

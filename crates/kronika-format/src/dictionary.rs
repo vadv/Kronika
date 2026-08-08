@@ -242,6 +242,7 @@ impl SegmentDicts {
             let stored_len = stored.bytes.len() as u64;
             if stored.is_blob() {
                 stats.blob_count += 1;
+                stats.truncated_blob_count += usize::from(stored.full_sha256.is_some());
                 stats.blob_bytes += stored_len;
             } else {
                 stats.string_count += 1;
