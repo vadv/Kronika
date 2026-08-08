@@ -5,5 +5,7 @@
 )]
 
 mod pool;
+mod settings;
 
 pub use pool::{MAX_AGE, Pool};
+pub use settings::{SettingsRow, collect as collect_settings, to_section as settings_to_section};
