@@ -32,11 +32,20 @@ fn is_utc_calendar_path(relative: &Path) -> bool {
             .all(|part| part.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
+/// A reader over what the run published.
+fn reader(world: &BddWorld) -> Result<Reader> {
+    let run = world.run.as_ref().context("a collector was started")?;
+    Ok(Reader::open(&run.out_dir())?)
+}
+
 /// Every segment the run published, oldest first, read the way web reads.
 fn segments(world: &BddWorld) -> Result<Vec<Segment>> {
-    let run = world.run.as_ref().context("a collector was started")?;
-    let out_dir = run.out_dir();
-    let reader = Reader::open(&out_dir)?;
+    let out_dir = world
+        .run
+        .as_ref()
+        .context("a collector was started")?
+        .out_dir();
+    let reader = reader(world)?;
     let listing = reader.segments(..)?;
     anyhow::ensure!(
         listing.warnings.is_empty(),
@@ -54,6 +63,107 @@ fn segments(world: &BddWorld) -> Result<Vec<Segment>> {
         .iter()
         .map(|unit| reader.open_segment(unit).map_err(Into::into))
         .collect()
+}
+
+/// The window every published segment covers, oldest first.
+fn windows(world: &BddWorld) -> Result<Vec<(i64, i64)>> {
+    Ok(segments(world)?
+        .iter()
+        .map(|segment| (segment.min_ts(), segment.max_ts()))
+        .collect())
+}
+
+#[then(regex = r"^at least (\d+) segments were published$")]
+fn several_segments(world: &mut BddWorld, least: usize) -> Result<()> {
+    let published = segments(world)?.len();
+    anyhow::ensure!(
+        published >= least,
+        "the run published {published} segments, fewer than {least}"
+    );
+    Ok(())
+}
+
+#[then("reading each segment's own window returns that segment")]
+fn window_returns_its_segment(world: &mut BddWorld) -> Result<()> {
+    let reader = reader(world)?;
+    for (min_ts, max_ts) in windows(world)? {
+        let found = reader.segments(min_ts..=max_ts)?.segments;
+        anyhow::ensure!(
+            found
+                .iter()
+                .any(|unit| unit.summary.min_ts == min_ts && unit.summary.max_ts == max_ts),
+            "reading {min_ts}..={max_ts} returned {} segments, none of them that one",
+            found.len()
+        );
+    }
+    Ok(())
+}
+
+#[then("reading the first segment's window leaves out the last segment")]
+fn window_excludes_the_others(world: &mut BddWorld) -> Result<()> {
+    let reader = reader(world)?;
+    let windows = windows(world)?;
+    let (first, last) = (
+        *windows.first().context("no segment was published")?,
+        *windows.last().context("no segment was published")?,
+    );
+    let found = reader.segments(first.0..=first.1)?.segments;
+    anyhow::ensure!(
+        !found.iter().any(|unit| unit.summary.min_ts == last.0),
+        "reading {}..={} returned the segment starting at {}",
+        first.0,
+        first.1,
+        last.0
+    );
+    Ok(())
+}
+
+#[then("reading the time before the first segment returns nothing")]
+fn nothing_before_the_first(world: &mut BddWorld) -> Result<()> {
+    let reader = reader(world)?;
+    let first = windows(world)?
+        .first()
+        .copied()
+        .context("no segment was published")?
+        .0;
+    let found = reader.segments(..first)?.segments;
+    anyhow::ensure!(
+        found.is_empty(),
+        "reading up to {first} returned {} segments",
+        found.len()
+    );
+    Ok(())
+}
+
+#[then("reading the time after the last segment returns nothing")]
+fn nothing_after_the_last(world: &mut BddWorld) -> Result<()> {
+    let reader = reader(world)?;
+    let last = windows(world)?
+        .last()
+        .copied()
+        .context("no segment was published")?
+        .1;
+    let found = reader.segments(last.saturating_add(1)..)?.segments;
+    anyhow::ensure!(
+        found.is_empty(),
+        "reading from {} returned {} segments",
+        last.saturating_add(1),
+        found.len()
+    );
+    Ok(())
+}
+
+#[then(regex = r"^the reader sets aside (\d+) files?$")]
+fn reader_sets_aside(world: &mut BddWorld, expected: usize) -> Result<()> {
+    let reader = reader(world)?;
+    let listing = reader.segments(..)?;
+    anyhow::ensure!(
+        listing.warnings.len() == expected,
+        "the scan set aside {} files, not {expected}: {:?}",
+        listing.warnings.len(),
+        listing.warnings
+    );
+    Ok(())
 }
 
 /// One decoded cell as the text a scenario writes for it.

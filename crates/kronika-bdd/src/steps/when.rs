@@ -2,10 +2,11 @@
 
 use super::table_rows;
 use crate::BddWorld;
-use crate::collector::Run;
+use crate::collector::{Run, files_under};
 use anyhow::{Context as _, Result};
 use cucumber::gherkin::Step;
 use cucumber::when;
+use std::path::PathBuf;
 use std::time::Duration;
 
 #[when(regex = r"^it runs for (\d+) seconds$")]
@@ -30,6 +31,31 @@ fn cut_the_journal(world: &mut BddWorld, bytes: u64) -> Result<()> {
         .open(&journal)?
         .set_len(len - bytes)?;
     world.prepared_root = Some(run.into_root());
+    Ok(())
+}
+
+#[when(regex = r"^the oldest published segment is cut down to (\d+) bytes$")]
+fn cut_a_segment(world: &mut BddWorld, bytes: u64) -> Result<()> {
+    let run = world.run.as_ref().context("a collector was started")?;
+    let root = run.out_dir();
+    let mut segments: Vec<PathBuf> = files_under(&root)
+        .into_iter()
+        .filter(|path| path.extension().is_some_and(|ext| ext == "zms"))
+        .collect();
+    segments.sort();
+    let oldest = root.join(segments.first().context("no segment was published")?);
+    let len = std::fs::metadata(&oldest)
+        .with_context(|| format!("stat {}", oldest.display()))?
+        .len();
+    anyhow::ensure!(
+        len > bytes,
+        "{} holds {len} bytes, too few to cut down to {bytes}",
+        oldest.display()
+    );
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&oldest)?
+        .set_len(bytes)?;
     Ok(())
 }
 
