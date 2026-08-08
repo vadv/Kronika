@@ -205,6 +205,10 @@ An `.idx` records the sources that were enabled when it was built. A different
 set means a different file, and web rebuilds it under the same rule as a
 version it does not know.
 
+An `.idx` carries a checksum of its contents in its header. That is what a
+browser revalidates against, so the file has to hold it rather than have web
+compute it per request.
+
 `.idx` files are derived data. Deleting one is safe; web rebuilds it from the
 `.zms`. When web finds an `.idx` written by an incompatible version, it
 rebuilds it instead of failing.
@@ -226,22 +230,37 @@ check sits in one place so that adding one does not touch the handlers.
 ### Browser caching
 
 Web retains no in-memory segment or index cache between requests. A finished
-segment is immutable, and web serves one deterministic HTTP representation per
-finished segment with `Cache-Control: private, max-age=31536000, immutable`. The browser stores
-that representation as immutable in its private cache.
+segment is immutable, and a request names the segment and the series it wants,
+so one URL and its series list together identify one representation. Web serves
+it with `Cache-Control: private, max-age=31536000, immutable`, and the browser
+stores it as immutable in its private cache. The cache key is the whole URL as
+it arrived: web reads the series in the order given and neither sorts nor
+deduplicates them.
 
 Each finished per-segment index has one stable URL. Web serves its response with
 `Cache-Control: private, no-cache`; the browser stores it and uses ordinary `ETag`
 revalidation because the index is derived from the segment and may be rebuilt.
-An unchanged index returns `304 Not Modified` with no body; rebuilt content has
-a different `ETag`. Because requests use the HTTP `Basic` authentication
-scheme, public and shared caches must not store either response.
+An unchanged index returns `304 Not Modified` with no body. The `ETag` is the
+`.idx` checksum, which the file carries in its header, so a rebuild that changes
+nothing keeps its `ETag` and a rebuild that changes something does not. Because
+requests use the HTTP `Basic` authentication scheme, public and shared caches
+must not store either response.
 
-The active WAL is append-only. Browser-held active rows and index points
-refresh against the current active cursor; web does not persist an `active.idx`
-or rewrite one for each snapshot. When the same `SegmentId` moves from active to
-finished, its finished data and index are canonical, and the browser does not
-duplicate rows.
+The active WAL is append-only. A browser asks for the tail as
+`from=<segment_id>:<ts>`, naming the active segment it holds and the last
+timestamp in it, and web answers with the rows after that timestamp and with the
+`segment_id` that is active now. Web does not persist an `active.idx` or rewrite
+one for each snapshot; the tail's index points are computed for the response.
+
+A `segment_id` that differs from the one asked for means that segment was
+published while the browser was away. The browser then drops the tail it holds,
+fetches that segment through its ordinary immutable URL, and starts the tail
+again on the new active segment. Refetching what it already had is not worth
+avoiding.
+
+A request refreshes the tail; a timer must not. A front end that polls on an
+interval keeps web awake for nobody, which is the one thing standby exists to
+prevent.
 
 Browser caching is only an optimization. If the browser evicts a response or
 ignores cache headers, web performs a normal reread; correctness does not
