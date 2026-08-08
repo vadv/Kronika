@@ -304,7 +304,7 @@ fn instance_facts(world: &mut BddWorld, step: &Step) -> Result<()> {
                 .get(column)
                 .with_context(|| format!("instance_metadata has no column {column}"))?;
             anyhow::ensure!(
-                held == value,
+                held == *value,
                 "a segment records {column}={held}, not {value}"
             );
         }
@@ -413,11 +413,7 @@ fn log_events_recorded_once(world: &mut BddWorld, step: &Step) -> Result<()> {
 /// Every value one column holds, for a failure message that says what is there
 /// instead of only what is not.
 fn seen_values(rows: &[super::dump::Line], column: &str) -> Vec<String> {
-    let mut seen: Vec<String> = rows
-        .iter()
-        .filter_map(|row| row.get(column))
-        .map(str::to_owned)
-        .collect();
+    let mut seen: Vec<String> = rows.iter().filter_map(|row| row.get(column)).collect();
     seen.sort();
     seen.dedup();
     seen
@@ -428,6 +424,5 @@ fn paths(segments: &[super::dump::Line]) -> Vec<String> {
     segments
         .iter()
         .filter_map(|line| line.get("path"))
-        .map(str::to_owned)
         .collect()
 }

@@ -1070,6 +1070,7 @@ dependencies = [
  "cucumber",
  "kronika-format",
  "nix",
+ "serde_json",
  "tempfile",
  "tokio",
 ]
