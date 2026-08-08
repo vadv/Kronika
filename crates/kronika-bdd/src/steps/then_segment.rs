@@ -3,7 +3,7 @@
 //! Everything a segment is asked comes back through `kronika-dump`. A scenario
 //! that checked a segment some other way would be checking a path nobody runs.
 
-use super::dump::{Line, dump, lines};
+use super::dump::{Line, dump, lines, strict_lines};
 use super::{count, table_rows, type_id};
 use crate::BddWorld;
 use crate::collector::files_under;
@@ -46,15 +46,8 @@ fn permissive_listing(world: &BddWorld, range: &[&str]) -> Result<Vec<Line>> {
 
 /// A complete listing with at least one admitted segment and no scan warning.
 fn listing(world: &BddWorld) -> Result<Vec<Line>> {
-    let listed = permissive_listing(world, &[])?;
-    let warnings = listed
-        .iter()
-        .filter(|line| line.holds("kind", "warning"))
-        .count();
-    anyhow::ensure!(
-        warnings == 0,
-        "the full listing reported {warnings} warnings"
-    );
+    let printed = dump(world, &["--json"])?;
+    let listed = strict_lines(&printed, "the full listing")?;
     anyhow::ensure!(
         listed.iter().any(|line| line.holds("kind", "segment")),
         "the full listing admitted no segments"
@@ -92,15 +85,7 @@ fn rows(world: &BddWorld, type_id: u32) -> Result<Vec<Line>> {
         world,
         &["--json", "--limit", "0", "--section", &type_id.to_string()],
     )?;
-    let listed = lines(&printed)?;
-    let warnings = listed
-        .iter()
-        .filter(|line| line.holds("kind", "warning"))
-        .count();
-    anyhow::ensure!(
-        warnings == 0,
-        "the row listing reported {warnings} warnings"
-    );
+    let listed = strict_lines(&printed, "the row listing")?;
     Ok(listed
         .into_iter()
         .filter(|line| {

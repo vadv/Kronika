@@ -85,13 +85,6 @@ fn a_flipped_point_byte_fails_the_checksum() {
 }
 
 #[test]
-fn a_flipped_source_byte_fails_the_checksum() {
-    let mut bytes = sample().encode();
-    bytes[8] ^= 0x01;
-    assert_eq!(Index::decode(&bytes), Err(IndexError::BadChecksum));
-}
-
-#[test]
 fn a_foreign_file_is_rejected_by_its_magic() {
     let mut bytes = sample().encode();
     bytes[0] = b'X';

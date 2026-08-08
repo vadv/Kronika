@@ -30,16 +30,6 @@ struct PartialStall {
     io: Option<i64>,
 }
 
-impl PartialStall {
-    fn complete(&self) -> Option<Stall> {
-        Some(Stall {
-            cpu: self.cpu?,
-            memory: self.memory?,
-            io: self.io?,
-        })
-    }
-}
-
 /// Health at every pressure snapshot, oldest first.
 ///
 /// `metadata_rows` identifies the collector's resource boundary. Only pressure
@@ -87,7 +77,10 @@ pub fn points(metadata_rows: &[Row], psi_rows: &[Row]) -> Vec<Point> {
     let mut points = Vec::with_capacity(snapshots.len());
     let mut previous: Option<(i64, Stall)> = None;
     for (ts, snapshot) in snapshots {
-        let current = snapshot.complete();
+        let current = match (snapshot.cpu, snapshot.memory, snapshot.io) {
+            (Some(cpu), Some(memory), Some(io)) => Some(Stall { cpu, memory, io }),
+            _other => None,
+        };
         let value = previous.and_then(|(before_ts, before)| {
             current.and_then(|after| health(before, before_ts, after, ts))
         });

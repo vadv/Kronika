@@ -3,9 +3,11 @@
 use std::io::Write;
 
 use kronika_index::{INSTANCE_METADATA_TYPE_ID, OS_PSI_TYPE_ID, points};
-use kronika_reader::{Cell, Dictionary, ReaderError, Resolved, Segment, StoreWarning};
+use kronika_reader::{Cell, Dictionary, Resolved, Segment, StoreWarning};
 use kronika_registry::{DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, section_name};
 use serde_json::{Map, Value, json};
+
+use crate::DumpError;
 
 /// A file the scan would not admit.
 ///
@@ -15,7 +17,7 @@ pub(crate) fn warning(
     output: &mut impl Write,
     json_output: bool,
     warning: &StoreWarning,
-) -> Result<(), ReaderError> {
+) -> Result<(), DumpError> {
     if json_output {
         say(
             output,
@@ -32,14 +34,14 @@ pub(crate) fn sizes(
     output: &mut impl Write,
     json_output: bool,
     segment: &Segment,
-) -> Result<(), ReaderError> {
+) -> Result<(), DumpError> {
     let section_bytes: u64 = segment.sections().map(|(_id, section)| section.bytes).sum();
     let captured_bytes = segment.captured_bytes();
     let overhead_bytes = captured_bytes.checked_sub(section_bytes).ok_or_else(|| {
-        std::io::Error::new(
+        kronika_reader::ReaderError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("section bodies use {section_bytes} bytes in a {captured_bytes}-byte segment"),
-        )
+        ))
     })?;
     if json_output {
         let path = segment.path().display().to_string();
@@ -120,7 +122,7 @@ pub(crate) fn index(
     output: &mut impl Write,
     json_output: bool,
     segment: &Segment,
-) -> Result<(), ReaderError> {
+) -> Result<(), DumpError> {
     let metadata_rows = segment.rows(INSTANCE_METADATA_TYPE_ID)?;
     let pressure_rows = segment.rows(OS_PSI_TYPE_ID)?;
     let points = points(&metadata_rows, &pressure_rows);
@@ -167,7 +169,7 @@ pub(crate) fn section(
     segment: &Segment,
     type_id: u32,
     limit: usize,
-) -> Result<(), ReaderError> {
+) -> Result<(), DumpError> {
     let dictionary = segment.dictionary()?;
     if matches!(type_id, DICT_STRINGS_TYPE_ID | DICT_BLOBS_TYPE_ID) {
         return dictionary_section(output, json_output, segment, type_id, limit, &dictionary);
@@ -218,10 +220,15 @@ fn dictionary_section(
     type_id: u32,
     limit: usize,
     dictionary: &Dictionary,
-) -> Result<(), ReaderError> {
+) -> Result<(), DumpError> {
     let mut entries: Vec<_> = dictionary
         .entries()
-        .filter(|(_id, resolved)| belongs_to(type_id, *resolved))
+        .filter(|(_id, resolved)| {
+            matches!(
+                (type_id, *resolved),
+                (DICT_STRINGS_TYPE_ID, Resolved::Str(_)) | (DICT_BLOBS_TYPE_ID, Resolved::Blob(_))
+            )
+        })
         .collect();
     entries.sort_unstable_by_key(|(id, _resolved)| *id);
     if !json_output {
@@ -259,13 +266,6 @@ fn dictionary_section(
     Ok(())
 }
 
-const fn belongs_to(type_id: u32, resolved: Resolved<'_>) -> bool {
-    matches!(
-        (type_id, resolved),
-        (DICT_STRINGS_TYPE_ID, Resolved::Str(_)) | (DICT_BLOBS_TYPE_ID, Resolved::Blob(_))
-    )
-}
-
 fn dictionary_json(id: u64, resolved: Resolved<'_>) -> Value {
     match resolved {
         Resolved::Str(bytes) => json!({
@@ -287,7 +287,7 @@ fn write_json_row(
     path: &std::path::Path,
     type_id: u32,
     row: &Value,
-) -> std::io::Result<()> {
+) -> Result<(), DumpError> {
     say(
         output,
         &json!({
@@ -359,8 +359,8 @@ fn json_cell(cell: &Cell, dictionary: &Dictionary) -> Value {
 }
 
 /// One JSON document per line, so a long dump streams.
-fn say(output: &mut impl Write, value: &Value) -> std::io::Result<()> {
-    writeln!(output, "{value}")
+fn say(output: &mut impl Write, value: &Value) -> Result<(), DumpError> {
+    writeln!(output, "{value}").map_err(DumpError::Output)
 }
 
 #[cfg(test)]

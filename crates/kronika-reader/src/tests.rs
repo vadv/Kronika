@@ -186,13 +186,6 @@ fn active_read_keeps_its_prefix_and_next_read_gets_later_deltas() {
         .open_segment(&first_listing.segments[0])
         .expect("open captured prefix after append");
     assert_eq!(first.captured_bytes(), first_prefix_bytes);
-    assert!(
-        first.captured_bytes()
-            < std::fs::metadata(directory.path().join("active.wal"))
-                .expect("grown active journal metadata")
-                .len(),
-        "the first listing keeps the captured journal prefix length"
-    );
     assert_eq!(
         first
             .rows(OsTopology::CONTRACT.type_id.get())

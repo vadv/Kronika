@@ -6,6 +6,8 @@ use kronika_reader::{BlobEntry, Resolved};
 use kronika_registry::{DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict};
 
+use crate::DumpError;
+
 use super::{dictionary_json, percent, section, sizes, write_json_row};
 
 #[test]
@@ -30,15 +32,6 @@ fn a_huge_part_does_not_overflow_the_multiplication() {
 #[test]
 fn a_part_larger_than_the_whole_is_capped_at_a_hundred() {
     assert_eq!(percent(3, 2), 100);
-}
-
-#[test]
-fn section_and_overhead_shares_use_the_captured_segment_size() {
-    let captured_bytes = 100;
-    let section_bytes = 30;
-    let overhead_bytes = captured_bytes - section_bytes;
-    assert_eq!(percent(section_bytes, captured_bytes), 30);
-    assert_eq!(percent(overhead_bytes, captured_bytes), 70);
 }
 
 #[test]
@@ -127,7 +120,10 @@ fn a_size_report_accounts_for_the_captured_file() {
 
 #[test]
 fn a_broken_pipe_is_returned_as_an_output_error() {
-    let mut output = BrokenPipe;
+    let mut output = FailingWriter {
+        kind: std::io::ErrorKind::BrokenPipe,
+        message: "closed pipe",
+    };
     let error = write_json_row(
         &mut output,
         Path::new("/data/one.zms"),
@@ -135,7 +131,26 @@ fn a_broken_pipe_is_returned_as_an_output_error() {
         &serde_json::json!({"ts": 42}),
     )
     .expect_err("closed pipe");
-    assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+    assert!(matches!(
+        error,
+        DumpError::Output(problem) if problem.kind() == std::io::ErrorKind::BrokenPipe
+    ));
+}
+
+#[test]
+fn a_non_pipe_failure_is_reported_as_an_output_write() {
+    let mut output = FailingWriter {
+        kind: std::io::ErrorKind::Other,
+        message: "synthetic failure",
+    };
+    let error = write_json_row(
+        &mut output,
+        Path::new("/data/one.zms"),
+        1_107_001,
+        &serde_json::json!({"ts": 42}),
+    )
+    .expect_err("failed write");
+    assert_eq!(error.to_string(), "write output: synthetic failure");
 }
 
 fn dictionary_segment() -> (tempfile::TempDir, kronika_reader::Segment) {
@@ -168,11 +183,14 @@ fn dictionary_segment() -> (tempfile::TempDir, kronika_reader::Segment) {
     (directory, segment)
 }
 
-struct BrokenPipe;
+struct FailingWriter {
+    kind: std::io::ErrorKind,
+    message: &'static str,
+}
 
-impl std::io::Write for BrokenPipe {
+impl std::io::Write for FailingWriter {
     fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
-        Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+        Err(std::io::Error::new(self.kind, self.message))
     }
 
     fn flush(&mut self) -> std::io::Result<()> {

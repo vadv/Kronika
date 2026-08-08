@@ -1,6 +1,6 @@
 //! Assertions on what the dumper prints and on the index it builds.
 
-use super::dump::{dump, lines};
+use super::dump::{Line, dump, strict_lines};
 use super::table_rows;
 use crate::BddWorld;
 use anyhow::{Context as _, Result};
@@ -70,18 +70,18 @@ fn dumper_resolves_dictionary(
     Ok(())
 }
 
+fn index_points(world: &BddWorld) -> Result<Vec<Line>> {
+    let printed = dump(world, &["--index", "--json"])?;
+    Ok(strict_lines(&printed, "the index listing")?
+        .into_iter()
+        .filter(|line| line.holds("kind", "point"))
+        .collect())
+}
+
 #[then("the dumper builds one health point per pressure snapshot")]
 fn dumper_builds_points(world: &mut BddWorld) -> Result<()> {
     let printed = dump(world, &["--section", "1107001", "--limit", "0", "--json"])?;
-    let section_lines = lines(&printed)?;
-    let warnings = section_lines
-        .iter()
-        .filter(|line| line.holds("kind", "warning"))
-        .count();
-    anyhow::ensure!(
-        warnings == 0,
-        "the PSI row listing reported {warnings} warnings"
-    );
+    let section_lines = strict_lines(&printed, "the PSI row listing")?;
     let snapshots: std::collections::BTreeSet<i64> = section_lines
         .iter()
         .filter(|row| row.holds("kind", "row"))
@@ -89,20 +89,7 @@ fn dumper_builds_points(world: &mut BddWorld) -> Result<()> {
         .collect();
     anyhow::ensure!(!snapshots.is_empty(), "the dumper printed no PSI snapshots");
 
-    let indexed = dump(world, &["--index", "--json"])?;
-    let index_lines = lines(&indexed)?;
-    let warnings = index_lines
-        .iter()
-        .filter(|line| line.holds("kind", "warning"))
-        .count();
-    anyhow::ensure!(
-        warnings == 0,
-        "the index listing reported {warnings} warnings"
-    );
-    let points = index_lines
-        .iter()
-        .filter(|line| line.holds("kind", "point"))
-        .count();
+    let points = index_points(world)?.len();
     anyhow::ensure!(points > 0, "the dumper built no health points");
     anyhow::ensure!(
         points == snapshots.len(),
@@ -114,20 +101,7 @@ fn dumper_builds_points(world: &mut BddWorld) -> Result<()> {
 
 #[then("every health point the dumper builds is null or between 0 and 100")]
 fn dumper_points_are_in_range(world: &mut BddWorld) -> Result<()> {
-    let printed = dump(world, &["--index", "--json"])?;
-    let index_lines = lines(&printed)?;
-    let warnings = index_lines
-        .iter()
-        .filter(|line| line.holds("kind", "warning"))
-        .count();
-    anyhow::ensure!(
-        warnings == 0,
-        "the index listing reported {warnings} warnings"
-    );
-    let points: Vec<_> = index_lines
-        .iter()
-        .filter(|line| line.holds("kind", "point"))
-        .collect();
+    let points = index_points(world)?;
     anyhow::ensure!(!points.is_empty(), "the dumper built no health points");
     for point in points {
         let value = point

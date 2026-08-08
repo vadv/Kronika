@@ -2,15 +2,11 @@ use kronika_registry::instance_metadata::{Environment, InstanceMetadata};
 use kronika_registry::os_psi::OsPsi;
 use kronika_registry::{Cell, Row, Section};
 
-use super::points;
+use super::{CONTAINER, HOST, POD, points};
 use crate::file::Point;
 
 /// One second, in the microseconds the counters use.
 const SECOND: i64 = 1_000_000;
-
-const HOST: u32 = 0;
-const POD: u32 = 1;
-const CONTAINER: u32 = 3;
 
 fn metadata(environment: Environment) -> Row {
     metadata_raw(u32::from(environment.as_u8()))

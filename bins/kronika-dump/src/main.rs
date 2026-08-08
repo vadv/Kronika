@@ -6,6 +6,8 @@
 mod args;
 mod render;
 
+use std::fmt;
+use std::io;
 use std::ops::Bound;
 use std::process::ExitCode;
 
@@ -21,11 +23,11 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let stdout = std::io::stdout();
+    let stdout = io::stdout();
     let mut output = stdout.lock();
     match run(&parsed, &mut output) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(ReaderError::Io(problem)) if problem.kind() == std::io::ErrorKind::BrokenPipe => {
+        Err(DumpError::Output(problem)) if problem.kind() == io::ErrorKind::BrokenPipe => {
             ExitCode::SUCCESS
         }
         Err(problem) => {
@@ -35,7 +37,34 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(args: &args::Args, output: &mut impl std::io::Write) -> Result<(), ReaderError> {
+#[derive(Debug)]
+enum DumpError {
+    Reader(ReaderError),
+    Output(io::Error),
+}
+
+impl fmt::Display for DumpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Reader(problem) => problem.fmt(f),
+            Self::Output(problem) => write!(f, "write output: {problem}"),
+        }
+    }
+}
+
+impl From<ReaderError> for DumpError {
+    fn from(problem: ReaderError) -> Self {
+        Self::Reader(problem)
+    }
+}
+
+impl From<io::Error> for DumpError {
+    fn from(problem: io::Error) -> Self {
+        Self::Output(problem)
+    }
+}
+
+fn run(args: &args::Args, output: &mut impl io::Write) -> Result<(), DumpError> {
     let reader = Reader::open(&args.root)?;
     let listing = reader.segments((
         args.from.map_or(Bound::Unbounded, Bound::Included),

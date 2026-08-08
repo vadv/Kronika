@@ -84,5 +84,16 @@ pub(crate) fn lines(printed: &str) -> Result<Vec<Line>> {
         .collect()
 }
 
+/// Parse a listing and reject every scan warning.
+pub(crate) fn strict_lines(printed: &str, description: &str) -> Result<Vec<Line>> {
+    let listed = lines(printed)?;
+    let warnings = listed
+        .iter()
+        .filter(|line| line.holds("kind", "warning"))
+        .count();
+    anyhow::ensure!(warnings == 0, "{description} reported {warnings} warnings");
+    Ok(listed)
+}
+
 #[cfg(test)]
 mod tests;
