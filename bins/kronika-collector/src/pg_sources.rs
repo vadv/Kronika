@@ -95,6 +95,7 @@ pub(crate) enum QueryOutcome {
 struct QueryMeasurement<'a> {
     observe: &'a mut (dyn FnMut(PgObservation) + Send),
     query_name: &'static str,
+    connection: String,
     database: String,
     started: Instant,
     stats: query::QueryStats,
@@ -133,7 +134,7 @@ impl QueryMeasurement<'_> {
     fn finish(self, outcome: QueryOutcome, error: Option<String>) {
         (self.observe)(PgObservation::Query(QueryObservation {
             query_name: self.query_name,
-            connection: self.database.clone(),
+            connection: self.connection,
             database: self.database,
             elapsed: self.started.elapsed(),
             stats: self.stats,
@@ -146,11 +147,13 @@ impl QueryMeasurement<'_> {
 fn measure<'a>(
     observe: &'a mut (dyn FnMut(PgObservation) + Send),
     query_name: &'static str,
+    connection: &str,
     database: &str,
 ) -> QueryMeasurement<'a> {
     QueryMeasurement {
         observe,
         query_name,
+        connection: connection.to_owned(),
         database: database.to_owned(),
         started: Instant::now(),
         stats: query::QueryStats::default(),
@@ -350,6 +353,7 @@ impl PgSources {
         let cached = self.probe.clone();
         let server = self.server.as_mut()?;
         let database = server.database_label().to_owned();
+        let connection = server.connection_label(0);
         let session = match open_session(server, observe).await {
             Ok(session) => session,
             Err(_failure) => {
@@ -364,7 +368,7 @@ impl PgSources {
             return Some(cached);
         }
         let result = {
-            let mut measured = measure(observe, "server_probe", &database);
+            let mut measured = measure(observe, "server_probe", &connection, &database);
             let result = tokio::time::timeout(
                 QUERY_TIMEOUT,
                 read_generation_probe(session, generation, measured.stats_mut()),
@@ -374,6 +378,7 @@ impl PgSources {
         };
         match result {
             Ok(probe) => {
+                server.remember_resolved_user(&probe.user);
                 self.settings = None;
                 self.capabilities.clear();
                 self.discovered.clear();
@@ -404,6 +409,7 @@ impl PgSources {
             return Ok(false);
         };
         let database = probe.database.clone();
+        let connection = server.connection_label(0);
         let major = probe.major;
         let generation = probe.generation;
 
@@ -412,7 +418,7 @@ impl PgSources {
                 Ok(session) => session,
                 Err(_failure) => return Ok(false),
             };
-            let mut measured = measure(observe, "pg_stat_archiver", &database);
+            let mut measured = measure(observe, "pg_stat_archiver", &connection, &database);
             let result = tokio::time::timeout(
                 QUERY_TIMEOUT,
                 kronika_source_pg::archiver::collect_archiver(session, measured.stats_mut()),
@@ -430,7 +436,7 @@ impl PgSources {
                     Some(())
                 }
                 other => match finish_failed(measured, other) {
-                    QueryCompletion::SourceFailed => Some(()),
+                    QueryCompletion::SourceFailed | QueryCompletion::CapabilityChanged => Some(()),
                     QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut => None,
                     QueryCompletion::Complete => unreachable!("success handled above"),
                 },
@@ -476,7 +482,7 @@ impl PgSources {
                     Ok(session) => session,
                     Err(_failure) => return Ok(false),
                 };
-                let mut measured = measure(observe, "pg_stat_wal", &database);
+                let mut measured = measure(observe, "pg_stat_wal", &connection, &database);
                 let result = tokio::time::timeout(
                     QUERY_TIMEOUT,
                     wal::collect_wal(session, major, measured.stats_mut()),
@@ -618,6 +624,7 @@ impl PgSources {
                     self.invalidate_statements(&database);
                     return Ok(());
                 };
+                let connection = pool.connection_label(0);
                 let session = if is_current {
                     session_for_generation(pool, probe.generation, observe)
                 } else {
@@ -633,7 +640,7 @@ impl PgSources {
                     Err(QueryFailure::Source) => return Ok(()),
                 };
                 let version = capability.version;
-                let mut measured = measure(observe, "pg_stat_statements", &database);
+                let mut measured = measure(observe, "pg_stat_statements", &connection, &database);
                 let result = statements::collect_statements(
                     session,
                     &capability,
@@ -645,6 +652,9 @@ impl PgSources {
             };
             match completion {
                 QueryCompletion::Complete | QueryCompletion::SourceFailed => {}
+                QueryCompletion::CapabilityChanged => {
+                    self.invalidate_statements(&database);
+                }
                 QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut => {
                     self.invalidate_statements(&database);
                     return Ok(());
@@ -657,6 +667,7 @@ impl PgSources {
                         self.invalidate_statements(&database);
                         return Ok(());
                     };
+                    let connection = pool.connection_label(0);
                     let session = if is_current {
                         session_for_generation(pool, probe.generation, observe)
                     } else {
@@ -671,7 +682,8 @@ impl PgSources {
                         }
                         Err(QueryFailure::Source) => return Ok(()),
                     };
-                    let mut measured = measure(observe, "pg_stat_statements_info", &database);
+                    let mut measured =
+                        measure(observe, "pg_stat_statements_info", &connection, &database);
                     let result = tokio::time::timeout(
                         QUERY_TIMEOUT,
                         statements_info::collect(
@@ -700,6 +712,8 @@ impl PgSources {
                     QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut
                 ) {
                     self.invalidate_statements(&database);
+                } else if completion == QueryCompletion::CapabilityChanged {
+                    self.invalidate_statements(&database);
                 }
             }
         }
@@ -717,6 +731,7 @@ impl PgSources {
                     self.invalidate_store_plans(&database);
                     return Ok(());
                 };
+                let connection = pool.connection_label(0);
                 let session = if is_current {
                     session_for_generation(pool, probe.generation, observe)
                 } else {
@@ -731,7 +746,7 @@ impl PgSources {
                     }
                     Err(QueryFailure::Source) => return Ok(()),
                 };
-                let mut measured = measure(observe, "pg_store_plans", &database);
+                let mut measured = measure(observe, "pg_store_plans", &connection, &database);
                 let result = match capability.flavour {
                     Flavour::OsscCompatible => {
                         store_plans::collect_ossc(
@@ -756,6 +771,9 @@ impl PgSources {
             };
             match completion {
                 QueryCompletion::Complete | QueryCompletion::SourceFailed => {}
+                QueryCompletion::CapabilityChanged => {
+                    self.invalidate_store_plans(&database);
+                }
                 QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut => {
                     self.invalidate_store_plans(&database);
                     return Ok(());
@@ -768,6 +786,7 @@ impl PgSources {
                         self.invalidate_store_plans(&database);
                         return Ok(());
                     };
+                    let connection = pool.connection_label(0);
                     let session = if is_current {
                         session_for_generation(pool, probe.generation, observe)
                     } else {
@@ -782,7 +801,8 @@ impl PgSources {
                         }
                         Err(QueryFailure::Source) => return Ok(()),
                     };
-                    let mut measured = measure(observe, "pg_store_plans_info", &database);
+                    let mut measured =
+                        measure(observe, "pg_store_plans_info", &connection, &database);
                     let result = tokio::time::timeout(
                         QUERY_TIMEOUT,
                         store_plans_info::collect(
@@ -810,6 +830,8 @@ impl PgSources {
                     completion,
                     QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut
                 ) {
+                    self.invalidate_store_plans(&database);
+                } else if completion == QueryCompletion::CapabilityChanged {
                     self.invalidate_store_plans(&database);
                 }
             }
@@ -866,6 +888,7 @@ impl PgSources {
             let Some(server) = self.server.as_mut() else {
                 return;
             };
+            let connection = server.connection_label(0);
             let session = match session_for_generation(server, probe.generation, observe) {
                 Ok(session) => session,
                 Err(_failure) => {
@@ -873,7 +896,7 @@ impl PgSources {
                     return;
                 }
             };
-            let mut measured = measure(observe, "databases", &probe.database);
+            let mut measured = measure(observe, "databases", &connection, &probe.database);
             let result = tokio::time::timeout(
                 QUERY_TIMEOUT,
                 databases::enumerate(session, measured.stats_mut()),
@@ -906,6 +929,7 @@ impl PgSources {
             let Some(pool) = self.database_pool_mut(&database.name) else {
                 continue;
             };
+            let connection = pool.connection_label(0);
             let session = if database.is_current {
                 session_for_generation(pool, probe.generation, observe)
             } else {
@@ -919,7 +943,7 @@ impl PgSources {
                 }
                 Err(QueryFailure::Source | QueryFailure::Connection) => continue,
             };
-            let mut measured = measure(observe, "extension_inventory", &database.name);
+            let mut measured = measure(observe, "extension_inventory", &connection, &database.name);
             let result = tokio::time::timeout(
                 QUERY_TIMEOUT,
                 extension::inventory(session, measured.stats_mut()),
@@ -1101,11 +1125,12 @@ async fn read_settings<E>(
     admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
 ) -> Result<Option<Arc<[SettingsRow]>>, E> {
     let database = server.database_label().to_owned();
+    let connection = server.connection_label(0);
     let session = match session_for_generation(server, generation, observe) {
         Ok(session) => session,
         Err(_failure) => return Ok(None),
     };
-    let mut measured = measure(observe, "pg_settings", &database);
+    let mut measured = measure(observe, "pg_settings", &connection, &database);
     let result = tokio::time::timeout(
         QUERY_TIMEOUT,
         settings::collect(session, measured.stats_mut()),
@@ -1141,11 +1166,12 @@ async fn collect_bgwriter<E>(
     settings: Option<&Arc<[SettingsRow]>>,
     admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
 ) -> Result<bool, E> {
+    let connection = pool.connection_label(0);
     let session = match session_for_generation(pool, generation, observe) {
         Ok(session) => session,
         Err(_failure) => return Ok(false),
     };
-    let mut measured = measure(observe, "pg_stat_bgwriter", database);
+    let mut measured = measure(observe, "pg_stat_bgwriter", &connection, database);
     let result = tokio::time::timeout(
         QUERY_TIMEOUT,
         bgwriter::collect_bgwriter(session, major, measured.stats_mut()),
@@ -1176,11 +1202,12 @@ async fn collect_checkpointer<E>(
     let Some(_version) = checkpointer::checkpointer_version(major) else {
         return Ok(true);
     };
+    let connection = pool.connection_label(0);
     let session = match session_for_generation(pool, generation, observe) {
         Ok(session) => session,
         Err(_failure) => return Ok(false),
     };
-    let mut measured = measure(observe, "pg_stat_checkpointer", database);
+    let mut measured = measure(observe, "pg_stat_checkpointer", &connection, database);
     let result = tokio::time::timeout(
         QUERY_TIMEOUT,
         checkpointer::collect_checkpointer(session, major, measured.stats_mut()),
@@ -1217,12 +1244,13 @@ async fn collect_locks<E>(
     settings: Option<&Arc<[SettingsRow]>>,
     admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
 ) -> Result<bool, E> {
+    let connection = pool.connection_label(0);
     let session = match session_for_generation(pool, generation, observe) {
         Ok(session) => session,
         Err(_failure) => return Ok(false),
     };
     let version = locks::locks_version(major);
-    let mut measured = measure(observe, "pg_locks", database);
+    let mut measured = measure(observe, "pg_locks", &connection, database);
     let result = locks::collect_locks(session, major, measured.stats_mut(), |batch| {
         admit(PgBatch::Locks(version, batch.rows), settings.cloned())
     })
@@ -1238,11 +1266,12 @@ async fn collect_prepared<E>(
     settings: Option<&Arc<[SettingsRow]>>,
     admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
 ) -> Result<bool, E> {
+    let connection = pool.connection_label(0);
     let session = match session_for_generation(pool, generation, observe) {
         Ok(session) => session,
         Err(_failure) => return Ok(false),
     };
-    let mut measured = measure(observe, "pg_prepared_xacts", database);
+    let mut measured = measure(observe, "pg_prepared_xacts", &connection, database);
     let result = prepared_xacts::collect_prepared_xacts(session, measured.stats_mut(), |batch| {
         admit(PgBatch::PreparedXacts(batch.rows), settings.cloned())
     })
@@ -1259,12 +1288,13 @@ async fn collect_database<E>(
     settings: Option<&Arc<[SettingsRow]>>,
     admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
 ) -> Result<bool, E> {
+    let connection = pool.connection_label(0);
     let session = match session_for_generation(pool, generation, observe) {
         Ok(session) => session,
         Err(_failure) => return Ok(false),
     };
     let version = database::database_version(major);
-    let mut measured = measure(observe, "pg_stat_database", database_label);
+    let mut measured = measure(observe, "pg_stat_database", &connection, database_label);
     let result = database::collect_database(session, major, measured.stats_mut(), |batch| {
         admit(PgBatch::Database(version, batch.rows), settings.cloned())
     })
@@ -1281,6 +1311,7 @@ async fn collect_io<E>(
     settings: Option<&Arc<[SettingsRow]>>,
     admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
 ) -> Result<bool, E> {
+    let connection = pool.connection_label(0);
     let session = match session_for_generation(pool, generation, observe) {
         Ok(session) => session,
         Err(_failure) => return Ok(false),
@@ -1288,7 +1319,7 @@ async fn collect_io<E>(
     let Some(version) = io::io_version(major) else {
         return Ok(true);
     };
-    let mut measured = measure(observe, "pg_stat_io", database);
+    let mut measured = measure(observe, "pg_stat_io", &connection, database);
     let result = io::collect_io(session, major, measured.stats_mut(), |batch| {
         admit(PgBatch::Io(version, batch.rows), settings.cloned())
     })
@@ -1305,12 +1336,13 @@ async fn collect_activity<E>(
     settings: Option<&Arc<[SettingsRow]>>,
     admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
 ) -> Result<bool, E> {
+    let connection = pool.connection_label(0);
     let session = match session_for_generation(pool, generation, observe) {
         Ok(session) => session,
         Err(_failure) => return Ok(false),
     };
     let version = activity::activity_version(major);
-    let mut measured = measure(observe, "pg_stat_activity", database);
+    let mut measured = measure(observe, "pg_stat_activity", &connection, database);
     let result = activity::collect_activity(session, major, measured.stats_mut(), |batch| {
         admit(PgBatch::Activity(version, batch.rows), settings.cloned())
     })
@@ -1327,11 +1359,12 @@ async fn collect_progress<E>(
     settings: Option<&Arc<[SettingsRow]>>,
     admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
 ) -> Result<bool, E> {
+    let connection = pool.connection_label(0);
     let session = match session_for_generation(pool, generation, observe) {
         Ok(session) => session,
         Err(_failure) => return Ok(false),
     };
-    let mut measured = measure(observe, "pg_stat_progress_vacuum", database);
+    let mut measured = measure(observe, "pg_stat_progress_vacuum", &connection, database);
     let result =
         progress_vacuum::collect_progress_vacuum(session, major, measured.stats_mut(), |batch| {
             admit(PgBatch::ProgressVacuum(batch.rows), settings.cloned())
@@ -1356,6 +1389,7 @@ async fn collect_relation_database<E>(
     settings: Option<&Arc<[SettingsRow]>>,
     admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
 ) -> Result<RelationResult, E> {
+    let connection = pool.connection_label(0);
     let session = match open_session(pool, observe).await {
         Ok(session) => session,
         Err(QueryFailure::Timeout) => return Ok(RelationResult::TimedOut),
@@ -1364,7 +1398,7 @@ async fn collect_relation_database<E>(
     };
     let generation = session.generation();
     let table_version = user_tables::user_tables_version(major);
-    let mut measured = measure(observe, "pg_stat_user_tables", &database.name);
+    let mut measured = measure(observe, "pg_stat_user_tables", &connection, &database.name);
     let result =
         user_tables::collect_user_tables(session, database, major, measured.stats_mut(), |batch| {
             admit(
@@ -1375,7 +1409,9 @@ async fn collect_relation_database<E>(
         .await;
     match finish_batched_kind(pool, measured, result)? {
         QueryCompletion::Complete => {}
-        QueryCompletion::SourceFailed => return Ok(RelationResult::SourceFailed),
+        QueryCompletion::SourceFailed | QueryCompletion::CapabilityChanged => {
+            return Ok(RelationResult::SourceFailed);
+        }
         QueryCompletion::ConnectionFailed => return Ok(RelationResult::ConnectionFailed),
         QueryCompletion::TimedOut => return Ok(RelationResult::TimedOut),
     }
@@ -1387,7 +1423,7 @@ async fn collect_relation_database<E>(
         Err(QueryFailure::Connection) => return Ok(RelationResult::ConnectionFailed),
     };
     let index_version = user_indexes::user_indexes_version(major);
-    let mut measured = measure(observe, "pg_stat_user_indexes", &database.name);
+    let mut measured = measure(observe, "pg_stat_user_indexes", &connection, &database.name);
     let result = user_indexes::collect_user_indexes(
         session,
         database,
@@ -1403,7 +1439,9 @@ async fn collect_relation_database<E>(
     .await;
     Ok(match finish_batched_kind(pool, measured, result)? {
         QueryCompletion::Complete => RelationResult::Complete,
-        QueryCompletion::SourceFailed => RelationResult::SourceFailed,
+        QueryCompletion::SourceFailed | QueryCompletion::CapabilityChanged => {
+            RelationResult::SourceFailed
+        }
         QueryCompletion::ConnectionFailed => RelationResult::ConnectionFailed,
         QueryCompletion::TimedOut => RelationResult::TimedOut,
     })
@@ -1442,6 +1480,7 @@ enum QueryFailure {
 enum QueryCompletion {
     Complete,
     SourceFailed,
+    CapabilityChanged,
     ConnectionFailed,
     TimedOut,
 }
@@ -1451,13 +1490,14 @@ async fn open_session<'a>(
     observe: &mut (dyn FnMut(PgObservation) + Send),
 ) -> Result<Session<'a>, QueryFailure> {
     let database = pool.database_label().to_owned();
+    let connection = pool.connection_label(0);
     let started = Instant::now();
     match pool.session().await {
         Ok(session) => Ok(session),
         Err(error) => {
             let timeout = error.is_timeout();
             observe(PgObservation::Connection(ConnectionObservation {
-                connection: database.clone(),
+                connection,
                 database,
                 elapsed: started.elapsed(),
                 timeout,
@@ -1479,9 +1519,10 @@ fn session_for_generation<'a>(
     observe: &mut (dyn FnMut(PgObservation) + Send),
 ) -> Result<Session<'a>, QueryFailure> {
     let database = pool.database_label().to_owned();
+    let connection = pool.connection_label(0);
     let Some(session) = pool.session_for_generation(expected) else {
         observe(PgObservation::Connection(ConnectionObservation {
-            connection: database.clone(),
+            connection,
             database,
             elapsed: Duration::ZERO,
             timeout: false,
@@ -1530,6 +1571,8 @@ fn finish_failed<T>(
             measured.error(&error);
             if postgres_connection_error(&error) {
                 QueryCompletion::ConnectionFailed
+            } else if postgres_capability_changed(&error) {
+                QueryCompletion::CapabilityChanged
             } else {
                 QueryCompletion::SourceFailed
             }
@@ -1548,7 +1591,9 @@ fn finish_batched<E>(
 ) -> Result<bool, E> {
     Ok(matches!(
         finish_batched_kind(pool, measured, result)?,
-        QueryCompletion::Complete | QueryCompletion::SourceFailed
+        QueryCompletion::Complete
+            | QueryCompletion::SourceFailed
+            | QueryCompletion::CapabilityChanged
     ))
 }
 
@@ -1567,6 +1612,8 @@ fn finish_batched_kind<E>(
             if postgres_stream_connection_error(&error) {
                 pool.close();
                 Ok(QueryCompletion::ConnectionFailed)
+            } else if postgres_stream_capability_changed(&error) {
+                Ok(QueryCompletion::CapabilityChanged)
             } else {
                 Ok(QueryCompletion::SourceFailed)
             }
@@ -1594,11 +1641,25 @@ fn postgres_stream_connection_error(error: &tokio_postgres::Error) -> bool {
     error.is_closed() || error.as_db_error().is_none()
 }
 
+fn postgres_stream_capability_changed(error: &tokio_postgres::Error) -> bool {
+    error
+        .code()
+        .is_some_and(|code| matches!(code.code(), "42P01" | "42883" | "42704"))
+}
+
 fn postgres_connection_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause
             .downcast_ref::<tokio_postgres::Error>()
-            .is_some_and(tokio_postgres::Error::is_closed)
+            .is_some_and(postgres_stream_connection_error)
+    })
+}
+
+fn postgres_capability_changed(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<tokio_postgres::Error>()
+            .is_some_and(postgres_stream_capability_changed)
     })
 }
 
@@ -1626,7 +1687,7 @@ mod tests {
     fn timeout_observation_retains_partial_query_accounting() {
         let mut observations = Vec::new();
         let mut observe = |observation| observations.push(observation);
-        let mut measured = measure(&mut observe, "probe", "postgres");
+        let mut measured = measure(&mut observe, "probe", "monitor@db.example:5432", "postgres");
         measured.stats_mut().rows = 9;
         measured.timeout();
 

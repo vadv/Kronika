@@ -52,9 +52,26 @@ fn a_url_dsn_is_accepted_as_well_as_keywords() {
 
 #[test]
 fn another_database_keeps_server_configuration_without_an_open_session() {
-    let other = pool().on_database("payments");
+    let mut primary = pool();
+    primary.remember_resolved_user("actual_role");
+    let other = primary.on_database("payments");
     assert_eq!(other.config.get_dbname(), Some("payments"));
     assert_eq!(other.generation(), None);
+    assert!(other.connection_label(0).starts_with("actual_role@"));
+}
+
+#[test]
+fn labels_use_neutral_defaults_until_the_generation_probe_resolves_them() {
+    let mut pool = Pool::new("host=db.example").expect("the DSN parses");
+    assert_eq!(pool.database_label(), "server-default");
+    assert_eq!(pool.connection_label(3), "server-default@db.example:5432");
+    pool.remember_resolved_user("monitor");
+    assert_eq!(pool.connection_label(3), "monitor@db.example:5432");
+    assert!(
+        pool.config
+            .get_application_name()
+            .is_some_and(|name| name.starts_with("kronika-collector-"))
+    );
 }
 
 #[tokio::test]

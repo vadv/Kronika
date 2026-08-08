@@ -63,7 +63,7 @@ impl ConnectionTarget {
     }
 
     pub(super) fn database_label(&self) -> &str {
-        self.config.get_dbname().unwrap_or("postgresql")
+        self.config.get_dbname().unwrap_or("server-default")
     }
 
     fn label_for_user(&self, user: &str) -> String {
@@ -102,7 +102,7 @@ fn validate_endpoints(config: &Config) -> Result<(), InvalidConnection> {
 }
 
 fn connection_label(config: &Config) -> String {
-    connection_label_for_user(config, config.get_user().unwrap_or("default"))
+    connection_label_for_user(config, config.get_user().unwrap_or("server-default"))
 }
 
 fn connection_label_for_user(config: &Config, user: &str) -> String {

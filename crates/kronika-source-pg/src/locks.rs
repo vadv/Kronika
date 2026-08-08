@@ -47,13 +47,20 @@ pub fn locks_query(version: LocksVersion) -> String {
            SELECT DISTINCT ON (l.pid) l.* FROM pg_catalog.pg_locks l \
            WHERE NOT l.granted AND l.pid IS NOT NULL \
              AND l.pid <> pg_catalog.pg_backend_pid() \
+             AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_stat_activity own \
+               WHERE own.pid = l.pid AND own.application_name IS NOT DISTINCT FROM \
+                 current_setting('application_name')) \
            ORDER BY l.pid, l.locktype, l.database, l.relation, l.page, l.tuple, \
                     l.virtualxid, l.transactionid, l.classid, l.objid, l.objsubid\
          ), waiters AS (\
            SELECT l.*, ARRAY(\
              SELECT DISTINCT b.pid \
              FROM unnest(pg_catalog.pg_blocking_pids(l.pid)) AS b(pid) \
-             WHERE b.pid <> pg_catalog.pg_backend_pid() ORDER BY b.pid\
+             WHERE b.pid <> pg_catalog.pg_backend_pid() \
+               AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_stat_activity own \
+                 WHERE own.pid = b.pid AND own.application_name IS NOT DISTINCT FROM \
+                   current_setting('application_name')) \
+             ORDER BY b.pid\
            )::int4[] AS blocked_by FROM raw_waiters l\
          ), involved(pid) AS (\
            SELECT pid FROM waiters UNION \

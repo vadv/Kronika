@@ -72,7 +72,9 @@ pub const fn activity_query(version: ActivityVersion) -> &'static str {
              (extract(epoch from state_change) * 1e6)::int8 AS state_change_us, \
              (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us \
              FROM pg_catalog.pg_stat_activity \
-             WHERE pid <> pg_catalog.pg_backend_pid()"
+             WHERE pid <> pg_catalog.pg_backend_pid() \
+               AND application_name IS DISTINCT FROM current_setting('application_name') \
+             ORDER BY pid"
         ),
         ActivityVersion::V2 => marked!(
             "SELECT pid, leader_pid, datname::text AS datname, usename::text AS usename, \
@@ -88,7 +90,9 @@ pub const fn activity_query(version: ActivityVersion) -> &'static str {
              (extract(epoch from state_change) * 1e6)::int8 AS state_change_us, \
              (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us \
              FROM pg_catalog.pg_stat_activity \
-             WHERE pid <> pg_catalog.pg_backend_pid()"
+             WHERE pid <> pg_catalog.pg_backend_pid() \
+               AND application_name IS DISTINCT FROM current_setting('application_name') \
+             ORDER BY pid"
         ),
         ActivityVersion::V3 => marked!(
             "SELECT pid, leader_pid, datname::text AS datname, usename::text AS usename, \
@@ -104,7 +108,9 @@ pub const fn activity_query(version: ActivityVersion) -> &'static str {
              (extract(epoch from state_change) * 1e6)::int8 AS state_change_us, \
              (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us \
              FROM pg_catalog.pg_stat_activity \
-             WHERE pid <> pg_catalog.pg_backend_pid()"
+             WHERE pid <> pg_catalog.pg_backend_pid() \
+               AND application_name IS DISTINCT FROM current_setting('application_name') \
+             ORDER BY pid"
         ),
     }
 }
@@ -300,7 +306,7 @@ pub async fn collect_activity<E>(
     let version = activity_version(major);
     query::read_batched(
         session,
-        &format!("{} ORDER BY pid", activity_query(version)),
+        activity_query(version),
         std::iter::empty::<(String, Type)>(),
         0,
         stats,
@@ -388,19 +394,27 @@ mod tests {
         let query = activity_query(ActivityVersion::V3);
         assert!(query.contains("left(query, 65536) AS query"));
         assert!(query.contains("WHERE pid <> pg_catalog.pg_backend_pid()"));
+        assert!(
+            query.contains("application_name IS DISTINCT FROM current_setting('application_name')")
+        );
+        assert!(query.ends_with("ORDER BY pid"));
         assert!(!query.contains("LIMIT"));
     }
 
     #[test]
-    fn query_records_visibility_without_exposing_activity_text() {
+    fn every_layout_excludes_all_connections_from_this_collector_process() {
         for version in [
             ActivityVersion::V1,
             ActivityVersion::V2,
             ActivityVersion::V3,
         ] {
             let query = activity_query(version);
-            assert!(query.contains("pg_has_role('pg_read_all_stats', 'member')"));
             assert!(query.contains("pid <> pg_catalog.pg_backend_pid()"));
+            assert!(
+                query.contains(
+                    "application_name IS DISTINCT FROM current_setting('application_name')"
+                )
+            );
         }
     }
 

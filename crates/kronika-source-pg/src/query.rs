@@ -95,17 +95,6 @@ impl QueryStats {
         bytes
     }
 
-    fn received_simple(&mut self, row: &tokio_postgres::SimpleQueryRow) {
-        let bytes = (0..row.len())
-            .filter_map(|index| row.get(index))
-            .map(str::len)
-            .fold(0_usize, usize::saturating_add);
-        self.rows = self.rows.saturating_add(1);
-        self.application_payload_from_postgres_bytes = self
-            .application_payload_from_postgres_bytes
-            .saturating_add(usize_to_u64(bytes));
-    }
-
     const fn wrote_batch(&mut self, elapsed: Duration, write: BatchWrite) {
         self.attempted_batch(elapsed);
         self.encode_elapsed = self.encode_elapsed.saturating_add(write.encode_elapsed);
@@ -503,8 +492,8 @@ pub async fn read_simple_rows<T>(
     let mut stream = pin!(stream);
     let mut rows = Vec::new();
     while let Some(message) = stream.try_next().await? {
+        stats.received_simple(&message);
         if let SimpleQueryMessage::Row(row) = message {
-            stats.received_simple(&row);
             rows.push(decode(&row)?);
         }
     }

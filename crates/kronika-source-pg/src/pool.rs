@@ -62,6 +62,7 @@ impl Error for ConnectError {
 #[derive(Debug)]
 pub struct Pool {
     config: Config,
+    resolved_user: Option<String>,
     open: Option<Open>,
     next_generation: u64,
 }
@@ -81,15 +82,17 @@ impl Pool {
     /// Returns the parse error when `dsn` is neither a keyword string nor a
     /// connection URL.
     pub fn new(dsn: &str) -> Result<Self> {
-        let config: Config = dsn.parse().context("parse the PostgreSQL DSN")?;
+        let mut config: Config = dsn.parse().context("parse the PostgreSQL DSN")?;
+        config.application_name(format!("kronika-collector-{}", std::process::id()));
         Ok(Self::from_config(config))
     }
 
     /// Build a lazy pool from an already parsed configuration.
     #[must_use]
-    pub const fn from_config(config: Config) -> Self {
+    pub fn from_config(config: Config) -> Self {
         Self {
             config,
+            resolved_user: None,
             open: None,
             next_generation: 1,
         }
@@ -100,25 +103,33 @@ impl Pool {
     pub fn on_database(&self, dbname: &str) -> Self {
         let mut config = self.config.clone();
         config.dbname(dbname);
-        Self::from_config(config)
+        Self {
+            config,
+            resolved_user: self.resolved_user.clone(),
+            open: None,
+            next_generation: 1,
+        }
     }
 
     /// Safe database label used by per-query logs.
     #[must_use]
     pub fn database_label(&self) -> &str {
-        self.config.get_dbname().unwrap_or("postgresql")
+        self.config.get_dbname().unwrap_or("server-default")
     }
 
     /// Safe endpoint label with the configured user, or a source placeholder.
     #[must_use]
-    pub fn configured_connection_label(&self, source_index: usize) -> String {
-        connection_label(&self.config, self.config.get_user(), source_index)
+    pub fn connection_label(&self, source_index: usize) -> String {
+        connection_label(
+            &self.config,
+            self.resolved_user.as_deref().or(self.config.get_user()),
+            source_index,
+        )
     }
 
-    /// Safe endpoint label with the server-resolved login role.
-    #[must_use]
-    pub fn connection_label(&self, user: &str, source_index: usize) -> String {
-        connection_label(&self.config, Some(user), source_index)
+    /// Use the login role reported by the server for later safe labels.
+    pub fn remember_resolved_user(&mut self, user: &str) {
+        self.resolved_user = Some(user.to_owned());
     }
 
     /// Return the healthy current session, connecting when necessary.

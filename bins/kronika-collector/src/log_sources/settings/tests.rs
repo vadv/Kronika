@@ -76,23 +76,23 @@ fn multiple_hosts_use_default_broadcast_and_per_host_ports() {
 fn ipv6_is_bracketed_and_logical_host_wins_over_hostaddr() {
     assert_eq!(
         target("host=2001:db8::1 port=6432").label(),
-        "default@[2001:db8::1]:6432"
+        "server-default@[2001:db8::1]:6432"
     );
     assert_eq!(
         target("postgresql://[2001:db8::1]:6432/prod").label(),
-        "default@[2001:db8::1]:6432"
+        "server-default@[2001:db8::1]:6432"
     );
     assert_eq!(
         target("host=fe80::1%eth0 port=6432").label(),
-        "default@[fe80::1%eth0]:6432"
+        "server-default@[fe80::1%eth0]:6432"
     );
     assert_eq!(
         target("host=logical.example hostaddr=192.0.2.10 port=6543").label(),
-        "default@logical.example:6543"
+        "server-default@logical.example:6543"
     );
     assert_eq!(
         target("hostaddr=2001:db8::2 port=6544").label(),
-        "default@[2001:db8::2]:6544"
+        "server-default@[2001:db8::2]:6544"
     );
 }
 
@@ -113,7 +113,7 @@ fn unix_sockets_are_distinct_and_can_be_percent_encoded() {
 fn missing_user_is_labelled_as_the_server_default() {
     assert_eq!(
         target("host=db.example port=6543").label(),
-        "default@db.example:6543"
+        "server-default@db.example:6543"
     );
 }
 

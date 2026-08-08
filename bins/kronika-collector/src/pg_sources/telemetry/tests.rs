@@ -1,17 +1,16 @@
 use super::*;
 
 fn stats(rows: u64, received: u64, sent: u64) -> QueryStats {
-    QueryStats {
-        rows,
-        application_payload_from_postgres_bytes: received,
-        application_payload_to_postgres_bytes: sent,
-        batches: 2,
-        encode_elapsed: Duration::from_millis(7),
-        append_elapsed: Duration::from_millis(5),
-        encoded_bytes: 300,
-        wal_bytes_appended: 360,
-        ..QueryStats::default()
-    }
+    let mut stats = QueryStats::default();
+    stats.rows = rows;
+    stats.application_payload_from_postgres_bytes = received;
+    stats.application_payload_to_postgres_bytes = sent;
+    stats.batches = 2;
+    stats.encode_elapsed = Duration::from_millis(7);
+    stats.append_elapsed = Duration::from_millis(5);
+    stats.encoded_bytes = 300;
+    stats.wal_bytes_appended = 360;
+    stats
 }
 
 #[test]

@@ -66,6 +66,8 @@ fn query_builds_a_bounded_backend_graph() {
     assert_eq!(v1.matches("pg_blocking_pids").count(), 1);
     assert!(v1.contains("NOT l.granted"));
     assert!(v1.contains("l.pid <> pg_catalog.pg_backend_pid()"));
+    assert_eq!(v1.matches("current_setting('application_name')").count(), 2);
+    assert!(v1.contains("own.application_name IS NOT DISTINCT FROM"));
     assert!(v1.contains("SELECT DISTINCT ON (l.pid)"));
     assert!(!v1.contains("WITH RECURSIVE"));
     assert!(!v1.contains("root_pid"));
