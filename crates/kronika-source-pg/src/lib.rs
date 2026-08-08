@@ -13,6 +13,7 @@ mod pool;
 pub mod prepared_xacts;
 pub mod progress_vacuum;
 pub mod settings;
+pub mod user_indexes;
 pub mod wal;
 
 pub use pool::{MAX_AGE, Pool};
