@@ -164,92 +164,96 @@ async fn run_collector() -> Result<()> {
 
     announce("ready");
 
-    loop {
-        pg_telemetry.maybe_emit(Instant::now());
-        let sleep = if first_timer_tick {
-            first_timer_tick = false;
-            Some(Duration::ZERO)
-        } else {
-            timer_sleep_delay(
-                Instant::now(),
-                config.tick_secs,
-                config.segment_max_age_secs,
-                &sched,
-                &segment,
-                rotation.as_ref(),
-            )
-        };
-        let forced = tokio::select! {
-            Some(()) = sigusr2.recv() => true,
-            () = async {
-                match sleep {
-                    Some(delay) => tokio::time::sleep(delay).await,
-                    None => std::future::pending::<()>().await,
+    let result: Result<()> = async {
+        loop {
+            pg_telemetry.maybe_emit(Instant::now());
+            let sleep = if first_timer_tick {
+                first_timer_tick = false;
+                Some(Duration::ZERO)
+            } else {
+                timer_sleep_delay(
+                    Instant::now(),
+                    config.tick_secs,
+                    config.segment_max_age_secs,
+                    &sched,
+                    &segment,
+                    rotation.as_ref(),
+                )
+            };
+            let forced = tokio::select! {
+                Some(()) = sigusr2.recv() => true,
+                () = async {
+                    match sleep {
+                        Some(delay) => tokio::time::sleep(delay).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    // With the collection timer disabled the only timed wake is
+                    // rotation's; collection stays strictly signal-driven.
+                    if config.tick_secs == 0 {
+                        run_rotation(&mut rotation, &writer_owner, &journal, &[]);
+                        continue;
+                    }
+                    false
                 }
-            } => {
-                // With the collection timer disabled the only timed wake is
-                // rotation's; collection stays strictly signal-driven.
-                if config.tick_secs == 0 {
-                    run_rotation(&mut rotation, &writer_owner, &journal, &[]);
-                    continue;
-                }
-                false
+                _ = sigterm.recv() => break,
+                _ = sigint.recv() => break,
+            };
+            let due = sched.plan(Instant::now(), forced);
+            let mut written_this_tick: Vec<PathBuf> = Vec::new();
+            // The age valve runs before collection: a tick whose sources fail or
+            // return no rows must still close an expired segment.
+            let age = Duration::from_secs(config.segment_max_age_secs);
+            if segment.age_expired(Instant::now(), age) {
+                let dest = close_open_segment(&mut journal, &writer_owner, &mut segment, "age")?;
+                sched.mark_segment_opened();
+                announce(&format!("wrote {} reason=age", dest.display()));
+                written_this_tick.push(dest);
+                stop_if_persistence_unhealthy(&journal)?;
             }
-            _ = sigterm.recv() => break,
-            _ = sigint.recv() => break,
-        };
-        let due = sched.plan(Instant::now(), forced);
-        let mut written_this_tick: Vec<PathBuf> = Vec::new();
-        // The age valve runs before collection: a tick whose sources fail or
-        // return no rows must still close an expired segment.
-        let age = Duration::from_secs(config.segment_max_age_secs);
-        if segment.age_expired(Instant::now(), age) {
-            let dest = close_open_segment(&mut journal, &writer_owner, &mut segment, "age")?;
-            sched.mark_segment_opened();
-            announce(&format!("wrote {} reason=age", dest.display()));
-            written_this_tick.push(dest);
+            if due.is_empty() {
+                run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
+                continue;
+            }
+            logs.rescan(&mut |observation| pg_telemetry.observe(observation))
+                .await;
+            // PostgreSQL batches reach the WAL before the query stream fetches
+            // another batch. They never ride on the incremental log windows.
+            let pg_outcome = run_pg_collection_cycle(
+                &mut pg,
+                &mut journal,
+                &writer_owner,
+                &config,
+                &due,
+                &mut segment,
+                &mut sched,
+                &mut pg_telemetry,
+            )
+            .await?;
+            written_this_tick.extend(pg_outcome.written);
+            let collection_due = if pg_outcome.opening_os_collected && !segment.is_empty() {
+                due.without(SourceKind::OsMountTopo)
+            } else {
+                due.clone()
+            };
+            written_this_tick.extend(run_collection_cycle(
+                &mut journal,
+                &writer_owner,
+                &config,
+                &collection_due,
+                &mut segment,
+                &mut sched,
+                &mut logs,
+                pg_outcome.appended,
+            )?);
             stop_if_persistence_unhealthy(&journal)?;
-        }
-        if due.is_empty() {
             run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
-            continue;
         }
-        logs.rescan(&mut |observation| pg_telemetry.observe(observation))
-            .await;
-        // PostgreSQL batches reach the WAL before the query stream fetches
-        // another batch. They never ride on the incremental log windows.
-        let pg_outcome = run_pg_collection_cycle(
-            &mut pg,
-            &mut journal,
-            &writer_owner,
-            &config,
-            &due,
-            &mut segment,
-            &mut sched,
-            &mut pg_telemetry,
-        )
-        .await?;
-        written_this_tick.extend(pg_outcome.written);
-        let collection_due = if pg_outcome.opening_os_collected && !segment.is_empty() {
-            due.without(SourceKind::OsMountTopo)
-        } else {
-            due.clone()
-        };
-        written_this_tick.extend(run_collection_cycle(
-            &mut journal,
-            &writer_owner,
-            &config,
-            &collection_due,
-            &mut segment,
-            &mut sched,
-            &mut logs,
-            pg_outcome.appended,
-        )?);
-        stop_if_persistence_unhealthy(&journal)?;
-        run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
+        Ok(())
     }
+    .await;
     pg_telemetry.shutdown(Instant::now());
-    Ok(())
+    result
 }
 
 #[derive(Default)]
@@ -346,7 +350,11 @@ fn append_pending_pg_batch(
         let includes_settings = matches!(batch, PgBatch::Settings(_))
             || (segment.needs_pg_settings() && !opening_settings.is_empty());
         let buffers = buffer_pg_batch(segment, batch, opening_settings, opening_due.as_ref(), ts)
-            .map_err(|()| PgAppendError::Rejected)?;
+            .map_err(|()| {
+            PgAppendError::Fatal(anyhow::anyhow!(
+                "buffer the PostgreSQL batch after updating segment state"
+            ))
+        })?;
         let encode_started = Instant::now();
         let flushed = match encode_window(buffers, segment.interner()) {
             Ok(flushed) => flushed,
@@ -356,7 +364,9 @@ fn append_pending_pg_batch(
                     "window_encode_failure",
                     &[field("error", format!("{err:#}"))],
                 );
-                return Err(PgAppendError::Rejected);
+                return Err(PgAppendError::Fatal(
+                    err.context("encode the PostgreSQL batch"),
+                ));
             }
         };
         encode_elapsed = encode_elapsed.saturating_add(encode_started.elapsed());
@@ -380,11 +390,13 @@ fn append_pending_pg_batch(
                     &[field("error", format!("{err:#}"))],
                 );
                 return if close_failed {
-                    Err(PgAppendError::Fatal(
-                        err.context("close the segment for a PostgreSQL batch"),
-                    ))
+                    Err(PgAppendError::Fatal(err.context(
+                        "close the segment while appending a PostgreSQL batch",
+                    )))
                 } else {
-                    Err(PgAppendError::Rejected)
+                    Err(PgAppendError::Fatal(
+                        err.context("append the PostgreSQL batch to the journal"),
+                    ))
                 };
             }
         };

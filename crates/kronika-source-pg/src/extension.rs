@@ -77,6 +77,8 @@ const INVENTORY_QUERY: &str = marked!(
          ('ossc', 'temp_blk_write_time', 'pg_catalog.float8'::pg_catalog.regtype), \
          ('ossc', 'first_call', 'pg_catalog.timestamptz'::pg_catalog.regtype), \
          ('ossc', 'last_call', 'pg_catalog.timestamptz'::pg_catalog.regtype), \
+         ('datasentinel', 'relids', 'pg_catalog.oid[]'::pg_catalog.regtype), \
+         ('datasentinel', 'cmd_type', 'pg_catalog.text'::pg_catalog.regtype), \
          ('vadv', 'userid', 'pg_catalog.oid'::pg_catalog.regtype), \
          ('vadv', 'dbid', 'pg_catalog.oid'::pg_catalog.regtype), \
          ('vadv', 'queryid', 'pg_catalog.int8'::pg_catalog.regtype), \
@@ -219,7 +221,20 @@ const INVENTORY_QUERY: &str = marked!(
                       FROM function_capabilities f \
                       WHERE f.extension_oid = i.extension_oid \
                         AND f.proname = 'pg_store_plans'), false) \
-                AS store_plans_vadv_columns \
+                AS store_plans_vadv_columns, \
+            coalesce((SELECT bool_or(NOT EXISTS (\
+                                        SELECT 1 FROM required_columns wanted \
+                                        WHERE wanted.layout = 'datasentinel' AND NOT EXISTS (\
+                                            SELECT 1 FROM function_outputs actual \
+                                            WHERE actual.function_oid = f.function_oid \
+                                              AND actual.attname = wanted.attname \
+                                              AND actual.atttypid = wanted.atttypid\
+                                        )\
+                                    ) AND f.proargtypes = ''::pg_catalog.oidvector) \
+                      FROM function_capabilities f \
+                      WHERE f.extension_oid = i.extension_oid \
+                        AND f.proname = 'pg_store_plans'), false) \
+                AS store_plans_datasentinel_columns \
      FROM installed i ORDER BY i.extname"
 );
 
@@ -289,6 +304,8 @@ pub struct InventoryEntry {
     pub store_plans_ossc_columns: bool,
     /// Whether the boolean reader has every vadv output.
     pub store_plans_vadv_columns: bool,
+    /// Whether the zero-argument reader has Datasentinel's extra outputs.
+    pub store_plans_datasentinel_columns: bool,
 }
 
 /// Read `major.minor` from an `extversion` string.
@@ -351,6 +368,7 @@ fn entry_from_row(row: &SimpleQueryRow) -> Result<InventoryEntry> {
         store_plans_key_getter: boolean(row, "store_plans_key_getter")?,
         store_plans_ossc_columns: boolean(row, "store_plans_ossc_columns")?,
         store_plans_vadv_columns: boolean(row, "store_plans_vadv_columns")?,
+        store_plans_datasentinel_columns: boolean(row, "store_plans_datasentinel_columns")?,
     })
 }
 

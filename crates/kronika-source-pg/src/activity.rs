@@ -263,34 +263,34 @@ pub fn to_v1<E>(
 }
 
 /// Read a raw row from a result row using the version's column set.
-fn row_from_pg(row: &tokio_postgres::Row, version: ActivityVersion) -> ActivityRow {
-    ActivityRow {
-        ts: row.get("ts_us"),
-        pid: row.get("pid"),
+fn row_from_pg(row: &tokio_postgres::Row, version: ActivityVersion) -> anyhow::Result<ActivityRow> {
+    Ok(ActivityRow {
+        ts: row.try_get("ts_us")?,
+        pid: row.try_get("pid")?,
         leader_pid: match version {
             ActivityVersion::V1 => None,
-            ActivityVersion::V2 | ActivityVersion::V3 => row.get("leader_pid"),
+            ActivityVersion::V2 | ActivityVersion::V3 => row.try_get("leader_pid")?,
         },
-        datname: row.get("datname"),
-        usename: row.get("usename"),
-        application_name: row.get("application_name"),
-        client_addr: row.get("client_addr"),
-        backend_type: row.get("backend_type"),
-        state: row.get("state"),
-        wait_event_type: row.get("wait_event_type"),
-        wait_event: row.get("wait_event"),
-        query: row.get("query"),
+        datname: row.try_get("datname")?,
+        usename: row.try_get("usename")?,
+        application_name: row.try_get("application_name")?,
+        client_addr: row.try_get("client_addr")?,
+        backend_type: row.try_get("backend_type")?,
+        state: row.try_get("state")?,
+        wait_event_type: row.try_get("wait_event_type")?,
+        wait_event: row.try_get("wait_event")?,
+        query: row.try_get("query")?,
         query_id: match version {
             ActivityVersion::V1 | ActivityVersion::V2 => None,
-            ActivityVersion::V3 => row.get("query_id"),
+            ActivityVersion::V3 => row.try_get("query_id")?,
         },
-        backend_xid_age: row.get("backend_xid_age"),
-        backend_xmin_age: row.get("backend_xmin_age"),
-        backend_start: row.get("backend_start_us"),
-        xact_start: row.get("xact_start_us"),
-        query_start: row.get("query_start_us"),
-        state_change: row.get("state_change_us"),
-    }
+        backend_xid_age: row.try_get("backend_xid_age")?,
+        backend_xmin_age: row.try_get("backend_xmin_age")?,
+        backend_start: row.try_get("backend_start_us")?,
+        xact_start: row.try_get("xact_start_us")?,
+        query_start: row.try_get("query_start_us")?,
+        state_change: row.try_get("state_change_us")?,
+    })
 }
 
 /// Stream the complete `pg_stat_activity` snapshot in bounded batches.

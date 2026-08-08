@@ -1,14 +1,18 @@
-//! `pg_store_plans` collection for types `1_003_001` and `1_004_001`.
+//! `pg_store_plans` collection for types `1_003_001`, `1_004_001`, and
+//! `1_018_001`.
 //!
 //! Several extensions share a name and two query interfaces. The OSSC and
-//! Datasentinel-compatible interface carries plan text in its zero-argument
-//! result. The vadv interface carries an internal query id plus a separate
-//! `pg_stat_statements` id and exposes plan text through a four-key function.
+//! Datasentinel interfaces carry plan text in their zero-argument results.
+//! Datasentinel additionally reports relation OIDs and command type. The vadv
+//! interface carries an internal query id plus a separate `pg_stat_statements`
+//! id and exposes plan text through a four-key function.
 //!
 //! Rows are streamed in bounded collector batches. PostgreSQL truncates each
 //! plan text before it crosses the connection.
 
-use kronika_registry::pg_store_plans::{PgStorePlansOsscV1, PgStorePlansVadvV1};
+use kronika_registry::pg_store_plans::{
+    PgStorePlansDatasentinelV1, PgStorePlansOsscV1, PgStorePlansVadvV1,
+};
 use kronika_registry::{StrId, Ts};
 use tokio_postgres::types::Type;
 
@@ -34,8 +38,10 @@ pub const EXTENSION: &str = "pg_store_plans";
 /// Which `pg_store_plans` is installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flavour {
-    /// The OSSC or Datasentinel interface with an inline plan column.
+    /// The OSSC interface with an inline plan column.
     OsscCompatible,
+    /// Datasentinel's zero-argument interface with relation and command data.
+    Datasentinel,
     /// The vadv interface with two query ids and a keyed plan getter.
     Vadv,
 }
@@ -60,6 +66,11 @@ pub fn capability(entry: &InventoryEntry) -> Option<StorePlansCapability> {
         && entry.store_plans_vadv_columns
     {
         Flavour::Vadv
+    } else if entry.store_plans_zero_arg
+        && entry.store_plans_ossc_columns
+        && entry.store_plans_datasentinel_columns
+    {
+        Flavour::Datasentinel
     } else if entry.store_plans_zero_arg && entry.store_plans_ossc_columns {
         Flavour::OsscCompatible
     } else {
@@ -74,17 +85,26 @@ pub fn capability(entry: &InventoryEntry) -> Option<StorePlansCapability> {
 /// The statistics query for one discovered interface.
 #[must_use]
 pub fn store_plans_query(capability: &StorePlansCapability) -> String {
+    const OSSC_COLUMNS: &str = "s.queryid, s.planid, s.userid, s.dbid, left(s.plan, 65536) AS plan, \
+         s.calls, s.total_time, s.min_time, s.max_time, s.mean_time, s.stddev_time, s.rows, \
+         s.shared_blks_hit, s.shared_blks_read, s.shared_blks_dirtied, s.shared_blks_written, \
+         s.local_blks_hit, s.local_blks_read, s.local_blks_dirtied, s.local_blks_written, \
+         s.temp_blks_read, s.temp_blks_written, \
+         s.shared_blk_read_time, s.shared_blk_write_time, \
+         s.local_blk_read_time, s.local_blk_write_time, \
+         s.temp_blk_read_time, s.temp_blk_write_time, \
+         s.first_call, s.last_call";
     let (columns, source, plan) = match capability.flavour {
         Flavour::OsscCompatible => (
-            "s.queryid, s.planid, s.userid, s.dbid, left(s.plan, 65536) AS plan, \
-             s.calls, s.total_time, s.min_time, s.max_time, s.mean_time, s.stddev_time, s.rows, \
-             s.shared_blks_hit, s.shared_blks_read, s.shared_blks_dirtied, s.shared_blks_written, \
-             s.local_blks_hit, s.local_blks_read, s.local_blks_dirtied, s.local_blks_written, \
-             s.temp_blks_read, s.temp_blks_written, \
-             s.shared_blk_read_time, s.shared_blk_write_time, \
-             s.local_blk_read_time, s.local_blk_write_time, \
-             s.temp_blk_read_time, s.temp_blk_write_time, \
-             s.first_call, s.last_call",
+            OSSC_COLUMNS.to_owned(),
+            format!("{}()", capability.schema.qualify(EXTENSION)),
+            String::new(),
+        ),
+        Flavour::Datasentinel => (
+            format!(
+                "{OSSC_COLUMNS}, left(s.relids[1:48]::text, 1024) AS relids, \
+                 left(s.cmd_type, 64) AS cmd_type"
+            ),
             format!("{}()", capability.schema.qualify(EXTENSION)),
             String::new(),
         ),
@@ -97,7 +117,8 @@ pub fn store_plans_query(capability: &StorePlansCapability) -> String {
              s.temp_blks_read, s.temp_blks_written, \
              s.blk_read_time, s.blk_write_time, \
              s.first_call, s.last_call, \
-             s.total_plan_time, s.min_plan_time, s.max_plan_time, s.mean_plan_time",
+             s.total_plan_time, s.min_plan_time, s.max_plan_time, s.mean_plan_time"
+                .to_owned(),
             format!("{}(false)", capability.schema.qualify(EXTENSION)),
             format!(
                 ", left({}(s.userid, s.dbid, s.queryid, s.planid), 65536) AS plan",
@@ -190,6 +211,21 @@ pub struct OsscRow {
     pub first_call: i64,
     /// Last execution of this entry, unix microseconds.
     pub last_call: i64,
+}
+
+/// One raw Datasentinel row: OSSC-compatible counters plus its extra fields.
+#[derive(Debug, Clone)]
+pub struct DatasentinelRow {
+    /// The shared zero-argument-interface fields.
+    base: OsscRow,
+    /// Relation OIDs as bounded PostgreSQL `oid[]` text.
+    relids: Option<String>,
+    /// Command type reported by the extension.
+    cmd_type: Option<String>,
+    /// First completed call, absent while the entry is in flight.
+    first_call: Option<i64>,
+    /// Last completed call, absent while the entry is in flight.
+    last_call: Option<i64>,
 }
 
 /// One raw vadv-fork row.
@@ -325,6 +361,54 @@ pub fn to_ossc<E>(
     })
 }
 
+/// Build a `1_018_001` Datasentinel row.
+///
+/// # Errors
+/// Returns the interner's error.
+pub fn to_datasentinel<E>(
+    row: &DatasentinelRow,
+    mut intern: impl FnMut(&[u8]) -> Result<StrId, E>,
+) -> Result<PgStorePlansDatasentinelV1, E> {
+    let base = &row.base;
+    Ok(PgStorePlansDatasentinelV1 {
+        ts: Ts(base.ts),
+        queryid: base.queryid,
+        planid: base.planid,
+        userid: base.userid,
+        dbid: base.dbid,
+        datname: opt(&mut intern, base.datname.as_deref())?,
+        usename: opt(&mut intern, base.usename.as_deref())?,
+        plan: opt(&mut intern, base.plan.as_deref())?,
+        relids: opt(&mut intern, row.relids.as_deref())?,
+        cmd_type: opt(&mut intern, row.cmd_type.as_deref())?,
+        calls: base.calls,
+        total_time: base.total_time,
+        min_time: base.min_time,
+        max_time: base.max_time,
+        mean_time: base.mean_time,
+        stddev_time: base.stddev_time,
+        rows: base.rows,
+        shared_blks_hit: base.shared_blks_hit,
+        shared_blks_read: base.shared_blks_read,
+        shared_blks_dirtied: base.shared_blks_dirtied,
+        shared_blks_written: base.shared_blks_written,
+        local_blks_hit: base.local_blks_hit,
+        local_blks_read: base.local_blks_read,
+        local_blks_dirtied: base.local_blks_dirtied,
+        local_blks_written: base.local_blks_written,
+        temp_blks_read: base.temp_blks_read,
+        temp_blks_written: base.temp_blks_written,
+        shared_blk_read_time: base.shared_blk_read_time,
+        shared_blk_write_time: base.shared_blk_write_time,
+        local_blk_read_time: base.local_blk_read_time,
+        local_blk_write_time: base.local_blk_write_time,
+        temp_blk_read_time: base.temp_blk_read_time,
+        temp_blk_write_time: base.temp_blk_write_time,
+        first_call: row.first_call.map(Ts),
+        last_call: row.last_call.map(Ts),
+    })
+}
+
 /// Build a `1_004_001` row (vadv fork).
 ///
 /// # Errors
@@ -374,88 +458,133 @@ pub fn to_vadv<E>(
     })
 }
 
-fn ossc_row_from_pg(row: &tokio_postgres::Row) -> OsscRow {
-    OsscRow {
-        ts: row.get("ts_us"),
-        queryid: row.get("queryid"),
-        planid: row.get("planid"),
-        userid: row.get("userid"),
-        dbid: row.get("dbid"),
-        datname: row.get("datname"),
-        usename: row.get("usename"),
-        plan: row.get("plan"),
-        calls: row.get("calls"),
-        total_time: row.get("total_time"),
-        min_time: row.get("min_time"),
-        max_time: row.get("max_time"),
-        mean_time: row.get("mean_time"),
-        stddev_time: row.get("stddev_time"),
-        rows: row.get("rows"),
-        shared_blks_hit: row.get("shared_blks_hit"),
-        shared_blks_read: row.get("shared_blks_read"),
-        shared_blks_dirtied: row.get("shared_blks_dirtied"),
-        shared_blks_written: row.get("shared_blks_written"),
-        local_blks_hit: row.get("local_blks_hit"),
-        local_blks_read: row.get("local_blks_read"),
-        local_blks_dirtied: row.get("local_blks_dirtied"),
-        local_blks_written: row.get("local_blks_written"),
-        temp_blks_read: row.get("temp_blks_read"),
-        temp_blks_written: row.get("temp_blks_written"),
-        shared_blk_read_time: row.get("shared_blk_read_time"),
-        shared_blk_write_time: row.get("shared_blk_write_time"),
-        local_blk_read_time: row.get("local_blk_read_time"),
-        local_blk_write_time: row.get("local_blk_write_time"),
-        temp_blk_read_time: row.get("temp_blk_read_time"),
-        temp_blk_write_time: row.get("temp_blk_write_time"),
-        first_call: row.get("first_call_us"),
-        last_call: row.get("last_call_us"),
-    }
+fn ossc_row_from_pg(row: &tokio_postgres::Row) -> anyhow::Result<OsscRow> {
+    Ok(OsscRow {
+        ts: row.try_get("ts_us")?,
+        queryid: row.try_get("queryid")?,
+        planid: row.try_get("planid")?,
+        userid: row.try_get("userid")?,
+        dbid: row.try_get("dbid")?,
+        datname: row.try_get("datname")?,
+        usename: row.try_get("usename")?,
+        plan: row.try_get("plan")?,
+        calls: row.try_get("calls")?,
+        total_time: row.try_get("total_time")?,
+        min_time: row.try_get("min_time")?,
+        max_time: row.try_get("max_time")?,
+        mean_time: row.try_get("mean_time")?,
+        stddev_time: row.try_get("stddev_time")?,
+        rows: row.try_get("rows")?,
+        shared_blks_hit: row.try_get("shared_blks_hit")?,
+        shared_blks_read: row.try_get("shared_blks_read")?,
+        shared_blks_dirtied: row.try_get("shared_blks_dirtied")?,
+        shared_blks_written: row.try_get("shared_blks_written")?,
+        local_blks_hit: row.try_get("local_blks_hit")?,
+        local_blks_read: row.try_get("local_blks_read")?,
+        local_blks_dirtied: row.try_get("local_blks_dirtied")?,
+        local_blks_written: row.try_get("local_blks_written")?,
+        temp_blks_read: row.try_get("temp_blks_read")?,
+        temp_blks_written: row.try_get("temp_blks_written")?,
+        shared_blk_read_time: row.try_get("shared_blk_read_time")?,
+        shared_blk_write_time: row.try_get("shared_blk_write_time")?,
+        local_blk_read_time: row.try_get("local_blk_read_time")?,
+        local_blk_write_time: row.try_get("local_blk_write_time")?,
+        temp_blk_read_time: row.try_get("temp_blk_read_time")?,
+        temp_blk_write_time: row.try_get("temp_blk_write_time")?,
+        first_call: row.try_get("first_call_us")?,
+        last_call: row.try_get("last_call_us")?,
+    })
 }
 
-fn vadv_row_from_pg(row: &tokio_postgres::Row) -> VadvRow {
-    VadvRow {
-        ts: row.get("ts_us"),
-        userid: row.get("userid"),
-        dbid: row.get("dbid"),
-        queryid: row.get("queryid"),
-        planid: row.get("planid"),
-        queryid_stat_statements: row.get("queryid_stat_statements"),
-        datname: row.get("datname"),
-        usename: row.get("usename"),
-        plan: row.get("plan"),
-        calls: row.get("calls"),
-        slow_log_calls: row.get("slow_log_calls"),
-        total_time: row.get("total_time"),
-        min_time: row.get("min_time"),
-        max_time: row.get("max_time"),
-        mean_time: row.get("mean_time"),
-        stddev_time: row.get("stddev_time"),
-        rows: row.get("rows"),
-        shared_blks_hit: row.get("shared_blks_hit"),
-        shared_blks_read: row.get("shared_blks_read"),
-        shared_blks_dirtied: row.get("shared_blks_dirtied"),
-        shared_blks_written: row.get("shared_blks_written"),
-        local_blks_hit: row.get("local_blks_hit"),
-        local_blks_read: row.get("local_blks_read"),
-        local_blks_dirtied: row.get("local_blks_dirtied"),
-        local_blks_written: row.get("local_blks_written"),
-        temp_blks_read: row.get("temp_blks_read"),
-        temp_blks_written: row.get("temp_blks_written"),
-        blk_read_time: row.get("blk_read_time"),
-        blk_write_time: row.get("blk_write_time"),
-        first_call: row.get("first_call_us"),
-        last_call: row.get("last_call_us"),
-        total_plan_time: row.get("total_plan_time"),
-        min_plan_time: row.get("min_plan_time"),
-        max_plan_time: row.get("max_plan_time"),
-        mean_plan_time: row.get("mean_plan_time"),
-    }
+fn datasentinel_row_from_pg(row: &tokio_postgres::Row) -> anyhow::Result<DatasentinelRow> {
+    let calls = row.try_get("calls")?;
+    Ok(DatasentinelRow {
+        base: OsscRow {
+            ts: row.try_get("ts_us")?,
+            queryid: row.try_get("queryid")?,
+            planid: row.try_get("planid")?,
+            userid: row.try_get("userid")?,
+            dbid: row.try_get("dbid")?,
+            datname: row.try_get("datname")?,
+            usename: row.try_get("usename")?,
+            plan: row.try_get("plan")?,
+            calls,
+            total_time: row.try_get("total_time")?,
+            min_time: row.try_get("min_time")?,
+            max_time: row.try_get("max_time")?,
+            mean_time: row.try_get("mean_time")?,
+            stddev_time: row.try_get("stddev_time")?,
+            rows: row.try_get("rows")?,
+            shared_blks_hit: row.try_get("shared_blks_hit")?,
+            shared_blks_read: row.try_get("shared_blks_read")?,
+            shared_blks_dirtied: row.try_get("shared_blks_dirtied")?,
+            shared_blks_written: row.try_get("shared_blks_written")?,
+            local_blks_hit: row.try_get("local_blks_hit")?,
+            local_blks_read: row.try_get("local_blks_read")?,
+            local_blks_dirtied: row.try_get("local_blks_dirtied")?,
+            local_blks_written: row.try_get("local_blks_written")?,
+            temp_blks_read: row.try_get("temp_blks_read")?,
+            temp_blks_written: row.try_get("temp_blks_written")?,
+            shared_blk_read_time: row.try_get("shared_blk_read_time")?,
+            shared_blk_write_time: row.try_get("shared_blk_write_time")?,
+            local_blk_read_time: row.try_get("local_blk_read_time")?,
+            local_blk_write_time: row.try_get("local_blk_write_time")?,
+            temp_blk_read_time: row.try_get("temp_blk_read_time")?,
+            temp_blk_write_time: row.try_get("temp_blk_write_time")?,
+            first_call: 0,
+            last_call: 0,
+        },
+        relids: row.try_get("relids")?,
+        cmd_type: row.try_get("cmd_type")?,
+        first_call: row.try_get("first_call_us")?,
+        last_call: row.try_get("last_call_us")?,
+    })
+}
+
+fn vadv_row_from_pg(row: &tokio_postgres::Row) -> anyhow::Result<VadvRow> {
+    Ok(VadvRow {
+        ts: row.try_get("ts_us")?,
+        userid: row.try_get("userid")?,
+        dbid: row.try_get("dbid")?,
+        queryid: row.try_get("queryid")?,
+        planid: row.try_get("planid")?,
+        queryid_stat_statements: row.try_get("queryid_stat_statements")?,
+        datname: row.try_get("datname")?,
+        usename: row.try_get("usename")?,
+        plan: row.try_get("plan")?,
+        calls: row.try_get("calls")?,
+        slow_log_calls: row.try_get("slow_log_calls")?,
+        total_time: row.try_get("total_time")?,
+        min_time: row.try_get("min_time")?,
+        max_time: row.try_get("max_time")?,
+        mean_time: row.try_get("mean_time")?,
+        stddev_time: row.try_get("stddev_time")?,
+        rows: row.try_get("rows")?,
+        shared_blks_hit: row.try_get("shared_blks_hit")?,
+        shared_blks_read: row.try_get("shared_blks_read")?,
+        shared_blks_dirtied: row.try_get("shared_blks_dirtied")?,
+        shared_blks_written: row.try_get("shared_blks_written")?,
+        local_blks_hit: row.try_get("local_blks_hit")?,
+        local_blks_read: row.try_get("local_blks_read")?,
+        local_blks_dirtied: row.try_get("local_blks_dirtied")?,
+        local_blks_written: row.try_get("local_blks_written")?,
+        temp_blks_read: row.try_get("temp_blks_read")?,
+        temp_blks_written: row.try_get("temp_blks_written")?,
+        blk_read_time: row.try_get("blk_read_time")?,
+        blk_write_time: row.try_get("blk_write_time")?,
+        first_call: row.try_get("first_call_us")?,
+        last_call: row.try_get("last_call_us")?,
+        total_plan_time: row.try_get("total_plan_time")?,
+        min_plan_time: row.try_get("min_plan_time")?,
+        max_plan_time: row.try_get("max_plan_time")?,
+        mean_plan_time: row.try_get("mean_plan_time")?,
+    })
 }
 
 /// Collect every OSSC-compatible plan entry.
 ///
 /// # Errors
-/// Returns the [`tokio_postgres::Error`] if the query fails.
+/// Returns a [`BatchError`] when the query, row decoding, or batch sink fails.
 pub async fn collect_ossc<E>(
     session: Session<'_>,
     capability: &StorePlansCapability,
@@ -474,10 +603,32 @@ pub async fn collect_ossc<E>(
     .await
 }
 
+/// Collect every Datasentinel plan entry.
+///
+/// # Errors
+/// Returns a [`BatchError`] when the query, row decoding, or batch sink fails.
+pub async fn collect_datasentinel<E>(
+    session: Session<'_>,
+    capability: &StorePlansCapability,
+    stats: &mut QueryStats,
+    sink: impl FnMut(Batch<DatasentinelRow>) -> Result<BatchWrite, E>,
+) -> Result<(), BatchError<E>> {
+    query::read_batched(
+        session,
+        &store_plans_query(capability),
+        std::iter::empty::<(String, Type)>(),
+        0,
+        stats,
+        datasentinel_row_from_pg,
+        sink,
+    )
+    .await
+}
+
 /// Collect every vadv entry and its bounded plan text in one set-based query.
 ///
 /// # Errors
-/// Returns the [`tokio_postgres::Error`] if a query fails.
+/// Returns a [`BatchError`] when the query, row decoding, or batch sink fails.
 pub async fn collect_vadv<E>(
     session: Session<'_>,
     capability: &StorePlansCapability,

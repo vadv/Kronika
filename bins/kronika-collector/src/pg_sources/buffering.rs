@@ -83,6 +83,15 @@ pub(crate) fn push_pg_batch(
             }
             Ok(())
         }
+        PgBatch::StorePlansDatasentinel(rows) => {
+            for row in rows {
+                buffer_row(
+                    buffers,
+                    store_plans::to_datasentinel(row, intern(interner))?,
+                )?;
+            }
+            Ok(())
+        }
         PgBatch::StorePlansVadv(rows) => {
             for row in rows {
                 buffer_row(buffers, store_plans::to_vadv(row, intern(interner))?)?;

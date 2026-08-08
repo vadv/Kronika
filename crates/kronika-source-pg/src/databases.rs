@@ -62,10 +62,12 @@ pub async fn enumerate(session: Session<'_>, stats: &mut QueryStats) -> Result<V
         std::iter::empty::<(String, Type)>(),
         0,
         stats,
-        |row| Database {
-            oid: row.get("oid"),
-            name: row.get("datname"),
-            is_current: row.get("is_current"),
+        |row| {
+            Ok(Database {
+                oid: row.try_get("oid")?,
+                name: row.try_get("datname")?,
+                is_current: row.try_get("is_current")?,
+            })
         },
     )
     .await

@@ -76,30 +76,30 @@ pub enum WalSnapshot {
     V2(PgStatWalV2),
 }
 
-fn v1_from_pg(row: &tokio_postgres::Row) -> PgStatWalV1 {
-    PgStatWalV1 {
-        ts: Ts(row.get("ts_us")),
-        wal_records: row.get("wal_records"),
-        wal_fpi: row.get("wal_fpi"),
-        wal_bytes: row.get("wal_bytes"),
-        wal_buffers_full: row.get("wal_buffers_full"),
-        wal_write: row.get("wal_write"),
-        wal_sync: row.get("wal_sync"),
-        wal_write_time: row.get("wal_write_time"),
-        wal_sync_time: row.get("wal_sync_time"),
-        stats_reset: row.get::<_, Option<i64>>("stats_reset_us").map(Ts),
-    }
+fn v1_from_pg(row: &tokio_postgres::Row) -> anyhow::Result<PgStatWalV1> {
+    Ok(PgStatWalV1 {
+        ts: Ts(row.try_get("ts_us")?),
+        wal_records: row.try_get("wal_records")?,
+        wal_fpi: row.try_get("wal_fpi")?,
+        wal_bytes: row.try_get("wal_bytes")?,
+        wal_buffers_full: row.try_get("wal_buffers_full")?,
+        wal_write: row.try_get("wal_write")?,
+        wal_sync: row.try_get("wal_sync")?,
+        wal_write_time: row.try_get("wal_write_time")?,
+        wal_sync_time: row.try_get("wal_sync_time")?,
+        stats_reset: row.try_get::<_, Option<i64>>("stats_reset_us")?.map(Ts),
+    })
 }
 
-fn v2_from_pg(row: &tokio_postgres::Row) -> PgStatWalV2 {
-    PgStatWalV2 {
-        ts: Ts(row.get("ts_us")),
-        wal_records: row.get("wal_records"),
-        wal_fpi: row.get("wal_fpi"),
-        wal_bytes: row.get("wal_bytes"),
-        wal_buffers_full: row.get("wal_buffers_full"),
-        stats_reset: row.get::<_, Option<i64>>("stats_reset_us").map(Ts),
-    }
+fn v2_from_pg(row: &tokio_postgres::Row) -> anyhow::Result<PgStatWalV2> {
+    Ok(PgStatWalV2 {
+        ts: Ts(row.try_get("ts_us")?),
+        wal_records: row.try_get("wal_records")?,
+        wal_fpi: row.try_get("wal_fpi")?,
+        wal_bytes: row.try_get("wal_bytes")?,
+        wal_buffers_full: row.try_get("wal_buffers_full")?,
+        stats_reset: row.try_get::<_, Option<i64>>("stats_reset_us")?.map(Ts),
+    })
 }
 
 /// Collect the single `pg_stat_wal` row, or `None` before PG14 where the view
@@ -122,8 +122,8 @@ pub async fn collect_wal(
         0,
         stats,
         |row| match version {
-            WalVersion::V1 => WalSnapshot::V1(v1_from_pg(row)),
-            WalVersion::V2 => WalSnapshot::V2(v2_from_pg(row)),
+            WalVersion::V1 => Ok(WalSnapshot::V1(v1_from_pg(row)?)),
+            WalVersion::V2 => Ok(WalSnapshot::V2(v2_from_pg(row)?)),
         },
     )
     .await

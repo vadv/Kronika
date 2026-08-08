@@ -406,59 +406,75 @@ pub fn to_v1<E>(
 }
 
 /// Read a raw row from a result row using the version's column set.
-fn row_from_pg(row: &tokio_postgres::Row, version: DatabaseVersion) -> DatabaseRow {
+fn row_from_pg(row: &tokio_postgres::Row, version: DatabaseVersion) -> anyhow::Result<DatabaseRow> {
     let has_checksum = matches!(
         version,
         DatabaseVersion::V2 | DatabaseVersion::V3 | DatabaseVersion::V4
     );
     let has_session = matches!(version, DatabaseVersion::V3 | DatabaseVersion::V4);
     let has_parallel = matches!(version, DatabaseVersion::V4);
-    DatabaseRow {
-        ts: row.get("ts_us"),
-        datid: row.get("datid"),
-        datname: row.get("datname"),
-        numbackends: row.get("numbackends"),
-        xact_commit: row.get("xact_commit"),
-        xact_rollback: row.get("xact_rollback"),
-        blks_read: row.get("blks_read"),
-        blks_hit: row.get("blks_hit"),
-        tup_returned: row.get("tup_returned"),
-        tup_fetched: row.get("tup_fetched"),
-        tup_inserted: row.get("tup_inserted"),
-        tup_updated: row.get("tup_updated"),
-        tup_deleted: row.get("tup_deleted"),
-        conflicts: row.get("conflicts"),
-        temp_files: row.get("temp_files"),
-        temp_bytes: row.get("temp_bytes"),
-        deadlocks: row.get("deadlocks"),
-        blk_read_time: row.get("blk_read_time"),
-        blk_write_time: row.get("blk_write_time"),
-        stats_reset: row.get("stats_reset_us"),
+    Ok(DatabaseRow {
+        ts: row.try_get("ts_us")?,
+        datid: row.try_get("datid")?,
+        datname: row.try_get("datname")?,
+        numbackends: row.try_get("numbackends")?,
+        xact_commit: row.try_get("xact_commit")?,
+        xact_rollback: row.try_get("xact_rollback")?,
+        blks_read: row.try_get("blks_read")?,
+        blks_hit: row.try_get("blks_hit")?,
+        tup_returned: row.try_get("tup_returned")?,
+        tup_fetched: row.try_get("tup_fetched")?,
+        tup_inserted: row.try_get("tup_inserted")?,
+        tup_updated: row.try_get("tup_updated")?,
+        tup_deleted: row.try_get("tup_deleted")?,
+        conflicts: row.try_get("conflicts")?,
+        temp_files: row.try_get("temp_files")?,
+        temp_bytes: row.try_get("temp_bytes")?,
+        deadlocks: row.try_get("deadlocks")?,
+        blk_read_time: row.try_get("blk_read_time")?,
+        blk_write_time: row.try_get("blk_write_time")?,
+        stats_reset: row.try_get("stats_reset_us")?,
         checksum_failures: if has_checksum {
-            row.get::<_, Option<i64>>("checksum_failures")
+            row.try_get("checksum_failures")?
         } else {
             None
         },
         checksum_last_failure: if has_checksum {
-            row.get("checksum_last_failure_us")
+            row.try_get("checksum_last_failure_us")?
         } else {
             None
         },
-        session_time: has_session.then(|| row.get("session_time")),
-        active_time: has_session.then(|| row.get("active_time")),
-        idle_in_transaction_time: has_session.then(|| row.get("idle_in_transaction_time")),
-        sessions: has_session.then(|| row.get("sessions")),
-        sessions_abandoned: has_session.then(|| row.get("sessions_abandoned")),
-        sessions_fatal: has_session.then(|| row.get("sessions_fatal")),
-        sessions_killed: has_session.then(|| row.get("sessions_killed")),
-        parallel_workers_to_launch: has_parallel.then(|| row.get("parallel_workers_to_launch")),
-        parallel_workers_launched: has_parallel.then(|| row.get("parallel_workers_launched")),
-        frozen_xid_age: row.get("frozen_xid_age"),
-        min_mxid_age: row.get("min_mxid_age"),
-        datconnlimit: row.get("datconnlimit"),
-        datallowconn: row.get("datallowconn"),
-        datistemplate: row.get("datistemplate"),
-    }
+        session_time: has_session
+            .then(|| row.try_get("session_time"))
+            .transpose()?,
+        active_time: has_session
+            .then(|| row.try_get("active_time"))
+            .transpose()?,
+        idle_in_transaction_time: has_session
+            .then(|| row.try_get("idle_in_transaction_time"))
+            .transpose()?,
+        sessions: has_session.then(|| row.try_get("sessions")).transpose()?,
+        sessions_abandoned: has_session
+            .then(|| row.try_get("sessions_abandoned"))
+            .transpose()?,
+        sessions_fatal: has_session
+            .then(|| row.try_get("sessions_fatal"))
+            .transpose()?,
+        sessions_killed: has_session
+            .then(|| row.try_get("sessions_killed"))
+            .transpose()?,
+        parallel_workers_to_launch: has_parallel
+            .then(|| row.try_get("parallel_workers_to_launch"))
+            .transpose()?,
+        parallel_workers_launched: has_parallel
+            .then(|| row.try_get("parallel_workers_launched"))
+            .transpose()?,
+        frozen_xid_age: row.try_get("frozen_xid_age")?,
+        min_mxid_age: row.try_get("min_mxid_age")?,
+        datconnlimit: row.try_get("datconnlimit")?,
+        datallowconn: row.try_get("datallowconn")?,
+        datistemplate: row.try_get("datistemplate")?,
+    })
 }
 
 /// Stream a full `pg_stat_database` snapshot in bounded batches.

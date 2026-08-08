@@ -97,15 +97,17 @@ pub async fn collect_archiver(
         std::iter::empty::<(String, Type)>(),
         0,
         stats,
-        |row| ArchiverRow {
-            ts: row.get("ts_us"),
-            archived_count: row.get("archived_count"),
-            last_archived_wal: row.get("last_archived_wal"),
-            last_archived_time: row.get("last_archived_time_us"),
-            failed_count: row.get("failed_count"),
-            last_failed_wal: row.get("last_failed_wal"),
-            last_failed_time: row.get("last_failed_time_us"),
-            stats_reset: row.get("stats_reset_us"),
+        |row| {
+            Ok(ArchiverRow {
+                ts: row.try_get("ts_us")?,
+                archived_count: row.try_get("archived_count")?,
+                last_archived_wal: row.try_get("last_archived_wal")?,
+                last_archived_time: row.try_get("last_archived_time_us")?,
+                failed_count: row.try_get("failed_count")?,
+                last_failed_wal: row.try_get("last_failed_wal")?,
+                last_failed_time: row.try_get("last_failed_time_us")?,
+                stats_reset: row.try_get("stats_reset_us")?,
+            })
         },
     )
     .await

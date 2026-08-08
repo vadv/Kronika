@@ -311,7 +311,7 @@ pub struct PgStorePlansOsscV1 {
     #[column(l)]
     pub usename: Option<StrId>,
     /// Plan text from the view, server-truncated per row; `None` when the
-    /// per-cycle plan-text budget was exhausted before this row.
+    /// server does not expose text for this entry.
     #[column(l)]
     pub plan: Option<StrId>,
     /// Executions accumulated for this plan entry.
@@ -389,6 +389,126 @@ pub struct PgStorePlansOsscV1 {
     /// When the entry was last executed.
     #[column(g, unit = microseconds)]
     pub last_call: Ts,
+}
+
+/// Type `1_018_001`: Datasentinel `pg_store_plans` 2.x.
+///
+/// This interface extends the OSSC-compatible counters with the relation OIDs
+/// and command type. `relids` keeps PostgreSQL's lossless `oid[]` text because
+/// the segment codec has no unsigned-integer list type.
+#[derive(Debug, Clone, Copy, PartialEq, Section)]
+#[section(
+    id = 1_018_001,
+    name = "pg_store_plans_datasentinel",
+    semantics = conditional_full,
+    sort_key("dbid", "userid", "queryid", "planid")
+)]
+pub struct PgStorePlansDatasentinelV1 {
+    /// Collection time, unix microseconds; one value for all rows of a read.
+    #[column(t)]
+    pub ts: Ts,
+    /// Core query id, part of the entry identity; joins section `1_002`.
+    #[column(l)]
+    pub queryid: i64,
+    /// Plan id derived from the normalized plan representation.
+    #[column(l)]
+    pub planid: i64,
+    /// Role oid the statements ran as.
+    #[column(l)]
+    pub userid: u32,
+    /// Database oid the statements ran in.
+    #[column(l)]
+    pub dbid: u32,
+    /// Database name resolved from `dbid`.
+    #[column(l)]
+    pub datname: Option<StrId>,
+    /// Role name resolved from `userid`.
+    #[column(l)]
+    pub usename: Option<StrId>,
+    /// Server-truncated plan text.
+    #[column(l)]
+    pub plan: Option<StrId>,
+    /// Relation OIDs in PostgreSQL `oid[]` text form, at most 48 elements.
+    #[column(l)]
+    pub relids: Option<StrId>,
+    /// Command type reported by the extension.
+    #[column(l)]
+    pub cmd_type: Option<StrId>,
+    /// Executions accumulated for this plan entry.
+    #[column(c, unit = count)]
+    pub calls: i64,
+    /// Total execution time in milliseconds.
+    #[column(c, unit = milliseconds)]
+    pub total_time: f64,
+    /// Minimum execution time in milliseconds.
+    #[column(g, unit = milliseconds)]
+    pub min_time: f64,
+    /// Maximum execution time in milliseconds.
+    #[column(g, unit = milliseconds)]
+    pub max_time: f64,
+    /// Mean execution time in milliseconds.
+    #[column(g, unit = milliseconds)]
+    pub mean_time: f64,
+    /// Population standard deviation of execution time, milliseconds.
+    #[column(g, unit = milliseconds)]
+    pub stddev_time: f64,
+    /// Rows retrieved or affected.
+    #[column(c, unit = count)]
+    pub rows: i64,
+    /// Shared-block buffer hits.
+    #[column(c, unit = count)]
+    pub shared_blks_hit: i64,
+    /// Shared blocks read.
+    #[column(c, unit = count)]
+    pub shared_blks_read: i64,
+    /// Shared blocks dirtied.
+    #[column(c, unit = count)]
+    pub shared_blks_dirtied: i64,
+    /// Shared blocks written.
+    #[column(c, unit = count)]
+    pub shared_blks_written: i64,
+    /// Local-block buffer hits.
+    #[column(c, unit = count)]
+    pub local_blks_hit: i64,
+    /// Local blocks read.
+    #[column(c, unit = count)]
+    pub local_blks_read: i64,
+    /// Local blocks dirtied.
+    #[column(c, unit = count)]
+    pub local_blks_dirtied: i64,
+    /// Local blocks written.
+    #[column(c, unit = count)]
+    pub local_blks_written: i64,
+    /// Temp blocks read.
+    #[column(c, unit = count)]
+    pub temp_blks_read: i64,
+    /// Temp blocks written.
+    #[column(c, unit = count)]
+    pub temp_blks_written: i64,
+    /// Time reading shared blocks, milliseconds.
+    #[column(c, unit = milliseconds)]
+    pub shared_blk_read_time: f64,
+    /// Time writing shared blocks, milliseconds.
+    #[column(c, unit = milliseconds)]
+    pub shared_blk_write_time: f64,
+    /// Time reading local blocks, milliseconds.
+    #[column(c, unit = milliseconds)]
+    pub local_blk_read_time: f64,
+    /// Time writing local blocks, milliseconds.
+    #[column(c, unit = milliseconds)]
+    pub local_blk_write_time: f64,
+    /// Time reading temp blocks, milliseconds.
+    #[column(c, unit = milliseconds)]
+    pub temp_blk_read_time: f64,
+    /// Time writing temp blocks, milliseconds.
+    #[column(c, unit = milliseconds)]
+    pub temp_blk_write_time: f64,
+    /// When statistics began; `None` while the first call is in flight.
+    #[column(g, unit = microseconds)]
+    pub first_call: Option<Ts>,
+    /// Last completed execution; `None` before the first completion.
+    #[column(g, unit = microseconds)]
+    pub last_call: Option<Ts>,
 }
 
 #[cfg(test)]
@@ -490,5 +610,80 @@ mod ossc_tests {
                 .collect::<Vec<_>>(),
             [(1, 2), (1, 8), (9, 3)]
         );
+    }
+}
+
+#[cfg(test)]
+mod datasentinel_tests {
+    use super::PgStorePlansDatasentinelV1;
+    use crate::{Section, StrId, Ts, Unit, lint};
+
+    fn row(calls: i64) -> PgStorePlansDatasentinelV1 {
+        PgStorePlansDatasentinelV1 {
+            ts: Ts(2_000),
+            queryid: -7,
+            planid: 991,
+            userid: 10,
+            dbid: 16_400,
+            datname: Some(StrId(1)),
+            usename: Some(StrId(2)),
+            plan: Some(StrId(3)),
+            relids: Some(StrId(4)),
+            cmd_type: Some(StrId(5)),
+            calls,
+            total_time: 99.5,
+            min_time: 1.0,
+            max_time: 50.0,
+            mean_time: 24.9,
+            stddev_time: 2.2,
+            rows: 40,
+            shared_blks_hit: 1,
+            shared_blks_read: 2,
+            shared_blks_dirtied: 3,
+            shared_blks_written: 4,
+            local_blks_hit: 5,
+            local_blks_read: 6,
+            local_blks_dirtied: 7,
+            local_blks_written: 8,
+            temp_blks_read: 9,
+            temp_blks_written: 10,
+            shared_blk_read_time: 1.5,
+            shared_blk_write_time: 2.5,
+            local_blk_read_time: 3.5,
+            local_blk_write_time: 4.5,
+            temp_blk_read_time: 5.5,
+            temp_blk_write_time: 6.5,
+            first_call: (calls > 0).then_some(Ts(1_000)),
+            last_call: (calls > 0).then_some(Ts(1_900)),
+        }
+    }
+
+    #[test]
+    fn datasentinel_contract_keeps_its_distinct_shape() {
+        let contract = PgStorePlansDatasentinelV1::CONTRACT;
+        assert_eq!(contract.type_id.get(), 1_018_001);
+        assert_eq!(contract.columns.len(), 35);
+        assert_eq!(contract.sort_key, ["dbid", "userid", "queryid", "planid"]);
+        assert_eq!(
+            contract.column("relids").map(|col| col.nullable),
+            Some(true)
+        );
+        assert_eq!(
+            contract.column("cmd_type").map(|col| col.nullable),
+            Some(true)
+        );
+        for name in ["first_call", "last_call"] {
+            assert_eq!(contract.column(name).map(|col| col.nullable), Some(true));
+            assert_eq!(
+                contract.column(name).and_then(|col| col.unit),
+                Some(Unit::Microseconds)
+            );
+        }
+        assert_eq!(lint(&[contract]), Ok(()));
+    }
+
+    #[test]
+    fn datasentinel_roundtrips_completed_and_in_flight_entries() {
+        crate::assert_roundtrips(&[row(1), row(0)]);
     }
 }

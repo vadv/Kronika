@@ -40,10 +40,12 @@ pub async fn collect(
         std::iter::empty::<(String, Type)>(),
         0,
         stats,
-        |row| PgStatStatementsInfo {
-            ts: Ts(row.get("ts_us")),
-            dealloc: row.get("dealloc"),
-            stats_reset: Ts(row.get("stats_reset_us")),
+        |row| {
+            Ok(PgStatStatementsInfo {
+                ts: Ts(row.try_get("ts_us")?),
+                dealloc: row.try_get("dealloc")?,
+                stats_reset: Ts(row.try_get("stats_reset_us")?),
+            })
         },
     )
     .await

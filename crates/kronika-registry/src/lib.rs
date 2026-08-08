@@ -87,7 +87,9 @@ pub use codec::pg_stat_user_tables::{
     PgStatUserTablesV1, PgStatUserTablesV2, PgStatUserTablesV3, PgStatUserTablesV4,
 };
 pub use codec::pg_stat_wal::{PgStatWalV1, PgStatWalV2};
-pub use codec::pg_store_plans::{PgStorePlansOsscV1, PgStorePlansVadvV1};
+pub use codec::pg_store_plans::{
+    PgStorePlansDatasentinelV1, PgStorePlansOsscV1, PgStorePlansVadvV1,
+};
 pub use codec::pg_store_plans_info::PgStorePlansInfo;
 pub use codec::pgbouncer_events::PgBouncerEvents;
 pub(crate) use codec::{check_row_cap, decode_batches, decode_section, encode_section};
@@ -197,6 +199,7 @@ pub const fn registry() -> &'static [TypeContract] {
         PgStatUserTablesV1::CONTRACT,
         PgStorePlansVadvV1::CONTRACT,
         PgStorePlansOsscV1::CONTRACT,
+        PgStorePlansDatasentinelV1::CONTRACT,
         PgStatStatementsInfo::CONTRACT,
         PgStorePlansInfo::CONTRACT,
         PgStatCheckpointerV1::CONTRACT,

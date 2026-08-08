@@ -59,6 +59,11 @@ fn inventory_is_one_marked_catalog_query_with_exact_capability_checks() {
     assert!(INVENTORY_QUERY.contains("'26 26 20 20'"));
     assert!(INVENTORY_QUERY.contains("queryid_stat_statements"));
     assert!(INVENTORY_QUERY.contains("store_plans_ossc_columns"));
-    assert!(!INVENTORY_QUERY.contains("pg_catalog.pg_attribute"));
+    assert!(INVENTORY_QUERY.contains("store_plans_datasentinel_columns"));
+    assert!(INVENTORY_QUERY.contains("'datasentinel', 'relids'"));
+    assert!(INVENTORY_QUERY.contains("'datasentinel', 'cmd_type'"));
+    assert!(INVENTORY_QUERY.contains("pg_catalog.pg_attribute"));
+    assert!(INVENTORY_QUERY.contains("a.attname = 'dealloc'"));
+    assert!(INVENTORY_QUERY.contains("a.attname = 'stats_reset'"));
     assert!(!INVENTORY_QUERY.contains("$1"));
 }

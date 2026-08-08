@@ -194,32 +194,48 @@ pub fn to_v2<E>(
 }
 
 /// Read a raw row from a result row using the version's column set.
-fn row_from_pg(row: &tokio_postgres::Row, version: IoVersion) -> IoRow {
+fn row_from_pg(row: &tokio_postgres::Row, version: IoVersion) -> anyhow::Result<IoRow> {
     let is_v2 = matches!(version, IoVersion::V2);
-    IoRow {
-        ts: row.get("ts_us"),
-        backend_type: row.get("backend_type"),
-        object: row.get("object"),
-        context: row.get("context"),
-        reads: row.get("reads"),
-        read_bytes: if is_v2 { row.get("read_bytes") } else { None },
-        read_time: row.get("read_time"),
-        writes: row.get("writes"),
-        write_bytes: if is_v2 { row.get("write_bytes") } else { None },
-        write_time: row.get("write_time"),
-        writebacks: row.get("writebacks"),
-        writeback_time: row.get("writeback_time"),
-        extends: row.get("extends"),
-        extend_bytes: if is_v2 { row.get("extend_bytes") } else { None },
-        extend_time: row.get("extend_time"),
-        op_bytes: if is_v2 { None } else { row.get("op_bytes") },
-        hits: row.get("hits"),
-        evictions: row.get("evictions"),
-        reuses: row.get("reuses"),
-        fsyncs: row.get("fsyncs"),
-        fsync_time: row.get("fsync_time"),
-        stats_reset: row.get("stats_reset_us"),
-    }
+    Ok(IoRow {
+        ts: row.try_get("ts_us")?,
+        backend_type: row.try_get("backend_type")?,
+        object: row.try_get("object")?,
+        context: row.try_get("context")?,
+        reads: row.try_get("reads")?,
+        read_bytes: if is_v2 {
+            row.try_get("read_bytes")?
+        } else {
+            None
+        },
+        read_time: row.try_get("read_time")?,
+        writes: row.try_get("writes")?,
+        write_bytes: if is_v2 {
+            row.try_get("write_bytes")?
+        } else {
+            None
+        },
+        write_time: row.try_get("write_time")?,
+        writebacks: row.try_get("writebacks")?,
+        writeback_time: row.try_get("writeback_time")?,
+        extends: row.try_get("extends")?,
+        extend_bytes: if is_v2 {
+            row.try_get("extend_bytes")?
+        } else {
+            None
+        },
+        extend_time: row.try_get("extend_time")?,
+        op_bytes: if is_v2 {
+            None
+        } else {
+            row.try_get("op_bytes")?
+        },
+        hits: row.try_get("hits")?,
+        evictions: row.try_get("evictions")?,
+        reuses: row.try_get("reuses")?,
+        fsyncs: row.try_get("fsyncs")?,
+        fsync_time: row.try_get("fsync_time")?,
+        stats_reset: row.try_get("stats_reset_us")?,
+    })
 }
 
 /// Stream a full `pg_stat_io` snapshot in bounded batches. Before PG16, where

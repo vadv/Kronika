@@ -70,3 +70,27 @@ fn no_error_line(world: &mut BddWorld) -> Result<()> {
     anyhow::ensure!(errors.is_empty(), "unexpected error lines: {errors:?}");
     Ok(())
 }
+
+#[then("the shutdown PostgreSQL query summary reports traffic")]
+fn shutdown_postgresql_query_summary_reports_traffic(world: &mut BddWorld) -> Result<()> {
+    let text = log(world)?;
+    let line = text
+        .lines()
+        .find(|line| line.contains("action=pg_query_summary") && line.contains("reason=shutdown"))
+        .with_context(|| format!("no shutdown pg_query_summary line in:\n{text}"))?;
+    for name in [
+        "query_count",
+        "rows",
+        "application_payload_from_postgres_bytes",
+        "application_payload_to_postgres_bytes",
+    ] {
+        let value = line
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix(&format!("{name}=")))
+            .with_context(|| format!("{name} is missing from {line}"))?
+            .parse::<u64>()
+            .with_context(|| format!("{name} is not an integer in {line}"))?;
+        anyhow::ensure!(value > 0, "{name} must be positive in {line}");
+    }
+    Ok(())
+}

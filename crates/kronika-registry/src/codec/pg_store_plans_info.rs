@@ -1,4 +1,4 @@
-//! Type `1_016_001`: OSSC `pg_store_plans_info` on extension 1.10.
+//! Type `1_016_001`: a discovered `pg_store_plans_info(dealloc, stats_reset)` view.
 
 use crate::{Section, Ts};
 

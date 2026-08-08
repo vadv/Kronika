@@ -30,7 +30,7 @@ use kronika_source_pg::query::{self, BatchError, BatchWrite};
 use kronika_source_pg::settings::{self, SettingsRow};
 use kronika_source_pg::statements::{self, StatementsRow, StatementsVersion};
 use kronika_source_pg::statements_info;
-use kronika_source_pg::store_plans::{self, Flavour, OsscRow, VadvRow};
+use kronika_source_pg::store_plans::{self, DatasentinelRow, Flavour, OsscRow, VadvRow};
 use kronika_source_pg::store_plans_info;
 use kronika_source_pg::user_indexes::{self, UserIndexesRow, UserIndexesVersion};
 use kronika_source_pg::user_tables::{self, UserTablesRow, UserTablesVersion};
@@ -106,6 +106,11 @@ impl QueryMeasurement<'_> {
         &mut self.stats
     }
 
+    fn resolve_identity(&mut self, connection: String, database: String) {
+        self.connection = connection;
+        self.database = database;
+    }
+
     fn success(self) {
         self.finish(QueryOutcome::Success, None);
     }
@@ -177,6 +182,7 @@ pub(crate) enum PgBatch {
     Statements(StatementsVersion, Vec<StatementsRow>),
     StatementsInfo(PgStatStatementsInfo),
     StorePlansOssc(Vec<OsscRow>),
+    StorePlansDatasentinel(Vec<DatasentinelRow>),
     StorePlansVadv(Vec<VadvRow>),
     StorePlansInfo(PgStorePlansInfo),
     UserTables(UserTablesVersion, Vec<UserTablesRow>),
@@ -367,18 +373,17 @@ impl PgSources {
         {
             return Some(cached);
         }
-        let result = {
-            let mut measured = measure(observe, "server_probe", &connection, &database);
-            let result = tokio::time::timeout(
-                QUERY_TIMEOUT,
-                read_generation_probe(session, generation, measured.stats_mut()),
-            )
-            .await;
-            finish_query(measured, result)
-        };
+        let mut measured = measure(observe, "server_probe", &connection, &database);
+        let result = tokio::time::timeout(
+            QUERY_TIMEOUT,
+            read_generation_probe(session, generation, measured.stats_mut()),
+        )
+        .await;
         match result {
-            Ok(probe) => {
-                server.remember_resolved_user(&probe.user);
+            Ok(Ok(probe)) => {
+                server.remember_resolved_identity(&probe.user, &probe.database);
+                measured.resolve_identity(server.connection_label(0), probe.database.clone());
+                measured.success();
                 self.settings = None;
                 self.capabilities.clear();
                 self.discovered.clear();
@@ -387,7 +392,15 @@ impl PgSources {
                 self.probe = Some(probe.clone());
                 Some(probe)
             }
-            Err(_failure) => {
+            Ok(Err(error)) => {
+                measured.error(&error);
+                if postgres_connection_error(&error) {
+                    self.clear_primary_connection();
+                }
+                None
+            }
+            Err(_elapsed) => {
+                measured.timeout();
                 self.clear_primary_connection();
                 None
             }
@@ -611,6 +624,7 @@ impl PgSources {
         settings: Option<&Arc<[SettingsRow]>>,
         admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
     ) -> Result<(), E> {
+        let mut unavailable_database: Option<String> = None;
         if let Some((database, capability)) =
             selected_statements(&self.capabilities, self.server_database.as_deref())
         {
@@ -619,10 +633,9 @@ impl PgSources {
                 .get(&database)
                 .and_then(|entry| entry.statements_info.clone());
             let is_current = self.server_database.as_deref() == Some(&database);
-            let completion = {
+            let completion = 'query: {
                 let Some(pool) = self.database_pool_mut(&database) else {
-                    self.invalidate_statements(&database);
-                    return Ok(());
+                    break 'query QueryCompletion::ConnectionFailed;
                 };
                 let connection = pool.connection_label(0);
                 let session = if is_current {
@@ -634,10 +647,9 @@ impl PgSources {
                     Ok(session) => session,
                     Err(QueryFailure::Timeout | QueryFailure::Connection) => {
                         pool.close();
-                        self.invalidate_statements(&database);
-                        return Ok(());
+                        break 'query QueryCompletion::ConnectionFailed;
                     }
-                    Err(QueryFailure::Source) => return Ok(()),
+                    Err(QueryFailure::Source) => break 'query QueryCompletion::SourceFailed,
                 };
                 let version = capability.version;
                 let mut measured = measure(observe, "pg_stat_statements", &connection, &database);
@@ -656,16 +668,16 @@ impl PgSources {
                     self.invalidate_statements(&database);
                 }
                 QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut => {
-                    self.invalidate_statements(&database);
-                    return Ok(());
+                    unavailable_database = Some(database.clone());
                 }
             }
-            if let Some(schema) = info {
+            if unavailable_database.as_deref() != Some(&database)
+                && let Some(schema) = info
+            {
                 let is_current = self.server_database.as_deref() == Some(&database);
-                let completion = {
+                let completion = 'query: {
                     let Some(pool) = self.database_pool_mut(&database) else {
-                        self.invalidate_statements(&database);
-                        return Ok(());
+                        break 'query QueryCompletion::ConnectionFailed;
                     };
                     let connection = pool.connection_label(0);
                     let session = if is_current {
@@ -677,10 +689,9 @@ impl PgSources {
                         Ok(session) => session,
                         Err(QueryFailure::Timeout | QueryFailure::Connection) => {
                             pool.close();
-                            self.invalidate_statements(&database);
-                            return Ok(());
+                            break 'query QueryCompletion::ConnectionFailed;
                         }
-                        Err(QueryFailure::Source) => return Ok(()),
+                        Err(QueryFailure::Source) => break 'query QueryCompletion::SourceFailed,
                     };
                     let mut measured =
                         measure(observe, "pg_stat_statements_info", &connection, &database);
@@ -711,7 +722,10 @@ impl PgSources {
                     completion,
                     QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut
                 ) {
-                    self.invalidate_statements(&database);
+                    if let Some(pool) = self.database_pool_mut(&database) {
+                        pool.close();
+                    }
+                    unavailable_database = Some(database.clone());
                 } else if completion == QueryCompletion::CapabilityChanged {
                     self.invalidate_statements(&database);
                 }
@@ -720,16 +734,16 @@ impl PgSources {
 
         if let Some((database, capability)) =
             selected_store_plans(&self.capabilities, self.server_database.as_deref())
+            && unavailable_database.as_deref() != Some(&database)
         {
             let info = self
                 .capabilities
                 .get(&database)
                 .and_then(|entry| entry.store_plans_info.clone());
             let is_current = self.server_database.as_deref() == Some(&database);
-            let completion = {
+            let completion = 'query: {
                 let Some(pool) = self.database_pool_mut(&database) else {
-                    self.invalidate_store_plans(&database);
-                    return Ok(());
+                    break 'query QueryCompletion::ConnectionFailed;
                 };
                 let connection = pool.connection_label(0);
                 let session = if is_current {
@@ -741,10 +755,9 @@ impl PgSources {
                     Ok(session) => session,
                     Err(QueryFailure::Timeout | QueryFailure::Connection) => {
                         pool.close();
-                        self.invalidate_store_plans(&database);
-                        return Ok(());
+                        break 'query QueryCompletion::ConnectionFailed;
                     }
-                    Err(QueryFailure::Source) => return Ok(()),
+                    Err(QueryFailure::Source) => break 'query QueryCompletion::SourceFailed,
                 };
                 let mut measured = measure(observe, "pg_store_plans", &connection, &database);
                 let result = match capability.flavour {
@@ -754,6 +767,20 @@ impl PgSources {
                             &capability,
                             measured.stats_mut(),
                             |batch| admit(PgBatch::StorePlansOssc(batch.rows), settings.cloned()),
+                        )
+                        .await
+                    }
+                    Flavour::Datasentinel => {
+                        store_plans::collect_datasentinel(
+                            session,
+                            &capability,
+                            measured.stats_mut(),
+                            |batch| {
+                                admit(
+                                    PgBatch::StorePlansDatasentinel(batch.rows),
+                                    settings.cloned(),
+                                )
+                            },
                         )
                         .await
                     }
@@ -775,16 +802,16 @@ impl PgSources {
                     self.invalidate_store_plans(&database);
                 }
                 QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut => {
-                    self.invalidate_store_plans(&database);
-                    return Ok(());
+                    unavailable_database = Some(database.clone());
                 }
             }
-            if let Some(schema) = info {
+            if unavailable_database.as_deref() != Some(&database)
+                && let Some(schema) = info
+            {
                 let is_current = self.server_database.as_deref() == Some(&database);
-                let completion = {
+                let completion = 'query: {
                     let Some(pool) = self.database_pool_mut(&database) else {
-                        self.invalidate_store_plans(&database);
-                        return Ok(());
+                        break 'query QueryCompletion::ConnectionFailed;
                     };
                     let connection = pool.connection_label(0);
                     let session = if is_current {
@@ -796,10 +823,9 @@ impl PgSources {
                         Ok(session) => session,
                         Err(QueryFailure::Timeout | QueryFailure::Connection) => {
                             pool.close();
-                            self.invalidate_store_plans(&database);
-                            return Ok(());
+                            break 'query QueryCompletion::ConnectionFailed;
                         }
-                        Err(QueryFailure::Source) => return Ok(()),
+                        Err(QueryFailure::Source) => break 'query QueryCompletion::SourceFailed,
                     };
                     let mut measured =
                         measure(observe, "pg_store_plans_info", &connection, &database);
@@ -830,7 +856,9 @@ impl PgSources {
                     completion,
                     QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut
                 ) {
-                    self.invalidate_store_plans(&database);
+                    if let Some(pool) = self.database_pool_mut(&database) {
+                        pool.close();
+                    }
                 } else if completion == QueryCompletion::CapabilityChanged {
                     self.invalidate_store_plans(&database);
                 }
@@ -908,10 +936,11 @@ impl PgSources {
                     self.clear_primary_connection();
                     return;
                 }
-                Err(QueryFailure::Source | QueryFailure::Connection) => {
-                    self.discovered.clear();
-                    self.capabilities.clear();
-                    self.databases.clear();
+                Err(QueryFailure::Connection) => {
+                    self.clear_primary_connection();
+                    return;
+                }
+                Err(QueryFailure::Source) => {
                     return;
                 }
             }
@@ -926,7 +955,11 @@ impl PgSources {
 
         let mut capabilities = BTreeMap::new();
         for database in &found {
+            let previous = self.capabilities.get(&database.name).cloned();
             let Some(pool) = self.database_pool_mut(&database.name) else {
+                if let Some(previous) = previous {
+                    capabilities.insert(database.name.clone(), previous);
+                }
                 continue;
             };
             let connection = pool.connection_label(0);
@@ -939,9 +972,24 @@ impl PgSources {
                 Ok(session) => session,
                 Err(QueryFailure::Timeout) => {
                     pool.close();
+                    if let Some(previous) = previous {
+                        capabilities.insert(database.name.clone(), previous);
+                    }
                     continue;
                 }
-                Err(QueryFailure::Source | QueryFailure::Connection) => continue,
+                Err(QueryFailure::Connection) => {
+                    pool.close();
+                    if let Some(previous) = previous {
+                        capabilities.insert(database.name.clone(), previous);
+                    }
+                    continue;
+                }
+                Err(QueryFailure::Source) => {
+                    if let Some(previous) = previous {
+                        capabilities.insert(database.name.clone(), previous);
+                    }
+                    continue;
+                }
             };
             let mut measured = measure(observe, "extension_inventory", &connection, &database.name);
             let result = tokio::time::timeout(
@@ -956,8 +1004,17 @@ impl PgSources {
                         capabilities_from_inventory(&inventory),
                     );
                 }
-                Err(QueryFailure::Timeout) => pool.close(),
-                Err(QueryFailure::Source | QueryFailure::Connection) => {}
+                Err(QueryFailure::Timeout | QueryFailure::Connection) => {
+                    pool.close();
+                    if let Some(previous) = previous {
+                        capabilities.insert(database.name.clone(), previous);
+                    }
+                }
+                Err(QueryFailure::Source) => {
+                    if let Some(previous) = previous {
+                        capabilities.insert(database.name.clone(), previous);
+                    }
+                }
             }
         }
         self.discovered = found;
@@ -977,6 +1034,7 @@ impl PgSources {
             capability.statements = None;
             capability.statements_info = None;
         }
+        self.last_discovery = None;
     }
 
     fn invalidate_store_plans(&mut self, database: &str) {
@@ -984,6 +1042,7 @@ impl PgSources {
             capability.store_plans = None;
             capability.store_plans_info = None;
         }
+        self.last_discovery = None;
     }
 
     fn clear_primary_connection(&mut self) {
@@ -1397,6 +1456,7 @@ async fn collect_relation_database<E>(
         Err(QueryFailure::Connection) => return Ok(RelationResult::ConnectionFailed),
     };
     let generation = session.generation();
+    let mut source_failed = false;
     let table_version = user_tables::user_tables_version(major);
     let mut measured = measure(observe, "pg_stat_user_tables", &connection, &database.name);
     let result =
@@ -1409,9 +1469,7 @@ async fn collect_relation_database<E>(
         .await;
     match finish_batched_kind(pool, measured, result)? {
         QueryCompletion::Complete => {}
-        QueryCompletion::SourceFailed | QueryCompletion::CapabilityChanged => {
-            return Ok(RelationResult::SourceFailed);
-        }
+        QueryCompletion::SourceFailed | QueryCompletion::CapabilityChanged => source_failed = true,
         QueryCompletion::ConnectionFailed => return Ok(RelationResult::ConnectionFailed),
         QueryCompletion::TimedOut => return Ok(RelationResult::TimedOut),
     }
@@ -1438,6 +1496,7 @@ async fn collect_relation_database<E>(
     )
     .await;
     Ok(match finish_batched_kind(pool, measured, result)? {
+        QueryCompletion::Complete if source_failed => RelationResult::SourceFailed,
         QueryCompletion::Complete => RelationResult::Complete,
         QueryCompletion::SourceFailed | QueryCompletion::CapabilityChanged => {
             RelationResult::SourceFailed
@@ -1648,6 +1707,15 @@ fn postgres_stream_capability_changed(error: &tokio_postgres::Error) -> bool {
 }
 
 fn postgres_connection_error(error: &anyhow::Error) -> bool {
+    if error.chain().any(|cause| cause.is::<query::DecodeError>()) {
+        return false;
+    }
+    if let Some(stream) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<query::StreamError>())
+    {
+        return postgres_stream_connection_error(stream.postgres());
+    }
     error.chain().any(|cause| {
         cause
             .downcast_ref::<tokio_postgres::Error>()
@@ -1656,6 +1724,15 @@ fn postgres_connection_error(error: &anyhow::Error) -> bool {
 }
 
 fn postgres_capability_changed(error: &anyhow::Error) -> bool {
+    if error.chain().any(|cause| cause.is::<query::DecodeError>()) {
+        return false;
+    }
+    if let Some(stream) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<query::StreamError>())
+    {
+        return postgres_stream_capability_changed(stream.postgres());
+    }
     error.chain().any(|cause| {
         cause
             .downcast_ref::<tokio_postgres::Error>()

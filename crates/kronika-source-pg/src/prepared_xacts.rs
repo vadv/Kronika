@@ -90,12 +90,14 @@ pub async fn collect_prepared_xacts<E>(
         std::iter::empty::<(String, Type)>(),
         0,
         stats,
-        |row| PreparedXactsRow {
-            ts: row.get("ts_us"),
-            datname: row.get("datname"),
-            prepared_count: row.get("prepared_count"),
-            max_age_us: row.get("max_age_us"),
-            max_xid_age_tx: row.get("max_xid_age_tx"),
+        |row| {
+            Ok(PreparedXactsRow {
+                ts: row.try_get("ts_us")?,
+                datname: row.try_get("datname")?,
+                prepared_count: row.try_get("prepared_count")?,
+                max_age_us: row.try_get("max_age_us")?,
+                max_xid_age_tx: row.try_get("max_xid_age_tx")?,
+            })
         },
         sink,
     )

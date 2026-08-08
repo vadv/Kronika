@@ -1,6 +1,6 @@
 use super::{
-    Flavour, OsscRow, StorePlansCapability, VadvRow, capability, store_plans_query, to_ossc,
-    to_vadv,
+    DatasentinelRow, Flavour, OsscRow, StorePlansCapability, VadvRow, capability,
+    store_plans_query, to_datasentinel, to_ossc, to_vadv,
 };
 use crate::extension::{ExtensionSchema, InventoryEntry};
 use kronika_registry::StrId;
@@ -32,6 +32,7 @@ fn inventory(extversion: &str) -> InventoryEntry {
         store_plans_key_getter: false,
         store_plans_ossc_columns: false,
         store_plans_vadv_columns: false,
+        store_plans_datasentinel_columns: false,
         statements_info: false,
         store_plans_info: false,
     }
@@ -47,6 +48,13 @@ fn ossc_capability() -> StorePlansCapability {
 fn vadv_capability() -> StorePlansCapability {
     StorePlansCapability {
         flavour: Flavour::Vadv,
+        schema: ExtensionSchema::new("plans schema"),
+    }
+}
+
+fn datasentinel_capability() -> StorePlansCapability {
+    StorePlansCapability {
+        flavour: Flavour::Datasentinel,
         schema: ExtensionSchema::new("plans schema"),
     }
 }
@@ -129,14 +137,27 @@ fn vadv_row() -> VadvRow {
     }
 }
 
+fn datasentinel_row(calls: i64) -> DatasentinelRow {
+    let mut base = ossc_row();
+    base.calls = calls;
+    DatasentinelRow {
+        base,
+        relids: Some("{16384,16385}".to_owned()),
+        cmd_type: Some("SELECT".to_owned()),
+        first_call: (calls > 0).then_some(1_000),
+        last_call: (calls > 0).then_some(1_900),
+    }
+}
+
 #[test]
 fn exact_catalog_capabilities_not_extversion_select_the_interface() {
     let mut datasentinel = inventory("2.0");
     datasentinel.store_plans_zero_arg = true;
     datasentinel.store_plans_ossc_columns = true;
+    datasentinel.store_plans_datasentinel_columns = true;
     assert_eq!(
         capability(&datasentinel).map(|found| found.flavour),
-        Some(Flavour::OsscCompatible)
+        Some(Flavour::Datasentinel)
     );
 
     let mut ossc_1_9 = inventory("1.9");
@@ -170,9 +191,16 @@ fn an_incomplete_or_inaccessible_interface_is_not_selected() {
 #[test]
 fn each_interface_asks_only_for_the_columns_it_has() {
     let ossc = store_plans_query(&ossc_capability());
+    let datasentinel = store_plans_query(&datasentinel_capability());
     let vadv = store_plans_query(&vadv_capability());
     assert!(ossc.contains("s.shared_blk_read_time"), "{ossc}");
     assert!(!ossc.contains("slow_log_calls"), "{ossc}");
+    assert!(!ossc.contains("s.relids"), "{ossc}");
+    assert!(
+        datasentinel.contains("s.relids[1:48]::text"),
+        "{datasentinel}"
+    );
+    assert!(datasentinel.contains("s.cmd_type"), "{datasentinel}");
     assert!(vadv.contains("s.blk_read_time"), "{vadv}");
     assert!(vadv.contains("s.queryid_stat_statements"), "{vadv}");
     assert!(vadv.contains("slow_log_calls"), "{vadv}");
@@ -189,7 +217,11 @@ fn each_interface_asks_only_for_the_columns_it_has() {
 
 #[test]
 fn a_read_is_complete_schema_qualified_and_sorted_by_identity() {
-    for capability in [ossc_capability(), vadv_capability()] {
+    for capability in [
+        ossc_capability(),
+        datasentinel_capability(),
+        vadv_capability(),
+    ] {
         let sql = store_plans_query(&capability);
         assert!(sql.contains("kronika:"), "{sql}");
         assert!(
@@ -207,20 +239,20 @@ fn vadv_uses_one_query_and_the_exact_four_key_plan_getter() {
     assert!(sql.contains("\"pg_store_plans\"(false)"), "{sql}");
     assert!(
         sql.contains(
-            "\"pg_store_plans_get_plan\"(s.userid, s.dbid, s.queryid, s.planid) END AS plan"
+            "\"pg_store_plans_get_plan\"(s.userid, s.dbid, s.queryid, s.planid), 65536) AS plan"
         ),
         "{sql}"
     );
-    assert!(sql.contains("s.queryid IS NOT NULL"), "{sql}");
-    assert!(sql.contains("s.planid IS NOT NULL"), "{sql}");
     assert!(!sql.contains("pg_store_plans_get_plan($1)"), "{sql}");
 }
 
 #[test]
 fn ossc_and_datasentinel_use_the_proved_zero_argument_interface() {
-    let sql = store_plans_query(&ossc_capability());
-    assert!(sql.contains("\"pg_store_plans\"()"), "{sql}");
-    assert!(!sql.contains("pg_store_plans_get_plan"), "{sql}");
+    for capability in [ossc_capability(), datasentinel_capability()] {
+        let sql = store_plans_query(&capability);
+        assert!(sql.contains("\"pg_store_plans\"()"), "{sql}");
+        assert!(!sql.contains("pg_store_plans_get_plan"), "{sql}");
+    }
 }
 
 #[test]
@@ -233,6 +265,23 @@ fn to_ossc_maps_every_column() {
     assert_eq!(r.plan, Some(fake_intern(b"Seq Scan on orders").unwrap()));
     assert!((r.temp_blk_write_time - 0.4).abs() < f64::EPSILON);
     assert_eq!(r.last_call.0, 1_900);
+}
+
+#[test]
+fn to_datasentinel_keeps_its_extra_identity_and_in_flight_nulls() {
+    let completed = to_datasentinel(&datasentinel_row(1), fake_intern).expect("intern");
+    assert_eq!(
+        completed.relids,
+        Some(fake_intern(b"{16384,16385}").unwrap())
+    );
+    assert_eq!(completed.cmd_type, Some(fake_intern(b"SELECT").unwrap()));
+    assert_eq!(completed.first_call.map(|ts| ts.0), Some(1_000));
+    assert_eq!(completed.last_call.map(|ts| ts.0), Some(1_900));
+
+    let in_flight = to_datasentinel(&datasentinel_row(0), fake_intern).expect("intern");
+    assert_eq!(in_flight.calls, 0);
+    assert_eq!(in_flight.first_call, None);
+    assert_eq!(in_flight.last_call, None);
 }
 
 #[test]

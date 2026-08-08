@@ -77,6 +77,8 @@ impl FakePostgres {
                             Reply::Value(facts) => write_row(
                                 &mut stream,
                                 &[
+                                    ("user_name", Some("monitor".to_owned())),
+                                    ("database_name", Some("postgres".to_owned())),
                                     ("line_prefix", Some(facts.prefix.to_owned())),
                                     ("data_directory", Some("/unused".to_owned())),
                                     ("log_path", Some(facts.path)),

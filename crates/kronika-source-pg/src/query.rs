@@ -7,6 +7,7 @@
 
 use std::pin::pin;
 use std::time::{Duration, Instant};
+use std::{error::Error, fmt};
 
 use anyhow::{Context as _, Result};
 use futures_util::TryStreamExt as _;
@@ -146,6 +147,46 @@ pub enum BatchError<E> {
     Sink(E),
 }
 
+/// A typed row failed to decode after PostgreSQL returned it successfully.
+#[derive(Debug)]
+pub struct DecodeError(anyhow::Error);
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "decode a PostgreSQL result row: {:#}", self.0)
+    }
+}
+
+impl Error for DecodeError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
+/// A small-query stream failed at the transport, protocol, or server boundary.
+#[derive(Debug)]
+pub struct StreamError(tokio_postgres::Error);
+
+impl StreamError {
+    /// The underlying PostgreSQL error used for failure classification.
+    #[must_use]
+    pub const fn postgres(&self) -> &tokio_postgres::Error {
+        &self.0
+    }
+}
+
+impl fmt::Display for StreamError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl Error for StreamError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
 /// One live `PostgreSQL` connection and its generation.
 #[derive(Debug, Clone, Copy)]
 pub struct Session<'a> {
@@ -212,7 +253,7 @@ pub async fn read_all<P, I, T>(
     params: I,
     parameter_bytes: usize,
     stats: &mut QueryStats,
-    mut decode: impl FnMut(&Row) -> T,
+    mut decode: impl FnMut(&Row) -> Result<T>,
 ) -> Result<Vec<T>>
 where
     P: BorrowToSql,
@@ -220,12 +261,13 @@ where
 {
     let stream = session
         .typed_stream(sql, params, parameter_bytes, stats)
-        .await?;
+        .await
+        .map_err(StreamError)?;
     let mut stream = pin!(stream);
     let mut rows = Vec::new();
-    while let Some(row) = stream.try_next().await? {
+    while let Some(row) = stream.try_next().await.map_err(StreamError)? {
         stats.received(&row);
-        rows.push(decode(&row));
+        rows.push(decode(&row).map_err(DecodeError)?);
     }
     Ok(rows)
 }
@@ -242,7 +284,7 @@ pub async fn read_one<P, I, T>(
     params: I,
     parameter_bytes: usize,
     stats: &mut QueryStats,
-    decode: impl FnMut(&Row) -> T,
+    decode: impl FnMut(&Row) -> Result<T>,
 ) -> Result<T>
 where
     P: BorrowToSql,
@@ -269,7 +311,7 @@ pub async fn read_optional<P, I, T>(
     params: I,
     parameter_bytes: usize,
     stats: &mut QueryStats,
-    decode: impl FnMut(&Row) -> T,
+    decode: impl FnMut(&Row) -> Result<T>,
 ) -> Result<Option<T>>
 where
     P: BorrowToSql,
@@ -289,39 +331,10 @@ where
 /// # Errors
 ///
 /// Returns [`BatchError::Timeout`] when the cumulative query/fetch deadline
-/// elapses, [`BatchError::PostgreSql`] for a stream failure, and
-/// [`BatchError::Sink`] when the synchronous sink rejects a retained batch.
+/// elapses, [`BatchError::PostgreSql`] for a stream failure,
+/// [`BatchError::Decode`] for a row-shape mismatch, and [`BatchError::Sink`]
+/// when the synchronous sink rejects a retained batch.
 pub async fn read_batched<P, I, T, E>(
-    session: Session<'_>,
-    sql: &str,
-    params: I,
-    parameter_bytes: usize,
-    stats: &mut QueryStats,
-    mut decode: impl FnMut(&Row) -> T,
-    sink: impl FnMut(Batch<T>) -> Result<BatchWrite, E>,
-) -> Result<(), BatchError<E>>
-where
-    P: BorrowToSql,
-    I: IntoIterator<Item = (P, Type)>,
-{
-    read_batched_inner(
-        session,
-        sql,
-        params,
-        parameter_bytes,
-        stats,
-        |row| Ok(decode(row)),
-        sink,
-    )
-    .await
-}
-
-/// Decode and deliver bounded batches with a fallible row decoder.
-///
-/// # Errors
-///
-/// Returns the same errors as [`read_batched`] plus [`BatchError::Decode`].
-pub async fn read_batched_fallible<P, I, T, E>(
     session: Session<'_>,
     sql: &str,
     params: I,
@@ -457,10 +470,13 @@ pub async fn read_simple_i32(
     sql: &str,
     stats: &mut QueryStats,
 ) -> Result<i32> {
-    let stream = session.simple_stream(sql, stats).await?;
+    let stream = session
+        .simple_stream(sql, stats)
+        .await
+        .map_err(StreamError)?;
     let mut stream = pin!(stream);
     let mut value = None;
-    while let Some(message) = stream.try_next().await? {
+    while let Some(message) = stream.try_next().await.map_err(StreamError)? {
         if let SimpleQueryMessage::Row(row) = message {
             anyhow::ensure!(value.is_none(), "PostgreSQL returned more than one row");
             let text = row.get(0).context("the scalar column was NULL")?;
@@ -488,13 +504,16 @@ pub async fn read_simple_rows<T>(
     stats: &mut QueryStats,
     mut decode: impl FnMut(&tokio_postgres::SimpleQueryRow) -> Result<T>,
 ) -> Result<Vec<T>> {
-    let stream = session.simple_stream(sql, stats).await?;
+    let stream = session
+        .simple_stream(sql, stats)
+        .await
+        .map_err(StreamError)?;
     let mut stream = pin!(stream);
     let mut rows = Vec::new();
-    while let Some(message) = stream.try_next().await? {
+    while let Some(message) = stream.try_next().await.map_err(StreamError)? {
         stats.received_simple(&message);
         if let SimpleQueryMessage::Row(row) = message {
-            rows.push(decode(&row)?);
+            rows.push(decode(&row).map_err(DecodeError)?);
         }
     }
     Ok(rows)
@@ -696,7 +715,7 @@ mod tests {
             std::iter::empty::<(String, tokio_postgres::types::Type)>(),
             0,
             &mut stats,
-            |_row| (),
+            |_row| Ok(()),
             |_batch| Ok::<BatchWrite, ()>(BatchWrite::default()),
         )
         .await;

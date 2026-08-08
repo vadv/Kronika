@@ -36,6 +36,7 @@ fn inventory(extversion: &str, reader: bool) -> InventoryEntry {
         store_plans_key_getter: false,
         store_plans_ossc_columns: false,
         store_plans_vadv_columns: false,
+        store_plans_datasentinel_columns: false,
         statements_info: false,
         store_plans_info: false,
     }

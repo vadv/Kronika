@@ -49,6 +49,7 @@ Feature: What a PostgreSQL server reports reaches the segment
       | 1013002 | schemaname    | public         |
       | 1014001 | indexrelname  | bdd_orders_pkey |
       | 1014001 | amname        | btree          |
+    And the shutdown PostgreSQL query summary reports traffic
 
   Scenario: Without a configured server no PostgreSQL section is written
     Given a collector with these settings

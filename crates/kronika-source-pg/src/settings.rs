@@ -77,19 +77,21 @@ pub async fn collect(session: Session<'_>, stats: &mut QueryStats) -> Result<Vec
         std::iter::empty::<(String, Type)>(),
         0,
         stats,
-        |row| SettingsRow {
-            ts: row.get("ts_us"),
-            name: row.get("name"),
-            setting: row.get("setting"),
-            unit: row.get("unit"),
-            source: row.get("source"),
-            sourcefile: row.get("sourcefile"),
-            sourceline: row.get("sourceline"),
-            pending_restart: row.get("pending_restart"),
-            context: row.get("context"),
-            vartype: row.get("vartype"),
-            boot_val: row.get("boot_val"),
-            reset_val: row.get("reset_val"),
+        |row| {
+            Ok(SettingsRow {
+                ts: row.try_get("ts_us")?,
+                name: row.try_get("name")?,
+                setting: row.try_get("setting")?,
+                unit: row.try_get("unit")?,
+                source: row.try_get("source")?,
+                sourcefile: row.try_get("sourcefile")?,
+                sourceline: row.try_get("sourceline")?,
+                pending_restart: row.try_get("pending_restart")?,
+                context: row.try_get("context")?,
+                vartype: row.try_get("vartype")?,
+                boot_val: row.try_get("boot_val")?,
+                reset_val: row.try_get("reset_val")?,
+            })
         },
     )
     .await

@@ -63,6 +63,7 @@ impl Error for ConnectError {
 pub struct Pool {
     config: Config,
     resolved_user: Option<String>,
+    resolved_database: Option<String>,
     open: Option<Open>,
     next_generation: u64,
 }
@@ -93,6 +94,7 @@ impl Pool {
         Self {
             config,
             resolved_user: None,
+            resolved_database: None,
             open: None,
             next_generation: 1,
         }
@@ -106,6 +108,7 @@ impl Pool {
         Self {
             config,
             resolved_user: self.resolved_user.clone(),
+            resolved_database: Some(dbname.to_owned()),
             open: None,
             next_generation: 1,
         }
@@ -114,7 +117,10 @@ impl Pool {
     /// Safe database label used by per-query logs.
     #[must_use]
     pub fn database_label(&self) -> &str {
-        self.config.get_dbname().unwrap_or("server-default")
+        self.resolved_database
+            .as_deref()
+            .or(self.config.get_dbname())
+            .unwrap_or("server-default")
     }
 
     /// Safe endpoint label with the configured user, or a source placeholder.
@@ -127,9 +133,10 @@ impl Pool {
         )
     }
 
-    /// Use the login role reported by the server for later safe labels.
-    pub fn remember_resolved_user(&mut self, user: &str) {
+    /// Use the login role and database reported by the server for later logs.
+    pub fn remember_resolved_identity(&mut self, user: &str, database: &str) {
         self.resolved_user = Some(user.to_owned());
+        self.resolved_database = Some(database.to_owned());
     }
 
     /// Return the healthy current session, connecting when necessary.

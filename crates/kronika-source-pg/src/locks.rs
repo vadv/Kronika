@@ -294,7 +294,7 @@ pub async fn collect_locks<E>(
 ) -> Result<(), BatchError<E>> {
     let version = locks_version(major);
     let sql = locks_query(version);
-    query::read_batched_fallible(
+    query::read_batched(
         session,
         &sql,
         std::iter::empty::<(String, Type)>(),

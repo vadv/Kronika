@@ -654,85 +654,111 @@ pub fn to_v1<E>(
 fn row_from_pg(
     row: &tokio_postgres::Row,
     version: StatementsVersion,
-    queryid: i64,
-) -> StatementsRow {
+) -> anyhow::Result<StatementsRow> {
     let planning = since_v2(version);
     let jit = since_v4(version);
     let renamed = since_v5(version);
-    StatementsRow {
-        ts: row.get("ts_us"),
-        queryid: Some(queryid),
-        userid: row.get("userid"),
-        dbid: row.get("dbid"),
-        toplevel: since_v3(version).then(|| row.get("toplevel")),
-        datname: row.get("datname"),
-        usename: row.get("usename"),
-        query: row.get("query"),
-        calls: row.get("calls"),
-        rows: row.get("rows"),
-        plans: planning.then(|| row.get("plans")),
-        total_exec_time: row.get("total_exec_time"),
-        total_plan_time: planning.then(|| row.get("total_plan_time")),
-        min_exec_time: row.get("min_exec_time"),
-        max_exec_time: row.get("max_exec_time"),
-        mean_exec_time: row.get("mean_exec_time"),
-        stddev_exec_time: row.get("stddev_exec_time"),
-        min_plan_time: planning.then(|| row.get("min_plan_time")),
-        max_plan_time: planning.then(|| row.get("max_plan_time")),
-        mean_plan_time: planning.then(|| row.get("mean_plan_time")),
-        stddev_plan_time: planning.then(|| row.get("stddev_plan_time")),
-        shared_blks_hit: row.get("shared_blks_hit"),
-        shared_blks_read: row.get("shared_blks_read"),
-        shared_blks_dirtied: row.get("shared_blks_dirtied"),
-        shared_blks_written: row.get("shared_blks_written"),
-        local_blks_hit: row.get("local_blks_hit"),
-        local_blks_read: row.get("local_blks_read"),
-        local_blks_dirtied: row.get("local_blks_dirtied"),
-        local_blks_written: row.get("local_blks_written"),
-        temp_blks_read: row.get("temp_blks_read"),
-        temp_blks_written: row.get("temp_blks_written"),
-        shared_blk_read_time: row.get("shared_blk_read_time"),
-        shared_blk_write_time: row.get("shared_blk_write_time"),
-        local_blk_read_time: renamed.then(|| row.get("local_blk_read_time")),
-        local_blk_write_time: renamed.then(|| row.get("local_blk_write_time")),
-        temp_blk_read_time: jit.then(|| row.get("temp_blk_read_time")),
-        temp_blk_write_time: jit.then(|| row.get("temp_blk_write_time")),
-        wal_records: planning.then(|| row.get("wal_records")),
-        wal_fpi: planning.then(|| row.get("wal_fpi")),
-        wal_bytes: planning.then(|| row.get("wal_bytes")),
+    Ok(StatementsRow {
+        ts: row.try_get("ts_us")?,
+        queryid: Some(row.try_get("queryid")?),
+        userid: row.try_get("userid")?,
+        dbid: row.try_get("dbid")?,
+        toplevel: since_v3(version)
+            .then(|| row.try_get("toplevel"))
+            .transpose()?,
+        datname: row.try_get("datname")?,
+        usename: row.try_get("usename")?,
+        query: row.try_get("query")?,
+        calls: row.try_get("calls")?,
+        rows: row.try_get("rows")?,
+        plans: planning.then(|| row.try_get("plans")).transpose()?,
+        total_exec_time: row.try_get("total_exec_time")?,
+        total_plan_time: planning
+            .then(|| row.try_get("total_plan_time"))
+            .transpose()?,
+        min_exec_time: row.try_get("min_exec_time")?,
+        max_exec_time: row.try_get("max_exec_time")?,
+        mean_exec_time: row.try_get("mean_exec_time")?,
+        stddev_exec_time: row.try_get("stddev_exec_time")?,
+        min_plan_time: planning.then(|| row.try_get("min_plan_time")).transpose()?,
+        max_plan_time: planning.then(|| row.try_get("max_plan_time")).transpose()?,
+        mean_plan_time: planning
+            .then(|| row.try_get("mean_plan_time"))
+            .transpose()?,
+        stddev_plan_time: planning
+            .then(|| row.try_get("stddev_plan_time"))
+            .transpose()?,
+        shared_blks_hit: row.try_get("shared_blks_hit")?,
+        shared_blks_read: row.try_get("shared_blks_read")?,
+        shared_blks_dirtied: row.try_get("shared_blks_dirtied")?,
+        shared_blks_written: row.try_get("shared_blks_written")?,
+        local_blks_hit: row.try_get("local_blks_hit")?,
+        local_blks_read: row.try_get("local_blks_read")?,
+        local_blks_dirtied: row.try_get("local_blks_dirtied")?,
+        local_blks_written: row.try_get("local_blks_written")?,
+        temp_blks_read: row.try_get("temp_blks_read")?,
+        temp_blks_written: row.try_get("temp_blks_written")?,
+        shared_blk_read_time: row.try_get("shared_blk_read_time")?,
+        shared_blk_write_time: row.try_get("shared_blk_write_time")?,
+        local_blk_read_time: renamed
+            .then(|| row.try_get("local_blk_read_time"))
+            .transpose()?,
+        local_blk_write_time: renamed
+            .then(|| row.try_get("local_blk_write_time"))
+            .transpose()?,
+        temp_blk_read_time: jit.then(|| row.try_get("temp_blk_read_time")).transpose()?,
+        temp_blk_write_time: jit
+            .then(|| row.try_get("temp_blk_write_time"))
+            .transpose()?,
+        wal_records: planning.then(|| row.try_get("wal_records")).transpose()?,
+        wal_fpi: planning.then(|| row.try_get("wal_fpi")).transpose()?,
+        wal_bytes: planning.then(|| row.try_get("wal_bytes")).transpose()?,
         wal_buffers_full: matches!(version, StatementsVersion::V6)
-            .then(|| row.get("wal_buffers_full")),
-        jit_functions: jit.then(|| row.get("jit_functions")),
-        jit_generation_time: jit.then(|| row.get("jit_generation_time")),
-        jit_inlining_count: jit.then(|| row.get("jit_inlining_count")),
-        jit_inlining_time: jit.then(|| row.get("jit_inlining_time")),
-        jit_optimization_count: jit.then(|| row.get("jit_optimization_count")),
-        jit_optimization_time: jit.then(|| row.get("jit_optimization_time")),
-        jit_emission_count: jit.then(|| row.get("jit_emission_count")),
-        jit_emission_time: jit.then(|| row.get("jit_emission_time")),
-        jit_deform_count: renamed.then(|| row.get("jit_deform_count")),
-        jit_deform_time: renamed.then(|| row.get("jit_deform_time")),
+            .then(|| row.try_get("wal_buffers_full"))
+            .transpose()?,
+        jit_functions: jit.then(|| row.try_get("jit_functions")).transpose()?,
+        jit_generation_time: jit
+            .then(|| row.try_get("jit_generation_time"))
+            .transpose()?,
+        jit_inlining_count: jit.then(|| row.try_get("jit_inlining_count")).transpose()?,
+        jit_inlining_time: jit.then(|| row.try_get("jit_inlining_time")).transpose()?,
+        jit_optimization_count: jit
+            .then(|| row.try_get("jit_optimization_count"))
+            .transpose()?,
+        jit_optimization_time: jit
+            .then(|| row.try_get("jit_optimization_time"))
+            .transpose()?,
+        jit_emission_count: jit.then(|| row.try_get("jit_emission_count")).transpose()?,
+        jit_emission_time: jit.then(|| row.try_get("jit_emission_time")).transpose()?,
+        jit_deform_count: renamed
+            .then(|| row.try_get("jit_deform_count"))
+            .transpose()?,
+        jit_deform_time: renamed
+            .then(|| row.try_get("jit_deform_time"))
+            .transpose()?,
         parallel_workers_to_launch: matches!(version, StatementsVersion::V6)
-            .then(|| row.get("parallel_workers_to_launch")),
+            .then(|| row.try_get("parallel_workers_to_launch"))
+            .transpose()?,
         parallel_workers_launched: matches!(version, StatementsVersion::V6)
-            .then(|| row.get("parallel_workers_launched")),
+            .then(|| row.try_get("parallel_workers_launched"))
+            .transpose()?,
         stats_since: if renamed {
-            row.get("stats_since_us")
+            row.try_get("stats_since_us")?
         } else {
             None
         },
         minmax_stats_since: if renamed {
-            row.get("minmax_stats_since_us")
+            row.try_get("minmax_stats_since_us")?
         } else {
             None
         },
-    }
+    })
 }
 
 /// Collect every visible statement the extension is holding counters for.
 ///
 /// # Errors
-/// Returns the [`tokio_postgres::Error`] if the query fails.
+/// Returns a [`BatchError`] when the query, row decoding, or batch sink fails.
 pub async fn collect_statements<E>(
     session: Session<'_>,
     capability: &StatementsCapability,
@@ -746,7 +772,7 @@ pub async fn collect_statements<E>(
         std::iter::empty::<(String, Type)>(),
         0,
         stats,
-        |row| row_from_pg(row, version, row.get("queryid")),
+        |row| row_from_pg(row, version),
         sink,
     )
     .await

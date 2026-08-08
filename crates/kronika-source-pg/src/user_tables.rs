@@ -489,71 +489,79 @@ fn row_from_pg(
     row: &tokio_postgres::Row,
     database: &Database,
     version: UserTablesVersion,
-) -> UserTablesRow {
-    UserTablesRow {
-        ts: row.get("ts_us"),
+) -> anyhow::Result<UserTablesRow> {
+    Ok(UserTablesRow {
+        ts: row.try_get("ts_us")?,
         datid: database.oid,
         datname: database.name.clone(),
-        relid: row.get("relid"),
-        schemaname: row.get("schemaname"),
-        relname: row.get("relname"),
-        tablespace: row.get("tablespace"),
-        seq_scan: row.get("seq_scan"),
-        seq_tup_read: row.get("seq_tup_read"),
-        idx_scan: row.get("idx_scan"),
-        idx_tup_fetch: row.get("idx_tup_fetch"),
-        n_tup_ins: row.get("n_tup_ins"),
-        n_tup_upd: row.get("n_tup_upd"),
-        n_tup_del: row.get("n_tup_del"),
-        n_tup_hot_upd: row.get("n_tup_hot_upd"),
-        n_tup_newpage_upd: since_v3(version).then(|| row.get("n_tup_newpage_upd")),
-        n_live_tup: row.get("n_live_tup"),
-        n_dead_tup: row.get("n_dead_tup"),
-        n_mod_since_analyze: row.get("n_mod_since_analyze"),
-        n_ins_since_vacuum: since_v2(version).then(|| row.get("n_ins_since_vacuum")),
-        vacuum_count: row.get("vacuum_count"),
-        autovacuum_count: row.get("autovacuum_count"),
-        analyze_count: row.get("analyze_count"),
-        autoanalyze_count: row.get("autoanalyze_count"),
-        last_vacuum: row.get("last_vacuum_us"),
-        last_autovacuum: row.get("last_autovacuum_us"),
-        last_analyze: row.get("last_analyze_us"),
-        last_autoanalyze: row.get("last_autoanalyze_us"),
+        relid: row.try_get("relid")?,
+        schemaname: row.try_get("schemaname")?,
+        relname: row.try_get("relname")?,
+        tablespace: row.try_get("tablespace")?,
+        seq_scan: row.try_get("seq_scan")?,
+        seq_tup_read: row.try_get("seq_tup_read")?,
+        idx_scan: row.try_get("idx_scan")?,
+        idx_tup_fetch: row.try_get("idx_tup_fetch")?,
+        n_tup_ins: row.try_get("n_tup_ins")?,
+        n_tup_upd: row.try_get("n_tup_upd")?,
+        n_tup_del: row.try_get("n_tup_del")?,
+        n_tup_hot_upd: row.try_get("n_tup_hot_upd")?,
+        n_tup_newpage_upd: since_v3(version)
+            .then(|| row.try_get("n_tup_newpage_upd"))
+            .transpose()?,
+        n_live_tup: row.try_get("n_live_tup")?,
+        n_dead_tup: row.try_get("n_dead_tup")?,
+        n_mod_since_analyze: row.try_get("n_mod_since_analyze")?,
+        n_ins_since_vacuum: since_v2(version)
+            .then(|| row.try_get("n_ins_since_vacuum"))
+            .transpose()?,
+        vacuum_count: row.try_get("vacuum_count")?,
+        autovacuum_count: row.try_get("autovacuum_count")?,
+        analyze_count: row.try_get("analyze_count")?,
+        autoanalyze_count: row.try_get("autoanalyze_count")?,
+        last_vacuum: row.try_get("last_vacuum_us")?,
+        last_autovacuum: row.try_get("last_autovacuum_us")?,
+        last_analyze: row.try_get("last_analyze_us")?,
+        last_autoanalyze: row.try_get("last_autoanalyze_us")?,
         last_seq_scan: if since_v3(version) {
-            row.get("last_seq_scan_us")
+            row.try_get("last_seq_scan_us")?
         } else {
             None
         },
         last_idx_scan: if since_v3(version) {
-            row.get("last_idx_scan_us")
+            row.try_get("last_idx_scan_us")?
         } else {
             None
         },
         total_vacuum_time: matches!(version, UserTablesVersion::V4)
-            .then(|| row.get("total_vacuum_time")),
+            .then(|| row.try_get("total_vacuum_time"))
+            .transpose()?,
         total_autovacuum_time: matches!(version, UserTablesVersion::V4)
-            .then(|| row.get("total_autovacuum_time")),
+            .then(|| row.try_get("total_autovacuum_time"))
+            .transpose()?,
         total_analyze_time: matches!(version, UserTablesVersion::V4)
-            .then(|| row.get("total_analyze_time")),
+            .then(|| row.try_get("total_analyze_time"))
+            .transpose()?,
         total_autoanalyze_time: matches!(version, UserTablesVersion::V4)
-            .then(|| row.get("total_autoanalyze_time")),
-        main_fork_bytes: row.get("main_fork_bytes"),
-        toast_bytes: row.get("toast_bytes"),
-        toast_n_live_tup: row.get("toast_n_live_tup"),
-        toast_n_dead_tup: row.get("toast_n_dead_tup"),
-        toast_last_autovacuum: row.get("toast_last_autovacuum_us"),
-        xid_age: row.get("xid_age"),
-        mxid_age: row.get("mxid_age"),
-        reltuples: row.get("reltuples"),
-        heap_blks_read: row.get("heap_blks_read"),
-        heap_blks_hit: row.get("heap_blks_hit"),
-        idx_blks_read: row.get("idx_blks_read"),
-        idx_blks_hit: row.get("idx_blks_hit"),
-        toast_blks_read: row.get("toast_blks_read"),
-        toast_blks_hit: row.get("toast_blks_hit"),
-        tidx_blks_read: row.get("tidx_blks_read"),
-        tidx_blks_hit: row.get("tidx_blks_hit"),
-    }
+            .then(|| row.try_get("total_autoanalyze_time"))
+            .transpose()?,
+        main_fork_bytes: row.try_get("main_fork_bytes")?,
+        toast_bytes: row.try_get("toast_bytes")?,
+        toast_n_live_tup: row.try_get("toast_n_live_tup")?,
+        toast_n_dead_tup: row.try_get("toast_n_dead_tup")?,
+        toast_last_autovacuum: row.try_get("toast_last_autovacuum_us")?,
+        xid_age: row.try_get("xid_age")?,
+        mxid_age: row.try_get("mxid_age")?,
+        reltuples: row.try_get("reltuples")?,
+        heap_blks_read: row.try_get("heap_blks_read")?,
+        heap_blks_hit: row.try_get("heap_blks_hit")?,
+        idx_blks_read: row.try_get("idx_blks_read")?,
+        idx_blks_hit: row.try_get("idx_blks_hit")?,
+        toast_blks_read: row.try_get("toast_blks_read")?,
+        toast_blks_hit: row.try_get("toast_blks_hit")?,
+        tidx_blks_read: row.try_get("tidx_blks_read")?,
+        tidx_blks_hit: row.try_get("tidx_blks_hit")?,
+    })
 }
 
 /// Collect every table of the database `client` is attached to.
