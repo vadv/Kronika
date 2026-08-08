@@ -223,6 +223,30 @@ change in the interface.
 Requests carry HTTP basic authentication. Other schemes come later, and the
 check sits in one place so that adding one does not touch the handlers.
 
+### Browser caching
+
+Web retains no in-memory segment or index cache between requests. A finished
+segment is immutable, and web serves one deterministic HTTP representation per
+finished segment with `Cache-Control: private, immutable`. The browser stores
+that representation as immutable in its private cache.
+
+Each finished per-segment index has one stable URL. Web serves its response with
+`Cache-Control: private`; the browser stores it and uses ordinary `ETag`
+revalidation because the index is derived from the segment and may be rebuilt.
+An unchanged index returns `304 Not Modified` with no body; rebuilt content has
+a different `ETag`. Because requests use the HTTP `Basic` authentication
+scheme, public and shared caches must not store either response.
+
+The active WAL is append-only. Browser-held active rows and index points
+refresh against the current active cursor; web does not persist an `active.idx`
+or rewrite one for each snapshot. When the same `SegmentId` moves from active to
+finished, its finished data and index are canonical, and the browser does not
+duplicate rows.
+
+Browser caching is only an optimization. If the browser evicts a response or
+ignores cache headers, web performs a normal reread; correctness does not
+change.
+
 ### Standby
 
 Web is not a resident service. Between requests it holds nothing: buffers,
