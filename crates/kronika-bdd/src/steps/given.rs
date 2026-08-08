@@ -3,6 +3,7 @@
 use super::table_rows;
 use crate::BddWorld;
 use crate::collector::{Run, copy_tree};
+use crate::services::{PgBouncer, Postgres};
 use anyhow::{Context as _, Result};
 use cucumber::gherkin::Step;
 use cucumber::given;
@@ -59,5 +60,30 @@ fn prepared_corrupt_journal(world: &mut BddWorld, trailer: String) -> Result<()>
     bytes.extend_from_slice(trailer.as_bytes());
     std::fs::write(out_dir.join("active.wal"), bytes).context("write the damaged journal")?;
     world.prepared_root = Some(root);
+    Ok(())
+}
+
+#[given(regex = r"^a PostgreSQL writing its log as (\S+)$")]
+fn postgres_writing_its_log(world: &mut BddWorld, destination: String) -> Result<()> {
+    let postgres = Postgres::start(&destination)?;
+    world.env.push((
+        "KRONIKA_PG_LOG".to_owned(),
+        postgres.log_path.to_string_lossy().into_owned(),
+    ));
+    world
+        .env
+        .push(("KRONIKA_PG_DSN".to_owned(), postgres.dsn.clone()));
+    world.postgres = Some(postgres);
+    Ok(())
+}
+
+#[given("a PgBouncer in front of it")]
+fn pgbouncer_in_front(world: &mut BddWorld) -> Result<()> {
+    let pgbouncer = PgBouncer::start()?;
+    world.env.push((
+        "KRONIKA_PGBOUNCER_LOG".to_owned(),
+        pgbouncer.log_path.to_string_lossy().into_owned(),
+    ));
+    world.pgbouncer = Some(pgbouncer);
     Ok(())
 }

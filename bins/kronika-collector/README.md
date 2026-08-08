@@ -43,6 +43,20 @@ source interval of `0` reads on every timer cycle.
 | `KRONIKA_OS_PROCESS_STATUS_INTERVAL_S` | 30 | `1_101`. |
 | `KRONIKA_OS_CGROUP_INTERVAL_S` | 10 | `1_201`–`1_204`. |
 | `KRONIKA_OS_CGROUP_MAPPING_INTERVAL_S` | 30 | `1_200`. |
+| `KRONIKA_LOG_INTERVAL_S` | 10 | `2_001`–`2_007`, `2_100`. |
+
+### Which logs to follow
+
+No log is followed unless its path is given. A log file's size is set by
+someone else's software, so it is read through a fixed buffer and never held
+whole; a file that grows faster than the collector reads it is read at 4 MiB
+per tick until it catches up.
+
+| Variable | Default | Meaning |
+| --- | ---: | --- |
+| `KRONIKA_PG_LOG` | unset | The `PostgreSQL` log to follow. The file name decides the format: `.csv` is `csvlog`, `.json` is `jsonlog`, anything else is `stderr`. |
+| `KRONIKA_PGBOUNCER_LOG` | unset | The `PgBouncer` log to follow. `PgBouncer` writes to a file only when `logfile` is set in `pgbouncer.ini`. |
+| `KRONIKA_PG_DSN` | unset | How to reach `PostgreSQL` to read `log_line_prefix`. Only a `stderr` log needs it, and only for the database and user of a record. |
 
 ### Other settings
 

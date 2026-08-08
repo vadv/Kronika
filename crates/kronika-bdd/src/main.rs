@@ -28,6 +28,7 @@
 
 mod collector;
 mod segment;
+mod services;
 mod steps;
 
 use collector::Run;
@@ -41,12 +42,18 @@ struct BddWorld {
     fixture: Option<tempfile::TempDir>,
     prepared_root: Option<tempfile::TempDir>,
     run: Option<Run>,
+    postgres: Option<services::Postgres>,
+    pgbouncer: Option<services::PgBouncer>,
 }
 
 #[tokio::main]
 async fn main() {
     let features = std::env::var("KRONIKA_FEATURES").unwrap_or_else(|_unset| "features".to_owned());
+    // One at a time: the log scenarios start a real PostgreSQL and a real
+    // PgBouncer on fixed ports and data directories, and two of those at once
+    // are two scenarios wiping each other's server.
     BddWorld::cucumber()
+        .max_concurrent_scenarios(1)
         .fail_on_skipped()
         .run_and_exit(features)
         .await;

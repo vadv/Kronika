@@ -5,6 +5,10 @@
 //! peak resident set and CPU time. Every later stage of the project extends
 //! the same run.
 //!
+//! The report names every section the run produced and how many rows of it
+//! reached a segment, so pointing `KRONIKA_PG_LOG` or `KRONIKA_PGBOUNCER_LOG`
+//! at a live log shows those events in the same summary.
+//!
 //! Environment: `KRONIKA_DEMO_DIR` (default `demo-data`),
 //! `KRONIKA_DEMO_DURATION_S` (default `60`), `KRONIKA_COLLECTOR_BIN` (default
 //! `kronika-collector` next to this binary). Any `KRONIKA_*` variable the
@@ -12,6 +16,7 @@
 
 mod report;
 mod sample;
+mod sections;
 
 use anyhow::{Context, Result};
 use nix::sys::signal::{Signal, kill};
@@ -148,6 +153,7 @@ fn main() -> Result<()> {
         journal_bytes,
         peak_rss_bytes,
         cpu_ms: cpu_ticks.saturating_mul(1_000) / clock_ticks.max(1),
+        sections: sections::section_rows(&segments)?,
     };
     print!("{}", report.render());
     let report_path = root.join("report.json");

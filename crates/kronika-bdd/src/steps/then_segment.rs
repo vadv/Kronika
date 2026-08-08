@@ -275,3 +275,73 @@ fn peak_rss(world: &mut BddWorld, limit_mb: u64) -> Result<()> {
     );
     Ok(())
 }
+
+#[then("some segment records these log events")]
+fn log_events_recorded(world: &mut BddWorld, step: &Step) -> Result<()> {
+    let wanted = table_rows(step, &["type_id", "column", "value"])?;
+    let segments = segments(world)?;
+    for expected in &wanted {
+        let [id, column, value] = expected.as_slice() else {
+            anyhow::bail!(
+                "a log-event row needs a type_id, a column and a value, got {expected:?}"
+            );
+        };
+        let id = type_id(id)?;
+        anyhow::ensure!(
+            segments
+                .iter()
+                .any(|segment| holds_value(segment, id, column, value).unwrap_or(false)),
+            "none of the {} segments records {column}={value} in {id}",
+            segments.len()
+        );
+    }
+    Ok(())
+}
+
+#[then("some segment records these log events exactly once")]
+fn log_events_recorded_once(world: &mut BddWorld, step: &Step) -> Result<()> {
+    let wanted = table_rows(step, &["type_id", "column", "value"])?;
+    let segments = segments(world)?;
+    for expected in &wanted {
+        let [id, column, value] = expected.as_slice() else {
+            anyhow::bail!(
+                "a log-event row needs a type_id, a column and a value, got {expected:?}"
+            );
+        };
+        let id = type_id(id)?;
+        let mut seen = 0_usize;
+        for segment in &segments {
+            seen += matching_rows(segment, id, column, value)?;
+        }
+        anyhow::ensure!(
+            seen == 1,
+            "{id} records {column}={value} {seen} times across {} segments, not once",
+            segments.len()
+        );
+    }
+    Ok(())
+}
+
+/// How many rows of `type_id` carry `value` in `column`.
+///
+/// A dictionary column is compared against the text the segment interned, not
+/// against the id it was interned under.
+fn matching_rows(segment: &Segment, type_id: u32, column: &str, value: &str) -> Result<usize> {
+    let strings = segment.strings()?;
+    let render_cell = |cell: &Cell| match cell {
+        Cell::StrId(id) => strings.get(id).cloned().unwrap_or_else(|| render(cell)),
+        other => render(other),
+    };
+    Ok(segment
+        .decode(type_id)?
+        .iter()
+        .filter(|row| {
+            row.get(column)
+                .is_some_and(|cell| render_cell(cell) == value)
+        })
+        .count())
+}
+
+fn holds_value(segment: &Segment, type_id: u32, column: &str, value: &str) -> Result<bool> {
+    matching_rows(segment, type_id, column, value).map(|rows| rows > 0)
+}

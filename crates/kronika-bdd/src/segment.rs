@@ -5,8 +5,11 @@
 //! `kronika-store`: a scenario asserts on the file the collector wrote.
 
 use anyhow::{Context, Result, bail};
+use arrow_array::{Array as _, BinaryArray, UInt64Array};
 use kronika_format::{Catalog, TAIL_INDEX_LEN, TailIndex, crc32c};
-use kronika_registry::{Bytes, Row, VerifiedSection, decode_rows};
+use kronika_registry::{Bytes, DICT_STRINGS_TYPE_ID, Row, VerifiedSection, decode_rows};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// One finished segment, held in memory.
@@ -52,6 +55,46 @@ impl Segment {
             .iter()
             .find(|entry| entry.type_id == type_id)
             .map(|entry| entry.rows)
+    }
+
+    /// The segment's string dictionary, so a scenario can assert on the text
+    /// of an event rather than on the id it was interned under.
+    pub(crate) fn strings(&self) -> Result<HashMap<u64, String>> {
+        let Some(body) = self.section_body(DICT_STRINGS_TYPE_ID) else {
+            return Ok(HashMap::new());
+        };
+        let reader = ParquetRecordBatchReaderBuilder::try_new(body)
+            .context("open the string dictionary")?
+            .build()
+            .context("read the string dictionary")?;
+        let mut strings = HashMap::new();
+        for batch in reader {
+            let batch = batch.context("decode a dictionary batch")?;
+            let ids = batch
+                .column_by_name("str_id")
+                .and_then(|column| column.as_any().downcast_ref::<UInt64Array>())
+                .context("the dictionary has no str_id column")?;
+            let bytes = batch
+                .column_by_name("bytes")
+                .and_then(|column| column.as_any().downcast_ref::<BinaryArray>())
+                .context("the dictionary has no bytes column")?;
+            for row in 0..batch.num_rows() {
+                let text = String::from_utf8_lossy(bytes.value(row)).into_owned();
+                strings.insert(ids.value(row), text);
+            }
+        }
+        Ok(strings)
+    }
+
+    fn section_body(&self, type_id: u32) -> Option<Bytes> {
+        let entry = self
+            .catalog
+            .entries
+            .iter()
+            .find(|entry| entry.type_id == type_id)?;
+        let at = usize::try_from(entry.offset).ok()?;
+        let len = usize::try_from(entry.len).ok()?;
+        Some(Bytes::copy_from_slice(self.bytes.get(at..at + len)?))
     }
 
     /// Decode a section into column-addressable rows.

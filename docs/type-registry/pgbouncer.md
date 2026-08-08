@@ -1,173 +1,130 @@
-# PgBouncer log sections
+# Class 2: PgBouncer log events
 
-Proposed registry types for what a PgBouncer log carries. Every field below was
-taken from the PgBouncer sources, not from its documentation: `src/stats.c`,
-`src/objects.c`, `src/janitor.c`, `src/client.c`, `src/server.c`, `src/admin.c`.
+`PgBouncer` occupies `2_100_001`–`2_199_999`. The schema is declared in
+[`crates/kronika-registry/src/codec/pgbouncer_events.rs`](../../crates/kronika-registry/src/codec/pgbouncer_events.rs).
+Every line below was read out of the `PgBouncer` sources, not out of its
+documentation.
 
-The collector reads the log file. It does not connect to the admin console.
-`log_stats` defaults to `1` and `stats_period` to `60`, so the numbers below
-arrive on a default install with no configuration and no credentials.
+The log to follow is `KRONIKA_PGBOUNCER_LOG`. The collector does not connect to
+the admin console: no `SHOW POOLS`, no `SHOW STATS`, no `SHOW CLIENTS`.
 
-The line prefix is fixed, unlike PostgreSQL's configurable `log_line_prefix`:
-
-```
-2026-08-07 12:34:56.789 UTC [12345] LOG C-0x55f1: db/user@10.0.0.1:5432 closing because: query timeout (age=42s)
-```
-
-Timestamp, pid, level, socket handle, then `database/user@address:port` when the
-line belongs to a connection.
-
-## `pgbouncer_stats`
-
-One row per `stats:` line, `src/stats.c:399`. Averages over `stats_period`,
-computed by PgBouncer itself.
-
-| Column | Class | Unit | Source field |
-|---|---|---|---|
-| `ts` | t | — | line timestamp |
-| `xacts_per_sec` | g | per_second | `xacts/s` |
-| `queries_per_sec` | g | per_second | `queries/s` |
-| `client_parses_per_sec` | g | per_second | `client parses/s` |
-| `server_parses_per_sec` | g | per_second | `server parses/s` |
-| `binds_per_sec` | g | per_second | `binds/s` |
-| `client_logins_per_sec` | g | per_second | `client logins/s` |
-| `bytes_in_per_sec` | g | bytes_per_second | `in B/s` |
-| `bytes_out_per_sec` | g | bytes_per_second | `out B/s` |
-| `avg_xact_us` | g | microseconds | `xact us` |
-| `avg_query_us` | g | microseconds | `query us` |
-| `avg_wait_us` | g | microseconds | `wait us` |
-
-`avg_wait_us` is how long a client waited for a server connection. It is the
-number that says whether the pool is the bottleneck.
-
-Known limit: the log line is process-wide. `SHOW STATS` breaks the same numbers
-down per database; the log does not.
-
-## `pgbouncer_pool_full`
-
-One row per refusal to open or accept a connection. Sites in `src/objects.c`.
-
-| Column | Class | Unit | Nullable |
-|---|---|---|---|
-| `ts` | t | — | no |
-| `limit_kind` | l | — | no |
-| `database` | l | — | yes |
-| `username` | l | — | yes |
-| `current` | g | count | yes |
-| `limit_value` | g | count | yes |
-
-`limit_kind` takes the value the source distinguishes:
-
-| Value | Log text |
-|---|---|
-| `pool` | `launch_new_connection: pool full (%d >= %d)` |
-| `database` | `launch_new_connection: database '%s' full (%d >= %d)` |
-| `user` | `launch_new_connection: user '%s' full (%d >= %d)` |
-| `peer_pool` | `launch_new_connection: peer pool full (%d >= %d)` |
-| `max_client_conn` | `no more connections allowed (max_client_conn)` |
-| `max_db_client_connections` | `client connections exceeded (max_db_client_connections)` |
-| `max_user_client_connections` | `client connections exceeded (max_user_client_connections)` |
-| `too_many_servers` | `too many servers in the pool` |
-
-`current` and `limit_value` are null for the three that carry no numbers.
-
-## `pgbouncer_disconnect`
-
-One row per `closing because: %s (age=%llus)`, `src/objects.c:1363` for the
-server side and `:1481` for the client side.
-
-| Column | Class | Unit | Nullable |
-|---|---|---|---|
-| `ts` | t | — | no |
-| `side` | l | — | no |
-| `reason` | l | — | no |
-| `database` | l | — | yes |
-| `username` | l | — | yes |
-| `peer_addr` | l | — | yes |
-| `age_s` | g | seconds | no |
-
-`reason` is the string PgBouncer printed, interned. The distinct values are the
-categories; no classification is added on top. The ones an operator acts on:
-
-- Timeouts: `query timeout`, `query_wait_timeout`, `idle transaction timeout`,
-  `transaction timeout`, `client_idle_timeout`, `client_login_timeout`,
-  `client_login_timeout (server down)`, `connect timeout`, `cancel_wait_timeout`,
-  `suspend_timeout`
-- Server recycling: `server lifetime over`, `server idle timeout`,
-  `idle server got dirty`, `SV_IDLE server got dirty`, `SV_USED server got dirty`
-- Server trouble: `server conn crashed?`, `server connection closed`,
-  `server shutting down`, `server DNS lookup failed`, `connect failed`,
-  `cannot connect`, `test query failed`, `reset query failed`,
-  `exec_on_connect query failed`,
-  `server login has been failing, cached error: %s (server_login_retry)`
-- Client trouble: `client unexpected eof`, `client disconnected with query in
-  progress`, `client disconnect before everything was sent to the server`,
-  `client disconnect while server was not ready`
-- Configuration: `connect string changed`, `database configuration changed`,
-  `obsolete connection`, `evicted`, `pause mode`, `pooler is shutting down`
+**`logfile` is empty by default.** `PgBouncer` then writes to stderr, and under
+systemd that goes to the journal without the line layout below. The section
+works when `pgbouncer.ini` sets `logfile = <path>`.
 
 ## `pgbouncer_events`
 
-Everything the other three do not cover, one row per line.
+One row per recognized line.
 
-| Column | Class | Unit | Nullable |
+| Column | Class | Nullable | Meaning |
 |---|---|---|---|
-| `ts` | t | — | no |
-| `level` | l | — | no |
-| `database` | l | — | yes |
-| `username` | l | — | yes |
-| `peer_addr` | l | — | yes |
-| `detail` | l | — | no |
+| `ts` | t | no | Line time |
+| `level` | l | no | `0` fatal, `1` error, `2` warning, `3` log, `4` debug, `5` noise |
+| `database` | l | yes | The `pgbouncer.ini` section name |
+| `username` | l | yes | The login user |
+| `host` | l | yes | Client or server address, without the port |
+| `text` | l | no | What happened |
 
-`level` is `LOG`, `WARNING`, `ERROR` or `FATAL`. `detail` is the message text,
-interned, so repeated messages cost one dictionary entry.
+There is no `kind` column. The message text is the category, identical texts
+already cost one dictionary entry between them, and a taxonomy maintained by
+hand goes stale against a moving upstream.
 
-No `kind` column. The message text is the category, distinct texts already
-deduplicate through the string dictionary, and a taxonomy maintained by hand
-goes stale against a moving upstream.
+## The line layout
 
-What lands here:
+`lib/usual/logging.c:231` writes every line the same way:
 
-- Authentication: `password authentication failed`, `SASL authentication
-  failed`, `LDAP authentication failed`, `PAM authentication failed`,
-  `certificate authentication failed`, `no such user`, `no such database: %s`,
-  `login rejected`, `unix socket login rejected`, `empty password returned by
-  client`, `no authentication method is found`, `broken auth file`
-- Auth query: `error response from auth_query`, `unable to send auth_query`,
-  `unexpected response from auth_query`, `auth_query response contained null
-  user name`, `expected 2 columns from auth_query, not %hu`
-- Resources: `out of memory`, `no memory for pool`, `no memory for
-  authentication pool`, `bouncer resources exhaustion`,
-  `unable to allocate new user for auth`
-- Protocol: `bad packet`, `bad packet header`, `failed to parse packet`,
-  `unknown pkt`, `unknown pkt from server`, `broken Bind/Parse/Describe/Close
-  packet`, `old V2 protocol not supported`, `invalid startup packet layout`,
-  `client re-sent startup pkt`, `PQexec disallowed`,
-  `transaction blocks not allowed in statement pooling mode`
-- Prepared statements: `prepared statement did not exist`,
-  `prepared statement name is already in use`
-- TLS: `TLS handshake error`, `TLS accept error`, `TLS connect error`,
-  `TLS startup failed`, `server refused SSL`, `SSL required`,
-  `SSL req inside SSL`, `received unencrypted data after SSL request`,
-  `TLS configuration could not be reloaded, keeping old configuration`
-- Cancel requests: `bad cancel key`, `bad cancel request`, `failed cancel
-  request`, `failed to forward cancel request because its TTL was exhausted`,
-  `could not find peer to forward request to`
-- Admin: `PAUSE command issued`, `RELOAD command issued`, `KILL command issued`,
-  `RELOAD failed, see logs for additional details`, `admin forced disconnect`
-- Lifecycle: `pooler is shutting down`, `client connections dropped, exiting`,
-  `server connections dropped, exiting`, `database removed`, `peer removed`,
-  `cleaning up idle pool for user %s on db %s because: pool idle timeout`,
-  `launching new connection to satisfy min_pool_size`
+```
+2026-08-07 12:34:56.789 MSK [12345] LOG C-0x55f1: db/user@10.0.0.1:41537 closing because: query timeout (age=42s)
+```
 
-## New units
+Time, pid, level, then the socket context, then the message. What that costs a
+reader:
 
-`per_second` and `bytes_per_second` do not exist in the registry yet. Both get
-consumers here.
+- **The time is local, not UTC.** `lib/usual/time.c:39,44` calls `localtime_r`
+  and prints the zone abbreviation, so the collector reads it in the host's
+  timezone.
+- **The socket context is not on every line.** Lines from `janitor.c`,
+  `main.c` and `pooler.c`, and the `stats:` line, carry no socket. Those rows
+  have `database`, `username` and `host` missing.
+- **When it is there, nothing in it is empty.** `src/util.c:52` substitutes the
+  literals `(nodb)` and `(nouser)`, so those are what the columns hold. A unix
+  socket's host is `unix(<pid>)` and its port `0`. A peer connection is written
+  `peer-<id>@host:port` and has no database or user at all.
+- **The port is not stored.** It is the client's ephemeral port, different on
+  every connection, and keeping it would add one dictionary entry per
+  connection. Only the host is kept.
+- **`db` is not `dbname`.** It is the section name in `pgbouncer.ini`
+  (`src/util.c:52`), which may point at a different database on the server.
+- **A message with a newline in it is written as `\n\t`**
+  (`lib/usual/logging.c:177-189`) and the whole line is cut at 2048 bytes. A
+  line starting with a tab continues the line before it.
+- **One event can be two lines.** `disconnect_client(notify=true)` writes
+  `closing because: <reason>` and then `WARNING pooler error: <reason>` through
+  `send_pooler_error` (`src/proto.c:266`), and `log_pooler_errors` is `1` by
+  default. The second is dropped; keeping it would count every such event
+  twice.
+- **The reason is formatted into `char buf[128]`** (`src/objects.c:1349`), so a
+  long one arrives cut.
+- **`launch_new_connection: … full` is not there on a default install.** Those
+  lines are `log_debug` and need `verbose >= 1`.
+
+`text` is the message with the `closing because:` wrapper and the trailing
+` (age=Ns)` removed, so a timeout that fires a thousand times costs one
+dictionary entry instead of a thousand.
+
+## What is recognized
+
+A line becomes a row when its message, or the reason inside its
+`closing because:`, starts with one of these. Everything else is dropped: a
+default install also logs a line per connection opened and closed, which is
+traffic, not an event.
+
+### The database is not giving out connections
+
+`cannot connect`, `connect failed`, `server conn crashed?`,
+`server DNS lookup failed`, `server login failed: <LEVEL> <text>`,
+`server login has been failing, cached error: <text> (server_login_retry)`
+
+### The pooler is turning connections away or evicting live ones
+
+`evicted`, `bouncer resources exhaustion`, `out of memory`,
+`no memory for pool`, `no memory for authentication pool`,
+`too many servers in the pool`, `no more connections allowed (max_client_conn)`,
+`client connections exceeded (max_db_client_connections)`,
+`client connections exceeded (max_user_client_connections)`
+
+### The queue and the timeouts that empty it
+
+`query_wait_timeout`, `query_timeout` (the client side, `janitor.c:462`),
+`query timeout` (the server side, `janitor.c:667` — a different string in a
+different place, so both are listed), `idle transaction timeout`,
+`transaction timeout`, `cancel_wait_timeout`, `connect timeout`,
+`client_login_timeout`, `client_login_timeout (server down)`, `suspend_timeout`
+
+### The server connection cannot be handed out again
+
+`idle server got dirty`, `SV_IDLE server got dirty`, `SV_USED server got dirty`,
+`reset query failed`, `test query failed`, `exec_on_connect query failed`,
+`var change failed`, `invalid server parameter`
+
+### The pooler process itself
+
+`pooler is shutting down`, `client connections dropped, exiting`,
+`server connections dropped, exiting`, `accept() failed`, `cannot listen on`,
+`kernel file descriptor limit`, `process up: PgBouncer <version>`,
+`TLS configuration could not be reloaded, keeping old configuration`,
+`RELOAD Failed, see logs for more details`
+
+### Authentication and protocol
+
+`password authentication failed`, `SASL authentication failed`,
+`LDAP authentication failed`, `PAM authentication failed`,
+`certificate authentication failed`, `no such user`, `no such database`,
+`broken auth file`, `error response from auth_query`, `unable to send
+auth_query`, `bad packet`, `bad pkt header`, `failed to parse packet`,
+`old V2 protocol not supported`, `TLS handshake error`
 
 ## Not collected
 
-`SHOW STATS`, `SHOW POOLS`, `SHOW CLIENTS` over the admin console. The `stats:`
-line carries the same aggregate numbers without a connection, a password, or a
-grant on the admin database. If a specific number turns out to be missing from
-the log, that is when the console earns its place.
+The `stats:` line. It carries the averages `PgBouncer` computes over
+`stats_period`, and the collector takes events only for now.

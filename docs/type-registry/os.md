@@ -83,6 +83,7 @@ registry linter rejects one that does not. The set in use:
 | `jiffies` | scheduler ticks, of `instance_metadata.clock_ticks_per_sec` per second |
 | `hertz` | clock frequency |
 | `megabits_per_second` | negotiated link speed |
+| `megabytes_per_second` | the I/O rates `PostgreSQL` prints in an autovacuum report |
 | `percent`, `celsius` | declared and unused by OS sections |
 
 `TypeContract` is compile-time data and never reaches a segment, so a unit

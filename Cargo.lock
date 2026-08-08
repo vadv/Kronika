@@ -1067,10 +1067,12 @@ name = "kronika-bdd"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "arrow-array",
  "cucumber",
  "kronika-format",
  "kronika-registry",
  "nix",
+ "parquet",
  "tempfile",
  "tokio",
 ]
@@ -1097,6 +1099,8 @@ name = "kronika-demo"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "kronika-format",
+ "kronika-registry",
  "nix",
  "rustix",
 ]
