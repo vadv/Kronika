@@ -9,7 +9,7 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::{Client, Config, NoTls};
 
 /// How long a connection may live before it is replaced.
 ///
@@ -20,7 +20,7 @@ pub const MAX_AGE: Duration = Duration::from_hours(1);
 /// A connection that reopens itself once it is old enough.
 #[derive(Debug)]
 pub struct Pool {
-    dsn: String,
+    config: Config,
     max_age: Duration,
     open: Option<Open>,
 }
@@ -37,13 +37,35 @@ impl Pool {
     ///
     /// `max_age` above [`MAX_AGE`] is brought down to it: the ceiling is the
     /// point of the setting.
+    ///
+    /// # Errors
+    ///
+    /// Returns the parse error when `dsn` is neither a keyword string nor a
+    /// connection URL.
+    pub fn new(dsn: &str, max_age: Duration) -> Result<Self> {
+        let config: Config = dsn.parse().context("parse the PostgreSQL DSN")?;
+        Ok(Self::from_config(config, max_age))
+    }
+
+    /// A pool for an already parsed connection configuration.
     #[must_use]
-    pub fn new(dsn: String, max_age: Duration) -> Self {
+    pub fn from_config(config: Config, max_age: Duration) -> Self {
         Self {
-            dsn,
+            config,
             max_age: max_age.min(MAX_AGE),
             open: None,
         }
+    }
+
+    /// The same server and credentials, connecting to `dbname` instead.
+    ///
+    /// This is how a per-database section reaches every database: the operator
+    /// configures one DSN and the collector varies only the database name.
+    #[must_use]
+    pub fn on_database(&self, dbname: &str) -> Self {
+        let mut config = self.config.clone();
+        config.dbname(dbname);
+        Self::from_config(config, self.max_age)
     }
 
     /// The connection to use now, opening or replacing it as needed.
@@ -89,7 +111,9 @@ impl Pool {
     }
 
     async fn connect(&self) -> Result<Open> {
-        let (client, connection) = tokio_postgres::connect(&self.dsn, NoTls)
+        let (client, connection) = self
+            .config
+            .connect(NoTls)
             .await
             .context("connect to PostgreSQL")?;
         // The connection drives the protocol; it ends when the client drops.

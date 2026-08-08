@@ -7,6 +7,7 @@
 pub mod activity;
 pub mod archiver;
 pub mod database;
+pub mod databases;
 pub mod io;
 mod pool;
 pub mod prepared_xacts;
