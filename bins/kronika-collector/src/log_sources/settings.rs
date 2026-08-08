@@ -4,8 +4,122 @@
 //! collector asks them rather than having the operator declare it a second
 //! time. What comes back also carries the identity that ends up in every row.
 
+use std::fmt;
+use std::net::IpAddr;
+use std::str::FromStr as _;
+
 use anyhow::{Context as _, Result};
-use tokio_postgres::NoTls;
+use tokio_postgres::config::Host;
+use tokio_postgres::{Config, NoTls};
+
+const DEFAULT_PORT: u16 = 5432;
+
+/// A parsed connection and the only identity safe to put in a log line.
+pub(super) struct ConnectionTarget {
+    config: Config,
+    label: String,
+}
+
+impl ConnectionTarget {
+    /// Parse one configured connection without retaining its original text.
+    pub(super) fn parse(raw: &str) -> Result<Self, InvalidConnection> {
+        let config = Config::from_str(raw).map_err(|_error| InvalidConnection)?;
+        validate_endpoints(&config)?;
+        let label = connection_label(&config);
+        Ok(Self { config, label })
+    }
+
+    pub(super) fn label(&self) -> &str {
+        &self.label
+    }
+}
+
+impl fmt::Debug for ConnectionTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConnectionTarget")
+            .field("label", &self.label)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Deliberately carries neither parser details nor the rejected input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct InvalidConnection;
+
+fn validate_endpoints(config: &Config) -> Result<(), InvalidConnection> {
+    let hosts = config.get_hosts().len();
+    let hostaddrs = config.get_hostaddrs().len();
+    let endpoints = hosts.max(hostaddrs);
+    let ports = config.get_ports().len();
+    if endpoints == 0
+        || (hosts != 0 && hostaddrs != 0 && hosts != hostaddrs)
+        || !matches!(ports, 0 | 1) && ports != endpoints
+    {
+        return Err(InvalidConnection);
+    }
+    Ok(())
+}
+
+fn connection_label(config: &Config) -> String {
+    let user = config.get_user();
+    let ports = config.get_ports();
+    if config.get_hosts().is_empty() {
+        return config
+            .get_hostaddrs()
+            .iter()
+            .enumerate()
+            .map(|(index, host)| endpoint(user, &ip_label(*host), port_at(ports, index)))
+            .collect::<Vec<_>>()
+            .join(",");
+    }
+    config
+        .get_hosts()
+        .iter()
+        .enumerate()
+        .map(|(index, host)| {
+            let host = match host {
+                Host::Tcp(host) => tcp_label(host),
+                #[cfg(unix)]
+                Host::Unix(path) => format!("unix:{}", path.display()),
+            };
+            endpoint(user, &host, port_at(ports, index))
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn port_at(ports: &[u16], index: usize) -> u16 {
+    match ports {
+        [] => DEFAULT_PORT,
+        [port] => *port,
+        many => many.get(index).copied().unwrap_or(DEFAULT_PORT),
+    }
+}
+
+fn endpoint(user: Option<&str>, host: &str, port: u16) -> String {
+    user.map_or_else(
+        || format!("{host}:{port}"),
+        |user| format!("{user}@{host}:{port}"),
+    )
+}
+
+fn tcp_label(host: &str) -> String {
+    if host.starts_with('[') && host.ends_with(']') {
+        return host.to_owned();
+    }
+    if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    }
+}
+
+fn ip_label(host: IpAddr) -> String {
+    match host {
+        IpAddr::V4(host) => host.to_string(),
+        IpAddr::V6(host) => format!("[{host}]"),
+    }
+}
 
 /// What one `PostgreSQL` server said about itself.
 #[derive(Debug)]
@@ -32,8 +146,10 @@ pub(super) struct PgBouncerServer {
 /// # Errors
 ///
 /// Returns an error when the connection cannot be made or a query fails.
-pub(super) async fn postgres(dsn: &str) -> Result<PostgresServer> {
-    let (client, connection) = tokio_postgres::connect(dsn, NoTls)
+pub(super) async fn postgres(target: &ConnectionTarget) -> Result<PostgresServer> {
+    let (client, connection) = target
+        .config
+        .connect(NoTls)
         .await
         .context("connect to PostgreSQL")?;
     // The connection drives the protocol and ends when the client is dropped.
@@ -84,8 +200,10 @@ pub(super) async fn postgres(dsn: &str) -> Result<PostgresServer> {
 /// # Errors
 ///
 /// Returns an error when the connection cannot be made or the query fails.
-pub(super) async fn pgbouncer(dsn: &str) -> Result<PgBouncerServer> {
-    let (client, connection) = tokio_postgres::connect(dsn, NoTls)
+pub(super) async fn pgbouncer(target: &ConnectionTarget) -> Result<PgBouncerServer> {
+    let (client, connection) = target
+        .config
+        .connect(NoTls)
         .await
         .context("connect to PgBouncer")?;
     let driver = tokio::spawn(connection);
@@ -140,3 +258,6 @@ fn absolute(data_directory: &str, name: &str) -> String {
     }
     format!("{}/{name}", data_directory.trim_end_matches('/'))
 }
+
+#[cfg(test)]
+mod tests;

@@ -10,7 +10,7 @@ use crate::text::bounded;
 use crate::timestamp;
 
 /// A JSON record is always one line.
-pub(super) const fn continues(_open: &[String], _line: &str) -> bool {
+pub(super) const fn continues(_open: &[String], _line: &str, _raw_quotes_odd: bool) -> bool {
     false
 }
 

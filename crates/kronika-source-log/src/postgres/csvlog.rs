@@ -23,12 +23,8 @@ const MIN_FIELDS: usize = 23;
 
 /// A record continues while a quoted field is still open, which is how a
 /// statement with a newline in it reaches the log.
-pub(super) fn continues(open: &[String], _line: &str) -> bool {
-    open.iter()
-        .map(|line| line.bytes().filter(|byte| *byte == b'"').count())
-        .sum::<usize>()
-        % 2
-        == 1
+pub(super) const fn continues(_open: &[String], _line: &str, raw_quotes_odd: bool) -> bool {
+    raw_quotes_odd
 }
 
 pub(super) fn parse(record: &str, now: i64) -> Option<PgRecord> {

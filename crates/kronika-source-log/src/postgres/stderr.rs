@@ -40,7 +40,7 @@ const PARTS: &[(&str, Part)] = &[
 
 /// A wrapped line starts with a tab; a `DETAIL:` and its kin carry the prefix
 /// again and are found by their marker.
-pub(super) fn continues(_open: &[String], line: &str) -> bool {
+pub(super) fn continues(_open: &[String], line: &str, _raw_quotes_odd: bool) -> bool {
     line.starts_with('\t') || PARTS.iter().any(|(marker, _part)| line.contains(marker))
 }
 

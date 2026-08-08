@@ -31,7 +31,11 @@ fn fixture(name: &str) -> PathBuf {
 
 fn read(name: &str, prefix: Option<LinePrefix>) -> Events {
     let mut log = PgLog::new(fixture(name), Position::default(), prefix);
-    log.read(NOW).expect("read the fixture")
+    let batch = log.read_batch(NOW, 1024).expect("read the fixture");
+    if batch.needs_ack {
+        log.acknowledge().expect("acknowledge the fixture");
+    }
+    batch.events
 }
 
 #[test]
@@ -169,7 +173,11 @@ fn a_jsonlog_yields_the_same_events_as_the_csvlog_of_the_same_records() {
 fn a_pgbouncer_log_yields_one_row_per_event_and_no_duplicates() {
     let mut log = PgBouncerLog::new(fixture("pgbouncer.log"), Position::default());
 
-    let events = log.read().expect("read the fixture");
+    let batch = log.read_batch(1024).expect("read the fixture");
+    if batch.needs_ack {
+        log.acknowledge().expect("acknowledge the fixture");
+    }
+    let events = batch.events;
 
     let texts: Vec<&str> = events.iter().map(|event| event.text.as_str()).collect();
     assert_eq!(

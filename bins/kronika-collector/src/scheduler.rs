@@ -103,6 +103,14 @@ impl DueSet {
         self.forced
     }
 
+    /// A non-forced set for one incremental log batch.
+    pub(crate) fn logs() -> Self {
+        Self {
+            kinds: vec![SourceKind::Logs],
+            forced: false,
+        }
+    }
+
     /// A set with every source due (forced tick).
     fn all() -> Self {
         Self {

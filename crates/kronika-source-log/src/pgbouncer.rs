@@ -84,6 +84,19 @@ pub struct PgBouncerLog {
     tail: Tail,
 }
 
+/// One bounded read from a followed `PgBouncer` log.
+#[derive(Debug)]
+pub struct ReadBatch {
+    /// Recognized events from complete records.
+    pub events: Vec<Event>,
+    /// Raw file bytes read while producing this batch.
+    pub raw_bytes: usize,
+    /// Whether the volatile scan cursor reached the observed end of file.
+    pub at_eof: bool,
+    /// Whether input completed by this batch awaits acknowledgement.
+    pub needs_ack: bool,
+}
+
 impl PgBouncerLog {
     /// Follow `path`, resuming from `position`.
     #[must_use]
@@ -105,21 +118,39 @@ impl PgBouncerLog {
         self.tail.position()
     }
 
-    /// Read and recognize everything written since the last call.
+    /// Read and recognize one bounded batch written since the last call.
     ///
     /// # Errors
     ///
     /// Returns the operating system's error for reading the file.
-    pub fn read(&mut self) -> io::Result<Vec<Event>> {
-        let records = self.tail.read(continues)?;
-        Ok(records.iter().filter_map(parse).collect())
+    pub fn read_batch(&mut self, max_records: usize) -> io::Result<ReadBatch> {
+        let batch = self.tail.read_batch(continues, max_records)?;
+        Ok(ReadBatch {
+            events: batch.records.iter().filter_map(parse).collect(),
+            raw_bytes: batch.raw_bytes,
+            at_eof: batch.at_eof,
+            needs_ack: batch.needs_ack,
+        })
+    }
+
+    /// Commit the candidate position from the last completed batch.
+    ///
+    /// The collector calls this only after the batch's rows have reached the
+    /// active journal, or immediately when the batch contains no durable rows.
+    pub fn acknowledge(&mut self) -> Option<Position> {
+        self.tail.acknowledge()
+    }
+
+    /// Discard unacknowledged volatile progress so the same input is read again.
+    pub fn retry(&mut self) {
+        self.tail.retry();
     }
 }
 
 /// A message with a newline in it is written as `\n\t`
 /// (`lib/usual/logging.c:177`), so a line starting with a tab continues the
 /// line before it.
-fn continues(_open: &[String], line: &str) -> bool {
+fn continues(_open: &[String], line: &str, _raw_quotes_odd: bool) -> bool {
     line.starts_with('\t')
 }
 

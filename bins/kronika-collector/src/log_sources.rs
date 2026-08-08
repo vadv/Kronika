@@ -18,9 +18,11 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use anyhow::Context as _;
+use kronika_registry::MAX_SECTION_ROWS;
 use kronika_source_log::pgbouncer::PgBouncerLog;
 use kronika_source_log::postgres::{Events, LinePrefix, PgLog};
-use kronika_source_log::{Offsets, pgbouncer};
+use kronika_source_log::{MAX_READ_BYTES, Offsets, pgbouncer};
 
 use crate::config::Config;
 use crate::logging::{
@@ -40,6 +42,9 @@ const RESCAN: Duration = Duration::from_mins(5);
 /// looks for first.
 const PG_LOG_TYPE_ID: u32 = 2_001_001;
 const PGBOUNCER_TYPE_ID: u32 = 2_100_001;
+
+/// Most raw bytes read from one file in one scheduled log cycle.
+const MAX_SOURCE_READ_BYTES: usize = 256 * 1_048_576;
 
 /// What one read of one `PostgreSQL` log produced.
 #[derive(Debug)]
@@ -81,9 +86,9 @@ struct PostgresFacts {
 #[derive(Debug)]
 pub(crate) struct LogSources {
     offsets: Offsets,
-    pg_dsns: Vec<String>,
+    pg_dsns: Vec<settings::ConnectionTarget>,
     pg_logs: Vec<String>,
-    pgbouncer_dsns: Vec<String>,
+    pgbouncer_dsns: Vec<settings::ConnectionTarget>,
     pgbouncer_logs: Vec<String>,
     postgres: Vec<PostgresSource>,
     pgbouncer: Vec<PgBouncerLog>,
@@ -98,11 +103,12 @@ impl LogSources {
     /// Returns the error of reading the offsets file. Nothing is opened here:
     /// the first rescan finds what exists.
     pub(crate) fn open(config: &Config) -> anyhow::Result<Self> {
+        let offsets = Offsets::load(&config.out_dir)?;
         Ok(Self {
-            offsets: Offsets::load(&config.out_dir)?,
-            pg_dsns: config.pg_dsns.clone(),
+            offsets,
+            pg_dsns: parse_connections("postgresql", &config.pg_dsns),
             pg_logs: config.pg_logs.clone(),
-            pgbouncer_dsns: config.pgbouncer_dsns.clone(),
+            pgbouncer_dsns: parse_connections("pgbouncer", &config.pgbouncer_dsns),
             pgbouncer_logs: config.pgbouncer_logs.clone(),
             postgres: Vec::new(),
             pgbouncer: Vec::new(),
@@ -124,16 +130,19 @@ impl LogSources {
 
     async fn rescan_postgres(&mut self) {
         let mut wanted: BTreeMap<PathBuf, PostgresFacts> = BTreeMap::new();
-        for dsn in &self.pg_dsns {
-            match settings::postgres(dsn).await {
+        for target in &self.pg_dsns {
+            match settings::postgres(target).await {
                 Ok(server) => {
                     let Some(path) = server.log_path else {
-                        log_source_absent(dsn, "logging_collector is off, so there is no log file");
+                        log_source_absent(
+                            target.label(),
+                            "logging_collector is off, so there is no log file",
+                        );
                         continue;
                     };
                     let path = PathBuf::from(path);
                     if !path.is_file() {
-                        log_source_unreadable(&path, dsn);
+                        log_source_unreadable(&path, target.label());
                         continue;
                     }
                     wanted.insert(
@@ -144,7 +153,7 @@ impl LogSources {
                         },
                     );
                 }
-                Err(error) => log_source_unreachable("postgresql", dsn, &error),
+                Err(_error) => log_source_unreachable("postgresql", target.label()),
             }
         }
         for entry in &self.pg_logs {
@@ -179,21 +188,24 @@ impl LogSources {
 
     async fn rescan_pgbouncer(&mut self) {
         let mut wanted: Vec<PathBuf> = Vec::new();
-        for dsn in &self.pgbouncer_dsns {
-            match settings::pgbouncer(dsn).await {
+        for target in &self.pgbouncer_dsns {
+            match settings::pgbouncer(target).await {
                 Ok(server) => {
                     let Some(path) = server.log_path else {
-                        log_source_absent(dsn, "logfile is unset, so the pooler writes to stderr");
+                        log_source_absent(
+                            target.label(),
+                            "logfile is unset, so the pooler writes to stderr",
+                        );
                         continue;
                     };
                     let path = PathBuf::from(path);
                     if path.is_file() {
                         wanted.push(path);
                     } else {
-                        log_source_unreadable(&path, dsn);
+                        log_source_unreadable(&path, target.label());
                     }
                 }
-                Err(error) => log_source_unreachable("pgbouncer", dsn, &error),
+                Err(_error) => log_source_unreachable("pgbouncer", target.label()),
             }
         }
         for entry in &self.pgbouncer_logs {
@@ -214,73 +226,188 @@ impl LogSources {
         }
     }
 
-    /// Read what the followed logs have written since the last tick.
-    pub(crate) fn collect(&mut self, due: &DueSet, now: i64) -> LogRows {
-        let mut rows = LogRows::default();
+    /// Read each followed file in bounded batches and offer every nonempty
+    /// parsed batch to `admit` before acknowledging its input position.
+    ///
+    /// Returns `false` when `admit` safely rejected a batch for a later retry.
+    ///
+    /// # Errors
+    ///
+    /// Returns a fatal downstream error. File read errors remain best-effort
+    /// source failures and do not stop the other configured files.
+    pub(crate) fn collect(
+        &mut self,
+        due: &DueSet,
+        now: i64,
+        mut admit: impl FnMut(&LogRows) -> anyhow::Result<bool>,
+    ) -> anyhow::Result<bool> {
         if !due.has(SourceKind::Logs) {
-            return rows;
+            return Ok(true);
         }
+        if !self.collect_postgres(now, &mut admit)? {
+            return Ok(false);
+        }
+        self.collect_pgbouncer(&mut admit)
+    }
+
+    fn collect_postgres(
+        &mut self,
+        now: i64,
+        admit: &mut impl FnMut(&LogRows) -> anyhow::Result<bool>,
+    ) -> anyhow::Result<bool> {
         for source in &mut self.postgres {
             let started = Instant::now();
             let format = source.log.format().as_str();
             log_collection_start(PG_LOG_TYPE_ID, format);
-            match source.log.read(now) {
-                Ok(events) => {
-                    log_collection_finish(PG_LOG_TYPE_ID, format, events.rows(), started.elapsed());
-                    rows.postgres.push(PostgresBatch {
-                        system_identifier: source.system_identifier,
-                        source_file: source.log.path().display().to_string(),
-                        events,
-                    });
+            let mut raw_bytes = 0_usize;
+            let mut event_rows = 0_usize;
+            let mut read_failed = false;
+            while next_batch_bytes(raw_bytes) != 0 {
+                let batch = match source.log.read_batch(now, MAX_SECTION_ROWS) {
+                    Ok(batch) => batch,
+                    Err(error) => {
+                        log_collection_failure(PG_LOG_TYPE_ID, format, &error, started.elapsed());
+                        read_failed = true;
+                        break;
+                    }
+                };
+                raw_bytes = raw_bytes.saturating_add(batch.raw_bytes);
+                event_rows = event_rows.saturating_add(batch.events.rows());
+                let at_eof = batch.at_eof;
+                let made_progress = batch.raw_bytes != 0 || batch.needs_ack;
+                if batch.needs_ack {
+                    let accepted = if batch.events.is_empty() {
+                        true
+                    } else {
+                        let rows = LogRows {
+                            postgres: vec![PostgresBatch {
+                                system_identifier: source.system_identifier,
+                                source_file: source.log.path().display().to_string(),
+                                events: batch.events,
+                            }],
+                            pgbouncer: Vec::new(),
+                        };
+                        admit(&rows)?
+                    };
+                    if !accepted {
+                        source.log.retry();
+                        log_collection_finish(
+                            PG_LOG_TYPE_ID,
+                            format,
+                            event_rows,
+                            started.elapsed(),
+                        );
+                        return Ok(false);
+                    }
+                    let position = source
+                        .log
+                        .acknowledge()
+                        .context("acknowledge the admitted PostgreSQL log batch")?;
+                    self.offsets.set(&key(source.log.path()), position);
+                    save_offsets(&self.offsets);
                 }
-                Err(error) => {
-                    log_collection_failure(PG_LOG_TYPE_ID, format, &error, started.elapsed());
+                if at_eof || !made_progress {
+                    break;
                 }
             }
-            self.offsets
-                .set(&key(source.log.path()), source.log.position());
+            if !read_failed {
+                log_collection_finish(PG_LOG_TYPE_ID, format, event_rows, started.elapsed());
+            }
         }
+        Ok(true)
+    }
+
+    fn collect_pgbouncer(
+        &mut self,
+        admit: &mut impl FnMut(&LogRows) -> anyhow::Result<bool>,
+    ) -> anyhow::Result<bool> {
         for log in &mut self.pgbouncer {
             let started = Instant::now();
             log_collection_start(PGBOUNCER_TYPE_ID, "pgbouncer");
-            match log.read() {
-                Ok(events) => {
-                    log_collection_finish(
-                        PGBOUNCER_TYPE_ID,
-                        "pgbouncer",
-                        events.len(),
-                        started.elapsed(),
-                    );
-                    rows.pgbouncer.push(PgBouncerBatch {
-                        source_file: log.path().display().to_string(),
-                        events,
-                    });
+            let mut raw_bytes = 0_usize;
+            let mut event_rows = 0_usize;
+            let mut read_failed = false;
+            while next_batch_bytes(raw_bytes) != 0 {
+                let batch = match log.read_batch(MAX_SECTION_ROWS) {
+                    Ok(batch) => batch,
+                    Err(error) => {
+                        log_collection_failure(
+                            PGBOUNCER_TYPE_ID,
+                            "pgbouncer",
+                            &error,
+                            started.elapsed(),
+                        );
+                        read_failed = true;
+                        break;
+                    }
+                };
+                raw_bytes = raw_bytes.saturating_add(batch.raw_bytes);
+                event_rows = event_rows.saturating_add(batch.events.len());
+                let at_eof = batch.at_eof;
+                let made_progress = batch.raw_bytes != 0 || batch.needs_ack;
+                if batch.needs_ack {
+                    let accepted = if batch.events.is_empty() {
+                        true
+                    } else {
+                        let rows = LogRows {
+                            postgres: Vec::new(),
+                            pgbouncer: vec![PgBouncerBatch {
+                                source_file: log.path().display().to_string(),
+                                events: batch.events,
+                            }],
+                        };
+                        admit(&rows)?
+                    };
+                    if !accepted {
+                        log.retry();
+                        log_collection_finish(
+                            PGBOUNCER_TYPE_ID,
+                            "pgbouncer",
+                            event_rows,
+                            started.elapsed(),
+                        );
+                        return Ok(false);
+                    }
+                    let position = log
+                        .acknowledge()
+                        .context("acknowledge the admitted PgBouncer log batch")?;
+                    self.offsets.set(&key(log.path()), position);
+                    save_offsets(&self.offsets);
                 }
-                Err(error) => {
-                    log_collection_failure(
-                        PGBOUNCER_TYPE_ID,
-                        "pgbouncer",
-                        &error,
-                        started.elapsed(),
-                    );
+                if at_eof || !made_progress {
+                    break;
                 }
             }
-            self.offsets.set(&key(log.path()), log.position());
+            if !read_failed {
+                log_collection_finish(
+                    PGBOUNCER_TYPE_ID,
+                    "pgbouncer",
+                    event_rows,
+                    started.elapsed(),
+                );
+            }
         }
-        self.save_offsets();
-        rows
+        Ok(true)
     }
+}
 
-    /// A restart re-reads from the last saved offset, so a failed save costs
-    /// the lines between it and the restart.
-    fn save_offsets(&self) {
-        if let Err(error) = self.offsets.save() {
-            log_event(
-                LogLevel::Warn,
-                "log_offsets_save_failure",
-                &[field("error", format!("{error:#}"))],
-            );
-        }
+const fn next_batch_bytes(read: usize) -> usize {
+    if MAX_SOURCE_READ_BYTES.saturating_sub(read) >= MAX_READ_BYTES {
+        MAX_READ_BYTES
+    } else {
+        0
+    }
+}
+
+/// A restart re-reads from the last saved offset, so a failed save can only
+/// duplicate rows already present in the WAL.
+fn save_offsets(offsets: &Offsets) {
+    if let Err(error) = offsets.save() {
+        log_event(
+            LogLevel::Warn,
+            "log_offsets_save_failure",
+            &[field("error", format!("{error:#}"))],
+        );
     }
 }
 
@@ -288,6 +415,22 @@ impl LogSources {
 /// and a file that stops existing stops being written out.
 fn key(path: &std::path::Path) -> String {
     path.display().to_string()
+}
+
+fn parse_connections(kind: &'static str, configured: &[String]) -> Vec<settings::ConnectionTarget> {
+    configured
+        .iter()
+        .enumerate()
+        .filter_map(
+            |(index, raw)| match settings::ConnectionTarget::parse(raw) {
+                Ok(target) => Some(target),
+                Err(_error) => {
+                    log_source_configuration_invalid(kind, index);
+                    None
+                }
+            },
+        )
+        .collect()
 }
 
 fn log_source_opened(kind: &str, path: &std::path::Path, format: &str) {
@@ -302,68 +445,51 @@ fn log_source_opened(kind: &str, path: &std::path::Path, format: &str) {
     );
 }
 
-fn log_source_unreachable(kind: &str, dsn: &str, error: &anyhow::Error) {
+fn log_source_configuration_invalid(kind: &str, index: usize) {
+    log_event(
+        LogLevel::Warn,
+        "log_source_configuration_invalid",
+        &[
+            field("kind", kind),
+            field("source_index", index),
+            field("reason", "invalid_connection_configuration"),
+        ],
+    );
+}
+
+fn log_source_unreachable(kind: &str, connection: &str) {
     log_event(
         LogLevel::Warn,
         "log_source_unreachable",
         &[
             field("kind", kind),
-            field("dsn", redact(dsn)),
-            field("error", format!("{error:#}")),
+            field("connection", connection),
+            field("reason", "connection_or_discovery_failed"),
         ],
     );
 }
 
-fn log_source_absent(dsn: &str, reason: &str) {
+fn log_source_absent(connection: &str, reason: &str) {
     log_event(
         LogLevel::Warn,
         "log_source_absent",
-        &[field("dsn", redact(dsn)), field("reason", reason)],
+        &[field("connection", connection), field("reason", reason)],
     );
 }
 
-fn log_source_unreadable(path: &std::path::Path, dsn: &str) {
+fn log_source_unreadable(path: &std::path::Path, connection: &str) {
     log_event(
         LogLevel::Warn,
         "log_source_unreadable",
         &[
             field("path", path.display()),
-            field("dsn", redact(dsn)),
+            field("connection", connection),
             field(
                 "hint",
                 "mount the directory here and name the file in KRONIKA_PG_LOGS",
             ),
         ],
     );
-}
-
-/// A DSN may carry a password, and this line goes to an operator's log.
-fn redact(dsn: &str) -> String {
-    let mut out = String::with_capacity(dsn.len());
-    let mut hidden = false;
-    for part in dsn.split(' ') {
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        if let Some(name) = part.strip_prefix("password=") {
-            hidden = !name.is_empty();
-            out.push_str("password=***");
-        } else {
-            out.push_str(part);
-        }
-    }
-    if hidden || !dsn.contains('@') {
-        return out;
-    }
-    // A URL keeps its credentials in front of the host.
-    match (out.find("://"), out.rfind('@')) {
-        (Some(scheme), Some(at)) if scheme + 3 < at => {
-            let mut redacted = out.clone();
-            redacted.replace_range(scheme + 3..at, "***");
-            redacted
-        }
-        _plain => out,
-    }
 }
 
 #[cfg(test)]

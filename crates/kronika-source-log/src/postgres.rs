@@ -158,6 +158,19 @@ pub struct PgLog {
     prefix: Option<LinePrefix>,
 }
 
+/// One bounded read from a followed `PostgreSQL` log.
+#[derive(Debug)]
+pub struct ReadBatch {
+    /// Parsed events from complete, usable records.
+    pub events: Events,
+    /// Raw file bytes read while producing this batch.
+    pub raw_bytes: usize,
+    /// Whether the volatile scan cursor reached the observed end of file.
+    pub at_eof: bool,
+    /// Whether input completed by this batch awaits acknowledgement.
+    pub needs_ack: bool,
+}
+
 impl PgLog {
     /// Follow `path`, resuming from `position`.
     ///
@@ -202,7 +215,7 @@ impl PgLog {
         self.tail.position()
     }
 
-    /// Read and classify everything written since the last call.
+    /// Read and classify one bounded batch written since the last call.
     ///
     /// `now` stands in for the timestamp of a record whose format or
     /// `log_line_prefix` does not carry one.
@@ -210,16 +223,39 @@ impl PgLog {
     /// # Errors
     ///
     /// Returns the operating system's error for reading the file.
-    pub fn read(&mut self, now: i64) -> io::Result<Events> {
-        let records = self.tail.read(self.format.continues())?;
+    pub fn read_batch(&mut self, now: i64, max_records: usize) -> io::Result<ReadBatch> {
+        let batch = self.tail.read_batch(self.format.continues(), max_records)?;
         let mut events = Events::default();
-        for record in &records {
+        for record in &batch.records {
+            // A CSV prefix cannot be parsed safely. Tail still follows its raw
+            // quote parity to the true boundary before handing over successors.
+            if self.format == Format::Csvlog && record.truncated() {
+                continue;
+            }
             if let Some(parsed) = self.parse(record, now) {
                 events.add(&parsed);
             }
         }
         events.finish();
-        Ok(events)
+        Ok(ReadBatch {
+            events,
+            raw_bytes: batch.raw_bytes,
+            at_eof: batch.at_eof,
+            needs_ack: batch.needs_ack,
+        })
+    }
+
+    /// Commit the candidate position from the last completed batch.
+    ///
+    /// The collector calls this only after the batch's rows have reached the
+    /// active journal, or immediately when the batch contains no durable rows.
+    pub fn acknowledge(&mut self) -> Option<Position> {
+        self.tail.acknowledge()
+    }
+
+    /// Discard unacknowledged volatile progress so the same input is read again.
+    pub fn retry(&mut self) {
+        self.tail.retry();
     }
 
     fn parse(&self, record: &Record, now: i64) -> Option<PgRecord> {
