@@ -28,6 +28,7 @@ use crate::config::Config;
 use crate::logging::{
     LogLevel, field, log_collection_failure, log_collection_finish, log_collection_start, log_event,
 };
+use crate::pg_sources::PgObservation;
 use crate::scheduler::{DueSet, SourceKind};
 
 pub(crate) use buffering::push_log_sources;
@@ -82,11 +83,29 @@ struct PostgresFacts {
     line_prefix: Option<String>,
 }
 
+/// One configured server and the facts that survive a failed refresh.
+#[derive(Debug)]
+struct PostgresTarget {
+    connection: settings::ConnectionTarget,
+    system_identifier: Option<u64>,
+    last_log: Option<(PathBuf, String)>,
+}
+
+impl PostgresTarget {
+    const fn new(connection: settings::ConnectionTarget) -> Self {
+        Self {
+            connection,
+            system_identifier: None,
+            last_log: None,
+        }
+    }
+}
+
 /// The configured logs and where each of them was left off.
 #[derive(Debug)]
 pub(crate) struct LogSources {
     offsets: Offsets,
-    pg_dsns: Vec<settings::ConnectionTarget>,
+    pg_dsns: Vec<PostgresTarget>,
     pg_logs: Vec<String>,
     pgbouncer_dsns: Vec<settings::ConnectionTarget>,
     pgbouncer_logs: Vec<String>,
@@ -100,15 +119,20 @@ impl LogSources {
     ///
     /// # Errors
     ///
-    /// Returns the error of reading the offsets file. Nothing is opened here:
-    /// the first rescan finds what exists.
+    /// Returns an opaque configuration error or the error of reading the
+    /// offsets file. Nothing is opened here: the first rescan finds what exists.
     pub(crate) fn open(config: &Config) -> anyhow::Result<Self> {
+        let pg_dsns = parse_connections("KRONIKA_PG_DSNS", &config.pg_dsns)?
+            .into_iter()
+            .map(PostgresTarget::new)
+            .collect();
+        let pgbouncer_dsns = parse_connections("KRONIKA_PGBOUNCER_DSNS", &config.pgbouncer_dsns)?;
         let offsets = Offsets::load(&config.out_dir)?;
         Ok(Self {
             offsets,
-            pg_dsns: parse_connections("postgresql", &config.pg_dsns),
+            pg_dsns,
             pg_logs: config.pg_logs.clone(),
-            pgbouncer_dsns: parse_connections("pgbouncer", &config.pgbouncer_dsns),
+            pgbouncer_dsns,
             pgbouncer_logs: config.pgbouncer_logs.clone(),
             postgres: Vec::new(),
             pgbouncer: Vec::new(),
@@ -118,42 +142,74 @@ impl LogSources {
 
     /// Ask every configured server what it writes, expand every glob, and
     /// bring the followed set in line with what came back.
-    pub(crate) async fn rescan(&mut self) {
+    pub(crate) async fn rescan(&mut self, observe: &mut (dyn FnMut(PgObservation) + Send)) {
         let now = Instant::now();
         if self.next_scan.is_some_and(|due| now < due) {
             return;
         }
         self.next_scan = Some(now + RESCAN);
-        self.rescan_postgres().await;
-        self.rescan_pgbouncer().await;
+        self.rescan_postgres(observe).await;
+        self.rescan_pgbouncer(observe).await;
     }
 
-    async fn rescan_postgres(&mut self) {
+    async fn rescan_postgres(&mut self, observe: &mut (dyn FnMut(PgObservation) + Send)) {
         let mut wanted: BTreeMap<PathBuf, PostgresFacts> = BTreeMap::new();
-        for target in &self.pg_dsns {
-            match settings::postgres(target).await {
+        for target in &mut self.pg_dsns {
+            match settings::postgres(&target.connection, target.system_identifier, observe).await {
                 Ok(server) => {
+                    if let Some(identifier) = server.system_identifier {
+                        target.system_identifier = Some(identifier);
+                    }
+                    if server.system_identifier.is_none() {
+                        log_source_identity_unavailable(
+                            target.connection.label(),
+                            target.connection.source_index(),
+                        );
+                    }
                     let Some(path) = server.log_path else {
+                        target.last_log = None;
                         log_source_absent(
-                            target.label(),
+                            target.connection.label(),
+                            target.connection.source_index(),
                             "logging_collector is off, so there is no log file",
                         );
                         continue;
                     };
                     let path = PathBuf::from(path);
                     if !path.is_file() {
-                        log_source_unreadable(&path, target.label());
+                        target.last_log = None;
+                        log_source_unreadable(
+                            &path,
+                            target.connection.label(),
+                            target.connection.source_index(),
+                        );
                         continue;
                     }
+                    target.last_log = Some((path.clone(), server.line_prefix.clone()));
                     wanted.insert(
                         path,
                         PostgresFacts {
-                            system_identifier: Some(server.system_identifier),
+                            system_identifier: target.system_identifier,
                             line_prefix: Some(server.line_prefix),
                         },
                     );
                 }
-                Err(_error) => log_source_unreachable("postgresql", target.label()),
+                Err(_error) => {
+                    log_source_unreachable(
+                        "postgresql",
+                        target.connection.label(),
+                        target.connection.source_index(),
+                    );
+                    if let Some((path, line_prefix)) = &target.last_log {
+                        wanted.insert(
+                            path.clone(),
+                            PostgresFacts {
+                                system_identifier: target.system_identifier,
+                                line_prefix: Some(line_prefix.clone()),
+                            },
+                        );
+                    }
+                }
             }
         }
         for entry in &self.pg_logs {
@@ -186,14 +242,15 @@ impl LogSources {
         }
     }
 
-    async fn rescan_pgbouncer(&mut self) {
+    async fn rescan_pgbouncer(&mut self, observe: &mut (dyn FnMut(PgObservation) + Send)) {
         let mut wanted: Vec<PathBuf> = Vec::new();
         for target in &self.pgbouncer_dsns {
-            match settings::pgbouncer(target).await {
+            match settings::pgbouncer(target, observe).await {
                 Ok(server) => {
                     let Some(path) = server.log_path else {
                         log_source_absent(
                             target.label(),
+                            target.source_index(),
                             "logfile is unset, so the pooler writes to stderr",
                         );
                         continue;
@@ -202,10 +259,12 @@ impl LogSources {
                     if path.is_file() {
                         wanted.push(path);
                     } else {
-                        log_source_unreadable(&path, target.label());
+                        log_source_unreadable(&path, target.label(), target.source_index());
                     }
                 }
-                Err(_error) => log_source_unreachable("pgbouncer", target.label()),
+                Err(_error) => {
+                    log_source_unreachable("pgbouncer", target.label(), target.source_index());
+                }
             }
         }
         for entry in &self.pgbouncer_logs {
@@ -417,19 +476,18 @@ fn key(path: &std::path::Path) -> String {
     path.display().to_string()
 }
 
-fn parse_connections(kind: &'static str, configured: &[String]) -> Vec<settings::ConnectionTarget> {
+fn parse_connections(
+    variable: &'static str,
+    configured: &[String],
+) -> anyhow::Result<Vec<settings::ConnectionTarget>> {
     configured
         .iter()
         .enumerate()
-        .filter_map(
-            |(index, raw)| match settings::ConnectionTarget::parse(raw) {
-                Ok(target) => Some(target),
-                Err(_error) => {
-                    log_source_configuration_invalid(kind, index);
-                    None
-                }
-            },
-        )
+        .map(|(index, raw)| {
+            settings::ConnectionTarget::parse(raw, index).map_err(|_error| {
+                anyhow::anyhow!("{variable}[{index}] is not a valid connection string")
+            })
+        })
         .collect()
 }
 
@@ -445,45 +503,52 @@ fn log_source_opened(kind: &str, path: &std::path::Path, format: &str) {
     );
 }
 
-fn log_source_configuration_invalid(kind: &str, index: usize) {
-    log_event(
-        LogLevel::Warn,
-        "log_source_configuration_invalid",
-        &[
-            field("kind", kind),
-            field("source_index", index),
-            field("reason", "invalid_connection_configuration"),
-        ],
-    );
-}
-
-fn log_source_unreachable(kind: &str, connection: &str) {
+fn log_source_unreachable(kind: &str, connection: &str, source_index: usize) {
     log_event(
         LogLevel::Warn,
         "log_source_unreachable",
         &[
             field("kind", kind),
             field("connection", connection),
+            field("source_index", source_index),
             field("reason", "connection_or_discovery_failed"),
         ],
     );
 }
 
-fn log_source_absent(connection: &str, reason: &str) {
+fn log_source_identity_unavailable(connection: &str, source_index: usize) {
     log_event(
         LogLevel::Warn,
-        "log_source_absent",
-        &[field("connection", connection), field("reason", reason)],
+        "log_source_identity_unavailable",
+        &[
+            field("kind", "postgresql"),
+            field("connection", connection),
+            field("source_index", source_index),
+            field("reason", "pg_control_system_query_failed"),
+        ],
     );
 }
 
-fn log_source_unreadable(path: &std::path::Path, connection: &str) {
+fn log_source_absent(connection: &str, source_index: usize, reason: &str) {
+    log_event(
+        LogLevel::Warn,
+        "log_source_absent",
+        &[
+            field("connection", connection),
+            field("source_index", source_index),
+            field("reason", reason),
+        ],
+    );
+}
+
+fn log_source_unreadable(path: &std::path::Path, connection: &str, source_index: usize) {
     log_event(
         LogLevel::Warn,
         "log_source_unreadable",
         &[
             field("path", path.display()),
             field("connection", connection),
+            field("source_index", source_index),
             field(
                 "hint",
                 "mount the directory here and name the file in KRONIKA_PG_LOGS",

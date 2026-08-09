@@ -64,6 +64,33 @@ pub use codec::pg_log::{
     PgLogAutovacuum, PgLogCheckpoints, PgLogErrors, PgLogLifecycle, PgLogLockWaits,
     PgLogSlowQueries, PgLogTempFiles,
 };
+pub use codec::pg_prepared_xacts::PgPreparedXacts;
+pub use codec::pg_settings::PgSettings;
+pub use codec::pg_stat_activity::{PgStatActivityV1, PgStatActivityV2, PgStatActivityV3};
+pub use codec::pg_stat_archiver::PgStatArchiver;
+pub use codec::pg_stat_bgwriter::{PgStatBgwriterV1, PgStatBgwriterV2};
+pub use codec::pg_stat_checkpointer::{PgStatCheckpointerV1, PgStatCheckpointerV2};
+pub use codec::pg_stat_database::{
+    PgStatDatabaseV1, PgStatDatabaseV2, PgStatDatabaseV3, PgStatDatabaseV4,
+};
+pub use codec::pg_stat_io::{PgStatIoV1, PgStatIoV2};
+pub use codec::pg_stat_progress_vacuum::{
+    PgStatProgressVacuumV1, PgStatProgressVacuumV2, PgStatProgressVacuumV3,
+};
+pub use codec::pg_stat_statements::{
+    PgStatStatementsV1, PgStatStatementsV2, PgStatStatementsV3, PgStatStatementsV4,
+    PgStatStatementsV5, PgStatStatementsV6,
+};
+pub use codec::pg_stat_statements_info::PgStatStatementsInfo;
+pub use codec::pg_stat_user_indexes::{PgStatUserIndexesV1, PgStatUserIndexesV2};
+pub use codec::pg_stat_user_tables::{
+    PgStatUserTablesV1, PgStatUserTablesV2, PgStatUserTablesV3, PgStatUserTablesV4,
+};
+pub use codec::pg_stat_wal::{PgStatWalV1, PgStatWalV2};
+pub use codec::pg_store_plans::{
+    PgStorePlansDatasentinelV1, PgStorePlansOsscV1, PgStorePlansVadvV1,
+};
+pub use codec::pg_store_plans_info::PgStorePlansInfo;
 pub use codec::pgbouncer_events::PgBouncerEvents;
 pub(crate) use codec::{check_row_cap, decode_batches, decode_section, encode_section};
 pub use codec::{
@@ -71,7 +98,10 @@ pub use codec::{
     os_cgroup_pids, os_cpu, os_diskstats, os_interrupts, os_kernel_limits, os_loadavg, os_meminfo,
     os_mountinfo, os_netdev, os_netstat, os_nfs, os_numa, os_process, os_process_status, os_psi,
     os_snmp, os_snmp6, os_softirq, os_stat, os_topology, os_vmstat, pg_locks, pg_log,
-    pgbouncer_events,
+    pg_prepared_xacts, pg_settings, pg_stat_activity, pg_stat_archiver, pg_stat_bgwriter,
+    pg_stat_checkpointer, pg_stat_database, pg_stat_io, pg_stat_progress_vacuum,
+    pg_stat_statements, pg_stat_statements_info, pg_stat_user_indexes, pg_stat_user_tables,
+    pg_stat_wal, pg_store_plans, pg_store_plans_info, pgbouncer_events,
 };
 pub use contract::{
     Column, ColumnClass, ColumnType, LintError, Semantics, StrId, Ts, TypeContract, Unit, lint,
@@ -144,6 +174,44 @@ pub const fn registry() -> &'static [TypeContract] {
         os_snmp6::OsSnmp6::CONTRACT,
         os_nfs::OsNfsClient::CONTRACT,
         os_nfs::OsNfsServer::CONTRACT,
+        PgSettings::CONTRACT,
+        PgStatArchiver::CONTRACT,
+        PgStatBgwriterV1::CONTRACT,
+        PgStatBgwriterV2::CONTRACT,
+        PgPreparedXacts::CONTRACT,
+        PgStatDatabaseV4::CONTRACT,
+        PgStatDatabaseV3::CONTRACT,
+        PgStatDatabaseV2::CONTRACT,
+        PgStatDatabaseV1::CONTRACT,
+        PgStatIoV1::CONTRACT,
+        PgStatIoV2::CONTRACT,
+        PgStatActivityV3::CONTRACT,
+        PgStatActivityV2::CONTRACT,
+        PgStatActivityV1::CONTRACT,
+        PgStatProgressVacuumV1::CONTRACT,
+        PgStatProgressVacuumV2::CONTRACT,
+        PgStatProgressVacuumV3::CONTRACT,
+        PgStatUserIndexesV2::CONTRACT,
+        PgStatUserIndexesV1::CONTRACT,
+        PgStatUserTablesV4::CONTRACT,
+        PgStatUserTablesV3::CONTRACT,
+        PgStatUserTablesV2::CONTRACT,
+        PgStatUserTablesV1::CONTRACT,
+        PgStorePlansVadvV1::CONTRACT,
+        PgStorePlansOsscV1::CONTRACT,
+        PgStorePlansDatasentinelV1::CONTRACT,
+        PgStatStatementsInfo::CONTRACT,
+        PgStorePlansInfo::CONTRACT,
+        PgStatCheckpointerV1::CONTRACT,
+        PgStatCheckpointerV2::CONTRACT,
+        PgStatStatementsV6::CONTRACT,
+        PgStatStatementsV5::CONTRACT,
+        PgStatStatementsV4::CONTRACT,
+        PgStatStatementsV3::CONTRACT,
+        PgStatStatementsV2::CONTRACT,
+        PgStatStatementsV1::CONTRACT,
+        PgStatWalV1::CONTRACT,
+        PgStatWalV2::CONTRACT,
         PgLocksV1::CONTRACT,
         PgLocksV2::CONTRACT,
         PgLogErrors::CONTRACT,
@@ -230,9 +298,9 @@ mod tests {
     use bytes::Bytes;
 
     use super::{
-        BytesPool, CodecError, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, VerifiedSection,
-        arrow_schema, decode_any, decode_pooled, encode_section, lint_registry, registry,
-        section_name,
+        BytesPool, CodecError, ColumnClass, ColumnType, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID,
+        Unit, VerifiedSection, arrow_schema, decode_any, decode_pooled, encode_section,
+        lint_registry, registry, section_name,
     };
 
     #[test]
@@ -243,6 +311,25 @@ mod tests {
     #[test]
     fn registry_is_not_empty() {
         assert!(!registry().is_empty());
+    }
+
+    #[test]
+    fn every_timestamp_gauge_is_measured_in_microseconds() {
+        for contract in registry() {
+            for column in contract
+                .columns
+                .iter()
+                .filter(|column| column.class == ColumnClass::Gauge && column.ty == ColumnType::Ts)
+            {
+                assert_eq!(
+                    column.unit,
+                    Some(Unit::Microseconds),
+                    "type {} column {}",
+                    contract.type_id.get(),
+                    column.name
+                );
+            }
+        }
     }
 
     /// Registry wiring check with no per-type branch.

@@ -110,6 +110,7 @@ fn soft_hot_survives_the_flush_boundary() {
     let (_, hot) = interner.intern_hot_best_effort(b"note").expect("soft mark");
     assert!(hot);
     assert!(interner.window().is_empty());
+    assert_eq!(interner.stats().hot_count, 2);
     let finished = interner.write_segment();
     let entry = finished
         .flushed
@@ -256,6 +257,7 @@ fn stats_cover_window_and_flushed_without_double_counting() {
     // now a blob. Blobs: "one" + the oversized value.
     assert_eq!(stats.string_count, 2);
     assert_eq!(stats.blob_count, 2);
+    assert_eq!(stats.truncated_blob_count, 1);
     assert_eq!(stats.hot_count, 1);
 }
 

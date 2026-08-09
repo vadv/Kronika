@@ -22,6 +22,7 @@ mod config;
 mod log_sources;
 mod logging;
 mod os_sources;
+mod pg_sources;
 mod rotation;
 mod scheduler;
 mod segments;
@@ -31,12 +32,15 @@ use anyhow::{Context, Result};
 use config::Config;
 use kronika_layout::{DataRoot, LayoutLimits, TemporaryKind, WriterOwner};
 use kronika_source_os::{OsScope, ProcFs, detect_container};
+use kronika_source_pg::query::BatchWrite;
 use kronika_writer::{Journal, SectionBuffers};
 use log_sources::{LogRows, LogSources, push_log_sources};
 use logging::{LogLevel, field, log_event};
 use os_sources::{collect_os_sources, push_os_sources};
+use pg_sources::telemetry::PgTelemetry;
+use pg_sources::{PgBatch, PgSources, push_pg_batch, push_pg_settings};
 use rotation::Rotation;
-use scheduler::{DueSet, Scheduler};
+use scheduler::{DueSet, Scheduler, SourceKind};
 use segments::{
     SegmentState, append_window_and_maybe_close, close_open_segment, encode_window,
     open_collector_journal,
@@ -129,6 +133,13 @@ fn start_up(config: &Config) -> Result<(WriterOwner, Journal)> {
     Ok((writer_owner, journal))
 }
 
+fn initialize_collector(config: &Config) -> Result<(WriterOwner, Journal, LogSources, PgSources)> {
+    let logs = LogSources::open(config).context("open the configured log files")?;
+    let pg = PgSources::open(config).context("open the configured PostgreSQL metrics")?;
+    let (writer_owner, journal) = start_up(config)?;
+    Ok((writer_owner, journal, logs, pg))
+}
+
 fn main() -> Result<()> {
     if capacity::is_helper_invocation() {
         return capacity::run_helper();
@@ -137,10 +148,14 @@ fn main() -> Result<()> {
 }
 
 #[tokio::main]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the top-level signal and persistence loop must share shutdown telemetry"
+)]
 async fn run_collector() -> Result<()> {
     let config = Config::from_env()?;
-    let (writer_owner, mut journal) = start_up(&config)?;
-    let mut logs = LogSources::open(&config).context("open the configured log files")?;
+    let (writer_owner, mut journal, mut logs, mut pg) = initialize_collector(&config)?;
+    let mut pg_telemetry = PgTelemetry::new(Instant::now());
 
     let mut sigusr2 = signal(SignalKind::user_defined2()).context("install the SIGUSR2 handler")?;
     let mut sigterm = signal(SignalKind::terminate()).context("install the SIGTERM handler")?;
@@ -158,69 +173,356 @@ async fn run_collector() -> Result<()> {
 
     announce("ready");
 
-    loop {
-        let sleep = if first_timer_tick {
-            first_timer_tick = false;
-            Some(Duration::ZERO)
-        } else {
-            timer_sleep_delay(
-                Instant::now(),
-                config.tick_secs,
-                config.segment_max_age_secs,
-                &sched,
-                &segment,
-                rotation.as_ref(),
-            )
-        };
-        let forced = tokio::select! {
-            Some(()) = sigusr2.recv() => true,
-            () = async {
-                match sleep {
-                    Some(delay) => tokio::time::sleep(delay).await,
-                    None => std::future::pending::<()>().await,
+    let result: Result<()> = async {
+        loop {
+            pg_telemetry.maybe_emit(Instant::now());
+            let sleep = if first_timer_tick {
+                first_timer_tick = false;
+                Some(Duration::ZERO)
+            } else {
+                timer_sleep_delay(
+                    Instant::now(),
+                    config.tick_secs,
+                    config.segment_max_age_secs,
+                    &sched,
+                    &segment,
+                    rotation.as_ref(),
+                )
+            };
+            let forced = tokio::select! {
+                Some(()) = sigusr2.recv() => true,
+                () = async {
+                    match sleep {
+                        Some(delay) => tokio::time::sleep(delay).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    // With the collection timer disabled the only timed wake is
+                    // rotation's; collection stays strictly signal-driven.
+                    if config.tick_secs == 0 {
+                        run_rotation(&mut rotation, &writer_owner, &journal, &[]);
+                        continue;
+                    }
+                    false
                 }
-            } => {
-                // With the collection timer disabled the only timed wake is
-                // rotation's; collection stays strictly signal-driven.
-                if config.tick_secs == 0 {
-                    run_rotation(&mut rotation, &writer_owner, &journal, &[]);
-                    continue;
-                }
-                false
+                _ = sigterm.recv() => break,
+                _ = sigint.recv() => break,
+            };
+            let due = sched.plan(Instant::now(), forced);
+            let mut written_this_tick: Vec<PathBuf> = Vec::new();
+            // The age valve runs before collection: a tick whose sources fail or
+            // return no rows must still close an expired segment.
+            let age = Duration::from_secs(config.segment_max_age_secs);
+            if segment.age_expired(Instant::now(), age) {
+                let dest = close_open_segment(&mut journal, &writer_owner, &mut segment, "age")?;
+                sched.mark_segment_opened();
+                announce(&format!("wrote {} reason=age", dest.display()));
+                written_this_tick.push(dest);
+                stop_if_persistence_unhealthy(&journal)?;
             }
-            _ = sigterm.recv() => break,
-            _ = sigint.recv() => break,
-        };
-        let due = sched.plan(Instant::now(), forced);
-        let mut written_this_tick: Vec<PathBuf> = Vec::new();
-        // The age valve runs before collection: a tick whose sources fail or
-        // return no rows must still close an expired segment.
-        let age = Duration::from_secs(config.segment_max_age_secs);
-        if segment.age_expired(Instant::now(), age) {
-            let dest = close_open_segment(&mut journal, &writer_owner, &mut segment, "age")?;
-            sched.mark_segment_opened();
-            announce(&format!("wrote {} reason=age", dest.display()));
-            written_this_tick.push(dest);
+            if due.is_empty() {
+                run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
+                continue;
+            }
+            logs.rescan(&mut |observation| pg_telemetry.observe(observation))
+                .await;
+            // PostgreSQL batches reach the WAL before the query stream fetches
+            // another batch. They never ride on the incremental log windows.
+            let shutdown = async {
+                tokio::select! {
+                    _ = sigterm.recv() => (),
+                    _ = sigint.recv() => (),
+                }
+            };
+            let Some(pg_outcome) = complete_or_shutdown(
+                Box::pin(run_pg_collection_cycle(
+                    &mut pg,
+                    &mut journal,
+                    &writer_owner,
+                    &config,
+                    &due,
+                    &mut segment,
+                    &mut sched,
+                    &mut pg_telemetry,
+                )),
+                shutdown,
+            )
+            .await
+            else {
+                pg.close_connections();
+                break;
+            };
+            let pg_outcome = pg_outcome?;
+            written_this_tick.extend(pg_outcome.written);
+            let opening_settings = pg.last_settings();
+            let collection_due = if pg_outcome.opening_os_collected && !segment.is_empty() {
+                due.without(SourceKind::OsMountTopo)
+            } else {
+                due.clone()
+            };
+            written_this_tick.extend(run_collection_cycle(
+                &mut journal,
+                &writer_owner,
+                &config,
+                &collection_due,
+                opening_settings.as_deref().unwrap_or(&[]),
+                &mut segment,
+                &mut sched,
+                &mut logs,
+                pg_outcome.appended,
+            )?);
             stop_if_persistence_unhealthy(&journal)?;
-        }
-        if due.is_empty() {
             run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
+        }
+        Ok(())
+    }
+    .await;
+    pg_telemetry.shutdown(Instant::now());
+    result
+}
+
+async fn complete_or_shutdown<T>(
+    work: impl Future<Output = T>,
+    shutdown: impl Future<Output = ()>,
+) -> Option<T> {
+    tokio::pin!(work);
+    tokio::pin!(shutdown);
+    tokio::select! {
+        biased;
+        () = &mut shutdown => None,
+        output = &mut work => Some(output),
+    }
+}
+
+#[derive(Default)]
+struct PgCollectionOutcome {
+    written: Vec<PathBuf>,
+    appended: bool,
+    opening_os_collected: bool,
+}
+
+#[derive(Debug)]
+enum PgAppendError {
+    Rejected,
+    Fatal(anyhow::Error),
+}
+
+/// Stream due `PostgreSQL` sources into independently admitted WAL parts.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the PostgreSQL stream needs the same durable segment state as ordinary collection"
+)]
+async fn run_pg_collection_cycle(
+    pg: &mut PgSources,
+    journal: &mut Journal,
+    writer_owner: &WriterOwner,
+    config: &Config,
+    due: &DueSet,
+    segment: &mut SegmentState,
+    sched: &mut Scheduler,
+    telemetry: &mut PgTelemetry,
+) -> Result<PgCollectionOutcome> {
+    let mut outcome = PgCollectionOutcome::default();
+    let mut last_ts = None;
+    let result = pg
+        .collect(
+            due,
+            &mut |observation| telemetry.observe(observation),
+            |batch, settings| {
+                let Some(ts) = collection_timestamp_after(last_ts) else {
+                    return Err(PgAppendError::Rejected);
+                };
+                last_ts = Some(ts);
+                let admitted = append_pending_pg_batch(
+                    journal,
+                    writer_owner,
+                    config,
+                    &batch,
+                    settings.as_deref().unwrap_or(&[]),
+                    ts,
+                    segment,
+                    sched,
+                )?;
+                outcome.written.extend(admitted.written);
+                outcome.appended = true;
+                outcome.opening_os_collected |= admitted.opening_os_collected;
+                Ok(admitted.write)
+            },
+        )
+        .await;
+    match result {
+        Ok(()) | Err(PgAppendError::Rejected) => Ok(outcome),
+        Err(PgAppendError::Fatal(error)) => Err(error),
+    }
+}
+
+struct PgPendingOutcome {
+    written: Vec<PathBuf>,
+    write: BatchWrite,
+    opening_os_collected: bool,
+}
+
+/// Retain one `PostgreSQL` batch through a pre-append close and encode it once
+/// more against the new segment dictionary before the stream may advance.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a retained batch needs the journal, owner, limits, timestamp, and segment state"
+)]
+fn append_pending_pg_batch(
+    journal: &mut Journal,
+    writer_owner: &WriterOwner,
+    config: &Config,
+    batch: &PgBatch,
+    opening_settings: &[kronika_source_pg::settings::SettingsRow],
+    ts: i64,
+    segment: &mut SegmentState,
+    sched: &mut Scheduler,
+) -> std::result::Result<PgPendingOutcome, PgAppendError> {
+    let mut written = Vec::new();
+    let mut encode_elapsed = Duration::ZERO;
+    let mut append_elapsed = Duration::ZERO;
+    for attempt in 0..2 {
+        let opening_due = segment
+            .is_empty()
+            .then(|| sched.recollection_due(&DueSet::default(), Instant::now()));
+        let includes_settings = matches!(batch, PgBatch::Settings(_))
+            || (segment.needs_pg_settings() && !opening_settings.is_empty());
+        let buffers = buffer_pg_batch(segment, batch, opening_settings, opening_due.as_ref(), ts)
+            .map_err(|()| {
+            PgAppendError::Fatal(anyhow::anyhow!(
+                "buffer the PostgreSQL batch after updating segment state"
+            ))
+        })?;
+        let encode_started = Instant::now();
+        let flushed = match encode_window(buffers, segment.interner()) {
+            Ok(flushed) => flushed,
+            Err(err) => {
+                log_event(
+                    LogLevel::Error,
+                    "window_encode_failure",
+                    &[field("error", format!("{err:#}"))],
+                );
+                return Err(PgAppendError::Fatal(
+                    err.context("encode the PostgreSQL batch"),
+                ));
+            }
+        };
+        encode_elapsed = encode_elapsed.saturating_add(encode_started.elapsed());
+        let encoded_bytes = u64::try_from(flushed.summary.part_bytes).unwrap_or(u64::MAX);
+        let append_started = Instant::now();
+        let finished = match append_window_and_maybe_close(
+            journal,
+            writer_owner,
+            config,
+            segment,
+            ts,
+            false,
+            &flushed,
+        ) {
+            Ok(finished) => finished,
+            Err(failure) => {
+                let (close_failed, err) = failure.into_parts();
+                log_event(
+                    LogLevel::Error,
+                    "window_append_failure",
+                    &[field("error", format!("{err:#}"))],
+                );
+                return if close_failed {
+                    Err(PgAppendError::Fatal(err.context(
+                        "close the segment while appending a PostgreSQL batch",
+                    )))
+                } else {
+                    Err(PgAppendError::Fatal(
+                        err.context("append the PostgreSQL batch to the journal"),
+                    ))
+                };
+            }
+        };
+        append_elapsed = append_elapsed.saturating_add(append_started.elapsed());
+        let retry = finished
+            .iter()
+            .any(|(_, reason)| matches!(*reason, "format-limit" | "journal-full"));
+        for (dest, reason) in finished {
+            sched.mark_segment_opened();
+            announce(&format!("wrote {} reason={reason}", dest.display()));
+            written.push(dest);
+        }
+        if retry {
+            if attempt != 0 {
+                return Err(PgAppendError::Fatal(anyhow::anyhow!(
+                    "a fresh segment unexpectedly requested another pre-append close"
+                )));
+            }
             continue;
         }
-        logs.rescan().await;
-        written_this_tick.extend(run_collection_cycle(
-            &mut journal,
-            &writer_owner,
-            &config,
-            &due,
-            &mut segment,
-            &mut sched,
-            &mut logs,
-        )?);
-        stop_if_persistence_unhealthy(&journal)?;
-        run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
+        if includes_settings && !segment.is_empty() {
+            segment.mark_pg_settings_present();
+        }
+        let frame_bytes = encoded_bytes
+            .saturating_add(u64::try_from(kronika_format::FRAME_HEADER_LEN).unwrap_or(u64::MAX));
+        return Ok(PgPendingOutcome {
+            written,
+            opening_os_collected: opening_due.is_some(),
+            write: BatchWrite {
+                encode_elapsed,
+                append_elapsed,
+                encoded_bytes,
+                wal_bytes_appended: frame_bytes,
+            },
+        });
     }
-    Ok(())
+    Err(PgAppendError::Fatal(anyhow::anyhow!(
+        "a retained PostgreSQL batch exhausted its append attempts"
+    )))
+}
+
+fn buffer_pg_batch(
+    segment: &mut SegmentState,
+    batch: &PgBatch,
+    opening_settings: &[kronika_source_pg::settings::SettingsRow],
+    opening_due: Option<&DueSet>,
+    ts: i64,
+) -> std::result::Result<SectionBuffers, ()> {
+    let fs = ProcFs::from_env();
+    let in_container = detect_container(&fs);
+    let mut buffers = SectionBuffers::new();
+    if segment.is_empty() {
+        let facts = collect_instance().map_err(|err| {
+            log_buffer_failure(&err);
+        })?;
+        push_instance_metadata(
+            &mut buffers,
+            segment.interner_mut(),
+            &facts,
+            in_container,
+            ts,
+        )
+        .map_err(|err| {
+            log_buffer_failure(&err);
+        })?;
+    }
+    let settings = if segment.needs_pg_settings() {
+        opening_settings
+    } else {
+        &[]
+    };
+    if let Some(due) = opening_due {
+        let os = collect_os_sources(
+            &fs,
+            segment.interner_mut(),
+            OsScope::Host.as_u8(),
+            ts,
+            in_container,
+            due,
+        );
+        push_os_sources(&mut buffers, &os).map_err(|err| {
+            log_buffer_failure(&err);
+        })?;
+    }
+    push_pg_batch(&mut buffers, segment.interner_mut(), batch, settings).map_err(|err| {
+        log_buffer_failure(&err);
+    })?;
+    Ok(buffers)
 }
 
 /// One collection cycle: read the due sources, append bounded windows, and
@@ -235,9 +537,11 @@ fn run_collection_cycle(
     writer_owner: &WriterOwner,
     config: &Config,
     due: &DueSet,
+    opening_settings: &[kronika_source_pg::settings::SettingsRow],
     segment: &mut SegmentState,
     sched: &mut Scheduler,
     logs: &mut LogSources,
+    already_appended: bool,
 ) -> Result<Vec<PathBuf>> {
     let Some(parse_now) = collection_timestamp() else {
         return Ok(Vec::new());
@@ -245,7 +549,7 @@ fn run_collection_cycle(
     let mut first_window = true;
     let mut last_ts = None;
     let mut written = Vec::new();
-    let mut appended = false;
+    let mut appended = already_appended;
     let completed = logs.collect(due, parse_now, |rows| {
         let batch_due = if first_window {
             first_window = false;
@@ -263,6 +567,7 @@ fn run_collection_cycle(
             config,
             &batch_due,
             rows,
+            opening_settings,
             ts,
             segment,
             sched,
@@ -284,6 +589,7 @@ fn run_collection_cycle(
             config,
             due,
             &LogRows::default(),
+            opening_settings,
             ts,
             segment,
             sched,
@@ -319,6 +625,7 @@ fn append_pending_window(
     config: &Config,
     due: &DueSet,
     log_rows: &LogRows,
+    opening_settings: &[kronika_source_pg::settings::SettingsRow],
     ts: i64,
     segment: &mut SegmentState,
     sched: &mut Scheduler,
@@ -326,13 +633,20 @@ fn append_pending_window(
     let mut outcome = PendingWindowOutcome::default();
     let mut attempt_due = due_for_window(segment, due, sched);
     for attempt in 0..2 {
-        let buffers = match buffer_window(segment, &attempt_due, log_rows, ts) {
+        let fresh_segment = segment.is_empty();
+        let includes_settings = segment.needs_pg_settings() && !opening_settings.is_empty();
+        let buffers = match buffer_window(segment, &attempt_due, log_rows, opening_settings, ts) {
             Ok(Some(buffers)) => buffers,
             Ok(None) => {
                 outcome.accepted = true;
                 return Ok(outcome);
             }
-            Err(BufferFailure) => return Ok(outcome),
+            Err(BufferFailure) => {
+                if fresh_segment {
+                    anyhow::bail!("buffer the collection window after updating segment state");
+                }
+                return Ok(outcome);
+            }
         };
         let flushed = match encode_window(buffers, segment.interner()) {
             Ok(flushed) => flushed,
@@ -342,6 +656,9 @@ fn append_pending_window(
                     "window_encode_failure",
                     &[field("error", format!("{err:#}"))],
                 );
+                if fresh_segment {
+                    return Err(err.context("encode the collection window"));
+                }
                 return Ok(outcome);
             }
         };
@@ -373,6 +690,9 @@ fn append_pending_window(
                     attempt_due = sched.recollection_due(due, Instant::now());
                     continue;
                 }
+                if includes_settings && !segment.is_empty() {
+                    segment.mark_pg_settings_present();
+                }
                 outcome.accepted = true;
                 outcome.appended = true;
                 return Ok(outcome);
@@ -384,10 +704,13 @@ fn append_pending_window(
                     "window_append_failure",
                     &[field("error", format!("{err:#}"))],
                 );
-                if close_failed {
-                    return Err(err.context("close the segment for the collection window"));
-                }
-                return Ok(outcome);
+                return if close_failed {
+                    Err(err.context("close the segment for the collection window"))
+                } else if fresh_segment {
+                    Err(err.context("append the collection window to the journal"))
+                } else {
+                    Ok(outcome)
+                };
             }
         }
     }
@@ -410,12 +733,12 @@ fn buffer_window(
     segment: &mut SegmentState,
     due: &DueSet,
     log_rows: &LogRows,
+    opening_settings: &[kronika_source_pg::settings::SettingsRow],
     ts: i64,
 ) -> std::result::Result<Option<SectionBuffers>, BufferFailure> {
     let fs = ProcFs::from_env();
     let in_container = detect_container(&fs);
     let mut buffers = SectionBuffers::new();
-
     if segment.is_empty() {
         let facts = collect_instance().map_err(|err| {
             log_buffer_failure(&err);
@@ -441,7 +764,13 @@ fn buffer_window(
         in_container,
         due,
     );
-    if let Err(err) = push_os_sources(&mut buffers, &os)
+    let settings = if segment.needs_pg_settings() {
+        opening_settings
+    } else {
+        &[]
+    };
+    if let Err(err) = push_pg_settings(&mut buffers, segment.interner_mut(), settings)
+        .and_then(|()| push_os_sources(&mut buffers, &os))
         .and_then(|()| push_log_sources(&mut buffers, segment.interner_mut(), log_rows))
     {
         log_buffer_failure(&err);

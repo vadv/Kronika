@@ -1,7 +1,9 @@
-use super::{ConnectionTarget, InvalidConnection};
+use super::{
+    ConnectionTarget, InvalidConnection, POSTGRES_LOG_FACTS_QUERY, POSTGRES_SYSTEM_IDENTIFIER_QUERY,
+};
 
 fn target(raw: &str) -> ConnectionTarget {
-    ConnectionTarget::parse(raw).expect("parse connection")
+    ConnectionTarget::parse(raw, 7).expect("parse connection")
 }
 
 #[test]
@@ -74,23 +76,23 @@ fn multiple_hosts_use_default_broadcast_and_per_host_ports() {
 fn ipv6_is_bracketed_and_logical_host_wins_over_hostaddr() {
     assert_eq!(
         target("host=2001:db8::1 port=6432").label(),
-        "[2001:db8::1]:6432"
+        "server-default@[2001:db8::1]:6432"
     );
     assert_eq!(
         target("postgresql://[2001:db8::1]:6432/prod").label(),
-        "[2001:db8::1]:6432"
+        "server-default@[2001:db8::1]:6432"
     );
     assert_eq!(
         target("host=fe80::1%eth0 port=6432").label(),
-        "[fe80::1%eth0]:6432"
+        "server-default@[fe80::1%eth0]:6432"
     );
     assert_eq!(
         target("host=logical.example hostaddr=192.0.2.10 port=6543").label(),
-        "logical.example:6543"
+        "server-default@logical.example:6543"
     );
     assert_eq!(
         target("hostaddr=2001:db8::2 port=6544").label(),
-        "[2001:db8::2]:6544"
+        "server-default@[2001:db8::2]:6544"
     );
 }
 
@@ -108,17 +110,26 @@ fn unix_sockets_are_distinct_and_can_be_percent_encoded() {
 }
 
 #[test]
-fn missing_user_has_no_prefix() {
+fn missing_user_is_labelled_as_the_server_default() {
     assert_eq!(
         target("host=db.example port=6543").label(),
-        "db.example:6543"
+        "server-default@db.example:6543"
+    );
+}
+
+#[test]
+fn server_reported_user_replaces_the_default_label() {
+    let parsed = target("host=db.example port=6543");
+    assert_eq!(
+        parsed.label_for_user("postgres"),
+        "postgres@db.example:6543"
     );
 }
 
 #[test]
 fn malformed_and_structurally_invalid_inputs_return_opaque_errors() {
     let raw = "host='unterminated MALFORMED_SECRET";
-    let error = ConnectionTarget::parse(raw).expect_err("reject malformed connection");
+    let error = ConnectionTarget::parse(raw, 0).expect_err("reject malformed connection");
     assert_eq!(error, InvalidConnection);
     let rendered = format!("{error:?}");
     assert!(!rendered.contains("MALFORMED_SECRET"));
@@ -130,8 +141,22 @@ fn malformed_and_structurally_invalid_inputs_return_opaque_errors() {
         "host=one,two port=6000,6001,6002",
         "host=db.example passfile=PASSFILE_SECRET",
     ] {
-        let error = ConnectionTarget::parse(invalid).expect_err("reject invalid connection");
+        let error = ConnectionTarget::parse(invalid, 0).expect_err("reject invalid connection");
         assert_eq!(error, InvalidConnection);
         assert!(!format!("{error:?}").contains("PASSFILE_SECRET"));
+    }
+}
+
+#[test]
+fn log_facts_and_identity_are_separate_marked_queries() {
+    let parsed = target("host=db.example user=monitor");
+
+    assert_eq!(parsed.source_index(), 7);
+    assert!(POSTGRES_LOG_FACTS_QUERY.contains("pg_current_logfile()"));
+    assert!(!POSTGRES_LOG_FACTS_QUERY.contains("pg_control_system()"));
+    assert!(POSTGRES_SYSTEM_IDENTIFIER_QUERY.contains("pg_control_system()"));
+    for sql in [POSTGRES_LOG_FACTS_QUERY, POSTGRES_SYSTEM_IDENTIFIER_QUERY] {
+        assert!(sql.contains(env!("CARGO_PKG_VERSION")), "{sql}");
+        assert!(sql.contains("log_sources/settings.rs"), "{sql}");
     }
 }

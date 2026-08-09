@@ -36,10 +36,14 @@ Concrete consequences:
   there costs more than a lost segment.
 - **The collector's peak RSS stays under 20 MB on an ordinary host**, and each
   segment write logs it as `rss_kib`. A host with thirty thousand processes is
-  a host already in trouble; the collector reads all of them and is allowed to
-  die trying rather than report a fraction. Log files are the exception: their
-  size is set by someone else's software and they are read through a fixed
-  buffer.
+  a host already in trouble; an ordinary OS snapshot reads all of them and is
+  allowed to die trying rather than report a fraction. Log files and potentially
+  large PostgreSQL query results are streamed through bounded buffers. A
+  PostgreSQL batch limits retained memory, not the number of source rows; each
+  batch reaches the WAL before the collector fetches the next one. If a query
+  fails after earlier batches reached the WAL, those batches remain and the
+  collector logs the query error. It keeps no separate completeness or
+  continuity state.
 
 ## Storage format
 

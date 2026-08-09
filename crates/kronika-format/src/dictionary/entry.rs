@@ -79,6 +79,8 @@ pub struct DictStats {
     pub string_count: usize,
     /// Number of `dict.blobs` entries.
     pub blob_count: usize,
+    /// Number of truncated `dict.blobs` entries.
+    pub truncated_blob_count: usize,
     /// Number of `dict.hot_strings` entries.
     pub hot_count: usize,
     /// Total stored bytes of `dict.strings` values.

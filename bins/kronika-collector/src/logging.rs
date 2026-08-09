@@ -181,7 +181,11 @@ fn emit_log_event(level: LogLevel, action: &'static str, fields: &[LogField<'_>]
     eprintln!("{line}");
 }
 
-fn render_log_line(level: LogLevel, action: &'static str, fields: &[LogField<'_>]) -> String {
+pub(crate) fn render_log_line(
+    level: LogLevel,
+    action: &'static str,
+    fields: &[LogField<'_>],
+) -> String {
     let mut line = String::from("kronika-collector");
     push_log_field(&mut line, "level", level.as_str());
     push_log_field(&mut line, "action", action);
