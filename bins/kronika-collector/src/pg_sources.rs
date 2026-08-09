@@ -535,10 +535,7 @@ impl PgSources {
                         measured.success();
                         true
                     }
-                    other => matches!(
-                        finish_failed(measured, other),
-                        QueryCompletion::SourceFailed
-                    ),
+                    other => fixed_source_can_continue(finish_failed(measured, other)),
                 }
             };
             if !result {
@@ -1580,10 +1577,7 @@ async fn collect_bgwriter<E>(
             measured.success();
             Ok(true)
         }
-        other => Ok(matches!(
-            finish_failed(measured, other),
-            QueryCompletion::SourceFailed
-        )),
+        other => Ok(fixed_source_can_continue(finish_failed(measured, other))),
     }
 }
 
@@ -1626,10 +1620,7 @@ async fn collect_checkpointer<E>(
             measured.success();
             Ok(true)
         }
-        other => Ok(matches!(
-            finish_failed(measured, other),
-            QueryCompletion::SourceFailed
-        )),
+        other => Ok(fixed_source_can_continue(finish_failed(measured, other))),
     }
 }
 
@@ -1885,6 +1876,13 @@ enum QueryCompletion {
     CapabilityChanged,
     ConnectionFailed,
     TimedOut,
+}
+
+const fn fixed_source_can_continue(completion: QueryCompletion) -> bool {
+    matches!(
+        completion,
+        QueryCompletion::SourceFailed | QueryCompletion::CapabilityChanged
+    )
 }
 
 async fn open_session<'a>(

@@ -16,8 +16,8 @@ use super::{
     BatchWrite, CachedSettings, DISCOVERY_INTERVAL, DatabaseCapabilities, GenerationProbe,
     PgObservation, PgSources, QueryCompletion, QueryFailure, QueryOutcome, SERVER_PROBE_SQL,
     cached_settings_for_generation, capabilities_from_inventory, capabilities_match_generation,
-    capability_sqlstate, discovery_due, finish_batched_kind, measure, selected_statements,
-    selected_statements_info, selected_store_plans, selected_store_plans_info,
+    capability_sqlstate, discovery_due, finish_batched_kind, fixed_source_can_continue, measure,
+    selected_statements, selected_statements_info, selected_store_plans, selected_store_plans_info,
     session_for_generation, try_another_database,
 };
 
@@ -148,6 +148,18 @@ fn extension_fallback_stops_after_completion_or_an_admitted_batch() {
         assert!(try_another_database(completion, false));
         assert!(!try_another_database(completion, true));
     }
+}
+
+#[test]
+fn fixed_sources_skip_capability_errors_without_dropping_the_generation() {
+    assert!(fixed_source_can_continue(QueryCompletion::SourceFailed));
+    assert!(fixed_source_can_continue(
+        QueryCompletion::CapabilityChanged
+    ));
+    assert!(!fixed_source_can_continue(
+        QueryCompletion::ConnectionFailed
+    ));
+    assert!(!fixed_source_can_continue(QueryCompletion::TimedOut));
 }
 
 #[test]
