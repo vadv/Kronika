@@ -14,18 +14,6 @@ use tokio_postgres::types::Type;
 use crate::Session;
 use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
 
-/// SQL transparency marker for collector queries.
-macro_rules! marked {
-    ($sql:literal) => {
-        concat!(
-            "/* kronika:",
-            env!("CARGO_PKG_VERSION"),
-            " crates/kronika-source-pg/src/progress_vacuum.rs */ ",
-            $sql,
-        )
-    };
-}
-
 /// The exact `pg_stat_progress_vacuum` column set for one server major.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProgressVacuumVersion {
@@ -378,21 +366,7 @@ mod tests {
         ProgressVacuumRow, ProgressVacuumV1Row, ProgressVacuumV2Row, ProgressVacuumV3Row,
         ProgressVacuumVersion, progress_vacuum_query, progress_vacuum_version, to_v1, to_v2, to_v3,
     };
-    use kronika_registry::StrId;
-    use std::convert::Infallible;
-
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "must match the fallible interner signature the converters expect"
-    )]
-    fn fake_intern(bytes: &[u8]) -> Result<StrId, Infallible> {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for &b in bytes {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        Ok(StrId(h | 1))
-    }
+    use crate::test_intern as fake_intern;
 
     fn v1_raw() -> ProgressVacuumV1Row {
         ProgressVacuumV1Row {
@@ -519,11 +493,8 @@ mod tests {
 
     #[test]
     fn intern_failure_propagates() {
-        fn boom(_b: &[u8]) -> Result<StrId, &'static str> {
-            Err("full")
-        }
-        assert_eq!(to_v1(&v1_raw(), boom), Err("full"));
-        assert_eq!(to_v2(&v2_raw(), boom), Err("full"));
-        assert_eq!(to_v3(&v3_raw(), boom), Err("full"));
+        assert_eq!(to_v1(&v1_raw(), |_| Err("full")), Err("full"));
+        assert_eq!(to_v2(&v2_raw(), |_| Err("full")), Err("full"));
+        assert_eq!(to_v3(&v3_raw(), |_| Err("full")), Err("full"));
     }
 }

@@ -3,21 +3,7 @@ use super::{
     store_plans_query, to_datasentinel, to_ossc, to_vadv,
 };
 use crate::extension::{ExtensionSchema, InventoryEntry};
-use kronika_registry::StrId;
-use std::convert::Infallible;
-
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "must match the fallible interner signature to_* expects"
-)]
-fn fake_intern(bytes: &[u8]) -> Result<StrId, Infallible> {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in bytes {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    Ok(StrId(h | 1))
-}
+use crate::test_intern as fake_intern;
 
 fn inventory(extversion: &str) -> InventoryEntry {
     InventoryEntry {
@@ -307,8 +293,5 @@ fn a_row_whose_plan_text_did_not_fit_keeps_its_numbers() {
 
 #[test]
 fn intern_failure_propagates() {
-    fn boom(_b: &[u8]) -> Result<StrId, &'static str> {
-        Err("full")
-    }
-    assert_eq!(to_ossc(&ossc_row(), boom), Err("full"));
+    assert_eq!(to_ossc(&ossc_row(), |_| Err("full")), Err("full"));
 }

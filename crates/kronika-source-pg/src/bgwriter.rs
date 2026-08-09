@@ -7,17 +7,6 @@ use tokio_postgres::types::Type;
 use crate::Session;
 use crate::query::{self, QueryStats};
 
-macro_rules! marked {
-    ($sql:literal) => {
-        concat!(
-            "/* kronika:",
-            env!("CARGO_PKG_VERSION"),
-            " crates/kronika-source-pg/src/bgwriter.rs */ ",
-            $sql,
-        )
-    };
-}
-
 /// Layout selected by the `PostgreSQL` major version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BgwriterVersion {

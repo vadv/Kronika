@@ -17,18 +17,6 @@ use crate::Session;
 use crate::databases::Database;
 use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
 
-/// Prefix a query literal with the kronika marker (SQL-transparency rule).
-macro_rules! marked {
-    ($sql:literal) => {
-        concat!(
-            "/* kronika:",
-            env!("CARGO_PKG_VERSION"),
-            " crates/kronika-source-pg/src/user_tables.rs */ ",
-            $sql,
-        )
-    };
-}
-
 /// The `pg_stat_user_tables` layout selected by the server major version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserTablesVersion {

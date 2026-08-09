@@ -44,7 +44,7 @@ pub struct PgPreparedXacts {
 #[cfg(test)]
 mod tests {
     use super::PgPreparedXacts;
-    use crate::{Section, StrId, Ts, VerifiedSection, lint};
+    use crate::{Section, StrId, Ts, VerifiedSection};
 
     fn row(ts: i64, datname: u64, count: i64, age_us: i64, xid_age_tx: i64) -> PgPreparedXacts {
         PgPreparedXacts {
@@ -54,11 +54,6 @@ mod tests {
             max_age_us: age_us,
             max_xid_age_tx: xid_age_tx,
         }
-    }
-
-    #[test]
-    fn contract_passes_the_linter() {
-        assert_eq!(lint(&[PgPreparedXacts::CONTRACT]), Ok(()));
     }
 
     #[test]

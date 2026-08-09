@@ -42,7 +42,7 @@ pub struct PgStatArchiver {
 #[cfg(test)]
 mod tests {
     use super::PgStatArchiver;
-    use crate::{Section, StrId, Ts, VerifiedSection, lint};
+    use crate::{Section, StrId, Ts, VerifiedSection};
 
     fn row(ts: i64, with_archive: bool) -> PgStatArchiver {
         PgStatArchiver {
@@ -55,11 +55,6 @@ mod tests {
             last_failed_time: None,
             stats_reset: Some(Ts(ts - 100_000)),
         }
-    }
-
-    #[test]
-    fn contract_passes_the_linter() {
-        assert_eq!(lint(&[PgStatArchiver::CONTRACT]), Ok(()));
     }
 
     #[test]

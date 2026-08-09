@@ -14,18 +14,6 @@ use tokio_postgres::types::Type;
 use crate::Session;
 use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
 
-/// Prefix a query literal with the kronika marker (SQL-transparency rule).
-macro_rules! marked {
-    ($sql:literal) => {
-        concat!(
-            "/* kronika:",
-            env!("CARGO_PKG_VERSION"),
-            " crates/kronika-source-pg/src/prepared_xacts.rs */ ",
-            $sql,
-        )
-    };
-}
-
 /// One raw per-database `pg_prepared_xacts` aggregate row.
 ///
 /// `datname` is owned here and interned by the caller; numbers are owned
@@ -107,21 +95,7 @@ pub async fn collect_prepared_xacts<E>(
 #[cfg(test)]
 mod tests {
     use super::{PreparedXactsRow, to_prepared_xacts};
-    use kronika_registry::StrId;
-    use std::convert::Infallible;
-
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "must match the fallible interner signature to_prepared_xacts expects"
-    )]
-    fn fake_intern(bytes: &[u8]) -> Result<StrId, Infallible> {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for &b in bytes {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        Ok(StrId(h | 1))
-    }
+    use crate::test_intern as fake_intern;
 
     #[test]
     fn maps_every_field_and_interns_datname() {
@@ -142,9 +116,6 @@ mod tests {
 
     #[test]
     fn intern_failure_propagates() {
-        fn boom(_b: &[u8]) -> Result<StrId, &'static str> {
-            Err("full")
-        }
         let r = PreparedXactsRow {
             ts: 1,
             datname: "db".to_owned(),
@@ -152,6 +123,6 @@ mod tests {
             max_age_us: 1,
             max_xid_age_tx: 1,
         };
-        assert_eq!(to_prepared_xacts(&r, boom), Err("full"));
+        assert_eq!(to_prepared_xacts(&r, |_| Err("full")), Err("full"));
     }
 }

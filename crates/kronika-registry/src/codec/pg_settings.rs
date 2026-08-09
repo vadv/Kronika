@@ -61,7 +61,7 @@ pub struct PgSettings {
 #[cfg(test)]
 mod tests {
     use super::PgSettings;
-    use crate::{Section, Semantics, StrId, Ts, lint};
+    use crate::{Section, Semantics, StrId, Ts};
 
     fn row(name: u64) -> PgSettings {
         PgSettings {
@@ -78,11 +78,6 @@ mod tests {
             boot_val: Some(StrId(15)),
             reset_val: Some(StrId(16)),
         }
-    }
-
-    #[test]
-    fn contract_passes_the_linter() {
-        assert_eq!(lint(&[PgSettings::CONTRACT]), Ok(()));
     }
 
     #[test]

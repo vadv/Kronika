@@ -10,18 +10,6 @@ use tokio_postgres::types::Type;
 use crate::Session;
 use crate::query::{self, QueryStats};
 
-/// SQL transparency marker for collector queries.
-macro_rules! marked {
-    ($sql:literal) => {
-        concat!(
-            "/* kronika:",
-            env!("CARGO_PKG_VERSION"),
-            " crates/kronika-source-pg/src/wal.rs */ ",
-            $sql,
-        )
-    };
-}
-
 /// `pg_stat_wal` layout for a server major.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WalVersion {

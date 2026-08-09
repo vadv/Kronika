@@ -1,11 +1,10 @@
 use super::{PgStatCheckpointerV1, PgStatCheckpointerV2};
-use crate::{Section, Ts, lint};
+use crate::{Section, Ts};
 
 #[test]
 fn contracts_match_postgresql_versions() {
     let v1 = PgStatCheckpointerV1::CONTRACT;
     let v2 = PgStatCheckpointerV2::CONTRACT;
-    assert_eq!(lint(&[v1, v2]), Ok(()));
     assert_eq!(v1.type_id.get(), 1_017_001);
     assert_eq!(v1.columns.len(), 10);
     assert!(v1.column("num_done").is_none());

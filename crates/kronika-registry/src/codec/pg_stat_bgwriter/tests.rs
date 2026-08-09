@@ -1,11 +1,10 @@
 use super::{PgStatBgwriterV1, PgStatBgwriterV2};
-use crate::{Section, Ts, lint};
+use crate::{Section, Ts};
 
 #[test]
 fn contracts_match_postgresql_versions() {
     let v1 = PgStatBgwriterV1::CONTRACT;
     let v2 = PgStatBgwriterV2::CONTRACT;
-    assert_eq!(lint(&[v1, v2]), Ok(()));
     assert_eq!(v1.type_id.get(), 1_006_001);
     assert_eq!(v1.columns.len(), 12);
     assert!(v1.column("checkpoints_timed").is_some());

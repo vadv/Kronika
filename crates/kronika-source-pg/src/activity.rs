@@ -8,20 +8,8 @@ use kronika_registry::pg_stat_activity::{PgStatActivityV1, PgStatActivityV2, PgS
 use kronika_registry::{StrId, Ts};
 use tokio_postgres::types::Type;
 
-use crate::Session;
 use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
-
-/// Add the collector marker required by the SQL-transparency rule.
-macro_rules! marked {
-    ($sql:literal) => {
-        concat!(
-            "/* kronika:",
-            env!("CARGO_PKG_VERSION"),
-            " crates/kronika-source-pg/src/activity.rs */ ",
-            $sql,
-        )
-    };
-}
+use crate::{Session, intern_opt as opt};
 
 /// The `pg_stat_activity` layout selected by the server major version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,17 +147,6 @@ pub struct ActivityRow {
     pub query_start: Option<i64>,
     /// Last state change, unix microseconds.
     pub state_change: Option<i64>,
-}
-
-/// Intern an optional string, preserving `None`.
-fn opt<E>(
-    intern: &mut impl FnMut(&[u8]) -> Result<StrId, E>,
-    value: Option<&str>,
-) -> Result<Option<StrId>, E> {
-    match value {
-        Some(s) => Ok(Some(intern(s.as_bytes())?)),
-        None => Ok(None),
-    }
 }
 
 /// Build a `1_001_003` row, interning strings through `intern`.
@@ -321,22 +298,7 @@ mod tests {
     use super::{
         ActivityRow, ActivityVersion, activity_query, activity_version, to_v1, to_v2, to_v3,
     };
-    use kronika_registry::StrId;
-    use std::convert::Infallible;
-
-    /// Deterministic stand-in for the segment interner (FNV-1a, forced nonzero).
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "must match the fallible interner signature to_v* expects"
-    )]
-    fn fake_intern(bytes: &[u8]) -> Result<StrId, Infallible> {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for &b in bytes {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        Ok(StrId(h | 1))
-    }
+    use crate::test_intern as fake_intern;
 
     fn sample_row() -> ActivityRow {
         ActivityRow {
@@ -452,9 +414,6 @@ mod tests {
 
     #[test]
     fn intern_failure_propagates() {
-        fn boom(_b: &[u8]) -> Result<StrId, &'static str> {
-            Err("full")
-        }
-        assert_eq!(to_v3(&sample_row(), boom), Err("full"));
+        assert_eq!(to_v3(&sample_row(), |_| Err("full")), Err("full"));
     }
 }

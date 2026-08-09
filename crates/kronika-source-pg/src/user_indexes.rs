@@ -10,21 +10,9 @@ use kronika_registry::pg_stat_user_indexes::{PgStatUserIndexesV1, PgStatUserInde
 use kronika_registry::{StrId, Ts};
 use tokio_postgres::types::Type;
 
-use crate::Session;
 use crate::databases::Database;
 use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
-
-/// Prefix a query literal with the kronika marker (SQL-transparency rule).
-macro_rules! marked {
-    ($sql:literal) => {
-        concat!(
-            "/* kronika:",
-            env!("CARGO_PKG_VERSION"),
-            " crates/kronika-source-pg/src/user_indexes.rs */ ",
-            $sql,
-        )
-    };
-}
+use crate::{Session, intern_opt as opt};
 
 /// The `pg_stat_user_indexes` layout selected by the server major version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,17 +130,6 @@ pub struct UserIndexesRow {
     pub idx_blks_read: i64,
     /// Shared-buffer hits for index blocks.
     pub idx_blks_hit: i64,
-}
-
-/// Intern an optional string, preserving `None`.
-fn opt<E>(
-    intern: &mut impl FnMut(&[u8]) -> Result<StrId, E>,
-    value: Option<&str>,
-) -> Result<Option<StrId>, E> {
-    match value {
-        Some(text) => Ok(Some(intern(text.as_bytes())?)),
-        None => Ok(None),
-    }
 }
 
 /// Build a `1_014_002` row (PG16+ layout), interning every string.

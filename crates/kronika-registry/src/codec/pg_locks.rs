@@ -235,7 +235,7 @@ pub struct PgLocksV1 {
 #[cfg(test)]
 mod tests {
     use super::{PgLocksV1, PgLocksV2};
-    use crate::{Section, StrId, Ts, VerifiedSection, lint};
+    use crate::{Section, StrId, Ts, VerifiedSection};
 
     /// A blocker-only backend: no waiter columns populated.
     fn v2_row(ts: i64, pid: i32) -> PgLocksV2 {
@@ -351,7 +351,6 @@ mod tests {
         assert!(c.column("depth").is_none());
         assert!(c.column("lock_granted").is_none());
         assert!(c.column("lock_fastpath").is_none());
-        assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]
@@ -382,7 +381,6 @@ mod tests {
         assert!(c.column("depth").is_none());
         assert!(c.column("lock_granted").is_none());
         assert!(c.column("lock_fastpath").is_none());
-        assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]

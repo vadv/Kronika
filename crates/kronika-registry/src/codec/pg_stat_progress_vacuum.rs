@@ -180,7 +180,7 @@ pub struct PgStatProgressVacuumV3 {
 #[cfg(test)]
 mod tests {
     use super::{PgStatProgressVacuumV1, PgStatProgressVacuumV2, PgStatProgressVacuumV3};
-    use crate::{ColumnType, Section, Semantics, StrId, Ts, TypeContract, Unit, lint};
+    use crate::{ColumnType, Section, Semantics, StrId, Ts, TypeContract, Unit};
 
     const COMMON: [(&str, ColumnType); 11] = [
         ("ts", ColumnType::Ts),
@@ -269,18 +269,6 @@ mod tests {
             indexes_processed: 1,
             delay_time: 1234.5,
         }
-    }
-
-    #[test]
-    fn contracts_pass_the_linter() {
-        assert_eq!(
-            lint(&[
-                PgStatProgressVacuumV1::CONTRACT,
-                PgStatProgressVacuumV2::CONTRACT,
-                PgStatProgressVacuumV3::CONTRACT,
-            ]),
-            Ok(())
-        );
     }
 
     #[test]

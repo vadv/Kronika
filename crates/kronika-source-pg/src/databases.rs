@@ -13,18 +13,6 @@ use tokio_postgres::types::Type;
 use crate::query::QueryStats;
 use crate::{Pool, Session, query};
 
-/// Prefix a query literal with the kronika marker (SQL-transparency rule).
-macro_rules! marked {
-    ($sql:literal) => {
-        concat!(
-            "/* kronika:",
-            env!("CARGO_PKG_VERSION"),
-            " crates/kronika-source-pg/src/databases.rs */ ",
-            $sql,
-        )
-    };
-}
-
 const ENUMERATE_QUERY: &str = marked!(
     "SELECT oid, datname::text AS datname, \
             datname = pg_catalog.current_database() AS is_current \

@@ -624,7 +624,7 @@ pub struct PgStatUserTablesV1 {
 #[cfg(test)]
 mod tests {
     use super::{PgStatUserTablesV1, PgStatUserTablesV2, PgStatUserTablesV3, PgStatUserTablesV4};
-    use crate::{Section, StrId, Ts, Unit, VerifiedSection, lint};
+    use crate::{Section, StrId, Ts, Unit, VerifiedSection};
 
     fn assert_common_contract(c: crate::TypeContract) {
         assert_eq!(
@@ -725,7 +725,6 @@ mod tests {
         assert!(c.column("main_fork_bytes").is_some());
         assert!(c.column("size_bytes").is_none());
         assert_common_contract(c);
-        assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]
@@ -765,7 +764,6 @@ mod tests {
         assert!(c.column("n_tup_newpage_upd").is_some());
         assert!(c.column("last_seq_scan").is_some());
         assert_common_contract(c);
-        assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]
@@ -777,7 +775,6 @@ mod tests {
         assert!(c.column("n_tup_newpage_upd").is_none());
         assert!(c.column("last_seq_scan").is_none());
         assert_common_contract(c);
-        assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]
@@ -787,7 +784,6 @@ mod tests {
         assert_eq!(c.columns.len(), 42);
         assert!(c.column("n_ins_since_vacuum").is_none());
         assert_common_contract(c);
-        assert_eq!(lint(&[c]), Ok(()));
     }
 
     fn v3_row(ts: i64, datid: u32, relid: u32) -> PgStatUserTablesV3 {

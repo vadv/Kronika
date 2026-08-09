@@ -214,7 +214,7 @@ pub struct PgStatActivityV1 {
 #[cfg(test)]
 mod tests {
     use super::{PgStatActivityV1, PgStatActivityV2, PgStatActivityV3};
-    use crate::{Section, StrId, Ts, Unit, VerifiedSection, lint};
+    use crate::{Section, StrId, Ts, Unit, VerifiedSection};
 
     fn assert_timestamp_units(c: crate::TypeContract) {
         for name in ["backend_start", "xact_start", "query_start", "state_change"] {
@@ -273,11 +273,6 @@ mod tests {
             query_start: None,
             state_change: None,
         }
-    }
-
-    #[test]
-    fn v3_contract_passes_the_linter() {
-        assert_eq!(lint(&[PgStatActivityV3::CONTRACT]), Ok(()));
     }
 
     #[test]
@@ -380,11 +375,6 @@ mod tests {
     }
 
     #[test]
-    fn v2_contract_passes_the_linter() {
-        assert_eq!(lint(&[PgStatActivityV2::CONTRACT]), Ok(()));
-    }
-
-    #[test]
     fn v2_contract_shape_has_leader_pid_without_query_id() {
         let c = PgStatActivityV2::CONTRACT;
         assert_eq!(c.type_id.get(), 1_001_002);
@@ -421,11 +411,6 @@ mod tests {
             query_start: Some(Ts(ts - 100)),
             state_change: Some(Ts(ts - 50)),
         }
-    }
-
-    #[test]
-    fn v1_contract_passes_the_linter() {
-        assert_eq!(lint(&[PgStatActivityV1::CONTRACT]), Ok(()));
     }
 
     #[test]

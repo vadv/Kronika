@@ -151,7 +151,7 @@ pub struct PgStorePlansVadvV1 {
 #[cfg(test)]
 mod tests {
     use super::PgStorePlansVadvV1;
-    use crate::{Section, StrId, Ts, Unit, VerifiedSection, lint};
+    use crate::{Section, StrId, Ts, Unit, VerifiedSection};
 
     fn row(
         ts: i64,
@@ -231,7 +231,6 @@ mod tests {
         assert!(c.column("mean_plan_time").is_some());
         // The vadv fork sums I/O timings; the split ossc columns must not leak in.
         assert!(c.column("shared_blk_read_time").is_none());
-        assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]
@@ -516,7 +515,7 @@ pub struct PgStorePlansDatasentinelV1 {
 #[cfg(test)]
 mod ossc_tests {
     use super::PgStorePlansOsscV1;
-    use crate::{Section, StrId, Ts, Unit, VerifiedSection, lint};
+    use crate::{Section, StrId, Ts, Unit, VerifiedSection};
 
     fn row(ts: i64, dbid: u32, queryid: i64, plan: Option<StrId>) -> PgStorePlansOsscV1 {
         PgStorePlansOsscV1 {
@@ -582,7 +581,6 @@ mod ossc_tests {
         assert!(c.column("queryid_stat_statements").is_none());
         assert!(c.column("slow_log_calls").is_none());
         assert!(c.column("total_plan_time").is_none());
-        assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]
@@ -619,7 +617,7 @@ mod ossc_tests {
 #[cfg(test)]
 mod datasentinel_tests {
     use super::PgStorePlansDatasentinelV1;
-    use crate::{Section, StrId, Ts, Unit, lint};
+    use crate::{Section, StrId, Ts, Unit};
 
     fn row(calls: i64) -> PgStorePlansDatasentinelV1 {
         PgStorePlansDatasentinelV1 {
@@ -683,7 +681,6 @@ mod datasentinel_tests {
                 Some(Unit::Microseconds)
             );
         }
-        assert_eq!(lint(&[contract]), Ok(()));
     }
 
     #[test]

@@ -9,18 +9,6 @@ use tokio_postgres::SimpleQueryRow;
 use crate::Session;
 use crate::query::QueryStats;
 
-/// Prefix a query literal with the kronika marker (SQL-transparency rule).
-macro_rules! marked {
-    ($sql:literal) => {
-        concat!(
-            "/* kronika:",
-            env!("CARGO_PKG_VERSION"),
-            " crates/kronika-source-pg/src/extension.rs */ ",
-            $sql,
-        )
-    };
-}
-
 /// One compact inventory of the two supported extensions.
 ///
 /// Function checks include the exact input and result types and the current

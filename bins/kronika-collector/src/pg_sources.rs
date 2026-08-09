@@ -913,10 +913,7 @@ impl PgSources {
                     return Err(error);
                 }
                 Ok(RelationResult::Complete | RelationResult::SourceFailed) => {}
-                Ok(RelationResult::ConnectionFailed) => pool.close(),
-                Ok(RelationResult::TimedOut) => {
-                    pool.close();
-                }
+                Ok(RelationResult::ConnectionFailed | RelationResult::TimedOut) => pool.close(),
             }
         }
         Ok(())
@@ -990,18 +987,17 @@ impl PgSources {
             };
             let session = match session {
                 Ok(session) => session,
-                Err(QueryFailure::Timeout | QueryFailure::Connection) => {
-                    pool.close();
-                    if database.is_current {
-                        self.clear_primary_connection();
-                        return false;
+                Err(failure) => {
+                    match failure {
+                        QueryFailure::Timeout | QueryFailure::Connection => {
+                            pool.close();
+                            if database.is_current {
+                                self.clear_primary_connection();
+                                return false;
+                            }
+                        }
+                        QueryFailure::Source => {}
                     }
-                    if let Some(previous) = previous {
-                        capabilities.insert(database.name.clone(), previous);
-                    }
-                    continue;
-                }
-                Err(QueryFailure::Source) => {
                     if let Some(previous) = previous {
                         capabilities.insert(database.name.clone(), previous);
                     }
@@ -1022,17 +1018,17 @@ impl PgSources {
                         capabilities_from_inventory(&inventory),
                     );
                 }
-                Err(QueryFailure::Timeout | QueryFailure::Connection) => {
-                    pool.close();
-                    if database.is_current {
-                        self.clear_primary_connection();
-                        return false;
+                Err(failure) => {
+                    match failure {
+                        QueryFailure::Timeout | QueryFailure::Connection => {
+                            pool.close();
+                            if database.is_current {
+                                self.clear_primary_connection();
+                                return false;
+                            }
+                        }
+                        QueryFailure::Source => {}
                     }
-                    if let Some(previous) = previous {
-                        capabilities.insert(database.name.clone(), previous);
-                    }
-                }
-                Err(QueryFailure::Source) => {
                     if let Some(previous) = previous {
                         capabilities.insert(database.name.clone(), previous);
                     }
@@ -1807,26 +1803,17 @@ fn capability_sqlstate(code: &str) -> bool {
 }
 
 fn postgres_connection_error(error: &anyhow::Error) -> bool {
-    if error
-        .chain()
-        .any(<dyn std::error::Error>::is::<query::DecodeError>)
-    {
-        return false;
-    }
-    if let Some(stream) = error
-        .chain()
-        .find_map(|cause| cause.downcast_ref::<query::StreamError>())
-    {
-        return postgres_stream_connection_error(stream.postgres());
-    }
-    error.chain().any(|cause| {
-        cause
-            .downcast_ref::<tokio_postgres::Error>()
-            .is_some_and(postgres_stream_connection_error)
-    })
+    postgres_error_matches(error, postgres_stream_connection_error)
 }
 
 fn postgres_capability_changed(error: &anyhow::Error) -> bool {
+    postgres_error_matches(error, postgres_stream_capability_changed)
+}
+
+fn postgres_error_matches(
+    error: &anyhow::Error,
+    predicate: fn(&tokio_postgres::Error) -> bool,
+) -> bool {
     if error
         .chain()
         .any(<dyn std::error::Error>::is::<query::DecodeError>)
@@ -1837,12 +1824,12 @@ fn postgres_capability_changed(error: &anyhow::Error) -> bool {
         .chain()
         .find_map(|cause| cause.downcast_ref::<query::StreamError>())
     {
-        return postgres_stream_capability_changed(stream.postgres());
+        return predicate(stream.postgres());
     }
     error.chain().any(|cause| {
         cause
             .downcast_ref::<tokio_postgres::Error>()
-            .is_some_and(postgres_stream_capability_changed)
+            .is_some_and(predicate)
     })
 }
 

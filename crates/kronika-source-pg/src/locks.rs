@@ -7,14 +7,10 @@ use kronika_registry::pg_locks::{PgLocksV1, PgLocksV2};
 use kronika_registry::{StrId, Ts};
 use tokio_postgres::types::Type;
 
-use crate::Session;
 use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
+use crate::{Session, intern_opt as opt};
 
-const MARKER: &str = concat!(
-    "/* kronika:",
-    env!("CARGO_PKG_VERSION"),
-    " crates/kronika-source-pg/src/locks.rs */ "
-);
+const MARKER: &str = marked!();
 
 /// Layout selected by the `PostgreSQL` major version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,13 +131,6 @@ pub struct LockRow {
     lock_objsubid: Option<i16>,
     lock_target: Option<String>,
     waitstart: Option<i64>,
-}
-
-fn opt<E>(
-    intern: &mut impl FnMut(&[u8]) -> Result<StrId, E>,
-    value: Option<&str>,
-) -> Result<Option<StrId>, E> {
-    value.map(|text| intern(text.as_bytes())).transpose()
 }
 
 /// Build a `PostgreSQL` 10-13 row, interning labels.

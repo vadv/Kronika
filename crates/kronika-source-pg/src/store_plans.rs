@@ -16,21 +16,9 @@ use kronika_registry::pg_store_plans::{
 use kronika_registry::{StrId, Ts};
 use tokio_postgres::types::Type;
 
-use crate::Session;
 use crate::extension::{ExtensionSchema, InventoryEntry};
 use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
-
-/// Prefix a query literal with the kronika marker (SQL-transparency rule).
-macro_rules! marked {
-    ($sql:literal) => {
-        concat!(
-            "/* kronika:",
-            env!("CARGO_PKG_VERSION"),
-            " crates/kronika-source-pg/src/store_plans.rs */ ",
-            $sql,
-        )
-    };
-}
+use crate::{Session, intern_opt as opt};
 
 /// The extension name to look for.
 pub const EXTENSION: &str = "pg_store_plans";
@@ -303,17 +291,6 @@ pub struct VadvRow {
     pub max_plan_time: f64,
     /// Mean planning time, ms.
     pub mean_plan_time: f64,
-}
-
-/// Intern an optional string, preserving `None`.
-fn opt<E>(
-    intern: &mut impl FnMut(&[u8]) -> Result<StrId, E>,
-    value: Option<&str>,
-) -> Result<Option<StrId>, E> {
-    match value {
-        Some(text) => Ok(Some(intern(text.as_bytes())?)),
-        None => Ok(None),
-    }
 }
 
 /// Build a `1_003_001` row (ossc upstream).

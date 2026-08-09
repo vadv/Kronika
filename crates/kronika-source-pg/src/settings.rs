@@ -9,23 +9,8 @@ use anyhow::{Context as _, Result};
 use kronika_registry::{PgSettings, StrId, Ts};
 use tokio_postgres::types::Type;
 
-use crate::Session;
 use crate::query::{self, QueryStats};
-
-/// Prefix a query with a marker naming who is asking.
-///
-/// A DBA reading `pg_stat_activity` sees which collector and which file the
-/// query came from, without having to guess.
-macro_rules! marked {
-    ($sql:literal) => {
-        concat!(
-            "/* kronika:",
-            env!("CARGO_PKG_VERSION"),
-            " crates/kronika-source-pg/src/settings.rs */ ",
-            $sql,
-        )
-    };
-}
+use crate::{Session, intern_opt};
 
 const SETTINGS_QUERY: &str = marked!(
     "SELECT \
@@ -115,24 +100,16 @@ pub fn to_section<E>(
         ts: Ts(row.ts),
         name: intern(row.name.as_bytes())?,
         setting: intern(row.setting.as_bytes())?,
-        unit: intern_opt(row.unit.as_deref(), &mut intern)?,
+        unit: intern_opt(&mut intern, row.unit.as_deref())?,
         source: intern(row.source.as_bytes())?,
-        sourcefile: intern_opt(row.sourcefile.as_deref(), &mut intern)?,
+        sourcefile: intern_opt(&mut intern, row.sourcefile.as_deref())?,
         sourceline: row.sourceline,
         pending_restart: row.pending_restart,
         context: intern(row.context.as_bytes())?,
         vartype: intern(row.vartype.as_bytes())?,
-        boot_val: intern_opt(row.boot_val.as_deref(), &mut intern)?,
-        reset_val: intern_opt(row.reset_val.as_deref(), &mut intern)?,
+        boot_val: intern_opt(&mut intern, row.boot_val.as_deref())?,
+        reset_val: intern_opt(&mut intern, row.reset_val.as_deref())?,
     })
-}
-
-/// Intern an optional string, keeping absence as absence.
-fn intern_opt<E>(
-    value: Option<&str>,
-    intern: &mut impl FnMut(&[u8]) -> Result<StrId, E>,
-) -> Result<Option<StrId>, E> {
-    value.map(|text| intern(text.as_bytes())).transpose()
 }
 
 #[cfg(test)]

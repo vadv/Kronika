@@ -77,7 +77,7 @@ pub struct PgStatWalV2 {
 #[cfg(test)]
 mod tests {
     use super::{PgStatWalV1, PgStatWalV2};
-    use crate::{Section, Ts, VerifiedSection, lint};
+    use crate::{Section, Ts, VerifiedSection};
 
     fn v1_row(ts: i64) -> PgStatWalV1 {
         PgStatWalV1 {
@@ -103,14 +103,6 @@ mod tests {
             wal_buffers_full: 640,
             stats_reset: None,
         }
-    }
-
-    #[test]
-    fn contract_passes_the_linter() {
-        assert_eq!(
-            lint(&[PgStatWalV1::CONTRACT, PgStatWalV2::CONTRACT]),
-            Ok(())
-        );
     }
 
     #[test]

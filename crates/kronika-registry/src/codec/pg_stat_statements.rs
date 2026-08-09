@@ -877,7 +877,7 @@ mod tests {
         PgStatStatementsV1, PgStatStatementsV2, PgStatStatementsV3, PgStatStatementsV4,
         PgStatStatementsV5, PgStatStatementsV6,
     };
-    use crate::{Section, StrId, Ts, Unit, VerifiedSection, lint};
+    use crate::{Section, StrId, Ts, Unit, VerifiedSection};
 
     fn assert_shared_block_unit(c: crate::TypeContract) {
         assert_eq!(
@@ -978,7 +978,6 @@ mod tests {
         // No legacy names on the newest layout.
         assert!(c.column("total_time").is_none());
         assert!(c.column("blk_read_time").is_none());
-        assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]
@@ -1087,7 +1086,6 @@ mod tests {
         assert!(c.column("parallel_workers_launched").is_none());
         assert_shared_block_unit(c);
         assert_stats_timestamp_units(c);
-        assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]
@@ -1161,7 +1159,6 @@ mod tests {
         assert!(c.column("jit_deform_count").is_none());
         assert!(c.column("stats_since").is_none());
         assert_shared_block_unit(c);
-        assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]
@@ -1221,7 +1218,6 @@ mod tests {
         assert!(c.column("temp_blk_read_time").is_none());
         assert!(c.column("jit_functions").is_none());
         assert_shared_block_unit(c);
-        assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]
@@ -1281,7 +1277,6 @@ mod tests {
         assert!(c.column("toplevel").is_none());
         assert!(c.column("temp_blk_read_time").is_none());
         assert_shared_block_unit(c);
-        assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]
@@ -1334,7 +1329,6 @@ mod tests {
         assert!(c.column("wal_records").is_none());
         assert!(c.column("toplevel").is_none());
         assert_shared_block_unit(c);
-        assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]

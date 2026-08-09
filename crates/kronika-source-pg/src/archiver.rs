@@ -6,20 +6,8 @@ use kronika_registry::pg_stat_archiver::PgStatArchiver;
 use kronika_registry::{StrId, Ts};
 use tokio_postgres::types::Type;
 
-use crate::Session;
 use crate::query::{self, QueryStats};
-
-/// SQL transparency marker for collector queries.
-macro_rules! marked {
-    ($sql:literal) => {
-        concat!(
-            "/* kronika:",
-            env!("CARGO_PKG_VERSION"),
-            " crates/kronika-source-pg/src/archiver.rs */ ",
-            $sql,
-        )
-    };
-}
+use crate::{Session, intern_opt as opt};
 
 const QUERY: &str = marked!(
     "SELECT archived_count, last_archived_wal, \
@@ -50,17 +38,6 @@ pub struct ArchiverRow {
     pub last_failed_time: Option<i64>,
     /// Last reset, unix microseconds.
     pub stats_reset: Option<i64>,
-}
-
-/// Intern an optional string, preserving `None`.
-fn opt<E>(
-    intern: &mut impl FnMut(&[u8]) -> Result<StrId, E>,
-    value: Option<&str>,
-) -> Result<Option<StrId>, E> {
-    match value {
-        Some(s) => Ok(Some(intern(s.as_bytes())?)),
-        None => Ok(None),
-    }
 }
 
 /// Build the typed `1_008_001` row, interning WAL file names.
@@ -116,21 +93,7 @@ pub async fn collect_archiver(
 #[cfg(test)]
 mod tests {
     use super::{ArchiverRow, to_archiver};
-    use kronika_registry::StrId;
-    use std::convert::Infallible;
-
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "must match the fallible interner signature to_archiver expects"
-    )]
-    fn fake_intern(bytes: &[u8]) -> Result<StrId, Infallible> {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for &b in bytes {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        Ok(StrId(h | 1))
-    }
+    use crate::test_intern as fake_intern;
 
     fn sample_row(archived: bool, failed: bool) -> ArchiverRow {
         ArchiverRow {
@@ -173,9 +136,9 @@ mod tests {
 
     #[test]
     fn intern_failure_propagates() {
-        fn boom(_b: &[u8]) -> Result<StrId, &'static str> {
+        assert_eq!(
+            to_archiver(&sample_row(false, true), |_| Err("full")),
             Err("full")
-        }
-        assert_eq!(to_archiver(&sample_row(false, true), boom), Err("full"));
+        );
     }
 }

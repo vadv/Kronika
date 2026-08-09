@@ -13,20 +13,8 @@ use kronika_registry::pg_stat_database::{
 use kronika_registry::{StrId, Ts};
 use tokio_postgres::types::Type;
 
-use crate::Session;
 use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
-
-/// Prefix a query literal with the kronika marker (SQL-transparency rule).
-macro_rules! marked {
-    ($sql:literal) => {
-        concat!(
-            "/* kronika:",
-            env!("CARGO_PKG_VERSION"),
-            " crates/kronika-source-pg/src/database.rs */ ",
-            $sql,
-        )
-    };
-}
+use crate::{Session, intern_opt as opt};
 
 /// The `pg_stat_database` layout selected by the server major version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,17 +210,6 @@ pub struct DatabaseRow {
     pub datallowconn: Option<bool>,
     /// Whether the database is a template; `None` for the shared-objects row.
     pub datistemplate: Option<bool>,
-}
-
-/// Intern an optional string, preserving `None`.
-fn opt<E>(
-    intern: &mut impl FnMut(&[u8]) -> Result<StrId, E>,
-    value: Option<&str>,
-) -> Result<Option<StrId>, E> {
-    match value {
-        Some(s) => Ok(Some(intern(s.as_bytes())?)),
-        None => Ok(None),
-    }
 }
 
 /// Build a `1_005_004` row (PG18 layout), interning `datname`.
@@ -505,21 +482,7 @@ mod tests {
     use super::{
         DatabaseRow, DatabaseVersion, database_query, database_version, to_v1, to_v2, to_v3, to_v4,
     };
-    use kronika_registry::StrId;
-    use std::convert::Infallible;
-
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "must match the fallible interner signature to_v* expects"
-    )]
-    fn fake_intern(bytes: &[u8]) -> Result<StrId, Infallible> {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for &b in bytes {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        Ok(StrId(h | 1))
-    }
+    use crate::test_intern as fake_intern;
 
     fn sample_row(datid: u32) -> DatabaseRow {
         DatabaseRow {
@@ -660,9 +623,6 @@ mod tests {
 
     #[test]
     fn intern_failure_propagates() {
-        fn boom(_b: &[u8]) -> Result<StrId, &'static str> {
-            Err("full")
-        }
-        assert_eq!(to_v4(&sample_row(5), boom), Err("full"));
+        assert_eq!(to_v4(&sample_row(5), |_| Err("full")), Err("full"));
     }
 }

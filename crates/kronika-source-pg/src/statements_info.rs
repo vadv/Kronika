@@ -7,11 +7,7 @@ use tokio_postgres::types::Type;
 use crate::Session;
 use crate::query::{self, QueryStats};
 
-const MARKER: &str = concat!(
-    "/* kronika:",
-    env!("CARGO_PKG_VERSION"),
-    " crates/kronika-source-pg/src/statements_info.rs */ "
-);
+const MARKER: &str = marked!();
 
 /// Build the one-row query for a safely qualified view supplied by discovery.
 #[must_use]

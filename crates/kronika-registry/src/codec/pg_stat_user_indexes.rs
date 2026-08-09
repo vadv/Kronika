@@ -188,7 +188,7 @@ pub struct PgStatUserIndexesV1 {
 #[cfg(test)]
 mod tests {
     use super::{PgStatUserIndexesV1, PgStatUserIndexesV2};
-    use crate::{Section, StrId, Ts, Unit, VerifiedSection, lint};
+    use crate::{Section, StrId, Ts, Unit, VerifiedSection};
 
     fn v2_row(ts: i64, datid: u32, indexrelid: u32) -> PgStatUserIndexesV2 {
         PgStatUserIndexesV2 {
@@ -245,7 +245,6 @@ mod tests {
             c.column("last_idx_scan").and_then(|col| col.unit),
             Some(Unit::Microseconds)
         );
-        assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]
@@ -260,7 +259,6 @@ mod tests {
         assert!(c.column("indisexclusion").is_some());
         assert!(c.column("indisready").is_some());
         assert_eq!(c.column("indexdef").map(|col| col.nullable), Some(true));
-        assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]

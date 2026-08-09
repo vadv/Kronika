@@ -393,22 +393,6 @@ pub async fn read_batched<P, I, T, E>(
     params: I,
     parameter_bytes: usize,
     stats: &mut QueryStats,
-    decode: impl FnMut(&Row) -> Result<T>,
-    sink: impl FnMut(Batch<T>) -> Result<BatchWrite, E>,
-) -> Result<(), BatchError<E>>
-where
-    P: BorrowToSql,
-    I: IntoIterator<Item = (P, Type)>,
-{
-    read_batched_inner(session, sql, params, parameter_bytes, stats, decode, sink).await
-}
-
-async fn read_batched_inner<P, I, T, E>(
-    session: Session<'_>,
-    sql: &str,
-    params: I,
-    parameter_bytes: usize,
-    stats: &mut QueryStats,
     mut decode: impl FnMut(&Row) -> Result<T>,
     mut sink: impl FnMut(Batch<T>) -> Result<BatchWrite, E>,
 ) -> Result<(), BatchError<E>>

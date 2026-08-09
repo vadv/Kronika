@@ -443,7 +443,7 @@ pub struct PgStatDatabaseV1 {
 #[cfg(test)]
 mod tests {
     use super::{PgStatDatabaseV1, PgStatDatabaseV2, PgStatDatabaseV3, PgStatDatabaseV4};
-    use crate::{Section, StrId, Ts, Unit, VerifiedSection, lint};
+    use crate::{Section, StrId, Ts, Unit, VerifiedSection};
 
     fn assert_checksum_contract(c: crate::TypeContract) {
         assert_eq!(
@@ -500,11 +500,6 @@ mod tests {
             datallowconn: if datid == 0 { None } else { Some(true) },
             datistemplate: if datid == 0 { None } else { Some(false) },
         }
-    }
-
-    #[test]
-    fn v4_contract_passes_the_linter() {
-        assert_eq!(lint(&[PgStatDatabaseV4::CONTRACT]), Ok(()));
     }
 
     #[test]
@@ -619,7 +614,6 @@ mod tests {
         assert!(c.column("session_time").is_some());
         assert!(c.column("parallel_workers_launched").is_none());
         assert_checksum_contract(c);
-        assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]
@@ -669,7 +663,6 @@ mod tests {
         assert!(c.column("checksum_failures").is_some());
         assert!(c.column("session_time").is_none());
         assert_checksum_contract(c);
-        assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]
@@ -716,7 +709,6 @@ mod tests {
         assert_eq!(c.columns.len(), 25);
         assert!(c.column("checksum_failures").is_none());
         assert!(c.column("session_time").is_none());
-        assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]

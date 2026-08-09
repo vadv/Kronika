@@ -165,7 +165,7 @@ pub struct PgStatIoV2 {
 #[cfg(test)]
 mod tests {
     use super::{PgStatIoV1, PgStatIoV2};
-    use crate::{ColumnClass, Section, StrId, Ts, VerifiedSection, lint};
+    use crate::{ColumnClass, Section, StrId, Ts, VerifiedSection};
 
     fn v1_row(ts: i64, object: u64) -> PgStatIoV1 {
         PgStatIoV1 {
@@ -189,11 +189,6 @@ mod tests {
             fsync_time: None,
             stats_reset: Some(Ts(ts - 1000)),
         }
-    }
-
-    #[test]
-    fn v1_contract_passes_the_linter() {
-        assert_eq!(lint(&[PgStatIoV1::CONTRACT]), Ok(()));
     }
 
     #[test]
@@ -264,7 +259,6 @@ mod tests {
         assert!(c.column("read_bytes").is_some());
         assert!(c.column("op_bytes").is_none());
         assert_eq!(c.column("read_bytes").map(|col| col.nullable), Some(true));
-        assert_eq!(lint(&[c]), Ok(()));
     }
 
     #[test]

@@ -13,18 +13,6 @@ use tokio_postgres::types::Type;
 use crate::Session;
 use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
 
-/// Prefix a query literal with the kronika marker (SQL-transparency rule).
-macro_rules! marked {
-    ($sql:literal) => {
-        concat!(
-            "/* kronika:",
-            env!("CARGO_PKG_VERSION"),
-            " crates/kronika-source-pg/src/io.rs */ ",
-            $sql,
-        )
-    };
-}
-
 /// The `pg_stat_io` layout selected by the server major version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IoVersion {
@@ -267,21 +255,7 @@ pub async fn collect_io<E>(
 #[cfg(test)]
 mod tests {
     use super::{IoRow, IoVersion, io_query, io_version, to_v1, to_v2};
-    use kronika_registry::StrId;
-    use std::convert::Infallible;
-
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "must match the fallible interner signature to_v* expects"
-    )]
-    fn fake_intern(bytes: &[u8]) -> Result<StrId, Infallible> {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for &b in bytes {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        Ok(StrId(h | 1))
-    }
+    use crate::test_intern as fake_intern;
 
     fn sample_row() -> IoRow {
         IoRow {
@@ -352,9 +326,6 @@ mod tests {
 
     #[test]
     fn intern_failure_propagates() {
-        fn boom(_b: &[u8]) -> Result<StrId, &'static str> {
-            Err("full")
-        }
-        assert_eq!(to_v1(&sample_row(), boom), Err("full"));
+        assert_eq!(to_v1(&sample_row(), |_| Err("full")), Err("full"));
     }
 }
