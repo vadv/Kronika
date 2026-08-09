@@ -13,6 +13,18 @@ fn each_allowlisted_block_roundtrips() {
                 value: Some(73),
             },
         ]),
+        SeriesBlock::OverallHealth(vec![HealthPoint {
+            timestamp: 20,
+            value: Some(51),
+        }]),
+        SeriesBlock::PostgresHealth(vec![HealthPoint {
+            timestamp: 20,
+            value: Some(80),
+        }]),
+        SeriesBlock::PgbouncerHealth(vec![HealthPoint {
+            timestamp: 20,
+            value: None,
+        }]),
         SeriesBlock::PgTransactions {
             type_id: 1_005_004,
             points: vec![

@@ -68,8 +68,18 @@ pub(crate) fn push_instance_metadata(
         boot_id: intern(&facts.boot_id)?,
         btime: Ts(facts.btime),
         postgresql_enabled: !config.pg_dsns.is_empty(),
+        os_core_interval_seconds: effective_interval(config.intervals.os_core, config.tick_secs),
+        postgresql_interval_seconds: effective_interval(config.intervals.pg, config.tick_secs),
         postgresql_effective_cpus: config.postgres_effective_cpus,
         pgbouncer_enabled: !config.pgbouncer_dsns.is_empty(),
     };
     buffer_row(buffers, row)
+}
+
+const fn effective_interval(configured: u64, base_tick: u64) -> u64 {
+    if configured == 0 {
+        base_tick
+    } else {
+        configured
+    }
 }

@@ -4,8 +4,8 @@ use std::path::Path;
 
 use hyper::StatusCode;
 use kronika_index::{
-    DERIVED_HEALTH_TYPE_ID, INSTANCE_METADATA_TYPE_ID, OS_PSI_TYPE_ID, ResourceIndex, SeriesBlock,
-    resource, series_keys,
+    DERIVED_HEALTH_TYPE_ID, INSTANCE_METADATA_TYPE_ID, INSTANCE_METADATA_V1_TYPE_ID,
+    OS_PSI_TYPE_ID, ResourceIndex, SeriesBlock, resource, series_keys,
 };
 use kronika_reader::{SegmentKind, SegmentRef};
 use kronika_registry::{contract, section_implementation};
@@ -92,13 +92,24 @@ impl PreparedIndex {
             {
                 return Ok(());
             }
+            let health_series = match &block {
+                SeriesBlock::OsHealth(_) => Some("os_health"),
+                SeriesBlock::OverallHealth(_) => Some("overall_health"),
+                SeriesBlock::PostgresHealth(_) => Some("postgres_health"),
+                SeriesBlock::PgbouncerHealth(_) => Some("pgbouncer_health"),
+                _ => None,
+            };
             match block {
-                SeriesBlock::OsHealth(points) => {
+                SeriesBlock::OsHealth(points)
+                | SeriesBlock::OverallHealth(points)
+                | SeriesBlock::PostgresHealth(points)
+                | SeriesBlock::PgbouncerHealth(points) => {
+                    let series = health_series.expect("health block has a series name");
                     for point in points {
                         if cancelled()
                             || !emit(record(json!({
                                 "record": "point",
-                                "series": "os_health",
+                                "series": series,
                                 "type_id": DERIVED_HEALTH_TYPE_ID.to_string(),
                                 "ts": point.timestamp.to_string(),
                                 "identity": {},
@@ -149,7 +160,10 @@ impl PreparedIndex {
 
 fn block_len(block: &SeriesBlock) -> usize {
     match block {
-        SeriesBlock::OsHealth(points) => points.len(),
+        SeriesBlock::OsHealth(points)
+        | SeriesBlock::OverallHealth(points)
+        | SeriesBlock::PostgresHealth(points)
+        | SeriesBlock::PgbouncerHealth(points) => points.len(),
         SeriesBlock::PgTransactions { points, .. } => points.len(),
         SeriesBlock::PgActiveBackends { points, .. } => points.len(),
     }
@@ -195,7 +209,10 @@ fn resource_meta(kind: SegmentKind, checksum: Option<u32>) -> Result<ResponseMet
 
 fn block_layout(logical_name: &str, block: &SeriesBlock) -> Result<Value, ApiError> {
     match block {
-        SeriesBlock::OsHealth(_) => section_layout("health", DERIVED_HEALTH_TYPE_ID),
+        SeriesBlock::OsHealth(_) => health_layout("os_health"),
+        SeriesBlock::OverallHealth(_) => health_layout("overall_health"),
+        SeriesBlock::PostgresHealth(_) => health_layout("postgres_health"),
+        SeriesBlock::PgbouncerHealth(_) => health_layout("pgbouncer_health"),
         SeriesBlock::PgTransactions { type_id, .. }
         | SeriesBlock::PgActiveBackends { type_id, .. } => section_layout(logical_name, *type_id),
     }
@@ -203,26 +220,7 @@ fn block_layout(logical_name: &str, block: &SeriesBlock) -> Result<Value, ApiErr
 
 pub(super) fn section_layout(logical_name: &str, type_id: u32) -> Result<Value, ApiError> {
     if type_id == DERIVED_HEALTH_TYPE_ID {
-        return Ok(json!({
-            "logical_name": "health",
-            "physical_name": "derived_os_health",
-            "type_id": DERIVED_HEALTH_TYPE_ID.to_string(),
-            "implementation": "kronika",
-            "identity": [],
-            "columns": [{
-                "name": "os_health",
-                "type": "u8",
-                "class": "gauge",
-                "unit": "percent",
-                "nullable": true,
-            }],
-            "provenance": {
-                "inputs": [
-                    INSTANCE_METADATA_TYPE_ID.to_string(),
-                    OS_PSI_TYPE_ID.to_string(),
-                ],
-            },
-        }));
+        return health_layout("os_health");
     }
     let contract = contract(type_id).ok_or(ApiError::NoSuchSection)?;
     let (identity, columns) = match logical_name {
@@ -255,6 +253,33 @@ pub(super) fn section_layout(logical_name: &str, type_id: u32) -> Result<Value, 
         "implementation": section_implementation(type_id),
         "identity": identity,
         "columns": columns,
+    }))
+}
+
+fn health_layout(series: &str) -> Result<Value, ApiError> {
+    Ok(json!({
+        "logical_name": "health",
+        "physical_name": format!("derived_{series}"),
+        "type_id": DERIVED_HEALTH_TYPE_ID.to_string(),
+        "implementation": "kronika",
+        "identity": [],
+        "columns": [{
+            "name": series,
+            "type": "u8",
+            "class": "gauge",
+            "unit": "percent",
+            "nullable": true,
+        }],
+        "provenance": {
+            "inputs": [
+                INSTANCE_METADATA_TYPE_ID.to_string(),
+                INSTANCE_METADATA_V1_TYPE_ID.to_string(),
+                OS_PSI_TYPE_ID.to_string(),
+                "1001001",
+                "1001002",
+                "1001003",
+            ],
+        },
     }))
 }
 

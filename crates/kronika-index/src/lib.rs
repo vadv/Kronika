@@ -8,8 +8,8 @@ mod series;
 mod store;
 
 pub use build::{
-    BuildError, DERIVED_HEALTH_TYPE_ID, INSTANCE_METADATA_TYPE_ID, OS_PSI_TYPE_ID, build,
-    build_selected, keys, visit_health_points,
+    BuildError, DERIVED_HEALTH_TYPE_ID, INSTANCE_METADATA_TYPE_ID, INSTANCE_METADATA_V1_TYPE_ID,
+    OS_PSI_TYPE_ID, build, build_selected, keys, visit_health_points,
 };
 pub use file::{ENTRY_LEN, HEADER_LEN, Index, IndexError, MAGIC, TargetedIndex};
 pub use health::{SourcePenalty, Stall, health, overall_health, postgres_penalty};

@@ -6,7 +6,7 @@ use kronika_reader::{Cell, ReaderError, Resolved, Segment};
 use kronika_registry::instance_metadata::Environment;
 
 use crate::file::Index;
-use crate::health::{Stall, health};
+use crate::health::{SourcePenalty, Stall, health, overall_health, postgres_penalty};
 use crate::series::{
     ActiveBackendPoint, HealthPoint, SeriesBlock, SeriesKey, SeriesKind, TransactionPoint,
     pg_activity_layout, pg_database_layout,
@@ -15,7 +15,9 @@ use crate::series::{
 /// Reserved input-free layout for the derived OS health gauge.
 pub const DERIVED_HEALTH_TYPE_ID: u32 = 0;
 /// `type_id` of `instance_metadata`.
-pub const INSTANCE_METADATA_TYPE_ID: u32 = 1_021_001;
+pub const INSTANCE_METADATA_TYPE_ID: u32 = 1_021_002;
+/// Previous `instance_metadata`, used only to retain OS-health readability.
+pub const INSTANCE_METADATA_V1_TYPE_ID: u32 = 1_021_001;
 /// `type_id` of `os_psi`.
 pub const OS_PSI_TYPE_ID: u32 = 1_107_001;
 
@@ -33,6 +35,8 @@ pub enum BuildError {
     Reader(ReaderError),
     /// A PostgreSQL state dictionary id had no value.
     UnresolvedState(u64),
+    /// The one current metadata row was absent or malformed.
+    InvalidMetadata,
 }
 
 impl std::fmt::Display for BuildError {
@@ -45,6 +49,7 @@ impl std::fmt::Display for BuildError {
                     "pg_stat_activity state has unresolved dictionary id {id}"
                 )
             }
+            Self::InvalidMetadata => write!(f, "instance_metadata v2 must contain exactly one row"),
         }
     }
 }
@@ -54,6 +59,7 @@ impl std::error::Error for BuildError {
         match self {
             Self::Reader(error) => Some(error),
             Self::UnresolvedState(_) => None,
+            Self::InvalidMetadata => None,
         }
     }
 }
@@ -67,7 +73,12 @@ impl From<ReaderError> for BuildError {
 /// Return the complete current allowlist for a captured segment.
 #[must_use]
 pub fn keys(segment: &Segment) -> Vec<SeriesKey> {
-    let mut keys = vec![SeriesKey::OS_HEALTH];
+    let mut keys = vec![
+        SeriesKey::OS_HEALTH,
+        SeriesKey::OVERALL_HEALTH,
+        SeriesKey::POSTGRES_HEALTH,
+        SeriesKey::PGBOUNCER_HEALTH,
+    ];
     for type_id in segment.type_ids() {
         if pg_database_layout(type_id) {
             keys.push(SeriesKey {
@@ -105,10 +116,68 @@ pub fn build_selected(segment: &Segment, requested: &[SeriesKey]) -> Result<Inde
     requested.sort_unstable();
     requested.dedup();
     let mut blocks = Vec::with_capacity(requested.len());
+    let wants_health = requested.iter().any(|key| {
+        matches!(
+            key.kind,
+            SeriesKind::OsHealth
+                | SeriesKind::OverallHealth
+                | SeriesKind::PostgresHealth
+                | SeriesKind::PgbouncerHealth
+        )
+    });
+    let metadata = wants_health.then(|| health_metadata(segment)).transpose()?;
+    let os_points = if wants_health {
+        health_points(segment)?
+    } else {
+        Vec::new()
+    };
+    let needs_pg_health = requested.contains(&SeriesKey::POSTGRES_HEALTH);
+    let mut activity = BTreeMap::<u32, Vec<ActiveBackendPoint>>::new();
+    for type_id in segment
+        .type_ids()
+        .filter(|type_id| pg_activity_layout(*type_id))
+    {
+        let raw_requested = requested.contains(&SeriesKey {
+            kind: SeriesKind::PgActiveBackends,
+            type_id,
+        });
+        if raw_requested || needs_pg_health {
+            activity.insert(type_id, active_backend_points(segment, type_id)?);
+        }
+    }
+    let combined_active = combined_active_points(&activity);
+    let postgres_points = metadata
+        .as_ref()
+        .and_then(|metadata| postgres_health_points(metadata, &combined_active));
+
     for key in requested {
         match key.kind {
             SeriesKind::OsHealth if key == SeriesKey::OS_HEALTH => {
-                blocks.push(SeriesBlock::OsHealth(health_points(segment)?));
+                blocks.push(SeriesBlock::OsHealth(os_points.clone()));
+            }
+            SeriesKind::OverallHealth if key == SeriesKey::OVERALL_HEALTH => {
+                let metadata = metadata.as_ref().ok_or(BuildError::InvalidMetadata)?;
+                blocks.push(SeriesBlock::OverallHealth(overall_points(
+                    &os_points,
+                    postgres_points.as_deref(),
+                    metadata,
+                )));
+            }
+            SeriesKind::PostgresHealth if key == SeriesKey::POSTGRES_HEALTH => {
+                if let Some(points) = &postgres_points {
+                    blocks.push(SeriesBlock::PostgresHealth(points.clone()));
+                }
+            }
+            SeriesKind::PgbouncerHealth if key == SeriesKey::PGBOUNCER_HEALTH => {
+                if metadata
+                    .as_ref()
+                    .is_some_and(|facts| facts.pgbouncer_enabled == Some(true))
+                {
+                    blocks.push(SeriesBlock::PgbouncerHealth(vec![HealthPoint {
+                        timestamp: metadata.as_ref().map_or(0, |facts| facts.timestamp),
+                        value: None,
+                    }]));
+                }
             }
             SeriesKind::PgTransactionsPerSecond
                 if pg_database_layout(key.type_id) && segment.rows_of(key.type_id).is_some() =>
@@ -123,13 +192,166 @@ pub fn build_selected(segment: &Segment, requested: &[SeriesKey]) -> Result<Inde
             {
                 blocks.push(SeriesBlock::PgActiveBackends {
                     type_id: key.type_id,
-                    points: active_backend_points(segment, key.type_id)?,
+                    points: activity.remove(&key.type_id).unwrap_or_default(),
                 });
             }
             _ => {}
         }
     }
+    blocks.sort_by_key(SeriesBlock::key);
     Ok(Index { blocks })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HealthMetadata {
+    timestamp: i64,
+    postgresql_enabled: Option<bool>,
+    postgresql_effective_cpus: Option<u32>,
+    postgresql_interval_seconds: u64,
+    pgbouncer_enabled: Option<bool>,
+}
+
+fn health_metadata(segment: &Segment) -> Result<HealthMetadata, BuildError> {
+    if segment.rows_of(INSTANCE_METADATA_TYPE_ID).is_none() {
+        return Ok(HealthMetadata {
+            timestamp: segment.min_ts(),
+            postgresql_enabled: None,
+            postgresql_effective_cpus: None,
+            postgresql_interval_seconds: 0,
+            pgbouncer_enabled: None,
+        });
+    }
+    let mut facts = None;
+    let mut rows = 0_usize;
+    segment.visit_rows(
+        INSTANCE_METADATA_TYPE_ID,
+        &[
+            "ts",
+            "postgresql_enabled",
+            "postgresql_effective_cpus",
+            "postgresql_interval_seconds",
+            "pgbouncer_enabled",
+        ],
+        0,
+        usize::MAX,
+        |_ordinal, row| {
+            rows = rows.saturating_add(1);
+            let capacity = match row.get("postgresql_effective_cpus") {
+                Some(Cell::U32(value)) => Some(*value),
+                Some(Cell::Null) => None,
+                _ => return true,
+            };
+            if let (
+                Some(Cell::Ts(timestamp)),
+                Some(Cell::Bool(postgresql_enabled)),
+                Some(Cell::U64(postgresql_interval_seconds)),
+                Some(Cell::Bool(pgbouncer_enabled)),
+            ) = (
+                row.get("ts"),
+                row.get("postgresql_enabled"),
+                row.get("postgresql_interval_seconds"),
+                row.get("pgbouncer_enabled"),
+            ) {
+                facts = Some(HealthMetadata {
+                    timestamp: *timestamp,
+                    postgresql_enabled: Some(*postgresql_enabled),
+                    postgresql_effective_cpus: capacity,
+                    postgresql_interval_seconds: *postgresql_interval_seconds,
+                    pgbouncer_enabled: Some(*pgbouncer_enabled),
+                });
+            }
+            true
+        },
+    )?;
+    if rows != 1 {
+        return Err(BuildError::InvalidMetadata);
+    }
+    facts.ok_or(BuildError::InvalidMetadata)
+}
+
+fn combined_active_points(
+    activity: &BTreeMap<u32, Vec<ActiveBackendPoint>>,
+) -> Vec<(i64, Option<u32>)> {
+    let mut counts = BTreeMap::<i64, Option<u32>>::new();
+    for points in activity.values() {
+        for point in points {
+            counts
+                .entry(point.timestamp)
+                .and_modify(|count| *count = None)
+                .or_insert(Some(point.count));
+        }
+    }
+    counts.into_iter().collect()
+}
+
+fn postgres_health_points(
+    metadata: &HealthMetadata,
+    active: &[(i64, Option<u32>)],
+) -> Option<Vec<HealthPoint>> {
+    if metadata.postgresql_enabled != Some(true) {
+        return None;
+    }
+    if active.is_empty() {
+        return Some(vec![HealthPoint {
+            timestamp: metadata.timestamp,
+            value: None,
+        }]);
+    }
+    Some(
+        active
+            .iter()
+            .map(|(timestamp, active)| HealthPoint {
+                timestamp: *timestamp,
+                value: active
+                    .zip(metadata.postgresql_effective_cpus)
+                    .and_then(|(active, cpus)| postgres_penalty(active, cpus))
+                    .map(|penalty| 100_u8.saturating_sub(penalty)),
+            })
+            .collect(),
+    )
+}
+
+fn overall_points(
+    os: &[HealthPoint],
+    postgres: Option<&[HealthPoint]>,
+    metadata: &HealthMetadata,
+) -> Vec<HealthPoint> {
+    let postgres_interval = metadata
+        .postgresql_interval_seconds
+        .checked_mul(1_000_000)
+        .and_then(|value| i64::try_from(value).ok());
+    os.iter()
+        .map(|point| {
+            let postgres_penalty = match metadata.postgresql_enabled {
+                Some(false) => SourcePenalty::Disabled,
+                Some(true) => postgres
+                    .and_then(|points| {
+                        points
+                            .iter()
+                            .rev()
+                            .find(|candidate| candidate.timestamp <= point.timestamp)
+                    })
+                    .filter(|candidate| {
+                        postgres_interval.is_some_and(|interval| {
+                            point.timestamp.saturating_sub(candidate.timestamp) <= interval
+                        })
+                    })
+                    .and_then(|candidate| candidate.value)
+                    .map_or(SourcePenalty::Unknown, |health| {
+                        SourcePenalty::Known(100_u8.saturating_sub(health))
+                    }),
+                None => SourcePenalty::Unknown,
+            };
+            let pgbouncer_penalty = match metadata.pgbouncer_enabled {
+                Some(false) => SourcePenalty::Disabled,
+                Some(true) | None => SourcePenalty::Unknown,
+            };
+            HealthPoint {
+                timestamp: point.timestamp,
+                value: overall_health(point.value, postgres_penalty, pgbouncer_penalty),
+            }
+        })
+        .collect()
 }
 
 fn transaction_points(
@@ -250,9 +472,16 @@ pub fn visit_health_points(
     }
     let mut running = true;
     let mut environment = None;
-    if segment.rows_of(INSTANCE_METADATA_TYPE_ID).is_some() {
+    let metadata_type_id = if segment.rows_of(INSTANCE_METADATA_TYPE_ID).is_some() {
+        Some(INSTANCE_METADATA_TYPE_ID)
+    } else if segment.rows_of(INSTANCE_METADATA_V1_TYPE_ID).is_some() {
+        Some(INSTANCE_METADATA_V1_TYPE_ID)
+    } else {
+        None
+    };
+    if let Some(metadata_type_id) = metadata_type_id {
         segment.visit_rows(
-            INSTANCE_METADATA_TYPE_ID,
+            metadata_type_id,
             &["environment"],
             0,
             usize::MAX,
