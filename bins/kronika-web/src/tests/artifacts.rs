@@ -4,7 +4,7 @@ use std::path::Path;
 use hyper::StatusCode;
 use kronika_format::DictLimits;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
-use kronika_registry::instance_metadata::InstanceMetadata;
+use kronika_registry::instance_metadata::InstanceMetadataV1;
 use kronika_registry::os_diskstats::OsDiskstats;
 use kronika_registry::os_psi::OsPsi;
 use kronika_registry::{StrId, Ts};
@@ -80,7 +80,7 @@ impl Fixture {
     fn append_health(&mut self) {
         let mut buffers = SectionBuffers::new();
         buffers
-            .push(InstanceMetadata {
+            .push(InstanceMetadataV1 {
                 ts: Ts(100),
                 hostname: StrId(901),
                 kernel_version: StrId(902),

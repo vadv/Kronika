@@ -47,6 +47,7 @@ fn config(out_dir: &Path) -> Config {
         journal_max_bytes: 64 * 1024 * 1024,
         retention: None,
         pg_dsns: Vec::new(),
+        postgres_effective_cpus: None,
         pg_logs: Vec::new(),
         pgbouncer_dsns: Vec::new(),
         pgbouncer_logs: Vec::new(),

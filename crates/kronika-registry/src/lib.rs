@@ -183,6 +183,7 @@ pub fn contract(type_id: u32) -> Option<&'static TypeContract> {
 #[must_use]
 pub const fn registry() -> &'static [TypeContract] {
     &[
+        instance_metadata::InstanceMetadataV1::CONTRACT,
         instance_metadata::InstanceMetadata::CONTRACT,
         os_process::OsProcess::CONTRACT,
         os_process_status::OsProcessStatus::CONTRACT,

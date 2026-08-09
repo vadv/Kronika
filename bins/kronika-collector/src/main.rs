@@ -387,8 +387,15 @@ fn append_pending_pg_batch(
             .then(|| sched.recollection_due(&DueSet::default(), Instant::now()));
         let includes_settings = matches!(batch, PgBatch::Settings(_))
             || (segment.needs_pg_settings() && !opening_settings.is_empty());
-        let buffers = buffer_pg_batch(segment, batch, opening_settings, opening_due.as_ref(), ts)
-            .map_err(|()| {
+        let buffers = buffer_pg_batch(
+            segment,
+            batch,
+            opening_settings,
+            opening_due.as_ref(),
+            config,
+            ts,
+        )
+        .map_err(|()| {
             PgAppendError::Fatal(anyhow::anyhow!(
                 "buffer the PostgreSQL batch after updating segment state"
             ))
@@ -481,6 +488,7 @@ fn buffer_pg_batch(
     batch: &PgBatch,
     opening_settings: &[kronika_source_pg::settings::SettingsRow],
     opening_due: Option<&DueSet>,
+    config: &Config,
     ts: i64,
 ) -> std::result::Result<SectionBuffers, ()> {
     let fs = ProcFs::from_env();
@@ -495,6 +503,7 @@ fn buffer_pg_batch(
             segment.interner_mut(),
             &facts,
             in_container,
+            config,
             ts,
         )
         .map_err(|err| {
@@ -635,7 +644,14 @@ fn append_pending_window(
     for attempt in 0..2 {
         let fresh_segment = segment.is_empty();
         let includes_settings = segment.needs_pg_settings() && !opening_settings.is_empty();
-        let buffers = match buffer_window(segment, &attempt_due, log_rows, opening_settings, ts) {
+        let buffers = match buffer_window(
+            segment,
+            &attempt_due,
+            log_rows,
+            opening_settings,
+            config,
+            ts,
+        ) {
             Ok(Some(buffers)) => buffers,
             Ok(None) => {
                 outcome.accepted = true;
@@ -734,6 +750,7 @@ fn buffer_window(
     due: &DueSet,
     log_rows: &LogRows,
     opening_settings: &[kronika_source_pg::settings::SettingsRow],
+    config: &Config,
     ts: i64,
 ) -> std::result::Result<Option<SectionBuffers>, BufferFailure> {
     let fs = ProcFs::from_env();
@@ -749,6 +766,7 @@ fn buffer_window(
             segment.interner_mut(),
             &facts,
             in_container,
+            config,
             ts,
         ) {
             log_buffer_failure(&err);

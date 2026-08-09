@@ -4,7 +4,7 @@ use kronika_format::DictLimits;
 use kronika_index::{BuildError, IdentityValue, IndexError, Number, Observation, Sample};
 use kronika_layout::{DataRoot, LayoutLimits, SegmentId};
 use kronika_reader::{BlobEntry, Resolved};
-use kronika_registry::instance_metadata::{Environment, InstanceMetadata};
+use kronika_registry::instance_metadata::{Environment, InstanceMetadataV1};
 use kronika_registry::os_psi::OsPsi;
 use kronika_registry::{DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict};
@@ -307,7 +307,7 @@ fn health_segment() -> (tempfile::TempDir, kronika_reader::Segment) {
         .expect("acquire writer");
     let mut sections = SectionBuffers::new();
     sections
-        .push(InstanceMetadata {
+        .push(InstanceMetadataV1 {
             ts: Ts(1_000_000),
             hostname: StrId(1),
             kernel_version: StrId(2),

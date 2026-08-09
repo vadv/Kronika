@@ -16,7 +16,7 @@ use crate::scheduler::{DueSet, Intervals};
 use crate::segments::{SegmentState, append_window_and_maybe_close, encode_window};
 use crate::{append_pending_pg_batch, append_pending_window, scheduler::Scheduler};
 
-const INSTANCE_METADATA_TYPE_ID: u32 = 1_021_001;
+const INSTANCE_METADATA_TYPE_ID: u32 = 1_021_002;
 const PGBOUNCER_TYPE_ID: u32 = 2_100_001;
 const PG_ARCHIVER_TYPE_ID: u32 = 1_008_001;
 const PG_SETTINGS_TYPE_ID: u32 = 1_019_001;
@@ -37,6 +37,7 @@ fn config(root: &Path, journal_max_bytes: u64) -> Config {
         journal_max_bytes,
         retention: None,
         pg_dsns: Vec::new(),
+        postgres_effective_cpus: None,
         pg_logs: Vec::new(),
         pgbouncer_dsns: Vec::new(),
         pgbouncer_logs: Vec::new(),
@@ -123,7 +124,7 @@ fn assert_retained_batch_moves_to_fresh_segment(pressure: Pressure) {
     let first = first_window(&segment);
     let max = match pressure {
         Pressure::Format => JournalConfig::default().max_journal_len,
-        Pressure::Journal => 16 * 1024,
+        Pressure::Journal => 20 * 1024,
     };
     let owner = owner(dir.path());
     let mut journal = Journal::open(
