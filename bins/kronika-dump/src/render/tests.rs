@@ -50,8 +50,9 @@ fn index_dump_uses_only_allowlisted_point_records() {
     let mut output = Vec::new();
     index(&mut output, false, &segment).expect("dump index table");
     let output = String::from_utf8(output).expect("UTF-8 index table");
-    assert!(output.contains("blocks=1  points=0"));
+    assert!(output.contains("blocks=2  points=0"));
     assert!(output.contains("os_health"));
+    assert!(output.contains("overall_health"));
 }
 
 #[test]
@@ -63,7 +64,7 @@ fn index_json_keeps_one_derived_health_point_per_psi_snapshot() {
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())
         .map(|line| serde_json::from_slice(line).expect("index JSON line"))
-        .filter(|line: &serde_json::Value| line["kind"] == "point")
+        .filter(|line: &serde_json::Value| line["kind"] == "point" && line["series"] == "os_health")
         .collect();
     assert_eq!(points.len(), 2);
     assert_eq!(points[0]["ts"], "1000000");

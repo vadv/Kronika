@@ -1,4 +1,4 @@
-//! Host identity facts for the `instance_metadata` section (`1_021_001`).
+//! Host identity facts used by the current `instance_metadata` section.
 
 use crate::ProcFs;
 use std::io;

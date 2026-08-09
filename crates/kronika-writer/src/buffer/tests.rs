@@ -29,7 +29,6 @@ fn instance(ts: i64) -> InstanceMetadata {
         boot_id: StrId(4),
         btime: Ts(ts - 1_000),
         postgresql_enabled: false,
-        os_core_interval_seconds: 10,
         postgresql_interval_seconds: 30,
         postgresql_effective_cpus: None,
         pgbouncer_enabled: false,

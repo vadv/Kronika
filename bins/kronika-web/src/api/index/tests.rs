@@ -1,7 +1,7 @@
 use hyper::StatusCode;
 use kronika_reader::SegmentKind;
 
-use super::{etag_matches, resource_meta, section_layout};
+use super::{etag_matches, health_layout, resource_meta, section_layout};
 use crate::api::CachePolicy;
 
 #[test]
@@ -29,14 +29,25 @@ fn active_index_has_no_validator_and_is_never_stored() {
 }
 
 #[test]
-fn health_has_one_explicit_allowlisted_series() {
-    let value = section_layout("health", 0).unwrap();
-    assert_eq!(value["logical_name"], "health");
-    assert_eq!(value["type_id"], "0");
-    assert_eq!(value["identity"].as_array().unwrap().len(), 0);
-    assert_eq!(value["columns"][0]["name"], "os_health");
-    assert_eq!(value["columns"][0]["class"], "gauge");
-    assert_eq!(value["columns"][0]["type"], "u8");
+fn health_has_four_explicit_allowlisted_series() {
+    for series in [
+        "os_health",
+        "overall_health",
+        "postgres_health",
+        "pgbouncer_health",
+    ] {
+        let value = health_layout(series).unwrap();
+        assert_eq!(value["logical_name"], "health");
+        assert_eq!(value["type_id"], "0");
+        assert_eq!(value["identity"].as_array().unwrap().len(), 0);
+        assert_eq!(value["columns"][0]["name"], series);
+        assert_eq!(value["columns"][0]["class"], "gauge");
+        assert_eq!(value["columns"][0]["type"], "u8");
+    }
+    assert_eq!(
+        section_layout("health", 0).unwrap()["columns"][0]["name"],
+        "os_health"
+    );
 }
 
 #[test]

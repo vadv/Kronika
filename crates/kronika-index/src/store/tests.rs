@@ -91,7 +91,7 @@ fn real_active_and_finished_resources_are_bounded_and_atomically_cached() {
         resource(directory.path(), &reader, &active_ref, "health").expect("active resource");
     assert!(!active.persisted);
     assert_eq!(active.index.checksum, None);
-    assert_eq!(active.index.blocks.len(), 1);
+    assert_eq!(active.index.blocks.len(), 2);
 
     write_segment(&journal, &writer, address()).expect("finish segment");
     let reader = Reader::open(directory.path()).expect("finished reader");
@@ -121,7 +121,7 @@ fn real_active_and_finished_resources_are_bounded_and_atomically_cached() {
             .any(|window| window == b"IDX-MUST-NOT-COPY-THIS-DISPLAY-LABEL"),
         "non-identity display labels do not belong in IDX"
     );
-    assert_eq!(read(&index_path).expect("read index").blocks.len(), 1);
+    assert_eq!(read(&index_path).expect("read index").blocks.len(), 2);
 }
 
 #[test]

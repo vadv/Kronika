@@ -130,20 +130,16 @@ pub(crate) fn index(
         for block in &built.blocks {
             match block {
                 SeriesBlock::OsHealth(points) => {
-                    for point in points {
-                        say(
-                            output,
-                            &json!({
-                                "kind": "point",
-                                "path": path,
-                                "series": "os_health",
-                                "type_id": "0",
-                                "ts": point.timestamp.to_string(),
-                                "identity": {},
-                                "value": point.value,
-                            }),
-                        )?;
-                    }
+                    write_health_points(output, &path, "os_health", points)?;
+                }
+                SeriesBlock::OverallHealth(points) => {
+                    write_health_points(output, &path, "overall_health", points)?;
+                }
+                SeriesBlock::PostgresHealth(points) => {
+                    write_health_points(output, &path, "postgres_health", points)?;
+                }
+                SeriesBlock::PgbouncerHealth(points) => {
+                    write_health_points(output, &path, "pgbouncer_health", points)?;
                 }
                 SeriesBlock::PgTransactions { type_id, points } => {
                     for point in points {
@@ -199,9 +195,35 @@ pub(crate) fn index(
     Ok(())
 }
 
+fn write_health_points(
+    output: &mut impl Write,
+    path: &str,
+    series: &str,
+    points: &[kronika_index::HealthPoint],
+) -> Result<(), DumpError> {
+    for point in points {
+        say(
+            output,
+            &json!({
+                "kind": "point",
+                "path": path,
+                "series": series,
+                "type_id": "0",
+                "ts": point.timestamp.to_string(),
+                "identity": {},
+                "value": point.value,
+            }),
+        )?;
+    }
+    Ok(())
+}
+
 const fn index_block_name(block: &SeriesBlock) -> &'static str {
     match block {
         SeriesBlock::OsHealth(_) => "os_health",
+        SeriesBlock::OverallHealth(_) => "overall_health",
+        SeriesBlock::PostgresHealth(_) => "postgres_health",
+        SeriesBlock::PgbouncerHealth(_) => "pgbouncer_health",
         SeriesBlock::PgTransactions { .. } => "transactions_per_second",
         SeriesBlock::PgActiveBackends { .. } => "active_backends",
     }
@@ -209,7 +231,10 @@ const fn index_block_name(block: &SeriesBlock) -> &'static str {
 
 const fn index_block_len(block: &SeriesBlock) -> usize {
     match block {
-        SeriesBlock::OsHealth(points) => points.len(),
+        SeriesBlock::OsHealth(points)
+        | SeriesBlock::OverallHealth(points)
+        | SeriesBlock::PostgresHealth(points)
+        | SeriesBlock::PgbouncerHealth(points) => points.len(),
         SeriesBlock::PgTransactions { points, .. } => points.len(),
         SeriesBlock::PgActiveBackends { points, .. } => points.len(),
     }

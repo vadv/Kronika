@@ -68,7 +68,6 @@ pub(crate) fn push_instance_metadata(
         boot_id: intern(&facts.boot_id)?,
         btime: Ts(facts.btime),
         postgresql_enabled: !config.pg_dsns.is_empty(),
-        os_core_interval_seconds: effective_interval(config.intervals.os_core, config.tick_secs),
         postgresql_interval_seconds: effective_interval(config.intervals.pg, config.tick_secs),
         postgresql_effective_cpus: config.postgres_effective_cpus,
         pgbouncer_enabled: !config.pgbouncer_dsns.is_empty(),
@@ -81,5 +80,17 @@ const fn effective_interval(configured: u64, base_tick: u64) -> u64 {
         base_tick
     } else {
         configured
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::effective_interval;
+
+    #[test]
+    fn zero_source_interval_uses_the_timer_tick_as_its_freshness() {
+        assert_eq!(effective_interval(30, 5), 30);
+        assert_eq!(effective_interval(0, 5), 5);
+        assert_eq!(effective_interval(0, 0), 0);
     }
 }

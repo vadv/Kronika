@@ -78,9 +78,6 @@ pub struct InstanceMetadata {
     /// Whether PostgreSQL metric collection was configured.
     #[column(l)]
     pub postgresql_enabled: bool,
-    /// Effective cadence of the OS core/PSI source, seconds.
-    #[column(l, unit = seconds)]
-    pub os_core_interval_seconds: u64,
     /// Effective cadence of the PostgreSQL snapshot source, seconds.
     #[column(l, unit = seconds)]
     pub postgresql_interval_seconds: u64,
@@ -143,7 +140,6 @@ mod tests {
             boot_id: StrId(4),
             btime: Ts(1_700_000_000_000_000),
             postgresql_enabled: true,
-            os_core_interval_seconds: 10,
             postgresql_interval_seconds: 30,
             postgresql_effective_cpus: Some(2),
             pgbouncer_enabled: false,
@@ -177,7 +173,6 @@ mod tests {
                 "boot_id",
                 "btime",
                 "postgresql_enabled",
-                "os_core_interval_seconds",
                 "postgresql_interval_seconds",
                 "postgresql_effective_cpus",
                 "pgbouncer_enabled",

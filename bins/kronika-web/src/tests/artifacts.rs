@@ -4,9 +4,10 @@ use std::path::Path;
 use hyper::StatusCode;
 use kronika_format::DictLimits;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
-use kronika_registry::instance_metadata::InstanceMetadataV1;
+use kronika_registry::instance_metadata::InstanceMetadata;
 use kronika_registry::os_diskstats::OsDiskstats;
 use kronika_registry::os_psi::OsPsi;
+use kronika_registry::pg_stat_activity::PgStatActivityV3;
 use kronika_registry::{StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use serde_json::Value;
@@ -80,7 +81,7 @@ impl Fixture {
     fn append_health(&mut self) {
         let mut buffers = SectionBuffers::new();
         buffers
-            .push(InstanceMetadataV1 {
+            .push(InstanceMetadata {
                 ts: Ts(100),
                 hostname: StrId(901),
                 kernel_version: StrId(902),
@@ -89,6 +90,10 @@ impl Fixture {
                 page_size_bytes: 4_096,
                 boot_id: StrId(903),
                 btime: Ts(1),
+                postgresql_enabled: false,
+                postgresql_interval_seconds: 30,
+                postgresql_effective_cpus: None,
+                pgbouncer_enabled: false,
             })
             .expect("metadata row fits");
         for row in [
@@ -102,6 +107,66 @@ impl Fixture {
             buffers.push(row).expect("psi row fits");
         }
         self.append(buffers);
+    }
+
+    fn append_postgres_health(&mut self, active: u32, pgbouncer_enabled: bool) {
+        let mut interner = Interner::new(DictLimits::default());
+        let active_state = StrId(interner.intern(b"active").expect("active state").get());
+        let idle_state = StrId(interner.intern(b"idle").expect("idle state").get());
+        let query = StrId(
+            interner
+                .intern(b"QUERY-TEXT-MUST-STAY-OUT-OF-IDX")
+                .expect("query text")
+                .get(),
+        );
+        let dictionary = dict::encode(interner.window()).expect("health dictionary");
+        let mut buffers = SectionBuffers::new();
+        buffers
+            .push(InstanceMetadata {
+                ts: Ts(100),
+                hostname: StrId(901),
+                kernel_version: StrId(902),
+                environment: 0,
+                clock_ticks_per_sec: 100,
+                page_size_bytes: 4_096,
+                boot_id: StrId(903),
+                btime: Ts(1),
+                postgresql_enabled: true,
+                postgresql_interval_seconds: 30,
+                postgresql_effective_cpus: Some(2),
+                pgbouncer_enabled,
+            })
+            .expect("metadata row fits");
+        for row in [
+            psi(100, 0, 0),
+            psi(100, 1, 0),
+            psi(100, 2, 0),
+            psi(200, 0, 50),
+            psi(200, 1, 20),
+            psi(200, 2, 0),
+        ] {
+            buffers.push(row).expect("psi row fits");
+        }
+        for pid in 0..active {
+            buffers
+                .push(activity(
+                    150,
+                    i32::try_from(pid).expect("fixture pid"),
+                    active_state,
+                    query,
+                ))
+                .expect("active row fits");
+        }
+        buffers
+            .push(activity(150, 10_000, idle_state, query))
+            .expect("idle row fits");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode health fixture")
+            .expect("nonempty health fixture");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append health fixture");
     }
 
     fn append(&mut self, mut buffers: SectionBuffers) {
@@ -228,6 +293,30 @@ fn psi(ts: i64, resource: u8, some_total: i64) -> OsPsi {
         full_avg300: None,
         full_total: None,
         scope: 0,
+    }
+}
+
+fn activity(ts: i64, pid: i32, state: StrId, query: StrId) -> PgStatActivityV3 {
+    PgStatActivityV3 {
+        ts: Ts(ts),
+        pid,
+        leader_pid: None,
+        datname: None,
+        usename: None,
+        application_name: state,
+        client_addr: state,
+        backend_type: state,
+        state: Some(state),
+        wait_event_type: Some(state),
+        wait_event: Some(state),
+        query: Some(query),
+        query_id: None,
+        backend_xid_age: None,
+        backend_xmin_age: None,
+        backend_start: Ts(1),
+        xact_start: None,
+        query_start: None,
+        state_change: None,
     }
 }
 
@@ -435,4 +524,45 @@ fn health_is_streamed_as_an_ordinary_history_series_from_real_sections() {
             && record["type_id"] == "0"
             && record["value"] == 50
     }));
+}
+
+#[test]
+fn postgres_health_counts_every_active_backend_and_adds_its_penalty() {
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_health(5, false);
+
+    let target = format!("/api/segments/{SEGMENT_ID}/sections/health/index");
+    let records = stream(fixture.prepare(&target, None)).expect("health index");
+    let points = |series: &str| {
+        records
+            .iter()
+            .filter(|record| record["record"] == "point" && record["series"] == series)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(points("postgres_health")[0]["value"], 80);
+    assert_eq!(points("overall_health")[1]["value"], 30);
+    assert_eq!(points("active_backends").len(), 0);
+    assert!(points("pgbouncer_health").is_empty());
+}
+
+#[test]
+fn configured_pgbouncer_is_unknown_until_pool_pressure_is_collected() {
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_health(4, true);
+
+    let target = format!("/api/segments/{SEGMENT_ID}/sections/health/index");
+    let records = stream(fixture.prepare(&target, None)).expect("health index");
+    let pgbouncer = records
+        .iter()
+        .find(|record| record["record"] == "point" && record["series"] == "pgbouncer_health")
+        .expect("configured PgBouncer component");
+    assert_eq!(pgbouncer["value"], Value::Null);
+    assert!(
+        records
+            .iter()
+            .filter(|record| {
+                record["record"] == "point" && record["series"] == "overall_health"
+            })
+            .all(|record| record["value"] == Value::Null)
+    );
 }
