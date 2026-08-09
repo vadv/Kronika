@@ -172,8 +172,6 @@ pub(super) struct PostgresServer {
     pub(super) line_prefix: String,
     /// Generated at `initdb`, so it survives restarts, renames and moves.
     pub(super) system_identifier: Option<u64>,
-    /// The identity query failed and should be retried on the next rescan.
-    pub(super) identity_unavailable: bool,
 }
 
 /// What one `PgBouncer` said about itself.
@@ -296,64 +294,63 @@ pub(super) async fn postgres(
         QueryOutcome::Success,
         None,
     );
-    let (system_identifier, identity_unavailable) =
-        if let Some(identifier) = cached_system_identifier {
-            (Some(identifier), false)
-        } else {
-            let mut stats = QueryStats::default();
-            let started = Instant::now();
-            let session = Session::new(&client, 0);
-            let identity = query::timeout(
-                session,
-                QUERY_TIMEOUT,
-                read_system_identifier(session, &mut stats),
-            )
-            .await;
-            match identity {
-                Ok(Ok(identifier)) => {
-                    observe_query(
-                        observe,
-                        "postgres_system_identifier",
-                        &connection_label,
-                        &facts.database_name,
-                        started,
-                        stats,
-                        QueryOutcome::Success,
-                        None,
-                    );
-                    (Some(identifier), false)
-                }
-                Ok(Err(error)) => {
-                    observe_query(
-                        observe,
-                        "postgres_system_identifier",
-                        &connection_label,
-                        &facts.database_name,
-                        started,
-                        stats,
-                        QueryOutcome::Error,
-                        Some(format!("{error:#}")),
-                    );
-                    (None, true)
-                }
-                Err(_elapsed) => {
-                    observe_query(
-                        observe,
-                        "postgres_system_identifier",
-                        &connection_label,
-                        &facts.database_name,
-                        started,
-                        stats,
-                        QueryOutcome::Timeout,
-                        Some(format!(
-                            "query timed out after {} seconds",
-                            QUERY_TIMEOUT.as_secs()
-                        )),
-                    );
-                    (None, true)
-                }
+    let system_identifier = if let Some(identifier) = cached_system_identifier {
+        Some(identifier)
+    } else {
+        let mut stats = QueryStats::default();
+        let started = Instant::now();
+        let session = Session::new(&client, 0);
+        let identity = query::timeout(
+            session,
+            QUERY_TIMEOUT,
+            read_system_identifier(session, &mut stats),
+        )
+        .await;
+        match identity {
+            Ok(Ok(identifier)) => {
+                observe_query(
+                    observe,
+                    "postgres_system_identifier",
+                    &connection_label,
+                    &facts.database_name,
+                    started,
+                    stats,
+                    QueryOutcome::Success,
+                    None,
+                );
+                Some(identifier)
             }
-        };
+            Ok(Err(error)) => {
+                observe_query(
+                    observe,
+                    "postgres_system_identifier",
+                    &connection_label,
+                    &facts.database_name,
+                    started,
+                    stats,
+                    QueryOutcome::Error,
+                    Some(format!("{error:#}")),
+                );
+                None
+            }
+            Err(_elapsed) => {
+                observe_query(
+                    observe,
+                    "postgres_system_identifier",
+                    &connection_label,
+                    &facts.database_name,
+                    started,
+                    stats,
+                    QueryOutcome::Timeout,
+                    Some(format!(
+                        "query timed out after {} seconds",
+                        QUERY_TIMEOUT.as_secs()
+                    )),
+                );
+                None
+            }
+        }
+    };
     drop(client);
     driver.abort();
     Ok(PostgresServer {
@@ -362,7 +359,6 @@ pub(super) async fn postgres(
             .map(|name| absolute(&facts.data_directory, &name)),
         line_prefix: facts.line_prefix,
         system_identifier,
-        identity_unavailable,
     })
 }
 

@@ -69,12 +69,20 @@ impl QueryStats {
 
     /// Account for one batch encoded and appended outside the stream helper.
     pub const fn record_batch_write(&mut self, elapsed: Duration, write: BatchWrite) {
-        self.wrote_batch(elapsed, write);
+        self.batches = self.batches.saturating_add(1);
+        self.sink_elapsed = self.sink_elapsed.saturating_add(elapsed);
+        self.encode_elapsed = self.encode_elapsed.saturating_add(write.encode_elapsed);
+        self.append_elapsed = self.append_elapsed.saturating_add(write.append_elapsed);
+        self.encoded_bytes = self.encoded_bytes.saturating_add(write.encoded_bytes);
+        self.wal_bytes_appended = self
+            .wal_bytes_appended
+            .saturating_add(write.wal_bytes_appended);
     }
 
     /// Account for batch sink work that failed before bytes were written.
     pub const fn record_failed_batch(&mut self, elapsed: Duration) {
-        self.attempted_batch(elapsed);
+        self.batches = self.batches.saturating_add(1);
+        self.sink_elapsed = self.sink_elapsed.saturating_add(elapsed);
     }
 
     /// Account for one message returned by Simple Protocol.
@@ -106,21 +114,6 @@ impl QueryStats {
             .application_payload_from_postgres_bytes
             .saturating_add(usize_to_u64(decoded_bytes));
         row_bytes.saturating_add(decoded_bytes)
-    }
-
-    const fn wrote_batch(&mut self, elapsed: Duration, write: BatchWrite) {
-        self.attempted_batch(elapsed);
-        self.encode_elapsed = self.encode_elapsed.saturating_add(write.encode_elapsed);
-        self.append_elapsed = self.append_elapsed.saturating_add(write.append_elapsed);
-        self.encoded_bytes = self.encoded_bytes.saturating_add(write.encoded_bytes);
-        self.wal_bytes_appended = self
-            .wal_bytes_appended
-            .saturating_add(write.wal_bytes_appended);
-    }
-
-    const fn attempted_batch(&mut self, elapsed: Duration) {
-        self.batches = self.batches.saturating_add(1);
-        self.sink_elapsed = self.sink_elapsed.saturating_add(elapsed);
     }
 }
 
@@ -219,10 +212,6 @@ impl<'a> Session<'a> {
         self.generation
     }
 
-    fn cancel_token(self) -> CancelToken {
-        self.client.cancel_token()
-    }
-
     /// Start a one-shot unnamed typed Extended Protocol query.
     ///
     /// # Errors
@@ -280,7 +269,7 @@ async fn timeout_at<T>(
     deadline: tokio::time::Instant,
     future: impl Future<Output = T>,
 ) -> Result<T, tokio::time::error::Elapsed> {
-    let cancel = session.cancel_token();
+    let cancel = session.client.cancel_token();
     timeout_at_with_cancel(deadline, future, send_cancel(cancel)).await
 }
 
@@ -503,11 +492,11 @@ fn deliver_batch<T, E>(
     match sink(batch) {
         Ok(write) => {
             let elapsed = started.elapsed();
-            stats.wrote_batch(elapsed, write);
+            stats.record_batch_write(elapsed, write);
             Ok(elapsed)
         }
         Err(error) => {
-            stats.attempted_batch(started.elapsed());
+            stats.record_failed_batch(started.elapsed());
             Err(BatchError::Sink(error))
         }
     }

@@ -42,7 +42,7 @@ pub struct PgStatArchiver {
 #[cfg(test)]
 mod tests {
     use super::PgStatArchiver;
-    use crate::{Section, StrId, Ts, VerifiedSection};
+    use crate::{Section, StrId, Ts};
 
     fn row(ts: i64, with_archive: bool) -> PgStatArchiver {
         PgStatArchiver {
@@ -75,15 +75,6 @@ mod tests {
 
     #[test]
     fn roundtrip_preserves_values_and_nulls() {
-        crate::assert_roundtrips(&[row(1_000, true)]);
-    }
-
-    #[test]
-    fn nulls_survive_distinct_from_zero() {
-        let bytes = PgStatArchiver::encode(&[row(5, false)]).expect("encode");
-        let decoded =
-            PgStatArchiver::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
-        assert_eq!(decoded[0].last_archived_wal, None);
-        assert_eq!(decoded[0].last_archived_time, None);
+        crate::assert_roundtrips(&[row(5, false), row(1_000, true)]);
     }
 }

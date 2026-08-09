@@ -160,7 +160,7 @@ impl LogSources {
                     if let Some(identifier) = server.system_identifier {
                         target.system_identifier = Some(identifier);
                     }
-                    if server.identity_unavailable {
+                    if server.system_identifier.is_none() {
                         log_source_identity_unavailable(
                             target.connection.label(),
                             target.connection.source_index(),

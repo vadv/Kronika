@@ -274,7 +274,7 @@ fn store_plans_flavours_are_not_ranked() {
 
 #[test]
 fn capability_invalidation_preserves_independent_info_and_tracks_a_move() {
-    let mut sources = PgSources::disabled();
+    let mut sources = PgSources::default();
     let schema = ExtensionSchema::new("monitoring");
     sources.capabilities.insert(
         "alpha".to_owned(),
@@ -335,7 +335,7 @@ fn extension_inventory_cache_is_scoped_to_one_connection_generation() {
 
 #[test]
 fn visibility_refresh_on_the_same_connection_keeps_generation_scoped_state() {
-    let mut sources = PgSources::disabled();
+    let mut sources = PgSources::default();
     let now = Instant::now();
     sources.settings = Some(CachedSettings {
         generation: 7,
@@ -381,7 +381,7 @@ fn visibility_refresh_on_the_same_connection_keeps_generation_scoped_state() {
 
 #[test]
 fn a_new_primary_generation_discards_secondary_pools() {
-    let mut sources = PgSources::disabled();
+    let mut sources = PgSources::default();
     sources.databases.insert(
         "other".to_owned(),
         Pool::new("host=127.0.0.1 dbname=other").expect("the DSN parses"),
@@ -405,9 +405,11 @@ fn a_new_primary_generation_discards_secondary_pools() {
 
 #[tokio::test]
 async fn losing_the_primary_during_extension_collection_ends_the_cycle() {
-    let mut sources = PgSources::disabled();
-    sources.server = Some(Pool::new("host=127.0.0.1 dbname=app").expect("the primary DSN parses"));
-    sources.server_database = Some("app".to_owned());
+    let mut sources = PgSources {
+        server: Some(Pool::new("host=127.0.0.1 dbname=app").expect("the primary DSN parses")),
+        server_database: Some("app".to_owned()),
+        ..PgSources::default()
+    };
     sources.databases.insert(
         "other".to_owned(),
         Pool::new("host=127.0.0.1 dbname=other").expect("the DSN parses"),

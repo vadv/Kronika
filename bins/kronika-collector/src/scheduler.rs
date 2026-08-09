@@ -201,11 +201,6 @@ impl Scheduler {
         }
     }
 
-    /// Record and return only the service sources required by a new segment.
-    pub(crate) fn segment_open_due(&mut self, now: Instant) -> DueSet {
-        self.recollection_due(&DueSet::default(), now)
-    }
-
     /// Time until the next positive source interval elapses.
     ///
     /// Sources with no previous read and explicit zero intervals are read on

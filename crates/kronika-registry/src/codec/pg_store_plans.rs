@@ -239,14 +239,6 @@ mod tests {
             row(1_000, 5, 10, 42, Some(StrId(77))),
             row(1_000, 5, 11, 43, None),
         ]);
-        let bytes = PgStorePlansVadvV1::encode(&[row(1_000, 5, 11, 43, None)]).expect("encode");
-        let decoded =
-            PgStorePlansVadvV1::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
-        assert_eq!(decoded[0].plan, None);
-        assert_eq!(decoded[0].queryid, 43);
-        assert_eq!(decoded[0].queryid_stat_statements, 4_242_424_242_424);
-        assert!((decoded[0].total_time - 1_234.5).abs() < f64::EPSILON);
-        assert_eq!(decoded[0].first_call, Ts(1_000 - 5_000_000));
     }
 
     #[test]
@@ -586,12 +578,6 @@ mod ossc_tests {
     #[test]
     fn ossc_v1_roundtrip_preserves_null_plan() {
         crate::assert_roundtrips(&[row(1_000, 5, 42, Some(StrId(77))), row(1_000, 5, 43, None)]);
-        let bytes = PgStorePlansOsscV1::encode(&[row(1_000, 5, 43, None)]).expect("encode");
-        let decoded =
-            PgStorePlansOsscV1::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
-        assert_eq!(decoded[0].plan, None);
-        assert_eq!(decoded[0].queryid, 43);
-        assert!((decoded[0].shared_blk_read_time - 1.5).abs() < f64::EPSILON);
     }
 
     #[test]

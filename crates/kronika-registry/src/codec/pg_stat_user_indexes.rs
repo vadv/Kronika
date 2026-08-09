@@ -263,7 +263,14 @@ mod tests {
 
     #[test]
     fn v2_roundtrip() {
-        crate::assert_roundtrips(&[v2_row(1_000, 5, 16_384), v2_row(1_000, 5, 16_385)]);
+        let mut never_scanned = v2_row(5, 5, 16_384);
+        never_scanned.last_idx_scan = None;
+        never_scanned.indexdef = None;
+        crate::assert_roundtrips(&[
+            never_scanned,
+            v2_row(1_000, 5, 16_384),
+            v2_row(1_000, 5, 16_385),
+        ]);
     }
 
     #[test]
@@ -283,21 +290,5 @@ mod tests {
                 .collect::<Vec<_>>(),
             [(1, 16_384), (1, 16_390), (9, 16_385)]
         );
-    }
-
-    #[test]
-    fn v2_roundtrip_preserves_never_scanned_null() {
-        let mut row = v2_row(5, 5, 16_384);
-        row.last_idx_scan = None;
-        row.indexdef = None;
-        let bytes = PgStatUserIndexesV2::encode(&[row]).expect("encode");
-        let decoded =
-            PgStatUserIndexesV2::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
-        assert_eq!(decoded[0].last_idx_scan, None);
-        assert_eq!(decoded[0].main_fork_bytes, 16_384);
-        assert!(decoded[0].indisprimary);
-        assert!(!decoded[0].indisexclusion);
-        assert!(decoded[0].indisready);
-        assert_eq!(decoded[0].indexdef, None);
     }
 }

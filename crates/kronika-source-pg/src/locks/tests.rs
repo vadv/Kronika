@@ -1,18 +1,8 @@
-use std::convert::Infallible;
-
-use kronika_registry::StrId;
+use crate::test_intern as intern;
 
 use super::{
     LockRow, LocksVersion, blocked_by_logical_bytes, locks_query, locks_version, to_v1, to_v2,
 };
-
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "the converter API is fallible; Infallible proves this test interner is not"
-)]
-fn intern(bytes: &[u8]) -> Result<StrId, Infallible> {
-    Ok(StrId(u64::try_from(bytes.len()).unwrap_or(u64::MAX) + 1))
-}
 
 fn row() -> LockRow {
     LockRow {

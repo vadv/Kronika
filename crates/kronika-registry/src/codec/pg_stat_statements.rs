@@ -985,13 +985,6 @@ mod tests {
         // A row with a resolved queryid/query and one with nullable identity
         // and text, as produced under restricted visibility.
         crate::assert_roundtrips(&[v6_row(1_000, 5, 10, Some(777)), v6_row(1_000, 5, 11, None)]);
-        let bytes = PgStatStatementsV6::encode(&[v6_row(1_000, 5, 11, None)]).expect("encode");
-        let decoded =
-            PgStatStatementsV6::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
-        assert_eq!(decoded[0].queryid, None);
-        assert_eq!(decoded[0].query, None);
-        assert!((decoded[0].total_exec_time - 1_234.5).abs() < f64::EPSILON);
-        assert_eq!(decoded[0].stats_since, Ts(900));
     }
 
     #[test]
@@ -1333,15 +1326,9 @@ mod tests {
 
     #[test]
     fn v1_roundtrip_and_null_query() {
-        crate::assert_roundtrips(&[v1_row(1_000, 5, 10), v1_row(1_000, 5, 11)]);
-        let mut row = v1_row(5, 5, 10);
-        row.query = None;
-        row.queryid = None;
-        let bytes = PgStatStatementsV1::encode(&[row]).expect("encode");
-        let decoded =
-            PgStatStatementsV1::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
-        assert_eq!(decoded[0].query, None);
-        assert_eq!(decoded[0].queryid, None);
-        assert!((decoded[0].total_time - 1_234.5).abs() < f64::EPSILON);
+        let mut null_query = v1_row(5, 5, 10);
+        null_query.query = None;
+        null_query.queryid = None;
+        crate::assert_roundtrips(&[null_query, v1_row(1_000, 5, 10), v1_row(1_000, 5, 11)]);
     }
 }

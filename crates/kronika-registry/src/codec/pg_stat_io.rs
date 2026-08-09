@@ -165,7 +165,7 @@ pub struct PgStatIoV2 {
 #[cfg(test)]
 mod tests {
     use super::{PgStatIoV1, PgStatIoV2};
-    use crate::{ColumnClass, Section, StrId, Ts, VerifiedSection};
+    use crate::{ColumnClass, Section, StrId, Ts};
 
     fn v1_row(ts: i64, object: u64) -> PgStatIoV1 {
         PgStatIoV1 {
@@ -215,14 +215,6 @@ mod tests {
     #[test]
     fn v1_roundtrip_preserves_values_and_nulls() {
         crate::assert_roundtrips(&[v1_row(1_000, 10), v1_row(1_000, 20)]);
-    }
-
-    #[test]
-    fn v1_nulls_survive_distinct_from_zero() {
-        let bytes = PgStatIoV1::encode(&[v1_row(5, 10)]).expect("encode");
-        let decoded = PgStatIoV1::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
-        assert_eq!(decoded[0].reuses, None);
-        assert_eq!(decoded[0].fsync_time, None);
     }
 
     fn v2_row(ts: i64, object: u64) -> PgStatIoV2 {

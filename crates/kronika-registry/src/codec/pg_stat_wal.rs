@@ -77,7 +77,7 @@ pub struct PgStatWalV2 {
 #[cfg(test)]
 mod tests {
     use super::{PgStatWalV1, PgStatWalV2};
-    use crate::{Section, Ts, VerifiedSection};
+    use crate::{Section, Ts};
 
     fn v1_row(ts: i64) -> PgStatWalV1 {
         PgStatWalV1 {
@@ -128,12 +128,5 @@ mod tests {
     fn roundtrip_preserves_values_and_nulls() {
         crate::assert_roundtrips(&[v1_row(1_000_000), v1_row(2_000_000)]);
         crate::assert_roundtrips(&[v2_row(3_000_000)]);
-    }
-
-    #[test]
-    fn nulls_survive_distinct_from_zero() {
-        let bytes = PgStatWalV2::encode(&[v2_row(5)]).expect("encode");
-        let decoded = PgStatWalV2::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
-        assert_eq!(decoded[0].stats_reset, None);
     }
 }

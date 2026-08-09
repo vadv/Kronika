@@ -729,24 +729,14 @@ mod tests {
 
     #[test]
     fn v4_roundtrip() {
-        crate::assert_roundtrips(&[v4_row(1_000, 5, 16_384), v4_row(1_000, 5, 16_385)]);
-    }
-
-    #[test]
-    fn v4_roundtrip_preserves_timing_and_nulls() {
-        let mut row = v4_row(5, 5, 16_384);
-        row.xid_age = None;
-        row.mxid_age = None;
-        let bytes = PgStatUserTablesV4::encode(&[row]).expect("encode");
-        let decoded =
-            PgStatUserTablesV4::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
-        assert!((decoded[0].total_autovacuum_time - 340.0).abs() < f64::EPSILON);
-        assert_eq!(decoded[0].idx_scan, None);
-        assert_eq!(decoded[0].toast_bytes, None);
-        assert_eq!(decoded[0].last_autovacuum, None);
-        assert_eq!(decoded[0].main_fork_bytes, 8_192);
-        assert_eq!(decoded[0].xid_age, None);
-        assert_eq!(decoded[0].mxid_age, None);
+        let mut null_ages = v4_row(5, 5, 16_384);
+        null_ages.xid_age = None;
+        null_ages.mxid_age = None;
+        crate::assert_roundtrips(&[
+            null_ages,
+            v4_row(1_000, 5, 16_384),
+            v4_row(1_000, 5, 16_385),
+        ]);
     }
 
     #[test]
@@ -859,17 +849,5 @@ mod tests {
                 .collect::<Vec<_>>(),
             [(1, 16_384), (1, 16_390), (9, 16_385)]
         );
-    }
-
-    #[test]
-    fn v3_roundtrip_preserves_nulls() {
-        let bytes = PgStatUserTablesV3::encode(&[v3_row(5, 5, 16_384)]).expect("encode");
-        let decoded =
-            PgStatUserTablesV3::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
-        assert_eq!(decoded[0].idx_scan, None);
-        assert_eq!(decoded[0].toast_bytes, None);
-        assert_eq!(decoded[0].last_autovacuum, None);
-        assert_eq!(decoded[0].last_vacuum, Some(Ts(-5)));
-        assert_eq!(decoded[0].tidx_blks_hit, None);
     }
 }

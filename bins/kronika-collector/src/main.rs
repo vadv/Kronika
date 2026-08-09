@@ -384,7 +384,7 @@ fn append_pending_pg_batch(
     for attempt in 0..2 {
         let opening_due = segment
             .is_empty()
-            .then(|| sched.segment_open_due(Instant::now()));
+            .then(|| sched.recollection_due(&DueSet::default(), Instant::now()));
         let includes_settings = matches!(batch, PgBatch::Settings(_))
             || (segment.needs_pg_settings() && !opening_settings.is_empty());
         let buffers = buffer_pg_batch(segment, batch, opening_settings, opening_due.as_ref(), ts)

@@ -529,8 +529,10 @@ mod tests {
 
     #[test]
     fn v4_roundtrip_preserves_values_and_nulls() {
+        let mut checksum_disabled = v4_row(5, 1);
+        checksum_disabled.checksum_failures = None;
         // The shared-objects row sorts before database rows.
-        crate::assert_roundtrips(&[v4_row(1_000, 0), v4_row(1_000, 5)]);
+        crate::assert_roundtrips(&[v4_row(1_000, 0), checksum_disabled, v4_row(1_000, 5)]);
     }
 
     #[test]
@@ -540,31 +542,6 @@ mod tests {
         let decoded =
             PgStatDatabaseV4::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
         assert_eq!(decoded.iter().map(|r| r.datid).collect::<Vec<_>>(), [1, 9]);
-    }
-
-    #[test]
-    fn v4_shared_row_preserves_numbackends_and_null_catalog_fields() {
-        let bytes = PgStatDatabaseV4::encode(&[v4_row(5, 0)]).expect("encode");
-        let decoded =
-            PgStatDatabaseV4::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
-        assert_eq!(decoded[0].datname, None);
-        assert_eq!(decoded[0].numbackends, Some(0));
-        assert_eq!(decoded[0].checksum_last_failure, None);
-        assert_eq!(decoded[0].frozen_xid_age, None);
-        assert_eq!(decoded[0].min_mxid_age, None);
-        assert_eq!(decoded[0].datconnlimit, None);
-        assert_eq!(decoded[0].datallowconn, None);
-        assert_eq!(decoded[0].datistemplate, None);
-    }
-
-    #[test]
-    fn v4_roundtrip_preserves_checksum_disabled_null() {
-        let mut row = v4_row(5, 1);
-        row.checksum_failures = None;
-        let bytes = PgStatDatabaseV4::encode(&[row]).expect("encode");
-        let decoded =
-            PgStatDatabaseV4::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
-        assert_eq!(decoded[0].checksum_failures, None);
     }
 
     fn v3_row(ts: i64, datid: u32) -> PgStatDatabaseV3 {

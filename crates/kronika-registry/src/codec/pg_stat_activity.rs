@@ -312,18 +312,6 @@ mod tests {
     }
 
     #[test]
-    fn v3_nulls_survive_distinct_from_some() {
-        let bytes = PgStatActivityV3::encode(&[v3_background(5, 7)]).expect("encode");
-        let decoded =
-            PgStatActivityV3::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
-        assert_eq!(decoded[0].datname, None);
-        assert_eq!(decoded[0].query, None);
-        assert_eq!(decoded[0].query_id, None);
-        assert_eq!(decoded[0].leader_pid, None);
-        assert_eq!(decoded[0].backend_xmin_age, None);
-    }
-
-    #[test]
     fn v3_encode_sorts_by_ts_then_pid() {
         // Equal timestamps fall back to pid.
         let rows = [

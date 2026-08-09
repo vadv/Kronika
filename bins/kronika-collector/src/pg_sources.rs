@@ -115,16 +115,16 @@ impl QueryMeasurement<'_> {
         self.database = database;
     }
 
-    fn success(self) {
-        self.finish(QueryOutcome::Success, None);
+    fn success(mut self) {
+        self.emit(QueryOutcome::Success, None);
     }
 
-    fn error(self, error: &(dyn std::fmt::Display + '_)) {
-        self.finish(QueryOutcome::Error, Some(error.to_string()));
+    fn error(mut self, error: &(dyn std::fmt::Display + '_)) {
+        self.emit(QueryOutcome::Error, Some(error.to_string()));
     }
 
-    fn timeout(self) {
-        self.finish(
+    fn timeout(mut self) {
+        self.emit(
             QueryOutcome::Timeout,
             Some(format!(
                 "query timed out after {} seconds",
@@ -133,15 +133,11 @@ impl QueryMeasurement<'_> {
         );
     }
 
-    fn sink_error(self) {
-        self.finish(
+    fn sink_error(mut self) {
+        self.emit(
             QueryOutcome::SinkError,
             Some("write query batch to the journal failed".to_owned()),
         );
-    }
-
-    fn finish(mut self, outcome: QueryOutcome, error: Option<String>) {
-        self.emit(outcome, error);
     }
 
     fn emit(&mut self, outcome: QueryOutcome, error: Option<String>) {
@@ -238,7 +234,7 @@ struct DatabaseCapabilities {
 
 /// The primary connection, persistent per-database connections, and caches
 /// tied to the primary connection generation.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct PgSources {
     server: Option<Pool>,
     server_database: Option<String>,
@@ -254,7 +250,7 @@ impl PgSources {
     /// Take the first configured DSN, or nothing when none is configured.
     pub(crate) fn open(config: &Config) -> anyhow::Result<Self> {
         let Some(dsn) = config.pg_dsns.first() else {
-            return Ok(Self::disabled());
+            return Ok(Self::default());
         };
         if config.pg_dsns.len() > 1 {
             log_event(
@@ -274,27 +270,8 @@ impl PgSources {
         })?;
         Ok(Self {
             server: Some(server),
-            server_database: None,
-            databases: BTreeMap::new(),
-            capabilities: BTreeMap::new(),
-            discovered: Vec::new(),
-            last_discovery: None,
-            settings: None,
-            probe: None,
+            ..Self::default()
         })
-    }
-
-    const fn disabled() -> Self {
-        Self {
-            server: None,
-            server_database: None,
-            databases: BTreeMap::new(),
-            discovered: Vec::new(),
-            capabilities: BTreeMap::new(),
-            last_discovery: None,
-            settings: None,
-            probe: None,
-        }
     }
 
     /// Configuration rows safe to attach to a newly opened segment.
@@ -631,7 +608,6 @@ impl PgSources {
                 ],
             );
         }
-        let _ = server;
         self.collect_extensions_dynamic(probe, observe, cached_settings, admit)
             .await
     }
