@@ -9,6 +9,15 @@ Feature: What a PostgreSQL server reports reaches the segment
   scenario is meant to fail loudly rather than pass against a shape nobody
   asserted.
 
+  The shutdown pg_query_summary line measures logical_application_estimate
+  payload. Its positive query_rate_per_s is query_count divided by the real
+  interval, allowing only interval_ms truncation and six-decimal rounding.
+  application_payload_from_postgres_mib and
+  application_payload_to_postgres_mib are their corresponding byte fields
+  divided by 1,048,576 with the same rounding. errors equals query_errors plus
+  sink_errors plus connect_errors; timeouts equals query_timeouts plus
+  connect_timeouts. fetch_elapsed_ms_max never exceeds fetch_elapsed_ms_total.
+
   Scenario: A live server's statistics become typed rows
     Given a PostgreSQL writing its log as stderr
     And the collector reaches PostgreSQL by DSN
@@ -49,7 +58,29 @@ Feature: What a PostgreSQL server reports reaches the segment
       | 1013002 | schemaname    | public         |
       | 1014001 | indexrelname  | bdd_orders_pkey |
       | 1014001 | amname        | btree          |
-    And the shutdown PostgreSQL query summary reports traffic
+    And the shutdown pg_query_summary for logical_application_estimate payload reports consistent traffic and costs
+      | field                                       | requirement |
+      | interval_ms                                 | positive    |
+      | query_count                                 | positive    |
+      | rows                                        | positive    |
+      | application_payload_from_postgres_bytes     | positive    |
+      | application_payload_to_postgres_bytes       | positive    |
+      | batches                                     | positive    |
+      | encoded_bytes                               | positive    |
+      | wal_bytes_appended                          | positive    |
+      | peak_rss_kib                                | positive    |
+      | query_errors                                | nonnegative |
+      | sink_errors                                 | nonnegative |
+      | connect_errors                              | nonnegative |
+      | query_timeouts                              | nonnegative |
+      | connect_timeouts                            | nonnegative |
+      | errors                                      | nonnegative |
+      | timeouts                                    | nonnegative |
+      | slow_queries                                | nonnegative |
+      | fetch_elapsed_ms_total                      | nonnegative |
+      | fetch_elapsed_ms_max                        | nonnegative |
+      | encode_elapsed_ms_total                     | nonnegative |
+      | append_elapsed_ms_total                     | nonnegative |
 
   Scenario: Without a configured server no PostgreSQL section is written
     Given a collector with these settings
