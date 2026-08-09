@@ -472,6 +472,7 @@ pub async fn collect_database<E>(
         0,
         stats,
         |row| row_from_pg(row, version),
+        |_row| 0,
         sink,
     )
     .await

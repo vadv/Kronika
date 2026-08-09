@@ -101,6 +101,13 @@ impl QueryStats {
         bytes
     }
 
+    const fn add_decoded_payload(&mut self, row_bytes: usize, decoded_bytes: usize) -> usize {
+        self.application_payload_from_postgres_bytes = self
+            .application_payload_from_postgres_bytes
+            .saturating_add(usize_to_u64(decoded_bytes));
+        row_bytes.saturating_add(decoded_bytes)
+    }
+
     const fn wrote_batch(&mut self, elapsed: Duration, write: BatchWrite) {
         self.attempted_batch(elapsed);
         self.encode_elapsed = self.encode_elapsed.saturating_add(write.encode_elapsed);
@@ -318,9 +325,19 @@ where
         .map_err(StreamError)?;
     let mut stream = pin!(stream);
     let mut rows = Vec::new();
+    let mut decode_error = None;
     while let Some(row) = stream.try_next().await.map_err(StreamError)? {
         stats.received(&row);
-        rows.push(decode(&row).map_err(DecodeError)?);
+        // Drain this known-small response before the connection can be reused.
+        if decode_error.is_none() {
+            match decode(&row) {
+                Ok(decoded) => rows.push(decoded),
+                Err(error) => decode_error = Some(error),
+            }
+        }
+    }
+    if let Some(error) = decode_error {
+        return Err(DecodeError(error).into());
     }
     Ok(rows)
 }
@@ -380,6 +397,8 @@ where
 }
 
 /// Decode and deliver bounded batches before fetching more rows.
+/// `decoded_logical_bytes` accounts for owned payloads that cannot be measured
+/// from a borrowed [`Row`] without decoding them a second time.
 ///
 /// # Errors
 ///
@@ -387,6 +406,10 @@ where
 /// elapses, [`BatchError::PostgreSql`] for a stream failure,
 /// [`BatchError::Decode`] for a row-shape mismatch, and [`BatchError::Sink`]
 /// when the synchronous sink rejects a retained batch.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "stream limits, accounting, decoding, and sink ownership stay explicit"
+)]
 pub async fn read_batched<P, I, T, E>(
     session: Session<'_>,
     sql: &str,
@@ -394,6 +417,7 @@ pub async fn read_batched<P, I, T, E>(
     parameter_bytes: usize,
     stats: &mut QueryStats,
     mut decode: impl FnMut(&Row) -> Result<T>,
+    mut decoded_logical_bytes: impl FnMut(&T) -> usize,
     mut sink: impl FnMut(Batch<T>) -> Result<BatchWrite, E>,
 ) -> Result<(), BatchError<E>>
 where
@@ -416,8 +440,9 @@ where
         .map_err(|_elapsed| BatchError::Timeout)?
         .map_err(BatchError::PostgreSql)?
     {
-        let bytes = stats.received(&row);
+        let row_bytes = stats.received(&row);
         let decoded = decode(&row).map_err(BatchError::Decode)?;
+        let bytes = stats.add_decoded_payload(row_bytes, decoded_logical_bytes(&decoded));
         if let Some(batch) = pending.push(decoded, bytes) {
             extend_fetch_deadline(&mut deadline, deliver_batch(batch, stats, &mut sink)?);
         }
@@ -669,6 +694,22 @@ mod tests {
     }
 
     #[test]
+    fn decoded_payload_counts_toward_telemetry_and_the_batch_limit() {
+        let mut stats = QueryStats::default();
+        let bytes = stats.add_decoded_payload(8, BATCH_LOGICAL_BYTES);
+        let mut pending = PendingBatch::new();
+        let batch = pending
+            .push("locks", bytes)
+            .expect("the decoded payload reaches the byte target");
+
+        assert_eq!(batch.logical_bytes, BATCH_LOGICAL_BYTES + 8);
+        assert_eq!(
+            stats.application_payload_from_postgres_bytes,
+            u64::try_from(BATCH_LOGICAL_BYTES).expect("the target fits u64")
+        );
+    }
+
+    #[test]
     fn multirow_metric_collectors_use_the_bounded_stream_helper() {
         for source in [
             include_str!("database.rs"),
@@ -783,6 +824,7 @@ mod tests {
             0,
             &mut stats,
             |_row| Ok(()),
+            |_row| 0,
             |_batch| Ok::<BatchWrite, ()>(BatchWrite::default()),
         )
         .await;

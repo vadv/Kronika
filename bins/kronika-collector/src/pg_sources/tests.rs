@@ -1,10 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Read as _, Write as _};
+use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use kronika_source_pg::Pool;
 use kronika_source_pg::databases::Database;
 use kronika_source_pg::extension::{ExtensionSchema, InventoryEntry};
+use kronika_source_pg::query::BatchError;
 use kronika_source_pg::statements::{StatementsCapability, StatementsVersion};
 use kronika_source_pg::store_plans::{Flavour, StorePlansCapability};
 
@@ -12,8 +16,9 @@ use super::{
     BatchWrite, CachedSettings, DISCOVERY_INTERVAL, DatabaseCapabilities, GenerationProbe,
     PgObservation, PgSources, QueryCompletion, QueryFailure, QueryOutcome, SERVER_PROBE_SQL,
     cached_settings_for_generation, capabilities_from_inventory, capabilities_match_generation,
-    capability_sqlstate, discovery_due, measure, selected_statements, selected_statements_info,
-    selected_store_plans, selected_store_plans_info, session_for_generation, try_another_database,
+    capability_sqlstate, discovery_due, finish_batched_kind, measure, selected_statements,
+    selected_statements_info, selected_store_plans, selected_store_plans_info,
+    session_for_generation, try_another_database,
 };
 
 fn statements(version: StatementsVersion) -> StatementsCapability {
@@ -525,4 +530,73 @@ fn unavailable_session_is_accounted_as_a_closed_connection() {
     assert_eq!(observation.database, "metrics");
     assert!(observation.closed);
     assert!(!observation.timeout);
+}
+
+#[tokio::test]
+async fn a_batch_decode_error_forces_the_next_query_to_reconnect() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the protocol probe");
+    let port = listener
+        .local_addr()
+        .expect("read the probe address")
+        .port();
+    let (release_tx, release_rx) = mpsc::channel();
+    let server = std::thread::spawn(move || serve_two_handshakes(listener, release_rx));
+    let mut pool = Pool::new(&format!(
+        "host=127.0.0.1 port={port} user=monitor dbname=metrics"
+    ))
+    .expect("the probe DSN parses");
+
+    assert_eq!(
+        pool.session()
+            .await
+            .expect("open the first connection")
+            .generation(),
+        1
+    );
+    let completion = {
+        let mut observe = |_observation| {};
+        finish_batched_kind(
+            &mut pool,
+            measure(&mut observe, "pg_locks", "monitor@127.0.0.1", "metrics"),
+            Err(BatchError::<()>::Decode(anyhow::anyhow!(
+                "unexpected row shape"
+            ))),
+        )
+        .expect("a decode error is a source failure")
+    };
+    assert_eq!(completion, QueryCompletion::SourceFailed);
+    assert_eq!(pool.generation(), None);
+
+    assert_eq!(
+        pool.session()
+            .await
+            .expect("open a replacement connection")
+            .generation(),
+        2
+    );
+    release_tx.send(()).expect("release the protocol probe");
+    server.join().expect("the protocol probe exits");
+}
+
+fn serve_two_handshakes(listener: TcpListener, release: mpsc::Receiver<()>) {
+    let (mut first, _peer) = listener.accept().expect("accept the first connection");
+    accept_startup(&mut first);
+    let (mut second, _peer) = listener.accept().expect("accept the second connection");
+    accept_startup(&mut second);
+    drop(listener);
+    release.recv().expect("the test releases the connections");
+    drop((first, second, release));
+}
+
+fn accept_startup(stream: &mut TcpStream) {
+    let mut len = [0_u8; 4];
+    stream.read_exact(&mut len).expect("read startup length");
+    let body_len = usize::try_from(u32::from_be_bytes(len).saturating_sub(4))
+        .expect("the startup body length fits usize");
+    let mut body = vec![0_u8; body_len];
+    stream.read_exact(&mut body).expect("read startup body");
+    stream
+        .write_all(&[b'R', 0, 0, 0, 8, 0, 0, 0, 0, b'Z', 0, 0, 0, 5, b'I'])
+        .expect("write authentication and ready messages");
+    stream.flush().expect("flush startup response");
 }

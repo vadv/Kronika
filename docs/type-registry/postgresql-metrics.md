@@ -96,7 +96,9 @@ server probe reads those facts from the current metric session. The view is read
 on each PostgreSQL cycle and emitted on its first successful read, when it
 changes, and in every new segment. The latest successful snapshot is reused when
 another source opens a segment between PostgreSQL cycles.
-The `primary_conninfo` row is excluded because its value may contain a password.
+The `primary_conninfo` and `ssl_passphrase_command` rows are excluded because
+their values may contain secrets. Other command settings and custom settings
+remain in the snapshot.
 
 ## Extension views
 

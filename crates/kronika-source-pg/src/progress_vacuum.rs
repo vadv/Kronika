@@ -355,6 +355,7 @@ pub async fn collect_progress_vacuum<E>(
         0,
         stats,
         |row| row_from_pg(row, version),
+        |_row| 0,
         sink,
     )
     .await

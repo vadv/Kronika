@@ -575,6 +575,7 @@ pub async fn collect_ossc<E>(
         0,
         stats,
         ossc_row_from_pg,
+        |_row| 0,
         sink,
     )
     .await
@@ -597,6 +598,7 @@ pub async fn collect_datasentinel<E>(
         0,
         stats,
         datasentinel_row_from_pg,
+        |_row| 0,
         sink,
     )
     .await
@@ -619,6 +621,7 @@ pub async fn collect_vadv<E>(
         0,
         stats,
         vadv_row_from_pg,
+        |_row| 0,
         sink,
     )
     .await

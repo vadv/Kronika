@@ -133,6 +133,10 @@ pub struct LockRow {
     waitstart: Option<i64>,
 }
 
+const fn blocked_by_logical_bytes(row: &LockRow) -> usize {
+    row.blocked_by.len().saturating_mul(size_of::<i32>())
+}
+
 /// Build a `PostgreSQL` 10-13 row, interning labels.
 ///
 /// # Errors
@@ -290,6 +294,7 @@ pub async fn collect_locks<E>(
         0,
         stats,
         |row| from_pg(row, version).map_err(anyhow::Error::new),
+        blocked_by_logical_bytes,
         sink,
     )
     .await

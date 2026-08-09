@@ -87,6 +87,7 @@ pub async fn collect_prepared_xacts<E>(
                 max_xid_age_tx: row.try_get("max_xid_age_tx")?,
             })
         },
+        |_row| 0,
         sink,
     )
     .await

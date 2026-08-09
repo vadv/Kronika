@@ -2022,6 +2022,7 @@ fn finish_batched_kind<E>(
         }
         Err(BatchError::Decode(error)) => {
             measured.error(&error);
+            pool.close();
             Ok(QueryCompletion::SourceFailed)
         }
         Err(BatchError::Sink(error)) => {

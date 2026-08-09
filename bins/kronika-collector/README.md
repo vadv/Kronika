@@ -87,7 +87,9 @@ deterministic tie-break.
 full snapshot after the first successful read, when a setting changes, and in
 every new segment. It reuses the latest successful snapshot when OS metrics or
 log rows open a segment between PostgreSQL collections.
-The `primary_conninfo` row is omitted because its value may contain a password.
+The `primary_conninfo` and `ssl_passphrase_command` rows are omitted because
+their values may contain secrets. Other command settings, including
+`archive_command` and `restore_command`, and custom settings remain available.
 
 ### PostgreSQL query execution
 

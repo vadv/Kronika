@@ -571,6 +571,7 @@ pub async fn collect_user_tables<E>(
         0,
         stats,
         |row| row_from_pg(row, database, version),
+        |_row| 0,
         sink,
     )
     .await

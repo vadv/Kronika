@@ -1,8 +1,9 @@
 //! `pg_settings` for section `1_019_001`.
 //!
-//! One query returns every parameter except `primary_conninfo`, whose value may
-//! contain a password. The layout has been stable since PG 10. Every row names
-//! the database and login role whose effective configuration was read.
+//! One query returns every parameter except `primary_conninfo` and
+//! `ssl_passphrase_command`, whose values may contain secrets. The layout has
+//! been stable since PG 10. Every row names the database and login role whose
+//! effective configuration was read.
 
 use anyhow::{Context as _, Result};
 use kronika_registry::{PgSettings, StrId, Ts};
@@ -20,7 +21,7 @@ const SETTINGS_QUERY: &str = marked!(
          left(boot_val, 65536) AS boot_val, \
          left(reset_val, 65536) AS reset_val \
      FROM pg_settings \
-     WHERE name <> 'primary_conninfo' \
+     WHERE name NOT IN ('primary_conninfo', 'ssl_passphrase_command') \
      ORDER BY name"
 );
 

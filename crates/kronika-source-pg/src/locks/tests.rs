@@ -2,7 +2,9 @@ use std::convert::Infallible;
 
 use kronika_registry::StrId;
 
-use super::{LockRow, LocksVersion, locks_query, locks_version, to_v1, to_v2};
+use super::{
+    LockRow, LocksVersion, blocked_by_logical_bytes, locks_query, locks_version, to_v1, to_v2,
+};
 
 #[allow(
     clippy::unnecessary_wraps,
@@ -86,4 +88,9 @@ fn converters_preserve_edges_and_versioned_waitstart() {
     assert_eq!(v1.lock_transactionid, Some(42));
     assert_eq!(v2.blocked_by, [10, 0]);
     assert_eq!(v2.waitstart.map(|ts| ts.0), Some(1_900_000));
+}
+
+#[test]
+fn blocked_by_arrays_contribute_their_decoded_bytes() {
+    assert_eq!(blocked_by_logical_bytes(&row()), 2 * size_of::<i32>());
 }

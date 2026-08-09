@@ -71,8 +71,13 @@ fn an_interner_that_fails_fails_the_row() {
 }
 
 #[test]
-fn primary_conninfo_is_excluded_before_its_value_crosses_the_connection() {
-    assert!(SETTINGS_QUERY.contains("WHERE name <> 'primary_conninfo'"));
+fn only_the_two_secret_bearing_settings_are_excluded_on_the_server() {
+    assert!(
+        SETTINGS_QUERY.contains("WHERE name NOT IN ('primary_conninfo', 'ssl_passphrase_command')")
+    );
+    for retained in ["archive_command", "restore_command", "custom.setting"] {
+        assert!(!SETTINGS_QUERY.contains(retained), "{retained}");
+    }
     assert!(!SETTINGS_QUERY.contains("regexp"));
     assert!(!SETTINGS_QUERY.contains("replace("));
 }
