@@ -154,6 +154,7 @@ of the four is set.
 | Variable | Default | Meaning |
 | --- | ---: | --- |
 | `KRONIKA_PG_DSNS` | unset | PostgreSQL metric and log-discovery connections. Every entry supplies log location and format; only the first supplies metric rows. |
+| `KRONIKA_POSTGRES_EFFECTIVE_CPUS` | unset | Positive effective CPU capacity of the first PostgreSQL metric target. Required for numeric PostgreSQL health; never inferred from the collector host. |
 | `KRONIKA_PG_LOGS` | unset | `PostgreSQL` logs named outright. An entry with `*` or `?` in its last component is a pattern matched against that directory. |
 | `KRONIKA_PGBOUNCER_DSNS` | unset | Where to ask `PgBouncer` for `SHOW CONFIG`, which carries `logfile`. The account needs to be in `stats_users`; no administrative right beyond that. |
 | `KRONIKA_PGBOUNCER_LOGS` | unset | `PgBouncer` logs named outright, paths or patterns. |
