@@ -41,11 +41,22 @@ impl std::fmt::Display for LoadError {
 
 impl std::error::Error for LoadError {}
 
+/// Extension of a finished segment.
+const SEGMENT_EXTENSION: &str = "zms";
+
 /// Where the index of `segment` lives: the same path with the extension
 /// replaced, so the two are found together and deleted together.
+///
+/// `None` for the current segment. It grows with every snapshot, so a file
+/// written for it would be rewritten by the next request and describe a
+/// segment that no longer ends where it did. Its points are computed for the
+/// answer instead.
 #[must_use]
-pub fn path_of(segment: &Path) -> PathBuf {
-    segment.with_extension(EXTENSION)
+pub fn path_of(segment: &Path) -> Option<PathBuf> {
+    if segment.extension()? != SEGMENT_EXTENSION {
+        return None;
+    }
+    Some(segment.with_extension(EXTENSION))
 }
 
 /// Read an index file.

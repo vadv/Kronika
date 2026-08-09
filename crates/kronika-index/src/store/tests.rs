@@ -27,8 +27,14 @@ fn sample() -> Index {
 fn an_index_lives_beside_its_segment_under_the_same_name() {
     assert_eq!(
         path_of(Path::new("/data/2026/08/08/17.zms")),
-        Path::new("/data/2026/08/08/17.idx")
+        Some(Path::new("/data/2026/08/08/17.idx").to_path_buf())
     );
+}
+
+#[test]
+fn the_current_segment_gets_no_file_of_its_own() {
+    assert_eq!(path_of(Path::new("/data/active.wal")), None);
+    assert_eq!(path_of(Path::new("/data/whatever")), None);
 }
 
 #[test]

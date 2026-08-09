@@ -15,6 +15,7 @@ members = [
     "bins/kronika-collector",
     "bins/kronika-dump",
     "bins/kronika-demo",
+    "bins/kronika-web",
 ]
 
 [workspace.package]
