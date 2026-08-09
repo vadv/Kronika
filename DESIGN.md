@@ -96,6 +96,16 @@ list of rows and nothing can ask what one disk, one interface or one table did
 over time. Where rows of one section can come from more than one source, the
 identity names the source too, or two sources write over each other's objects.
 
+The registry also assigns each physical section layout a stable textual logical
+name. Several physical layouts may share that name; generated compatibility
+metadata decides whether their rows compose into one stream. The collector
+discovers supported PostgreSQL layouts dynamically, and the catalog reports
+the layouts recorded in each segment. Incompatible identities remain separate
+streams with their exact physical layout and `type_id` as provenance. This
+includes `pg_stat_statements` layouts before and after `toplevel` became part
+of the identity, and the different `pg_store_plans` implementations. A column
+absent from a physical layout is unavailable or `null`; it is never zero.
+
 ## What Kronika does not build
 
 There is a metric and there is data. Nothing else.
@@ -205,39 +215,46 @@ exercise would not be the one that ships.
 
 A read includes finished `.zms` segments and the current logical segment from
 the valid prefix of `active.wal`. Finished segments are immutable and
-browser-cacheable; web refreshes only the append-only active tail.
+browser-cacheable. Web revalidates the catalog and refreshes append-only active
+resources when a user requests current data.
 
 ## Index files
 
 Web builds `.idx` files next to the segments for fast dashboard access. An
-`.idx` holds what a dashboard needs without reopening every segment.
+`.idx` holds segment-grain summaries so a long-range dashboard does not reopen
+every segment body.
 
-An `.idx` holds the health line of its segment and one row per object of every
-section that declares an identity: a cumulative column as its delta over the
-segment, a gauge as its last value. That is what the top and heatmap requests
-read, and they read nothing else, so a dashboard over a day opens ninety-six
-index files instead of ninety-six segments.
+The file has a header, a table of contents and blocks. Every physical section
+included in the index has its own targeted block, so a request decodes only the
+section it needs. The table records each block's kind, layout, offset and
+length. Offsets, lengths and the checksum belong to the file; section identities
+and summaries belong to the block. Health follows the same indexed-series rules
+as other metrics and has no special global block.
 
-The grain of the index is the segment. Over a day that is ninety-six columns,
-which is what a heatmap draws. Over an hour it is four, and the request reads
-the four segments themselves.
+The index grain is one segment. For every object in an indexed physical
+section, its block keeps the exact identity and enough data to reproduce the
+section's whole-segment result: first and last observed timestamps and values,
+or an equivalent counter delta and observed duration, plus the last gauge
+sample. Missing and invalid inputs remain distinguishable from a real zero.
 
-The file is a header, a table of what it contains, and the blocks themselves.
-A block states its kind, its offset and its length, so a request that wants the
-health line does not decode the object rows. Offsets, lengths and the checksum
-belong to the file; what a block holds belongs to the block.
-
-An `.idx` records the sources that were enabled when it was built. A different
-set means a different file, and web rebuilds it under the same rule as a
-version it does not know.
+An index does not copy every `Label` column. Query text, plans, command lines
+and similar display values would duplicate the largest fields in the segment.
+After a heatmap selects its identities, a projected raw response supplies only
+the display labels for those identities.
 
 An `.idx` carries a checksum of its contents in its header. That is what a
 browser revalidates against, so the file has to hold it rather than have web
-compute it per request.
+compute it per request. Web writes a complete temporary index and replaces the
+derived file atomically.
 
 `.idx` files are derived data. Deleting one is safe; web rebuilds it from the
 `.zms`. When web finds an `.idx` written by an incompatible version, it
 rebuilds it instead of failing.
+
+The index format is accepted only after measuring both `.idx` size and web peak
+RSS through the production path. The measurement includes at least 5,000
+`pg_stat_statements` rows and 5,000 `pg_store_plans` rows with their large text
+fields.
 
 ## Web
 
@@ -245,92 +262,124 @@ Rust for the API, static JavaScript for the interface. The API comes first and
 is tested on its own; the interface is written against an API that already
 works.
 
-Which sources are enabled is declared by whoever starts web, not deduced from
-what the segments happen to contain. A source that is enabled but has no data
-is drawn empty. A misconfigured DSN is a line in the collector's log, not a
-change in the interface.
+Web configuration selects which source families the interface shows. It never
+selects a physical PostgreSQL layout; the catalog reports the layouts actually
+present. A configured source with no data is drawn empty. A misconfigured DSN
+is a line in the collector's log, not a change in the interface.
 
 Requests carry HTTP basic authentication. Other schemes come later, and the
 check sits in one place so that adding one does not touch the handlers.
 
-### The API
+### Segment resources
 
-Four handles answer everything the interface asks:
+HTTP exposes cacheable resources for explicit segments. It has no generic
+query language or global health, top, series or rows calls. The route names
+below are sketches rather than a framework choice:
 
-- `/api/health` — the health line, from `.idx`.
-- `/api/top` — the objects of one section over a window, ordered by one column.
-  `buckets=N` splits the window into N columns and turns the same answer into a
-  heatmap.
-- `/api/series` — one column of one object over time.
-- `/api/rows` — the rows of one section over an interval, as recorded.
+- `/api/catalog` lists finished `SegmentId` values, their time bounds and the
+  physical section layouts actually present. It also lists the active
+  `SegmentId`, its actual sections and the cursor at the committed valid WAL
+  prefix.
+- `/api/segments/{segment_id}/sections/{logical_name}/index` returns one
+  finished segment's derived index representation for that section.
+- `/api/segments/{segment_id}/sections/{logical_name}/history` returns selected
+  fields for one or more series in that segment. Label filters are exact
+  equality matches.
+- `/api/segments/{segment_id}/sections/{logical_name}/rows` returns raw rows in
+  pages with a stable order and a next-page cursor.
+- Active paths expose the same section projections and an append-only tail for
+  the active `SegmentId` up to a returned WAL cursor.
 
-`/api/top` reads index files only. `/api/series` is the one handle that opens a
-segment, and it opens it for a single object.
+The catalog reports which layouts are present, not their schemas. Registry and
+layout metadata are generated from the compiled Rust registry into the static
+JavaScript data module shipped with the same web build. It includes fields,
+kinds, units, identities and layout-compatibility rules. There is no separately
+maintained runtime schema service and no API-version field. A representation
+header may name its exact physical layout, columns, kinds and units.
 
-The API describes nothing about itself. The interface ships in the same binary
-as the server, so a handle listing the sections and their columns would be a
-second statement of what the registry already holds, and the two would part
-company in the first commit that touched one of them. For the same reason the
-API carries no version and keeps no deprecated field: no client ships
-separately from the server it talks to.
+The interface never hardcodes which native PostgreSQL, `pg_stat_statements` or
+`pg_store_plans` layout is installed. It addresses a section by its stable
+logical name and retains the physical layout and `type_id` from the catalog or
+response header as provenance.
 
-A response states its class and its unit once, in the envelope. A series is one
-column of one object and has one class and one unit for its whole length, so
-repeating them per point would say nothing. `/api/rows` is the exception and
-carries a column header, because its rows are heterogeneous; that header
-describes the response, not the catalogue.
+### JavaScript data client
 
-The server does the arithmetic the column's class calls for. A cumulative
-column comes back as a rate per second, computed from the point before the
-window so the first point of the answer is a rate rather than a hole, and its
-unit gains `/s`. A gauge comes back as recorded. Where the difference between
-two readings of a counter is negative the value is `null`: the rate over that
-interval is not defined, and nothing is concluded about why.
+The small static data client composes segment resources into `listMetrics`,
+`listSeries`, `history`, `heatmap` and `rows`. `listMetrics` combines the
+configured source families, co-shipped registry metadata and layouts found in
+the catalog. `listSeries` discovers identities and applies exact label filters.
+The other calls request every intersecting segment and combine finished and
+active representations by `SegmentId`. `heatmap` derives the ranked top view in
+the client; HTTP has no top entity. Health is an ordinary indexed time series
+available through `history` and section indexes.
 
-The registry's `identity` is what groups rows from different snapshots into one
-object. It stays inside the server; a request filters on whatever label columns
-it names.
+History can select several fields and series. The client requests every segment
+that intersects the window. Neither client nor server applies an implicit limit
+to the selected fields, series or segments.
 
-The server returns codes and numbers: unit and class names, section and column
-names, unix microseconds. It reads no `Accept-Language`, translates nothing and
-formats nothing. The interface holds the words for both languages it ships and
-decides how a number and a time are written. Data is not translated at all: a
-table name, a database name, a statement and a log line are another server's
-facts and go out as they were recorded.
+Raw rows use `page_size >= 1`. A page has a stable order and a next cursor, and
+the reader stops work when the page is full. Zero is rejected rather than
+coerced. The same rule applies to zero heatmap columns and `top=0`. In
+`top=N`, `N` is the number of identities returned; it is not a scan or memory
+limit.
 
-Four routes need no framework. The API is served over hyper, which the runtime
-the collector already uses comes with.
+### Heatmap values
+
+Every heatmap column carries its exact interval boundaries. For a counter, a
+cell is the last value minus the first value for that identity in the interval,
+divided by the elapsed time between those two observations. Missing input,
+fewer than two usable observations, a non-positive observed duration or a
+negative delta produces `null`. A zero delta produces `0`. For a gauge, the
+cell is the last sample in the interval, or `null` when no usable sample exists.
+
+Ranking uses the whole requested window and does not change with the number of
+columns. The first pass scans the whole window and selects the top K identities.
+Only the second pass allocates the K-by-column result and fills its cells. The
+requested K limits the returned identities, not the work needed to rank them.
+Long ranges use segment-grain `.idx`; sub-segment resolution and partial
+boundary segments use projected raw samples.
+
+### Representations
+
+Potentially large textual section responses are streamable, for example as
+NDJSON. Every 64-bit integer and cursor component is decimal text so JavaScript
+does not lose precision. A blob value carries the stored bytes and the recorded
+`full_len`, `truncated` and `hash` metadata.
+
+The server returns codes and data: unit and kind names, logical section names,
+physical layouts, column names and unix times. It reads no `Accept-Language`,
+translates nothing and formats nothing. The interface holds the words for every
+language it ships and decides how to display numbers and times. A table name,
+database name, statement or log line leaves the server as recorded.
+
+Synchronous disk reads, decompression and Parquet work run outside async
+handlers. A slow section read must not block unrelated requests.
 
 ### Browser caching
 
-Web retains no in-memory segment or index cache between requests. A finished
-segment is immutable, and a request names the segment and the series it wants,
-so one URL and its series list together identify one representation. Web serves
-it with `Cache-Control: private, max-age=31536000, immutable`, and the browser
-stores it as immutable in its private cache. The cache key is the whole URL as
-it arrived: web reads the series in the order given and neither sorts nor
-deduplicates them.
+Web keeps no segment, index or decoded-data cache between requests. The catalog
+uses `Cache-Control: private, no-cache`. Finished raw and projected section
+representations use
+`Cache-Control: private, max-age=31536000, immutable`; all selection,
+projection and ordering parameters are part of their URL.
 
-Each finished per-segment index has one stable URL. Web serves its response with
-`Cache-Control: private, no-cache`; the browser stores it and uses ordinary `ETag`
-revalidation because the index is derived from the segment and may be rebuilt.
-An unchanged index returns `304 Not Modified` with no body. The `ETag` is the
-`.idx` checksum, which the file carries in its header, so a rebuild that changes
-nothing keeps its `ETag` and a rebuild that changes something does not. Because
-requests use the HTTP `Basic` authentication scheme, public and shared caches
-must not store either response.
+Each finished per-section derived index has a stable URL and uses
+`Cache-Control: private, no-cache`. The browser revalidates it with the `ETag`
+from the `.idx` checksum. An unchanged index returns `304 Not Modified` with no
+body. Active resources use `Cache-Control: private, no-store`. Basic
+authentication keeps all of these representations out of public and shared
+caches.
 
-The active WAL is append-only. A browser asks for the tail as
-`from=<segment_id>:<ts>`, naming the active segment it holds and the last
-timestamp in it, and web answers with the rows after that timestamp and with the
-`segment_id` that is active now. Web does not persist an `active.idx` or rewrite
-one for each snapshot; the tail's index points are computed for the response.
+An active cursor is `(segment_id, wal_position)`, where `wal_position` is the
+committed end of the valid WAL prefix. It is never a metric timestamp, so rows
+with equal timestamps remain distinguishable. Active index points are computed
+for the response; web writes no `active.idx`.
 
-A `segment_id` that differs from the one asked for means that segment was
-published while the browser was away. The browser then drops the tail it holds,
-fetches that segment through its ordinary immutable URL, and starts the tail
-again on the new active segment. Refetching what it already had is not worth
-avoiding.
+The active and finished forms retain the same `SegmentId`. When the segment
+finishes, its finished resource becomes canonical. The data client replaces
+the active form for that `SegmentId` instead of appending another copy, so the
+transition cannot duplicate rows. It then follows the new active `SegmentId`
+from the catalog.
 
 A request refreshes the tail; a timer must not. A front end that polls on an
 interval keeps web awake for nobody, which is the one thing standby exists to
@@ -346,8 +395,26 @@ Web is not a resident service. Between requests it holds nothing: buffers,
 decoded sections and open segments are all released, and the next request pays
 to open what it needs.
 
-This is why the index files exist. A dashboard opening a day reads `.idx` and
-not every segment of that day, so starting from nothing stays cheap.
+This is why the index files exist. A long-range dashboard reads segment-grain
+indexes for complete segments and raw projections only where exact boundaries
+require them, so starting from nothing stays cheap.
+
+### Web BDD
+
+Web BDD runs only in CI. Its scenarios cover:
+
+- discovery of actual `pg_stat_statements` and `pg_store_plans` extension
+  layouts and their textual fields without frontend layout constants;
+- multi-field, multi-series history with exact label filters, and raw-row
+  pagination including rejected zero limits;
+- every cache policy and header above, `ETag` revalidation and
+  `304 Not Modified`;
+- equal-timestamp active rows, WAL-position cursors and the active-to-finished
+  transition for one `SegmentId` without duplicates;
+- exact heatmap intervals, counter and gauge values, `null` and real-zero
+  behavior, whole-window ranking independent of column count, and top K;
+- lossless JavaScript output for 64-bit values and blobs; and
+- bounded peak memory for a large individual object.
 
 ## Logging
 
