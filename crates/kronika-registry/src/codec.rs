@@ -77,7 +77,10 @@ mod decode;
 mod encode;
 mod error;
 
-pub use bounds::{FinalPlainColumnSize, final_data_body_bound, final_plain_body_bound};
+pub use bounds::{
+    FinalPlainColumnSize, final_data_body_bound, final_plain_body_bound,
+    final_single_batch_plain_body_bound,
+};
 pub(crate) use columns::schema_matches;
 use columns::validate_list_i32_batch;
 pub use columns::{
@@ -255,6 +258,9 @@ mod verified_section_tests;
 
 #[cfg(test)]
 mod final_profile_tests;
+
+#[cfg(test)]
+mod bounds_tests;
 
 #[cfg(test)]
 mod codec_error_tests;

@@ -23,6 +23,7 @@ kronika-source-log = { version = "0.0.0", path = "../../crates/kronika-source-lo
 tokio-postgres = "0.7.18"
 
 [dev-dependencies]
+kronika-reader = { path = "../../crates/kronika-reader" }
 tempfile = "3"
 
 [lints]

@@ -154,7 +154,7 @@ fn admission_deduplicates_exact_dictionary_values() {
 }
 
 #[test]
-fn dictionary_plain_budgets_are_independent_per_placement() {
+fn dictionary_columns_can_span_final_pages() {
     let limits = DictLimits::new(FINAL_DATA_PAGE_BYTES, FINAL_DATA_PAGE_BYTES)
         .expect("test dictionary limits are valid");
     let mut interner = Interner::new(limits);
@@ -178,21 +178,18 @@ fn dictionary_plain_budgets_are_independent_per_placement() {
     interner
         .intern(b"new")
         .expect("the window cap still has room");
-    assert!(matches!(
-        admission.assess(&summary, &interner),
-        Err(AdmissionError::Codec(CodecError::PlainPageTooLarge {
-            name: "bytes",
-            ..
-        }))
-    ));
+    admission
+        .assess(&summary, &interner)
+        .expect("the cumulative strings dictionary may use another final page");
     SegmentAdmission::assess_window(&summary, &interner)
         .expect("the new segment checks only the current window dictionary");
 }
 
 #[test]
-fn admission_counts_truncated_blob_hashes() {
+fn admission_accepts_multi_page_truncated_blob_hashes_until_the_row_cap() {
     let mut interner = Interner::new(DictLimits::new(1, 1).expect("valid limits"));
-    for value in 0_u32..32_767 {
+    for value in 0..MAX_SECTION_ROWS {
+        let value = u32::try_from(value).expect("test row fits u32");
         interner
             .intern(&value.to_le_bytes())
             .expect("unique truncated blob interns");
@@ -204,17 +201,18 @@ fn admission_counts_truncated_blob_hashes() {
     let admission = SegmentAdmission::default();
     admission
         .assess(&summary, &interner)
-        .expect("32,767 SHA-256 values stay below one PLAIN page");
+        .expect("the maximum dictionary rows and hashes fit multiple pages");
 
     interner
-        .intern(&32_767_u32.to_le_bytes())
+        .intern(
+            &u32::try_from(MAX_SECTION_ROWS)
+                .expect("row cap fits u32")
+                .to_le_bytes(),
+        )
         .expect("the dictionary window still has room");
     assert!(matches!(
         admission.assess(&summary, &interner),
-        Err(AdmissionError::Codec(CodecError::PlainPageTooLarge {
-            name: "full_sha256",
-            ..
-        }))
+        Err(AdmissionError::Codec(CodecError::TooManyRows { .. }))
     ));
 }
 

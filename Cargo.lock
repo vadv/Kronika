@@ -1168,6 +1168,7 @@ dependencies = [
  "futures-util",
  "kronika-format",
  "kronika-layout",
+ "kronika-reader",
  "kronika-registry",
  "kronika-source-log",
  "kronika-source-os",
