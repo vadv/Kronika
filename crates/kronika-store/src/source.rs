@@ -117,6 +117,7 @@ pub struct ActiveSnapshot {
         reason = "the snapshot shares the exact validated LocalScan allocation"
     )]
     pub(crate) active: Arc<Vec<ActivePart>>,
+    pub(crate) part_count: usize,
     pub(crate) valid_len: u64,
     pub(crate) segment_id: SegmentId,
 }

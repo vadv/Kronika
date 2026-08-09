@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-use kronika_index::Value as IndexValue;
+use kronika_index::{DERIVED_HEALTH_TYPE_ID, IdentityValue, Number, Observation, Sample};
 use kronika_reader::{Cell, Dictionary, Resolved, Segment, StoreWarning};
 use kronika_registry::{DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, section_name};
 use serde_json::{Map, Value, json};
@@ -113,13 +113,13 @@ pub(crate) fn sizes(
     Ok(())
 }
 
-/// The index this segment would get: its health line, and the objects each
-/// section saw.
+/// The index this segment would get: exact identities and bounded numeric
+/// observations for each physical layout, including derived health.
 ///
 /// # Errors
 ///
-/// Returns the reader's error when a section or the dictionary cannot be
-/// decoded.
+/// Returns a build, reader, or index-encoding error when the segment cannot be
+/// summarized exactly.
 pub(crate) fn index(
     output: &mut impl Write,
     json_output: bool,
@@ -128,18 +128,7 @@ pub(crate) fn index(
     let built = kronika_index::build(segment, 0)?;
     let path = segment.path().display().to_string();
     if json_output {
-        for point in &built.points {
-            say(
-                output,
-                &json!({
-                    "kind": "point",
-                    "path": path,
-                    "ts": point.ts,
-                    "health": point.health,
-                }),
-            )?;
-        }
-        for section in &built.objects {
+        for section in &built.sections {
             for object in &section.objects {
                 say(
                     output,
@@ -147,48 +136,158 @@ pub(crate) fn index(
                         "kind": "object",
                         "path": path,
                         "type_id": section.type_id,
-                        "section": section_name(section.type_id).unwrap_or("unknown"),
-                        "labels": object.labels,
-                        "values": object.values.iter().map(index_value).collect::<Vec<_>>(),
+                        "section": index_section_name(section.type_id),
+                        "identity": object.identity.iter().map(index_identity).collect::<Vec<_>>(),
+                        "observations": object
+                            .observations
+                            .iter()
+                            .map(index_observation)
+                            .collect::<Vec<_>>(),
                     }),
                 )?;
             }
         }
         return Ok(());
     }
+    let encoded_bytes = built.encode()?.len();
+    let object_count = built
+        .sections
+        .iter()
+        .map(|section| section.objects.len())
+        .sum::<usize>();
+    let series_count = built
+        .sections
+        .iter()
+        .flat_map(|section| &section.objects)
+        .map(|object| object.observations.len())
+        .sum::<usize>();
     writeln!(
         output,
-        "{path}  points={}  objects={}  idx_bytes={}",
-        built.points.len(),
-        built.objects.iter().map(|s| s.objects.len()).sum::<usize>(),
-        built.encode().len()
+        "{path}  sections={}  objects={object_count}  series={series_count}  idx_bytes={encoded_bytes}",
+        built.sections.len(),
     )?;
-    for point in &built.points {
-        match point.health {
-            Some(health) => writeln!(output, "  {:<20} {health}", point.ts)?,
-            None => writeln!(output, "  {:<20} -", point.ts)?,
-        }
-    }
-    for section in &built.objects {
+    for section in &built.sections {
+        let observations = section
+            .objects
+            .iter()
+            .map(|object| object.observations.len())
+            .sum::<usize>();
+        let samples = section
+            .objects
+            .iter()
+            .flat_map(|object| &object.observations)
+            .map(|observation| observation.count)
+            .fold(0_u64, u64::saturating_add);
         writeln!(
             output,
-            "  {:<9} {:<22} objects={}",
+            "  {:<9} {:<22} objects={:<8} series={:<8} samples={}",
             section.type_id,
-            section_name(section.type_id).unwrap_or("unknown"),
-            section.objects.len()
+            index_section_name(section.type_id),
+            section.objects.len(),
+            observations,
+            samples,
         )?;
     }
     Ok(())
 }
 
-/// One index value as JSON. A value the segment gave nothing to reduce is
-/// null, the same as an absent cell.
-fn index_value(value: &IndexValue) -> Value {
-    match value {
-        IndexValue::Int(number) => json!(number),
-        IndexValue::Float(number) => json!(number),
-        IndexValue::Null => Value::Null,
+fn index_section_name(type_id: u32) -> &'static str {
+    if type_id == DERIVED_HEALTH_TYPE_ID {
+        "health"
+    } else {
+        section_name(type_id).unwrap_or("unknown")
     }
+}
+
+/// One exact index identity as JSON. Wide integers and timestamps use decimal
+/// strings so JavaScript consumers do not silently round them.
+fn index_identity(value: &IdentityValue) -> Value {
+    match value {
+        IdentityValue::Null => Value::Null,
+        IdentityValue::I16(number) => json!(number),
+        IdentityValue::I32(number) => json!(number),
+        IdentityValue::I64(number) | IdentityValue::Ts(number) => Value::String(number.to_string()),
+        IdentityValue::U32(number) => json!(number),
+        IdentityValue::U64(number) => Value::String(number.to_string()),
+        IdentityValue::F64(number) => index_float(*number),
+        IdentityValue::Bool(value) => json!(value),
+        IdentityValue::Text(bytes) => index_bytes(bytes),
+        IdentityValue::Blob {
+            stored_bytes,
+            full_len,
+            truncated,
+            full_sha256,
+        } => json!({
+            "representation": "blob",
+            "stored_bytes": index_bytes(stored_bytes),
+            "full_len": full_len.to_string(),
+            "truncated": truncated,
+            "full_sha256": full_sha256.map(|hash| index_hex(&hash)),
+        }),
+        IdentityValue::ListI32(values) => json!(values),
+    }
+}
+
+fn index_observation(observation: &Observation) -> Value {
+    json!({
+        "count": observation.count.to_string(),
+        "first": observation.first.map(index_sample),
+        "last": observation.last.map(index_sample),
+        "nonnegative_delta": observation.nonnegative_delta.map(index_number),
+        "observed_us": observation.observed_us.to_string(),
+    })
+}
+
+fn index_sample(sample: Sample) -> Value {
+    json!({
+        "ts": sample.ts.to_string(),
+        "value": index_number(sample.value),
+    })
+}
+
+fn index_number(number: Number) -> Value {
+    match number {
+        Number::I16(number) => json!(number),
+        Number::I32(number) => json!(number),
+        Number::I64(number) => Value::String(number.to_string()),
+        Number::U32(number) => json!(number),
+        Number::U64(number) => Value::String(number.to_string()),
+        Number::F64(number) => index_float(number),
+    }
+}
+
+fn index_float(number: f64) -> Value {
+    serde_json::Number::from_f64(number).map_or_else(
+        || {
+            json!({
+                "representation": "nonfinite_f64",
+                "bits": number.to_bits().to_string(),
+            })
+        },
+        Value::Number,
+    )
+}
+
+fn index_bytes(bytes: &[u8]) -> Value {
+    std::str::from_utf8(bytes).map_or_else(
+        |_invalid| {
+            json!({
+                "representation": "bytes",
+                "bytes": bytes,
+            })
+        },
+        |text| Value::String(text.to_owned()),
+    )
+}
+
+fn index_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        encoded.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        encoded.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    encoded
 }
 
 /// The rows of one section, with dictionary ids resolved to what they hold.

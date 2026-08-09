@@ -39,6 +39,8 @@ fn main() -> ExitCode {
 
 #[derive(Debug)]
 enum DumpError {
+    Build(kronika_index::BuildError),
+    Index(kronika_index::IndexError),
     Reader(ReaderError),
     Output(io::Error),
 }
@@ -46,9 +48,34 @@ enum DumpError {
 impl fmt::Display for DumpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Build(problem) => problem.fmt(f),
+            Self::Index(problem) => problem.fmt(f),
             Self::Reader(problem) => problem.fmt(f),
             Self::Output(problem) => write!(f, "write output: {problem}"),
         }
+    }
+}
+
+impl std::error::Error for DumpError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Build(problem) => Some(problem),
+            Self::Index(problem) => Some(problem),
+            Self::Reader(problem) => Some(problem),
+            Self::Output(problem) => Some(problem),
+        }
+    }
+}
+
+impl From<kronika_index::BuildError> for DumpError {
+    fn from(problem: kronika_index::BuildError) -> Self {
+        Self::Build(problem)
+    }
+}
+
+impl From<kronika_index::IndexError> for DumpError {
+    fn from(problem: kronika_index::IndexError) -> Self {
+        Self::Index(problem)
     }
 }
 

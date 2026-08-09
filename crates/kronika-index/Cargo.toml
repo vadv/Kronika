@@ -10,10 +10,12 @@ repository.workspace = true
 
 [dependencies]
 kronika-format = { path = "../kronika-format" }
+kronika-layout = { path = "../kronika-layout" }
 kronika-reader = { path = "../kronika-reader" }
 kronika-registry = { path = "../kronika-registry" }
 
 [dev-dependencies]
+kronika-writer = { path = "../kronika-writer" }
 tempfile = "3"
 
 [lints]

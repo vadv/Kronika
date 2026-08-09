@@ -1229,8 +1229,10 @@ name = "kronika-index"
 version = "0.0.0"
 dependencies = [
  "kronika-format",
+ "kronika-layout",
  "kronika-reader",
  "kronika-registry",
+ "kronika-writer",
  "tempfile",
 ]
 
@@ -1247,6 +1249,7 @@ name = "kronika-reader"
 version = "0.0.0"
 dependencies = [
  "arrow-array",
+ "arrow-schema",
  "kronika-format",
  "kronika-layout",
  "kronika-registry",

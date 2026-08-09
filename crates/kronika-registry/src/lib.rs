@@ -106,7 +106,7 @@ pub use codec::{
 pub use contract::{
     Column, ColumnClass, ColumnType, LintError, Semantics, StrId, Ts, TypeContract, Unit, lint,
 };
-pub use generic::{Cell, Row, decode_rows};
+pub use generic::{Cell, Row, decode_rows, visit_rows};
 pub use pool::{BytesPool, PoolStats};
 pub use section::Section;
 #[cfg(test)]
@@ -141,6 +141,42 @@ pub fn section_name(type_id: u32) -> Option<&'static str> {
             .find(|contract| contract.type_id.get() == type_id)
             .map(|contract| contract.name),
     }
+}
+
+/// Return the stable public section name for a physical `type_id`.
+///
+/// Most layouts use their registry name directly. The three independently
+/// implemented `pg_store_plans` extensions are the only current exception:
+/// callers request one logical name and still receive separate physical
+/// layouts.
+#[must_use]
+pub fn logical_section_name(type_id: u32) -> Option<&'static str> {
+    match type_id {
+        1_003_001 | 1_004_001 | 1_018_001 => Some("pg_store_plans"),
+        _ => section_name(type_id),
+    }
+}
+
+/// Return the implementation provenance of a physical section layout.
+///
+/// A value is present only where several implementations share one public
+/// logical name. This deliberately remains a small compile-time mapping.
+#[must_use]
+pub const fn section_implementation(type_id: u32) -> Option<&'static str> {
+    match type_id {
+        1_003_001 => Some("ossc"),
+        1_004_001 => Some("vadv"),
+        1_018_001 => Some("datasentinel"),
+        _ => None,
+    }
+}
+
+/// Return the exact registry contract for a physical `type_id`.
+#[must_use]
+pub fn contract(type_id: u32) -> Option<&'static TypeContract> {
+    registry()
+        .iter()
+        .find(|contract| contract.type_id.get() == type_id)
 }
 
 /// Every type id known to this build, in registry order.

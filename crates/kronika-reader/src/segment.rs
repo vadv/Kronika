@@ -1,22 +1,24 @@
 //! One finished or current logical segment, opened.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use kronika_format::{Catalog, Entry, ReadAt as _, crc32c};
 use kronika_registry::{
-    Bytes, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, Row, VerifiedSection, decode_rows,
+    Bytes, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, Row, VerifiedSection, contract,
+    logical_section_name, visit_rows,
 };
-use kronika_store::{ActiveSnapshot, LocalDir, read_catalog};
+use kronika_store::{ActiveSnapshot, LocalDir};
 
 use crate::dictionary::Dictionary;
 use crate::error::ReaderError;
-use crate::{SegmentRef, SegmentSource};
+use crate::{SegmentKind, SegmentRef, SegmentSource};
 
 #[derive(Debug)]
 enum Source {
-    Finished { file: File, catalog: Catalog },
+    Finished { file: File, catalog: Arc<Catalog> },
     Active(ActiveSnapshot),
 }
 
@@ -26,6 +28,8 @@ enum Source {
 /// descriptor; a current segment holds one descriptor for its captured prefix.
 #[derive(Debug)]
 pub struct Segment {
+    id: i64,
+    kind: SegmentKind,
     path: PathBuf,
     source: Source,
     min_ts: i64,
@@ -56,10 +60,12 @@ impl Segment {
         match &unit.source {
             SegmentSource::Finished(finished) => {
                 let file = dir.open_finished(finished)?;
-                let catalog = read_catalog(&file)?;
+                let catalog = Arc::new(kronika_store::read_catalog(&file)?);
                 dir.validate_finished_file(&file, finished)?;
-                let section_rows = rows_by_type(std::iter::once(&catalog));
+                let section_rows = rows_by_type(std::iter::once(catalog.as_ref()));
                 Ok(Self {
+                    id: unit.segment_id,
+                    kind: SegmentKind::Finished,
                     path: finished_path(root, finished),
                     source: Source::Finished { file, catalog },
                     min_ts: unit.min_ts,
@@ -78,6 +84,8 @@ impl Segment {
                 })?;
                 let section_rows = rows_by_type(snapshot.parts().iter().map(|part| &part.catalog));
                 Ok(Self {
+                    id: unit.segment_id,
+                    kind: SegmentKind::Active,
                     path: root.join("active.wal"),
                     source: Source::Active(snapshot.clone()),
                     min_ts: unit.min_ts,
@@ -87,6 +95,27 @@ impl Segment {
                     section_rows,
                 })
             }
+        }
+    }
+
+    /// Stable segment id.
+    #[must_use]
+    pub const fn id(&self) -> i64 {
+        self.id
+    }
+
+    /// Whether this segment is immutable or a captured journal prefix.
+    #[must_use]
+    pub const fn kind(&self) -> SegmentKind {
+        self.kind
+    }
+
+    /// Exact committed active-journal position, when current.
+    #[must_use]
+    pub const fn active_position(&self) -> Option<u64> {
+        match self.kind {
+            SegmentKind::Finished => None,
+            SegmentKind::Active => Some(self.captured_bytes),
         }
     }
 
@@ -141,6 +170,17 @@ impl Segment {
             .map(|(type_id, section)| (*type_id, *section))
     }
 
+    /// Physical layouts present under one stable public section name.
+    pub fn layouts<'a>(
+        &'a self,
+        logical_name: &'a str,
+    ) -> impl Iterator<Item = (u32, Section)> + 'a {
+        self.sections().filter(move |(type_id, _section)| {
+            contract(*type_id).is_some()
+                && logical_section_name(*type_id).is_some_and(|name| name == logical_name)
+        })
+    }
+
     /// Decode every section of `type_id` into column-addressable rows.
     ///
     /// Current-segment sections are concatenated in journal order.
@@ -149,25 +189,115 @@ impl Segment {
     ///
     /// Returns an error when a body fails its checksum or the codec rejects it.
     pub fn rows(&self, type_id: u32) -> Result<Vec<Row>, ReaderError> {
+        let Some(contract) = contract(type_id) else {
+            return Err(ReaderError::Section {
+                type_id,
+                source: kronika_registry::CodecError::UnknownType { type_id },
+            });
+        };
+        let columns: Vec<&str> = contract.columns.iter().map(|column| column.name).collect();
         let mut rows = Vec::new();
+        self.visit_rows(type_id, &columns, 0, usize::MAX, |_ordinal, row| {
+            rows.push(row);
+            true
+        })?;
+        Ok(rows)
+    }
+
+    /// Visit a projected physical row range in stable ascending order.
+    ///
+    /// Current-segment ordinals span all journal parts carrying `type_id`.
+    /// Catalog row counts skip earlier parts without opening their bodies, and
+    /// returning `false` from `visitor` stops decoding immediately.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a selected body fails its checksum or projection
+    /// decode.
+    pub fn visit_rows(
+        &self,
+        type_id: u32,
+        columns: &[&str],
+        offset: u64,
+        limit: usize,
+        mut visitor: impl FnMut(u64, Row) -> bool,
+    ) -> Result<usize, ReaderError> {
+        let mut visited = 0_usize;
+        let mut global_base = 0_u64;
+        let mut remaining_offset = offset;
         match &self.source {
             Source::Finished { file, catalog } => {
                 if let Some(entry) = entry(catalog, type_id) {
-                    rows.extend(decode_section_rows(type_id, finished_body(file, entry)?)?);
+                    let rows = u64::from(entry.rows);
+                    if remaining_offset < rows {
+                        let local_offset =
+                            usize::try_from(remaining_offset).map_err(|_overflow| {
+                                std::io::Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    "row offset does not fit usize",
+                                )
+                            })?;
+                        let count = visit_body(
+                            type_id,
+                            finished_body(file, entry)?,
+                            columns,
+                            BodyVisit {
+                                expected_rows: u64::from(entry.rows),
+                                offset: local_offset,
+                                limit,
+                                base: 0,
+                            },
+                            &mut visitor,
+                        )?;
+                        visited = visited.saturating_add(count);
+                    }
                 }
             }
             Source::Active(snapshot) => {
                 for (part_index, part) in snapshot.parts().iter().enumerate() {
-                    if let Some(entry) = entry(&part.catalog, type_id) {
-                        rows.extend(decode_section_rows(
-                            type_id,
-                            active_body(snapshot, part_index, entry)?,
-                        )?);
+                    let Some(entry) = entry(&part.catalog, type_id) else {
+                        continue;
+                    };
+                    if visited >= limit {
+                        break;
+                    }
+                    if remaining_offset >= u64::from(entry.rows) {
+                        remaining_offset -= u64::from(entry.rows);
+                        global_base = global_base.saturating_add(u64::from(entry.rows));
+                        continue;
+                    }
+                    let local_offset = usize::try_from(remaining_offset).map_err(|_overflow| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "row offset does not fit usize",
+                        )
+                    })?;
+                    let mut keep_going = true;
+                    let count = visit_body(
+                        type_id,
+                        active_body(snapshot, part_index, entry)?,
+                        columns,
+                        BodyVisit {
+                            expected_rows: u64::from(entry.rows),
+                            offset: local_offset,
+                            limit: limit.saturating_sub(visited),
+                            base: global_base,
+                        },
+                        &mut |ordinal, row| {
+                            keep_going = visitor(ordinal, row);
+                            keep_going
+                        },
+                    )?;
+                    visited = visited.saturating_add(count);
+                    remaining_offset = 0;
+                    global_base = global_base.saturating_add(u64::from(entry.rows));
+                    if !keep_going {
+                        break;
                     }
                 }
             }
         }
-        Ok(rows)
+        Ok(visited)
     }
 
     /// Decode the complete segment dictionary.
@@ -196,6 +326,67 @@ impl Segment {
         }
         Ok(dictionary)
     }
+
+    /// Decode only dictionary values named by `ids`.
+    ///
+    /// The dictionary id column is scanned first and large value columns are
+    /// projected only for matching rows. An empty set opens no dictionary
+    /// section.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a dictionary body fails its checksum or codec.
+    pub fn dictionary_for(&self, ids: &HashSet<u64>) -> Result<Dictionary, ReaderError> {
+        let mut dictionary = Dictionary::default();
+        if ids.is_empty() {
+            return Ok(dictionary);
+        }
+        match &self.source {
+            Source::Finished { file, catalog } => {
+                decode_selected_dictionary_catalog(&mut dictionary, catalog, ids, |entry| {
+                    finished_body(file, entry)
+                })?;
+            }
+            Source::Active(snapshot) => {
+                for (part_index, part) in snapshot.parts().iter().enumerate() {
+                    decode_selected_dictionary_catalog(
+                        &mut dictionary,
+                        &part.catalog,
+                        ids,
+                        |entry| active_body(snapshot, part_index, entry),
+                    )?;
+                }
+            }
+        }
+        Ok(dictionary)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BodyVisit {
+    expected_rows: u64,
+    offset: usize,
+    limit: usize,
+    base: u64,
+}
+
+fn visit_body(
+    type_id: u32,
+    body: VerifiedSection,
+    columns: &[&str],
+    request: BodyVisit,
+    visitor: &mut impl FnMut(u64, Row) -> bool,
+) -> Result<usize, ReaderError> {
+    visit_rows(
+        type_id,
+        body,
+        columns,
+        Some(request.expected_rows),
+        request.offset,
+        request.limit,
+        |local_ordinal, row| visitor(request.base.saturating_add(local_ordinal), row),
+    )
+    .map_err(|source| ReaderError::Section { type_id, source })
 }
 
 #[allow(
@@ -214,15 +405,28 @@ fn rows_by_type<'a>(catalogs: impl IntoIterator<Item = &'a Catalog>) -> BTreeMap
     sections
 }
 
-fn decode_section_rows(type_id: u32, section: VerifiedSection) -> Result<Vec<Row>, ReaderError> {
-    decode_rows(type_id, section).map_err(|source| ReaderError::Section { type_id, source })
-}
-
 fn entry(catalog: &Catalog, type_id: u32) -> Option<&Entry> {
     catalog
         .entries
         .iter()
         .find(|entry| entry.type_id == type_id)
+}
+
+fn decode_selected_dictionary_catalog(
+    dictionary: &mut Dictionary,
+    catalog: &Catalog,
+    ids: &HashSet<u64>,
+    mut body: impl FnMut(&Entry) -> Result<VerifiedSection, ReaderError>,
+) -> Result<(), ReaderError> {
+    for entry in &catalog.entries {
+        if matches!(entry.type_id, DICT_STRINGS_TYPE_ID | DICT_BLOBS_TYPE_ID) {
+            let type_id = entry.type_id;
+            dictionary
+                .decode_selected(type_id, body(entry)?, ids, u64::from(entry.rows))
+                .map_err(|source| ReaderError::Section { type_id, source })?;
+        }
+    }
+    Ok(())
 }
 
 fn decode_dictionary_catalog(
@@ -234,7 +438,7 @@ fn decode_dictionary_catalog(
         if matches!(entry.type_id, DICT_STRINGS_TYPE_ID | DICT_BLOBS_TYPE_ID) {
             let type_id = entry.type_id;
             dictionary
-                .decode(type_id, body(entry)?)
+                .decode(type_id, body(entry)?, u64::from(entry.rows))
                 .map_err(|source| ReaderError::Section { type_id, source })?;
         }
     }

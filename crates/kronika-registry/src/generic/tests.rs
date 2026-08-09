@@ -1,4 +1,4 @@
-use super::{Cell, Row, decode_rows};
+use super::{Cell, Row, decode_rows, visit_rows};
 use crate::contract::TypeContract;
 use crate::os_process::OsProcess;
 use crate::{Section, StrId, Ts, VerifiedSection, registry};
@@ -155,6 +155,106 @@ fn decoded_row_cells_align_with_contract_columns() {
             column.name
         );
     }
+}
+
+#[test]
+fn projected_visit_applies_offset_limit_and_physical_ordinal() {
+    let bytes = OsProcess::encode(&[
+        process_row(10, 10, false),
+        process_row(20, 20, false),
+        process_row(30, 30, false),
+    ])
+    .expect("encode");
+    let mut visited = Vec::new();
+    let count = visit_rows(
+        1_100_001,
+        VerifiedSection::for_test(bytes.into()),
+        &["pid"],
+        Some(3),
+        1,
+        1,
+        |ordinal, row| {
+            visited.push((ordinal, row));
+            true
+        },
+    )
+    .expect("projected visit");
+    assert_eq!(count, 1);
+    assert_eq!(visited[0].0, 1);
+    assert_eq!(visited[0].1.get("pid"), Some(&Cell::I32(20)));
+    assert_eq!(visited[0].1.get("ts"), Some(&Cell::Null));
+}
+
+#[test]
+fn empty_projection_counts_rows_without_exposing_a_synthetic_column() {
+    let bytes = OsProcess::encode(&[process_row(10, 10, false)]).expect("encode");
+    visit_rows(
+        1_100_001,
+        VerifiedSection::for_test(bytes.into()),
+        &[],
+        Some(1),
+        0,
+        1,
+        |_ordinal, row| {
+            assert!(row.cells().iter().all(|cell| matches!(cell, Cell::Null)));
+            true
+        },
+    )
+    .expect("empty projection");
+}
+
+#[test]
+fn zero_limit_still_rejects_an_unknown_projection() {
+    let bytes = OsProcess::encode(&[process_row(10, 10, false)]).expect("encode");
+    assert!(
+        visit_rows(
+            1_100_001,
+            VerifiedSection::for_test(bytes.into()),
+            &["not_a_column"],
+            Some(1),
+            0,
+            0,
+            |_ordinal, _row| true,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn callback_can_stop_before_the_requested_limit() {
+    let bytes = OsProcess::encode(&[process_row(10, 10, false), process_row(20, 20, false)])
+        .expect("encode");
+    let count = visit_rows(
+        1_100_001,
+        VerifiedSection::for_test(bytes.into()),
+        &["pid"],
+        Some(2),
+        0,
+        2,
+        |_ordinal, _row| false,
+    )
+    .expect("early stop");
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn catalog_and_parquet_row_counts_must_agree() {
+    let bytes = OsProcess::encode(&[process_row(10, 10, false)]).expect("encode");
+    let error = visit_rows(
+        1_100_001,
+        VerifiedSection::for_test(bytes.into()),
+        &["pid"],
+        Some(2),
+        0,
+        1,
+        |_ordinal, _row| true,
+    )
+    .expect_err("mismatched catalog row count");
+    assert!(matches!(
+        error,
+        crate::CodecError::Section { source, .. }
+            if matches!(*source, crate::CodecError::RowCountMismatch { expected: 2, got: 1 })
+    ));
 }
 
 #[test]

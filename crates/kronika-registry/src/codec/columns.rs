@@ -49,7 +49,7 @@ pub(super) fn build_arrow_schema(contract: &TypeContract) -> SchemaRef {
 }
 
 /// Whether a decoded file's schema matches the contract.
-pub(super) fn schema_matches(got: &Schema, contract: &TypeContract) -> bool {
+pub(crate) fn schema_matches(got: &Schema, contract: &TypeContract) -> bool {
     let want = arrow_schema(contract);
     got.fields().len() == want.fields().len()
         && got.fields().iter().zip(want.fields()).all(|(g, w)| {

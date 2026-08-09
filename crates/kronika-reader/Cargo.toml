@@ -13,6 +13,7 @@ kronika-format = { path = "../kronika-format" }
 kronika-registry = { path = "../kronika-registry" }
 kronika-store = { path = "../kronika-store" }
 arrow-array = "55"
+arrow-schema = "55"
 parquet = { version = "55", default-features = false, features = ["arrow", "zstd"] }
 
 [dev-dependencies]

@@ -1,16 +1,21 @@
-//! Health, and the index files a dashboard reads instead of every segment.
+//! Targeted derived summaries for immutable and captured Kronika segments.
 //!
-//! An `.idx` sits next to its `.zms` and holds what a dashboard needs without
-//! reopening the segment: the health line, and the objects every section saw.
+//! A finished `.idx` has one independently decodable block per physical
+//! registry layout plus the ordinary derived `health` series. It stores exact
+//! declared identities and bounded first/last observations, never arbitrary
+//! label columns or every timestamped sample.
 
 mod build;
 mod file;
 mod health;
-mod objects;
 mod store;
+mod summary;
 
-pub use build::{INSTANCE_METADATA_TYPE_ID, OS_PSI_TYPE_ID, objects, points};
-pub use file::{ENTRY_LEN, HEADER_LEN, Index, IndexError, MAGIC, POINT_LEN, Point};
+pub use build::{
+    BuildError, DERIVED_HEALTH_TYPE_ID, INSTANCE_METADATA_TYPE_ID, OS_PSI_TYPE_ID, build,
+    build_selected,
+};
+pub use file::{ENTRY_LEN, HEADER_LEN, Index, IndexError, MAGIC, TargetedIndex};
 pub use health::{Stall, health};
-pub use objects::{Object, SectionObjects, Value};
-pub use store::{EXTENSION, LoadError, build, path_of, read, write};
+pub use store::{EXTENSION, LoadError, ResourceIndex, path_of, read, resource};
+pub use summary::{IdentityValue, Number, ObjectSummary, Observation, Sample, SectionSummary};
