@@ -4,7 +4,9 @@ use kronika_format::DictLimits;
 use kronika_index::{BuildError, IdentityValue, IndexError, Number, Observation, Sample};
 use kronika_layout::{DataRoot, LayoutLimits, SegmentId};
 use kronika_reader::{BlobEntry, Resolved};
-use kronika_registry::{DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID};
+use kronika_registry::instance_metadata::{Environment, InstanceMetadata};
+use kronika_registry::os_psi::OsPsi;
+use kronika_registry::{DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict};
 
 use crate::DumpError;
@@ -114,6 +116,24 @@ fn index_dump_uses_the_generic_health_section() {
     let output = String::from_utf8(output).expect("UTF-8 index table");
     assert!(output.contains("sections=1  objects=1  series=1"));
     assert!(output.contains("health"));
+}
+
+#[test]
+fn index_json_keeps_one_derived_health_point_per_psi_snapshot() {
+    let (_directory, segment) = health_segment();
+    let mut output = Vec::new();
+    index(&mut output, true, &segment).expect("dump index");
+    let points: Vec<serde_json::Value> = output
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).expect("index JSON line"))
+        .filter(|line: &serde_json::Value| line["kind"] == "point")
+        .collect();
+    assert_eq!(points.len(), 2);
+    assert_eq!(points[0]["ts"], "1000000");
+    assert_eq!(points[0]["health"], serde_json::Value::Null);
+    assert_eq!(points[1]["ts"], "2000000");
+    assert_eq!(points[1]["health"], 75);
 }
 
 #[test]
@@ -265,6 +285,62 @@ fn dictionary_segment() -> (tempfile::TempDir, kronika_reader::Segment) {
         .flush(&dictionary)
         .expect("encode part")
         .expect("dictionary part");
+    let segment_id = SegmentId::new(1_709_164_800_000_000).expect("segment id");
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
+    journal.append(segment_id, &part).expect("append part");
+    drop(journal);
+
+    let reader = kronika_reader::Reader::open(directory.path()).expect("open reader");
+    let listing = reader.segments(..).expect("list segment");
+    assert_eq!(listing.segments.len(), 1);
+    let segment = reader
+        .open_segment(&listing.segments[0])
+        .expect("open segment");
+    (directory, segment)
+}
+
+fn health_segment() -> (tempfile::TempDir, kronika_reader::Segment) {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let root = DataRoot::open(directory.path()).expect("open data root");
+    let owner = root
+        .acquire_writer(LayoutLimits::default())
+        .expect("acquire writer");
+    let mut sections = SectionBuffers::new();
+    sections
+        .push(InstanceMetadata {
+            ts: Ts(1_000_000),
+            hostname: StrId(1),
+            kernel_version: StrId(2),
+            environment: Environment::Machine.as_u8(),
+            clock_ticks_per_sec: 100,
+            page_size_bytes: 4096,
+            boot_id: StrId(3),
+            btime: Ts(0),
+        })
+        .expect("buffer instance metadata");
+    for (ts, totals) in [(1_000_000, [0, 0, 0]), (2_000_000, [250_000, 0, 0])] {
+        for (resource, some_total) in totals.into_iter().enumerate() {
+            sections
+                .push(OsPsi {
+                    ts: Ts(ts),
+                    resource: u8::try_from(resource).expect("resource id"),
+                    some_avg10: 0.0,
+                    some_avg60: 0.0,
+                    some_avg300: 0.0,
+                    some_total,
+                    full_avg10: None,
+                    full_avg60: None,
+                    full_avg300: None,
+                    full_total: None,
+                    scope: 0,
+                })
+                .expect("buffer PSI row");
+        }
+    }
+    let part = sections
+        .flush(&[])
+        .expect("encode part")
+        .expect("metric part");
     let segment_id = SegmentId::new(1_709_164_800_000_000).expect("segment id");
     let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
     journal.append(segment_id, &part).expect("append part");

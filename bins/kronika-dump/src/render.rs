@@ -128,6 +128,29 @@ pub(crate) fn index(
     let built = kronika_index::build(segment, 0)?;
     let path = segment.path().display().to_string();
     if json_output {
+        let mut write_error = None;
+        kronika_index::visit_health_points(
+            segment,
+            || true,
+            |point| match say(
+                output,
+                &json!({
+                    "kind": "point",
+                    "path": path,
+                    "ts": point.timestamp.to_string(),
+                    "health": point.value,
+                }),
+            ) {
+                Ok(()) => true,
+                Err(error) => {
+                    write_error = Some(error);
+                    false
+                }
+            },
+        )?;
+        if let Some(error) = write_error {
+            return Err(error);
+        }
         for section in &built.sections {
             for object in &section.objects {
                 say(
