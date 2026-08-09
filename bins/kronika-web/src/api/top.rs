@@ -11,29 +11,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use kronika_index::Value as Cell;
-use kronika_reader::{Reader, ReaderError};
-use kronika_registry::{ColumnClass, TypeContract, registry};
+use kronika_reader::Reader;
+use kronika_registry::{ColumnClass, TypeContract};
 use serde_json::{Value, json};
 
-use super::{bounds, index_of};
+use super::{ApiError, bounds, contract_of, index_of};
 use crate::route::{TopRequest, Window};
-
-/// Why a request for the objects of a section could not be answered.
-#[derive(Debug)]
-pub(crate) enum TopError {
-    /// No section carries that id.
-    NoSuchSection,
-    /// The section has no column of that name that holds a number.
-    NoSuchColumn,
-    /// The data root or a segment could not be read.
-    Unreadable(ReaderError),
-}
-
-impl From<ReaderError> for TopError {
-    fn from(error: ReaderError) -> Self {
-        Self::Unreadable(error)
-    }
-}
 
 /// What one object accumulated over the window.
 #[derive(Debug)]
@@ -55,10 +38,10 @@ type Observed = Vec<i64>;
 /// # Errors
 ///
 /// Returns which part of the request nothing answers, or the reader's error.
-pub(crate) fn top(root: &Path, window: Window, request: &TopRequest) -> Result<Value, TopError> {
-    let contract = contract_of(request.section).ok_or(TopError::NoSuchSection)?;
+pub(crate) fn top(root: &Path, window: Window, request: &TopRequest) -> Result<Value, ApiError> {
+    let contract = contract_of(request.section).ok_or(ApiError::NoSuchSection)?;
     let (at, class, unit) =
-        numeric_column(contract, &request.column).ok_or(TopError::NoSuchColumn)?;
+        numeric_column(contract, &request.column).ok_or(ApiError::NoSuchColumn)?;
     let identity = identity_positions(contract);
 
     let reader = Reader::open(root)?;
@@ -133,13 +116,6 @@ pub(crate) fn top(root: &Path, window: Window, request: &TopRequest) -> Result<V
         "buckets": bucket_edges(span, buckets),
         "rows": rows.into_iter().map(|(_order, row)| row).collect::<Vec<_>>(),
     }))
-}
-
-/// The contract of one section, or nothing when no section carries that id.
-fn contract_of(type_id: u32) -> Option<&'static TypeContract> {
-    registry()
-        .iter()
-        .find(|contract| contract.type_id.get() == type_id)
 }
 
 /// Where `name` sits among the section's numbers, its class, and its unit.

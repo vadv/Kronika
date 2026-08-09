@@ -7,6 +7,32 @@ pub(crate) enum Route {
     Health,
     /// The objects of one section, ordered by one column.
     Top(TopRequest),
+    /// One column of one object over time.
+    Series(SeriesRequest),
+    /// The rows of one section, as they were recorded.
+    Rows(RowsRequest),
+}
+
+/// What a request for one object's history names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SeriesRequest {
+    /// Which section to read.
+    pub(crate) section: u32,
+    /// Which of its numbers to follow.
+    pub(crate) column: String,
+    /// Label columns the rows have to match, as the request wrote them.
+    pub(crate) filters: Vec<(String, String)>,
+}
+
+/// What a request for raw rows names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RowsRequest {
+    /// Which section to read.
+    pub(crate) section: u32,
+    /// How many rows to answer with.
+    pub(crate) limit: usize,
+    /// Label columns the rows have to match.
+    pub(crate) filters: Vec<(String, String)>,
 }
 
 /// What a request for the objects of a section names.
@@ -75,6 +101,7 @@ pub(crate) fn parse(target: &str) -> Result<(Route, Window), RouteError> {
     let mut column: Option<String> = None;
     let mut limit = DEFAULT_LIMIT;
     let mut buckets = 1;
+    let mut filters: Vec<(String, String)> = Vec::new();
     for (name, value) in pairs(query) {
         match name {
             "from" => window.from = Some(number("from", value)?),
@@ -83,7 +110,10 @@ pub(crate) fn parse(target: &str) -> Result<(Route, Window), RouteError> {
             "column" => column = Some(value.to_owned()),
             "limit" => limit = count("limit", value, MAX_LIMIT)?,
             "buckets" => buckets = count("buckets", value, MAX_BUCKETS)?.max(1),
-            _other => {}
+            // Anything else names a label column and the value it must hold.
+            // The server does not decide which label is the right one to filter
+            // on; the request says, and the rows either match or do not.
+            label => filters.push((label.to_owned(), decoded(value))),
         }
     }
     let route = match path {
@@ -93,6 +123,16 @@ pub(crate) fn parse(target: &str) -> Result<(Route, Window), RouteError> {
             column: column.ok_or_else(|| RouteError::BadParameter("column".to_owned()))?,
             limit,
             buckets,
+        }),
+        "/api/series" => Route::Series(SeriesRequest {
+            section: section.ok_or_else(|| RouteError::BadParameter("section".to_owned()))?,
+            column: column.ok_or_else(|| RouteError::BadParameter("column".to_owned()))?,
+            filters,
+        }),
+        "/api/rows" => Route::Rows(RowsRequest {
+            section: section.ok_or_else(|| RouteError::BadParameter("section".to_owned()))?,
+            limit,
+            filters,
         }),
         _other => return Err(RouteError::NoSuchPath),
     };
@@ -111,6 +151,30 @@ fn number(name: &str, value: &str) -> Result<i64, RouteError> {
     value
         .parse()
         .map_err(|_reason| RouteError::BadParameter(name.to_owned()))
+}
+
+/// A query value with its percent escapes and pluses undone.
+///
+/// A mount point and a command line both carry characters a query string has
+/// to escape, and a filter has to compare against what the segment recorded.
+fn decoded(value: &str) -> String {
+    let bytes = value.replace('+', " ").into_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'%'
+            && let Some(hex) = bytes.get(at + 1..at + 3)
+            && let Ok(text) = std::str::from_utf8(hex)
+            && let Ok(byte) = u8::from_str_radix(text, 16)
+        {
+            out.push(byte);
+            at += 3;
+            continue;
+        }
+        out.push(bytes[at]);
+        at += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// A section id, which is a `type_id` of the registry.

@@ -6,14 +6,115 @@
 use std::path::Path;
 
 use kronika_index::Index;
-use kronika_reader::{Reader, ReaderError};
+use kronika_reader::{Cell, Dictionary, Reader, ReaderError, Resolved, Row};
+use kronika_registry::{Column, ColumnClass, TypeContract, registry};
 use serde_json::{Value, json};
 
 use crate::route::Window;
 
+mod rows;
+mod series;
 mod top;
 
-pub(crate) use top::{TopError, top};
+pub(crate) use rows::rows;
+pub(crate) use series::series;
+pub(crate) use top::top;
+
+/// Why a request could not be answered.
+#[derive(Debug)]
+pub(crate) enum ApiError {
+    /// No section carries that id.
+    NoSuchSection,
+    /// The section has no column of that name that holds a number.
+    NoSuchColumn,
+    /// The data root or a segment could not be read.
+    Unreadable(ReaderError),
+}
+
+impl From<ReaderError> for ApiError {
+    fn from(error: ReaderError) -> Self {
+        Self::Unreadable(error)
+    }
+}
+
+/// The contract of one section, or nothing when no section carries that id.
+pub(crate) fn contract_of(type_id: u32) -> Option<&'static TypeContract> {
+    registry()
+        .iter()
+        .find(|contract| contract.type_id.get() == type_id)
+}
+
+/// The section and the numeric column a request named.
+///
+/// # Errors
+///
+/// Says which of the two nothing answers.
+pub(crate) fn column_of(
+    section: u32,
+    column: &str,
+) -> Result<(&'static TypeContract, &'static Column), ApiError> {
+    let contract = contract_of(section).ok_or(ApiError::NoSuchSection)?;
+    let found = contract
+        .columns
+        .iter()
+        .find(|candidate| {
+            candidate.name == column
+                && matches!(
+                    candidate.class,
+                    ColumnClass::Cumulative | ColumnClass::Gauge
+                )
+        })
+        .ok_or(ApiError::NoSuchColumn)?;
+    Ok((contract, found))
+}
+
+/// Whether a row carries every label the request named.
+///
+/// A filter on a column the section does not have matches nothing, which is
+/// the honest answer to a request for rows that cannot exist.
+pub(crate) fn matches(row: &Row, filters: &[(String, String)], dictionary: &Dictionary) -> bool {
+    filters.iter().all(|(name, wanted)| {
+        row.get(name)
+            .is_some_and(|cell| rendered_text(cell, dictionary) == *wanted)
+    })
+}
+
+/// One cell as JSON. Numbers stay numbers so an answer can be filtered on
+/// them; a dictionary id becomes the text it stands for.
+pub(crate) fn rendered(cell: &Cell, dictionary: &Dictionary) -> Value {
+    match cell {
+        Cell::Null => Value::Null,
+        Cell::I16(value) => json!(value),
+        Cell::I32(value) => json!(value),
+        Cell::I64(value) | Cell::Ts(value) => json!(value),
+        Cell::U32(value) => json!(value),
+        Cell::U64(value) => json!(value),
+        Cell::F64(value) => json!(value),
+        Cell::Bool(value) => json!(value),
+        Cell::ListI32(value) => json!(value),
+        Cell::StrId(_id) => json!(rendered_text(cell, dictionary)),
+    }
+}
+
+/// One cell as the text a filter compares against.
+fn rendered_text(cell: &Cell, dictionary: &Dictionary) -> String {
+    match cell {
+        Cell::Null => String::new(),
+        Cell::I16(value) => value.to_string(),
+        Cell::I32(value) => value.to_string(),
+        Cell::I64(value) | Cell::Ts(value) => value.to_string(),
+        Cell::U32(value) => value.to_string(),
+        Cell::U64(value) => value.to_string(),
+        Cell::F64(value) => value.to_string(),
+        Cell::Bool(value) => value.to_string(),
+        Cell::ListI32(value) => format!("{value:?}"),
+        Cell::StrId(id) => match dictionary.resolve(*id) {
+            Some(Resolved::Str(bytes)) => String::from_utf8_lossy(bytes).into_owned(),
+            Some(Resolved::Blob(blob)) => String::from_utf8_lossy(blob.stored_bytes).into_owned(),
+            None => format!("<str {id}>"),
+        },
+    }
+}
 
 /// The health line over `window`.
 ///

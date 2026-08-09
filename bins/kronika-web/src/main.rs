@@ -88,21 +88,40 @@ async fn answer(
         },
         Ok((Route::Top(request), window)) => match api::top(&config.data_root, window, &request) {
             Ok(body) => ok(&body),
-            Err(api::TopError::NoSuchSection) => {
+            Err(api::ApiError::NoSuchSection) => {
                 refused(StatusCode::BAD_REQUEST, "no_such_section")
             }
-            Err(api::TopError::NoSuchColumn) => refused(StatusCode::BAD_REQUEST, "no_such_column"),
-            Err(api::TopError::Unreadable(error)) => {
+            Err(api::ApiError::NoSuchColumn) => refused(StatusCode::BAD_REQUEST, "no_such_column"),
+            Err(api::ApiError::Unreadable(error)) => {
                 eprintln!("kronika-web: {target}: {error}");
                 failed("unreadable")
             }
         },
+        Ok((Route::Series(request), window)) => {
+            answered(api::series(&config.data_root, window, &request), &target)
+        }
+        Ok((Route::Rows(request), window)) => {
+            answered(api::rows(&config.data_root, window, &request), &target)
+        }
         Err(RouteError::NoSuchPath) => refused(StatusCode::NOT_FOUND, "no_such_path"),
         Err(RouteError::BadParameter(name)) => json_response(
             StatusCode::BAD_REQUEST,
             &json!({ "error": "bad_parameter", "parameter": name }),
         ),
     })
+}
+
+/// One handler's answer, turned into a response.
+fn answered(answer: Result<Value, api::ApiError>, target: &str) -> Response<Full<Bytes>> {
+    match answer {
+        Ok(body) => ok(&body),
+        Err(api::ApiError::NoSuchSection) => refused(StatusCode::BAD_REQUEST, "no_such_section"),
+        Err(api::ApiError::NoSuchColumn) => refused(StatusCode::BAD_REQUEST, "no_such_column"),
+        Err(api::ApiError::Unreadable(error)) => {
+            eprintln!("kronika-web: {target}: {error}");
+            failed("unreadable")
+        }
+    }
 }
 
 /// A JSON response with the body it was given.
