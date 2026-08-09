@@ -138,31 +138,39 @@ async fn streamed(
     route: route::Route,
     if_none_match: Option<String>,
 ) -> Response<WebBody> {
-    let (body_tx, body_rx) = mpsc::channel::<Vec<u8>>(8);
-    let (meta_tx, meta_rx) = oneshot::channel::<Result<ResponseMeta, ApiError>>();
-    let handle = tokio::task::spawn_blocking(move || {
-        let prepared = api::prepare(
+    blocking_stream(move || {
+        api::prepare(
             &config.data_root,
             config.sources,
             route,
             if_none_match.as_deref(),
-        );
-        match prepared {
-            Ok(prepared) => {
-                let meta = prepared.meta();
-                let no_body = meta.status == StatusCode::NOT_MODIFIED;
-                if meta_tx.send(Ok(meta)).is_err() || no_body {
-                    return;
-                }
-                let mut emit = |bytes| body_tx.blocking_send(bytes).is_ok();
-                if let Err(error) = prepared.stream(&mut emit) {
-                    eprintln!("kronika-web: streamed resource failed: {error}");
-                    let _sent = emit(error_record());
-                }
+        )
+    })
+    .await
+}
+
+async fn blocking_stream(
+    prepare: impl FnOnce() -> Result<api::Prepared, ApiError> + Send + 'static,
+) -> Response<WebBody> {
+    let (body_tx, body_rx) = mpsc::channel::<Vec<u8>>(8);
+    let (meta_tx, meta_rx) = oneshot::channel::<Result<ResponseMeta, ApiError>>();
+    let handle = tokio::task::spawn_blocking(move || match prepare() {
+        Ok(prepared) => {
+            let meta = prepared.meta();
+            let no_body = meta.status == StatusCode::NOT_MODIFIED;
+            if meta_tx.send(Ok(meta)).is_err() || no_body {
+                return;
             }
-            Err(error) => {
-                let _sent = meta_tx.send(Err(error));
+            let cancellation_tx = body_tx.clone();
+            let cancelled = || cancellation_tx.is_closed();
+            let mut emit = |bytes| body_tx.blocking_send(bytes).is_ok();
+            if let Err(error) = prepared.stream(&mut emit, &cancelled) {
+                eprintln!("kronika-web: streamed resource failed: {error}");
+                let _sent = emit(error_record());
             }
+        }
+        Err(error) => {
+            let _sent = meta_tx.send(Err(error));
         }
     });
     drop(handle);

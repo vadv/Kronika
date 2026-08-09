@@ -5,13 +5,12 @@ use std::path::Path;
 use kronika_reader::{Dictionary, Row, Segment, SegmentKind, SegmentRef};
 use serde_json::{Value, json};
 
-use super::query::{Plan, chunk_dictionary, plans};
+use super::query::{Plan, apply_tail, chunk_dictionary, plans};
 use super::render::{cell, projected_layout, record};
-use super::{ApiError, CachePolicy, ResponseMeta, explicit_segment};
+use super::{ApiError, CachePolicy, ResponseMeta, active_tail, explicit_segment};
 use crate::route::{Order, RowsRequest};
 
-const ASC_CHUNK_ROWS: usize = 256;
-const DESC_CHUNK_ROWS: usize = 1_000;
+const ROW_CHUNK_ROWS: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Cursor {
@@ -46,8 +45,10 @@ pub(super) fn prepare(root: &Path, request: RowsRequest) -> Result<PreparedRows,
     }
     let (reader, current) = explicit_segment(root, request.data.segment.segment_id)?;
     let segment_ref = pin(current, parsed)?;
+    let tail = active_tail(&segment_ref, request.data.after)?;
     let segment = reader.open_segment(&segment_ref)?;
-    let plans = plans(&segment, &request.data)?;
+    let mut plans = plans(&segment, &request.data, false)?;
+    apply_tail(&mut plans, tail.as_ref())?;
     let active_position = segment.active_position().unwrap_or(0);
     let start = match parsed {
         Some(cursor) => cursor,
@@ -56,7 +57,7 @@ pub(super) fn prepare(root: &Path, request: RowsRequest) -> Result<PreparedRows,
                 segment_id: segment.id(),
                 active_position,
                 layout_index: 0,
-                position: 0,
+                position: plans[0].start_row,
                 binding,
             },
             Order::Desc => {
@@ -74,7 +75,10 @@ pub(super) fn prepare(root: &Path, request: RowsRequest) -> Result<PreparedRows,
     let Some(plan) = plans.get(start.layout_index) else {
         return Err(ApiError::BadCursor);
     };
-    if start.position > plan.rows || start.active_position != active_position {
+    if start.position < plan.start_row
+        || start.position > plan.rows
+        || start.active_position != active_position
+    {
         return Err(ApiError::BadCursor);
     }
     Ok(PreparedRows {
@@ -95,27 +99,39 @@ impl PreparedRows {
         })
     }
 
-    pub(super) fn stream(self, emit: &mut impl FnMut(Vec<u8>) -> bool) -> Result<(), ApiError> {
-        if !emit(record(json!({
-            "record": "rows",
-            "segment": {
-                "id": self.segment.id().to_string(),
-                "kind": match self.segment.kind() {
-                    SegmentKind::Finished => "finished",
-                    SegmentKind::Active => "active",
+    pub(super) fn stream(
+        self,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(), ApiError> {
+        if cancelled()
+            || !emit(record(json!({
+                "record": "rows",
+                "segment": {
+                    "id": self.segment.id().to_string(),
+                    "kind": match self.segment.kind() {
+                        SegmentKind::Finished => "finished",
+                        SegmentKind::Active => "active",
+                    },
+                    "cursor": self.segment.active_position().map(|wal_position| json!({
+                        "segment_id": self.segment.id().to_string(),
+                        "wal_position": wal_position.to_string(),
+                    })),
                 },
-                "active_position": self.segment.active_position().map(|value| value.to_string()),
-            },
-            "logical_name": self.logical_name,
-            "order": match self.order {
-                Order::Asc => "asc",
-                Order::Desc => "desc",
-            },
-            "page_size": self.page_size.to_string(),
-        }))?) {
+                "logical_name": self.logical_name,
+                "order": match self.order {
+                    Order::Asc => "asc",
+                    Order::Desc => "desc",
+                },
+                "page_size": self.page_size.to_string(),
+            }))?)
+        {
             return Ok(());
         }
         for plan in &self.plans {
+            if cancelled() {
+                return Ok(());
+            }
             let fields = plan
                 .fields
                 .iter()
@@ -135,10 +151,10 @@ impl PreparedRows {
         }
 
         let page = match self.order {
-            Order::Asc => self.asc(emit)?,
-            Order::Desc => self.desc(emit)?,
+            Order::Asc => self.asc(emit, cancelled)?,
+            Order::Desc => self.desc(emit, cancelled)?,
         };
-        if !page.connected {
+        if !page.connected || cancelled() {
             return Ok(());
         }
         let next = page.next.map(Cursor::encode);
@@ -149,7 +165,11 @@ impl PreparedRows {
         Ok(())
     }
 
-    fn asc(&self, emit: &mut impl FnMut(Vec<u8>) -> bool) -> Result<Page, ApiError> {
+    fn asc(
+        &self,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Page, ApiError> {
         let mut page = AscPage {
             emitted: 0,
             next: None,
@@ -157,33 +177,50 @@ impl PreparedRows {
         };
         let mut failure = None;
         for layout_index in self.start.layout_index..self.plans.len() {
+            if cancelled() {
+                page.connected = false;
+                break;
+            }
             let plan = &self.plans[layout_index];
+            if !plan.applies() {
+                continue;
+            }
             let offset = if layout_index == self.start.layout_index {
                 self.start.position
             } else {
-                0
+                plan.start_row
             };
-            let mut chunk = Vec::with_capacity(ASC_CHUNK_ROWS);
+            let chunk_rows = self.page_size.saturating_add(1).min(ROW_CHUNK_ROWS);
+            let mut chunk = Vec::with_capacity(chunk_rows);
             self.segment.visit_rows(
                 plan.type_id,
                 &plan.projection,
                 offset,
                 usize::MAX,
                 |ordinal, row| {
+                    if cancelled() {
+                        page.connected = false;
+                        return false;
+                    }
                     chunk.push((ordinal, row));
-                    if chunk.len() < ASC_CHUNK_ROWS {
+                    if chunk.len() < chunk_rows {
                         return true;
                     }
-                    if let Err(error) =
-                        self.emit_asc_chunk(plan, layout_index, &mut chunk, &mut page, emit)
-                    {
+                    if let Err(error) = self.emit_asc_chunk(
+                        plan,
+                        layout_index,
+                        &mut chunk,
+                        &mut page,
+                        emit,
+                        cancelled,
+                    ) {
                         failure = Some(error);
                     }
                     page.connected && failure.is_none() && page.next.is_none()
                 },
             )?;
             if failure.is_none() && page.connected && page.next.is_none() && !chunk.is_empty() {
-                self.emit_asc_chunk(plan, layout_index, &mut chunk, &mut page, emit)?;
+                self.emit_asc_chunk(plan, layout_index, &mut chunk, &mut page, emit, cancelled)?;
             }
             if failure.is_some() || !page.connected || page.next.is_some() {
                 break;
@@ -205,9 +242,18 @@ impl PreparedRows {
         rows: &mut Vec<(u64, Row)>,
         page: &mut AscPage,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
+        cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
+        if cancelled() {
+            page.connected = false;
+            return Ok(());
+        }
         let dictionary = chunk_dictionary(&self.segment, rows)?;
         for (ordinal, row) in rows.drain(..) {
+            if cancelled() {
+                page.connected = false;
+                break;
+            }
             if !plan.matches(&row, &dictionary) {
                 continue;
             }
@@ -228,20 +274,32 @@ impl PreparedRows {
         Ok(())
     }
 
-    fn desc(&self, emit: &mut impl FnMut(Vec<u8>) -> bool) -> Result<Page, ApiError> {
+    fn desc(
+        &self,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Page, ApiError> {
         let mut emitted = 0_usize;
         let mut next = None;
         let mut connected = true;
         let mut failure = None;
         for layout_index in (0..=self.start.layout_index).rev() {
+            if cancelled() {
+                connected = false;
+                break;
+            }
             let plan = &self.plans[layout_index];
+            if !plan.applies() {
+                continue;
+            }
             let mut upper = if layout_index == self.start.layout_index {
                 self.start.position
             } else {
                 plan.rows
             };
-            while upper != 0 && connected && next.is_none() {
-                let lower = upper.saturating_sub(DESC_CHUNK_ROWS as u64);
+            while upper > plan.start_row && connected && next.is_none() {
+                let chunk_rows = self.page_size.saturating_add(1).min(ROW_CHUNK_ROWS);
+                let lower = upper.saturating_sub(chunk_rows as u64).max(plan.start_row);
                 let limit =
                     usize::try_from(upper - lower).map_err(|_overflow| ApiError::BadCursor)?;
                 // Reverse physical order needs only one bounded projected chunk;
@@ -253,12 +311,23 @@ impl PreparedRows {
                     lower,
                     limit,
                     |ordinal, row| {
+                        if cancelled() {
+                            connected = false;
+                            return false;
+                        }
                         chunk.push((ordinal, row));
                         true
                     },
                 )?;
+                if !connected {
+                    break;
+                }
                 let dictionary = chunk_dictionary(&self.segment, &chunk)?;
                 for (ordinal, row) in chunk.into_iter().rev() {
+                    if cancelled() {
+                        connected = false;
+                        break;
+                    }
                     if !plan.matches(&row, &dictionary) {
                         continue;
                     }
@@ -385,6 +454,10 @@ fn binding(request: &RowsRequest) -> u64 {
     for filter in &request.data.filters {
         hash_bytes(&mut hash, filter.column.as_bytes());
         hash_bytes(&mut hash, filter.value.as_bytes());
+    }
+    if let Some(after) = request.data.after {
+        hash_bytes(&mut hash, &after.segment_id.to_le_bytes());
+        hash_bytes(&mut hash, &after.wal_position.to_le_bytes());
     }
     hash
 }

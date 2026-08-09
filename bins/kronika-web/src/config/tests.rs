@@ -12,7 +12,9 @@ fn both_nonempty_credentials_are_required() {
 
 #[test]
 fn the_source_bitset_is_explicit_and_typed() {
-    assert_eq!(source_set(Some("5".to_owned())).expect("bitset"), 5);
+    assert_eq!(source_set(Some("1".to_owned())).expect("OS"), 1);
+    assert_eq!(source_set(Some("3".to_owned())).expect("all sources"), 3);
     assert!(source_set(None).is_err());
     assert!(source_set(Some("postgres".to_owned())).is_err());
+    assert!(source_set(Some("4".to_owned())).is_err());
 }

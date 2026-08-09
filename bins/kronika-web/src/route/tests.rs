@@ -1,4 +1,6 @@
-use super::{DataRequest, Filter, Order, Route, RouteError, SegmentRequest, Window, parse};
+use super::{
+    ActiveCursor, DataRequest, Filter, Order, Route, RouteError, SegmentRequest, Window, parse,
+};
 
 #[test]
 fn catalog_accepts_only_valid_ordered_bounds() {
@@ -58,8 +60,41 @@ fn repeated_fields_and_exact_where_parameters_keep_request_order() {
                     value: "9".to_owned(),
                 },
             ],
+            after: None,
         })
     );
+}
+
+#[test]
+fn active_tail_is_one_strict_physical_cursor() {
+    let Route::History(request) = parse(
+        "/api/segments/7/sections/os_diskstats/history",
+        Some("field=reads&after=7%2C18446744073709551615"),
+    )
+    .expect("active tail") else {
+        panic!("history route");
+    };
+    assert_eq!(
+        request.after,
+        Some(ActiveCursor {
+            segment_id: 7,
+            wal_position: u64::MAX,
+        })
+    );
+
+    for query in [
+        "after=8,1",
+        "after=7",
+        "after=7,1,2",
+        "after=7,-1",
+        "after=7,1&after=7,2",
+    ] {
+        assert_eq!(
+            parse("/api/segments/7/sections/os_diskstats/history", Some(query),),
+            Err(RouteError::BadParameter("after".to_owned())),
+            "{query}",
+        );
+    }
 }
 
 #[test]
@@ -84,6 +119,19 @@ fn rows_enforces_order_and_page_bounds() {
 }
 
 #[test]
+fn a_tail_and_page_cursor_remain_separate_physical_inputs() {
+    let Route::Rows(request) = parse(
+        "/api/segments/7/sections/os_process/rows",
+        Some("after=7,100&cursor=7,200,0,1,9"),
+    )
+    .expect("page inside an active tail") else {
+        panic!("rows route");
+    };
+    assert_eq!(request.data.after.unwrap().wal_position, 100);
+    assert_eq!(request.cursor.as_deref(), Some("7,200,0,1,9"));
+}
+
+#[test]
 fn malformed_escapes_utf8_duplicates_and_old_routes_are_refused() {
     assert_eq!(
         parse("/api/catalog", Some("from=1&from=2")),
@@ -97,6 +145,20 @@ fn malformed_escapes_utf8_duplicates_and_old_routes_are_refused() {
     assert_eq!(parse("/api/top", None), Err(RouteError::NoSuchPath));
     assert_eq!(parse("/api/series", None), Err(RouteError::NoSuchPath));
     assert_eq!(parse("/api/rows", None), Err(RouteError::NoSuchPath));
+    assert_eq!(
+        parse(
+            "/api/segments/7/sections/os_cpu/history",
+            Some("field=ts&field=ts"),
+        ),
+        Err(RouteError::BadParameter("field".to_owned()))
+    );
+    assert_eq!(
+        parse(
+            "/api/segments/7/sections/os_cpu/history",
+            Some("where.cpu_id=1&where.cpu_id=2"),
+        ),
+        Err(RouteError::BadParameter("where".to_owned()))
+    );
 }
 
 #[test]

@@ -41,12 +41,20 @@ pub(crate) struct Filter {
     pub(crate) value: String,
 }
 
+/// Committed prefix of one active segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ActiveCursor {
+    pub(crate) segment_id: i64,
+    pub(crate) wal_position: u64,
+}
+
 /// Projection and predicates shared by history and rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DataRequest {
     pub(crate) segment: SegmentRequest,
     pub(crate) fields: Vec<String>,
     pub(crate) filters: Vec<Filter>,
+    pub(crate) after: Option<ActiveCursor>,
 }
 
 /// Physical row ordering.
@@ -145,13 +153,19 @@ fn parse_catalog(query: &str) -> Result<Window, RouteError> {
 
 fn parse_data(segment: SegmentRequest, query: &str) -> Result<DataRequest, RouteError> {
     let (fields, filters, extras) = data_parameters(query)?;
-    if !extras.is_empty() {
-        return Err(RouteError::BadParameter(extras[0].0.clone()));
+    let mut after = None;
+    for (name, value) in extras {
+        match name.as_str() {
+            "after" if after.is_none() => after = Some(active_cursor(&value)?),
+            _ => return Err(RouteError::BadParameter(name)),
+        }
     }
+    validate_after(&segment, after)?;
     Ok(DataRequest {
         segment,
         fields,
         filters,
+        after,
     })
 }
 
@@ -160,6 +174,7 @@ fn parse_rows(segment: SegmentRequest, query: &str) -> Result<RowsRequest, Route
     let mut order = Order::Asc;
     let mut page_size = DEFAULT_PAGE_SIZE;
     let mut cursor = None;
+    let mut after = None;
     let mut saw_order = false;
     let mut saw_page_size = false;
     for (name, value) in extras {
@@ -181,19 +196,44 @@ fn parse_rows(segment: SegmentRequest, query: &str) -> Result<RowsRequest, Route
                 saw_page_size = true;
             }
             "cursor" if cursor.is_none() && !value.is_empty() => cursor = Some(value),
+            "after" if after.is_none() => after = Some(active_cursor(&value)?),
             _ => return Err(RouteError::BadParameter(name)),
         }
     }
+    validate_after(&segment, after)?;
     Ok(RowsRequest {
         data: DataRequest {
             segment,
             fields,
             filters,
+            after,
         },
         order,
         page_size,
         cursor,
     })
+}
+
+fn active_cursor(value: &str) -> Result<ActiveCursor, RouteError> {
+    let (segment_id, wal_position) = value
+        .split_once(',')
+        .filter(|(segment_id, wal_position)| {
+            !segment_id.is_empty() && !wal_position.is_empty() && !wal_position.contains(',')
+        })
+        .ok_or_else(|| RouteError::BadParameter("after".to_owned()))?;
+    Ok(ActiveCursor {
+        segment_id: number("after", segment_id)?,
+        wal_position: wal_position
+            .parse()
+            .map_err(|_error| RouteError::BadParameter("after".to_owned()))?,
+    })
+}
+
+fn validate_after(segment: &SegmentRequest, after: Option<ActiveCursor>) -> Result<(), RouteError> {
+    if after.is_some_and(|cursor| cursor.segment_id != segment.segment_id) {
+        return Err(RouteError::BadParameter("after".to_owned()));
+    }
+    Ok(())
 }
 
 type Extra = (String, String);
@@ -207,12 +247,17 @@ fn data_parameters(query: &str) -> Result<DataParameters, RouteError> {
         let name = decoded("parameter", raw_name, true)?;
         let value = decoded(&name, raw_value, true)?;
         if name == "field" {
-            if value.is_empty() || fields.len() >= MAX_FIELDS {
+            if value.is_empty() || fields.len() >= MAX_FIELDS || fields.contains(&value) {
                 return Err(RouteError::BadParameter("field".to_owned()));
             }
             fields.push(value);
         } else if let Some(column) = name.strip_prefix("where.") {
-            if column.is_empty() || filters.len() >= MAX_FILTERS {
+            if column.is_empty()
+                || filters.len() >= MAX_FILTERS
+                || filters
+                    .iter()
+                    .any(|filter: &Filter| filter.column == column)
+            {
                 return Err(RouteError::BadParameter("where".to_owned()));
             }
             filters.push(Filter {

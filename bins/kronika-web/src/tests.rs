@@ -1,10 +1,13 @@
 use hyper::header::{ALLOW, CACHE_CONTROL, ETAG, IF_NONE_MATCH, VARY, WWW_AUTHENTICATE};
 use hyper::{Method, Request, StatusCode};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use super::{authorization, if_none_match_values, response_from_meta, route_request};
-use crate::api::{CachePolicy, ResponseMeta};
+use crate::api::{CachePolicy, Prepared, ResponseMeta};
 use crate::config::Account;
+
+mod artifacts;
+mod multi_layout;
 
 const AUTHORIZATION: &str = "Basic ZGJhOnNlY3JldA==";
 
@@ -126,4 +129,35 @@ fn response_metadata_controls_private_cache_headers_and_etag() {
 
 const fn auth_header() -> hyper::header::HeaderValue {
     hyper::header::HeaderValue::from_static("Authorization")
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn blocking_resource_work_does_not_stall_the_current_thread_runtime() {
+    let (entered_tx, entered_rx) = oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let response = tokio::spawn(super::blocking_stream(move || {
+        let _sent = entered_tx.send(());
+        release_rx.recv().expect("release blocking producer");
+        Ok(Prepared::Empty(ResponseMeta {
+            status: StatusCode::OK,
+            cache: CachePolicy::NoStore,
+            etag: None,
+        }))
+    }));
+
+    entered_rx.await.expect("producer entered blocking pool");
+    let (serviced_tx, serviced_rx) = oneshot::channel();
+    tokio::spawn(async move {
+        tokio::task::yield_now().await;
+        let _sent = serviced_tx.send(());
+    });
+    serviced_rx
+        .await
+        .expect("unrelated future runs while producer is blocked");
+    release_tx.send(()).expect("release producer");
+
+    assert_eq!(
+        response.await.expect("response task").status(),
+        StatusCode::OK
+    );
 }

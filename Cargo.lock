@@ -1324,10 +1324,14 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "kronika-format",
  "kronika-index",
+ "kronika-layout",
  "kronika-reader",
  "kronika-registry",
+ "kronika-writer",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

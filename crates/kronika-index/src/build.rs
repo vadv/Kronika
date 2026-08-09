@@ -17,6 +17,15 @@ pub const INSTANCE_METADATA_TYPE_ID: u32 = 1_021_001;
 /// `type_id` of `os_psi`.
 pub const OS_PSI_TYPE_ID: u32 = 1_107_001;
 
+/// One full-resolution point of the derived health gauge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HealthPoint {
+    /// Snapshot timestamp in unix microseconds.
+    pub timestamp: i64,
+    /// Derived percent, or `None` when this snapshot has no usable baseline.
+    pub value: Option<u8>,
+}
+
 const CPU: u32 = 0;
 const MEMORY: u32 = 1;
 const IO: u32 = 2;
@@ -373,25 +382,42 @@ struct PartialStall {
     io: Option<i64>,
 }
 
-fn health_summary(segment: &Segment) -> Result<SectionSummary, ReaderError> {
-    if segment.rows_of(INSTANCE_METADATA_TYPE_ID).is_none()
-        || segment.rows_of(OS_PSI_TYPE_ID).is_none()
-    {
-        return Ok(empty_health());
+/// Visit full-resolution derived health points in timestamp order.
+///
+/// # Errors
+///
+/// Returns a production-reader failure for either input section.
+pub fn visit_health_points(
+    segment: &Segment,
+    mut keep_going: impl FnMut() -> bool,
+    mut visitor: impl FnMut(HealthPoint) -> bool,
+) -> Result<(), ReaderError> {
+    if segment.rows_of(OS_PSI_TYPE_ID).is_none() || !keep_going() {
+        return Ok(());
     }
+    let mut running = true;
     let mut environment = None;
-    segment.visit_rows(
-        INSTANCE_METADATA_TYPE_ID,
-        &["environment"],
-        0,
-        usize::MAX,
-        |_ordinal, row| {
-            if let Some(Cell::U32(value)) = row.get("environment") {
-                environment = Some(*value);
-            }
-            true
-        },
-    )?;
+    if segment.rows_of(INSTANCE_METADATA_TYPE_ID).is_some() {
+        segment.visit_rows(
+            INSTANCE_METADATA_TYPE_ID,
+            &["environment"],
+            0,
+            usize::MAX,
+            |_ordinal, row| {
+                running = keep_going();
+                if !running {
+                    return false;
+                }
+                if let Some(Cell::U32(value)) = row.get("environment") {
+                    environment = Some(*value);
+                }
+                true
+            },
+        )?;
+    }
+    if !running {
+        return Ok(());
+    }
     let mut snapshots: BTreeMap<i64, PartialStall> = BTreeMap::new();
     segment.visit_rows(
         OS_PSI_TYPE_ID,
@@ -399,17 +425,16 @@ fn health_summary(segment: &Segment) -> Result<SectionSummary, ReaderError> {
         0,
         usize::MAX,
         |_ordinal, row| {
-            let (
-                Some(Cell::Ts(ts)),
-                Some(Cell::U32(resource)),
-                Some(Cell::I64(total)),
-                Some(Cell::U32(scope)),
-            ) = (
-                row.get("ts"),
-                row.get("resource"),
-                row.get("some_total"),
-                row.get("scope"),
-            )
+            running = keep_going();
+            if !running {
+                return false;
+            }
+            let Some(Cell::Ts(ts)) = row.get("ts") else {
+                return true;
+            };
+            let snapshot = snapshots.entry(*ts).or_default();
+            let (Some(Cell::U32(resource)), Some(Cell::I64(total)), Some(Cell::U32(scope))) =
+                (row.get("resource"), row.get("some_total"), row.get("scope"))
             else {
                 return true;
             };
@@ -421,7 +446,6 @@ fn health_summary(segment: &Segment) -> Result<SectionSummary, ReaderError> {
                 _ => false,
             };
             if matching_scope {
-                let snapshot = snapshots.entry(*ts).or_default();
                 match *resource {
                     CPU => snapshot.cpu = Some(*total),
                     MEMORY => snapshot.memory = Some(*total),
@@ -432,21 +456,45 @@ fn health_summary(segment: &Segment) -> Result<SectionSummary, ReaderError> {
             true
         },
     )?;
+    if !running {
+        return Ok(());
+    }
 
-    let mut summary = Accum::new(ColumnClass::Gauge);
     let mut previous = None;
     for (ts, snapshot) in snapshots {
+        if !keep_going() {
+            break;
+        }
         let current = match (snapshot.cpu, snapshot.memory, snapshot.io) {
             (Some(cpu), Some(memory), Some(io)) => Some(Stall { cpu, memory, io }),
             _ => None,
         };
-        if let Some(value) = previous.and_then(|(before_ts, before)| {
+        let value = previous.and_then(|(before_ts, before)| {
             current.and_then(|after| health(before, before_ts, after, ts))
-        }) {
-            summary.observe(ts, Some(&Cell::U32(u32::from(value))));
-        }
+        });
         previous = current.map(|stall| (ts, stall));
+        if !visitor(HealthPoint {
+            timestamp: ts,
+            value,
+        }) {
+            break;
+        }
     }
+    Ok(())
+}
+
+fn health_summary(segment: &Segment) -> Result<SectionSummary, ReaderError> {
+    let mut summary = Accum::new(ColumnClass::Gauge);
+    visit_health_points(
+        segment,
+        || true,
+        |point| {
+            if let Some(value) = point.value {
+                summary.observe(point.timestamp, Some(&Cell::U32(u32::from(value))));
+            }
+            true
+        },
+    )?;
     Ok(SectionSummary {
         type_id: DERIVED_HEALTH_TYPE_ID,
         objects: vec![ObjectSummary {
@@ -454,16 +502,6 @@ fn health_summary(segment: &Segment) -> Result<SectionSummary, ReaderError> {
             observations: vec![summary.finish()],
         }],
     })
-}
-
-fn empty_health() -> SectionSummary {
-    SectionSummary {
-        type_id: DERIVED_HEALTH_TYPE_ID,
-        objects: vec![ObjectSummary {
-            identity: Vec::new(),
-            observations: vec![Accum::new(ColumnClass::Gauge).finish()],
-        }],
-    }
 }
 
 #[cfg(test)]

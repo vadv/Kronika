@@ -150,3 +150,59 @@ fn real_active_and_finished_resources_are_bounded_and_atomically_cached() {
         0b111
     );
 }
+
+#[test]
+fn a_published_index_does_not_require_its_finished_source_body() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+    append_fixture(&mut journal);
+    write_segment(&journal, &writer, address()).expect("finish segment");
+
+    let reader = Reader::open(directory.path()).expect("finished reader");
+    let finished_ref = only_segment(&reader, SegmentKind::Finished);
+    let source_path = reader
+        .open_segment(&finished_ref)
+        .expect("open finished segment")
+        .path()
+        .to_path_buf();
+    let published = resource(
+        directory.path(),
+        &reader,
+        &finished_ref,
+        0b101,
+        "os_topology",
+    )
+    .expect("publish finished index");
+    assert!(published.persisted);
+    journal.reset().expect("leave no active segment");
+
+    let mut bytes = std::fs::read(&source_path).expect("read source segment");
+    bytes[kronika_format::MAGIC.len()] ^= 0xff;
+    std::fs::write(&source_path, bytes).expect("damage source section body");
+
+    let reader = Reader::open(directory.path()).expect("reader after damage");
+    let validated = reader.segments(..).expect("validate source bodies");
+    assert!(validated.segments.is_empty());
+    assert_eq!(validated.warnings.len(), 1);
+    assert_eq!(
+        validated.warnings[0].reason.code(),
+        "invalid_zms_section_checksum"
+    );
+
+    let catalog = reader.catalog_segments(..).expect("catalog-only discovery");
+    assert!(catalog.warnings.is_empty());
+    assert_eq!(catalog.segments.len(), 1);
+    let recovered = resource(
+        directory.path(),
+        &reader,
+        &catalog.segments[0],
+        0b101,
+        "os_topology",
+    )
+    .expect("load published index without source body");
+    assert_eq!(recovered, published);
+}

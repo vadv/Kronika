@@ -1,5 +1,8 @@
 use kronika_registry::os_diskstats::OsDiskstats;
-use kronika_registry::{ColumnClass, PgStatDatabaseV1, PgStatDatabaseV4, Section as _};
+use kronika_registry::{
+    ColumnClass, PgStatDatabaseV1, PgStatDatabaseV4, PgStatStatementsV1, PgStatStatementsV3,
+    Section as _,
+};
 
 use super::{OutputField, cells_equal, output_names, projection, typed_filter};
 use crate::api::ApiError;
@@ -34,17 +37,17 @@ fn default_projection_is_the_union_in_stable_layout_order() {
 #[test]
 fn a_filter_absent_from_one_layout_makes_that_layout_inapplicable() {
     let filter = Filter {
-        column: "parallel_workers_launched".to_owned(),
-        value: "7".to_owned(),
+        column: "toplevel".to_owned(),
+        value: "true".to_owned(),
     };
     assert!(
-        typed_filter(&PgStatDatabaseV1::CONTRACT, &filter)
+        typed_filter(&PgStatStatementsV1::CONTRACT, &filter)
             .expect("absence is not a type error")
             .is_none()
     );
     assert!(
-        typed_filter(&PgStatDatabaseV4::CONTRACT, &filter)
-            .expect("typed v4 filter")
+        typed_filter(&PgStatStatementsV3::CONTRACT, &filter)
+            .expect("typed v3 filter")
             .is_some()
     );
 }
@@ -58,6 +61,18 @@ fn typed_filters_reject_values_outside_the_physical_type() {
     let error =
         typed_filter(&PgStatDatabaseV1::CONTRACT, &filter).expect_err("datid does not hold u64");
     assert!(matches!(error, ApiError::BadFilter(name) if name == "datid"));
+}
+
+#[test]
+fn filters_are_exact_labels_not_metric_predicates() {
+    let filter = Filter {
+        column: "xact_commit".to_owned(),
+        value: "7".to_owned(),
+    };
+    assert!(matches!(
+        typed_filter(&PgStatDatabaseV1::CONTRACT, &filter),
+        Err(ApiError::BadFilter(name)) if name == "xact_commit"
+    ));
 }
 
 #[test]
@@ -84,7 +99,7 @@ fn explicit_non_identity_history_field_keeps_timestamp_and_identity_projection()
         name: "reads".to_owned(),
         column: Some("reads"),
     }];
-    let projected = projection(contract, &fields, timestamp, &[]);
+    let projected = projection(contract, &fields, timestamp, &[], true);
 
     assert!(projected.contains(&"reads"));
     assert!(projected.contains(&"ts"));

@@ -36,7 +36,23 @@ pub(super) fn prepare(
     if !exists {
         return Err(ApiError::NoSuchSection);
     }
+    let started = std::time::Instant::now();
     let resource = resource(root, &reader, &segment, sources, &request.section)?;
+    let objects = resource
+        .index
+        .sections
+        .iter()
+        .map(|section| section.objects.len())
+        .sum::<usize>();
+    eprintln!(
+        "kronika-web: index_resource segment_id={} logical_name={} persisted={} sections={} objects={} elapsed_us={}",
+        segment.id(),
+        request.section,
+        resource.persisted,
+        resource.index.sections.len(),
+        objects,
+        started.elapsed().as_micros(),
+    );
     let meta = resource_meta(segment.kind(), resource.index.checksum)?;
     if meta
         .etag
@@ -62,34 +78,44 @@ impl PreparedIndex {
         self.meta.clone()
     }
 
-    pub(super) fn stream(self, emit: &mut impl FnMut(Vec<u8>) -> bool) -> Result<(), ApiError> {
-        if !emit(record(json!({
-            "record": "index",
-            "segment": segment_value(&self.segment),
-            "logical_name": self.logical_name,
-            "sources": self.resource.index.sources.to_string(),
-            "checksum": self.resource.index.checksum.map(|value| format!("{value:08x}")),
-        }))?) {
+    pub(super) fn stream(
+        self,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(), ApiError> {
+        if cancelled()
+            || !emit(record(json!({
+                "record": "index",
+                "segment": segment_value(&self.segment),
+                "logical_name": self.logical_name,
+                "sources": self.resource.index.sources.to_string(),
+                "checksum": self.resource.index.checksum.map(|value| format!("{value:08x}")),
+            }))?)
+        {
             return Ok(());
         }
         for section in self.resource.index.sections {
-            if !emit(record(json!({
-                "record": "layout",
-                "layout": section_layout(&self.logical_name, section.type_id)?,
-            }))?) {
+            if cancelled()
+                || !emit(record(json!({
+                    "record": "layout",
+                    "layout": section_layout(&self.logical_name, section.type_id)?,
+                }))?)
+            {
                 return Ok(());
             }
             for object in section.objects {
-                if !emit(record(json!({
-                    "record": "object",
-                    "type_id": section.type_id.to_string(),
-                    "identity": object.identity.iter().map(identity).collect::<Vec<_>>(),
-                    "observations": object
-                        .observations
-                        .into_iter()
-                        .map(observation)
-                        .collect::<Vec<_>>(),
-                }))?) {
+                if cancelled()
+                    || !emit(record(json!({
+                        "record": "object",
+                        "type_id": section.type_id.to_string(),
+                        "identity": object.identity.iter().map(identity).collect::<Vec<_>>(),
+                        "observations": object
+                            .observations
+                            .into_iter()
+                            .map(observation)
+                            .collect::<Vec<_>>(),
+                    }))?)
+                {
                     return Ok(());
                 }
             }
@@ -136,7 +162,7 @@ fn resource_meta(kind: SegmentKind, checksum: Option<u32>) -> Result<ResponseMet
     }
 }
 
-fn section_layout(logical_name: &str, type_id: u32) -> Result<Value, ApiError> {
+pub(super) fn section_layout(logical_name: &str, type_id: u32) -> Result<Value, ApiError> {
     if type_id == DERIVED_HEALTH_TYPE_ID {
         return Ok(json!({
             "logical_name": "health",

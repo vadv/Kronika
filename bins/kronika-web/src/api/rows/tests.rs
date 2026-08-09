@@ -13,6 +13,7 @@ fn request(order: Order) -> RowsRequest {
                 column: "pid".to_owned(),
                 value: "42".to_owned(),
             }],
+            after: None,
         },
         order,
         page_size: 100,

@@ -6,7 +6,7 @@ use std::path::Path;
 use hyper::StatusCode;
 use kronika_reader::{Reader, ReaderError, SegmentRef};
 
-use crate::route::Route;
+use crate::route::{ActiveCursor, Route};
 
 mod catalog;
 mod history;
@@ -76,12 +76,16 @@ impl Prepared {
     }
 
     /// Emit newline-delimited JSON records until complete or the client leaves.
-    pub(crate) fn stream(self, emit: &mut impl FnMut(Vec<u8>) -> bool) -> Result<(), ApiError> {
+    pub(crate) fn stream(
+        self,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(), ApiError> {
         match self {
-            Self::Catalog(prepared) => prepared.stream(emit),
-            Self::Index(prepared) => prepared.stream(emit),
-            Self::History(prepared) => prepared.stream(emit),
-            Self::Rows(prepared) => prepared.stream(emit),
+            Self::Catalog(prepared) => prepared.stream(emit, cancelled),
+            Self::Index(prepared) => prepared.stream(emit, cancelled),
+            Self::History(prepared) => prepared.stream(emit, cancelled),
+            Self::Rows(prepared) => prepared.stream(emit, cancelled),
             Self::Empty(_meta) => Ok(()),
         }
     }
@@ -174,7 +178,7 @@ pub(crate) fn prepare(
     if_none_match: Option<&str>,
 ) -> Result<Prepared, ApiError> {
     match route {
-        Route::Catalog(window) => catalog::prepare(root, window).map(Prepared::Catalog),
+        Route::Catalog(window) => catalog::prepare(root, window, sources).map(Prepared::Catalog),
         Route::Index(request) => index::prepare(root, sources, request, if_none_match),
         Route::History(request) => history::prepare(root, request).map(Prepared::History),
         Route::Rows(request) => rows::prepare(root, request).map(Prepared::Rows),
@@ -182,6 +186,7 @@ pub(crate) fn prepare(
 }
 
 fn explicit_segment(root: &Path, id: i64) -> Result<(Reader, SegmentRef), ApiError> {
+    let started = std::time::Instant::now();
     let reader = Reader::open(root)?;
     let listing = reader.catalog_segments(..)?;
     log_warnings(&listing.warnings);
@@ -190,7 +195,33 @@ fn explicit_segment(root: &Path, id: i64) -> Result<(Reader, SegmentRef), ApiErr
         .into_iter()
         .find(|segment| segment.id() == id)
         .ok_or(ApiError::NoSuchSegment)?;
+    eprintln!(
+        "kronika-web: segment_open id={} kind={} sections={} elapsed_us={}",
+        segment.id(),
+        match segment.kind() {
+            kronika_reader::SegmentKind::Finished => "finished",
+            kronika_reader::SegmentKind::Active => "active",
+        },
+        segment.sections().len(),
+        started.elapsed().as_micros(),
+    );
     Ok((reader, segment))
+}
+
+fn active_tail(
+    current: &SegmentRef,
+    after: Option<ActiveCursor>,
+) -> Result<Option<SegmentRef>, ApiError> {
+    let Some(after) = after else {
+        return Ok(None);
+    };
+    if current.kind() != kronika_reader::SegmentKind::Active || current.id() != after.segment_id {
+        return Err(ApiError::BadCursor);
+    }
+    current
+        .at_active_position(after.wal_position)
+        .map(Some)
+        .map_err(|_error| ApiError::BadCursor)
 }
 
 fn log_warnings(warnings: &[kronika_reader::StoreWarning]) {

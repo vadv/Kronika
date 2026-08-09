@@ -12,8 +12,8 @@ mod store;
 mod summary;
 
 pub use build::{
-    BuildError, DERIVED_HEALTH_TYPE_ID, INSTANCE_METADATA_TYPE_ID, OS_PSI_TYPE_ID, build,
-    build_selected,
+    BuildError, DERIVED_HEALTH_TYPE_ID, HealthPoint, INSTANCE_METADATA_TYPE_ID, OS_PSI_TYPE_ID,
+    build, build_selected, visit_health_points,
 };
 pub use file::{ENTRY_LEN, HEADER_LEN, Index, IndexError, MAGIC, TargetedIndex};
 pub use health::{Stall, health};

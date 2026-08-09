@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use kronika_reader::{Cell, Dictionary, Resolved, Row, Segment};
+use kronika_reader::{Cell, Dictionary, Resolved, Row, Segment, SegmentRef};
 use kronika_registry::{ColumnClass, ColumnType, TypeContract, contract};
 
 use super::ApiError;
@@ -22,6 +22,7 @@ pub(super) struct Plan {
     pub(super) fields: Vec<OutputField>,
     pub(super) projection: Vec<&'static str>,
     pub(super) timestamp: Option<&'static str>,
+    pub(super) start_row: u64,
     filters: Vec<TypedFilter>,
     matches_none: bool,
     pub(super) rows: u64,
@@ -40,7 +41,11 @@ enum TypedFilter {
 }
 
 /// Build compatible per-physical-layout plans without merging identities.
-pub(super) fn plans(segment: &Segment, request: &DataRequest) -> Result<Vec<Plan>, ApiError> {
+pub(super) fn plans(
+    segment: &Segment,
+    request: &DataRequest,
+    history_coordinates: bool,
+) -> Result<Vec<Plan>, ApiError> {
     let layouts: Vec<(u32, kronika_reader::Section)> =
         segment.layouts(&request.segment.section).collect();
     if layouts.is_empty() {
@@ -82,13 +87,15 @@ pub(super) fn plans(segment: &Segment, request: &DataRequest) -> Result<Vec<Plan
                 .iter()
                 .find(|column| column.class == ColumnClass::Timestamp)
                 .map(|column| column.name);
-            let projection = projection(contract, &fields, timestamp, &filters);
+            let projection =
+                projection(contract, &fields, timestamp, &filters, history_coordinates);
             Ok(Plan {
                 type_id,
                 contract,
                 fields,
                 projection,
                 timestamp,
+                start_row: 0,
                 filters,
                 matches_none,
                 rows: section.rows,
@@ -97,19 +104,39 @@ pub(super) fn plans(segment: &Segment, request: &DataRequest) -> Result<Vec<Plan
         .collect()
 }
 
+pub(super) fn apply_tail(plans: &mut [Plan], prior: Option<&SegmentRef>) -> Result<(), ApiError> {
+    let Some(prior) = prior else {
+        return Ok(());
+    };
+    for plan in plans {
+        plan.start_row = prior
+            .sections()
+            .iter()
+            .find(|section| section.type_id == plan.type_id)
+            .map_or(0, |section| section.rows);
+        if plan.start_row > plan.rows {
+            return Err(ApiError::BadCursor);
+        }
+    }
+    Ok(())
+}
+
 fn projection(
     contract: &'static TypeContract,
     fields: &[OutputField],
     timestamp: Option<&'static str>,
     filters: &[TypedFilter],
+    history_coordinates: bool,
 ) -> Vec<&'static str> {
     let mut projection: Vec<&'static str> = fields
         .iter()
         .filter_map(|field| field.column)
-        .chain(contract.identity.iter().copied())
-        .chain(timestamp)
         .chain(filters.iter().map(TypedFilter::column))
         .collect();
+    if history_coordinates {
+        projection.extend(contract.identity.iter().copied());
+        projection.extend(timestamp);
+    }
     projection.sort_unstable();
     projection.dedup();
     projection
@@ -190,6 +217,10 @@ fn resolved_dictionary(segment: &Segment, ids: &HashSet<u64>) -> Result<Dictiona
 }
 
 impl Plan {
+    pub(super) const fn applies(&self) -> bool {
+        !self.matches_none
+    }
+
     pub(super) fn matches(&self, row: &Row, dictionary: &Dictionary) -> bool {
         !self.matches_none
             && self
@@ -233,6 +264,9 @@ fn typed_filter(
         return Ok(None);
     };
     let bad = || ApiError::BadFilter(filter.column.clone());
+    if column.class != ColumnClass::Label {
+        return Err(bad());
+    }
     let value = filter.value.as_str();
     let wanted = match column.ty {
         ColumnType::I8 => Cell::I16(i16::from(value.parse::<i8>().map_err(|_error| bad())?)),
