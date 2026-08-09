@@ -1310,6 +1310,7 @@ dependencies = [
  "hyper-util",
  "kronika-index",
  "kronika-reader",
+ "kronika-registry",
  "serde_json",
  "tokio",
 ]

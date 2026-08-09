@@ -11,6 +11,10 @@ use serde_json::{Value, json};
 
 use crate::route::Window;
 
+mod top;
+
+pub(crate) use top::{TopError, top};
+
 /// The health line over `window`.
 ///
 /// Every segment the window touches contributes the points its index holds.
@@ -44,7 +48,7 @@ pub(crate) fn health(root: &Path, window: Window) -> Result<Value, ReaderError> 
 ///
 /// The current segment has no file: its points are computed for this answer
 /// and thrown away with the rest of the request.
-fn index_of(segment: &kronika_reader::Segment) -> Result<Index, ReaderError> {
+pub(crate) fn index_of(segment: &kronika_reader::Segment) -> Result<Index, ReaderError> {
     let Some(path) = kronika_index::path_of(segment.path()) else {
         return kronika_index::build(segment, 0);
     };
@@ -59,7 +63,7 @@ fn index_of(segment: &kronika_reader::Segment) -> Result<Index, ReaderError> {
 }
 
 /// The range to ask the reader for.
-const fn bounds(window: Window) -> (std::ops::Bound<i64>, std::ops::Bound<i64>) {
+pub(crate) const fn bounds(window: Window) -> (std::ops::Bound<i64>, std::ops::Bound<i64>) {
     use std::ops::Bound::{Included, Unbounded};
     (
         match window.from {

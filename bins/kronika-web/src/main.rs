@@ -86,6 +86,17 @@ async fn answer(
                 failed("unreadable")
             }
         },
+        Ok((Route::Top(request), window)) => match api::top(&config.data_root, window, &request) {
+            Ok(body) => ok(&body),
+            Err(api::TopError::NoSuchSection) => {
+                refused(StatusCode::BAD_REQUEST, "no_such_section")
+            }
+            Err(api::TopError::NoSuchColumn) => refused(StatusCode::BAD_REQUEST, "no_such_column"),
+            Err(api::TopError::Unreadable(error)) => {
+                eprintln!("kronika-web: {target}: {error}");
+                failed("unreadable")
+            }
+        },
         Err(RouteError::NoSuchPath) => refused(StatusCode::NOT_FOUND, "no_such_path"),
         Err(RouteError::BadParameter(name)) => json_response(
             StatusCode::BAD_REQUEST,
