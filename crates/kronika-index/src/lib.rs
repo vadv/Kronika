@@ -16,6 +16,6 @@ pub use build::{
     build, build_selected, visit_health_points,
 };
 pub use file::{ENTRY_LEN, HEADER_LEN, Index, IndexError, MAGIC, TargetedIndex};
-pub use health::{Stall, health};
+pub use health::{SourcePenalty, Stall, health, overall_health, postgres_penalty};
 pub use store::{EXTENSION, LoadError, ResourceIndex, path_of, read, resource};
 pub use summary::{IdentityValue, Number, ObjectSummary, Observation, Sample, SectionSummary};

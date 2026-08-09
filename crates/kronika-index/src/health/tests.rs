@@ -1,4 +1,4 @@
-use super::{Stall, health};
+use super::{SourcePenalty, Stall, health, overall_health, postgres_penalty};
 
 /// One second, in the microseconds the counters use.
 const SECOND: i64 = 1_000_000;
@@ -73,4 +73,71 @@ fn a_long_interval_does_not_overflow_the_multiplication() {
     let day = 86_400 * SECOND;
     assert_eq!(health(ZERO, 0, stall(day / 2, 0, 0), day), Some(50));
     assert_eq!(health(ZERO, 0, stall(i64::MAX, 0, 0), day), Some(0));
+}
+
+#[test]
+fn two_service_slots_per_cpu_set_the_postgres_boundary() {
+    assert_eq!(postgres_penalty(0, 2), Some(0));
+    assert_eq!(postgres_penalty(4, 2), Some(0));
+    assert_eq!(postgres_penalty(5, 2), Some(20));
+    assert_eq!(postgres_penalty(8, 2), Some(50));
+    assert_eq!(postgres_penalty(40, 2), Some(90));
+}
+
+#[test]
+fn postgres_pressure_rounds_to_the_nearest_percent() {
+    assert_eq!(postgres_penalty(3, 1), Some(33));
+    assert_eq!(postgres_penalty(6, 2), Some(33));
+    assert_eq!(postgres_penalty(7, 2), Some(43));
+}
+
+#[test]
+fn zero_postgres_capacity_is_unknown() {
+    assert_eq!(postgres_penalty(0, 0), None);
+    assert_eq!(postgres_penalty(u32::MAX, 0), None);
+}
+
+#[test]
+fn very_large_postgres_capacity_does_not_overflow() {
+    assert_eq!(postgres_penalty(u32::MAX, u32::MAX), Some(0));
+}
+
+#[test]
+fn overall_health_subtracts_every_enabled_penalty() {
+    assert_eq!(
+        overall_health(Some(80), SourcePenalty::Known(20), SourcePenalty::Known(10),),
+        Some(50)
+    );
+}
+
+#[test]
+fn overall_health_clamps_additive_penalties_at_zero() {
+    assert_eq!(
+        overall_health(Some(40), SourcePenalty::Known(70), SourcePenalty::Known(80),),
+        Some(0)
+    );
+}
+
+#[test]
+fn disabled_sources_do_not_reduce_health() {
+    assert_eq!(
+        overall_health(Some(73), SourcePenalty::Disabled, SourcePenalty::Disabled,),
+        Some(73)
+    );
+}
+
+#[test]
+fn enabled_unknown_sources_make_overall_health_unknown() {
+    assert_eq!(
+        overall_health(Some(100), SourcePenalty::Unknown, SourcePenalty::Disabled,),
+        None
+    );
+    assert_eq!(
+        overall_health(Some(100), SourcePenalty::Disabled, SourcePenalty::Unknown,),
+        None
+    );
+    assert_eq!(
+        overall_health(None, SourcePenalty::Disabled, SourcePenalty::Disabled,),
+        None
+    );
 }
