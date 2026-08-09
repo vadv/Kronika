@@ -1,81 +1,76 @@
-//! What a request asks for: the path, and the window it names.
+//! Strict parsing of the four resource families.
+
+const DEFAULT_PAGE_SIZE: usize = 100;
+const MAX_PAGE_SIZE: usize = 1_000;
+const MAX_QUERY_BYTES: usize = 64 * 1024;
+const MAX_SECTION_BYTES: usize = 128;
+const MAX_FIELDS: usize = 256;
+const MAX_FILTERS: usize = 64;
 
 /// The requests the server answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Route {
-    /// The health line over a window.
-    Health,
-    /// The objects of one section, ordered by one column.
-    Top(TopRequest),
-    /// One column of one object over time.
-    Series(SeriesRequest),
-    /// The rows of one section, as they were recorded.
+    /// Actual finished/current segment catalog.
+    Catalog(Window),
+    /// One logical indexed series in one explicit segment.
+    Index(SegmentRequest),
+    /// Projected full-resolution history in one explicit segment.
+    History(DataRequest),
+    /// One stable page of physical rows in one explicit segment.
     Rows(RowsRequest),
 }
 
-/// What a request for one object's history names.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SeriesRequest {
-    /// Which section to read.
-    pub(crate) section: u32,
-    /// Which of its numbers to follow.
-    pub(crate) column: String,
-    /// Label columns the rows have to match, as the request wrote them.
-    pub(crate) filters: Vec<(String, String)>,
-}
-
-/// What a request for raw rows names.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RowsRequest {
-    /// Which section to read.
-    pub(crate) section: u32,
-    /// How many rows to answer with.
-    pub(crate) limit: usize,
-    /// Label columns the rows have to match.
-    pub(crate) filters: Vec<(String, String)>,
-}
-
-/// What a request for the objects of a section names.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TopRequest {
-    /// Which section to read.
-    pub(crate) section: u32,
-    /// Which of its numbers to order by.
-    pub(crate) column: String,
-    /// How many objects to answer with.
-    pub(crate) limit: usize,
-    /// How many columns to split the window into. One is a plain ordering.
-    pub(crate) buckets: usize,
-}
-
-/// Objects answered when the request does not say.
-const DEFAULT_LIMIT: usize = 20;
-
-/// Most objects one answer carries. A dashboard draws rows; a request for a
-/// hundred thousand of them is a mistake, and a slow one.
-const MAX_LIMIT: usize = 1_000;
-
-/// Most columns a window is split into.
-const MAX_BUCKETS: usize = 1_000;
-
-/// The window a request names, in unix microseconds.
-///
-/// An absent bound means everything on that side. The server does not invent
-/// one from the clock: a request that wants the last hour says so.
+/// Optional timestamp bounds for catalog listing only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct Window {
-    /// Oldest timestamp to include.
     pub(crate) from: Option<i64>,
-    /// Newest timestamp to include.
     pub(crate) to: Option<i64>,
 }
 
-/// Why a request was refused before it reached the data.
+/// One logical section in one explicit segment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SegmentRequest {
+    pub(crate) segment_id: i64,
+    pub(crate) section: String,
+}
+
+/// One exact typed equality predicate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Filter {
+    pub(crate) column: String,
+    pub(crate) value: String,
+}
+
+/// Projection and predicates shared by history and rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DataRequest {
+    pub(crate) segment: SegmentRequest,
+    pub(crate) fields: Vec<String>,
+    pub(crate) filters: Vec<Filter>,
+}
+
+/// Physical row ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Order {
+    Asc,
+    Desc,
+}
+
+/// Bounded page request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RowsRequest {
+    pub(crate) data: DataRequest,
+    pub(crate) order: Order,
+    pub(crate) page_size: usize,
+    pub(crate) cursor: Option<String>,
+}
+
+/// Why a request was refused before touching disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RouteError {
-    /// No handler answers that path.
+    /// No resource has this path shape.
     NoSuchPath,
-    /// A parameter is present and unusable, or required and absent.
+    /// One named path/query field is absent, duplicated, or invalid.
     BadParameter(String),
 }
 
@@ -83,116 +78,203 @@ impl std::fmt::Display for RouteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoSuchPath => write!(f, "no such path"),
-            Self::BadParameter(name) => write!(f, "{name} is not a number"),
+            Self::BadParameter(name) => write!(f, "invalid parameter {name}"),
         }
     }
 }
 
-/// Read the route and its window out of a request target.
+/// Parse a path and optional query into a typed resource request.
 ///
 /// # Errors
 ///
-/// Returns [`RouteError::NoSuchPath`] for a path nothing answers, and
-/// [`RouteError::BadParameter`] for a bound that is not a number.
-pub(crate) fn parse(target: &str) -> Result<(Route, Window), RouteError> {
-    let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    let mut window = Window::default();
-    let mut section: Option<u32> = None;
-    let mut column: Option<String> = None;
-    let mut limit = DEFAULT_LIMIT;
-    let mut buckets = 1;
-    let mut filters: Vec<(String, String)> = Vec::new();
-    for (name, value) in pairs(query) {
-        match name {
-            "from" => window.from = Some(number("from", value)?),
-            "to" => window.to = Some(number("to", value)?),
-            "section" => section = Some(type_id(value)?),
-            "column" => column = Some(value.to_owned()),
-            "limit" => limit = count("limit", value, MAX_LIMIT)?,
-            "buckets" => buckets = count("buckets", value, MAX_BUCKETS)?.max(1),
-            // Anything else names a label column and the value it must hold.
-            // The server does not decide which label is the right one to filter
-            // on; the request says, and the rows either match or do not.
-            label => filters.push((label.to_owned(), decoded(value))),
-        }
+/// Returns a path or named-parameter refusal; malformed percent escapes and
+/// non-UTF-8 data are always refused.
+pub(crate) fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError> {
+    let query = query.unwrap_or("");
+    if query.len() > MAX_QUERY_BYTES {
+        return Err(RouteError::BadParameter("query".to_owned()));
     }
-    let route = match path {
-        "/api/health" => Route::Health,
-        "/api/top" => Route::Top(TopRequest {
-            section: section.ok_or_else(|| RouteError::BadParameter("section".to_owned()))?,
-            column: column.ok_or_else(|| RouteError::BadParameter("column".to_owned()))?,
-            limit,
-            buckets,
-        }),
-        "/api/series" => Route::Series(SeriesRequest {
-            section: section.ok_or_else(|| RouteError::BadParameter("section".to_owned()))?,
-            column: column.ok_or_else(|| RouteError::BadParameter("column".to_owned()))?,
-            filters,
-        }),
-        "/api/rows" => Route::Rows(RowsRequest {
-            section: section.ok_or_else(|| RouteError::BadParameter("section".to_owned()))?,
-            limit,
-            filters,
-        }),
-        _other => return Err(RouteError::NoSuchPath),
+    if path == "/api/catalog" {
+        return parse_catalog(query).map(Route::Catalog);
+    }
+    let tail = path
+        .strip_prefix("/api/segments/")
+        .ok_or(RouteError::NoSuchPath)?;
+    let pieces: Vec<&str> = tail.split('/').collect();
+    if pieces.len() != 4 || pieces[1] != "sections" || pieces.iter().any(|piece| piece.is_empty()) {
+        return Err(RouteError::NoSuchPath);
+    }
+    let segment_id = number("segment_id", pieces[0])?;
+    let section = decoded("section", pieces[2], false)?;
+    if section.is_empty() || section.len() > MAX_SECTION_BYTES {
+        return Err(RouteError::BadParameter("section".to_owned()));
+    }
+    let segment = SegmentRequest {
+        segment_id,
+        section,
     };
-    Ok((route, window))
+    match pieces[3] {
+        "index" if query.is_empty() => Ok(Route::Index(segment)),
+        "index" => Err(RouteError::BadParameter("query".to_owned())),
+        "history" => parse_data(segment, query).map(Route::History),
+        "rows" => parse_rows(segment, query).map(Route::Rows),
+        _ => Err(RouteError::NoSuchPath),
+    }
 }
 
-/// The `name=value` pairs of a query string, in the order they were written.
-fn pairs(query: &str) -> impl Iterator<Item = (&str, &str)> {
+fn parse_catalog(query: &str) -> Result<Window, RouteError> {
+    let mut window = Window::default();
+    for (raw_name, raw_value) in pairs(query)? {
+        let name = decoded("parameter", raw_name, true)?;
+        let value = decoded(&name, raw_value, true)?;
+        match name.as_str() {
+            "from" if window.from.is_none() => window.from = Some(number("from", &value)?),
+            "to" if window.to.is_none() => window.to = Some(number("to", &value)?),
+            _ => return Err(RouteError::BadParameter(name)),
+        }
+    }
+    if window
+        .from
+        .zip(window.to)
+        .is_some_and(|(from, to)| from > to)
+    {
+        return Err(RouteError::BadParameter("from".to_owned()));
+    }
+    Ok(window)
+}
+
+fn parse_data(segment: SegmentRequest, query: &str) -> Result<DataRequest, RouteError> {
+    let (fields, filters, extras) = data_parameters(query)?;
+    if !extras.is_empty() {
+        return Err(RouteError::BadParameter(extras[0].0.clone()));
+    }
+    Ok(DataRequest {
+        segment,
+        fields,
+        filters,
+    })
+}
+
+fn parse_rows(segment: SegmentRequest, query: &str) -> Result<RowsRequest, RouteError> {
+    let (fields, filters, extras) = data_parameters(query)?;
+    let mut order = Order::Asc;
+    let mut page_size = DEFAULT_PAGE_SIZE;
+    let mut cursor = None;
+    let mut saw_order = false;
+    let mut saw_page_size = false;
+    for (name, value) in extras {
+        match name.as_str() {
+            "order" if !saw_order => {
+                order = match value.as_str() {
+                    "asc" => Order::Asc,
+                    "desc" => Order::Desc,
+                    _ => return Err(RouteError::BadParameter(name)),
+                };
+                saw_order = true;
+            }
+            "page_size" if !saw_page_size => {
+                page_size = value
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|size| (1..=MAX_PAGE_SIZE).contains(size))
+                    .ok_or_else(|| RouteError::BadParameter(name.clone()))?;
+                saw_page_size = true;
+            }
+            "cursor" if cursor.is_none() && !value.is_empty() => cursor = Some(value),
+            _ => return Err(RouteError::BadParameter(name)),
+        }
+    }
+    Ok(RowsRequest {
+        data: DataRequest {
+            segment,
+            fields,
+            filters,
+        },
+        order,
+        page_size,
+        cursor,
+    })
+}
+
+type Extra = (String, String);
+type DataParameters = (Vec<String>, Vec<Filter>, Vec<Extra>);
+
+fn data_parameters(query: &str) -> Result<DataParameters, RouteError> {
+    let mut fields = Vec::new();
+    let mut filters = Vec::new();
+    let mut extras = Vec::new();
+    for (raw_name, raw_value) in pairs(query)? {
+        let name = decoded("parameter", raw_name, true)?;
+        let value = decoded(&name, raw_value, true)?;
+        if name == "field" {
+            if value.is_empty() || fields.len() >= MAX_FIELDS {
+                return Err(RouteError::BadParameter("field".to_owned()));
+            }
+            fields.push(value);
+        } else if let Some(column) = name.strip_prefix("where.") {
+            if column.is_empty() || filters.len() >= MAX_FILTERS {
+                return Err(RouteError::BadParameter("where".to_owned()));
+            }
+            filters.push(Filter {
+                column: column.to_owned(),
+                value,
+            });
+        } else {
+            extras.push((name, value));
+        }
+    }
+    Ok((fields, filters, extras))
+}
+
+fn pairs(query: &str) -> Result<Vec<(&str, &str)>, RouteError> {
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
     query
         .split('&')
-        .filter(|part| !part.is_empty())
-        .map(|part| part.split_once('=').unwrap_or((part, "")))
+        .map(|part| {
+            if part.is_empty() {
+                return Err(RouteError::BadParameter("query".to_owned()));
+            }
+            Ok(part.split_once('=').unwrap_or((part, "")))
+        })
+        .collect()
+}
+
+fn decoded(name: &str, value: &str, plus_as_space: bool) -> Result<String, RouteError> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0_usize;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'+' if plus_as_space => {
+                out.push(b' ');
+                at += 1;
+            }
+            b'%' => {
+                let raw = bytes
+                    .get(at + 1..at + 3)
+                    .ok_or_else(|| RouteError::BadParameter(name.to_owned()))?;
+                let text = std::str::from_utf8(raw)
+                    .map_err(|_error| RouteError::BadParameter(name.to_owned()))?;
+                let byte = u8::from_str_radix(text, 16)
+                    .map_err(|_error| RouteError::BadParameter(name.to_owned()))?;
+                out.push(byte);
+                at += 3;
+            }
+            byte => {
+                out.push(byte);
+                at += 1;
+            }
+        }
+    }
+    String::from_utf8(out).map_err(|_error| RouteError::BadParameter(name.to_owned()))
 }
 
 fn number(name: &str, value: &str) -> Result<i64, RouteError> {
     value
         .parse()
-        .map_err(|_reason| RouteError::BadParameter(name.to_owned()))
-}
-
-/// A query value with its percent escapes and pluses undone.
-///
-/// A mount point and a command line both carry characters a query string has
-/// to escape, and a filter has to compare against what the segment recorded.
-fn decoded(value: &str) -> String {
-    let bytes = value.replace('+', " ").into_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut at = 0;
-    while at < bytes.len() {
-        if bytes[at] == b'%'
-            && let Some(hex) = bytes.get(at + 1..at + 3)
-            && let Ok(text) = std::str::from_utf8(hex)
-            && let Ok(byte) = u8::from_str_radix(text, 16)
-        {
-            out.push(byte);
-            at += 3;
-            continue;
-        }
-        out.push(bytes[at]);
-        at += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// A section id, which is a `type_id` of the registry.
-fn type_id(value: &str) -> Result<u32, RouteError> {
-    value
-        .parse()
-        .map_err(|_reason| RouteError::BadParameter("section".to_owned()))
-}
-
-/// A count, refused rather than clamped when it runs past what is answerable.
-fn count(name: &str, value: &str, most: usize) -> Result<usize, RouteError> {
-    let parsed: usize = value
-        .parse()
-        .map_err(|_reason| RouteError::BadParameter(name.to_owned()))?;
-    if parsed > most {
-        return Err(RouteError::BadParameter(name.to_owned()));
-    }
-    Ok(parsed)
+        .map_err(|_error| RouteError::BadParameter(name.to_owned()))
 }
 
 #[cfg(test)]

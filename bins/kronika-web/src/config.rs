@@ -1,29 +1,26 @@
-//! Environment-only configuration, read once before the first request.
-//!
-//! A value that does not parse stops the process instead of falling back to a
-//! default: a dashboard bound to the wrong address is worse than one that did
-//! not start.
+//! Environment-only configuration, validated before the listener starts.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
 
-/// Where the server listens when nothing says otherwise.
 const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
 
-/// The validated contract.
+/// The validated server contract.
 #[derive(Debug, Clone)]
 pub(crate) struct Config {
-    /// Data root: the segments, the journal, and the index files.
+    /// Data root containing journal, segments, and derived indexes.
     pub(crate) data_root: PathBuf,
     /// Address to listen on.
     pub(crate) listen: SocketAddr,
-    /// The one account allowed in, if any.
-    pub(crate) account: Option<Account>,
+    /// Required account admitted by centralized Basic auth.
+    pub(crate) account: Account,
+    /// Explicit source bitset persisted in every derived index.
+    pub(crate) sources: u32,
 }
 
-/// The credentials a request has to carry.
+/// Credentials every request has to carry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Account {
     /// User name.
@@ -33,46 +30,51 @@ pub(crate) struct Account {
 }
 
 impl Config {
-    /// Read and validate the contract from the environment.
+    /// Read and validate the environment contract.
     ///
     /// # Errors
     ///
-    /// Returns an error when `KRONIKA_OUT_DIR` is unset, the listen address
-    /// does not parse, or only one half of the account is set.
+    /// Returns an error when the data root, either credential, or the source
+    /// bitset is absent, or when a configured value is invalid.
     pub(crate) fn from_env() -> Result<Self> {
         let data_root: PathBuf = std::env::var("KRONIKA_OUT_DIR")
             .context("KRONIKA_OUT_DIR is not set")?
             .into();
-        let raw =
+        let raw_listen =
             std::env::var("KRONIKA_WEB_LISTEN").unwrap_or_else(|_unset| DEFAULT_LISTEN.to_owned());
-        let listen = raw
-            .parse()
-            .with_context(|| format!("KRONIKA_WEB_LISTEN={raw:?} is not an address and port"))?;
+        let listen = raw_listen.parse().with_context(|| {
+            format!("KRONIKA_WEB_LISTEN={raw_listen:?} is not an address and port")
+        })?;
+        let account = account(
+            std::env::var("KRONIKA_WEB_USER").ok(),
+            std::env::var("KRONIKA_WEB_PASSWORD").ok(),
+        )?;
+        let sources = source_set(std::env::var("KRONIKA_WEB_SOURCES").ok())?;
         Ok(Self {
             data_root,
             listen,
-            account: account(
-                std::env::var("KRONIKA_WEB_USER").ok(),
-                std::env::var("KRONIKA_WEB_PASSWORD").ok(),
-            )?,
+            account,
+            sources,
         })
     }
 }
 
-/// The account, or nothing when neither half is set.
-///
-/// Half an account is a typo, not a decision to serve without one.
-fn account(user: Option<String>, password: Option<String>) -> Result<Option<Account>> {
-    match (user, password) {
-        (Some(user), Some(password)) => Ok(Some(Account { user, password })),
-        (None, None) => Ok(None),
-        (Some(_user), None) => {
-            anyhow::bail!("KRONIKA_WEB_USER is set and KRONIKA_WEB_PASSWORD is not")
-        }
-        (None, Some(_password)) => {
-            anyhow::bail!("KRONIKA_WEB_PASSWORD is set and KRONIKA_WEB_USER is not")
-        }
+fn account(user: Option<String>, password: Option<String>) -> Result<Account> {
+    let user = user.context("KRONIKA_WEB_USER is not set")?;
+    let password = password.context("KRONIKA_WEB_PASSWORD is not set")?;
+    if user.is_empty() {
+        anyhow::bail!("KRONIKA_WEB_USER is empty");
     }
+    if password.is_empty() {
+        anyhow::bail!("KRONIKA_WEB_PASSWORD is empty");
+    }
+    Ok(Account { user, password })
+}
+
+fn source_set(raw: Option<String>) -> Result<u32> {
+    let raw = raw.context("KRONIKA_WEB_SOURCES is not set")?;
+    raw.parse::<u32>()
+        .with_context(|| format!("KRONIKA_WEB_SOURCES={raw:?} is not a u32 bitset"))
 }
 
 #[cfg(test)]

@@ -1,42 +1,55 @@
-use kronika_registry::os_diskstats::OsDiskstats;
-use kronika_registry::os_meminfo::OsMeminfo;
-use kronika_registry::{Cell, Row, Section};
+use super::{Cursor, binding};
+use crate::route::{DataRequest, Filter, Order, RowsRequest, SegmentRequest};
 
-use super::within;
-use crate::route::Window;
-
-fn diskstats(ts: i64) -> Row {
-    let mut cells = vec![Cell::Ts(ts)];
-    cells.resize(OsDiskstats::CONTRACT.columns.len(), Cell::Null);
-    Row::new(&OsDiskstats::CONTRACT, cells)
+fn request(order: Order) -> RowsRequest {
+    RowsRequest {
+        data: DataRequest {
+            segment: SegmentRequest {
+                segment_id: 7,
+                section: "os_process".to_owned(),
+            },
+            fields: vec!["pid".to_owned(), "rss_bytes".to_owned()],
+            filters: vec![Filter {
+                column: "pid".to_owned(),
+                value: "42".to_owned(),
+            }],
+        },
+        order,
+        page_size: 100,
+        cursor: None,
+    }
 }
 
 #[test]
-fn an_open_window_holds_every_row() {
-    assert!(within(Window::default(), &diskstats(1_000)));
-}
-
-#[test]
-fn a_row_outside_the_window_is_left_out() {
-    let window = Window {
-        from: Some(100),
-        to: Some(200),
+fn cursor_roundtrips_every_physical_coordinate() {
+    let cursor = Cursor {
+        segment_id: i64::MAX,
+        active_position: u64::MAX,
+        layout_index: 17,
+        position: u64::MAX - 1,
+        binding: u64::MAX - 2,
     };
-    assert!(!within(window, &diskstats(99)));
-    assert!(within(window, &diskstats(100)));
-    assert!(within(window, &diskstats(200)));
-    assert!(!within(window, &diskstats(201)));
+    assert_eq!(Cursor::parse(&cursor.encode()).expect("cursor"), cursor);
 }
 
 #[test]
-fn a_row_without_a_timestamp_is_answered_whole() {
-    let row = Row::new(&OsMeminfo::CONTRACT, Vec::new());
-    let window = Window {
-        from: Some(100),
-        to: Some(200),
-    };
-    assert!(
-        within(window, &row),
-        "a row with no time of its own has none to compare"
-    );
+fn malformed_cursor_is_rejected() {
+    assert!(Cursor::parse("7,8,9").is_err());
+    assert!(Cursor::parse("7,8,layout,10,11").is_err());
+}
+
+#[test]
+fn binding_changes_with_order_projection_and_filters() {
+    let asc = request(Order::Asc);
+    let mut changed = asc.clone();
+    changed.order = Order::Desc;
+    assert_ne!(binding(&asc), binding(&changed));
+
+    changed = asc.clone();
+    changed.data.fields.swap(0, 1);
+    assert_ne!(binding(&asc), binding(&changed));
+
+    changed = asc.clone();
+    changed.data.filters[0].value = "43".to_owned();
+    assert_ne!(binding(&asc), binding(&changed));
 }
