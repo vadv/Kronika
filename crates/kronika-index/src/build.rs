@@ -33,7 +33,7 @@ const CONTAINER: u32 = 3;
 pub enum BuildError {
     /// The production reader rejected an input body.
     Reader(ReaderError),
-    /// A PostgreSQL state dictionary id had no value.
+    /// A `PostgreSQL` state dictionary id had no value.
     UnresolvedState(u64),
     /// The one current metadata row was absent or malformed.
     InvalidMetadata,
@@ -403,8 +403,20 @@ fn transaction_rate(before_ts: i64, before: i128, timestamp: i64, total: i128) -
     if elapsed <= 0 || delta < 0 {
         return None;
     }
-    let rate = (delta as f64) * 1_000_000.0 / (elapsed as f64);
+    let rate = integer_as_f64(delta)? * 1_000_000.0 / integer_as_f64(i128::from(elapsed))?;
     (rate.is_finite() && rate >= 0.0).then_some(rate)
+}
+
+fn integer_as_f64(value: i128) -> Option<f64> {
+    let mut value = u128::try_from(value).ok()?;
+    let mut words = [0_u32; 4];
+    for word in words.iter_mut().rev() {
+        *word = u32::try_from(value & u128::from(u32::MAX)).ok()?;
+        value >>= 32;
+    }
+    Some(words.into_iter().fold(0.0, |number, word| {
+        number.mul_add(4_294_967_296.0, f64::from(word))
+    }))
 }
 
 fn active_backend_points(

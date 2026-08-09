@@ -67,19 +67,14 @@ fn index_json_keeps_one_derived_health_point_per_psi_snapshot() {
         .collect();
     assert_eq!(points.len(), 2);
     assert_eq!(points[0]["ts"], "1000000");
-    assert_eq!(points[0]["health"], serde_json::Value::Null);
+    assert_eq!(points[0]["value"], serde_json::Value::Null);
     assert_eq!(points[1]["ts"], "2000000");
-    assert_eq!(points[1]["health"], 75);
+    assert_eq!(points[1]["value"], 75);
 }
 
 #[test]
 fn index_failures_keep_their_typed_dump_error_variants() {
-    let build: DumpError = BuildError::UnresolvedIdentity {
-        type_id: 42,
-        column: "identity",
-        id: 9,
-    }
-    .into();
+    let build: DumpError = BuildError::UnresolvedState(9).into();
     assert!(matches!(build, DumpError::Build(_)));
 
     let index: DumpError = IndexError::BadLayout.into();

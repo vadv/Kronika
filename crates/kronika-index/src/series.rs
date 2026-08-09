@@ -16,7 +16,7 @@ pub enum SeriesKind {
     PgbouncerHealth = 4,
     /// Per-database committed plus rolled-back transactions per second.
     PgTransactionsPerSecond = 5,
-    /// PostgreSQL backends whose instantaneous state is `active`.
+    /// `PostgreSQL` backends whose instantaneous state is `active`.
     PgActiveBackends = 6,
 }
 
@@ -80,7 +80,7 @@ pub struct HealthPoint {
 pub struct TransactionPoint {
     /// Snapshot timestamp in unix microseconds.
     pub timestamp: i64,
-    /// PostgreSQL database OID; zero is the shared-objects row.
+    /// `PostgreSQL` database OID; zero is the shared-objects row.
     pub datid: u32,
     /// Transactions per second since the preceding usable sample.
     pub value: Option<f64>,

@@ -360,16 +360,17 @@ fn active_pages_pin_valid_len_and_preserve_equal_timestamp_ordinals() {
 fn finished_index_and_catalog_have_revalidation_contracts_and_source_facts() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[(100, 0, 7), (200, 0, 9)]);
+    fixture.append_health();
     fixture.finish();
 
-    let index_target = format!("/api/segments/{SEGMENT_ID}/sections/os_diskstats/index");
+    let index_target = format!("/api/segments/{SEGMENT_ID}/sections/health/index");
     let prepared = fixture.prepare(&index_target, None);
     let meta = prepared.meta();
     assert_eq!(meta.status, StatusCode::OK);
     assert_eq!(meta.cache, CachePolicy::Revalidate);
     let etag = meta.etag.expect("finished index ETag");
     let index = stream(prepared).expect("finished index body");
-    assert!(index.iter().any(|record| record["record"] == "object"));
+    assert!(index.iter().any(|record| record["record"] == "point"));
 
     let offered = format!("\"stale\", W/{etag}");
     let not_modified = fixture.prepare(&index_target, Some(&offered));

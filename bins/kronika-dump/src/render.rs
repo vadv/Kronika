@@ -199,7 +199,7 @@ pub(crate) fn index(
     Ok(())
 }
 
-fn index_block_name(block: &SeriesBlock) -> &'static str {
+const fn index_block_name(block: &SeriesBlock) -> &'static str {
     match block {
         SeriesBlock::OsHealth(_) => "os_health",
         SeriesBlock::PgTransactions { .. } => "transactions_per_second",
@@ -207,7 +207,7 @@ fn index_block_name(block: &SeriesBlock) -> &'static str {
     }
 }
 
-fn index_block_len(block: &SeriesBlock) -> usize {
+const fn index_block_len(block: &SeriesBlock) -> usize {
     match block {
         SeriesBlock::OsHealth(points) => points.len(),
         SeriesBlock::PgTransactions { points, .. } => points.len(),

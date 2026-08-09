@@ -158,7 +158,7 @@ impl PreparedIndex {
     }
 }
 
-fn block_len(block: &SeriesBlock) -> usize {
+const fn block_len(block: &SeriesBlock) -> usize {
     match block {
         SeriesBlock::OsHealth(points)
         | SeriesBlock::OverallHealth(points)

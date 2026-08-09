@@ -1,4 +1,7 @@
-use super::{ActiveBackendPoint, HealthPoint, SeriesBlock, TransactionPoint};
+use super::{
+    ActiveBackendPoint, HealthPoint, SeriesBlock, TransactionPoint, pg_activity_layout,
+    pg_database_layout,
+};
 
 #[test]
 fn each_allowlisted_block_roundtrips() {
@@ -79,4 +82,15 @@ fn a_real_zero_is_distinct_from_an_unknown_rate() {
         SeriesBlock::decode(block.key(), &bytes).expect("decode"),
         block
     );
+}
+
+#[test]
+fn statements_and_plans_are_not_index_layouts() {
+    for type_id in [
+        1_002_001, 1_002_002, 1_002_003, 1_002_004, 1_002_005, 1_002_006, 1_003_001, 1_004_001,
+        1_018_001,
+    ] {
+        assert!(!pg_database_layout(type_id));
+        assert!(!pg_activity_layout(type_id));
+    }
 }
