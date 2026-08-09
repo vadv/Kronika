@@ -93,7 +93,6 @@ impl Fixture {
                 postgresql_enabled: false,
                 postgresql_interval_seconds: 30,
                 postgresql_effective_cpus: None,
-                pgbouncer_enabled: false,
             })
             .expect("metadata row fits");
         for row in [
@@ -109,7 +108,7 @@ impl Fixture {
         self.append(buffers);
     }
 
-    fn append_postgres_health(&mut self, active: u32, pgbouncer_enabled: bool) {
+    fn append_postgres_health(&mut self, active: u32) {
         let mut interner = Interner::new(DictLimits::default());
         let active_state = StrId(interner.intern(b"active").expect("active state").get());
         let idle_state = StrId(interner.intern(b"idle").expect("idle state").get());
@@ -134,7 +133,6 @@ impl Fixture {
                 postgresql_enabled: true,
                 postgresql_interval_seconds: 30,
                 postgresql_effective_cpus: Some(2),
-                pgbouncer_enabled,
             })
             .expect("metadata row fits");
         for row in [
@@ -529,7 +527,7 @@ fn health_is_streamed_as_an_ordinary_history_series_from_real_sections() {
 #[test]
 fn postgres_health_counts_every_active_backend_and_adds_its_penalty() {
     let mut fixture = Fixture::new();
-    fixture.append_postgres_health(5, false);
+    fixture.append_postgres_health(5);
 
     let target = format!("/api/segments/{SEGMENT_ID}/sections/health/index");
     let records = stream(fixture.prepare(&target, None)).expect("health index");
@@ -542,27 +540,4 @@ fn postgres_health_counts_every_active_backend_and_adds_its_penalty() {
     assert_eq!(points("postgres_health")[0]["value"], 80);
     assert_eq!(points("overall_health")[1]["value"], 30);
     assert_eq!(points("active_backends").len(), 0);
-    assert!(points("pgbouncer_health").is_empty());
-}
-
-#[test]
-fn configured_pgbouncer_is_unknown_until_pool_pressure_is_collected() {
-    let mut fixture = Fixture::new();
-    fixture.append_postgres_health(4, true);
-
-    let target = format!("/api/segments/{SEGMENT_ID}/sections/health/index");
-    let records = stream(fixture.prepare(&target, None)).expect("health index");
-    let pgbouncer = records
-        .iter()
-        .find(|record| record["record"] == "point" && record["series"] == "pgbouncer_health")
-        .expect("configured PgBouncer component");
-    assert_eq!(pgbouncer["value"], Value::Null);
-    assert!(
-        records
-            .iter()
-            .filter(|record| {
-                record["record"] == "point" && record["series"] == "overall_health"
-            })
-            .all(|record| record["value"] == Value::Null)
-    );
 }

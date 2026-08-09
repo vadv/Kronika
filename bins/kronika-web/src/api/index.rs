@@ -96,14 +96,12 @@ impl PreparedIndex {
                 SeriesBlock::OsHealth(_) => Some("os_health"),
                 SeriesBlock::OverallHealth(_) => Some("overall_health"),
                 SeriesBlock::PostgresHealth(_) => Some("postgres_health"),
-                SeriesBlock::PgbouncerHealth(_) => Some("pgbouncer_health"),
                 _ => None,
             };
             match block {
                 SeriesBlock::OsHealth(points)
                 | SeriesBlock::OverallHealth(points)
-                | SeriesBlock::PostgresHealth(points)
-                | SeriesBlock::PgbouncerHealth(points) => {
+                | SeriesBlock::PostgresHealth(points) => {
                     let series = health_series.expect("health block has a series name");
                     for point in points {
                         if cancelled()
@@ -162,8 +160,7 @@ const fn block_len(block: &SeriesBlock) -> usize {
     match block {
         SeriesBlock::OsHealth(points)
         | SeriesBlock::OverallHealth(points)
-        | SeriesBlock::PostgresHealth(points)
-        | SeriesBlock::PgbouncerHealth(points) => points.len(),
+        | SeriesBlock::PostgresHealth(points) => points.len(),
         SeriesBlock::PgTransactions { points, .. } => points.len(),
         SeriesBlock::PgActiveBackends { points, .. } => points.len(),
     }
@@ -209,10 +206,9 @@ fn resource_meta(kind: SegmentKind, checksum: Option<u32>) -> Result<ResponseMet
 
 fn block_layout(logical_name: &str, block: &SeriesBlock) -> Result<Value, ApiError> {
     match block {
-        SeriesBlock::OsHealth(_) => health_layout("os_health"),
-        SeriesBlock::OverallHealth(_) => health_layout("overall_health"),
-        SeriesBlock::PostgresHealth(_) => health_layout("postgres_health"),
-        SeriesBlock::PgbouncerHealth(_) => health_layout("pgbouncer_health"),
+        SeriesBlock::OsHealth(_) => Ok(health_layout("os_health")),
+        SeriesBlock::OverallHealth(_) => Ok(health_layout("overall_health")),
+        SeriesBlock::PostgresHealth(_) => Ok(health_layout("postgres_health")),
         SeriesBlock::PgTransactions { type_id, .. }
         | SeriesBlock::PgActiveBackends { type_id, .. } => section_layout(logical_name, *type_id),
     }
@@ -220,7 +216,7 @@ fn block_layout(logical_name: &str, block: &SeriesBlock) -> Result<Value, ApiErr
 
 pub(super) fn section_layout(logical_name: &str, type_id: u32) -> Result<Value, ApiError> {
     if type_id == DERIVED_HEALTH_TYPE_ID {
-        return health_layout("os_health");
+        return Ok(health_layout("os_health"));
     }
     let contract = contract(type_id).ok_or(ApiError::NoSuchSection)?;
     let (identity, columns) = match logical_name {
@@ -256,8 +252,8 @@ pub(super) fn section_layout(logical_name: &str, type_id: u32) -> Result<Value, 
     }))
 }
 
-fn health_layout(series: &str) -> Result<Value, ApiError> {
-    Ok(json!({
+fn health_layout(series: &str) -> Value {
+    json!({
         "logical_name": "health",
         "physical_name": format!("derived_{series}"),
         "type_id": DERIVED_HEALTH_TYPE_ID.to_string(),
@@ -280,7 +276,7 @@ fn health_layout(series: &str) -> Result<Value, ApiError> {
                 "1001003",
             ],
         },
-    }))
+    })
 }
 
 fn etag_matches(offered: &str, current: &str) -> bool {

@@ -138,9 +138,6 @@ pub(crate) fn index(
                 SeriesBlock::PostgresHealth(points) => {
                     write_health_points(output, &path, "postgres_health", points)?;
                 }
-                SeriesBlock::PgbouncerHealth(points) => {
-                    write_health_points(output, &path, "pgbouncer_health", points)?;
-                }
                 SeriesBlock::PgTransactions { type_id, points } => {
                     for point in points {
                         say(
@@ -223,7 +220,6 @@ const fn index_block_name(block: &SeriesBlock) -> &'static str {
         SeriesBlock::OsHealth(_) => "os_health",
         SeriesBlock::OverallHealth(_) => "overall_health",
         SeriesBlock::PostgresHealth(_) => "postgres_health",
-        SeriesBlock::PgbouncerHealth(_) => "pgbouncer_health",
         SeriesBlock::PgTransactions { .. } => "transactions_per_second",
         SeriesBlock::PgActiveBackends { .. } => "active_backends",
     }
@@ -233,8 +229,7 @@ const fn index_block_len(block: &SeriesBlock) -> usize {
     match block {
         SeriesBlock::OsHealth(points)
         | SeriesBlock::OverallHealth(points)
-        | SeriesBlock::PostgresHealth(points)
-        | SeriesBlock::PgbouncerHealth(points) => points.len(),
+        | SeriesBlock::PostgresHealth(points) => points.len(),
         SeriesBlock::PgTransactions { points, .. } => points.len(),
         SeriesBlock::PgActiveBackends { points, .. } => points.len(),
     }

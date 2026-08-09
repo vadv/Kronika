@@ -162,12 +162,11 @@ changing the formula.
 
 ## Health
 
-Health is up to four ordinary nullable point series from 0 to 100: OS,
-PostgreSQL, PgBouncer, and their combined value. A component penalty is
-`100 - health`.
-Disabled optional sources contribute no penalty. An enabled source with no
-usable snapshot is `null`, and makes combined health `null` rather than
-silently healthy.
+Health is up to three ordinary nullable point series from 0 to 100: OS,
+PostgreSQL, and their combined value. A component penalty is `100 - health`.
+Disabled PostgreSQL contributes no penalty. Enabled PostgreSQL with no usable
+snapshot is `null`, and makes combined health `null` rather than silently
+healthy.
 
 OS health is the share of the interval in which nothing was waiting for the
 most contended resource:
@@ -234,30 +233,22 @@ postgres_health = 100 - postgres_penalty
 
 For a two-CPU server, the first penalty is at five active backends. Enabled
 PostgreSQL without a configured capacity or a usable activity snapshot is
-`null`. The enabled flags, PostgreSQL capacity, and effective PostgreSQL
-collection interval are recorded once in the current `instance_metadata` row
+`null`. The PostgreSQL enabled flag, capacity, and effective collection
+interval are recorded once in the current `instance_metadata` row
 of every segment. When the PostgreSQL interval is configured as zero, the
 recorded effective interval is the collector timer tick.
 
-PgBouncer pressure must come from an actual pool/queue snapshot. Log events and
-`SHOW CONFIG` do not say how many clients are queued. The current collector has
-no such snapshot, so configured PgBouncer health and combined health remain
-`null`; disabled PgBouncer contributes no penalty. A future collector must add
-the pool signal before assigning a numeric penalty.
-
 ```
-overall_health = clamp(100 - os_penalty - postgres_penalty - pgbouncer_penalty,
-                       0, 100)
+overall_health = clamp(100 - os_penalty - postgres_penalty, 0, 100)
 ```
 
 Each combined point has an OS-health timestamp. It uses the latest PostgreSQL
 snapshot not later than that timestamp only while its age is at most the
 recorded effective PostgreSQL interval. There is no interpolation: before the
 first PostgreSQL snapshot and after a stale one the combined value is `null`.
-It also stays `null` while any other enabled component is unknown. The index
-always exposes OS and combined health; it exposes each optional component only
-when that source is configured. These blocks contain only small points, never
-large source rows.
+The index always exposes OS and combined health; it exposes PostgreSQL health
+only when that source is configured. These blocks contain only small points,
+never large source rows.
 
 ## Reading
 

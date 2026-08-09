@@ -24,7 +24,6 @@ fn metadata() -> HealthMetadata {
         postgresql_enabled: Some(true),
         postgresql_effective_cpus: Some(2),
         postgresql_interval_seconds: 30,
-        pgbouncer_enabled: Some(false),
     }
 }
 
@@ -112,7 +111,7 @@ fn overall_uses_latest_nonfuture_postgres_value_only_through_its_interval() {
 }
 
 #[test]
-fn disabled_sources_cost_nothing_but_configured_pgbouncer_is_unknown() {
+fn disabled_postgres_costs_nothing_and_unknown_postgres_is_unknown() {
     let os = [HealthPoint {
         timestamp: 10,
         value: Some(73),
@@ -120,10 +119,7 @@ fn disabled_sources_cost_nothing_but_configured_pgbouncer_is_unknown() {
     let mut facts = metadata();
     facts.postgresql_enabled = Some(false);
     assert_eq!(overall_points(&os, None, &facts)[0].value, Some(73));
-    facts.pgbouncer_enabled = Some(true);
-    assert_eq!(overall_points(&os, None, &facts)[0].value, None);
     facts.postgresql_enabled = None;
-    facts.pgbouncer_enabled = None;
     assert_eq!(overall_points(&os, None, &facts)[0].value, None);
 }
 

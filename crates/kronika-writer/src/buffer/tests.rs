@@ -31,7 +31,6 @@ fn instance(ts: i64) -> InstanceMetadata {
         postgresql_enabled: false,
         postgresql_interval_seconds: 30,
         postgresql_effective_cpus: None,
-        pgbouncer_enabled: false,
     }
 }
 

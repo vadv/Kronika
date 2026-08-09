@@ -191,7 +191,6 @@ pub fn series_keys(segment: &SegmentRef, logical_name: &str) -> Vec<SeriesKey> {
             SeriesKey::OS_HEALTH,
             SeriesKey::OVERALL_HEALTH,
             SeriesKey::POSTGRES_HEALTH,
-            SeriesKey::PGBOUNCER_HEALTH,
         ];
     }
     segment
@@ -213,12 +212,7 @@ pub fn series_keys(segment: &SegmentRef, logical_name: &str) -> Vec<SeriesKey> {
 
 fn contains_targets(index: &TargetedIndex, keys: &[SeriesKey]) -> bool {
     keys.iter()
-        .filter(|key| {
-            !matches!(
-                key.kind,
-                SeriesKind::PostgresHealth | SeriesKind::PgbouncerHealth
-            )
-        })
+        .filter(|key| !matches!(key.kind, SeriesKind::PostgresHealth))
         .all(|key| index.blocks.iter().any(|block| block.key() == *key))
 }
 

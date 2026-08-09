@@ -103,41 +103,22 @@ fn very_large_postgres_capacity_does_not_overflow() {
 }
 
 #[test]
-fn overall_health_subtracts_every_enabled_penalty() {
-    assert_eq!(
-        overall_health(Some(80), SourcePenalty::Known(20), SourcePenalty::Known(10),),
-        Some(50)
-    );
+fn overall_health_subtracts_the_postgres_penalty() {
+    assert_eq!(overall_health(Some(80), SourcePenalty::Known(20)), Some(60));
 }
 
 #[test]
 fn overall_health_clamps_additive_penalties_at_zero() {
-    assert_eq!(
-        overall_health(Some(40), SourcePenalty::Known(70), SourcePenalty::Known(80),),
-        Some(0)
-    );
+    assert_eq!(overall_health(Some(40), SourcePenalty::Known(70)), Some(0));
 }
 
 #[test]
 fn disabled_sources_do_not_reduce_health() {
-    assert_eq!(
-        overall_health(Some(73), SourcePenalty::Disabled, SourcePenalty::Disabled,),
-        Some(73)
-    );
+    assert_eq!(overall_health(Some(73), SourcePenalty::Disabled), Some(73));
 }
 
 #[test]
 fn enabled_unknown_sources_make_overall_health_unknown() {
-    assert_eq!(
-        overall_health(Some(100), SourcePenalty::Unknown, SourcePenalty::Disabled,),
-        None
-    );
-    assert_eq!(
-        overall_health(Some(100), SourcePenalty::Disabled, SourcePenalty::Unknown,),
-        None
-    );
-    assert_eq!(
-        overall_health(None, SourcePenalty::Disabled, SourcePenalty::Disabled,),
-        None
-    );
+    assert_eq!(overall_health(Some(100), SourcePenalty::Unknown), None);
+    assert_eq!(overall_health(None, SourcePenalty::Disabled), None);
 }

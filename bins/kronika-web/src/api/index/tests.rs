@@ -29,14 +29,9 @@ fn active_index_has_no_validator_and_is_never_stored() {
 }
 
 #[test]
-fn health_has_four_explicit_allowlisted_series() {
-    for series in [
-        "os_health",
-        "overall_health",
-        "postgres_health",
-        "pgbouncer_health",
-    ] {
-        let value = health_layout(series).unwrap();
+fn health_has_three_explicit_allowlisted_series() {
+    for series in ["os_health", "overall_health", "postgres_health"] {
+        let value = health_layout(series);
         assert_eq!(value["logical_name"], "health");
         assert_eq!(value["type_id"], "0");
         assert_eq!(value["identity"].as_array().unwrap().len(), 0);

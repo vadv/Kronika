@@ -10,14 +10,12 @@ pub enum SeriesKind {
     OsHealth = 1,
     /// OS health after subtracting every configured service penalty.
     OverallHealth = 2,
-    /// PostgreSQL health derived from instantaneous active backends.
+    /// `PostgreSQL` health derived from instantaneous active backends.
     PostgresHealth = 3,
-    /// PgBouncer health derived from pool pressure when available.
-    PgbouncerHealth = 4,
     /// Per-database committed plus rolled-back transactions per second.
-    PgTransactionsPerSecond = 5,
+    PgTransactionsPerSecond = 4,
     /// `PostgreSQL` backends whose instantaneous state is `active`.
-    PgActiveBackends = 6,
+    PgActiveBackends = 5,
 }
 
 impl SeriesKind {
@@ -26,9 +24,8 @@ impl SeriesKind {
             1 => Ok(Self::OsHealth),
             2 => Ok(Self::OverallHealth),
             3 => Ok(Self::PostgresHealth),
-            4 => Ok(Self::PgbouncerHealth),
-            5 => Ok(Self::PgTransactionsPerSecond),
-            6 => Ok(Self::PgActiveBackends),
+            4 => Ok(Self::PgTransactionsPerSecond),
+            5 => Ok(Self::PgActiveBackends),
             _ => Err(IndexError::BadLayout),
         }
     }
@@ -54,14 +51,9 @@ impl SeriesKey {
         kind: SeriesKind::OverallHealth,
         type_id: 0,
     };
-    /// PostgreSQL health.
+    /// `PostgreSQL` health.
     pub const POSTGRES_HEALTH: Self = Self {
         kind: SeriesKind::PostgresHealth,
-        type_id: 0,
-    };
-    /// PgBouncer health.
-    pub const PGBOUNCER_HEALTH: Self = Self {
-        kind: SeriesKind::PgbouncerHealth,
         type_id: 0,
     };
 }
@@ -102,10 +94,8 @@ pub enum SeriesBlock {
     OsHealth(Vec<HealthPoint>),
     /// Overall health points.
     OverallHealth(Vec<HealthPoint>),
-    /// PostgreSQL health points; absent when collection is disabled.
+    /// `PostgreSQL` health points; absent when collection is disabled.
     PostgresHealth(Vec<HealthPoint>),
-    /// PgBouncer health points; absent when collection is disabled.
-    PgbouncerHealth(Vec<HealthPoint>),
     /// Full-resolution per-database TPS points from one physical layout.
     PgTransactions {
         /// Physical `pg_stat_database` layout.
@@ -130,7 +120,6 @@ impl SeriesBlock {
             Self::OsHealth(_) => SeriesKey::OS_HEALTH,
             Self::OverallHealth(_) => SeriesKey::OVERALL_HEALTH,
             Self::PostgresHealth(_) => SeriesKey::POSTGRES_HEALTH,
-            Self::PgbouncerHealth(_) => SeriesKey::PGBOUNCER_HEALTH,
             Self::PgTransactions { type_id, .. } => SeriesKey {
                 kind: SeriesKind::PgTransactionsPerSecond,
                 type_id: *type_id,
@@ -144,10 +133,9 @@ impl SeriesBlock {
 
     pub(crate) fn encode(&self) -> Result<Vec<u8>, IndexError> {
         match self {
-            Self::OsHealth(points)
-            | Self::OverallHealth(points)
-            | Self::PostgresHealth(points)
-            | Self::PgbouncerHealth(points) => encode_health(points),
+            Self::OsHealth(points) | Self::OverallHealth(points) | Self::PostgresHealth(points) => {
+                encode_health(points)
+            }
             Self::PgTransactions { points, .. } => encode_transactions(points),
             Self::PgActiveBackends { points, .. } => encode_active(points),
         }
@@ -161,9 +149,6 @@ impl SeriesBlock {
             }
             SeriesKind::PostgresHealth if key.type_id == 0 => {
                 decode_health(bytes).map(Self::PostgresHealth)
-            }
-            SeriesKind::PgbouncerHealth if key.type_id == 0 => {
-                decode_health(bytes).map(Self::PgbouncerHealth)
             }
             SeriesKind::PgTransactionsPerSecond if pg_database_layout(key.type_id) => {
                 Ok(Self::PgTransactions {

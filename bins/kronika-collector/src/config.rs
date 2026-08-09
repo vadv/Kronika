@@ -34,7 +34,7 @@ pub(crate) struct Config {
     pub(crate) retention: Option<RetentionConfig>,
     /// Where to ask `PostgreSQL` which log it writes and who it is.
     pub(crate) pg_dsns: Vec<String>,
-    /// Explicit CPU capacity of the monitored PostgreSQL server.
+    /// Explicit CPU capacity of the monitored `PostgreSQL` server.
     pub(crate) postgres_effective_cpus: Option<u32>,
     /// `PostgreSQL` logs named outright, as paths or globs.
     pub(crate) pg_logs: Vec<String>,

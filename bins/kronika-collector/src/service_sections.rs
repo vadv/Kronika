@@ -70,7 +70,6 @@ pub(crate) fn push_instance_metadata(
         postgresql_enabled: !config.pg_dsns.is_empty(),
         postgresql_interval_seconds: effective_interval(config.intervals.pg, config.tick_secs),
         postgresql_effective_cpus: config.postgres_effective_cpus,
-        pgbouncer_enabled: !config.pgbouncer_dsns.is_empty(),
     };
     buffer_row(buffers, row)
 }

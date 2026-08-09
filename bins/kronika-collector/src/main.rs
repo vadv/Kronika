@@ -42,8 +42,8 @@ use pg_sources::{PgBatch, PgSources, push_pg_batch, push_pg_settings};
 use rotation::Rotation;
 use scheduler::{DueSet, Scheduler, SourceKind};
 use segments::{
-    SegmentState, append_window_and_maybe_close, close_open_segment, encode_window,
-    open_collector_journal,
+    AppendWindowError, SegmentState, append_window_and_maybe_close, close_open_segment,
+    encode_window, open_collector_journal,
 };
 use service_sections::{collect_instance, push_instance_metadata};
 use std::io::Write as _;
@@ -427,23 +427,7 @@ fn append_pending_pg_batch(
             &flushed,
         ) {
             Ok(finished) => finished,
-            Err(failure) => {
-                let (close_failed, err) = failure.into_parts();
-                log_event(
-                    LogLevel::Error,
-                    "window_append_failure",
-                    &[field("error", format!("{err:#}"))],
-                );
-                return if close_failed {
-                    Err(PgAppendError::Fatal(err.context(
-                        "close the segment while appending a PostgreSQL batch",
-                    )))
-                } else {
-                    Err(PgAppendError::Fatal(
-                        err.context("append the PostgreSQL batch to the journal"),
-                    ))
-                };
-            }
+            Err(failure) => return Err(pg_append_error(failure)),
         };
         append_elapsed = append_elapsed.saturating_add(append_started.elapsed());
         let retry = finished
@@ -481,6 +465,21 @@ fn append_pending_pg_batch(
     Err(PgAppendError::Fatal(anyhow::anyhow!(
         "a retained PostgreSQL batch exhausted its append attempts"
     )))
+}
+
+fn pg_append_error(failure: AppendWindowError) -> PgAppendError {
+    let (close_failed, err) = failure.into_parts();
+    log_event(
+        LogLevel::Error,
+        "window_append_failure",
+        &[field("error", format!("{err:#}"))],
+    );
+    let context = if close_failed {
+        "close the segment while appending a PostgreSQL batch"
+    } else {
+        "append the PostgreSQL batch to the journal"
+    };
+    PgAppendError::Fatal(err.context(context))
 }
 
 fn buffer_pg_batch(

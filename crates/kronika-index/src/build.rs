@@ -58,8 +58,7 @@ impl std::error::Error for BuildError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Reader(error) => Some(error),
-            Self::UnresolvedState(_) => None,
-            Self::InvalidMetadata => None,
+            Self::UnresolvedState(_) | Self::InvalidMetadata => None,
         }
     }
 }
@@ -77,7 +76,6 @@ pub fn keys(segment: &Segment) -> Vec<SeriesKey> {
         SeriesKey::OS_HEALTH,
         SeriesKey::OVERALL_HEALTH,
         SeriesKey::POSTGRES_HEALTH,
-        SeriesKey::PGBOUNCER_HEALTH,
     ];
     for type_id in segment.type_ids() {
         if pg_database_layout(type_id) {
@@ -119,10 +117,7 @@ pub fn build_selected(segment: &Segment, requested: &[SeriesKey]) -> Result<Inde
     let wants_health = requested.iter().any(|key| {
         matches!(
             key.kind,
-            SeriesKind::OsHealth
-                | SeriesKind::OverallHealth
-                | SeriesKind::PostgresHealth
-                | SeriesKind::PgbouncerHealth
+            SeriesKind::OsHealth | SeriesKind::OverallHealth | SeriesKind::PostgresHealth
         )
     });
     let metadata = wants_health.then(|| health_metadata(segment)).transpose()?;
@@ -168,17 +163,6 @@ pub fn build_selected(segment: &Segment, requested: &[SeriesKey]) -> Result<Inde
                     blocks.push(SeriesBlock::PostgresHealth(points.clone()));
                 }
             }
-            SeriesKind::PgbouncerHealth if key == SeriesKey::PGBOUNCER_HEALTH => {
-                if metadata
-                    .as_ref()
-                    .is_some_and(|facts| facts.pgbouncer_enabled == Some(true))
-                {
-                    blocks.push(SeriesBlock::PgbouncerHealth(vec![HealthPoint {
-                        timestamp: metadata.as_ref().map_or(0, |facts| facts.timestamp),
-                        value: None,
-                    }]));
-                }
-            }
             SeriesKind::PgTransactionsPerSecond
                 if pg_database_layout(key.type_id) && segment.rows_of(key.type_id).is_some() =>
             {
@@ -208,7 +192,6 @@ struct HealthMetadata {
     postgresql_enabled: Option<bool>,
     postgresql_effective_cpus: Option<u32>,
     postgresql_interval_seconds: u64,
-    pgbouncer_enabled: Option<bool>,
 }
 
 fn health_metadata(segment: &Segment) -> Result<HealthMetadata, BuildError> {
@@ -218,7 +201,6 @@ fn health_metadata(segment: &Segment) -> Result<HealthMetadata, BuildError> {
             postgresql_enabled: None,
             postgresql_effective_cpus: None,
             postgresql_interval_seconds: 0,
-            pgbouncer_enabled: None,
         });
     }
     let mut facts = None;
@@ -230,7 +212,6 @@ fn health_metadata(segment: &Segment) -> Result<HealthMetadata, BuildError> {
             "postgresql_enabled",
             "postgresql_effective_cpus",
             "postgresql_interval_seconds",
-            "pgbouncer_enabled",
         ],
         0,
         usize::MAX,
@@ -245,19 +226,16 @@ fn health_metadata(segment: &Segment) -> Result<HealthMetadata, BuildError> {
                 Some(Cell::Ts(timestamp)),
                 Some(Cell::Bool(postgresql_enabled)),
                 Some(Cell::U64(postgresql_interval_seconds)),
-                Some(Cell::Bool(pgbouncer_enabled)),
             ) = (
                 row.get("ts"),
                 row.get("postgresql_enabled"),
                 row.get("postgresql_interval_seconds"),
-                row.get("pgbouncer_enabled"),
             ) {
                 facts = Some(HealthMetadata {
                     timestamp: *timestamp,
                     postgresql_enabled: Some(*postgresql_enabled),
                     postgresql_effective_cpus: capacity,
                     postgresql_interval_seconds: *postgresql_interval_seconds,
-                    pgbouncer_enabled: Some(*pgbouncer_enabled),
                 });
             }
             true
@@ -342,13 +320,9 @@ fn overall_points(
                     }),
                 None => SourcePenalty::Unknown,
             };
-            let pgbouncer_penalty = match metadata.pgbouncer_enabled {
-                Some(false) => SourcePenalty::Disabled,
-                Some(true) | None => SourcePenalty::Unknown,
-            };
             HealthPoint {
                 timestamp: point.timestamp,
-                value: overall_health(point.value, postgres_penalty, pgbouncer_penalty),
+                value: overall_health(point.value, postgres_penalty),
             }
         })
         .collect()

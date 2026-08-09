@@ -75,18 +75,15 @@ pub struct InstanceMetadata {
     /// Kernel boot time (`/proc/stat` btime), unix microseconds.
     #[column(l)]
     pub btime: Ts,
-    /// Whether PostgreSQL metric collection was configured.
+    /// Whether `PostgreSQL` metric collection was configured.
     #[column(l)]
     pub postgresql_enabled: bool,
-    /// Effective cadence of the PostgreSQL snapshot source, seconds.
+    /// Effective cadence of the `PostgreSQL` snapshot source, seconds.
     #[column(l, unit = seconds)]
     pub postgresql_interval_seconds: u64,
-    /// CPU capacity available to the monitored PostgreSQL server.
+    /// CPU capacity available to the monitored `PostgreSQL` server.
     #[column(l)]
     pub postgresql_effective_cpus: Option<u32>,
-    /// Whether a PgBouncer admin source was configured.
-    #[column(l)]
-    pub pgbouncer_enabled: bool,
 }
 
 /// Previous type `1_021_001`, retained so existing ZMS remains readable.
@@ -142,7 +139,6 @@ mod tests {
             postgresql_enabled: true,
             postgresql_interval_seconds: 30,
             postgresql_effective_cpus: Some(2),
-            pgbouncer_enabled: false,
         }
     }
 
@@ -175,7 +171,6 @@ mod tests {
                 "postgresql_enabled",
                 "postgresql_interval_seconds",
                 "postgresql_effective_cpus",
-                "pgbouncer_enabled",
             ]
         );
     }
@@ -208,7 +203,6 @@ mod tests {
     fn current_layout_preserves_disabled_and_unknown_sources() {
         let unknown = InstanceMetadata {
             postgresql_effective_cpus: None,
-            pgbouncer_enabled: true,
             ..row()
         };
         let disabled = InstanceMetadata {

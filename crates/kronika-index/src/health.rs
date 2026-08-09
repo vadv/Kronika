@@ -41,7 +41,7 @@ pub fn health(before: Stall, before_ts: i64, after: Stall, after_ts: i64) -> Opt
     Some(percent_left(worst, elapsed))
 }
 
-/// PostgreSQL pressure from the number of backends that are `active` in one
+/// `PostgreSQL` pressure from the number of backends that are `active` in one
 /// `pg_stat_activity` snapshot.
 ///
 /// One effective CPU supplies two service slots: one backend can execute while
@@ -62,22 +62,15 @@ pub fn postgres_penalty(active: u32, effective_cpus: u32) -> Option<u8> {
     Some(u8::try_from(rounded).unwrap_or(100))
 }
 
-/// Add OS, PostgreSQL, and PgBouncer penalties into one `0..=100` value.
+/// Add OS and `PostgreSQL` penalties into one `0..=100` value.
 ///
 /// OS health is required. An enabled source with an unknown value makes the
 /// result unknown; a disabled source contributes nothing.
 #[must_use]
-pub fn overall_health(
-    os_health: Option<u8>,
-    postgres: SourcePenalty,
-    pgbouncer: SourcePenalty,
-) -> Option<u8> {
+pub fn overall_health(os_health: Option<u8>, postgres: SourcePenalty) -> Option<u8> {
     let os_penalty = 100_u8.saturating_sub(os_health?.min(100));
     let postgres = penalty(postgres)?;
-    let pgbouncer = penalty(pgbouncer)?;
-    let total = u16::from(os_penalty)
-        .saturating_add(u16::from(postgres))
-        .saturating_add(u16::from(pgbouncer));
+    let total = u16::from(os_penalty).saturating_add(u16::from(postgres));
     Some(100_u8.saturating_sub(u8::try_from(total.min(100)).unwrap_or(100)))
 }
 
