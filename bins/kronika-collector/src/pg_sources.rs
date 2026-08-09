@@ -53,7 +53,7 @@ const SERVER_PROBE_SQL: &str = concat!(
     "FROM pg_catalog.pg_database AS d CROSS JOIN pg_catalog.pg_roles AS r ",
     "WHERE d.datname = current_database() AND r.rolname = session_user"
 );
-const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
+const QUERY_TIMEOUT: Duration = query::QUERY_FETCH_TIMEOUT;
 const DISCOVERY_INTERVAL: Duration = Duration::from_mins(5);
 
 /// A low-cardinality measurement hook for the canonical collector telemetry.
@@ -131,6 +131,10 @@ impl QueryMeasurement<'_> {
                 QUERY_TIMEOUT.as_secs()
             )),
         );
+    }
+
+    fn server_timeout(mut self, error: &(dyn std::fmt::Display + '_)) {
+        self.emit(QueryOutcome::Timeout, Some(error.to_string()));
     }
 
     fn sink_error(mut self) {
@@ -391,8 +395,13 @@ impl PgSources {
                 Some(probe)
             }
             Ok(Err(error)) => {
-                measured.error(&error);
-                if postgres_connection_error(&error) {
+                let cancelled = postgres_query_cancelled(&error);
+                if cancelled {
+                    measured.server_timeout(&error);
+                } else {
+                    measured.error(&error);
+                }
+                if !cancelled && postgres_connection_error(&error) {
                     self.clear_primary_connection();
                 }
                 None
@@ -448,7 +457,9 @@ impl PgSources {
                     Some(())
                 }
                 other => match finish_failed(measured, other) {
-                    QueryCompletion::SourceFailed | QueryCompletion::CapabilityChanged => Some(()),
+                    QueryCompletion::SourceFailed
+                    | QueryCompletion::CapabilityChanged
+                    | QueryCompletion::ServerTimedOut => Some(()),
                     QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut => None,
                     QueryCompletion::Complete => unreachable!("success handled above"),
                 },
@@ -644,6 +655,9 @@ impl PgSources {
                         pool.close();
                         break 'query (QueryCompletion::ConnectionFailed, false);
                     }
+                    Err(QueryFailure::ServerTimeout) => {
+                        break 'query (QueryCompletion::ServerTimedOut, false);
+                    }
                     Err(QueryFailure::Source) => {
                         break 'query (QueryCompletion::SourceFailed, false);
                     }
@@ -682,7 +696,7 @@ impl PgSources {
                     self.last_discovery = None;
                     unavailable_databases.insert(database.clone());
                 }
-                QueryCompletion::SourceFailed => {}
+                QueryCompletion::ServerTimedOut | QueryCompletion::SourceFailed => {}
             }
             if !try_another_database(completion, admitted) {
                 break;
@@ -707,6 +721,9 @@ impl PgSources {
                     Err(QueryFailure::Timeout | QueryFailure::Connection) => {
                         pool.close();
                         break 'query (QueryCompletion::ConnectionFailed, false);
+                    }
+                    Err(QueryFailure::ServerTimeout) => {
+                        break 'query (QueryCompletion::ServerTimedOut, false);
                     }
                     Err(QueryFailure::Source) => {
                         break 'query (QueryCompletion::SourceFailed, false);
@@ -755,7 +772,7 @@ impl PgSources {
                 QueryCompletion::CapabilityChanged => {
                     self.invalidate_statements_info(&database);
                 }
-                QueryCompletion::SourceFailed => {}
+                QueryCompletion::ServerTimedOut | QueryCompletion::SourceFailed => {}
             }
             if !try_another_database(completion, admitted) {
                 break;
@@ -780,6 +797,9 @@ impl PgSources {
                     Err(QueryFailure::Timeout | QueryFailure::Connection) => {
                         pool.close();
                         break 'query (QueryCompletion::ConnectionFailed, false);
+                    }
+                    Err(QueryFailure::ServerTimeout) => {
+                        break 'query (QueryCompletion::ServerTimedOut, false);
                     }
                     Err(QueryFailure::Source) => {
                         break 'query (QueryCompletion::SourceFailed, false);
@@ -852,7 +872,7 @@ impl PgSources {
                     self.last_discovery = None;
                     unavailable_databases.insert(database.clone());
                 }
-                QueryCompletion::SourceFailed => {}
+                QueryCompletion::ServerTimedOut | QueryCompletion::SourceFailed => {}
             }
             if !try_another_database(completion, admitted) {
                 break;
@@ -877,6 +897,9 @@ impl PgSources {
                     Err(QueryFailure::Timeout | QueryFailure::Connection) => {
                         pool.close();
                         break 'query (QueryCompletion::ConnectionFailed, false);
+                    }
+                    Err(QueryFailure::ServerTimeout) => {
+                        break 'query (QueryCompletion::ServerTimedOut, false);
                     }
                     Err(QueryFailure::Source) => {
                         break 'query (QueryCompletion::SourceFailed, false);
@@ -924,7 +947,7 @@ impl PgSources {
                 QueryCompletion::CapabilityChanged => {
                     self.invalidate_store_plans_info(&database);
                 }
-                QueryCompletion::SourceFailed => {}
+                QueryCompletion::ServerTimedOut | QueryCompletion::SourceFailed => {}
             }
             if !try_another_database(completion, admitted) {
                 break;
@@ -969,6 +992,10 @@ impl PgSources {
                         self.capabilities.remove(&database.name);
                         continue;
                     }
+                    Err(QueryFailure::ServerTimeout) => {
+                        unavailable.insert(database.name.clone());
+                        continue;
+                    }
                     Err(QueryFailure::Source) => {
                         self.capabilities.remove(&database.name);
                         continue;
@@ -999,6 +1026,11 @@ impl PgSources {
                     }
                     unavailable.insert(database.name.clone());
                     self.capabilities.remove(&database.name);
+                }
+                (_generation, Err(QueryFailure::ServerTimeout)) => {
+                    // The live session is still usable, but this database's
+                    // stale generation must not be selected in this cycle.
+                    unavailable.insert(database.name.clone());
                 }
                 (generation, Err(QueryFailure::Source)) => {
                     self.capabilities.insert(
@@ -1096,6 +1128,10 @@ impl PgSources {
                     self.clear_primary_connection();
                     return false;
                 }
+                Err(QueryFailure::ServerTimeout) => {
+                    self.last_discovery = None;
+                    return true;
+                }
                 Err(QueryFailure::Source) => {
                     self.last_discovery = None;
                     return false;
@@ -1110,6 +1146,7 @@ impl PgSources {
             databases::refresh(&mut self.databases, &found, server);
         }
 
+        let previous_capabilities = self.capabilities.clone();
         let mut capabilities = BTreeMap::new();
         for database in &found {
             let Some(pool) = self.database_pool_mut(&database.name) else {
@@ -1130,6 +1167,17 @@ impl PgSources {
                             if database.is_current {
                                 self.clear_primary_connection();
                                 return false;
+                            }
+                        }
+                        QueryFailure::ServerTimeout => {
+                            let generation = pool.generation();
+                            let cached = previous_capabilities
+                                .get(&database.name)
+                                .filter(|cached| Some(cached.generation) == generation)
+                                .cloned();
+                            self.last_discovery = None;
+                            if let Some(cached) = cached {
+                                capabilities.insert(database.name.clone(), cached);
                             }
                         }
                         QueryFailure::Source => {}
@@ -1159,6 +1207,15 @@ impl PgSources {
                         if database.is_current {
                             self.clear_primary_connection();
                             return false;
+                        }
+                    }
+                    QueryFailure::ServerTimeout => {
+                        self.last_discovery = None;
+                        if let Some(cached) = previous_capabilities
+                            .get(&database.name)
+                            .filter(|cached| cached.generation == generation)
+                        {
+                            capabilities.insert(database.name.clone(), cached.clone());
                         }
                     }
                     QueryFailure::Source => {
@@ -1457,7 +1514,11 @@ fn selected_store_plans_info(
 }
 
 const fn try_another_database(completion: QueryCompletion, admitted: bool) -> bool {
-    !admitted && !matches!(completion, QueryCompletion::Complete)
+    !admitted
+        && !matches!(
+            completion,
+            QueryCompletion::Complete | QueryCompletion::ServerTimedOut
+        )
 }
 
 fn settings_equal_ignoring_ts(left: &[SettingsRow], right: &[SettingsRow]) -> bool {
@@ -1762,7 +1823,9 @@ async fn collect_relation_database<E>(
     } {
         Ok(session) => session,
         Err(QueryFailure::Timeout) => return Ok(RelationResult::TimedOut),
-        Err(QueryFailure::Source) => return Ok(RelationResult::SourceFailed),
+        Err(QueryFailure::Source | QueryFailure::ServerTimeout) => {
+            return Ok(RelationResult::SourceFailed);
+        }
         Err(QueryFailure::Connection) => return Ok(RelationResult::ConnectionFailed),
     };
     let generation = session.generation();
@@ -1779,7 +1842,9 @@ async fn collect_relation_database<E>(
         .await;
     match finish_batched_kind(pool, measured, result)? {
         QueryCompletion::Complete => {}
-        QueryCompletion::SourceFailed | QueryCompletion::CapabilityChanged => source_failed = true,
+        QueryCompletion::SourceFailed
+        | QueryCompletion::CapabilityChanged
+        | QueryCompletion::ServerTimedOut => source_failed = true,
         QueryCompletion::ConnectionFailed => return Ok(RelationResult::ConnectionFailed),
         QueryCompletion::TimedOut => return Ok(RelationResult::TimedOut),
     }
@@ -1787,7 +1852,9 @@ async fn collect_relation_database<E>(
     let session = match session_for_generation(pool, generation, observe) {
         Ok(session) => session,
         Err(QueryFailure::Timeout) => return Ok(RelationResult::TimedOut),
-        Err(QueryFailure::Source) => return Ok(RelationResult::SourceFailed),
+        Err(QueryFailure::Source | QueryFailure::ServerTimeout) => {
+            return Ok(RelationResult::SourceFailed);
+        }
         Err(QueryFailure::Connection) => return Ok(RelationResult::ConnectionFailed),
     };
     let index_version = user_indexes::user_indexes_version(major);
@@ -1808,9 +1875,9 @@ async fn collect_relation_database<E>(
     Ok(match finish_batched_kind(pool, measured, result)? {
         QueryCompletion::Complete if source_failed => RelationResult::SourceFailed,
         QueryCompletion::Complete => RelationResult::Complete,
-        QueryCompletion::SourceFailed | QueryCompletion::CapabilityChanged => {
-            RelationResult::SourceFailed
-        }
+        QueryCompletion::SourceFailed
+        | QueryCompletion::CapabilityChanged
+        | QueryCompletion::ServerTimedOut => RelationResult::SourceFailed,
         QueryCompletion::ConnectionFailed => RelationResult::ConnectionFailed,
         QueryCompletion::TimedOut => RelationResult::TimedOut,
     })
@@ -1842,6 +1909,7 @@ fn deliver<'a, E>(
 enum QueryFailure {
     Source,
     Connection,
+    ServerTimeout,
     Timeout,
 }
 
@@ -1851,13 +1919,16 @@ enum QueryCompletion {
     SourceFailed,
     CapabilityChanged,
     ConnectionFailed,
+    ServerTimedOut,
     TimedOut,
 }
 
 const fn fixed_source_can_continue(completion: QueryCompletion) -> bool {
     matches!(
         completion,
-        QueryCompletion::SourceFailed | QueryCompletion::CapabilityChanged
+        QueryCompletion::SourceFailed
+            | QueryCompletion::CapabilityChanged
+            | QueryCompletion::ServerTimedOut
     )
 }
 
@@ -1920,10 +1991,14 @@ fn finish_query<T>(
             Ok(value)
         }
         Ok(Err(error)) => {
-            measured.error(&error);
-            if postgres_connection_error(&error) {
+            if postgres_query_cancelled(&error) {
+                measured.server_timeout(&error);
+                Err(QueryFailure::ServerTimeout)
+            } else if postgres_connection_error(&error) {
+                measured.error(&error);
                 Err(QueryFailure::Connection)
             } else {
+                measured.error(&error);
                 Err(QueryFailure::Source)
             }
         }
@@ -1944,12 +2019,17 @@ fn finish_failed<T>(
             QueryCompletion::Complete
         }
         Ok(Err(error)) => {
-            measured.error(&error);
-            if postgres_connection_error(&error) {
+            if postgres_query_cancelled(&error) {
+                measured.server_timeout(&error);
+                QueryCompletion::ServerTimedOut
+            } else if postgres_connection_error(&error) {
+                measured.error(&error);
                 QueryCompletion::ConnectionFailed
             } else if postgres_capability_changed(&error) {
+                measured.error(&error);
                 QueryCompletion::CapabilityChanged
             } else {
+                measured.error(&error);
                 QueryCompletion::SourceFailed
             }
         }
@@ -1970,6 +2050,7 @@ fn finish_batched<E>(
         QueryCompletion::Complete
             | QueryCompletion::SourceFailed
             | QueryCompletion::CapabilityChanged
+            | QueryCompletion::ServerTimedOut
     ))
 }
 
@@ -1984,13 +2065,18 @@ fn finish_batched_kind<E>(
             Ok(QueryCompletion::Complete)
         }
         Err(BatchError::PostgreSql(error)) => {
-            measured.error(&error);
-            if postgres_stream_connection_error(&error) {
+            if query::is_query_cancelled(&error) {
+                measured.server_timeout(&error);
+                Ok(QueryCompletion::ServerTimedOut)
+            } else if postgres_stream_connection_error(&error) {
+                measured.error(&error);
                 pool.close();
                 Ok(QueryCompletion::ConnectionFailed)
             } else if postgres_stream_capability_changed(&error) {
+                measured.error(&error);
                 Ok(QueryCompletion::CapabilityChanged)
             } else {
+                measured.error(&error);
                 Ok(QueryCompletion::SourceFailed)
             }
         }
@@ -2037,6 +2123,10 @@ fn postgres_connection_error(error: &anyhow::Error) -> bool {
 
 fn postgres_capability_changed(error: &anyhow::Error) -> bool {
     postgres_error_matches(error, postgres_stream_capability_changed)
+}
+
+pub(crate) fn postgres_query_cancelled(error: &anyhow::Error) -> bool {
+    postgres_error_matches(error, query::is_query_cancelled)
 }
 
 fn postgres_error_matches(

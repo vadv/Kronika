@@ -57,10 +57,12 @@ more than one is one line in the log saying which was chosen.
 
 Per-table and per-index statistics exist only inside the database that produced
 them. The collector keeps one connection to each connectable database and
-reuses it while it remains healthy. The five-minute discovery pass adds a
-connection when a database appears and removes it when the database disappears.
-A connection is reopened after a connection, protocol, or query deadline
-failure; age alone does not replace it.
+reuses it while it remains healthy for at most one hour. The five-minute
+discovery pass adds a connection when a database appears and removes it when
+the database disappears. A healthy connection is closed and reopened when it
+reaches one hour, bounding collector connection resources and PostgreSQL
+backend memory and session resources. A connection, protocol, or client query
+deadline failure also makes the next collection reconnect.
 
 Extensions are database-local even when their statistics are instance-wide.
 The same discovery pass runs one compact inventory query in every database and
@@ -100,6 +102,21 @@ does not pipeline requests.
 All persistent metric sessions from one collector process share one unique
 `application_name`; activity and lock reads omit that exact name.
 
+Before exposing each new PostgreSQL frontend session, the collector sends
+exactly one Simple Protocol `SET statement_timeout = '30s'` and waits for its
+completion. This server deadline is the primary query limit. The client-side
+Rust fetch deadline is 35 seconds and remains a backstop for network or protocol
+stalls; after it elapses, the collector makes one bounded CancelRequest attempt
+and closes the connection.
+
+PostgreSQL metric DSNs support direct PostgreSQL and PgBouncer session pooling.
+PgBouncer transaction and statement pooling are unsupported for metric
+collection because they do not preserve `SET`/`RESET` session state between
+queries. The collector does not inject startup `options` and does not add a
+per-query transaction to emulate session state. `KRONIKA_PGBOUNCER_DSNS` uses
+the separate PgBouncer admin console path and does not receive the PostgreSQL
+session `SET`.
+
 Potentially large results are consumed in batches of at most 256 rows, targeting
 approximately 512 KiB of decoded application data. The byte target may be
 exceeded by the final SQL-bounded row. Each batch is encoded and appended to the
@@ -109,13 +126,13 @@ characters before it crosses the connection.
 
 If a stream fails after earlier batches reached the WAL, those batches remain.
 The collector logs the error, skips the rest of that read, and continues with
-independent sources. A connection or query timeout closes that connection; a
-later collection reconnects. Before closing after a query timeout, the
-collector makes one PostgreSQL CancelRequest attempt with a one-second
-deadline.
+independent sources. PostgreSQL SQLSTATE `57014` from `statement_timeout` is
+counted as a query timeout; after PostgreSQL returns `ReadyForQuery`, that
+session remains reusable. A client-side backstop timeout closes the connection,
+and the bounded CancelRequest attempt has a one-second deadline.
 
-Every SQL query produces a `pg_query_finish` event at debug level with its
-timings and counters. Fetches longer than 500 ms also produce a
+Every monitoring SQL query produces a `pg_query_finish` event at debug level
+with its timings and counters. Fetches longer than 500 ms also produce a
 `pg_query_slow` warning. About every five minutes, and once at shutdown,
 `pg_query_summary` reports the query count and rate, rows, estimated logical
 application bytes read and written, errors, timeouts, slow queries, fetch,

@@ -1,8 +1,8 @@
 //! One reusable connection to a `PostgreSQL` server.
 //!
-//! A healthy connection remains open across collection cycles. It is replaced
-//! only after the driver reports it closed or the caller closes it following a
-//! connection, protocol, or deadline failure.
+//! A healthy connection remains open across collection cycles for at most one
+//! hour. It is also replaced after the driver reports it closed or the caller
+//! closes it following a connection, protocol, or deadline failure.
 
 use std::error::Error;
 use std::fmt;
@@ -11,27 +11,31 @@ use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result};
+use tokio::time::Instant;
 use tokio_postgres::config::Host;
 use tokio_postgres::{Config, NoTls};
 
 use crate::Session;
+use crate::query;
 
 /// Maximum time allowed for opening a `PostgreSQL` connection.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Maximum lifetime of one healthy frontend session.
+pub const MAX_AGE: Duration = Duration::from_hours(1);
 const DEFAULT_PORT: u16 = 5432;
 static APPLICATION_NAME: OnceLock<String> = OnceLock::new();
 
 /// Failure to open a `PostgreSQL` connection.
 #[derive(Debug)]
 pub enum ConnectError {
-    /// The explicit connection deadline elapsed.
+    /// The explicit connection or session-setup deadline elapsed.
     Timeout,
     /// `PostgreSQL` or its transport rejected the connection.
     PostgreSql(tokio_postgres::Error),
 }
 
 impl ConnectError {
-    /// Whether this failure is the explicit connection deadline.
+    /// Whether this failure is the explicit session-opening deadline.
     #[must_use]
     pub const fn is_timeout(&self) -> bool {
         matches!(self, Self::Timeout)
@@ -43,7 +47,7 @@ impl fmt::Display for ConnectError {
         match self {
             Self::Timeout => write!(
                 f,
-                "connect to PostgreSQL timed out after {} seconds",
+                "open PostgreSQL monitoring session timed out after {} seconds",
                 CONNECT_TIMEOUT.as_secs()
             ),
             Self::PostgreSql(error) => fmt::Display::fmt(error, f),
@@ -75,6 +79,13 @@ struct Open {
     client: tokio_postgres::Client,
     driver: tokio::task::JoinHandle<()>,
     generation: u64,
+    opened_at: Instant,
+}
+
+impl Open {
+    fn reusable(&self) -> bool {
+        !self.client.is_closed() && self.opened_at.elapsed() < MAX_AGE
+    }
 }
 
 impl Pool {
@@ -150,7 +161,7 @@ impl Pool {
     /// Returns a finite-deadline timeout or the `PostgreSQL` connection error.
     pub async fn session(&mut self) -> std::result::Result<Session<'_>, ConnectError> {
         if let Some(open) = self.open.take() {
-            if !open.client.is_closed() {
+            if open.reusable() {
                 let open = self.open.insert(open);
                 return Ok(Session::new(&open.client, open.generation));
             }
@@ -168,11 +179,8 @@ impl Pool {
     /// next collection pass.
     #[must_use]
     pub fn session_for_generation(&mut self, expected: u64) -> Option<Session<'_>> {
-        let closed = self
-            .open
-            .as_ref()
-            .is_some_and(|open| open.client.is_closed());
-        if closed {
+        let unusable = self.open.as_ref().is_some_and(|open| !open.reusable());
+        if unusable {
             self.close();
             return None;
         }
@@ -185,7 +193,7 @@ impl Pool {
     pub fn generation(&self) -> Option<u64> {
         self.open
             .as_ref()
-            .filter(|open| !open.client.is_closed())
+            .filter(|open| open.reusable())
             .map(|open| open.generation)
     }
 
@@ -202,15 +210,28 @@ impl Pool {
             .await
             .map_err(|_elapsed| ConnectError::Timeout)?
             .map_err(ConnectError::PostgreSql)?;
-        let generation = self.next_generation;
-        self.next_generation = self.next_generation.saturating_add(1);
         let driver = tokio::spawn(async move {
             let _ended = connection.await;
         });
+        match tokio::time::timeout(CONNECT_TIMEOUT, query::configure_session(&client)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                driver.abort();
+                return Err(ConnectError::PostgreSql(error));
+            }
+            Err(_elapsed) => {
+                driver.abort();
+                return Err(ConnectError::Timeout);
+            }
+        }
+        let opened_at = Instant::now();
+        let generation = self.next_generation;
+        self.next_generation = self.next_generation.saturating_add(1);
         Ok(Open {
             client,
             driver,
             generation,
+            opened_at,
         })
     }
 }

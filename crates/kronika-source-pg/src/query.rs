@@ -25,11 +25,34 @@ pub const BATCH_LOGICAL_BYTES: usize = 512 * 1024;
 /// Maximum characters retained from a potentially unbounded text value.
 pub const TEXT_PREFIX_CHARS: usize = 65_536;
 
-/// Cumulative deadline for opening and consuming one bounded row stream.
-pub const QUERY_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+/// Server-side deadline installed on every `PostgreSQL` monitoring session.
+pub const SERVER_STATEMENT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Client-side backstop for opening and consuming one bounded row stream.
+pub const QUERY_FETCH_TIMEOUT: Duration = Duration::from_secs(35);
+
+pub(crate) const SESSION_SETUP_SQL: &str = marked!("SET statement_timeout = '30s'");
 
 /// Maximum time spent sending a best-effort `PostgreSQL` `CancelRequest`.
 pub const CANCEL_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Install the monitoring query deadline on one newly opened frontend session.
+///
+/// This uses one Simple Query message and waits for `ReadyForQuery` before the
+/// session can be exposed to a caller.
+///
+/// # Errors
+///
+/// Returns the server, transport, or protocol error from the `SET` command.
+pub async fn configure_session(client: &Client) -> Result<(), tokio_postgres::Error> {
+    client.batch_execute(SESSION_SETUP_SQL).await
+}
+
+/// Whether `PostgreSQL` cancelled the statement, including `statement_timeout`.
+#[must_use]
+pub fn is_query_cancelled(error: &tokio_postgres::Error) -> bool {
+    error.code() == Some(&tokio_postgres::error::SqlState::QUERY_CANCELED)
+}
 
 /// Measurements made while one SQL statement is consumed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -622,9 +645,9 @@ mod tests {
 
     use super::{
         BATCH_LOGICAL_BYTES, BATCH_ROWS, Batch, BatchError, BatchWrite, CANCEL_REQUEST_TIMEOUT,
-        PendingBatch, QUERY_FETCH_TIMEOUT, QueryStats, Session, TEXT_PREFIX_CHARS,
-        batch_limit_reached, deliver_batch, extend_fetch_deadline, read_batched,
-        timeout_at_with_cancel,
+        PendingBatch, QUERY_FETCH_TIMEOUT, QueryStats, SERVER_STATEMENT_TIMEOUT, SESSION_SETUP_SQL,
+        Session, TEXT_PREFIX_CHARS, batch_limit_reached, deliver_batch, extend_fetch_deadline,
+        is_query_cancelled, read_batched, timeout_at_with_cancel,
     };
 
     #[test]
@@ -780,9 +803,12 @@ mod tests {
     }
 
     #[test]
-    fn the_cumulative_fetch_deadline_is_thirty_seconds() {
-        assert_eq!(QUERY_FETCH_TIMEOUT, Duration::from_secs(30));
+    fn server_timeout_precedes_the_client_backstop() {
+        assert_eq!(SERVER_STATEMENT_TIMEOUT, Duration::from_secs(30));
+        assert_eq!(QUERY_FETCH_TIMEOUT, Duration::from_secs(35));
+        assert!(QUERY_FETCH_TIMEOUT > SERVER_STATEMENT_TIMEOUT);
         assert_eq!(CANCEL_REQUEST_TIMEOUT, Duration::from_secs(1));
+        assert!(SESSION_SETUP_SQL.contains("SET statement_timeout = '30s'"));
     }
 
     #[tokio::test(start_paused = true)]
@@ -882,6 +908,51 @@ mod tests {
         assert_eq!(bind.first(), Some(&0), "Bind portal name must be empty");
         assert_eq!(bind.get(1), Some(&0), "Bind statement name must be empty");
         assert!(messages.iter().all(|(tag, _body)| *tag != b'C'));
+    }
+
+    #[tokio::test]
+    async fn query_canceled_sqlstate_is_detected_without_message_matching() {
+        let (client_io, mut server_io) = tokio::io::duplex(4_096);
+        let server = tokio::spawn(async move {
+            let startup_len = server_io.read_u32().await.expect("read startup length");
+            let mut startup = vec![0; usize::try_from(startup_len - 4).expect("startup fits")];
+            server_io
+                .read_exact(&mut startup)
+                .await
+                .expect("read startup body");
+            write_backend(&mut server_io, b'R', &0_i32.to_be_bytes()).await;
+            write_backend(&mut server_io, b'Z', b"I").await;
+
+            assert_eq!(server_io.read_u8().await.expect("read query tag"), b'Q');
+            let query_len = server_io.read_u32().await.expect("read query length");
+            let mut query = vec![0; usize::try_from(query_len - 4).expect("query fits")];
+            server_io
+                .read_exact(&mut query)
+                .await
+                .expect("read query body");
+            write_backend(
+                &mut server_io,
+                b'E',
+                b"SERROR\0C57014\0Mlocalized cancellation text\0\0",
+            )
+            .await;
+            write_backend(&mut server_io, b'Z', b"I").await;
+        });
+        let mut config = Config::new();
+        config.user("kronika-timeout-classification-test");
+        let (client, connection) = config
+            .connect_raw(client_io, NoTls)
+            .await
+            .expect("the probe performs a valid startup handshake");
+        let driver = tokio::spawn(connection);
+
+        let error = client
+            .batch_execute("SELECT pg_sleep(60)")
+            .await
+            .expect_err("the server cancels the query");
+        assert!(is_query_cancelled(&error));
+        server.await.expect("the protocol probe exits");
+        driver.abort();
     }
 
     async fn connect_to_probe() -> (

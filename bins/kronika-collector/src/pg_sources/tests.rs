@@ -139,6 +139,11 @@ fn statements_fallback_is_deterministic_across_databases_and_layouts() {
 fn extension_fallback_stops_after_completion_or_an_admitted_batch() {
     assert!(!try_another_database(QueryCompletion::Complete, false));
     assert!(!try_another_database(QueryCompletion::Complete, true));
+    assert!(!try_another_database(
+        QueryCompletion::ServerTimedOut,
+        false
+    ));
+    assert!(!try_another_database(QueryCompletion::ServerTimedOut, true));
     for completion in [
         QueryCompletion::SourceFailed,
         QueryCompletion::CapabilityChanged,
@@ -156,6 +161,7 @@ fn fixed_sources_skip_capability_errors_without_dropping_the_generation() {
     assert!(fixed_source_can_continue(
         QueryCompletion::CapabilityChanged
     ));
+    assert!(fixed_source_can_continue(QueryCompletion::ServerTimedOut));
     assert!(!fixed_source_can_continue(
         QueryCompletion::ConnectionFailed
     ));
@@ -487,6 +493,29 @@ fn timeout_observation_retains_partial_query_accounting() {
 }
 
 #[test]
+fn server_statement_timeout_is_timeout_telemetry_not_capability_loss() {
+    assert_eq!(
+        tokio_postgres::error::SqlState::QUERY_CANCELED.code(),
+        "57014"
+    );
+    assert!(!capability_sqlstate("57014"));
+
+    let mut observations = Vec::new();
+    let mut observe = |observation| observations.push(observation);
+    measure(&mut observe, "probe", "monitor@db.example:5432", "postgres")
+        .server_timeout(&"canceling statement due to statement timeout");
+
+    let PgObservation::Query(observation) = observations.pop().expect("one observation") else {
+        panic!("expected a query observation");
+    };
+    assert_eq!(observation.outcome, QueryOutcome::Timeout);
+    assert_eq!(
+        observation.error.as_deref(),
+        Some("canceling statement due to statement timeout")
+    );
+}
+
+#[test]
 fn dropping_an_inflight_measurement_emits_one_cancelled_observation() {
     let mut observations = Vec::new();
     {
@@ -613,4 +642,25 @@ fn accept_startup(stream: &mut TcpStream) {
         .write_all(&[b'R', 0, 0, 0, 8, 0, 0, 0, 0, b'Z', 0, 0, 0, 5, b'I'])
         .expect("write authentication and ready messages");
     stream.flush().expect("flush startup response");
+
+    let mut tag = [0_u8; 1];
+    stream.read_exact(&mut tag).expect("read setup tag");
+    assert_eq!(tag[0], b'Q');
+    stream.read_exact(&mut len).expect("read setup length");
+    let body_len = usize::try_from(u32::from_be_bytes(len).saturating_sub(4))
+        .expect("the setup body length fits usize");
+    let mut body = vec![0_u8; body_len];
+    stream.read_exact(&mut body).expect("read setup body");
+    let sql = body.strip_suffix(&[0]).expect("setup SQL is terminated");
+    assert!(
+        std::str::from_utf8(sql)
+            .expect("setup SQL is UTF-8")
+            .contains("SET statement_timeout = '30s'")
+    );
+    stream
+        .write_all(&[
+            b'C', 0, 0, 0, 8, b'S', b'E', b'T', 0, b'Z', 0, 0, 0, 5, b'I',
+        ])
+        .expect("write setup completion and ready messages");
+    stream.flush().expect("flush setup response");
 }

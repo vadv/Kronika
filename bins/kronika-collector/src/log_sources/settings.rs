@@ -16,11 +16,13 @@ use kronika_source_pg::query::{self, QueryStats};
 use tokio_postgres::config::Host;
 use tokio_postgres::{Config, NoTls, SimpleQueryMessage};
 
-use crate::pg_sources::{ConnectionObservation, PgObservation, QueryObservation, QueryOutcome};
+use crate::pg_sources::{
+    ConnectionObservation, PgObservation, QueryObservation, QueryOutcome, postgres_query_cancelled,
+};
 
 const DEFAULT_PORT: u16 = 5432;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
+const QUERY_TIMEOUT: Duration = query::QUERY_FETCH_TIMEOUT;
 
 const POSTGRES_LOG_FACTS_QUERY: &str = concat!(
     "/* kronika:",
@@ -238,6 +240,38 @@ pub(super) async fn postgres(
     };
     // The connection drives the protocol and ends when the client is dropped.
     let driver = tokio::spawn(connection);
+    match tokio::time::timeout(CONNECT_TIMEOUT, query::configure_session(&client)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            observe(PgObservation::Connection(ConnectionObservation {
+                connection: target.label().to_owned(),
+                database: target.database_label().to_owned(),
+                elapsed: connect_started.elapsed(),
+                timeout: false,
+                closed: false,
+                error: error.to_string(),
+            }));
+            drop(client);
+            driver.abort();
+            return Err(error).context("configure PostgreSQL monitoring session");
+        }
+        Err(elapsed) => {
+            observe(PgObservation::Connection(ConnectionObservation {
+                connection: target.label().to_owned(),
+                database: target.database_label().to_owned(),
+                elapsed: connect_started.elapsed(),
+                timeout: true,
+                closed: false,
+                error: format!(
+                    "configure PostgreSQL monitoring session timed out after {} seconds",
+                    CONNECT_TIMEOUT.as_secs()
+                ),
+            }));
+            drop(client);
+            driver.abort();
+            return Err(elapsed).context("configure PostgreSQL monitoring session timed out");
+        }
+    }
     let mut facts_stats = QueryStats::default();
     let facts_started = Instant::now();
     let session = Session::new(&client, 0);
@@ -250,6 +284,11 @@ pub(super) async fn postgres(
     let facts = match facts {
         Ok(Ok(facts)) => facts,
         Ok(Err(error)) => {
+            let outcome = if postgres_query_cancelled(&error) {
+                QueryOutcome::Timeout
+            } else {
+                QueryOutcome::Error
+            };
             observe_query(
                 observe,
                 "postgres_log_facts",
@@ -257,7 +296,7 @@ pub(super) async fn postgres(
                 target.database_label(),
                 facts_started,
                 facts_stats,
-                QueryOutcome::Error,
+                outcome,
                 Some(format!("{error:#}")),
             );
             drop(client);
@@ -321,6 +360,11 @@ pub(super) async fn postgres(
                 Some(identifier)
             }
             Ok(Err(error)) => {
+                let outcome = if postgres_query_cancelled(&error) {
+                    QueryOutcome::Timeout
+                } else {
+                    QueryOutcome::Error
+                };
                 observe_query(
                     observe,
                     "postgres_system_identifier",
@@ -328,7 +372,7 @@ pub(super) async fn postgres(
                     &facts.database_name,
                     started,
                     stats,
-                    QueryOutcome::Error,
+                    outcome,
                     Some(format!("{error:#}")),
                 );
                 None

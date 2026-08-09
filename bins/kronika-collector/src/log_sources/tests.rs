@@ -55,7 +55,19 @@ impl FakePostgres {
                 write_backend(&mut stream, b'R', &0_u32.to_be_bytes());
                 write_backend(&mut stream, b'Z', b"I");
                 stream.flush().expect("flush startup response");
+                let mut configured = false;
                 while let Some(query) = read_query(&mut stream) {
+                    if !configured {
+                        assert!(
+                            query.contains("SET statement_timeout = '30s'"),
+                            "the session timeout must precede monitoring queries"
+                        );
+                        write_backend(&mut stream, b'C', b"SET\0");
+                        write_backend(&mut stream, b'Z', b"I");
+                        stream.flush().expect("flush session setup response");
+                        configured = true;
+                        continue;
+                    }
                     recorded
                         .lock()
                         .expect("lock recorded queries")
@@ -89,6 +101,7 @@ impl FakePostgres {
                     }
                     stream.flush().expect("flush query response");
                 }
+                assert!(configured, "the frontend session must be configured");
             }
             assert!(facts.is_empty(), "unused log facts replies");
             assert!(identities.is_empty(), "unused identity replies");

@@ -48,7 +48,7 @@ pub mod user_indexes;
 pub mod user_tables;
 pub mod wal;
 
-pub use pool::{CONNECT_TIMEOUT, ConnectError, Pool};
+pub use pool::{CONNECT_TIMEOUT, ConnectError, MAX_AGE, Pool};
 pub use query::Session;
 
 fn intern_opt<E>(
