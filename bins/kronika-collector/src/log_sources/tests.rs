@@ -280,13 +280,32 @@ fn configured_connections_retain_no_raw_dsn_or_secret() {
     let raw = "postgresql://monitor:RAW_SECRET@db.example:6432/PRIVATE_DATABASE";
     let configured = vec![raw.to_owned()];
 
-    let parsed = parse_connections("postgresql", &configured);
+    let parsed = parse_connections("KRONIKA_PG_DSNS", &configured)
+        .expect("the configured connection parses");
 
     assert_eq!(parsed.len(), 1);
     let debug = format!("{:?}", parsed[0]);
     assert!(debug.contains("monitor@db.example:6432"));
     for secret in [raw, "RAW_SECRET", "PRIVATE_DATABASE"] {
         assert!(!debug.contains(secret));
+    }
+}
+
+#[test]
+fn invalid_connection_error_contains_only_variable_and_index() {
+    let raw = "host='unterminated password=RAW_SECRET dbname=PRIVATE_DATABASE";
+    let configured = vec!["host=db.example user=monitor".to_owned(), raw.to_owned()];
+
+    let error = parse_connections("KRONIKA_PG_DSNS", &configured)
+        .expect_err("the second connection is invalid");
+    let message = format!("{error:#}");
+
+    assert_eq!(
+        message,
+        "KRONIKA_PG_DSNS[1] is not a valid connection string"
+    );
+    for secret in [raw, "RAW_SECRET", "PRIVATE_DATABASE"] {
+        assert!(!message.contains(secret));
     }
 }
 

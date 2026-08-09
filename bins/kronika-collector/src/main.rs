@@ -133,6 +133,13 @@ fn start_up(config: &Config) -> Result<(WriterOwner, Journal)> {
     Ok((writer_owner, journal))
 }
 
+fn initialize_collector(config: &Config) -> Result<(WriterOwner, Journal, LogSources, PgSources)> {
+    let logs = LogSources::open(config).context("open the configured log files")?;
+    let pg = PgSources::open(config).context("open the configured PostgreSQL metrics")?;
+    let (writer_owner, journal) = start_up(config)?;
+    Ok((writer_owner, journal, logs, pg))
+}
+
 fn main() -> Result<()> {
     if capacity::is_helper_invocation() {
         return capacity::run_helper();
@@ -147,9 +154,7 @@ fn main() -> Result<()> {
 )]
 async fn run_collector() -> Result<()> {
     let config = Config::from_env()?;
-    let (writer_owner, mut journal) = start_up(&config)?;
-    let mut logs = LogSources::open(&config).context("open the configured log files")?;
-    let mut pg = PgSources::open(&config);
+    let (writer_owner, mut journal, mut logs, mut pg) = initialize_collector(&config)?;
     let mut pg_telemetry = PgTelemetry::new(Instant::now());
 
     let mut sigusr2 = signal(SignalKind::user_defined2()).context("install the SIGUSR2 handler")?;

@@ -331,8 +331,10 @@ fn visibility_refresh_on_the_same_connection_keeps_generation_scoped_state() {
     sources.probe = Some(GenerationProbe {
         generation: 7,
         major: 18,
-        user: "monitor".to_owned(),
+        datid: 16_384,
         database: "app".to_owned(),
+        usesysid: 16_385,
+        user: "monitor".to_owned(),
         full_visibility: false,
     });
 
@@ -340,8 +342,10 @@ fn visibility_refresh_on_the_same_connection_keeps_generation_scoped_state() {
         GenerationProbe {
             generation: 7,
             major: 18,
-            user: "monitor".to_owned(),
+            datid: 16_384,
             database: "app".to_owned(),
+            usesysid: 16_385,
+            user: "monitor".to_owned(),
             full_visibility: true,
         },
         true,
@@ -370,8 +374,10 @@ fn a_new_primary_generation_discards_secondary_pools() {
         GenerationProbe {
             generation: 8,
             major: 18,
-            user: "monitor".to_owned(),
+            datid: 16_384,
             database: "app".to_owned(),
+            usesysid: 16_385,
+            user: "monitor".to_owned(),
             full_visibility: true,
         },
         false,
@@ -401,8 +407,10 @@ async fn losing_the_primary_during_extension_collection_ends_the_cycle() {
     let probe = GenerationProbe {
         generation: 7,
         major: 18,
-        user: "monitor".to_owned(),
+        datid: 16_384,
         database: "app".to_owned(),
+        usesysid: 16_385,
+        user: "monitor".to_owned(),
         full_visibility: true,
     };
     let mut admitted = false;
@@ -424,6 +432,16 @@ async fn losing_the_primary_during_extension_collection_ends_the_cycle() {
 #[test]
 fn server_and_extension_visibility_use_immediately_usable_role_privileges() {
     assert!(SERVER_PROBE_SQL.contains("pg_has_role('pg_read_all_stats', 'USAGE')"));
+}
+
+#[test]
+fn server_probe_reads_metric_session_identity_with_session_user() {
+    assert!(SERVER_PROBE_SQL.contains("d.oid::text"));
+    assert!(SERVER_PROBE_SQL.contains("d.datname::text"));
+    assert!(SERVER_PROBE_SQL.contains("r.oid::text"));
+    assert!(SERVER_PROBE_SQL.contains("r.rolname::text"));
+    assert!(SERVER_PROBE_SQL.contains("r.rolname = session_user"));
+    assert!(!SERVER_PROBE_SQL.contains("current_user"));
 }
 
 #[test]

@@ -4,6 +4,10 @@ use kronika_registry::{StrId, Ts};
 fn row() -> SettingsRow {
     SettingsRow {
         ts: 5,
+        datid: 16_384,
+        datname: "app".to_owned(),
+        usesysid: 16_385,
+        usename: "monitor".to_owned(),
         name: "work_mem".to_owned(),
         setting: "4096".to_owned(),
         unit: Some("kB".to_owned()),
@@ -31,10 +35,14 @@ fn counting() -> impl FnMut(&[u8]) -> Result<StrId, ()> {
 fn interning_follows_field_order() {
     let built = to_section(&row(), counting()).expect("the interner never fails here");
     assert_eq!(built.ts, Ts(5));
-    assert_eq!(built.name, StrId(1));
-    assert_eq!(built.setting, StrId(2));
-    assert_eq!(built.unit, Some(StrId(3)));
-    assert_eq!(built.source, StrId(4));
+    assert_eq!(built.datid, 16_384);
+    assert_eq!(built.datname, StrId(1));
+    assert_eq!(built.usesysid, 16_385);
+    assert_eq!(built.usename, StrId(2));
+    assert_eq!(built.name, StrId(3));
+    assert_eq!(built.setting, StrId(4));
+    assert_eq!(built.unit, Some(StrId(5)));
+    assert_eq!(built.source, StrId(6));
 }
 
 #[test]

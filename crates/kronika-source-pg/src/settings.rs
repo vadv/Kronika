@@ -1,9 +1,8 @@
 //! `pg_settings` for section `1_019_001`.
 //!
 //! One query returns every parameter except `primary_conninfo`, whose value may
-//! contain a password. The layout has been stable since PG 10. Rows arrive
-//! ordered by `name`, which is the section sort key, so interning in arrival
-//! order keeps that order meaningful.
+//! contain a password. The layout has been stable since PG 10. Every row names
+//! the database and login role whose effective configuration was read.
 
 use anyhow::{Context as _, Result};
 use kronika_registry::{PgSettings, StrId, Ts};
@@ -30,6 +29,14 @@ const SETTINGS_QUERY: &str = marked!(
 pub struct SettingsRow {
     /// Collection time, unix microseconds.
     pub ts: i64,
+    /// OID of the database used by the metric session.
+    pub datid: u32,
+    /// Name of the database used by the metric session.
+    pub datname: String,
+    /// OID of the login role used by the metric session.
+    pub usesysid: u32,
+    /// Name of the login role used by the metric session.
+    pub usename: String,
     /// Parameter name.
     pub name: String,
     /// Running value, in `unit` units.
@@ -59,7 +66,14 @@ pub struct SettingsRow {
 /// # Errors
 ///
 /// Returns the error of the query.
-pub async fn collect(session: Session<'_>, stats: &mut QueryStats) -> Result<Vec<SettingsRow>> {
+pub async fn collect(
+    session: Session<'_>,
+    stats: &mut QueryStats,
+    datid: u32,
+    datname: &str,
+    usesysid: u32,
+    usename: &str,
+) -> Result<Vec<SettingsRow>> {
     query::read_all(
         session,
         SETTINGS_QUERY,
@@ -69,6 +83,10 @@ pub async fn collect(session: Session<'_>, stats: &mut QueryStats) -> Result<Vec
         |row| {
             Ok(SettingsRow {
                 ts: row.try_get("ts_us")?,
+                datid,
+                datname: datname.to_owned(),
+                usesysid,
+                usename: usename.to_owned(),
                 name: row.try_get("name")?,
                 setting: row.try_get("setting")?,
                 unit: row.try_get("unit")?,
@@ -98,6 +116,10 @@ pub fn to_section<E>(
 ) -> Result<PgSettings, E> {
     Ok(PgSettings {
         ts: Ts(row.ts),
+        datid: row.datid,
+        datname: intern(row.datname.as_bytes())?,
+        usesysid: row.usesysid,
+        usename: intern(row.usename.as_bytes())?,
         name: intern(row.name.as_bytes())?,
         setting: intern(row.setting.as_bytes())?,
         unit: intern_opt(&mut intern, row.unit.as_deref())?,

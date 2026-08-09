@@ -119,18 +119,20 @@ impl LogSources {
     ///
     /// # Errors
     ///
-    /// Returns the error of reading the offsets file. Nothing is opened here:
-    /// the first rescan finds what exists.
+    /// Returns an opaque configuration error or the error of reading the
+    /// offsets file. Nothing is opened here: the first rescan finds what exists.
     pub(crate) fn open(config: &Config) -> anyhow::Result<Self> {
+        let pg_dsns = parse_connections("KRONIKA_PG_DSNS", &config.pg_dsns)?
+            .into_iter()
+            .map(PostgresTarget::new)
+            .collect();
+        let pgbouncer_dsns = parse_connections("KRONIKA_PGBOUNCER_DSNS", &config.pgbouncer_dsns)?;
         let offsets = Offsets::load(&config.out_dir)?;
         Ok(Self {
             offsets,
-            pg_dsns: parse_connections("postgresql", &config.pg_dsns)
-                .into_iter()
-                .map(PostgresTarget::new)
-                .collect(),
+            pg_dsns,
             pg_logs: config.pg_logs.clone(),
-            pgbouncer_dsns: parse_connections("pgbouncer", &config.pgbouncer_dsns),
+            pgbouncer_dsns,
             pgbouncer_logs: config.pgbouncer_logs.clone(),
             postgres: Vec::new(),
             pgbouncer: Vec::new(),
@@ -474,19 +476,18 @@ fn key(path: &std::path::Path) -> String {
     path.display().to_string()
 }
 
-fn parse_connections(kind: &'static str, configured: &[String]) -> Vec<settings::ConnectionTarget> {
+fn parse_connections(
+    variable: &'static str,
+    configured: &[String],
+) -> anyhow::Result<Vec<settings::ConnectionTarget>> {
     configured
         .iter()
         .enumerate()
-        .filter_map(
-            |(index, raw)| match settings::ConnectionTarget::parse(raw, index) {
-                Ok(target) => Some(target),
-                Err(_error) => {
-                    log_source_configuration_invalid(kind, index);
-                    None
-                }
-            },
-        )
+        .map(|(index, raw)| {
+            settings::ConnectionTarget::parse(raw, index).map_err(|_error| {
+                anyhow::anyhow!("{variable}[{index}] is not a valid connection string")
+            })
+        })
         .collect()
 }
 
@@ -498,18 +499,6 @@ fn log_source_opened(kind: &str, path: &std::path::Path, format: &str) {
             field("kind", kind),
             field("path", path.display()),
             field("format", format),
-        ],
-    );
-}
-
-fn log_source_configuration_invalid(kind: &str, index: usize) {
-    log_event(
-        LogLevel::Warn,
-        "log_source_configuration_invalid",
-        &[
-            field("kind", kind),
-            field("source_index", index),
-            field("reason", "invalid_connection_configuration"),
         ],
     );
 }

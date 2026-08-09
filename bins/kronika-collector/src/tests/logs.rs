@@ -99,6 +99,10 @@ fn archiver_batch() -> PgBatch {
 fn settings_row() -> SettingsRow {
     SettingsRow {
         ts: 200,
+        datid: 16_384,
+        datname: "app".to_owned(),
+        usesysid: 16_385,
+        usename: "monitor".to_owned(),
         name: "shared_buffers".to_owned(),
         setting: "16384".to_owned(),
         unit: Some("8kB".to_owned()),

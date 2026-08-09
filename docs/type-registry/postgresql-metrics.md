@@ -84,15 +84,18 @@ connection is closed.
 | `1_014_002` | `pg_stat_user_indexes` | 16–18 | each database | `snapshot_full` |
 | `1_017_001` | `pg_stat_checkpointer` | 17 | instance | `snapshot_full` |
 | `1_017_002` | `pg_stat_checkpointer` | 18 | instance | `snapshot_full` |
-| `1_019_001` | `pg_settings` | 10–18 | instance | `on_change` |
+| `1_019_001` | `pg_settings` | 10–18 | metric session | `on_change` |
 
 `pg_stat_wal`, `pg_stat_io`, and `pg_stat_checkpointer` have no section before
 the first PostgreSQL release listed above. PostgreSQL 17 and 18 changed
 `pg_stat_progress_vacuum`, so those layouts have separate `type_id` values.
-`pg_settings` is read on each PostgreSQL cycle and emitted on its first
-successful read, when it changes, and in every new segment. The latest
-successful snapshot is reused when another source opens a segment between
-PostgreSQL cycles.
+`pg_settings` records the effective configuration of the collector's metric
+session. Each row identifies its database and login role as `datid`, `datname`,
+`usesysid`, and `usename`; `(datid, usesysid, name)` is the row identity. The
+server probe reads those facts from the current metric session. The view is read
+on each PostgreSQL cycle and emitted on its first successful read, when it
+changes, and in every new segment. The latest successful snapshot is reused when
+another source opens a segment between PostgreSQL cycles.
 The `primary_conninfo` row is excluded because its value may contain a password.
 
 ## Extension views

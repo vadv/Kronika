@@ -47,8 +47,11 @@ const SERVER_PROBE_SQL: &str = concat!(
     "/* kronika:",
     env!("CARGO_PKG_VERSION"),
     " bins/kronika-collector/src/pg_sources.rs */ ",
-    "SELECT current_setting('server_version_num'), session_user::text, ",
-    "current_database()::text, pg_catalog.pg_has_role('pg_read_all_stats', 'USAGE')"
+    "SELECT current_setting('server_version_num'), d.oid::text, d.datname::text, ",
+    "r.oid::text, r.rolname::text, ",
+    "pg_catalog.pg_has_role('pg_read_all_stats', 'USAGE') ",
+    "FROM pg_catalog.pg_database AS d CROSS JOIN pg_catalog.pg_roles AS r ",
+    "WHERE d.datname = current_database() AND r.rolname = session_user"
 );
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 const DISCOVERY_INTERVAL: Duration = Duration::from_mins(5);
@@ -217,8 +220,10 @@ struct CachedSettings {
 struct GenerationProbe {
     generation: u64,
     major: u32,
-    user: String,
+    datid: u32,
     database: String,
+    usesysid: u32,
+    user: String,
     full_visibility: bool,
 }
 
@@ -247,9 +252,9 @@ pub(crate) struct PgSources {
 
 impl PgSources {
     /// Take the first configured DSN, or nothing when none is configured.
-    pub(crate) fn open(config: &Config) -> Self {
+    pub(crate) fn open(config: &Config) -> anyhow::Result<Self> {
         let Some(dsn) = config.pg_dsns.first() else {
-            return Self::disabled();
+            return Ok(Self::disabled());
         };
         if config.pg_dsns.len() > 1 {
             log_event(
@@ -264,29 +269,19 @@ impl PgSources {
                 ],
             );
         }
-        match Pool::new(dsn) {
-            Ok(server) => Self {
-                server: Some(server),
-                server_database: None,
-                databases: BTreeMap::new(),
-                discovered: Vec::new(),
-                capabilities: BTreeMap::new(),
-                last_discovery: None,
-                settings: None,
-                probe: None,
-            },
-            Err(_error) => {
-                log_event(
-                    LogLevel::Warn,
-                    "pg_metrics_configuration_invalid",
-                    &[
-                        field("source_index", 0_usize),
-                        field("reason", "invalid_connection_configuration"),
-                    ],
-                );
-                Self::disabled()
-            }
-        }
+        let server = Pool::new(dsn).map_err(|_error| {
+            anyhow::anyhow!("KRONIKA_PG_DSNS[0] is not a valid connection string")
+        })?;
+        Ok(Self {
+            server: Some(server),
+            server_database: None,
+            databases: BTreeMap::new(),
+            capabilities: BTreeMap::new(),
+            discovered: Vec::new(),
+            last_discovery: None,
+            settings: None,
+            probe: None,
+        })
     }
 
     const fn disabled() -> Self {
@@ -341,9 +336,7 @@ impl PgSources {
         if instance {
             let current = self.settings.as_ref().map(|cached| cached.rows.as_ref());
             let settings_result = match self.server.as_mut() {
-                Some(server) => {
-                    read_settings(server, probe.generation, current, observe, &mut admit).await
-                }
+                Some(server) => read_settings(server, &probe, current, observe, &mut admit).await,
                 None => Ok(None),
             };
             match settings_result {
@@ -1295,16 +1288,28 @@ async fn read_generation_probe(
         let version = row
             .get(0)
             .context("server probe omitted server_version_num")?;
-        let user = row.get(1).context("server probe omitted session_user")?;
+        let datid = row
+            .get(1)
+            .context("server probe omitted current database oid")?;
         let database = row
             .get(2)
             .context("server probe omitted current_database")?;
-        let visibility = row
+        let usesysid = row
             .get(3)
+            .context("server probe omitted session role oid")?;
+        let user = row.get(4).context("server probe omitted session_user")?;
+        let visibility = row
+            .get(5)
             .context("server probe omitted pg_read_all_stats usability")?;
         let version = version
             .parse::<u32>()
             .context("parse server_version_num from server probe")?;
+        let datid = datid
+            .parse::<u32>()
+            .context("parse current database oid from server probe")?;
+        let usesysid = usesysid
+            .parse::<u32>()
+            .context("parse session role oid from server probe")?;
         let full_visibility = match visibility {
             "t" => true,
             "f" => false,
@@ -1313,8 +1318,10 @@ async fn read_generation_probe(
         Ok(GenerationProbe {
             generation,
             major: version / 10_000,
-            user: user.to_owned(),
+            datid,
             database: database.to_owned(),
+            usesysid,
+            user: user.to_owned(),
             full_visibility,
         })
     })
@@ -1500,14 +1507,14 @@ fn cached_settings_for_generation(
 
 async fn read_settings<E>(
     server: &mut Pool,
-    generation: u64,
+    probe: &GenerationProbe,
     cached: Option<&[SettingsRow]>,
     observe: &mut (dyn FnMut(PgObservation) + Send),
     admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
 ) -> Result<Option<Arc<[SettingsRow]>>, E> {
     let database = server.database_label().to_owned();
     let connection = server.connection_label(0);
-    let session = match session_for_generation(server, generation, observe) {
+    let session = match session_for_generation(server, probe.generation, observe) {
         Ok(session) => session,
         Err(_failure) => return Ok(None),
     };
@@ -1515,7 +1522,14 @@ async fn read_settings<E>(
     let result = query::timeout(
         session,
         QUERY_TIMEOUT,
-        settings::collect(session, measured.stats_mut()),
+        settings::collect(
+            session,
+            measured.stats_mut(),
+            probe.datid,
+            &probe.database,
+            probe.usesysid,
+            &probe.user,
+        ),
     )
     .await;
     match result {
