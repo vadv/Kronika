@@ -219,6 +219,7 @@ fn stats_count_both_dictionaries() {
     assert_eq!(stats.string_count, 2);
     assert_eq!(stats.hot_count, 1);
     assert_eq!(stats.blob_count, 1);
+    assert_eq!(stats.truncated_blob_count, 1);
     assert_eq!(stats.string_bytes, 4);
     assert_eq!(stats.blob_bytes, 16);
 }

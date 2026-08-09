@@ -1165,11 +1165,13 @@ name = "kronika-collector"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "futures-util",
  "kronika-format",
  "kronika-layout",
  "kronika-registry",
  "kronika-source-log",
  "kronika-source-os",
+ "kronika-source-pg",
  "kronika-writer",
  "rustix",
  "tempfile",
@@ -1287,6 +1289,17 @@ dependencies = [
  "nix",
  "rustix",
  "tempfile",
+]
+
+[[package]]
+name = "kronika-source-pg"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "kronika-registry",
+ "tokio",
+ "tokio-postgres",
 ]
 
 [[package]]

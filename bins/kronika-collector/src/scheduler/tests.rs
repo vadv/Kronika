@@ -11,6 +11,8 @@ fn intervals() -> Intervals {
         os_cgroup: 10,
         os_cgroup_mapping: 30,
         logs: 10,
+        pg: 30,
+        pg_relations: 300,
     }
 }
 
