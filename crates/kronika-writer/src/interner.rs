@@ -60,6 +60,42 @@ impl Flushed {
     }
 }
 
+fn stats_for_flushed(entry: Flushed, limits: DictLimits) -> DictStats {
+    let stored_len = entry.full_len.min(limits.truncate_limit() as u64);
+    match entry.placement(limits) {
+        Placement::Blobs => DictStats {
+            blob_count: 1,
+            truncated_blob_count: usize::from(entry.full_len > limits.truncate_limit() as u64),
+            blob_bytes: stored_len,
+            ..DictStats::default()
+        },
+        Placement::Strings => DictStats {
+            string_count: 1,
+            hot_count: usize::from(entry.hot() != HotMark::None),
+            string_bytes: stored_len,
+            ..DictStats::default()
+        },
+    }
+}
+
+const fn add_stats(stats: &mut DictStats, added: DictStats) {
+    stats.string_count += added.string_count;
+    stats.blob_count += added.blob_count;
+    stats.truncated_blob_count += added.truncated_blob_count;
+    stats.hot_count += added.hot_count;
+    stats.string_bytes += added.string_bytes;
+    stats.blob_bytes += added.blob_bytes;
+}
+
+const fn remove_stats(stats: &mut DictStats, removed: DictStats) {
+    stats.string_count -= removed.string_count;
+    stats.blob_count -= removed.blob_count;
+    stats.truncated_blob_count -= removed.truncated_blob_count;
+    stats.hot_count -= removed.hot_count;
+    stats.string_bytes -= removed.string_bytes;
+    stats.blob_bytes -= removed.blob_bytes;
+}
+
 /// One interning request, mirroring the four `intern*` entry points.
 #[derive(Debug, Clone, Copy, Default)]
 struct Request {
@@ -121,6 +157,8 @@ pub struct Interner {
     /// (`JournalError::Full`) forces a merge before the journal, and with it
     /// this map, can grow without limit.
     flushed: HashMap<StrId, Flushed>,
+    /// Aggregate for `flushed`, kept so admission scans only the current window.
+    flushed_stats: DictStats,
     /// Bytes of strict-hot values inserted into every window.
     ///
     /// Bounded by contract, not by data: callers may strict-hot only
@@ -137,6 +175,7 @@ impl Interner {
         Self {
             window: SegmentDicts::new(limits),
             flushed: HashMap::new(),
+            flushed_stats: DictStats::default(),
             hot_pinned: BTreeMap::new(),
         }
     }
@@ -227,24 +266,25 @@ impl Interner {
         write(&self.window)?;
 
         let count = self.window.len();
+        let limits = self.window.limits();
         for snap in self.window.entries() {
             // The stored bytes are the full value when not truncated.
             let check = snap
                 .full_sha256
                 .map_or_else(|| check16(snap.stored_bytes), first16);
-            self.flushed.insert(
-                snap.str_id,
-                Flushed {
-                    full_len: snap.full_len,
-                    check,
-                    blob_required: snap.blob_required,
-                    hot_hard: snap.hot == HotMark::Hard,
-                    hot_soft: snap.hot == HotMark::Soft,
-                },
-            );
+            let value = Flushed {
+                full_len: snap.full_len,
+                check,
+                blob_required: snap.blob_required,
+                hot_hard: snap.hot == HotMark::Hard,
+                hot_soft: snap.hot == HotMark::Soft,
+            };
+            if let Some(previous) = self.flushed.insert(snap.str_id, value) {
+                remove_stats(&mut self.flushed_stats, stats_for_flushed(previous, limits));
+            }
+            add_stats(&mut self.flushed_stats, stats_for_flushed(value, limits));
         }
 
-        let limits = self.window.limits();
         self.window = SegmentDicts::new(limits);
         // Reinsert strict-hot values so the next part carries them too.
         // These re-inserts cannot fail: every pinned value already passed
@@ -263,6 +303,7 @@ impl Interner {
         let limits = self.window.limits();
         let window = std::mem::replace(&mut self.window, SegmentDicts::new(limits));
         let flushed = std::mem::take(&mut self.flushed);
+        self.flushed_stats = DictStats::default();
         self.hot_pinned.clear();
 
         let mut entries: Vec<FlushedEntry> = flushed
@@ -289,26 +330,11 @@ impl Interner {
     #[must_use]
     pub fn stats(&self) -> DictStats {
         let limits = self.window.limits();
-        let mut stats = self.window.stats();
-        for (id, f) in &self.flushed {
-            // A re-flushed upgrade is present in both maps; the window copy is
-            // current and already counted.
-            if self.window.resolve(*id).is_some() {
-                continue;
-            }
-            let stored_len = f.full_len.min(limits.truncate_limit() as u64);
-            match f.placement(limits) {
-                Placement::Blobs => {
-                    stats.blob_count += 1;
-                    stats.blob_bytes += stored_len;
-                }
-                Placement::Strings => {
-                    stats.string_count += 1;
-                    stats.string_bytes += stored_len;
-                    if f.hot() != HotMark::None {
-                        stats.hot_count += 1;
-                    }
-                }
+        let mut stats = self.flushed_stats;
+        add_stats(&mut stats, self.window.stats());
+        for snapshot in self.window.entries() {
+            if let Some(previous) = self.flushed.get(&snapshot.str_id) {
+                remove_stats(&mut stats, stats_for_flushed(*previous, limits));
             }
         }
         stats
@@ -385,9 +411,14 @@ impl Interner {
     /// flush writes the upgraded value again.
     fn record_flushed_bits(&mut self, id: StrId, merged: Request) {
         if let Some(entry) = self.flushed.get_mut(&id) {
+            let previous = *entry;
             entry.blob_required = merged.blob_required;
             entry.hot_hard = merged.hot_hard;
             entry.hot_soft = merged.hot_soft;
+            let updated = *entry;
+            let limits = self.window.limits();
+            remove_stats(&mut self.flushed_stats, stats_for_flushed(previous, limits));
+            add_stats(&mut self.flushed_stats, stats_for_flushed(updated, limits));
         }
     }
 

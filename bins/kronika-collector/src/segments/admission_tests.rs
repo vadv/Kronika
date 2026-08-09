@@ -2,8 +2,8 @@ use std::fs;
 use std::path::Path;
 
 use kronika_format::{
-    DictLimits, FRAME_HEADER_LEN, JOURNAL_HEADER_LEN, PartMeta, RESET_MARKER_LEN, SectionInput,
-    build_part, validate_part,
+    DictLimits, DictStats, FRAME_HEADER_LEN, JOURNAL_HEADER_LEN, PartMeta, RESET_MARKER_LEN,
+    SectionInput, build_part, validate_part,
 };
 use kronika_layout::{DataRoot, FileKind, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
 use kronika_registry::os_loadavg::OsLoadavg;
@@ -128,69 +128,91 @@ fn max_admitted_rows(type_id: u32) -> usize {
 #[test]
 fn admission_deduplicates_exact_dictionary_values() {
     let type_id = OsLoadavg::CONTRACT.type_id.get();
-    let first = interner(8, b"same");
-    let second = interner(8, b"same");
+    let mut interner = interner(8, b"same");
     let mut admission = SegmentAdmission::default();
 
     let delta = admission
-        .assess(&data_summary(type_id, 1, 0), &first)
+        .assess(&data_summary(type_id, 1, 0), &interner)
         .expect("first window fits");
     admission.commit(delta);
-    let bytes_after_first = admission.string_stored_bytes;
+    let stats_after_first = interner.stats();
+    interner
+        .flush_window(|_| Ok::<(), ()>(()))
+        .expect("flush first window");
+    interner.intern(b"same").expect("repeat interns");
     let delta = admission
-        .assess(&data_summary(type_id, 1, 0), &second)
+        .assess(&data_summary(type_id, 1, 0), &interner)
         .expect("the repeated value and second data row fit");
-    assert!(
-        delta.dictionary.is_empty(),
-        "the duplicate adds no dictionary row"
+    admission.commit(delta);
+
+    assert_eq!(interner.stats(), stats_after_first);
+    assert!(interner.window().is_empty());
+    assert_eq!(
+        admission.data_by_type[&type_id].rows, 2,
+        "both data rows are admitted"
     );
-    admission.commit(delta);
-
-    assert_eq!(admission.dictionary.len(), 1);
-    assert_eq!(admission.string_rows, 1, "the repeated id counts once");
-    assert_eq!(admission.string_stored_bytes, bytes_after_first);
-}
-
-#[test]
-fn admission_rejects_cross_dictionary_placement() {
-    let strings = interner(8, b"same");
-    let blobs = interner(1, b"same");
-    let mut admission = SegmentAdmission::default();
-    let empty = FlushSummary {
-        sections: Vec::new(),
-        part_bytes: 0,
-    };
-
-    let delta = admission.assess(&empty, &strings).expect("string fits");
-    admission.commit(delta);
-    assert!(matches!(
-        admission.assess(&empty, &blobs),
-        Err(AdmissionError::DictionaryPlacementConflict { .. })
-    ));
 }
 
 #[test]
 fn dictionary_plain_budgets_are_independent_per_placement() {
-    let mut admission = SegmentAdmission {
-        string_rows: 1,
-        string_stored_bytes: FINAL_DATA_PAGE_BYTES - 5,
-        ..SegmentAdmission::default()
-    };
+    let limits = DictLimits::new(FINAL_DATA_PAGE_BYTES, FINAL_DATA_PAGE_BYTES)
+        .expect("test dictionary limits are valid");
+    let mut interner = Interner::new(limits);
+    let string = vec![b'x'; FINAL_DATA_PAGE_BYTES - 5];
+    interner.intern(&string).expect("large string fits");
+    interner
+        .intern_blob(b"blob")
+        .expect("small forced blob fits");
+    let admission = SegmentAdmission::default();
     let summary = FlushSummary {
         sections: Vec::new(),
         part_bytes: 0,
     };
-    let blob = interner(1, b"blob");
-    let delta = admission
-        .assess(&summary, &blob)
+    admission
+        .assess(&summary, &interner)
         .expect("a full strings value page does not consume the blobs value page");
-    admission.commit(delta);
+    interner
+        .flush_window(|_| Ok::<(), ()>(()))
+        .expect("flush the admitted values");
 
-    let string = interner(8, b"new");
+    interner
+        .intern(b"new")
+        .expect("the window cap still has room");
     assert!(matches!(
-        admission.assess(&summary, &string),
+        admission.assess(&summary, &interner),
         Err(AdmissionError::Codec(CodecError::PlainPageTooLarge {
             name: "bytes",
+            ..
+        }))
+    ));
+    SegmentAdmission::assess_window(&summary, &interner)
+        .expect("the new segment checks only the current window dictionary");
+}
+
+#[test]
+fn admission_counts_truncated_blob_hashes() {
+    let mut interner = Interner::new(DictLimits::new(1, 1).expect("valid limits"));
+    for value in 0_u32..32_767 {
+        interner
+            .intern(&value.to_le_bytes())
+            .expect("unique truncated blob interns");
+    }
+    let summary = FlushSummary {
+        sections: Vec::new(),
+        part_bytes: 0,
+    };
+    let admission = SegmentAdmission::default();
+    admission
+        .assess(&summary, &interner)
+        .expect("32,767 SHA-256 values stay below one PLAIN page");
+
+    interner
+        .intern(&32_767_u32.to_le_bytes())
+        .expect("the dictionary window still has room");
+    assert!(matches!(
+        admission.assess(&summary, &interner),
+        Err(AdmissionError::Codec(CodecError::PlainPageTooLarge {
+            name: "full_sha256",
             ..
         }))
     ));
@@ -484,6 +506,40 @@ fn persistent_interner_writes_only_new_dictionary_entries_to_each_part() {
             .map(|entry| entry.rows),
         Some(2)
     );
+}
+
+#[test]
+fn failed_close_drops_segment_memory_and_preserves_the_journal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("active.wal");
+    let config = test_config(dir.path());
+    let mut segment = SegmentState::default();
+    let (owner, mut journal) = open_journal(dir.path(), JournalConfig::default().max_journal_len);
+    let part = flushed_window(100);
+    append_window_and_maybe_close(
+        &mut journal,
+        &owner,
+        &config,
+        &mut segment,
+        100,
+        false,
+        &part,
+    )
+    .expect("append one window");
+    let bytes_before = fs::read(&path).expect("snapshot active.wal");
+    let destination = segment_path(&owner, 100);
+    fs::create_dir_all(destination.parent().expect("segment has a parent"))
+        .expect("create segment day");
+    fs::write(&destination, b"conflicting segment").expect("write conflicting segment");
+
+    close_open_segment(&mut journal, &owner, &mut segment, "test")
+        .expect_err("a conflicting destination stops close");
+
+    assert!(segment.is_empty());
+    assert_eq!(segment.admission, SegmentAdmission::default());
+    assert_eq!(segment.interner.stats(), DictStats::default());
+    assert_eq!(fs::read(&path).expect("read active.wal"), bytes_before);
+    assert_eq!(journal.parts().len(), 1);
 }
 
 #[test]
