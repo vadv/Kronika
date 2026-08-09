@@ -9,13 +9,13 @@ fn layout(extversion: &str) -> Option<StatementsVersion> {
     parse_version(extversion).and_then(statements_version)
 }
 
-fn inventory(extversion: &str, reader: bool) -> InventoryEntry {
+fn inventory(extversion: &str, reader: bool, full_visibility: bool) -> InventoryEntry {
     InventoryEntry {
         name: "pg_stat_statements".to_owned(),
         extversion: extversion.to_owned(),
         schema: ExtensionSchema::new("odd schema"),
         schema_usable: true,
-        full_visibility: true,
+        full_visibility,
         statements_reader: reader,
         store_plans_zero_arg: false,
         store_plans_bool_arg: false,
@@ -156,12 +156,24 @@ fn every_query_carries_the_marker_and_bounds_statement_text() {
 }
 
 #[test]
-fn catalog_capabilities_not_version_alone_enable_collection() {
-    assert!(capability(&inventory("1.5", true)).is_some());
-    assert!(capability(&inventory("1.12", false)).is_none());
-    let mut inaccessible = inventory("1.12", true);
+fn statement_collection_requires_full_visibility() {
+    assert!(capability(&inventory("1.12", true, true), 18).is_some());
+    assert!(capability(&inventory("1.12", true, false), 18).is_none());
+}
+
+#[test]
+fn the_reader_and_schema_must_be_usable() {
+    assert!(capability(&inventory("1.12", false, true), 18).is_none());
+    let mut inaccessible = inventory("1.12", true, true);
     inaccessible.schema_usable = false;
-    assert!(capability(&inaccessible).is_none());
+    assert!(capability(&inaccessible, 18).is_none());
+}
+
+#[test]
+fn postgres_fourteen_requires_a_toplevel_aware_extension_layout() {
+    assert!(capability(&inventory("1.8", true, true), 13).is_some());
+    assert!(capability(&inventory("1.8", true, true), 14).is_none());
+    assert!(capability(&inventory("1.9", true, true), 14).is_some());
 }
 
 #[test]

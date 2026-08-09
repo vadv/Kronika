@@ -111,7 +111,9 @@ The `primary_conninfo` row is excluded because its value may contain a password.
 | `1_016_001` | `pg_store_plans_info` | exact readable `dealloc, stats_reset` view | discovered installation | `snapshot_full` |
 | `1_018_001` | `pg_store_plans_datasentinel` | Datasentinel-compatible zero-argument reader with `relids` and `cmd_type` | discovered installation | `conditional_full` |
 
-`pg_stat_statements` below 1.5 is not collected. Rows with a privilege-masked
-`queryid` have no usable identity and are omitted. `pg_store_plans_info` is
-selected by its exact readable view shape; the vadv interface does not expose
-that view.
+`pg_stat_statements` below 1.5 is not collected. Its main reader is used only
+when the current role can use `pg_read_all_stats`; a readable
+`pg_stat_statements_info` view remains independently selectable without that
+role. Rows with a privilege-masked `queryid` have no usable identity and are
+omitted. `pg_store_plans_info` is selected by its exact readable view shape;
+the vadv interface does not expose that view.

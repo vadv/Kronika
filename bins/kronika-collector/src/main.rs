@@ -223,17 +223,31 @@ async fn run_collector() -> Result<()> {
                 .await;
             // PostgreSQL batches reach the WAL before the query stream fetches
             // another batch. They never ride on the incremental log windows.
-            let pg_outcome = run_pg_collection_cycle(
-                &mut pg,
-                &mut journal,
-                &writer_owner,
-                &config,
-                &due,
-                &mut segment,
-                &mut sched,
-                &mut pg_telemetry,
+            let shutdown = async {
+                tokio::select! {
+                    _ = sigterm.recv() => (),
+                    _ = sigint.recv() => (),
+                }
+            };
+            let Some(pg_outcome) = complete_or_shutdown(
+                Box::pin(run_pg_collection_cycle(
+                    &mut pg,
+                    &mut journal,
+                    &writer_owner,
+                    &config,
+                    &due,
+                    &mut segment,
+                    &mut sched,
+                    &mut pg_telemetry,
+                )),
+                shutdown,
             )
-            .await?;
+            .await
+            else {
+                pg.close_connections();
+                break;
+            };
+            let pg_outcome = pg_outcome?;
             written_this_tick.extend(pg_outcome.written);
             let opening_settings = pg.last_settings();
             let collection_due = if pg_outcome.opening_os_collected && !segment.is_empty() {
@@ -260,6 +274,19 @@ async fn run_collector() -> Result<()> {
     .await;
     pg_telemetry.shutdown(Instant::now());
     result
+}
+
+async fn complete_or_shutdown<T>(
+    work: impl Future<Output = T>,
+    shutdown: impl Future<Output = ()>,
+) -> Option<T> {
+    tokio::pin!(work);
+    tokio::pin!(shutdown);
+    tokio::select! {
+        biased;
+        () = &mut shutdown => None,
+        output = &mut work => Some(output),
+    }
 }
 
 #[derive(Default)]
@@ -601,6 +628,7 @@ fn append_pending_window(
     let mut outcome = PendingWindowOutcome::default();
     let mut attempt_due = due_for_window(segment, due, sched);
     for attempt in 0..2 {
+        let fresh_segment = segment.is_empty();
         let includes_settings = segment.needs_pg_settings() && !opening_settings.is_empty();
         let buffers = match buffer_window(segment, &attempt_due, log_rows, opening_settings, ts) {
             Ok(Some(buffers)) => buffers,
@@ -608,7 +636,12 @@ fn append_pending_window(
                 outcome.accepted = true;
                 return Ok(outcome);
             }
-            Err(BufferFailure) => return Ok(outcome),
+            Err(BufferFailure) => {
+                if fresh_segment {
+                    anyhow::bail!("buffer the collection window after updating segment state");
+                }
+                return Ok(outcome);
+            }
         };
         let flushed = match encode_window(buffers, segment.interner()) {
             Ok(flushed) => flushed,
@@ -618,6 +651,9 @@ fn append_pending_window(
                     "window_encode_failure",
                     &[field("error", format!("{err:#}"))],
                 );
+                if fresh_segment {
+                    return Err(err.context("encode the collection window"));
+                }
                 return Ok(outcome);
             }
         };
@@ -663,10 +699,13 @@ fn append_pending_window(
                     "window_append_failure",
                     &[field("error", format!("{err:#}"))],
                 );
-                if close_failed {
-                    return Err(err.context("close the segment for the collection window"));
-                }
-                return Ok(outcome);
+                return if close_failed {
+                    Err(err.context("close the segment for the collection window"))
+                } else if fresh_segment {
+                    Err(err.context("append the collection window to the journal"))
+                } else {
+                    Ok(outcome)
+                };
             }
         }
     }

@@ -111,11 +111,18 @@ pub struct StatementsCapability {
 
 /// Select a statement interface only after catalog discovery proved it usable.
 #[must_use]
-pub fn capability(entry: &InventoryEntry) -> Option<StatementsCapability> {
-    if entry.name != EXTENSION || !entry.schema_usable || !entry.statements_reader {
+pub fn capability(entry: &InventoryEntry, server_major: u32) -> Option<StatementsCapability> {
+    if entry.name != EXTENSION
+        || !entry.schema_usable
+        || !entry.full_visibility
+        || !entry.statements_reader
+    {
         return None;
     }
     let version = parse_version(&entry.extversion).and_then(statements_version)?;
+    if server_major >= 14 && matches!(version, StatementsVersion::V1 | StatementsVersion::V2) {
+        return None;
+    }
     Some(StatementsCapability {
         version,
         schema: entry.schema.clone(),

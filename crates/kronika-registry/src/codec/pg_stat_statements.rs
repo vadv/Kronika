@@ -27,10 +27,10 @@ use crate::{Section, StrId, Ts};
 /// Type `1_002_006`: `pg_stat_statements` on extension 1.12 (PG18).
 ///
 /// One row per `(userid, dbid, queryid, toplevel)`. Adds `wal_buffers_full` and
-/// the parallel-worker counters over [`PgStatStatementsV5`]. `queryid` can be
-/// `None`; the production collector always writes `query` as `None` (see the
-/// module docs). The planning and JIT columns are `0` when `track_planning` or
-/// JIT is off, not `NULL`.
+/// the parallel-worker counters over [`PgStatStatementsV5`]. Query text is
+/// optional in the format; the collector bounds it to 65,536 characters in
+/// SQL. The planning and JIT columns are `0` when `track_planning` or JIT is
+/// off, not `NULL`.
 #[derive(Debug, Clone, Copy, PartialEq, Section)]
 #[section(
     id = 1_002_006,
@@ -61,7 +61,7 @@ pub struct PgStatStatementsV6 {
     /// Role name resolved from `userid`; `None` when `userid` has no `pg_roles` row.
     #[column(l)]
     pub usename: Option<StrId>,
-    /// Statement text; the production collector writes `None`.
+    /// Statement text; the collector bounds present text to 65,536 characters.
     #[column(l)]
     pub query: Option<StrId>,
     /// Times the statement was executed.
@@ -241,7 +241,7 @@ pub struct PgStatStatementsV5 {
     /// Role name resolved from `userid`; `None` when `userid` has no `pg_roles` row.
     #[column(l)]
     pub usename: Option<StrId>,
-    /// Statement text; the production collector writes `None`.
+    /// Statement text; the collector bounds present text to 65,536 characters.
     #[column(l)]
     pub query: Option<StrId>,
     /// Times the statement was executed.
@@ -414,7 +414,7 @@ pub struct PgStatStatementsV4 {
     /// Role name resolved from `userid`; `None` when `userid` has no `pg_roles` row.
     #[column(l)]
     pub usename: Option<StrId>,
-    /// Statement text; the production collector writes `None`.
+    /// Statement text; the collector bounds present text to 65,536 characters.
     #[column(l)]
     pub query: Option<StrId>,
     /// Times the statement was executed.
@@ -567,7 +567,7 @@ pub struct PgStatStatementsV3 {
     /// Role name resolved from `userid`; `None` when `userid` has no `pg_roles` row.
     #[column(l)]
     pub usename: Option<StrId>,
-    /// Statement text; the production collector writes `None`.
+    /// Statement text; the collector bounds present text to 65,536 characters.
     #[column(l)]
     pub query: Option<StrId>,
     /// Times the statement was executed.
@@ -687,7 +687,7 @@ pub struct PgStatStatementsV2 {
     /// Role name resolved from `userid`; `None` when `userid` has no `pg_roles` row.
     #[column(l)]
     pub usename: Option<StrId>,
-    /// Statement text; the production collector writes `None`.
+    /// Statement text; the collector bounds present text to 65,536 characters.
     #[column(l)]
     pub query: Option<StrId>,
     /// Times the statement was executed.
@@ -809,7 +809,7 @@ pub struct PgStatStatementsV1 {
     /// Role name resolved from `userid`; `None` when `userid` has no `pg_roles` row.
     #[column(l)]
     pub usename: Option<StrId>,
-    /// Statement text; the production collector writes `None`.
+    /// Statement text; the collector bounds present text to 65,536 characters.
     #[column(l)]
     pub query: Option<StrId>,
     /// Times the statement was executed.

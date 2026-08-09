@@ -99,6 +99,7 @@ struct QueryMeasurement<'a> {
     database: String,
     started: Instant,
     stats: query::QueryStats,
+    finished: bool,
 }
 
 impl QueryMeasurement<'_> {
@@ -136,16 +137,32 @@ impl QueryMeasurement<'_> {
         );
     }
 
-    fn finish(self, outcome: QueryOutcome, error: Option<String>) {
+    fn finish(mut self, outcome: QueryOutcome, error: Option<String>) {
+        self.emit(outcome, error);
+    }
+
+    fn emit(&mut self, outcome: QueryOutcome, error: Option<String>) {
+        self.finished = true;
         (self.observe)(PgObservation::Query(QueryObservation {
             query_name: self.query_name,
-            connection: self.connection,
-            database: self.database,
+            connection: std::mem::take(&mut self.connection),
+            database: std::mem::take(&mut self.database),
             elapsed: self.started.elapsed(),
-            stats: self.stats,
+            stats: std::mem::take(&mut self.stats),
             outcome,
             error,
         }));
+    }
+}
+
+impl Drop for QueryMeasurement<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.emit(
+                QueryOutcome::Error,
+                Some("collector stopped while the query was running".to_owned()),
+            );
+        }
     }
 }
 
@@ -162,6 +179,7 @@ fn measure<'a>(
         database: database.to_owned(),
         started: Instant::now(),
         stats: query::QueryStats::default(),
+        finished: false,
     }
 }
 
@@ -206,6 +224,7 @@ struct GenerationProbe {
 
 #[derive(Debug, Clone, Default)]
 struct DatabaseCapabilities {
+    generation: u64,
     statements: Option<statements::StatementsCapability>,
     store_plans: Option<store_plans::StorePlansCapability>,
     statements_info: Option<extension::ExtensionSchema>,
@@ -287,6 +306,13 @@ impl PgSources {
     pub(crate) fn last_settings(&self) -> Option<Arc<[SettingsRow]>> {
         let generation = self.server.as_ref().and_then(Pool::generation)?;
         cached_settings_for_generation(self.settings.as_ref(), generation)
+    }
+
+    pub(crate) fn close_connections(&mut self) {
+        if let Some(server) = self.server.as_mut() {
+            server.close();
+        }
+        self.close_secondary_connections();
     }
 
     /// Read due sections and synchronously admit each bounded batch before the
@@ -631,42 +657,50 @@ impl PgSources {
         settings: Option<&Arc<[SettingsRow]>>,
         admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
     ) -> Result<bool, E> {
-        let mut unavailable_databases = BTreeSet::new();
-        if let Some((database, capability)) =
-            selected_statements(&self.capabilities, self.server_database.as_deref())
-        {
+        let mut unavailable_databases = self
+            .refresh_secondary_capabilities(probe.major, observe)
+            .await;
+        let mut attempted = unavailable_databases.clone();
+        while let Some((database, generation, capability)) = selected_statements(
+            &self.capabilities,
+            self.server_database.as_deref(),
+            &attempted,
+        ) {
             let is_current = self.server_database.as_deref() == Some(&database);
-            let completion = 'query: {
+            let (completion, admitted) = 'query: {
                 let Some(pool) = self.database_pool_mut(&database) else {
-                    break 'query QueryCompletion::ConnectionFailed;
+                    break 'query (QueryCompletion::ConnectionFailed, false);
                 };
                 let connection = pool.connection_label(0);
-                let session = if is_current {
-                    session_for_generation(pool, probe.generation, observe)
-                } else {
-                    open_session(pool, observe).await
-                };
-                let session = match session {
+                let session = match session_for_generation(pool, generation, observe) {
                     Ok(session) => session,
                     Err(QueryFailure::Timeout | QueryFailure::Connection) => {
                         pool.close();
-                        break 'query QueryCompletion::ConnectionFailed;
+                        break 'query (QueryCompletion::ConnectionFailed, false);
                     }
-                    Err(QueryFailure::Source) => break 'query QueryCompletion::SourceFailed,
+                    Err(QueryFailure::Source) => {
+                        break 'query (QueryCompletion::SourceFailed, false);
+                    }
                 };
                 let version = capability.version;
                 let mut measured = measure(observe, "pg_stat_statements", &connection, &database);
+                let mut admitted = false;
                 let result = statements::collect_statements(
                     session,
                     &capability,
                     measured.stats_mut(),
-                    |batch| admit(PgBatch::Statements(version, batch.rows), settings.cloned()),
+                    |batch| {
+                        let write =
+                            admit(PgBatch::Statements(version, batch.rows), settings.cloned())?;
+                        admitted = true;
+                        Ok(write)
+                    },
                 )
                 .await;
-                finish_batched_kind(pool, measured, result)?
+                (finish_batched_kind(pool, measured, result)?, admitted)
             };
             match completion {
-                QueryCompletion::Complete | QueryCompletion::SourceFailed => {}
+                QueryCompletion::Complete => break,
                 QueryCompletion::CapabilityChanged => {
                     self.invalidate_statements(&database);
                 }
@@ -675,33 +709,42 @@ impl PgSources {
                         self.clear_primary_connection();
                         return Ok(false);
                     }
-                    unavailable_databases.insert(database);
+                    if let Some(pool) = self.database_pool_mut(&database) {
+                        pool.close();
+                    }
+                    self.capabilities.remove(&database);
+                    self.last_discovery = None;
+                    unavailable_databases.insert(database.clone());
                 }
+                QueryCompletion::SourceFailed => {}
             }
+            if !try_another_database(completion, admitted) {
+                break;
+            }
+            attempted.insert(database);
         }
 
-        if let Some((database, schema)) =
-            selected_statements_info(&self.capabilities, self.server_database.as_deref())
-            && !unavailable_databases.contains(&database)
-        {
+        let mut attempted = unavailable_databases.clone();
+        while let Some((database, generation, schema)) = selected_statements_info(
+            &self.capabilities,
+            self.server_database.as_deref(),
+            &attempted,
+        ) {
             let is_current = self.server_database.as_deref() == Some(&database);
-            let completion = 'query: {
+            let (completion, admitted) = 'query: {
                 let Some(pool) = self.database_pool_mut(&database) else {
-                    break 'query QueryCompletion::ConnectionFailed;
+                    break 'query (QueryCompletion::ConnectionFailed, false);
                 };
                 let connection = pool.connection_label(0);
-                let session = if is_current {
-                    session_for_generation(pool, probe.generation, observe)
-                } else {
-                    open_session(pool, observe).await
-                };
-                let session = match session {
+                let session = match session_for_generation(pool, generation, observe) {
                     Ok(session) => session,
                     Err(QueryFailure::Timeout | QueryFailure::Connection) => {
                         pool.close();
-                        break 'query QueryCompletion::ConnectionFailed;
+                        break 'query (QueryCompletion::ConnectionFailed, false);
                     }
-                    Err(QueryFailure::Source) => break 'query QueryCompletion::SourceFailed,
+                    Err(QueryFailure::Source) => {
+                        break 'query (QueryCompletion::SourceFailed, false);
+                    }
                 };
                 let mut measured =
                     measure(observe, "pg_stat_statements_info", &connection, &database);
@@ -724,59 +767,72 @@ impl PgSources {
                             settings.cloned(),
                         )?;
                         measured.success();
-                        QueryCompletion::Complete
+                        (QueryCompletion::Complete, true)
                     }
-                    other => finish_failed(measured, other),
+                    other => (finish_failed(measured, other), false),
                 }
             };
-            if matches!(
-                completion,
-                QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut
-            ) {
-                if is_current {
-                    self.clear_primary_connection();
-                    return Ok(false);
+            match completion {
+                QueryCompletion::Complete => break,
+                QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut => {
+                    if is_current {
+                        self.clear_primary_connection();
+                        return Ok(false);
+                    }
+                    if let Some(pool) = self.database_pool_mut(&database) {
+                        pool.close();
+                    }
+                    self.capabilities.remove(&database);
+                    self.last_discovery = None;
+                    unavailable_databases.insert(database.clone());
                 }
-                if let Some(pool) = self.database_pool_mut(&database) {
-                    pool.close();
+                QueryCompletion::CapabilityChanged => {
+                    self.invalidate_statements_info(&database);
                 }
-                unavailable_databases.insert(database);
-            } else if completion == QueryCompletion::CapabilityChanged {
-                self.invalidate_statements_info(&database);
+                QueryCompletion::SourceFailed => {}
             }
+            if !try_another_database(completion, admitted) {
+                break;
+            }
+            attempted.insert(database);
         }
 
-        if let Some((database, capability)) =
-            selected_store_plans(&self.capabilities, self.server_database.as_deref())
-            && !unavailable_databases.contains(&database)
-        {
+        let mut attempted = unavailable_databases.clone();
+        while let Some((database, generation, capability)) = selected_store_plans(
+            &self.capabilities,
+            self.server_database.as_deref(),
+            &attempted,
+        ) {
             let is_current = self.server_database.as_deref() == Some(&database);
-            let completion = 'query: {
+            let (completion, admitted) = 'query: {
                 let Some(pool) = self.database_pool_mut(&database) else {
-                    break 'query QueryCompletion::ConnectionFailed;
+                    break 'query (QueryCompletion::ConnectionFailed, false);
                 };
                 let connection = pool.connection_label(0);
-                let session = if is_current {
-                    session_for_generation(pool, probe.generation, observe)
-                } else {
-                    open_session(pool, observe).await
-                };
-                let session = match session {
+                let session = match session_for_generation(pool, generation, observe) {
                     Ok(session) => session,
                     Err(QueryFailure::Timeout | QueryFailure::Connection) => {
                         pool.close();
-                        break 'query QueryCompletion::ConnectionFailed;
+                        break 'query (QueryCompletion::ConnectionFailed, false);
                     }
-                    Err(QueryFailure::Source) => break 'query QueryCompletion::SourceFailed,
+                    Err(QueryFailure::Source) => {
+                        break 'query (QueryCompletion::SourceFailed, false);
+                    }
                 };
                 let mut measured = measure(observe, "pg_store_plans", &connection, &database);
+                let mut admitted = false;
                 let result = match capability.flavour {
                     Flavour::OsscCompatible => {
                         store_plans::collect_ossc(
                             session,
                             &capability,
                             measured.stats_mut(),
-                            |batch| admit(PgBatch::StorePlansOssc(batch.rows), settings.cloned()),
+                            |batch| {
+                                let write =
+                                    admit(PgBatch::StorePlansOssc(batch.rows), settings.cloned())?;
+                                admitted = true;
+                                Ok(write)
+                            },
                         )
                         .await
                     }
@@ -786,10 +842,12 @@ impl PgSources {
                             &capability,
                             measured.stats_mut(),
                             |batch| {
-                                admit(
+                                let write = admit(
                                     PgBatch::StorePlansDatasentinel(batch.rows),
                                     settings.cloned(),
-                                )
+                                )?;
+                                admitted = true;
+                                Ok(write)
                             },
                         )
                         .await
@@ -799,15 +857,20 @@ impl PgSources {
                             session,
                             &capability,
                             measured.stats_mut(),
-                            |batch| admit(PgBatch::StorePlansVadv(batch.rows), settings.cloned()),
+                            |batch| {
+                                let write =
+                                    admit(PgBatch::StorePlansVadv(batch.rows), settings.cloned())?;
+                                admitted = true;
+                                Ok(write)
+                            },
                         )
                         .await
                     }
                 };
-                finish_batched_kind(pool, measured, result)?
+                (finish_batched_kind(pool, measured, result)?, admitted)
             };
             match completion {
-                QueryCompletion::Complete | QueryCompletion::SourceFailed => {}
+                QueryCompletion::Complete => break,
                 QueryCompletion::CapabilityChanged => {
                     self.invalidate_store_plans(&database);
                 }
@@ -816,33 +879,42 @@ impl PgSources {
                         self.clear_primary_connection();
                         return Ok(false);
                     }
-                    unavailable_databases.insert(database);
+                    if let Some(pool) = self.database_pool_mut(&database) {
+                        pool.close();
+                    }
+                    self.capabilities.remove(&database);
+                    self.last_discovery = None;
+                    unavailable_databases.insert(database.clone());
                 }
+                QueryCompletion::SourceFailed => {}
             }
+            if !try_another_database(completion, admitted) {
+                break;
+            }
+            attempted.insert(database);
         }
 
-        if let Some((database, schema)) =
-            selected_store_plans_info(&self.capabilities, self.server_database.as_deref())
-            && !unavailable_databases.contains(&database)
-        {
+        let mut attempted = unavailable_databases.clone();
+        while let Some((database, generation, schema)) = selected_store_plans_info(
+            &self.capabilities,
+            self.server_database.as_deref(),
+            &attempted,
+        ) {
             let is_current = self.server_database.as_deref() == Some(&database);
-            let completion = 'query: {
+            let (completion, admitted) = 'query: {
                 let Some(pool) = self.database_pool_mut(&database) else {
-                    break 'query QueryCompletion::ConnectionFailed;
+                    break 'query (QueryCompletion::ConnectionFailed, false);
                 };
                 let connection = pool.connection_label(0);
-                let session = if is_current {
-                    session_for_generation(pool, probe.generation, observe)
-                } else {
-                    open_session(pool, observe).await
-                };
-                let session = match session {
+                let session = match session_for_generation(pool, generation, observe) {
                     Ok(session) => session,
                     Err(QueryFailure::Timeout | QueryFailure::Connection) => {
                         pool.close();
-                        break 'query QueryCompletion::ConnectionFailed;
+                        break 'query (QueryCompletion::ConnectionFailed, false);
                     }
-                    Err(QueryFailure::Source) => break 'query QueryCompletion::SourceFailed,
+                    Err(QueryFailure::Source) => {
+                        break 'query (QueryCompletion::SourceFailed, false);
+                    }
                 };
                 let mut measured = measure(observe, "pg_store_plans_info", &connection, &database);
                 let result = query::timeout(
@@ -864,27 +936,116 @@ impl PgSources {
                             settings.cloned(),
                         )?;
                         measured.success();
-                        QueryCompletion::Complete
+                        (QueryCompletion::Complete, true)
                     }
-                    other => finish_failed(measured, other),
+                    other => (finish_failed(measured, other), false),
                 }
             };
-            if matches!(
-                completion,
-                QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut
-            ) {
-                if is_current {
-                    self.clear_primary_connection();
-                    return Ok(false);
+            match completion {
+                QueryCompletion::Complete => break,
+                QueryCompletion::ConnectionFailed | QueryCompletion::TimedOut => {
+                    if is_current {
+                        self.clear_primary_connection();
+                        return Ok(false);
+                    }
+                    if let Some(pool) = self.database_pool_mut(&database) {
+                        pool.close();
+                    }
+                    self.capabilities.remove(&database);
+                    self.last_discovery = None;
+                    unavailable_databases.insert(database.clone());
                 }
-                if let Some(pool) = self.database_pool_mut(&database) {
-                    pool.close();
+                QueryCompletion::CapabilityChanged => {
+                    self.invalidate_store_plans_info(&database);
                 }
-            } else if completion == QueryCompletion::CapabilityChanged {
-                self.invalidate_store_plans_info(&database);
+                QueryCompletion::SourceFailed => {}
             }
+            if !try_another_database(completion, admitted) {
+                break;
+            }
+            attempted.insert(database);
         }
         Ok(true)
+    }
+
+    async fn refresh_secondary_capabilities(
+        &mut self,
+        server_major: u32,
+        observe: &mut (dyn FnMut(PgObservation) + Send),
+    ) -> BTreeSet<String> {
+        let mut unavailable = BTreeSet::new();
+        let found = self.discovered.clone();
+        for database in found {
+            if self.server_database.as_deref() == Some(database.name.as_str()) {
+                continue;
+            }
+            let cached_generation = self
+                .capabilities
+                .get(&database.name)
+                .map(|capabilities| capabilities.generation);
+            let live_generation = self
+                .databases
+                .get(&database.name)
+                .and_then(Pool::generation);
+            if capabilities_match_generation(cached_generation, live_generation) {
+                continue;
+            }
+            let refreshed = {
+                let Some(pool) = self.databases.get_mut(&database.name) else {
+                    continue;
+                };
+                let connection = pool.connection_label(0);
+                let session = match open_session(pool, observe).await {
+                    Ok(session) => session,
+                    Err(QueryFailure::Timeout | QueryFailure::Connection) => {
+                        pool.close();
+                        unavailable.insert(database.name.clone());
+                        self.capabilities.remove(&database.name);
+                        continue;
+                    }
+                    Err(QueryFailure::Source) => {
+                        self.capabilities.remove(&database.name);
+                        continue;
+                    }
+                };
+                let generation = session.generation();
+                let mut measured =
+                    measure(observe, "extension_inventory", &connection, &database.name);
+                let result = query::timeout(
+                    session,
+                    QUERY_TIMEOUT,
+                    extension::inventory(session, measured.stats_mut()),
+                )
+                .await;
+                (generation, finish_query(measured, result))
+            };
+            match refreshed {
+                (generation, Ok(inventory)) => {
+                    warn_outdated_statements_layout(&inventory, server_major, &database.name);
+                    self.capabilities.insert(
+                        database.name,
+                        capabilities_from_inventory(&inventory, generation, server_major),
+                    );
+                }
+                (_generation, Err(QueryFailure::Timeout | QueryFailure::Connection)) => {
+                    if let Some(pool) = self.databases.get_mut(&database.name) {
+                        pool.close();
+                    }
+                    unavailable.insert(database.name.clone());
+                    self.capabilities.remove(&database.name);
+                }
+                (generation, Err(QueryFailure::Source)) => {
+                    self.capabilities.insert(
+                        database.name,
+                        DatabaseCapabilities {
+                            generation,
+                            ..DatabaseCapabilities::default()
+                        },
+                    );
+                }
+            }
+        }
+        unavailable
     }
 
     async fn collect_relations<E>(
@@ -896,24 +1057,36 @@ impl PgSources {
     ) -> Result<(), E> {
         let found = self.discovered.clone();
         for database in &found {
-            let Some(pool) = self.database_pool_mut(&database.name) else {
-                continue;
+            let is_current = self.server_database.as_deref() == Some(database.name.as_str());
+            let result = {
+                let Some(pool) = self.database_pool_mut(&database.name) else {
+                    continue;
+                };
+                collect_relation_database(
+                    pool,
+                    database,
+                    probe.major,
+                    is_current.then_some(probe.generation),
+                    observe,
+                    cached_settings,
+                    admit,
+                )
+                .await
             };
-            let result = collect_relation_database(
-                pool,
-                database,
-                probe.major,
-                observe,
-                cached_settings,
-                admit,
-            )
-            .await;
             match result {
                 Err(error) => {
                     return Err(error);
                 }
                 Ok(RelationResult::Complete | RelationResult::SourceFailed) => {}
-                Ok(RelationResult::ConnectionFailed | RelationResult::TimedOut) => pool.close(),
+                Ok(RelationResult::ConnectionFailed | RelationResult::TimedOut) if is_current => {
+                    self.clear_primary_connection();
+                    return Ok(());
+                }
+                Ok(RelationResult::ConnectionFailed | RelationResult::TimedOut) => {
+                    if let Some(pool) = self.database_pool_mut(&database.name) {
+                        pool.close();
+                    }
+                }
             }
         }
         Ok(())
@@ -958,7 +1131,8 @@ impl PgSources {
                     return false;
                 }
                 Err(QueryFailure::Source) => {
-                    return true;
+                    self.last_discovery = None;
+                    return false;
                 }
             }
         };
@@ -972,11 +1146,7 @@ impl PgSources {
 
         let mut capabilities = BTreeMap::new();
         for database in &found {
-            let previous = self.capabilities.get(&database.name).cloned();
             let Some(pool) = self.database_pool_mut(&database.name) else {
-                if let Some(previous) = previous {
-                    capabilities.insert(database.name.clone(), previous);
-                }
                 continue;
             };
             let connection = pool.connection_label(0);
@@ -998,12 +1168,10 @@ impl PgSources {
                         }
                         QueryFailure::Source => {}
                     }
-                    if let Some(previous) = previous {
-                        capabilities.insert(database.name.clone(), previous);
-                    }
                     continue;
                 }
             };
+            let generation = session.generation();
             let mut measured = measure(observe, "extension_inventory", &connection, &database.name);
             let result = query::timeout(
                 session,
@@ -1013,26 +1181,30 @@ impl PgSources {
             .await;
             match finish_query(measured, result) {
                 Ok(inventory) => {
+                    warn_outdated_statements_layout(&inventory, probe.major, &database.name);
                     capabilities.insert(
                         database.name.clone(),
-                        capabilities_from_inventory(&inventory),
+                        capabilities_from_inventory(&inventory, generation, probe.major),
                     );
                 }
-                Err(failure) => {
-                    match failure {
-                        QueryFailure::Timeout | QueryFailure::Connection => {
-                            pool.close();
-                            if database.is_current {
-                                self.clear_primary_connection();
-                                return false;
-                            }
+                Err(failure) => match failure {
+                    QueryFailure::Timeout | QueryFailure::Connection => {
+                        pool.close();
+                        if database.is_current {
+                            self.clear_primary_connection();
+                            return false;
                         }
-                        QueryFailure::Source => {}
                     }
-                    if let Some(previous) = previous {
-                        capabilities.insert(database.name.clone(), previous);
+                    QueryFailure::Source => {
+                        capabilities.insert(
+                            database.name.clone(),
+                            DatabaseCapabilities {
+                                generation,
+                                ..DatabaseCapabilities::default()
+                            },
+                        );
                     }
-                }
+                },
             }
         }
         self.discovered = found;
@@ -1155,7 +1327,11 @@ fn discovery_due(last: Option<Instant>, now: Instant, forced: bool) -> bool {
     forced || last.is_none_or(|last| now.saturating_duration_since(last) >= DISCOVERY_INTERVAL)
 }
 
-fn capabilities_from_inventory(inventory: &[extension::InventoryEntry]) -> DatabaseCapabilities {
+fn capabilities_from_inventory(
+    inventory: &[extension::InventoryEntry],
+    generation: u64,
+    server_major: u32,
+) -> DatabaseCapabilities {
     let statements_entry = inventory
         .iter()
         .find(|entry| entry.name == statements::EXTENSION);
@@ -1163,7 +1339,8 @@ fn capabilities_from_inventory(inventory: &[extension::InventoryEntry]) -> Datab
         .iter()
         .find(|entry| entry.name == store_plans::EXTENSION);
     DatabaseCapabilities {
-        statements: statements_entry.and_then(statements::capability),
+        generation,
+        statements: statements_entry.and_then(|entry| statements::capability(entry, server_major)),
         store_plans: store_plans_entry.and_then(store_plans::capability),
         statements_info: statements_entry
             .filter(|entry| entry.schema_usable && entry.statements_info)
@@ -1174,31 +1351,83 @@ fn capabilities_from_inventory(inventory: &[extension::InventoryEntry]) -> Datab
     }
 }
 
+fn warn_outdated_statements_layout(
+    inventory: &[extension::InventoryEntry],
+    server_major: u32,
+    database: &str,
+) {
+    if server_major < 14 {
+        return;
+    }
+    let Some(entry) = inventory
+        .iter()
+        .find(|entry| entry.name == statements::EXTENSION)
+    else {
+        return;
+    };
+    let outdated = extension::parse_version(&entry.extversion)
+        .and_then(statements::statements_version)
+        .is_some_and(|version| matches!(version, StatementsVersion::V1 | StatementsVersion::V2));
+    if outdated {
+        log_event(
+            LogLevel::Warn,
+            "pg_stat_statements_extension_update_required",
+            &[
+                field("database", database),
+                field("extension_version", &entry.extversion),
+                field("reason", "run ALTER EXTENSION pg_stat_statements UPDATE"),
+            ],
+        );
+    }
+}
+
 fn selected_capability<T: Clone>(
     capabilities: &BTreeMap<String, DatabaseCapabilities>,
     current_database: Option<&str>,
+    excluded: &BTreeSet<String>,
     get: impl Fn(&DatabaseCapabilities) -> Option<&T>,
-) -> Option<(String, T)> {
+) -> Option<(String, u64, T)> {
     if let Some(current) = current_database
-        && let Some(capability) = capabilities.get(current).and_then(&get)
+        && !excluded.contains(current)
+        && let Some(capabilities) = capabilities.get(current)
+        && let Some(capability) = get(capabilities)
     {
-        return Some((current.to_owned(), capability.clone()));
+        return Some((
+            current.to_owned(),
+            capabilities.generation,
+            capability.clone(),
+        ));
     }
-    capabilities.iter().find_map(|(database, capabilities)| {
-        get(capabilities).map(|capability| (database.clone(), capability.clone()))
-    })
+    capabilities
+        .iter()
+        .filter(|(database, _capabilities)| !excluded.contains(*database))
+        .find_map(|(database, capabilities)| {
+            get(capabilities).map(|capability| {
+                (
+                    database.clone(),
+                    capabilities.generation,
+                    capability.clone(),
+                )
+            })
+        })
+}
+
+const fn capabilities_match_generation(cached: Option<u64>, live: Option<u64>) -> bool {
+    matches!((cached, live), (Some(cached), Some(live)) if cached == live)
 }
 
 fn selected_statements(
     capabilities: &BTreeMap<String, DatabaseCapabilities>,
     current_database: Option<&str>,
-) -> Option<(String, statements::StatementsCapability)> {
+    excluded: &BTreeSet<String>,
+) -> Option<(String, u64, statements::StatementsCapability)> {
     let richest = capabilities
-        .values()
-        .filter_map(|entry| entry.statements.as_ref())
+        .iter()
+        .filter(|(database, _capabilities)| !excluded.contains(*database))
+        .filter_map(|(_database, entry)| entry.statements.as_ref())
         .map(|capability| statements_rank(capability.version))
         .max()?;
-    selected_capability(capabilities, current_database, |entry| {
+    selected_capability(capabilities, current_database, excluded, |entry| {
         entry
             .statements
             .as_ref()
@@ -1220,8 +1449,9 @@ const fn statements_rank(version: StatementsVersion) -> u8 {
 fn selected_statements_info(
     capabilities: &BTreeMap<String, DatabaseCapabilities>,
     current_database: Option<&str>,
-) -> Option<(String, extension::ExtensionSchema)> {
-    selected_capability(capabilities, current_database, |entry| {
+    excluded: &BTreeSet<String>,
+) -> Option<(String, u64, extension::ExtensionSchema)> {
+    selected_capability(capabilities, current_database, excluded, |entry| {
         entry.statements_info.as_ref()
     })
 }
@@ -1229,8 +1459,9 @@ fn selected_statements_info(
 fn selected_store_plans(
     capabilities: &BTreeMap<String, DatabaseCapabilities>,
     current_database: Option<&str>,
-) -> Option<(String, store_plans::StorePlansCapability)> {
-    selected_capability(capabilities, current_database, |entry| {
+    excluded: &BTreeSet<String>,
+) -> Option<(String, u64, store_plans::StorePlansCapability)> {
+    selected_capability(capabilities, current_database, excluded, |entry| {
         entry.store_plans.as_ref()
     })
 }
@@ -1238,10 +1469,15 @@ fn selected_store_plans(
 fn selected_store_plans_info(
     capabilities: &BTreeMap<String, DatabaseCapabilities>,
     current_database: Option<&str>,
-) -> Option<(String, extension::ExtensionSchema)> {
-    selected_capability(capabilities, current_database, |entry| {
+    excluded: &BTreeSet<String>,
+) -> Option<(String, u64, extension::ExtensionSchema)> {
+    selected_capability(capabilities, current_database, excluded, |entry| {
         entry.store_plans_info.as_ref()
     })
+}
+
+const fn try_another_database(completion: QueryCompletion, admitted: bool) -> bool {
+    !admitted && !matches!(completion, QueryCompletion::Complete)
 }
 
 fn settings_equal_ignoring_ts(left: &[SettingsRow], right: &[SettingsRow]) -> bool {
@@ -1533,12 +1769,16 @@ async fn collect_relation_database<E>(
     pool: &mut Pool,
     database: &databases::Database,
     major: u32,
+    expected_generation: Option<u64>,
     observe: &mut (dyn FnMut(PgObservation) + Send),
     settings: Option<&Arc<[SettingsRow]>>,
     admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
 ) -> Result<RelationResult, E> {
     let connection = pool.connection_label(0);
-    let session = match open_session(pool, observe).await {
+    let session = match match expected_generation {
+        Some(generation) => session_for_generation(pool, generation, observe),
+        None => open_session(pool, observe).await,
+    } {
         Ok(session) => session,
         Err(QueryFailure::Timeout) => return Ok(RelationResult::TimedOut),
         Err(QueryFailure::Source) => return Ok(RelationResult::SourceFailed),

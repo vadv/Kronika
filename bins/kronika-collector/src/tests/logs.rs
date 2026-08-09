@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use kronika_format::validate_part;
+use kronika_format::{JOURNAL_HEADER_LEN, validate_part};
 use kronika_layout::{DataRoot, LayoutLimits, WriterOwner};
 use kronika_registry::Ts;
 use kronika_registry::os_loadavg::OsLoadavg;
@@ -221,6 +221,46 @@ fn format_limit_retains_and_reencodes_the_exact_log_batch() {
 #[test]
 fn journal_full_retains_and_reencodes_the_exact_log_batch() {
     assert_retained_batch_moves_to_fresh_segment(Pressure::Journal);
+}
+
+#[test]
+fn a_fresh_log_window_append_failure_is_fatal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let owner = owner(dir.path());
+    let mut journal = Journal::open(
+        &owner,
+        JournalConfig {
+            max_journal_len: JOURNAL_HEADER_LEN,
+            ..JournalConfig::default()
+        },
+    )
+    .expect("open header-only journal");
+    let config = config(dir.path(), JOURNAL_HEADER_LEN as u64);
+    let mut segment = SegmentState::default();
+    let mut scheduler = Scheduler::new(Intervals::default());
+
+    let error = match append_pending_window(
+        &mut journal,
+        &owner,
+        &config,
+        &DueSet::logs(),
+        &log_rows(),
+        &[],
+        200,
+        &mut segment,
+        &mut scheduler,
+    ) {
+        Err(error) => error,
+        Ok(_outcome) => {
+            panic!("a fresh segment must not retry a deterministically rejected window")
+        }
+    };
+
+    assert!(
+        format!("{error:#}").contains("append the collection window to the journal"),
+        "{error:#}"
+    );
+    assert!(journal.parts().is_empty());
 }
 
 fn assert_pg_batch_moves_to_fresh_segment(pressure: Pressure) {

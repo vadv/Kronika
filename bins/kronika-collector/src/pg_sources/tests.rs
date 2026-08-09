@@ -1,19 +1,19 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use kronika_source_pg::Pool;
 use kronika_source_pg::databases::Database;
-use kronika_source_pg::extension::ExtensionSchema;
+use kronika_source_pg::extension::{ExtensionSchema, InventoryEntry};
 use kronika_source_pg::statements::{StatementsCapability, StatementsVersion};
 use kronika_source_pg::store_plans::{Flavour, StorePlansCapability};
 
 use super::{
     BatchWrite, CachedSettings, DISCOVERY_INTERVAL, DatabaseCapabilities, GenerationProbe,
-    PgObservation, PgSources, QueryFailure, QueryOutcome, SERVER_PROBE_SQL,
-    cached_settings_for_generation, capability_sqlstate, discovery_due, measure,
-    selected_statements, selected_statements_info, selected_store_plans, selected_store_plans_info,
-    session_for_generation,
+    PgObservation, PgSources, QueryCompletion, QueryFailure, QueryOutcome, SERVER_PROBE_SQL,
+    cached_settings_for_generation, capabilities_from_inventory, capabilities_match_generation,
+    capability_sqlstate, discovery_due, measure, selected_statements, selected_statements_info,
+    selected_store_plans, selected_store_plans_info, session_for_generation, try_another_database,
 };
 
 fn statements(version: StatementsVersion) -> StatementsCapability {
@@ -35,6 +35,7 @@ fn capabilities(
     plans: Option<StorePlansCapability>,
 ) -> DatabaseCapabilities {
     DatabaseCapabilities {
+        generation: 7,
         statements,
         store_plans: plans,
         ..DatabaseCapabilities::default()
@@ -77,20 +78,71 @@ fn statements_choose_the_richest_layout_before_database_preference() {
     ]);
 
     assert_eq!(
-        selected_statements(&capabilities, Some("alpha")).map(|(database, _)| database),
+        selected_statements(&capabilities, Some("alpha"), &BTreeSet::new())
+            .map(|(database, _, _)| database),
         Some("beta".to_owned()),
         "an older current-database installation must not hide newer counters"
     );
     assert_eq!(
-        selected_statements(&capabilities, Some("zeta")).map(|(database, _)| database),
+        selected_statements(&capabilities, Some("zeta"), &BTreeSet::new())
+            .map(|(database, _, _)| database),
         Some("zeta".to_owned()),
         "the current database wins between equal richest layouts"
     );
     assert_eq!(
-        selected_statements(&capabilities, None).map(|(database, _)| database),
+        selected_statements(&capabilities, None, &BTreeSet::new()).map(|(database, _, _)| database),
         Some("beta".to_owned()),
         "the database name is the deterministic final tie-break"
     );
+}
+
+#[test]
+fn statements_fallback_is_deterministic_across_databases_and_layouts() {
+    let capabilities = BTreeMap::from([
+        (
+            "alpha".to_owned(),
+            capabilities(Some(statements(StatementsVersion::V1)), None),
+        ),
+        (
+            "beta".to_owned(),
+            capabilities(Some(statements(StatementsVersion::V6)), None),
+        ),
+        (
+            "zeta".to_owned(),
+            capabilities(Some(statements(StatementsVersion::V6)), None),
+        ),
+    ]);
+    let mut excluded = BTreeSet::new();
+
+    assert_eq!(
+        selected_statements(&capabilities, None, &excluded).map(|(database, _, _)| database),
+        Some("beta".to_owned())
+    );
+    excluded.insert("beta".to_owned());
+    assert_eq!(
+        selected_statements(&capabilities, None, &excluded).map(|(database, _, _)| database),
+        Some("zeta".to_owned())
+    );
+    excluded.insert("zeta".to_owned());
+    assert_eq!(
+        selected_statements(&capabilities, None, &excluded).map(|(database, _, _)| database),
+        Some("alpha".to_owned())
+    );
+}
+
+#[test]
+fn extension_fallback_stops_after_completion_or_an_admitted_batch() {
+    assert!(!try_another_database(QueryCompletion::Complete, false));
+    assert!(!try_another_database(QueryCompletion::Complete, true));
+    for completion in [
+        QueryCompletion::SourceFailed,
+        QueryCompletion::CapabilityChanged,
+        QueryCompletion::ConnectionFailed,
+        QueryCompletion::TimedOut,
+    ] {
+        assert!(try_another_database(completion, false));
+        assert!(!try_another_database(completion, true));
+    }
 }
 
 #[test]
@@ -115,20 +167,56 @@ fn main_readers_and_info_views_are_selected_independently() {
     ]);
 
     assert_eq!(
-        selected_statements(&capabilities, None).map(|(database, _)| database),
+        selected_statements(&capabilities, None, &BTreeSet::new()).map(|(database, _, _)| database),
         Some("beta".to_owned())
     );
     assert_eq!(
-        selected_statements_info(&capabilities, None).map(|(database, _)| database),
+        selected_statements_info(&capabilities, None, &BTreeSet::new())
+            .map(|(database, _, _)| database),
         Some("alpha".to_owned())
     );
     assert_eq!(
-        selected_store_plans(&capabilities, None).map(|(database, _)| database),
+        selected_store_plans(&capabilities, None, &BTreeSet::new())
+            .map(|(database, _, _)| database),
         Some("beta".to_owned())
     );
     assert_eq!(
-        selected_store_plans_info(&capabilities, None).map(|(database, _)| database),
+        selected_store_plans_info(&capabilities, None, &BTreeSet::new())
+            .map(|(database, _, _)| database),
         Some("alpha".to_owned())
+    );
+}
+
+#[test]
+fn statements_info_remains_available_without_full_statement_visibility() {
+    let capabilities = capabilities_from_inventory(
+        &[InventoryEntry {
+            name: "pg_stat_statements".to_owned(),
+            extversion: "1.12".to_owned(),
+            schema: ExtensionSchema::new("monitoring"),
+            schema_usable: true,
+            full_visibility: false,
+            statements_info: true,
+            store_plans_info: false,
+            statements_reader: true,
+            store_plans_zero_arg: false,
+            store_plans_bool_arg: false,
+            store_plans_key_getter: false,
+            store_plans_ossc_columns: false,
+            store_plans_vadv_columns: false,
+            store_plans_datasentinel_columns: false,
+        }],
+        7,
+        18,
+    );
+
+    assert!(capabilities.statements.is_none());
+    assert_eq!(
+        capabilities
+            .statements_info
+            .as_ref()
+            .map(ExtensionSchema::name),
+        Some("monitoring")
     );
 }
 
@@ -154,12 +242,14 @@ fn store_plans_flavours_are_not_ranked() {
     ]);
 
     assert_eq!(
-        selected_store_plans(&capabilities, Some("alpha")).map(|(database, _)| database),
+        selected_store_plans(&capabilities, Some("alpha"), &BTreeSet::new())
+            .map(|(database, _, _)| database),
         Some("alpha".to_owned()),
         "the current database wins without ranking independent implementations"
     );
     assert_eq!(
-        selected_store_plans(&capabilities, None).map(|(database, _)| database),
+        selected_store_plans(&capabilities, None, &BTreeSet::new())
+            .map(|(database, _, _)| database),
         Some("alpha".to_owned()),
         "the database name is the deterministic fallback"
     );
@@ -172,6 +262,7 @@ fn capability_invalidation_preserves_independent_info_and_tracks_a_move() {
     sources.capabilities.insert(
         "alpha".to_owned(),
         DatabaseCapabilities {
+            generation: 7,
             statements: Some(statements(StatementsVersion::V1)),
             store_plans: Some(plans(Flavour::OsscCompatible)),
             statements_info: Some(schema.clone()),
@@ -180,10 +271,10 @@ fn capability_invalidation_preserves_independent_info_and_tracks_a_move() {
     );
     sources.invalidate_statements("alpha");
     sources.invalidate_store_plans("alpha");
-    assert!(selected_statements(&sources.capabilities, None).is_none());
-    assert!(selected_store_plans(&sources.capabilities, None).is_none());
-    assert!(selected_statements_info(&sources.capabilities, None).is_some());
-    assert!(selected_store_plans_info(&sources.capabilities, None).is_some());
+    assert!(selected_statements(&sources.capabilities, None, &BTreeSet::new()).is_none());
+    assert!(selected_store_plans(&sources.capabilities, None, &BTreeSet::new()).is_none());
+    assert!(selected_statements_info(&sources.capabilities, None, &BTreeSet::new()).is_some());
+    assert!(selected_store_plans_info(&sources.capabilities, None, &BTreeSet::new()).is_some());
 
     sources.invalidate_statements_info("alpha");
     sources.invalidate_store_plans_info("alpha");
@@ -196,11 +287,13 @@ fn capability_invalidation_preserves_independent_info_and_tracks_a_move() {
         },
     );
     assert_eq!(
-        selected_statements_info(&sources.capabilities, None).map(|(database, _)| database),
+        selected_statements_info(&sources.capabilities, None, &BTreeSet::new())
+            .map(|(database, _, _)| database),
         Some("beta".to_owned())
     );
     assert_eq!(
-        selected_store_plans_info(&sources.capabilities, None).map(|(database, _)| database),
+        selected_store_plans_info(&sources.capabilities, None, &BTreeSet::new())
+            .map(|(database, _, _)| database),
         Some("beta".to_owned())
     );
 }
@@ -213,6 +306,14 @@ fn settings_cache_is_scoped_to_one_connection_generation() {
     });
     assert!(cached_settings_for_generation(cached.as_ref(), 7).is_some());
     assert!(cached_settings_for_generation(cached.as_ref(), 8).is_none());
+}
+
+#[test]
+fn extension_inventory_cache_is_scoped_to_one_connection_generation() {
+    assert!(capabilities_match_generation(Some(7), Some(7)));
+    assert!(!capabilities_match_generation(None, Some(7)));
+    assert!(!capabilities_match_generation(Some(7), Some(8)));
+    assert!(!capabilities_match_generation(Some(7), None));
 }
 
 #[test]
@@ -346,6 +447,43 @@ fn timeout_observation_retains_partial_query_accounting() {
     };
     assert_eq!(observation.outcome, QueryOutcome::Timeout);
     assert_eq!(observation.stats.rows, 9);
+}
+
+#[test]
+fn dropping_an_inflight_measurement_emits_one_cancelled_observation() {
+    let mut observations = Vec::new();
+    {
+        let mut observe = |observation| observations.push(observation);
+        let mut measured = measure(
+            &mut observe,
+            "pg_stat_statements",
+            "monitor@db.example:5432",
+            "postgres",
+        );
+        measured.stats_mut().rows = 9;
+    }
+
+    assert_eq!(observations.len(), 1);
+    let PgObservation::Query(observation) = observations.pop().expect("one observation") else {
+        panic!("expected a query observation");
+    };
+    assert_eq!(observation.query_name, "pg_stat_statements");
+    assert_eq!(observation.outcome, QueryOutcome::Error);
+    assert_eq!(observation.stats.rows, 9);
+    assert_eq!(
+        observation.error.as_deref(),
+        Some("collector stopped while the query was running")
+    );
+}
+
+#[test]
+fn completed_measurement_does_not_emit_from_drop() {
+    let mut observations = Vec::new();
+    {
+        let mut observe = |observation| observations.push(observation);
+        measure(&mut observe, "probe", "monitor@db.example:5432", "postgres").success();
+    }
+    assert_eq!(observations.len(), 1);
 }
 
 #[test]
