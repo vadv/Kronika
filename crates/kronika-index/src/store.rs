@@ -3,12 +3,11 @@
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
+use crate::build::{BuildError, build, build_selected};
+use crate::file::{Index, IndexError, TargetedIndex, read_all, read_target};
+use crate::series::{SeriesKey, SeriesKind, pg_activity_layout, pg_database_layout};
 use kronika_layout::{DataRoot, LayoutError, LayoutLimits, OwnerKind, SegmentAddress, SegmentId};
 use kronika_reader::{Reader, ReaderError, SegmentKind, SegmentRef};
-use kronika_registry::logical_section_name;
-
-use crate::build::{BuildError, DERIVED_HEALTH_TYPE_ID, build, build_selected};
-use crate::file::{Index, IndexError, TargetedIndex, read_all, read_target};
 
 /// Extension of an index file.
 pub const EXTENSION: &str = "idx";
@@ -118,16 +117,15 @@ pub fn resource(
     root: &Path,
     reader: &Reader,
     segment_ref: &SegmentRef,
-    sources: u32,
     logical_name: &str,
 ) -> Result<ResourceIndex, LoadError> {
-    let type_ids = physical_type_ids(segment_ref, logical_name);
+    let keys = series_keys(segment_ref, logical_name);
     match segment_ref.kind() {
         SegmentKind::Active => {
             let segment = reader.open_segment(segment_ref)?;
-            let index = build_selected(&segment, sources, &type_ids)?;
+            let index = build_selected(&segment, &keys)?;
             Ok(ResourceIndex {
-                index: targeted(index, &type_ids, None),
+                index: targeted(index, &keys, None),
                 persisted: false,
             })
         }
@@ -135,9 +133,8 @@ pub fn resource(
             let data_root = DataRoot::open(root)?;
             let address = address_of(segment_ref.id())?;
             if let Some(mut file) = data_root.open_idx(address)?
-                && let Ok(selected) = read_target(&mut file, &type_ids)
-                && selected.sources == sources
-                && contains_targets(&selected, &type_ids)
+                && let Ok(selected) = read_target(&mut file, &keys)
+                && contains_targets(&selected, &keys)
             {
                 return Ok(ResourceIndex {
                     index: selected,
@@ -152,14 +149,14 @@ pub fn resource(
                     // identity after the complete build.
                     let mut temporary = owner.create_idx_temp(address)?;
                     let segment = reader.open_segment(segment_ref)?;
-                    let index = build(&segment, sources)?;
+                    let index = build(&segment)?;
                     let bytes = index.encode().map_err(LoadError::Bad)?;
                     let checksum = encoded_checksum(&bytes)?;
                     temporary.file_mut().write_all(&bytes)?;
                     drop(temporary.try_clone_file()?);
                     temporary.publish()?;
                     Ok(ResourceIndex {
-                        index: targeted(index, &type_ids, Some(checksum)),
+                        index: targeted(index, &keys, Some(checksum)),
                         persisted: true,
                     })
                 }
@@ -172,11 +169,11 @@ pub fn resource(
                     // full-file checksum is the same stable representation
                     // tag the winning publisher computes.
                     let segment = reader.open_segment(segment_ref)?;
-                    let index = build(&segment, sources)?;
+                    let index = build(&segment)?;
                     let bytes = index.encode().map_err(LoadError::Bad)?;
                     let checksum = encoded_checksum(&bytes)?;
                     Ok(ResourceIndex {
-                        index: targeted(index, &type_ids, Some(checksum)),
+                        index: targeted(index, &keys, Some(checksum)),
                         persisted: false,
                     })
                 }
@@ -186,50 +183,53 @@ pub fn resource(
     }
 }
 
-fn physical_type_ids(segment: &SegmentRef, logical_name: &str) -> Vec<u32> {
+/// Return the allowlisted series exposed by one logical section.
+#[must_use]
+pub fn series_keys(segment: &SegmentRef, logical_name: &str) -> Vec<SeriesKey> {
     if logical_name == "health" {
-        return vec![DERIVED_HEALTH_TYPE_ID];
+        return vec![SeriesKey::OS_HEALTH];
     }
     segment
         .sections()
         .iter()
-        .filter_map(|section| {
-            logical_section_name(section.type_id)
-                .is_some_and(|name| name == logical_name)
-                .then_some(section.type_id)
+        .filter_map(|section| match logical_name {
+            "pg_stat_database" if pg_database_layout(section.type_id) => Some(SeriesKey {
+                kind: SeriesKind::PgTransactionsPerSecond,
+                type_id: section.type_id,
+            }),
+            "pg_stat_activity" if pg_activity_layout(section.type_id) => Some(SeriesKey {
+                kind: SeriesKind::PgActiveBackends,
+                type_id: section.type_id,
+            }),
+            _ => None,
         })
         .collect()
 }
 
-fn contains_targets(index: &TargetedIndex, type_ids: &[u32]) -> bool {
-    type_ids.iter().all(|type_id| {
-        index
-            .sections
-            .iter()
-            .any(|section| section.type_id == *type_id)
-    })
+fn contains_targets(index: &TargetedIndex, keys: &[SeriesKey]) -> bool {
+    keys.iter()
+        .all(|key| index.blocks.iter().any(|block| block.key() == *key))
 }
 
 fn address_of(raw_id: i64) -> Result<SegmentAddress, LayoutError> {
     SegmentAddress::new(SegmentId::new(raw_id)?)
 }
 
-fn targeted(index: Index, type_ids: &[u32], checksum: Option<u32>) -> TargetedIndex {
-    let wanted: std::collections::HashSet<u32> = type_ids.iter().copied().collect();
+fn targeted(index: Index, keys: &[SeriesKey], checksum: Option<u32>) -> TargetedIndex {
+    let wanted: std::collections::HashSet<SeriesKey> = keys.iter().copied().collect();
     TargetedIndex {
         checksum,
-        sources: index.sources,
-        sections: index
-            .sections
+        blocks: index
+            .blocks
             .into_iter()
-            .filter(|section| wanted.contains(&section.type_id))
+            .filter(|block| wanted.contains(&block.key()))
             .collect(),
     }
 }
 
 fn encoded_checksum(bytes: &[u8]) -> Result<u32, LoadError> {
     let raw: [u8; 4] = bytes
-        .get(16..20)
+        .get(12..16)
         .ok_or(LoadError::Bad(IndexError::Truncated))?
         .try_into()
         .map_err(|_error| LoadError::Bad(IndexError::Truncated))?;

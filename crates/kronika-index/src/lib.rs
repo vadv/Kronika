@@ -1,21 +1,19 @@
-//! Targeted derived summaries for immutable and captured Kronika segments.
-//!
-//! A finished `.idx` has one independently decodable block per physical
-//! registry layout plus the ordinary derived `health` series. It stores exact
-//! declared identities and bounded first/last observations, never arbitrary
-//! label columns or every timestamped sample.
+//! A small allowlist of presentation series for immutable and captured Kronika
+//! segments. Raw and unlisted metrics stay only in ZMS/WAL.
 
 mod build;
 mod file;
 mod health;
+mod series;
 mod store;
-mod summary;
 
 pub use build::{
-    BuildError, DERIVED_HEALTH_TYPE_ID, HealthPoint, INSTANCE_METADATA_TYPE_ID, OS_PSI_TYPE_ID,
-    build, build_selected, visit_health_points,
+    BuildError, DERIVED_HEALTH_TYPE_ID, INSTANCE_METADATA_TYPE_ID, OS_PSI_TYPE_ID, build,
+    build_selected, keys, visit_health_points,
 };
 pub use file::{ENTRY_LEN, HEADER_LEN, Index, IndexError, MAGIC, TargetedIndex};
 pub use health::{SourcePenalty, Stall, health, overall_health, postgres_penalty};
-pub use store::{EXTENSION, LoadError, ResourceIndex, path_of, read, resource};
-pub use summary::{IdentityValue, Number, ObjectSummary, Observation, Sample, SectionSummary};
+pub use series::{
+    ActiveBackendPoint, HealthPoint, SeriesBlock, SeriesKey, SeriesKind, TransactionPoint,
+};
+pub use store::{EXTENSION, LoadError, ResourceIndex, path_of, read, resource, series_keys};

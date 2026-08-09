@@ -29,25 +29,28 @@ fn active_index_has_no_validator_and_is_never_stored() {
 }
 
 #[test]
-fn health_uses_the_same_layout_and_object_record_shape_as_physical_series() {
+fn health_has_one_explicit_allowlisted_series() {
     let value = section_layout("health", 0).unwrap();
     assert_eq!(value["logical_name"], "health");
     assert_eq!(value["type_id"], "0");
     assert_eq!(value["identity"].as_array().unwrap().len(), 0);
-    assert_eq!(value["columns"][0]["name"], "health");
+    assert_eq!(value["columns"][0]["name"], "os_health");
     assert_eq!(value["columns"][0]["class"], "gauge");
-    assert_eq!(value["columns"][0]["type"], "u32");
+    assert_eq!(value["columns"][0]["type"], "u8");
 }
 
 #[test]
 fn a_logical_section_retains_its_exact_physical_layout_provenance() {
-    let value = section_layout("pg_store_plans", 1_004_001).expect("known vadv layout");
-    assert_eq!(value["logical_name"], "pg_store_plans");
-    assert_eq!(value["physical_name"], "pg_store_plans_vadv");
-    assert_eq!(value["type_id"], "1004001");
-    assert_eq!(value["implementation"], "vadv");
-    assert_eq!(value["identity"][0], "userid");
-    assert_eq!(value["identity"][1], "dbid");
-    assert_eq!(value["identity"][2], "queryid");
-    assert_eq!(value["identity"][3], "planid");
+    let value = section_layout("pg_stat_database", 1_005_004).expect("known PG18 layout");
+    assert_eq!(value["logical_name"], "pg_stat_database");
+    assert_eq!(value["physical_name"], "pg_stat_database");
+    assert_eq!(value["type_id"], "1005004");
+    assert_eq!(value["identity"][0], "datid");
+    assert_eq!(value["columns"][0]["name"], "transactions_per_second");
+}
+
+#[test]
+fn statement_and_plan_layouts_have_no_index_representation() {
+    assert!(section_layout("pg_stat_statements", 1_002_006).is_err());
+    assert!(section_layout("pg_store_plans", 1_004_001).is_err());
 }

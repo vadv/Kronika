@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-use kronika_index::{DERIVED_HEALTH_TYPE_ID, IdentityValue, Number, Observation, Sample};
+use kronika_index::SeriesBlock;
 use kronika_reader::{Cell, Dictionary, Resolved, Segment, StoreWarning};
 use kronika_registry::{DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, section_name};
 use serde_json::{Map, Value, json};
@@ -113,8 +113,7 @@ pub(crate) fn sizes(
     Ok(())
 }
 
-/// The index this segment would get: exact identities and bounded numeric
-/// observations for each physical layout, including derived health.
+/// The small presentation-series index this segment would get.
 ///
 /// # Errors
 ///
@@ -125,192 +124,95 @@ pub(crate) fn index(
     json_output: bool,
     segment: &Segment,
 ) -> Result<(), DumpError> {
-    let built = kronika_index::build(segment, 0)?;
+    let built = kronika_index::build(segment)?;
     let path = segment.path().display().to_string();
     if json_output {
-        let mut write_error = None;
-        kronika_index::visit_health_points(
-            segment,
-            || true,
-            |point| match say(
-                output,
-                &json!({
-                    "kind": "point",
-                    "path": path,
-                    "ts": point.timestamp.to_string(),
-                    "health": point.value,
-                }),
-            ) {
-                Ok(()) => true,
-                Err(error) => {
-                    write_error = Some(error);
-                    false
+        for block in &built.blocks {
+            match block {
+                SeriesBlock::OsHealth(points) => {
+                    for point in points {
+                        say(
+                            output,
+                            &json!({
+                                "kind": "point",
+                                "path": path,
+                                "series": "os_health",
+                                "type_id": "0",
+                                "ts": point.timestamp.to_string(),
+                                "identity": {},
+                                "value": point.value,
+                            }),
+                        )?;
+                    }
                 }
-            },
-        )?;
-        if let Some(error) = write_error {
-            return Err(error);
-        }
-        for section in &built.sections {
-            for object in &section.objects {
-                say(
-                    output,
-                    &json!({
-                        "kind": "object",
-                        "path": path,
-                        "type_id": section.type_id,
-                        "section": index_section_name(section.type_id),
-                        "identity": object.identity.iter().map(index_identity).collect::<Vec<_>>(),
-                        "observations": object
-                            .observations
-                            .iter()
-                            .map(index_observation)
-                            .collect::<Vec<_>>(),
-                    }),
-                )?;
+                SeriesBlock::PgTransactions { type_id, points } => {
+                    for point in points {
+                        say(
+                            output,
+                            &json!({
+                                "kind": "point",
+                                "path": path,
+                                "series": "transactions_per_second",
+                                "type_id": type_id.to_string(),
+                                "ts": point.timestamp.to_string(),
+                                "identity": { "datid": point.datid },
+                                "value": point.value,
+                            }),
+                        )?;
+                    }
+                }
+                SeriesBlock::PgActiveBackends { type_id, points } => {
+                    for point in points {
+                        say(
+                            output,
+                            &json!({
+                                "kind": "point",
+                                "path": path,
+                                "series": "active_backends",
+                                "type_id": type_id.to_string(),
+                                "ts": point.timestamp.to_string(),
+                                "identity": {},
+                                "value": point.count,
+                            }),
+                        )?;
+                    }
+                }
             }
         }
         return Ok(());
     }
     let encoded_bytes = built.encode()?.len();
-    let object_count = built
-        .sections
-        .iter()
-        .map(|section| section.objects.len())
-        .sum::<usize>();
-    let series_count = built
-        .sections
-        .iter()
-        .flat_map(|section| &section.objects)
-        .map(|object| object.observations.len())
-        .sum::<usize>();
+    let point_count = built.blocks.iter().map(index_block_len).sum::<usize>();
     writeln!(
         output,
-        "{path}  sections={}  objects={object_count}  series={series_count}  idx_bytes={encoded_bytes}",
-        built.sections.len(),
+        "{path}  blocks={}  points={point_count}  idx_bytes={encoded_bytes}",
+        built.blocks.len(),
     )?;
-    for section in &built.sections {
-        let observations = section
-            .objects
-            .iter()
-            .map(|object| object.observations.len())
-            .sum::<usize>();
-        let samples = section
-            .objects
-            .iter()
-            .flat_map(|object| &object.observations)
-            .map(|observation| observation.count)
-            .fold(0_u64, u64::saturating_add);
+    for block in &built.blocks {
         writeln!(
             output,
-            "  {:<9} {:<22} objects={:<8} series={:<8} samples={}",
-            section.type_id,
-            index_section_name(section.type_id),
-            section.objects.len(),
-            observations,
-            samples,
+            "  {:<28} points={}",
+            index_block_name(block),
+            index_block_len(block),
         )?;
     }
     Ok(())
 }
 
-fn index_section_name(type_id: u32) -> &'static str {
-    if type_id == DERIVED_HEALTH_TYPE_ID {
-        "health"
-    } else {
-        section_name(type_id).unwrap_or("unknown")
+fn index_block_name(block: &SeriesBlock) -> &'static str {
+    match block {
+        SeriesBlock::OsHealth(_) => "os_health",
+        SeriesBlock::PgTransactions { .. } => "transactions_per_second",
+        SeriesBlock::PgActiveBackends { .. } => "active_backends",
     }
 }
 
-/// One exact index identity as JSON. Wide integers and timestamps use decimal
-/// strings so JavaScript consumers do not silently round them.
-fn index_identity(value: &IdentityValue) -> Value {
-    match value {
-        IdentityValue::Null => Value::Null,
-        IdentityValue::I16(number) => json!(number),
-        IdentityValue::I32(number) => json!(number),
-        IdentityValue::I64(number) | IdentityValue::Ts(number) => Value::String(number.to_string()),
-        IdentityValue::U32(number) => json!(number),
-        IdentityValue::U64(number) => Value::String(number.to_string()),
-        IdentityValue::F64(number) => index_float(*number),
-        IdentityValue::Bool(value) => json!(value),
-        IdentityValue::Text(bytes) => index_bytes(bytes),
-        IdentityValue::Blob {
-            stored_bytes,
-            full_len,
-            truncated,
-            full_sha256,
-        } => json!({
-            "representation": "blob",
-            "stored_bytes": index_bytes(stored_bytes),
-            "full_len": full_len.to_string(),
-            "truncated": truncated,
-            "full_sha256": full_sha256.map(|hash| index_hex(&hash)),
-        }),
-        IdentityValue::ListI32(values) => json!(values),
+fn index_block_len(block: &SeriesBlock) -> usize {
+    match block {
+        SeriesBlock::OsHealth(points) => points.len(),
+        SeriesBlock::PgTransactions { points, .. } => points.len(),
+        SeriesBlock::PgActiveBackends { points, .. } => points.len(),
     }
-}
-
-fn index_observation(observation: &Observation) -> Value {
-    json!({
-        "count": observation.count.to_string(),
-        "first": observation.first.map(index_sample),
-        "last": observation.last.map(index_sample),
-        "nonnegative_delta": observation.nonnegative_delta.map(index_number),
-        "observed_us": observation.observed_us.to_string(),
-    })
-}
-
-fn index_sample(sample: Sample) -> Value {
-    json!({
-        "ts": sample.ts.to_string(),
-        "value": index_number(sample.value),
-    })
-}
-
-fn index_number(number: Number) -> Value {
-    match number {
-        Number::I16(number) => json!(number),
-        Number::I32(number) => json!(number),
-        Number::I64(number) => Value::String(number.to_string()),
-        Number::U32(number) => json!(number),
-        Number::U64(number) => Value::String(number.to_string()),
-        Number::F64(number) => index_float(number),
-    }
-}
-
-fn index_float(number: f64) -> Value {
-    serde_json::Number::from_f64(number).map_or_else(
-        || {
-            json!({
-                "representation": "nonfinite_f64",
-                "bits": number.to_bits().to_string(),
-            })
-        },
-        Value::Number,
-    )
-}
-
-fn index_bytes(bytes: &[u8]) -> Value {
-    std::str::from_utf8(bytes).map_or_else(
-        |_invalid| {
-            json!({
-                "representation": "bytes",
-                "bytes": bytes,
-            })
-        },
-        |text| Value::String(text.to_owned()),
-    )
-}
-
-fn index_hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        encoded.push(char::from(DIGITS[usize::from(byte >> 4)]));
-        encoded.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
-    }
-    encoded
 }
 
 /// The rows of one section, with dictionary ids resolved to what they hold.

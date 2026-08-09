@@ -179,7 +179,7 @@ pub(crate) fn prepare(
 ) -> Result<Prepared, ApiError> {
     match route {
         Route::Catalog(window) => catalog::prepare(root, window, sources).map(Prepared::Catalog),
-        Route::Index(request) => index::prepare(root, sources, request, if_none_match),
+        Route::Index(request) => index::prepare(root, request, if_none_match),
         Route::History(request) => history::prepare(root, request).map(Prepared::History),
         Route::Rows(request) => rows::prepare(root, request).map(Prepared::Rows),
     }

@@ -87,11 +87,11 @@ fn real_active_and_finished_resources_are_bounded_and_atomically_cached() {
 
     let reader = Reader::open(directory.path()).expect("reader");
     let active_ref = only_segment(&reader, SegmentKind::Active);
-    let active = resource(directory.path(), &reader, &active_ref, 0b101, "os_topology")
-        .expect("active resource");
+    let active =
+        resource(directory.path(), &reader, &active_ref, "health").expect("active resource");
     assert!(!active.persisted);
     assert_eq!(active.index.checksum, None);
-    assert_eq!(active.index.sections.len(), 1);
+    assert_eq!(active.index.blocks.len(), 1);
 
     write_segment(&journal, &writer, address()).expect("finish segment");
     let reader = Reader::open(directory.path()).expect("finished reader");
@@ -102,27 +102,15 @@ fn real_active_and_finished_resources_are_bounded_and_atomically_cached() {
     let contended_owner = data_root
         .acquire_index(LayoutLimits::default())
         .expect("hold index owner");
-    let computed = resource(
-        directory.path(),
-        &reader,
-        &finished_ref,
-        0b101,
-        "os_topology",
-    )
-    .expect("serve while publication is contended");
+    let computed = resource(directory.path(), &reader, &finished_ref, "health")
+        .expect("serve while publication is contended");
     assert!(!computed.persisted);
     assert!(computed.index.checksum.is_some());
     assert!(!index_path.exists(), "contended request must not publish");
     drop(contended_owner);
 
-    let published = resource(
-        directory.path(),
-        &reader,
-        &finished_ref,
-        0b101,
-        "os_topology",
-    )
-    .expect("publish finished index");
+    let published = resource(directory.path(), &reader, &finished_ref, "health")
+        .expect("publish finished index");
     assert!(published.persisted);
     assert_eq!(published.index.checksum, computed.index.checksum);
     assert!(index_path.is_file());
@@ -133,22 +121,7 @@ fn real_active_and_finished_resources_are_bounded_and_atomically_cached() {
             .any(|window| window == b"IDX-MUST-NOT-COPY-THIS-DISPLAY-LABEL"),
         "non-identity display labels do not belong in IDX"
     );
-    assert_eq!(read(&index_path).expect("read index").sources, 0b101);
-
-    let rebuilt = resource(
-        directory.path(),
-        &reader,
-        &finished_ref,
-        0b111,
-        "os_topology",
-    )
-    .expect("rebuild for changed source set");
-    assert!(rebuilt.persisted);
-    assert_ne!(rebuilt.index.checksum, published.index.checksum);
-    assert_eq!(
-        read(&index_path).expect("read rebuilt index").sources,
-        0b111
-    );
+    assert_eq!(read(&index_path).expect("read index").blocks.len(), 1);
 }
 
 #[test]
@@ -169,14 +142,8 @@ fn a_published_index_does_not_require_its_finished_source_body() {
         .expect("open finished segment")
         .path()
         .to_path_buf();
-    let published = resource(
-        directory.path(),
-        &reader,
-        &finished_ref,
-        0b101,
-        "os_topology",
-    )
-    .expect("publish finished index");
+    let published = resource(directory.path(), &reader, &finished_ref, "health")
+        .expect("publish finished index");
     assert!(published.persisted);
     journal.reset().expect("leave no active segment");
 
@@ -196,13 +163,7 @@ fn a_published_index_does_not_require_its_finished_source_body() {
     let catalog = reader.catalog_segments(..).expect("catalog-only discovery");
     assert!(catalog.warnings.is_empty());
     assert_eq!(catalog.segments.len(), 1);
-    let recovered = resource(
-        directory.path(),
-        &reader,
-        &catalog.segments[0],
-        0b101,
-        "os_topology",
-    )
-    .expect("load published index without source body");
+    let recovered = resource(directory.path(), &reader, &catalog.segments[0], "health")
+        .expect("load published index without source body");
     assert_eq!(recovered, published);
 }

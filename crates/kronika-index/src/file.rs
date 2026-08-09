@@ -1,30 +1,30 @@
-//! The targeted `.idx` container: header, physical-layout TOC, and blocks.
+//! The single current `.idx` container format.
 
 use std::collections::HashSet;
 use std::io::{Read, Seek, SeekFrom};
 
 use kronika_format::Crc32c;
 
-use crate::summary::{SectionSummary, decode_section, encode_section};
+use crate::series::{SeriesBlock, SeriesKey, SeriesKind};
 
-/// Magic of the unreleased targeted index format.
-pub const MAGIC: [u8; 8] = *b"KRNIDX3\0";
-/// Bytes before the table: magic, source set, entry count, checksum.
-pub const HEADER_LEN: usize = 20;
-/// Bytes per TOC entry: kind, physical type id, body offset, body length.
+/// Magic of the current unreleased allowlist format.
+pub const MAGIC: [u8; 8] = *b"KRNIDX4\0";
+/// Bytes before the table: magic, entry count, checksum.
+pub const HEADER_LEN: usize = 16;
+/// Bytes per TOC entry: series kind, physical input layout, offset, length.
 pub const ENTRY_LEN: usize = 16;
 
-const CHECKSUM_AT: usize = 16;
-const KIND_SECTION: u32 = 1;
-const MAX_INDEX_BYTES: u64 = 128 * 1024 * 1024;
+const CHECKSUM_AT: usize = 12;
+const MAX_INDEX_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_BLOCKS: usize = 32;
 const CHECKSUM_CHUNK: usize = 16 * 1024;
 
-/// Why an index container or one selected block was rejected.
+/// Why an index container or selected block was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexError {
     /// A declared byte range is absent.
     Truncated,
-    /// The file is from another format.
+    /// The file is not the one current format.
     BadMagic,
     /// The persisted checksum does not match the bytes.
     BadChecksum,
@@ -48,85 +48,73 @@ impl std::fmt::Display for IndexError {
 
 impl std::error::Error for IndexError {}
 
-/// All blocks built for one segment.
+/// All allowlisted blocks built for one segment.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Index {
-    /// Source bitset explicitly configured for the web process.
-    pub sources: u32,
-    /// One independently encoded block per physical registry layout.
-    pub sections: Vec<SectionSummary>,
+    /// Canonically ordered presentation blocks.
+    pub blocks: Vec<SeriesBlock>,
 }
 
-/// Blocks selected from a validated index.
+/// Selected blocks from a validated index.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TargetedIndex {
     /// Canonical checksum suitable for a finished response `ETag`; active
     /// computed resources have no checksum.
     pub checksum: Option<u32>,
-    /// Source bitset under which the file was built.
-    pub sources: u32,
-    /// Selected physical layout blocks, in `type_id` order.
-    pub sections: Vec<SectionSummary>,
+    /// Selected presentation blocks.
+    pub blocks: Vec<SeriesBlock>,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct TocEntry {
-    kind: u32,
-    type_id: u32,
+    key: SeriesKey,
     offset: u32,
     len: u32,
 }
 
 impl Index {
-    /// Encode a canonical index file.
+    /// Encode canonical bytes of the only current index format.
     ///
     /// # Errors
     ///
-    /// Returns [`IndexError::BadLayout`] for duplicate/out-of-order layouts or
-    /// a block that does not fit the container fields, or
-    /// [`IndexError::TooLarge`] when the complete file crosses its read bound.
+    /// Returns a layout or size failure.
     pub fn encode(&self) -> Result<Vec<u8>, IndexError> {
-        let count =
-            u32::try_from(self.sections.len()).map_err(|_overflow| IndexError::BadLayout)?;
+        if self.blocks.len() > MAX_BLOCKS {
+            return Err(IndexError::TooLarge);
+        }
+        let count = u32::try_from(self.blocks.len()).map_err(|_overflow| IndexError::TooLarge)?;
         let table_len = self
-            .sections
+            .blocks
             .len()
             .checked_mul(ENTRY_LEN)
             .ok_or(IndexError::TooLarge)?;
         let body_at = HEADER_LEN
             .checked_add(table_len)
             .ok_or(IndexError::TooLarge)?;
-        if u64::try_from(body_at).map_err(|_overflow| IndexError::TooLarge)? > MAX_INDEX_BYTES {
-            return Err(IndexError::TooLarge);
-        }
-
         let mut bytes = Vec::with_capacity(body_at);
         bytes.extend_from_slice(&MAGIC);
-        bytes.extend_from_slice(&self.sources.to_le_bytes());
         bytes.extend_from_slice(&count.to_le_bytes());
         bytes.extend_from_slice(&0_u32.to_le_bytes());
         bytes.resize(body_at, 0);
 
         let mut previous = None;
         let mut offset = 0_u32;
-        for (at, section) in self.sections.iter().enumerate() {
-            if previous.is_some_and(|before| before >= section.type_id) {
+        for (index, block) in self.blocks.iter().enumerate() {
+            let key = block.key();
+            if previous.is_some_and(|before| before >= key) {
                 return Err(IndexError::BadLayout);
             }
-            previous = Some(section.type_id);
-            let body = encode_section(section)?;
-            let len = u32::try_from(body.len()).map_err(|_overflow| IndexError::BadLayout)?;
-            if len == 0 {
-                return Err(IndexError::BadLayout);
-            }
+            previous = Some(key);
+            let body = block.encode()?;
+            let len = u32::try_from(body.len()).map_err(|_overflow| IndexError::TooLarge)?;
             let table_at = HEADER_LEN
-                .checked_add(at.checked_mul(ENTRY_LEN).ok_or(IndexError::TooLarge)?)
+                .checked_add(index.checked_mul(ENTRY_LEN).ok_or(IndexError::TooLarge)?)
                 .ok_or(IndexError::TooLarge)?;
-            put_u32_at(&mut bytes, table_at, KIND_SECTION)?;
-            put_u32_at(&mut bytes, table_at + 4, section.type_id)?;
+            put_u32_at(&mut bytes, table_at, key.kind as u32)?;
+            put_u32_at(&mut bytes, table_at + 4, key.type_id)?;
             put_u32_at(&mut bytes, table_at + 8, offset)?;
             put_u32_at(&mut bytes, table_at + 12, len)?;
-            offset = offset.checked_add(len).ok_or(IndexError::BadLayout)?;
+            offset = offset.checked_add(len).ok_or(IndexError::TooLarge)?;
             let total = bytes
                 .len()
                 .checked_add(body.len())
@@ -142,89 +130,75 @@ impl Index {
         Ok(bytes)
     }
 
-    /// Decode every block in a byte slice.
+    /// Decode every block.
     ///
     /// # Errors
     ///
     /// Returns the first container or block validation failure.
     pub fn decode(bytes: &[u8]) -> Result<Self, IndexError> {
-        let mut cursor = std::io::Cursor::new(bytes);
-        read_all(&mut cursor)
+        read_all(&mut std::io::Cursor::new(bytes))
     }
 
-    /// Decode only selected indexed-series layouts.
-    ///
-    /// The checksum and complete TOC are validated, but unrelated blocks are
-    /// never decoded.
+    /// Decode only requested blocks while validating the complete container.
     ///
     /// # Errors
     ///
     /// Returns the first container or selected-block validation failure.
-    pub fn decode_target(bytes: &[u8], type_ids: &[u32]) -> Result<TargetedIndex, IndexError> {
-        let mut cursor = std::io::Cursor::new(bytes);
-        read_target(&mut cursor, type_ids)
+    pub fn decode_target(bytes: &[u8], keys: &[SeriesKey]) -> Result<TargetedIndex, IndexError> {
+        read_target(&mut std::io::Cursor::new(bytes), keys)
     }
 }
 
-/// Read selected blocks from a seekable index without allocating unrelated
-/// block bodies.
 pub(crate) fn read_target(
     reader: &mut (impl Read + Seek),
-    type_ids: &[u32],
+    keys: &[SeriesKey],
 ) -> Result<TargetedIndex, IndexError> {
-    let (sources, expected_checksum, table, body_at, file_len) = metadata(reader)?;
+    let (expected_checksum, table, body_at, file_len) = metadata(reader)?;
     validate_checksum(reader, expected_checksum, file_len)?;
-    let wanted: HashSet<u32> = type_ids.iter().copied().collect();
-    let mut sections = Vec::new();
+    let wanted: HashSet<SeriesKey> = keys.iter().copied().collect();
+    let mut blocks = Vec::new();
     for entry in table {
-        let selected = entry.kind == KIND_SECTION && wanted.contains(&entry.type_id);
-        if !selected {
+        if !wanted.contains(&entry.key) {
             continue;
         }
-        let absolute = body_at
-            .checked_add(u64::from(entry.offset))
-            .ok_or(IndexError::BadLayout)?;
-        reader
-            .seek(SeekFrom::Start(absolute))
-            .map_err(|_error| IndexError::Truncated)?;
-        let len = usize::try_from(entry.len).map_err(|_overflow| IndexError::TooLarge)?;
-        let mut block = vec![0_u8; len];
-        reader
-            .read_exact(&mut block)
-            .map_err(|_error| IndexError::Truncated)?;
-        sections.push(decode_section(&block, entry.type_id)?);
+        blocks.push(read_block(reader, body_at, entry)?);
     }
     Ok(TargetedIndex {
         checksum: Some(expected_checksum),
-        sources,
-        sections,
+        blocks,
     })
 }
 
 pub(crate) fn read_all(reader: &mut (impl Read + Seek)) -> Result<Index, IndexError> {
-    let (sources, expected_checksum, table, body_at, file_len) = metadata(reader)?;
+    let (expected_checksum, table, body_at, file_len) = metadata(reader)?;
     validate_checksum(reader, expected_checksum, file_len)?;
-    let mut sections = Vec::new();
+    let mut blocks = Vec::with_capacity(table.len());
     for entry in table {
-        let absolute = body_at
-            .checked_add(u64::from(entry.offset))
-            .ok_or(IndexError::BadLayout)?;
-        reader
-            .seek(SeekFrom::Start(absolute))
-            .map_err(|_error| IndexError::Truncated)?;
-        let len = usize::try_from(entry.len).map_err(|_overflow| IndexError::TooLarge)?;
-        let mut block = vec![0_u8; len];
-        reader
-            .read_exact(&mut block)
-            .map_err(|_error| IndexError::Truncated)?;
-        sections.push(decode_section(&block, entry.type_id)?);
+        blocks.push(read_block(reader, body_at, entry)?);
     }
-    Ok(Index { sources, sections })
+    Ok(Index { blocks })
 }
 
-fn metadata(
+fn read_block(
     reader: &mut (impl Read + Seek),
-) -> Result<(u32, u32, Vec<TocEntry>, u64, u64), IndexError> {
+    body_at: u64,
+    entry: TocEntry,
+) -> Result<SeriesBlock, IndexError> {
+    let absolute = body_at
+        .checked_add(u64::from(entry.offset))
+        .ok_or(IndexError::BadLayout)?;
+    reader
+        .seek(SeekFrom::Start(absolute))
+        .map_err(|_error| IndexError::Truncated)?;
+    let len = usize::try_from(entry.len).map_err(|_overflow| IndexError::TooLarge)?;
+    let mut block = vec![0_u8; len];
+    reader
+        .read_exact(&mut block)
+        .map_err(|_error| IndexError::Truncated)?;
+    SeriesBlock::decode(entry.key, &block)
+}
+
+fn metadata(reader: &mut (impl Read + Seek)) -> Result<(u32, Vec<TocEntry>, u64, u64), IndexError> {
     let file_len = reader
         .seek(SeekFrom::End(0))
         .map_err(|_error| IndexError::Truncated)?;
@@ -241,16 +215,18 @@ fn metadata(
     if header[..MAGIC.len()] != MAGIC {
         return Err(IndexError::BadMagic);
     }
-    let sources = u32_at(&header, 8)?;
-    let count = usize::try_from(u32_at(&header, 12)?).map_err(|_overflow| IndexError::TooLarge)?;
+    let count = usize::try_from(u32_at(&header, 8)?).map_err(|_overflow| IndexError::TooLarge)?;
+    if count > MAX_BLOCKS {
+        return Err(IndexError::TooLarge);
+    }
     let expected_checksum = u32_at(&header, CHECKSUM_AT)?;
     let table_len = count.checked_mul(ENTRY_LEN).ok_or(IndexError::TooLarge)?;
     let body_at = u64::try_from(HEADER_LEN)
         .ok()
-        .and_then(|head| {
+        .and_then(|header| {
             u64::try_from(table_len)
                 .ok()
-                .and_then(|table| head.checked_add(table))
+                .and_then(|table| header.checked_add(table))
         })
         .ok_or(IndexError::TooLarge)?;
     if body_at > file_len {
@@ -262,35 +238,34 @@ fn metadata(
         .map_err(|_error| IndexError::Truncated)?;
     let mut table = Vec::with_capacity(count);
     let mut expected_offset = 0_u32;
-    let mut previous_type = None;
+    let mut previous = None;
     for raw in raw_table.chunks_exact(ENTRY_LEN) {
-        let entry = TocEntry {
-            kind: u32_at(raw, 0)?,
+        let key = SeriesKey {
+            kind: SeriesKind::from_raw(u32_at(raw, 0)?)?,
             type_id: u32_at(raw, 4)?,
+        };
+        let entry = TocEntry {
+            key,
             offset: u32_at(raw, 8)?,
             len: u32_at(raw, 12)?,
         };
-        if entry.offset != expected_offset || entry.len == 0 {
+        if entry.offset != expected_offset || previous.is_some_and(|before| before >= key) {
             return Err(IndexError::BadLayout);
         }
+        previous = Some(key);
         expected_offset = expected_offset
             .checked_add(entry.len)
             .ok_or(IndexError::BadLayout)?;
-        match entry.kind {
-            KIND_SECTION if previous_type.is_none_or(|before| before < entry.type_id) => {
-                previous_type = Some(entry.type_id);
-            }
-            _ => return Err(IndexError::BadLayout),
-        }
         table.push(entry);
     }
-    let declared_end = body_at
+    if body_at
         .checked_add(u64::from(expected_offset))
-        .ok_or(IndexError::BadLayout)?;
-    if declared_end != file_len {
+        .ok_or(IndexError::BadLayout)?
+        != file_len
+    {
         return Err(IndexError::BadLayout);
     }
-    Ok((sources, expected_checksum, table, body_at, file_len))
+    Ok((expected_checksum, table, body_at, file_len))
 }
 
 fn validate_checksum(
@@ -329,9 +304,8 @@ fn validate_checksum(
 }
 
 fn u32_at(bytes: &[u8], at: usize) -> Result<u32, IndexError> {
-    let end = at.checked_add(4).ok_or(IndexError::Truncated)?;
     let raw: [u8; 4] = bytes
-        .get(at..end)
+        .get(at..at.checked_add(4).ok_or(IndexError::Truncated)?)
         .ok_or(IndexError::Truncated)?
         .try_into()
         .map_err(|_error| IndexError::Truncated)?;
@@ -339,9 +313,8 @@ fn u32_at(bytes: &[u8], at: usize) -> Result<u32, IndexError> {
 }
 
 fn put_u32_at(bytes: &mut [u8], at: usize, value: u32) -> Result<(), IndexError> {
-    let end = at.checked_add(4).ok_or(IndexError::BadLayout)?;
     bytes
-        .get_mut(at..end)
+        .get_mut(at..at.checked_add(4).ok_or(IndexError::BadLayout)?)
         .ok_or(IndexError::BadLayout)?
         .copy_from_slice(&value.to_le_bytes());
     Ok(())

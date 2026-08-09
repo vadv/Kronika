@@ -2,7 +2,6 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use kronika_index::{IdentityValue, Number, Observation, Sample};
 use kronika_reader::{Cell, Dictionary, Resolved};
 use kronika_registry::{Column, ColumnType, TypeContract, section_implementation};
 use serde_json::{Value, json};
@@ -13,25 +12,6 @@ pub(super) fn record(value: impl std::borrow::Borrow<Value>) -> Result<Vec<u8>, 
     let mut bytes = serde_json::to_vec(value.borrow())?;
     bytes.push(b'\n');
     Ok(bytes)
-}
-
-pub(super) fn layout(
-    logical_name: &str,
-    contract: &'static TypeContract,
-    fields: &[&'static str],
-) -> Value {
-    json!({
-        "logical_name": logical_name,
-        "physical_name": contract.name,
-        "type_id": contract.type_id.get().to_string(),
-        "implementation": section_implementation(contract.type_id.get()),
-        "identity": contract.identity,
-        "columns": fields
-            .iter()
-            .filter_map(|name| contract.column(name))
-            .map(column)
-            .collect::<Vec<_>>(),
-    })
 }
 
 pub(super) fn projected_layout(
@@ -57,10 +37,6 @@ pub(super) fn projected_layout(
             ))
             .collect::<Vec<_>>(),
     })
-}
-
-pub(super) fn column(column: &Column) -> Value {
-    Value::Object(column_value(column))
 }
 
 fn column_value(column: &Column) -> serde_json::Map<String, Value> {
@@ -103,55 +79,6 @@ pub(super) fn cell(cell: &Cell, dictionary: &Dictionary) -> Result<Value, ApiErr
             }
         },
     })
-}
-
-pub(super) fn identity(value: &IdentityValue) -> Value {
-    match value {
-        IdentityValue::Null => Value::Null,
-        IdentityValue::I16(value) => json!(value),
-        IdentityValue::I32(value) => json!(value),
-        IdentityValue::I64(value) | IdentityValue::Ts(value) => Value::String(value.to_string()),
-        IdentityValue::U32(value) => json!(value),
-        IdentityValue::U64(value) => Value::String(value.to_string()),
-        IdentityValue::F64(value) => finite(*value),
-        IdentityValue::Bool(value) => json!(value),
-        IdentityValue::Text(bytes) => bytes_value(bytes),
-        IdentityValue::Blob {
-            stored_bytes,
-            full_len,
-            truncated,
-            full_sha256,
-        } => blob_value(stored_bytes, *full_len, *truncated, *full_sha256),
-        IdentityValue::ListI32(values) => json!(values),
-    }
-}
-
-pub(super) fn observation(value: Observation) -> Value {
-    json!({
-        "count": value.count.to_string(),
-        "first": value.first.map(sample),
-        "last": value.last.map(sample),
-        "nonnegative_delta": value.nonnegative_delta.map(number),
-        "observed_us": value.observed_us.to_string(),
-    })
-}
-
-fn sample(value: Sample) -> Value {
-    json!({
-        "ts": value.ts.to_string(),
-        "value": number(value.value),
-    })
-}
-
-pub(super) fn number(value: Number) -> Value {
-    match value {
-        Number::I16(value) => json!(value),
-        Number::I32(value) => json!(value),
-        Number::I64(value) => Value::String(value.to_string()),
-        Number::U32(value) => json!(value),
-        Number::U64(value) => Value::String(value.to_string()),
-        Number::F64(value) => finite(value),
-    }
 }
 
 fn finite(value: f64) -> Value {

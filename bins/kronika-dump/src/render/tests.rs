@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use kronika_format::DictLimits;
-use kronika_index::{BuildError, IdentityValue, IndexError, Number, Observation, Sample};
+use kronika_index::{BuildError, IndexError};
 use kronika_layout::{DataRoot, LayoutLimits, SegmentId};
 use kronika_reader::{BlobEntry, Resolved};
 use kronika_registry::instance_metadata::{Environment, InstanceMetadataV1};
@@ -11,10 +11,7 @@ use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict};
 
 use crate::DumpError;
 
-use super::{
-    dictionary_json, index, index_identity, index_number, index_observation, percent, section,
-    sizes, write_json_row,
-};
+use super::{dictionary_json, index, percent, section, sizes, write_json_row};
 
 #[test]
 fn a_share_of_nothing_is_zero_rather_than_a_division_by_zero() {
@@ -41,81 +38,20 @@ fn a_part_larger_than_the_whole_is_capped_at_a_hundred() {
 }
 
 #[test]
-fn index_numbers_that_javascript_cannot_represent_are_decimal_strings() {
-    assert_eq!(
-        index_number(Number::I64(i64::MIN)),
-        serde_json::json!(i64::MIN.to_string())
-    );
-    assert_eq!(
-        index_number(Number::U64(u64::MAX)),
-        serde_json::json!(u64::MAX.to_string())
-    );
-    assert_eq!(index_number(Number::F64(1.5)), serde_json::json!(1.5));
-}
-
-#[test]
-fn index_observations_use_js_safe_counts_timestamps_and_durations() {
-    let rendered = index_observation(&Observation {
-        count: u64::MAX,
-        first: Some(Sample {
-            ts: i64::MIN,
-            value: Number::I64(i64::MIN),
-        }),
-        last: Some(Sample {
-            ts: i64::MAX,
-            value: Number::U64(u64::MAX),
-        }),
-        nonnegative_delta: Some(Number::U64(u64::MAX)),
-        observed_us: u64::MAX,
-    });
-    assert_eq!(rendered["count"], u64::MAX.to_string());
-    assert_eq!(rendered["first"]["ts"], i64::MIN.to_string());
-    assert_eq!(rendered["first"]["value"], i64::MIN.to_string());
-    assert_eq!(rendered["last"]["ts"], i64::MAX.to_string());
-    assert_eq!(rendered["last"]["value"], u64::MAX.to_string());
-    assert_eq!(rendered["nonnegative_delta"], u64::MAX.to_string());
-    assert_eq!(rendered["observed_us"], u64::MAX.to_string());
-}
-
-#[test]
-fn index_blob_identity_keeps_exact_bytes_and_metadata() {
-    let rendered = index_identity(&IdentityValue::Blob {
-        stored_bytes: vec![0xff, 0, b'a'],
-        full_len: u64::MAX,
-        truncated: true,
-        full_sha256: Some([0xa5; 32]),
-    });
-    assert_eq!(rendered["representation"], "blob");
-    assert_eq!(rendered["stored_bytes"]["representation"], "bytes");
-    assert_eq!(
-        rendered["stored_bytes"]["bytes"],
-        serde_json::json!([255, 0, 97])
-    );
-    assert_eq!(rendered["full_len"], u64::MAX.to_string());
-    assert_eq!(rendered["truncated"], true);
-    assert_eq!(
-        rendered["full_sha256"],
-        "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
-    );
-}
-
-#[test]
-fn index_dump_uses_the_generic_health_section() {
+fn index_dump_uses_only_allowlisted_point_records() {
     let (_directory, segment) = dictionary_segment();
     let mut output = Vec::new();
     index(&mut output, true, &segment).expect("dump index");
-    let line: serde_json::Value = serde_json::from_slice(&output).expect("index JSON line");
-    assert_eq!(line["kind"], "object");
-    assert_eq!(line["type_id"], kronika_index::DERIVED_HEALTH_TYPE_ID);
-    assert_eq!(line["section"], "health");
-    assert_eq!(line["identity"], serde_json::json!([]));
-    assert_eq!(line["observations"][0]["count"], "0");
+    assert!(
+        output.is_empty(),
+        "a segment without PSI has no index points"
+    );
 
     let mut output = Vec::new();
     index(&mut output, false, &segment).expect("dump index table");
     let output = String::from_utf8(output).expect("UTF-8 index table");
-    assert!(output.contains("sections=1  objects=1  series=1"));
-    assert!(output.contains("health"));
+    assert!(output.contains("blocks=1  points=0"));
+    assert!(output.contains("os_health"));
 }
 
 #[test]

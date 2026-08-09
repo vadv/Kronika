@@ -429,8 +429,9 @@ fn health_is_streamed_as_an_ordinary_history_series_from_real_sections() {
     assert_eq!(index.meta().cache, CachePolicy::NoStore);
     let index = stream(index).expect("health index");
     assert!(index.iter().any(|record| {
-        record["record"] == "object"
+        record["record"] == "point"
+            && record["series"] == "os_health"
             && record["type_id"] == "0"
-            && record["observations"][0]["last"]["value"] == 50
+            && record["value"] == 50
     }));
 }

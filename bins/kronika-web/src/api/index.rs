@@ -1,16 +1,17 @@
-//! One logical indexed series selected from per-layout IDX blocks.
+//! HTTP representation of one allowlisted per-segment index series.
 
 use std::path::Path;
 
 use hyper::StatusCode;
 use kronika_index::{
-    DERIVED_HEALTH_TYPE_ID, INSTANCE_METADATA_TYPE_ID, OS_PSI_TYPE_ID, ResourceIndex, resource,
+    DERIVED_HEALTH_TYPE_ID, INSTANCE_METADATA_TYPE_ID, OS_PSI_TYPE_ID, ResourceIndex, SeriesBlock,
+    resource, series_keys,
 };
 use kronika_reader::{SegmentKind, SegmentRef};
-use kronika_registry::{ColumnClass, contract, logical_section_name};
+use kronika_registry::{contract, section_implementation};
 use serde_json::{Value, json};
 
-use super::render::{identity, layout, observation, record};
+use super::render::record;
 use super::{ApiError, CachePolicy, Prepared, ResponseMeta, explicit_segment};
 use crate::route::SegmentRequest;
 
@@ -23,34 +24,23 @@ pub(crate) struct PreparedIndex {
 
 pub(super) fn prepare(
     root: &Path,
-    sources: u32,
     request: SegmentRequest,
     if_none_match: Option<&str>,
 ) -> Result<Prepared, ApiError> {
     let (reader, segment) = explicit_segment(root, request.segment_id)?;
-    let exists = request.section == "health"
-        || segment.sections().iter().any(|section| {
-            contract(section.type_id).is_some()
-                && logical_section_name(section.type_id).is_some_and(|name| name == request.section)
-        });
-    if !exists {
+    if series_keys(&segment, &request.section).is_empty() {
         return Err(ApiError::NoSuchSection);
     }
     let started = std::time::Instant::now();
-    let resource = resource(root, &reader, &segment, sources, &request.section)?;
-    let objects = resource
-        .index
-        .sections
-        .iter()
-        .map(|section| section.objects.len())
-        .sum::<usize>();
+    let resource = resource(root, &reader, &segment, &request.section)?;
+    let point_count = resource.index.blocks.iter().map(block_len).sum::<usize>();
     eprintln!(
-        "kronika-web: index_resource segment_id={} logical_name={} persisted={} sections={} objects={} elapsed_us={}",
+        "kronika-web: index_resource segment_id={} logical_name={} persisted={} blocks={} points={} elapsed_us={}",
         segment.id(),
         request.section,
         resource.persisted,
-        resource.index.sections.len(),
-        objects,
+        resource.index.blocks.len(),
+        point_count,
         started.elapsed().as_micros(),
     );
     let meta = resource_meta(segment.kind(), resource.index.checksum)?;
@@ -88,39 +78,80 @@ impl PreparedIndex {
                 "record": "index",
                 "segment": segment_value(&self.segment),
                 "logical_name": self.logical_name,
-                "sources": self.resource.index.sources.to_string(),
                 "checksum": self.resource.index.checksum.map(|value| format!("{value:08x}")),
             }))?)
         {
             return Ok(());
         }
-        for section in self.resource.index.sections {
+        for block in self.resource.index.blocks {
             if cancelled()
                 || !emit(record(json!({
                     "record": "layout",
-                    "layout": section_layout(&self.logical_name, section.type_id)?,
+                    "layout": block_layout(&self.logical_name, &block)?,
                 }))?)
             {
                 return Ok(());
             }
-            for object in section.objects {
-                if cancelled()
-                    || !emit(record(json!({
-                        "record": "object",
-                        "type_id": section.type_id.to_string(),
-                        "identity": object.identity.iter().map(identity).collect::<Vec<_>>(),
-                        "observations": object
-                            .observations
-                            .into_iter()
-                            .map(observation)
-                            .collect::<Vec<_>>(),
-                    }))?)
-                {
-                    return Ok(());
+            match block {
+                SeriesBlock::OsHealth(points) => {
+                    for point in points {
+                        if cancelled()
+                            || !emit(record(json!({
+                                "record": "point",
+                                "series": "os_health",
+                                "type_id": DERIVED_HEALTH_TYPE_ID.to_string(),
+                                "ts": point.timestamp.to_string(),
+                                "identity": {},
+                                "value": point.value,
+                            }))?)
+                        {
+                            return Ok(());
+                        }
+                    }
+                }
+                SeriesBlock::PgTransactions { type_id, points } => {
+                    for point in points {
+                        if cancelled()
+                            || !emit(record(json!({
+                                "record": "point",
+                                "series": "transactions_per_second",
+                                "type_id": type_id.to_string(),
+                                "ts": point.timestamp.to_string(),
+                                "identity": { "datid": point.datid },
+                                "value": point.value,
+                            }))?)
+                        {
+                            return Ok(());
+                        }
+                    }
+                }
+                SeriesBlock::PgActiveBackends { type_id, points } => {
+                    for point in points {
+                        if cancelled()
+                            || !emit(record(json!({
+                                "record": "point",
+                                "series": "active_backends",
+                                "type_id": type_id.to_string(),
+                                "ts": point.timestamp.to_string(),
+                                "identity": {},
+                                "value": point.count,
+                            }))?)
+                        {
+                            return Ok(());
+                        }
+                    }
                 }
             }
         }
         Ok(())
+    }
+}
+
+fn block_len(block: &SeriesBlock) -> usize {
+    match block {
+        SeriesBlock::OsHealth(points) => points.len(),
+        SeriesBlock::PgTransactions { points, .. } => points.len(),
+        SeriesBlock::PgActiveBackends { points, .. } => points.len(),
     }
 }
 
@@ -162,17 +193,25 @@ fn resource_meta(kind: SegmentKind, checksum: Option<u32>) -> Result<ResponseMet
     }
 }
 
+fn block_layout(logical_name: &str, block: &SeriesBlock) -> Result<Value, ApiError> {
+    match block {
+        SeriesBlock::OsHealth(_) => section_layout("health", DERIVED_HEALTH_TYPE_ID),
+        SeriesBlock::PgTransactions { type_id, .. }
+        | SeriesBlock::PgActiveBackends { type_id, .. } => section_layout(logical_name, *type_id),
+    }
+}
+
 pub(super) fn section_layout(logical_name: &str, type_id: u32) -> Result<Value, ApiError> {
     if type_id == DERIVED_HEALTH_TYPE_ID {
         return Ok(json!({
             "logical_name": "health",
-            "physical_name": "derived_health",
+            "physical_name": "derived_os_health",
             "type_id": DERIVED_HEALTH_TYPE_ID.to_string(),
             "implementation": "kronika",
             "identity": [],
             "columns": [{
-                "name": "health",
-                "type": "u32",
+                "name": "os_health",
+                "type": "u8",
                 "class": "gauge",
                 "unit": "percent",
                 "nullable": true,
@@ -186,16 +225,37 @@ pub(super) fn section_layout(logical_name: &str, type_id: u32) -> Result<Value, 
         }));
     }
     let contract = contract(type_id).ok_or(ApiError::NoSuchSection)?;
-    let fields: Vec<&str> = contract
-        .columns
-        .iter()
-        .filter(|column| {
-            contract.identity.contains(&column.name)
-                || matches!(column.class, ColumnClass::Cumulative | ColumnClass::Gauge)
-        })
-        .map(|column| column.name)
-        .collect();
-    Ok(layout(logical_name, contract, &fields))
+    let (identity, columns) = match logical_name {
+        "pg_stat_database" => (
+            json!(["datid"]),
+            json!([{
+                "name": "transactions_per_second",
+                "type": "f64",
+                "class": "gauge",
+                "unit": "per_second",
+                "nullable": true,
+            }]),
+        ),
+        "pg_stat_activity" => (
+            json!([]),
+            json!([{
+                "name": "active_backends",
+                "type": "u32",
+                "class": "gauge",
+                "unit": "count",
+                "nullable": false,
+            }]),
+        ),
+        _ => return Err(ApiError::NoSuchSection),
+    };
+    Ok(json!({
+        "logical_name": logical_name,
+        "physical_name": contract.name,
+        "type_id": type_id.to_string(),
+        "implementation": section_implementation(type_id),
+        "identity": identity,
+        "columns": columns,
+    }))
 }
 
 fn etag_matches(offered: &str, current: &str) -> bool {

@@ -1,61 +1,56 @@
 use super::{CHECKSUM_AT, HEADER_LEN, Index, IndexError, checksum};
-use crate::{Number, ObjectSummary, Observation, Sample, SectionSummary};
-
-fn observation(value: Number) -> Observation {
-    Observation {
-        count: 1,
-        first: Some(Sample { ts: 42, value }),
-        last: Some(Sample { ts: 42, value }),
-        nonnegative_delta: None,
-        observed_us: 0,
-    }
-}
-
-fn health_section(value: u32) -> SectionSummary {
-    SectionSummary {
-        type_id: 0,
-        objects: vec![ObjectSummary {
-            identity: Vec::new(),
-            observations: vec![observation(Number::U32(value))],
-        }],
-    }
-}
-
-fn loadavg_section() -> SectionSummary {
-    SectionSummary {
-        type_id: 1_105_001,
-        objects: vec![ObjectSummary {
-            identity: Vec::new(),
-            observations: vec![
-                observation(Number::F64(1.0)),
-                observation(Number::F64(2.0)),
-                observation(Number::F64(3.0)),
-                observation(Number::I32(4)),
-                observation(Number::I32(5)),
-            ],
-        }],
-    }
-}
+use crate::{
+    ActiveBackendPoint, HealthPoint, SeriesBlock, SeriesKey, SeriesKind, TransactionPoint,
+};
 
 fn sample() -> Index {
     Index {
-        sources: 0b101,
-        sections: vec![health_section(5), loadavg_section()],
+        blocks: vec![
+            SeriesBlock::OsHealth(vec![HealthPoint {
+                timestamp: 42,
+                value: Some(95),
+            }]),
+            SeriesBlock::PgTransactions {
+                type_id: 1_005_004,
+                points: vec![TransactionPoint {
+                    timestamp: 42,
+                    datid: 7,
+                    value: Some(1.5),
+                }],
+            },
+            SeriesBlock::PgActiveBackends {
+                type_id: 1_001_003,
+                points: vec![ActiveBackendPoint {
+                    timestamp: 42,
+                    count: 4,
+                }],
+            },
+        ],
     }
 }
 
 #[test]
-fn every_block_roundtrips_with_exact_unsigned_values() {
+fn current_format_roundtrips() {
     let index = sample();
     let bytes = index.encode().expect("encode");
     assert_eq!(Index::decode(&bytes).expect("decode"), index);
 }
 
 #[test]
-fn a_targeted_decode_returns_only_requested_physical_layouts() {
+fn targeted_decode_never_allocates_unrequested_blocks() {
     let bytes = sample().encode().expect("encode");
-    let selected = Index::decode_target(&bytes, &[1_105_001]).expect("target");
-    assert_eq!(selected.sections, [loadavg_section()]);
+    let selected = Index::decode_target(
+        &bytes,
+        &[SeriesKey {
+            kind: SeriesKind::PgTransactionsPerSecond,
+            type_id: 1_005_004,
+        }],
+    )
+    .expect("target");
+    assert!(matches!(
+        selected.blocks.as_slice(),
+        [SeriesBlock::PgTransactions { .. }]
+    ));
 }
 
 #[test]
@@ -67,24 +62,50 @@ fn an_unrelated_malformed_block_is_not_decoded() {
             .try_into()
             .expect("offset"),
     ) as usize;
-    let body_at = HEADER_LEN + 2 * super::ENTRY_LEN;
-    bytes[body_at + second_offset] = 0;
+    let body_at = HEADER_LEN + 3 * super::ENTRY_LEN;
+    bytes[body_at + second_offset] = 0xff;
     let value = checksum(&bytes[..CHECKSUM_AT], &bytes[HEADER_LEN..]);
     bytes[CHECKSUM_AT..HEADER_LEN].copy_from_slice(&value.to_le_bytes());
 
-    let selected = Index::decode_target(&bytes, &[0]).expect("first block");
-    assert_eq!(selected.sections.len(), 1);
+    let selected = Index::decode_target(&bytes, &[SeriesKey::OS_HEALTH]).expect("first block");
+    assert_eq!(selected.blocks.len(), 1);
     assert_eq!(Index::decode(&bytes), Err(IndexError::BadLayout));
 }
 
 #[test]
-fn changing_the_configured_source_set_changes_the_checksum() {
-    let first = sample().encode().expect("first");
-    let mut changed = sample();
-    changed.sources ^= 0b010;
-    let second = changed.encode().expect("second");
-    assert_ne!(
-        &first[CHECKSUM_AT..HEADER_LEN],
-        &second[CHECKSUM_AT..HEADER_LEN]
-    );
+fn the_allowlist_stays_small_at_far_more_than_one_normal_segment() {
+    let index = Index {
+        blocks: vec![
+            SeriesBlock::OsHealth(
+                (0..1_000)
+                    .map(|point| HealthPoint {
+                        timestamp: point,
+                        value: Some(100),
+                    })
+                    .collect(),
+            ),
+            SeriesBlock::PgTransactions {
+                type_id: 1_005_004,
+                points: (0_u32..100)
+                    .flat_map(|datid| {
+                        (0_i64..100).map(move |timestamp| TransactionPoint {
+                            timestamp,
+                            datid,
+                            value: Some(1.0),
+                        })
+                    })
+                    .collect(),
+            },
+            SeriesBlock::PgActiveBackends {
+                type_id: 1_001_003,
+                points: (0..1_000)
+                    .map(|timestamp| ActiveBackendPoint {
+                        timestamp,
+                        count: 4,
+                    })
+                    .collect(),
+            },
+        ],
+    };
+    assert!(index.encode().expect("encode").len() < 256 * 1024);
 }
