@@ -108,7 +108,7 @@ absent from a physical layout is unavailable or `null`; it is never zero.
 
 ## What Kronika does not build
 
-There is a metric and there is data. Nothing else.
+There is recorded metric data. Kronika adds no collection-quality model.
 
 Kronika does not ship a layer that reasons about whether its own data is
 trustworthy, complete, or continuous. That layer catches nothing an operator
@@ -124,7 +124,8 @@ Specifically, none of this belongs in the project:
 - Any machinery built around missing intervals. Snapshots with nothing between
   them are the normal state of a monitoring system, not a defect to detect,
   classify, or report.
-- Any artifact whose purpose is to assess the data rather than store it.
+- Any artifact whose purpose is to assess collection completeness or
+  continuity rather than store metrics.
 
 A missing metric produces one warning in the collector log and a `null` in
 web. That is the whole treatment.
@@ -250,6 +251,134 @@ The index always exposes OS and combined health; it exposes PostgreSQL health
 only when that source is configured. These blocks contain only small points,
 never large source rows.
 
+## Highlighting
+
+Kronika records two independent finding kinds. A `critical` finding crosses a
+curated boundary defined in advance. An `anomaly` finding is a short local
+change in one series. A point may have either kind, both, or neither. Value
+colour and finding markers remain separate.
+
+Only explicitly registered metric fields have finding policies. One registered
+field may produce many typed series; field count and series cardinality are
+different measurements. Incompatible physical layouts or identity namespaces
+never form one series.
+
+Zero is data and participates in comparisons. `null` is not a value. Web does
+not interpolate it or carry a previous value across it.
+
+### Critical boundaries
+
+A critical policy is compiled presentation metadata for one registered field.
+It normalizes an observation, if needed, and applies one approved critical
+boundary. It is not ZMS schema, does not change `type_id`, and is not a generic
+expression or configuration language. The design defines no universal boundary
+or list of exact metric thresholds; the implementation must enumerate every
+field policy it ships.
+
+### Local anomalies
+
+An anomaly compares the current value with exactly the five immediately
+preceding valid adjacent values of the same series. This is a local spike or
+change detector, not a long-term behavioural model.
+
+The series key contains the physical-layout and identity compatibility
+namespace, typed identity, and field. For a gauge, the detector uses the value.
+For a counter, it uses the interval rate from two adjacent raw observations. A
+negative delta, including a reset, or non-positive elapsed time produces no
+rate. A `null` or invalid interval breaks the adjacent chain; the detector does
+not step over it. A time interval too large for the registered collection
+cadence also breaks adjacency.
+
+For predecessors `p1` through `p5`:
+
+```
+centre       = median(p1, p2, p3, p4, p5)
+local_change = median(|p2-p1|, |p3-p2|, |p4-p3|, |p5-p4|)
+```
+
+The compiled field policy compares the current value with `centre` and
+`local_change`. It supplies a direction when needed, absolute and relative
+materiality floors, and the finding cutoff. The resulting magnitude is a local
+comparison, not a probability or confidence claim. There is no universal
+statistical cutoff or distribution assumption.
+
+The first value after five usable adjacent predecessors may produce a finding
+immediately. The detector does not wait for a later return to the old level. A
+sustained level change may therefore produce adjacent findings.
+
+### Finished IDX findings
+
+Web runs anomaly detection only while building a missing IDX for an immutable
+finished ZMS. The collector never runs it. Predecessors may come from preceding
+finished ZMS files; a segment boundary does not reset the five-value
+neighbourhood. A batch build may carry the five-value neighbourhood for each
+encountered series while processing ZMS files chronologically. An isolated
+build reads preceding ZMS through the production reader. Temporary state is
+discarded after the build, and an IDX is never derived from another IDX.
+
+Each physical-section finding block stores only sparse findings whose current
+source row is in that segment. Existing compact health and presentation blocks
+remain separate. A finding record contains only:
+
+- `kind` (`critical` or `anomaly`), physical `type_id`, and field ordinal or an
+  equivalent stable field ID;
+- the recorded interval, row ordinal or another minimal source locator; and
+- the policy-defined magnitude needed to plot the finding.
+
+A point observation may use equal interval bounds. Finding blocks do not copy
+full rows, typed identities, display labels, query text, or plan text. A
+consumer that already has values or IDs joins them itself. This contract does
+not add a special server path for locating a ZMS row.
+
+Every finding block has a deterministic storage safety cap. If more findings
+qualify, the writer uses magnitude and stable locator tie-breaks to choose the
+stored records, and writes `total_hits` and `truncated`. This only bounds
+storage; it is not a ranking presented to a person.
+
+There is no `active.idx` and no fabricated active anomaly history. Statistical
+findings appear when the finished segment's IDX is built. Active values may
+still be compared directly with registered critical policies.
+
+The IDX format is unreleased. A finding-rule or layout change replaces the
+format and magic outright. Web discards and rebuilds an old IDX; there is no
+old-format reader, migration, compatibility branch, or dual write.
+
+### One timeline, no diagnosis
+
+Kronika does not infer causes, correlations, a main symptom, root causes,
+confidence, or diagnoses. It places findings on one timeline. Several unrelated
+problems may coexist.
+
+Findings whose recorded intervals overlap, including a shared endpoint, or
+directly adjoin under the registered cadence may be displayed as one neutral
+group. The group contains only its time bounds, findings, and counts. Grouping
+is mechanical and makes no causal claim. The person examining the recorded data
+is the sole judge.
+
+A future MCP tool may expose clear recorded values and nearby context to a
+language model assisting a person. This document defines no MCP API and gives
+neither Kronika nor the model authority to diagnose a cause.
+
+### Implementation acceptance
+
+The later code PR must:
+
+- enumerate the exact critical and anomaly field allowlists and their compiled
+  policies;
+- use only the production `kronika-reader` path and test five-neighbour
+  cross-segment detection at 10-second, 30-second, and 5-minute cadences;
+- test a local spike, an immediate level change, counter reset, `null`, an
+  over-cadence interval, deterministic cap and truncation with stable ties, no
+  text duplication, and neutral timeline interval grouping;
+- exercise production-encoded data with 5,000 `pg_stat_statements` rows, 5,000
+  `pg_store_plans` rows, processes, relations, and cross-segment low-frequency
+  series; and
+- report registered field count separately from series cardinality, plus IDX
+  bytes, build CPU and elapsed time, and peak RSS.
+
+These focused tests and BDD belong to the code PR, not this documentation PR.
+The compact reference remains 37,008 bytes for 20 IDX files from one real hour.
+
 ## Reading
 
 One crate reads segments: `kronika-reader`. It takes a data directory and a
@@ -265,21 +394,22 @@ resources when a user requests current data.
 ## Index files
 
 Web builds `.idx` files next to the segments for fast dashboard access. An
-`.idx` holds segment-grain summaries so a long-range dashboard does not reopen
-every segment body.
+`.idx` holds compact segment-grain summaries for a curated set of presentation
+fields plus the sparse findings defined above. Fields outside the summary
+allowlist are read from ZMS; IDX does not promise a scan of every metric.
 
-The file has a header, a table of contents and blocks. Every physical section
-included in the index has its own targeted block, so a request decodes only the
-section it needs. The table records each block's kind, layout, offset and
-length. Offsets, lengths and the checksum belong to the file; section identities
-and summaries belong to the block. Health follows the same indexed-series rules
-as other metrics and has no special global block.
+The file has a header, a table of contents and typed blocks. Each block belongs
+to one physical section, so a request decodes only the section and block kind it
+needs. The table records each block's kind, layout, offset and length. Offsets,
+lengths and the checksum belong to the file; each block carries its own summary
+or finding payload. Health follows the same indexed-series rules as other
+metrics and has no special global block.
 
-The index grain is one segment. For every object in an indexed physical
-section, its block keeps the exact identity and enough data to reproduce the
-section's whole-segment result: first and last observed timestamps and values,
-or an equivalent counter delta and observed duration, plus the last gauge
-sample. Missing and invalid inputs remain distinguishable from a real zero.
+A summary block's grain is one segment. For every object included in that
+block, it keeps the exact identity and enough data to reproduce the
+whole-segment result: first and last observed timestamps and values, or an
+equivalent counter delta and observed duration, plus the last gauge sample.
+Missing and invalid inputs remain distinguishable from a real zero.
 
 An index does not copy every `Label` column. Query text, plans, command lines
 and similar display values would duplicate the largest fields in the segment.
@@ -291,8 +421,8 @@ browser revalidates against, so the file has to hold it rather than have web
 compute it per request. Web writes a complete temporary index and replaces the
 derived file atomically.
 
-`.idx` files are derived data. Deleting one is safe; web rebuilds it from the
-`.zms`. When web finds an `.idx` written by an incompatible version, it
+`.idx` files are derived data. Deleting one is safe; web rebuilds it from ZMS
+files. When web finds an `.idx` written by an incompatible version, it
 rebuilds it instead of failing.
 
 The index format is accepted only after measuring both `.idx` size and web peak
@@ -380,8 +510,9 @@ Ranking uses the whole requested window and does not change with the number of
 columns. The first pass scans the whole window and selects the top K identities.
 Only the second pass allocates the K-by-column result and fills its cells. The
 requested K limits the returned identities, not the work needed to rank them.
-Long ranges use segment-grain `.idx`; sub-segment resolution and partial
-boundary segments use projected raw samples.
+Long ranges use segment-grain `.idx` for fields in the summary allowlist.
+Other fields, sub-segment resolution and partial boundary segments use
+projected raw samples.
 
 ### Representations
 
@@ -440,8 +571,9 @@ decoded sections and open segments are all released, and the next request pays
 to open what it needs.
 
 This is why the index files exist. A long-range dashboard reads segment-grain
-indexes for complete segments and raw projections only where exact boundaries
-require them, so starting from nothing stays cheap.
+summaries for allowlisted fields in complete segments and raw projections for
+other fields or where exact boundaries require them, so starting from nothing
+stays cheap.
 
 ### Web BDD
 
