@@ -108,7 +108,7 @@ absent from a physical layout is unavailable or `null`; it is never zero.
 
 ## What Kronika does not build
 
-There is a metric and there is data. Nothing else.
+There is recorded metric data. Kronika adds no collection-quality model.
 
 Kronika does not ship a layer that reasons about whether its own data is
 trustworthy, complete, or continuous. That layer catches nothing an operator
@@ -124,7 +124,8 @@ Specifically, none of this belongs in the project:
 - Any machinery built around missing intervals. Snapshots with nothing between
   them are the normal state of a monitoring system, not a defect to detect,
   classify, or report.
-- Any artifact whose purpose is to assess the data rather than store it.
+- Any artifact whose purpose is to assess collection completeness or
+  continuity rather than store metrics.
 
 A missing metric produces one warning in the collector log and a `null` in
 web. That is the whole treatment.
@@ -252,146 +253,118 @@ never large source rows.
 
 ## Highlighting
 
-### What is on the screen
+Highlighting answers two independent questions: is a value past a known bad
+boundary, and is it statistically unexpected for its own series? A point may
+satisfy either, both, or neither. Value colour shows the normalized value; a
+finding marker is separate and never changes that colour.
 
-A map. Rows are objects — a device, a table, a query, a mount point. Columns are
-time. A cell holds one number and its colour says how large that number is.
-Reading the map is reading values, the same thing `atop` shows for one moment,
-laid out over a day.
+Zero is data and participates in comparisons and baselines. `null` means no
+observation and contributes nothing. Web neither interpolates it nor carries a
+previous value across it.
 
-A red cell is a value the catalogue calls bad. The map's colour scale is marked
-at the boundary rather than having a second layer drawn over it, so there is no
-separate screen for known-bad values.
+### Critical boundaries
 
-A ribbon under the map. Marks on the same time axis, one per moment where a
-series moved away from what that series had been doing. This is about change,
-not about size, which is why it is not painted into the map: a cell coloured by
-change stops saying how much, and saying how much is what the map is for.
+Critical boundaries are compiled presentation metadata shipped with web. They
+are not ZMS schema, do not change a metric `type_id`, and do not form a generic
+expression language. V1 has one critical/red level, with no warning tier and no
+configuration. Web first normalizes an observation to one scalar, then compares
+that scalar. Missing normalization input produces `null` and no finding.
 
-The two are joined by navigation. Picking a mark moves the map to that moment
-and that row.
+The initial boundary table is deliberately small:
 
-### Zero and nothing
+| Metric | Normalized scalar | Critical when |
+|--------|-------------------|---------------|
+| Aggregate CPU busy | busy share | `>= 80%` |
+| System load | `load1 / effective_cpu` | `>= 2` (load 10 on 2 CPUs is critical) |
+| Available memory | `available / effective_memory_limit` | `<= 10%` |
+| Filesystem use | `used / size` | `>= 90%` |
+| Overall health | recorded health | `< 50` |
+| OOM kills | interval delta | `> 0` |
+| PostgreSQL active backends | active backend count | `> 2 * effective_postgres_cpu` |
+| PostgreSQL deadlocks | interval delta | `> 0` |
 
-A zero is a measurement. There were no deadlocks. A `null` is the absence of a
-measurement: we do not know how many there were.
+`max_connections` may be shown separately as refusal-capacity information. It
+is not a workload or CPU-load denominator. V1 defines no fixed red boundary for
+`pg_stat_statements` latency, TPS, cache hit ratio, generic disk latency,
+network throughput, or another metric without an approved physical meaning.
 
-- On the map a zero is a cell at the quiet end of the scale. A `null` has no
-  colour and is drawn as an empty cell.
-- Against a boundary a zero is compared like any other number. A `null` is not
-  classified at all.
-- In a reference a zero is one of the readings. A `null` is not a reading and
-  contributes nothing, so it cannot drag a median.
+### Statistical findings
 
-Nothing is derived from a reading that was not taken. It is not interpolated,
-the previous value is not held over it, and its absence is not counted.
+Web runs the expensive anomaly analysis only when it builds a missing `.idx`
+for an immutable finished ZMS. The collector never runs it. The analysis starts
+with previous valid observations from a bounded range of preceding finished
+ZMS files, processes the current segment in timestamp order, scores each point
+before adding it to the rolling baseline, and discards that state after the
+build.
 
-### Bad by design
+A series key contains the compatibility namespace for the physical layout and
+identity, the typed identity, and the field. Generated compatibility metadata
+may join layouts only when their identities compose. Incompatible physical
+layouts or identity namespaces never merge; `pg_store_plans` implementations
+and typed identities remain distinct.
 
-Some values are bad whatever the machine has been doing. A transaction open for
-minutes, a device answering in tens of milliseconds, a filesystem nearly full.
-This needs no history and works from the first snapshot recorded.
+A gauge contributes its value. A counter contributes a valid interval rate
+computed with its predecessor. A missing predecessor, `null`, a negative delta
+(including a reset), or non-positive elapsed time produces no score or
+bookkeeping. Zero remains a valid value or rate.
 
-Boundaries come in two shapes.
+The detector examines a small curated allowlist, never every numeric column.
+Initial `pg_stat_statements` candidates are calls rate,
+`delta(total_exec_time) / delta(calls)`, `delta(rows) / delta(calls)`, and
+WAL-byte rate.
 
-Fixed. The number means the same on every host.
+A point must pass a real numerical anomaly cutoff before any top-K selection.
+After that cutoff, a deterministic protective cap applies to each section of a
+segment, with stable tie-breaking. The block records `total_hits` and
+`truncated`, so omitted findings are visible. Top-K without a cutoff is ranking,
+not anomaly detection.
 
-Scaled to the instance. The number is a share of something the host reports:
-the effective CPU count, which is the smaller of the cores and the cgroup
-quota; the memory limit, which is the smaller of total memory and the cgroup
-maximum; the size of a filesystem; a PostgreSQL setting.
+### Findings in IDX
 
-Choosing the right divisor is most of the work, and the obvious one is often
-wrong. Health above divides active backends by the server's CPU capacity for
-the same reason a boundary would: `max_connections` says how close the server
-is to refusing work, which is a different question from whether the work it
-already accepted is queueing for a processor. Both deserve an entry; neither
-stands in for the other.
+Each finding block stores only sparse findings whose source rows are in its
+segment. It stores no history, baseline samples, rolling state, or anomaly
+scores below the cutoff. A finding block needs only:
 
-The catalogue of quantities, divisors and numbers does not live in this
-document. Those numbers are settled with the people who run databases, and they
-change without the design changing.
+- `kind` (`critical` or `anomaly`), `type_id`, field ordinal or an equivalent
+  stable metric-field ID, timestamp, and row ordinal;
+- the observed value, rate, or delta and its score; and
+- compact explanation fields only when the interface actually needs them.
 
-### Unexpected
+The block does not copy typed identity, display labels, query text, or plan
+text. Its section and segment provide context, and the row ordinal resolves the
+exact immutable ZMS row for display or navigation.
 
-The other question is whether a series is doing something it has not been
-doing. A series is one object's one column: one device, one table, one
-`query_id`. Not the column across all objects. Ten seconds for the statement
-that always takes ten seconds is nothing, and half a second for the statement
-that takes five milliseconds is a lot. The identity a section declares gives
-this on its own, with no rule about kinds of query anywhere in the code.
+IDX remains derived and rebuildable from ZMS only. A current IDX is never
+derived from an earlier IDX. A batch may build missing indexes chronologically
+in one pass with temporary rolling state. An isolated rebuild reads a bounded
+raw ZMS lookback. Both discard temporary state when finished.
 
-A cumulative column is read as its per-interval rate. A raw counter grows, so
-its freshest value is the farthest from its median every single time, and a
-detector fed raw counters fires always. A gauge is read as its value. Labels,
-timestamps and event sections have no series.
+There is no `active.idx`. Web compares active values directly with critical
+boundaries. Statistical findings appear only after the segment finishes and
+its missing IDX is built, up to the normal close delay. Live anomaly scoring is
+deferred until measurements justify it and the owner approves it.
 
-```
-reference = the last n readings of the series
-centre    = median(reference)
-scale     = max(q-quantile of |x - centre| over the reference,
-                what the column can express)
-magnitude = |x - centre| / scale
-```
+The IDX format is unreleased. Any change to the finding algorithm or rules
+replaces the format and magic outright. Web discards and rebuilds an old IDX;
+there is no old-format reader, migration, compatibility branch, or dual write.
 
-`n = 400` and `q = 0.9`. Neither is configuration and neither is taste. `q` has
-one job: leave enough of the reference above the quantile that it is an
-estimate rather than the largest reading, which takes an `n * (1 - q)` of a
-few, and here it is forty. `n` sets how well the scale is known. The spread of
-the estimate falls as `1/sqrt(n)`, with a constant about three times worse on
-the heavy-tailed series that disk and query timings produce: such a scale is
-known to about a quarter of itself at `n = 100` and to an eighth at `n = 400`,
-and an eighth is finer than a person reads a magnitude to.
+The code PR is accepted only after it:
 
-The scale is a quantile of the reference's own deviations rather than a
-multiple of MAD, because a magnitude has to mean the same thing on series whose
-distributions are nothing alike. A magnitude in MAD-sigmas carries a tail
-probability, and that probability is right for a normal distribution and wrong
-by four orders of magnitude for the heavy-tailed ones. A quantile of the
-reference's own deviations claims no probability: it says the reading sits this
-much further out than the reference reached in a tenth of its own readings.
+- uses only the production `kronika-reader` path and rebuilds byte-for-byte
+  deterministically;
+- exercises a production-encoded fixture with 5,000 `pg_stat_statements` rows,
+  5,000 `pg_store_plans` rows, and low-frequency points that cross segment
+  boundaries;
+- measures IDX bytes, build CPU and elapsed time, and peak RSS;
+- asserts that no query or plan text enters IDX; and
+- replays preserved real data to choose the exact baseline length, numerical
+  cutoff, maximum baseline age, protective cap, and final allowlist, then bounds
+  false findings.
 
-The floor is what makes flat series work, and they are common. A counter of
-deadlocks reads zero interval after interval, so its scale falls to one
-deadlock, and an interval with five is five times the smallest thing the column
-can say. A series that has been flat and stops being flat is the easy case.
-
-A series with fewer than `n` readings has no answer yet. That is about how many
-actual values exist, not about whether they are zero. A device that appeared a
-minute ago is on the map from its first reading; only the ribbon waits.
-
-### The ribbon ranks
-
-There is no cut-off above which a reading becomes a mark, because no such
-number would help. An ordinary host carries on the order of a hundred thousand
-series — every numeric column of every process, device, filesystem, table,
-index, statement and plan — which is some seven million readings an hour. A
-rule that marked one reading in four thousand would still draw close to two
-thousand marks an hour.
-
-So the ribbon shows the largest magnitudes in the window, as many as the screen
-has rows, and prints the magnitude beside each. The reader sees whether the
-largest is a two or a forty, and nothing claims that either is an anomaly.
-
-That also settles what the ribbon covers: the rows already on the screen, not
-the host. A ribbon over everything would hold a reference for every series at
-once — hundreds of megabytes — and would read several hours of segments before
-the window, because the reference reaches back past its left edge. A ribbon
-over the forty rows of one section holds a hundred kilobytes and scores a few
-thousand readings.
-
-The two kinds of highlighting differ by three orders of magnitude in cost, and
-that is what decides their reach. Bad by design is one comparison per value and
-keeps nothing between values, so it runs over every object on the host, out of
-index files alone, whenever a window is drawn: it says where to look.
-Unexpected needs a reference per series and the readings themselves, so it runs
-on the section a person opened: it says why.
-
-### Incidents
-
-Marks that fall in one snapshot are one incident. Consecutive snapshots join
-into the same incident while no snapshot without marks sits between them. An
-incident is an interval and the marks inside it, ordered by magnitude.
+The current compact-index reference is 37,008 bytes for 20 IDX files from one
+real hour. The finding design must preserve that compact principle. No exact
+baseline length, cutoff, maximum age, or final allowlist becomes design truth
+before the replay.
 
 ## Reading
 
@@ -408,21 +381,22 @@ resources when a user requests current data.
 ## Index files
 
 Web builds `.idx` files next to the segments for fast dashboard access. An
-`.idx` holds segment-grain summaries so a long-range dashboard does not reopen
-every segment body.
+`.idx` holds compact segment-grain summaries for a curated set of presentation
+fields plus the sparse findings defined above. Fields outside the summary
+allowlist are read from ZMS; IDX does not promise a scan of every metric.
 
-The file has a header, a table of contents and blocks. Every physical section
-included in the index has its own targeted block, so a request decodes only the
-section it needs. The table records each block's kind, layout, offset and
-length. Offsets, lengths and the checksum belong to the file; section identities
-and summaries belong to the block. Health follows the same indexed-series rules
-as other metrics and has no special global block.
+The file has a header, a table of contents and typed blocks. Each block belongs
+to one physical section, so a request decodes only the section and block kind it
+needs. The table records each block's kind, layout, offset and length. Offsets,
+lengths and the checksum belong to the file; each block carries its own summary
+or finding payload. Health follows the same indexed-series rules as other
+metrics and has no special global block.
 
-The index grain is one segment. For every object in an indexed physical
-section, its block keeps the exact identity and enough data to reproduce the
-section's whole-segment result: first and last observed timestamps and values,
-or an equivalent counter delta and observed duration, plus the last gauge
-sample. Missing and invalid inputs remain distinguishable from a real zero.
+A summary block's grain is one segment. For every object included in that
+block, it keeps the exact identity and enough data to reproduce the
+whole-segment result: first and last observed timestamps and values, or an
+equivalent counter delta and observed duration, plus the last gauge sample.
+Missing and invalid inputs remain distinguishable from a real zero.
 
 An index does not copy every `Label` column. Query text, plans, command lines
 and similar display values would duplicate the largest fields in the segment.
@@ -434,8 +408,8 @@ browser revalidates against, so the file has to hold it rather than have web
 compute it per request. Web writes a complete temporary index and replaces the
 derived file atomically.
 
-`.idx` files are derived data. Deleting one is safe; web rebuilds it from the
-`.zms`. When web finds an `.idx` written by an incompatible version, it
+`.idx` files are derived data. Deleting one is safe; web rebuilds it from ZMS
+files. When web finds an `.idx` written by an incompatible version, it
 rebuilds it instead of failing.
 
 The index format is accepted only after measuring both `.idx` size and web peak
@@ -523,8 +497,9 @@ Ranking uses the whole requested window and does not change with the number of
 columns. The first pass scans the whole window and selects the top K identities.
 Only the second pass allocates the K-by-column result and fills its cells. The
 requested K limits the returned identities, not the work needed to rank them.
-Long ranges use segment-grain `.idx`; sub-segment resolution and partial
-boundary segments use projected raw samples.
+Long ranges use segment-grain `.idx` for fields in the summary allowlist.
+Other fields, sub-segment resolution and partial boundary segments use
+projected raw samples.
 
 ### Representations
 
@@ -583,8 +558,9 @@ decoded sections and open segments are all released, and the next request pays
 to open what it needs.
 
 This is why the index files exist. A long-range dashboard reads segment-grain
-indexes for complete segments and raw projections only where exact boundaries
-require them, so starting from nothing stays cheap.
+summaries for allowlisted fields in complete segments and raw projections for
+other fields or where exact boundaries require them, so starting from nothing
+stays cheap.
 
 ### Web BDD
 
