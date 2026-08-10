@@ -250,6 +250,149 @@ The index always exposes OS and combined health; it exposes PostgreSQL health
 only when that source is configured. These blocks contain only small points,
 never large source rows.
 
+## Highlighting
+
+### What is on the screen
+
+A map. Rows are objects — a device, a table, a query, a mount point. Columns are
+time. A cell holds one number and its colour says how large that number is.
+Reading the map is reading values, the same thing `atop` shows for one moment,
+laid out over a day.
+
+A red cell is a value the catalogue calls bad. The map's colour scale is marked
+at the boundary rather than having a second layer drawn over it, so there is no
+separate screen for known-bad values.
+
+A ribbon under the map. Marks on the same time axis, one per moment where a
+series moved away from what that series had been doing. This is about change,
+not about size, which is why it is not painted into the map: a cell coloured by
+change stops saying how much, and saying how much is what the map is for.
+
+The two are joined by navigation. Picking a mark moves the map to that moment
+and that row.
+
+### Zero and nothing
+
+A zero is a measurement. There were no deadlocks. A `null` is the absence of a
+measurement: we do not know how many there were.
+
+- On the map a zero is a cell at the quiet end of the scale. A `null` has no
+  colour and is drawn as an empty cell.
+- Against a boundary a zero is compared like any other number. A `null` is not
+  classified at all.
+- In a reference a zero is one of the readings. A `null` is not a reading and
+  contributes nothing, so it cannot drag a median.
+
+Nothing is derived from a reading that was not taken. It is not interpolated,
+the previous value is not held over it, and its absence is not counted.
+
+### Bad by design
+
+Some values are bad whatever the machine has been doing. A transaction open for
+minutes, a device answering in tens of milliseconds, a filesystem nearly full.
+This needs no history and works from the first snapshot recorded.
+
+Boundaries come in two shapes.
+
+Fixed. The number means the same on every host.
+
+Scaled to the instance. The number is a share of something the host reports:
+the effective CPU count, which is the smaller of the cores and the cgroup
+quota; the memory limit, which is the smaller of total memory and the cgroup
+maximum; the size of a filesystem; a PostgreSQL setting.
+
+Choosing the right divisor is most of the work, and the obvious one is often
+wrong. Health above divides active backends by the server's CPU capacity for
+the same reason a boundary would: `max_connections` says how close the server
+is to refusing work, which is a different question from whether the work it
+already accepted is queueing for a processor. Both deserve an entry; neither
+stands in for the other.
+
+The catalogue of quantities, divisors and numbers does not live in this
+document. Those numbers are settled with the people who run databases, and they
+change without the design changing.
+
+### Unexpected
+
+The other question is whether a series is doing something it has not been
+doing. A series is one object's one column: one device, one table, one
+`query_id`. Not the column across all objects. Ten seconds for the statement
+that always takes ten seconds is nothing, and half a second for the statement
+that takes five milliseconds is a lot. The identity a section declares gives
+this on its own, with no rule about kinds of query anywhere in the code.
+
+A cumulative column is read as its per-interval rate. A raw counter grows, so
+its freshest value is the farthest from its median every single time, and a
+detector fed raw counters fires always. A gauge is read as its value. Labels,
+timestamps and event sections have no series.
+
+```
+reference = the last n readings of the series
+centre    = median(reference)
+scale     = max(q-quantile of |x - centre| over the reference,
+                what the column can express)
+magnitude = |x - centre| / scale
+```
+
+`n = 400` and `q = 0.9`. Neither is configuration and neither is taste. `q` has
+one job: leave enough of the reference above the quantile that it is an
+estimate rather than the largest reading, which takes an `n * (1 - q)` of a
+few, and here it is forty. `n` sets how well the scale is known. The spread of
+the estimate falls as `1/sqrt(n)`, with a constant about three times worse on
+the heavy-tailed series that disk and query timings produce: such a scale is
+known to about a quarter of itself at `n = 100` and to an eighth at `n = 400`,
+and an eighth is finer than a person reads a magnitude to.
+
+The scale is a quantile of the reference's own deviations rather than a
+multiple of MAD, because a magnitude has to mean the same thing on series whose
+distributions are nothing alike. A magnitude in MAD-sigmas carries a tail
+probability, and that probability is right for a normal distribution and wrong
+by four orders of magnitude for the heavy-tailed ones. A quantile of the
+reference's own deviations claims no probability: it says the reading sits this
+much further out than the reference reached in a tenth of its own readings.
+
+The floor is what makes flat series work, and they are common. A counter of
+deadlocks reads zero interval after interval, so its scale falls to one
+deadlock, and an interval with five is five times the smallest thing the column
+can say. A series that has been flat and stops being flat is the easy case.
+
+A series with fewer than `n` readings has no answer yet. That is about how many
+actual values exist, not about whether they are zero. A device that appeared a
+minute ago is on the map from its first reading; only the ribbon waits.
+
+### The ribbon ranks
+
+There is no cut-off above which a reading becomes a mark, because no such
+number would help. An ordinary host carries on the order of a hundred thousand
+series — every numeric column of every process, device, filesystem, table,
+index, statement and plan — which is some seven million readings an hour. A
+rule that marked one reading in four thousand would still draw close to two
+thousand marks an hour.
+
+So the ribbon shows the largest magnitudes in the window, as many as the screen
+has rows, and prints the magnitude beside each. The reader sees whether the
+largest is a two or a forty, and nothing claims that either is an anomaly.
+
+That also settles what the ribbon covers: the rows already on the screen, not
+the host. A ribbon over everything would hold a reference for every series at
+once — hundreds of megabytes — and would read several hours of segments before
+the window, because the reference reaches back past its left edge. A ribbon
+over the forty rows of one section holds a hundred kilobytes and scores a few
+thousand readings.
+
+The two kinds of highlighting differ by three orders of magnitude in cost, and
+that is what decides their reach. Bad by design is one comparison per value and
+keeps nothing between values, so it runs over every object on the host, out of
+index files alone, whenever a window is drawn: it says where to look.
+Unexpected needs a reference per series and the readings themselves, so it runs
+on the section a person opened: it says why.
+
+### Incidents
+
+Marks that fall in one snapshot are one incident. Consecutive snapshots join
+into the same incident while no snapshot without marks sits between them. An
+incident is an interval and the marks inside it, ordered by magnitude.
+
 ## Reading
 
 One crate reads segments: `kronika-reader`. It takes a data directory and a
