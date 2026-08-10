@@ -253,118 +253,131 @@ never large source rows.
 
 ## Highlighting
 
-Highlighting answers two independent questions: is a value past a known bad
-boundary, and is it statistically unexpected for its own series? A point may
-satisfy either, both, or neither. Value colour shows the normalized value; a
-finding marker is separate and never changes that colour.
+Kronika records two independent finding kinds. A `critical` finding crosses a
+curated boundary defined in advance. An `anomaly` finding is a short local
+change in one series. A point may have either kind, both, or neither. Value
+colour and finding markers remain separate.
 
-Zero is data and participates in comparisons and baselines. `null` means no
-observation and contributes nothing. Web neither interpolates it nor carries a
-previous value across it.
+Only explicitly registered metric fields have finding policies. One registered
+field may produce many typed series; field count and series cardinality are
+different measurements. Incompatible physical layouts or identity namespaces
+never form one series.
+
+Zero is data and participates in comparisons. `null` is not a value. Web does
+not interpolate it or carry a previous value across it.
 
 ### Critical boundaries
 
-Critical boundaries are compiled presentation metadata shipped with web. They
-are not ZMS schema, do not change a metric `type_id`, and do not form a generic
-expression language. V1 has one critical/red level, with no warning tier and no
-configuration. Web first normalizes an observation to one scalar, then compares
-that scalar. Missing normalization input produces `null` and no finding.
+A critical policy is compiled presentation metadata for one registered field.
+It normalizes an observation, if needed, and applies one approved critical
+boundary. It is not ZMS schema, does not change `type_id`, and is not a generic
+expression or configuration language. The design defines no universal boundary
+or list of exact metric thresholds; the implementation must enumerate every
+field policy it ships.
 
-The initial boundary table is deliberately small:
+### Local anomalies
 
-| Metric | Normalized scalar | Critical when |
-|--------|-------------------|---------------|
-| Aggregate CPU busy | busy share | `>= 80%` |
-| System load | `load1 / effective_cpu` | `>= 2` (load 10 on 2 CPUs is critical) |
-| Available memory | `available / effective_memory_limit` | `<= 10%` |
-| Filesystem use | `used / size` | `>= 90%` |
-| Overall health | recorded health | `< 50` |
-| OOM kills | interval delta | `> 0` |
-| PostgreSQL active backends | active backend count | `> 2 * effective_postgres_cpu` |
-| PostgreSQL deadlocks | interval delta | `> 0` |
+An anomaly compares the current value with exactly the five immediately
+preceding valid adjacent values of the same series. This is a local spike or
+change detector, not a long-term behavioural model.
 
-`max_connections` may be shown separately as refusal-capacity information. It
-is not a workload or CPU-load denominator. V1 defines no fixed red boundary for
-`pg_stat_statements` latency, TPS, cache hit ratio, generic disk latency,
-network throughput, or another metric without an approved physical meaning.
+The series key contains the physical-layout and identity compatibility
+namespace, typed identity, and field. For a gauge, the detector uses the value.
+For a counter, it uses the interval rate from two adjacent raw observations. A
+negative delta, including a reset, or non-positive elapsed time produces no
+rate. A `null` or invalid interval breaks the adjacent chain; the detector does
+not step over it. A time interval too large for the registered collection
+cadence also breaks adjacency.
 
-### Statistical findings
+For predecessors `p1` through `p5`:
 
-Web runs the expensive anomaly analysis only when it builds a missing `.idx`
-for an immutable finished ZMS. The collector never runs it. The analysis starts
-with previous valid observations from a bounded range of preceding finished
-ZMS files, processes the current segment in timestamp order, scores each point
-before adding it to the rolling baseline, and discards that state after the
-build.
+```
+centre       = median(p1, p2, p3, p4, p5)
+local_change = median(|p2-p1|, |p3-p2|, |p4-p3|, |p5-p4|)
+```
 
-A series key contains the compatibility namespace for the physical layout and
-identity, the typed identity, and the field. Generated compatibility metadata
-may join layouts only when their identities compose. Incompatible physical
-layouts or identity namespaces never merge; `pg_store_plans` implementations
-and typed identities remain distinct.
+The compiled field policy compares the current value with `centre` and
+`local_change`. It supplies a direction when needed, absolute and relative
+materiality floors, and the finding cutoff. The resulting magnitude is a local
+comparison, not a probability or confidence claim. There is no universal
+statistical cutoff or distribution assumption.
 
-A gauge contributes its value. A counter contributes a valid interval rate
-computed with its predecessor. A missing predecessor, `null`, a negative delta
-(including a reset), or non-positive elapsed time produces no score or
-bookkeeping. Zero remains a valid value or rate.
+The first value after five usable adjacent predecessors may produce a finding
+immediately. The detector does not wait for a later return to the old level. A
+sustained level change may therefore produce adjacent findings.
 
-The detector examines a small curated allowlist, never every numeric column.
-Initial `pg_stat_statements` candidates are calls rate,
-`delta(total_exec_time) / delta(calls)`, `delta(rows) / delta(calls)`, and
-WAL-byte rate.
+### Finished IDX findings
 
-A point must pass a real numerical anomaly cutoff before any top-K selection.
-After that cutoff, a deterministic protective cap applies to each section of a
-segment, with stable tie-breaking. The block records `total_hits` and
-`truncated`, so omitted findings are visible. Top-K without a cutoff is ranking,
-not anomaly detection.
+Web runs anomaly detection only while building a missing IDX for an immutable
+finished ZMS. The collector never runs it. Predecessors may come from preceding
+finished ZMS files; a segment boundary does not reset the five-value
+neighbourhood. A batch build may carry the five-value neighbourhood for each
+encountered series while processing ZMS files chronologically. An isolated
+build reads preceding ZMS through the production reader. Temporary state is
+discarded after the build, and an IDX is never derived from another IDX.
 
-### Findings in IDX
+Each physical-section finding block stores only sparse findings whose current
+source row is in that segment. Existing compact health and presentation blocks
+remain separate. A finding record contains only:
 
-Each finding block stores only sparse findings whose source rows are in its
-segment. It stores no history, baseline samples, rolling state, or anomaly
-scores below the cutoff. A finding block needs only:
+- `kind` (`critical` or `anomaly`), physical `type_id`, and field ordinal or an
+  equivalent stable field ID;
+- the recorded interval, row ordinal or another minimal source locator; and
+- the policy-defined magnitude needed to plot the finding.
 
-- `kind` (`critical` or `anomaly`), `type_id`, field ordinal or an equivalent
-  stable metric-field ID, timestamp, and row ordinal;
-- the observed value, rate, or delta and its score; and
-- compact explanation fields only when the interface actually needs them.
+A point observation may use equal interval bounds. Finding blocks do not copy
+full rows, typed identities, display labels, query text, or plan text. A
+consumer that already has values or IDs joins them itself. This contract does
+not add a special server path for locating a ZMS row.
 
-The block does not copy typed identity, display labels, query text, or plan
-text. Its section and segment provide context, and the row ordinal resolves the
-exact immutable ZMS row for display or navigation.
+Every finding block has a deterministic storage safety cap. If more findings
+qualify, the writer uses magnitude and stable locator tie-breaks to choose the
+stored records, and writes `total_hits` and `truncated`. This only bounds
+storage; it is not a ranking presented to a person.
 
-IDX remains derived and rebuildable from ZMS only. A current IDX is never
-derived from an earlier IDX. A batch may build missing indexes chronologically
-in one pass with temporary rolling state. An isolated rebuild reads a bounded
-raw ZMS lookback. Both discard temporary state when finished.
+There is no `active.idx` and no fabricated active anomaly history. Statistical
+findings appear when the finished segment's IDX is built. Active values may
+still be compared directly with registered critical policies.
 
-There is no `active.idx`. Web compares active values directly with critical
-boundaries. Statistical findings appear only after the segment finishes and
-its missing IDX is built, up to the normal close delay. Live anomaly scoring is
-deferred until measurements justify it and the owner approves it.
+The IDX format is unreleased. A finding-rule or layout change replaces the
+format and magic outright. Web discards and rebuilds an old IDX; there is no
+old-format reader, migration, compatibility branch, or dual write.
 
-The IDX format is unreleased. Any change to the finding algorithm or rules
-replaces the format and magic outright. Web discards and rebuilds an old IDX;
-there is no old-format reader, migration, compatibility branch, or dual write.
+### One timeline, no diagnosis
 
-The code PR is accepted only after it:
+Kronika does not infer causes, correlations, a main symptom, root causes,
+confidence, or diagnoses. It places findings on one timeline. Several unrelated
+problems may coexist.
 
-- uses only the production `kronika-reader` path and rebuilds byte-for-byte
-  deterministically;
-- exercises a production-encoded fixture with 5,000 `pg_stat_statements` rows,
-  5,000 `pg_store_plans` rows, and low-frequency points that cross segment
-  boundaries;
-- measures IDX bytes, build CPU and elapsed time, and peak RSS;
-- asserts that no query or plan text enters IDX; and
-- replays preserved real data to choose the exact baseline length, numerical
-  cutoff, maximum baseline age, protective cap, and final allowlist, then bounds
-  false findings.
+Findings whose recorded intervals overlap, including a shared endpoint, or
+directly adjoin under the registered cadence may be displayed as one neutral
+group. The group contains only its time bounds, findings, and counts. Grouping
+is mechanical and makes no causal claim. The person examining the recorded data
+is the sole judge.
 
-The current compact-index reference is 37,008 bytes for 20 IDX files from one
-real hour. The finding design must preserve that compact principle. No exact
-baseline length, cutoff, maximum age, or final allowlist becomes design truth
-before the replay.
+A future MCP tool may expose clear recorded values and nearby context to a
+language model assisting a person. This document defines no MCP API and gives
+neither Kronika nor the model authority to diagnose a cause.
+
+### Implementation acceptance
+
+The later code PR must:
+
+- enumerate the exact critical and anomaly field allowlists and their compiled
+  policies;
+- use only the production `kronika-reader` path and test five-neighbour
+  cross-segment detection at 10-second, 30-second, and 5-minute cadences;
+- test a local spike, an immediate level change, counter reset, `null`, an
+  over-cadence interval, deterministic cap and truncation with stable ties, no
+  text duplication, and neutral timeline interval grouping;
+- exercise production-encoded data with 5,000 `pg_stat_statements` rows, 5,000
+  `pg_store_plans` rows, processes, relations, and cross-segment low-frequency
+  series; and
+- report registered field count separately from series cardinality, plus IDX
+  bytes, build CPU and elapsed time, and peak RSS.
+
+These focused tests and BDD belong to the code PR, not this documentation PR.
+The compact reference remains 37,008 bytes for 20 IDX files from one real hour.
 
 ## Reading
 
