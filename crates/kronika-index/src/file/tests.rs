@@ -32,6 +32,7 @@ fn sample() -> Index {
                 truncated: false,
                 findings: vec![Finding {
                     kind: FindingKind::Spike,
+                    category: None,
                     field_ordinal: 33,
                     row_ordinal: 7,
                     timestamp: 42,
@@ -66,6 +67,29 @@ fn current_format_rejects_truncation_corruption_and_unknown_magic() {
     let mut unknown = bytes;
     unknown[0] ^= 1;
     assert_eq!(Index::decode(&unknown), Err(IndexError::BadMagic));
+}
+
+#[test]
+fn current_format_rejects_a_checksum_valid_invalid_error_category() {
+    let index = Index {
+        blocks: vec![SeriesBlock::Findings(FindingBlock {
+            type_id: 2_001_001,
+            total_hits: 1,
+            truncated: false,
+            findings: vec![Finding {
+                kind: FindingKind::Event,
+                category: Some(5),
+                field_ordinal: 0,
+                row_ordinal: 7,
+                timestamp: 42,
+            }],
+        })],
+    };
+    let mut bytes = index.encode().expect("encode categorized event");
+    *bytes.last_mut().expect("category byte") = 11;
+    let value = checksum(&bytes[..CHECKSUM_AT], &bytes[HEADER_LEN..]);
+    bytes[CHECKSUM_AT..HEADER_LEN].copy_from_slice(&value.to_le_bytes());
+    assert_eq!(Index::decode(&bytes), Err(IndexError::BadLayout));
 }
 
 #[test]

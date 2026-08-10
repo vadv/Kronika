@@ -180,16 +180,21 @@ fn stream_findings(
         return Ok(false);
     }
     for finding in block.findings {
-        if cancelled()
-            || !emit(record(json!({
-                "record": "finding",
-                "kind": finding_kind(finding.kind),
-                "type_id": block.type_id.to_string(),
-                "field_ordinal": finding.field_ordinal,
-                "row_ordinal": finding.row_ordinal,
-                "ts": finding.timestamp.to_string(),
-            }))?)
-        {
+        if cancelled() {
+            return Ok(false);
+        }
+        let mut value = json!({
+            "record": "finding",
+            "kind": finding_kind(finding.kind),
+            "type_id": block.type_id.to_string(),
+            "field_ordinal": finding.field_ordinal,
+            "row_ordinal": finding.row_ordinal,
+            "ts": finding.timestamp.to_string(),
+        });
+        if let Some(category) = finding.category {
+            value["category"] = category.into();
+        }
+        if !emit(record(value)?) {
             return Ok(false);
         }
     }

@@ -120,6 +120,7 @@ fn the_fixed_cap_keeps_timestamp_locator_order_and_reports_omissions() {
         .rev()
         .map(|ordinal| Finding {
             kind: FindingKind::Event,
+            category: Some(0),
             field_ordinal: 0,
             row_ordinal: u32::try_from(ordinal).expect("small test ordinal"),
             timestamp: i64::try_from(ordinal).expect("small test timestamp"),

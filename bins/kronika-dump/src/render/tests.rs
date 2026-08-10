@@ -68,17 +68,32 @@ fn index_dump_uses_only_allowlisted_point_records() {
 fn index_dump_emits_an_event_as_only_a_source_locator() {
     let (_directory, segment) = dictionary_segment();
     let built = Index {
-        blocks: vec![SeriesBlock::Findings(FindingBlock {
-            type_id: 2_006_001,
-            total_hits: 1,
-            truncated: false,
-            findings: vec![Finding {
-                kind: FindingKind::Event,
-                field_ordinal: 0,
-                row_ordinal: 42,
-                timestamp: 1_700_000_000_000_000,
-            }],
-        })],
+        blocks: vec![
+            SeriesBlock::Findings(FindingBlock {
+                type_id: 2_001_001,
+                total_hits: 1,
+                truncated: false,
+                findings: vec![Finding {
+                    kind: FindingKind::Event,
+                    category: Some(5),
+                    field_ordinal: 0,
+                    row_ordinal: 7,
+                    timestamp: 1_700_000_000_000_000,
+                }],
+            }),
+            SeriesBlock::Findings(FindingBlock {
+                type_id: 2_006_001,
+                total_hits: 1,
+                truncated: false,
+                findings: vec![Finding {
+                    kind: FindingKind::Event,
+                    category: None,
+                    field_ordinal: 0,
+                    row_ordinal: 42,
+                    timestamp: 1_700_000_000_000_000,
+                }],
+            }),
+        ],
     };
     let mut output = Vec::new();
     write_index(&mut output, true, &segment, &built).expect("dump event locator");
@@ -87,9 +102,22 @@ fn index_dump_emits_an_event_as_only_a_source_locator() {
         .filter(|line| !line.is_empty())
         .map(|line| serde_json::from_slice(line).expect("event JSON line"))
         .collect();
-    assert_eq!(rows.len(), 2);
+    assert_eq!(rows.len(), 4);
     assert_eq!(
         rows[1],
+        serde_json::json!({
+            "kind": "finding",
+            "path": segment.path().display().to_string(),
+            "mark": "event",
+            "type_id": "2001001",
+            "field_ordinal": 0,
+            "row_ordinal": 7,
+            "ts": "1700000000000000",
+            "category": 5,
+        })
+    );
+    assert_eq!(
+        rows[3],
         serde_json::json!({
             "kind": "finding",
             "path": segment.path().display().to_string(),
@@ -100,9 +128,20 @@ fn index_dump_emits_an_event_as_only_a_source_locator() {
             "ts": "1700000000000000",
         })
     );
-    for copied in ["message", "query", "statement"] {
-        assert!(rows[1].get(copied).is_none());
+    for row in [&rows[1], &rows[3]] {
+        for copied in [
+            "severity",
+            "sqlstate",
+            "pattern",
+            "sample",
+            "message",
+            "query",
+            "statement",
+        ] {
+            assert!(row.get(copied).is_none());
+        }
     }
+    assert!(rows[3].get("category").is_none());
 }
 
 #[test]

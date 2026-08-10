@@ -38,6 +38,8 @@ pub enum BuildError {
     UnresolvedState(u64),
     /// The one current metadata row was absent or malformed.
     InvalidMetadata,
+    /// A `pg_log_errors.category` value was absent or outside its registry range.
+    InvalidLogErrorCategory,
 }
 
 impl std::fmt::Display for BuildError {
@@ -51,6 +53,9 @@ impl std::fmt::Display for BuildError {
                 )
             }
             Self::InvalidMetadata => write!(f, "instance_metadata v2 must contain exactly one row"),
+            Self::InvalidLogErrorCategory => {
+                write!(f, "pg_log_errors.category must be between 0 and 10")
+            }
         }
     }
 }
@@ -59,7 +64,9 @@ impl std::error::Error for BuildError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Reader(error) => Some(error),
-            Self::UnresolvedState(_) | Self::InvalidMetadata => None,
+            Self::UnresolvedState(_) | Self::InvalidMetadata | Self::InvalidLogErrorCategory => {
+                None
+            }
         }
     }
 }

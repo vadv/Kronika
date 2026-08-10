@@ -344,17 +344,26 @@ containing IDX is bound to its exact finished source ZMS. A record contains the
 locator kind, physical `type_id`, field ordinal, current timestamp, and row
 ordinal; together these identify the source row. An `event` locator uses field
 ordinal 0, the row's `ts` field. A slow-query row at or above 5 seconds also
-keeps its independent `known_bad` locator for `max_duration_ms`. Derived
-overall health uses its compact health-point ordinal. Blocks do not copy
-severity, category, SQLSTATE, messages, statements, identities, values,
-labels, query or plan text, command lines, rows, or histories.
+keeps its independent `known_bad` locator for `max_duration_ms`.
+
+Only a `pg_log_errors` event locator also carries the row's stored one-byte
+category: `0` lock, `1` constraint/data-integrity, `2` serialization, `3`
+timeout, `4` resource, `5` data corruption, `6` system, `7` connection, `8`
+auth, `9` syntax, or `10` other. IDX reads this byte directly and does not
+classify SQLSTATE. The other six log layouts omit category because their
+physical `type_id` already identifies the event class. HTTP and dump expose
+the numeric category only on an error event locator.
+
+Derived overall health uses its compact health-point ordinal. Blocks do not
+copy severity, SQLSTATE, messages, statements, identities, values, labels,
+query or plan text, command lines, rows, or histories.
 
 One fixed per-block cap keeps the format bounded. Stored locators remain in
 deterministic timestamp and locator order; `total_hits` and `truncated` make an
 omission visible. This is not ranking.
 
-The IDX format is unreleased. A finding-rule or layout change replaces the
-format and magic outright. Web discards and rebuilds an old IDX; there is no
+The IDX format is unreleased. `KRNIDX5` is its one current reader and writer and
+changes in place. Web discards and rebuilds any other IDX; there is no
 old-format reader, migration, compatibility branch, or dual write.
 
 ### One timeline, no diagnosis

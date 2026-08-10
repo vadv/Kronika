@@ -70,6 +70,7 @@ fn event_stream_contains_only_sparse_locator_facts() {
         truncated: false,
         findings: vec![Finding {
             kind: FindingKind::Event,
+            category: None,
             field_ordinal: 0,
             row_ordinal: 42,
             timestamp: 1_700_000_000_000_000,
@@ -107,7 +108,64 @@ fn event_stream_contains_only_sparse_locator_facts() {
             "ts": "1700000000000000",
         })
     );
-    for copied in ["message", "query", "statement"] {
+    for copied in [
+        "severity",
+        "sqlstate",
+        "pattern",
+        "sample",
+        "message",
+        "query",
+        "statement",
+    ] {
+        assert!(rows[1].get(copied).is_none());
+    }
+}
+
+#[test]
+fn error_event_stream_exposes_only_the_stored_category_and_locator() {
+    let block = FindingBlock {
+        type_id: 2_001_001,
+        total_hits: 1,
+        truncated: false,
+        findings: vec![Finding {
+            kind: FindingKind::Event,
+            category: Some(5),
+            field_ordinal: 0,
+            row_ordinal: 42,
+            timestamp: 1_700_000_000_000_000,
+        }],
+    };
+    let mut rows = Vec::new();
+    stream_findings(
+        block,
+        &mut |line| {
+            rows.push(serde_json::from_slice::<serde_json::Value>(&line).expect("finding JSON"));
+            true
+        },
+        &|| false,
+    )
+    .expect("stream findings");
+    assert_eq!(
+        rows[1],
+        serde_json::json!({
+            "record": "finding",
+            "kind": "event",
+            "type_id": "2001001",
+            "field_ordinal": 0,
+            "row_ordinal": 42,
+            "ts": "1700000000000000",
+            "category": 5,
+        })
+    );
+    for copied in [
+        "severity",
+        "sqlstate",
+        "pattern",
+        "sample",
+        "message",
+        "query",
+        "statement",
+    ] {
         assert!(rows[1].get(copied).is_none());
     }
 }

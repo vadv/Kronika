@@ -4,10 +4,13 @@ use crate::file::IndexError;
 
 /// Maximum sparse locators stored for one physical section.
 pub const MAX_FINDINGS_PER_BLOCK: usize = 4_096;
+pub(crate) const PG_LOG_ERRORS_TYPE_ID: u32 = 2_001_001;
+pub(crate) const MAX_LOG_ERROR_CATEGORY: u8 = 10;
 
 const FIFTEEN_MINUTES_US: i64 = 15 * 60 * 1_000_000;
 const HEADER_LEN: usize = 9;
 const FINDING_LEN: usize = 15;
+const NO_CATEGORY: u8 = u8::MAX;
 
 /// A compact source-row locator kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -43,6 +46,8 @@ pub struct Finding {
     pub row_ordinal: u32,
     /// Current snapshot timestamp in unix microseconds.
     pub timestamp: i64,
+    /// Stored `pg_log_errors.category` for an event in that layout only.
+    pub category: Option<u8>,
 }
 
 impl Finding {
@@ -73,11 +78,12 @@ impl FindingBlock {
     pub(crate) fn encode(&self) -> Result<Vec<u8>, IndexError> {
         validate(self)?;
         let count = u32::try_from(self.findings.len()).map_err(|_overflow| IndexError::TooLarge)?;
+        let finding_len = finding_len(self.type_id);
         let capacity = HEADER_LEN
             .checked_add(
                 self.findings
                     .len()
-                    .checked_mul(FINDING_LEN)
+                    .checked_mul(finding_len)
                     .ok_or(IndexError::TooLarge)?,
             )
             .ok_or(IndexError::TooLarge)?;
@@ -90,6 +96,9 @@ impl FindingBlock {
             out.extend_from_slice(&finding.field_ordinal.to_le_bytes());
             out.extend_from_slice(&finding.row_ordinal.to_le_bytes());
             out.extend_from_slice(&finding.timestamp.to_le_bytes());
+            if self.type_id == PG_LOG_ERRORS_TYPE_ID {
+                out.push(finding.category.unwrap_or(NO_CATEGORY));
+            }
         }
         Ok(out)
     }
@@ -102,19 +111,28 @@ impl FindingBlock {
             Some(1) => true,
             _ => return Err(IndexError::BadLayout),
         };
+        let finding_len = finding_len(type_id);
         let expected = HEADER_LEN
-            .checked_add(count.checked_mul(FINDING_LEN).ok_or(IndexError::TooLarge)?)
+            .checked_add(count.checked_mul(finding_len).ok_or(IndexError::TooLarge)?)
             .ok_or(IndexError::TooLarge)?;
         if bytes.len() != expected || count > MAX_FINDINGS_PER_BLOCK {
             return Err(IndexError::BadLayout);
         }
         let mut findings = Vec::with_capacity(count);
-        for raw in bytes[HEADER_LEN..].chunks_exact(FINDING_LEN) {
+        for raw in bytes[HEADER_LEN..].chunks_exact(finding_len) {
             findings.push(Finding {
                 kind: FindingKind::from_raw(raw[0])?,
                 field_ordinal: u16_at(raw, 1)?,
                 row_ordinal: u32_at(raw, 3)?,
                 timestamp: i64_at(raw, 7)?,
+                category: if type_id == PG_LOG_ERRORS_TYPE_ID {
+                    match raw[15] {
+                        NO_CATEGORY => None,
+                        value => Some(value),
+                    }
+                } else {
+                    None
+                },
             });
         }
         let block = Self {
@@ -128,6 +146,14 @@ impl FindingBlock {
     }
 }
 
+const fn finding_len(type_id: u32) -> usize {
+    if type_id == PG_LOG_ERRORS_TYPE_ID {
+        FINDING_LEN + 1
+    } else {
+        FINDING_LEN
+    }
+}
+
 fn validate(block: &FindingBlock) -> Result<(), IndexError> {
     if block.findings.len() > MAX_FINDINGS_PER_BLOCK {
         return Err(IndexError::BadLayout);
@@ -138,6 +164,13 @@ fn validate(block: &FindingBlock) -> Result<(), IndexError> {
     }
     let mut previous = None;
     for finding in &block.findings {
+        if block.type_id == PG_LOG_ERRORS_TYPE_ID && finding.kind == FindingKind::Event {
+            if !matches!(finding.category, Some(0..=MAX_LOG_ERROR_CATEGORY)) {
+                return Err(IndexError::BadLayout);
+            }
+        } else if finding.category.is_some() {
+            return Err(IndexError::BadLayout);
+        }
         if previous.is_some_and(|before| before >= finding.order_key()) {
             return Err(IndexError::BadLayout);
         }

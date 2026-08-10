@@ -16,7 +16,7 @@ use kronika_registry::pg_stat_statements::PgStatStatementsV2;
 use kronika_registry::{StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 
-use crate::{FindingKind, SeriesBlock};
+use crate::{BuildError, FindingKind, LoadError, SeriesBlock};
 
 use super::{path_of, read, resource};
 
@@ -204,8 +204,13 @@ fn cpu_row(ts: i64, cpu_id: i32, user: i64, idle: i64, scope: u8) -> OsCpu {
     }
 }
 
-fn append_log_event_rows(buffers: &mut SectionBuffers, timestamp: i64, label: StrId) {
-    append_log_event_rows_2_001_to_2_003(buffers, timestamp, label);
+fn append_log_event_rows(
+    buffers: &mut SectionBuffers,
+    timestamp: i64,
+    label: StrId,
+    error_category: u8,
+) {
+    append_log_event_rows_2_001_to_2_003(buffers, timestamp, label, error_category);
     append_log_event_rows_2_004_to_2_007(buffers, timestamp, label);
 }
 
@@ -213,6 +218,7 @@ fn append_log_event_rows_2_001_to_2_003(
     buffers: &mut SectionBuffers,
     timestamp: i64,
     label: StrId,
+    error_category: u8,
 ) {
     buffers
         .push(PgLogErrors {
@@ -220,7 +226,7 @@ fn append_log_event_rows_2_001_to_2_003(
             system_identifier: None,
             source_file: label,
             severity: 0,
-            category: 0,
+            category: error_category,
             sqlstate: Some(label),
             pattern: label,
             count: 1,
@@ -340,7 +346,7 @@ fn append_log_event_rows_2_004_to_2_007(
         .expect("temporary-file row");
 }
 
-fn append_direct_fixture(journal: &mut Journal, segment_id: i64) {
+fn append_direct_fixture(journal: &mut Journal, segment_id: i64, error_category: u8) {
     let mut interner = Interner::new(DictLimits::default());
     let label = StrId(
         interner
@@ -385,7 +391,7 @@ fn append_direct_fixture(journal: &mut Journal, segment_id: i64) {
             scope: 0,
         })
         .expect("mount row");
-    append_log_event_rows(&mut buffers, later, label);
+    append_log_event_rows(&mut buffers, later, label, error_category);
     let part = buffers
         .flush(&dictionary)
         .expect("encode direct fixture")
@@ -523,13 +529,13 @@ fn truncated_and_unknown_finished_indexes_are_rebuilt_in_place() {
         .acquire_writer(LayoutLimits::default())
         .expect("writer");
     let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
-    append_direct_fixture(&mut journal, SEGMENT_ID);
+    append_direct_fixture(&mut journal, SEGMENT_ID, 5);
     write_segment(&journal, &writer, address()).expect("finish segment");
     journal.reset().expect("leave no active segment");
 
     let reader = Reader::open(directory.path()).expect("reader");
     let finished = only_segment(&reader, SegmentKind::Finished);
-    let published = resource(directory.path(), &reader, &finished, "pg_log_slow_queries")
+    let published = resource(directory.path(), &reader, &finished, "pg_log_errors")
         .expect("publish current index");
     let path = path_of(
         reader
@@ -541,7 +547,7 @@ fn truncated_and_unknown_finished_indexes_are_rebuilt_in_place() {
     let canonical = std::fs::read(&path).expect("canonical index");
 
     std::fs::write(&path, &canonical[..10]).expect("truncate derived index");
-    let rebuilt = resource(directory.path(), &reader, &finished, "pg_log_slow_queries")
+    let rebuilt = resource(directory.path(), &reader, &finished, "pg_log_errors")
         .expect("rebuild truncated index");
     assert_eq!(rebuilt, published);
     assert_eq!(std::fs::read(&path).expect("rebuilt index"), canonical);
@@ -549,7 +555,7 @@ fn truncated_and_unknown_finished_indexes_are_rebuilt_in_place() {
     let mut unknown = canonical.clone();
     unknown[0] ^= 1;
     std::fs::write(&path, unknown).expect("replace index magic");
-    let rebuilt = resource(directory.path(), &reader, &finished, "pg_log_slow_queries")
+    let rebuilt = resource(directory.path(), &reader, &finished, "pg_log_errors")
         .expect("rebuild unknown index");
     assert_eq!(rebuilt, published);
     assert_eq!(
@@ -566,7 +572,7 @@ fn direct_boundaries_and_log_events_use_exact_production_fields() {
         .acquire_writer(LayoutLimits::default())
         .expect("writer");
     let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
-    append_direct_fixture(&mut journal, SEGMENT_ID);
+    append_direct_fixture(&mut journal, SEGMENT_ID, 5);
     write_segment(&journal, &writer, address()).expect("finish direct segment");
     journal.reset().expect("leave no active segment");
 
@@ -587,6 +593,7 @@ fn direct_boundaries_and_log_events_use_exact_production_fields() {
         assert!(!block.truncated);
         assert_eq!(block.findings.len(), 1);
         assert_eq!(block.findings[0].kind, FindingKind::KnownBad);
+        assert_eq!(block.findings[0].category, None);
         assert_eq!(block.findings[0].field_ordinal, field_ordinal);
         assert_eq!(block.findings[0].row_ordinal, row_ordinal);
         assert_eq!(block.findings[0].timestamp, SEGMENT_ID + 1_000_000);
@@ -612,11 +619,16 @@ fn direct_boundaries_and_log_events_use_exact_production_fields() {
         assert!(!block.truncated);
         assert_eq!(block.findings.len(), expected_hits as usize);
         assert_eq!(block.findings[0].kind, FindingKind::Event);
+        assert_eq!(
+            block.findings[0].category,
+            (type_id == 2_001_001).then_some(5)
+        );
         assert_eq!(block.findings[0].field_ordinal, 0);
         assert_eq!(block.findings[0].row_ordinal, 0);
         assert_eq!(block.findings[0].timestamp, SEGMENT_ID + 1_000_000);
         if type_id == 2_004_001 {
             assert_eq!(block.findings[1].kind, FindingKind::KnownBad);
+            assert_eq!(block.findings[1].category, None);
             assert_eq!(block.findings[1].field_ordinal, 6);
             assert_eq!(block.findings[1].row_ordinal, 0);
             assert_eq!(block.findings[1].timestamp, SEGMENT_ID + 1_000_000);
@@ -636,6 +648,30 @@ fn direct_boundaries_and_log_events_use_exact_production_fields() {
         !bytes.windows(copied.len()).any(|window| window == copied),
         "event locators contain no source row text"
     );
+}
+
+#[test]
+fn production_builder_rejects_an_invalid_log_error_category() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+    append_direct_fixture(&mut journal, SEGMENT_ID, 11);
+    write_segment(&journal, &writer, address()).expect("finish direct segment");
+    journal.reset().expect("leave no active segment");
+
+    let reader = Reader::open(directory.path()).expect("reader");
+    let segment = only_segment(&reader, SegmentKind::Finished);
+    let error = match resource(directory.path(), &reader, &segment, "pg_log_errors") {
+        Ok(_resource) => panic!("invalid category must fail the build"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        LoadError::Build(BuildError::InvalidLogErrorCategory)
+    ));
 }
 
 #[test]

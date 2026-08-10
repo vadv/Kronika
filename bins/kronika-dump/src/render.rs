@@ -203,22 +203,23 @@ fn write_index(
                         }),
                     )?;
                     for finding in &block.findings {
-                        say(
-                            output,
-                            &json!({
-                                "kind": "finding",
-                                "path": path,
-                                "mark": match finding.kind {
-                                    kronika_index::FindingKind::KnownBad => "known_bad",
-                                    kronika_index::FindingKind::Spike => "spike",
-                                    kronika_index::FindingKind::Event => "event",
-                                },
-                                "type_id": block.type_id.to_string(),
-                                "field_ordinal": finding.field_ordinal,
-                                "row_ordinal": finding.row_ordinal,
-                                "ts": finding.timestamp.to_string(),
-                            }),
-                        )?;
+                        let mut value = json!({
+                            "kind": "finding",
+                            "path": path,
+                            "mark": match finding.kind {
+                                kronika_index::FindingKind::KnownBad => "known_bad",
+                                kronika_index::FindingKind::Spike => "spike",
+                                kronika_index::FindingKind::Event => "event",
+                            },
+                            "type_id": block.type_id.to_string(),
+                            "field_ordinal": finding.field_ordinal,
+                            "row_ordinal": finding.row_ordinal,
+                            "ts": finding.timestamp.to_string(),
+                        });
+                        if let Some(category) = finding.category {
+                            value["category"] = category.into();
+                        }
+                        say(output, &value)?;
                     }
                 }
             }

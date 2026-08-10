@@ -95,6 +95,7 @@ impl FindingBuilder {
                         {
                             hits.push(Finding {
                                 kind: FindingKind::Spike,
+                                category: None,
                                 field_ordinal: PROCESS_READ_BYTES_FIELD,
                                 row_ordinal,
                                 timestamp: *timestamp,
@@ -159,6 +160,7 @@ impl FindingBuilder {
                     {
                         hits.push(Finding {
                             kind: FindingKind::Spike,
+                            category: None,
                             field_ordinal: statement_total_time_field(type_id),
                             row_ordinal,
                             timestamp: *timestamp,

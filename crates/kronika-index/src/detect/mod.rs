@@ -9,7 +9,10 @@ use kronika_reader::{Cell, Segment, SegmentRef};
 
 use crate::Index;
 use crate::build::BuildError;
-use crate::findings::{Finding, FindingBlock, FindingKind, MAX_FINDINGS_PER_BLOCK, PriorValue};
+use crate::findings::{
+    Finding, FindingBlock, FindingKind, MAX_FINDINGS_PER_BLOCK, MAX_LOG_ERROR_CATEGORY,
+    PG_LOG_ERRORS_TYPE_ID, PriorValue,
+};
 use crate::series::{SeriesBlock, SeriesKey, SeriesKind};
 
 use self::direct::CpuRaw;
@@ -22,7 +25,7 @@ const OS_VMSTAT: u32 = 1_106_001;
 const OS_MOUNTINFO: u32 = 1_112_001;
 const PG_LOG_SLOW_QUERIES: u32 = 2_004_001;
 const PG_LOG_EVENT_LAYOUTS: [u32; 7] = [
-    2_001_001,
+    PG_LOG_ERRORS_TYPE_ID,
     2_002_001,
     2_003_001,
     PG_LOG_SLOW_QUERIES,
@@ -163,19 +166,42 @@ impl FindingBuilder {
                 continue;
             }
             let event_hits = hits.entry(type_id).or_default();
-            segment.visit_rows(type_id, &["ts"], 0, usize::MAX, |ordinal, row| {
+            let fields: &[&str] = if type_id == PG_LOG_ERRORS_TYPE_ID {
+                &["ts", "category"]
+            } else {
+                &["ts"]
+            };
+            let mut invalid_category = false;
+            segment.visit_rows(type_id, fields, 0, usize::MAX, |ordinal, row| {
                 if let (Some(Cell::Ts(timestamp)), Some(row_ordinal)) =
                     (row.get("ts"), u32::try_from(ordinal).ok())
                 {
+                    let category = if type_id == PG_LOG_ERRORS_TYPE_ID {
+                        let Some(Cell::U32(value)) = row.get("category") else {
+                            invalid_category = true;
+                            return false;
+                        };
+                        let Ok(value @ 0..=MAX_LOG_ERROR_CATEGORY) = u8::try_from(*value) else {
+                            invalid_category = true;
+                            return false;
+                        };
+                        Some(value)
+                    } else {
+                        None
+                    };
                     event_hits.push(Finding {
                         kind: FindingKind::Event,
                         field_ordinal: EVENT_TIMESTAMP_FIELD,
                         row_ordinal,
                         timestamp: *timestamp,
+                        category,
                     });
                 }
                 true
             })?;
+            if invalid_category {
+                return Err(BuildError::InvalidLogErrorCategory);
+            }
         }
         Ok(())
     }

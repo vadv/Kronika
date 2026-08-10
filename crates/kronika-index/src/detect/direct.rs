@@ -149,6 +149,7 @@ impl FindingBuilder {
                 {
                     cpu_hits.push(Finding {
                         kind: FindingKind::KnownBad,
+                        category: None,
                         field_ordinal: CPU_IDLE_FIELD,
                         row_ordinal,
                         timestamp: current.timestamp,
@@ -196,6 +197,7 @@ impl FindingBuilder {
                 if online != 0 && load1.is_finite() && *load1 >= 2.0 * f64::from(online) {
                     load_hits.push(Finding {
                         kind: FindingKind::KnownBad,
+                        category: None,
                         field_ordinal: LOAD1_FIELD,
                         row_ordinal,
                         timestamp: *timestamp,
@@ -245,6 +247,7 @@ impl FindingBuilder {
                 {
                     memory_hits.push(Finding {
                         kind: FindingKind::KnownBad,
+                        category: None,
                         field_ordinal: MEM_AVAILABLE_FIELD,
                         row_ordinal,
                         timestamp: *timestamp,
@@ -294,6 +297,7 @@ impl FindingBuilder {
                 {
                     mount_hits.push(Finding {
                         kind: FindingKind::KnownBad,
+                        category: None,
                         field_ordinal: MOUNT_FREE_BYTES_FIELD,
                         row_ordinal,
                         timestamp: *timestamp,
@@ -331,6 +335,7 @@ impl FindingBuilder {
                 {
                     query_hits.push(Finding {
                         kind: FindingKind::KnownBad,
+                        category: None,
                         field_ordinal: SLOW_QUERY_DURATION_FIELD,
                         row_ordinal,
                         timestamp: *timestamp,
@@ -370,6 +375,7 @@ impl FindingBuilder {
                 {
                     oom_hits.push(Finding {
                         kind: FindingKind::KnownBad,
+                        category: None,
                         field_ordinal: OOM_KILL_FIELD,
                         row_ordinal,
                         timestamp: *timestamp,
@@ -415,6 +421,7 @@ impl FindingBuilder {
                 {
                     database_hits.push(Finding {
                         kind: FindingKind::KnownBad,
+                        category: None,
                         field_ordinal: DATABASE_DEADLOCKS_FIELD,
                         row_ordinal,
                         timestamp: *timestamp,
@@ -463,6 +470,7 @@ impl FindingBuilder {
             {
                 hits.entry(sample.type_id).or_default().push(Finding {
                     kind: FindingKind::KnownBad,
+                    category: None,
                     field_ordinal: activity_state_field(sample.type_id),
                     row_ordinal: sample.row_ordinal,
                     timestamp,
@@ -489,6 +497,7 @@ impl FindingBuilder {
                     {
                         health_hits.push(Finding {
                             kind: FindingKind::KnownBad,
+                            category: None,
                             field_ordinal: OVERALL_HEALTH_FIELD,
                             row_ordinal,
                             timestamp: point.timestamp,
