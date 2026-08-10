@@ -162,8 +162,14 @@ changing the formula.
 
 ## Health
 
-Health is one number per snapshot, from 0 to 100: the share of the interval in
-which nothing was waiting for the most contended resource.
+Health is up to three ordinary nullable point series from 0 to 100: OS,
+PostgreSQL, and their combined value. A component penalty is `100 - health`.
+Disabled PostgreSQL contributes no penalty. Enabled PostgreSQL with no usable
+snapshot is `null`, and makes combined health `null` rather than silently
+healthy.
+
+OS health is the share of the interval in which nothing was waiting for the
+most contended resource:
 
 ```
 health = 100 * (1 - max(cpu, memory, io))
@@ -183,8 +189,8 @@ The counters rather than `avg10`: a kernel rolling average is sampled at read
 time and lags, so it does not describe exactly the interval between two
 snapshots.
 
-No thresholds and no weights. The worst resource decides, because an average
-hides a saturated disk behind an idle CPU.
+No thresholds and no weights inside the OS component. The worst resource
+decides, because an average hides a saturated disk behind an idle CPU.
 
 Health is null when it cannot be computed: the first snapshot of a segment has
 nothing to subtract from; a counter that went backwards yields no stall time
@@ -205,6 +211,44 @@ in the log line, because that is the whole fix.
 An OOM kill, a filesystem at zero free and cgroup throttling are not a share of
 time. They stay out of the formula and are shown alongside the line. Folding
 them in would need weights, and weights need tuning.
+
+PostgreSQL pressure uses the number of rows whose `pg_stat_activity.state` is
+exactly `active` in one snapshot. It does not split running and waiting
+backends: both are active work the server must service. It does not use
+`max_connections`, because that limit says nothing about the CPU capacity
+available to the workload.
+
+The operator records the monitored server's positive effective CPU capacity in
+`KRONIKA_POSTGRES_EFFECTIVE_CPUS`. A metric DSN can be remote, so Kronika never
+substitutes the collector host's CPU count. One effective CPU supplies two
+service slots: one backend may execute while another sends results to its
+client.
+
+```
+service_slots = 2 * effective_postgres_cpu
+postgres_penalty = 0                                      when active <= service_slots
+postgres_penalty = round(100 * (active-service_slots)/active) otherwise
+postgres_health = 100 - postgres_penalty
+```
+
+For a two-CPU server, the first penalty is at five active backends. Enabled
+PostgreSQL without a configured capacity or a usable activity snapshot is
+`null`. The PostgreSQL enabled flag, capacity, and effective collection
+interval are recorded once in the current `instance_metadata` row
+of every segment. When the PostgreSQL interval is configured as zero, the
+recorded effective interval is the collector timer tick.
+
+```
+overall_health = clamp(100 - os_penalty - postgres_penalty, 0, 100)
+```
+
+Each combined point has an OS-health timestamp. It uses the latest PostgreSQL
+snapshot not later than that timestamp only while its age is at most the
+recorded effective PostgreSQL interval. There is no interpolation: before the
+first PostgreSQL snapshot and after a stale one the combined value is `null`.
+The index always exposes OS and combined health; it exposes PostgreSQL health
+only when that source is configured. These blocks contain only small points,
+never large source rows.
 
 ## Reading
 

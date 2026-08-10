@@ -1,11 +1,19 @@
 //! Resolving the dictionary ids carried by row cells.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 
 use arrow_array::{Array as _, BinaryArray, BooleanArray, FixedSizeBinaryArray, UInt64Array};
+use arrow_schema::{DataType, Field, Schema};
 use kronika_format::{BlobEntry, Resolved, StrId};
-use kronika_registry::{CodecError, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, VerifiedSection};
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use kronika_registry::{
+    Bytes, CodecError, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, MAX_DECODED_SECTION_BYTES,
+    VerifiedSection, plain_parquet_decode_profile,
+};
+use parquet::arrow::ProjectionMask;
+use parquet::arrow::arrow_reader::{
+    ArrowReaderOptions, ParquetRecordBatchReaderBuilder, RowSelection,
+};
 
 #[derive(Debug, Clone)]
 enum Value {
@@ -43,8 +51,9 @@ impl Dictionary {
         &mut self,
         type_id: u32,
         section: VerifiedSection,
+        expected_rows: u64,
     ) -> Result<(), CodecError> {
-        let reader = ParquetRecordBatchReaderBuilder::try_new(section.into_bytes())?.build()?;
+        let reader = dictionary_builder(section.into_bytes(), type_id, expected_rows)?.build()?;
         for batch in reader {
             let batch = batch?;
             let ids = required_array::<UInt64Array>(&batch, "str_id")?;
@@ -91,6 +100,140 @@ impl Dictionary {
         }
         Ok(())
     }
+
+    pub(crate) fn decode_selected(
+        &mut self,
+        type_id: u32,
+        section: VerifiedSection,
+        wanted: &HashSet<u64>,
+        expected_rows: u64,
+    ) -> Result<(), CodecError> {
+        if wanted.is_empty() {
+            return Ok(());
+        }
+        let bytes = section.into_bytes();
+        let id_builder = dictionary_builder(bytes.clone(), type_id, expected_rows)?;
+        let total_rows = usize::try_from(id_builder.metadata().file_metadata().num_rows())
+            .map_err(|_overflow| CodecError::SchemaMismatch)?;
+        let id_mask = ProjectionMask::roots(id_builder.parquet_schema(), [0]);
+        let id_reader = id_builder.with_projection(id_mask).build()?;
+        let mut ranges: Vec<Range<usize>> = Vec::new();
+        let mut ordinal = 0_usize;
+        for batch in id_reader {
+            let batch = batch?;
+            let ids = required_array::<UInt64Array>(&batch, "str_id")?;
+            for row in 0..batch.num_rows() {
+                if wanted.contains(&ids.value(row)) {
+                    ranges.push(ordinal..ordinal.saturating_add(1));
+                }
+                ordinal = ordinal.saturating_add(1);
+            }
+        }
+        if ranges.is_empty() {
+            return Ok(());
+        }
+        let selection = RowSelection::from_consecutive_ranges(ranges.into_iter(), total_rows);
+        let options = ArrowReaderOptions::new().with_skip_arrow_metadata(true);
+        let reader = ParquetRecordBatchReaderBuilder::try_new_with_options(bytes, options)?
+            .with_row_selection(selection)
+            .build()?;
+        for batch in reader {
+            let batch = batch?;
+            let ids = required_array::<UInt64Array>(&batch, "str_id")?;
+            match type_id {
+                DICT_STRINGS_TYPE_ID => {
+                    let values = required_array::<BinaryArray>(&batch, "bytes")?;
+                    for row in 0..batch.num_rows() {
+                        let id =
+                            StrId::from_raw(ids.value(row)).ok_or(CodecError::SchemaMismatch)?;
+                        self.by_id
+                            .insert(id, Value::String(values.value(row).to_vec()));
+                    }
+                }
+                DICT_BLOBS_TYPE_ID => {
+                    let stored = required_array::<BinaryArray>(&batch, "stored_bytes")?;
+                    let full_len = required_array::<UInt64Array>(&batch, "full_len")?;
+                    let truncated = required_array::<BooleanArray>(&batch, "truncated")?;
+                    let hash = nullable_hash_array(&batch)?;
+                    for row in 0..batch.num_rows() {
+                        let id =
+                            StrId::from_raw(ids.value(row)).ok_or(CodecError::SchemaMismatch)?;
+                        let full_sha256 = if hash.is_null(row) {
+                            None
+                        } else {
+                            Some(
+                                hash.value(row)
+                                    .try_into()
+                                    .map_err(|_error| CodecError::SchemaMismatch)?,
+                            )
+                        };
+                        self.by_id.insert(
+                            id,
+                            Value::Blob {
+                                stored_bytes: stored.value(row).to_vec(),
+                                full_len: full_len.value(row),
+                                truncated: truncated.value(row),
+                                full_sha256,
+                            },
+                        );
+                    }
+                }
+                _ => return Err(CodecError::UnknownType { type_id }),
+            }
+        }
+        Ok(())
+    }
+}
+
+fn dictionary_builder(
+    bytes: Bytes,
+    type_id: u32,
+    expected_rows: u64,
+) -> Result<ParquetRecordBatchReaderBuilder<Bytes>, CodecError> {
+    let profile = plain_parquet_decode_profile(bytes.as_ref(), MAX_DECODED_SECTION_BYTES)?;
+    let got = u64::try_from(profile.rows).map_err(|_overflow| CodecError::SchemaMismatch)?;
+    if got != expected_rows {
+        return Err(CodecError::RowCountMismatch {
+            expected: expected_rows,
+            got,
+        });
+    }
+    let options = ArrowReaderOptions::new().with_skip_arrow_metadata(true);
+    let builder = ParquetRecordBatchReaderBuilder::try_new_with_options(bytes, options)?;
+    if dictionary_schema_matches(builder.schema(), type_id) {
+        Ok(builder)
+    } else {
+        Err(CodecError::SchemaMismatch)
+    }
+}
+
+fn dictionary_schema_matches(schema: &Schema, type_id: u32) -> bool {
+    let fields = schema.fields();
+    match type_id {
+        DICT_STRINGS_TYPE_ID => {
+            fields.len() == 2
+                && field_matches(&fields[0], "str_id", &DataType::UInt64, false)
+                && field_matches(&fields[1], "bytes", &DataType::Binary, false)
+        }
+        DICT_BLOBS_TYPE_ID => {
+            fields.len() == 5
+                && field_matches(&fields[0], "str_id", &DataType::UInt64, false)
+                && field_matches(&fields[1], "stored_bytes", &DataType::Binary, false)
+                && field_matches(&fields[2], "full_len", &DataType::UInt64, false)
+                && field_matches(&fields[3], "truncated", &DataType::Boolean, false)
+                && field_matches(
+                    &fields[4],
+                    "full_sha256",
+                    &DataType::FixedSizeBinary(32),
+                    true,
+                )
+        }
+        _ => false,
+    }
+}
+
+fn field_matches(field: &Field, name: &str, ty: &DataType, nullable: bool) -> bool {
+    field.name() == name && field.data_type() == ty && field.is_nullable() == nullable
 }
 
 fn resolved(str_id: StrId, value: &Value) -> Resolved<'_> {

@@ -10,7 +10,8 @@ use crate::{Section, Ts};
     id = 1_107_001,
     name = "os_psi",
     semantics = snapshot_full,
-    sort_key("resource", "ts")
+    sort_key("resource", "ts"),
+    identity("resource")
 )]
 pub struct OsPsi {
     /// Collection timestamp, unix microseconds.
@@ -95,6 +96,7 @@ mod tests {
         let c = OsPsi::CONTRACT;
         assert_eq!(c.type_id.get(), 1_107_001);
         assert_eq!(c.sort_key, ["resource", "ts"]);
+        assert_eq!(c.identity, ["resource"]);
         assert_eq!(c.column("full_avg10").map(|col| col.nullable), Some(true));
         assert_eq!(c.column("full_total").map(|col| col.nullable), Some(true));
         assert_eq!(c.column("some_avg10").map(|col| col.nullable), Some(false));

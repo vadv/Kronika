@@ -13,7 +13,8 @@ use crate::{Section, Ts};
     id = 1_117_001,
     name = "os_numa",
     semantics = snapshot_full,
-    sort_key("node_id", "ts")
+    sort_key("node_id", "ts"),
+    identity("node_id")
 )]
 pub struct OsNuma {
     /// Collection timestamp, unix microseconds.

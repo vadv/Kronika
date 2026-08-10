@@ -401,6 +401,7 @@ impl LocalDir {
         Ok(Some(ActiveSnapshot {
             file: Arc::new(file),
             active: Arc::clone(&scan.active),
+            part_count: scan.active.len(),
             valid_len: scan.valid_len,
             segment_id: first.segment_id,
         }))
@@ -506,7 +507,47 @@ impl ActiveSnapshot {
     /// Valid journal parts in captured order.
     #[must_use]
     pub fn parts(&self) -> &[ActivePart] {
-        &self.active
+        &self.active[..self.part_count]
+    }
+
+    /// Return the same journal generation truncated at an earlier committed
+    /// frame boundary.
+    ///
+    /// This lets a paged active reader keep the exact prefix named by its
+    /// cursor even after later frames have been appended.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::OutOfBounds`] when `position` is later than this
+    /// capture or does not end at the journal header or a complete frame.
+    pub fn at_position(&self, position: u64) -> Result<Self, StoreError> {
+        if position > self.valid_len {
+            return Err(StoreError::OutOfBounds);
+        }
+        let header_end = JOURNAL_HEADER_LEN as u64;
+        let mut boundary = header_end;
+        let mut count = 0_usize;
+        for part in self.parts() {
+            let offset =
+                u64::try_from(part.part.offset).map_err(|_overflow| StoreError::OutOfBounds)?;
+            let len = u64::try_from(part.part.len).map_err(|_overflow| StoreError::OutOfBounds)?;
+            let end = offset.checked_add(len).ok_or(StoreError::OutOfBounds)?;
+            if end > position {
+                break;
+            }
+            boundary = end;
+            count = count.saturating_add(1);
+        }
+        if position != boundary {
+            return Err(StoreError::OutOfBounds);
+        }
+        Ok(Self {
+            file: Arc::clone(&self.file),
+            active: Arc::clone(&self.active),
+            part_count: count,
+            valid_len: position,
+            segment_id: self.segment_id,
+        })
     }
 
     /// Read a byte range relative to one captured part.
@@ -525,7 +566,10 @@ impl ActiveSnapshot {
         offset: u64,
         len: u64,
     ) -> Result<Vec<u8>, StoreError> {
-        let part = self.active.get(part_index).ok_or(StoreError::OutOfBounds)?;
+        let part = self
+            .parts()
+            .get(part_index)
+            .ok_or(StoreError::OutOfBounds)?;
         if part.segment_id != self.segment_id {
             return Err(StoreError::OutOfBounds);
         }

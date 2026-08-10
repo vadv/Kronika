@@ -78,6 +78,69 @@ pub fn final_plain_body_bound(
     Ok(body)
 }
 
+/// Conservative body bound for PLAIN columns written in one record batch.
+///
+/// The caller supplies the maximum data-page count per physical column. The
+/// bound sums Zstandard's per-page overhead and fixed Parquet framing without
+/// assuming how the batch's bytes are distributed between pages.
+///
+/// # Errors
+///
+/// Returns [`CodecError::InvalidPageLayout`] for a zero page count, or
+/// [`CodecError::SectionTooLarge`] when arithmetic or the conservative final
+/// body bound crosses [`MAX_SECTION_BYTES`].
+pub fn final_single_batch_plain_body_bound(
+    columns: impl IntoIterator<Item = FinalPlainColumnSize>,
+    pages_per_column: usize,
+) -> Result<usize, CodecError> {
+    if pages_per_column == 0 {
+        return Err(CodecError::InvalidPageLayout);
+    }
+    let compression_overhead =
+        pages_per_column
+            .checked_mul(64)
+            .ok_or(CodecError::SectionTooLarge {
+                len: usize::MAX,
+                max: MAX_SECTION_BYTES,
+            })?;
+    let page_framing = pages_per_column
+        .checked_mul(FINAL_PAGE_FRAMING_BOUND)
+        .ok_or(CodecError::SectionTooLarge {
+            len: usize::MAX,
+            max: MAX_SECTION_BYTES,
+        })?;
+    let mut body = FINAL_FILE_FRAMING_BOUND;
+    for column in columns {
+        let page_input = column.value_bytes.checked_add(column.level_bytes).ok_or(
+            CodecError::SectionTooLarge {
+                len: usize::MAX,
+                max: MAX_SECTION_BYTES,
+            },
+        )?;
+        let compressed = page_input
+            .checked_add(page_input >> 8)
+            .and_then(|bytes| bytes.checked_add(compression_overhead))
+            .ok_or(CodecError::SectionTooLarge {
+                len: usize::MAX,
+                max: MAX_SECTION_BYTES,
+            })?;
+        body = body
+            .checked_add(compressed)
+            .and_then(|bytes| bytes.checked_add(page_framing))
+            .ok_or(CodecError::SectionTooLarge {
+                len: usize::MAX,
+                max: MAX_SECTION_BYTES,
+            })?;
+    }
+    if body > MAX_SECTION_BYTES {
+        return Err(CodecError::SectionTooLarge {
+            len: body,
+            max: MAX_SECTION_BYTES,
+        });
+    }
+    Ok(body)
+}
+
 /// The `ZSTD_COMPRESSBOUND` formula from the pinned Zstandard 1.5 contract.
 pub(super) fn zstd_compress_bound(src_size: usize) -> Option<usize> {
     let small_input_margin = if src_size < 128 * 1024 {

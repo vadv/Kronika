@@ -1,4 +1,4 @@
-//! Type `1_021_001`: `instance_metadata`, the per-segment host fingerprint.
+//! Types `1_021_001` and `1_021_002`: per-segment instance facts.
 //!
 //! Mandatory in every segment carrying snapshots. It records the node identity
 //! and the constants needed to interpret the other sections: without
@@ -42,10 +42,10 @@ impl Environment {
     }
 }
 
-/// One row of type `1_021_001`; one row per segment.
+/// One row of type `1_021_002`; one row per segment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Section)]
 #[section(
-    id = 1_021_001,
+    id = 1_021_002,
     name = "instance_metadata",
     semantics = snapshot_full,
     sort_key("ts")
@@ -75,11 +75,55 @@ pub struct InstanceMetadata {
     /// Kernel boot time (`/proc/stat` btime), unix microseconds.
     #[column(l)]
     pub btime: Ts,
+    /// Whether `PostgreSQL` metric collection was configured.
+    #[column(l)]
+    pub postgresql_enabled: bool,
+    /// Effective cadence of the `PostgreSQL` snapshot source, seconds.
+    #[column(l, unit = seconds)]
+    pub postgresql_interval_seconds: u64,
+    /// CPU capacity available to the monitored `PostgreSQL` server.
+    #[column(l)]
+    pub postgresql_effective_cpus: Option<u32>,
+}
+
+/// Previous type `1_021_001`, retained so existing ZMS remains readable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Section)]
+#[section(
+    id = 1_021_001,
+    name = "instance_metadata",
+    semantics = snapshot_full,
+    sort_key("ts")
+)]
+pub struct InstanceMetadataV1 {
+    /// Collection timestamp, unix microseconds.
+    #[column(t)]
+    pub ts: Ts,
+    /// Collector hostname.
+    #[column(l)]
+    pub hostname: StrId,
+    /// OS kernel version string.
+    #[column(l)]
+    pub kernel_version: StrId,
+    /// `0` machine or VM, `1` container. See [`Environment`].
+    #[column(l)]
+    pub environment: u8,
+    /// `sysconf(_SC_CLK_TCK)`; needed to convert OS tick counters.
+    #[column(l)]
+    pub clock_ticks_per_sec: i64,
+    /// OS page size, bytes.
+    #[column(l)]
+    pub page_size_bytes: i64,
+    /// `/proc/sys/kernel/random/boot_id`.
+    #[column(l)]
+    pub boot_id: StrId,
+    /// Kernel boot time (`/proc/stat` btime), unix microseconds.
+    #[column(l)]
+    pub btime: Ts,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Environment, InstanceMetadata};
+    use super::{Environment, InstanceMetadata, InstanceMetadataV1};
     use crate::{Section, StrId, Ts, lint};
 
     fn row() -> InstanceMetadata {
@@ -92,12 +136,18 @@ mod tests {
             page_size_bytes: 4096,
             boot_id: StrId(4),
             btime: Ts(1_700_000_000_000_000),
+            postgresql_enabled: true,
+            postgresql_interval_seconds: 30,
+            postgresql_effective_cpus: Some(2),
         }
     }
 
     #[test]
     fn contract_passes_the_linter() {
-        assert_eq!(lint(&[InstanceMetadata::CONTRACT]), Ok(()));
+        assert_eq!(
+            lint(&[InstanceMetadataV1::CONTRACT, InstanceMetadata::CONTRACT]),
+            Ok(())
+        );
     }
 
     #[test]
@@ -118,6 +168,9 @@ mod tests {
                 "page_size_bytes",
                 "boot_id",
                 "btime",
+                "postgresql_enabled",
+                "postgresql_interval_seconds",
+                "postgresql_effective_cpus",
             ]
         );
     }
@@ -144,5 +197,20 @@ mod tests {
             ..row()
         };
         crate::assert_roundtrips(&[row(), container]);
+    }
+
+    #[test]
+    fn current_layout_preserves_disabled_and_unknown_sources() {
+        let unknown = InstanceMetadata {
+            postgresql_effective_cpus: None,
+            ..row()
+        };
+        let disabled = InstanceMetadata {
+            postgresql_enabled: false,
+            postgresql_effective_cpus: None,
+            ..row()
+        };
+        crate::assert_roundtrips(&[unknown]);
+        crate::assert_roundtrips(&[disabled]);
     }
 }

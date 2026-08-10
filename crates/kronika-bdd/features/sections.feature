@@ -19,7 +19,7 @@ Feature: Which sections reach the segment, and how many rows they may hold
     When it runs for 3 seconds
     Then every segment holds these sections
       | type_id | section            | min rows |
-      | 1021001 | instance_metadata  | 1        |
+      | 1021002 | instance_metadata  | 1        |
       | 1100001 | os_process         | 1        |
       | 1101001 | os_process_status  | 1        |
       | 1102001 | os_cpu             | 2        |

@@ -22,7 +22,11 @@ futures-util = "0.3"
 kronika-source-log = { version = "0.0.0", path = "../../crates/kronika-source-log" }
 tokio-postgres = "0.7.18"
 
+[target.'cfg(target_env = "musl")'.dependencies]
+tikv-jemallocator = { version = "0.6.1", default-features = false, features = ["override_allocator_on_supported_platforms"] }
+
 [dev-dependencies]
+kronika-reader = { path = "../../crates/kronika-reader" }
 tempfile = "3"
 
 [lints]

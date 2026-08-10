@@ -22,6 +22,13 @@ pub enum CodecError {
         /// The raw `num_rows` from Parquet metadata.
         raw: i64,
     },
+    /// Parquet metadata disagrees with the row count in the segment catalog.
+    RowCountMismatch {
+        /// Rows declared by the segment catalog.
+        expected: u64,
+        /// Rows declared by Parquet metadata.
+        got: u64,
+    },
     /// The section byte length is above [`MAX_SECTION_BYTES`].
     SectionTooLarge {
         /// The byte length that exceeded the cap.
@@ -140,6 +147,12 @@ impl fmt::Display for CodecError {
             Self::InvalidRowCount { raw } => {
                 write!(f, "section claims an invalid row count of {raw}")
             }
+            Self::RowCountMismatch { expected, got } => {
+                write!(
+                    f,
+                    "section catalog declares {expected} rows but Parquet declares {got}"
+                )
+            }
             Self::SectionTooLarge { len, max } => {
                 write!(f, "section is {len} bytes, above the cap of {max}")
             }
@@ -203,6 +216,7 @@ impl Error for CodecError {
             Self::Parquet(err) => Some(err),
             Self::TooManyRows { .. }
             | Self::InvalidRowCount { .. }
+            | Self::RowCountMismatch { .. }
             | Self::SectionTooLarge { .. }
             | Self::PlainPageTooLarge { .. }
             | Self::DecodedSectionTooLarge { .. }

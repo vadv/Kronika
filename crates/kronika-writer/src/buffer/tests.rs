@@ -28,6 +28,9 @@ fn instance(ts: i64) -> InstanceMetadata {
         page_size_bytes: 4096,
         boot_id: StrId(4),
         btime: Ts(ts - 1_000),
+        postgresql_enabled: false,
+        postgresql_interval_seconds: 30,
+        postgresql_effective_cpus: None,
     }
 }
 
@@ -69,7 +72,7 @@ fn buffers_many_types_and_flushes_one_part() {
         decode_any(type_id, verified).expect("decode").stats.rows
     };
     assert_eq!(decode_rows(1_105_001), 2);
-    assert_eq!(decode_rows(1_021_001), 1);
+    assert_eq!(decode_rows(1_021_002), 1);
 }
 
 #[test]
@@ -98,7 +101,7 @@ fn flush_with_summary_reports_section_rows_and_bytes() {
         .summary
         .sections
         .iter()
-        .find(|section| section.type_id == 1_021_001)
+        .find(|section| section.type_id == 1_021_002)
         .expect("instance section summary");
     assert_eq!(instance.rows, 1);
     assert!(instance.body_bytes > 0);

@@ -140,6 +140,47 @@ pub enum Unit {
     Celsius,
 }
 
+impl Unit {
+    /// The code the API sends for this unit.
+    ///
+    /// A code, not a word: the interface holds the words for both languages it
+    /// ships, and the server holds none of them.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Count => "count",
+            Self::Bytes => "bytes",
+            Self::Kib => "kibibytes",
+            Self::Pages => "pages",
+            Self::Sectors => "sectors",
+            Self::Seconds => "seconds",
+            Self::Milliseconds => "milliseconds",
+            Self::Microseconds => "microseconds",
+            Self::Nanoseconds => "nanoseconds",
+            Self::Jiffies => "jiffies",
+            Self::Hertz => "hertz",
+            Self::MegabitsPerSecond => "megabits_per_second",
+            Self::MegabytesPerSecond => "megabytes_per_second",
+            Self::Percent => "percent",
+            Self::Celsius => "celsius",
+        }
+    }
+}
+
+impl ColumnClass {
+    /// The code the API sends for this class.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Cumulative => "cumulative",
+            Self::Gauge => "gauge",
+            Self::Label => "label",
+            Self::Timestamp => "timestamp",
+        }
+    }
+}
+
 /// One column of a typed section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Column {

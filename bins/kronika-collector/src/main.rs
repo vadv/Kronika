@@ -16,6 +16,10 @@
     reason = "the registry's arrow/parquet stack pulls duplicate transitive versions outside our control"
 )]
 
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 mod buffering;
 mod capacity;
 mod config;
@@ -42,8 +46,8 @@ use pg_sources::{PgBatch, PgSources, push_pg_batch, push_pg_settings};
 use rotation::Rotation;
 use scheduler::{DueSet, Scheduler, SourceKind};
 use segments::{
-    SegmentState, append_window_and_maybe_close, close_open_segment, encode_window,
-    open_collector_journal,
+    AppendWindowError, SegmentState, append_window_and_maybe_close, close_open_segment,
+    encode_window, open_collector_journal,
 };
 use service_sections::{collect_instance, push_instance_metadata};
 use std::io::Write as _;
@@ -387,8 +391,15 @@ fn append_pending_pg_batch(
             .then(|| sched.recollection_due(&DueSet::default(), Instant::now()));
         let includes_settings = matches!(batch, PgBatch::Settings(_))
             || (segment.needs_pg_settings() && !opening_settings.is_empty());
-        let buffers = buffer_pg_batch(segment, batch, opening_settings, opening_due.as_ref(), ts)
-            .map_err(|()| {
+        let buffers = buffer_pg_batch(
+            segment,
+            batch,
+            opening_settings,
+            opening_due.as_ref(),
+            config,
+            ts,
+        )
+        .map_err(|()| {
             PgAppendError::Fatal(anyhow::anyhow!(
                 "buffer the PostgreSQL batch after updating segment state"
             ))
@@ -420,23 +431,7 @@ fn append_pending_pg_batch(
             &flushed,
         ) {
             Ok(finished) => finished,
-            Err(failure) => {
-                let (close_failed, err) = failure.into_parts();
-                log_event(
-                    LogLevel::Error,
-                    "window_append_failure",
-                    &[field("error", format!("{err:#}"))],
-                );
-                return if close_failed {
-                    Err(PgAppendError::Fatal(err.context(
-                        "close the segment while appending a PostgreSQL batch",
-                    )))
-                } else {
-                    Err(PgAppendError::Fatal(
-                        err.context("append the PostgreSQL batch to the journal"),
-                    ))
-                };
-            }
+            Err(failure) => return Err(pg_append_error(failure)),
         };
         append_elapsed = append_elapsed.saturating_add(append_started.elapsed());
         let retry = finished
@@ -476,11 +471,27 @@ fn append_pending_pg_batch(
     )))
 }
 
+fn pg_append_error(failure: AppendWindowError) -> PgAppendError {
+    let (close_failed, err) = failure.into_parts();
+    log_event(
+        LogLevel::Error,
+        "window_append_failure",
+        &[field("error", format!("{err:#}"))],
+    );
+    let context = if close_failed {
+        "close the segment while appending a PostgreSQL batch"
+    } else {
+        "append the PostgreSQL batch to the journal"
+    };
+    PgAppendError::Fatal(err.context(context))
+}
+
 fn buffer_pg_batch(
     segment: &mut SegmentState,
     batch: &PgBatch,
     opening_settings: &[kronika_source_pg::settings::SettingsRow],
     opening_due: Option<&DueSet>,
+    config: &Config,
     ts: i64,
 ) -> std::result::Result<SectionBuffers, ()> {
     let fs = ProcFs::from_env();
@@ -495,6 +506,7 @@ fn buffer_pg_batch(
             segment.interner_mut(),
             &facts,
             in_container,
+            config,
             ts,
         )
         .map_err(|err| {
@@ -635,7 +647,14 @@ fn append_pending_window(
     for attempt in 0..2 {
         let fresh_segment = segment.is_empty();
         let includes_settings = segment.needs_pg_settings() && !opening_settings.is_empty();
-        let buffers = match buffer_window(segment, &attempt_due, log_rows, opening_settings, ts) {
+        let buffers = match buffer_window(
+            segment,
+            &attempt_due,
+            log_rows,
+            opening_settings,
+            config,
+            ts,
+        ) {
             Ok(Some(buffers)) => buffers,
             Ok(None) => {
                 outcome.accepted = true;
@@ -734,6 +753,7 @@ fn buffer_window(
     due: &DueSet,
     log_rows: &LogRows,
     opening_settings: &[kronika_source_pg::settings::SettingsRow],
+    config: &Config,
     ts: i64,
 ) -> std::result::Result<Option<SectionBuffers>, BufferFailure> {
     let fs = ProcFs::from_env();
@@ -749,6 +769,7 @@ fn buffer_window(
             segment.interner_mut(),
             &facts,
             in_container,
+            config,
             ts,
         ) {
             log_buffer_failure(&err);

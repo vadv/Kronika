@@ -8,7 +8,8 @@ use crate::{Section, StrId, Ts};
     id = 1_204_001,
     name = "os_cgroup_pids",
     semantics = snapshot_full,
-    sort_key("cgroup_path", "ts")
+    sort_key("cgroup_path", "ts"),
+    identity("cgroup_path")
 )]
 pub struct OsCgroupPids {
     /// Collection timestamp, unix microseconds.
@@ -53,6 +54,7 @@ mod tests {
         let c = OsCgroupPids::CONTRACT;
         assert_eq!(c.type_id.get(), 1_204_001);
         assert_eq!(c.sort_key, ["cgroup_path", "ts"]);
+        assert_eq!(c.identity, ["cgroup_path"]);
     }
 
     #[test]

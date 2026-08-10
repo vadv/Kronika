@@ -10,13 +10,16 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema};
 use kronika_format::{DictLimits, EntrySnapshot, Placement, SegmentDicts};
 use kronika_registry::{
-    CodecError, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, FINAL_DATA_PAGE_BYTES,
-    FinalPlainColumnSize, MAX_SECTION_BYTES, MAX_SECTION_ROWS, final_plain_body_bound,
+    CodecError, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, FinalPlainColumnSize, MAX_SECTION_BYTES,
+    MAX_SECTION_ROWS, final_single_batch_plain_body_bound,
 };
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_writer::ArrowWriterOptions;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersion};
+
+/// Rows handed to each final dictionary column writer at once.
+const FINAL_DICT_WRITE_BATCH_ROWS: usize = 1024;
 
 /// Parquet writer properties shared by dictionary sections.
 static DICT_WRITER_PROPS: LazyLock<WriterProperties> = LazyLock::new(|| {
@@ -41,6 +44,7 @@ static FINAL_DICT_WRITER_PROPS: LazyLock<WriterProperties> = LazyLock::new(|| {
         .set_max_row_group_size(MAX_SECTION_ROWS)
         .set_data_page_size_limit(1024 * 1024)
         .set_data_page_row_count_limit(MAX_SECTION_ROWS)
+        .set_write_batch_size(FINAL_DICT_WRITE_BATCH_ROWS)
         .set_dictionary_enabled(false)
         .set_statistics_enabled(EnabledStatistics::None)
         .set_offset_index_disabled(true)
@@ -118,20 +122,19 @@ pub(crate) fn encode_final_entries<'a>(
 ///
 /// # Errors
 ///
-/// Returns [`CodecError::PlainPageTooLarge`] when `truncate_limit` admits a
-/// single stored value that cannot fit the finished one-page budget.
+/// Returns [`CodecError::SectionTooLarge`] when `truncate_limit` admits a
+/// single stored value above the finished dictionary body cap.
 pub fn validate_dict_limits_for_write(limits: DictLimits) -> Result<(), CodecError> {
     final_dictionary_body_bound(Placement::Strings, 1, limits.truncate_limit(), 0)?;
     final_dictionary_body_bound(Placement::Blobs, 1, limits.truncate_limit(), 1).map(drop)
 }
 
-/// Prove one normalized dictionary body's PLAIN page and encoded-size bounds.
+/// Check one normalized dictionary body's PLAIN page and encoded-size bounds.
 ///
 /// # Errors
 ///
-/// Returns [`CodecError`] when row arithmetic overflows, one physical value
-/// stream cannot remain below the 1 MiB page target, or the conservative body
-/// bound crosses 8 MiB.
+/// Returns [`CodecError`] when row arithmetic overflows or the conservative
+/// multi-page body bound crosses 8 MiB.
 pub fn final_dictionary_body_bound(
     placement: Placement,
     rows: usize,
@@ -142,16 +145,15 @@ pub fn final_dictionary_body_bound(
     if truncated_rows > rows || (placement == Placement::Strings && truncated_rows != 0) {
         return Err(CodecError::SchemaMismatch);
     }
-    let too_large = |name| CodecError::PlainPageTooLarge {
-        name,
+    let too_large = || CodecError::SectionTooLarge {
         len: usize::MAX,
-        max: FINAL_DATA_PAGE_BYTES - 1,
+        max: MAX_SECTION_BYTES,
     };
-    let ids = rows.checked_mul(8).ok_or_else(|| too_large("str_id"))?;
+    let ids = rows.checked_mul(8).ok_or_else(&too_large)?;
     let binary = rows
         .checked_mul(4)
         .and_then(|offsets| offsets.checked_add(stored_bytes))
-        .ok_or_else(|| too_large("stored_bytes"))?;
+        .ok_or_else(&too_large)?;
     let mut columns = vec![
         FinalPlainColumnSize::new("str_id", ids, 0),
         FinalPlainColumnSize::new(
@@ -165,10 +167,8 @@ pub fn final_dictionary_body_bound(
         ),
     ];
     if placement == Placement::Blobs {
-        let full_len = rows.checked_mul(8).ok_or_else(|| too_large("full_len"))?;
-        let sha = truncated_rows
-            .checked_mul(32)
-            .ok_or_else(|| too_large("full_sha256"))?;
+        let full_len = rows.checked_mul(8).ok_or_else(&too_large)?;
+        let sha = truncated_rows.checked_mul(32).ok_or_else(&too_large)?;
         let sha_levels = rows
             .checked_mul(2)
             .and_then(|bytes| bytes.checked_add(8))
@@ -182,7 +182,8 @@ pub fn final_dictionary_body_bound(
             FinalPlainColumnSize::new("full_sha256", sha, sha_levels),
         ]);
     }
-    final_plain_body_bound(columns)
+    let pages_per_column = rows.div_ceil(FINAL_DICT_WRITE_BATCH_ROWS).max(1);
+    final_single_batch_plain_body_bound(columns, pages_per_column)
 }
 
 #[allow(

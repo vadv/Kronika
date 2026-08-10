@@ -33,6 +33,7 @@ COPY crates/kronika-bdd/Cargo.toml crates/kronika-bdd/
 COPY bins/kronika-collector/Cargo.toml bins/kronika-collector/
 COPY bins/kronika-dump/Cargo.toml bins/kronika-dump/
 COPY bins/kronika-demo/Cargo.toml bins/kronika-demo/
+COPY bins/kronika-web/Cargo.toml bins/kronika-web/
 # Placeholder sources let cargo resolve and compile the dependency graph. A
 # proc-macro crate gets no bin target: cargo rejects one.
 RUN set -eu; \

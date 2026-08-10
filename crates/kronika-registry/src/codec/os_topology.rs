@@ -11,7 +11,8 @@ use crate::{Section, StrId, Ts};
     id = 1_113_001,
     name = "os_topology",
     semantics = on_change,
-    sort_key("cpu_id", "ts")
+    sort_key("cpu_id", "ts"),
+    identity("cpu_id")
 )]
 pub struct OsTopology {
     /// Collection timestamp, unix microseconds.
@@ -68,6 +69,7 @@ mod tests {
         let c = OsTopology::CONTRACT;
         assert_eq!(c.type_id.get(), 1_113_001);
         assert_eq!(c.sort_key, ["cpu_id", "ts"]);
+        assert_eq!(c.identity, ["cpu_id"]);
     }
 
     #[test]

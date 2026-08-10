@@ -77,13 +77,17 @@ mod decode;
 mod encode;
 mod error;
 
-pub use bounds::{FinalPlainColumnSize, final_data_body_bound, final_plain_body_bound};
+pub use bounds::{
+    FinalPlainColumnSize, final_data_body_bound, final_plain_body_bound,
+    final_single_batch_plain_body_bound,
+};
+pub(crate) use columns::schema_matches;
+use columns::validate_list_i32_batch;
 pub use columns::{
     ListColumn, arrow_schema, nullable_bool, nullable_column, opt_bool, opt_primitive,
     read_list_i32, required_bool, required_column, write_bool, write_bool_nullable, write_list_i32,
     write_nullable, write_required,
 };
-use columns::{schema_matches, validate_list_i32_batch};
 use decode::{boolean_column, capped_reader};
 pub use encode::encode_final_batches;
 use encode::sort_by_sort_key;
@@ -256,6 +260,9 @@ mod verified_section_tests;
 mod final_profile_tests;
 
 #[cfg(test)]
+mod bounds_tests;
+
+#[cfg(test)]
 mod codec_error_tests;
 
 /// What a section decode processed.
@@ -285,7 +292,7 @@ pub struct DecodedSection {
 }
 
 /// Parquet read batch size: the reader yields batches of at most this many rows.
-const DECODE_BATCH_SIZE: usize = if MAX_SECTION_ROWS < 8192 {
+pub(crate) const DECODE_BATCH_SIZE: usize = if MAX_SECTION_ROWS < 8192 {
     MAX_SECTION_ROWS
 } else {
     8192

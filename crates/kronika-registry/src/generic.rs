@@ -1,19 +1,24 @@
 //! Generic, column-name-addressable section decode.
 //!
-//! [`decode_rows`] turns any registered section into `Vec<Row>`, where a [`Row`]
-//! carries one [`Cell`] per contract column, addressable by column name. This is
-//! the primitive the BDD harness uses to assert an arbitrary section's rows by
-//! column name, without a per-metric typed struct. `StrId` cells stay as the raw
-//! `u64` id; the caller resolves them through the segment dictionary.
+//! [`visit_rows`] is the production decode path: it projects named Parquet
+//! columns, applies a physical row range, and visits one row at a time.
+//! [`decode_rows`] is the collecting compatibility wrapper used by existing
+//! reader and BDD callers. `StrId` cells stay as raw `u64` ids; the caller
+//! resolves them through the segment dictionary.
 
 use arrow_array::{
     Array, BooleanArray, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array,
     ListArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
+use parquet::arrow::ProjectionMask;
+use parquet::arrow::arrow_reader::{ArrowReaderOptions, ParquetRecordBatchReaderBuilder};
 
-use crate::codec::{CodecError, decode_batches};
+use crate::codec::{
+    CodecError, DECODE_BATCH_SIZE, MAX_DECODED_SECTION_BYTES, MAX_LIST_I32_VALUES_PER_ROW,
+    MAX_ROW_GROUPS, MAX_SECTION_BYTES, MAX_SECTION_ROWS, schema_matches,
+};
 use crate::contract::{ColumnType, TypeContract};
-use crate::{VerifiedSection, registry};
+use crate::{VerifiedSection, registry, validate_parquet_decode_work};
 
 /// One decoded section value, addressed by column name.
 ///
@@ -123,45 +128,178 @@ impl Row {
 ///
 /// [`decode_any`]: crate::decode_any
 pub fn decode_rows(type_id: u32, section: VerifiedSection) -> Result<Vec<Row>, CodecError> {
+    let columns: Vec<&str> = registry()
+        .iter()
+        .find(|contract| contract.type_id.get() == type_id)
+        .ok_or(CodecError::UnknownType { type_id })?
+        .columns
+        .iter()
+        .map(|column| column.name)
+        .collect();
+    let mut rows = Vec::new();
+    visit_rows(
+        type_id,
+        section,
+        &columns,
+        None,
+        0,
+        usize::MAX,
+        |_ordinal, row| {
+            rows.push(row);
+            true
+        },
+    )?;
+    Ok(rows)
+}
+
+/// Visit a projected physical row range without collecting a section.
+///
+/// `columns` are exact contract column names. Cells outside the projection are
+/// represented as [`Cell::Null`] and must not be observed by the caller. The
+/// callback receives the stable zero-based physical row ordinal and returns
+/// `false` to stop decoding early.
+///
+/// # Errors
+///
+/// Returns [`CodecError`] for an unknown type or column, a schema mismatch,
+/// resource caps, or a Parquet decode failure.
+pub fn visit_rows(
+    type_id: u32,
+    section: VerifiedSection,
+    columns: &[&str],
+    expected_rows: Option<u64>,
+    offset: usize,
+    limit: usize,
+    mut visitor: impl FnMut(u64, Row) -> bool,
+) -> Result<usize, CodecError> {
     let contract = registry()
         .iter()
         .find(|contract| contract.type_id.get() == type_id)
         .ok_or(CodecError::UnknownType { type_id })?;
     let bytes_in = section.len();
-    decode_rows_with(contract, section).map_err(|source| CodecError::Section {
+    visit_rows_with(
+        contract,
+        section,
+        columns,
+        expected_rows,
+        offset,
+        limit,
+        &mut visitor,
+    )
+    .map_err(|source| CodecError::Section {
         type_id,
         bytes_in,
         source: Box::new(source),
     })
 }
 
-/// Decode against an explicit contract, without the [`CodecError::Section`] wrap.
-fn decode_rows_with(
+fn visit_rows_with(
     contract: &'static TypeContract,
     section: VerifiedSection,
-) -> Result<Vec<Row>, CodecError> {
-    let decoded = decode_batches(contract, section)?;
-    let mut rows: Vec<Row> = Vec::with_capacity(decoded.stats.rows);
-    for batch in &decoded.batches {
-        let arrays: Vec<&dyn Array> = contract
-            .columns
+    columns: &[&str],
+    expected_rows: Option<u64>,
+    offset: usize,
+    limit: usize,
+    visitor: &mut impl FnMut(u64, Row) -> bool,
+) -> Result<usize, CodecError> {
+    let mut requested: Vec<usize> = columns
+        .iter()
+        .map(|name| {
+            contract
+                .columns
+                .iter()
+                .position(|column| column.name == *name)
+                .ok_or(CodecError::MissingColumn { name: "projection" })
+        })
+        .collect::<Result<_, _>>()?;
+    requested.sort_unstable();
+    requested.dedup();
+    if limit == 0 {
+        return Ok(0);
+    }
+    let physical_projection = if requested.is_empty() {
+        vec![0]
+    } else {
+        requested.clone()
+    };
+
+    let bytes = section.into_bytes();
+    if bytes.len() > MAX_SECTION_BYTES {
+        return Err(CodecError::SectionTooLarge {
+            len: bytes.len(),
+            max: MAX_SECTION_BYTES,
+        });
+    }
+    validate_parquet_decode_work(bytes.as_ref(), MAX_DECODED_SECTION_BYTES)?;
+    let options = ArrowReaderOptions::new().with_skip_arrow_metadata(true);
+    let builder = ParquetRecordBatchReaderBuilder::try_new_with_options(bytes, options)?;
+    if !schema_matches(builder.schema(), contract) {
+        return Err(CodecError::SchemaMismatch);
+    }
+    let groups = builder.metadata().num_row_groups();
+    if groups > MAX_ROW_GROUPS {
+        return Err(CodecError::TooManyRowGroups {
+            groups,
+            max: MAX_ROW_GROUPS,
+        });
+    }
+    let claimed = builder.metadata().file_metadata().num_rows();
+    let rows = usize::try_from(claimed)
+        .map_err(|_overflow| CodecError::InvalidRowCount { raw: claimed })?;
+    if rows > MAX_SECTION_ROWS {
+        return Err(CodecError::TooManyRows {
+            rows,
+            max: MAX_SECTION_ROWS,
+        });
+    }
+    let rows_u64 =
+        u64::try_from(rows).map_err(|_overflow| CodecError::InvalidRowCount { raw: claimed })?;
+    if let Some(expected) = expected_rows
+        && expected != rows_u64
+    {
+        return Err(CodecError::RowCountMismatch {
+            expected,
+            got: rows_u64,
+        });
+    }
+    let mask = ProjectionMask::roots(
+        builder.parquet_schema(),
+        physical_projection.iter().copied(),
+    );
+    let reader = builder
+        .with_projection(mask)
+        .with_offset(offset)
+        .with_limit(limit)
+        .with_batch_size(DECODE_BATCH_SIZE)
+        .build()?;
+
+    let mut visited = 0_usize;
+    for batch in reader {
+        let batch = batch?;
+        let arrays: Vec<(usize, &dyn Array)> = requested
             .iter()
-            .map(|column| {
+            .map(|&at| {
+                let column = &contract.columns[at];
                 batch
                     .column_by_name(column.name)
-                    .map(AsRef::as_ref)
+                    .map(|array| (at, array.as_ref()))
                     .ok_or(CodecError::MissingColumn { name: column.name })
             })
             .collect::<Result<_, _>>()?;
         for i in 0..batch.num_rows() {
-            let mut cells = Vec::with_capacity(contract.columns.len());
-            for (column, array) in contract.columns.iter().zip(&arrays) {
-                cells.push(cell_at(*array, column.ty, column.name, i)?);
+            let mut cells = vec![Cell::Null; contract.columns.len()];
+            for &(at, array) in &arrays {
+                let column = &contract.columns[at];
+                cells[at] = cell_at(array, column.ty, column.name, i)?;
             }
-            rows.push(Row { contract, cells });
+            let ordinal = offset.saturating_add(visited) as u64;
+            visited = visited.saturating_add(1);
+            if !visitor(ordinal, Row { contract, cells }) {
+                return Ok(visited);
+            }
         }
     }
-    Ok(rows)
+    Ok(visited)
 }
 
 /// Read cell `i` of `array` as a [`Cell`], per the column's [`ColumnType`].
@@ -201,6 +339,13 @@ fn list_i32_at(array: &dyn Array, name: &'static str, i: usize) -> Result<Vec<i3
         .as_any()
         .downcast_ref::<Int32Array>()
         .ok_or(CodecError::ColumnType { name })?;
+    if ints.len() > MAX_LIST_I32_VALUES_PER_ROW {
+        return Err(CodecError::TooManyListValues {
+            name,
+            values: ints.len(),
+            max: MAX_LIST_I32_VALUES_PER_ROW,
+        });
+    }
     let mut out = Vec::with_capacity(ints.len());
     for j in 0..ints.len() {
         if ints.is_null(j) {

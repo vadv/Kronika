@@ -1,12 +1,19 @@
-//! Health, and the index files a dashboard reads instead of every segment.
-//!
-//! An `.idx` sits next to its `.zms` and holds what a dashboard needs without
-//! reopening the segment. Today that is health and nothing else.
+//! A small allowlist of presentation series for immutable and captured Kronika
+//! segments. Raw and unlisted metrics stay only in ZMS/WAL.
 
 mod build;
 mod file;
 mod health;
+mod series;
+mod store;
 
-pub use build::{INSTANCE_METADATA_TYPE_ID, OS_PSI_TYPE_ID, points};
-pub use file::{HEADER_LEN, Index, IndexError, MAGIC, POINT_LEN, Point};
-pub use health::{Stall, health};
+pub use build::{
+    BuildError, DERIVED_HEALTH_TYPE_ID, INSTANCE_METADATA_TYPE_ID, INSTANCE_METADATA_V1_TYPE_ID,
+    OS_PSI_TYPE_ID, build, build_selected, keys, visit_health_points,
+};
+pub use file::{ENTRY_LEN, HEADER_LEN, Index, IndexError, MAGIC, TargetedIndex};
+pub use health::{SourcePenalty, Stall, health, overall_health, postgres_penalty};
+pub use series::{
+    ActiveBackendPoint, HealthPoint, SeriesBlock, SeriesKey, SeriesKind, TransactionPoint,
+};
+pub use store::{EXTENSION, LoadError, ResourceIndex, path_of, read, resource, series_keys};

@@ -10,7 +10,8 @@ use crate::{Section, StrId, Ts};
     id = 1_109_001,
     name = "os_netdev",
     semantics = snapshot_full,
-    sort_key("iface", "ts")
+    sort_key("iface", "ts"),
+    identity("iface")
 )]
 pub struct OsNetdev {
     /// Collection timestamp, unix microseconds.
@@ -120,6 +121,7 @@ mod tests {
         let c = OsNetdev::CONTRACT;
         assert_eq!(c.type_id.get(), 1_109_001);
         assert_eq!(c.sort_key, ["iface", "ts"]);
+        assert_eq!(c.identity, ["iface"]);
     }
 
     #[test]

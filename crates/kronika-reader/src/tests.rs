@@ -1,5 +1,7 @@
 use super::overlaps;
 
+use std::collections::HashSet;
+
 use kronika_format::{DEFAULT_BLOB_THRESHOLD, DEFAULT_TRUNCATE_LIMIT, DictLimits, Resolved, StrId};
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
 use kronika_registry::os_topology::OsTopology;
@@ -7,7 +9,7 @@ use kronika_registry::{Cell, Section as _, StrId as RegistryStrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use sha2::{Digest as _, Sha256};
 
-use super::Reader;
+use super::{Dictionary, Reader, Segment};
 
 /// A segment covering ten to twenty microseconds.
 const MIN: i64 = 10;
@@ -120,13 +122,25 @@ fn append_text_window(journal: &mut Journal, segment_id: SegmentId, ts: i64, tex
     id
 }
 
-fn one_segment(reader: &Reader) -> super::Segment {
+fn one_segment(reader: &Reader) -> Segment {
     let listing = reader.segments(..).expect("list segments");
     assert!(listing.warnings.is_empty(), "unexpected warnings");
     assert_eq!(listing.segments.len(), 1, "one logical segment");
     reader
         .open_segment(&listing.segments[0])
         .expect("open logical segment")
+}
+
+fn assert_model_names_resolve(segment: &Segment, dictionary: &Dictionary) {
+    for row in segment
+        .rows(OsTopology::CONTRACT.type_id.get())
+        .expect("decode rows")
+    {
+        let Some(Cell::StrId(id)) = row.get("model_name") else {
+            panic!("model_name must be a StrId")
+        };
+        assert!(dictionary.resolve(*id).is_some());
+    }
 }
 
 #[test]
@@ -217,6 +231,14 @@ fn active_read_keeps_its_prefix_and_next_read_gets_later_deltas() {
         second_dictionary.resolve(second_id.get()),
         Some(Resolved::Str(b"second"))
     );
+    let selected = second
+        .dictionary_for(&HashSet::from([first_id.get()]))
+        .expect("select an id from the older dictionary delta");
+    assert_eq!(
+        selected.resolve(first_id.get()),
+        Some(Resolved::Str(b"first"))
+    );
+    assert_eq!(selected.resolve(second_id.get()), None);
     assert!(
         reader
             .segments(201..)
@@ -224,6 +246,67 @@ fn active_read_keeps_its_prefix_and_next_read_gets_later_deltas() {
             .segments
             .is_empty()
     );
+}
+
+#[test]
+fn an_active_reference_can_be_pinned_to_an_earlier_committed_position() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let owner = writer(&directory);
+    let address = address(SEGMENT_ID);
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
+    append_text_window(&mut journal, address.id, 100, b"first");
+
+    let reader = Reader::open(directory.path()).expect("open reader");
+    let first = reader.segments(..).expect("capture first prefix");
+    let position = first.segments[0]
+        .active_position()
+        .expect("active position");
+
+    append_text_window(&mut journal, address.id, 200, b"second");
+    let latest = reader.segments(..).expect("capture latest prefix");
+    let pinned = latest.segments[0]
+        .at_active_position(position)
+        .expect("pin earlier frame boundary");
+    assert_eq!(pinned.active_position(), Some(position));
+    let segment = reader.open_segment(&pinned).expect("open pinned prefix");
+    assert_eq!(
+        segment
+            .rows(OsTopology::CONTRACT.type_id.get())
+            .expect("pinned rows")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn projected_visit_keeps_stable_active_ordinals_and_stops_at_its_limit() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let owner = writer(&directory);
+    let address = address(SEGMENT_ID);
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
+    append_text_window(&mut journal, address.id, 100, b"first");
+    append_text_window(&mut journal, address.id, 200, b"second");
+
+    let reader = Reader::open(directory.path()).expect("open reader");
+    let segment = one_segment(&reader);
+    let mut rows = Vec::new();
+    let visited = segment
+        .visit_rows(
+            OsTopology::CONTRACT.type_id.get(),
+            &["cpu_id"],
+            1,
+            1,
+            |ordinal, row| {
+                rows.push((ordinal, row));
+                true
+            },
+        )
+        .expect("visit projected row");
+    assert_eq!(visited, 1);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, 1);
+    assert_eq!(rows[0].1.get("cpu_id"), Some(&Cell::I32(200)));
+    assert_eq!(rows[0].1.get("ts"), Some(&Cell::Null));
 }
 
 #[test]
@@ -258,25 +341,59 @@ fn finished_segment_wins_over_the_same_active_generation() {
 }
 
 #[test]
-fn complete_dictionary_preserves_boundary_and_truncated_blob_metadata() {
+fn damaged_finished_segment_does_not_hide_the_same_valid_active_generation() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let owner = writer(&directory);
+    let address = address(SEGMENT_ID);
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
+    append_text_window(&mut journal, address.id, 100, b"one row");
+    write_segment(&journal, &owner, address).expect("publish finished segment");
+
+    let path = directory
+        .path()
+        .join(address.day.year_component())
+        .join(address.day.month_component())
+        .join(address.day.day_component())
+        .join(address.zms_name());
+    let mut bytes = std::fs::read(&path).expect("read finished segment");
+    bytes[kronika_format::MAGIC.len()] ^= 0xff;
+    std::fs::write(&path, bytes).expect("damage finished section body");
+
+    let reader = Reader::open(directory.path()).expect("open reader");
+    let listing = reader.segments(..).expect("list with body validation");
+    assert_eq!(listing.segments.len(), 1);
+    assert_eq!(listing.warnings.len(), 1);
+    let segment = reader
+        .open_segment(&listing.segments[0])
+        .expect("open active fallback");
+    assert_eq!(
+        segment.path().file_name().and_then(std::ffi::OsStr::to_str),
+        Some("active.wal")
+    );
+}
+
+#[test]
+fn current_dictionary_preserves_boundary_and_truncated_blob_metadata() {
     let directory = tempfile::tempdir().expect("tempdir");
     let owner = writer(&directory);
     let active_address = address(SEGMENT_ID);
     let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
-    let small = vec![b's'; DEFAULT_BLOB_THRESHOLD - 1];
+    let small = vec![0xff; DEFAULT_BLOB_THRESHOLD - 1];
     let boundary = vec![b'b'; DEFAULT_BLOB_THRESHOLD];
     let oversized = vec![b't'; DEFAULT_TRUNCATE_LIMIT + 1];
+    let ignored = b"not selected".to_vec();
     let mut interner = Interner::new(DictLimits::default());
     let small_id = interner.intern(&small).expect("4095-byte string");
     let boundary_id = interner.intern(&boundary).expect("4096-byte blob");
     let oversized_id = interner.intern(&oversized).expect("truncated blob");
+    let ignored_id = interner.intern(&ignored).expect("unrequested string");
     let dictionary = dict::encode(interner.window()).expect("collector dictionary output");
     let mut buffers = SectionBuffers::new();
-    for (cpu_id, id) in [small_id, boundary_id, oversized_id]
+    for (cpu_id, id) in [small_id, boundary_id, oversized_id, ignored_id]
         .into_iter()
         .enumerate()
     {
-        let cpu_id = i32::try_from(cpu_id).expect("three fixture rows fit i32");
+        let cpu_id = i32::try_from(cpu_id).expect("four fixture rows fit i32");
         buffers
             .push(topology(100 + i64::from(cpu_id), cpu_id, id))
             .expect("buffer topology row");
@@ -292,7 +409,7 @@ fn complete_dictionary_preserves_boundary_and_truncated_blob_metadata() {
     let reader = Reader::open(directory.path()).expect("open reader");
     let segment = one_segment(&reader);
     let dictionary = segment.dictionary().expect("decode complete dictionary");
-    assert_eq!(dictionary.entries().count(), 3);
+    assert_eq!(dictionary.entries().count(), 4);
     assert_eq!(
         dictionary.resolve(small_id.get()),
         Some(Resolved::Str(&small))
@@ -318,27 +435,53 @@ fn complete_dictionary_preserves_boundary_and_truncated_blob_metadata() {
             full_sha256: Some(expected_hash),
         }))
     );
-    for row in segment
-        .rows(OsTopology::CONTRACT.type_id.get())
-        .expect("decode rows")
-    {
-        let Some(Cell::StrId(id)) = row.get("model_name") else {
-            panic!("model_name must be a StrId")
-        };
-        assert!(dictionary.resolve(*id).is_some());
-    }
+    let selected = segment
+        .dictionary_for(&HashSet::from([
+            small_id.get(),
+            boundary_id.get(),
+            oversized_id.get(),
+        ]))
+        .expect("decode selected dictionary values");
+    assert_eq!(
+        selected.resolve(small_id.get()),
+        Some(Resolved::Str(&small))
+    );
+    assert_eq!(
+        selected.resolve(boundary_id.get()),
+        Some(Resolved::Blob(kronika_format::BlobEntry {
+            str_id: boundary_id,
+            stored_bytes: &boundary,
+            full_len: DEFAULT_BLOB_THRESHOLD as u64,
+            truncated: false,
+            full_sha256: None,
+        }))
+    );
+    assert_eq!(
+        selected.resolve(oversized_id.get()),
+        Some(Resolved::Blob(kronika_format::BlobEntry {
+            str_id: oversized_id,
+            stored_bytes: &oversized[..DEFAULT_TRUNCATE_LIMIT],
+            full_len: oversized.len() as u64,
+            truncated: true,
+            full_sha256: Some(expected_hash),
+        }))
+    );
+    assert_eq!(selected.resolve(ignored_id.get()), None);
+    assert_model_names_resolve(&segment, &dictionary);
+}
 
-    let finished_directory = tempfile::tempdir().expect("finished tempdir");
-    let finished_owner = writer(&finished_directory);
+#[test]
+fn finished_dictionary_preserves_boundary_blob_metadata() {
+    let directory = tempfile::tempdir().expect("finished tempdir");
+    let owner = writer(&directory);
     let finished_address = address(SEGMENT_ID + 1);
-    let mut finished_journal =
-        Journal::open(&finished_owner, JournalConfig::default()).expect("open finished journal");
-    let finished_boundary_id =
-        append_text_window(&mut finished_journal, finished_address.id, 200, &boundary);
-    write_segment(&finished_journal, &finished_owner, finished_address)
-        .expect("publish finished blob output");
-    let finished_reader = Reader::open(finished_directory.path()).expect("open finished reader");
-    let finished = one_segment(&finished_reader);
+    let mut journal =
+        Journal::open(&owner, JournalConfig::default()).expect("open finished journal");
+    let boundary = vec![b'b'; DEFAULT_BLOB_THRESHOLD];
+    let boundary_id = append_text_window(&mut journal, finished_address.id, 200, &boundary);
+    write_segment(&journal, &owner, finished_address).expect("publish finished blob output");
+    let reader = Reader::open(directory.path()).expect("open finished reader");
+    let finished = one_segment(&reader);
     assert_eq!(
         finished
             .path()
@@ -348,9 +491,9 @@ fn complete_dictionary_preserves_boundary_and_truncated_blob_metadata() {
     );
     let dictionary = finished.dictionary().expect("finished dictionary");
     assert_eq!(
-        dictionary.resolve(finished_boundary_id.get()),
+        dictionary.resolve(boundary_id.get()),
         Some(Resolved::Blob(kronika_format::BlobEntry {
-            str_id: finished_boundary_id,
+            str_id: boundary_id,
             stored_bytes: &boundary,
             full_len: DEFAULT_BLOB_THRESHOLD as u64,
             truncated: false,
@@ -400,4 +543,17 @@ fn range_discovery_checks_bodies_only_after_selection() {
             kronika_store::InvalidZmsReason::SectionChecksum
         )
     ));
+
+    let catalog = reader
+        .catalog_segments(200..=200)
+        .expect("catalog-only discovery");
+    assert_eq!(catalog.segments.len(), 1, "catalog remains discoverable");
+    assert!(catalog.warnings.is_empty());
+    let selected = reader
+        .open_segment(&catalog.segments[0])
+        .expect("open selected catalog");
+    assert!(
+        selected.rows(OsTopology::CONTRACT.type_id.get()).is_err(),
+        "the production row path must reject the damaged selected body"
+    );
 }

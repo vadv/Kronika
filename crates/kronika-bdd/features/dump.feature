@@ -34,5 +34,5 @@ Feature: Reading a data directory back with the dumper
       | KRONIKA_SEGMENT_MAX_BYTES  | 1073741824 |
       | KRONIKA_SEGMENT_MAX_AGE_S  | 3          |
     When it runs for 6 seconds
-    Then the dumper builds one health point per pressure snapshot
-    And every health point the dumper builds is null or between 0 and 100
+    Then the dumper builds one OS health point per pressure snapshot
+    And every health series point is null or between 0 and 100

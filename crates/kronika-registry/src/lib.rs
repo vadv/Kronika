@@ -50,9 +50,9 @@ pub use codec::{
     CodecError, DecodeStats, DecodedSection, FINAL_DATA_PAGE_BYTES, FINAL_ZSTD_LEVEL,
     FinalPlainColumnSize, ListColumn, MAX_DECODED_SECTION_BYTES, MAX_ROW_GROUPS, MAX_SECTION_BYTES,
     MAX_SECTION_ROWS, VerifiedSection, arrow_schema, encode_final_batches, final_data_body_bound,
-    final_plain_body_bound, nullable_bool, nullable_column, opt_bool, opt_primitive, read_list_i32,
-    required_bool, required_column, write_bool, write_bool_nullable, write_list_i32,
-    write_nullable, write_required,
+    final_plain_body_bound, final_single_batch_plain_body_bound, nullable_bool, nullable_column,
+    opt_bool, opt_primitive, read_list_i32, required_bool, required_column, write_bool,
+    write_bool_nullable, write_list_i32, write_nullable, write_required,
 };
 pub use parquet_preflight::{
     ParquetDecodeProfile, parquet_decode_profile, plain_parquet_decode_profile,
@@ -106,7 +106,7 @@ pub use codec::{
 pub use contract::{
     Column, ColumnClass, ColumnType, LintError, Semantics, StrId, Ts, TypeContract, Unit, lint,
 };
-pub use generic::{Cell, Row, decode_rows};
+pub use generic::{Cell, Row, decode_rows, visit_rows};
 pub use pool::{BytesPool, PoolStats};
 pub use section::Section;
 #[cfg(test)]
@@ -143,10 +143,47 @@ pub fn section_name(type_id: u32) -> Option<&'static str> {
     }
 }
 
+/// Return the stable public section name for a physical `type_id`.
+///
+/// Most layouts use their registry name directly. The three independently
+/// implemented `pg_store_plans` extensions are the only current exception:
+/// callers request one logical name and still receive separate physical
+/// layouts.
+#[must_use]
+pub fn logical_section_name(type_id: u32) -> Option<&'static str> {
+    match type_id {
+        1_003_001 | 1_004_001 | 1_018_001 => Some("pg_store_plans"),
+        _ => section_name(type_id),
+    }
+}
+
+/// Return the implementation provenance of a physical section layout.
+///
+/// A value is present only where several implementations share one public
+/// logical name. This deliberately remains a small compile-time mapping.
+#[must_use]
+pub const fn section_implementation(type_id: u32) -> Option<&'static str> {
+    match type_id {
+        1_003_001 => Some("ossc"),
+        1_004_001 => Some("vadv"),
+        1_018_001 => Some("datasentinel"),
+        _ => None,
+    }
+}
+
+/// Return the exact registry contract for a physical `type_id`.
+#[must_use]
+pub fn contract(type_id: u32) -> Option<&'static TypeContract> {
+    registry()
+        .iter()
+        .find(|contract| contract.type_id.get() == type_id)
+}
+
 /// Every type id known to this build, in registry order.
 #[must_use]
 pub const fn registry() -> &'static [TypeContract] {
     &[
+        instance_metadata::InstanceMetadataV1::CONTRACT,
         instance_metadata::InstanceMetadata::CONTRACT,
         os_process::OsProcess::CONTRACT,
         os_process_status::OsProcessStatus::CONTRACT,

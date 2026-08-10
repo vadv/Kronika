@@ -78,7 +78,7 @@ fn index_points(world: &BddWorld) -> Result<Vec<Line>> {
         .collect())
 }
 
-#[then("the dumper builds one health point per pressure snapshot")]
+#[then("the dumper builds one OS health point per pressure snapshot")]
 fn dumper_builds_points(world: &mut BddWorld) -> Result<()> {
     let printed = dump(world, &["--section", "1107001", "--limit", "0", "--json"])?;
     let section_lines = strict_lines(&printed, "the PSI row listing")?;
@@ -89,24 +89,34 @@ fn dumper_builds_points(world: &mut BddWorld) -> Result<()> {
         .collect();
     anyhow::ensure!(!snapshots.is_empty(), "the dumper printed no PSI snapshots");
 
-    let points = index_points(world)?.len();
-    anyhow::ensure!(points > 0, "the dumper built no health points");
+    let points = index_points(world)?
+        .into_iter()
+        .filter(|point| point.holds("series", "os_health"))
+        .count();
+    anyhow::ensure!(points > 0, "the dumper built no OS health points");
     anyhow::ensure!(
         points == snapshots.len(),
-        "the dumper built {points} points for {} pressure snapshots",
+        "the dumper built {points} OS health points for {} pressure snapshots",
         snapshots.len()
     );
     Ok(())
 }
 
-#[then("every health point the dumper builds is null or between 0 and 100")]
+#[then("every health series point is null or between 0 and 100")]
 fn dumper_points_are_in_range(world: &mut BddWorld) -> Result<()> {
-    let points = index_points(world)?;
+    let points = index_points(world)?
+        .into_iter()
+        .filter(|point| {
+            point.holds("series", "os_health")
+                || point.holds("series", "overall_health")
+                || point.holds("series", "postgres_health")
+        })
+        .collect::<Vec<_>>();
     anyhow::ensure!(!points.is_empty(), "the dumper built no health points");
     for point in points {
         let value = point
-            .get("health")
-            .context("an index point without a health field")?;
+            .get("value")
+            .context("an index point without a value field")?;
         if value == "null" {
             continue;
         }

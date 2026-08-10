@@ -1,27 +1,440 @@
-//! Turning a segment's pressure rows into the points an index holds.
+//! Construction of the small presentation-series allowlist.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
+use kronika_reader::{Cell, ReaderError, Resolved, Segment};
 use kronika_registry::instance_metadata::Environment;
-use kronika_registry::{Cell, Row};
 
-use crate::file::Point;
-use crate::health::{Stall, health};
+use crate::file::Index;
+use crate::health::{SourcePenalty, Stall, health, overall_health, postgres_penalty};
+use crate::series::{
+    ActiveBackendPoint, HealthPoint, SeriesBlock, SeriesKey, SeriesKind, TransactionPoint,
+    pg_activity_layout, pg_database_layout,
+};
 
+/// Reserved input-free layout for the derived OS health gauge.
+pub const DERIVED_HEALTH_TYPE_ID: u32 = 0;
 /// `type_id` of `instance_metadata`.
-pub const INSTANCE_METADATA_TYPE_ID: u32 = 1_021_001;
+pub const INSTANCE_METADATA_TYPE_ID: u32 = 1_021_002;
+/// Previous `instance_metadata`, used only to retain OS-health readability.
+pub const INSTANCE_METADATA_V1_TYPE_ID: u32 = 1_021_001;
 /// `type_id` of `os_psi`.
 pub const OS_PSI_TYPE_ID: u32 = 1_107_001;
 
-/// The `resource` column: `0` cpu, `1` memory, `2` io.
 const CPU: u32 = 0;
 const MEMORY: u32 = 1;
 const IO: u32 = 2;
-
-/// The `scope` column: `0` host, `1` pod, `3` container.
 const HOST: u32 = 0;
 const POD: u32 = 1;
 const CONTAINER: u32 = 3;
+
+/// Why an allowlisted series could not be derived.
+#[derive(Debug)]
+pub enum BuildError {
+    /// The production reader rejected an input body.
+    Reader(ReaderError),
+    /// A `PostgreSQL` state dictionary id had no value.
+    UnresolvedState(u64),
+    /// The one current metadata row was absent or malformed.
+    InvalidMetadata,
+}
+
+impl std::fmt::Display for BuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Reader(error) => error.fmt(f),
+            Self::UnresolvedState(id) => {
+                write!(
+                    f,
+                    "pg_stat_activity state has unresolved dictionary id {id}"
+                )
+            }
+            Self::InvalidMetadata => write!(f, "instance_metadata v2 must contain exactly one row"),
+        }
+    }
+}
+
+impl std::error::Error for BuildError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Reader(error) => Some(error),
+            Self::UnresolvedState(_) | Self::InvalidMetadata => None,
+        }
+    }
+}
+
+impl From<ReaderError> for BuildError {
+    fn from(error: ReaderError) -> Self {
+        Self::Reader(error)
+    }
+}
+
+/// Return the complete current allowlist for a captured segment.
+#[must_use]
+pub fn keys(segment: &Segment) -> Vec<SeriesKey> {
+    let mut keys = vec![
+        SeriesKey::OS_HEALTH,
+        SeriesKey::OVERALL_HEALTH,
+        SeriesKey::POSTGRES_HEALTH,
+    ];
+    for type_id in segment.type_ids() {
+        if pg_database_layout(type_id) {
+            keys.push(SeriesKey {
+                kind: SeriesKind::PgTransactionsPerSecond,
+                type_id,
+            });
+        } else if pg_activity_layout(type_id) {
+            keys.push(SeriesKey {
+                kind: SeriesKind::PgActiveBackends,
+                type_id,
+            });
+        }
+    }
+    keys.sort_unstable();
+    keys.dedup();
+    keys
+}
+
+/// Build every allowlisted presentation series present in a segment.
+///
+/// # Errors
+///
+/// Returns a production-reader or dictionary-resolution failure.
+pub fn build(segment: &Segment) -> Result<Index, BuildError> {
+    build_selected(segment, &keys(segment))
+}
+
+/// Build selected allowlisted series for a captured active response.
+///
+/// # Errors
+///
+/// Returns a production-reader or dictionary-resolution failure.
+pub fn build_selected(segment: &Segment, requested: &[SeriesKey]) -> Result<Index, BuildError> {
+    let mut requested = requested.to_vec();
+    requested.sort_unstable();
+    requested.dedup();
+    let mut blocks = Vec::with_capacity(requested.len());
+    let wants_health = requested.iter().any(|key| {
+        matches!(
+            key.kind,
+            SeriesKind::OsHealth | SeriesKind::OverallHealth | SeriesKind::PostgresHealth
+        )
+    });
+    let metadata = wants_health.then(|| health_metadata(segment)).transpose()?;
+    let os_points = if wants_health {
+        health_points(segment)?
+    } else {
+        Vec::new()
+    };
+    let needs_pg_health = requested.contains(&SeriesKey::POSTGRES_HEALTH);
+    let mut activity = BTreeMap::<u32, Vec<ActiveBackendPoint>>::new();
+    for type_id in segment
+        .type_ids()
+        .filter(|type_id| pg_activity_layout(*type_id))
+    {
+        let raw_requested = requested.contains(&SeriesKey {
+            kind: SeriesKind::PgActiveBackends,
+            type_id,
+        });
+        if raw_requested || needs_pg_health {
+            activity.insert(type_id, active_backend_points(segment, type_id)?);
+        }
+    }
+    let combined_active = combined_active_points(&activity);
+    let postgres_points = metadata
+        .as_ref()
+        .and_then(|metadata| postgres_health_points(metadata, &combined_active));
+
+    for key in requested {
+        match key.kind {
+            SeriesKind::OsHealth if key == SeriesKey::OS_HEALTH => {
+                blocks.push(SeriesBlock::OsHealth(os_points.clone()));
+            }
+            SeriesKind::OverallHealth if key == SeriesKey::OVERALL_HEALTH => {
+                let metadata = metadata.as_ref().ok_or(BuildError::InvalidMetadata)?;
+                blocks.push(SeriesBlock::OverallHealth(overall_points(
+                    &os_points,
+                    postgres_points.as_deref(),
+                    metadata,
+                )));
+            }
+            SeriesKind::PostgresHealth if key == SeriesKey::POSTGRES_HEALTH => {
+                if let Some(points) = &postgres_points {
+                    blocks.push(SeriesBlock::PostgresHealth(points.clone()));
+                }
+            }
+            SeriesKind::PgTransactionsPerSecond
+                if pg_database_layout(key.type_id) && segment.rows_of(key.type_id).is_some() =>
+            {
+                blocks.push(SeriesBlock::PgTransactions {
+                    type_id: key.type_id,
+                    points: transaction_points(segment, key.type_id)?,
+                });
+            }
+            SeriesKind::PgActiveBackends
+                if pg_activity_layout(key.type_id) && segment.rows_of(key.type_id).is_some() =>
+            {
+                blocks.push(SeriesBlock::PgActiveBackends {
+                    type_id: key.type_id,
+                    points: activity.remove(&key.type_id).unwrap_or_default(),
+                });
+            }
+            _ => {}
+        }
+    }
+    blocks.sort_by_key(SeriesBlock::key);
+    Ok(Index { blocks })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HealthMetadata {
+    timestamp: i64,
+    postgresql_enabled: Option<bool>,
+    postgresql_effective_cpus: Option<u32>,
+    postgresql_interval_seconds: u64,
+}
+
+fn health_metadata(segment: &Segment) -> Result<HealthMetadata, BuildError> {
+    if segment.rows_of(INSTANCE_METADATA_TYPE_ID).is_none() {
+        return Ok(HealthMetadata {
+            timestamp: segment.min_ts(),
+            postgresql_enabled: None,
+            postgresql_effective_cpus: None,
+            postgresql_interval_seconds: 0,
+        });
+    }
+    let mut facts = None;
+    let mut rows = 0_usize;
+    segment.visit_rows(
+        INSTANCE_METADATA_TYPE_ID,
+        &[
+            "ts",
+            "postgresql_enabled",
+            "postgresql_effective_cpus",
+            "postgresql_interval_seconds",
+        ],
+        0,
+        usize::MAX,
+        |_ordinal, row| {
+            rows = rows.saturating_add(1);
+            let capacity = match row.get("postgresql_effective_cpus") {
+                Some(Cell::U32(value)) => Some(*value),
+                Some(Cell::Null) => None,
+                _ => return true,
+            };
+            if let (
+                Some(Cell::Ts(timestamp)),
+                Some(Cell::Bool(postgresql_enabled)),
+                Some(Cell::U64(postgresql_interval_seconds)),
+            ) = (
+                row.get("ts"),
+                row.get("postgresql_enabled"),
+                row.get("postgresql_interval_seconds"),
+            ) {
+                facts = Some(HealthMetadata {
+                    timestamp: *timestamp,
+                    postgresql_enabled: Some(*postgresql_enabled),
+                    postgresql_effective_cpus: capacity,
+                    postgresql_interval_seconds: *postgresql_interval_seconds,
+                });
+            }
+            true
+        },
+    )?;
+    if rows != 1 {
+        return Err(BuildError::InvalidMetadata);
+    }
+    facts.ok_or(BuildError::InvalidMetadata)
+}
+
+fn combined_active_points(
+    activity: &BTreeMap<u32, Vec<ActiveBackendPoint>>,
+) -> Vec<(i64, Option<u32>)> {
+    let mut counts = BTreeMap::<i64, Option<u32>>::new();
+    for points in activity.values() {
+        for point in points {
+            counts
+                .entry(point.timestamp)
+                .and_modify(|count| *count = None)
+                .or_insert(Some(point.count));
+        }
+    }
+    counts.into_iter().collect()
+}
+
+fn postgres_health_points(
+    metadata: &HealthMetadata,
+    active: &[(i64, Option<u32>)],
+) -> Option<Vec<HealthPoint>> {
+    if metadata.postgresql_enabled != Some(true) {
+        return None;
+    }
+    if active.is_empty() {
+        return Some(vec![HealthPoint {
+            timestamp: metadata.timestamp,
+            value: None,
+        }]);
+    }
+    Some(
+        active
+            .iter()
+            .map(|(timestamp, active)| HealthPoint {
+                timestamp: *timestamp,
+                value: active
+                    .zip(metadata.postgresql_effective_cpus)
+                    .and_then(|(active, cpus)| postgres_penalty(active, cpus))
+                    .map(|penalty| 100_u8.saturating_sub(penalty)),
+            })
+            .collect(),
+    )
+}
+
+fn overall_points(
+    os: &[HealthPoint],
+    postgres: Option<&[HealthPoint]>,
+    metadata: &HealthMetadata,
+) -> Vec<HealthPoint> {
+    let postgres_interval = metadata
+        .postgresql_interval_seconds
+        .checked_mul(1_000_000)
+        .and_then(|value| i64::try_from(value).ok());
+    os.iter()
+        .map(|point| {
+            let postgres_penalty = match metadata.postgresql_enabled {
+                Some(false) => SourcePenalty::Disabled,
+                Some(true) => postgres
+                    .and_then(|points| {
+                        points
+                            .iter()
+                            .rev()
+                            .find(|candidate| candidate.timestamp <= point.timestamp)
+                    })
+                    .filter(|candidate| {
+                        postgres_interval.is_some_and(|interval| {
+                            point.timestamp.saturating_sub(candidate.timestamp) <= interval
+                        })
+                    })
+                    .and_then(|candidate| candidate.value)
+                    .map_or(SourcePenalty::Unknown, |health| {
+                        SourcePenalty::Known(100_u8.saturating_sub(health))
+                    }),
+                None => SourcePenalty::Unknown,
+            };
+            HealthPoint {
+                timestamp: point.timestamp,
+                value: overall_health(point.value, postgres_penalty),
+            }
+        })
+        .collect()
+}
+
+fn transaction_points(
+    segment: &Segment,
+    type_id: u32,
+) -> Result<Vec<TransactionPoint>, ReaderError> {
+    let mut previous: BTreeMap<u32, (i64, i128)> = BTreeMap::new();
+    let mut points = Vec::new();
+    segment.visit_rows(
+        type_id,
+        &["ts", "datid", "xact_commit", "xact_rollback"],
+        0,
+        usize::MAX,
+        |_ordinal, row| {
+            let (
+                Some(Cell::Ts(timestamp)),
+                Some(Cell::U32(datid)),
+                Some(Cell::I64(commit)),
+                Some(Cell::I64(rollback)),
+            ) = (
+                row.get("ts"),
+                row.get("datid"),
+                row.get("xact_commit"),
+                row.get("xact_rollback"),
+            )
+            else {
+                return true;
+            };
+            let total = i128::from(*commit) + i128::from(*rollback);
+            let value = previous.get(datid).and_then(|(before_ts, before)| {
+                transaction_rate(*before_ts, *before, *timestamp, total)
+            });
+            previous.insert(*datid, (*timestamp, total));
+            points.push(TransactionPoint {
+                timestamp: *timestamp,
+                datid: *datid,
+                value,
+            });
+            true
+        },
+    )?;
+    points.sort_by_key(|point| (point.datid, point.timestamp));
+    Ok(points)
+}
+
+fn transaction_rate(before_ts: i64, before: i128, timestamp: i64, total: i128) -> Option<f64> {
+    let elapsed = timestamp.checked_sub(before_ts)?;
+    let delta = total.checked_sub(before)?;
+    if elapsed <= 0 || delta < 0 {
+        return None;
+    }
+    let rate = integer_as_f64(delta)? * 1_000_000.0 / integer_as_f64(i128::from(elapsed))?;
+    (rate.is_finite() && rate >= 0.0).then_some(rate)
+}
+
+fn integer_as_f64(value: i128) -> Option<f64> {
+    let mut value = u128::try_from(value).ok()?;
+    let mut words = [0_u32; 4];
+    for word in words.iter_mut().rev() {
+        *word = u32::try_from(value & u128::from(u32::MAX)).ok()?;
+        value >>= 32;
+    }
+    Some(words.into_iter().fold(0.0, |number, word| {
+        number.mul_add(4_294_967_296.0, f64::from(word))
+    }))
+}
+
+fn active_backend_points(
+    segment: &Segment,
+    type_id: u32,
+) -> Result<Vec<ActiveBackendPoint>, BuildError> {
+    let mut ids = HashSet::new();
+    segment.visit_rows(type_id, &["state"], 0, usize::MAX, |_ordinal, row| {
+        if let Some(Cell::StrId(id)) = row.get("state") {
+            ids.insert(*id);
+        }
+        true
+    })?;
+    let dictionary = segment.dictionary_for(&ids)?;
+    let mut active_ids = HashSet::new();
+    for id in ids {
+        match dictionary.resolve(id) {
+            Some(Resolved::Str(b"active")) => {
+                active_ids.insert(id);
+            }
+            Some(Resolved::Str(_) | Resolved::Blob(_)) => {}
+            None => return Err(BuildError::UnresolvedState(id)),
+        }
+    }
+
+    let mut counts = BTreeMap::<i64, u32>::new();
+    segment.visit_rows(type_id, &["ts", "state"], 0, usize::MAX, |_ordinal, row| {
+        let Some(Cell::Ts(timestamp)) = row.get("ts") else {
+            return true;
+        };
+        let count = counts.entry(*timestamp).or_default();
+        if row
+            .get("state")
+            .is_some_and(|cell| matches!(cell, Cell::StrId(id) if active_ids.contains(id)))
+        {
+            *count = count.saturating_add(1);
+        }
+        true
+    })?;
+    Ok(counts
+        .into_iter()
+        .map(|(timestamp, count)| ActiveBackendPoint { timestamp, count })
+        .collect())
+}
 
 #[derive(Debug, Default)]
 struct PartialStall {
@@ -30,64 +443,122 @@ struct PartialStall {
     io: Option<i64>,
 }
 
-/// Health at every pressure snapshot, oldest first.
+/// Visit full-resolution derived OS health points in timestamp order.
 ///
-/// `metadata_rows` identifies the collector's resource boundary. Only pressure
-/// rows with a matching scope can contribute counters. Every timestamp still
-/// gets a point when the scope is wrong or a resource is absent, but its health
-/// is `None`. Health needs complete counters in both adjacent snapshots, so a
-/// resource reappearing after an absence starts a new baseline.
-#[must_use]
-pub fn points(metadata_rows: &[Row], psi_rows: &[Row]) -> Vec<Point> {
-    let environment = metadata_rows
-        .iter()
-        .find_map(|row| match row.get("environment") {
-            Some(Cell::U32(value)) => Some(*value),
-            _other => None,
-        });
+/// # Errors
+///
+/// Returns a production-reader failure for either input section.
+pub fn visit_health_points(
+    segment: &Segment,
+    mut keep_going: impl FnMut() -> bool,
+    mut visitor: impl FnMut(HealthPoint) -> bool,
+) -> Result<(), ReaderError> {
+    if segment.rows_of(OS_PSI_TYPE_ID).is_none() || !keep_going() {
+        return Ok(());
+    }
+    let mut running = true;
+    let mut environment = None;
+    let metadata_type_id = if segment.rows_of(INSTANCE_METADATA_TYPE_ID).is_some() {
+        Some(INSTANCE_METADATA_TYPE_ID)
+    } else if segment.rows_of(INSTANCE_METADATA_V1_TYPE_ID).is_some() {
+        Some(INSTANCE_METADATA_V1_TYPE_ID)
+    } else {
+        None
+    };
+    if let Some(metadata_type_id) = metadata_type_id {
+        segment.visit_rows(
+            metadata_type_id,
+            &["environment"],
+            0,
+            usize::MAX,
+            |_ordinal, row| {
+                running = keep_going();
+                if !running {
+                    return false;
+                }
+                if let Some(Cell::U32(value)) = row.get("environment") {
+                    environment = Some(*value);
+                }
+                true
+            },
+        )?;
+    }
+    if !running {
+        return Ok(());
+    }
     let mut snapshots: BTreeMap<i64, PartialStall> = BTreeMap::new();
-    for row in psi_rows {
-        let Some(Cell::Ts(ts)) = row.get("ts") else {
-            continue;
-        };
-        let snapshot = snapshots.entry(*ts).or_default();
-        let (Some(Cell::U32(resource)), Some(Cell::I64(total)), Some(Cell::U32(scope))) =
-            (row.get("resource"), row.get("some_total"), row.get("scope"))
-        else {
-            continue;
-        };
-        let matching_scope = match environment {
-            Some(value) if value == u32::from(Environment::Machine.as_u8()) => *scope == HOST,
-            Some(value) if value == u32::from(Environment::Container.as_u8()) => {
-                matches!(*scope, POD | CONTAINER)
+    segment.visit_rows(
+        OS_PSI_TYPE_ID,
+        &["ts", "resource", "some_total", "scope"],
+        0,
+        usize::MAX,
+        |_ordinal, row| {
+            running = keep_going();
+            if !running {
+                return false;
             }
-            _other => false,
-        };
-        if !matching_scope {
-            continue;
-        }
-        match *resource {
-            CPU => snapshot.cpu = Some(*total),
-            MEMORY => snapshot.memory = Some(*total),
-            IO => snapshot.io = Some(*total),
-            _other => {}
-        }
+            let Some(Cell::Ts(ts)) = row.get("ts") else {
+                return true;
+            };
+            let snapshot = snapshots.entry(*ts).or_default();
+            let (Some(Cell::U32(resource)), Some(Cell::I64(total)), Some(Cell::U32(scope))) =
+                (row.get("resource"), row.get("some_total"), row.get("scope"))
+            else {
+                return true;
+            };
+            let matching_scope = match environment {
+                Some(value) if value == u32::from(Environment::Machine.as_u8()) => *scope == HOST,
+                Some(value) if value == u32::from(Environment::Container.as_u8()) => {
+                    matches!(*scope, POD | CONTAINER)
+                }
+                _ => false,
+            };
+            if matching_scope {
+                match *resource {
+                    CPU => snapshot.cpu = Some(*total),
+                    MEMORY => snapshot.memory = Some(*total),
+                    IO => snapshot.io = Some(*total),
+                    _ => {}
+                }
+            }
+            true
+        },
+    )?;
+    if !running {
+        return Ok(());
     }
 
-    let mut points = Vec::with_capacity(snapshots.len());
-    let mut previous: Option<(i64, Stall)> = None;
-    for (ts, snapshot) in snapshots {
+    let mut previous = None;
+    for (timestamp, snapshot) in snapshots {
+        if !keep_going() {
+            break;
+        }
         let current = match (snapshot.cpu, snapshot.memory, snapshot.io) {
             (Some(cpu), Some(memory), Some(io)) => Some(Stall { cpu, memory, io }),
-            _other => None,
+            _ => None,
         };
         let value = previous.and_then(|(before_ts, before)| {
-            current.and_then(|after| health(before, before_ts, after, ts))
+            current.and_then(|after| health(before, before_ts, after, timestamp))
         });
-        points.push(Point { ts, health: value });
-        previous = current.map(|stall| (ts, stall));
+        previous = current.map(|stall| (timestamp, stall));
+        if !visitor(HealthPoint { timestamp, value }) {
+            break;
+        }
     }
-    points
+    Ok(())
+}
+
+fn health_points(segment: &Segment) -> Result<Vec<HealthPoint>, ReaderError> {
+    let mut points = Vec::new();
+    visit_health_points(
+        segment,
+        || true,
+        |point| {
+            points.push(point);
+            true
+        },
+    )?;
+    Ok(points)
 }
 
 #[cfg(test)]

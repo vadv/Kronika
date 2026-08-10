@@ -1,4 +1,15 @@
-//! Health: one number per interval, from the pressure stall counters.
+//! Health components and their additive penalties.
+
+/// Whether one optional source contributes a known penalty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourcePenalty {
+    /// The source was not enabled for this collection.
+    Disabled,
+    /// The source was enabled, but this snapshot has no usable value.
+    Unknown,
+    /// A penalty from `0` to `100`.
+    Known(u8),
+}
 
 /// What one snapshot reported in `os_psi`: cumulative stall time per resource,
 /// microseconds since the counters started.
@@ -28,6 +39,47 @@ pub fn health(before: Stall, before_ts: i64, after: Stall, after_ts: i64) -> Opt
     let io = stalled(before.io, after.io)?;
     let worst = cpu.max(memory).max(io);
     Some(percent_left(worst, elapsed))
+}
+
+/// `PostgreSQL` pressure from the number of backends that are `active` in one
+/// `pg_stat_activity` snapshot.
+///
+/// One effective CPU supplies two service slots: one backend can execute while
+/// another sends results to its client. Pressure starts only above that bound.
+/// `None` means the configured capacity is zero and therefore unusable.
+#[must_use]
+pub fn postgres_penalty(active: u32, effective_cpus: u32) -> Option<u8> {
+    if effective_cpus == 0 {
+        return None;
+    }
+    let active = u64::from(active);
+    let service_slots = u64::from(effective_cpus).saturating_mul(2);
+    if active <= service_slots {
+        return Some(0);
+    }
+    let waiting = active.saturating_sub(service_slots);
+    let rounded = waiting.saturating_mul(100).saturating_add(active / 2) / active;
+    Some(u8::try_from(rounded).unwrap_or(100))
+}
+
+/// Add OS and `PostgreSQL` penalties into one `0..=100` value.
+///
+/// OS health is required. An enabled source with an unknown value makes the
+/// result unknown; a disabled source contributes nothing.
+#[must_use]
+pub fn overall_health(os_health: Option<u8>, postgres: SourcePenalty) -> Option<u8> {
+    let os_penalty = 100_u8.saturating_sub(os_health?.min(100));
+    let postgres = penalty(postgres)?;
+    let total = u16::from(os_penalty).saturating_add(u16::from(postgres));
+    Some(100_u8.saturating_sub(u8::try_from(total.min(100)).unwrap_or(100)))
+}
+
+fn penalty(value: SourcePenalty) -> Option<u8> {
+    match value {
+        SourcePenalty::Disabled => Some(0),
+        SourcePenalty::Unknown => None,
+        SourcePenalty::Known(value) => Some(value.min(100)),
+    }
 }
 
 /// Stall microseconds between two readings of one counter, or `None` when it

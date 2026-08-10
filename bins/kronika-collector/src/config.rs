@@ -34,6 +34,8 @@ pub(crate) struct Config {
     pub(crate) retention: Option<RetentionConfig>,
     /// Where to ask `PostgreSQL` which log it writes and who it is.
     pub(crate) pg_dsns: Vec<String>,
+    /// Explicit CPU capacity of the monitored `PostgreSQL` server.
+    pub(crate) postgres_effective_cpus: Option<u32>,
     /// `PostgreSQL` logs named outright, as paths or globs.
     pub(crate) pg_logs: Vec<String>,
     /// Where to ask `PgBouncer` which log it writes and who it is.
@@ -75,6 +77,15 @@ fn env_u64(key: &str, default: u64) -> Result<u64> {
         Ok(raw) => parse_env_number(key, &raw),
         Err(_unset) => Ok(default),
     }
+}
+
+fn optional_positive_u32(key: &str, raw: Option<&str>) -> Result<Option<u32>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let value = parse_env_number::<u32>(key, raw)?;
+    anyhow::ensure!(value > 0, "{key} must be greater than zero");
+    Ok(Some(value))
 }
 
 /// Parse one numeric variable's value.
@@ -199,6 +210,17 @@ impl Config {
             .unwrap_or(RetentionConfig::Fixed(DEFAULT_RETENTION_BYTES));
         validate_retention(retention, segment_max_bytes)?;
         log_retention_config(retention);
+        let pg_dsns = env_list("KRONIKA_PG_DSNS")?;
+        let postgres_effective_cpus = optional_positive_u32(
+            "KRONIKA_POSTGRES_EFFECTIVE_CPUS",
+            std::env::var("KRONIKA_POSTGRES_EFFECTIVE_CPUS")
+                .ok()
+                .as_deref(),
+        )?;
+        anyhow::ensure!(
+            !pg_dsns.is_empty() || postgres_effective_cpus.is_none(),
+            "KRONIKA_POSTGRES_EFFECTIVE_CPUS requires KRONIKA_PG_DSNS"
+        );
         Ok(Self {
             out_dir,
             tick_secs,
@@ -207,7 +229,8 @@ impl Config {
             segment_max_age_secs,
             journal_max_bytes,
             retention: Some(retention),
-            pg_dsns: env_list("KRONIKA_PG_DSNS")?,
+            pg_dsns,
+            postgres_effective_cpus,
             pg_logs: env_list("KRONIKA_PG_LOGS")?,
             pgbouncer_dsns: env_list("KRONIKA_PGBOUNCER_DSNS")?,
             pgbouncer_logs: env_list("KRONIKA_PGBOUNCER_LOGS")?,

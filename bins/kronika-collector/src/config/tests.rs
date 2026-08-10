@@ -103,3 +103,19 @@ fn a_blank_list_is_empty_rather_than_one_blank_element() {
             .is_empty()
     );
 }
+
+#[test]
+fn postgres_capacity_is_positive_or_unknown() {
+    assert_eq!(
+        super::optional_positive_u32("KRONIKA_POSTGRES_EFFECTIVE_CPUS", None)
+            .expect("unset capacity"),
+        None
+    );
+    assert_eq!(
+        super::optional_positive_u32("KRONIKA_POSTGRES_EFFECTIVE_CPUS", Some(" 2 "))
+            .expect("positive capacity"),
+        Some(2)
+    );
+    assert!(super::optional_positive_u32("KRONIKA_POSTGRES_EFFECTIVE_CPUS", Some("0")).is_err());
+    assert!(super::optional_positive_u32("KRONIKA_POSTGRES_EFFECTIVE_CPUS", Some("two")).is_err());
+}

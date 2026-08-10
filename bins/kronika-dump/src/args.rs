@@ -9,7 +9,7 @@ usage: kronika-dump <data-dir> [--section <type_id>] [--index] [--json]
 
   no flag        every segment with what each section costs
   --section ID   the rows of one section, dictionary ids resolved
-  --index        health points, built from the segment
+  --index        typed identities and bounded series summaries
   --json         machine-readable instead of a table
   --limit N      stop after N rows per segment (default 20, 0 means all)
   --from TS      skip segments ending before this unix microsecond
@@ -23,7 +23,7 @@ pub(crate) enum Want {
     Sizes,
     /// The rows of one section.
     Section(u32),
-    /// Health points.
+    /// Typed identities and bounded series summaries.
     Index,
 }
 

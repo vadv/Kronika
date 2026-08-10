@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-use kronika_index::{INSTANCE_METADATA_TYPE_ID, OS_PSI_TYPE_ID, points};
+use kronika_index::SeriesBlock;
 use kronika_reader::{Cell, Dictionary, Resolved, Segment, StoreWarning};
 use kronika_registry::{DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, section_name};
 use serde_json::{Map, Value, json};
@@ -113,48 +113,126 @@ pub(crate) fn sizes(
     Ok(())
 }
 
-/// The health points an index would hold for this segment.
+/// The small presentation-series index this segment would get.
 ///
 /// # Errors
 ///
-/// Returns the reader's error when metadata or pressure rows cannot be decoded.
+/// Returns a build, reader, or index-encoding error when the segment cannot be
+/// summarized exactly.
 pub(crate) fn index(
     output: &mut impl Write,
     json_output: bool,
     segment: &Segment,
 ) -> Result<(), DumpError> {
-    let metadata_rows = segment.rows(INSTANCE_METADATA_TYPE_ID)?;
-    let pressure_rows = segment.rows(OS_PSI_TYPE_ID)?;
-    let points = points(&metadata_rows, &pressure_rows);
+    let built = kronika_index::build(segment)?;
+    let path = segment.path().display().to_string();
     if json_output {
-        let path = segment.path().display().to_string();
-        for point in &points {
-            say(
-                output,
-                &json!({
-                    "kind": "point",
-                    "path": path,
-                    "ts": point.ts,
-                    "health": point.health,
-                }),
-            )?;
+        for block in &built.blocks {
+            match block {
+                SeriesBlock::OsHealth(points) => {
+                    write_health_points(output, &path, "os_health", points)?;
+                }
+                SeriesBlock::OverallHealth(points) => {
+                    write_health_points(output, &path, "overall_health", points)?;
+                }
+                SeriesBlock::PostgresHealth(points) => {
+                    write_health_points(output, &path, "postgres_health", points)?;
+                }
+                SeriesBlock::PgTransactions { type_id, points } => {
+                    for point in points {
+                        say(
+                            output,
+                            &json!({
+                                "kind": "point",
+                                "path": path,
+                                "series": "transactions_per_second",
+                                "type_id": type_id.to_string(),
+                                "ts": point.timestamp.to_string(),
+                                "identity": { "datid": point.datid },
+                                "value": point.value,
+                            }),
+                        )?;
+                    }
+                }
+                SeriesBlock::PgActiveBackends { type_id, points } => {
+                    for point in points {
+                        say(
+                            output,
+                            &json!({
+                                "kind": "point",
+                                "path": path,
+                                "series": "active_backends",
+                                "type_id": type_id.to_string(),
+                                "ts": point.timestamp.to_string(),
+                                "identity": {},
+                                "value": point.count,
+                            }),
+                        )?;
+                    }
+                }
+            }
         }
         return Ok(());
     }
+    let encoded_bytes = built.encode()?.len();
+    let point_count = built.blocks.iter().map(index_block_len).sum::<usize>();
     writeln!(
         output,
-        "{}  points={}  idx_bytes={}",
-        segment.path().display(),
-        points.len(),
-        kronika_index::HEADER_LEN + points.len() * kronika_index::POINT_LEN
+        "{path}  blocks={}  points={point_count}  idx_bytes={encoded_bytes}",
+        built.blocks.len(),
     )?;
-    for point in &points {
-        match point.health {
-            Some(health) => writeln!(output, "  {:<20} {health}", point.ts)?,
-            None => writeln!(output, "  {:<20} -", point.ts)?,
-        }
+    for block in &built.blocks {
+        writeln!(
+            output,
+            "  {:<28} points={}",
+            index_block_name(block),
+            index_block_len(block),
+        )?;
     }
     Ok(())
+}
+
+fn write_health_points(
+    output: &mut impl Write,
+    path: &str,
+    series: &str,
+    points: &[kronika_index::HealthPoint],
+) -> Result<(), DumpError> {
+    for point in points {
+        say(
+            output,
+            &json!({
+                "kind": "point",
+                "path": path,
+                "series": series,
+                "type_id": "0",
+                "ts": point.timestamp.to_string(),
+                "identity": {},
+                "value": point.value,
+            }),
+        )?;
+    }
+    Ok(())
+}
+
+const fn index_block_name(block: &SeriesBlock) -> &'static str {
+    match block {
+        SeriesBlock::OsHealth(_) => "os_health",
+        SeriesBlock::OverallHealth(_) => "overall_health",
+        SeriesBlock::PostgresHealth(_) => "postgres_health",
+        SeriesBlock::PgTransactions { .. } => "transactions_per_second",
+        SeriesBlock::PgActiveBackends { .. } => "active_backends",
+    }
+}
+
+const fn index_block_len(block: &SeriesBlock) -> usize {
+    match block {
+        SeriesBlock::OsHealth(points)
+        | SeriesBlock::OverallHealth(points)
+        | SeriesBlock::PostgresHealth(points) => points.len(),
+        SeriesBlock::PgTransactions { points, .. } => points.len(),
+        SeriesBlock::PgActiveBackends { points, .. } => points.len(),
+    }
 }
 
 /// The rows of one section, with dictionary ids resolved to what they hold.

@@ -12,7 +12,8 @@ use crate::{Section, Ts};
     id = 1_102_001,
     name = "os_cpu",
     semantics = snapshot_full,
-    sort_key("cpu_id", "ts")
+    sort_key("cpu_id", "ts"),
+    identity("cpu_id")
 )]
 pub struct OsCpu {
     /// Collection timestamp, unix microseconds.
@@ -89,6 +90,7 @@ mod tests {
         let c = OsCpu::CONTRACT;
         assert_eq!(c.type_id.get(), 1_102_001);
         assert_eq!(c.sort_key, ["cpu_id", "ts"]);
+        assert_eq!(c.identity, ["cpu_id"]);
     }
 
     #[test]

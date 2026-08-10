@@ -1,118 +1,111 @@
-use super::{HEADER_LEN, Index, IndexError, MAGIC, POINT_LEN, Point};
+use super::{CHECKSUM_AT, HEADER_LEN, Index, IndexError, checksum};
+use crate::{
+    ActiveBackendPoint, HealthPoint, SeriesBlock, SeriesKey, SeriesKind, TransactionPoint,
+};
 
 fn sample() -> Index {
     Index {
-        sources: 0b11,
-        points: vec![
-            Point {
-                ts: 1_700_000_000_000_000,
-                health: None,
+        blocks: vec![
+            SeriesBlock::OsHealth(vec![HealthPoint {
+                timestamp: 42,
+                value: Some(95),
+            }]),
+            SeriesBlock::PgTransactions {
+                type_id: 1_005_004,
+                points: vec![TransactionPoint {
+                    timestamp: 42,
+                    datid: 7,
+                    value: Some(1.5),
+                }],
             },
-            Point {
-                ts: 1_700_000_010_000_000,
-                health: Some(100),
-            },
-            Point {
-                ts: 1_700_000_020_000_000,
-                health: Some(0),
+            SeriesBlock::PgActiveBackends {
+                type_id: 1_001_003,
+                points: vec![ActiveBackendPoint {
+                    timestamp: 42,
+                    count: 4,
+                }],
             },
         ],
     }
 }
 
 #[test]
-fn a_file_survives_the_round_trip() {
+fn current_format_roundtrips() {
     let index = sample();
-    assert_eq!(Index::decode(&index.encode()), Ok(index));
+    let bytes = index.encode().expect("encode");
+    assert_eq!(Index::decode(&bytes).expect("decode"), index);
 }
 
 #[test]
-fn an_empty_index_is_a_header_and_nothing_else() {
+fn targeted_decode_never_allocates_unrequested_blocks() {
+    let bytes = sample().encode().expect("encode");
+    let selected = Index::decode_target(
+        &bytes,
+        &[SeriesKey {
+            kind: SeriesKind::PgTransactionsPerSecond,
+            type_id: 1_005_004,
+        }],
+    )
+    .expect("target");
+    assert!(matches!(
+        selected.blocks.as_slice(),
+        [SeriesBlock::PgTransactions { .. }]
+    ));
+}
+
+#[test]
+fn an_unrelated_malformed_block_is_not_decoded() {
+    let mut bytes = sample().encode().expect("encode");
+    let second_entry = HEADER_LEN + super::ENTRY_LEN;
+    let second_offset = u32::from_le_bytes(
+        bytes[second_entry + 8..second_entry + 12]
+            .try_into()
+            .expect("offset"),
+    ) as usize;
+    let body_at = HEADER_LEN + 3 * super::ENTRY_LEN;
+    bytes[body_at + second_offset] = 0xff;
+    let value = checksum(&bytes[..CHECKSUM_AT], &bytes[HEADER_LEN..]);
+    bytes[CHECKSUM_AT..HEADER_LEN].copy_from_slice(&value.to_le_bytes());
+
+    let selected = Index::decode_target(&bytes, &[SeriesKey::OS_HEALTH]).expect("first block");
+    assert_eq!(selected.blocks.len(), 1);
+    assert_eq!(Index::decode(&bytes), Err(IndexError::BadLayout));
+}
+
+#[test]
+fn the_allowlist_stays_small_at_far_more_than_one_normal_segment() {
     let index = Index {
-        sources: 0,
-        points: Vec::new(),
+        blocks: vec![
+            SeriesBlock::OsHealth(
+                (0..1_000)
+                    .map(|point| HealthPoint {
+                        timestamp: point,
+                        value: Some(100),
+                    })
+                    .collect(),
+            ),
+            SeriesBlock::PgTransactions {
+                type_id: 1_005_004,
+                points: (0_u32..100)
+                    .flat_map(|datid| {
+                        (0_i64..100).map(move |timestamp| TransactionPoint {
+                            timestamp,
+                            datid,
+                            value: Some(1.0),
+                        })
+                    })
+                    .collect(),
+            },
+            SeriesBlock::PgActiveBackends {
+                type_id: 1_001_003,
+                points: (0..1_000)
+                    .map(|timestamp| ActiveBackendPoint {
+                        timestamp,
+                        count: 4,
+                    })
+                    .collect(),
+            },
+        ],
     };
-    let bytes = index.encode();
-    assert_eq!(bytes.len(), HEADER_LEN);
-    assert_eq!(Index::decode(&bytes), Ok(index));
-}
-
-#[test]
-fn a_point_costs_nine_bytes() {
-    assert_eq!(sample().encode().len(), HEADER_LEN + 3 * POINT_LEN);
-}
-
-#[test]
-fn the_header_checksum_is_readable_without_the_points() {
-    let bytes = sample().encode();
-    let from_header = Index::checksum_of(&bytes).expect("read the checksum");
-    let from_header_only = Index::checksum_of(&bytes[..HEADER_LEN]).expect("header alone");
-    assert_eq!(from_header, from_header_only);
-}
-
-#[test]
-fn a_rebuild_that_changes_a_value_changes_the_checksum() {
-    let before = Index::checksum_of(&sample().encode()).expect("before");
-    let mut changed = sample();
-    changed.points[1].health = Some(99);
-    let after = Index::checksum_of(&changed.encode()).expect("after");
-    assert_ne!(before, after);
-}
-
-#[test]
-fn a_rebuild_that_changes_sources_changes_the_checksum() {
-    let before = Index::checksum_of(&sample().encode()).expect("before");
-    let mut changed = sample();
-    changed.sources ^= 0b100;
-    let after = Index::checksum_of(&changed.encode()).expect("after");
-    assert_ne!(before, after);
-}
-
-#[test]
-fn a_rebuild_that_changes_nothing_keeps_the_checksum() {
-    assert_eq!(
-        Index::checksum_of(&sample().encode()),
-        Index::checksum_of(&sample().encode())
-    );
-}
-
-#[test]
-fn a_flipped_point_byte_fails_the_checksum() {
-    let mut bytes = sample().encode();
-    let last = bytes.len() - 1;
-    bytes[last] ^= 0x01;
-    assert_eq!(Index::decode(&bytes), Err(IndexError::BadChecksum));
-}
-
-#[test]
-fn a_foreign_file_is_rejected_by_its_magic() {
-    let mut bytes = sample().encode();
-    bytes[0] = b'X';
-    assert_eq!(Index::decode(&bytes), Err(IndexError::BadMagic));
-    assert_eq!(Index::checksum_of(&bytes), Err(IndexError::BadMagic));
-}
-
-#[test]
-fn a_cut_file_is_truncated_whether_the_header_or_the_points_went() {
-    let bytes = sample().encode();
-    assert_eq!(
-        Index::decode(&bytes[..HEADER_LEN - 1]),
-        Err(IndexError::Truncated)
-    );
-    assert_eq!(
-        Index::decode(&bytes[..bytes.len() - 1]),
-        Err(IndexError::Truncated)
-    );
-}
-
-#[test]
-fn a_body_that_is_not_whole_points_is_truncated() {
-    let mut bytes = sample().encode();
-    bytes.push(0);
-    assert_eq!(Index::decode(&bytes), Err(IndexError::Truncated));
-}
-
-#[test]
-fn the_magic_names_the_file_kind_and_its_version() {
-    assert_eq!(&MAGIC, b"KRNIDX1\0");
+    assert!(index.encode().expect("encode").len() < 256 * 1024);
 }
