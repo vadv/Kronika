@@ -3,12 +3,52 @@ import { registry } from "kronika:registry"
 import { bundledFixtureHour, bundledFixtureRange } from "./fixture"
 import { parseNdjson } from "./wire"
 
-export type Cell = null | boolean | number | string | { readonly [key: string]: unknown }
+export type Cell = null | boolean | number | string | readonly number[] | { readonly [key: string]: unknown }
 
-const BUNDLED_TYPE_IDS = new Set(registry.map((layout) => layout.typeId))
+const REGISTRY_BY_TYPE_ID = new Map(registry.map((layout) => [layout.typeId, layout]))
+const REGISTRY_LOGICAL_NAMES = unique(registry.flatMap((layout) =>
+  layout.logicalName === null ? [] : [layout.logicalName],
+))
+
+const POSTGRESQL_OVERVIEW = [
+  "pg_stat_bgwriter",
+  "pg_stat_checkpointer",
+  "pg_stat_wal",
+  "pg_stat_archiver",
+  "pg_stat_io",
+  "pg_prepared_xacts",
+  "pg_stat_statements_info",
+] as const
+
+export const PRODUCT_SECTION_GROUPS = {
+  host: REGISTRY_LOGICAL_NAMES.filter((name) => name === "instance_metadata" || name.startsWith("os_")),
+  postgresqlOverview: POSTGRESQL_OVERVIEW,
+  postgresqlActivity: ["pg_stat_activity", "pg_stat_progress_vacuum"] as const,
+  postgresqlStatements: ["pg_stat_statements"] as const,
+  postgresqlLocks: ["pg_locks"] as const,
+  postgresqlDatabases: ["pg_stat_database"] as const,
+  events: REGISTRY_LOGICAL_NAMES.filter((name) => name.startsWith("pg_log_") || name === "pgbouncer_events"),
+} as const
+
+const UI_SECTION_NAMES = unique(Object.values(PRODUCT_SECTION_GROUPS).flat())
+const UI_SECTION_NAME_SET = new Set(UI_SECTION_NAMES)
+const FINDING_INDEX_NAMES = new Set([
+  "os_process",
+  "os_cpu",
+  "os_meminfo",
+  "os_loadavg",
+  "os_vmstat",
+  "os_mountinfo",
+  "pg_stat_activity",
+  "pg_stat_database",
+  "pg_stat_statements",
+  ...PRODUCT_SECTION_GROUPS.events,
+])
+const REQUEST_CONCURRENCY = 4
 
 export interface DataRow {
   readonly segmentId: string
+  readonly logicalName: string
   readonly typeId: string
   readonly ordinal: string
   readonly timestamp: number
@@ -17,13 +57,17 @@ export interface DataRow {
 
 export interface Point {
   readonly segmentId: string
+  readonly logicalName: string
+  readonly typeId: string
   readonly series: string
   readonly timestamp: number
+  readonly identity: Readonly<Record<string, Cell>>
   readonly value: number | null
 }
 
 export interface Finding {
   readonly segmentId: string
+  readonly logicalName: string
   readonly kind: "known_bad" | "spike" | "event"
   readonly typeId: string
   readonly timestamp: number
@@ -50,16 +94,31 @@ export interface SourceFamily {
 }
 
 export interface HourData {
+  /** Rows keyed by their registry logical section name. */
+  readonly sections: Readonly<Record<string, readonly DataRow[]>>
+  /** Catalog-backed names, including present sections that have no row in this hour. */
+  readonly availableSections: readonly string[]
   readonly processes: readonly DataRow[]
   readonly activities: readonly DataRow[]
   readonly load: readonly DataRow[]
   readonly memory: readonly DataRow[]
   readonly pressure: readonly DataRow[]
   readonly health: readonly DataRow[]
+  readonly pgOverview: readonly DataRow[]
+  readonly pgStatements: readonly DataRow[]
+  readonly pgLocks: readonly DataRow[]
+  readonly pgDatabases: readonly DataRow[]
+  readonly pgEvents: readonly DataRow[]
   readonly points: readonly Point[]
   readonly findings: readonly Finding[]
   readonly sourceFamilies: readonly SourceFamily[]
   readonly segmentCount: number
+}
+
+export interface ResolvedLocator {
+  readonly logicalName: string
+  readonly row: DataRow
+  readonly fieldName: string | null
 }
 
 export const PROCESS_FIELDS = [
@@ -95,113 +154,232 @@ export async function loadHour(start: number, signal: AbortSignal): Promise<Hour
   )
   const sourceFamilies = catalog
     .find((record) => record.record === "catalog")?.source_families as readonly SourceFamily[] | undefined
-  const loaded = []
-  for (const segment of segments) loaded.push(await loadSegment(segment, signal))
+  const tasks = segments.flatMap(segmentTasks)
+  const loaded = await mapLimited(tasks, REQUEST_CONCURRENCY, (task) => runTask(task, signal))
   const within = (row: { readonly timestamp: number }) => row.timestamp >= start && row.timestamp < end
-  return {
-    processes: loaded.flatMap((part) => part.processes).filter(within),
-    activities: loaded.flatMap((part) => part.activities).filter(within),
-    load: loaded.flatMap((part) => part.load).filter(within),
-    memory: loaded.flatMap((part) => part.memory).filter(within),
-    pressure: loaded.flatMap((part) => part.pressure).filter(within),
-    health: loaded.flatMap((part) => part.health).filter(within),
-    points: loaded.flatMap((part) => part.points).filter(within),
-    findings: loaded.flatMap((part) => part.findings).filter(within),
+  const grouped: Record<string, DataRow[]> = {}
+  const points: Point[] = []
+  const findings: Finding[] = []
+  for (const result of loaded) {
+    if (result.kind === "history") {
+      const rows = grouped[result.logicalName] ?? []
+      rows.push(...result.rows.filter(within))
+      grouped[result.logicalName] = rows
+    } else {
+      points.push(...result.points.filter(within))
+      findings.push(...result.findings.filter(within))
+    }
+  }
+  const availableSections = availableSectionNames(segments)
+  for (const name of availableSections) grouped[name] ??= []
+  const sections = Object.fromEntries(availableSections.map((name) => [name, grouped[name] ?? []]))
+  return hourData({
+    sections,
+    availableSections,
+    points: points.sort(pointOrder),
+    findings: findings.sort(findingOrder),
     sourceFamilies: sourceFamilies ?? [],
     segmentCount: segments.length,
+  })
+}
+
+export function sectionRows(data: HourData, logicalName: string): readonly DataRow[] {
+  return data.sections[logicalName] ?? []
+}
+
+export function logicalNameForTypeId(typeId: string): string | null {
+  if (typeId === "0") return "health"
+  return REGISTRY_BY_TYPE_ID.get(typeId)?.logicalName ?? null
+}
+
+export function fieldNameForLocator(locator: Pick<Finding, "typeId" | "fieldOrdinal">): string | null {
+  if (locator.typeId === "0") return locator.fieldOrdinal === 0 ? "os_health" : null
+  return REGISTRY_BY_TYPE_ID.get(locator.typeId)?.columns[locator.fieldOrdinal]?.name ?? null
+}
+
+export function resolveLoadedRow(
+  data: Pick<HourData, "sections">,
+  locator: Pick<Finding, "segmentId" | "typeId" | "rowOrdinal" | "timestamp">,
+): DataRow | null {
+  const logicalName = logicalNameForTypeId(locator.typeId)
+  if (logicalName === null) return null
+  return (data.sections[logicalName] ?? []).find((row) =>
+    row.segmentId === locator.segmentId
+      && row.typeId === locator.typeId
+      && row.ordinal === locator.rowOrdinal
+      && row.timestamp === locator.timestamp,
+  ) ?? null
+}
+
+export function resolveLocator(data: Pick<HourData, "sections">, finding: Finding): ResolvedLocator | null {
+  const row = resolveLoadedRow(data, finding)
+  if (row === null) return null
+  return {
+    logicalName: row.logicalName,
+    row,
+    fieldName: fieldNameForLocator(finding),
   }
 }
 
-async function loadSegment(segment: Segment, signal: AbortSignal) {
-  const names = new Set(segment.sections.flatMap((section) => section.logical_name === null ? [] : [section.logical_name]))
-  const history = (section: string, fields: readonly string[]) => names.has(section)
-    ? readHistory(segment.id, section, fields, signal)
-    : Promise.resolve([])
-  const indexed = [
-    "os_process", "os_cpu", "os_meminfo", "os_loadavg", "os_vmstat", "os_mountinfo",
-    "pg_stat_activity", "pg_stat_database", "pg_stat_statements", "pg_log_errors",
-    "pg_log_checkpoints", "pg_log_autovacuum", "pg_log_slow_queries", "pg_log_lock_waits",
-    "pg_log_lifecycle", "pg_log_temp_files",
-  ]
-    .filter((section) => names.has(section))
-  if ([...names].some((name) => name.startsWith("os_"))) indexed.push("health")
-  const [processes, activities, load, memory, pressure, health, indexes] = await Promise.all([
-    history("os_process", PROCESS_FIELDS),
-    history("pg_stat_activity", ACTIVITY_FIELDS),
-    history("os_loadavg", ["load1", "load5", "load15", "running", "total"]),
-    history("os_meminfo", ["mem_total", "mem_available"]),
-    history("os_psi", ["resource", "some_avg10", "full_avg10"]),
-    readHistory(segment.id, "health", ["health"], signal).catch((error: unknown) => absent(error)),
-    mapLimited(indexed, 2, (section) => readIndex(segment.id, section, signal).catch((error: unknown) => absentIndex(error))),
-  ])
+function hourData(input: {
+  readonly sections: Readonly<Record<string, readonly DataRow[]>>
+  readonly availableSections: readonly string[]
+  readonly points: readonly Point[]
+  readonly findings: readonly Finding[]
+  readonly sourceFamilies: readonly SourceFamily[]
+  readonly segmentCount: number
+}): HourData {
+  const rows = (name: string) => input.sections[name] ?? []
+  const flatten = (names: readonly string[]) => names.flatMap(rows)
   return {
-    processes,
-    activities,
-    load,
-    memory,
-    pressure,
-    health,
-    points: indexes.flatMap((index) => index.points),
-    findings: indexes.flatMap((index) => index.findings),
+    ...input,
+    processes: rows("os_process"),
+    activities: rows("pg_stat_activity"),
+    load: rows("os_loadavg"),
+    memory: rows("os_meminfo"),
+    pressure: rows("os_psi"),
+    health: rows("health"),
+    pgOverview: flatten(PRODUCT_SECTION_GROUPS.postgresqlOverview),
+    pgStatements: flatten(PRODUCT_SECTION_GROUPS.postgresqlStatements),
+    pgLocks: flatten(PRODUCT_SECTION_GROUPS.postgresqlLocks),
+    pgDatabases: flatten(PRODUCT_SECTION_GROUPS.postgresqlDatabases),
+    pgEvents: flatten(PRODUCT_SECTION_GROUPS.events),
   }
+}
+
+type LoadTask =
+  | { readonly kind: "history"; readonly segmentId: string; readonly logicalName: string }
+  | { readonly kind: "index"; readonly segmentId: string; readonly logicalName: string }
+
+type LoadResult =
+  | { readonly kind: "history"; readonly logicalName: string; readonly rows: readonly DataRow[] }
+  | { readonly kind: "index"; readonly points: readonly Point[]; readonly findings: readonly Finding[] }
+
+function segmentTasks(segment: Segment): readonly LoadTask[] {
+  const names = segmentSectionNames(segment)
+  const tasks: LoadTask[] = names.map((logicalName) => ({
+    kind: "history",
+    segmentId: segment.id,
+    logicalName,
+  }))
+  for (const logicalName of names) {
+    if (FINDING_INDEX_NAMES.has(logicalName)) {
+      tasks.push({ kind: "index", segmentId: segment.id, logicalName })
+    }
+  }
+  if (names.some((name) => name.startsWith("os_"))) {
+    tasks.push(
+      { kind: "history", segmentId: segment.id, logicalName: "health" },
+      { kind: "index", segmentId: segment.id, logicalName: "health" },
+    )
+  }
+  return tasks
+}
+
+async function runTask(task: LoadTask, signal: AbortSignal): Promise<LoadResult> {
+  if (task.kind === "history") {
+    const rows = await readHistory(
+      task.segmentId,
+      task.logicalName,
+      fieldsForLogicalName(task.logicalName),
+      signal,
+    ).catch((error: unknown) => task.logicalName === "health" ? absent(error) : Promise.reject(error))
+    return { kind: "history", logicalName: task.logicalName, rows }
+  }
+  const result = await readIndex(task.segmentId, task.logicalName, signal)
+    .catch((error: unknown) => absentIndex(error))
+  return { kind: "index", ...result }
+}
+
+export function fieldsForLogicalName(logicalName: string): readonly string[] {
+  if (logicalName === "health") return ["health"]
+  return unique(registry
+    .filter((layout) => layout.logicalName === logicalName)
+    .flatMap((layout) => layout.columns.map((column) => column.name))
+    .filter((name) => name !== "ts"))
 }
 
 async function readHistory(
   segmentId: string,
-  section: string,
+  logicalName: string,
   fields: readonly string[],
   signal: AbortSignal,
 ): Promise<readonly DataRow[]> {
   const query = fields.map((field) => `field=${encodeURIComponent(field)}`).join("&")
-  const records = await request(`/api/segments/${segmentId}/sections/${section}/history?${query}`, signal)
+  const suffix = query === "" ? "" : `?${query}`
+  const records = await request(
+    `/api/segments/${encodeURIComponent(segmentId)}/sections/${encodeURIComponent(logicalName)}/history${suffix}`,
+    signal,
+  )
   const layouts = new Map<string, readonly string[]>()
   const rows: DataRow[] = []
   for (const record of records) {
     if (record.record === "layout") {
-      const layout = record.layout as { readonly type_id: string; readonly columns: readonly { readonly name: string }[] }
-      if (layout.type_id !== "0" && !BUNDLED_TYPE_IDS.has(layout.type_id)) {
-        throw new Error(`layout ${layout.type_id} is not in the bundled registry`)
+      const layout = record.layout as {
+        readonly type_id: unknown
+        readonly columns: readonly { readonly name: unknown }[]
       }
-      layouts.set(layout.type_id, layout.columns.map((column) => column.name))
+      const typeId = requiredText(layout.type_id, "layout type_id")
+      const registeredName = logicalNameForTypeId(typeId)
+      if (registeredName !== logicalName) {
+        throw new Error(`layout ${typeId} does not belong to ${logicalName}`)
+      }
+      if (!Array.isArray(layout.columns)) throw new Error(`layout ${typeId} has no columns`)
+      layouts.set(typeId, layout.columns.map((column) => requiredText(column.name, "column name")))
     } else if (record.record === "row") {
-      const typeId = text(record.type_id)
+      const typeId = requiredText(record.type_id, "row type_id")
       const names = layouts.get(typeId)
       const values = record.values as readonly Cell[]
-      if (names === undefined || !Array.isArray(values)) continue
+      if (names === undefined || !Array.isArray(values)) {
+        throw new Error(`row for layout ${typeId} arrived before its layout`)
+      }
       rows.push({
         segmentId,
+        logicalName,
         typeId,
-        ordinal: text(record.ordinal),
-        timestamp: Number(record.timestamp),
-        values: Object.fromEntries(names.map((name, index) => [name, values[index] ?? null])),
+        ordinal: requiredText(record.ordinal, "row ordinal"),
+        timestamp: integer(record.timestamp, "row timestamp"),
+        values: Object.fromEntries(names.map((name, index) => [
+          name,
+          index < values.length ? values[index] as Cell : null,
+        ])),
       })
     }
   }
   return rows
 }
 
-async function readIndex(segmentId: string, section: string, signal: AbortSignal) {
-  const records = await request(`/api/segments/${segmentId}/sections/${section}/index`, signal)
+async function readIndex(segmentId: string, logicalName: string, signal: AbortSignal) {
+  const records = await request(
+    `/api/segments/${encodeURIComponent(segmentId)}/sections/${encodeURIComponent(logicalName)}/index`,
+    signal,
+  )
   const points: Point[] = []
   const findings: Finding[] = []
   for (const record of records) {
     if (record.record === "point") {
+      const typeId = requiredText(record.type_id, "point type_id")
       points.push({
         segmentId,
-        series: text(record.series),
-        timestamp: Number(record.ts),
-        value: record.value === null ? null : Number(record.value),
+        logicalName,
+        typeId,
+        series: requiredText(record.series, "point series"),
+        timestamp: integer(record.ts, "point timestamp"),
+        identity: cellRecord(record.identity),
+        value: record.value === null ? null : finiteNumber(record.value, "point value"),
       })
     } else if (record.record === "finding"
       && (record.kind === "known_bad" || record.kind === "spike" || record.kind === "event")) {
+      const typeId = requiredText(record.type_id, "finding type_id")
       findings.push({
         segmentId,
+        logicalName: logicalNameForTypeId(typeId) ?? logicalName,
         kind: record.kind,
-        typeId: text(record.type_id),
-        timestamp: Number(record.ts),
+        typeId,
+        timestamp: integer(record.ts, "finding timestamp"),
         category: typeof record.category === "number" ? record.category : null,
-        rowOrdinal: text(record.row_ordinal),
-        fieldOrdinal: typeof record.field_ordinal === "number" ? record.field_ordinal : 0,
+        rowOrdinal: requiredText(record.row_ordinal, "finding row ordinal"),
+        fieldOrdinal: integer(record.field_ordinal, "finding field ordinal"),
       })
     }
   }
@@ -225,6 +403,19 @@ function catalogSegments(records: readonly Record<string, unknown>[]): readonly 
   ) as unknown as readonly Segment[]
 }
 
+function segmentSectionNames(segment: Segment): string[] {
+  const present = new Set(segment.sections.flatMap((section) =>
+    section.logical_name !== null && UI_SECTION_NAME_SET.has(section.logical_name) ? [section.logical_name] : [],
+  ))
+  return UI_SECTION_NAMES.filter((name) => present.has(name))
+}
+
+function availableSectionNames(segments: readonly Segment[]): string[] {
+  const present = new Set(segments.flatMap(segmentSectionNames))
+  if ([...present].some((name) => name.startsWith("os_"))) present.add("health")
+  return [...UI_SECTION_NAMES, "health"].filter((name) => present.has(name))
+}
+
 function absent(error: unknown): readonly DataRow[] {
   if (status(error) === 404) return []
   throw error
@@ -239,8 +430,45 @@ function status(error: unknown): number | undefined {
   return error instanceof Error ? (error as Error & { readonly status?: number }).status : undefined
 }
 
-function text(value: unknown): string {
-  return typeof value === "string" ? value : String(value)
+function requiredText(value: unknown, name: string): string {
+  if ((typeof value === "string" && value !== "") || typeof value === "number") return String(value)
+  throw new Error(`${name} is invalid`)
+}
+
+function integer(value: unknown, name: string): number {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN
+  if (!Number.isSafeInteger(parsed)) throw new Error(`${name} is invalid`)
+  return parsed
+}
+
+function finiteNumber(value: unknown, name: string): number {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN
+  if (!Number.isFinite(parsed)) throw new Error(`${name} is invalid`)
+  return parsed
+}
+
+function cellRecord(value: unknown): Readonly<Record<string, Cell>> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return {}
+  return value as Readonly<Record<string, Cell>>
+}
+
+function unique<Value>(values: readonly Value[]): Value[] {
+  return [...new Set(values)]
+}
+
+function pointOrder(left: Point, right: Point): number {
+  return left.timestamp - right.timestamp
+    || left.segmentId.localeCompare(right.segmentId)
+    || left.typeId.localeCompare(right.typeId)
+    || left.series.localeCompare(right.series)
+}
+
+function findingOrder(left: Finding, right: Finding): number {
+  return left.timestamp - right.timestamp
+    || left.segmentId.localeCompare(right.segmentId)
+    || left.typeId.localeCompare(right.typeId)
+    || Number(left.rowOrdinal) - Number(right.rowOrdinal)
+    || left.fieldOrdinal - right.fieldOrdinal
 }
 
 async function mapLimited<Input, Output>(

@@ -135,20 +135,23 @@ export function rawText(cell: Cell): string | null {
   if (typeof cell === "string") return cell
   if (typeof cell === "number" || typeof cell === "boolean") return String(cell)
   if (cell === null) return null
-  if (cell.representation === "text" && typeof cell.stored_text === "string") return cell.stored_text
-  if (cell.representation === "bytes") {
-    if (typeof cell.stored_base64 === "string") return cell.stored_base64
-    if (typeof cell.base64 === "string") return cell.base64
+  if (Array.isArray(cell)) return JSON.stringify(cell)
+  const payload = cell as Readonly<Record<string, unknown>>
+  if (payload.representation === "text" && typeof payload.stored_text === "string") return payload.stored_text
+  if (payload.representation === "bytes") {
+    if (typeof payload.stored_base64 === "string") return payload.stored_base64
+    if (typeof payload.base64 === "string") return payload.base64
   }
-  return JSON.stringify(cell)
+  return JSON.stringify(payload)
 }
 
 export function payloadMeta(cell: Cell): string | null {
-  if (cell === null || typeof cell !== "object") return null
+  if (cell === null || typeof cell !== "object" || Array.isArray(cell)) return null
+  const payload = cell as Readonly<Record<string, unknown>>
   const parts = []
-  if (cell.truncated === true) parts.push("truncated")
-  if (typeof cell.full_len === "string") parts.push(`full_len=${cell.full_len}`)
-  if (typeof cell.sha256 === "string") parts.push(`sha256=${cell.sha256}`)
+  if (payload.truncated === true) parts.push("truncated")
+  if (typeof payload.full_len === "string") parts.push(`full_len=${payload.full_len}`)
+  if (typeof payload.sha256 === "string") parts.push(`sha256=${payload.sha256}`)
   return parts.length === 0 ? null : parts.join(" · ")
 }
 

@@ -18,6 +18,13 @@ test("the approved real hour converts without losing entity relationships", () =
   assert.equal(hour?.activities.length, 2_888)
   assert.equal(hour?.findings.length, 2_884)
   assert.equal(hour?.sourceFamilies.find((source) => source.name === "postgresql")?.present, true)
+  assert.deepEqual(hour?.availableSections, ["os_process", "pg_stat_activity", "health"])
+  assert.equal(hour?.sections.os_process, hour?.processes)
+  assert.equal(hour?.sections.pg_stat_activity, hour?.activities)
+  assert.equal(hour?.memory[0]?.values.mem_available_percent !== undefined, true)
+  assert.equal(hour?.memory[0]?.values.mem_available, undefined)
+  assert.ok(hour?.points.some((point) => point.series === "os_oom_kills"))
+  assert.ok(hour?.points.some((point) => point.series === "os_psi_some_avg10" && point.identity.resource === 0))
   const processByTime = new Map<number, Set<unknown>>()
   for (const row of hour?.processes ?? []) {
     const pids = processByTime.get(row.timestamp) ?? new Set()

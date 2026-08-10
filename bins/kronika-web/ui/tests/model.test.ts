@@ -5,7 +5,7 @@ import type { Cell, DataRow } from "../src/api.ts"
 import { activityFor, formatUtc, identifier, measure, nearestTime, payloadMeta, processCommand, rawText, selectedHour, systemSnapshots } from "../src/model.ts"
 
 function row(timestamp: number): DataRow {
-  return { segmentId: "7", typeId: "1100001", ordinal: "0", timestamp, values: {} }
+  return { segmentId: "7", logicalName: "os_process", typeId: "1100001", ordinal: "0", timestamp, values: {} }
 }
 
 test("UTC hour selection and timestamp presentation are exact", () => {
@@ -29,6 +29,10 @@ test("text payloads retain their stored value and truncation metadata", () => {
   const payload: Cell = { representation: "text", stored_text: "SELECT 1", full_len: "8", truncated: true, sha256: "abc" }
   assert.equal(rawText(payload), "SELECT 1")
   assert.equal(payloadMeta(payload), "truncated · full_len=8 · sha256=abc")
+})
+
+test("integer lists retain exact ungrouped identifiers", () => {
+  assert.equal(rawText([1234, 5678]), "[1234,5678]")
 })
 
 test("activity linking uses the cursor-nearest PG snapshot and exact PID", () => {

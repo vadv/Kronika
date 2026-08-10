@@ -10,7 +10,19 @@ interface FixtureTable {
   }[]
 }
 
-type FixturePoint = readonly [string, number | null]
+type FixturePoint = readonly [string, number | null, string?]
+
+const FIXTURE_TYPE_NAMES: Readonly<Record<string, string>> = {
+  "1001003": "pg_stat_activity",
+  "1002003": "pg_stat_statements",
+  "1100001": "os_process",
+  "1102001": "os_cpu",
+  "2001001": "pg_log_errors",
+  "2002001": "pg_log_checkpoints",
+  "2003001": "pg_log_autovacuum",
+  "2004001": "pg_log_slow_queries",
+  "2007001": "pg_log_temp_files",
+}
 
 interface RealHourFixture {
   readonly findings: readonly {
@@ -35,7 +47,7 @@ interface RealHourFixture {
     readonly load1: readonly FixturePoint[]
     readonly memAvailable: readonly FixturePoint[]
     readonly minFsFree: readonly FixturePoint[]
-    readonly oom: readonly (readonly [string, number, number])[]
+    readonly oom: readonly FixturePoint[]
     readonly psi: Readonly<Record<string, readonly FixturePoint[]>>
   }
 }
@@ -53,17 +65,25 @@ export function bundledFixtureHour(start: number): HourData | null {
   if (fixture === null) return null
   const end = start + 3_600_000_000
   const within = (timestamp: number) => timestamp >= start && timestamp < end
-  const processes = tableRows(fixture.os).filter((row) => within(row.timestamp))
-  const activities = tableRows(fixture.pg).filter((row) => within(row.timestamp))
-  const health = seriesRows(fixture.system.health, "fixture:health", { field: "os_health" }).filter((row) => within(row.timestamp))
-  const load = seriesRows(fixture.system.load1, "fixture:load", { field: "load1" }).filter((row) => within(row.timestamp))
-  const memory = seriesRows(fixture.system.memAvailable, "fixture:memory", { field: "mem_available" }).filter((row) => within(row.timestamp))
+  const processes = tableRows(fixture.os, "os_process").filter((row) => within(row.timestamp))
+  const activities = tableRows(fixture.pg, "pg_stat_activity").filter((row) => within(row.timestamp))
+  const health = seriesRows(fixture.system.health, "health", "0", { field: "os_health" })
+    .filter((row) => within(row.timestamp))
+  const load = seriesRows(fixture.system.load1, "os_loadavg", "1105001", { field: "load1" })
+    .filter((row) => within(row.timestamp))
+  const memory = seriesRows(fixture.system.memAvailable, "os_meminfo", "1104001", {
+    field: "mem_available_percent",
+  }).filter((row) => within(row.timestamp))
   const pressure = Object.entries(fixture.system.psi).flatMap(([resource, series]) =>
-    seriesRows(series, `fixture:pressure:${resource}`, { field: "some_avg10", extra: { resource: Number(resource) } }),
+    seriesRows(series, "os_psi", "1107001", {
+      field: "some_avg10",
+      extra: { resource: Number(resource) },
+    }),
   ).filter((row) => within(row.timestamp))
   const points = fixturePoints(fixture).filter((point) => within(point.timestamp))
   const findings = fixture.findings.map((finding) => ({
     segmentId: finding.segment_id,
+    logicalName: fixtureLogicalName(finding.type_id),
     kind: finding.kind,
     typeId: finding.type_id,
     timestamp: Number(finding.t),
@@ -77,13 +97,25 @@ export function bundledFixtureHour(start: number): HourData | null {
     { name: "pgbouncer", configured: false, present: false },
     { name: "clickhouse", configured: false, present: false },
   ]
+  const sections = {
+    os_process: processes,
+    pg_stat_activity: activities,
+    health,
+  }
   return {
+    sections,
+    availableSections: ["os_process", "pg_stat_activity", "health"],
     processes,
     activities,
     load,
     memory,
     pressure,
     health,
+    pgOverview: [],
+    pgStatements: [],
+    pgLocks: [],
+    pgDatabases: [],
+    pgEvents: [],
     points,
     findings,
     sourceFamilies,
@@ -119,7 +151,7 @@ function table(value: unknown): value is FixtureTable {
   return Array.isArray(candidate.columns) && Array.isArray(candidate.snapshots)
 }
 
-function tableRows(table: FixtureTable): readonly DataRow[] {
+function tableRows(table: FixtureTable, logicalName: string): readonly DataRow[] {
   const columns = new Map(table.columns.map((name, index) => [name, index]))
   const ordinalIndex = columns.get("ordinal")
   const timestampIndex = columns.get("ts")
@@ -129,6 +161,7 @@ function tableRows(table: FixtureTable): readonly DataRow[] {
     ))
     return {
       segmentId: snapshot.segment_id,
+      logicalName,
       typeId: snapshot.type_id,
       ordinal: text(ordinalIndex === undefined ? rowIndex : cells[ordinalIndex]),
       timestamp: Number(timestampIndex === undefined ? snapshot.ts : cells[timestampIndex]),
@@ -139,11 +172,13 @@ function tableRows(table: FixtureTable): readonly DataRow[] {
 
 function seriesRows(
   series: readonly FixturePoint[],
+  logicalName: string,
   typeId: string,
   options: { readonly field: string; readonly extra?: Readonly<Record<string, Cell>> },
 ): readonly DataRow[] {
   return series.map(([timestamp, value], ordinal) => ({
     segmentId: "fixture",
+    logicalName,
     typeId,
     ordinal: String(ordinal),
     timestamp: Number(timestamp),
@@ -152,19 +187,42 @@ function seriesRows(
 }
 
 function fixturePoints(fixture: RealHourFixture): readonly Point[] {
-  const series: readonly [string, readonly FixturePoint[]][] = [
-    ["os_cpu_busy_percent", fixture.system.cpuBusy],
-    ["os_health", fixture.system.health],
-    ["os_load1", fixture.system.load1],
-    ["os_mem_available_kib", fixture.system.memAvailable],
-    ["os_min_filesystem_free_percent", fixture.system.minFsFree],
+  const series: readonly [string, string, string, readonly FixturePoint[]][] = [
+    ["os_cpu", "1102001", "os_cpu_busy_percent", fixture.system.cpuBusy],
+    ["health", "0", "os_health", fixture.system.health],
+    ["os_loadavg", "1105001", "os_load1", fixture.system.load1],
+    ["os_meminfo", "1104001", "os_mem_available_percent", fixture.system.memAvailable],
+    ["os_mountinfo", "1112001", "os_min_filesystem_free_percent", fixture.system.minFsFree],
+    ["os_vmstat", "1106001", "os_oom_kills", fixture.system.oom],
   ]
-  return series.flatMap(([name, values]) => values.map(([timestamp, value]) => ({
-    segmentId: "fixture",
-    series: name,
-    timestamp: Number(timestamp),
-    value,
-  })))
+  const points = series.flatMap(([logicalName, typeId, name, values]) =>
+    values.map(([timestamp, value, segmentId]) => ({
+      segmentId: segmentId ?? "fixture",
+      logicalName,
+      typeId,
+      series: name,
+      timestamp: Number(timestamp),
+      identity: {},
+      value,
+    })),
+  )
+  return points.concat(Object.entries(fixture.system.psi).flatMap(([resource, values]) =>
+    values.map(([timestamp, value]) => ({
+      segmentId: "fixture",
+      logicalName: "os_psi",
+      typeId: "1107001",
+      series: "os_psi_some_avg10",
+      timestamp: Number(timestamp),
+      identity: { resource: Number(resource) },
+      value,
+    })),
+  ))
+}
+
+function fixtureLogicalName(typeId: string): string {
+  const logicalName = FIXTURE_TYPE_NAMES[typeId]
+  if (logicalName === undefined) throw new Error(`fixture type ${typeId} is not recognized`)
+  return logicalName
 }
 
 function text(value: Cell | undefined): string {
