@@ -260,6 +260,7 @@ const fn finding_kind(kind: FindingKind) -> &'static str {
     match kind {
         FindingKind::KnownBad => "known_bad",
         FindingKind::Spike => "spike",
+        FindingKind::Event => "event",
     }
 }
 

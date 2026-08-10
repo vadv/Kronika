@@ -8,7 +8,10 @@ use kronika_registry::os_loadavg::OsLoadavg;
 use kronika_registry::os_mountinfo::OsMountinfo;
 use kronika_registry::os_process::OsProcess;
 use kronika_registry::os_topology::OsTopology;
-use kronika_registry::pg_log::PgLogSlowQueries;
+use kronika_registry::pg_log::{
+    PgLogAutovacuum, PgLogCheckpoints, PgLogErrors, PgLogLifecycle, PgLogLockWaits,
+    PgLogSlowQueries, PgLogTempFiles,
+};
 use kronika_registry::pg_stat_statements::PgStatStatementsV2;
 use kronika_registry::{StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
@@ -201,11 +204,147 @@ fn cpu_row(ts: i64, cpu_id: i32, user: i64, idle: i64, scope: u8) -> OsCpu {
     }
 }
 
+fn append_log_event_rows(buffers: &mut SectionBuffers, timestamp: i64, label: StrId) {
+    append_log_event_rows_2_001_to_2_003(buffers, timestamp, label);
+    append_log_event_rows_2_004_to_2_007(buffers, timestamp, label);
+}
+
+fn append_log_event_rows_2_001_to_2_003(
+    buffers: &mut SectionBuffers,
+    timestamp: i64,
+    label: StrId,
+) {
+    buffers
+        .push(PgLogErrors {
+            ts: Ts(timestamp),
+            system_identifier: None,
+            source_file: label,
+            severity: 0,
+            category: 0,
+            sqlstate: Some(label),
+            pattern: label,
+            count: 1,
+            sample: label,
+            detail: Some(label),
+            hint: Some(label),
+            context: Some(label),
+            statement: Some(label),
+            database: Some(label),
+            username: Some(label),
+        })
+        .expect("error row");
+    buffers
+        .push(PgLogCheckpoints {
+            ts: Ts(timestamp),
+            system_identifier: None,
+            source_file: label,
+            phase: 0,
+            reason: Some(label),
+            seconds_apart: None,
+            buffers_written: None,
+            write_ms: None,
+            sync_ms: None,
+            total_ms: None,
+            distance_kb: None,
+            estimate_kb: None,
+            wal_added: None,
+            wal_removed: None,
+            wal_recycled: None,
+            sync_files: None,
+            longest_sync_ms: None,
+            average_sync_ms: None,
+        })
+        .expect("checkpoint row");
+    buffers
+        .push(PgLogAutovacuum {
+            ts: Ts(timestamp),
+            system_identifier: None,
+            source_file: label,
+            kind: 0,
+            relation: Some(label),
+            index_scans: None,
+            pages_removed: None,
+            pages_remaining: None,
+            tuples_removed: None,
+            tuples_remaining: None,
+            tuples_dead_not_removable: None,
+            elapsed_ms: None,
+            buffer_hits: None,
+            buffer_misses: None,
+            buffer_dirtied: None,
+            avg_read_rate_mbs: None,
+            avg_write_rate_mbs: None,
+            cpu_user_ms: None,
+            cpu_system_ms: None,
+            wal_records: None,
+            wal_fpi: None,
+            wal_bytes: None,
+        })
+        .expect("autovacuum row");
+}
+
+fn append_log_event_rows_2_004_to_2_007(
+    buffers: &mut SectionBuffers,
+    timestamp: i64,
+    label: StrId,
+) {
+    buffers
+        .push(PgLogSlowQueries {
+            ts: Ts(timestamp),
+            system_identifier: None,
+            source_file: label,
+            pattern: label,
+            sample: label,
+            count: 3,
+            max_duration_ms: 5_000.0,
+            total_duration_ms: 99_999.0,
+        })
+        .expect("slow query row");
+    buffers
+        .push(PgLogLockWaits {
+            ts: Ts(timestamp),
+            system_identifier: None,
+            source_file: label,
+            kind: 0,
+            pid: Some(41),
+            lock_mode: Some(label),
+            lock_target: Some(label),
+            duration_ms: Some(1.0),
+            detail: Some(label),
+            context: Some(label),
+            statement: Some(label),
+        })
+        .expect("lock wait row");
+    buffers
+        .push(PgLogLifecycle {
+            ts: Ts(timestamp),
+            system_identifier: None,
+            source_file: label,
+            kind: 0,
+            pid: Some(41),
+            signal: Some(9),
+            shutdown_mode: Some(label),
+            message: label,
+            query_detail: Some(label),
+        })
+        .expect("lifecycle row");
+    buffers
+        .push(PgLogTempFiles {
+            ts: Ts(timestamp),
+            system_identifier: None,
+            source_file: label,
+            path: Some(label),
+            size_bytes: 1,
+            statement: Some(label),
+        })
+        .expect("temporary-file row");
+}
+
 fn append_direct_fixture(journal: &mut Journal, segment_id: i64) {
     let mut interner = Interner::new(DictLimits::default());
     let label = StrId(
         interner
-            .intern(b"DIRECT-FINDING-SOURCE-TEXT")
+            .intern(b"EVENT-SOURCE-MESSAGE-QUERY-STATEMENT-MUST-STAY-IN-ZMS")
             .expect("intern direct source text")
             .get(),
     );
@@ -246,18 +385,7 @@ fn append_direct_fixture(journal: &mut Journal, segment_id: i64) {
             scope: 0,
         })
         .expect("mount row");
-    buffers
-        .push(PgLogSlowQueries {
-            ts: Ts(later),
-            system_identifier: None,
-            source_file: label,
-            pattern: label,
-            sample: label,
-            count: 3,
-            max_duration_ms: 5_000.0,
-            total_duration_ms: 99_999.0,
-        })
-        .expect("slow query row");
+    append_log_event_rows(&mut buffers, later, label);
     let part = buffers
         .flush(&dictionary)
         .expect("encode direct fixture")
@@ -395,14 +523,14 @@ fn truncated_and_unknown_finished_indexes_are_rebuilt_in_place() {
         .acquire_writer(LayoutLimits::default())
         .expect("writer");
     let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
-    append_fixture(&mut journal);
+    append_direct_fixture(&mut journal, SEGMENT_ID);
     write_segment(&journal, &writer, address()).expect("finish segment");
     journal.reset().expect("leave no active segment");
 
     let reader = Reader::open(directory.path()).expect("reader");
     let finished = only_segment(&reader, SegmentKind::Finished);
-    let published =
-        resource(directory.path(), &reader, &finished, "health").expect("publish current index");
+    let published = resource(directory.path(), &reader, &finished, "pg_log_slow_queries")
+        .expect("publish current index");
     let path = path_of(
         reader
             .open_segment(&finished)
@@ -413,16 +541,16 @@ fn truncated_and_unknown_finished_indexes_are_rebuilt_in_place() {
     let canonical = std::fs::read(&path).expect("canonical index");
 
     std::fs::write(&path, &canonical[..10]).expect("truncate derived index");
-    let rebuilt =
-        resource(directory.path(), &reader, &finished, "health").expect("rebuild truncated index");
+    let rebuilt = resource(directory.path(), &reader, &finished, "pg_log_slow_queries")
+        .expect("rebuild truncated index");
     assert_eq!(rebuilt, published);
     assert_eq!(std::fs::read(&path).expect("rebuilt index"), canonical);
 
     let mut unknown = canonical.clone();
     unknown[0] ^= 1;
     std::fs::write(&path, unknown).expect("replace index magic");
-    let rebuilt =
-        resource(directory.path(), &reader, &finished, "health").expect("rebuild unknown index");
+    let rebuilt = resource(directory.path(), &reader, &finished, "pg_log_slow_queries")
+        .expect("rebuild unknown index");
     assert_eq!(rebuilt, published);
     assert_eq!(
         std::fs::read(path).expect("rebuilt current index"),
@@ -431,7 +559,7 @@ fn truncated_and_unknown_finished_indexes_are_rebuilt_in_place() {
 }
 
 #[test]
-fn direct_boundaries_are_wired_to_exact_production_fields() {
+fn direct_boundaries_and_log_events_use_exact_production_fields() {
     let directory = tempfile::tempdir().expect("tempdir");
     let data_root = DataRoot::open(directory.path()).expect("data root");
     let writer = data_root
@@ -448,7 +576,6 @@ fn direct_boundaries_are_wired_to_exact_production_fields() {
         ("os_cpu", 1_102_001, 5, 1),
         ("os_loadavg", 1_105_001, 1, 0),
         ("os_mountinfo", 1_112_001, 8, 0),
-        ("pg_log_slow_queries", 2_004_001, 6, 0),
     ] {
         let selected = resource(directory.path(), &reader, &segment, logical_name)
             .expect("direct finding resource");
@@ -464,6 +591,51 @@ fn direct_boundaries_are_wired_to_exact_production_fields() {
         assert_eq!(block.findings[0].row_ordinal, row_ordinal);
         assert_eq!(block.findings[0].timestamp, SEGMENT_ID + 1_000_000);
     }
+
+    for (logical_name, type_id) in [
+        ("pg_log_errors", 2_001_001),
+        ("pg_log_checkpoints", 2_002_001),
+        ("pg_log_autovacuum", 2_003_001),
+        ("pg_log_slow_queries", 2_004_001),
+        ("pg_log_lock_waits", 2_005_001),
+        ("pg_log_lifecycle", 2_006_001),
+        ("pg_log_temp_files", 2_007_001),
+    ] {
+        let selected = resource(directory.path(), &reader, &segment, logical_name)
+            .expect("log event resource");
+        let [SeriesBlock::Findings(block)] = selected.index.blocks.as_slice() else {
+            panic!("one event locator block for {logical_name}");
+        };
+        assert_eq!(block.type_id, type_id);
+        let expected_hits = if type_id == 2_004_001 { 2 } else { 1 };
+        assert_eq!(block.total_hits, expected_hits);
+        assert!(!block.truncated);
+        assert_eq!(block.findings.len(), expected_hits as usize);
+        assert_eq!(block.findings[0].kind, FindingKind::Event);
+        assert_eq!(block.findings[0].field_ordinal, 0);
+        assert_eq!(block.findings[0].row_ordinal, 0);
+        assert_eq!(block.findings[0].timestamp, SEGMENT_ID + 1_000_000);
+        if type_id == 2_004_001 {
+            assert_eq!(block.findings[1].kind, FindingKind::KnownBad);
+            assert_eq!(block.findings[1].field_ordinal, 6);
+            assert_eq!(block.findings[1].row_ordinal, 0);
+            assert_eq!(block.findings[1].timestamp, SEGMENT_ID + 1_000_000);
+        }
+    }
+
+    let path = path_of(
+        reader
+            .open_segment(&segment)
+            .expect("finished segment")
+            .path(),
+    )
+    .expect("index path");
+    let bytes = std::fs::read(path).expect("published index");
+    let copied = b"EVENT-SOURCE-MESSAGE-QUERY-STATEMENT-MUST-STAY-IN-ZMS";
+    assert!(
+        !bytes.windows(copied.len()).any(|window| window == copied),
+        "event locators contain no source row text"
+    );
 }
 
 #[test]

@@ -63,14 +63,14 @@ fn statement_and_plan_layouts_have_no_summary_layout() {
 }
 
 #[test]
-fn finding_stream_contains_only_sparse_locator_facts() {
+fn event_stream_contains_only_sparse_locator_facts() {
     let block = FindingBlock {
-        type_id: 1_002_006,
+        type_id: 2_006_001,
         total_hits: 1,
         truncated: false,
         findings: vec![Finding {
-            kind: FindingKind::Spike,
-            field_ordinal: 11,
+            kind: FindingKind::Event,
+            field_ordinal: 0,
             row_ordinal: 42,
             timestamp: 1_700_000_000_000_000,
         }],
@@ -91,7 +91,7 @@ fn finding_stream_contains_only_sparse_locator_facts() {
         rows[0],
         serde_json::json!({
             "record": "findings",
-            "type_id": "1002006",
+            "type_id": "2006001",
             "total_hits": 1,
             "truncated": false,
         })
@@ -100,11 +100,14 @@ fn finding_stream_contains_only_sparse_locator_facts() {
         rows[1],
         serde_json::json!({
             "record": "finding",
-            "kind": "spike",
-            "type_id": "1002006",
-            "field_ordinal": 11,
+            "kind": "event",
+            "type_id": "2006001",
+            "field_ordinal": 0,
             "row_ordinal": 42,
             "ts": "1700000000000000",
         })
     );
+    for copied in ["message", "query", "statement"] {
+        assert!(rows[1].get(copied).is_none());
+    }
 }

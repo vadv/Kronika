@@ -9,7 +9,7 @@ use kronika_reader::{Cell, Segment, SegmentRef};
 
 use crate::Index;
 use crate::build::BuildError;
-use crate::findings::{Finding, FindingBlock, MAX_FINDINGS_PER_BLOCK, PriorValue};
+use crate::findings::{Finding, FindingBlock, FindingKind, MAX_FINDINGS_PER_BLOCK, PriorValue};
 use crate::series::{SeriesBlock, SeriesKey, SeriesKind};
 
 use self::direct::CpuRaw;
@@ -21,6 +21,15 @@ const OS_LOADAVG: u32 = 1_105_001;
 const OS_VMSTAT: u32 = 1_106_001;
 const OS_MOUNTINFO: u32 = 1_112_001;
 const PG_LOG_SLOW_QUERIES: u32 = 2_004_001;
+const PG_LOG_EVENT_LAYOUTS: [u32; 7] = [
+    2_001_001,
+    2_002_001,
+    2_003_001,
+    PG_LOG_SLOW_QUERIES,
+    2_005_001,
+    2_006_001,
+    2_007_001,
+];
 const FIFTEEN_MINUTES_US: i64 = 15 * 60 * 1_000_000;
 
 const OVERALL_HEALTH_FIELD: u16 = 1;
@@ -32,6 +41,7 @@ const OOM_KILL_FIELD: u16 = 11;
 const MOUNT_FREE_BYTES_FIELD: u16 = 8;
 const SLOW_QUERY_DURATION_FIELD: u16 = 6;
 const DATABASE_DEADLOCKS_FIELD: u16 = 16;
+const EVENT_TIMESTAMP_FIELD: u16 = 0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct ProcessId {
@@ -143,6 +153,33 @@ impl FindingBuilder {
         Ok(())
     }
 
+    fn find_log_events(
+        &self,
+        segment: &Segment,
+        hits: &mut BTreeMap<u32, Vec<Finding>>,
+    ) -> Result<(), BuildError> {
+        for type_id in PG_LOG_EVENT_LAYOUTS {
+            if !self.requested.contains(&type_id) || segment.rows_of(type_id).is_none() {
+                continue;
+            }
+            let event_hits = hits.entry(type_id).or_default();
+            segment.visit_rows(type_id, &["ts"], 0, usize::MAX, |ordinal, row| {
+                if let (Some(Cell::Ts(timestamp)), Some(row_ordinal)) =
+                    (row.get("ts"), u32::try_from(ordinal).ok())
+                {
+                    event_hits.push(Finding {
+                        kind: FindingKind::Event,
+                        field_ordinal: EVENT_TIMESTAMP_FIELD,
+                        row_ordinal,
+                        timestamp: *timestamp,
+                    });
+                }
+                true
+            })?;
+        }
+        Ok(())
+    }
+
     /// Build every requested finding block, including empty supported blocks.
     pub(crate) fn finish(
         mut self,
@@ -154,6 +191,7 @@ impl FindingBuilder {
             hits.insert(*type_id, Vec::new());
         }
 
+        self.find_log_events(segment, &mut hits)?;
         self.find_cpu_and_online_count(segment, &mut hits)?;
         self.find_memory(segment, &mut hits)?;
         self.find_mounts(segment, &mut hits)?;
@@ -186,20 +224,20 @@ impl FindingBuilder {
     }
 }
 
-pub(crate) const fn finding_layout(type_id: u32) -> bool {
-    matches!(
-        type_id,
-        0 | OS_PROCESS
-            | OS_CPU
-            | OS_MEMINFO
-            | OS_LOADAVG
-            | OS_VMSTAT
-            | OS_MOUNTINFO
-            | PG_LOG_SLOW_QUERIES
-            | 1_001_001..=1_001_003
-            | 1_002_002..=1_002_006
-            | 1_005_001..=1_005_004
-    )
+pub(crate) fn finding_layout(type_id: u32) -> bool {
+    PG_LOG_EVENT_LAYOUTS.contains(&type_id)
+        || matches!(
+            type_id,
+            0 | OS_PROCESS
+                | OS_CPU
+                | OS_MEMINFO
+                | OS_LOADAVG
+                | OS_VMSTAT
+                | OS_MOUNTINFO
+                | 1_001_001..=1_001_003
+                | 1_002_002..=1_002_006
+                | 1_005_001..=1_005_004
+        )
 }
 
 const fn needs_prior_rows(type_id: u32) -> bool {

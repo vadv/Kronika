@@ -119,13 +119,13 @@ fn the_fixed_cap_keeps_timestamp_locator_order_and_reports_omissions() {
     let findings: Vec<_> = (0..=MAX_FINDINGS_PER_BLOCK)
         .rev()
         .map(|ordinal| Finding {
-            kind: FindingKind::KnownBad,
-            field_ordinal: 1,
+            kind: FindingKind::Event,
+            field_ordinal: 0,
             row_ordinal: u32::try_from(ordinal).expect("small test ordinal"),
             timestamp: i64::try_from(ordinal).expect("small test timestamp"),
         })
         .collect();
-    let block = block(1_104_001, findings);
+    let block = block(2_001_001, findings);
     assert_eq!(block.findings.len(), MAX_FINDINGS_PER_BLOCK);
     assert_eq!(block.total_hits, 4_097);
     assert!(block.truncated);

@@ -18,7 +18,7 @@ pub enum SeriesKind {
     PgTransactionsPerSecond = 4,
     /// `PostgreSQL` backends whose instantaneous state is `active`.
     PgActiveBackends = 5,
-    /// Sparse finding locators for one physical section.
+    /// Sparse source locators for one physical section.
     Findings = 6,
 }
 

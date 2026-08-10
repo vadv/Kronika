@@ -1,4 +1,4 @@
-//! Sparse finding locators and the small upward-spike calculation.
+//! Sparse source locators and the small upward-spike calculation.
 
 use crate::file::IndexError;
 
@@ -9,7 +9,7 @@ const FIFTEEN_MINUTES_US: i64 = 15 * 60 * 1_000_000;
 const HEADER_LEN: usize = 9;
 const FINDING_LEN: usize = 15;
 
-/// The two independent visual marks Kronika records.
+/// A compact source-row locator kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum FindingKind {
@@ -17,6 +17,8 @@ pub enum FindingKind {
     KnownBad = 1,
     /// The current transformed value exceeded its upper Tukey fence.
     Spike = 2,
+    /// A stored row in an explicit event-stream layout.
+    Event = 3,
 }
 
 impl FindingKind {
@@ -24,6 +26,7 @@ impl FindingKind {
         match raw {
             1 => Ok(Self::KnownBad),
             2 => Ok(Self::Spike),
+            3 => Ok(Self::Event),
             _ => Err(IndexError::BadLayout),
         }
     }
@@ -32,7 +35,7 @@ impl FindingKind {
 /// One locator into a physical ZMS section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Finding {
-    /// Independent visual mark.
+    /// Source locator kind.
     pub kind: FindingKind,
     /// Zero-based field position in the physical registry contract.
     pub field_ordinal: u16,
@@ -53,12 +56,12 @@ impl Finding {
     }
 }
 
-/// Sparse findings for one physical section.
+/// Sparse locators for one physical section.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FindingBlock {
     /// Physical source layout.
     pub type_id: u32,
-    /// Qualifying findings before the fixed storage cap was applied.
+    /// Locators before the fixed storage cap was applied.
     pub total_hits: u32,
     /// Whether qualifying locators were omitted by the fixed cap.
     pub truncated: bool,

@@ -71,23 +71,23 @@ fn a_sparse_series_extends_only_to_the_nearest_five_values() {
 }
 
 #[test]
-fn finding_block_roundtrips_in_locator_order() {
+fn event_and_known_bad_roundtrip_in_locator_order() {
     let block = FindingBlock {
-        type_id: 1_100_001,
+        type_id: 2_004_001,
         total_hits: 2,
         truncated: false,
         findings: vec![
             Finding {
-                kind: FindingKind::KnownBad,
-                field_ordinal: 3,
+                kind: FindingKind::Event,
+                field_ordinal: 0,
                 row_ordinal: 7,
                 timestamp: 10,
             },
             Finding {
-                kind: FindingKind::Spike,
-                field_ordinal: 34,
-                row_ordinal: 8,
-                timestamp: 20,
+                kind: FindingKind::KnownBad,
+                field_ordinal: 6,
+                row_ordinal: 7,
+                timestamp: 10,
             },
         ],
     };

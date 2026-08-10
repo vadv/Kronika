@@ -211,6 +211,7 @@ fn write_index(
                                 "mark": match finding.kind {
                                     kronika_index::FindingKind::KnownBad => "known_bad",
                                     kronika_index::FindingKind::Spike => "spike",
+                                    kronika_index::FindingKind::Event => "event",
                                 },
                                 "type_id": block.type_id.to_string(),
                                 "field_ordinal": finding.field_ordinal,

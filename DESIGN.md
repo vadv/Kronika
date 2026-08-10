@@ -253,12 +253,24 @@ never large source rows.
 
 ## Highlighting
 
-Kronika records discrete snapshots, not continuous history. It adds only two
-independent best-effort visual marks. `known_bad` means an exact stored value
-crossed one small explicit boundary. `spike` means the current value is a short
-upward spike relative to prior stored snapshots of the same concrete series. A
-point may have either mark, both, or neither. Value colour and marks remain
-separate.
+Kronika records discrete snapshots, not continuous history. For every stored
+row in these exact PostgreSQL event-stream layouts, IDX records one `event`
+locator before applying the existing per-section cap:
+
+- `2_001_001` `pg_log_errors`;
+- `2_002_001` `pg_log_checkpoints`;
+- `2_003_001` `pg_log_autovacuum`;
+- `2_004_001` `pg_log_slow_queries`;
+- `2_005_001` `pg_log_lock_waits`;
+- `2_006_001` `pg_log_lifecycle`; and
+- `2_007_001` `pg_log_temp_files`.
+
+This list is exhaustive; registry metadata does not expand it. Separately,
+Kronika adds only two independent best-effort visual marks. `known_bad` means
+an exact stored value crossed one small explicit boundary. `spike` means the
+current value is a short upward spike relative to prior stored snapshots of
+the same concrete series. A point may have either mark, both, or neither. Value
+colour and marks remain separate.
 
 The implementation uses explicit field matches and ordinary comparisons. It
 has no policy or expression framework, persistent baseline, cadence or
@@ -319,18 +331,23 @@ The initial spike series are exactly:
 `pg_store_plans` has no spike rule. A predecessor is only an input to the
 current calculation; Kronika stores no chain state.
 
-### IDX findings
+### IDX locators
 
-Web computes findings while building an index through the production reader.
-When prior values are needed, it reads preceding finished ZMS directly, never
-another IDX. Temporary state is discarded after the build. The collector does
-not compute findings, and there is no `active.idx`.
+Web records event locators and computes findings while building an index
+through the production reader. When prior values are needed, it reads
+preceding finished ZMS directly, never another IDX. Temporary state is
+discarded after the build. The collector does not compute findings, and there
+is no `active.idx`.
 
-Each finding block stores only sparse locators for one physical section. A
-record contains the mark kind, physical `type_id`, field ordinal, current
-snapshot timestamp, and row ordinal. Derived overall health uses its compact
-health-point ordinal. Blocks do not copy identities, rows, values, labels,
-query text, plan text, command lines, or histories.
+Each block stores only compact locators for one physical section. The
+containing IDX is bound to its exact finished source ZMS. A record contains the
+locator kind, physical `type_id`, field ordinal, current timestamp, and row
+ordinal; together these identify the source row. An `event` locator uses field
+ordinal 0, the row's `ts` field. A slow-query row at or above 5 seconds also
+keeps its independent `known_bad` locator for `max_duration_ms`. Derived
+overall health uses its compact health-point ordinal. Blocks do not copy
+severity, category, SQLSTATE, messages, statements, identities, values,
+labels, query or plan text, command lines, rows, or histories.
 
 One fixed per-block cap keeps the format bounded. Stored locators remain in
 deterministic timestamp and locator order; `total_hits` and `truncated` make an
@@ -342,10 +359,12 @@ old-format reader, migration, compatibility branch, or dual write.
 
 ### One timeline, no diagnosis
 
-Kronika places independent marks on one timeline. It does not group them into
-incidents or infer a main symptom, severity, cause, relationship, confidence,
-or diagnosis. Several unrelated problems may coexist, and the person examining
-the recorded data is the sole judge.
+Kronika places event locators and independent marks on one timeline. An
+`event` locator says only that the source row was recorded; it is not a visual
+mark, anomaly, alert, incident, severity, cause, diagnosis, or correlation.
+Kronika does not group marks into incidents or infer a main symptom, severity,
+cause, relationship, confidence, or diagnosis. Several unrelated problems may
+coexist, and the person examining the recorded data is the sole judge.
 
 ## Reading
 
