@@ -2,6 +2,7 @@
 //! segments. Raw and unlisted metrics stay only in ZMS/WAL.
 
 mod build;
+mod detect;
 mod file;
 mod findings;
 mod health;
@@ -10,7 +11,7 @@ mod store;
 
 pub use build::{
     BuildError, DERIVED_HEALTH_TYPE_ID, INSTANCE_METADATA_TYPE_ID, INSTANCE_METADATA_V1_TYPE_ID,
-    OS_PSI_TYPE_ID, build, build_selected, keys, visit_health_points,
+    OS_PSI_TYPE_ID, build, build_from_reader, build_selected, keys, visit_health_points,
 };
 pub use file::{ENTRY_LEN, HEADER_LEN, Index, IndexError, MAGIC, TargetedIndex};
 pub use findings::{

@@ -1,7 +1,8 @@
 use hyper::StatusCode;
+use kronika_index::{Finding, FindingBlock, FindingKind};
 use kronika_reader::SegmentKind;
 
-use super::{etag_matches, health_layout, resource_meta, section_layout};
+use super::{etag_matches, health_layout, resource_meta, section_layout, stream_findings};
 use crate::api::CachePolicy;
 
 #[test]
@@ -56,7 +57,54 @@ fn a_logical_section_retains_its_exact_physical_layout_provenance() {
 }
 
 #[test]
-fn statement_and_plan_layouts_have_no_index_representation() {
+fn statement_and_plan_layouts_have_no_summary_layout() {
     assert!(section_layout("pg_stat_statements", 1_002_006).is_err());
     assert!(section_layout("pg_store_plans", 1_004_001).is_err());
+}
+
+#[test]
+fn finding_stream_contains_only_sparse_locator_facts() {
+    let block = FindingBlock {
+        type_id: 1_002_006,
+        total_hits: 1,
+        truncated: false,
+        findings: vec![Finding {
+            kind: FindingKind::Spike,
+            field_ordinal: 11,
+            row_ordinal: 42,
+            timestamp: 1_700_000_000_000_000,
+        }],
+    };
+    let mut rows = Vec::new();
+    let streamed = stream_findings(
+        block,
+        &mut |line| {
+            rows.push(serde_json::from_slice::<serde_json::Value>(&line).expect("finding JSON"));
+            true
+        },
+        &|| false,
+    )
+    .expect("stream findings");
+    assert!(streamed);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows[0],
+        serde_json::json!({
+            "record": "findings",
+            "type_id": "1002006",
+            "total_hits": 1,
+            "truncated": false,
+        })
+    );
+    assert_eq!(
+        rows[1],
+        serde_json::json!({
+            "record": "finding",
+            "kind": "spike",
+            "type_id": "1002006",
+            "field_ordinal": 11,
+            "row_ordinal": 42,
+            "ts": "1700000000000000",
+        })
+    );
 }

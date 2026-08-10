@@ -32,10 +32,9 @@ fn sample() -> Index {
                 truncated: false,
                 findings: vec![Finding {
                     kind: FindingKind::Spike,
-                    field_ordinal: 34,
+                    field_ordinal: 33,
                     row_ordinal: 7,
-                    start_ts: 30,
-                    end_ts: 42,
+                    timestamp: 42,
                 }],
             }),
         ],
@@ -46,7 +45,27 @@ fn sample() -> Index {
 fn current_format_roundtrips() {
     let index = sample();
     let bytes = index.encode().expect("encode");
-    assert_eq!(Index::decode(&bytes).expect("decode"), index);
+    let decoded = Index::decode(&bytes).expect("decode");
+    assert_eq!(decoded, index);
+    assert_eq!(decoded.encode().expect("re-encode"), bytes);
+}
+
+#[test]
+fn current_format_rejects_truncation_corruption_and_unknown_magic() {
+    let bytes = sample().encode().expect("encode");
+    assert!(matches!(
+        Index::decode(&bytes[..bytes.len() - 1]),
+        Err(IndexError::Truncated | IndexError::BadLayout)
+    ));
+
+    let mut corrupt = bytes.clone();
+    let last = corrupt.len() - 1;
+    corrupt[last] ^= 1;
+    assert_eq!(Index::decode(&corrupt), Err(IndexError::BadChecksum));
+
+    let mut unknown = bytes;
+    unknown[0] ^= 1;
+    assert_eq!(Index::decode(&unknown), Err(IndexError::BadMagic));
 }
 
 #[test]

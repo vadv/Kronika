@@ -3,7 +3,7 @@
 use std::io::Write;
 
 use kronika_index::SeriesBlock;
-use kronika_reader::{Cell, Dictionary, Resolved, Segment, StoreWarning};
+use kronika_reader::{Cell, Dictionary, Reader, Resolved, Segment, SegmentRef, StoreWarning};
 use kronika_registry::{DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, section_name};
 use serde_json::{Map, Value, json};
 
@@ -119,12 +119,33 @@ pub(crate) fn sizes(
 ///
 /// Returns a build, reader, or index-encoding error when the segment cannot be
 /// summarized exactly.
+#[cfg(test)]
 pub(crate) fn index(
     output: &mut impl Write,
     json_output: bool,
     segment: &Segment,
 ) -> Result<(), DumpError> {
     let built = kronika_index::build(segment)?;
+    write_index(output, json_output, segment, &built)
+}
+
+pub(crate) fn index_from_reader(
+    output: &mut impl Write,
+    json_output: bool,
+    reader: &Reader,
+    segment_ref: &SegmentRef,
+    segment: &Segment,
+) -> Result<(), DumpError> {
+    let built = kronika_index::build_from_reader(reader, segment_ref, segment)?;
+    write_index(output, json_output, segment, &built)
+}
+
+fn write_index(
+    output: &mut impl Write,
+    json_output: bool,
+    segment: &Segment,
+    built: &kronika_index::Index,
+) -> Result<(), DumpError> {
     let path = segment.path().display().to_string();
     if json_output {
         for block in &built.blocks {
@@ -166,6 +187,35 @@ pub(crate) fn index(
                                 "ts": point.timestamp.to_string(),
                                 "identity": {},
                                 "value": point.count,
+                            }),
+                        )?;
+                    }
+                }
+                SeriesBlock::Findings(block) => {
+                    say(
+                        output,
+                        &json!({
+                            "kind": "findings",
+                            "path": path,
+                            "type_id": block.type_id.to_string(),
+                            "total_hits": block.total_hits,
+                            "truncated": block.truncated,
+                        }),
+                    )?;
+                    for finding in &block.findings {
+                        say(
+                            output,
+                            &json!({
+                                "kind": "finding",
+                                "path": path,
+                                "mark": match finding.kind {
+                                    kronika_index::FindingKind::KnownBad => "known_bad",
+                                    kronika_index::FindingKind::Spike => "spike",
+                                },
+                                "type_id": block.type_id.to_string(),
+                                "field_ordinal": finding.field_ordinal,
+                                "row_ordinal": finding.row_ordinal,
+                                "ts": finding.timestamp.to_string(),
                             }),
                         )?;
                     }
@@ -222,6 +272,7 @@ const fn index_block_name(block: &SeriesBlock) -> &'static str {
         SeriesBlock::PostgresHealth(_) => "postgres_health",
         SeriesBlock::PgTransactions { .. } => "transactions_per_second",
         SeriesBlock::PgActiveBackends { .. } => "active_backends",
+        SeriesBlock::Findings(_) => "findings",
     }
 }
 
@@ -232,6 +283,7 @@ const fn index_block_len(block: &SeriesBlock) -> usize {
         | SeriesBlock::PostgresHealth(points) => points.len(),
         SeriesBlock::PgTransactions { points, .. } => points.len(),
         SeriesBlock::PgActiveBackends { points, .. } => points.len(),
+        SeriesBlock::Findings(block) => block.findings.len(),
     }
 }
 

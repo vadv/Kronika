@@ -2,9 +2,10 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use kronika_reader::{Cell, ReaderError, Resolved, Segment};
+use kronika_reader::{Cell, Reader, ReaderError, Resolved, Segment, SegmentKind, SegmentRef};
 use kronika_registry::instance_metadata::Environment;
 
+use crate::detect::{FindingBuilder, finding_layout};
 use crate::file::Index;
 use crate::health::{SourcePenalty, Stall, health, overall_health, postgres_penalty};
 use crate::series::{
@@ -76,6 +77,10 @@ pub fn keys(segment: &Segment) -> Vec<SeriesKey> {
         SeriesKey::OS_HEALTH,
         SeriesKey::OVERALL_HEALTH,
         SeriesKey::POSTGRES_HEALTH,
+        SeriesKey {
+            kind: SeriesKind::Findings,
+            type_id: DERIVED_HEALTH_TYPE_ID,
+        },
     ];
     for type_id in segment.type_ids() {
         if pg_database_layout(type_id) {
@@ -86,6 +91,12 @@ pub fn keys(segment: &Segment) -> Vec<SeriesKey> {
         } else if pg_activity_layout(type_id) {
             keys.push(SeriesKey {
                 kind: SeriesKind::PgActiveBackends,
+                type_id,
+            });
+        }
+        if finding_layout(type_id) {
+            keys.push(SeriesKey {
+                kind: SeriesKind::Findings,
                 type_id,
             });
         }
@@ -110,6 +121,53 @@ pub fn build(segment: &Segment) -> Result<Index, BuildError> {
 ///
 /// Returns a production-reader or dictionary-resolution failure.
 pub fn build_selected(segment: &Segment, requested: &[SeriesKey]) -> Result<Index, BuildError> {
+    let finder = FindingBuilder::new(segment, requested)?;
+    let mut index = build_selected_series(segment, requested)?;
+    index.blocks.extend(finder.finish(segment, &index)?);
+    index.blocks.sort_by_key(SeriesBlock::key);
+    Ok(index)
+}
+
+/// Build the complete index while reading earlier finished ZMS through the
+/// same production reader when a comparison needs prior values.
+///
+/// # Errors
+///
+/// Returns a production-reader, dictionary-resolution, or build failure.
+pub fn build_from_reader(
+    reader: &Reader,
+    segment_ref: &SegmentRef,
+    segment: &Segment,
+) -> Result<Index, BuildError> {
+    let requested = keys(segment);
+    build_selected_from_reader(reader, segment_ref, segment, &requested)
+}
+
+pub(crate) fn build_selected_from_reader(
+    reader: &Reader,
+    segment_ref: &SegmentRef,
+    segment: &Segment,
+    requested: &[SeriesKey],
+) -> Result<Index, BuildError> {
+    let mut finder = FindingBuilder::new(segment, requested)?;
+    let listing = reader.catalog_segments(..segment_ref.min_ts())?;
+    for prior_ref in listing
+        .segments
+        .into_iter()
+        .filter(|prior| prior.kind() == SegmentKind::Finished)
+    {
+        if finder.needs(&prior_ref) {
+            let prior = reader.open_segment(&prior_ref)?;
+            finder.observe_prior(&prior)?;
+        }
+    }
+    let mut index = build_selected_series(segment, requested)?;
+    index.blocks.extend(finder.finish(segment, &index)?);
+    index.blocks.sort_by_key(SeriesBlock::key);
+    Ok(index)
+}
+
+fn build_selected_series(segment: &Segment, requested: &[SeriesKey]) -> Result<Index, BuildError> {
     let mut requested = requested.to_vec();
     requested.sort_unstable();
     requested.dedup();
@@ -381,7 +439,7 @@ fn transaction_rate(before_ts: i64, before: i128, timestamp: i64, total: i128) -
     (rate.is_finite() && rate >= 0.0).then_some(rate)
 }
 
-fn integer_as_f64(value: i128) -> Option<f64> {
+pub(crate) fn integer_as_f64(value: i128) -> Option<f64> {
     let mut value = u128::try_from(value).ok()?;
     let mut words = [0_u32; 4];
     for word in words.iter_mut().rev() {

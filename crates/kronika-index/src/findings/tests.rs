@@ -49,8 +49,8 @@ fn one_old_outlier_is_excluded_when_five_recent_values_exist() {
 #[test]
 fn selection_uses_every_value_in_the_preceding_fifteen_minutes() {
     let current = 30 * MINUTE;
-    let prior: Vec<_> = (0..8)
-        .map(|index| point(current - (8 - index) * MINUTE, index as f64))
+    let prior: Vec<_> = (0_i32..8)
+        .map(|index| point(current - i64::from(8 - index) * MINUTE, f64::from(index)))
         .collect();
     assert_eq!(select_baseline(&prior, current), Some(prior.as_slice()));
 }
@@ -59,7 +59,7 @@ fn selection_uses_every_value_in_the_preceding_fifteen_minutes() {
 fn a_sparse_series_extends_only_to_the_nearest_five_values() {
     let current = 40 * MINUTE;
     let prior = [
-        point(1 * MINUTE, 1.0),
+        point(MINUTE, 1.0),
         point(5 * MINUTE, 2.0),
         point(10 * MINUTE, 3.0),
         point(20 * MINUTE, 4.0),
@@ -81,15 +81,13 @@ fn finding_block_roundtrips_in_locator_order() {
                 kind: FindingKind::KnownBad,
                 field_ordinal: 3,
                 row_ordinal: 7,
-                start_ts: 10,
-                end_ts: 10,
+                timestamp: 10,
             },
             Finding {
                 kind: FindingKind::Spike,
                 field_ordinal: 34,
                 row_ordinal: 8,
-                start_ts: 10,
-                end_ts: 20,
+                timestamp: 20,
             },
         ],
     };
@@ -108,15 +106,13 @@ fn finding_block_rejects_out_of_order_and_truncated_payloads() {
                 kind: FindingKind::Spike,
                 field_ordinal: 34,
                 row_ordinal: 8,
-                start_ts: 10,
-                end_ts: 20,
+                timestamp: 20,
             },
             Finding {
                 kind: FindingKind::KnownBad,
                 field_ordinal: 3,
                 row_ordinal: 7,
-                start_ts: 10,
-                end_ts: 10,
+                timestamp: 10,
             },
         ],
     };

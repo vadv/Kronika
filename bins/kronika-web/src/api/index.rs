@@ -4,8 +4,9 @@ use std::path::Path;
 
 use hyper::StatusCode;
 use kronika_index::{
-    DERIVED_HEALTH_TYPE_ID, INSTANCE_METADATA_TYPE_ID, INSTANCE_METADATA_V1_TYPE_ID,
-    OS_PSI_TYPE_ID, ResourceIndex, SeriesBlock, resource, series_keys,
+    DERIVED_HEALTH_TYPE_ID, FindingBlock, FindingKind, INSTANCE_METADATA_TYPE_ID,
+    INSTANCE_METADATA_V1_TYPE_ID, OS_PSI_TYPE_ID, ResourceIndex, SeriesBlock, resource,
+    series_keys,
 };
 use kronika_reader::{SegmentKind, SegmentRef};
 use kronika_registry::{contract, section_implementation};
@@ -84,6 +85,12 @@ impl PreparedIndex {
             return Ok(());
         }
         for block in self.resource.index.blocks {
+            if let SeriesBlock::Findings(block) = block {
+                if !stream_findings(block, emit, cancelled)? {
+                    return Ok(());
+                }
+                continue;
+            }
             if cancelled()
                 || !emit(record(json!({
                     "record": "layout",
@@ -150,10 +157,43 @@ impl PreparedIndex {
                         }
                     }
                 }
+                SeriesBlock::Findings(_) => return Err(ApiError::NoSuchSection),
             }
         }
         Ok(())
     }
+}
+
+fn stream_findings(
+    block: FindingBlock,
+    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    cancelled: &impl Fn() -> bool,
+) -> Result<bool, ApiError> {
+    if cancelled()
+        || !emit(record(json!({
+            "record": "findings",
+            "type_id": block.type_id.to_string(),
+            "total_hits": block.total_hits,
+            "truncated": block.truncated,
+        }))?)
+    {
+        return Ok(false);
+    }
+    for finding in block.findings {
+        if cancelled()
+            || !emit(record(json!({
+                "record": "finding",
+                "kind": finding_kind(finding.kind),
+                "type_id": block.type_id.to_string(),
+                "field_ordinal": finding.field_ordinal,
+                "row_ordinal": finding.row_ordinal,
+                "ts": finding.timestamp.to_string(),
+            }))?)
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 const fn block_len(block: &SeriesBlock) -> usize {
@@ -163,6 +203,7 @@ const fn block_len(block: &SeriesBlock) -> usize {
         | SeriesBlock::PostgresHealth(points) => points.len(),
         SeriesBlock::PgTransactions { points, .. } => points.len(),
         SeriesBlock::PgActiveBackends { points, .. } => points.len(),
+        SeriesBlock::Findings(block) => block.findings.len(),
     }
 }
 
@@ -211,6 +252,14 @@ fn block_layout(logical_name: &str, block: &SeriesBlock) -> Result<Value, ApiErr
         SeriesBlock::PostgresHealth(_) => Ok(health_layout("postgres_health")),
         SeriesBlock::PgTransactions { type_id, .. }
         | SeriesBlock::PgActiveBackends { type_id, .. } => section_layout(logical_name, *type_id),
+        SeriesBlock::Findings(_) => Err(ApiError::NoSuchSection),
+    }
+}
+
+const fn finding_kind(kind: FindingKind) -> &'static str {
+    match kind {
+        FindingKind::KnownBad => "known_bad",
+        FindingKind::Spike => "spike",
     }
 }
 

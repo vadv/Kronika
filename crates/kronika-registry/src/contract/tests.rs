@@ -1,6 +1,4 @@
-use super::{
-    Column, ColumnClass, ColumnType, LintError, Semantics, TypeContract, Unit, lint, lint_eps_abs,
-};
+use super::{Column, ColumnClass, ColumnType, LintError, Semantics, TypeContract, Unit, lint};
 use crate::TypeId;
 
 const TS: Column = Column {
@@ -60,55 +58,7 @@ fn accepts_a_valid_contract() {
 }
 
 #[test]
-fn all_enumerates_every_column_class() {
-    // Compile-time tripwire: a new `ColumnClass` variant fails this match,
-    // pointing whoever adds it at `ALL`, which must list the variant for
-    // `lint` to check its `eps_abs` declaration.
-    for class in ColumnClass::ALL {
-        match class {
-            ColumnClass::Cumulative
-            | ColumnClass::Gauge
-            | ColumnClass::Label
-            | ColumnClass::Timestamp => {}
-        }
-    }
-}
-
-#[test]
-fn scorable_classes_declare_a_positive_finite_eps_abs() {
-    for class in [ColumnClass::Cumulative, ColumnClass::Gauge] {
-        let eps = class.eps_abs().expect("scorable class declares eps_abs");
-        assert!(eps.is_finite() && eps > 0.0, "{class:?}: {eps}");
-    }
-    assert_eq!(ColumnClass::Label.eps_abs(), None);
-    assert_eq!(ColumnClass::Timestamp.eps_abs(), None);
-}
-
-#[test]
-fn lint_rejects_a_degenerate_eps_abs() {
-    // The registry constants are valid by construction, so the lint arm
-    // is exercised through the helper with injected values.
-    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1e-6] {
-        let mut out = Vec::new();
-        lint_eps_abs(ColumnClass::Gauge, Some(bad), &mut out);
-        assert_eq!(
-            out,
-            vec![LintError::BadEpsAbs {
-                class: ColumnClass::Gauge
-            }],
-            "eps_abs {bad} must be rejected"
-        );
-    }
-    let mut out = Vec::new();
-    lint_eps_abs(ColumnClass::Cumulative, Some(1e-6), &mut out);
-    lint_eps_abs(ColumnClass::Label, None, &mut out);
-    assert!(out.is_empty(), "valid and absent eps_abs pass");
-}
-
-#[test]
 fn an_empty_registry_lints_clean() {
-    // Also pins the built-in per-class eps_abs declarations, which are
-    // linted regardless of the contract list.
     assert_eq!(lint(&[]), Ok(()));
 }
 

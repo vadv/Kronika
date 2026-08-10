@@ -7,7 +7,7 @@ pub const MAX_FINDINGS_PER_BLOCK: usize = 4_096;
 
 const FIFTEEN_MINUTES_US: i64 = 15 * 60 * 1_000_000;
 const HEADER_LEN: usize = 9;
-const FINDING_LEN: usize = 23;
+const FINDING_LEN: usize = 15;
 
 /// The two independent visual marks Kronika records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -38,17 +38,14 @@ pub struct Finding {
     pub field_ordinal: u16,
     /// Physical row position returned by the production reader.
     pub row_ordinal: u32,
-    /// Start of the represented observation interval, in unix microseconds.
-    pub start_ts: i64,
-    /// End of the represented observation interval, in unix microseconds.
-    pub end_ts: i64,
+    /// Current snapshot timestamp in unix microseconds.
+    pub timestamp: i64,
 }
 
 impl Finding {
-    const fn order_key(self) -> (i64, i64, u32, u16, FindingKind) {
+    const fn order_key(self) -> (i64, u32, u16, FindingKind) {
         (
-            self.end_ts,
-            self.start_ts,
+            self.timestamp,
             self.row_ordinal,
             self.field_ordinal,
             self.kind,
@@ -89,8 +86,7 @@ impl FindingBlock {
             out.push(finding.kind as u8);
             out.extend_from_slice(&finding.field_ordinal.to_le_bytes());
             out.extend_from_slice(&finding.row_ordinal.to_le_bytes());
-            out.extend_from_slice(&finding.start_ts.to_le_bytes());
-            out.extend_from_slice(&finding.end_ts.to_le_bytes());
+            out.extend_from_slice(&finding.timestamp.to_le_bytes());
         }
         Ok(out)
     }
@@ -115,8 +111,7 @@ impl FindingBlock {
                 kind: FindingKind::from_raw(raw[0])?,
                 field_ordinal: u16_at(raw, 1)?,
                 row_ordinal: u32_at(raw, 3)?,
-                start_ts: i64_at(raw, 7)?,
-                end_ts: i64_at(raw, 15)?,
+                timestamp: i64_at(raw, 7)?,
             });
         }
         let block = Self {
@@ -131,7 +126,7 @@ impl FindingBlock {
 }
 
 fn validate(block: &FindingBlock) -> Result<(), IndexError> {
-    if block.type_id == 0 || block.findings.len() > MAX_FINDINGS_PER_BLOCK {
+    if block.findings.len() > MAX_FINDINGS_PER_BLOCK {
         return Err(IndexError::BadLayout);
     }
     let stored = u32::try_from(block.findings.len()).map_err(|_overflow| IndexError::TooLarge)?;
@@ -140,9 +135,7 @@ fn validate(block: &FindingBlock) -> Result<(), IndexError> {
     }
     let mut previous = None;
     for finding in &block.findings {
-        if finding.start_ts > finding.end_ts
-            || previous.is_some_and(|before| before >= finding.order_key())
-        {
+        if previous.is_some_and(|before| before >= finding.order_key()) {
             return Err(IndexError::BadLayout);
         }
         previous = Some(finding.order_key());
@@ -210,7 +203,8 @@ fn quartile(sorted: &[f64], numerator: usize) -> Option<f64> {
     let remainder = scaled % 4;
     let low = *sorted.get(lower)?;
     let high = *sorted.get(lower.checked_add(usize::from(remainder != 0))?)?;
-    Some((high - low).mul_add(remainder as f64 / 4.0, low))
+    let fraction = [0.0, 0.25, 0.5, 0.75][remainder];
+    Some((high - low).mul_add(fraction, low))
 }
 
 fn u16_at(bytes: &[u8], at: usize) -> Result<u16, IndexError> {

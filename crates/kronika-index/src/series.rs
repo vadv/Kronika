@@ -1,5 +1,6 @@
 //! The small presentation series allowed in an IDX.
 
+use crate::detect::finding_layout;
 use crate::file::IndexError;
 use crate::findings::FindingBlock;
 
@@ -173,7 +174,7 @@ impl SeriesBlock {
                     points: decode_active(bytes)?,
                 })
             }
-            SeriesKind::Findings if key.type_id != 0 => {
+            SeriesKind::Findings if key.type_id == 0 || finding_layout(key.type_id) => {
                 FindingBlock::decode(key.type_id, bytes).map(Self::Findings)
             }
             _ => Err(IndexError::BadLayout),

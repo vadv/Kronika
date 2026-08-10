@@ -42,17 +42,24 @@ fn index_dump_uses_only_allowlisted_point_records() {
     let (_directory, segment) = dictionary_segment();
     let mut output = Vec::new();
     index(&mut output, true, &segment).expect("dump index");
-    assert!(
-        output.is_empty(),
-        "a segment without PSI has no index points"
-    );
+    let rows: Vec<serde_json::Value> = output
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).expect("index JSON line"))
+        .collect();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["kind"], "findings");
+    assert_eq!(rows[0]["type_id"], "0");
+    assert_eq!(rows[0]["total_hits"], 0);
+    assert_eq!(rows[0]["truncated"], false);
 
     let mut output = Vec::new();
     index(&mut output, false, &segment).expect("dump index table");
     let output = String::from_utf8(output).expect("UTF-8 index table");
-    assert!(output.contains("blocks=2  points=0"));
+    assert!(output.contains("blocks=3  points=0"));
     assert!(output.contains("os_health"));
     assert!(output.contains("overall_health"));
+    assert!(output.contains("findings"));
 }
 
 #[test]
