@@ -3,11 +3,13 @@
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
-use crate::build::{BuildError, build, build_selected};
+use crate::build::{BuildError, build_from_reader, build_selected_from_reader};
+use crate::detect::finding_layout;
 use crate::file::{Index, IndexError, TargetedIndex, read_all, read_target};
 use crate::series::{SeriesKey, SeriesKind, pg_activity_layout, pg_database_layout};
 use kronika_layout::{DataRoot, LayoutError, LayoutLimits, OwnerKind, SegmentAddress, SegmentId};
 use kronika_reader::{Reader, ReaderError, SegmentKind, SegmentRef};
+use kronika_registry::logical_section_name;
 
 /// Extension of an index file.
 pub const EXTENSION: &str = "idx";
@@ -123,7 +125,7 @@ pub fn resource(
     match segment_ref.kind() {
         SegmentKind::Active => {
             let segment = reader.open_segment(segment_ref)?;
-            let index = build_selected(&segment, &keys)?;
+            let index = build_selected_from_reader(reader, segment_ref, &segment, &keys)?;
             Ok(ResourceIndex {
                 index: targeted(index, &keys, None),
                 persisted: false,
@@ -149,7 +151,7 @@ pub fn resource(
                     // identity after the complete build.
                     let mut temporary = owner.create_idx_temp(address)?;
                     let segment = reader.open_segment(segment_ref)?;
-                    let index = build(&segment)?;
+                    let index = build_from_reader(reader, segment_ref, &segment)?;
                     let bytes = index.encode().map_err(LoadError::Bad)?;
                     let checksum = encoded_checksum(&bytes)?;
                     temporary.file_mut().write_all(&bytes)?;
@@ -169,7 +171,7 @@ pub fn resource(
                     // full-file checksum is the same stable representation
                     // tag the winning publisher computes.
                     let segment = reader.open_segment(segment_ref)?;
-                    let index = build(&segment)?;
+                    let index = build_from_reader(reader, segment_ref, &segment)?;
                     let bytes = index.encode().map_err(LoadError::Bad)?;
                     let checksum = encoded_checksum(&bytes)?;
                     Ok(ResourceIndex {
@@ -191,23 +193,37 @@ pub fn series_keys(segment: &SegmentRef, logical_name: &str) -> Vec<SeriesKey> {
             SeriesKey::OS_HEALTH,
             SeriesKey::OVERALL_HEALTH,
             SeriesKey::POSTGRES_HEALTH,
+            SeriesKey {
+                kind: SeriesKind::Findings,
+                type_id: 0,
+            },
         ];
     }
-    segment
-        .sections()
-        .iter()
-        .filter_map(|section| match logical_name {
-            "pg_stat_database" if pg_database_layout(section.type_id) => Some(SeriesKey {
+    let mut keys = Vec::new();
+    for section in segment.sections() {
+        match logical_name {
+            "pg_stat_database" if pg_database_layout(section.type_id) => keys.push(SeriesKey {
                 kind: SeriesKind::PgTransactionsPerSecond,
                 type_id: section.type_id,
             }),
-            "pg_stat_activity" if pg_activity_layout(section.type_id) => Some(SeriesKey {
+            "pg_stat_activity" if pg_activity_layout(section.type_id) => keys.push(SeriesKey {
                 kind: SeriesKind::PgActiveBackends,
                 type_id: section.type_id,
             }),
-            _ => None,
-        })
-        .collect()
+            _ => {}
+        }
+        if finding_layout(section.type_id)
+            && logical_section_name(section.type_id).is_some_and(|name| name == logical_name)
+        {
+            keys.push(SeriesKey {
+                kind: SeriesKind::Findings,
+                type_id: section.type_id,
+            });
+        }
+    }
+    keys.sort_unstable();
+    keys.dedup();
+    keys
 }
 
 fn contains_targets(index: &TargetedIndex, keys: &[SeriesKey]) -> bool {

@@ -104,7 +104,9 @@ fn run(args: &args::Args, output: &mut impl io::Write) -> Result<(), DumpError> 
         let segment = reader.open_segment(reference)?;
         match args.want {
             Want::Sizes => render::sizes(output, args.json, &segment)?,
-            Want::Index => render::index(output, args.json, &segment)?,
+            Want::Index => {
+                render::index_from_reader(output, args.json, &reader, reference, &segment)?;
+            }
             Want::Section(type_id) => {
                 render::section(output, args.json, &segment, type_id, args.limit)?;
             }

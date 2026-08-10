@@ -1,6 +1,8 @@
 //! The small presentation series allowed in an IDX.
 
+use crate::detect::finding_layout;
 use crate::file::IndexError;
+use crate::findings::FindingBlock;
 
 /// Stable kind stored in the IDX table of contents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -16,6 +18,8 @@ pub enum SeriesKind {
     PgTransactionsPerSecond = 4,
     /// `PostgreSQL` backends whose instantaneous state is `active`.
     PgActiveBackends = 5,
+    /// Sparse source locators for one physical section.
+    Findings = 6,
 }
 
 impl SeriesKind {
@@ -26,6 +30,7 @@ impl SeriesKind {
             3 => Ok(Self::PostgresHealth),
             4 => Ok(Self::PgTransactionsPerSecond),
             5 => Ok(Self::PgActiveBackends),
+            6 => Ok(Self::Findings),
             _ => Err(IndexError::BadLayout),
         }
     }
@@ -110,6 +115,8 @@ pub enum SeriesBlock {
         /// Points ordered by timestamp.
         points: Vec<ActiveBackendPoint>,
     },
+    /// Sparse locators into one physical section.
+    Findings(FindingBlock),
 }
 
 impl SeriesBlock {
@@ -128,6 +135,10 @@ impl SeriesBlock {
                 kind: SeriesKind::PgActiveBackends,
                 type_id: *type_id,
             },
+            Self::Findings(block) => SeriesKey {
+                kind: SeriesKind::Findings,
+                type_id: block.type_id,
+            },
         }
     }
 
@@ -138,6 +149,7 @@ impl SeriesBlock {
             }
             Self::PgTransactions { points, .. } => encode_transactions(points),
             Self::PgActiveBackends { points, .. } => encode_active(points),
+            Self::Findings(block) => block.encode(),
         }
     }
 
@@ -161,6 +173,9 @@ impl SeriesBlock {
                     type_id: key.type_id,
                     points: decode_active(bytes)?,
                 })
+            }
+            SeriesKind::Findings if key.type_id == 0 || finding_layout(key.type_id) => {
+                FindingBlock::decode(key.type_id, bytes).map(Self::Findings)
             }
             _ => Err(IndexError::BadLayout),
         }

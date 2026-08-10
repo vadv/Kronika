@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use kronika_format::DictLimits;
-use kronika_index::{BuildError, IndexError};
+use kronika_index::{
+    BuildError, Finding, FindingBlock, FindingKind, Index, IndexError, SeriesBlock,
+};
 use kronika_layout::{DataRoot, LayoutLimits, SegmentId};
 use kronika_reader::{BlobEntry, Resolved};
 use kronika_registry::instance_metadata::{Environment, InstanceMetadataV1};
@@ -11,7 +13,7 @@ use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict};
 
 use crate::DumpError;
 
-use super::{dictionary_json, index, percent, section, sizes, write_json_row};
+use super::{dictionary_json, index, percent, section, sizes, write_index, write_json_row};
 
 #[test]
 fn a_share_of_nothing_is_zero_rather_than_a_division_by_zero() {
@@ -42,17 +44,104 @@ fn index_dump_uses_only_allowlisted_point_records() {
     let (_directory, segment) = dictionary_segment();
     let mut output = Vec::new();
     index(&mut output, true, &segment).expect("dump index");
-    assert!(
-        output.is_empty(),
-        "a segment without PSI has no index points"
-    );
+    let rows: Vec<serde_json::Value> = output
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).expect("index JSON line"))
+        .collect();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["kind"], "findings");
+    assert_eq!(rows[0]["type_id"], "0");
+    assert_eq!(rows[0]["total_hits"], 0);
+    assert_eq!(rows[0]["truncated"], false);
 
     let mut output = Vec::new();
     index(&mut output, false, &segment).expect("dump index table");
     let output = String::from_utf8(output).expect("UTF-8 index table");
-    assert!(output.contains("blocks=2  points=0"));
+    assert!(output.contains("blocks=3  points=0"));
     assert!(output.contains("os_health"));
     assert!(output.contains("overall_health"));
+    assert!(output.contains("findings"));
+}
+
+#[test]
+fn index_dump_emits_an_event_as_only_a_source_locator() {
+    let (_directory, segment) = dictionary_segment();
+    let built = Index {
+        blocks: vec![
+            SeriesBlock::Findings(FindingBlock {
+                type_id: 2_001_001,
+                total_hits: 1,
+                truncated: false,
+                findings: vec![Finding {
+                    kind: FindingKind::Event,
+                    category: Some(5),
+                    field_ordinal: 0,
+                    row_ordinal: 7,
+                    timestamp: 1_700_000_000_000_000,
+                }],
+            }),
+            SeriesBlock::Findings(FindingBlock {
+                type_id: 2_006_001,
+                total_hits: 1,
+                truncated: false,
+                findings: vec![Finding {
+                    kind: FindingKind::Event,
+                    category: None,
+                    field_ordinal: 0,
+                    row_ordinal: 42,
+                    timestamp: 1_700_000_000_000_000,
+                }],
+            }),
+        ],
+    };
+    let mut output = Vec::new();
+    write_index(&mut output, true, &segment, &built).expect("dump event locator");
+    let rows: Vec<serde_json::Value> = output
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).expect("event JSON line"))
+        .collect();
+    assert_eq!(rows.len(), 4);
+    assert_eq!(
+        rows[1],
+        serde_json::json!({
+            "kind": "finding",
+            "path": segment.path().display().to_string(),
+            "mark": "event",
+            "type_id": "2001001",
+            "field_ordinal": 0,
+            "row_ordinal": 7,
+            "ts": "1700000000000000",
+            "category": 5,
+        })
+    );
+    assert_eq!(
+        rows[3],
+        serde_json::json!({
+            "kind": "finding",
+            "path": segment.path().display().to_string(),
+            "mark": "event",
+            "type_id": "2006001",
+            "field_ordinal": 0,
+            "row_ordinal": 42,
+            "ts": "1700000000000000",
+        })
+    );
+    for row in [&rows[1], &rows[3]] {
+        for copied in [
+            "severity",
+            "sqlstate",
+            "pattern",
+            "sample",
+            "message",
+            "query",
+            "statement",
+        ] {
+            assert!(row.get(copied).is_none());
+        }
+    }
+    assert!(rows[3].get("category").is_none());
 }
 
 #[test]

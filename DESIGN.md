@@ -253,131 +253,127 @@ never large source rows.
 
 ## Highlighting
 
-Kronika records two independent finding kinds. A `critical` finding crosses a
-curated boundary defined in advance. An `anomaly` finding is a short local
-change in one series. A point may have either kind, both, or neither. Value
-colour and finding markers remain separate.
+Kronika records discrete snapshots, not continuous history. For every stored
+row in these exact PostgreSQL event-stream layouts, IDX records one `event`
+locator before applying the existing per-section cap:
 
-Only explicitly registered metric fields have finding policies. One registered
-field may produce many typed series; field count and series cardinality are
-different measurements. Incompatible physical layouts or identity namespaces
-never form one series.
+- `2_001_001` `pg_log_errors`;
+- `2_002_001` `pg_log_checkpoints`;
+- `2_003_001` `pg_log_autovacuum`;
+- `2_004_001` `pg_log_slow_queries`;
+- `2_005_001` `pg_log_lock_waits`;
+- `2_006_001` `pg_log_lifecycle`; and
+- `2_007_001` `pg_log_temp_files`.
+
+This list is exhaustive; registry metadata does not expand it. Separately,
+Kronika adds only two independent best-effort visual marks. `known_bad` means
+an exact stored value crossed one small explicit boundary. `spike` means the
+current value is a short upward spike relative to prior stored snapshots of
+the same concrete series. A point may have either mark, both, or neither. Value
+colour and marks remain separate.
+
+The implementation uses explicit field matches and ordinary comparisons. It
+has no policy or expression framework, persistent baseline, cadence or
+continuity check, future confirmation, alert, incident, confidence, score,
+cause, diagnosis, or correlation.
 
 Zero is data and participates in comparisons. `null` is not a value. Web does
 not interpolate it or carry a previous value across it.
 
-### Critical boundaries
+### Known-bad boundaries
 
-A critical policy is compiled presentation metadata for one registered field.
-It normalizes an observation, if needed, and applies one approved critical
-boundary. It is not ZMS schema, does not change `type_id`, and is not a generic
-expression or configuration language. The design defines no universal boundary
-or list of exact metric thresholds; the implementation must enumerate every
-field policy it ships.
+The initial exact comparisons are:
 
-### Local anomalies
+- a recorded slow-query occurrence lasts at least 5 seconds;
+- aggregate CPU busy is at least 80% between two stored snapshots;
+- host `load1` divided by the exact same-snapshot online CPU count is at least
+  2;
+- available host memory is at most 10% of the stored host memory total;
+- a local filesystem with exact stored capacity is at least 90% used;
+- overall health is below 50;
+- the host OOM-kill counter or a database deadlock counter increases;
+- active PostgreSQL backends exceed twice the configured positive effective
+  PostgreSQL CPU count.
 
-An anomaly compares the current value with exactly the five immediately
-preceding valid adjacent values of the same series. This is a local spike or
-change detector, not a long-term behavioural model.
+Optional or missing inputs produce no mark. Kronika does not substitute a
+cgroup quota for the host CPU denominator, approximate an absent capacity, or
+use a grouped duration sum as one event duration.
 
-The series key contains the physical-layout and identity compatibility
-namespace, typed identity, and field. For a gauge, the detector uses the value.
-For a counter, it uses the interval rate from two adjacent raw observations. A
-negative delta, including a reset, or non-positive elapsed time produces no
-rate. A `null` or invalid interval breaks the adjacent chain; the detector does
-not step over it. A time interval too large for the registered collection
-cadence also breaks adjacency.
+### Upward spikes
 
-For predecessors `p1` through `p5`:
+A spike compares the current transformed value with prior stored values of the
+same concrete series. Use every prior value in the preceding 15 minutes when
+that set contains at least five values. Otherwise continue backward only until
+the nearest five prior values have been selected. With fewer than five prior
+values, there is no spike. Values may cross segment boundaries; snapshot
+spacing creates no continuity or cadence rule.
+
+Sort the selected values. `Q1` and `Q3` are the 25th and 75th percentiles, using
+linear interpolation at sorted rank `(n-1)p`:
 
 ```
-centre       = median(p1, p2, p3, p4, p5)
-local_change = median(|p2-p1|, |p3-p2|, |p4-p3|, |p5-p4|)
+upper_fence = Q3 + 1.5 * (Q3 - Q1)
+spike       = current > upper_fence
 ```
 
-The compiled field policy compares the current value with `centre` and
-`local_change`. It supplies a direction when needed, absolute and relative
-materiality floors, and the finding cutoff. The resulting magnitude is a local
-comparison, not a probability or confidence claim. There is no universal
-statistical cutoff or distribution assumption.
+Thus `[98, 99, 100, 101, 102]` has `Q1=99`, `Q3=101`, and upper fence `104`.
+Zero is data. `null`, a missing predecessor, a non-positive elapsed time, or a
+negative counter delta produces no transformed value.
 
-The first value after five usable adjacent predecessors may produce a finding
-immediately. The detector does not wait for a later return to the old level. A
-sustained level change may therefore produce adjacent findings.
+The initial spike series are exactly:
 
-### Finished IDX findings
+- per-process disk-read bytes per second from adjacent stored `read_bytes`
+  values, keyed by `(pid,starttime)`; and
+- per-statement average execution duration from
+  `delta(total_exec_time)/delta(calls)` where one exact physical
+  `pg_stat_statements` layout stores both fields and its full identity.
 
-Web runs anomaly detection only while building a missing IDX for an immutable
-finished ZMS. The collector never runs it. Predecessors may come from preceding
-finished ZMS files; a segment boundary does not reset the five-value
-neighbourhood. A batch build may carry the five-value neighbourhood for each
-encountered series while processing ZMS files chronologically. An isolated
-build reads preceding ZMS through the production reader. Temporary state is
-discarded after the build, and an IDX is never derived from another IDX.
+`pg_store_plans` has no spike rule. A predecessor is only an input to the
+current calculation; Kronika stores no chain state.
 
-Each physical-section finding block stores only sparse findings whose current
-source row is in that segment. Existing compact health and presentation blocks
-remain separate. A finding record contains only:
+### IDX locators
 
-- `kind` (`critical` or `anomaly`), physical `type_id`, and field ordinal or an
-  equivalent stable field ID;
-- the recorded interval, row ordinal or another minimal source locator; and
-- the policy-defined magnitude needed to plot the finding.
+Web records event locators and computes findings while building an index
+through the production reader. When prior values are needed, it reads
+preceding finished ZMS directly, never another IDX. Temporary state is
+discarded after the build. The collector does not compute findings, and there
+is no `active.idx`.
 
-A point observation may use equal interval bounds. Finding blocks do not copy
-full rows, typed identities, display labels, query text, or plan text. A
-consumer that already has values or IDs joins them itself. This contract does
-not add a special server path for locating a ZMS row.
+Each block stores only compact locators for one physical section. The
+containing IDX is bound to its exact finished source ZMS. A record contains the
+locator kind, physical `type_id`, field ordinal, current timestamp, and row
+ordinal; together these identify the source row. An `event` locator uses field
+ordinal 0, the row's `ts` field. A slow-query row at or above 5 seconds also
+keeps its independent `known_bad` locator for `max_duration_ms`.
 
-Every finding block has a deterministic storage safety cap. If more findings
-qualify, the writer uses magnitude and stable locator tie-breaks to choose the
-stored records, and writes `total_hits` and `truncated`. This only bounds
-storage; it is not a ranking presented to a person.
+Only a `pg_log_errors` event locator also carries the row's stored one-byte
+category: `0` lock, `1` constraint/data-integrity, `2` serialization, `3`
+timeout, `4` resource, `5` data corruption, `6` system, `7` connection, `8`
+auth, `9` syntax, or `10` other. IDX reads this byte directly and does not
+classify SQLSTATE. The other six log layouts omit category because their
+physical `type_id` already identifies the event class. HTTP and dump expose
+the numeric category only on an error event locator.
 
-There is no `active.idx` and no fabricated active anomaly history. Statistical
-findings appear when the finished segment's IDX is built. Active values may
-still be compared directly with registered critical policies.
+Derived overall health uses its compact health-point ordinal. Blocks do not
+copy severity, SQLSTATE, messages, statements, identities, values, labels,
+query or plan text, command lines, rows, or histories.
 
-The IDX format is unreleased. A finding-rule or layout change replaces the
-format and magic outright. Web discards and rebuilds an old IDX; there is no
+One fixed per-block cap keeps the format bounded. Stored locators remain in
+deterministic timestamp and locator order; `total_hits` and `truncated` make an
+omission visible. This is not ranking.
+
+The IDX format is unreleased. `KRNIDX5` is its one current reader and writer and
+changes in place. Web discards and rebuilds any other IDX; there is no
 old-format reader, migration, compatibility branch, or dual write.
 
 ### One timeline, no diagnosis
 
-Kronika does not infer causes, correlations, a main symptom, root causes,
-confidence, or diagnoses. It places findings on one timeline. Several unrelated
-problems may coexist.
-
-Findings whose recorded intervals overlap, including a shared endpoint, or
-directly adjoin under the registered cadence may be displayed as one neutral
-group. The group contains only its time bounds, findings, and counts. Grouping
-is mechanical and makes no causal claim. The person examining the recorded data
-is the sole judge.
-
-A future MCP tool may expose clear recorded values and nearby context to a
-language model assisting a person. This document defines no MCP API and gives
-neither Kronika nor the model authority to diagnose a cause.
-
-### Implementation acceptance
-
-The later code PR must:
-
-- enumerate the exact critical and anomaly field allowlists and their compiled
-  policies;
-- use only the production `kronika-reader` path and test five-neighbour
-  cross-segment detection at 10-second, 30-second, and 5-minute cadences;
-- test a local spike, an immediate level change, counter reset, `null`, an
-  over-cadence interval, deterministic cap and truncation with stable ties, no
-  text duplication, and neutral timeline interval grouping;
-- exercise production-encoded data with 5,000 `pg_stat_statements` rows, 5,000
-  `pg_store_plans` rows, processes, relations, and cross-segment low-frequency
-  series; and
-- report registered field count separately from series cardinality, plus IDX
-  bytes, build CPU and elapsed time, and peak RSS.
-
-These focused tests and BDD belong to the code PR, not this documentation PR.
-The compact reference remains 37,008 bytes for 20 IDX files from one real hour.
+Kronika places event locators and independent marks on one timeline. An
+`event` locator says only that the source row was recorded; it is not a visual
+mark, anomaly, alert, incident, severity, cause, diagnosis, or correlation.
+Kronika does not group marks into incidents or infer a main symptom, severity,
+cause, relationship, confidence, or diagnosis. Several unrelated problems may
+coexist, and the person examining the recorded data is the sole judge.
 
 ## Reading
 

@@ -8,7 +8,7 @@ use kronika_format::Crc32c;
 use crate::series::{SeriesBlock, SeriesKey, SeriesKind};
 
 /// Magic of the current unreleased allowlist format.
-pub const MAGIC: [u8; 8] = *b"KRNIDX4\0";
+pub const MAGIC: [u8; 8] = *b"KRNIDX5\0";
 /// Bytes before the table: magic, entry count, checksum.
 pub const HEADER_LEN: usize = 16;
 /// Bytes per TOC entry: series kind, physical input layout, offset, length.
@@ -16,7 +16,8 @@ pub const ENTRY_LEN: usize = 16;
 
 const CHECKSUM_AT: usize = 12;
 const MAX_INDEX_BYTES: u64 = 8 * 1024 * 1024;
-const MAX_BLOCKS: usize = 32;
+// Ten presentation blocks and 26 locator blocks are currently allowlisted.
+const MAX_BLOCKS: usize = 36;
 const CHECKSUM_CHUNK: usize = 16 * 1024;
 
 /// Why an index container or selected block was rejected.

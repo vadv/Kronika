@@ -1,6 +1,7 @@
 use super::{CHECKSUM_AT, HEADER_LEN, Index, IndexError, checksum};
 use crate::{
-    ActiveBackendPoint, HealthPoint, SeriesBlock, SeriesKey, SeriesKind, TransactionPoint,
+    ActiveBackendPoint, Finding, FindingBlock, FindingKind, HealthPoint, SeriesBlock, SeriesKey,
+    SeriesKind, TransactionPoint,
 };
 
 fn sample() -> Index {
@@ -25,6 +26,18 @@ fn sample() -> Index {
                     count: 4,
                 }],
             },
+            SeriesBlock::Findings(FindingBlock {
+                type_id: 1_100_001,
+                total_hits: 1,
+                truncated: false,
+                findings: vec![Finding {
+                    kind: FindingKind::Spike,
+                    category: None,
+                    field_ordinal: 33,
+                    row_ordinal: 7,
+                    timestamp: 42,
+                }],
+            }),
         ],
     }
 }
@@ -33,7 +46,50 @@ fn sample() -> Index {
 fn current_format_roundtrips() {
     let index = sample();
     let bytes = index.encode().expect("encode");
-    assert_eq!(Index::decode(&bytes).expect("decode"), index);
+    let decoded = Index::decode(&bytes).expect("decode");
+    assert_eq!(decoded, index);
+    assert_eq!(decoded.encode().expect("re-encode"), bytes);
+}
+
+#[test]
+fn current_format_rejects_truncation_corruption_and_unknown_magic() {
+    let bytes = sample().encode().expect("encode");
+    assert!(matches!(
+        Index::decode(&bytes[..bytes.len() - 1]),
+        Err(IndexError::Truncated | IndexError::BadLayout)
+    ));
+
+    let mut corrupt = bytes.clone();
+    let last = corrupt.len() - 1;
+    corrupt[last] ^= 1;
+    assert_eq!(Index::decode(&corrupt), Err(IndexError::BadChecksum));
+
+    let mut unknown = bytes;
+    unknown[0] ^= 1;
+    assert_eq!(Index::decode(&unknown), Err(IndexError::BadMagic));
+}
+
+#[test]
+fn current_format_rejects_a_checksum_valid_invalid_error_category() {
+    let index = Index {
+        blocks: vec![SeriesBlock::Findings(FindingBlock {
+            type_id: 2_001_001,
+            total_hits: 1,
+            truncated: false,
+            findings: vec![Finding {
+                kind: FindingKind::Event,
+                category: Some(5),
+                field_ordinal: 0,
+                row_ordinal: 7,
+                timestamp: 42,
+            }],
+        })],
+    };
+    let mut bytes = index.encode().expect("encode categorized event");
+    *bytes.last_mut().expect("category byte") = 11;
+    let value = checksum(&bytes[..CHECKSUM_AT], &bytes[HEADER_LEN..]);
+    bytes[CHECKSUM_AT..HEADER_LEN].copy_from_slice(&value.to_le_bytes());
+    assert_eq!(Index::decode(&bytes), Err(IndexError::BadLayout));
 }
 
 #[test]
@@ -62,7 +118,7 @@ fn an_unrelated_malformed_block_is_not_decoded() {
             .try_into()
             .expect("offset"),
     ) as usize;
-    let body_at = HEADER_LEN + 3 * super::ENTRY_LEN;
+    let body_at = HEADER_LEN + 4 * super::ENTRY_LEN;
     bytes[body_at + second_offset] = 0xff;
     let value = checksum(&bytes[..CHECKSUM_AT], &bytes[HEADER_LEN..]);
     bytes[CHECKSUM_AT..HEADER_LEN].copy_from_slice(&value.to_le_bytes());
