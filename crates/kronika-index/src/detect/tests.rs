@@ -1,8 +1,7 @@
-use super::{
-    CpuRaw, Finding, FindingKind, ProcessRaw, StatementRaw, block, cpu_busy_at_least_80,
-    finding_layout, process_rate, statement_average,
-};
-use crate::MAX_FINDINGS_PER_BLOCK;
+use super::direct::{CpuRaw, cpu_busy_at_least_80};
+use super::spikes::{process_rate, statement_average};
+use super::{ProcessRaw, StatementRaw, block, finding_layout};
+use crate::{Finding, FindingKind, MAX_FINDINGS_PER_BLOCK};
 
 #[test]
 fn process_rate_requires_an_adjacent_nonnegative_counter_delta() {
