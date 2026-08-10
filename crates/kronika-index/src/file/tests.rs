@@ -1,6 +1,7 @@
 use super::{CHECKSUM_AT, HEADER_LEN, Index, IndexError, checksum};
 use crate::{
-    ActiveBackendPoint, HealthPoint, SeriesBlock, SeriesKey, SeriesKind, TransactionPoint,
+    ActiveBackendPoint, Finding, FindingBlock, FindingKind, HealthPoint, SeriesBlock, SeriesKey,
+    SeriesKind, TransactionPoint,
 };
 
 fn sample() -> Index {
@@ -25,6 +26,18 @@ fn sample() -> Index {
                     count: 4,
                 }],
             },
+            SeriesBlock::Findings(FindingBlock {
+                type_id: 1_100_001,
+                total_hits: 1,
+                truncated: false,
+                findings: vec![Finding {
+                    kind: FindingKind::Spike,
+                    field_ordinal: 34,
+                    row_ordinal: 7,
+                    start_ts: 30,
+                    end_ts: 42,
+                }],
+            }),
         ],
     }
 }
@@ -62,7 +75,7 @@ fn an_unrelated_malformed_block_is_not_decoded() {
             .try_into()
             .expect("offset"),
     ) as usize;
-    let body_at = HEADER_LEN + 3 * super::ENTRY_LEN;
+    let body_at = HEADER_LEN + 4 * super::ENTRY_LEN;
     bytes[body_at + second_offset] = 0xff;
     let value = checksum(&bytes[..CHECKSUM_AT], &bytes[HEADER_LEN..]);
     bytes[CHECKSUM_AT..HEADER_LEN].copy_from_slice(&value.to_le_bytes());
