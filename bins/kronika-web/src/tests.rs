@@ -2,7 +2,9 @@ use hyper::header::{ALLOW, CACHE_CONTROL, ETAG, IF_NONE_MATCH, VARY, WWW_AUTHENT
 use hyper::{Method, Request, StatusCode};
 use tokio::sync::{mpsc, oneshot};
 
-use super::{authorization, if_none_match_values, response_from_meta, route_request};
+use super::{
+    RequestTarget, authorization, if_none_match_values, response_from_meta, route_request,
+};
 use crate::api::{CachePolicy, Prepared, ResponseMeta};
 use crate::config::Account;
 
@@ -55,6 +57,15 @@ fn authentication_is_mandatory_and_central() {
             .headers()
             .contains_key("access-control-allow-origin")
     );
+
+    let request = Request::builder().uri("/").body(()).expect("UI request");
+    assert_eq!(
+        route_request(&account(), &request)
+            .expect_err("UI also requires credentials")
+            .response()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
 }
 
 #[test]
@@ -84,6 +95,63 @@ fn route_recognition_precedes_the_method_check() {
     assert_eq!(
         known.headers().get(ALLOW),
         Some(&hyper::header::HeaderValue::from_static("GET"))
+    );
+
+    let api_head = rejection(Method::HEAD, "/api/catalog");
+    assert_eq!(api_head.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(
+        api_head.headers().get(ALLOW),
+        Some(&hyper::header::HeaderValue::from_static("GET"))
+    );
+}
+
+#[test]
+fn only_the_two_exact_ui_paths_admit_get_and_head() {
+    assert_eq!(
+        route_request(&account(), &request(Method::GET, "/")),
+        Ok(RequestTarget::Ui { head: false })
+    );
+    assert_eq!(
+        route_request(&account(), &request(Method::HEAD, "/index.html")),
+        Ok(RequestTarget::Ui { head: true })
+    );
+    assert!(matches!(
+        route_request(&account(), &request(Method::GET, "/api/catalog")),
+        Ok(RequestTarget::Api(crate::route::Route::Catalog(_)))
+    ));
+
+    let post = rejection(Method::POST, "/");
+    assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(
+        post.headers().get(ALLOW),
+        Some(&hyper::header::HeaderValue::from_static("GET, HEAD"))
+    );
+    assert_eq!(
+        rejection(Method::GET, "/index.html/").status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        rejection(Method::GET, "/api/not-a-resource").status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[test]
+fn a_ui_client_that_refuses_gzip_gets_an_explicit_406() {
+    let mut request = request(Method::GET, "/");
+    request.headers_mut().insert(
+        hyper::header::ACCEPT_ENCODING,
+        hyper::header::HeaderValue::from_static("identity"),
+    );
+    let response = route_request(&account(), &request)
+        .expect_err("identity-only UI request")
+        .response();
+    assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+    assert_eq!(
+        response.headers().get(VARY),
+        Some(&hyper::header::HeaderValue::from_static(
+            "Authorization, Accept-Encoding"
+        ))
     );
 }
 

@@ -18,7 +18,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.21.1
+          cache: npm
+          cache-dependency-path: bins/kronika-web/ui/package-lock.json
       - uses: Swatinem/rust-cache@v2
+      - run: npm --prefix bins/kronika-web/ui ci
+      - run: make ui-check
+      - run: git diff --exit-code -- bins/kronika-web/ui/kronika-ui.html.gz
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets
 

@@ -26,5 +26,10 @@ kronika-layout = { path = "../../crates/kronika-layout" }
 kronika-writer = { path = "../../crates/kronika-writer" }
 tempfile = "3"
 
+[build-dependencies]
+base64 = "0.22"
+flate2 = "1"
+sha2 = "0.10"
+
 [lints]
 workspace = true

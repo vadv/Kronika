@@ -12,6 +12,7 @@ mod api;
 mod auth;
 mod config;
 mod route;
+mod ui;
 
 use std::convert::Infallible;
 use std::pin::Pin;
@@ -67,34 +68,55 @@ async fn answer(
     config: Arc<Config>,
     request: Request<hyper::body::Incoming>,
 ) -> Result<Response<WebBody>, Infallible> {
-    let route = match route_request(&config.account, &request) {
-        Ok(route) => route,
+    let target = match route_request(&config.account, &request) {
+        Ok(target) => target,
         Err(error) => return Ok(error.response()),
     };
     let if_none_match = if_none_match_values(request.headers());
-    Ok(streamed(config, route, if_none_match).await)
+    Ok(match target {
+        RequestTarget::Ui { head } => ui::response(head, if_none_match.as_deref()),
+        RequestTarget::Api(route) => streamed(config, route, if_none_match).await,
+    })
 }
 
 fn route_request<B>(
     account: &config::Account,
     request: &Request<B>,
-) -> Result<route::Route, RequestError> {
+) -> Result<RequestTarget, RequestError> {
     if !auth::admits(account, authorization(request.headers())) {
         return Err(RequestError::Unauthorized);
+    }
+    if ui::is_path(request.uri().path()) {
+        if request.method() != Method::GET && request.method() != Method::HEAD {
+            return Err(RequestError::MethodNotAllowed("GET, HEAD"));
+        }
+        if !ui::accepts_gzip(request.headers()) {
+            return Err(RequestError::EncodingNotAcceptable);
+        }
+        return Ok(RequestTarget::Ui {
+            head: request.method() == Method::HEAD,
+        });
     }
     let route =
         route::parse(request.uri().path(), request.uri().query()).map_err(RequestError::Route)?;
     if request.method() != Method::GET {
-        return Err(RequestError::MethodNotAllowed);
+        return Err(RequestError::MethodNotAllowed("GET"));
     }
-    Ok(route)
+    Ok(RequestTarget::Api(route))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RequestTarget {
+    Ui { head: bool },
+    Api(route::Route),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RequestError {
     Unauthorized,
     Route(RouteError),
-    MethodNotAllowed,
+    MethodNotAllowed(&'static str),
+    EncodingNotAcceptable,
 }
 
 impl RequestError {
@@ -107,7 +129,8 @@ impl RequestError {
             Self::Route(RouteError::BadParameter(parameter)) => {
                 refused(StatusCode::BAD_REQUEST, "bad_parameter", Some(&parameter))
             }
-            Self::MethodNotAllowed => method_not_allowed(),
+            Self::MethodNotAllowed(allow) => method_not_allowed(allow),
+            Self::EncodingNotAcceptable => encoding_not_acceptable(),
         }
     }
 }
@@ -237,14 +260,23 @@ fn unauthorized() -> Response<WebBody> {
     response
 }
 
-fn method_not_allowed() -> Response<WebBody> {
+fn method_not_allowed(allow: &'static str) -> Response<WebBody> {
     let mut response = json_response(
         StatusCode::METHOD_NOT_ALLOWED,
         json!({ "error": "method_not_allowed" }).to_string(),
     );
     response
         .headers_mut()
-        .insert(ALLOW, HeaderValue::from_static("GET"));
+        .insert(ALLOW, HeaderValue::from_static(allow));
+    response
+}
+
+fn encoding_not_acceptable() -> Response<WebBody> {
+    let mut response = json_response(
+        StatusCode::NOT_ACCEPTABLE,
+        json!({ "error": "encoding_not_acceptable" }).to_string(),
+    );
+    ui::set_vary(&mut response);
     response
 }
 

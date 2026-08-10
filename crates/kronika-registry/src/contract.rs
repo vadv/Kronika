@@ -61,6 +61,29 @@ pub enum ColumnType {
     ListI32,
 }
 
+impl ColumnType {
+    /// The code the API and generated interface registry use for this type.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::I8 => "i8",
+            Self::I16 => "i16",
+            Self::I32 => "i32",
+            Self::I64 => "i64",
+            Self::U8 => "u8",
+            Self::U16 => "u16",
+            Self::U32 => "u32",
+            Self::U64 => "u64",
+            Self::F32 => "f32",
+            Self::F64 => "f64",
+            Self::Bool => "bool",
+            Self::Ts => "timestamp_us",
+            Self::StrId => "dictionary_value",
+            Self::ListI32 => "list_i32",
+        }
+    }
+}
+
 /// A unix-microseconds timestamp, as carried in a `Ts` column.
 ///
 /// A distinct type so a timestamp column is `Ts`, not a bare `i64`, whatever
@@ -194,6 +217,20 @@ pub enum Semantics {
     Changed,
     /// Written on change or after a periodic refresh interval.
     OnChange,
+}
+
+impl Semantics {
+    /// The code generated interface metadata uses for collection semantics.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::SnapshotFull => "snapshot_full",
+            Self::ConditionalFull => "conditional_full",
+            Self::EventStream => "event_stream",
+            Self::Changed => "changed",
+            Self::OnChange => "on_change",
+        }
+    }
 }
 
 /// The full contract of one `type_id`.

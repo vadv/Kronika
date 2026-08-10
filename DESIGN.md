@@ -440,6 +440,26 @@ is a line in the collector's log, not a change in the interface.
 Requests carry HTTP basic authentication. Other schemes come later, and the
 check sits in one place so that adding one does not touch the handlers.
 
+### Shipped interface
+
+The React and TypeScript interface is built ahead of Rust into one
+self-contained HTML document, compressed reproducibly and committed as one
+gzip artifact. `kronika-web` embeds those exact bytes, so an ordinary Cargo
+build needs no Node installation. Fonts, icons, styles and scripts are local;
+the production document makes no external asset requests.
+
+English and Russian source dictionaries are flat YAML files. The interface
+build rejects duplicate keys, empty values, unequal key sets and unequal
+placeholders, then generates the compact typed dictionaries shipped in the
+document. A saved locale wins over `navigator.languages`, with English as the
+fallback; source values and recorded payload text are never translated.
+
+The first interface covers one selected calendar hour and the Host System and
+Processes views. The timeline always spans that complete hour and leaves
+unrecorded intervals blank. Process rows may link to the independently nearest
+`pg_stat_activity` snapshot by exact PID; both source times remain visible and
+the interface draws no causal conclusion from the link.
+
 ### Segment resources
 
 HTTP exposes cacheable resources for explicit segments. It has no generic

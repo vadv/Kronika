@@ -3,7 +3,7 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use kronika_reader::{Cell, Dictionary, Resolved};
-use kronika_registry::{Column, ColumnType, TypeContract, section_implementation};
+use kronika_registry::{Column, TypeContract, section_implementation};
 use serde_json::{Value, json};
 
 use super::ApiError;
@@ -42,7 +42,7 @@ pub(super) fn projected_layout(
 fn column_value(column: &Column) -> serde_json::Map<String, Value> {
     let mut value = serde_json::Map::new();
     value.insert("name".to_owned(), json!(column.name));
-    value.insert("type".to_owned(), json!(column_type(column.ty)));
+    value.insert("type".to_owned(), json!(column.ty.code()));
     value.insert("class".to_owned(), json!(column.class.code()));
     value.insert(
         "unit".to_owned(),
@@ -141,25 +141,6 @@ fn hex(bytes: &[u8]) -> String {
         out.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
     }
     out
-}
-
-const fn column_type(ty: ColumnType) -> &'static str {
-    match ty {
-        ColumnType::I8 => "i8",
-        ColumnType::I16 => "i16",
-        ColumnType::I32 => "i32",
-        ColumnType::I64 => "i64",
-        ColumnType::U8 => "u8",
-        ColumnType::U16 => "u16",
-        ColumnType::U32 => "u32",
-        ColumnType::U64 => "u64",
-        ColumnType::F32 => "f32",
-        ColumnType::F64 => "f64",
-        ColumnType::Bool => "bool",
-        ColumnType::Ts => "timestamp_us",
-        ColumnType::StrId => "dictionary_value",
-        ColumnType::ListI32 => "list_i32",
-    }
 }
 
 #[cfg(test)]
