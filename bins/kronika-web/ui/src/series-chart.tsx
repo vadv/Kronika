@@ -1,6 +1,7 @@
 import { useId } from "react"
 
-import { formatUtc, type Locale } from "./model"
+import type { Locale } from "./model"
+import { TimeTicks } from "./time-ticks"
 
 export interface ChartPoint {
   readonly segmentId: string
@@ -47,8 +48,8 @@ export function SeriesChart({
         }).join(" ")
         return <path className="mini-series" d={path} key={segmentId} />
       })}
-      {[0, 1, 2, 3, 4, 5, 6].map((tick) => <text className="mini-tick" key={tick} textAnchor={tick === 0 ? "start" : tick === 6 ? "end" : "middle"} x={tick / 6 * 920} y="122">{formatUtc(hour + tick * 600_000_000).slice(11, 16)}</text>)}
     </svg>
+    <TimeTicks className="mini-time-ticks" hour={hour} />
   </figure>
 }
 

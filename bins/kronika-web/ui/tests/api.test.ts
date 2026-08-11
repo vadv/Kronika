@@ -73,6 +73,10 @@ test("the hour loader uses registry fields, bounded requests and exact locators"
   }
 
   try {
+    const selection = await api.discoverHourSelection(new AbortController().signal)
+    assert.equal(selection.latest, START)
+    assert.deepEqual(selection.available, [START])
+
     const hour = await api.loadHour(START, new AbortController().signal)
     assert.ok(maximumActive > 1)
     assert.ok(maximumActive <= 4)

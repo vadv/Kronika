@@ -81,6 +81,11 @@ export interface SourceFamily {
   readonly present: boolean
 }
 
+export interface HourSelection {
+  readonly latest: number
+  readonly available: readonly number[]
+}
+
 export interface HourData {
   /** Rows keyed by their registry logical section name. */
   readonly sections: Readonly<Record<string, readonly DataRow[]>>
@@ -123,13 +128,29 @@ export const ACTIVITY_FIELDS = [
   "backend_xmin_age", "backend_start", "xact_start", "query_start", "state_change",
 ] as const
 
-export async function discoverLatestHour(signal: AbortSignal): Promise<number> {
+export async function discoverHourSelection(signal: AbortSignal): Promise<HourSelection> {
   const fixture = bundledFixtureRange()
-  if (fixture !== null) return floorHour(fixture.from)
+  if (fixture !== null) {
+    return {
+      latest: floorHour(fixture.from),
+      available: unique([floorHour(fixture.from), floorHour(fixture.to)]).sort((left, right) => left - right),
+    }
+  }
   const records = await request("/api/catalog", signal)
   const segments = catalogSegments(records)
   const latest = segments.reduce((current, segment) => Math.max(current, Number(segment.max_ts)), 0)
-  return latest > 0 ? floorHour(latest) : floorHour(Date.now() * 1_000)
+  return {
+    latest: latest > 0 ? floorHour(latest) : floorHour(Date.now() * 1_000),
+    available: unique(segments.flatMap((segment) => {
+      const from = Number(segment.min_ts)
+      const to = Number(segment.max_ts)
+      return Number.isFinite(from) && Number.isFinite(to) && to >= from ? [floorHour(from), floorHour(to)] : []
+    })).sort((left, right) => left - right),
+  }
+}
+
+export async function discoverLatestHour(signal: AbortSignal): Promise<number> {
+  return (await discoverHourSelection(signal)).latest
 }
 
 export async function loadHour(start: number, signal: AbortSignal): Promise<HourData> {

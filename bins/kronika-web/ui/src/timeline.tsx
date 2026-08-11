@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import type { DataRow, Finding } from "./api"
 import { LabelHelp, type Translate } from "./help"
 import { asNumber, formatUtc, value } from "./model"
+import { TimeTicks } from "./time-ticks"
 
 const WIDTH = 920
 const HEIGHT = 170
@@ -139,11 +140,8 @@ export function Timeline({
             <SeriesLine color="violet" end={end} hour={hour} lane={3} points={pressurePoints[1] ?? []} />
             <SeriesLine color="amber" end={end} hour={hour} lane={3} points={pressurePoints[2] ?? []} />
             <line className="cursor-line" x1={cursorX} x2={cursorX} y1={0} y2={PLOT_BOTTOM} />
-            {[0, 1, 2, 3, 4, 5, 6].map((tick) => {
-              const timestamp = hour + tick * 600_000_000
-              return <text className="tick-text" key={tick} textAnchor={tick === 0 ? "start" : tick === 6 ? "end" : "middle"} x={tick / 6 * WIDTH} y={HEIGHT - 2}>{formatUtc(timestamp).slice(11, 16)}</text>
-            })}
           </svg>
+          <TimeTicks className="timeline-time-ticks" hour={hour} />
         </div>
         {markers.map((marker, index) => {
           const x = scaleX(marker.timestamp, hour, end)

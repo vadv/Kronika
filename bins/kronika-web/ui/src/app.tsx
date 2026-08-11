@@ -1,10 +1,10 @@
-import { Activity, ChevronLeft, ChevronRight, HelpCircle, Languages } from "lucide-react"
+import { Activity, HelpCircle, Languages } from "lucide-react"
 import { dictionaries } from "kronika:i18n"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { createRoot } from "react-dom/client"
 
 import {
-  discoverLatestHour,
+  discoverHourSelection,
   fieldNameForLocator,
   loadHour,
   resolveLocator,
@@ -15,17 +15,15 @@ import {
 import { DetailDock } from "./detail"
 import { EventsView } from "./events-view"
 import { HelpPanel, type Translate } from "./help"
+import { HourPicker } from "./hour-picker"
 import {
   activityFor,
   asNumber,
   floorHour,
   formatUtc,
-  inputDay,
-  inputHour,
   interpolate,
   processKey,
   processLens,
-  selectedHour,
   snapshot,
   value,
   type Lens,
@@ -81,6 +79,7 @@ const HELP_EVENTS = [
 function App() {
   const [locale, setLocale] = useState<Locale>(initialLocale)
   const [hour, setHour] = useState<number | null>(null)
+  const [availableHours, setAvailableHours] = useState<readonly number[]>([])
   const [cursor, setCursor] = useState(0)
   const [data, setData] = useState<HourData>(EMPTY_DATA)
   const [loading, setLoading] = useState(true)
@@ -107,9 +106,10 @@ function App() {
   }, [locale])
   useEffect(() => {
     const controller = new AbortController()
-    void discoverLatestHour(controller.signal).then((latest) => {
-      setHour(latest)
-      setCursor(latest)
+    void discoverHourSelection(controller.signal).then((selection) => {
+      setAvailableHours(selection.available)
+      setHour(selection.latest)
+      setCursor(selection.latest)
     }).catch((reason: unknown) => {
       if (!controller.signal.aborted) {
         const current = floorHour(Date.now() * 1_000)
@@ -218,8 +218,6 @@ function App() {
     }
     setSource("events")
   }, [data])
-  const day = hour === null ? "" : inputDay(hour)
-  const hourNumber = hour === null ? 0 : inputHour(hour)
   const pgPresent = data.activities.length !== 0 || data.availableSections.some((name) => name.startsWith("pg_") && !name.startsWith("pg_log_"))
   const eventsPresent = data.findings.length !== 0
   const helpItems = source === "postgresql"
@@ -260,7 +258,7 @@ function App() {
           <button aria-selected={hostSection === "processes"} data-testid="process-tab" onClick={() => setHostSection("processes")} role="tab" type="button">{t("section.processes")}</button>
         </div>
         : <span className="toolbar-source">{t(`nav.${source}`)}</span>}
-      <HourPicker changeHour={changeHour} day={day} hour={hour} hourNumber={hourNumber} t={t} />
+      <HourPicker availableHours={availableHours} changeHour={changeHour} hour={hour} locale={locale} t={t} />
     </section>
 
     <section className="workspace">
@@ -293,15 +291,6 @@ function App() {
 
     {helpOpen && <HelpPanel items={helpItems} onClose={() => setHelpOpen(false)} t={t} />}
   </main>
-}
-
-function HourPicker({ changeHour, day, hour, hourNumber, t }: { readonly changeHour: (hour: number) => void; readonly day: string; readonly hour: number | null; readonly hourNumber: number; readonly t: Translate }) {
-  return <div className="hour-picker" data-testid="hour-picker">
-    <button aria-label={t("hour.previous")} disabled={hour === null} onClick={() => hour !== null && changeHour(hour - 3_600_000_000)} type="button"><ChevronLeft aria-hidden="true" size={15} /></button>
-    <label><span>{t("hour.day")}</span><input onChange={(event) => { const next = selectedHour(event.target.value, hourNumber); if (next !== null) changeHour(next) }} type="date" value={day} /></label>
-    <label><span>{t("hour.hour")}</span><select onChange={(event) => { const next = selectedHour(day, Number(event.target.value)); if (next !== null) changeHour(next) }} value={hourNumber}>{Array.from({ length: 24 }, (_, number) => <option key={number} value={number}>{String(number).padStart(2, "0")}:00</option>)}</select></label>
-    <button aria-label={t("hour.next")} disabled={hour === null} onClick={() => hour !== null && changeHour(hour + 3_600_000_000)} type="button"><ChevronRight aria-hidden="true" size={15} /></button>
-  </div>
 }
 
 function StateCard({ message }: { readonly message: string }) {

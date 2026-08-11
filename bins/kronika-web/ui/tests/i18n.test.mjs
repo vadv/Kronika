@@ -40,6 +40,7 @@ test("project dictionaries cover the active UI keys", async () => {
     "detail.tsx",
     "events-view.tsx",
     "help.tsx",
+    "hour-picker.tsx",
     "postgres-view.tsx",
     "process-table.tsx",
     "system-view.tsx",

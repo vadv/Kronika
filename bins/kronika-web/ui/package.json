@@ -8,6 +8,7 @@
     "check": "node scripts/build.mjs --check",
     "fixture:check": "node scripts/real-fixture.mjs --check",
     "test": "node --experimental-strip-types --test tests/*.test.mjs tests/*.test.ts",
+    "test:browser:corrections": "node tests/browser-corrections.mjs",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
