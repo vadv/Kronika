@@ -175,13 +175,28 @@ export function Timeline({
               return <line className="lane-line" key={y} x1={0} x2={plotWidth} y1={y} y2={y} />
             })}
             <line className="lane-line" x1={0} x2={plotWidth} y1={plotBottom} y2={plotBottom} />
-            {lanes.flatMap((lane, index) => lane.series.map((series, ordinal) => (
-              <SeriesLine color={series.color} domain={lane.domain} end={end} hour={hour} key={`${lane.key}:${ordinal}`} lane={index} points={series.points} width={plotWidth} />
-            )))}
+            {lanes.map((lane, index) => {
+              const range = laneRange(lane)
+              const peakY = seriesY(lanePeak(lane), index, range.low, range.span)
+              return <g key={lane.key}>
+                <line className="lane-peak" x1={0} x2={plotWidth} y1={peakY} y2={peakY} />
+                {lane.series.map((series, ordinal) => (
+                  <SeriesLine color={series.color} end={end} hour={hour} key={`${lane.key}:${ordinal}`} lane={index} points={series.points} range={range} width={plotWidth} />
+                ))}
+              </g>
+            })}
             {shownX !== null && Math.abs(shownX - cursorX) > 1
               && <line className="shown-line" x1={shownX} x2={shownX} y1={0} y2={plotBottom}><title>{t("hour.shown", { time: formatUtc(shownAt ?? 0) })}</title></line>}
             <line className="cursor-line" x1={cursorX} x2={cursorX} y1={0} y2={plotBottom} />
           </svg>
+          {lanes.map((lane, index) => {
+            const range = laneRange(lane)
+            const peak = lanePeak(lane)
+            const ceiling = range.low + range.span
+            return <span className="lane-ceiling" key={lane.key} style={{ top: `${TOP + index * LANE_HEIGHT + 2}px` }}>
+              {peak >= ceiling ? format(peak, lane.key) : `${format(peak, lane.key)} / ${format(ceiling, lane.key)}`}
+            </span>
+          })}
           <TimeTicks className="timeline-time-ticks" hour={hour} />
         </div>
         {markers.map((marker, index) => {
@@ -290,23 +305,24 @@ function FindingMarker({
 
 function SeriesLine({
   color,
-  domain,
   end,
   hour,
   lane,
   points,
+  range,
   width,
 }: {
   readonly color: "cyan" | "amber" | "violet"
-  readonly domain?: readonly [number, number] | undefined
   readonly end: number
   readonly hour: number
   readonly lane: number
   readonly points: readonly SeriesPoint[]
+  /** The lane owns the scale: two lines of one lane drawn against their own
+   *  maxima would be the same height and mean different things. */
+  readonly range: { readonly low: number; readonly span: number }
   readonly width: number
 }) {
   if (points.length === 0) return null
-  const range = seriesRange(points, domain)
   return <>{[...timelineRuns(points).entries()].map(([runId, stored]) => {
     const path = stored
       .slice()
@@ -437,7 +453,7 @@ function markerShapeStyle(kind: Finding["kind"]): React.CSSProperties {
 
 export function seriesYAt(points: readonly SeriesPoint[], segmentId: string, timestamp: number, lane: number): number {
   if (points.length === 0) return TOP + lane * LANE_HEIGHT + LANE_HEIGHT / 2
-  const range = seriesRange(points)
+  const range = laneRange({ series: [{ points }] })
   const numeric = points.filter((point): point is SeriesPoint & { readonly value: number } => point.value !== null && Number.isFinite(point.value))
   if (numeric.length === 0) return TOP + lane * LANE_HEIGHT + LANE_HEIGHT / 2
   const runs = [...timelineRuns(points).values()]
@@ -470,12 +486,22 @@ function contains(run: readonly SeriesPoint[], timestamp: number): boolean {
 /** Health, memory share and pressure are all read against a hundred: scaling
  *  them to their own extremes makes a step of two look like a collapse. Load
  *  has no ceiling, so it takes the one the hour reached. */
-function seriesRange(points: readonly SeriesPoint[], domain?: readonly [number, number]): { readonly low: number; readonly span: number } {
-  if (domain !== undefined) return { low: domain[0], span: domain[1] - domain[0] }
-  const values = points.flatMap((point) => point.value === null || !Number.isFinite(point.value) ? [] : [point.value])
+/** The tallest reading of the hour: without it the shape of a lane says that
+ *  something moved, but not how far. */
+function lanePeak(lane: { readonly series: readonly { readonly points: readonly SeriesPoint[] }[] }): number {
+  const values = lane.series.flatMap((series) => series.points)
+    .flatMap((point) => point.value === null || !Number.isFinite(point.value) ? [] : [point.value])
+  return values.length === 0 ? 0 : Math.max(...values)
+}
+
+export function laneRange(
+  lane: { readonly domain?: readonly [number, number] | undefined; readonly series: readonly { readonly points: readonly SeriesPoint[] }[] },
+): { readonly low: number; readonly span: number } {
+  if (lane.domain !== undefined) return { low: lane.domain[0], span: lane.domain[1] - lane.domain[0] }
+  const values = lane.series.flatMap((series) => series.points)
+    .flatMap((point) => point.value === null || !Number.isFinite(point.value) ? [] : [point.value])
   if (values.length === 0) return { low: 0, span: 1 }
-  const high = Math.max(...values)
-  return { low: 0, span: Math.max(high, 1) }
+  return { low: 0, span: Math.max(...values, 1) }
 }
 
 function seriesY(number: number, lane: number, low: number, span: number): number {

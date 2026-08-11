@@ -199,6 +199,9 @@ h2 { font-size: var(--t-md); }
 .timeline-plot { cursor: crosshair; min-width: 0; touch-action: none; }
 .timeline-plot svg { display: block; height: 205px; overflow: visible; width: 100%; }
 .timeline-grid { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
+/* Height means nothing without the ceiling it is measured against. */
+.lane-ceiling { background: var(--s1); box-shadow: 0 0 0 2px var(--s1); color: var(--fg3); font-size: 10px; font-variant-numeric: tabular-nums; line-height: 1.1; pointer-events: none; position: absolute; right: 6px; }
+.lane-peak { stroke: var(--line2); stroke-dasharray: 3 4; stroke-width: 1; vector-effect: non-scaling-stroke; }
 .lane-line { stroke: var(--line2); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .series-line { fill: none; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
 .series-cyan { stroke: var(--accent); }
