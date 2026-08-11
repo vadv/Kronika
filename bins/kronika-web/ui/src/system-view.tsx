@@ -162,12 +162,7 @@ const ENTITIES: readonly {
   },
 ]
 
-/** The sections and fields this view reads, and nothing more. A process row
- *  carries a command line; the charts here only sum numbers off it.
- *
- *  Split in two: an hour of per-process rows is megabytes per segment, and the
- *  cards that sum them are a minority of the screen. The rest draws first and
- *  they fill in. */
+/** The sections and fields this view reads, and nothing more. */
 function systemRequests(): readonly SectionRequest[] {
   const wanted = new Map<string, Set<string>>()
   const need = (section: string, fields: readonly string[]) => {
@@ -187,9 +182,7 @@ function systemRequests(): readonly SectionRequest[] {
   return [...wanted].map(([section, fields]) => ({ section, fields: [...fields] }))
 }
 
-const ALL_SYSTEM_REQUESTS = systemRequests()
-export const SYSTEM_REQUESTS = ALL_SYSTEM_REQUESTS.filter((request) => request.section !== "os_process")
-export const SYSTEM_DEFERRED_REQUESTS = ALL_SYSTEM_REQUESTS.filter((request) => request.section === "os_process")
+export const SYSTEM_REQUESTS = systemRequests().filter((request) => request.section !== "os_process")
 
 export function SystemView({
   cursor,

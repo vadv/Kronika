@@ -569,6 +569,60 @@ fn a_snapshot_answers_for_the_sections_that_are_there() {
 }
 
 #[test]
+fn snapshot_rows_align_positional_values_with_layout_columns() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(
+        &(0..32)
+            .map(|minor| (200, minor, i64::from(minor)))
+            .collect::<Vec<_>>(),
+    );
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_diskstats&field=major&field=minor&field=scope&field=io_in_progress"
+    );
+    let prepared = fixture.prepare(&target, None);
+    let mut body = Vec::new();
+    prepared
+        .stream(
+            &mut |record| {
+                body.extend_from_slice(&record);
+                true
+            },
+            &|| false,
+        )
+        .expect("snapshot body");
+    let text = std::str::from_utf8(&body).expect("UTF-8 snapshot");
+    let records = text
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("JSON record"))
+        .collect::<Vec<_>>();
+    let layout = records
+        .iter()
+        .find(|record| record["record"] == "layout")
+        .expect("projected layout");
+    assert_eq!(
+        layout["layout"]["columns"]
+            .as_array()
+            .expect("layout columns")
+            .iter()
+            .map(|column| column["name"].clone())
+            .collect::<Vec<_>>(),
+        ["major", "minor", "scope", "io_in_progress"].map(Value::from)
+    );
+    assert_eq!(
+        layout["layout"]["identity"],
+        serde_json::json!(["major", "minor"])
+    );
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), 32);
+    for (minor, row) in rows.iter().enumerate() {
+        assert_eq!(row["values"], serde_json::json!([8, minor, 0, "0"]));
+        assert!(row["values"].as_object().is_none());
+    }
+}
+
+#[test]
 fn an_hour_carries_its_segments_and_its_line_in_one_response() {
     let mut fixture = Fixture::new();
     fixture.append_health();
@@ -613,15 +667,18 @@ fn a_snapshot_orders_by_a_column_and_returns_only_the_top_of_it() {
     fixture.finish();
 
     let target = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_diskstats&field=minor&by=minor&top=2"
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_diskstats&field=major&field=minor&by=minor&top=2"
     );
     let records = stream(fixture.prepare(&target, None)).expect("ordered snapshot");
     let minors = records
         .iter()
         .filter(|record| record["record"] == "row")
-        .map(|record| record["values"]["minor"].clone())
+        .map(|record| record["values"].clone())
         .collect::<Vec<_>>();
-    assert_eq!(minors, [serde_json::json!(2), serde_json::json!(1)]);
+    assert_eq!(
+        minors,
+        [serde_json::json!([8, 2]), serde_json::json!([8, 1])]
+    );
 }
 
 #[test]
@@ -637,7 +694,7 @@ fn a_snapshot_keeps_only_the_rows_a_filter_names() {
     let minors = records
         .iter()
         .filter(|record| record["record"] == "row")
-        .map(|record| record["values"]["minor"].clone())
+        .map(|record| record["values"][0].clone())
         .collect::<Vec<_>>();
     assert_eq!(minors, [serde_json::json!(1)]);
 }
@@ -691,7 +748,7 @@ fn the_first_moment_of_a_segment_rates_against_the_segment_before_it() {
         .collect::<Vec<_>>();
     assert_eq!(rows.len(), 1);
     // Twenty reads across a hundred microseconds is two hundred thousand a second.
-    assert_eq!(rows[0]["values"]["reads"], serde_json::json!(200_000.0));
+    assert_eq!(rows[0]["values"][0], serde_json::json!(200_000.0));
 }
 
 #[test]

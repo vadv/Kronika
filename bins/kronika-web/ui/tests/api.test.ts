@@ -33,72 +33,47 @@ const TEST_REGISTRY = [
   },
 ]
 
-test("the hour loader uses registry fields, bounded requests and exact locators", async () => {
+test("snapshot rows use each physical layout's positional columns", async () => {
   const api = await bundledApi()
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
   const originalFetch = globalThis.fetch
-  let active = 0
-  let maximumActive = 0
-  const requested = new Set<string>()
   globalThis.fetch = async (input) => {
     const url = new URL(String(input), "http://kronika.invalid")
-    requested.add(`${url.pathname}?${url.searchParams.toString()}`)
-    active += 1
-    maximumActive = Math.max(maximumActive, active)
-    await new Promise((resolve) => setImmediate(resolve))
-    active -= 1
-    if (url.pathname === "/api/catalog") {
-      return ndjson([
-        {
-          record: "catalog",
-          source_families: [
-            { name: "os", configured: true, present: true },
-            { name: "postgresql", configured: true, present: true },
-          ],
+    assert.equal(url.pathname, "/api/segments/77/snapshot")
+    assert.deepEqual(url.searchParams.getAll("section"), ["os_loadavg"])
+    return ndjson([
+      {
+        record: "layout",
+        layout: {
+          type_id: "1105001",
+          logical_name: "os_loadavg",
+          columns: [{ name: "load1" }, { name: "load5" }],
         },
-        {
-          record: "finished_segment",
-          id: "77",
-          min_ts: String(START),
-          max_ts: String(START + 9_000_000),
-          sections: TEST_REGISTRY.map((layout) => ({ logical_name: layout.logicalName })),
+      },
+      {
+        record: "layout",
+        layout: {
+          type_id: "1105002",
+          logical_name: "os_loadavg",
+          columns: [{ name: "load5" }, { name: "load1" }],
         },
-      ])
-    }
-    const match = /^\/api\/segments\/77\/sections\/([^/]+)\/(history|index)$/.exec(url.pathname)
-    assert.notEqual(match, null)
-    const logicalName = match?.[1] ?? ""
-    if (match?.[2] === "index") return indexResponse(logicalName)
-    return historyResponse(logicalName, url.searchParams.getAll("field"))
+      },
+      {
+        record: "row", type_id: "1105001", ordinal: "4",
+        timestamp: String(START + 1), values: [1, 5],
+      },
+      {
+        record: "row", type_id: "1105002", ordinal: "8",
+        timestamp: String(START + 2), values: [50, 10],
+      },
+    ])
   }
 
   try {
-    const selection = await api.discoverHourSelection(new AbortController().signal)
-    assert.equal(selection.latest, START)
-    assert.deepEqual(selection.available, [START])
-
-    const hour = await api.loadHour(START, new AbortController().signal)
-    assert.ok(maximumActive > 1)
-    assert.ok(maximumActive <= 8)
-    assert.deepEqual(hour.availableSections, [
-      "os_loadavg", "pg_stat_database", "pg_log_errors", "health",
-    ])
-    assert.equal(hour.sections.os_loadavg?.[0]?.values.load1, 0)
-    assert.equal(hour.sections.os_loadavg?.[0]?.values.load5, null)
-    assert.equal(hour.pgDatabases[0]?.values.xact_commit, 0)
-    assert.equal(hour.points[0]?.identity.datid, 7)
-    const finding = hour.findings.find((candidate) => candidate.typeId === "2001001")
-    assert.notEqual(finding, undefined)
-    assert.equal(finding?.rowOrdinal, "12")
-    assert.equal(finding?.fieldOrdinal, 2)
-    const resolved = finding === undefined ? null : api.resolveLocator(hour, finding)
-    assert.equal(resolved?.logicalName, "pg_log_errors")
-    assert.equal(resolved?.fieldName, "category")
-    assert.equal(resolved?.row.ordinal, "12")
-    assert.equal(api.logicalNameForTypeId("1005001"), "pg_stat_database")
-    assert.ok([...requested].some((path) =>
-      path.includes("/os_loadavg/history?") && path.includes("field=load1") && path.includes("field=load5"),
-    ))
+    const hour = await api.loadSnapshot("77", START, ["os_loadavg"], new AbortController().signal)
+    assert.equal(hour.load.length, 2)
+    assert.deepEqual(hour.load[0]?.values, { load1: 1, load5: 5 })
+    assert.deepEqual(hour.load[1]?.values, { load5: 50, load1: 10 })
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -128,88 +103,9 @@ async function bundledApi() {
   return import(`data:text/javascript;base64,${source}`)
 }
 
-function historyResponse(logicalName: string, fields: readonly string[]): Response {
-  if (logicalName === "health") {
-    return ndjson([
-      { record: "layout", layout: { type_id: "0", columns: [{ name: "os_health" }] } },
-      { record: "row", type_id: "0", ordinal: "3", timestamp: String(START + 1), values: [0] },
-    ])
-  }
-  const layout = TEST_REGISTRY.find((candidate) => candidate.logicalName === logicalName)
-  assert.notEqual(layout, undefined)
-  const values = fields.map((field) => {
-    if (field === "load1" || field === "xact_commit" || field === "category") return 0
-    if (field === "datid") return 7
-    return null
-  })
-  return ndjson([
-    { record: "layout", layout: { type_id: layout?.typeId, columns: fields.map((name) => ({ name })) } },
-    {
-      record: "row",
-      type_id: layout?.typeId,
-      ordinal: logicalName === "pg_log_errors" ? "12" : "4",
-      timestamp: String(START + 1),
-      values,
-    },
-  ])
-}
-
-function indexResponse(logicalName: string): Response {
-  if (logicalName === "pg_stat_database") {
-    return ndjson([{
-      record: "point",
-      type_id: "1005001",
-      series: "transactions_per_second",
-      ts: String(START + 1),
-      identity: { datid: 7 },
-      value: 0,
-    }])
-  }
-  if (logicalName === "pg_log_errors") {
-    return ndjson([{
-      record: "finding",
-      kind: "event",
-      type_id: "2001001",
-      field_ordinal: 2,
-      row_ordinal: 12,
-      ts: String(START + 1),
-      category: 0,
-    }])
-  }
-  return ndjson([])
-}
-
 function ndjson(records: readonly unknown[]): Response {
   return new Response(`${records.map((record) => JSON.stringify(record)).join("\n")}\n`, { status: 200 })
 }
-
-test("the health line survives the first snapshot merged into the hour", async () => {
-  const api = await bundledApi()
-  const line = {
-    segmentId: "7",
-    logicalName: "health",
-    typeId: "0",
-    ordinal: "7:1",
-    timestamp: START + 1,
-    values: { os_health: 91 },
-  }
-  const hour = api.hourOf({
-    hour: START,
-    availableHours: [START],
-    segments: [{ id: "7", minTs: START, maxTs: START + 1_000 }],
-    lanes: { health: [line] },
-    health: [line],
-    lanePoints: [],
-    points: [],
-    findings: [],
-    sourceFamilies: [],
-    availableSections: ["health"],
-  })
-  assert.equal(hour.health.length, 1)
-  const snapshot = { ...hour, sections: { os_loadavg: [] }, health: [] }
-  const merged = api.mergeHourData(hour, snapshot)
-  assert.equal(merged.health.length, 1, "a snapshot without the health section must not erase the line")
-})
 
 test("a snapshot is keyed on the stored sample the cursor rests on", async () => {
   const api = await bundledApi()
@@ -227,13 +123,10 @@ test("a snapshot replaces the section it carries instead of piling moments up", 
   const row = (timestamp: number) => ({
     segmentId: "7", logicalName: "os_process", typeId: "1100001", ordinal: "0", timestamp, values: { pid: 1 },
   })
-  const before = api.mergeHourData(
-    api.hourOf({
-      hour: START, availableHours: [START], segments: [], lanes: {}, health: [],
-      points: [], lanePoints: [], findings: [], sourceFamilies: [], availableSections: [],
-    }),
-    { sections: { os_process: [row(START + 1)] }, availableSections: ["os_process"], points: [], lanePoints: [], findings: [], sourceFamilies: [], segmentCount: 1 },
-  )
+  const before = api.hourOf({
+    hour: START, availableHours: [START], segments: [], lanes: { os_process: [row(START + 1)] }, health: [],
+    points: [], lanePoints: [], findings: [], sourceFamilies: [], availableSections: ["os_process"],
+  })
   const after = api.replaceSections(before, {
     sections: { os_process: [row(START + 2)] }, availableSections: ["os_process"],
     points: [], lanePoints: [], findings: [], sourceFamilies: [], segmentCount: 1,

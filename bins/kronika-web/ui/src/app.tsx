@@ -11,7 +11,6 @@ import {
   loadSnapshot,
   segmentAt,
   fieldNameForLocator,
-  loadHour,
   replaceSections,
   resolveLocator,
   PRODUCT_SECTION_GROUPS,
@@ -44,7 +43,7 @@ import {
 } from "./model"
 import { PostgresView, type PostgresSection } from "./postgres-view"
 import { ProcessSummary, ProcessTable } from "./process-table"
-import { SYSTEM_DEFERRED_REQUESTS, SYSTEM_REQUESTS, SystemView } from "./system-view"
+import { SYSTEM_REQUESTS, SystemView } from "./system-view"
 import { Timeline } from "./timeline"
 
 type Source = "host" | "postgresql" | "events"
@@ -71,11 +70,6 @@ const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
 }
 
 function section(name: string): SectionRequest { return { section: name } }
-
-/** Heavy sections a view can draw without: fetched after the screen is up. */
-const VIEW_DEFERRED: Readonly<Record<string, readonly SectionRequest[]>> = {
-  system: SYSTEM_DEFERRED_REQUESTS,
-}
 
 const HELP_SYSTEM = [
   { label: "system.metric.health.label", help: "system.metric.health.help" },

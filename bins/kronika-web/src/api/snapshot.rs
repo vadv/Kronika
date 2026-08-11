@@ -29,7 +29,8 @@ pub(crate) struct PreparedSnapshot {
 }
 
 /// Counter readings of one moment, keyed by the identity they belong to.
-type Readings = BTreeMap<Vec<String>, BTreeMap<&'static str, f64>>;
+type Readings = BTreeMap<Vec<String>, CounterReadings>;
+type CounterReadings = BTreeMap<&'static str, Cell>;
 
 struct SectionPlans {
     logical_name: String,
@@ -202,7 +203,7 @@ impl PreparedSnapshot {
         if let Some(error) = failure {
             return Err(error);
         }
-        if let Some(by) = &self.by {
+        if let Some(by) = self.by.as_deref().and_then(|name| field_index(plan, name)) {
             rows.sort_by(|left, right| {
                 sort_value(right, by)
                     .partial_cmp(&sort_value(left, by))
@@ -337,8 +338,8 @@ impl PreparedSnapshot {
                 };
                 let mut stored = BTreeMap::new();
                 for name in &counters {
-                    if let Some(number) = row.get(name).and_then(numeric) {
-                        stored.insert(*name, number);
+                    if let Some(value) = row.get(name) {
+                        stored.insert(*name, value.clone());
                     }
                 }
                 collected.insert(key, stored);
@@ -389,17 +390,17 @@ impl PreparedSnapshot {
     fn row_record(
         plan: &Plan,
         row: &Row,
-        before: Option<&BTreeMap<&'static str, f64>>,
+        before: Option<&CounterReadings>,
         elapsed: Option<i64>,
         ordinal: u64,
         dictionary: &kronika_reader::Dictionary,
         text_limit: Option<usize>,
     ) -> Result<Value, ApiError> {
         let stamped = plan.timestamp.and_then(|column| row_timestamp(row, column));
-        let mut values = serde_json::Map::new();
+        let mut values = Vec::with_capacity(plan.fields.len());
         for field in &plan.fields {
             let Some(column) = field.column else {
-                values.insert(field.name.clone(), Value::Null);
+                values.push(Value::Null);
                 continue;
             };
             let stored = row.get(column);
@@ -408,38 +409,39 @@ impl PreparedSnapshot {
                 .column(column)
                 .is_some_and(|declared| declared.class == ColumnClass::Cumulative);
             if is_rate {
-                values.insert(field.name.clone(), rate(stored, before, column, elapsed));
+                values.push(rate(stored, before, column, elapsed));
                 continue;
             }
             let rendered = match stored {
                 Some(stored) => cell(stored, dictionary)?,
                 None => Value::Null,
             };
-            values.insert(
-                field.name.clone(),
-                match text_limit {
-                    Some(limit) => shorten(rendered, limit),
-                    None => rendered,
-                },
-            );
+            values.push(match text_limit {
+                Some(limit) => shorten(rendered, limit),
+                None => rendered,
+            });
         }
         Ok(json!({
             "record": "row",
             "type_id": plan.type_id.to_string(),
             "ordinal": ordinal.to_string(),
             "timestamp": stamped.map(|stored| stored.to_string()),
-            "values": Value::Object(values),
+            "values": values,
         }))
     }
 }
 
 /// Absent and non-numeric sort last, so an ordered table starts with the rows
 /// that have something to say.
-fn sort_value(row: &Value, column: &str) -> f64 {
+fn sort_value(row: &Value, field: usize) -> f64 {
     row.get("values")
-        .and_then(|values| values.get(column))
+        .and_then(|values| values.get(field))
         .and_then(Value::as_f64)
         .unwrap_or(f64::NEG_INFINITY)
+}
+
+fn field_index(plan: &Plan, name: &str) -> Option<usize> {
+    plan.fields.iter().position(|field| field.name == name)
 }
 
 /// The finished segment closest before this one. A counter is only a rate
@@ -468,21 +470,19 @@ struct Moments {
 /// predecessor, and absent rather than negative when a counter went backwards.
 fn rate(
     stored: Option<&Cell>,
-    before: Option<&BTreeMap<&'static str, f64>>,
+    before: Option<&CounterReadings>,
     column: &'static str,
     elapsed: Option<i64>,
 ) -> Value {
-    let (Some(now), Some(before), Some(elapsed)) = (stored.and_then(numeric), before, elapsed)
-    else {
+    let (Some(now), Some(before), Some(elapsed)) = (stored, before, elapsed) else {
         return Value::Null;
     };
     let Some(earlier) = before.get(column) else {
         return Value::Null;
     };
-    let delta = now - earlier;
-    if delta < 0.0 {
+    let Some(delta) = counter_delta(now, earlier) else {
         return Value::Null;
-    }
+    };
     #[expect(
         clippy::cast_precision_loss,
         reason = "an interval of 2^52 microseconds is 142 years"
@@ -494,6 +494,28 @@ fn rate(
     } else {
         Value::Null
     }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "integer counter deltas are converted only after exact subtraction"
+)]
+fn counter_delta(now: &Cell, earlier: &Cell) -> Option<f64> {
+    let exact = match (now, earlier) {
+        (Cell::I16(now), Cell::I16(earlier)) => i128::from(*now) - i128::from(*earlier),
+        (Cell::I32(now), Cell::I32(earlier)) => i128::from(*now) - i128::from(*earlier),
+        (Cell::I64(now) | Cell::Ts(now), Cell::I64(earlier) | Cell::Ts(earlier)) => {
+            i128::from(*now) - i128::from(*earlier)
+        }
+        (Cell::U32(now), Cell::U32(earlier)) => i128::from(*now) - i128::from(*earlier),
+        (Cell::U64(now), Cell::U64(earlier)) => i128::from(*now) - i128::from(*earlier),
+        (Cell::F64(now), Cell::F64(earlier)) => {
+            let delta = now - earlier;
+            return (delta >= 0.0 && delta.is_finite()).then_some(delta);
+        }
+        _ => return None,
+    };
+    (exact >= 0).then_some(exact as f64)
 }
 
 fn rate_columns(plan: &Plan) -> Vec<&'static str> {
@@ -541,18 +563,5 @@ fn row_timestamp(row: &Row, column: &'static str) -> Option<i64> {
     }
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "no counter reaches 2^53 between two snapshots"
-)]
-fn numeric(stored: &Cell) -> Option<f64> {
-    match stored {
-        Cell::I16(value) => Some(f64::from(*value)),
-        Cell::I32(value) => Some(f64::from(*value)),
-        Cell::I64(value) | Cell::Ts(value) => Some(*value as f64),
-        Cell::U32(value) => Some(f64::from(*value)),
-        Cell::U64(value) => Some(*value as f64),
-        Cell::F64(value) => Some(*value),
-        _other => None,
-    }
-}
+#[cfg(test)]
+mod tests;

@@ -46,12 +46,6 @@ export interface SectionRequest {
  *  by; they come from the snapshot under the cursor instead. */
 export const TIMELINE_REQUESTS: readonly SectionRequest[] = [{ section: "health" }]
 
-// The link to a monitored host is the slow part: a request costs about a second
-// of latency whatever it returns, while the host answers one in a quarter of
-// that on a single core. Deep enough to hide the latency, shallow enough not to
-// queue behind that core.
-const REQUEST_CONCURRENCY = 8
-
 export interface DataRow {
   readonly segmentId: string
   readonly logicalName: string
@@ -97,11 +91,6 @@ export interface SourceFamily {
   readonly name: string
   readonly configured: boolean
   readonly present: boolean
-}
-
-export interface HourSelection {
-  readonly latest: number
-  readonly available: readonly number[]
 }
 
 export interface HourData {
@@ -163,83 +152,6 @@ export const ACTIVITY_FIELDS = [
   "backend_xmin_age", "backend_start", "xact_start", "query_start", "state_change",
 ] as const
 
-export async function discoverHourSelection(signal: AbortSignal): Promise<HourSelection> {
-  const fixture = bundledFixtureRange()
-  if (fixture !== null) {
-    return {
-      latest: floorHour(fixture.from),
-      available: unique([floorHour(fixture.from), floorHour(fixture.to)]).sort((left, right) => left - right),
-    }
-  }
-  const records = await request("/api/catalog", signal)
-  const segments = catalogSegments(records)
-  const latest = segments.reduce((current, segment) => Math.max(current, Number(segment.max_ts)), 0)
-  return {
-    latest: latest > 0 ? floorHour(latest) : floorHour(Date.now() * 1_000),
-    available: unique(segments.flatMap((segment) => {
-      const from = Number(segment.min_ts)
-      const to = Number(segment.max_ts)
-      return Number.isFinite(from) && Number.isFinite(to) && to >= from ? [floorHour(from), floorHour(to)] : []
-    })).sort((left, right) => left - right),
-  }
-}
-
-export async function discoverLatestHour(signal: AbortSignal): Promise<number> {
-  return (await discoverHourSelection(signal)).latest
-}
-
-export async function loadHour(
-  start: number,
-  signal: AbortSignal,
-  wanted?: readonly SectionRequest[],
-  onlySegments?: readonly string[],
-  kinds: readonly LoadTask["kind"][] = ["history", "index"],
-): Promise<HourData> {
-  const fixture = bundledFixtureHour(start)
-  if (fixture !== null) return fixture
-  const end = start + 3_600_000_000
-  const catalog = await request(`/api/catalog?from=${start}&to=${end - 1}`, signal)
-  const chosen = onlySegments === undefined ? null : new Set(onlySegments)
-  const segments = catalogSegments(catalog).filter(
-    (segment) => Number(segment.min_ts) < end && Number(segment.max_ts) >= start
-      && (chosen === null || chosen.has(segment.id)),
-  )
-  const sourceFamilies = catalog
-    .find((record) => record.record === "catalog")?.source_families as readonly SourceFamily[] | undefined
-  const tasks = segments
-    .flatMap((segment) => segmentTasks(segment, wanted))
-    .filter((task) => kinds.includes(task.kind))
-  const loaded = await mapLimited(tasks, REQUEST_CONCURRENCY, (task) => runTask(task, signal))
-  const within = (row: { readonly timestamp: number }) => row.timestamp >= start && row.timestamp < end
-  const grouped: Record<string, DataRow[]> = {}
-  const points: Point[] = []
-  const findings: Finding[] = []
-  for (const result of loaded) {
-    if (result.kind === "history") {
-      const rows = grouped[result.logicalName] ?? []
-      rows.push(...result.rows.filter(within))
-      grouped[result.logicalName] = rows
-    } else {
-      points.push(...result.points.filter(within))
-      findings.push(...result.findings.filter(within))
-    }
-  }
-  const availableSections = availableSectionNames(segments)
-  for (const name of availableSections) grouped[name] ??= []
-  const sections = Object.fromEntries(availableSections.map((name) => [name, grouped[name] ?? []]))
-  return hourData({
-    sections,
-    availableSections,
-    points: points.sort(pointOrder),
-    lanePoints: [],
-    findings: findings.sort(findingOrder),
-    sourceFamilies: sourceFamilies ?? [],
-    segmentCount: segments.length,
-  })
-}
-
-/** Add a later view's sections to what is already on screen. The caller only
- *  ever asks for names it does not hold, so rows never arrive twice. */
 /** The hour as the rest of the screen holds it. The line goes in beside every
  *  other section, or the first snapshot to arrive merges it away. */
 export function hourOf(timeline: TimelineData): HourData {
@@ -279,23 +191,6 @@ export function replaceSections(before: HourData, after: HourData): HourData {
     findings: before.findings,
     sourceFamilies: before.sourceFamilies,
     segmentCount: before.segmentCount,
-  })
-}
-
-export function mergeHourData(before: HourData, after: HourData): HourData {
-  const sections: Record<string, readonly DataRow[]> = { ...before.sections }
-  for (const [name, rows] of Object.entries(after.sections)) {
-    sections[name] = [...(sections[name] ?? []), ...rows]
-  }
-  return hourData({
-    sections,
-    rateColumns: { ...before.rateColumns, ...after.rateColumns },
-    availableSections: unique([...before.availableSections, ...after.availableSections]),
-    points: [...before.points, ...after.points].sort(pointOrder),
-    lanePoints: before.lanePoints.length === 0 ? after.lanePoints : before.lanePoints,
-    findings: [...before.findings, ...after.findings].sort(findingOrder),
-    sourceFamilies: after.sourceFamilies.length === 0 ? before.sourceFamilies : after.sourceFamilies,
-    segmentCount: Math.max(before.segmentCount, after.segmentCount),
   })
 }
 
@@ -460,17 +355,6 @@ function healthRows(points: readonly Point[]): readonly DataRow[] {
   return [...byMoment.values()].sort((left, right) => left.timestamp - right.timestamp)
 }
 
-/** The segments an hour touches, in order. Held for the hour so that moving the
- *  cursor costs no request of its own. */
-export async function listSegments(start: number, signal: AbortSignal): Promise<readonly SegmentBound[]> {
-  const end = start + 3_600_000_000
-  const catalog = await request(`/api/catalog?from=${start}&to=${end - 1}`, signal)
-  return catalogSegments(catalog)
-    .filter((segment) => Number(segment.min_ts) < end && Number(segment.max_ts) >= start)
-    .map((segment) => ({ id: segment.id, minTs: Number(segment.min_ts), maxTs: Number(segment.max_ts) }))
-    .sort((left, right) => left.minTs - right.minTs)
-}
-
 /** The segment holding a moment, or the last one before it. A table shows one
  *  snapshot, so it needs one segment and not the hour around it. */
 export function segmentAt(segments: readonly SegmentBound[], at: number): string | null {
@@ -545,64 +429,6 @@ function hourData(input: {
   }
 }
 
-type LoadTask =
-  | {
-    readonly kind: "history"
-    readonly segmentId: string
-    readonly logicalName: string
-    readonly fields?: readonly string[]
-  }
-  | { readonly kind: "index"; readonly segmentId: string; readonly logicalName: string }
-
-type LoadResult =
-  | { readonly kind: "history"; readonly logicalName: string; readonly rows: readonly DataRow[] }
-  | { readonly kind: "index"; readonly points: readonly Point[]; readonly findings: readonly Finding[] }
-
-function segmentTasks(segment: Segment, wanted?: readonly SectionRequest[]): readonly LoadTask[] {
-  const keep = wanted === undefined ? null : new Map(wanted.map((request) => [request.section, request.fields]))
-  const names = segmentSectionNames(segment).filter((name) => keep === null || keep.has(name))
-  const tasks: LoadTask[] = names.map((logicalName) => {
-    const fields = keep?.get(logicalName)
-    return fields === undefined
-      ? { kind: "history" as const, segmentId: segment.id, logicalName }
-      : { kind: "history" as const, segmentId: segment.id, logicalName, fields }
-  })
-  // An index resource builds its file when one is not on disk, and the root
-  // takes a single writer, so asking every segment for its marks at once waits
-  // out every build. Callers take the history kind first and come back.
-  for (const logicalName of names) tasks.push({ kind: "index", segmentId: segment.id, logicalName })
-  if ((keep === null || keep.has("health")) && segmentSectionNames(segment).some((name) => name.startsWith("os_"))) {
-    tasks.push(
-      { kind: "history", segmentId: segment.id, logicalName: "health" },
-      { kind: "index", segmentId: segment.id, logicalName: "health" },
-    )
-  }
-  return tasks
-}
-
-async function runTask(task: LoadTask, signal: AbortSignal): Promise<LoadResult> {
-  if (task.kind === "history") {
-    const rows = await readHistory(
-      task.segmentId,
-      task.logicalName,
-      task.fields ?? fieldsForLogicalName(task.logicalName),
-      signal,
-    ).catch((error: unknown) => task.logicalName === "health" ? absent(error) : Promise.reject(error))
-    return { kind: "history", logicalName: task.logicalName, rows }
-  }
-  const result = await readIndex(task.segmentId, task.logicalName, signal)
-    .catch((error: unknown) => absentIndex(error))
-  return { kind: "index", ...result }
-}
-
-export function fieldsForLogicalName(logicalName: string): readonly string[] {
-  if (logicalName === "health") return ["health"]
-  return unique(registry
-    .filter((layout) => layout.logicalName === logicalName)
-    .flatMap((layout) => layout.columns.map((column) => column.name))
-    .filter((name) => name !== "ts"))
-}
-
 /** One request for a moment across several sections. Counters arrive already
  *  divided by the interval, so nothing is subtracted here. */
 /** A statement table on a busy server is thousands of rows and megabytes of
@@ -646,23 +472,33 @@ export async function loadSnapshot(
     `/api/segments/${encodeURIComponent(segmentId)}/snapshot?${query}`,
     signal,
   )
-  const named = new Map<string, string>()
+  const layouts = new Map<string, { readonly logicalName: string; readonly columns: readonly string[] }>()
   const grouped: Record<string, DataRow[]> = {}
   const rateColumns: Record<string, readonly string[]> = {}
   for (const name of sections) grouped[name] = []
   for (const record of records) {
     if (record.record === "layout") {
-      const layout = record.layout as { readonly type_id: unknown; readonly logical_name: unknown }
+      const layout = record.layout as {
+        readonly type_id: unknown
+        readonly logical_name: unknown
+        readonly columns: readonly { readonly name: unknown }[]
+      }
+      const typeId = requiredText(layout.type_id, "layout type_id")
       const logicalName = requiredText(layout.logical_name, "logical name")
-      named.set(requiredText(layout.type_id, "layout type_id"), logicalName)
+      if (!Array.isArray(layout.columns)) throw new Error(`layout ${typeId} has no columns`)
+      layouts.set(typeId, {
+        logicalName,
+        columns: layout.columns.map((column) => requiredText(column.name, "column name")),
+      })
       if (Array.isArray(record.rates)) rateColumns[logicalName] = record.rates as readonly string[]
     } else if (record.record === "row") {
       const typeId = requiredText(record.type_id, "row type_id")
-      const logicalName = named.get(typeId)
+      const layout = layouts.get(typeId)
       const values = record.values
-      if (logicalName === undefined || values === null || typeof values !== "object") {
+      if (layout === undefined || !Array.isArray(values)) {
         throw new Error(`row for layout ${typeId} arrived before its layout`)
       }
+      const { columns, logicalName } = layout
       const rows = grouped[logicalName] ?? []
       rows.push({
         segmentId,
@@ -670,7 +506,10 @@ export async function loadSnapshot(
         typeId,
         ordinal: requiredText(record.ordinal, "row ordinal"),
         timestamp: record.timestamp === null ? at : integer(record.timestamp, "row timestamp"),
-        values: values as Readonly<Record<string, Cell>>,
+        values: Object.fromEntries(columns.map((name, index) => [
+          name,
+          index < values.length ? values[index] as Cell : null,
+        ])),
       })
       grouped[logicalName] = rows
     }
@@ -685,70 +524,6 @@ export async function loadSnapshot(
     sourceFamilies: [],
     segmentCount: 1,
   })
-}
-
-async function readHistory(
-  segmentId: string,
-  logicalName: string,
-  fields: readonly string[],
-  signal: AbortSignal,
-): Promise<readonly DataRow[]> {
-  const query = fields.map((field) => `field=${encodeURIComponent(field)}`).join("&")
-  const suffix = query === "" ? "" : `?${query}`
-  const records = await request(
-    `/api/segments/${encodeURIComponent(segmentId)}/sections/${encodeURIComponent(logicalName)}/history${suffix}`,
-    signal,
-  )
-  const layouts = new Map<string, readonly string[]>()
-  const rows: DataRow[] = []
-  for (const record of records) {
-    if (record.record === "layout") {
-      const layout = record.layout as {
-        readonly type_id: unknown
-        readonly columns: readonly { readonly name: unknown }[]
-      }
-      const typeId = requiredText(layout.type_id, "layout type_id")
-      const registeredName = logicalNameForTypeId(typeId)
-      if (registeredName !== logicalName) {
-        throw new Error(`layout ${typeId} does not belong to ${logicalName}`)
-      }
-      if (!Array.isArray(layout.columns)) throw new Error(`layout ${typeId} has no columns`)
-      layouts.set(typeId, layout.columns.map((column) => requiredText(column.name, "column name")))
-    } else if (record.record === "row") {
-      const typeId = requiredText(record.type_id, "row type_id")
-      const names = layouts.get(typeId)
-      const values = record.values as readonly Cell[]
-      if (names === undefined || !Array.isArray(values)) {
-        throw new Error(`row for layout ${typeId} arrived before its layout`)
-      }
-      rows.push({
-        segmentId,
-        logicalName,
-        typeId,
-        ordinal: requiredText(record.ordinal, "row ordinal"),
-        timestamp: integer(record.timestamp, "row timestamp"),
-        values: Object.fromEntries(names.map((name, index) => [
-          name,
-          index < values.length ? values[index] as Cell : null,
-        ])),
-      })
-    }
-  }
-  return rows
-}
-
-async function readIndex(segmentId: string, logicalName: string, signal: AbortSignal) {
-  const records = await request(
-    `/api/segments/${encodeURIComponent(segmentId)}/sections/${encodeURIComponent(logicalName)}/index`,
-    signal,
-  )
-  const points: Point[] = []
-  const findings: Finding[] = []
-  for (const record of records) {
-    if (record.record === "point") points.push(indexPoint(record, segmentId, logicalName))
-    else if (isFindingRecord(record)) findings.push(indexFinding(record, segmentId, logicalName))
-  }
-  return { points, findings }
 }
 
 const HEALTH = "health"
@@ -792,9 +567,7 @@ function sourceFamiliesOf(records: readonly Record<string, unknown>[]): readonly
 async function request(path: string, signal: AbortSignal): Promise<readonly Record<string, unknown>[]> {
   const response = await fetch(path, { headers: { Accept: "application/x-ndjson" }, signal })
   if (!response.ok) {
-    const error = new Error(`HTTP ${response.status} for ${path}`) as Error & { status?: number }
-    error.status = response.status
-    throw error
+    throw new Error(`HTTP ${response.status} for ${path}`)
   }
   const body = await response.text()
   return parseNdjson(body, path)
@@ -817,20 +590,6 @@ function availableSectionNames(segments: readonly Segment[]): string[] {
   const present = new Set(segments.flatMap(segmentSectionNames))
   if ([...present].some((name) => name.startsWith("os_"))) present.add("health")
   return [...UI_SECTION_NAMES, "health"].filter((name) => present.has(name))
-}
-
-function absent(error: unknown): readonly DataRow[] {
-  if (status(error) === 404) return []
-  throw error
-}
-
-function absentIndex(error: unknown): { readonly points: readonly Point[]; readonly findings: readonly Finding[] } {
-  if (status(error) === 404) return { points: [], findings: [] }
-  throw error
-}
-
-function status(error: unknown): number | undefined {
-  return error instanceof Error ? (error as Error & { readonly status?: number }).status : undefined
 }
 
 function requiredText(value: unknown, name: string): string {
@@ -857,40 +616,6 @@ function cellRecord(value: unknown): Readonly<Record<string, Cell>> {
 
 function unique<Value>(values: readonly Value[]): Value[] {
   return [...new Set(values)]
-}
-
-function pointOrder(left: Point, right: Point): number {
-  return left.timestamp - right.timestamp
-    || left.segmentId.localeCompare(right.segmentId)
-    || left.typeId.localeCompare(right.typeId)
-    || left.series.localeCompare(right.series)
-}
-
-function findingOrder(left: Finding, right: Finding): number {
-  return left.timestamp - right.timestamp
-    || left.segmentId.localeCompare(right.segmentId)
-    || left.typeId.localeCompare(right.typeId)
-    || Number(left.rowOrdinal) - Number(right.rowOrdinal)
-    || left.fieldOrdinal - right.fieldOrdinal
-}
-
-async function mapLimited<Input, Output>(
-  inputs: readonly Input[],
-  limit: number,
-  run: (input: Input) => Promise<Output>,
-): Promise<readonly Output[]> {
-  const outputs = new Array<Output>(inputs.length)
-  let next = 0
-  const worker = async () => {
-    while (next < inputs.length) {
-      const index = next
-      next += 1
-      const input = inputs[index]
-      if (input !== undefined) outputs[index] = await run(input)
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, inputs.length) }, worker))
-  return outputs
 }
 
 function floorHour(timestamp: number): number {
