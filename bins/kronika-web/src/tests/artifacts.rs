@@ -459,7 +459,9 @@ fn finished_index_and_catalog_have_revalidation_contracts_and_source_facts() {
     let index = stream(prepared).expect("finished index body");
     assert!(index.iter().any(|record| record["record"] == "point"));
 
-    let offered = format!("\"stale\", W/{etag}");
+    assert!(etag.starts_with("W/\""));
+    let strong = etag.strip_prefix("W/").expect("weak validator");
+    let offered = format!("\"stale\", {strong}");
     let not_modified = fixture.prepare(&index_target, Some(&offered));
     assert_eq!(not_modified.meta().status, StatusCode::NOT_MODIFIED);
     assert_eq!(not_modified.meta().cache, CachePolicy::Immutable);
@@ -630,7 +632,7 @@ fn an_hour_carries_its_segments_and_its_line_in_one_response() {
 
     let prepared = fixture.prepare("/api/hour?from=0&to=1000", None);
     assert_eq!(prepared.meta().status, StatusCode::OK);
-    assert_eq!(prepared.meta().cache, CachePolicy::Immutable);
+    assert_eq!(prepared.meta().cache, CachePolicy::Revalidate);
     let records = stream(prepared).expect("hour body");
     let kinds = records
         .iter()

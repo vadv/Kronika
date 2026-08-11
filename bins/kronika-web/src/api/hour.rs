@@ -105,7 +105,7 @@ impl PreparedHour {
             .iter()
             .all(|segment| segment.kind() == SegmentKind::Finished);
         ResponseMeta::ok(if settled {
-            CachePolicy::Immutable
+            CachePolicy::Revalidate
         } else {
             CachePolicy::NoStore
         })

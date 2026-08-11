@@ -7,9 +7,15 @@ use crate::api::CachePolicy;
 
 #[test]
 fn entity_tag_matching_accepts_lists_wildcards_and_weak_validators() {
-    assert!(etag_matches("\"other\", W/\"1234abcd\"", "\"1234abcd\""));
-    assert!(etag_matches("*", "\"1234abcd\""));
-    assert!(!etag_matches("\"1234abce\"", "\"1234abcd\""));
+    for offered in [
+        "\"1234abcd\"",
+        "W/\"1234abcd\"",
+        "\"other\", W/\"1234abcd\"",
+        "*",
+    ] {
+        assert!(etag_matches(offered, "W/\"1234abcd\""), "{offered}");
+    }
+    assert!(!etag_matches("\"1234abce\"", "W/\"1234abcd\""));
 }
 
 #[test]
@@ -17,7 +23,7 @@ fn a_finished_index_is_kept_by_the_browser_as_long_as_its_segment_lasts() {
     let meta = resource_meta(SegmentKind::Finished, Some(0x1234_abcd)).unwrap();
     assert_eq!(meta.status, StatusCode::OK);
     assert_eq!(meta.cache, CachePolicy::Immutable);
-    assert_eq!(meta.etag.as_deref(), Some("\"1234abcd\""));
+    assert_eq!(meta.etag.as_deref(), Some("W/\"1234abcd\""));
     assert!(resource_meta(SegmentKind::Finished, None).is_err());
 }
 

@@ -108,7 +108,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
 impl PreparedSnapshot {
     pub(super) const fn meta(&self) -> ResponseMeta {
         ResponseMeta::ok(match self.segment.kind() {
-            SegmentKind::Finished => CachePolicy::Immutable,
+            SegmentKind::Finished => CachePolicy::Revalidate,
             SegmentKind::Active => CachePolicy::NoStore,
         })
     }

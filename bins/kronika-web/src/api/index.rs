@@ -256,7 +256,7 @@ fn resource_meta(kind: SegmentKind, checksum: Option<u32>) -> Result<ResponseMet
             Ok(ResponseMeta {
                 status: StatusCode::OK,
                 cache: CachePolicy::Immutable,
-                etag: Some(format!("\"{checksum:08x}\"")),
+                etag: Some(format!("W/\"{checksum:08x}\"")),
             })
         }
         SegmentKind::Active => Ok(ResponseMeta::ok(CachePolicy::NoStore)),
@@ -348,6 +348,7 @@ fn health_layout(series: &str) -> Value {
 }
 
 fn etag_matches(offered: &str, current: &str) -> bool {
+    let current = current.strip_prefix("W/").unwrap_or(current).trim();
     offered.split(',').any(|candidate| {
         let candidate = candidate.trim();
         if candidate == "*" {
