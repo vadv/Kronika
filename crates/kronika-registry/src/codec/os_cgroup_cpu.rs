@@ -1,4 +1,4 @@
-//! Type `1_201_001`: cgroup CPU counters and limits.
+//! Type `1_201_002`: cgroup CPU counters and limits.
 
 use crate::{Section, StrId, Ts};
 

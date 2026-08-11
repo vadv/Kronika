@@ -1,4 +1,4 @@
-//! Type `1_202_001`: cgroup memory usage, limits, and events.
+//! Type `1_202_002`: cgroup memory usage, limits, and events.
 
 use crate::{Section, StrId, Ts};
 

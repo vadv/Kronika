@@ -25,8 +25,8 @@ Feature: What the collector records about the container it runs in
     Then every segment holds these sections
       | type_id | section           | min rows |
       | 1200001 | os_cgroup_mapping | 1        |
-      | 1201001 | os_cgroup_cpu     | 1        |
-      | 1202001 | os_cgroup_memory  | 1        |
+      | 1201002 | os_cgroup_cpu     | 1        |
+      | 1202002 | os_cgroup_memory  | 1        |
       | 1203001 | os_cgroup_io      | 1        |
       | 1204001 | os_cgroup_pids    | 1        |
 
