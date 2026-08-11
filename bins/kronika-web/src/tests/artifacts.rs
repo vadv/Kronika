@@ -1,7 +1,11 @@
 use std::cell::Cell;
+use std::io::Read as _;
 use std::path::Path;
 
-use hyper::StatusCode;
+use flate2::read::GzDecoder;
+use http_body_util::BodyExt as _;
+use hyper::header::{ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_TYPE, ETAG, HeaderValue, VARY};
+use hyper::{HeaderMap, StatusCode};
 use kronika_format::DictLimits;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
 use kronika_registry::instance_metadata::InstanceMetadata;
@@ -13,6 +17,7 @@ use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, wri
 use serde_json::Value;
 
 use crate::api::{ApiError, CachePolicy, Prepared};
+use crate::encoding::AcceptedEncodings;
 
 const SEGMENT_ID: i64 = 1_709_164_800_000_000;
 const SOURCES: u32 = 0b11;
@@ -76,6 +81,33 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append blob fixture part");
+    }
+
+    fn append_named_then_unreadable_diskstats(&mut self, valid_rows: i32) {
+        let mut interner = Interner::new(DictLimits::default());
+        let device = StrId(interner.intern(b"nvme0n1").expect("intern device").get());
+        let dictionary = dict::encode(interner.window()).expect("encode device dictionary");
+        let mut buffers = SectionBuffers::new();
+        for minor in 0..valid_rows {
+            buffers
+                .push(diskstats_with_device(100, minor, i64::from(minor), device))
+                .expect("valid row fits");
+        }
+        buffers
+            .push(diskstats_with_device(
+                100,
+                valid_rows,
+                i64::from(valid_rows),
+                StrId(999_999),
+            ))
+            .expect("unreadable row fits");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode unreadable fixture")
+            .expect("nonempty unreadable fixture");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append unreadable fixture");
     }
 
     fn append_health(&mut self) {
@@ -344,6 +376,192 @@ fn target(resource: &str, query: &str) -> String {
     format!("/api/segments/{SEGMENT_ID}/sections/os_diskstats/{resource}?{query}")
 }
 
+fn accepted(value: &str) -> AcceptedEncodings {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        ACCEPT_ENCODING,
+        HeaderValue::from_str(value).expect("valid Accept-Encoding"),
+    );
+    AcceptedEncodings::from_headers(&headers).expect("acceptable representation")
+}
+
+#[tokio::test]
+async fn large_ndjson_gzip_round_trips_to_the_identity_representation() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(
+        &(0..256)
+            .map(|minor| (100, minor, i64::from(minor)))
+            .collect::<Vec<_>>(),
+    );
+    let resource = target("history", "field=reads");
+
+    let prepared = fixture.prepare(&resource, None);
+    let response = crate::blocking_stream(move || Ok(prepared), AcceptedEncodings::default()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(CONTENT_ENCODING),
+        Some(&HeaderValue::from_static("gzip"))
+    );
+    assert_eq!(
+        response.headers().get(VARY),
+        Some(&HeaderValue::from_static("Authorization, Accept-Encoding"))
+    );
+    let mut compressed = Vec::new();
+    let mut body = response.into_body();
+    while let Some(frame) = body.frame().await {
+        let bytes = frame
+            .expect("gzip body frame")
+            .into_data()
+            .expect("data frame");
+        assert!(bytes.len() <= 8 * 1_024, "bounded gzip frame");
+        compressed.extend_from_slice(&bytes);
+    }
+    assert_eq!(compressed.get(4..8), Some([0, 0, 0, 0].as_slice()));
+    let mut decoded = Vec::new();
+    GzDecoder::new(compressed.as_slice())
+        .read_to_end(&mut decoded)
+        .expect("decode response gzip");
+
+    let prepared = fixture.prepare(&resource, None);
+    let identity = crate::blocking_stream(move || Ok(prepared), accepted("identity")).await;
+    assert_eq!(identity.status(), StatusCode::OK);
+    assert!(!identity.headers().contains_key(CONTENT_ENCODING));
+    let identity = identity
+        .into_body()
+        .collect()
+        .await
+        .expect("identity body")
+        .to_bytes();
+    assert!(identity.len() > 8 * 1_024, "fixture crosses the threshold");
+    assert_eq!(decoded, identity);
+}
+
+#[tokio::test]
+async fn below_threshold_ndjson_stays_identity_when_it_is_allowed() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 7)]);
+    let prepared = fixture.prepare(&target("history", "field=reads"), None);
+    let response = crate::blocking_stream(move || Ok(prepared), AcceptedEncodings::default()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!response.headers().contains_key(CONTENT_ENCODING));
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("small identity body")
+        .to_bytes();
+    assert!(body.len() < 8 * 1_024);
+    let first = body
+        .split(|byte| *byte == b'\n')
+        .next()
+        .expect("history header");
+    assert_eq!(
+        serde_json::from_slice::<Value>(first).expect("history JSON")["record"],
+        "history"
+    );
+
+    let prepared = fixture.prepare(&target("history", "field=reads"), None);
+    let response =
+        crate::blocking_stream(move || Ok(prepared), accepted("gzip, identity;q=0")).await;
+    assert_eq!(
+        response.headers().get(CONTENT_ENCODING),
+        Some(&HeaderValue::from_static("gzip"))
+    );
+    let compressed = response
+        .into_body()
+        .collect()
+        .await
+        .expect("forced gzip body")
+        .to_bytes();
+    let mut decoded = Vec::new();
+    GzDecoder::new(compressed.as_ref())
+        .read_to_end(&mut decoded)
+        .expect("decode forced gzip");
+    assert_eq!(decoded, body);
+}
+
+#[tokio::test]
+async fn a_small_real_read_failure_returns_500_before_success_headers() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 7)]);
+    let prepared = fixture.prepare(&target("history", "field=device"), None);
+    let response = crate::blocking_stream(move || Ok(prepared), AcceptedEncodings::default()).await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        response.headers().get(CONTENT_TYPE),
+        Some(&HeaderValue::from_static("application/json"))
+    );
+    assert!(!response.headers().contains_key(CONTENT_ENCODING));
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("ordinary error body")
+        .to_bytes();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).expect("error JSON"),
+        serde_json::json!({"error": "unreadable"})
+    );
+}
+
+#[tokio::test]
+async fn a_real_read_failure_after_a_valid_prefix_fails_the_body_without_a_trailer() {
+    let mut fixture = Fixture::new();
+    fixture.append_named_then_unreadable_diskstats(160);
+    let resource = target("history", "field=device");
+
+    let prepared = fixture.prepare(&resource, None);
+    let response = crate::blocking_stream(move || Ok(prepared), accepted("identity")).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let error = response
+        .into_body()
+        .collect()
+        .await
+        .expect_err("late read failure reaches the body");
+    assert_eq!(error.to_string(), "response body failed");
+
+    let prepared = fixture.prepare(&resource, None);
+    let response =
+        crate::blocking_stream(move || Ok(prepared), accepted("gzip, identity;q=0")).await;
+    assert_eq!(
+        response.headers().get(CONTENT_ENCODING),
+        Some(&HeaderValue::from_static("gzip"))
+    );
+    response
+        .into_body()
+        .collect()
+        .await
+        .expect_err("late read failure also aborts gzip");
+
+    let prepared = fixture.prepare(&resource, None);
+    let response = crate::blocking_stream(move || Ok(prepared), accepted("identity")).await;
+    let mut prefix = Vec::new();
+    let mut failure = None;
+    let mut body = response.into_body();
+    while let Some(frame) = body.frame().await {
+        match frame {
+            Ok(frame) => prefix.extend_from_slice(&frame.into_data().expect("data frame")),
+            Err(error) => {
+                failure = Some(error);
+                break;
+            }
+        }
+    }
+    assert!(failure.is_some(), "body ends with an error");
+    assert!(prefix.len() >= 8 * 1_024, "a valid prefix was committed");
+    assert!(
+        !prefix
+            .windows(b"\"record\":\"error\"".len())
+            .any(|window| { window == b"\"record\":\"error\"" })
+    );
+    for record in prefix
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        serde_json::from_slice::<Value>(record).expect("prefix contains complete NDJSON records");
+    }
+}
+
 #[test]
 fn explicit_history_projection_keeps_coordinates_without_resolving_unused_text() {
     let mut fixture = Fixture::new();
@@ -500,6 +718,68 @@ fn finished_index_and_catalog_have_revalidation_contracts_and_source_facts() {
     );
 }
 
+#[tokio::test]
+async fn weak_index_etag_revalidates_both_representations_without_a_304_body() {
+    let mut fixture = Fixture::new();
+    fixture.append_health();
+    fixture.finish();
+    let resource = format!("/api/segments/{SEGMENT_ID}/sections/health/index");
+
+    let prepared = fixture.prepare(&resource, None);
+    let response = crate::blocking_stream(move || Ok(prepared), accepted("identity")).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let etag = response
+        .headers()
+        .get(ETAG)
+        .expect("ETag")
+        .to_str()
+        .expect("ASCII ETag")
+        .to_owned();
+    assert!(etag.starts_with("W/\""));
+    assert_eq!(
+        response.headers().get(VARY),
+        Some(&HeaderValue::from_static("Authorization, Accept-Encoding"))
+    );
+    assert!(
+        !response
+            .into_body()
+            .collect()
+            .await
+            .expect("index body")
+            .to_bytes()
+            .is_empty()
+    );
+
+    let strong = etag.strip_prefix("W/").expect("weak validator");
+    for offered in [format!("\"stale\", {strong}"), "*".to_owned()] {
+        let prepared = fixture.prepare(&resource, Some(&offered));
+        let response =
+            crate::blocking_stream(move || Ok(prepared), accepted("gzip, identity;q=0")).await;
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED, "{offered}");
+        assert_eq!(
+            response
+                .headers()
+                .get(ETAG)
+                .and_then(|value| value.to_str().ok()),
+            Some(etag.as_str())
+        );
+        assert_eq!(
+            response.headers().get(VARY),
+            Some(&HeaderValue::from_static("Authorization, Accept-Encoding"))
+        );
+        assert!(!response.headers().contains_key(CONTENT_ENCODING));
+        assert!(
+            response
+                .into_body()
+                .collect()
+                .await
+                .expect("304 body")
+                .to_bytes()
+                .is_empty()
+        );
+    }
+}
+
 #[test]
 fn health_is_streamed_as_an_ordinary_history_series_from_real_sections() {
     let mut fixture = Fixture::new();
@@ -628,6 +908,8 @@ fn snapshot_rows_align_positional_values_with_layout_columns() {
 fn an_hour_carries_its_segments_and_its_line_in_one_response() {
     let mut fixture = Fixture::new();
     fixture.append_health();
+    let active = fixture.prepare("/api/hour?from=0&to=1000", None);
+    assert_eq!(active.meta().cache, CachePolicy::NoStore);
     fixture.finish();
 
     let prepared = fixture.prepare("/api/hour?from=0&to=1000", None);
@@ -653,6 +935,21 @@ fn an_hour_carries_its_segments_and_its_line_in_one_response() {
         .expect("index header");
     assert_eq!(segment["segment"]["id"], SEGMENT_ID.to_string());
     assert_eq!(segment["logical_name"], "health");
+}
+
+#[test]
+fn snapshot_cache_policy_tracks_active_and_finished_inputs() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 7), (200, 0, 9)]);
+    let resource =
+        format!("/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_diskstats&field=reads");
+
+    let active = fixture.prepare(&resource, None);
+    assert_eq!(active.meta().cache, CachePolicy::NoStore);
+
+    fixture.finish();
+    let finished = fixture.prepare(&resource, None);
+    assert_eq!(finished.meta().cache, CachePolicy::Revalidate);
 }
 
 #[test]

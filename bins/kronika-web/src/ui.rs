@@ -67,7 +67,11 @@ pub(crate) fn response(head: bool, if_none_match: Option<&str>) -> Response<WebB
     } else {
         Bytes::from_static(UI_GZIP)
     };
-    let mut response = Response::new(Full::new(body).boxed_unsync());
+    let mut response = Response::new(
+        Full::new(body)
+            .map_err(crate::body::BodyError::from)
+            .boxed_unsync(),
+    );
     *response.status_mut() = if not_modified {
         StatusCode::NOT_MODIFIED
     } else {

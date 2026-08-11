@@ -1,4 +1,8 @@
-use hyper::header::{ALLOW, CACHE_CONTROL, ETAG, IF_NONE_MATCH, VARY, WWW_AUTHENTICATE};
+use http_body_util::BodyExt as _;
+use hyper::header::{
+    ACCEPT_ENCODING, ALLOW, CACHE_CONTROL, CONTENT_ENCODING, ETAG, IF_NONE_MATCH, VARY,
+    WWW_AUTHENTICATE,
+};
 use hyper::{Method, Request, StatusCode};
 use tokio::sync::{mpsc, oneshot};
 
@@ -6,7 +10,9 @@ use super::{
     RequestTarget, authorization, if_none_match_values, response_from_meta, route_request,
 };
 use crate::api::{CachePolicy, Prepared, ResponseMeta};
+use crate::body::StreamHead;
 use crate::config::Account;
+use crate::encoding::AcceptedEncodings;
 
 mod artifacts;
 mod multi_layout;
@@ -117,7 +123,10 @@ fn only_the_two_exact_ui_paths_admit_get_and_head() {
     );
     assert!(matches!(
         route_request(&account(), &request(Method::GET, "/api/catalog")),
-        Ok(RequestTarget::Api(crate::route::Route::Catalog(_)))
+        Ok(RequestTarget::Api {
+            route: crate::route::Route::Catalog(_),
+            ..
+        })
     ));
 
     let post = rejection(Method::POST, "/");
@@ -140,11 +149,30 @@ fn only_the_two_exact_ui_paths_admit_get_and_head() {
 fn a_ui_client_that_refuses_gzip_gets_an_explicit_406() {
     let mut request = request(Method::GET, "/");
     request.headers_mut().insert(
-        hyper::header::ACCEPT_ENCODING,
+        ACCEPT_ENCODING,
         hyper::header::HeaderValue::from_static("identity"),
     );
     let response = route_request(&account(), &request)
         .expect_err("identity-only UI request")
+        .response();
+    assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+    assert_eq!(
+        response.headers().get(VARY),
+        Some(&hyper::header::HeaderValue::from_static(
+            "Authorization, Accept-Encoding"
+        ))
+    );
+}
+
+#[test]
+fn an_api_client_that_refuses_every_coding_gets_an_explicit_406() {
+    let mut request = request(Method::GET, "/api/catalog");
+    request.headers_mut().insert(
+        ACCEPT_ENCODING,
+        hyper::header::HeaderValue::from_static("gzip;q=0, identity;q=0"),
+    );
+    let response = route_request(&account(), &request)
+        .expect_err("no API representation is acceptable")
         .response();
     assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
     assert_eq!(
@@ -172,14 +200,17 @@ fn all_if_none_match_fields_reach_the_matcher() {
     );
 }
 
-#[test]
-fn response_metadata_controls_private_cache_headers_and_etag() {
+#[tokio::test]
+async fn response_metadata_controls_private_cache_headers_etag_and_vary() {
     let (_sender, receiver) = mpsc::channel(1);
     let response = response_from_meta(
-        ResponseMeta {
-            status: StatusCode::NOT_MODIFIED,
-            cache: CachePolicy::Revalidate,
-            etag: Some("\"1234abcd\"".to_owned()),
+        StreamHead {
+            meta: ResponseMeta {
+                status: StatusCode::NOT_MODIFIED,
+                cache: CachePolicy::Revalidate,
+                etag: Some("W/\"1234abcd\"".to_owned()),
+            },
+            coding: None,
         },
         receiver,
     );
@@ -190,9 +221,24 @@ fn response_metadata_controls_private_cache_headers_and_etag() {
     );
     assert_eq!(
         response.headers().get(ETAG),
-        Some(&hyper::header::HeaderValue::from_static("\"1234abcd\""))
+        Some(&hyper::header::HeaderValue::from_static("W/\"1234abcd\""))
     );
-    assert_eq!(response.headers().get(VARY), Some(&auth_header()));
+    assert_eq!(
+        response.headers().get(VARY),
+        Some(&hyper::header::HeaderValue::from_static(
+            "Authorization, Accept-Encoding"
+        ))
+    );
+    assert!(!response.headers().contains_key(CONTENT_ENCODING));
+    assert!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .expect("304 body")
+            .to_bytes()
+            .is_empty()
+    );
 }
 
 const fn auth_header() -> hyper::header::HeaderValue {
@@ -203,15 +249,18 @@ const fn auth_header() -> hyper::header::HeaderValue {
 async fn blocking_resource_work_does_not_stall_the_current_thread_runtime() {
     let (entered_tx, entered_rx) = oneshot::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
-    let response = tokio::spawn(super::blocking_stream(move || {
-        let _sent = entered_tx.send(());
-        release_rx.recv().expect("release blocking producer");
-        Ok(Prepared::Empty(ResponseMeta {
-            status: StatusCode::OK,
-            cache: CachePolicy::NoStore,
-            etag: None,
-        }))
-    }));
+    let response = tokio::spawn(super::blocking_stream(
+        move || {
+            let _sent = entered_tx.send(());
+            release_rx.recv().expect("release blocking producer");
+            Ok(Prepared::Empty(ResponseMeta {
+                status: StatusCode::OK,
+                cache: CachePolicy::NoStore,
+                etag: None,
+            }))
+        },
+        AcceptedEncodings::default(),
+    ));
 
     entered_rx.await.expect("producer entered blocking pool");
     let (serviced_tx, serviced_rx) = oneshot::channel();

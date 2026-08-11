@@ -10,22 +10,22 @@
 
 mod api;
 mod auth;
+mod body;
 mod config;
+mod encoding;
 mod route;
 mod ui;
 
 use std::convert::Infallible;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
 use anyhow::{Context as _, Result};
 use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::{BodyExt as _, Full};
-use hyper::body::{Bytes, Frame, SizeHint};
+use hyper::body::Bytes;
 use hyper::header::{
-    ALLOW, AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, ETAG, HeaderValue, IF_NONE_MATCH, VARY,
-    WWW_AUTHENTICATE,
+    ALLOW, AUTHORIZATION, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_TYPE, ETAG, HeaderValue,
+    IF_NONE_MATCH, VARY, WWW_AUTHENTICATE,
 };
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -35,11 +35,13 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 
-use api::{ApiError, CachePolicy, ResponseMeta};
+use api::{ApiError, CachePolicy};
+use body::{BodyError, BodyItem, BodyProducer, ChannelBody, StreamHead};
 use config::Config;
+use encoding::AcceptedEncodings;
 use route::RouteError;
 
-type WebBody = UnsyncBoxBody<Bytes, Infallible>;
+type WebBody = UnsyncBoxBody<Bytes, BodyError>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -75,7 +77,9 @@ async fn answer(
     let if_none_match = if_none_match_values(request.headers());
     Ok(match target {
         RequestTarget::Ui { head } => ui::response(head, if_none_match.as_deref()),
-        RequestTarget::Api(route) => streamed(config, route, if_none_match).await,
+        RequestTarget::Api { route, accepted } => {
+            streamed(config, route, if_none_match, accepted).await
+        }
     })
 }
 
@@ -102,13 +106,20 @@ fn route_request<B>(
     if request.method() != Method::GET {
         return Err(RequestError::MethodNotAllowed("GET"));
     }
-    Ok(RequestTarget::Api(route))
+    let accepted = AcceptedEncodings::from_headers(request.headers())
+        .ok_or(RequestError::EncodingNotAcceptable)?;
+    Ok(RequestTarget::Api { route, accepted })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RequestTarget {
-    Ui { head: bool },
-    Api(route::Route),
+    Ui {
+        head: bool,
+    },
+    Api {
+        route: route::Route,
+        accepted: AcceptedEncodings,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,46 +171,52 @@ async fn streamed(
     config: Arc<Config>,
     route: route::Route,
     if_none_match: Option<String>,
+    accepted: AcceptedEncodings,
 ) -> Response<WebBody> {
-    blocking_stream(move || {
-        api::prepare(
-            &config.data_root,
-            config.sources,
-            route,
-            if_none_match.as_deref(),
-        )
-    })
+    blocking_stream(
+        move || {
+            api::prepare(
+                &config.data_root,
+                config.sources,
+                route,
+                if_none_match.as_deref(),
+            )
+        },
+        accepted,
+    )
     .await
 }
 
 async fn blocking_stream(
     prepare: impl FnOnce() -> Result<api::Prepared, ApiError> + Send + 'static,
+    accepted: AcceptedEncodings,
 ) -> Response<WebBody> {
-    let (body_tx, body_rx) = mpsc::channel::<Vec<u8>>(8);
-    let (meta_tx, meta_rx) = oneshot::channel::<Result<ResponseMeta, ApiError>>();
+    let (body_tx, body_rx) = mpsc::channel::<BodyItem>(8);
+    let (head_tx, head_rx) = oneshot::channel::<Result<StreamHead, ApiError>>();
     let handle = tokio::task::spawn_blocking(move || match prepare() {
         Ok(prepared) => {
             let meta = prepared.meta();
-            let no_body = meta.status == StatusCode::NOT_MODIFIED;
-            if meta_tx.send(Ok(meta)).is_err() || no_body {
+            if meta.status == StatusCode::NOT_MODIFIED {
+                let _sent = head_tx.send(Ok(StreamHead::not_modified(meta)));
                 return;
             }
             let cancellation_tx = body_tx.clone();
             let cancelled = || cancellation_tx.is_closed();
-            let mut emit = |bytes| body_tx.blocking_send(bytes).is_ok();
-            if let Err(error) = prepared.stream(&mut emit, &cancelled) {
-                eprintln!("kronika-web: streamed resource failed: {error}");
-                let _sent = emit(error_record());
+            let mut producer = BodyProducer::new(accepted, meta, head_tx, body_tx);
+            let result = prepared.stream(&mut |bytes| producer.emit(&bytes), &cancelled);
+            match result {
+                Ok(()) => producer.complete(),
+                Err(error) => producer.fail(error),
             }
         }
         Err(error) => {
-            let _sent = meta_tx.send(Err(error));
+            let _sent = head_tx.send(Err(error));
         }
     });
     drop(handle);
 
-    match meta_rx.await {
-        Ok(Ok(meta)) => response_from_meta(meta, body_rx),
+    match head_rx.await {
+        Ok(Ok(head)) => response_from_meta(head, body_rx),
         Ok(Err(error)) => {
             if matches!(error, ApiError::Unreadable(_)) {
                 eprintln!("kronika-web: resource preparation failed: {error}");
@@ -210,22 +227,33 @@ async fn blocking_stream(
     }
 }
 
-fn response_from_meta(meta: ResponseMeta, receiver: mpsc::Receiver<Vec<u8>>) -> Response<WebBody> {
-    let body = if meta.status == StatusCode::NOT_MODIFIED {
-        Full::new(Bytes::new()).boxed_unsync()
+fn response_from_meta(head: StreamHead, receiver: mpsc::Receiver<BodyItem>) -> Response<WebBody> {
+    let body = if head.meta.status == StatusCode::NOT_MODIFIED {
+        Full::new(Bytes::new())
+            .map_err(BodyError::from)
+            .boxed_unsync()
     } else {
         ChannelBody { receiver }.boxed_unsync()
     };
     let mut response = Response::new(body);
-    *response.status_mut() = meta.status;
-    common_headers(&mut response, meta.cache);
-    if meta.status != StatusCode::NOT_MODIFIED {
+    *response.status_mut() = head.meta.status;
+    common_headers(&mut response, head.meta.cache);
+    response.headers_mut().insert(
+        VARY,
+        HeaderValue::from_static("Authorization, Accept-Encoding"),
+    );
+    if head.meta.status != StatusCode::NOT_MODIFIED {
         response.headers_mut().insert(
             CONTENT_TYPE,
             HeaderValue::from_static("application/x-ndjson; charset=utf-8"),
         );
     }
-    if let Some(etag) = meta.etag
+    if let Some(coding) = head.coding.and_then(encoding::ContentCoding::header) {
+        response
+            .headers_mut()
+            .insert(CONTENT_ENCODING, HeaderValue::from_static(coding));
+    }
+    if let Some(etag) = head.meta.etag
         && let Ok(value) = HeaderValue::from_str(&etag)
     {
         response.headers_mut().insert(ETAG, value);
@@ -281,7 +309,11 @@ fn encoding_not_acceptable() -> Response<WebBody> {
 }
 
 fn json_response(status: StatusCode, body: String) -> Response<WebBody> {
-    let mut response = Response::new(Full::new(Bytes::from(body)).boxed_unsync());
+    let mut response = Response::new(
+        Full::new(Bytes::from(body))
+            .map_err(BodyError::from)
+            .boxed_unsync(),
+    );
     *response.status_mut() = status;
     common_headers(&mut response, CachePolicy::NoStore);
     response
@@ -297,36 +329,6 @@ fn common_headers(response: &mut Response<WebBody>, cache: CachePolicy) {
     response
         .headers_mut()
         .insert(VARY, HeaderValue::from_static("Authorization"));
-}
-
-fn error_record() -> Vec<u8> {
-    b"{\"record\":\"error\",\"error\":\"unreadable\"}\n".to_vec()
-}
-
-struct ChannelBody {
-    receiver: mpsc::Receiver<Vec<u8>>,
-}
-
-impl hyper::body::Body for ChannelBody {
-    type Data = Bytes;
-    type Error = Infallible;
-
-    fn poll_frame(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        self.receiver
-            .poll_recv(cx)
-            .map(|item| item.map(|bytes| Ok(Frame::data(Bytes::from(bytes)))))
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.receiver.is_closed() && self.receiver.is_empty()
-    }
-
-    fn size_hint(&self) -> SizeHint {
-        SizeHint::default()
-    }
 }
 
 #[cfg(test)]

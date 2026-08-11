@@ -96,9 +96,8 @@ const fn floor_hour(timestamp: i64) -> i64 {
 }
 
 impl PreparedHour {
-    /// An hour holding the active segment still grows, and one already closed
-    /// gains no segment, but nothing in the request says which it is until the
-    /// segments are known.
+    /// An active hour still grows. A settled hour embeds the catalog and the
+    /// available-hour list, so it is revalidated rather than immutable.
     pub(super) fn meta(&self) -> ResponseMeta {
         let settled = self
             .segments
