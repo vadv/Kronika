@@ -2,14 +2,20 @@ import { useEffect, useMemo, useRef, useState } from "react"
 
 import type { DataRow, Finding } from "./api"
 import { LabelHelp, type Translate } from "./help"
-import { asNumber, formatUtc, value } from "./model"
+import { asNumber, formatUtc, humanBytes, value } from "./model"
 import { TimeTicks } from "./time-ticks"
 
 const WIDTH = 920
-const HEIGHT = 170
+const HEIGHT = 184
 const LANE_HEIGHT = 36
-const TOP = 8
+/** The rail the marks sit on, above the first lane. */
+const MARKER_RAIL = 14
+const TOP = MARKER_RAIL + 8
 const MARKER_CLUSTER_PX = 38
+/** Marks sit on a rail of their own: on the health trace they covered the very
+    point they mark, and their 34px button stole ninety seconds of the hour
+    from the cursor. */
+const MARKER_RAIL_Y = MARKER_RAIL / 2
 /** Health, and the share of a ten-second window a resource stalled for. */
 const SHARE: readonly [number, number] = [0, 100]
 
@@ -106,7 +112,7 @@ export function Timeline({
     const ratio = Math.max(0, Math.min(1, (clientX - bounds.left) / bounds.width))
     onCursor(Math.min(end - 1_000, Math.round(hour + ratio * (end - hour))))
   }
-  const cursorX = scaleX(cursor, hour, end)
+  const cursorX = shareOf(cursor, hour, end) * plotWidth
   return (
     <section
       aria-label={t("hour.range", { start: formatUtc(hour).slice(11, 16), end: formatUtc(end).slice(11, 16) })}
@@ -118,7 +124,13 @@ export function Timeline({
         className="timeline-labels"
         style={{ gridTemplateRows: `repeat(${Math.max(1, lanes.length)}, ${LANE_HEIGHT}px)` }}
       >
-        {lanes.map((lane) => <LaneLabel help={`lane.${lane.key}.help`} key={lane.key} label={`lane.${lane.key}.label`} t={t} />)}
+        {lanes.map((lane) => <LaneLabel
+          help={`lane.${lane.key}.help`}
+          key={lane.key}
+          label={`lane.${lane.key}.label`}
+          reading={lane.series.map((series) => valueAt(series.points, cursor)).map((number) => number === null ? "—" : format(number, lane.key)).join(" · ")}
+          t={t}
+        />)}
       </div>
       <div className="timeline-plot" ref={plot} style={{ height: `${HEIGHT}px`, position: "relative" }}>
         <div
@@ -134,31 +146,42 @@ export function Timeline({
             const direction = event.key === "ArrowLeft" ? -1 : 1
             onCursor(Math.max(hour, Math.min(end - 1_000, cursor + direction * 60_000_000)))
           }}
-          onPointerDown={(event) => setFromClient(event.clientX)}
+          onPointerDown={(event) => {
+            event.currentTarget.setPointerCapture(event.pointerId)
+            setFromClient(event.clientX)
+          }}
+          onPointerMove={(event) => {
+            if (event.buttons !== 1) return
+            setFromClient(event.clientX)
+          }}
+          onPointerUp={(event) => event.currentTarget.releasePointerCapture(event.pointerId)}
           role="slider"
           style={{ height: `${HEIGHT}px` }}
           tabIndex={0}
         >
-          <svg aria-hidden="true" preserveAspectRatio="none" style={{ height: `${HEIGHT}px` }} viewBox={`0 0 ${WIDTH} ${HEIGHT}`}>
+          {/* One unit is one pixel: a fixed viewBox stretched X by the width of
+              the window and left Y alone, so every slope was wrong by however
+              wide the browser happened to be. */}
+          <svg aria-hidden="true" preserveAspectRatio="none" style={{ height: `${HEIGHT}px` }} viewBox={`0 0 ${plotWidth} ${HEIGHT}`}>
             {[0, 1, 2, 3, 4, 5, 6].map((tick) => {
-              const x = tick / 6 * WIDTH
+              const x = tick / 6 * plotWidth
               return <line className="timeline-grid" key={tick} x1={x} x2={x} y1={0} y2={plotBottom} />
             })}
             {lanes.map((_lane, index) => {
               const y = TOP + index * LANE_HEIGHT
-              return <line className="lane-line" key={y} x1={0} x2={WIDTH} y1={y} y2={y} />
+              return <line className="lane-line" key={y} x1={0} x2={plotWidth} y1={y} y2={y} />
             })}
+            <line className="lane-line" x1={0} x2={plotWidth} y1={plotBottom} y2={plotBottom} />
             {lanes.flatMap((lane, index) => lane.series.map((series, ordinal) => (
-              <SeriesLine color={series.color} domain={lane.domain} end={end} hour={hour} key={`${lane.key}:${ordinal}`} lane={index} points={series.points} />
+              <SeriesLine color={series.color} domain={lane.domain} end={end} hour={hour} key={`${lane.key}:${ordinal}`} lane={index} points={series.points} width={plotWidth} />
             )))}
             <line className="cursor-line" x1={cursorX} x2={cursorX} y1={0} y2={plotBottom} />
           </svg>
           <TimeTicks className="timeline-time-ticks" hour={hour} />
         </div>
         {markers.map((marker, index) => {
-          const x = scaleX(marker.timestamp, hour, end)
-          const displayTimestamp = hour + x / WIDTH * (end - hour)
-          const y = seriesYAt(healthPoints, marker.finding.segmentId, displayTimestamp, Math.max(0, healthLane))
+          const share = shareOf(marker.timestamp, hour, end)
+          const y = MARKER_RAIL_Y
           return <FindingMarker
             key={`${marker.timestamp}:${marker.kind}:${index}`}
             marker={marker}
@@ -167,7 +190,7 @@ export function Timeline({
               onFinding(marker.finding, marker.findings)
             }}
             t={t}
-            x={x}
+            share={share}
             y={y}
           />
         })}
@@ -176,21 +199,40 @@ export function Timeline({
   )
 }
 
-function LaneLabel({ label, help, t }: { readonly label: string; readonly help: string; readonly t: Translate }) {
-  return <div className="lane-label"><LabelHelp helpKey={help} labelKey={label} t={t} /></div>
+function LaneLabel({ label, help, reading, t }: { readonly label: string; readonly help: string; readonly reading: string; readonly t: Translate }) {
+  return <div className="lane-label">
+    <LabelHelp helpKey={help} labelKey={label} t={t} />
+    <span className="lane-reading">{reading}</span>
+  </div>
+}
+
+/** The value of a series at the cursor: the sample at or before it. */
+function valueAt(points: readonly SeriesPoint[], cursor: number): number | null {
+  let chosen: SeriesPoint | null = null
+  for (const point of points) {
+    if (point.timestamp <= cursor && (chosen === null || point.timestamp > chosen.timestamp)) chosen = point
+  }
+  return chosen?.value ?? null
+}
+
+function format(number: number, key: string): string {
+  if (key === "health" || key === "pressure") return `${Math.round(number)}%`
+  // /proc/meminfo counts in kibibytes.
+  if (key === "memory") return humanBytes(number * 1024, "en")
+  return number.toFixed(2)
 }
 
 function FindingMarker({
   marker,
   onActivate,
+  share,
   t,
-  x,
   y,
 }: {
   readonly marker: GroupedFinding
   readonly onActivate: () => void
   readonly t: Translate
-  readonly x: number
+  readonly share: number
   readonly y: number
 }) {
   const activate = (event: { preventDefault(): void; stopPropagation(): void }) => {
@@ -224,7 +266,7 @@ function FindingMarker({
       display: "flex",
       height: "30px",
       justifyContent: "center",
-      left: `${x / WIDTH * 100}%`,
+      left: `${share * 100}%`,
       padding: 0,
       position: "absolute",
       top: `${y}px`,
@@ -249,6 +291,7 @@ function SeriesLine({
   hour,
   lane,
   points,
+  width,
 }: {
   readonly color: "cyan" | "amber" | "violet"
   readonly domain?: readonly [number, number] | undefined
@@ -256,6 +299,7 @@ function SeriesLine({
   readonly hour: number
   readonly lane: number
   readonly points: readonly SeriesPoint[]
+  readonly width: number
 }) {
   if (points.length === 0) return null
   const range = seriesRange(points, domain)
@@ -264,7 +308,7 @@ function SeriesLine({
       .slice()
       .sort((left, right) => left.timestamp - right.timestamp)
       .map((point, index) => {
-        const x = scaleX(point.timestamp, hour, end)
+        const x = shareOf(point.timestamp, hour, end) * width
         const y = seriesY(point.value, lane, range.low, range.span)
         return `${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`
       })
@@ -435,6 +479,7 @@ function seriesY(number: number, lane: number, low: number, span: number): numbe
   return laneBottom - (number - low) / span * (LANE_HEIGHT - 12)
 }
 
-function scaleX(timestamp: number, hour: number, end: number): number {
-  return Math.max(0, Math.min(WIDTH, (timestamp - hour) / (end - hour) * WIDTH))
+/** Where a moment sits in the hour, from 0 to 1. */
+function shareOf(timestamp: number, hour: number, end: number): number {
+  return Math.max(0, Math.min(1, (timestamp - hour) / (end - hour)))
 }

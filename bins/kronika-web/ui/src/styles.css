@@ -177,9 +177,11 @@ h2 { font-size: var(--t-md); }
 .metric-label { align-items: center; color: var(--fg3); display: flex; font-size: var(--t-sm); text-transform: uppercase; }
 .metric-label > span:first-child { color: var(--fg4); margin-right: 7px; }
 .metric-card strong { color: var(--fg); display: block; font-size: clamp(18px, 2vw, 27px); font-weight: 620; letter-spacing: -.04em; margin-top: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.timeline-shell { background: var(--s1); border: 1px solid var(--line2); display: grid; grid-template-columns: 118px minmax(0, 1fr); margin-top: 11px; min-height: 224px; padding: 8px; }
-.timeline-labels { display: grid; grid-template-rows: repeat(5, 36px); padding-top: 8px; }
-.lane-label { align-items: center; border-bottom: 1px solid var(--line); color: var(--fg3); display: flex; font-size: var(--t-sm); padding-left: 5px; text-transform: uppercase; }
+.timeline-shell { background: var(--s1); border: 1px solid var(--line2); display: grid; grid-template-columns: 190px minmax(0, 1fr); margin-top: 11px; min-height: 224px; padding: 8px; }
+.lane-reading { color: var(--fg); text-transform: none; font-size: var(--t-sm); font-variant-numeric: tabular-nums; margin-left: auto; padding-left: 8px; white-space: nowrap; }
+.timeline-labels { display: grid; grid-template-rows: repeat(5, 36px); padding-top: 22px; }
+.lane-label { align-items: center; border-bottom: 1px solid var(--line); color: var(--fg3); display: flex; font-size: var(--t-sm); padding: 0 6px 0 5px; text-transform: uppercase; }
+.lane-label:last-child { border-bottom: 0; }
 .timeline-plot { cursor: crosshair; min-width: 0; touch-action: none; }
 .timeline-plot svg { display: block; height: 205px; overflow: visible; width: 100%; }
 .timeline-grid { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
@@ -376,9 +378,13 @@ h2 { font-size: var(--t-md); }
 
 .command-heading { align-items: center; display: flex; justify-content: space-between; }
 .command-heading > code { color: var(--fg4); font-size: var(--t-xs); margin: 0; }
-.process-history { border-top: 1px solid var(--line3); margin-top: 10px; padding-top: 4px; }
-.process-history .series-chart { border: 1px solid var(--line2); margin-top: 6px; }
-.process-history .series-chart svg { height: 94px; }
+/* Eight charts of one process are read against each other, so they have to be
+   on screen together: two columns at 56px fit in the dock, one column did not. */
+.process-history { border-top: 1px solid var(--line3); display: grid; gap: 6px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 10px; padding-top: 6px; }
+.process-history .series-chart { border: 1px solid var(--line2); margin-top: 0; padding: 6px 7px 4px; }
+.process-history .series-chart svg { height: 56px; }
+.process-history .series-chart .mini-time-ticks { display: none; }
+.process-history .process-history-ticks { grid-column: 1 / -1; position: relative; height: 12px; }
 .pg-title h3 { color: var(--fg); font-size: var(--t-sm); font-weight: 560; margin: 0; }
 .marker-button { overflow: visible; }
 .marker-button:focus-visible { outline: 2px solid var(--cursor); outline-offset: 1px; }
@@ -394,7 +400,7 @@ h2 { font-size: var(--t-md); }
   .cursor-time { order: 9; }
   .workspace { padding-left: 8px; padding-right: 8px; }
   .metric-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .timeline-shell { grid-template-columns: 91px minmax(0, 1fr); padding-left: 3px; padding-right: 3px; }
+  .timeline-shell { grid-template-columns: 150px minmax(0, 1fr); padding-left: 3px; padding-right: 3px; }
   .lane-label { font-size: var(--t-xs); padding-left: 2px; }
   .lens-tabs { width: 100%; }
   .lens-tabs button { flex: 1; min-width: 0; padding-left: 4px; padding-right: 4px; }

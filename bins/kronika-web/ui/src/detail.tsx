@@ -18,6 +18,7 @@ import {
   type Locale,
 } from "./model"
 import { SeriesChart, type ChartPoint } from "./series-chart"
+import { TimeTicks } from "./time-ticks"
 
 interface ProcessField {
   readonly field: string
@@ -200,6 +201,7 @@ export function DetailDock({
             points={series.points}
           />
         ))}
+        <div className="process-history-ticks"><TimeTicks className="mini-time-ticks" hour={hour} ticks={4} /></div>
       </section>
 
       {activity !== null && <section className="pg-section">
