@@ -12,8 +12,8 @@ import { Timeline } from "./timeline"
 
 export type PostgresSection = "overview" | "activity" | "statements" | "locks" | "databases"
 
-const ACTIVITY_COLUMNS: readonly EntityColumn[] = [
-  pgId("pid", "pg.pid", 78, true), pgId("leader_pid", "pg.leader_pid", 105), pgText("backend_type", "pg.backend_type", 150, true), pgText("datname", "pg.datname", 145), pgText("usename", "pg.usename", 130),
+export const ACTIVITY_COLUMNS: readonly EntityColumn[] = [
+  pgId("pid", "pg.field.pid", 78, true), pgId("leader_pid", "pg.leader_pid", 105), pgText("backend_type", "pg.backend_type", 150, true), pgText("datname", "pg.datname", 145), pgText("usename", "pg.usename", 130),
   pgText("application_name", "pg.application_name", 180), pgText("client_addr", "pg.client_addr", 150), pgText("state", "pg.state", 110), pgText("wait_event_type", "pg.wait_event_type", 135),
   pgText("wait_event", "pg.wait_event", 155), pgId("query_id", "pg.query_id", 150), pgNumber("backend_xid_age", "pg.backend_xid_age", 145), pgNumber("backend_xmin_age", "pg.backend_xmin_age", 145),
   pgTimestamp("backend_start", "pg.backend_start", 210), pgTimestamp("xact_start", "pg.xact_start", 210), pgTimestamp("query_start", "pg.query_start", 210), pgTimestamp("state_change", "pg.state_change", 210),
@@ -176,7 +176,7 @@ function PgEntityView({
   }, [focus, rows, section])
   const selectedKey = selected === null ? null : rowKey(selected)
   const selectedHistoryField = findingHistoryField(visibleColumns, finding, historyField)
-  return <div className={selected === null ? "pg-entity-layout pg-table-only" : "pg-entity-layout"}>
+  return <div className={selected === null ? "pg-entity-layout pg-table-only" : "pg-entity-layout"} data-pg-section={sectionName(section)} data-testid="pg-entity-layout">
     <EntityTable columns={visibleColumns} empty={t("table.no_rows")} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onSelect={setSelected} rows={rows} selectedKey={selectedKey} t={t} testId={`pg-${sectionName(section)}-table`} />
     {selected !== null && <PgDetail allRows={allRows} columns={visibleColumns} historyField={selectedHistoryField} hour={Math.floor(cursor / 3_600_000_000) * 3_600_000_000} locale={locale} onClose={() => setSelected(null)} row={selected} section={section} t={t} />}
   </div>
@@ -192,7 +192,7 @@ function PgDetail({ allRows, columns, historyField, hour, locale, onClose, row, 
   const historyColumn = columns.find((column) => column.field === historyField)
   const query = rawText(value(row, "query"))
   const fields = columns.filter((column) => column.field !== "query")
-  return <aside className="pg-detail">
+  return <aside className="pg-detail" data-testid="pg-detail">
     <header><div><span>{t(`pg.section.${sectionName(section)}`)}</span><h2>{detailTitle(row, section, t)}</h2></div><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
     <dl>{fields.map((column) => <div key={column.field}><dt>{column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}</dt><dd>{display(value(row, column.field), column, locale, t)}</dd></div>)}</dl>
     {query !== null && <section className="query-block"><span>{t("pg.query.label")}<button className="copy-raw" onClick={() => void navigator.clipboard?.writeText(query)} type="button">{t("common.raw")}</button></span><pre data-testid="pg-exact-query">{query}</pre></section>}

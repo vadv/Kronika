@@ -18,7 +18,7 @@ const compiled = await build({
     },
   }],
   stdin: {
-    contents: 'export { columnsFor, isTimestampField, overviewValue, postgresDatabaseCount, sameEntity, selectedEntity, STATEMENT_COLUMNS } from "../src/postgres-view.tsx"',
+    contents: 'export { ACTIVITY_COLUMNS, columnsFor, isTimestampField, overviewValue, postgresDatabaseCount, sameEntity, selectedEntity, STATEMENT_COLUMNS } from "../src/postgres-view.tsx"',
     loader: "tsx",
     resolveDir: directory,
   },
@@ -41,6 +41,13 @@ test("PostgreSQL durations are not formatted as Unix timestamps", () => {
   assert.equal(helpers.overviewValue(true, "datallowconn", "ru"), "да")
   assert.equal(helpers.columnsFor([row("1", { write_time: 123.4 })])[0].kind, "milliseconds")
   assert.equal(helpers.columnsFor([row("1", { max_age_us: 123.4 })])[0].kind, "microseconds")
+})
+
+test("activity keeps an explicit compact sticky PID header", () => {
+  assert.deepEqual(
+    helpers.ACTIVITY_COLUMNS[0],
+    { field: "pid", help: "pg.field.pid.help", kind: "id", label: "pg.field.pid.label", sticky: true, width: 78 },
+  )
 })
 
 test("statement histories keep top-level state and physical layouts distinct", () => {
