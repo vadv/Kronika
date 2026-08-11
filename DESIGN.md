@@ -562,9 +562,10 @@ representations use
 `Cache-Control: private, max-age=31536000, immutable`; all selection,
 projection and ordering parameters are part of their URL.
 
-Each finished per-section derived index has a stable URL and uses
-`Cache-Control: private, no-cache`. The browser revalidates it with the `ETag`
-from the `.idx` checksum. An unchanged index returns `304 Not Modified` with no
+Each finished per-section derived index has a stable URL and, because a
+finished segment cannot change, uses
+`Cache-Control: private, max-age=31536000, immutable` with the `ETag` from the
+`.idx` checksum. A browser that does revalidate gets `304 Not Modified` with no
 body. Active resources use `Cache-Control: private, no-store`. Basic
 authentication keeps all of these representations out of public and shared
 caches.

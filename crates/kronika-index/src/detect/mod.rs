@@ -139,7 +139,6 @@ impl FindingBuilder {
         })
     }
 
-
     /// Consume relevant rows from one preceding finished ZMS.
     pub(crate) fn observe_prior(&mut self, segment: &Segment) -> Result<(), BuildError> {
         if self.requested.contains(&OS_PROCESS) {

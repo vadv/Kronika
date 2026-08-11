@@ -242,7 +242,7 @@ fn resource_meta(kind: SegmentKind, checksum: Option<u32>) -> Result<ResponseMet
             })?;
             Ok(ResponseMeta {
                 status: StatusCode::OK,
-                cache: CachePolicy::Revalidate,
+                cache: CachePolicy::Immutable,
                 etag: Some(format!("\"{checksum:08x}\"")),
             })
         }

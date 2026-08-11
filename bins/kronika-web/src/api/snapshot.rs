@@ -172,8 +172,12 @@ impl PreparedSnapshot {
         let dictionary = self.segment.dictionary()?;
         let mut failure = None;
         let mut connected = true;
-        self.segment
-            .visit_rows(plan.type_id, &plan.projection, 0, usize::MAX, |ordinal, row| {
+        self.segment.visit_rows(
+            plan.type_id,
+            &plan.projection,
+            0,
+            usize::MAX,
+            |ordinal, row| {
                 if cancelled() {
                     connected = false;
                     return false;
@@ -186,7 +190,8 @@ impl PreparedSnapshot {
                     Err(error) => failure = Some(error),
                 }
                 connected && failure.is_none()
-            })?;
+            },
+        )?;
         if let Some(error) = failure {
             return Err(error);
         }
@@ -202,8 +207,12 @@ impl PreparedSnapshot {
     ) -> Result<Option<Moments>, ApiError> {
         let mut current: Option<i64> = None;
         let mut previous: Option<i64> = None;
-        self.segment
-            .visit_rows(plan.type_id, &[timestamp], 0, usize::MAX, |_ordinal, row| {
+        self.segment.visit_rows(
+            plan.type_id,
+            &[timestamp],
+            0,
+            usize::MAX,
+            |_ordinal, row| {
                 if cancelled() {
                     return false;
                 }
@@ -219,14 +228,17 @@ impl PreparedSnapshot {
                         previous = Some(chosen);
                         current = Some(stored);
                     }
-                    Some(chosen) if previous.is_none_or(|before| stored > before) && stored < chosen => {
+                    Some(chosen)
+                        if previous.is_none_or(|before| stored > before) && stored < chosen =>
+                    {
                         previous = Some(stored);
                     }
                     Some(_) => {}
                     None => current = Some(stored),
                 }
                 true
-            })?;
+            },
+        )?;
         Ok(current.map(|current| Moments { current, previous }))
     }
 
@@ -246,8 +258,12 @@ impl PreparedSnapshot {
         if counters.is_empty() {
             return Ok(collected);
         }
-        self.segment
-            .visit_rows(plan.type_id, &plan.projection, 0, usize::MAX, |_ordinal, row| {
+        self.segment.visit_rows(
+            plan.type_id,
+            &plan.projection,
+            0,
+            usize::MAX,
+            |_ordinal, row| {
                 if cancelled() {
                     return false;
                 }
@@ -265,7 +281,8 @@ impl PreparedSnapshot {
                 }
                 collected.insert(key, stored);
                 true
-            })?;
+            },
+        )?;
         Ok(collected)
     }
 

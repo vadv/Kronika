@@ -454,7 +454,7 @@ fn finished_index_and_catalog_have_revalidation_contracts_and_source_facts() {
     let prepared = fixture.prepare(&index_target, None);
     let meta = prepared.meta();
     assert_eq!(meta.status, StatusCode::OK);
-    assert_eq!(meta.cache, CachePolicy::Revalidate);
+    assert_eq!(meta.cache, CachePolicy::Immutable);
     let etag = meta.etag.expect("finished index ETag");
     let index = stream(prepared).expect("finished index body");
     assert!(index.iter().any(|record| record["record"] == "point"));
@@ -462,7 +462,7 @@ fn finished_index_and_catalog_have_revalidation_contracts_and_source_facts() {
     let offered = format!("\"stale\", W/{etag}");
     let not_modified = fixture.prepare(&index_target, Some(&offered));
     assert_eq!(not_modified.meta().status, StatusCode::NOT_MODIFIED);
-    assert_eq!(not_modified.meta().cache, CachePolicy::Revalidate);
+    assert_eq!(not_modified.meta().cache, CachePolicy::Immutable);
     assert_eq!(not_modified.meta().etag.as_deref(), Some(etag.as_str()));
     assert!(matches!(not_modified, Prepared::Empty(_)));
 

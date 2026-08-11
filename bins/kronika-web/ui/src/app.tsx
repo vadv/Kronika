@@ -178,12 +178,17 @@ function App() {
     loaded.current = { hour, keys: new Set() }
     void listSegments(hour, controller.signal).then((bounds) => {
       setSegments(bounds)
-      return loadHour(hour, controller.signal, TIMELINE_REQUESTS)
+      return loadHour(hour, controller.signal, TIMELINE_REQUESTS, undefined, ["history"])
     }).then((incoming) => {
       setData(incoming)
       const times = incoming.health.map((row) => row.timestamp)
       setCursor(times.length === 0 ? hour : Math.max(...times))
       setLoading(false)
+      // The marks live in index resources, and asking for one builds it. They
+      // come after the line is on screen rather than in front of it.
+      void loadHour(hour, controller.signal, TIMELINE_REQUESTS, undefined, ["index"])
+        .then((marks) => setData((before) => mergeHourData(before, marks)))
+        .catch(() => { /* the line stands without its marks */ })
     }).catch((reason: unknown) => {
       if (controller.signal.aborted) return
       setSegments([])

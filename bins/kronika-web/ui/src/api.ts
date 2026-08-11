@@ -176,6 +176,7 @@ export async function loadHour(
   signal: AbortSignal,
   wanted?: readonly SectionRequest[],
   onlySegments?: readonly string[],
+  kinds: readonly LoadTask["kind"][] = ["history", "index"],
 ): Promise<HourData> {
   const fixture = bundledFixtureHour(start)
   if (fixture !== null) return fixture
@@ -188,7 +189,9 @@ export async function loadHour(
   )
   const sourceFamilies = catalog
     .find((record) => record.record === "catalog")?.source_families as readonly SourceFamily[] | undefined
-  const tasks = segments.flatMap((segment) => segmentTasks(segment, wanted))
+  const tasks = segments
+    .flatMap((segment) => segmentTasks(segment, wanted))
+    .filter((task) => kinds.includes(task.kind))
   const loaded = await mapLimited(tasks, REQUEST_CONCURRENCY, (task) => runTask(task, signal))
   const within = (row: { readonly timestamp: number }) => row.timestamp >= start && row.timestamp < end
   const grouped: Record<string, DataRow[]> = {}
@@ -344,6 +347,9 @@ function segmentTasks(segment: Segment, wanted?: readonly SectionRequest[]): rea
       ? { kind: "history" as const, segmentId: segment.id, logicalName }
       : { kind: "history" as const, segmentId: segment.id, logicalName, fields }
   })
+  // An index resource builds its file when one is not on disk, and the root
+  // takes a single writer, so asking every segment for its marks at once waits
+  // out every build. Callers take the history kind first and come back.
   for (const logicalName of names) tasks.push({ kind: "index", segmentId: segment.id, logicalName })
   if ((keep === null || keep.has("health")) && segmentSectionNames(segment).some((name) => name.startsWith("os_"))) {
     tasks.push(

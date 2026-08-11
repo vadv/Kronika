@@ -14,6 +14,8 @@ use kronika_registry::logical_section_name;
 /// Extension of an index file.
 pub const EXTENSION: &str = "idx";
 const SEGMENT_EXTENSION: &str = "zms";
+const OWNER_RETRY: std::time::Duration = std::time::Duration::from_millis(200);
+const OWNER_ATTEMPTS: u32 = 150;
 
 /// A validated resource and whether it came from an immutable sidecar.
 #[derive(Debug, Clone, PartialEq)]
@@ -134,53 +136,56 @@ pub fn resource(
         SegmentKind::Finished => {
             let data_root = DataRoot::open(root)?;
             let address = address_of(segment_ref.id())?;
-            if let Some(mut file) = data_root.open_idx(address)?
-                && let Ok(selected) = read_target(&mut file, &keys)
-                && contains_targets(&selected, &keys)
-            {
-                return Ok(ResourceIndex {
-                    index: selected,
-                    persisted: true,
-                });
+            for _ in 0..OWNER_ATTEMPTS {
+                if let Some(mut file) = data_root.open_idx(address)?
+                    && let Ok(selected) = read_target(&mut file, &keys)
+                    && contains_targets(&selected, &keys)
+                {
+                    return Ok(ResourceIndex {
+                        index: selected,
+                        persisted: true,
+                    });
+                }
+
+                match data_root.acquire_index(LayoutLimits::default()) {
+                    Ok(owner) => {
+                        // Capture the immutable source identity before opening
+                        // it through the reader. Publication revalidates this
+                        // exact identity after the complete build.
+                        let mut temporary = owner.create_idx_temp(address)?;
+                        let segment = reader.open_segment(segment_ref)?;
+                        let index = build_from_reader(reader, segment_ref, &segment)?;
+                        let bytes = index.encode().map_err(LoadError::Bad)?;
+                        let checksum = encoded_checksum(&bytes)?;
+                        temporary.file_mut().write_all(&bytes)?;
+                        drop(temporary.try_clone_file()?);
+                        temporary.publish()?;
+                        return Ok(ResourceIndex {
+                            index: targeted(index, &keys, Some(checksum)),
+                            persisted: true,
+                        });
+                    }
+                    // One writer holds the whole root, so concurrent callers
+                    // build in turn rather than at once. Waiting spends idle
+                    // time; building here would spend a core on bytes that
+                    // are thrown away, leaving the next caller to repeat it.
+                    Err(LayoutError::OwnerContended {
+                        owner: OwnerKind::Index,
+                    }) => std::thread::sleep(OWNER_RETRY),
+                    Err(error) => return Err(LoadError::Layout(error)),
+                }
             }
 
-            match data_root.acquire_index(LayoutLimits::default()) {
-                Ok(owner) => {
-                    // Capture the immutable source identity before opening it
-                    // through the reader. Publication revalidates this exact
-                    // identity after the complete build.
-                    let mut temporary = owner.create_idx_temp(address)?;
-                    let segment = reader.open_segment(segment_ref)?;
-                    let index = build_from_reader(reader, segment_ref, &segment)?;
-                    let bytes = index.encode().map_err(LoadError::Bad)?;
-                    let checksum = encoded_checksum(&bytes)?;
-                    temporary.file_mut().write_all(&bytes)?;
-                    drop(temporary.try_clone_file()?);
-                    temporary.publish()?;
-                    Ok(ResourceIndex {
-                        index: targeted(index, &keys, Some(checksum)),
-                        persisted: true,
-                    })
-                }
-                Err(LayoutError::OwnerContended {
-                    owner: OwnerKind::Index,
-                }) => {
-                    // Another cold request may be publishing the same
-                    // canonical bytes. Serving a locally validated build keeps
-                    // lock contention out of the HTTP failure surface; its
-                    // full-file checksum is the same stable representation
-                    // tag the winning publisher computes.
-                    let segment = reader.open_segment(segment_ref)?;
-                    let index = build_from_reader(reader, segment_ref, &segment)?;
-                    let bytes = index.encode().map_err(LoadError::Bad)?;
-                    let checksum = encoded_checksum(&bytes)?;
-                    Ok(ResourceIndex {
-                        index: targeted(index, &keys, Some(checksum)),
-                        persisted: false,
-                    })
-                }
-                Err(error) => Err(LoadError::Layout(error)),
-            }
+            // The holder never released. Answer from a local build; the
+            // checksum is the same stable tag a publisher would compute.
+            let segment = reader.open_segment(segment_ref)?;
+            let index = build_from_reader(reader, segment_ref, &segment)?;
+            let bytes = index.encode().map_err(LoadError::Bad)?;
+            let checksum = encoded_checksum(&bytes)?;
+            Ok(ResourceIndex {
+                index: targeted(index, &keys, Some(checksum)),
+                persisted: false,
+            })
         }
     }
 }
