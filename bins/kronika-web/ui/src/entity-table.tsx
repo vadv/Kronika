@@ -8,10 +8,10 @@ import {
   useReactTable,
 } from "@tanstack/react-table"
 import { useVirtualizer } from "@tanstack/react-virtual"
-import { useCallback, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import type { Cell, DataRow } from "./api"
-import { fittedWidth, widestCell } from "./column-size"
+import { fittedWidth, headerWidths, widestCell } from "./column-size"
 import { LabelHelp, type Translate } from "./help"
 import { asNumber, formatUtc, identifier, measure, rawText, value, type Locale } from "./model"
 
@@ -72,10 +72,11 @@ export function EntityTable({
   const parent = useRef<HTMLDivElement>(null)
   const columns = useMemo<ColumnDef<DataRow>[]>(() => fields.map((field, index) => ({
     accessorFn: (row) => sortable(value(row, field.field), field.kind),
-    cell: ({ row }) => <Cell cell={value(row.original, field.field)} kind={field.kind} locale={locale} rate={field.rate} />,
+    cell: ({ row }) => <Cell cell={value(row.original, field.field)} kind={field.kind} locale={locale} rate={field.rate} t={t} />,
     header: () => t === undefined ? field.label : t(field.label),
     id: field.field,
     meta: {
+      numeric: NUMERIC_KINDS.has(field.kind ?? "text"),
       sticky: field.sticky === true,
       stickyLeft: fields.slice(0, index).reduce((left, candidate) => left + (candidate.sticky === true ? candidate.width ?? 128 : 0), 0),
       help: field.help,
@@ -110,6 +111,31 @@ export function EntityTable({
   })
   // A grip is dragged to resize and double clicked to fit: the width of the
   // widest cell on screen, which is what a person means by "fit".
+  // A header is the contract of its column: the column is widened to hold it
+  // before anything else decides the width.
+  const head = useRef<HTMLDivElement>(null)
+  const automatic = useRef<ColumnSizingState>({})
+  useEffect(() => {
+    const row = head.current
+    if (row === null) return
+    const wanted = headerWidths(row)
+    setSizing((current) => {
+      const next = { ...current }
+      fields.forEach((field, index) => {
+        const needed = wanted[index]
+        // A width the reader chose by dragging or fitting outranks this one.
+        const own = current[field.field] === undefined || current[field.field] === automatic.current[field.field]
+        if (needed === undefined || !own) return
+        if (needed > (field.width ?? 128)) {
+          next[field.field] = needed
+          automatic.current[field.field] = needed
+        } else {
+          delete next[field.field]
+        }
+      })
+      return next
+    })
+  }, [fields, locale])
   const fit = useCallback((id: string, index: number) => {
     const root = parent.current
     if (root === null) return
@@ -120,7 +146,7 @@ export function EntityTable({
   const width = table.getTotalSize()
   return <section aria-label={label} className="entity-table" data-testid={testId}>
     <div className="entity-scroll" ref={parent} role="table">
-      <div className="entity-head" role="row" style={{ width }}>
+      <div className="entity-head" ref={head} role="row" style={{ width }}>
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {
           const sorted = header.column.getIsSorted()
           return <div className={sticky(header.column.columnDef.meta, true)} key={header.id} role="columnheader" style={{ left: stickyLeft(header.column.columnDef.meta), width: header.getSize() }}>
@@ -162,24 +188,29 @@ export function EntityTable({
   </section>
 }
 
-export function unit(base: string, rate: boolean | undefined): string {
-  return rate === true ? `${base}/s` : base
+/** A number is read by comparing digits: numbers line up on the right, names
+ *  on the left, header included. */
+const NUMERIC_KINDS = new Set(["number", "bytes", "kib", "milliseconds", "microseconds", "percent"])
+
+export function unit(base: string, rate: boolean | undefined, perSecond = "/s"): string {
+  return rate === true ? `${base}${perSecond}` : base
 }
 
-function Cell({ cell, kind = "text", locale, rate }: { readonly cell: Cell; readonly kind?: EntityColumn["kind"]; readonly locale: Locale; readonly rate?: boolean | undefined }) {
+function Cell({ cell, kind = "text", locale, rate, t }: { readonly cell: Cell; readonly kind?: EntityColumn["kind"]; readonly locale: Locale; readonly rate?: boolean | undefined; readonly t?: Translate | undefined }) {
+  const per = t === undefined ? "/s" : t("unit.per_second")
   if (cell === null) return <span className="null-cell">—</span>
   if (kind === "id") return <span className="entity-value id-value">{identifier(cell)}</span>
   if (kind === "timestamp") {
     const timestamp = asNumber(cell)
     return <span className="entity-value">{timestamp === null ? "—" : formatUtc(timestamp)}</span>
   }
-  if (kind === "bytes") return <span className="entity-value">{measure(cell, locale, unit(" B", rate))}</span>
-  if (kind === "kib") return <span className="entity-value">{measure(cell, locale, unit(" KiB", rate))}</span>
-  if (kind === "milliseconds") return <span className="entity-value">{measure(cell, locale, unit(" ms", rate))}</span>
-  if (kind === "microseconds") return <span className="entity-value">{measure(cell, locale, unit(" μs", rate))}</span>
-  if (kind === "percent") return <span className="entity-value">{measure(cell, locale, unit("%", rate))}</span>
+  if (kind === "bytes") return <span className="entity-value">{measure(cell, locale, unit(t === undefined ? " B" : t("unit.byte"), rate, per))}</span>
+  if (kind === "kib") return <span className="entity-value">{measure(cell, locale, unit(" KiB", rate, per))}</span>
+  if (kind === "milliseconds") return <span className="entity-value">{measure(cell, locale, unit(t === undefined ? " ms" : t("unit.ms"), rate, per))}</span>
+  if (kind === "microseconds") return <span className="entity-value">{measure(cell, locale, unit(t === undefined ? " μs" : t("unit.us"), rate, per))}</span>
+  if (kind === "percent") return <span className="entity-value">{measure(cell, locale, unit("%", rate, per))}</span>
   if (kind === "boolean") return <span className="entity-value">{cell === true ? locale === "ru" ? "да" : "true" : cell === false ? locale === "ru" ? "нет" : "false" : rawText(cell) ?? "—"}</span>
-  if (kind === "number") return <span className="entity-value">{measure(cell, locale, unit("", rate))}</span>
+  if (kind === "number") return <span className="entity-value">{measure(cell, locale, unit("", rate, per))}</span>
   return <span className="entity-value text-value" title={rawText(cell) ?? "—"}>{rawText(cell) ?? "—"}</span>
 }
 
@@ -190,8 +221,12 @@ function sortable(cell: Cell, kind: EntityColumn["kind"]): string | number | boo
 }
 
 function sticky(meta: unknown, head: boolean): string {
-  const enabled = (meta as { readonly sticky?: boolean } | undefined)?.sticky === true
-  return `${head ? "entity-header-cell" : "entity-cell"}${enabled ? " entity-sticky" : ""}`
+  const cell = meta as { readonly sticky?: boolean; readonly numeric?: boolean } | undefined
+  return [
+    head ? "entity-header-cell" : "entity-cell",
+    cell?.numeric === true ? "align-right" : "",
+    cell?.sticky === true ? "entity-sticky" : "",
+  ].filter(Boolean).join(" ")
 }
 
 function stickyLeft(meta: unknown): number | undefined {

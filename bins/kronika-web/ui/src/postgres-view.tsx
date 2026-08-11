@@ -304,13 +304,14 @@ function display(cell: ReturnType<typeof value>, column: EntityColumn, locale: L
     return timestamp === null ? "—" : <TimestampValue t={t} timestamp={timestamp} />
   }
   if (column.kind === "id") return rawText(cell) ?? "—"
-  if (column.kind === "bytes") return unit(humanBytes(cell, locale), column.rate)
-  if (column.kind === "kib") return unit(humanBytes(asNumber(cell) === null ? null : (asNumber(cell) ?? 0) * 1024, locale), column.rate)
-  if (column.kind === "milliseconds") return measure(cell, locale, unit(" ms", column.rate))
-  if (column.kind === "microseconds") return measure(cell, locale, unit(" μs", column.rate))
-  if (column.kind === "percent") return measure(cell, locale, unit("%", column.rate))
+  const per = t("unit.per_second")
+  if (column.kind === "bytes") return unit(humanBytes(cell, locale), column.rate, per)
+  if (column.kind === "kib") return unit(humanBytes(asNumber(cell) === null ? null : (asNumber(cell) ?? 0) * 1024, locale), column.rate, per)
+  if (column.kind === "milliseconds") return measure(cell, locale, unit(t("unit.ms"), column.rate, per))
+  if (column.kind === "microseconds") return measure(cell, locale, unit(t("unit.us"), column.rate, per))
+  if (column.kind === "percent") return measure(cell, locale, unit("%", column.rate, per))
   if (column.kind === "boolean" && typeof cell === "boolean") return locale === "ru" ? cell ? "да" : "нет" : String(cell)
-  if (typeof cell === "number") return measure(cell, locale, unit("", column.rate))
+  if (typeof cell === "number") return measure(cell, locale, unit("", column.rate, per))
   return rawText(cell) ?? "—"
 }
 

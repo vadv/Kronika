@@ -159,7 +159,11 @@ h2 { font-size: var(--t-md); }
 .workspace { padding: 8px 10px 20px; }
 .cursor-time { color: var(--accent3); flex: 0 0 auto; font-size: var(--t-sm); font-variant-numeric: tabular-nums; }
 .shown-line { stroke: var(--accent3); stroke-width: 1; }
-.process-head [role="columnheader"], .entity-head [role="columnheader"] { position: relative; user-select: none; }
+/* A pinned header is already a positioning context; giving it `relative` would
+   drop the pin and shift the column by its own offset. */
+.process-head [role="columnheader"], .entity-head [role="columnheader"] { user-select: none; }
+.process-header-cell:not(.sticky-pid):not(.sticky-start):not(.sticky-command),
+.entity-header-cell:not(.entity-sticky) { position: relative; }
 .column-grip { bottom: 0; cursor: col-resize; position: absolute; right: 0; top: 0; touch-action: none; width: 7px; }
 .column-grip:hover { background: var(--accent3); opacity: 0.5; }
 .cursor-missing { color: var(--warn); font-size: var(--t-xs); margin-left: 8px; text-transform: uppercase; }
@@ -186,9 +190,11 @@ h2 { font-size: var(--t-md); }
 .metric-label > span:first-child { color: var(--fg4); margin-right: 7px; }
 .metric-card strong { color: var(--fg); display: block; font-size: clamp(18px, 2vw, 27px); font-weight: 620; letter-spacing: -.04em; margin-top: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .timeline-shell { background: var(--s1); border: 1px solid var(--line2); display: grid; grid-template-columns: 190px minmax(0, 1fr); margin-top: 11px; min-height: 224px; padding: 8px; }
-.lane-reading { color: var(--fg); text-transform: none; font-size: var(--t-sm); font-variant-numeric: tabular-nums; margin-left: auto; padding-left: 8px; white-space: nowrap; }
+.lane-reading { color: var(--fg); flex: 0 0 auto; font-size: var(--t-sm); font-variant-numeric: tabular-nums; margin-left: auto; text-align: right; text-transform: none; white-space: nowrap; }
 .timeline-labels { display: grid; grid-template-rows: repeat(5, 36px); padding-top: 22px; }
-.lane-label { align-items: center; border-bottom: 1px solid var(--line); color: var(--fg3); display: flex; font-size: var(--t-sm); padding: 0 6px 0 5px; text-transform: uppercase; }
+.lane-label { align-items: center; border-bottom: 1px solid var(--line); color: var(--fg3); display: flex; font-size: var(--t-sm); gap: 8px; padding: 0 6px 0 5px; text-transform: uppercase; }
+.lane-label .label-help { min-width: 0; }
+.lane-label .label-help > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lane-label:last-child { border-bottom: 0; }
 .timeline-plot { cursor: crosshair; min-width: 0; touch-action: none; }
 .timeline-plot svg { display: block; height: 205px; overflow: visible; width: 100%; }
@@ -228,9 +234,14 @@ h2 { font-size: var(--t-md); }
 .process-header-cell, .process-cell { border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); flex: 0 0 auto; min-width: 0; overflow: hidden; padding: 0 8px; }
 .process-header-cell { align-items: center; color: var(--fg3); display: flex; font-size: var(--t-xs); letter-spacing: .035em; text-transform: uppercase; }
 .column-head { align-items: center; display: flex; min-width: 0; width: 100%; }
+.align-right .column-head, .align-right .entity-sort { justify-content: flex-end; }
+.align-right .entity-sort { text-align: right; }
+.align-right .column-head > button { text-align: right; }
+.process-cell.align-right, .entity-cell.align-right { text-align: right; }
+.align-right .numeric-cell, .align-right .entity-value { display: block; text-align: right; width: 100%; }
 .column-head > button { background: transparent; border: 0; color: inherit; cursor: pointer; min-width: 0; overflow: hidden; padding: 8px 0; text-align: left; text-overflow: ellipsis; text-transform: inherit; white-space: nowrap; }
 .sort-mark { color: var(--accent2); margin-left: 5px; }
-.column-help { margin-left: auto; padding-left: 4px; }
+.column-help { flex: 0 0 auto; padding-left: 4px; }
 .process-row { background: var(--s1); cursor: pointer; display: flex; left: 0; min-width: 100%; position: absolute; top: 0; }
 .process-row:nth-child(even) { background: var(--zebra); }
 .process-row:hover { background: var(--s3); }
@@ -241,9 +252,7 @@ h2 { font-size: var(--t-md); }
 .command-cell { color: var(--fg); width: 100%; }
 .pg-badge { background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent2); display: inline-block; font-size: var(--t-xs); font-weight: 700; letter-spacing: .06em; margin-right: 6px; padding: 2px 4px; vertical-align: 1px; }
 .sticky-pid, .sticky-start, .sticky-command { background: inherit; position: sticky; z-index: 10; }
-.sticky-pid { left: 0; }
-.sticky-start { left: 62px; }
-.sticky-command { box-shadow: 5px 0 8px var(--shadow-b); left: 204px; }
+.sticky-command { box-shadow: 5px 0 8px var(--shadow-b); }
 .process-header-cell.sticky-pid, .process-header-cell.sticky-start, .process-header-cell.sticky-command { background: var(--s2); z-index: 40; }
 .virtual-body { position: relative; }
 .table-empty { color: var(--fg4); font-size: var(--t-sm); padding: 22px; }
@@ -305,6 +314,11 @@ h2 { font-size: var(--t-md); }
 .series-chart figcaption span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .series-chart figcaption span:last-child { color: var(--fg2); flex: 0 0 auto; font-variant-numeric: tabular-nums; text-transform: none; white-space: nowrap; }
 .series-chart svg { display: block; height: 126px; width: 100%; }
+/* Without a scale the shape of a sparkline says nothing: the ceiling and the
+   floor of the axis are written on it. */
+.series-ceiling, .series-floor { background: var(--s1); color: var(--fg4); box-shadow: 0 0 0 2px var(--s1); font-size: var(--t-xs); font-variant-numeric: tabular-nums; line-height: 1.2; padding: 0 3px; pointer-events: none; position: absolute; right: 10px; }
+.series-ceiling { top: 24px; }
+.series-floor { top: 112px; }
 .mini-grid { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .mini-zero { stroke: var(--line3); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .mini-series { fill: none; stroke: var(--accent); stroke-width: 1.6; vector-effect: non-scaling-stroke; }

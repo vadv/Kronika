@@ -11,7 +11,7 @@ import { useVirtualizer } from "@tanstack/react-virtual"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import type { Cell, DataRow } from "./api"
-import { fittedWidth, widestCell } from "./column-size"
+import { fittedWidth, headerWidths, widestCell } from "./column-size"
 import { LabelHelp, type Translate } from "./help"
 import {
   asNumber,
@@ -124,7 +124,7 @@ export function ProcessTable({
       </div>
     ),
     cell: ({ row }) => <CellValue field={field} locale={locale} linked={linkedPids.has(asNumber(value(row.original, "pid")) ?? -1)} row={row.original} t={t} ticksPerSecond={ticksPerSecond} />,
-    meta: { sticky: field.sticky },
+    meta: { numeric: isNumeric(field.kind), sticky: field.sticky },
   })), [lens, linkedPids, locale, t, ticksPerSecond])
   const table = useReactTable({
     columns,
@@ -142,6 +142,31 @@ export function ProcessTable({
   const scroll = useRef<HTMLDivElement>(null)
   // A grip is dragged to resize and double clicked to fit: the width of the
   // widest cell on screen, which is what a person means by "fit".
+  // A header is the contract of its column: it is laid out first, and the
+  // column is widened to hold it before anything else decides the width.
+  const head = useRef<HTMLDivElement>(null)
+  const automatic = useRef<ColumnSizingState>({})
+  useEffect(() => {
+    const row = head.current
+    if (row === null) return
+    const wanted = headerWidths(row)
+    setSizing((current) => {
+      const next = { ...current }
+      LENS_FIELDS[lens].forEach((field, index) => {
+        const needed = wanted[index]
+        // A width the reader chose by dragging or fitting outranks this one.
+        const own = current[field.id] === undefined || current[field.id] === automatic.current[field.id]
+        if (needed === undefined || !own) return
+        if (needed > field.size) {
+          next[field.id] = needed
+          automatic.current[field.id] = needed
+        } else {
+          delete next[field.id]
+        }
+      })
+      return next
+    })
+  }, [lens, locale])
   const fit = useCallback((id: string, index: number) => {
     const root = scroll.current
     if (root === null) return
@@ -149,11 +174,15 @@ export function ProcessTable({
   }, [])
   const virtual = useVirtualizer({ count: displayed.length, estimateSize: () => 23, getScrollElement: () => scroll.current, overscan: 14 })
   const width = table.getTotalSize()
+  const pinnedWidths = PINNED_ORDER.map((name) => {
+    const column = table.getAllColumns().find((candidate) => (candidate.columnDef.meta as { readonly sticky?: string } | undefined)?.sticky === name)
+    return column === undefined ? 0 : column.getSize()
+  })
   return (
     <div aria-label={t("table.processes")} className="process-table" data-testid="process-table" role="table">
       <div className="process-scroll" ref={scroll}>
-        <div className="process-head" role="row" style={{ width }}>
-          {table.getHeaderGroups()[0]?.headers.map((header, index) => <div className={stickyClass(header.column.columnDef.meta, true)} key={header.id} role="columnheader" style={{ width: header.getSize() }}>
+        <div className="process-head" ref={head} role="row" style={{ width }}>
+          {table.getHeaderGroups()[0]?.headers.map((header, index) => <div className={stickyClass(header.column.columnDef.meta, true)} key={header.id} role="columnheader" style={{ left: stickyLeft(header.column.columnDef.meta, pinnedWidths), width: header.getSize() }}>
             {flexRender(header.column.columnDef.header, header.getContext())}
             <span className="column-grip" onDoubleClick={() => fit(header.column.id, index)} onMouseDown={header.getResizeHandler()} onTouchStart={header.getResizeHandler()} />
           </div>)}
@@ -181,7 +210,7 @@ export function ProcessTable({
                   style={{ height: item.size, transform: `translateY(${item.start}px)`, width }}
                   tabIndex={0}
                 >
-                  {row.getVisibleCells().map((cell) => <div className={stickyClass(cell.column.columnDef.meta, false)} key={cell.id} role="cell" style={{ width: cell.column.getSize() }}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</div>)}
+                  {row.getVisibleCells().map((cell) => <div className={stickyClass(cell.column.columnDef.meta, false)} key={cell.id} role="cell" style={{ left: stickyLeft(cell.column.columnDef.meta, pinnedWidths), width: cell.column.getSize() }}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</div>)}
                 </div>
               )
             })}
@@ -296,6 +325,30 @@ function bytesField(field: string, key: string, size: number): Field { return { 
 function nsField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "ns", size } }
 
 function stickyClass(meta: unknown, head: boolean): string {
-  const sticky = (meta as { readonly sticky?: "pid" | "start" | "command" } | undefined)?.sticky
-  return [head ? "process-header-cell" : "process-cell", sticky === "pid" ? "sticky-pid" : "", sticky === "start" ? "sticky-start" : "", sticky === "command" ? "sticky-command" : ""].filter(Boolean).join(" ")
+  const cell = meta as { readonly sticky?: "pid" | "start" | "command"; readonly numeric?: boolean } | undefined
+  const sticky = cell?.sticky
+  return [
+    head ? "process-header-cell" : "process-cell",
+    cell?.numeric === true ? "align-right" : "",
+    sticky === "pid" ? "sticky-pid" : "",
+    sticky === "start" ? "sticky-start" : "",
+    sticky === "command" ? "sticky-command" : "",
+  ].filter(Boolean).join(" ")
+}
+
+/** Where a pinned column comes to rest: after the pinned columns before it,
+ *  which moves when any of them is resized. */
+function stickyLeft(meta: unknown, pinnedWidths: readonly number[]): number | undefined {
+  const pinned = (meta as { readonly sticky?: "pid" | "start" | "command" } | undefined)?.sticky
+  if (pinned === undefined) return undefined
+  const index = PINNED_ORDER.indexOf(pinned)
+  return pinnedWidths.slice(0, index).reduce((left, width) => left + width, 0)
+}
+
+const PINNED_ORDER = ["pid", "start", "command"] as const
+
+/** A number is read by comparing digits, so numbers line up on the right and
+ *  names on the left, header included. */
+export function isNumeric(kind: Field["kind"]): boolean {
+  return kind === "number" || kind === "rate" || kind === "cores" || kind === "kib" || kind === "bytes" || kind === "ns"
 }

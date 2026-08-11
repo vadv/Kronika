@@ -32,7 +32,9 @@ export function SeriesChart({
   const end = hour + 3_600_000_000
   const numeric = points.filter((point): point is NumericChartPoint => point.value !== null && Number.isFinite(point.value))
   const values = numeric.map((point) => point.value)
-  const low = values.length === 0 ? 0 : Math.min(...values)
+  // A chart that starts at its own minimum turns a flat line into a mountain
+  // range: the floor is zero, so height means the same thing in every card.
+  const low = Math.min(0, ...values)
   const high = values.length === 0 ? 0 : Math.max(...values)
   const span = high - low || 1
   const paths = chartRuns(points)
@@ -56,6 +58,8 @@ export function SeriesChart({
         return <path className="mini-series" d={path} key={segmentId} />
       })}
     </svg>
+    <span aria-hidden="true" className="series-ceiling">{values.length === 0 ? "" : (format ?? number)(high, locale)}</span>
+    {low !== 0 && <span aria-hidden="true" className="series-floor">{(format ?? number)(low, locale)}</span>}
     <TimeTicks className="mini-time-ticks" hour={hour} />
   </figure>
 }

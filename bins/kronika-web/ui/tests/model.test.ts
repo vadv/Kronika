@@ -76,8 +76,8 @@ test("the shown moment is the last sample at or before the cursor", () => {
 })
 
 test("a fitted column takes the widest cell within bounds", () => {
-  assert.equal(fittedWidth(200), 210)
+  assert.equal(fittedWidth(200), 212)
   assert.equal(fittedWidth(0), 64)
   assert.equal(fittedWidth(4000), 720)
-  assert.equal(fittedWidth(120.2), 131)
+  assert.equal(fittedWidth(120.2), 133)
 })
