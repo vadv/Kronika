@@ -233,6 +233,12 @@ h2 { font-size: var(--t-md); }
 .process-layout-table { grid-template-columns: minmax(0, 1fr); }
 .process-table { background: var(--s1); border: 1px solid var(--line2); min-width: 0; overflow: hidden; }
 .process-scroll { height: min(570px, calc(100vh - 370px)); min-height: 300px; overflow: auto; position: relative; }
+.table-filter { align-items: center; background: var(--s2); border-bottom: 1px solid var(--line2); color: var(--fg3); display: flex; gap: 6px; min-height: 26px; padding: 0 7px; }
+.table-filter input { background: transparent; border: 0; color: var(--fg); flex: 1 1 auto; font-family: inherit; font-size: var(--t-sm); min-width: 0; outline: none; padding: 4px 0; }
+.table-filter input::placeholder { color: var(--fg4); }
+.table-filter input::-webkit-search-cancel-button { appearance: none; display: none; }
+.table-filter-count { color: var(--fg3); flex: 0 0 auto; font-size: var(--t-xs); font-variant-numeric: tabular-nums; }
+.table-filter button { align-items: center; background: transparent; border: 0; color: var(--accent3); cursor: pointer; display: inline-flex; flex: 0 0 auto; padding: 2px; }
 .process-head { background: var(--s2); display: flex; height: var(--head); min-width: 100%; position: sticky; top: 0; z-index: 30; }
 .process-header-cell, .process-cell { border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); flex: 0 0 auto; min-width: 0; overflow: hidden; padding: 0 8px; }
 .process-header-cell { align-items: center; color: var(--fg3); display: flex; font-size: var(--t-xs); letter-spacing: .035em; text-transform: uppercase; }

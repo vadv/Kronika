@@ -12,7 +12,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import type { Cell, DataRow } from "./api"
 import { fittedWidth, headerWidths, widestCell } from "./column-size"
+import { globMatcher } from "./glob"
 import { LabelHelp, type Translate } from "./help"
+import { TableFilter } from "./table-filter"
 import { asNumber, formatUtc, identifier, measure, rawText, value, type Locale } from "./model"
 
 export interface EntityColumn {
@@ -66,6 +68,7 @@ export function EntityTable({
   // than the two hundred largest by that column.
   const [sorting, setSorting] = useState<SortingState>([])
   const [sizing, setSizing] = useState<ColumnSizingState>({})
+  const [pattern, setPattern] = useState("")
   const ordering: SortingState = order === undefined
     ? sorting
     : [{ id: order.column, desc: order.descending }]
@@ -87,7 +90,17 @@ export function EntityTable({
   // The table keeps its own model keyed on this reference. A fresh array every
   // render rebuilds that model every render, and the process table next door
   // does not do it.
-  const data = useMemo(() => [...rows], [rows])
+  // Text of a row is what a person searches by: a query, a database, a role,
+  // a wait event — every column that is not a number.
+  const data = useMemo(() => {
+    const match = globMatcher(pattern)
+    if (match === null) return [...rows]
+    const texts = fields.filter((field) => field.kind === undefined || field.kind === "text" || field.kind === "id")
+    return rows.filter((row) => texts.some((field) => {
+      const text = rawText(value(row, field.field))
+      return text !== null && match(text)
+    }))
+  }, [fields, pattern, rows])
   const table = useReactTable({
     columns,
     data,
@@ -145,6 +158,7 @@ export function EntityTable({
   const virtual = useVirtualizer({ count: rendered.length, estimateSize: () => 23, getScrollElement: () => parent.current, overscan: 10 })
   const width = table.getTotalSize()
   return <section aria-label={label} className="entity-table" data-testid={testId}>
+    {t !== undefined && <TableFilter kept={data.length} onPattern={setPattern} pattern={pattern} t={t} total={rows.length} />}
     <div className="entity-scroll" ref={parent} role="table">
       <div className="entity-head" ref={head} role="row" style={{ width }}>
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {
@@ -160,7 +174,7 @@ export function EntityTable({
         })}
       </div>
       {rendered.length === 0
-        ? <p className="table-empty">{empty}</p>
+        ? <p className="table-empty">{pattern !== "" && t !== undefined ? t("filter.none") : empty}</p>
         : <div className="virtual-body" style={{ height: virtual.getTotalSize(), width }}>
           {virtual.getVirtualItems().map((item) => {
             const row = rendered[item.index]

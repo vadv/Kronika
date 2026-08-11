@@ -12,6 +12,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import type { Cell, DataRow } from "./api"
 import { fittedWidth, headerWidths, widestCell } from "./column-size"
+import { TableFilter } from "./table-filter"
+import { globMatcher } from "./glob"
 import { LabelHelp, type Translate } from "./help"
 import {
   asNumber,
@@ -104,6 +106,7 @@ export function ProcessTable({
   readonly ticksPerSecond: number | null
 }) {
   const [sorting, setSorting] = useState<SortingState>([])
+  const [pattern, setPattern] = useState("")
   const [sizing, setSizing] = useState<ColumnSizingState>({})
   useEffect(() => {
     setSorting(lens === "generic" ? [{ id: "pid", desc: false }] : [{ id: defaultSort(lens), desc: true }])
@@ -126,9 +129,20 @@ export function ProcessTable({
     cell: ({ row }) => <CellValue field={field} locale={locale} linked={linkedPids.has(asNumber(value(row.original, "pid")) ?? -1)} row={row.original} t={t} ticksPerSecond={ticksPerSecond} />,
     meta: { numeric: isNumeric(field.kind), sticky: field.sticky },
   })), [lens, linkedPids, locale, t, ticksPerSecond])
+  // Text of a row is what a person searches by: the command line, its state
+  // and the identifiers beside them.
+  const visible = useMemo(() => {
+    const match = globMatcher(pattern)
+    if (match === null) return rows as DataRow[]
+    const texts = LENS_FIELDS[lens].filter((field) => field.kind === "command" || field.kind === "state" || field.kind === "id")
+    return (rows as DataRow[]).filter((row) => texts.some((field) => {
+      const text = field.kind === "command" ? processCommand(row) : rawText(field.field === undefined ? null : value(row, field.field))
+      return text !== null && match(text)
+    }))
+  }, [lens, pattern, rows])
   const table = useReactTable({
     columns,
-    data: rows as DataRow[],
+    data: visible,
     getCoreRowModel: getCoreRowModel(),
     getRowId: processKey,
     getSortedRowModel: getSortedRowModel(),
@@ -180,6 +194,7 @@ export function ProcessTable({
   })
   return (
     <div aria-label={t("table.processes")} className="process-table" data-testid="process-table" role="table">
+      <TableFilter kept={visible.length} onPattern={setPattern} pattern={pattern} t={t} total={rows.length} />
       <div className="process-scroll" ref={scroll}>
         <div className="process-head" ref={head} role="row" style={{ width }}>
           {table.getHeaderGroups()[0]?.headers.map((header, index) => <div className={stickyClass(header.column.columnDef.meta, true)} key={header.id} role="columnheader" style={{ left: stickyLeft(header.column.columnDef.meta, pinnedWidths), width: header.getSize() }}>
@@ -188,7 +203,7 @@ export function ProcessTable({
           </div>)}
         </div>
         {displayed.length === 0
-          ? <p className="table-empty">{t("table.empty")}</p>
+          ? <p className="table-empty">{t(pattern === "" ? "table.empty" : "filter.none")}</p>
           : <div className="virtual-body" style={{ height: virtual.getTotalSize(), width }}>
             {virtual.getVirtualItems().map((item) => {
               const row = displayed[item.index]
