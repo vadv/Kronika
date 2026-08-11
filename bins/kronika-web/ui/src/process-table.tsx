@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import type { Cell, DataRow } from "./api"
 import { fittedWidth, headerWidths, widestCell } from "./column-size"
+import type { TableOrder } from "./entity-table"
 import { TableFilter } from "./table-filter"
 import { globMatcher } from "./glob"
 import { LabelHelp, type Translate } from "./help"
@@ -90,7 +91,11 @@ export function ProcessTable({
   lens,
   linkedPids,
   locale,
+  onOrder,
+  onPattern,
   onSelect,
+  order,
+  pattern,
   rows,
   selectedKey,
   t,
@@ -99,18 +104,22 @@ export function ProcessTable({
   readonly lens: Lens
   readonly linkedPids: ReadonlySet<number>
   readonly locale: Locale
+  readonly onOrder: (order: TableOrder | null) => void
+  readonly onPattern: (pattern: string) => void
+  readonly order: TableOrder | null
   readonly onSelect: (row: DataRow) => void
+  readonly pattern: string
   readonly rows: readonly DataRow[]
   readonly selectedKey: string | null
   readonly t: Translate
   readonly ticksPerSecond: number | null
 }) {
-  const [sorting, setSorting] = useState<SortingState>([])
-  const [pattern, setPattern] = useState("")
   const [sizing, setSizing] = useState<ColumnSizingState>({})
-  useEffect(() => {
-    setSorting(lens === "generic" ? [{ id: "pid", desc: false }] : [{ id: defaultSort(lens), desc: true }])
-  }, [lens])
+  // A lens has a column worth opening on, but a chosen order outranks it — and
+  // the choice lives outside so that the address can carry it.
+  const sorting = useMemo<SortingState>(() => order === null
+    ? [lens === "generic" ? { id: "pid", desc: false } : { id: defaultSort(lens), desc: true }]
+    : [{ id: order.column, desc: order.descending }], [lens, order])
   const columns = useMemo<ColumnDef<DataRow>[]>(() => LENS_FIELDS[lens].map((field) => ({
     id: field.id,
     accessorFn: (row) => sortable(row, field),
@@ -149,7 +158,11 @@ export function ProcessTable({
     columnResizeMode: "onChange",
     enableColumnResizing: true,
     onColumnSizingChange: setSizing,
-    onSortingChange: setSorting,
+    onSortingChange: (updater) => {
+      const next = typeof updater === "function" ? updater(sorting) : updater
+      const first = next[0]
+      onOrder(first === undefined ? null : { column: first.id, descending: first.desc })
+    },
     state: { columnSizing: sizing, sorting },
   })
   const displayed = table.getRowModel().rows
@@ -194,7 +207,7 @@ export function ProcessTable({
   })
   return (
     <div aria-label={t("table.processes")} className="process-table" data-testid="process-table" role="table">
-      <TableFilter kept={visible.length} onPattern={setPattern} pattern={pattern} t={t} total={rows.length} />
+      <TableFilter kept={visible.length} onPattern={onPattern} pattern={pattern} t={t} total={rows.length} />
       <div className="process-scroll" ref={scroll}>
         <div className="process-head" ref={head} role="row" style={{ width }}>
           {table.getHeaderGroups()[0]?.headers.map((header, index) => <div className={stickyClass(header.column.columnDef.meta, true)} key={header.id} role="columnheader" style={{ left: stickyLeft(header.column.columnDef.meta, pinnedWidths), width: header.getSize() }}>

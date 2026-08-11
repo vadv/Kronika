@@ -59,6 +59,8 @@ const TABS: readonly { readonly id: PostgresSection; readonly icon: ReactNode; r
 ]
 
 export function PostgresView({
+  onPattern,
+  pattern,
   onOrder,
   order,
   cursor,
@@ -74,7 +76,9 @@ export function PostgresView({
   t,
 }: {
   readonly onOrder: (order: TableOrder | null) => void
+  readonly onPattern: (pattern: string) => void
   readonly order: TableOrder | undefined
+  readonly pattern: string
   readonly cursor: number
   readonly data: HourData
   readonly focus: DataRow | null
@@ -105,11 +109,11 @@ export function PostgresView({
       })}
     </nav>
     {section === "overview" && <Overview cursor={cursor} data={data} hour={hour} locale={locale} t={t} />}
-    {section === "activity" && available("pg_stat_activity") && <PgEntityView columns={ACTIVITY_COLUMNS} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_activity" ? focusFinding : null} focus={focus} historyField="backend_xid_age" locale={locale} section="pg_stat_activity" t={t} />}
+    {section === "activity" && available("pg_stat_activity") && <PgEntityView columns={ACTIVITY_COLUMNS} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_activity" ? focusFinding : null} focus={focus} historyField="backend_xid_age" locale={locale} section="pg_stat_activity" t={t} />}
     {section === "activity" && available("pg_stat_progress_vacuum") && <PgPreview cursor={cursor} data={data} focus={focusFinding?.logicalName === "pg_stat_progress_vacuum" ? focus : null} locale={locale} section="pg_stat_progress_vacuum" t={t} />}
-    {section === "statements" && <PgEntityView columns={STATEMENT_COLUMNS} onOrder={onOrder} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField="calls" locale={locale} section="pg_stat_statements" t={t} />}
-    {section === "locks" && <PgEntityView columns={LOCK_COLUMNS} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_locks" ? focusFinding : null} focus={focus} historyField={null} locale={locale} section="pg_locks" t={t} />}
-    {section === "databases" && <PgEntityView columns={DATABASE_COLUMNS} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_database" ? focusFinding : null} focus={focus} historyField="xact_commit" locale={locale} section="pg_stat_database" t={t} />}
+    {section === "statements" && <PgEntityView columns={STATEMENT_COLUMNS} onOrder={onOrder} onPattern={onPattern} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField="calls" locale={locale} section="pg_stat_statements" t={t} />}
+    {section === "locks" && <PgEntityView columns={LOCK_COLUMNS} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_locks" ? focusFinding : null} focus={focus} historyField={null} locale={locale} section="pg_locks" t={t} />}
+    {section === "databases" && <PgEntityView columns={DATABASE_COLUMNS} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_database" ? focusFinding : null} focus={focus} historyField="xact_commit" locale={locale} section="pg_stat_database" t={t} />}
   </>
 }
 
@@ -174,6 +178,8 @@ function PgEntityView({
   finding,
   historyField,
   locale,
+  onPattern,
+  pattern,
   section,
   t,
 }: {
@@ -186,6 +192,8 @@ function PgEntityView({
   readonly locale: Locale
   readonly section: string
   readonly onOrder?: ((order: TableOrder | null) => void) | undefined
+  readonly onPattern?: ((pattern: string) => void) | undefined
+  readonly pattern?: string | undefined
   readonly order?: TableOrder | undefined
   readonly t: Translate
 }) {
@@ -204,7 +212,7 @@ function PgEntityView({
   const selectedKey = selected === null ? null : rowKey(selected)
   const selectedHistoryField = findingHistoryField(visibleColumns, finding, historyField)
   return <div className={selected === null ? "pg-entity-layout pg-table-only" : "pg-entity-layout"} data-pg-section={sectionName(section)} data-testid="pg-entity-layout">
-    <EntityTable columns={visibleColumns} empty={t("table.no_rows")} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onOrder={onOrder} onSelect={setSelected} order={order} rows={rows} selectedKey={selectedKey} t={t} testId={`pg-${sectionName(section)}-table`} />
+    <EntityTable columns={visibleColumns} empty={t("table.no_rows")} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onOrder={onOrder} onPattern={onPattern} onSelect={setSelected} order={order} pattern={pattern} serverSorted={section === "pg_stat_statements"} rows={rows} selectedKey={selectedKey} t={t} testId={`pg-${sectionName(section)}-table`} />
     {selected !== null && <PgDetail allRows={allRows} columns={visibleColumns} historyField={selectedHistoryField} hour={Math.floor(cursor / 3_600_000_000) * 3_600_000_000} locale={locale} onClose={() => setSelected(null)} row={selected} section={section} t={t} />}
   </div>
 }

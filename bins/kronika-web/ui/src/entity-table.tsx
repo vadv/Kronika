@@ -40,8 +40,11 @@ export function EntityTable({
   label,
   locale,
   onOrder,
+  onPattern,
   onSelect,
   order,
+  pattern = "",
+  serverSorted,
   rowKey = defaultKey,
   rows,
   selectedKey,
@@ -55,23 +58,19 @@ export function EntityTable({
   /** Set when the server ordered and cut the rows; the header then asks it
    *  for another order rather than reshuffling what arrived. */
   readonly onOrder?: ((order: TableOrder | null) => void) | undefined
+  readonly onPattern?: ((pattern: string) => void) | undefined
   readonly onSelect?: (row: DataRow) => void
+  readonly pattern?: string | undefined
   readonly order?: TableOrder | undefined
+  readonly serverSorted?: boolean | undefined
   readonly rowKey?: (row: DataRow) => string
   readonly rows: readonly DataRow[]
   readonly selectedKey?: string | null
   readonly testId?: string
   readonly t?: Translate
 }) {
-  // A table the server cut to its top rows cannot be reordered here: sorting
-  // the visible two hundred by another column answers a different question
-  // than the two hundred largest by that column.
-  const [sorting, setSorting] = useState<SortingState>([])
   const [sizing, setSizing] = useState<ColumnSizingState>({})
-  const [pattern, setPattern] = useState("")
-  const ordering: SortingState = order === undefined
-    ? sorting
-    : [{ id: order.column, desc: order.descending }]
+  const ordering = useMemo<SortingState>(() => order === undefined ? [] : [{ id: order.column, desc: order.descending }], [order])
   const parent = useRef<HTMLDivElement>(null)
   const columns = useMemo<ColumnDef<DataRow>[]>(() => fields.map((field, index) => ({
     accessorFn: (row) => sortable(value(row, field.field), field.kind),
@@ -107,13 +106,13 @@ export function EntityTable({
     getCoreRowModel: getCoreRowModel(),
     getRowId: (row) => rowKey(row),
     getSortedRowModel: getSortedRowModel(),
-    manualSorting: order !== undefined,
+    // A table the server cut to its top rows cannot be reordered here: sorting
+    // the visible two hundred by another column answers a different question
+    // than the two hundred largest by that column. Every table reports its
+    // order outward all the same, so the address can carry it.
+    manualSorting: serverSorted === true,
     onSortingChange: (updater) => {
       const next = typeof updater === "function" ? updater(ordering) : updater
-      if (order === undefined) {
-        setSorting(next)
-        return
-      }
       const first = next[0]
       onOrder?.(first === undefined ? null : { column: first.id, descending: first.desc })
     },
@@ -158,7 +157,7 @@ export function EntityTable({
   const virtual = useVirtualizer({ count: rendered.length, estimateSize: () => 23, getScrollElement: () => parent.current, overscan: 10 })
   const width = table.getTotalSize()
   return <section aria-label={label} className="entity-table" data-testid={testId}>
-    {t !== undefined && <TableFilter kept={data.length} onPattern={setPattern} pattern={pattern} t={t} total={rows.length} />}
+    {t !== undefined && onPattern !== undefined && <TableFilter kept={data.length} onPattern={onPattern} pattern={pattern} t={t} total={rows.length} />}
     <div className="entity-scroll" ref={parent} role="table">
       <div className="entity-head" ref={head} role="row" style={{ width }}>
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {
