@@ -29,7 +29,7 @@ const PROCESS_DETAIL: Readonly<Record<Lens, readonly ProcessField[]>> = {
     processField("uid", "col.uid", "id"), processField("euid", "col.euid", "id"),
     processField("gid", "col.gid", "id"), processField("egid", "col.egid", "id"),
     processField("num_threads", "col.threads", "number"), processField("tty", "col.tty", "id"),
-    processField("scope", "col.scope", "id"), processField("exit_signal", "col.exit_signal", "id"),
+    processField("exit_signal", "col.exit_signal", "id"),
   ],
   cpu: [
     processField("state", "col.state", "state"), processField("curcpu", "col.curcpu", "id"),

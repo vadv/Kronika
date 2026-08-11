@@ -62,7 +62,6 @@ export function HelpPanel({
         </div>
         <button aria-label={t("help.close")} className="icon-button" onClick={onClose} type="button">×</button>
       </div>
-      <p className="help-intro">{t("help.intro")}</p>
       <p className="shortcut">{t("help.shortcut")}</p>
       <dl className="help-list">
         {items.map((item) => <div key={item.label}><dt>{t(item.label)}</dt><dd>{t(item.help)}</dd></div>)}

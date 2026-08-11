@@ -38,7 +38,7 @@ interface Field {
 const PID: Field = { id: "pid", field: "pid", label: "col.pid.label", help: "col.pid.help", kind: "id", size: 72, sticky: "pid" }
 const START: Field = { id: "starttime", field: "starttime", label: "col.starttime.label", help: "col.starttime.help", kind: "time", size: 215, sticky: "start" }
 const COMMAND: Field = { id: "command", label: "col.command.label", help: "col.command.help", kind: "command", size: 340, sticky: "command" }
-const STATE: Field = { id: "state", field: "state", label: "col.state.label", help: "col.state.help", kind: "state", size: 72 }
+const STATE: Field = { id: "state", field: "state", label: "col.state.label", help: "col.state.help", kind: "state", size: 96 }
 
 const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
   generic: [
@@ -46,7 +46,7 @@ const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
     idField("ppid", "col.ppid", 82), idField("uid", "col.uid", 80), idField("euid", "col.euid", 80),
     idField("gid", "col.gid", 80), idField("egid", "col.egid", 80),
     numberField("num_threads", "col.threads", 90), idField("tty", "col.tty", 75),
-    idField("scope", "col.scope", 75), idField("exit_signal", "col.exit_signal", 100),
+    idField("exit_signal", "col.exit_signal", 100),
   ],
   cpu: [
     PID, START, COMMAND, STATE,

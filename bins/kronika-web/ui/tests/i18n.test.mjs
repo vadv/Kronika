@@ -78,3 +78,56 @@ test("project dictionaries cover the active UI keys", async () => {
   assert.equal(Object.hasOwn(english, "detail.os_layout.label"), false)
   assert.equal(Object.hasOwn(english, "detail.pg_layout.label"), false)
 })
+
+test("help copy is concise and directs the reader to adjacent data", async () => {
+  const [englishSource, russianSource] = await Promise.all([
+    readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8"),
+  ])
+  const dictionaries = [
+    ["en", parseDictionary(englishSource, "en.yaml"), /(?:Compare|Inspect|Check|Open|Find|Use)/],
+    ["ru", parseDictionary(russianSource, "ru.yaml"), /(?:Сопоставьте|Проверьте|Смотрите|Откройте|Найдите|Сравните|Используйте)/],
+  ]
+
+  for (const [locale, dictionary, action] of dictionaries) {
+    const helpEntries = Object.entries(dictionary).filter(([key]) => key.endsWith(".help"))
+    assert.ok(helpEntries.length > 100)
+    for (const [key, value] of helpEntries) {
+      const actionAt = value.search(action)
+      assert.ok(actionAt > 0, `${locale} ${key} must direct the reader to related data`)
+      assert.ok(value.slice(0, actionAt).includes("."), `${locale} ${key} must define the value before the action`)
+      assert.ok(value.length <= 200, `${locale} ${key} is too long`)
+    }
+  }
+})
+
+test("obsolete status and internal collection copy stay out of the UI", async () => {
+  const [englishSource, russianSource, appSource, helpSource, processSource, detailSource] = await Promise.all([
+    readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../src/app.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/help.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/process-table.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/detail.tsx", import.meta.url), "utf8"),
+  ])
+  const english = parseDictionary(englishSource, "en.yaml")
+  const russian = parseDictionary(russianSource, "ru.yaml")
+  const removed = ["app.kicker", "app.offline", "help.intro", "col.scope.label", "col.scope.help"]
+  for (const key of removed) {
+    assert.equal(Object.hasOwn(english, key), false)
+    assert.equal(Object.hasOwn(russian, key), false)
+  }
+
+  assert.equal(english["common.raw"], "Copy exact value")
+  assert.equal(russian["common.raw"], "Скопировать точное значение")
+  assert.equal(english["lens.generic"], "General")
+  assert.equal(russian["lens.generic"], "Основное")
+  assert.equal(english["process.summary.running"], "Runnable")
+  assert.equal(russian["process.summary.running"], "Готовы к выполнению")
+  assert.doesNotMatch(englishSource, /Local · offline|Hover over|No source row|collection scope/)
+  assert.doesNotMatch(russianSource, /Наведите указатель|исходное значение|исходной строки|Область сбора/)
+  assert.doesNotMatch(appSource, /\[\.\.\.HELP_SYSTEM, \.\.\.HELP_PROCESS\]/)
+  assert.doesNotMatch(helpSource, /help\.intro|help-intro/)
+  assert.doesNotMatch(processSource, /col\.scope|idField\("scope"/)
+  assert.doesNotMatch(detailSource, /col\.scope|processField\("scope"/)
+})

@@ -46,15 +46,13 @@ const EMPTY_DATA: HourData = {
 }
 
 const HELP_SYSTEM = [
-  { label: "system.group.cpu", help: "system.group.cpu.help" },
-  { label: "system.group.load", help: "system.group.load.help" },
-  { label: "system.group.memory", help: "system.group.memory.help" },
-  { label: "system.group.pressure", help: "system.group.pressure.help" },
-  { label: "system.group.storage", help: "system.group.storage.help" },
-  { label: "lane.health.label", help: "lane.health.help" },
-  { label: "lane.load.label", help: "lane.load.help" },
-  { label: "lane.memory.label", help: "lane.memory.help" },
-  { label: "lane.pressure.label", help: "lane.pressure.help" },
+  { label: "system.metric.health.label", help: "system.metric.health.help" },
+  { label: "system.metric.cpu_busy.label", help: "system.metric.cpu_busy.help" },
+  { label: "system.metric.load1.label", help: "system.metric.load1.help" },
+  { label: "system.metric.mem_available_percent.label", help: "system.metric.mem_available_percent.help" },
+  { label: "system.metric.cpu_pressure.label", help: "system.metric.cpu_pressure.help" },
+  { label: "system.metric.memory_pressure.label", help: "system.metric.memory_pressure.help" },
+  { label: "system.metric.io_pressure.label", help: "system.metric.io_pressure.help" },
   { label: "system.metric.filesystem_free_min.label", help: "system.metric.filesystem_free_min.help" },
 ] as const
 
@@ -228,7 +226,7 @@ function App() {
     ? HELP_POSTGRESQL
     : source === "events"
       ? HELP_EVENTS
-      : hostSection === "processes" ? [...HELP_SYSTEM, ...HELP_PROCESS] : HELP_SYSTEM
+      : hostSection === "processes" ? HELP_PROCESS : HELP_SYSTEM
   useEffect(() => {
     if (source === "postgresql" && !pgPresent) setSource("host")
     if (source === "events" && !eventsPresent) setSource("host")
@@ -238,10 +236,9 @@ function App() {
     <header className="topbar">
       <div className="brand">
         <span className="brand-mark"><Activity aria-hidden="true" size={18} strokeWidth={1.75} /></span>
-        <div><p className="eyebrow">{t("app.kicker")}</p><h1>{t("app.title")}</h1></div>
+        <h1>{t("app.title")}</h1>
       </div>
       <div className="top-actions">
-        <span className="offline-state">{t("app.offline")}</span>
         <div aria-label={t("locale.switch")} className="locale-switch" role="group">
           <Languages aria-hidden="true" size={14} />
           {(["ru", "en"] as const).map((choice) => <button aria-pressed={locale === choice} data-testid={`locale-${choice}`} key={choice} onClick={() => setLocale(choice)} type="button">{t(`locale.${choice}`)}</button>)}
@@ -274,7 +271,7 @@ function App() {
         <span className="cursor-time">{formatUtc(cursor)}</span>
       </div>
       {loading && <StateCard message={t("status.loading")} />}
-      {!loading && error !== null && <StateCard code={error} message={t("status.error")} />}
+      {!loading && error !== null && <StateCard message={t("status.error")} />}
       {!loading && error === null && hour !== null && source === "host" && hostSection === "system" && <SystemView cursor={cursor} data={data} focus={systemFocus} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} t={t} />}
       {!loading && error === null && hour !== null && source === "host" && hostSection === "processes" && <>
         <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} load={data.load} memory={data.memory} onCursor={setCursor} onFinding={selectFinding} pressure={data.pressure} t={t} />
@@ -307,8 +304,8 @@ function HourPicker({ changeHour, day, hour, hourNumber, t }: { readonly changeH
   </div>
 }
 
-function StateCard({ code, message }: { readonly code?: string; readonly message: string }) {
-  return <div className="loading-card"><p className="eyebrow">KRONIKA</p><h2>{message}</h2>{code !== undefined && <code>{code}</code>}</div>
+function StateCard({ message }: { readonly message: string }) {
+  return <div className="loading-card"><p className="eyebrow">KRONIKA</p><h2>{message}</h2></div>
 }
 
 function postgresSection(logicalName: string): PostgresSection | null {
