@@ -23,18 +23,18 @@ function row(timestamp, values, segmentId = "segment-a", ordinal = "0") {
   return { segmentId, typeId: "1100001", ordinal, timestamp, values }
 }
 
-test("process history reads in time order and keeps null distinct from zero", () => {
+test("a counter is drawn as the rate between two readings", () => {
+  // Two seconds apart, in microseconds; the first reading has nothing before it.
   const series = detail.processLensHistory([
-    row(30, { pid: 77, starttime: 10, utime: null, stime: 4 }, "segment-a", "2"),
-    row(10, { pid: 77, starttime: 10, utime: 0, stime: 2 }, "segment-a", "0"),
-    row(20, { pid: 77, starttime: 10, utime: 3, stime: 3 }, "segment-a", "1"),
+    row(3_000_000, { pid: 77, starttime: 10, stime: 30 }, "segment-a", "2"),
+    row(1_000_000, { pid: 77, starttime: 10, stime: 10 }, "segment-a", "0"),
+    row(2_000_000, { pid: 77, starttime: 10, stime: 14 }, "segment-a", "1"),
   ], "cpu")
 
   assert.deepEqual(series.map((item) => item.field), [
     "utime", "stime", "rundelay_ns", "blkdelay_ticks", "nvcsw", "nivcsw", "minflt", "majflt",
   ])
-  assert.deepEqual(series[0].points.map((point) => point.value), [0, 3, null])
-  assert.deepEqual(series[1].points.map((point) => point.value), [2, 3, 4])
+  assert.deepEqual(series[1].points.map((point) => point.value), [null, 4, 16])
 })
 
 test("null values split rendered history runs while later zero stays numeric", () => {

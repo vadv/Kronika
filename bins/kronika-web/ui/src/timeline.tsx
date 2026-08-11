@@ -10,6 +10,8 @@ const HEIGHT = 170
 const LANE_HEIGHT = 36
 const TOP = 8
 const MARKER_CLUSTER_PX = 38
+/** Health, and the share of a ten-second window a resource stalled for. */
+const SHARE: readonly [number, number] = [0, 100]
 
 interface SeriesPoint {
   readonly segmentId: string
@@ -68,10 +70,11 @@ export function Timeline({
   )), [pressure])
   // A labelled lane with nothing in it is a line of chrome that says nothing.
   const lanes = useMemo(() => [
-    { key: "health", series: [{ color: "cyan" as const, points: healthPoints }] },
-    { key: "load", series: [{ color: "amber" as const, points: loadPoints }] },
-    { key: "memory", series: [{ color: "violet" as const, points: memoryPoints }] },
+    { domain: SHARE, key: "health", series: [{ color: "cyan" as const, points: healthPoints }] },
+    { domain: undefined, key: "load", series: [{ color: "amber" as const, points: loadPoints }] },
+    { domain: undefined, key: "memory", series: [{ color: "violet" as const, points: memoryPoints }] },
     {
+      domain: SHARE,
       key: "pressure",
       series: [
         { color: "cyan" as const, points: pressurePoints[0] ?? [] },
@@ -146,7 +149,7 @@ export function Timeline({
               return <line className="lane-line" key={y} x1={0} x2={WIDTH} y1={y} y2={y} />
             })}
             {lanes.flatMap((lane, index) => lane.series.map((series, ordinal) => (
-              <SeriesLine color={series.color} end={end} hour={hour} key={`${lane.key}:${ordinal}`} lane={index} points={series.points} />
+              <SeriesLine color={series.color} domain={lane.domain} end={end} hour={hour} key={`${lane.key}:${ordinal}`} lane={index} points={series.points} />
             )))}
             <line className="cursor-line" x1={cursorX} x2={cursorX} y1={0} y2={plotBottom} />
           </svg>
@@ -241,19 +244,21 @@ function FindingMarker({
 
 function SeriesLine({
   color,
+  domain,
   end,
   hour,
   lane,
   points,
 }: {
   readonly color: "cyan" | "amber" | "violet"
+  readonly domain?: readonly [number, number] | undefined
   readonly end: number
   readonly hour: number
   readonly lane: number
   readonly points: readonly SeriesPoint[]
 }) {
   if (points.length === 0) return null
-  const range = seriesRange(points)
+  const range = seriesRange(points, domain)
   return <>{[...timelineRuns(points).entries()].map(([runId, stored]) => {
     const path = stored
       .slice()
@@ -374,11 +379,11 @@ function markerShapeStyle(kind: Finding["kind"]): React.CSSProperties {
   const common: React.CSSProperties = { display: "block", flex: "0 0 auto", height: "9px", width: "9px" }
   switch (findingShape(kind)) {
     case "diamond":
-      return { ...common, background: "#f43f5e", border: "1px solid #fecdd3", transform: "rotate(45deg)" }
+      return { ...common, background: "var(--bad)", border: "1px solid var(--bad-edge)", transform: "rotate(45deg)" }
     case "triangle":
-      return { ...common, background: "#f59e0b", clipPath: "polygon(50% 0, 100% 100%, 0 100%)", height: "10px", width: "11px" }
+      return { ...common, background: "var(--warn)", clipPath: "polygon(50% 0, 100% 100%, 0 100%)", height: "10px", width: "11px" }
     case "circle":
-      return { ...common, background: "#a78bfa", border: "1px solid #ddd6fe", borderRadius: "50%" }
+      return { ...common, background: "var(--event)", border: "1px solid var(--event-edge)", borderRadius: "50%" }
   }
 }
 
@@ -414,11 +419,15 @@ function contains(run: readonly SeriesPoint[], timestamp: number): boolean {
   return first !== undefined && last !== undefined && first.timestamp <= timestamp && last.timestamp >= timestamp
 }
 
-function seriesRange(points: readonly SeriesPoint[]): { readonly low: number; readonly span: number } {
+/** Health, memory share and pressure are all read against a hundred: scaling
+ *  them to their own extremes makes a step of two look like a collapse. Load
+ *  has no ceiling, so it takes the one the hour reached. */
+function seriesRange(points: readonly SeriesPoint[], domain?: readonly [number, number]): { readonly low: number; readonly span: number } {
+  if (domain !== undefined) return { low: domain[0], span: domain[1] - domain[0] }
   const values = points.flatMap((point) => point.value === null || !Number.isFinite(point.value) ? [] : [point.value])
   if (values.length === 0) return { low: 0, span: 1 }
-  const low = Math.min(...values)
-  return { low, span: Math.max(...values) - low || 1 }
+  const high = Math.max(...values)
+  return { low: 0, span: Math.max(high, 1) }
 }
 
 function seriesY(number: number, lane: number, low: number, span: number): number {

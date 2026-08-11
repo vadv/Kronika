@@ -12,12 +12,15 @@ export interface ChartPoint {
 type NumericChartPoint = ChartPoint & { readonly value: number }
 
 export function SeriesChart({
+  cursor,
   hour,
   label,
   locale,
   format,
   points,
 }: {
+  /** The moment the tables below are showing, drawn on the same domain. */
+  readonly cursor?: number | undefined
   readonly hour: number
   readonly label: string
   readonly locale: Locale
@@ -41,6 +44,8 @@ export function SeriesChart({
     <svg aria-labelledby={title} preserveAspectRatio="none" role="img" viewBox="0 0 920 126">
       {[0, 1, 2, 3, 4, 5, 6].map((tick) => <line className="mini-grid" key={tick} x1={tick / 6 * 920} x2={tick / 6 * 920} y1="5" y2="105" />)}
       <line className="mini-zero" x1="0" x2="920" y1="105" y2="105" />
+      {cursor !== undefined && cursor >= hour && cursor < end
+        && <line className="cursor-line" x1={(cursor - hour) / (end - hour) * 920} x2={(cursor - hour) / (end - hour) * 920} y1="5" y2="105" />}
       {[...paths.entries()].map(([segmentId, stored]) => {
         const path = stored.slice().sort((left, right) => left.timestamp - right.timestamp).map((point, index) => {
           const x = Math.max(0, Math.min(920, (point.timestamp - hour) / (end - hour) * 920))

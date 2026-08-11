@@ -59,6 +59,8 @@ interface HistoryField {
   readonly field: string
   readonly key: string
   readonly format: (value: number, locale: Locale) => string
+  /** A counter only rises; what it means is how fast. */
+  readonly counter?: true
 }
 
 export interface ProcessHistorySeries extends HistoryField {
@@ -90,31 +92,31 @@ function kibibytes(value: number, locale: Locale): string {
 const PROCESS_HISTORY: Readonly<Record<Lens, readonly HistoryField[]>> = {
   generic: [{ field: "num_threads", key: "col.threads", format: plain }],
   cpu: [
-    { field: "utime", key: "col.utime", format: ticks },
-    { field: "stime", key: "col.stime", format: ticks },
-    { field: "rundelay_ns", key: "col.rundelay", format: delay },
-    { field: "blkdelay_ticks", key: "col.blkdelay", format: plain },
-    { field: "nvcsw", key: "col.nvcsw", format: plain },
-    { field: "nivcsw", key: "col.nivcsw", format: plain },
-    { field: "minflt", key: "col.minflt", format: plain },
-    { field: "majflt", key: "col.majflt", format: plain },
+    { counter: true, field: "utime", key: "col.utime", format: ticks },
+    { counter: true, field: "stime", key: "col.stime", format: ticks },
+    { counter: true, field: "rundelay_ns", key: "col.rundelay", format: delay },
+    { counter: true, field: "blkdelay_ticks", key: "col.blkdelay", format: plain },
+    { counter: true, field: "nvcsw", key: "col.nvcsw", format: plain },
+    { counter: true, field: "nivcsw", key: "col.nivcsw", format: plain },
+    { counter: true, field: "minflt", key: "col.minflt", format: plain },
+    { counter: true, field: "majflt", key: "col.majflt", format: plain },
   ],
   memory: [
     { field: "rmem_kb", key: "col.rmem", format: kibibytes },
     { field: "vmem_kb", key: "col.vmem", format: kibibytes },
     { field: "vswap_kb", key: "col.vswap", format: kibibytes },
-    { field: "minflt", key: "col.minflt", format: plain },
-    { field: "majflt", key: "col.majflt", format: plain },
+    { counter: true, field: "minflt", key: "col.minflt", format: plain },
+    { counter: true, field: "majflt", key: "col.majflt", format: plain },
   ],
   disk: [
-    { field: "read_bytes", key: "col.read_bytes", format: bytes },
-    { field: "write_bytes", key: "col.write_bytes", format: bytes },
-    { field: "cancelled_write_bytes", key: "col.cancelled_write", format: bytes },
-    { field: "syscr", key: "col.syscr", format: plain },
-    { field: "syscw", key: "col.syscw", format: plain },
-    { field: "rchar", key: "col.rchar", format: bytes },
-    { field: "wchar", key: "col.wchar", format: bytes },
-    { field: "blkdelay_ticks", key: "col.blkdelay", format: plain },
+    { counter: true, field: "read_bytes", key: "col.read_bytes", format: bytes },
+    { counter: true, field: "write_bytes", key: "col.write_bytes", format: bytes },
+    { counter: true, field: "cancelled_write_bytes", key: "col.cancelled_write", format: bytes },
+    { counter: true, field: "syscr", key: "col.syscr", format: plain },
+    { counter: true, field: "syscw", key: "col.syscw", format: plain },
+    { counter: true, field: "rchar", key: "col.rchar", format: bytes },
+    { counter: true, field: "wchar", key: "col.wchar", format: bytes },
+    { counter: true, field: "blkdelay_ticks", key: "col.blkdelay", format: plain },
   ],
 }
 
@@ -133,6 +135,7 @@ const ACTIVITY_FIELDS = [
 
 export function DetailDock({
   activity,
+  cursor,
   activityTime,
   hour,
   lens,
@@ -144,6 +147,7 @@ export function DetailDock({
 }: {
   readonly activity: DataRow | null
   readonly activityTime: number | null
+  readonly cursor: number
   readonly hour: number
   readonly lens: Lens
   readonly locale: Locale
@@ -187,6 +191,7 @@ export function DetailDock({
       <section aria-label={t(`lens.${lens}`)} className="process-history" data-testid="process-history">
         {history.map((series) => (
           <SeriesChart
+            cursor={cursor}
             hour={hour}
             key={series.field}
             label={t(`${series.key}.label`)}
@@ -255,25 +260,47 @@ export function processLensHistory(
     .sort((left, right) => left.timestamp - right.timestamp || left.ordinal.localeCompare(right.ordinal))
   return PROCESS_HISTORY[lens].map((field) => ({
     ...field,
-    points: historyPoints(selected, field.field),
+    points: historyPoints(selected, field.field, field.counter === true),
   }))
 }
 
-function historyPoints(rows: readonly DataRow[], field: string): readonly ChartPoint[] {
+/** A gauge is drawn as read; a counter is drawn as the rate between two
+ *  readings, which is what a person means by it. The first reading of a run
+ *  has nothing before it, and a run breaks where a value is absent. */
+function historyPoints(
+  rows: readonly DataRow[],
+  field: string,
+  counter: boolean,
+): readonly ChartPoint[] {
   let previousSegment: string | null = null
   let run = 0
+  let earlier: { readonly value: number; readonly timestamp: number } | null = null
   return rows.map((row) => {
     if (row.segmentId !== previousSegment) {
       previousSegment = row.segmentId
       run = 0
     }
     const number = asNumber(value(row, field))
+    const drawn = counter ? rate(earlier, number, row.timestamp) : number
+    if (counter && number !== null) earlier = { value: number, timestamp: row.timestamp }
     const point = {
       segmentId: `${row.segmentId}:${run}`,
       timestamp: row.timestamp,
-      value: number,
+      value: drawn,
     }
-    if (number === null) run += 1
+    if (drawn === null) run += 1
     return point
   })
+}
+
+function rate(
+  earlier: { readonly value: number; readonly timestamp: number } | null,
+  number: number | null,
+  timestamp: number,
+): number | null {
+  if (earlier === null || number === null) return null
+  const seconds = (timestamp - earlier.timestamp) / 1_000_000
+  if (seconds <= 0) return null
+  const delta = number - earlier.value
+  return delta < 0 ? null : delta / seconds
 }

@@ -94,13 +94,17 @@ test("timeline series break at null samples without dropping zero", () => {
     { segmentId: "host-a", timestamp: 300, value: 0 },
   ]).values()]
   assert.deepEqual(runs.map((run) => run.map((point) => point.value)), [[10], [0]])
+  // An absent sample breaks the line without moving the samples around it.
   assert.equal(
     helpers.seriesYAt([
       { segmentId: "host-a", timestamp: 100, value: 10 },
       { segmentId: "host-a", timestamp: 200, value: null },
       { segmentId: "host-a", timestamp: 300, value: 90 },
-    ], "host-a", 200, 0),
-    helpers.seriesYAt([{ segmentId: "host-a", timestamp: 100, value: 10 }], "host-a", 100, 0),
+    ], "host-a", 100, 0),
+    helpers.seriesYAt([
+      { segmentId: "host-a", timestamp: 100, value: 10 },
+      { segmentId: "host-a", timestamp: 300, value: 90 },
+    ], "host-a", 100, 0),
   )
 })
 
