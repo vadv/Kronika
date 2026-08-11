@@ -11,17 +11,25 @@ test("a pattern without wildcards matches a substring", () => {
   assert.equal(match("kthreadd"), false)
 })
 
-test("wildcards anchor the pattern to the whole value", () => {
-  const star = globMatcher("rcu*")
+test("a wildcard pattern is looked for inside the value, not against all of it", () => {
+  const star = globMatcher("kroni*")
   assert.ok(star !== null)
-  assert.equal(star("rcu_gp"), true)
-  assert.equal(star("migration/1"), false)
-  assert.equal(star("kworker rcu"), false)
+  assert.equal(star("/pgdata/.kronika-pr12-live/bin/kronika-collector"), true)
+  assert.equal(star("kronika-web"), true)
+  assert.equal(star("/usr/bin/postgres"), false)
 
   const single = globMatcher("cpuhp/?")
   assert.ok(single !== null)
   assert.equal(single("cpuhp/2"), true)
-  assert.equal(single("cpuhp/12"), false)
+  assert.equal(single("/sbin/cpuhp/7 --daemon"), true)
+  assert.equal(single("cpuhp/"), false)
+})
+
+test("a pattern spanning a gap matches what lies between", () => {
+  const match = globMatcher("postgres*checkpointer")
+  assert.ok(match !== null)
+  assert.equal(match("postgres: sgerp checkpointer"), true)
+  assert.equal(match("postgres: walwriter"), false)
 })
 
 test("regular expression characters in a pattern are literal", () => {
