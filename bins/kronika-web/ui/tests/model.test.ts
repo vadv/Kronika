@@ -3,7 +3,7 @@ import test from "node:test"
 
 import type { Cell, DataRow } from "../src/api.ts"
 import { fittedWidth } from "../src/column-size.ts"
-import { activityFor, formatUtc, identifier, measure, nearestTime, processCommand, processLens, rawText, shownMoment, selectedHour, stateText } from "../src/model.ts"
+import { activityFor, compact, formatUtc, identifier, measure, nearestTime, processCommand, processLens, rawText, shownMoment, selectedHour, stateText } from "../src/model.ts"
 
 function row(timestamp: number): DataRow {
   return { segmentId: "7", logicalName: "os_process", typeId: "1100001", ordinal: "0", timestamp, values: {} }
@@ -80,4 +80,14 @@ test("a fitted column takes the widest cell within bounds", () => {
   assert.equal(fittedWidth(0), 64)
   assert.equal(fittedWidth(4000), 720)
   assert.equal(fittedWidth(120.2), 133)
+})
+
+test("a large count is scaled instead of spelled out digit by digit", () => {
+  assert.equal(compact(1407.48, "en"), "1,407.48")
+  assert.equal(compact(9999, "en"), "9,999")
+  assert.equal(compact(21_471, "en"), "21.5k")
+  assert.equal(compact(3_052_945.27, "en"), "3.1M")
+  assert.equal(compact(452_000_000, "en"), "452M")
+  assert.equal(compact(-21_471, "en"), "-21.5k")
+  assert.equal(compact(4.5e12, "en"), "4.5T")
 })

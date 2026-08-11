@@ -135,7 +135,26 @@ export function stateText(cell: Cell): string {
 export function measure(cell: Cell, locale: Locale, suffix = ""): string {
   const number = asNumber(cell)
   if (number === null) return "—"
-  return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(number)}${suffix}`
+  return `${compact(number, locale)}${suffix}`
+}
+
+const SCALES: readonly (readonly [string, number])[] = [["T", 1e12], ["G", 1e9], ["M", 1e6], ["k", 1e3]]
+
+/** Four digits are read at a glance; seven are counted digit by digit, and a
+ *  counter is never read that way. */
+export function compact(value: number, locale: Locale): string {
+  const size = Math.abs(value)
+  if (!Number.isFinite(value) || size < 10_000) return decimals(value, locale, 2)
+  for (const [mark, scale] of SCALES) {
+    if (size < scale) continue
+    const scaled = value / scale
+    return `${decimals(scaled, locale, Math.abs(scaled) >= 100 ? 0 : 1)}${mark}`
+  }
+  return decimals(value, locale, 0)
+}
+
+function decimals(value: number, locale: Locale, digits: number): string {
+  return new Intl.NumberFormat(locale, { maximumFractionDigits: digits }).format(value)
 }
 
 

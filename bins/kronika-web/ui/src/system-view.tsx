@@ -1,10 +1,10 @@
 import { Activity, Cpu, Database, Gauge, HardDrive, MemoryStick, Network } from "lucide-react"
 import { useEffect, useMemo, useState, type ReactNode } from "react"
 
-import { fieldNameForLocator, resolveLocator, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
+import { fieldNameForLocator, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
 import { EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
-import { asNumber, measure, snapshot, stateText, value, type Locale, shownMoment } from "./model"
+import { asNumber, humanBytes, measure, shownMoment, snapshot, stateText, value, type Locale } from "./model"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 
@@ -243,7 +243,7 @@ export function SystemView({
               <h2>{group.icon}<span>{t(group.label)}</span></h2>
               <div className="metric-grid">
                 {metrics.map(({ points, spec }) => {
-                  const output = currentPointValue(points, cursor, locale, spec.unit)
+                  const output = currentPointValue(points, cursor, locale, spec.unit, t("unit.per_second"))
                   return <button aria-pressed={selectedMetric?.spec.id === spec.id} data-testid={`system-metric-${spec.id}`} key={spec.id} onClick={() => setSelected(spec.id)} type="button">
                     <LabelHelp helpKey={spec.help} labelKey={spec.label} t={t} />
                     <strong title={output}>{output}</strong>
@@ -258,7 +258,7 @@ export function SystemView({
         <header><span>{t("system.history")}</span><strong>{selectedMetric === undefined ? "—" : t(selectedMetric.spec.label)}</strong></header>
         {selectedMetric === undefined
           ? <p className="table-empty">{t("system.no_metrics")}</p>
-          : <SeriesChart hour={hour} label={t(selectedMetric.spec.label)} locale={locale} points={selectedPoints} />}
+          : <SeriesChart cursor={cursor} format={(reading, place) => metricValue(reading, place, selectedMetric.spec.unit, t("unit.per_second"))} hour={hour} label={t(selectedMetric.spec.label)} locale={locale} points={selectedPoints} />}
       </section>
     </section>
     <section className="entity-panels">
@@ -397,16 +397,24 @@ function cpuBusyPoints(rows: readonly DataRow[]): readonly ChartPoint[] {
 }
 
 export function currentValue(data: HourData, spec: MetricSpec, cursor: number, locale: Locale): string {
-  return currentPointValue(metricPoints(data, spec), cursor, locale, spec.unit)
+  return currentPointValue(metricPoints(data, spec), cursor, locale, spec.unit, "/s")
 }
 
-function currentPointValue(points: readonly ChartPoint[], cursor: number, locale: Locale, unit: string): string {
+function currentPointValue(points: readonly ChartPoint[], cursor: number, locale: Locale, unit: string, perSecond: string): string {
   let nearest: ChartPoint | null = null
   for (const candidate of points) {
     if (nearest === null || Math.abs(candidate.timestamp - cursor) < Math.abs(nearest.timestamp - cursor)
       || (Math.abs(candidate.timestamp - cursor) === Math.abs(nearest.timestamp - cursor) && candidate.timestamp < nearest.timestamp)) nearest = candidate
   }
-  return nearest === null ? "—" : measure(nearest.value, locale, unit)
+  return nearest === null ? "—" : metricValue(nearest.value, locale, unit, perSecond)
+}
+
+/** Memory arrives in kibibytes and network in bytes per second: neither is
+ *  read as a bare number with six digits in it. */
+export function metricValue(value: Cell, locale: Locale, unit: string, perSecond = "/s"): string {
+  if (unit === " KiB") return humanBytes(asNumber(value) === null ? null : (asNumber(value) ?? 0) * 1024, locale)
+  if (unit === " B") return humanBytes(value, locale, perSecond)
+  return measure(value, locale, unit)
 }
 
 export function fallbackMetric(logicalName: string): string | null {
