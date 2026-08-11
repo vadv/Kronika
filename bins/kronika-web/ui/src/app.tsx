@@ -1,11 +1,19 @@
-import { Activity, ChevronLeft, ChevronRight, Database, HelpCircle, Languages, MemoryStick, Server, Users } from "lucide-react"
+import { Activity, ChevronLeft, ChevronRight, HelpCircle, Languages } from "lucide-react"
 import { dictionaries } from "kronika:i18n"
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { createRoot } from "react-dom/client"
 
-import { discoverLatestHour, loadHour, type DataRow, type HourData } from "./api"
+import {
+  discoverLatestHour,
+  loadHour,
+  resolveLocator,
+  type DataRow,
+  type Finding,
+  type HourData,
+} from "./api"
 import { DetailDock } from "./detail"
-import { HelpPanel, LabelHelp, type Translate } from "./help"
+import { EventsView } from "./events-view"
+import { HelpPanel, type Translate } from "./help"
 import {
   activityFor,
   asNumber,
@@ -14,40 +22,36 @@ import {
   inputDay,
   inputHour,
   interpolate,
-  measure,
-  nearestRow,
   processKey,
   selectedHour,
   snapshot,
-  systemSnapshots,
   value,
   type Lens,
   type Locale,
 } from "./model"
+import { PostgresView, type PostgresSection } from "./postgres-view"
 import { ProcessTable } from "./process-table"
-import { SystemTable } from "./system-table"
+import { SystemView } from "./system-view"
 import { Timeline } from "./timeline"
 
+type Source = "host" | "postgresql" | "events"
+type HostSection = "system" | "processes"
+
 const EMPTY_DATA: HourData = {
-  processes: [], activities: [], load: [], memory: [], pressure: [], health: [], points: [],
-  findings: [], sourceFamilies: [], segmentCount: 0,
+  sections: {}, availableSections: [], processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
+  pgOverview: [], pgStatements: [], pgLocks: [], pgDatabases: [], pgEvents: [], points: [], findings: [],
+  sourceFamilies: [], segmentCount: 0,
 }
 
 const HELP_SYSTEM = [
-  { label: "metric.health.label", help: "metric.health.help" },
-  { label: "metric.load1.label", help: "metric.load1.help" },
-  { label: "metric.mem_available.label", help: "metric.mem_available.help" },
-  { label: "metric.processes.label", help: "metric.processes.help" },
-  { label: "metric.pg_backends.label", help: "metric.pg_backends.help" },
+  { label: "system.group.cpu", help: "system.group.cpu.help" },
+  { label: "system.group.load", help: "system.group.load.help" },
+  { label: "system.group.memory", help: "system.group.memory.help" },
+  { label: "system.group.pressure", help: "system.group.pressure.help" },
   { label: "lane.health.label", help: "lane.health.help" },
   { label: "lane.load.label", help: "lane.load.help" },
   { label: "lane.memory.label", help: "lane.memory.help" },
   { label: "lane.pressure.label", help: "lane.pressure.help" },
-  { label: "lane.locators.label", help: "lane.locators.help" },
-  { label: "system_table.time.label", help: "system_table.time.help" },
-  { label: "system_table.health.label", help: "system_table.health.help" },
-  { label: "system_table.load1.label", help: "system_table.load1.help" },
-  { label: "system_table.mem_available.label", help: "system_table.mem_available.help" },
 ] as const
 
 const HELP_PROCESS = [
@@ -65,10 +69,15 @@ function App() {
   const [data, setData] = useState<HourData>(EMPTY_DATA)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [section, setSection] = useState<"system" | "processes">("system")
+  const [source, setSource] = useState<Source>("host")
+  const [hostSection, setHostSection] = useState<HostSection>("system")
+  const [pgSection, setPgSection] = useState<PostgresSection>("overview")
   const [lens, setLens] = useState<Lens>("generic")
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [dockClosed, setDockClosed] = useState(false)
+  const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
+  const [pgFocus, setPgFocus] = useState<DataRow | null>(null)
+  const [systemFocus, setSystemFocus] = useState<Finding | null>(null)
   const [helpOpen, setHelpOpen] = useState(false)
   const t = useMemo<Translate>(() => (key, slots = {}) => {
     const template = dictionaries[locale][key as keyof typeof dictionaries.en] ?? dictionaries.en[key as keyof typeof dictionaries.en] ?? key
@@ -100,11 +109,14 @@ function App() {
     setLoading(true)
     setError(null)
     setDockClosed(false)
+    setSelectedFinding(null)
+    setPgFocus(null)
+    setSystemFocus(null)
     void loadHour(hour, controller.signal).then((loaded) => {
-      const storedTimes = [loaded.processes, loaded.health, loaded.load, loaded.memory, loaded.pressure, loaded.activities]
+      const times = [loaded.processes, loaded.health, loaded.load, loaded.memory, loaded.pressure, loaded.activities]
         .flatMap((rows) => rows.map((row) => row.timestamp))
       setData(loaded)
-      setCursor(storedTimes.length === 0 ? hour : Math.max(...storedTimes))
+      setCursor(times.length === 0 ? hour : Math.max(...times))
       setLoading(false)
     }).catch((reason: unknown) => {
       if (!controller.signal.aborted) {
@@ -143,130 +155,128 @@ function App() {
     setSelectedKey(preferred === undefined ? null : processKey(preferred))
   }, [dockClosed, linkedPids, processRows, selectedKey])
   const selectedProcess = processRows.find((row) => processKey(row) === selectedKey) ?? null
-  const joinedActivity = activityFor(selectedProcess, data.activities, cursor)
+  const joinedActivity = activityFor(selectedProcess, data.activities, selectedProcess?.timestamp ?? cursor)
+  const processHistory = selectedProcess === null ? [] : data.processes.filter((row) => processKey(row) === processKey(selectedProcess))
   const changeHour = useCallback((next: number) => setHour(floorHour(next)), [])
   const selectProcess = useCallback((row: DataRow) => {
     setDockClosed(false)
     setSelectedKey(processKey(row))
   }, [])
+  const selectFinding = useCallback((finding: Finding) => {
+    setCursor(finding.timestamp)
+    setSelectedFinding(finding)
+    const resolved = resolveLocator(data, finding)
+    const logicalName = finding.logicalName
+    if (logicalName === "os_process") {
+      setSource("host")
+      setHostSection("processes")
+      setDockClosed(false)
+      if (resolved !== null) setSelectedKey(processKey(resolved.row))
+      return
+    }
+    if (logicalName === "health" || logicalName.startsWith("os_") || logicalName === "instance_metadata") {
+      setSource("host")
+      setHostSection("system")
+      setSystemFocus(finding)
+      return
+    }
+    const section = postgresSection(logicalName)
+    if (section !== null) {
+      setSource("postgresql")
+      setPgSection(section)
+      setPgFocus(resolved?.row ?? null)
+      return
+    }
+    setSource("events")
+  }, [data])
   const day = hour === null ? "" : inputDay(hour)
   const hourNumber = hour === null ? 0 : inputHour(hour)
-  const pgPresent = data.sourceFamilies.some((source) => source.name === "postgresql" && source.present)
-  const snapshotCount = new Set(data.processes.map((row) => row.timestamp)).size
+  const pgPresent = data.activities.length !== 0 || data.availableSections.some((name) => name.startsWith("pg_"))
+  const eventsPresent = data.findings.length !== 0
 
-  return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark"><Activity aria-hidden="true" size={18} strokeWidth={1.75} /></span>
-          <div><p className="eyebrow">{t("app.kicker")}</p><h1>{t("app.title")}</h1></div>
+  return <main className="app-shell">
+    <header className="topbar">
+      <div className="brand">
+        <span className="brand-mark"><Activity aria-hidden="true" size={18} strokeWidth={1.75} /></span>
+        <div><p className="eyebrow">{t("app.kicker")}</p><h1>{t("app.title")}</h1></div>
+      </div>
+      <div className="top-actions">
+        <span className="offline-state">{t("app.offline")}</span>
+        <div aria-label={t("locale.switch")} className="locale-switch" role="group">
+          <Languages aria-hidden="true" size={14} />
+          {(["ru", "en"] as const).map((choice) => <button aria-pressed={locale === choice} data-testid={`locale-${choice}`} key={choice} onClick={() => setLocale(choice)} type="button">{t(`locale.${choice}`)}</button>)}
         </div>
-        <div className="top-actions">
-          <span className="offline-state">{t("app.offline")}</span>
-          <div aria-label={t("locale.switch")} className="locale-switch" role="group">
-            <Languages aria-hidden="true" size={14} />
-            {(["ru", "en"] as const).map((choice) => (
-              <button aria-pressed={locale === choice} data-testid={`locale-${choice}`} key={choice} onClick={() => setLocale(choice)} type="button">{t(`locale.${choice}`)}</button>
-            ))}
-          </div>
-          <button aria-expanded={helpOpen} aria-label={t("help.open")} className="icon-button" data-testid="help-trigger" onClick={() => setHelpOpen((current) => !current)} type="button"><HelpCircle aria-hidden="true" size={17} /></button>
+        <button aria-expanded={helpOpen} aria-label={t("help.open")} className="icon-button" data-testid="help-trigger" onClick={() => setHelpOpen((current) => !current)} type="button"><HelpCircle aria-hidden="true" size={17} /></button>
+      </div>
+    </header>
+
+    <nav aria-label={t("nav.sources")} className="source-tabs">
+      <button aria-current={source === "host" ? "page" : undefined} className={source === "host" ? "source-active" : undefined} onClick={() => setSource("host")} type="button">{t("nav.host")}</button>
+      <button aria-current={source === "postgresql" ? "page" : undefined} className={source === "postgresql" ? "source-active" : undefined} disabled={!pgPresent} onClick={() => setSource("postgresql")} title={pgPresent ? undefined : t("nav.no_data")} type="button">{t("nav.postgresql")}</button>
+      {eventsPresent && <button aria-current={source === "events" ? "page" : undefined} className={source === "events" ? "source-active" : undefined} onClick={() => setSource("events")} type="button">{t("nav.events")}</button>}
+    </nav>
+
+    <section className="toolbar">
+      {source === "host"
+        ? <div className="section-tabs" role="tablist">
+          <button aria-selected={hostSection === "system"} onClick={() => setHostSection("system")} role="tab" type="button">{t("section.system")}</button>
+          <button aria-selected={hostSection === "processes"} data-testid="process-tab" onClick={() => setHostSection("processes")} role="tab" type="button">{t("section.processes")}</button>
         </div>
-      </header>
-
-      <nav aria-label="Sources" className="source-tabs">
-        <button aria-current="page" className="source-active" type="button">{t("nav.host")}</button>
-        {["postgresql", "pgbouncer", "clickhouse", "events"].map((name) => <button disabled key={name} title={t("nav.future")} type="button">{t(`nav.${name}`)}</button>)}
-      </nav>
-
-      <section className="toolbar">
-        <div className="section-tabs" role="tablist">
-          <button aria-selected={section === "system"} onClick={() => setSection("system")} role="tab" type="button">{t("section.system")}</button>
-          <button aria-selected={section === "processes"} data-testid="process-tab" onClick={() => setSection("processes")} role="tab" type="button">{t("section.processes")}</button>
-        </div>
-        <div className="hour-picker" data-testid="hour-picker">
-          <button aria-label={t("hour.previous")} disabled={hour === null} onClick={() => hour !== null && changeHour(hour - 3_600_000_000)} type="button"><ChevronLeft aria-hidden="true" size={15} /></button>
-          <label><span>{t("hour.day")}</span><input onChange={(event) => { const next = selectedHour(event.target.value, hourNumber); if (next !== null) changeHour(next) }} type="date" value={day} /></label>
-          <label><span>{t("hour.hour")}</span><select onChange={(event) => { const next = selectedHour(day, Number(event.target.value)); if (next !== null) changeHour(next) }} value={hourNumber}>{Array.from({ length: 24 }, (_, number) => <option key={number} value={number}>{String(number).padStart(2, "0")}:00</option>)}</select></label>
-          <button aria-label={t("hour.next")} disabled={hour === null} onClick={() => hour !== null && changeHour(hour + 3_600_000_000)} type="button"><ChevronRight aria-hidden="true" size={15} /></button>
-        </div>
-      </section>
-
-      <section className="workspace">
-        <div className="status-strip" aria-live="polite">
-          <span>{t("status.segments", { count: data.segmentCount })}</span>
-          <span>{t("status.snapshots", { count: snapshotCount })}</span>
-          <span>{t("status.process_rows", { count: processRows.length })}</span>
-          <span className={pgPresent ? "status-on" : ""}>{t(pgPresent ? "status.pg_present" : "status.pg_absent")}</span>
-          <span className="cursor-time">{formatUtc(cursor)}</span>
-        </div>
-        {loading && <StateCard message={t("status.loading")} />}
-        {!loading && error !== null && <StateCard code={error} message={t("status.error")} />}
-        {!loading && error === null && hour !== null && section === "system" && <SystemView cursor={cursor} data={data} hour={hour} locale={locale} onCursor={setCursor} processRows={processRows} pgRows={pgRows} t={t} />}
-        {!loading && error === null && hour !== null && section === "processes" && <>
-          <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} load={data.load} memory={data.memory} onCursor={setCursor} pressure={data.pressure} t={t} />
-          <div className="lensbar">
-            <div aria-label={t("section.processes")} className="lens-tabs" role="group">
-              {(["generic", "cpu", "memory", "disk"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => setLens(choice)} type="button">{t(`lens.${choice}`)}</button>)}
-            </div>
-            <span>{processRows[0] === undefined ? t("status.no_data") : formatUtc(processRows[0].timestamp)}</span>
-          </div>
-          <div className={selectedProcess === null ? "process-layout process-layout-table" : "process-layout"}>
-            <ProcessTable lens={lens} linkedPids={linkedPids} locale={locale} onSelect={selectProcess} rows={processRows} selectedKey={selectedKey} t={t} />
-            {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activitySnapshotTime={joinedActivity.snapshotTime} lens={lens} locale={locale} onClose={() => { setDockClosed(true); setSelectedKey(null) }} process={selectedProcess} t={t} />}
-          </div>
-        </>}
-      </section>
-
-      {helpOpen && <HelpPanel items={section === "system" ? HELP_SYSTEM : [...HELP_SYSTEM, ...HELP_PROCESS]} onClose={() => setHelpOpen(false)} t={t} />}
-    </main>
-  )
-}
-
-function SystemView({
-  cursor,
-  data,
-  hour,
-  locale,
-  onCursor,
-  processRows,
-  pgRows,
-  t,
-}: {
-  readonly cursor: number
-  readonly data: HourData
-  readonly hour: number
-  readonly locale: Locale
-  readonly onCursor: (value: number) => void
-  readonly processRows: readonly DataRow[]
-  readonly pgRows: readonly DataRow[]
-  readonly t: Translate
-}) {
-  const health = nearestRow(data.health, cursor)
-  const load = nearestRow(data.load, cursor)
-  const memory = nearestRow(data.memory, cursor)
-  const snapshots = useMemo(() => systemSnapshots(data.health, data.load, data.memory, data.pressure), [data.health, data.load, data.memory, data.pressure])
-  return <>
-    <section className="metric-strip">
-      <Metric icon={<Activity size={15} />} help="metric.health.help" label="metric.health.label" t={t} value={measure(value(health, "os_health"), locale, "%")} />
-      <Metric icon={<Server size={15} />} help="metric.load1.help" label="metric.load1.label" t={t} value={measure(value(load, "load1"), locale)} />
-      <Metric icon={<MemoryStick size={15} />} help="metric.mem_available.help" label="metric.mem_available.label" t={t} value={measure(value(memory, "mem_available"), locale, " KiB")} />
-      <Metric icon={<Users size={15} />} help="metric.processes.help" label="metric.processes.label" t={t} value={data.processes.length === 0 ? "—" : measure(processRows.length, locale)} />
-      <Metric icon={<Database size={15} />} help="metric.pg_backends.help" label="metric.pg_backends.label" t={t} value={data.sourceFamilies.some((source) => source.name === "postgresql" && source.present) ? measure(pgRows.length, locale) : "—"} />
+        : <span className="toolbar-source">{t(`nav.${source}`)}</span>}
+      <HourPicker changeHour={changeHour} day={day} hour={hour} hourNumber={hourNumber} t={t} />
     </section>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} load={data.load} memory={data.memory} onCursor={onCursor} pressure={data.pressure} t={t} />
-    <div className="locator-legend">
-      {(["known_bad", "spike", "event"] as const).map((kind) => <span key={kind}><i className={`marker-key marker-${kind}`} />{t(`locator.${kind}`)} <b>{data.findings.filter((finding) => finding.kind === kind).length}</b></span>)}
-    </div>
-    <SystemTable cursor={cursor} locale={locale} onCursor={onCursor} rows={snapshots} t={t} />
-  </>
+
+    <section className="workspace">
+      <div className="status-strip" aria-live="polite">
+        <span>{t(`nav.${source}`)}</span>
+        {source === "host" && <span>{t(`section.${hostSection}`)}</span>}
+        {source === "postgresql" && <span>{t(`pg.section.${pgSection}`)}</span>}
+        <span className="cursor-time">{formatUtc(cursor)}</span>
+      </div>
+      {loading && <StateCard message={t("status.loading")} />}
+      {!loading && error !== null && <StateCard code={error} message={t("status.error")} />}
+      {!loading && error === null && hour !== null && source === "host" && hostSection === "system" && <SystemView cursor={cursor} data={data} focus={systemFocus} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} t={t} />}
+      {!loading && error === null && hour !== null && source === "host" && hostSection === "processes" && <>
+        <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} load={data.load} memory={data.memory} onCursor={setCursor} onFinding={selectFinding} pressure={data.pressure} t={t} />
+        <div className="lensbar">
+          <div aria-label={t("section.processes")} className="lens-tabs" role="group">
+            {(["generic", "cpu", "memory", "disk"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => setLens(choice)} type="button">{t(`lens.${choice}`)}</button>)}
+          </div>
+          <span>{processRows[0] === undefined ? t("status.no_data") : formatUtc(processRows[0].timestamp)}</span>
+        </div>
+        <div className={selectedProcess === null ? "process-layout process-layout-table" : "process-layout"}>
+          <ProcessTable lens={lens} linkedPids={linkedPids} locale={locale} onSelect={selectProcess} rows={processRows} selectedKey={selectedKey} t={t} />
+          {selectedProcess !== null && <DetailDock activity={joinedActivity.row} hour={hour} lens={lens} locale={locale} onClose={() => { setDockClosed(true); setSelectedKey(null) }} process={selectedProcess} processHistory={processHistory} t={t} />}
+        </div>
+      </>}
+      {!loading && error === null && hour !== null && source === "postgresql" && <PostgresView cursor={cursor} data={data} focus={pgFocus} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} onSection={setPgSection} section={pgSection} t={t} />}
+      {!loading && error === null && hour !== null && source === "events" && <EventsView cursor={cursor} data={data} hour={hour} onCursor={setCursor} onFinding={selectFinding} resolve={(finding) => resolveLocator(data, finding)?.row ?? null} selected={selectedFinding} t={t} />}
+    </section>
+
+    {helpOpen && <HelpPanel items={hostSection === "processes" ? [...HELP_SYSTEM, ...HELP_PROCESS] : HELP_SYSTEM} onClose={() => setHelpOpen(false)} t={t} />}
+  </main>
 }
 
-function Metric({ icon, help, label, t, value: output }: { readonly icon: ReactNode; readonly help: string; readonly label: string; readonly t: Translate; readonly value: string }) {
-  return <article className="metric-card"><div className="metric-label"><span>{icon}</span><LabelHelp helpKey={help} labelKey={label} t={t} /></div><strong>{output}</strong></article>
+function HourPicker({ changeHour, day, hour, hourNumber, t }: { readonly changeHour: (hour: number) => void; readonly day: string; readonly hour: number | null; readonly hourNumber: number; readonly t: Translate }) {
+  return <div className="hour-picker" data-testid="hour-picker">
+    <button aria-label={t("hour.previous")} disabled={hour === null} onClick={() => hour !== null && changeHour(hour - 3_600_000_000)} type="button"><ChevronLeft aria-hidden="true" size={15} /></button>
+    <label><span>{t("hour.day")}</span><input onChange={(event) => { const next = selectedHour(event.target.value, hourNumber); if (next !== null) changeHour(next) }} type="date" value={day} /></label>
+    <label><span>{t("hour.hour")}</span><select onChange={(event) => { const next = selectedHour(day, Number(event.target.value)); if (next !== null) changeHour(next) }} value={hourNumber}>{Array.from({ length: 24 }, (_, number) => <option key={number} value={number}>{String(number).padStart(2, "0")}:00</option>)}</select></label>
+    <button aria-label={t("hour.next")} disabled={hour === null} onClick={() => hour !== null && changeHour(hour + 3_600_000_000)} type="button"><ChevronRight aria-hidden="true" size={15} /></button>
+  </div>
 }
 
 function StateCard({ code, message }: { readonly code?: string; readonly message: string }) {
-  return <div className="loading-card"><p className="eyebrow">HOST</p><h2>{message}</h2>{code !== undefined && <code>{code}</code>}</div>
+  return <div className="loading-card"><p className="eyebrow">KRONIKA</p><h2>{message}</h2>{code !== undefined && <code>{code}</code>}</div>
+}
+
+function postgresSection(logicalName: string): PostgresSection | null {
+  if (logicalName === "pg_stat_activity" || logicalName === "pg_stat_progress_vacuum") return "activity"
+  if (logicalName === "pg_stat_statements") return "statements"
+  if (logicalName === "pg_locks") return "locks"
+  if (logicalName === "pg_stat_database") return "databases"
+  if (logicalName.startsWith("pg_") && !logicalName.startsWith("pg_log_")) return "overview"
+  return null
 }
 
 function initialLocale(): Locale {

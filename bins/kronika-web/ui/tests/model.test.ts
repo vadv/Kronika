@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { Cell, DataRow } from "../src/api.ts"
-import { activityFor, formatUtc, identifier, measure, nearestTime, payloadMeta, processCommand, rawText, selectedHour, systemSnapshots } from "../src/model.ts"
+import { activityFor, formatUtc, identifier, measure, nearestTime, processCommand, rawText, selectedHour } from "../src/model.ts"
 
 function row(timestamp: number): DataRow {
   return { segmentId: "7", logicalName: "os_process", typeId: "1100001", ordinal: "0", timestamp, values: {} }
@@ -25,10 +25,9 @@ test("null is a dash while zero remains data and identifiers are ungrouped", () 
   assert.equal(identifier("1234567"), "1234567")
 })
 
-test("text payloads retain their stored value and truncation metadata", () => {
+test("text payloads retain their exact text value", () => {
   const payload: Cell = { representation: "text", stored_text: "SELECT 1", full_len: "8", truncated: true, sha256: "abc" }
   assert.equal(rawText(payload), "SELECT 1")
-  assert.equal(payloadMeta(payload), "truncated · full_len=8 · sha256=abc")
 })
 
 test("integer lists retain exact ungrouped identifiers", () => {
@@ -44,14 +43,4 @@ test("activity linking uses the cursor-nearest PG snapshot and exact PID", () =>
   assert.equal(linked.snapshotTime, 300)
   assert.equal(linked.row?.values.backend_type, "nearest")
   assert.equal(processCommand(process), "worker")
-})
-
-test("system snapshot rows preserve exact timestamps, nulls and zero", () => {
-  const health = [{ ...row(100), values: { os_health: 0 } }]
-  const load = [{ ...row(200), values: { load1: 1.5, load5: null, load15: 0 } }]
-  const snapshots = systemSnapshots(health, load, [], [])
-  assert.deepEqual(snapshots.map((snapshot) => snapshot.timestamp), [100, 200])
-  assert.equal(snapshots[0]?.health, 0)
-  assert.equal(snapshots[0]?.load1, null)
-  assert.equal(snapshots[1]?.load15, 0)
 })

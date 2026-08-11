@@ -3,19 +3,6 @@ import type { Cell, DataRow } from "./api"
 export type Locale = "en" | "ru"
 export type Lens = "generic" | "cpu" | "memory" | "disk"
 
-export interface SystemSnapshot {
-  readonly timestamp: number
-  health: number | null
-  load1: number | null
-  load5: number | null
-  load15: number | null
-  memAvailable: number | null
-  memTotal: number | null
-  cpuPressure: number | null
-  memoryPressure: number | null
-  ioPressure: number | null
-}
-
 export function floorHour(timestamp: number): number {
   return Math.floor(timestamp / 3_600_000_000) * 3_600_000_000
 }
@@ -70,54 +57,6 @@ export function nearestRow(rows: readonly DataRow[], target: number): DataRow | 
   return timestamp === null ? null : rows.find((row) => row.timestamp === timestamp) ?? null
 }
 
-export function systemSnapshots(
-  health: readonly DataRow[],
-  load: readonly DataRow[],
-  memory: readonly DataRow[],
-  pressure: readonly DataRow[],
-): readonly SystemSnapshot[] {
-  const rows = new Map<number, SystemSnapshot>()
-  const at = (timestamp: number) => {
-    const current = rows.get(timestamp)
-    if (current !== undefined) return current
-    const created: SystemSnapshot = {
-      timestamp,
-      health: null,
-      load1: null,
-      load5: null,
-      load15: null,
-      memAvailable: null,
-      memTotal: null,
-      cpuPressure: null,
-      memoryPressure: null,
-      ioPressure: null,
-    }
-    rows.set(timestamp, created)
-    return created
-  }
-  for (const row of health) at(row.timestamp).health = asNumber(value(row, "os_health"))
-  for (const row of load) {
-    const snapshot = at(row.timestamp)
-    snapshot.load1 = asNumber(value(row, "load1"))
-    snapshot.load5 = asNumber(value(row, "load5"))
-    snapshot.load15 = asNumber(value(row, "load15"))
-  }
-  for (const row of memory) {
-    const snapshot = at(row.timestamp)
-    snapshot.memAvailable = asNumber(value(row, "mem_available"))
-    snapshot.memTotal = asNumber(value(row, "mem_total"))
-  }
-  for (const row of pressure) {
-    const snapshot = at(row.timestamp)
-    const resource = asNumber(value(row, "resource"))
-    const pressureValue = asNumber(value(row, "some_avg10"))
-    if (resource === 0) snapshot.cpuPressure = pressureValue
-    if (resource === 1) snapshot.memoryPressure = pressureValue
-    if (resource === 2) snapshot.ioPressure = pressureValue
-  }
-  return [...rows.values()].sort((left, right) => left.timestamp - right.timestamp)
-}
-
 export function value(row: DataRow | null, field: string): Cell {
   return row?.values[field] ?? null
 }
@@ -143,16 +82,6 @@ export function rawText(cell: Cell): string | null {
     if (typeof payload.base64 === "string") return payload.base64
   }
   return JSON.stringify(payload)
-}
-
-export function payloadMeta(cell: Cell): string | null {
-  if (cell === null || typeof cell !== "object" || Array.isArray(cell)) return null
-  const payload = cell as Readonly<Record<string, unknown>>
-  const parts = []
-  if (payload.truncated === true) parts.push("truncated")
-  if (typeof payload.full_len === "string") parts.push(`full_len=${payload.full_len}`)
-  if (typeof payload.sha256 === "string") parts.push(`sha256=${payload.sha256}`)
-  return parts.length === 0 ? null : parts.join(" · ")
 }
 
 export function processCommand(row: DataRow): string {

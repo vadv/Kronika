@@ -1,6 +1,5 @@
 import { X } from "lucide-react"
-import { registry } from "kronika:registry"
-import type { ReactNode } from "react"
+import { useMemo, type ReactNode } from "react"
 
 import type { Cell, DataRow } from "./api"
 import { LabelHelp, type Translate } from "./help"
@@ -9,7 +8,6 @@ import {
   formatUtc,
   identifier,
   measure,
-  payloadMeta,
   processCommand,
   rawText,
   stateText,
@@ -17,6 +15,7 @@ import {
   type Lens,
   type Locale,
 } from "./model"
+import { SeriesChart, type ChartPoint } from "./series-chart"
 
 interface ProcessField {
   readonly field: string
@@ -54,37 +53,66 @@ const PROCESS_DETAIL: Readonly<Record<Lens, readonly ProcessField[]>> = {
   ],
 }
 
+interface HistoryField {
+  readonly field: string
+  readonly key: string
+  readonly unit: string
+}
+
+export interface ProcessHistorySeries extends HistoryField {
+  readonly points: readonly ChartPoint[]
+}
+
+const PROCESS_HISTORY: Readonly<Record<Lens, readonly HistoryField[]>> = {
+  generic: [{ field: "num_threads", key: "col.threads", unit: "" }],
+  cpu: [
+    { field: "utime", key: "col.utime", unit: "" },
+    { field: "stime", key: "col.stime", unit: "" },
+  ],
+  memory: [{ field: "rmem_kb", key: "col.rmem", unit: " KiB" }],
+  disk: [
+    { field: "read_bytes", key: "col.read_bytes", unit: " B" },
+    { field: "write_bytes", key: "col.write_bytes", unit: " B" },
+  ],
+}
+
 const ACTIVITY_FIELDS = [
-  ["pid", "pg.pid", "id"], ["leader_pid", "pg.leader_pid", "id"],
-  ["datname", "pg.datname", "text"], ["usename", "pg.usename", "text"],
+  ["backend_type", "pg.backend_type", "text"], ["datname", "pg.datname", "text"],
+  ["usename", "pg.usename", "text"],
   ["application_name", "pg.application_name", "text"], ["client_addr", "pg.client_addr", "text"],
-  ["backend_type", "pg.backend_type", "text"], ["state", "pg.state", "text"],
+  ["state", "pg.state", "text"],
   ["wait_event_type", "pg.wait_event_type", "text"], ["wait_event", "pg.wait_event", "text"],
-  ["query_id", "pg.query_id", "id"], ["backend_xid_age", "pg.backend_xid_age", "number"],
-  ["backend_xmin_age", "pg.backend_xmin_age", "number"], ["backend_start", "pg.backend_start", "time"],
+  ["backend_start", "pg.backend_start", "time"],
   ["xact_start", "pg.xact_start", "time"], ["query_start", "pg.query_start", "time"],
   ["state_change", "pg.state_change", "time"],
 ] as const
 
 export function DetailDock({
   activity,
-  activitySnapshotTime,
+  hour,
   lens,
   locale,
   onClose,
   process,
+  processHistory,
   t,
 }: {
   readonly activity: DataRow | null
-  readonly activitySnapshotTime: number | null
+  readonly hour: number
   readonly lens: Lens
   readonly locale: Locale
   readonly onClose: () => void
   readonly process: DataRow
+  readonly processHistory: readonly DataRow[]
   readonly t: Translate
 }) {
   const commandCell = value(process, "cmdline")
-  const commandMeta = payloadMeta(commandCell)
+  const pid = identifier(value(process, "pid"))
+  const commandPath = rawText(commandCell)?.trim() ? `/proc/${pid}/cmdline` : `/proc/${pid}/comm`
+  const history = useMemo(
+    () => processLensHistory(processHistory, process, lens),
+    [lens, process, processHistory],
+  )
   return (
     <aside
       aria-label={t("detail.process.title")}
@@ -94,41 +122,48 @@ export function DetailDock({
       <div className="panel-head detail-head">
         <div>
           <LabelHelp helpKey="detail.process.help" labelKey="detail.process.title" t={t} />
-          <p className="detail-identity">PID {identifier(value(process, "pid"))}</p>
+          <p className="detail-identity">PID {pid}</p>
         </div>
         <button aria-label={t("common.close")} className="icon-button dock-close" onClick={onClose} type="button"><X aria-hidden="true" size={15} /></button>
       </div>
       <section className="command-block">
-        <LabelHelp helpKey="detail.cmdline.help" labelKey="detail.cmdline.label" t={t} />
+        <div className="command-heading">
+          <LabelHelp helpKey="detail.cmdline.help" labelKey="detail.cmdline.label" t={t} />
+          <code>{commandPath}</code>
+        </div>
         <code data-testid="process-cmdline">{processCommand(process)}</code>
-        {commandMeta !== null && <small>{commandMeta}</small>}
       </section>
       <dl className="detail-list">
         <DetailField help="col.pid.help" label="col.pid.label" t={t} value={identifier(value(process, "pid"))} />
         <DetailField help="col.starttime.help" label="col.starttime.label" t={t} value={<Timestamp cell={value(process, "starttime")} t={t} />} />
-        <DetailField help="detail.os_source.help" label="detail.os_source.label" t={t} value={<Timestamp raw={process.timestamp} t={t} />} />
-        <DetailField help="detail.os_layout.help" label="detail.os_layout.label" t={t} value={layoutName(process)} />
         {PROCESS_DETAIL[lens].map((field) => <DetailField help={`${field.key}.help`} key={field.field} label={`${field.key}.label`} t={t} value={formatProcess(value(process, field.field), field.kind, locale)} />)}
       </dl>
+      <section aria-label={t(`lens.${lens}`)} className="process-history" data-testid="process-history">
+        {history.map((series) => (
+          <SeriesChart
+            hour={hour}
+            key={series.field}
+            label={t(`${series.key}.label`)}
+            locale={locale}
+            points={series.points}
+            unit={series.unit}
+          />
+        ))}
+      </section>
 
       <section className="pg-section">
         <div className="pg-title">
-          <span className="pg-badge">{t("pg.badge")}</span>
-          <LabelHelp helpKey="detail.pg.help" labelKey="detail.pg.title" t={t} />
+          <h3>{activity === null ? t("detail.pg.title") : t("detail.pg_pid", { pid: identifier(value(activity, "pid")) })}</h3>
         </div>
-        {activitySnapshotTime !== null && <dl className="detail-list"><DetailField help="detail.pg_source.help" label="detail.pg_source.label" t={t} value={<Timestamp raw={activitySnapshotTime} t={t} />} /></dl>}
         {activity === null
           ? <p className="pg-empty">{t("detail.pg_none")}</p>
           : <>
-            <p className="backend-type">{rawText(value(activity, "backend_type")) ?? "—"}</p>
             <dl className="detail-list">
-              <DetailField help="detail.pg_layout.help" label="detail.pg_layout.label" t={t} value={layoutName(activity)} />
               {ACTIVITY_FIELDS.map(([field, key, kind]) => <DetailField help={`${key}.help`} key={field} label={`${key}.label`} t={t} value={formatActivity(value(activity, field), kind, locale, t)} />)}
             </dl>
             <section className="query-block">
               <LabelHelp helpKey="pg.query.help" labelKey="pg.query.label" t={t} />
               <pre data-testid="pg-exact-query">{rawText(value(activity, "query")) ?? "—"}</pre>
-              {payloadMeta(value(activity, "query")) !== null && <small>{payloadMeta(value(activity, "query"))}</small>}
             </section>
           </>}
       </section>
@@ -166,7 +201,38 @@ function processField(field: string, key: string, kind: ProcessField["kind"]): P
   return { field, key, kind }
 }
 
-function layoutName(row: DataRow): string {
-  const layout = registry.find((candidate) => candidate.typeId === row.typeId)
-  return `${layout?.physicalName ?? "unknown"} · type_id=${row.typeId}`
+export function processLensHistory(
+  rows: readonly DataRow[],
+  process: DataRow,
+  lens: Lens,
+): readonly ProcessHistorySeries[] {
+  const pid = identifier(value(process, "pid"))
+  const starttime = identifier(value(process, "starttime"))
+  const selected = rows
+    .filter((row) => identifier(value(row, "pid")) === pid && identifier(value(row, "starttime")) === starttime)
+    .slice()
+    .sort((left, right) => left.timestamp - right.timestamp || left.ordinal.localeCompare(right.ordinal))
+  return PROCESS_HISTORY[lens].map((field) => ({
+    ...field,
+    points: historyPoints(selected, field.field),
+  }))
+}
+
+function historyPoints(rows: readonly DataRow[], field: string): readonly ChartPoint[] {
+  let previousSegment: string | null = null
+  let run = 0
+  return rows.map((row) => {
+    if (row.segmentId !== previousSegment) {
+      previousSegment = row.segmentId
+      run = 0
+    }
+    const number = asNumber(value(row, field))
+    const point = {
+      segmentId: `${row.segmentId}:${run}`,
+      timestamp: row.timestamp,
+      value: number,
+    }
+    if (number === null) run += 1
+    return point
+  })
 }

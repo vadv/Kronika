@@ -23,6 +23,8 @@ test("the approved real hour converts without losing entity relationships", () =
   assert.equal(hour?.sections.pg_stat_activity, hour?.activities)
   assert.equal(hour?.memory[0]?.values.mem_available_percent !== undefined, true)
   assert.equal(hour?.memory[0]?.values.mem_available, undefined)
+  assert.notEqual(hour?.health[0]?.segmentId, "fixture")
+  assert.ok(hour?.health.every((row) => hour.processes.some((process) => process.segmentId === row.segmentId)))
   assert.ok(hour?.points.some((point) => point.series === "os_oom_kills"))
   assert.ok(hour?.points.some((point) => point.series === "os_psi_some_avg10" && point.identity.resource === 0))
   const processByTime = new Map<number, Set<unknown>>()

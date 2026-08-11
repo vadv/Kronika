@@ -32,18 +32,6 @@ export const PRODUCT_SECTION_GROUPS = {
 
 const UI_SECTION_NAMES = unique(Object.values(PRODUCT_SECTION_GROUPS).flat())
 const UI_SECTION_NAME_SET = new Set(UI_SECTION_NAMES)
-const FINDING_INDEX_NAMES = new Set([
-  "os_process",
-  "os_cpu",
-  "os_meminfo",
-  "os_loadavg",
-  "os_vmstat",
-  "os_mountinfo",
-  "pg_stat_activity",
-  "pg_stat_database",
-  "pg_stat_statements",
-  ...PRODUCT_SECTION_GROUPS.events,
-])
 const REQUEST_CONCURRENCY = 4
 
 export interface DataRow {
@@ -262,11 +250,7 @@ function segmentTasks(segment: Segment): readonly LoadTask[] {
     segmentId: segment.id,
     logicalName,
   }))
-  for (const logicalName of names) {
-    if (FINDING_INDEX_NAMES.has(logicalName)) {
-      tasks.push({ kind: "index", segmentId: segment.id, logicalName })
-    }
-  }
+  for (const logicalName of names) tasks.push({ kind: "index", segmentId: segment.id, logicalName })
   if (names.some((name) => name.startsWith("os_"))) {
     tasks.push(
       { kind: "history", segmentId: segment.id, logicalName: "health" },

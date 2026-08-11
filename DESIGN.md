@@ -452,13 +452,21 @@ English and Russian source dictionaries are flat YAML files. The interface
 build rejects duplicate keys, empty values, unequal key sets and unequal
 placeholders, then generates the compact typed dictionaries shipped in the
 document. A saved locale wins over `navigator.languages`, with English as the
-fallback; source values and recorded payload text are never translated.
+fallback; source values, identifiers, queries and command lines are never
+translated.
 
-The first interface covers one selected calendar hour and the Host System and
-Processes views. The timeline always spans that complete hour and leaves
-unrecorded intervals blank. Process rows may link to the independently nearest
-`pg_stat_activity` snapshot by exact PID; both source times remain visible and
-the interface draws no causal conclusion from the link.
+The interface covers one selected calendar hour. Host contains dense System
+metric groups and virtualized Processes lenses; PostgreSQL contains Overview,
+Activity, Statements, Locks and Databases whenever their sections are present.
+Events expands the same findings drawn on the shared healthline. The timeline
+always spans the complete hour, leaves gaps blank and drives every view with one
+cursor. Marker shape identifies log events, large or bad values, and spikes.
+
+System tables contain only entities such as devices, mounts, interfaces and CPU
+topology. Selecting a metric opens its one-hour history. A selected Linux
+process links to the nearest `pg_stat_activity` data by exact PID and shows the
+PostgreSQL PID, database, role, application, client, state, wait, query and
+times. The locale switch is immediate and persists locally.
 
 ### Segment resources
 

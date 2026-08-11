@@ -1,0 +1,61 @@
+import { useId } from "react"
+
+import { formatUtc, type Locale } from "./model"
+
+export interface ChartPoint {
+  readonly segmentId: string
+  readonly timestamp: number
+  readonly value: number | null
+}
+
+export function SeriesChart({
+  hour,
+  label,
+  locale,
+  points,
+  unit,
+}: {
+  readonly hour: number
+  readonly label: string
+  readonly locale: Locale
+  readonly points: readonly ChartPoint[]
+  readonly unit: string
+}) {
+  const title = useId()
+  const end = hour + 3_600_000_000
+  const numeric = points.filter((point): point is ChartPoint & { readonly value: number } => point.value !== null && Number.isFinite(point.value))
+  const values = numeric.map((point) => point.value)
+  const low = values.length === 0 ? 0 : Math.min(...values)
+  const high = values.length === 0 ? 0 : Math.max(...values)
+  const span = high - low || 1
+  const paths = new Map<string, (ChartPoint & { readonly value: number })[]>()
+  for (const point of numeric) {
+    const current = paths.get(point.segmentId) ?? []
+    current.push(point)
+    paths.set(point.segmentId, current)
+  }
+  return <figure className="series-chart">
+    <figcaption id={title}>
+      <span>{label}</span>
+      <span>{values.length === 0 ? "—" : `${number(low, locale)}–${number(high, locale)}${unit}`}</span>
+    </figcaption>
+    <svg aria-labelledby={title} preserveAspectRatio="none" role="img" viewBox="0 0 920 126">
+      {[0, 1, 2, 3, 4, 5, 6].map((tick) => <line className="mini-grid" key={tick} x1={tick / 6 * 920} x2={tick / 6 * 920} y1="5" y2="105" />)}
+      <line className="mini-zero" x1="0" x2="920" y1="105" y2="105" />
+      {[...paths.entries()].map(([segmentId, stored]) => {
+        const path = stored.slice().sort((left, right) => left.timestamp - right.timestamp).map((point, index) => {
+          const x = Math.max(0, Math.min(920, (point.timestamp - hour) / (end - hour) * 920))
+          const y = 101 - (point.value - low) / span * 92
+          return `${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`
+        }).join(" ")
+        return <path className="mini-series" d={path} key={segmentId} />
+      })}
+      {[0, 1, 2, 3, 4, 5, 6].map((tick) => <text className="mini-tick" key={tick} textAnchor={tick === 0 ? "start" : tick === 6 ? "end" : "middle"} x={tick / 6 * 920} y="122">{formatUtc(hour + tick * 600_000_000).slice(11, 16)}</text>)}
+    </svg>
+  </figure>
+}
+
+function number(value: number, locale: Locale): string {
+  if (Math.abs(value) >= 1_000_000) return value.toExponential(2)
+  return new Intl.NumberFormat(locale, { maximumFractionDigits: 2, useGrouping: false }).format(value)
+}

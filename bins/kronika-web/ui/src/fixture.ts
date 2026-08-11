@@ -65,22 +65,25 @@ export function bundledFixtureHour(start: number): HourData | null {
   if (fixture === null) return null
   const end = start + 3_600_000_000
   const within = (timestamp: number) => timestamp >= start && timestamp < end
+  const segmentAt = segmentForTimestamp(fixture.os)
   const processes = tableRows(fixture.os, "os_process").filter((row) => within(row.timestamp))
   const activities = tableRows(fixture.pg, "pg_stat_activity").filter((row) => within(row.timestamp))
-  const health = seriesRows(fixture.system.health, "health", "0", { field: "os_health" })
+  const health = seriesRows(fixture.system.health, "health", "0", { field: "os_health", segmentAt })
     .filter((row) => within(row.timestamp))
-  const load = seriesRows(fixture.system.load1, "os_loadavg", "1105001", { field: "load1" })
+  const load = seriesRows(fixture.system.load1, "os_loadavg", "1105001", { field: "load1", segmentAt })
     .filter((row) => within(row.timestamp))
   const memory = seriesRows(fixture.system.memAvailable, "os_meminfo", "1104001", {
     field: "mem_available_percent",
+    segmentAt,
   }).filter((row) => within(row.timestamp))
   const pressure = Object.entries(fixture.system.psi).flatMap(([resource, series]) =>
     seriesRows(series, "os_psi", "1107001", {
       field: "some_avg10",
       extra: { resource: Number(resource) },
+      segmentAt,
     }),
   ).filter((row) => within(row.timestamp))
-  const points = fixturePoints(fixture).filter((point) => within(point.timestamp))
+  const points = fixturePoints(fixture, segmentAt).filter((point) => within(point.timestamp))
   const findings = fixture.findings.map((finding) => ({
     segmentId: finding.segment_id,
     logicalName: fixtureLogicalName(finding.type_id),
@@ -174,10 +177,14 @@ function seriesRows(
   series: readonly FixturePoint[],
   logicalName: string,
   typeId: string,
-  options: { readonly field: string; readonly extra?: Readonly<Record<string, Cell>> },
+  options: {
+    readonly field: string
+    readonly extra?: Readonly<Record<string, Cell>>
+    readonly segmentAt: (timestamp: number) => string
+  },
 ): readonly DataRow[] {
-  return series.map(([timestamp, value], ordinal) => ({
-    segmentId: "fixture",
+  return series.map(([timestamp, value, explicitSegment], ordinal) => ({
+    segmentId: explicitSegment ?? options.segmentAt(Number(timestamp)),
     logicalName,
     typeId,
     ordinal: String(ordinal),
@@ -186,7 +193,7 @@ function seriesRows(
   }))
 }
 
-function fixturePoints(fixture: RealHourFixture): readonly Point[] {
+function fixturePoints(fixture: RealHourFixture, segmentAt: (timestamp: number) => string): readonly Point[] {
   const series: readonly [string, string, string, readonly FixturePoint[]][] = [
     ["os_cpu", "1102001", "os_cpu_busy_percent", fixture.system.cpuBusy],
     ["health", "0", "os_health", fixture.system.health],
@@ -197,7 +204,7 @@ function fixturePoints(fixture: RealHourFixture): readonly Point[] {
   ]
   const points = series.flatMap(([logicalName, typeId, name, values]) =>
     values.map(([timestamp, value, segmentId]) => ({
-      segmentId: segmentId ?? "fixture",
+      segmentId: segmentId ?? segmentAt(Number(timestamp)),
       logicalName,
       typeId,
       series: name,
@@ -208,7 +215,7 @@ function fixturePoints(fixture: RealHourFixture): readonly Point[] {
   )
   return points.concat(Object.entries(fixture.system.psi).flatMap(([resource, values]) =>
     values.map(([timestamp, value]) => ({
-      segmentId: "fixture",
+      segmentId: segmentAt(Number(timestamp)),
       logicalName: "os_psi",
       typeId: "1107001",
       series: "os_psi_some_avg10",
@@ -217,6 +224,24 @@ function fixturePoints(fixture: RealHourFixture): readonly Point[] {
       value,
     })),
   ))
+}
+
+function segmentForTimestamp(table: FixtureTable): (timestamp: number) => string {
+  const snapshots = table.snapshots
+    .map((snapshot) => ({ segmentId: snapshot.segment_id, timestamp: Number(snapshot.ts) }))
+    .sort((left, right) => left.timestamp - right.timestamp)
+  return (timestamp) => {
+    let selected = snapshots[0]
+    let distance = selected === undefined ? Number.POSITIVE_INFINITY : Math.abs(selected.timestamp - timestamp)
+    for (const candidate of snapshots) {
+      const candidateDistance = Math.abs(candidate.timestamp - timestamp)
+      if (candidateDistance < distance || (candidateDistance === distance && candidate.timestamp < (selected?.timestamp ?? Number.POSITIVE_INFINITY))) {
+        selected = candidate
+        distance = candidateDistance
+      }
+    }
+    return selected?.segmentId ?? "fixture"
+  }
 }
 
 function fixtureLogicalName(typeId: string): string {
