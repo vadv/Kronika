@@ -25,6 +25,7 @@ const DEFAULT_CPU_PERIOD_USEC: i64 = 100_000;
 const CPU_V1_DIRS: &[&str] = &["cpu,cpuacct", "cpuacct,cpu", "cpu", "cpuacct", ""];
 const MEMORY_V1_DIRS: &[&str] = &["memory", ""];
 const PIDS_V1_DIRS: &[&str] = &["pids", ""];
+const CPUSET_V1_DIRS: &[&str] = &["cpuset", ""];
 const BLKIO_V1_DIRS: &[&str] = &["blkio", ""];
 
 /// Collect cgroup v2 or v1 rows from `KRONIKA_SYS_ROOT/fs/cgroup`.
@@ -174,6 +175,9 @@ fn read_cpu_v1(sys: &SysFs, ts: i64, path: &str, clock_ticks_per_sec: i64) -> Op
     if let Some(content) = read_first_v1(sys, CPU_V1_DIRS, path, "cpu.cfs_period_us") {
         row.period_usec = parse_i64(&content).unwrap_or(DEFAULT_CPU_PERIOD_USEC);
     }
+    row.cpuset_cpus = read_first_v1(sys, CPUSET_V1_DIRS, path, "cpuset.effective_cpus")
+        .or_else(|| read_first_v1(sys, CPUSET_V1_DIRS, path, "cpuset.cpus"))
+        .and_then(|content| count_cpus(&content));
     let throttle_found = read_first_v1(sys, CPU_V1_DIRS, path, "cpu.stat").is_some_and(|content| {
         parse_v1_cpu_stat(&content, &mut row);
         true

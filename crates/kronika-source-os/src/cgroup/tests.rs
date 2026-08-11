@@ -287,3 +287,22 @@ fn a_cpuset_list_counts_the_cpus_it_names() {
     assert_eq!(count_cpus("3-1\n"), None);
     assert_eq!(count_cpus("what\n"), None);
 }
+
+#[test]
+fn cgroup_v1_reads_its_cpuset_from_the_cpuset_controller() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let cgroup = root.path().join("fs/cgroup");
+    std::fs::create_dir_all(cgroup.join("cpu,cpuacct")).expect("cpu tree");
+    std::fs::create_dir_all(cgroup.join("cpuset")).expect("cpuset tree");
+    std::fs::write(cgroup.join("cpu,cpuacct/cpuacct.usage"), "5000000\n").expect("usage");
+    std::fs::write(cgroup.join("cpuset/cpuset.effective_cpus"), "0-1\n").expect("cpuset");
+
+    let sys = SysFs::new(root.path().to_path_buf());
+    let rows = collect(&sys, 100, 100);
+    let root_row = rows
+        .cpu
+        .iter()
+        .find(|row| row.cgroup_path == "/")
+        .expect("root cpu row");
+    assert_eq!(root_row.cpuset_cpus, Some(2));
+}
