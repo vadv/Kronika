@@ -21,10 +21,10 @@ if (fixtureOutputAt >= 0 && (fixtureOutput === undefined || process.argv.length 
 const artifact = fixtureOutput === null ? join(uiDirectory, "kronika-ui.html.gz") : resolve(fixtureOutput)
 const checkOnly = process.argv.includes("--check")
 if (checkOnly && fixtureOutput !== null) throw new Error("--check and --fixture-output cannot be combined")
-// The contextual timeline, hover readout, and exact locator states add about
-// two compressed kilobytes while replacing seven equal plots.
-const maximumRawBytes = fixtureOutput === null ? 852_000 : 40_000_000
-const maximumGzipBytes = fixtureOutput === null ? 219_000 : 8_000_000
+// The contextual timeline plus registry-aware statement and plan tables stay
+// within this measured single-file budget, including both operator languages.
+const maximumRawBytes = fixtureOutput === null ? 900_000 : 40_000_000
+const maximumGzipBytes = fixtureOutput === null ? 226_000 : 8_000_000
 const rustToolchain = process.env.RUST_TOOLCHAIN ?? "1.96.0"
 const rustHost = execFileSync("rustc", [`+${rustToolchain}`, "-vV"], { encoding: "utf8" })
   .match(/^host: (.+)$/m)?.[1]
