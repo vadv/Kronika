@@ -14,6 +14,7 @@ import { LabelHelp, type Translate } from "./help"
 import {
   asNumber,
   formatUtc,
+  formatUtcCell,
   identifier,
   measure,
   processCommand,
@@ -35,39 +36,39 @@ interface Field {
   readonly sticky?: "pid" | "start" | "command"
 }
 
-const PID: Field = { id: "pid", field: "pid", label: "col.pid.label", help: "col.pid.help", kind: "id", size: 72, sticky: "pid" }
-const START: Field = { id: "starttime", field: "starttime", label: "col.starttime.label", help: "col.starttime.help", kind: "time", size: 215, sticky: "start" }
-const COMMAND: Field = { id: "command", label: "col.command.label", help: "col.command.help", kind: "command", size: 340, sticky: "command" }
-const STATE: Field = { id: "state", field: "state", label: "col.state.label", help: "col.state.help", kind: "state", size: 96 }
+const PID: Field = { id: "pid", field: "pid", label: "col.pid.label", help: "col.pid.help", kind: "id", size: 62, sticky: "pid" }
+const START: Field = { id: "starttime", field: "starttime", label: "col.starttime.label", help: "col.starttime.help", kind: "time", size: 142, sticky: "start" }
+const COMMAND: Field = { id: "command", label: "col.command.label", help: "col.command.help", kind: "command", size: 300, sticky: "command" }
+const STATE: Field = { id: "state", field: "state", label: "col.state.label", help: "col.state.help", kind: "state", size: 60 }
 
 const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
   generic: [
     PID, START, COMMAND, STATE,
-    idField("ppid", "col.ppid", 82), idField("uid", "col.uid", 80), idField("euid", "col.euid", 80),
-    idField("gid", "col.gid", 80), idField("egid", "col.egid", 80),
-    numberField("num_threads", "col.threads", 90), idField("tty", "col.tty", 75),
-    idField("exit_signal", "col.exit_signal", 100),
+    idField("ppid", "col.ppid", 70), idField("uid", "col.uid", 70), idField("euid", "col.euid", 70),
+    idField("gid", "col.gid", 70), idField("egid", "col.egid", 70),
+    numberField("num_threads", "col.threads", 84), idField("tty", "col.tty", 70),
+    idField("exit_signal", "col.exit_signal", 70),
   ],
   cpu: [
     PID, START, COMMAND, STATE,
-    idField("curcpu", "col.curcpu", 75), numberField("utime", "col.utime", 125),
-    numberField("stime", "col.stime", 135), nsField("rundelay_ns", "col.rundelay", 130),
-    numberField("blkdelay_ticks", "col.blkdelay", 130), numberField("nvcsw", "col.nvcsw", 130),
-    numberField("nivcsw", "col.nivcsw", 140), numberField("nice", "col.nice", 75),
-    numberField("prio", "col.prio", 90), numberField("rtprio", "col.rtprio", 100), idField("policy", "col.policy", 90),
+    idField("curcpu", "col.curcpu", 70), numberField("utime", "col.utime", 84),
+    numberField("stime", "col.stime", 84), nsField("rundelay_ns", "col.rundelay", 84),
+    numberField("blkdelay_ticks", "col.blkdelay", 84), numberField("nvcsw", "col.nvcsw", 84),
+    numberField("nivcsw", "col.nivcsw", 84), numberField("nice", "col.nice", 84),
+    numberField("prio", "col.prio", 84), numberField("rtprio", "col.rtprio", 84), idField("policy", "col.policy", 70),
   ],
   memory: [
     PID, START, COMMAND, STATE,
-    kibField("rmem_kb", "col.rmem", 125), kibField("vmem_kb", "col.vmem", 125),
-    kibField("vswap_kb", "col.vswap", 115), numberField("minflt", "col.minflt", 125),
-    numberField("majflt", "col.majflt", 125),
+    kibField("rmem_kb", "col.rmem", 96), kibField("vmem_kb", "col.vmem", 96),
+    kibField("vswap_kb", "col.vswap", 96), numberField("minflt", "col.minflt", 84),
+    numberField("majflt", "col.majflt", 84),
   ],
   disk: [
     PID, START, COMMAND, STATE,
-    bytesField("read_bytes", "col.read_bytes", 145), bytesField("write_bytes", "col.write_bytes", 145),
-    bytesField("cancelled_write_bytes", "col.cancelled_write", 155), numberField("syscr", "col.syscr", 120),
-    numberField("syscw", "col.syscw", 120), numberField("rchar", "col.rchar", 140),
-    numberField("wchar", "col.wchar", 140), numberField("blkdelay_ticks", "col.blkdelay", 130),
+    bytesField("read_bytes", "col.read_bytes", 96), bytesField("write_bytes", "col.write_bytes", 96),
+    bytesField("cancelled_write_bytes", "col.cancelled_write", 96), numberField("syscr", "col.syscr", 84),
+    numberField("syscw", "col.syscw", 84), numberField("rchar", "col.rchar", 84),
+    numberField("wchar", "col.wchar", 84), numberField("blkdelay_ticks", "col.blkdelay", 84),
   ],
 }
 
@@ -128,7 +129,7 @@ export function ProcessTable({
   })
   const displayed = table.getRowModel().rows
   const scroll = useRef<HTMLDivElement>(null)
-  const virtual = useVirtualizer({ count: displayed.length, estimateSize: () => 35, getScrollElement: () => scroll.current, overscan: 14 })
+  const virtual = useVirtualizer({ count: displayed.length, estimateSize: () => 23, getScrollElement: () => scroll.current, overscan: 14 })
   const width = table.getTotalSize()
   return (
     <div aria-label={t("table.processes")} className="process-table" data-testid="process-table" role="table">
@@ -175,7 +176,7 @@ function CellValue({ field, linked, locale, row }: { readonly field: Field; read
   switch (field.kind) {
     case "command": output = processCommand(row); break
     case "state": output = stateText(cell); break
-    case "time": output = formatUtc(asNumber(cell)); break
+    case "time": output = formatUtcCell(asNumber(cell)); break
     case "number": output = measure(cell, locale); break
     case "kib": output = measure(cell, locale, " KiB"); break
     case "bytes": output = measure(cell, locale, " B"); break

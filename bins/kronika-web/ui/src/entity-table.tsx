@@ -70,7 +70,7 @@ export function EntityTable({
     state: { sorting },
   })
   const rendered = table.getRowModel().rows
-  const virtual = useVirtualizer({ count: rendered.length, estimateSize: () => 31, getScrollElement: () => parent.current, overscan: 10 })
+  const virtual = useVirtualizer({ count: rendered.length, estimateSize: () => 23, getScrollElement: () => parent.current, overscan: 10 })
   const width = table.getTotalSize()
   return <section aria-label={label} className="entity-table" data-testid={testId}>
     <div className="entity-scroll" ref={parent} role="table">

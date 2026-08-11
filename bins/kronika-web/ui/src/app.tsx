@@ -1,4 +1,4 @@
-import { Activity, HelpCircle, Languages } from "lucide-react"
+import { Activity, HelpCircle, Languages, Moon, Sun } from "lucide-react"
 import { dictionaries } from "kronika:i18n"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { createRoot } from "react-dom/client"
@@ -35,6 +35,7 @@ import { SystemView } from "./system-view"
 import { Timeline } from "./timeline"
 
 type Source = "host" | "postgresql" | "events"
+type Theme = "dark" | "light"
 type HostSection = "system" | "processes"
 
 const EMPTY_DATA: HourData = {
@@ -78,6 +79,7 @@ const HELP_EVENTS = [
 
 function App() {
   const [locale, setLocale] = useState<Locale>(initialLocale)
+  const [theme, setTheme] = useState<Theme>(initialTheme)
   const [hour, setHour] = useState<number | null>(null)
   const [availableHours, setAvailableHours] = useState<readonly number[]>([])
   const [cursor, setCursor] = useState(0)
@@ -104,6 +106,10 @@ function App() {
     document.documentElement.lang = locale
     try { localStorage.setItem("kronika.locale", locale) } catch { /* storage can be disabled */ }
   }, [locale])
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    try { localStorage.setItem("kronika.theme", theme) } catch { /* storage can be disabled */ }
+  }, [theme])
   useEffect(() => {
     const controller = new AbortController()
     void discoverHourSelection(controller.signal).then((selection) => {
@@ -232,42 +238,41 @@ function App() {
 
   return <main className="app-shell">
     <header className="topbar">
-      <div className="brand">
-        <span className="brand-mark"><Activity aria-hidden="true" size={18} strokeWidth={1.75} /></span>
-        <h1>{t("app.title")}</h1>
-      </div>
+      <span className="brand-mark"><Activity aria-hidden="true" size={15} strokeWidth={2} /></span>
+      <h1>{t("app.title")}</h1>
+
+      <nav aria-label={t("nav.sources")} className="source-tabs">
+        <button aria-current={source === "host" ? "page" : undefined} className={source === "host" ? "source-active" : undefined} onClick={() => setSource("host")} type="button">{t("nav.host")}</button>
+        <button aria-current={source === "postgresql" ? "page" : undefined} className={source === "postgresql" ? "source-active" : undefined} disabled={!pgPresent} onClick={() => setSource("postgresql")} title={pgPresent ? undefined : t("nav.no_data")} type="button">{t("nav.postgresql")}</button>
+        {eventsPresent && <button aria-current={source === "events" ? "page" : undefined} className={source === "events" ? "source-active" : undefined} onClick={() => { setEventScope(null); setSource("events") }} type="button">{t("nav.events")}</button>}
+      </nav>
+
+      {source === "host" && <div className="section-tabs" role="tablist">
+        <button aria-selected={hostSection === "system"} onClick={() => setHostSection("system")} role="tab" type="button">{t("section.system")}</button>
+        <button aria-selected={hostSection === "processes"} data-testid="process-tab" onClick={() => setHostSection("processes")} role="tab" type="button">{t("section.processes")}</button>
+      </div>}
+
+      <HourPicker availableHours={availableHours} changeHour={changeHour} hour={hour} locale={locale} t={t} />
+      <span className="cursor-time">{formatUtc(cursor)}</span>
+
       <div className="top-actions">
+        <button aria-label={t("common.theme.switch")} className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title={t(theme === "dark" ? "common.theme.light" : "common.theme.dark")} type="button">
+          {theme === "dark" ? <Sun aria-hidden="true" size={15} /> : <Moon aria-hidden="true" size={15} />}
+        </button>
         <div aria-label={t("locale.switch")} className="locale-switch" role="group">
-          <Languages aria-hidden="true" size={14} />
+          <Languages aria-hidden="true" size={13} />
           {(["ru", "en"] as const).map((choice) => <button aria-pressed={locale === choice} data-testid={`locale-${choice}`} key={choice} onClick={() => setLocale(choice)} type="button">{t(`locale.${choice}`)}</button>)}
         </div>
-        <button aria-expanded={helpOpen} aria-label={t("help.open")} className="icon-button" data-testid="help-trigger" onClick={() => setHelpOpen((current) => !current)} type="button"><HelpCircle aria-hidden="true" size={17} /></button>
+        <button aria-expanded={helpOpen} aria-label={t("help.open")} className="icon-button" data-testid="help-trigger" onClick={() => setHelpOpen((current) => !current)} type="button"><HelpCircle aria-hidden="true" size={15} /></button>
       </div>
     </header>
 
-    <nav aria-label={t("nav.sources")} className="source-tabs">
-      <button aria-current={source === "host" ? "page" : undefined} className={source === "host" ? "source-active" : undefined} onClick={() => setSource("host")} type="button">{t("nav.host")}</button>
-      <button aria-current={source === "postgresql" ? "page" : undefined} className={source === "postgresql" ? "source-active" : undefined} disabled={!pgPresent} onClick={() => setSource("postgresql")} title={pgPresent ? undefined : t("nav.no_data")} type="button">{t("nav.postgresql")}</button>
-      {eventsPresent && <button aria-current={source === "events" ? "page" : undefined} className={source === "events" ? "source-active" : undefined} onClick={() => { setEventScope(null); setSource("events") }} type="button">{t("nav.events")}</button>}
-    </nav>
-
-    <section className="toolbar">
-      {source === "host"
-        ? <div className="section-tabs" role="tablist">
-          <button aria-selected={hostSection === "system"} onClick={() => setHostSection("system")} role="tab" type="button">{t("section.system")}</button>
-          <button aria-selected={hostSection === "processes"} data-testid="process-tab" onClick={() => setHostSection("processes")} role="tab" type="button">{t("section.processes")}</button>
-        </div>
-        : <span className="toolbar-source">{t(`nav.${source}`)}</span>}
-      <HourPicker availableHours={availableHours} changeHour={changeHour} hour={hour} locale={locale} t={t} />
-    </section>
-
     <section className="workspace">
-      <div className="status-strip" aria-live="polite">
-        <span>{t(`nav.${source}`)}</span>
-        {source === "host" && <span>{t(`section.${hostSection}`)}</span>}
-        {source === "postgresql" && <span>{t(`pg.section.${pgSection}`)}</span>}
-        <span className="cursor-time">{formatUtc(cursor)}</span>
-      </div>
+      <p aria-live="polite" className="live-note">
+        {t(`nav.${source}`)}
+        {source === "host" ? ` · ${t(`section.${hostSection}`)}` : ""}
+        {source === "postgresql" ? ` · ${t(`pg.section.${pgSection}`)}` : ""}
+      </p>
       {loading && <StateCard message={t("status.loading")} />}
       {!loading && error !== null && <StateCard message={t("status.error")} />}
       {!loading && error === null && hour !== null && source === "host" && hostSection === "system" && <SystemView cursor={cursor} data={data} focus={systemFocus} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} t={t} />}
@@ -304,6 +309,14 @@ function postgresSection(logicalName: string): PostgresSection | null {
   if (logicalName === "pg_stat_database") return "databases"
   if (logicalName.startsWith("pg_") && !logicalName.startsWith("pg_log_")) return "overview"
   return null
+}
+
+function initialTheme(): Theme {
+  try {
+    const saved = localStorage.getItem("kronika.theme")
+    if (saved === "dark" || saved === "light") return saved
+  } catch { /* storage can be disabled */ }
+  return matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"
 }
 
 function initialLocale(): Locale {

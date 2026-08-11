@@ -32,6 +32,13 @@ export function selectedHour(day: string, hour: number): number | null {
   return Number.isFinite(milliseconds) ? milliseconds * 1_000 : null
 }
 
+/** Table cells drop the milliseconds and the repeated UTC suffix: the whole
+ *  interface is UTC and the header says so once. */
+export function formatUtcCell(timestamp: number | null): string {
+  if (timestamp === null || !Number.isFinite(timestamp)) return "—"
+  return new Date(Math.trunc(timestamp / 1_000)).toISOString().slice(0, 19).replace("T", " ")
+}
+
 export function formatUtc(timestamp: number | null): string {
   if (timestamp === null || !Number.isFinite(timestamp)) return "—"
   return new Date(Math.trunc(timestamp / 1_000)).toISOString().replace("T", " ").replace("Z", " UTC")
