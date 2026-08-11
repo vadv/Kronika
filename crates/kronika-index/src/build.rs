@@ -158,15 +158,24 @@ pub(crate) fn build_selected_from_reader(
 ) -> Result<Index, BuildError> {
     let mut finder = FindingBuilder::new(segment, requested)?;
     let listing = reader.catalog_segments(..segment_ref.min_ts())?;
-    for prior_ref in listing
+    // Bounded by what a comparison reaches back for, not by how much history
+    // the host holds: the fifteen minutes a spike compares against, plus one
+    // segment beyond them for a counter whose predecessor sits just outside.
+    let mut priors: Vec<_> = listing
         .segments
         .into_iter()
         .filter(|prior| prior.kind() == SegmentKind::Finished)
-    {
-        if finder.needs(&prior_ref) {
-            let prior = reader.open_segment(&prior_ref)?;
-            finder.observe_prior(&prior)?;
-        }
+        .filter(|prior| finder.needs(prior))
+        .collect();
+    priors.sort_by_key(SegmentRef::min_ts);
+    let inside = priors
+        .iter()
+        .position(|prior| prior.max_ts() >= finder.window_start())
+        .unwrap_or(priors.len());
+    let from = inside.saturating_sub(1);
+    for prior_ref in priors.drain(from..) {
+        let prior = reader.open_segment(&prior_ref)?;
+        finder.observe_prior(&prior)?;
     }
     let mut index = build_selected_series(segment, requested)?;
     index.blocks.extend(finder.finish(segment, &index)?);

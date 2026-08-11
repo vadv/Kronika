@@ -123,6 +123,13 @@ impl FindingBuilder {
         Ok(builder)
     }
 
+    /// How far back a comparison here reaches: fifteen minutes of prior
+    /// values, and one segment beyond them for the series too sparse to fill
+    /// that window.
+    pub(crate) const fn window_start(&self) -> i64 {
+        self.cutoff
+    }
+
     /// Whether a prior segment can contribute a required predecessor.
     pub(crate) fn needs(&self, segment: &SegmentRef) -> bool {
         segment.sections().iter().any(|section| {
@@ -131,6 +138,7 @@ impl FindingBuilder {
                 && section.rows != 0
         })
     }
+
 
     /// Consume relevant rows from one preceding finished ZMS.
     pub(crate) fn observe_prior(&mut self, segment: &Segment) -> Result<(), BuildError> {
