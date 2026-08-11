@@ -114,6 +114,7 @@ function UseCell({
       label={t(`use.lane.${cell.lane}`)}
       locale={locale}
       points={points}
+      scale={cell.kind === "share" ? "percent" : cell.kind === "count" ? "count" : "auto"}
       second={second.length === 0 ? undefined : second}
     />
   </span>
@@ -122,7 +123,7 @@ function UseCell({
 function seriesOf(lanePoints: readonly LanePoint[], lane: string): readonly ChartPoint[] {
   return lanePoints
     .filter((point) => point.lane === lane)
-    .map((point) => ({ segmentId: lane, timestamp: point.timestamp, value: point.value }))
+    .map((point) => ({ segmentId: point.segmentId, timestamp: point.timestamp, value: point.value }))
 }
 
 export function reading(value: number, locale: Locale, kind: Cell["kind"], perSecond: string): string {

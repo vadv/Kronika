@@ -8,15 +8,18 @@ import { TimeTicks } from "./time-ticks"
 const WIDTH = 920
 /** Room for the ticks under the last lane. */
 const TICK_ROW = 18
-const LANE_HEIGHT = 36
-/** The rail the marks sit on, above the first lane. */
+const PRIMARY_HEIGHT = 132
+const OVERVIEW_HEIGHT = 27
+/** Events and findings without a displayed track keep separate rails. */
 const MARKER_RAIL = 14
-const TOP = MARKER_RAIL + 8
+const NEUTRAL_RAIL = 14
+const TOP = MARKER_RAIL + NEUTRAL_RAIL + 8
 const MARKER_CLUSTER_PX = 38
 /** Marks sit on a rail of their own: on the health trace they covered the very
     point they mark, and their 34px button stole ninety seconds of the hour
     from the cursor. */
 const MARKER_RAIL_Y = MARKER_RAIL / 2
+const NEUTRAL_RAIL_Y = MARKER_RAIL + NEUTRAL_RAIL / 2
 /** Health, and the share of a ten-second window a resource stalled for. */
 const SHARE: readonly [number, number] = [0, 100]
 
@@ -35,6 +38,26 @@ export interface GroupedFinding {
   readonly startTimestamp: number
   readonly endTimestamp: number
   readonly timestamp: number
+  readonly placement: "event" | "neutral" | "track"
+  readonly track: string | null
+}
+
+interface TimelineSeries {
+  readonly color: "cyan" | "amber" | "violet"
+  readonly points: readonly SeriesPoint[]
+}
+
+interface TimelineLane {
+  readonly domain?: readonly [number, number] | undefined
+  readonly key: string
+  readonly series: readonly TimelineSeries[]
+  readonly threshold?: number | undefined
+}
+
+interface DisplayedLane extends TimelineLane {
+  readonly height: number
+  readonly primary: boolean
+  readonly top: number
 }
 
 export type FindingShape = "circle" | "diamond" | "triangle"
@@ -47,6 +70,7 @@ export function Timeline({
   lanePoints,
   onCursor,
   onFinding,
+  primaryLane = "health",
   shownAt,
   t,
 }: {
@@ -57,6 +81,7 @@ export function Timeline({
   readonly lanePoints: readonly LanePoint[]
   readonly onCursor: (timestamp: number) => void
   readonly onFinding: (finding: Finding, grouped?: readonly Finding[]) => void
+  readonly primaryLane?: string | undefined
   /** The moment the tables below are showing, which is not the cursor when the
    *  cursor rests where nothing was sampled. */
   readonly shownAt?: number | null
@@ -64,17 +89,25 @@ export function Timeline({
 }) {
   const plot = useRef<HTMLDivElement>(null)
   const [plotWidth, setPlotWidth] = useState(WIDTH)
+  const [hover, setHover] = useState<number | null>(null)
+  const [selectedLane, setSelectedLane] = useState(primaryLane)
   const end = hour + 3_600_000_000
-  const healthPoints = useMemo(() => series(health, "os_health"), [health])
+  const healthTrack = useMemo(() => {
+    const overall = series(health, "overall_health")
+    if (overall.some((point) => point.value !== null)) {
+      return { points: overall, threshold: healthThreshold("overall_health") ?? undefined }
+    }
+    return { points: series(health, "os_health"), threshold: undefined }
+  }, [health])
   // What the machine lived under, then what the database was doing. Each is a
   // share of its own ceiling, so a pod and a machine read the same way.
-  const lanes = useMemo(() => {
+  const lanes = useMemo<readonly TimelineLane[]>(() => {
     const of = (name: string) => lanePoints
       .filter((point) => point.lane === name)
-      .map((point) => ({ segmentId: name, timestamp: point.timestamp, value: point.value }))
+      .map((point) => ({ segmentId: point.segmentId, timestamp: point.timestamp, value: point.value }))
     const backends = [...of("pg_running"), ...of("pg_waiting")]
     return [
-      { domain: SHARE, key: "health", series: [{ color: "cyan" as const, points: healthPoints }] },
+      { domain: SHARE, key: "health", series: [{ color: "cyan" as const, points: healthTrack.points }], threshold: healthTrack.threshold },
       { domain: SHARE, key: "cpu_busy", series: [{ color: "cyan" as const, points: of("cpu_busy") }] },
       { domain: SHARE, key: "cpu_stall", series: [{ color: "amber" as const, points: of("cpu_stall") }] },
       { domain: SHARE, key: "memory", series: [{ color: "violet" as const, points: of("memory") }] },
@@ -91,9 +124,29 @@ export function Timeline({
     ].filter((lane) => lane.key === "backends"
       ? backends.length !== 0
       : lane.series.some((series) => series.points.some((point) => point.value !== null)))
-  }, [healthPoints, lanePoints])
-  const healthLane = lanes.findIndex((lane) => lane.key === "health")
-  const plotBottom = TOP + Math.max(1, lanes.length) * LANE_HEIGHT
+  }, [healthTrack, lanePoints])
+  useEffect(() => {
+    if (lanes.some((lane) => lane.key === primaryLane)) setSelectedLane(primaryLane)
+  }, [lanes, primaryLane])
+  useEffect(() => {
+    if (lanes.some((lane) => lane.key === selectedLane)) return
+    setSelectedLane(lanes[0]?.key ?? "health")
+  }, [lanes, selectedLane])
+  const displayed = useMemo<readonly DisplayedLane[]>(() => {
+    const primary = lanes.find((lane) => lane.key === selectedLane) ?? lanes[0]
+    if (primary === undefined) return []
+    const overview = lanes.filter((lane) => lane.key !== primary.key).slice(0, overviewLaneCount(plotWidth))
+    let top = TOP
+    return [primary, ...overview].map((lane, index) => {
+      const height = index === 0 ? PRIMARY_HEIGHT : OVERVIEW_HEIGHT
+      const displayedLane = { ...lane, height, primary: index === 0, top }
+      top += height
+      return displayedLane
+    })
+  }, [lanes, plotWidth, selectedLane])
+  const plotBottom = displayed.at(-1) === undefined
+    ? TOP + PRIMARY_HEIGHT
+    : (displayed.at(-1)?.top ?? TOP) + (displayed.at(-1)?.height ?? PRIMARY_HEIGHT)
   const height = plotBottom + TICK_ROW
   const markers = useMemo(
     () => groupFindings(findings, hour, end, plotWidth),
@@ -109,14 +162,19 @@ export function Timeline({
     observer.observe(element)
     return () => observer.disconnect()
   }, [])
-  const setFromClient = (clientX: number) => {
+  const timestampFromClient = (clientX: number): number | null => {
     const bounds = plot.current?.getBoundingClientRect()
-    if (bounds === undefined) return
+    if (bounds === undefined) return null
     const ratio = Math.max(0, Math.min(1, (clientX - bounds.left) / bounds.width))
-    onCursor(Math.min(end - 1_000, Math.round(hour + ratio * (end - hour))))
+    return Math.min(end - 1_000, Math.round(hour + ratio * (end - hour)))
+  }
+  const commitFromClient = (clientX: number) => {
+    const timestamp = timestampFromClient(clientX)
+    if (timestamp !== null) onCursor(timestamp)
   }
   const cursorX = shareOf(cursor, hour, end) * plotWidth
   const shownX = shownAt === undefined || shownAt === null ? null : shareOf(shownAt, hour, end) * plotWidth
+  const hoverX = hover === null ? null : shareOf(hover, hour, end) * plotWidth
   return (
     <section
       aria-label={t("hour.range", { start: formatUtc(hour).slice(11, 16), end: formatUtc(end).slice(11, 16) })}
@@ -126,12 +184,14 @@ export function Timeline({
       <div
         aria-hidden="false"
         className="timeline-labels"
-        style={{ gridTemplateRows: `repeat(${Math.max(1, lanes.length)}, ${LANE_HEIGHT}px)` }}
+        style={{ gridTemplateRows: displayed.map((lane) => `${lane.height}px`).join(" ") }}
       >
-        {lanes.map((lane) => <LaneLabel
+        {displayed.map((lane) => <LaneLabel
           help={`lane.${lane.key}.help`}
           key={lane.key}
           label={`lane.${lane.key}.label`}
+          onSelect={lane.primary ? undefined : () => setSelectedLane(lane.key)}
+          primary={lane.primary}
           reading={lane.series.map((series) => valueAt(series.points, cursor)).map((number) => number === null ? "—" : format(number, lane.key)).join(" · ")}
           t={t}
         />)}
@@ -152,12 +212,15 @@ export function Timeline({
           }}
           onPointerDown={(event) => {
             event.currentTarget.setPointerCapture(event.pointerId)
-            setFromClient(event.clientX)
+            const timestamp = timestampFromClient(event.clientX)
+            setHover(timestamp)
+            if (timestamp !== null) onCursor(timestamp)
           }}
           onPointerMove={(event) => {
-            if (event.buttons !== 1) return
-            setFromClient(event.clientX)
+            setHover(timestampFromClient(event.clientX))
+            if (event.buttons === 1) commitFromClient(event.clientX)
           }}
+          onPointerLeave={() => setHover(null)}
           onPointerUp={(event) => event.currentTarget.releasePointerCapture(event.pointerId)}
           role="slider"
           style={{ height: `${height}px` }}
@@ -167,42 +230,57 @@ export function Timeline({
               the window and left Y alone, so every slope was wrong by however
               wide the browser happened to be. */}
           <svg aria-hidden="true" preserveAspectRatio="none" style={{ height: `${height}px` }} viewBox={`0 0 ${plotWidth} ${height}`}>
+            <line className="finding-rail event-rail" x1={0} x2={plotWidth} y1={MARKER_RAIL_Y} y2={MARKER_RAIL_Y} />
+            <line className="finding-rail neutral-rail" x1={0} x2={plotWidth} y1={NEUTRAL_RAIL_Y} y2={NEUTRAL_RAIL_Y} />
             {[0, 1, 2, 3, 4, 5, 6].map((tick) => {
               const x = tick / 6 * plotWidth
               return <line className="timeline-grid" key={tick} x1={x} x2={x} y1={0} y2={plotBottom} />
             })}
-            {lanes.map((_lane, index) => {
-              const y = TOP + index * LANE_HEIGHT
-              return <line className="lane-line" key={y} x1={0} x2={plotWidth} y1={y} y2={y} />
+            {displayed.map((lane) => {
+              return <line className="lane-line" key={lane.key} x1={0} x2={plotWidth} y1={lane.top} y2={lane.top} />
             })}
             <line className="lane-line" x1={0} x2={plotWidth} y1={plotBottom} y2={plotBottom} />
-            {lanes.map((lane, index) => {
+            {displayed.map((lane) => {
               const range = laneRange(lane)
-              const peakY = seriesY(lanePeak(lane), index, range.low, range.span)
+              const peakY = seriesY(lanePeak(lane), lane.top, lane.height, range.low, range.span)
+              const thresholdY = lane.threshold === undefined ? null : seriesY(lane.threshold, lane.top, lane.height, range.low, range.span)
+              const floorY = seriesY(range.low, lane.top, lane.height, range.low, range.span)
               return <g key={lane.key}>
+                {thresholdY !== null && <rect className="threshold-band" height={Math.max(0, floorY - thresholdY)} width={plotWidth} x={0} y={thresholdY} />}
                 <line className="lane-peak" x1={0} x2={plotWidth} y1={peakY} y2={peakY} />
                 {lane.series.map((series, ordinal) => (
-                  <SeriesLine color={series.color} end={end} hour={hour} key={`${lane.key}:${ordinal}`} lane={index} points={series.points} range={range} width={plotWidth} />
+                  <SeriesLine color={series.color} end={end} height={lane.height} hour={hour} key={`${lane.key}:${ordinal}`} points={series.points} range={range} top={lane.top} width={plotWidth} />
                 ))}
               </g>
             })}
             {shownX !== null && Math.abs(shownX - cursorX) > 1
               && <line className="shown-line" x1={shownX} x2={shownX} y1={0} y2={plotBottom}><title>{t("hour.shown", { time: formatUtc(shownAt ?? 0) })}</title></line>}
             <line className="cursor-line" x1={cursorX} x2={cursorX} y1={0} y2={plotBottom} />
+            {hoverX !== null && <line className="hover-line" x1={hoverX} x2={hoverX} y1={0} y2={plotBottom} />}
           </svg>
-          {lanes.map((lane, index) => {
+          {displayed.map((lane) => {
             const range = laneRange(lane)
             const peak = lanePeak(lane)
             const ceiling = range.low + range.span
-            return <span className="lane-ceiling" key={lane.key} style={{ top: `${TOP + index * LANE_HEIGHT + 2}px` }}>
+            return <span className="lane-ceiling" key={lane.key} style={{ top: `${lane.top + 2}px` }}>
               {peak >= ceiling ? format(peak, lane.key) : `${format(peak, lane.key)} / ${format(ceiling, lane.key)}`}
             </span>
           })}
+          {hover !== null && <div className="timeline-hover" style={{ left: `${Math.max(6, Math.min(94, shareOf(hover, hour, end) * 100))}%` }}>
+            <time>{formatUtc(hover)}</time>
+            {displayed.map((lane) => {
+              const reading = lane.series.map((series) => valueAt(series.points, hover)).map((number) => number === null ? "—" : format(number, lane.key)).join(" · ")
+              return <span key={lane.key}>{t(`lane.${lane.key}.label`)} <strong>{reading}</strong></span>
+            })}
+          </div>}
           <TimeTicks className="timeline-time-ticks" hour={hour} />
         </div>
         {markers.map((marker, index) => {
           const share = shareOf(marker.timestamp, hour, end)
-          const y = MARKER_RAIL_Y
+          const lane = marker.track === null ? undefined : displayed.find((candidate) => candidate.key === marker.track)
+          const y = marker.placement === "event"
+            ? MARKER_RAIL_Y
+            : lane === undefined ? NEUTRAL_RAIL_Y : findingY(marker.finding, lane)
           return <FindingMarker
             key={`${marker.timestamp}:${marker.kind}:${index}`}
             marker={marker}
@@ -212,7 +290,7 @@ export function Timeline({
             }}
             t={t}
             share={share}
-            y={y}
+            y={y ?? NEUTRAL_RAIL_Y}
           />
         })}
       </div>
@@ -220,21 +298,21 @@ export function Timeline({
   )
 }
 
-function LaneLabel({ label, help, reading, t }: { readonly label: string; readonly help: string; readonly reading: string; readonly t: Translate }) {
-  return <div className="lane-label">
+function LaneLabel({ label, help, onSelect, primary, reading, t }: { readonly label: string; readonly help: string; readonly onSelect?: (() => void) | undefined; readonly primary: boolean; readonly reading: string; readonly t: Translate }) {
+  const content = <>
     <LabelHelp helpKey={help} labelKey={label} t={t} />
     <span className="lane-reading">{reading}</span>
-  </div>
+  </>
+  return primary
+    ? <div className="lane-label lane-primary">{content}</div>
+    : <button className="lane-label lane-overview" onClick={onSelect} type="button">{content}</button>
 }
 
-/** The value of a series at the cursor: the sample at or before it. */
-function valueAt(points: readonly SeriesPoint[], cursor: number): number | null {
+/** The latest stored sample at or before a moment. A stored null wins over an
+ * older number, just as zero does. */
+export function valueAt(points: readonly SeriesPoint[], cursor: number): number | null {
   let chosen: SeriesPoint | null = null
   for (const point of points) {
-    // A gap in the series is not a reading: the label shows the last moment
-    // that was measured, not a dash because the newest sample happened to be
-    // the one that could not be computed.
-    if (point.value === null) continue
     if (point.timestamp <= cursor && (chosen === null || point.timestamp > chosen.timestamp)) chosen = point
   }
   return chosen?.value ?? null
@@ -302,7 +380,7 @@ function FindingMarker({
     type="button"
   >
     <span aria-hidden="true" className="marker-shape-stack">
-      {marker.kinds.map((kind) => <span data-marker-shape={findingShape(kind)} key={kind} style={markerShapeStyle(kind)} />)}
+      {marker.kinds.map((kind) => <FindingGlyph key={kind} kind={kind} />)}
     </span>
     {marker.count > 1 && <span aria-hidden="true" className="marker-count">{marker.count}</span>}
   </button>
@@ -311,20 +389,22 @@ function FindingMarker({
 function SeriesLine({
   color,
   end,
+  height,
   hour,
-  lane,
   points,
   range,
+  top,
   width,
 }: {
   readonly color: "cyan" | "amber" | "violet"
   readonly end: number
+  readonly height: number
   readonly hour: number
-  readonly lane: number
   readonly points: readonly SeriesPoint[]
   /** The lane owns the scale: two lines of one lane drawn against their own
    *  maxima would be the same height and mean different things. */
   readonly range: { readonly low: number; readonly span: number }
+  readonly top: number
   readonly width: number
 }) {
   if (points.length === 0) return null
@@ -334,7 +414,7 @@ function SeriesLine({
       .sort((left, right) => left.timestamp - right.timestamp)
       .map((point, index) => {
         const x = shareOf(point.timestamp, hour, end) * width
-        const y = seriesY(point.value, lane, range.low, range.span)
+        const y = seriesY(point.value, top, height, range.low, range.span)
         return `${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`
       })
       .join(" ")
@@ -390,38 +470,55 @@ export function groupFindings(
 ): readonly GroupedFinding[] {
   const duration = Math.max(1, end - hour)
   const width = Math.max(1, pixelWidth)
-  const ordered = findings.slice().sort(findingOrder)
-  const stored: Finding[][] = []
-  let active: Finding[] = []
-  let anchor = 0
-  for (const finding of ordered) {
-    const x = Math.max(0, Math.min(width, (finding.timestamp - hour) / duration * width))
-    if (active.length === 0 || x - anchor <= clusterWidth) {
-      if (active.length === 0) anchor = x
-      active.push(finding)
-    } else {
-      stored.push(active)
-      active = [finding]
-      anchor = x
+  const buckets = new Map<string, { readonly placement: GroupedFinding["placement"]; readonly track: string | null; readonly findings: Finding[] }>()
+  for (const finding of findings.slice().sort(findingOrder)) {
+    const track = findingTrack(finding)
+    const placement = finding.kind === "event" ? "event" : track === null ? "neutral" : "track"
+    const key = placement === "track" ? `track:${track}` : placement
+    const bucket = buckets.get(key) ?? { placement, track, findings: [] }
+    bucket.findings.push(finding)
+    buckets.set(key, bucket)
+  }
+  const grouped: GroupedFinding[] = []
+  for (const bucket of buckets.values()) {
+    const stored: Finding[][] = []
+    let active: Finding[] = []
+    let anchor = 0
+    for (const finding of bucket.findings) {
+      const x = Math.max(0, Math.min(width, (finding.timestamp - hour) / duration * width))
+      if (active.length === 0 || x - anchor <= clusterWidth) {
+        if (active.length === 0) anchor = x
+        active.push(finding)
+      } else {
+        stored.push(active)
+        active = [finding]
+        anchor = x
+      }
+    }
+    if (active.length !== 0) stored.push(active)
+    for (const group of stored) {
+      const first = group[0]
+      const last = group.at(-1)
+      if (first === undefined || last === undefined) throw new Error("empty marker cluster")
+      const kinds = FINDING_KINDS.filter((kind) => group.some((finding) => finding.kind === kind))
+      grouped.push({
+        count: group.length,
+        finding: first,
+        findings: group,
+        kind: first.kind,
+        kinds,
+        placement: bucket.placement,
+        startTimestamp: first.timestamp,
+        endTimestamp: last.timestamp,
+        timestamp: first.timestamp,
+        track: bucket.track,
+      })
     }
   }
-  if (active.length !== 0) stored.push(active)
-  return stored.map((group) => {
-    const first = group[0]
-    const last = group.at(-1)
-    if (first === undefined || last === undefined) throw new Error("empty marker cluster")
-    const kinds = FINDING_KINDS.filter((kind) => group.some((finding) => finding.kind === kind))
-    return {
-      count: group.length,
-      finding: first,
-      findings: group,
-      kind: first.kind,
-      kinds,
-      startTimestamp: first.timestamp,
-      endTimestamp: last.timestamp,
-      timestamp: first.timestamp,
-    }
-  })
+  return grouped.sort((left, right) => left.timestamp - right.timestamp
+    || placementOrder(left.placement) - placementOrder(right.placement)
+    || textOrder(left.track ?? "", right.track ?? "")
+    || findingOrder(left.finding, right.finding))
 }
 
 const FINDING_KINDS = ["event", "known_bad", "spike"] as const satisfies readonly Finding["kind"][]
@@ -438,54 +535,52 @@ function findingOrder(left: Finding, right: Finding): number {
 
 function textOrder(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0 }
 
+function placementOrder(placement: GroupedFinding["placement"]): number {
+  return placement === "event" ? 0 : placement === "track" ? 1 : 2
+}
+
+/** Only a line derived from the exact mapped field receives a finding. */
+export function findingTrack(finding: Finding): string | null {
+  if (finding.kind === "event") return null
+  if (finding.logicalName === "health" && finding.typeId === "0" && finding.fieldOrdinal === 1) return "health"
+  if (finding.logicalName === "os_meminfo" && finding.fieldOrdinal === 2) return "memory"
+  return null
+}
+
 export function findingShape(kind: Finding["kind"]): FindingShape {
   if (kind === "known_bad") return "diamond"
   if (kind === "spike") return "triangle"
   return "circle"
 }
 
-function markerShapeStyle(kind: Finding["kind"]): React.CSSProperties {
-  const common: React.CSSProperties = { display: "block", flex: "0 0 auto", height: "9px", width: "9px" }
-  switch (findingShape(kind)) {
-    case "diamond":
-      return { ...common, background: "var(--bad)", border: "1px solid var(--bad-edge)", transform: "rotate(45deg)" }
-    case "triangle":
-      return { ...common, background: "var(--warn)", clipPath: "polygon(50% 0, 100% 100%, 0 100%)", height: "10px", width: "11px" }
-    case "circle":
-      return { ...common, background: "var(--event)", border: "1px solid var(--event-edge)", borderRadius: "50%" }
-  }
+function FindingGlyph({ kind }: { readonly kind: Finding["kind"] }) {
+  if (kind === "known_bad") return <svg data-marker-shape="diamond" height="11" viewBox="0 0 12 12" width="11"><path d="M6 1 11 6 6 11 1 6Z" fill="var(--bad)" stroke="var(--bad-edge)" /></svg>
+  if (kind === "spike") return <svg data-marker-shape="triangle" height="11" viewBox="0 0 12 12" width="12"><path d="M6 1 11 10.5H1Z" fill="none" stroke="var(--warn)" strokeWidth="1.5" /></svg>
+  return <svg data-marker-shape="circle" height="10" viewBox="0 0 12 12" width="10"><circle cx="6" cy="6" fill="var(--event)" r="4.5" stroke="var(--event-edge)" /></svg>
 }
 
-export function seriesYAt(points: readonly SeriesPoint[], segmentId: string, timestamp: number, lane: number): number {
-  if (points.length === 0) return TOP + lane * LANE_HEIGHT + LANE_HEIGHT / 2
+/** The Y coordinate of an exact stored sample. Findings never borrow a nearby
+ * point and never interpolate between two observations. */
+export function seriesYAt(points: readonly SeriesPoint[], segmentId: string, timestamp: number, lane = 0): number | null {
   const range = laneRange({ series: [{ points }] })
-  const numeric = points.filter((point): point is SeriesPoint & { readonly value: number } => point.value !== null && Number.isFinite(point.value))
-  if (numeric.length === 0) return TOP + lane * LANE_HEIGHT + LANE_HEIGHT / 2
-  const runs = [...timelineRuns(points).values()]
-  const matching = runs.find((run) => run[0]?.segmentId === segmentId && contains(run, timestamp))
-    ?? runs.find((run) => contains(run, timestamp))
-  if (matching === undefined) {
-    const nearest = numeric.reduce((selected, point) => {
-      const distance = Math.abs(point.timestamp - timestamp)
-      const selectedDistance = Math.abs(selected.timestamp - timestamp)
-      return distance < selectedDistance || (distance === selectedDistance && point.timestamp < selected.timestamp) ? point : selected
-    })
-    return seriesY(nearest.value, lane, range.low, range.span)
-  }
-  const stored = matching.slice().sort((left, right) => left.timestamp - right.timestamp)
-  const rightIndex = stored.findIndex((point) => point.timestamp >= timestamp)
-  const right = stored[rightIndex]
-  const left = rightIndex <= 0 ? stored[0] : stored[rightIndex - 1]
-  if (left === undefined || right === undefined) return TOP + lane * LANE_HEIGHT + LANE_HEIGHT / 2
-  const duration = right.timestamp - left.timestamp
-  const ratio = duration === 0 ? 0 : (timestamp - left.timestamp) / duration
-  return seriesY(left.value + (right.value - left.value) * ratio, lane, range.low, range.span)
+  const point = points.find((candidate) => candidate.segmentId === segmentId
+    && candidate.timestamp === timestamp && candidate.value !== null && Number.isFinite(candidate.value))
+  if (point?.value === null || point?.value === undefined) return null
+  const top = lane === 0 ? TOP : TOP + PRIMARY_HEIGHT + (lane - 1) * OVERVIEW_HEIGHT
+  const height = lane === 0 ? PRIMARY_HEIGHT : OVERVIEW_HEIGHT
+  return seriesY(point.value, top, height, range.low, range.span)
 }
 
-function contains(run: readonly SeriesPoint[], timestamp: number): boolean {
-  const first = run[0]
-  const last = run.at(-1)
-  return first !== undefined && last !== undefined && first.timestamp <= timestamp && last.timestamp >= timestamp
+function findingY(finding: Finding, lane: DisplayedLane): number | null {
+  const range = laneRange(lane)
+  for (const series of lane.series) {
+    const point = series.points.find((candidate) => candidate.segmentId === finding.segmentId
+      && candidate.timestamp === finding.timestamp && candidate.value !== null && Number.isFinite(candidate.value))
+    if (point?.value !== null && point?.value !== undefined) {
+      return seriesY(point.value, lane.top, lane.height, range.low, range.span)
+    }
+  }
+  return null
 }
 
 /** Health, memory share and pressure are all read against a hundred: scaling
@@ -506,12 +601,30 @@ export function laneRange(
   const values = lane.series.flatMap((series) => series.points)
     .flatMap((point) => point.value === null || !Number.isFinite(point.value) ? [] : [point.value])
   if (values.length === 0) return { low: 0, span: 1 }
-  return { low: 0, span: Math.max(...values, 1) }
+  return { low: 0, span: niceCeiling(Math.max(...values, 0)) }
 }
 
-function seriesY(number: number, lane: number, low: number, span: number): number {
-  const laneBottom = TOP + (lane + 1) * LANE_HEIGHT - 6
-  return laneBottom - (number - low) / span * (LANE_HEIGHT - 12)
+export function niceCeiling(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 1
+  const magnitude = 10 ** Math.floor(Math.log10(value))
+  const normalized = value / magnitude
+  const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10
+  return step * magnitude
+}
+
+export function healthThreshold(field: string): number | null {
+  return field === "overall_health" ? 50 : null
+}
+
+export function overviewLaneCount(width: number): 2 | 3 | 4 {
+  if (width < 720) return 2
+  if (width < 1_040) return 3
+  return 4
+}
+
+function seriesY(number: number, top: number, height: number, low: number, span: number): number {
+  const laneBottom = top + height - 6
+  return laneBottom - (number - low) / span * (height - 12)
 }
 
 /** Where a moment sits in the hour, from 0 to 1. */

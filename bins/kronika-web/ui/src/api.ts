@@ -1,6 +1,7 @@
 import { registry } from "kronika:registry"
 
 import { bundledFixtureHour, bundledFixtureRange } from "./fixture"
+import { rowMatchesLocator } from "./locator"
 import { parseNdjson } from "./wire"
 
 export type Cell = null | boolean | number | string | readonly number[] | { readonly [key: string]: unknown }
@@ -121,9 +122,10 @@ export interface HourData {
 /** One lane of the timeline: a share of the ceiling this machine lived under,
  *  computed by the server against the environment it ran in. */
 export interface LanePoint {
+  readonly segmentId: string
   readonly lane: string
   readonly timestamp: number
-  readonly value: number
+  readonly value: number | null
 }
 
 export interface TimelineData {
@@ -252,9 +254,10 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
       if (row !== null) (lanes[row.logicalName] ??= []).push(row)
     } else if (record.record === "lane") {
       lanePoints.push({
+        segmentId: requiredText(record.segment_id, "lane segment id"),
         lane: requiredText(record.lane, "lane name"),
         timestamp: integer(record.ts, "lane timestamp"),
-        value: finiteNumber(record.value, "lane value"),
+        value: record.value === null ? null : finiteNumber(record.value, "lane value"),
       })
     }
   }
@@ -372,7 +375,11 @@ export function logicalNameForTypeId(typeId: string): string | null {
 }
 
 export function fieldNameForLocator(locator: Pick<Finding, "typeId" | "fieldOrdinal">): string | null {
-  if (locator.typeId === "0") return locator.fieldOrdinal === 0 ? "os_health" : null
+  if (locator.typeId === "0") {
+    if (locator.fieldOrdinal === 0) return "os_health"
+    if (locator.fieldOrdinal === 1) return "overall_health"
+    return null
+  }
   return REGISTRY_BY_TYPE_ID.get(locator.typeId)?.columns[locator.fieldOrdinal]?.name ?? null
 }
 
@@ -382,12 +389,7 @@ export function resolveLoadedRow(
 ): DataRow | null {
   const logicalName = logicalNameForTypeId(locator.typeId)
   if (logicalName === null) return null
-  return (data.sections[logicalName] ?? []).find((row) =>
-    row.segmentId === locator.segmentId
-      && row.typeId === locator.typeId
-      && row.ordinal === locator.rowOrdinal
-      && row.timestamp === locator.timestamp,
-  ) ?? null
+  return (data.sections[logicalName] ?? []).find((row) => rowMatchesLocator(row, locator)) ?? null
 }
 
 export function resolveLocator(data: Pick<HourData, "sections">, finding: Finding): ResolvedLocator | null {

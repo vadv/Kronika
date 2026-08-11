@@ -225,7 +225,7 @@ export function SystemView({
   const selectedPoints = selectedMetric?.points ?? []
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={onCursor} onFinding={onFinding} shownAt={shownAt} t={t} />
+    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={onCursor} onFinding={onFinding} primaryLane={timelineLane(selectedMetric?.spec.id)} shownAt={shownAt} t={t} />
     <section className="system-console">
       <div className="metric-groups">
         {GROUP_COLUMNS.map((column, index) => <div className="metric-column" key={index}>
@@ -252,7 +252,7 @@ export function SystemView({
         <header><span>{t("system.history")}</span><strong>{selectedMetric === undefined ? "—" : t(selectedMetric.spec.label)}</strong></header>
         {selectedMetric === undefined
           ? <p className="table-empty">{t("system.no_metrics")}</p>
-          : <SeriesChart cursor={cursor} format={(reading, place) => metricValue(reading, place, selectedMetric.spec.unit, t("unit.per_second"))} hour={hour} label={t(selectedMetric.spec.label)} locale={locale} points={selectedPoints} />}
+          : <SeriesChart cursor={cursor} format={(reading, place) => metricValue(reading, place, selectedMetric.spec.unit, t("unit.per_second"))} hour={hour} label={t(selectedMetric.spec.label)} locale={locale} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "auto"} />}
       </section>
     </section>
     <UseTable cursor={cursor} hour={hour} lanePoints={data.lanePoints} locale={locale} t={t} />
@@ -260,14 +260,22 @@ export function SystemView({
       {ENTITIES.map((entity) => {
         const rows = snapshot(sectionRows(data, entity.section), cursor)
         if (rows.length === 0) return null
-        const resolved = focus?.logicalName === entity.section ? resolveLocator(data, focus)?.row ?? null : null
+        const finding = focus?.logicalName === entity.section ? focus : null
         return <section className="entity-panel" key={entity.section}>
           <h2>{entity.icon}<span>{t(entity.label)}</span></h2>
-          <EntityTable columns={entity.columns} empty={t("table.no_rows")} label={t(entity.label)} locale={locale} rows={rows} selectedKey={resolved === null ? null : rowKey(resolved)} t={t} testId={`system-${entity.section}`} />
+          <EntityTable columns={entity.columns} empty={t("table.no_rows")} finding={finding} findingField={finding === null ? null : fieldNameForLocator(finding)} label={t(entity.label)} locale={locale} rows={rows} t={t} testId={`system-${entity.section}`} />
         </section>
       })}
     </section>
   </>
+}
+
+function timelineLane(metric: string | undefined): string {
+  if (metric === "cpu_busy") return "cpu_busy"
+  if (metric === "cpu_pressure") return "cpu_stall"
+  if (metric === "io_pressure") return "io_stall"
+  if (metric?.startsWith("mem_") === true || metric?.startsWith("process_resident") === true || metric?.startsWith("process_swap") === true) return "memory"
+  return "health"
 }
 
 export function metricPoints(data: HourData, spec: MetricSpec): readonly ChartPoint[] {

@@ -246,7 +246,7 @@ system.field.socket_id.help: "Identifier of the processor socket. Compare it wit
 system.field.numa_node.label: "NUMA node"
 system.field.numa_node.help: "Identifier of the NUMA node containing the logical CPU. Compare it with the neighboring CPU, core, socket, and NUMA fields."
 lane.health.label: "Health"
-lane.health.help: "A 0–100 OS health score derived from CPU, memory, and I/O PSI. Compare changes with the CPU, load, memory, and PSI lanes."
+lane.health.help: "Overall health from 0 to 100 when PostgreSQL input is available; otherwise OS health from CPU, memory, and I/O PSI. Compare the resource lanes."
 lane.load.label: "Load"
 lane.load.help: "One-minute average of runnable and uninterruptible tasks. Compare it with CPU utilization, runnable processes, and CPU PSI at the cursor."
 lane.memory.label: "Memory"

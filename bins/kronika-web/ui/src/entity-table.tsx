@@ -10,15 +10,18 @@ import {
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
-import type { Cell, DataRow } from "./api"
+import type { Cell, DataRow, Finding } from "./api"
 import { fittedWidth, headerWidths, widestCell } from "./column-size"
 import { globMatcher } from "./glob"
 import { LabelHelp, type Translate } from "./help"
+import { rowMatchesLocator } from "./locator"
 import { TableFilter } from "./table-filter"
 import { asNumber, formatUtc, identifier, measure, rawText, value, type Locale } from "./model"
 
 export interface EntityColumn {
   readonly field: string
+  /** The exact physical field represented by this semantic column. */
+  readonly physicalField?: string | Readonly<Record<string, string>>
   readonly label: string
   readonly help?: string
   /** The server divided this column by the interval: it reads per second. */
@@ -37,6 +40,8 @@ export interface TableOrder {
 export function EntityTable({
   columns: fields,
   empty,
+  finding,
+  findingField,
   label,
   locale,
   onOrder,
@@ -53,6 +58,8 @@ export function EntityTable({
 }: {
   readonly columns: readonly EntityColumn[]
   readonly empty: string
+  readonly finding?: Finding | null | undefined
+  readonly findingField?: string | null | undefined
   readonly label: string
   readonly locale: Locale
   /** Set when the server ordered and cut the rows; the header then asks it
@@ -155,6 +162,12 @@ export function EntityTable({
   }, [])
   const rendered = table.getRowModel().rows
   const virtual = useVirtualizer({ count: rendered.length, estimateSize: () => 23, getScrollElement: () => parent.current, overscan: 10 })
+  const locatedIndex = finding === null || finding === undefined
+    ? -1
+    : rendered.findIndex((row) => rowMatchesLocator(row.original, finding))
+  useEffect(() => {
+    if (locatedIndex >= 0) virtual.scrollToIndex(locatedIndex, { align: "center" })
+  }, [finding, locatedIndex, virtual])
   const width = table.getTotalSize()
   return <section aria-label={label} className="entity-table" data-testid={testId}>
     {t !== undefined && onPattern !== undefined && <TableFilter kept={data.length} onPattern={onPattern} pattern={pattern} t={t} total={rows.length} />}
@@ -179,9 +192,12 @@ export function EntityTable({
             const row = rendered[item.index]
             if (row === undefined) return null
             const key = rowKey(row.original)
+            const located = finding !== null && finding !== undefined && rowMatchesLocator(row.original, finding)
+            const activeFinding = located ? finding : null
             return <div
               aria-selected={selectedKey === key}
-              className="entity-row"
+              className={`entity-row${activeFinding === null ? "" : ` locator-row locator-${activeFinding.kind}`}`}
+              data-locator-row={located || undefined}
               key={row.id}
               onClick={() => onSelect?.(row.original)}
               onKeyDown={(event) => {
@@ -193,12 +209,23 @@ export function EntityTable({
               style={{ height: item.size, transform: `translateY(${item.start}px)`, width }}
               tabIndex={onSelect === undefined ? undefined : 0}
             >
-              {row.getVisibleCells().map((cell) => <div className={sticky(cell.column.columnDef.meta, false)} key={cell.id} role="cell" style={{ left: stickyLeft(cell.column.columnDef.meta), width: cell.column.getSize() }}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</div>)}
+              {row.getVisibleCells().map((cell) => {
+                const field = fields.find((candidate) => candidate.field === cell.column.id)
+                const exact = activeFinding !== null && field !== undefined && locatorMatchesColumn(field, row.original.typeId, findingField ?? null)
+                return <div className={`${sticky(cell.column.columnDef.meta, false)}${exact ? ` locator-cell locator-${activeFinding.kind}` : ""}`} data-locator-cell={exact || undefined} key={cell.id} role="cell" style={{ left: stickyLeft(cell.column.columnDef.meta), width: cell.column.getSize() }}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</div>
+              })}
             </div>
           })}
         </div>}
     </div>
   </section>
+}
+
+export function locatorMatchesColumn(column: EntityColumn, typeId: string, findingField: string | null): boolean {
+  const physical = typeof column.physicalField === "string"
+    ? column.physicalField
+    : column.physicalField?.[typeId] ?? column.field
+  return findingField !== null && physical === findingField
 }
 
 /** A number is read by comparing digits: numbers line up on the right, names

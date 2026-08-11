@@ -134,3 +134,24 @@ test("a snapshot replaces the section it carries instead of piling moments up", 
   assert.equal(after.processes.length, 1)
   assert.equal(after.processes[0].timestamp, START + 2)
 })
+
+test("timeline lanes retain their segment and a recorded null", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => ndjson([
+    { record: "hour", from: String(START), to: String(START + 3_600_000_000 - 1), available_hours: [String(START)] },
+    { record: "finished_segment", id: "segment-a", min_ts: String(START), max_ts: String(START + 10), sections: [] },
+    { record: "index", segment: { id: "segment-a" }, logical_name: "health", checksum: null },
+    { record: "lane", segment_id: "segment-a", lane: "cpu_busy", ts: String(START + 1), value: null },
+  ])
+  try {
+    const timeline = await api.loadTimeline(START, new AbortController().signal)
+    assert.deepEqual(timeline.lanePoints, [{ segmentId: "segment-a", lane: "cpu_busy", timestamp: START + 1, value: null }])
+    assert.equal(api.fieldNameForLocator({ typeId: "0", fieldOrdinal: 0 }), "os_health")
+    assert.equal(api.fieldNameForLocator({ typeId: "0", fieldOrdinal: 1 }), "overall_health")
+    assert.equal(api.fieldNameForLocator({ typeId: "0", fieldOrdinal: 2 }), null)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

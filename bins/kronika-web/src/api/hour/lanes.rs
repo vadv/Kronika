@@ -13,11 +13,14 @@ use kronika_registry::{contract, logical_section_name};
 
 use crate::api::ApiError;
 
+#[cfg(test)]
+mod tests;
+
 /// One lane's value at one stored moment.
 pub(super) struct LanePoint {
     pub(super) key: &'static str,
     pub(super) ts: i64,
-    pub(super) value: f64,
+    pub(super) value: Option<f64>,
 }
 
 /// Microseconds a resource spent stalled, and the CPU ticks burnt, are both
@@ -348,7 +351,7 @@ fn points(counters: &Counters, ticks_per_second: i64, cpu_count: i64) -> Vec<Lan
             out.push(LanePoint {
                 key,
                 ts: *ts,
-                value: *value,
+                value: Some(*value),
             });
         }
     }
@@ -356,21 +359,26 @@ fn points(counters: &Counters, ticks_per_second: i64, cpu_count: i64) -> Vec<Lan
     out
 }
 
-/// A counter between two samples, per second, clamped at zero: a reading that
-/// went backwards is a restart, not negative work.
-fn rate(stored: &BTreeMap<i64, i64>, scale: impl Fn(f64, f64) -> f64) -> Vec<(i64, f64)> {
+/// A counter between two samples, per second. The first sample and an
+/// unusable subtraction stay null so the interface cannot join across them.
+fn rate(stored: &BTreeMap<i64, i64>, scale: impl Fn(f64, f64) -> f64) -> Vec<(i64, Option<f64>)> {
     let mut out = Vec::with_capacity(stored.len());
     let mut earlier: Option<(i64, i64)> = None;
     for (ts, value) in stored {
-        if let Some((before_ts, before)) = earlier {
+        let point = if let Some((before_ts, before)) = earlier {
             #[expect(clippy::cast_precision_loss, reason = "an hour is far below 2^53")]
             let seconds = (ts - before_ts) as f64 / 1_000_000.0;
             #[expect(clippy::cast_precision_loss, reason = "counters stay below 2^53")]
             let delta = (value - before) as f64;
             if seconds > 0.0 && delta >= 0.0 {
-                out.push((*ts, scale(delta, seconds)));
+                Some(scale(delta, seconds))
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
+        out.push((*ts, point));
         earlier = Some((*ts, *value));
     }
     out

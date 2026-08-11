@@ -8,11 +8,19 @@ import { build } from "esbuild"
 const directory = dirname(fileURLToPath(import.meta.url))
 const compiled = await build({
   bundle: true,
-  external: ["kronika:registry"],
   format: "esm",
   platform: "node",
+  plugins: [{
+    name: "registry",
+    setup(context) {
+      context.onResolve({ filter: /^kronika:registry$/ }, () => ({ namespace: "registry", path: "registry" }))
+      context.onLoad({ filter: /.*/, namespace: "registry" }, () => ({
+        contents: 'export const registry=[{typeId:"1104001",logicalName:"os_meminfo",columns:[{name:"ts"},{name:"mem_total"},{name:"mem_available"}]}]',
+      }))
+    },
+  }],
   stdin: {
-    contents: 'export { findingShape, groupFindings, seriesYAt, timelineRuns } from "../src/timeline.tsx"',
+    contents: 'export { findingShape, findingTrack, groupFindings, healthThreshold, laneRange, overviewLaneCount, seriesYAt, timelineRuns, valueAt } from "../src/timeline.tsx"',
     loader: "tsx",
     resolveDir: directory,
   },
@@ -44,11 +52,12 @@ test("timeline markers cluster at the rendered scale and expand to every exact l
   ]
   const grouped = helpers.groupFindings(input, 0, 1_000, 100, 10)
 
-  assert.deepEqual(grouped.map(({ count, kinds, startTimestamp, endTimestamp }) => ({ count, kinds, startTimestamp, endTimestamp })), [
-    { count: 3, kinds: ["event", "known_bad", "spike"], startTimestamp: 100, endTimestamp: 150 },
+  assert.deepEqual(grouped.map(({ count, kinds, placement, startTimestamp, endTimestamp }) => ({ count, kinds, placement, startTimestamp, endTimestamp })), [
+    { count: 1, kinds: ["event"], placement: "event", startTimestamp: 100, endTimestamp: 100 },
+    { count: 2, kinds: ["known_bad", "spike"], placement: "neutral", startTimestamp: 100, endTimestamp: 150 },
     { count: 1, kinds: ["event"], startTimestamp: 205, endTimestamp: 205 },
     { count: 1, kinds: ["event"], startTimestamp: 900, endTimestamp: 900 },
-  ])
+  ].map((item) => ({ placement: "event", ...item })))
   const locator = (item) => `${item.segmentId}:${item.typeId}:${item.rowOrdinal}:${item.fieldOrdinal}:${item.timestamp}:${item.kind}`
   assert.deepEqual(
     grouped.flatMap((marker) => marker.findings).map(locator).sort(),
@@ -73,11 +82,13 @@ test("marker clustering is deterministic and separates locators when more pixels
   for (let index = 1; index < compact.length; index += 1) {
     const previous = compact[index - 1]
     const current = compact[index]
-    assert.ok((current.timestamp - previous.timestamp) / 1_000 * 100 > 10)
+    if (current.placement === previous.placement && current.track === previous.track) {
+      assert.ok((current.timestamp - previous.timestamp) / 1_000 * 100 > 10)
+    }
   }
   assert.deepEqual(
     helpers.groupFindings(input, 0, 1_000, 1_000, 10).map((marker) => marker.count),
-    [2, 1, 1],
+    [1, 1, 1, 1],
   )
 })
 
@@ -92,30 +103,40 @@ test("timeline series break at null samples without dropping zero", () => {
     { segmentId: "host-a", timestamp: 100, value: 10 },
     { segmentId: "host-a", timestamp: 200, value: null },
     { segmentId: "host-a", timestamp: 300, value: 0 },
+    { segmentId: "host-b", timestamp: 400, value: 12 },
   ]).values()]
-  assert.deepEqual(runs.map((run) => run.map((point) => point.value)), [[10], [0]])
-  // An absent sample breaks the line without moving the samples around it.
-  assert.equal(
-    helpers.seriesYAt([
-      { segmentId: "host-a", timestamp: 100, value: 10 },
-      { segmentId: "host-a", timestamp: 200, value: null },
-      { segmentId: "host-a", timestamp: 300, value: 90 },
-    ], "host-a", 100, 0),
-    helpers.seriesYAt([
-      { segmentId: "host-a", timestamp: 100, value: 10 },
-      { segmentId: "host-a", timestamp: 300, value: 90 },
-    ], "host-a", 100, 0),
-  )
+  assert.deepEqual(runs.map((run) => run.map((point) => point.value)), [[10], [0], [12]])
 })
 
-test("a finding from another source family sits on the nearest healthline segment", () => {
+test("a finding attaches only to an exact sample in the same segment", () => {
   const points = [
     { segmentId: "host-a", timestamp: 100, value: 20 },
     { segmentId: "host-a", timestamp: 200, value: 40 },
-    { segmentId: "host-b", timestamp: 800, value: 90 },
   ]
-  assert.equal(
-    helpers.seriesYAt(points, "postgresql-a", 150, 0),
-    helpers.seriesYAt(points, "host-a", 150, 0),
-  )
+  assert.equal(typeof helpers.seriesYAt(points, "host-a", 100, 0), "number")
+  assert.equal(helpers.seriesYAt(points, "host-a", 150, 0), null)
+  assert.equal(helpers.seriesYAt(points, "postgresql-a", 100, 0), null)
+})
+
+test("a stored null wins over an older number at the cursor", () => {
+  const points = [10, null, 12].map((value, index) => ({ segmentId: "a", timestamp: index + 1, value }))
+  assert.equal(helpers.valueAt(points, 2), null)
+  assert.equal(helpers.valueAt(points, 3), 12)
+})
+
+test("only overall health owns the below-50 band and exact findings map to tracks", () => {
+  assert.equal(helpers.healthThreshold("overall_health"), 50)
+  assert.equal(helpers.healthThreshold("os_health"), null)
+  assert.equal(helpers.healthThreshold("postgres_health"), null)
+  assert.equal(helpers.findingTrack({ ...finding("known_bad", 100, "1"), logicalName: "health", typeId: "0", fieldOrdinal: 1 }), "health")
+  assert.equal(helpers.findingTrack({ ...finding("known_bad", 100, "1"), logicalName: "health", typeId: "0", fieldOrdinal: 0 }), null)
+  assert.equal(helpers.findingTrack({ ...finding("known_bad", 100, "1"), logicalName: "os_meminfo", typeId: "1104001", fieldOrdinal: 2 }), "memory")
+  assert.equal(helpers.groupFindings([finding("event", 100, "1")], 0, 1_000, 100)[0].placement, "event")
+  assert.equal(helpers.groupFindings([finding("spike", 100, "1")], 0, 1_000, 100)[0].placement, "neutral")
+})
+
+test("timeline domains and overview density are explicit", () => {
+  assert.deepEqual(helpers.laneRange({ domain: [0, 100], series: [{ points: [{ segmentId: "a", timestamp: 1, value: 3 }] }] }), { low: 0, span: 100 })
+  assert.deepEqual(helpers.laneRange({ series: [{ points: [{ segmentId: "a", timestamp: 1, value: 12 }] }] }), { low: 0, span: 20 })
+  assert.deepEqual([helpers.overviewLaneCount(1_200), helpers.overviewLaneCount(900), helpers.overviewLaneCount(600)], [4, 3, 2])
 })

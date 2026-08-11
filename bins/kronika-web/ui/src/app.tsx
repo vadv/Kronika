@@ -271,6 +271,18 @@ function App() {
     setSelectedKey(preferred === undefined ? null : processKey(preferred))
   }, [dockClosed, linkedPids, processRows, selectedKey])
   const selectedProcess = processRows.find((row) => processKey(row) === selectedKey) ?? null
+  useEffect(() => {
+    if (selectedFinding?.logicalName !== "os_process") return
+    const exact = resolveLocator(data, selectedFinding)?.row
+    if (exact !== undefined && processRows.some((row) => processKey(row) === processKey(exact))) {
+      setSelectedKey(processKey(exact))
+    }
+  }, [data, processRows, selectedFinding])
+  useEffect(() => {
+    if (selectedFinding === null || postgresSection(selectedFinding.logicalName) === null) return
+    const exact = resolveLocator(data, selectedFinding)?.row
+    if (exact !== undefined) setPgFocus(exact)
+  }, [data, selectedFinding])
   const joinedActivity = activityFor(selectedProcess, data.activities, selectedProcess?.timestamp ?? cursor)
   // A table holds one moment, so the charts of the selected process are their
   // own request across the hour.
@@ -333,6 +345,7 @@ function App() {
   const selectFinding = useCallback((finding: Finding, grouped: readonly Finding[] = [finding]) => {
     setCursor(finding.timestamp)
     setSelectedFinding(finding)
+    setFind("")
     if (grouped.length > 1) {
       setEventScope(grouped)
       setSource("events")
@@ -346,6 +359,7 @@ function App() {
       setHostSection("processes")
       setLens(processLens(fieldNameForLocator(finding)))
       setDockClosed(false)
+      setSystemFocus(null)
       if (resolved !== null) setSelectedKey(processKey(resolved.row))
       return
     }
@@ -357,13 +371,10 @@ function App() {
     }
     const section = postgresSection(logicalName)
     if (section !== null) {
-      if (resolved === null) {
-        setSource("events")
-        return
-      }
       setSource("postgresql")
       setPgSection(section)
-      setPgFocus(resolved.row)
+      setSystemFocus(null)
+      setPgFocus(resolved?.row ?? null)
       return
     }
     setSource("events")
@@ -426,7 +437,7 @@ function App() {
       {!loading && error !== null && <StateCard message={t("status.error")} />}
       {!loading && error === null && hour !== null && source === "host" && hostSection === "system" && <SystemView cursor={cursor} data={data} focus={systemFocus} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} t={t} />}
       {!loading && error === null && hour !== null && source === "host" && hostSection === "processes" && <>
-        <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={setCursor} onFinding={selectFinding} shownAt={shownAt} t={t} />
+        <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={setCursor} onFinding={selectFinding} primaryLane={lens === "cpu" ? "cpu_busy" : lens === "memory" ? "memory" : lens === "disk" ? "io_stall" : "health"} shownAt={shownAt} t={t} />
         <div className="lensbar">
           <div aria-label={t("section.processes")} className="lens-tabs" role="group">
             {(["generic", "cpu", "memory", "disk"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => setLens(choice)} type="button">{t(`lens.${choice}`)}</button>)}
@@ -435,7 +446,7 @@ function App() {
         </div>
         <ProcessSummary lens={lens} linkedPids={linkedPids} locale={locale} rows={processRows} t={t} ticksPerSecond={ticksPerSecond} />
         <div className={selectedProcess === null ? "process-layout process-layout-table" : "process-layout"}>
-          <ProcessTable lens={lens} linkedPids={linkedPids} locale={locale} onOrder={setOrder} onPattern={setFind} onSelect={selectProcess} order={order} pattern={find} rows={processRows} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
+          <ProcessTable finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} onOrder={setOrder} onPattern={setFind} onSelect={selectProcess} order={order} pattern={find} rows={processRows} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
           {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onClose={() => { setDockClosed(true); setSelectedKey(null) }} process={selectedProcess} processHistory={processHistory} t={t} ticksPerSecond={ticksPerSecond} />}
         </div>
       </>}

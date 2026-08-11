@@ -10,12 +10,13 @@ import {
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
-import type { Cell, DataRow } from "./api"
+import type { Cell, DataRow, Finding } from "./api"
 import { fittedWidth, headerWidths, widestCell } from "./column-size"
 import type { TableOrder } from "./entity-table"
 import { TableFilter } from "./table-filter"
 import { globMatcher } from "./glob"
 import { LabelHelp, type Translate } from "./help"
+import { rowMatchesLocator } from "./locator"
 import {
   asNumber,
   cores,
@@ -37,6 +38,7 @@ import {
 export interface Field {
   readonly id: string
   readonly field?: string
+  readonly physicalField?: string | Readonly<Record<string, string>>
   readonly label: string
   readonly help: string
   readonly kind: "id" | "command" | "state" | "time" | "number" | "rate" | "cores" | "kib" | "bytes" | "ns"
@@ -88,6 +90,8 @@ export function ProcessSummary({ lens, linkedPids, locale, rows, t, ticksPerSeco
 }
 
 export function ProcessTable({
+  finding,
+  findingField,
   lens,
   linkedPids,
   locale,
@@ -101,6 +105,8 @@ export function ProcessTable({
   t,
   ticksPerSecond,
 }: {
+  readonly finding?: Finding | null
+  readonly findingField?: string | null | undefined
   readonly lens: Lens
   readonly linkedPids: ReadonlySet<number>
   readonly locale: Locale
@@ -200,6 +206,12 @@ export function ProcessTable({
     setSizing((current) => ({ ...current, [id]: fittedWidth(widestCell(root, index)) }))
   }, [])
   const virtual = useVirtualizer({ count: displayed.length, estimateSize: () => 23, getScrollElement: () => scroll.current, overscan: 14 })
+  const locatedIndex = finding === null || finding === undefined
+    ? -1
+    : displayed.findIndex((row) => rowMatchesLocator(row.original, finding))
+  useEffect(() => {
+    if (locatedIndex >= 0) virtual.scrollToIndex(locatedIndex, { align: "center" })
+  }, [finding, locatedIndex, virtual])
   const width = table.getTotalSize()
   const pinnedWidths = PINNED_ORDER.map((name) => {
     const column = table.getAllColumns().find((candidate) => (candidate.columnDef.meta as { readonly sticky?: string } | undefined)?.sticky === name)
@@ -224,11 +236,14 @@ export function ProcessTable({
               const pid = asNumber(value(row.original, "pid"))
               const linked = pid !== null && linkedPids.has(pid)
               const selected = processKey(row.original) === selectedKey
+              const located = finding !== null && finding !== undefined && rowMatchesLocator(row.original, finding)
+              const activeFinding = located ? finding : null
               return (
                 <div
                   aria-label={t("table.activate", { pid: identifier(value(row.original, "pid")) })}
                   aria-selected={selected}
-                  className="process-row"
+                  className={`process-row${activeFinding === null ? "" : ` locator-row locator-${activeFinding.kind}`}`}
+                  data-locator-row={located || undefined}
                   data-pg-linked={linked || undefined}
                   data-testid={linked ? "pg-linked-row" : undefined}
                   key={row.id}
@@ -238,7 +253,11 @@ export function ProcessTable({
                   style={{ height: item.size, transform: `translateY(${item.start}px)`, width }}
                   tabIndex={0}
                 >
-                  {row.getVisibleCells().map((cell) => <div className={stickyClass(cell.column.columnDef.meta, false)} key={cell.id} role="cell" style={{ left: stickyLeft(cell.column.columnDef.meta, pinnedWidths), width: cell.column.getSize() }}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</div>)}
+                  {row.getVisibleCells().map((cell) => {
+                    const field = LENS_FIELDS[lens].find((candidate) => candidate.id === cell.column.id)
+                    const exact = activeFinding !== null && field !== undefined && processFieldMatches(field, row.original.typeId, findingField ?? null)
+                    return <div className={`${stickyClass(cell.column.columnDef.meta, false)}${exact ? ` locator-cell locator-${activeFinding?.kind ?? ""}` : ""}`} data-locator-cell={exact || undefined} key={cell.id} role="cell" style={{ left: stickyLeft(cell.column.columnDef.meta, pinnedWidths), width: cell.column.getSize() }}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</div>
+                  })}
                 </div>
               )
             })}
@@ -246,6 +265,13 @@ export function ProcessTable({
       </div>
     </div>
   )
+}
+
+export function processFieldMatches(field: Field, typeId: string, findingField: string | null): boolean {
+  const physical = typeof field.physicalField === "string"
+    ? field.physicalField
+    : field.physicalField?.[typeId] ?? field.field ?? null
+  return findingField !== null && physical !== null && physical === findingField
 }
 
 /** One place decides how a kind reads, so a chart caption and the table cell

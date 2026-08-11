@@ -10,6 +10,7 @@ export interface ChartPoint {
 }
 
 type NumericChartPoint = ChartPoint & { readonly value: number }
+export type ChartScale = "auto" | "percent" | "count" | "duration"
 
 export function SeriesChart({
   cursor,
@@ -18,6 +19,7 @@ export function SeriesChart({
   locale,
   format,
   points,
+  scale = "auto",
   second,
 }: {
   /** The moment the tables below are showing, drawn on the same domain. */
@@ -28,6 +30,7 @@ export function SeriesChart({
   /** How a reading reads: a chart of bytes says bytes, not a bare number. */
   readonly format?: ((value: number, locale: Locale) => string) | undefined
   readonly points: readonly ChartPoint[]
+  readonly scale?: ChartScale | undefined
   /** A companion series on the same scale, as sent against received. */
   readonly second?: readonly ChartPoint[] | undefined
 }) {
@@ -38,12 +41,11 @@ export function SeriesChart({
   const values = numeric.map((point) => point.value)
   // A chart that starts at its own minimum turns a flat line into a mountain
   // range: the floor is zero, so height means the same thing in every card.
-  const low = Math.min(0, ...values)
-  const high = values.length === 0 ? 0 : Math.max(...values)
+  const { low, high } = chartDomain(values, scale)
   const span = high - low || 1
   const paths = chartRuns(points)
   const companion: ReadonlyMap<string, readonly NumericChartPoint[]> = second === undefined ? new Map() : chartRuns(second)
-  const reading = readingAt(numeric, cursor)
+  const reading = readingAt(points, cursor)
   return <figure className="series-chart">
     <figcaption id={title}>
       <span>{label}</span>
@@ -79,13 +81,30 @@ export function SeriesChart({
 
 /** What the series reads where the cursor stands: the caption of a chart this
  *  narrow says one number, and the useful one is the one being pointed at. */
-function readingAt(points: readonly NumericChartPoint[], cursor: number | undefined): number | null {
-  let chosen: NumericChartPoint | null = null
+export function readingAt(points: readonly ChartPoint[], cursor: number | undefined): number | null {
+  let chosen: ChartPoint | null = null
   for (const point of points) {
     if (cursor !== undefined && point.timestamp > cursor) continue
     if (chosen === null || point.timestamp > chosen.timestamp) chosen = point
   }
   return chosen?.value ?? null
+}
+
+export function chartDomain(values: readonly number[], scale: ChartScale): { readonly low: number; readonly high: number } {
+  if (scale === "percent") return { low: 0, high: 100 }
+  if (scale === "count" || scale === "duration") {
+    return { low: 0, high: niceCeiling(Math.max(0, ...values)) }
+  }
+  const low = Math.min(0, ...values)
+  const high = values.length === 0 ? 1 : Math.max(...values)
+  return { low, high: high === low ? low + 1 : high }
+}
+
+function niceCeiling(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 1
+  const magnitude = 10 ** Math.floor(Math.log10(value))
+  const normalized = value / magnitude
+  return (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10) * magnitude
 }
 
 export function chartRuns(points: readonly ChartPoint[]): ReadonlyMap<string, readonly NumericChartPoint[]> {

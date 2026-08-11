@@ -21,11 +21,10 @@ if (fixtureOutputAt >= 0 && (fixtureOutput === undefined || process.argv.length 
 const artifact = fixtureOutput === null ? join(uiDirectory, "kronika-ui.html.gz") : resolve(fixtureOutput)
 const checkOnly = process.argv.includes("--check")
 if (checkOnly && fixtureOutput !== null) throw new Error("--check and --fixture-output cannot be combined")
-// Raw grew by the lanes of the timeline and the help text each of them
-// carries in two languages; gzip, which is what a browser downloads, moved
-// by about a kilobyte.
-const maximumRawBytes = fixtureOutput === null ? 848_000 : 40_000_000
-const maximumGzipBytes = fixtureOutput === null ? 216_000 : 8_000_000
+// The contextual timeline, hover readout, and exact locator states add about
+// two compressed kilobytes while replacing seven equal plots.
+const maximumRawBytes = fixtureOutput === null ? 852_000 : 40_000_000
+const maximumGzipBytes = fixtureOutput === null ? 219_000 : 8_000_000
 const rustToolchain = process.env.RUST_TOOLCHAIN ?? "1.96.0"
 const rustHost = execFileSync("rustc", [`+${rustToolchain}`, "-vV"], { encoding: "utf8" })
   .match(/^host: (.+)$/m)?.[1]

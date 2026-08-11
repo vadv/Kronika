@@ -216,6 +216,7 @@ fn emit_lanes(
         if cancelled()
             || !emit(record(json!({
                 "record": "lane",
+                "segment_id": segment_ref.id().to_string(),
                 "lane": point.key,
                 "ts": point.ts.to_string(),
                 "value": point.value,
