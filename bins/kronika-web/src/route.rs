@@ -32,6 +32,12 @@ pub(crate) struct SnapshotRequest {
     pub(crate) segment_id: i64,
     pub(crate) at: i64,
     pub(crate) sections: Vec<String>,
+    /// Columns to return; empty is all of them.
+    pub(crate) fields: Vec<String>,
+    /// Column the rows are ordered by, largest first.
+    pub(crate) by: Option<String>,
+    /// How many of those rows to return.
+    pub(crate) top: Option<usize>,
 }
 
 /// Optional timestamp bounds for catalog listing only.
@@ -153,6 +159,9 @@ pub(crate) fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError
 fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, RouteError> {
     let mut at = None;
     let mut sections = Vec::new();
+    let mut fields = Vec::new();
+    let mut by = None;
+    let mut top = None;
     for (raw_name, raw_value) in pairs(query)? {
         match raw_name {
             "at" if at.is_none() => at = Some(number("at", raw_value)?),
@@ -166,16 +175,39 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
                 }
                 sections.push(section);
             }
+            "field" => {
+                let field = decoded("field", raw_value, true)?;
+                if field.is_empty() || fields.contains(&field) || fields.len() >= MAX_FIELDS {
+                    return Err(RouteError::BadParameter("field".to_owned()));
+                }
+                fields.push(field);
+            }
+            "by" if by.is_none() => by = Some(decoded("by", raw_value, true)?),
+            "top" if top.is_none() => {
+                let count = number("top", raw_value)?;
+                if count <= 0 {
+                    return Err(RouteError::BadParameter("top".to_owned()));
+                }
+                top = Some(usize::try_from(count).unwrap_or(usize::MAX));
+            }
             _other => return Err(RouteError::BadParameter(raw_name.to_owned())),
         }
     }
     if sections.is_empty() {
         return Err(RouteError::BadParameter("section".to_owned()));
     }
+    // A projection and an order name columns, and columns belong to one
+    // section. Several sections at once are the plain form of the request.
+    if sections.len() != 1 && (!fields.is_empty() || by.is_some() || top.is_some()) {
+        return Err(RouteError::BadParameter("section".to_owned()));
+    }
     Ok(SnapshotRequest {
         segment_id,
         at: at.ok_or_else(|| RouteError::BadParameter("at".to_owned()))?,
         sections,
+        fields,
+        by,
+        top,
     })
 }
 

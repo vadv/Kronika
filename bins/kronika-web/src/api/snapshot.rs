@@ -20,6 +20,8 @@ pub(crate) struct PreparedSnapshot {
     segment: Segment,
     at: i64,
     sections: Vec<SectionPlans>,
+    by: Option<String>,
+    top: Option<usize>,
 }
 
 struct SectionPlans {
@@ -37,14 +39,16 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
                 segment_id: request.segment_id,
                 section: logical_name.clone(),
             },
-            fields: Vec::new(),
+            fields: request.fields.clone(),
             filters: Vec::new(),
             after: None,
         };
         // A section reaches an active segment only with its first sample, so
         // a young one is missing most of them. An absent section is an empty
         // table, not a failed request for every other section beside it.
-        match plans(&segment, &data, false) {
+        // A projection asked for by name still has to carry the timestamp and the
+        // identity: this reads a moment and subtracts the one before it.
+        match plans(&segment, &data, true) {
             Ok(plans) => sections.push(SectionPlans {
                 logical_name,
                 plans,
@@ -57,6 +61,8 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
         segment,
         at: request.at,
         sections,
+        by: request.by,
+        top: request.top,
     })
 }
 
@@ -135,7 +141,7 @@ impl PreparedSnapshot {
             .checked_sub(moments.previous.unwrap_or(moments.current))
             .filter(|gap| *gap > 0);
         let mut failure = None;
-        let mut connected = true;
+        let mut rows = Vec::new();
         self.segment.visit_rows(
             plan.type_id,
             &plan.projection,
@@ -143,7 +149,6 @@ impl PreparedSnapshot {
             usize::MAX,
             |ordinal, row| {
                 if cancelled() {
-                    connected = false;
                     return false;
                 }
                 if row_timestamp(&row, timestamp) != Some(moments.current) {
@@ -151,19 +156,31 @@ impl PreparedSnapshot {
                 }
                 let before = identity_of(plan, &row).and_then(|key| previous.get(&key));
                 match Self::row_record(plan, &row, before, elapsed, ordinal, &dictionary) {
-                    Ok(value) => match record(&value) {
-                        Ok(bytes) => connected = emit(bytes),
-                        Err(error) => failure = Some(error),
-                    },
+                    Ok(value) => rows.push(value),
                     Err(error) => failure = Some(error),
                 }
-                connected && failure.is_none()
+                failure.is_none()
             },
         )?;
         if let Some(error) = failure {
             return Err(error);
         }
-        Ok(connected)
+        if let Some(by) = &self.by {
+            rows.sort_by(|left, right| {
+                sort_value(right, by)
+                    .partial_cmp(&sort_value(left, by))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+        if let Some(top) = self.top {
+            rows.truncate(top);
+        }
+        for value in rows {
+            if cancelled() || !emit(record(&value)?) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Sections without a timestamp hold one state, so the snapshot is the
@@ -333,6 +350,15 @@ impl PreparedSnapshot {
             "values": Value::Object(values),
         }))
     }
+}
+
+/// Absent and non-numeric sort last, so an ordered table starts with the rows
+/// that have something to say.
+fn sort_value(row: &Value, column: &str) -> f64 {
+    row.get("values")
+        .and_then(|values| values.get(column))
+        .and_then(Value::as_f64)
+        .unwrap_or(f64::NEG_INFINITY)
 }
 
 struct Moments {

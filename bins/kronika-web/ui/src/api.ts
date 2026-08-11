@@ -467,13 +467,28 @@ export function fieldsForLogicalName(logicalName: string): readonly string[] {
 
 /** One request for a moment across several sections. Counters arrive already
  *  divided by the interval, so nothing is subtracted here. */
+/** A statement table on a busy server is thousands of rows and megabytes of
+ *  query text, and a screen holds a few dozen. The server orders and cuts. */
+const SECTION_ORDER: Readonly<Record<string, { readonly by: string; readonly top: number }>> = {
+  pg_stat_statements: { by: "total_exec_time", top: 200 },
+}
+
+function orderFor(section: string | undefined): readonly string[] {
+  const order = section === undefined ? undefined : SECTION_ORDER[section]
+  return order === undefined ? [] : [`by=${encodeURIComponent(order.by)}`, `top=${order.top}`]
+}
+
 export async function loadSnapshot(
   segmentId: string,
   at: number,
   sections: readonly string[],
   signal: AbortSignal,
 ): Promise<HourData> {
-  const query = [`at=${at}`, ...sections.map((name) => `section=${encodeURIComponent(name)}`)].join("&")
+  const query = [
+    `at=${at}`,
+    ...sections.map((name) => `section=${encodeURIComponent(name)}`),
+    ...(sections.length === 1 ? orderFor(sections[0]) : []),
+  ].join("&")
   const records = await request(
     `/api/segments/${encodeURIComponent(segmentId)}/snapshot?${query}`,
     signal,

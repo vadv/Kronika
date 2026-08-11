@@ -598,3 +598,36 @@ fn an_hour_carries_its_segments_and_its_line_in_one_response() {
     assert_eq!(segment["segment"]["id"], SEGMENT_ID.to_string());
     assert_eq!(segment["logical_name"], "health");
 }
+
+#[test]
+fn a_snapshot_orders_by_a_column_and_returns_only_the_top_of_it() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[
+        (100, 0, 1),
+        (100, 1, 9),
+        (100, 2, 5),
+        (200, 0, 2),
+        (200, 1, 30),
+        (200, 2, 11),
+    ]);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_diskstats&field=minor&by=minor&top=2"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("ordered snapshot");
+    let minors = records
+        .iter()
+        .filter(|record| record["record"] == "row")
+        .map(|record| record["values"]["minor"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(minors, [serde_json::json!(2), serde_json::json!(1)]);
+}
+
+#[test]
+fn an_order_needs_one_section_to_name_a_column_in() {
+    let path = format!("/api/segments/{SEGMENT_ID}/snapshot");
+    assert!(crate::route::parse(&path, Some("at=1&section=a&section=b&by=x")).is_err());
+    assert!(crate::route::parse(&path, Some("at=1&section=a&section=b&top=5")).is_err());
+    assert!(crate::route::parse(&path, Some("at=1&section=a&by=x&top=5")).is_ok());
+}
