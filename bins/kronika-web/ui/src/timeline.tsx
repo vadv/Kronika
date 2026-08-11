@@ -74,6 +74,7 @@ export function Timeline({
       .map((point) => ({ segmentId: name, timestamp: point.timestamp, value: point.value }))
     const backends = [...of("pg_running"), ...of("pg_waiting")]
     return [
+      { domain: SHARE, key: "health", series: [{ color: "cyan" as const, points: healthPoints }] },
       { domain: SHARE, key: "cpu_busy", series: [{ color: "cyan" as const, points: of("cpu_busy") }] },
       { domain: SHARE, key: "cpu_stall", series: [{ color: "amber" as const, points: of("cpu_stall") }] },
       { domain: SHARE, key: "memory", series: [{ color: "violet" as const, points: of("memory") }] },
@@ -89,8 +90,8 @@ export function Timeline({
       { domain: undefined, key: "oldest_xact", series: [{ color: "violet" as const, points: of("pg_oldest_xact") }] },
     ].filter((lane) => lane.key === "backends"
       ? backends.length !== 0
-      : lane.series.some((series) => series.points.length !== 0))
-  }, [lanePoints])
+      : lane.series.some((series) => series.points.some((point) => point.value !== null)))
+  }, [healthPoints, lanePoints])
   const healthLane = lanes.findIndex((lane) => lane.key === "health")
   const plotBottom = TOP + Math.max(1, lanes.length) * LANE_HEIGHT
   const height = plotBottom + TICK_ROW
@@ -230,6 +231,10 @@ function LaneLabel({ label, help, reading, t }: { readonly label: string; readon
 function valueAt(points: readonly SeriesPoint[], cursor: number): number | null {
   let chosen: SeriesPoint | null = null
   for (const point of points) {
+    // A gap in the series is not a reading: the label shows the last moment
+    // that was measured, not a dash because the newest sample happened to be
+    // the one that could not be computed.
+    if (point.value === null) continue
     if (point.timestamp <= cursor && (chosen === null || point.timestamp > chosen.timestamp)) chosen = point
   }
   return chosen?.value ?? null
