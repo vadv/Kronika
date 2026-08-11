@@ -63,7 +63,7 @@ export function EventsView({
     if (index >= 0) virtual.scrollToIndex(index, { align: "auto" })
   }, [active, virtual, visible])
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} load={data.load} memory={data.memory} onCursor={onCursor} onFinding={onFinding} pressure={data.pressure} t={t} />
+    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={onCursor} onFinding={onFinding} t={t} />
     <section className="events-console">
       <header className="events-tools">
         <div className="event-filters" role="group">

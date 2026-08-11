@@ -51,7 +51,7 @@ type HostSection = "system" | "processes"
 
 const EMPTY_DATA: HourData = {
   sections: {}, availableSections: [], processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
-  pgOverview: [], pgStatements: [], pgLocks: [], pgDatabases: [], pgEvents: [], points: [], findings: [],
+  pgOverview: [], pgStatements: [], pgLocks: [], pgDatabases: [], pgEvents: [], points: [], lanePoints: [], findings: [],
   sourceFamilies: [], segmentCount: 0,
 }
 
@@ -358,7 +358,7 @@ function App() {
       {!loading && error !== null && <StateCard message={t("status.error")} />}
       {!loading && error === null && hour !== null && source === "host" && hostSection === "system" && <SystemView cursor={cursor} data={data} focus={systemFocus} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} t={t} />}
       {!loading && error === null && hour !== null && source === "host" && hostSection === "processes" && <>
-        <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} load={data.load} memory={data.memory} onCursor={setCursor} onFinding={selectFinding} pressure={data.pressure} t={t} />
+        <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={setCursor} onFinding={selectFinding} t={t} />
         <div className="lensbar">
           <div aria-label={t("section.processes")} className="lens-tabs" role="group">
             {(["generic", "cpu", "memory", "disk"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => setLens(choice)} type="button">{t(`lens.${choice}`)}</button>)}

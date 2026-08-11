@@ -21,16 +21,9 @@ use super::render::record;
 use super::{ApiError, CachePolicy, ResponseMeta};
 use crate::route::{DataRequest, HourRequest, SegmentRequest, SeriesRequest, Window};
 
-const SERIES: &str = "health";
+mod lanes;
 
-/// The lanes drawn beside the health line, and the columns each one reads.
-/// Whole-hour series, a handful of rows a sample, and they arrive with the
-/// line rather than as a request per section per segment.
-const LANES: [(&str, &[&str]); 3] = [
-    ("os_loadavg", &["load1"]),
-    ("os_meminfo", &["mem_available"]),
-    ("os_psi", &["resource", "some_avg10"]),
-];
+const SERIES: &str = "health";
 
 /// Microseconds in an hour.
 const HOUR: i64 = 3_600_000_000;
@@ -209,6 +202,8 @@ fn emit_series(
     }
 }
 
+/// The lanes of one segment, each a share of the ceiling the collector lived
+/// under. Computed here because the client has no business summing cores.
 fn emit_lanes(
     reader: &Reader,
     segment_ref: &SegmentRef,
@@ -216,22 +211,16 @@ fn emit_lanes(
     cancelled: &impl Fn() -> bool,
 ) -> Result<bool, ApiError> {
     let segment = reader.open_segment(segment_ref)?;
-    for (logical_name, fields) in LANES {
-        let request = DataRequest {
-            segment: SegmentRequest {
-                segment_id: segment_ref.id(),
-                section: (*logical_name).to_owned(),
-            },
-            fields: fields.iter().map(|name| (*name).to_owned()).collect(),
-            filters: Vec::new(),
-            after: None,
-        };
-        let plans = match plans(&segment, &request, true) {
-            Ok(plans) => plans,
-            Err(ApiError::NoSuchSection | ApiError::NoSuchColumn(_)) => continue,
-            Err(error) => return Err(error),
-        };
-        if !stream_plans(&segment, logical_name, &plans, emit, cancelled)? {
+    let facts = lanes::facts(&segment)?;
+    for point in lanes::collect(&segment, facts.ticks_per_second, facts.cpu_count)? {
+        if cancelled()
+            || !emit(record(json!({
+                "record": "lane",
+                "lane": point.key,
+                "ts": point.ts.to_string(),
+                "value": point.value,
+            }))?)
+        {
             return Ok(false);
         }
     }

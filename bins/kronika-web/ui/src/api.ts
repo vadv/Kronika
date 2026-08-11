@@ -121,13 +121,23 @@ export interface HourData {
   readonly pgDatabases: readonly DataRow[]
   readonly pgEvents: readonly DataRow[]
   readonly points: readonly Point[]
+  readonly lanePoints: readonly LanePoint[]
   readonly findings: readonly Finding[]
   readonly sourceFamilies: readonly SourceFamily[]
   readonly segmentCount: number
 }
 
+/** One lane of the timeline: a share of the ceiling this machine lived under,
+ *  computed by the server against the environment it ran in. */
+export interface LanePoint {
+  readonly lane: string
+  readonly timestamp: number
+  readonly value: number
+}
+
 export interface TimelineData {
   readonly hour: number
+  readonly lanePoints: readonly LanePoint[]
   /** Whole-hour rows keyed by section: the line and the lanes beside it. */
   readonly lanes: Readonly<Record<string, readonly DataRow[]>>
   readonly availableHours: readonly number[]
@@ -227,6 +237,7 @@ export async function loadHour(
     sections,
     availableSections,
     points: points.sort(pointOrder),
+    lanePoints: [],
     findings: findings.sort(findingOrder),
     sourceFamilies: sourceFamilies ?? [],
     segmentCount: segments.length,
@@ -242,6 +253,7 @@ export function hourOf(timeline: TimelineData): HourData {
     sections: timeline.lanes,
     availableSections: timeline.availableSections,
     points: timeline.points,
+    lanePoints: timeline.lanePoints,
     findings: timeline.findings,
     sourceFamilies: timeline.sourceFamilies,
     segmentCount: timeline.segments.length,
@@ -268,6 +280,7 @@ export function replaceSections(before: HourData, after: HourData): HourData {
     sections,
     availableSections: unique([...before.availableSections, ...after.availableSections]),
     points: before.points,
+    lanePoints: before.lanePoints,
     findings: before.findings,
     sourceFamilies: before.sourceFamilies,
     segmentCount: before.segmentCount,
@@ -283,6 +296,7 @@ export function mergeHourData(before: HourData, after: HourData): HourData {
     sections,
     availableSections: unique([...before.availableSections, ...after.availableSections]),
     points: [...before.points, ...after.points].sort(pointOrder),
+    lanePoints: before.lanePoints.length === 0 ? after.lanePoints : before.lanePoints,
     findings: [...before.findings, ...after.findings].sort(findingOrder),
     sourceFamilies: after.sourceFamilies.length === 0 ? before.sourceFamilies : after.sourceFamilies,
     segmentCount: Math.max(before.segmentCount, after.segmentCount),
@@ -304,7 +318,7 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
   if (fixture !== null && range !== null) {
     return {
       hour: floorHour(range.from), availableHours: unique([floorHour(range.from), floorHour(range.to)]),
-      segments: [], lanes: fixture.sections, health: fixture.health, points: fixture.points,
+      segments: [], lanePoints: [], lanes: fixture.sections, health: fixture.health, points: fixture.points,
       findings: fixture.findings, sourceFamilies: fixture.sourceFamilies,
       availableSections: fixture.availableSections,
     }
@@ -323,6 +337,7 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
     .sort((left, right) => left.minTs - right.minTs)
   const points: Point[] = []
   const findings: Finding[] = []
+  const lanePoints: LanePoint[] = []
   const lanes: Record<string, DataRow[]> = { [HEALTH]: [] }
   const layouts = new Map<string, readonly string[]>()
   let segmentId = ""
@@ -344,11 +359,18 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
     } else if (record.record === "row") {
       const row = laneRow(record, segmentId, layouts)
       if (row !== null) (lanes[row.logicalName] ??= []).push(row)
+    } else if (record.record === "lane") {
+      lanePoints.push({
+        lane: requiredText(record.lane, "lane name"),
+        timestamp: integer(record.ts, "lane timestamp"),
+        value: finiteNumber(record.value, "lane value"),
+      })
     }
   }
   lanes[HEALTH] = healthRows(points) as DataRow[]
   return {
     hour,
+    lanePoints,
     lanes,
     availableHours: ((header?.available_hours ?? []) as readonly string[])
       .map((value) => integer(value, "available hour")),
@@ -502,6 +524,7 @@ function hourData(input: {
   readonly sections: Readonly<Record<string, readonly DataRow[]>>
   readonly availableSections: readonly string[]
   readonly points: readonly Point[]
+  readonly lanePoints: readonly LanePoint[]
   readonly findings: readonly Finding[]
   readonly sourceFamilies: readonly SourceFamily[]
   readonly segmentCount: number
@@ -640,6 +663,7 @@ export async function loadSnapshot(
     sections: grouped,
     availableSections: sections,
     points: [],
+    lanePoints: [],
     findings: [],
     sourceFamilies: [],
     segmentCount: 1,

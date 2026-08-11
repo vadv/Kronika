@@ -199,6 +199,7 @@ test("the health line survives the first snapshot merged into the hour", async (
     segments: [{ id: "7", minTs: START, maxTs: START + 1_000 }],
     lanes: { health: [line] },
     health: [line],
+    lanePoints: [],
     points: [],
     findings: [],
     sourceFamilies: [],
@@ -229,13 +230,13 @@ test("a snapshot replaces the section it carries instead of piling moments up", 
   const before = api.mergeHourData(
     api.hourOf({
       hour: START, availableHours: [START], segments: [], lanes: {}, health: [],
-      points: [], findings: [], sourceFamilies: [], availableSections: [],
+      points: [], lanePoints: [], findings: [], sourceFamilies: [], availableSections: [],
     }),
-    { sections: { os_process: [row(START + 1)] }, availableSections: ["os_process"], points: [], findings: [], sourceFamilies: [], segmentCount: 1 },
+    { sections: { os_process: [row(START + 1)] }, availableSections: ["os_process"], points: [], lanePoints: [], findings: [], sourceFamilies: [], segmentCount: 1 },
   )
   const after = api.replaceSections(before, {
     sections: { os_process: [row(START + 2)] }, availableSections: ["os_process"],
-    points: [], findings: [], sourceFamilies: [], segmentCount: 1,
+    points: [], lanePoints: [], findings: [], sourceFamilies: [], segmentCount: 1,
   })
   assert.equal(after.processes.length, 1)
   assert.equal(after.processes[0].timestamp, START + 2)

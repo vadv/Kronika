@@ -21,9 +21,10 @@ if (fixtureOutputAt >= 0 && (fixtureOutput === undefined || process.argv.length 
 const artifact = fixtureOutput === null ? join(uiDirectory, "kronika-ui.html.gz") : resolve(fixtureOutput)
 const checkOnly = process.argv.includes("--check")
 if (checkOnly && fixtureOutput !== null) throw new Error("--check and --fixture-output cannot be combined")
-// Raw grew by the colour tokens and the second theme they carry; gzip, which
-// is what a browser actually downloads, moved by 283 bytes.
-const maximumRawBytes = fixtureOutput === null ? 812_000 : 40_000_000
+// Raw grew by the lanes of the timeline and the help text each of them
+// carries in two languages; gzip, which is what a browser downloads, moved
+// by about a kilobyte.
+const maximumRawBytes = fixtureOutput === null ? 822_000 : 40_000_000
 const maximumGzipBytes = fixtureOutput === null ? 210_000 : 8_000_000
 const rustToolchain = process.env.RUST_TOOLCHAIN ?? "1.96.0"
 const rustHost = execFileSync("rustc", [`+${rustToolchain}`, "-vV"], { encoding: "utf8" })

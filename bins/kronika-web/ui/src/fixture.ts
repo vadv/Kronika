@@ -120,6 +120,7 @@ export function bundledFixtureHour(start: number): HourData | null {
     pgDatabases: [],
     pgEvents: [],
     points,
+    lanePoints: [],
     findings,
     sourceFamilies,
     segmentCount: fixture.meta.segments,

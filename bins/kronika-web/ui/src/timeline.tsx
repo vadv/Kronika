@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
-import type { DataRow, Finding } from "./api"
+import type { DataRow, Finding, LanePoint } from "./api"
 import { LabelHelp, type Translate } from "./help"
 import { asNumber, formatUtc, humanBytes, value } from "./model"
 import { TimeTicks } from "./time-ticks"
 
 const WIDTH = 920
-const HEIGHT = 184
+/** Room for the ticks under the last lane. */
+const TICK_ROW = 18
 const LANE_HEIGHT = 36
 /** The rail the marks sit on, above the first lane. */
 const MARKER_RAIL = 14
@@ -43,55 +44,52 @@ export function Timeline({
   findings,
   health,
   hour,
-  load,
-  memory,
+  lanePoints,
   onCursor,
   onFinding,
-  pressure,
   t,
 }: {
   readonly cursor: number
   readonly findings: readonly Finding[]
   readonly health: readonly DataRow[]
   readonly hour: number
-  readonly load: readonly DataRow[]
-  readonly memory: readonly DataRow[]
+  readonly lanePoints: readonly LanePoint[]
   readonly onCursor: (timestamp: number) => void
   readonly onFinding: (finding: Finding, grouped?: readonly Finding[]) => void
-  readonly pressure: readonly DataRow[]
   readonly t: Translate
 }) {
   const plot = useRef<HTMLDivElement>(null)
   const [plotWidth, setPlotWidth] = useState(WIDTH)
   const end = hour + 3_600_000_000
   const healthPoints = useMemo(() => series(health, "os_health"), [health])
-  const loadPoints = useMemo(() => series(load, "load1"), [load])
-  const memoryPoints = useMemo(
-    () => preferredSeries(memory, ["mem_available_percent", "mem_available"]),
-    [memory],
-  )
-  const pressurePoints = useMemo(() => [0, 1, 2].map((resource) => series(
-    pressure.filter((row) => asNumber(value(row, "resource")) === resource),
-    "some_avg10",
-  )), [pressure])
-  // A labelled lane with nothing in it is a line of chrome that says nothing.
-  const lanes = useMemo(() => [
-    { domain: SHARE, key: "health", series: [{ color: "cyan" as const, points: healthPoints }] },
-    { domain: undefined, key: "load", series: [{ color: "amber" as const, points: loadPoints }] },
-    { domain: undefined, key: "memory", series: [{ color: "violet" as const, points: memoryPoints }] },
-    {
-      domain: SHARE,
-      key: "pressure",
-      series: [
-        { color: "cyan" as const, points: pressurePoints[0] ?? [] },
-        { color: "violet" as const, points: pressurePoints[1] ?? [] },
-        { color: "amber" as const, points: pressurePoints[2] ?? [] },
-      ],
-    },
-  ].filter((lane) => lane.series.some((series) => series.points.some((point) => point.value !== null))),
-  [healthPoints, loadPoints, memoryPoints, pressurePoints])
+  // What the machine lived under, then what the database was doing. Each is a
+  // share of its own ceiling, so a pod and a machine read the same way.
+  const lanes = useMemo(() => {
+    const of = (name: string) => lanePoints
+      .filter((point) => point.lane === name)
+      .map((point) => ({ segmentId: name, timestamp: point.timestamp, value: point.value }))
+    const backends = [...of("pg_running"), ...of("pg_waiting")]
+    return [
+      { domain: SHARE, key: "cpu_busy", series: [{ color: "cyan" as const, points: of("cpu_busy") }] },
+      { domain: SHARE, key: "cpu_stall", series: [{ color: "amber" as const, points: of("cpu_stall") }] },
+      { domain: SHARE, key: "memory", series: [{ color: "violet" as const, points: of("memory") }] },
+      { domain: SHARE, key: "io_stall", series: [{ color: "cyan" as const, points: of("io_stall") }] },
+      {
+        domain: undefined,
+        key: "backends",
+        series: [
+          { color: "cyan" as const, points: of("pg_running") },
+          { color: "amber" as const, points: of("pg_waiting") },
+        ],
+      },
+      { domain: undefined, key: "oldest_xact", series: [{ color: "violet" as const, points: of("pg_oldest_xact") }] },
+    ].filter((lane) => lane.key === "backends"
+      ? backends.length !== 0
+      : lane.series.some((series) => series.points.length !== 0))
+  }, [lanePoints])
   const healthLane = lanes.findIndex((lane) => lane.key === "health")
   const plotBottom = TOP + Math.max(1, lanes.length) * LANE_HEIGHT
+  const height = plotBottom + TICK_ROW
   const markers = useMemo(
     () => groupFindings(findings, hour, end, plotWidth),
     [end, findings, hour, plotWidth],
@@ -117,7 +115,7 @@ export function Timeline({
     <section
       aria-label={t("hour.range", { start: formatUtc(hour).slice(11, 16), end: formatUtc(end).slice(11, 16) })}
       className="timeline-shell"
-      style={{ minHeight: `${HEIGHT + 18}px` }}
+      style={{ minHeight: `${height + 8}px` }}
     >
       <div
         aria-hidden="false"
@@ -132,7 +130,7 @@ export function Timeline({
           t={t}
         />)}
       </div>
-      <div className="timeline-plot" ref={plot} style={{ height: `${HEIGHT}px`, position: "relative" }}>
+      <div className="timeline-plot" ref={plot} style={{ height: `${height}px`, position: "relative" }}>
         <div
           aria-label={t("hour.cursor", { time: formatUtc(cursor) })}
           aria-valuemax={end - 1_000}
@@ -156,13 +154,13 @@ export function Timeline({
           }}
           onPointerUp={(event) => event.currentTarget.releasePointerCapture(event.pointerId)}
           role="slider"
-          style={{ height: `${HEIGHT}px` }}
+          style={{ height: `${height}px` }}
           tabIndex={0}
         >
           {/* One unit is one pixel: a fixed viewBox stretched X by the width of
               the window and left Y alone, so every slope was wrong by however
               wide the browser happened to be. */}
-          <svg aria-hidden="true" preserveAspectRatio="none" style={{ height: `${HEIGHT}px` }} viewBox={`0 0 ${plotWidth} ${HEIGHT}`}>
+          <svg aria-hidden="true" preserveAspectRatio="none" style={{ height: `${height}px` }} viewBox={`0 0 ${plotWidth} ${height}`}>
             {[0, 1, 2, 3, 4, 5, 6].map((tick) => {
               const x = tick / 6 * plotWidth
               return <line className="timeline-grid" key={tick} x1={x} x2={x} y1={0} y2={plotBottom} />
@@ -216,10 +214,9 @@ function valueAt(points: readonly SeriesPoint[], cursor: number): number | null 
 }
 
 function format(number: number, key: string): string {
-  if (key === "health" || key === "pressure") return `${Math.round(number)}%`
-  // /proc/meminfo counts in kibibytes.
-  if (key === "memory") return humanBytes(number * 1024, "en")
-  return number.toFixed(2)
+  if (key === "oldest_xact") return `${Math.round(number)} s`
+  if (key === "backends") return String(Math.round(number))
+  return `${Math.round(number)}%`
 }
 
 function FindingMarker({
