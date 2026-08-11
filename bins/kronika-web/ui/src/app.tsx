@@ -4,13 +4,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client"
 
 import {
-  VIEW_SECTIONS,
+  TIMELINE_REQUESTS,
   discoverHourSelection,
+  listSegments,
+  segmentAt,
   fieldNameForLocator,
   loadHour,
   mergeHourData,
   resolveLocator,
+  PRODUCT_SECTION_GROUPS,
   type DataRow,
+  type SectionRequest,
+  type SegmentBound,
   type Finding,
   type HourData,
 } from "./api"
@@ -33,7 +38,7 @@ import {
 } from "./model"
 import { PostgresView, type PostgresSection } from "./postgres-view"
 import { ProcessSummary, ProcessTable } from "./process-table"
-import { SystemView } from "./system-view"
+import { SYSTEM_DEFERRED_REQUESTS, SYSTEM_REQUESTS, SystemView } from "./system-view"
 import { Timeline } from "./timeline"
 
 type Source = "host" | "postgresql" | "events"
@@ -44,6 +49,26 @@ const EMPTY_DATA: HourData = {
   sections: {}, availableSections: [], processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
   pgOverview: [], pgStatements: [], pgLocks: [], pgDatabases: [], pgEvents: [], points: [], findings: [],
   sourceFamilies: [], segmentCount: 0,
+}
+
+/** Each view is built from what it draws: the timeline every view shows, plus
+ *  that view's own sections. Nothing asks for an hour of everything. */
+const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
+  system: [...TIMELINE_REQUESTS, ...SYSTEM_REQUESTS],
+  processes: [...TIMELINE_REQUESTS, { section: "os_process" }, { section: "pg_stat_activity" }],
+  "postgresql:overview": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlOverview.map(section)],
+  "postgresql:activity": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlActivity.map(section)],
+  "postgresql:statements": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlStatements.map(section)],
+  "postgresql:locks": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlLocks.map(section)],
+  "postgresql:databases": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlDatabases.map(section)],
+  events: [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.events.map(section)],
+}
+
+function section(name: string): SectionRequest { return { section: name } }
+
+/** Heavy sections a view can draw without: fetched after the screen is up. */
+const VIEW_DEFERRED: Readonly<Record<string, readonly SectionRequest[]>> = {
+  system: SYSTEM_DEFERRED_REQUESTS,
 }
 
 const HELP_SYSTEM = [
@@ -131,7 +156,8 @@ function App() {
   // One view is on screen at a time, so one view's sections are what a load
   // fetches. Switching views adds the difference instead of reloading the hour.
   const viewKey = source === "host" ? hostSection : source === "postgresql" ? `postgresql:${pgSection}` : "events"
-  const loaded = useRef({ hour: null as number | null, names: new Set<string>() })
+  const [segments, setSegments] = useState<readonly SegmentBound[]>([])
+  const loaded = useRef({ hour: null as number | null, keys: new Set<string>() })
   useEffect(() => {
     if (hour === null) return
     setDockClosed(false)
@@ -140,36 +166,52 @@ function App() {
     setPgFocus(null)
     setSystemFocus(null)
   }, [hour])
+  // Two loads, and they are different in kind. The health line spans the hour
+  // and is a few kilobytes. A table shows the snapshot under the cursor, so it
+  // wants the one segment holding it — not the nine an hour contains.
   useEffect(() => {
     if (hour === null) return
-    const fresh = loaded.current.hour !== hour
-    if (fresh) loaded.current = { hour, names: new Set() }
-    const wanted = VIEW_SECTIONS[viewKey] ?? []
-    const missing = wanted.filter((name) => !loaded.current.names.has(name))
-    if (missing.length === 0) return
-    for (const name of missing) loaded.current.names.add(name)
     const controller = new AbortController()
     setLoading(true)
     setError(null)
-    void loadHour(hour, controller.signal, missing).then((incoming) => {
-      setData((before) => {
-        const next = fresh ? incoming : mergeHourData(before, incoming)
-        const times = [next.processes, next.health, next.load, next.memory, next.pressure, next.activities]
-          .flatMap((rows) => rows.map((row) => row.timestamp))
-        if (fresh) setCursor(times.length === 0 ? hour : Math.max(...times))
-        return next
-      })
+    loaded.current = { hour, keys: new Set() }
+    void listSegments(hour, controller.signal).then((bounds) => {
+      setSegments(bounds)
+      return loadHour(hour, controller.signal, TIMELINE_REQUESTS)
+    }).then((incoming) => {
+      setData(incoming)
+      const times = incoming.health.map((row) => row.timestamp)
+      setCursor(times.length === 0 ? hour : Math.max(...times))
       setLoading(false)
     }).catch((reason: unknown) => {
-      if (!controller.signal.aborted) {
-        for (const name of missing) loaded.current.names.delete(name)
-        if (fresh) { setData(EMPTY_DATA); setCursor(hour) }
-        setError(reason instanceof Error ? reason.message : String(reason))
-        setLoading(false)
-      }
+      if (controller.signal.aborted) return
+      setSegments([])
+      setData(EMPTY_DATA)
+      setCursor(hour)
+      setError(reason instanceof Error ? reason.message : String(reason))
+      setLoading(false)
     })
     return () => controller.abort()
-  }, [hour, viewKey])
+  }, [hour])
+
+  const cursorSegment = useMemo(() => segmentAt(segments, cursor), [cursor, segments])
+  useEffect(() => {
+    if (hour === null || cursorSegment === null) return
+    const wanted = VIEW_REQUESTS[viewKey] ?? []
+    const missing = wanted.filter((request) => !loaded.current.keys.has(`${cursorSegment}:${request.section}`))
+    if (missing.length === 0) return
+    for (const request of missing) loaded.current.keys.add(`${cursorSegment}:${request.section}`)
+    const controller = new AbortController()
+    void loadHour(hour, controller.signal, missing, [cursorSegment])
+      .then((incoming) => setData((before) => mergeHourData(before, incoming)))
+      .catch((reason: unknown) => {
+        if (controller.signal.aborted) return
+        for (const request of missing) loaded.current.keys.delete(`${cursorSegment}:${request.section}`)
+        setError(reason instanceof Error ? reason.message : String(reason))
+      })
+    return () => controller.abort()
+  }, [cursorSegment, hour, viewKey])
+
   useEffect(() => {
     const shortcuts = (event: KeyboardEvent) => {
       const target = event.target

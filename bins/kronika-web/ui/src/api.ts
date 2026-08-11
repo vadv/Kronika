@@ -33,22 +33,20 @@ export const PRODUCT_SECTION_GROUPS = {
 const UI_SECTION_NAMES = unique(Object.values(PRODUCT_SECTION_GROUPS).flat())
 const UI_SECTION_NAME_SET = new Set(UI_SECTION_NAMES)
 
-/** Every view draws the timeline, so these four are the floor. */
-const TIMELINE_SECTIONS = ["health", "os_loadavg", "os_meminfo", "os_psi"] as const
-
-/** What each view actually reads. Asking for a section a view never draws
- *  costs a full round trip and, for the ones that carry no index block, a
- *  guaranteed 404. */
-export const VIEW_SECTIONS: Readonly<Record<string, readonly string[]>> = {
-  system: [...TIMELINE_SECTIONS, "os_cpu", "os_diskstats", "os_mountinfo", "os_netdev", "os_process"],
-  processes: [...TIMELINE_SECTIONS, "os_process", "pg_stat_activity"],
-  "postgresql:overview": [...TIMELINE_SECTIONS, ...PRODUCT_SECTION_GROUPS.postgresqlOverview],
-  "postgresql:activity": [...TIMELINE_SECTIONS, ...PRODUCT_SECTION_GROUPS.postgresqlActivity],
-  "postgresql:statements": [...TIMELINE_SECTIONS, ...PRODUCT_SECTION_GROUPS.postgresqlStatements],
-  "postgresql:locks": [...TIMELINE_SECTIONS, ...PRODUCT_SECTION_GROUPS.postgresqlLocks],
-  "postgresql:databases": [...TIMELINE_SECTIONS, ...PRODUCT_SECTION_GROUPS.postgresqlDatabases],
-  events: [...TIMELINE_SECTIONS, ...PRODUCT_SECTION_GROUPS.events],
+/** A view asks for the sections it draws and, where it only needs a few
+ *  numbers, the fields it reads. A process row carries a command line. */
+export interface SectionRequest {
+  readonly section: string
+  readonly fields?: readonly string[]
 }
+
+/** Every view draws the timeline, so these four are the floor. */
+export const TIMELINE_REQUESTS: readonly SectionRequest[] = [
+  { section: "health" },
+  { section: "os_loadavg" },
+  { section: "os_meminfo" },
+  { section: "os_psi" },
+]
 
 // The link to a monitored host is the slow part: a request costs about a second
 // of latency whatever it returns, while the host answers one in a quarter of
@@ -178,14 +176,17 @@ export async function discoverLatestHour(signal: AbortSignal): Promise<number> {
 export async function loadHour(
   start: number,
   signal: AbortSignal,
-  wanted?: readonly string[],
+  wanted?: readonly SectionRequest[],
+  onlySegments?: readonly string[],
 ): Promise<HourData> {
   const fixture = bundledFixtureHour(start)
   if (fixture !== null) return fixture
   const end = start + 3_600_000_000
   const catalog = await request(`/api/catalog?from=${start}&to=${end - 1}`, signal)
+  const chosen = onlySegments === undefined ? null : new Set(onlySegments)
   const segments = catalogSegments(catalog).filter(
-    (segment) => Number(segment.min_ts) < end && Number(segment.max_ts) >= start,
+    (segment) => Number(segment.min_ts) < end && Number(segment.max_ts) >= start
+      && (chosen === null || chosen.has(segment.id)),
   )
   const sourceFamilies = catalog
     .find((record) => record.record === "catalog")?.source_families as readonly SourceFamily[] | undefined
@@ -233,6 +234,30 @@ export function mergeHourData(before: HourData, after: HourData): HourData {
     sourceFamilies: after.sourceFamilies.length === 0 ? before.sourceFamilies : after.sourceFamilies,
     segmentCount: Math.max(before.segmentCount, after.segmentCount),
   })
+}
+
+export interface SegmentBound {
+  readonly id: string
+  readonly minTs: number
+  readonly maxTs: number
+}
+
+/** The segments an hour touches, in order. Held for the hour so that moving the
+ *  cursor costs no request of its own. */
+export async function listSegments(start: number, signal: AbortSignal): Promise<readonly SegmentBound[]> {
+  const end = start + 3_600_000_000
+  const catalog = await request(`/api/catalog?from=${start}&to=${end - 1}`, signal)
+  return catalogSegments(catalog)
+    .filter((segment) => Number(segment.min_ts) < end && Number(segment.max_ts) >= start)
+    .map((segment) => ({ id: segment.id, minTs: Number(segment.min_ts), maxTs: Number(segment.max_ts) }))
+    .sort((left, right) => left.minTs - right.minTs)
+}
+
+/** The segment holding a moment, or the last one before it. A table shows one
+ *  snapshot, so it needs one segment and not the hour around it. */
+export function segmentAt(segments: readonly SegmentBound[], at: number): string | null {
+  const holding = segments.find((segment) => segment.minTs <= at && segment.maxTs >= at)
+  return holding?.id ?? segments.at(-1)?.id ?? null
 }
 
 export function sectionRows(data: HourData, logicalName: string): readonly DataRow[] {
@@ -300,21 +325,27 @@ function hourData(input: {
 }
 
 type LoadTask =
-  | { readonly kind: "history"; readonly segmentId: string; readonly logicalName: string }
+  | {
+    readonly kind: "history"
+    readonly segmentId: string
+    readonly logicalName: string
+    readonly fields?: readonly string[]
+  }
   | { readonly kind: "index"; readonly segmentId: string; readonly logicalName: string }
 
 type LoadResult =
   | { readonly kind: "history"; readonly logicalName: string; readonly rows: readonly DataRow[] }
   | { readonly kind: "index"; readonly points: readonly Point[]; readonly findings: readonly Finding[] }
 
-function segmentTasks(segment: Segment, wanted?: readonly string[]): readonly LoadTask[] {
-  const keep = wanted === undefined ? null : new Set(wanted)
+function segmentTasks(segment: Segment, wanted?: readonly SectionRequest[]): readonly LoadTask[] {
+  const keep = wanted === undefined ? null : new Map(wanted.map((request) => [request.section, request.fields]))
   const names = segmentSectionNames(segment).filter((name) => keep === null || keep.has(name))
-  const tasks: LoadTask[] = names.map((logicalName) => ({
-    kind: "history",
-    segmentId: segment.id,
-    logicalName,
-  }))
+  const tasks: LoadTask[] = names.map((logicalName) => {
+    const fields = keep?.get(logicalName)
+    return fields === undefined
+      ? { kind: "history" as const, segmentId: segment.id, logicalName }
+      : { kind: "history" as const, segmentId: segment.id, logicalName, fields }
+  })
   for (const logicalName of names) tasks.push({ kind: "index", segmentId: segment.id, logicalName })
   if ((keep === null || keep.has("health")) && segmentSectionNames(segment).some((name) => name.startsWith("os_"))) {
     tasks.push(
@@ -330,7 +361,7 @@ async function runTask(task: LoadTask, signal: AbortSignal): Promise<LoadResult>
     const rows = await readHistory(
       task.segmentId,
       task.logicalName,
-      fieldsForLogicalName(task.logicalName),
+      task.fields ?? fieldsForLogicalName(task.logicalName),
       signal,
     ).catch((error: unknown) => task.logicalName === "health" ? absent(error) : Promise.reject(error))
     return { kind: "history", logicalName: task.logicalName, rows }

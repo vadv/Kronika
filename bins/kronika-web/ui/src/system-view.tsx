@@ -1,7 +1,7 @@
 import { Activity, Cpu, Database, Gauge, HardDrive, MemoryStick, Network } from "lucide-react"
 import { useEffect, useMemo, useState, type ReactNode } from "react"
 
-import { fieldNameForLocator, resolveLocator, type DataRow, type Finding, type HourData, type Point } from "./api"
+import { fieldNameForLocator, resolveLocator, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
 import { EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import { asNumber, measure, snapshot, stateText, value, type Locale } from "./model"
@@ -101,6 +101,37 @@ const GROUPS: readonly { readonly id: MetricSpec["group"]; readonly icon: ReactN
   { id: "network", icon: <Network size={14} />, label: "system.group.network" },
 ]
 
+/** What each derived metric reads. Kept beside the code that derives it, so a
+ *  new metric cannot quietly ask the loader for a section it never declared. */
+const DERIVE_INPUTS: Readonly<Record<NonNullable<MetricSpec["derive"]>, readonly [string, readonly string[]]>> = {
+  cpu_busy: ["os_cpu", ["cpu_id", "scope", "user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal"]],
+  mem_available_percent: ["os_meminfo", ["mem_total", "mem_available"]],
+  filesystem_free_min: ["os_mountinfo", ["total_bytes", "free_bytes"]],
+  process_count: ["os_process", []],
+  process_running: ["os_process", ["state"]],
+  process_blocked: ["os_process", ["state"]],
+  process_threads: ["os_process", ["num_threads"]],
+  process_context_switches: ["os_process", ["nvcsw", "nivcsw"]],
+  process_run_delay: ["os_process", ["rundelay_ns"]],
+  process_resident: ["os_process", ["rmem_kb"]],
+  process_virtual: ["os_process", ["vmem_kb"]],
+  process_swap: ["os_process", ["vswap_kb"]],
+  process_minor_faults: ["os_process", ["minflt"]],
+  process_major_faults: ["os_process", ["majflt"]],
+  process_read: ["os_process", ["read_bytes"]],
+  process_write: ["os_process", ["write_bytes"]],
+  process_block_delay: ["os_process", ["blkdelay_ticks"]],
+  device_count: ["os_diskstats", []],
+  device_active_io: ["os_diskstats", ["io_in_progress"]],
+  filesystem_count: ["os_mountinfo", []],
+  interface_count: ["os_netdev", []],
+  network_rx: ["os_netdev", ["rx_bytes"]],
+  network_tx: ["os_netdev", ["tx_bytes"]],
+  network_errors: ["os_netdev", ["rx_errs", "tx_errs"]],
+  network_drops: ["os_netdev", ["rx_drop", "tx_drop"]],
+}
+
+
 const GROUP_COLUMNS: readonly (readonly MetricSpec["group"][])[] = [
   ["cpu", "memory"],
   ["load", "pressure", "storage", "network"],
@@ -129,6 +160,35 @@ const ENTITIES: readonly {
     columns: [id("cpu_id", 90, true), text("model_name", 300), number("mhz_max"), id("core_id"), id("socket_id"), id("numa_node")],
   },
 ]
+
+/** The sections and fields this view reads, and nothing more. A process row
+ *  carries a command line; the charts here only sum numbers off it.
+ *
+ *  Split in two: an hour of per-process rows is megabytes per segment, and the
+ *  cards that sum them are a minority of the screen. The rest draws first and
+ *  they fill in. */
+function systemRequests(): readonly SectionRequest[] {
+  const wanted = new Map<string, Set<string>>()
+  const need = (section: string, fields: readonly string[]) => {
+    const stored = wanted.get(section) ?? new Set<string>()
+    for (const field of fields) stored.add(field)
+    wanted.set(section, stored)
+  }
+  for (const spec of SYSTEM_METRICS) {
+    if (spec.derive !== undefined) {
+      const [section, fields] = DERIVE_INPUTS[spec.derive]
+      need(section, fields)
+    } else if (spec.section !== undefined && spec.field !== undefined) {
+      need(spec.section, spec.resource === undefined ? [spec.field] : [spec.field, "resource"])
+    }
+  }
+  for (const panel of ENTITIES) need(panel.section, panel.columns.map((column: EntityColumn) => column.field))
+  return [...wanted].map(([section, fields]) => ({ section, fields: [...fields] }))
+}
+
+const ALL_SYSTEM_REQUESTS = systemRequests()
+export const SYSTEM_REQUESTS = ALL_SYSTEM_REQUESTS.filter((request) => request.section !== "os_process")
+export const SYSTEM_DEFERRED_REQUESTS = ALL_SYSTEM_REQUESTS.filter((request) => request.section === "os_process")
 
 export function SystemView({
   cursor,
