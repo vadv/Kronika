@@ -28,6 +28,16 @@ struct Counters {
     stall_cpu: BTreeMap<i64, i64>,
     stall_io: BTreeMap<i64, i64>,
     memory: BTreeMap<i64, f64>,
+    /// Device busy time and weighted queue time, summed over the devices of
+    /// one moment: one machine has one storage layer.
+    disk_busy: BTreeMap<i64, i64>,
+    disk_queue: BTreeMap<i64, i64>,
+    net_rx: BTreeMap<i64, i64>,
+    net_tx: BTreeMap<i64, i64>,
+    net_drop: BTreeMap<i64, i64>,
+    net_errors: BTreeMap<i64, i64>,
+    swap: BTreeMap<i64, i64>,
+    oom: BTreeMap<i64, i64>,
     running: BTreeMap<i64, f64>,
     waiting: BTreeMap<i64, f64>,
     oldest_xact: BTreeMap<i64, f64>,
@@ -48,6 +58,9 @@ pub(super) fn collect(
             "os_cpu" => read_cpu(segment, type_id, &mut counters)?,
             "os_psi" => read_psi(segment, type_id, &mut counters)?,
             "os_meminfo" => read_memory(segment, type_id, &mut counters)?,
+            "os_diskstats" => read_disk(segment, type_id, &mut counters)?,
+            "os_netdev" => read_network(segment, type_id, &mut counters)?,
+            "os_vmstat" => read_vmstat(segment, type_id, &mut counters)?,
             "pg_stat_activity" => read_activity(segment, type_id, &mut counters)?,
             _other => {}
         }
@@ -131,6 +144,92 @@ fn read_memory(segment: &Segment, type_id: u32, counters: &mut Counters) -> Resu
     Ok(())
 }
 
+/// A storage layer is busy when any of its devices is: `io_time_ms` is the
+/// milliseconds a device had a request in flight, and the weighted time
+/// divided by the interval is the average depth of its queue.
+fn read_disk(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
+    let names = with_columns(
+        type_id,
+        &["ts", "io_time_ms", "io_weighted_time_ms"],
+        &["scope"],
+    );
+    segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
+        let (Some(ts), Some(busy), Some(weighted)) = (
+            timestamp(&row, "ts"),
+            number(&row, "io_time_ms"),
+            number(&row, "io_weighted_time_ms"),
+        ) else {
+            return true;
+        };
+        add(&mut counters.disk_busy, ts, busy);
+        add(&mut counters.disk_queue, ts, weighted);
+        true
+    })?;
+    Ok(())
+}
+
+/// Traffic, what the interface could not take, and what it got wrong. Summed
+/// over interfaces: the question is whether the host's network is in trouble.
+fn read_network(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
+    const FIELDS: [&str; 9] = [
+        "ts", "rx_bytes", "tx_bytes", "rx_drop", "tx_drop", "rx_errs", "tx_errs", "rx_fifo",
+        "tx_fifo",
+    ];
+    let names = with_columns(type_id, &FIELDS, &[]);
+    segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
+        let Some(ts) = timestamp(&row, "ts") else {
+            return true;
+        };
+        for (store, columns) in [
+            (&mut counters.net_rx, ["rx_bytes"].as_slice()),
+            (&mut counters.net_tx, ["tx_bytes"].as_slice()),
+            (
+                &mut counters.net_drop,
+                ["rx_drop", "tx_drop", "rx_fifo", "tx_fifo"].as_slice(),
+            ),
+            (&mut counters.net_errors, ["rx_errs", "tx_errs"].as_slice()),
+        ] {
+            let total: f64 = columns.iter().filter_map(|name| number(&row, name)).sum();
+            add(store, ts, total);
+        }
+        true
+    })?;
+    Ok(())
+}
+
+/// Pages moved to and from swap say memory is short before anything is killed;
+/// `oom_kill` says something already was.
+fn read_vmstat(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
+    let names = with_columns(type_id, &["ts"], &["pswpin", "pswpout", "oom_kill"]);
+    segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
+        let Some(ts) = timestamp(&row, "ts") else {
+            return true;
+        };
+        let swapped: f64 = ["pswpin", "pswpout"]
+            .iter()
+            .filter_map(|name| number(&row, name))
+            .sum();
+        add(&mut counters.swap, ts, swapped);
+        if let Some(killed) = number(&row, "oom_kill") {
+            add(&mut counters.oom, ts, killed);
+        }
+        true
+    })?;
+    Ok(())
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "kernel counters stay below 2^63"
+)]
+fn add(store: &mut BTreeMap<i64, i64>, ts: i64, value: f64) {
+    let value = value as i64;
+    store
+        .entry(ts)
+        .and_modify(|total| *total += value)
+        .or_insert(value);
+}
+
 /// Backends that are running and backends that are stuck, counted apart: the
 /// first says the database is working, the second that it is not.
 fn read_activity(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
@@ -212,6 +311,30 @@ fn points(counters: &Counters, ticks_per_second: i64, cpu_count: i64) -> Vec<Lan
             value / 1_000_000.0 / seconds * 100.0
         });
         for (ts, value) in stalled {
+            out.push(LanePoint { key, ts, value });
+        }
+    }
+    // Busy time is milliseconds per second of wall clock: a hundred per cent
+    // is a device that never went idle. Queue depth is a count, not a share.
+    for (ts, value) in rate(&counters.disk_busy, |value, seconds| {
+        (value / 1000.0 / seconds * 100.0).min(100.0)
+    }) {
+        out.push(LanePoint {
+            key: "disk_busy",
+            ts,
+            value,
+        });
+    }
+    for (key, stored, scale) in [
+        ("disk_queue", &counters.disk_queue, 1000.0),
+        ("net_rx", &counters.net_rx, 1.0),
+        ("net_tx", &counters.net_tx, 1.0),
+        ("net_drop", &counters.net_drop, 1.0),
+        ("net_errors", &counters.net_errors, 1.0),
+        ("mem_swap", &counters.swap, 1.0),
+        ("mem_oom", &counters.oom, 1.0),
+    ] {
+        for (ts, value) in rate(stored, |value, seconds| value / scale / seconds) {
             out.push(LanePoint { key, ts, value });
         }
     }

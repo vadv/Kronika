@@ -332,6 +332,23 @@ h2 { font-size: var(--t-md); }
 .mini-zero { stroke: var(--line3); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .mini-series { fill: none; stroke: var(--accent); stroke-width: 1.6; vector-effect: non-scaling-stroke; }
 .mini-time-ticks { bottom: 5px; left: 9px; right: 9px; }
+/* One line per resource, three readings across: the shape of atop, with the
+   hour drawn under each number instead of only the moment. */
+.use-table { background: var(--s2); border: 1px solid var(--line2); margin-top: 8px; }
+.use-table > header, .use-row { display: grid; grid-template-columns: minmax(96px, 130px) repeat(3, minmax(0, 1fr)); }
+.use-table > header { border-bottom: 1px solid var(--line2); color: var(--fg3); font-size: var(--t-xs); text-transform: uppercase; }
+.use-table > header span { padding: 5px 8px; }
+.use-row { border-bottom: 1px solid var(--line); }
+.use-row:last-child { border-bottom: 0; }
+.use-resource { align-self: center; color: var(--fg2); font-size: var(--t-sm); padding: 0 8px; text-transform: uppercase; }
+.use-cell { border-left: 1px solid var(--line); min-width: 0; }
+.use-cell .series-chart { padding: 4px 6px 2px; }
+.use-cell .series-chart svg { height: 54px; }
+.use-cell .series-ceiling { top: 20px; }
+.use-cell .series-floor { display: none; }
+.use-cell .mini-time-ticks { display: none; }
+.use-absent { align-items: center; color: var(--fg4); display: flex; justify-content: center; }
+.mini-second { opacity: 0.75; stroke: var(--amber, #c2703a); }
 .entity-panels { display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 8px; }
 .entity-panel { min-width: 0; }
 .entity-table { background: var(--s1); min-width: 0; overflow: hidden; }

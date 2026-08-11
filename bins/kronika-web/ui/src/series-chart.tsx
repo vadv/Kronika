@@ -18,6 +18,7 @@ export function SeriesChart({
   locale,
   format,
   points,
+  second,
 }: {
   /** The moment the tables below are showing, drawn on the same domain. */
   readonly cursor?: number | undefined
@@ -27,10 +28,13 @@ export function SeriesChart({
   /** How a reading reads: a chart of bytes says bytes, not a bare number. */
   readonly format?: ((value: number, locale: Locale) => string) | undefined
   readonly points: readonly ChartPoint[]
+  /** A companion series on the same scale, as sent against received. */
+  readonly second?: readonly ChartPoint[] | undefined
 }) {
   const title = useId()
   const end = hour + 3_600_000_000
-  const numeric = points.filter((point): point is NumericChartPoint => point.value !== null && Number.isFinite(point.value))
+  const both = second === undefined ? points : [...points, ...second]
+  const numeric = both.filter((point): point is NumericChartPoint => point.value !== null && Number.isFinite(point.value))
   const values = numeric.map((point) => point.value)
   // A chart that starts at its own minimum turns a flat line into a mountain
   // range: the floor is zero, so height means the same thing in every card.
@@ -38,6 +42,7 @@ export function SeriesChart({
   const high = values.length === 0 ? 0 : Math.max(...values)
   const span = high - low || 1
   const paths = chartRuns(points)
+  const companion: ReadonlyMap<string, readonly NumericChartPoint[]> = second === undefined ? new Map() : chartRuns(second)
   const reading = readingAt(numeric, cursor)
   return <figure className="series-chart">
     <figcaption id={title}>
@@ -49,6 +54,14 @@ export function SeriesChart({
       <line className="mini-zero" x1="0" x2="920" y1="105" y2="105" />
       {cursor !== undefined && cursor >= hour && cursor < end
         && <line className="cursor-line" x1={(cursor - hour) / (end - hour) * 920} x2={(cursor - hour) / (end - hour) * 920} y1="5" y2="105" />}
+      {[...companion.entries()].map(([segmentId, stored]) => {
+        const path = stored.slice().sort((left, right) => left.timestamp - right.timestamp).map((point, index) => {
+          const x = Math.max(0, Math.min(920, (point.timestamp - hour) / (end - hour) * 920))
+          const y = 101 - (point.value - low) / span * 92
+          return `${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`
+        }).join(" ")
+        return <path className="mini-series mini-second" d={path} key={`second:${segmentId}`} />
+      })}
       {[...paths.entries()].map(([segmentId, stored]) => {
         const path = stored.slice().sort((left, right) => left.timestamp - right.timestamp).map((point, index) => {
           const x = Math.max(0, Math.min(920, (point.timestamp - hour) / (end - hour) * 920))

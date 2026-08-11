@@ -7,6 +7,7 @@ import { LabelHelp, type Translate } from "./help"
 import { asNumber, humanBytes, measure, shownMoment, snapshot, stateText, value, type Locale } from "./model"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
+import { UseTable } from "./use-table"
 
 interface MetricSpec {
   readonly id: string
@@ -261,6 +262,7 @@ export function SystemView({
           : <SeriesChart cursor={cursor} format={(reading, place) => metricValue(reading, place, selectedMetric.spec.unit, t("unit.per_second"))} hour={hour} label={t(selectedMetric.spec.label)} locale={locale} points={selectedPoints} />}
       </section>
     </section>
+    <UseTable cursor={cursor} hour={hour} lanePoints={data.lanePoints} locale={locale} t={t} />
     <section className="entity-panels">
       {ENTITIES.map((entity) => {
         const rows = snapshot(sectionRows(data, entity.section), cursor)
