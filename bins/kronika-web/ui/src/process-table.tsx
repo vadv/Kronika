@@ -191,21 +191,26 @@ export function ProcessTable({
   )
 }
 
+/** One place decides how a kind reads, so a chart caption and the table cell
+ *  above it cannot disagree about the unit. */
+export function formatCell(kind: Field["kind"], cell: Cell, locale: Locale, t: Translate, ticksPerSecond: number | null): string {
+  switch (kind) {
+    case "state": return stateText(cell)
+    case "time": return formatUtcCell(asNumber(cell))
+    case "number": return measure(cell, locale)
+    case "rate": return measure(cell, locale, t("unit.per_second"))
+    case "cores": return cores(cell, locale, ticksPerSecond) + t("unit.cores")
+    case "kib": return humanBytes(kib(asNumber(cell)), locale)
+    case "bytes": return humanBytes(cell, locale, t("unit.per_second"))
+    case "ns": return millisecondsPerSecond(cell, locale) + t("unit.ms_per_second")
+    case "id": return identifier(cell)
+    case "command": return ""
+  }
+}
+
 export function CellValue({ field, linked, locale, row, t, ticksPerSecond }: { readonly field: Field; readonly linked: boolean; readonly locale: Locale; readonly row: DataRow; readonly t: Translate; readonly ticksPerSecond: number | null }) {
   const cell = field.field === undefined ? null : value(row, field.field)
-  let output: string
-  switch (field.kind) {
-    case "command": output = processCommand(row); break
-    case "state": output = stateText(cell); break
-    case "time": output = formatUtcCell(asNumber(cell)); break
-    case "number": output = measure(cell, locale); break
-    case "rate": output = measure(cell, locale, t("unit.per_second")); break
-    case "cores": output = cores(cell, locale, ticksPerSecond) + t("unit.cores"); break
-    case "kib": output = humanBytes(kib(asNumber(cell)), locale); break
-    case "bytes": output = humanBytes(cell, locale, t("unit.per_second")); break
-    case "ns": output = millisecondsPerSecond(cell, locale) + t("unit.ms_per_second"); break
-    case "id": output = identifier(cell); break
-  }
+  const output = field.kind === "command" ? processCommand(row) : formatCell(field.kind, cell, locale, t, ticksPerSecond)
   return <span className={field.kind === "command" ? "command-cell" : "numeric-cell"} title={output}>{field.kind === "command" && linked && <span className="pg-badge">PG</span>}{output}</span>
 }
 

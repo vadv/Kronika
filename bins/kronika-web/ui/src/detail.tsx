@@ -17,14 +17,15 @@ import {
   type Lens,
   type Locale,
 } from "./model"
-import { CellValue, LENS_FIELDS } from "./process-table"
+import { CellValue, formatCell, LENS_FIELDS, type Field } from "./process-table"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 import { TimeTicks } from "./time-ticks"
 
 interface HistoryField {
   readonly field: string
   readonly key: string
-  readonly format: (value: number, locale: Locale) => string
+  /** Read the same way as the table column of the same field. */
+  readonly kind: Field["kind"]
   /** A counter only rises; what it means is how fast. */
   readonly counter?: true
 }
@@ -33,60 +34,34 @@ export interface ProcessHistorySeries extends HistoryField {
   readonly points: readonly ChartPoint[]
 }
 
-/** The extremes of a chart read in the unit of the column it draws. Every
- *  cumulative one is already a rate, so these are per second. */
-function plain(value: number, locale: Locale): string {
-  return measure(value, locale)
-}
-
-function perSecond(value: number, locale: Locale): string {
-  return measure(value, locale, "/s")
-}
-
-function ticks(value: number, locale: Locale): string {
-  return measure(value, locale, " tick/s")
-}
-
-function delay(value: number, locale: Locale): string {
-  return millisecondsPerSecond(value, locale) + " ms/s"
-}
-
-function bytes(value: number, locale: Locale): string {
-  return humanBytes(value, locale, "/s")
-}
-
-function kibibytes(value: number, locale: Locale): string {
-  return humanBytes(value * 1024, locale)
-}
-
 const PROCESS_HISTORY: Readonly<Record<Lens, readonly HistoryField[]>> = {
-  generic: [{ field: "num_threads", key: "col.threads", format: plain }],
+  generic: [{ field: "num_threads", key: "col.threads", kind: "number" }],
   cpu: [
-    { counter: true, field: "utime", key: "col.utime", format: ticks },
-    { counter: true, field: "stime", key: "col.stime", format: ticks },
-    { counter: true, field: "rundelay_ns", key: "col.rundelay", format: delay },
-    { counter: true, field: "blkdelay_ticks", key: "col.blkdelay", format: perSecond },
-    { counter: true, field: "nvcsw", key: "col.nvcsw", format: perSecond },
-    { counter: true, field: "nivcsw", key: "col.nivcsw", format: perSecond },
-    { counter: true, field: "minflt", key: "col.minflt", format: perSecond },
-    { counter: true, field: "majflt", key: "col.majflt", format: perSecond },
+    { counter: true, field: "utime", key: "col.utime", kind: "cores" },
+    { counter: true, field: "stime", key: "col.stime", kind: "cores" },
+    { counter: true, field: "rundelay_ns", key: "col.rundelay", kind: "ns" },
+    { counter: true, field: "blkdelay_ticks", key: "col.blkdelay", kind: "rate" },
+    { counter: true, field: "nvcsw", key: "col.nvcsw", kind: "rate" },
+    { counter: true, field: "nivcsw", key: "col.nivcsw", kind: "rate" },
+    { counter: true, field: "minflt", key: "col.minflt", kind: "rate" },
+    { counter: true, field: "majflt", key: "col.majflt", kind: "rate" },
   ],
   memory: [
-    { field: "rmem_kb", key: "col.rmem", format: kibibytes },
-    { field: "vmem_kb", key: "col.vmem", format: kibibytes },
-    { field: "vswap_kb", key: "col.vswap", format: kibibytes },
-    { counter: true, field: "minflt", key: "col.minflt", format: perSecond },
-    { counter: true, field: "majflt", key: "col.majflt", format: perSecond },
+    { field: "rmem_kb", key: "col.rmem", kind: "kib" },
+    { field: "vmem_kb", key: "col.vmem", kind: "kib" },
+    { field: "vswap_kb", key: "col.vswap", kind: "kib" },
+    { counter: true, field: "minflt", key: "col.minflt", kind: "rate" },
+    { counter: true, field: "majflt", key: "col.majflt", kind: "rate" },
   ],
   disk: [
-    { counter: true, field: "read_bytes", key: "col.read_bytes", format: bytes },
-    { counter: true, field: "write_bytes", key: "col.write_bytes", format: bytes },
-    { counter: true, field: "cancelled_write_bytes", key: "col.cancelled_write", format: bytes },
-    { counter: true, field: "syscr", key: "col.syscr", format: perSecond },
-    { counter: true, field: "syscw", key: "col.syscw", format: perSecond },
-    { counter: true, field: "rchar", key: "col.rchar", format: bytes },
-    { counter: true, field: "wchar", key: "col.wchar", format: bytes },
-    { counter: true, field: "blkdelay_ticks", key: "col.blkdelay", format: perSecond },
+    { counter: true, field: "read_bytes", key: "col.read_bytes", kind: "bytes" },
+    { counter: true, field: "write_bytes", key: "col.write_bytes", kind: "bytes" },
+    { counter: true, field: "cancelled_write_bytes", key: "col.cancelled_write", kind: "bytes" },
+    { counter: true, field: "syscr", key: "col.syscr", kind: "rate" },
+    { counter: true, field: "syscw", key: "col.syscw", kind: "rate" },
+    { counter: true, field: "rchar", key: "col.rchar", kind: "bytes" },
+    { counter: true, field: "wchar", key: "col.wchar", kind: "bytes" },
+    { counter: true, field: "blkdelay_ticks", key: "col.blkdelay", kind: "rate" },
   ],
 }
 
@@ -172,7 +147,7 @@ export function DetailDock({
             key={series.field}
             label={t(`${series.key}.label`)}
             locale={locale}
-            format={series.format}
+            format={(reading, place) => formatCell(series.kind, reading, place, t, ticksPerSecond)}
             points={series.points}
           />
         ))}
