@@ -13,10 +13,13 @@ import type { Cell, DataRow } from "./api"
 import { LabelHelp, type Translate } from "./help"
 import {
   asNumber,
+  cores,
   formatUtc,
   formatUtcCell,
+  humanBytes,
   identifier,
   measure,
+  millisecondsPerSecond,
   processCommand,
   processKey,
   rawText,
@@ -31,7 +34,7 @@ interface Field {
   readonly field?: string
   readonly label: string
   readonly help: string
-  readonly kind: "id" | "command" | "state" | "time" | "number" | "kib" | "bytes" | "ns"
+  readonly kind: "id" | "command" | "state" | "time" | "number" | "rate" | "cores" | "kib" | "bytes" | "ns"
   readonly size: number
   readonly sticky?: "pid" | "start" | "command"
 }
@@ -51,31 +54,31 @@ const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
   ],
   cpu: [
     PID, START, COMMAND, STATE,
-    idField("curcpu", "col.curcpu", 70), numberField("utime", "col.utime", 84),
-    numberField("stime", "col.stime", 84), nsField("rundelay_ns", "col.rundelay", 84),
-    numberField("blkdelay_ticks", "col.blkdelay", 84), numberField("nvcsw", "col.nvcsw", 84),
-    numberField("nivcsw", "col.nivcsw", 84), numberField("nice", "col.nice", 84),
+    idField("curcpu", "col.curcpu", 70), coresField("utime", "col.utime", 84),
+    coresField("stime", "col.stime", 84), nsField("rundelay_ns", "col.rundelay", 96),
+    rateField("blkdelay_ticks", "col.blkdelay", 84), rateField("nvcsw", "col.nvcsw", 84),
+    rateField("nivcsw", "col.nivcsw", 84), numberField("nice", "col.nice", 84),
     numberField("prio", "col.prio", 84), numberField("rtprio", "col.rtprio", 84), idField("policy", "col.policy", 70),
   ],
   memory: [
     PID, START, COMMAND, STATE,
     kibField("rmem_kb", "col.rmem", 96), kibField("vmem_kb", "col.vmem", 96),
-    kibField("vswap_kb", "col.vswap", 96), numberField("minflt", "col.minflt", 84),
-    numberField("majflt", "col.majflt", 84),
+    kibField("vswap_kb", "col.vswap", 96), rateField("minflt", "col.minflt", 84),
+    rateField("majflt", "col.majflt", 84),
   ],
   disk: [
     PID, START, COMMAND, STATE,
     bytesField("read_bytes", "col.read_bytes", 96), bytesField("write_bytes", "col.write_bytes", 96),
-    bytesField("cancelled_write_bytes", "col.cancelled_write", 96), numberField("syscr", "col.syscr", 84),
-    numberField("syscw", "col.syscw", 84), numberField("rchar", "col.rchar", 84),
-    numberField("wchar", "col.wchar", 84), numberField("blkdelay_ticks", "col.blkdelay", 84),
+    bytesField("cancelled_write_bytes", "col.cancelled_write", 96), rateField("syscr", "col.syscr", 84),
+    rateField("syscw", "col.syscw", 84), bytesField("rchar", "col.rchar", 96),
+    bytesField("wchar", "col.wchar", 96), rateField("blkdelay_ticks", "col.blkdelay", 84),
   ],
 }
 
-export function ProcessSummary({ lens, linkedPids, locale, rows, t }: { readonly lens: Lens; readonly linkedPids: ReadonlySet<number>; readonly locale: Locale; readonly rows: readonly DataRow[]; readonly t: Translate }) {
-  const metrics = summaryMetrics(rows, lens, linkedPids)
+export function ProcessSummary({ lens, linkedPids, locale, rows, t, ticksPerSecond }: { readonly lens: Lens; readonly linkedPids: ReadonlySet<number>; readonly locale: Locale; readonly rows: readonly DataRow[]; readonly t: Translate; readonly ticksPerSecond: number | null }) {
+  const metrics = summaryMetrics(rows, lens, linkedPids, ticksPerSecond, locale, t)
   return <section aria-label={t("process.summary.title")} className="process-summary">
-    {metrics.map(({ key, output, unit }) => <article key={key}><span>{t(key)}</span><strong>{output === null ? "—" : measure(output, locale, unit)}</strong></article>)}
+    {metrics.map(({ key, output }) => <article key={key}><span>{t(key)}</span><strong>{output}</strong></article>)}
   </section>
 }
 
@@ -87,6 +90,7 @@ export function ProcessTable({
   rows,
   selectedKey,
   t,
+  ticksPerSecond,
 }: {
   readonly lens: Lens
   readonly linkedPids: ReadonlySet<number>
@@ -95,6 +99,7 @@ export function ProcessTable({
   readonly rows: readonly DataRow[]
   readonly selectedKey: string | null
   readonly t: Translate
+  readonly ticksPerSecond: number | null
 }) {
   const [sorting, setSorting] = useState<SortingState>([])
   useEffect(() => {
@@ -115,9 +120,9 @@ export function ProcessTable({
         <span className="column-help"><LabelHelp helpKey={field.help} iconOnly labelKey={field.label} t={t} /></span>
       </div>
     ),
-    cell: ({ row }) => <CellValue field={field} locale={locale} linked={linkedPids.has(asNumber(value(row.original, "pid")) ?? -1)} row={row.original} />,
+    cell: ({ row }) => <CellValue field={field} locale={locale} linked={linkedPids.has(asNumber(value(row.original, "pid")) ?? -1)} row={row.original} t={t} ticksPerSecond={ticksPerSecond} />,
     meta: { sticky: field.sticky },
-  })), [lens, linkedPids, locale, t])
+  })), [lens, linkedPids, locale, t, ticksPerSecond])
   const table = useReactTable({
     columns,
     data: rows as DataRow[],
@@ -170,7 +175,7 @@ export function ProcessTable({
   )
 }
 
-function CellValue({ field, linked, locale, row }: { readonly field: Field; readonly linked: boolean; readonly locale: Locale; readonly row: DataRow }) {
+function CellValue({ field, linked, locale, row, t, ticksPerSecond }: { readonly field: Field; readonly linked: boolean; readonly locale: Locale; readonly row: DataRow; readonly t: Translate; readonly ticksPerSecond: number | null }) {
   const cell = field.field === undefined ? null : value(row, field.field)
   let output: string
   switch (field.kind) {
@@ -178,9 +183,11 @@ function CellValue({ field, linked, locale, row }: { readonly field: Field; read
     case "state": output = stateText(cell); break
     case "time": output = formatUtcCell(asNumber(cell)); break
     case "number": output = measure(cell, locale); break
-    case "kib": output = measure(cell, locale, " KiB"); break
-    case "bytes": output = measure(cell, locale, " B"); break
-    case "ns": output = measure(cell, locale, " ns"); break
+    case "rate": output = measure(cell, locale, t("unit.per_second")); break
+    case "cores": output = cores(cell, locale, ticksPerSecond) + t("unit.cores"); break
+    case "kib": output = humanBytes(kib(asNumber(cell)), locale); break
+    case "bytes": output = humanBytes(cell, locale, t("unit.per_second")); break
+    case "ns": output = millisecondsPerSecond(cell, locale) + t("unit.ms_per_second"); break
     case "id": output = identifier(cell); break
   }
   return <span className={field.kind === "command" ? "command-cell" : "numeric-cell"} title={output}>{field.kind === "command" && linked && <span className="pg-badge">PG</span>}{output}</span>
@@ -201,31 +208,46 @@ function defaultSort(lens: Lens): string {
   return "pid"
 }
 
-function summaryMetrics(rows: readonly DataRow[], lens: Lens, linkedPids: ReadonlySet<number>): readonly { readonly key: string; readonly output: number | null; readonly unit: string }[] {
+/** Every cumulative column arrives as a rate, so a summary reads per second
+ *  and in the unit a person thinks in: cores, bytes, milliseconds. */
+function summaryMetrics(
+  rows: readonly DataRow[],
+  lens: Lens,
+  linkedPids: ReadonlySet<number>,
+  ticksPerSecond: number | null,
+  locale: Locale,
+  t: Translate,
+): readonly { readonly key: string; readonly output: string }[] {
+  const count = (number: number | null) => number === null ? "—" : measure(number, locale)
+  const perSecond = (number: number | null) => number === null ? "—" : measure(number, locale) + t("unit.per_second")
   if (lens === "generic") return [
-    { key: "process.summary.processes", output: rows.length, unit: "" },
-    { key: "process.summary.threads", output: sum(rows, "num_threads"), unit: "" },
-    { key: "process.summary.running", output: rows.filter((row) => stateText(value(row, "state")) === "R").length, unit: "" },
-    { key: "process.summary.postgresql", output: rows.filter((row) => linkedPids.has(asNumber(value(row, "pid")) ?? -1)).length, unit: "" },
+    { key: "process.summary.processes", output: count(rows.length) },
+    { key: "process.summary.threads", output: count(sum(rows, "num_threads")) },
+    { key: "process.summary.running", output: count(rows.filter((row) => stateText(value(row, "state")) === "R").length) },
+    { key: "process.summary.postgresql", output: count(rows.filter((row) => linkedPids.has(asNumber(value(row, "pid")) ?? -1)).length) },
   ]
   if (lens === "cpu") return [
-    { key: "process.summary.user_time", output: sum(rows, "utime"), unit: " ticks" },
-    { key: "process.summary.system_time", output: sum(rows, "stime"), unit: " ticks" },
-    { key: "process.summary.run_delay", output: sum(rows, "rundelay_ns"), unit: " ns" },
-    { key: "process.summary.context_switches", output: combine(rows, "nvcsw", "nivcsw"), unit: "" },
+    { key: "process.summary.user_time", output: cores(sum(rows, "utime"), locale, ticksPerSecond) + t("unit.cores") },
+    { key: "process.summary.system_time", output: cores(sum(rows, "stime"), locale, ticksPerSecond) + t("unit.cores") },
+    { key: "process.summary.run_delay", output: millisecondsPerSecond(sum(rows, "rundelay_ns"), locale) + t("unit.ms_per_second") },
+    { key: "process.summary.context_switches", output: perSecond(combine(rows, "nvcsw", "nivcsw")) },
   ]
   if (lens === "memory") return [
-    { key: "process.summary.resident", output: sum(rows, "rmem_kb"), unit: " KiB" },
-    { key: "process.summary.virtual", output: sum(rows, "vmem_kb"), unit: " KiB" },
-    { key: "process.summary.swap", output: sum(rows, "vswap_kb"), unit: " KiB" },
-    { key: "process.summary.major_faults", output: sum(rows, "majflt"), unit: "" },
+    { key: "process.summary.resident", output: humanBytes(kib(sum(rows, "rmem_kb")), locale) },
+    { key: "process.summary.virtual", output: humanBytes(kib(sum(rows, "vmem_kb")), locale) },
+    { key: "process.summary.swap", output: humanBytes(kib(sum(rows, "vswap_kb")), locale) },
+    { key: "process.summary.major_faults", output: perSecond(sum(rows, "majflt")) },
   ]
   return [
-    { key: "process.summary.read", output: sum(rows, "read_bytes"), unit: " B" },
-    { key: "process.summary.written", output: sum(rows, "write_bytes"), unit: " B" },
-    { key: "process.summary.read_calls", output: sum(rows, "syscr"), unit: "" },
-    { key: "process.summary.write_calls", output: sum(rows, "syscw"), unit: "" },
+    { key: "process.summary.read", output: humanBytes(sum(rows, "read_bytes"), locale, t("unit.per_second")) },
+    { key: "process.summary.written", output: humanBytes(sum(rows, "write_bytes"), locale, t("unit.per_second")) },
+    { key: "process.summary.read_calls", output: perSecond(sum(rows, "syscr")) },
+    { key: "process.summary.write_calls", output: perSecond(sum(rows, "syscw")) },
   ]
+}
+
+function kib(number: number | null): number | null {
+  return number === null ? null : number * 1024
 }
 
 function sum(rows: readonly DataRow[], field: string): number | null {
@@ -241,6 +263,10 @@ function combine(rows: readonly DataRow[], left: string, right: string): number 
   const rightValue = sum(rows, right)
   return leftValue === null && rightValue === null ? null : (leftValue ?? 0) + (rightValue ?? 0)
 }
+
+function rateField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "rate", size } }
+
+function coresField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "cores", size } }
 
 function idField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "id", size } }
 function numberField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "number", size } }

@@ -123,6 +123,38 @@ export function measure(cell: Cell, locale: Locale, suffix = ""): string {
   return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(number)}${suffix}`
 }
 
+
+const BYTE_UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"] as const
+
+/** Bytes at the scale a person reads them at. */
+export function humanBytes(cell: Cell, locale: Locale, suffix = ""): string {
+  const number = asNumber(cell)
+  if (number === null) return "—"
+  const sign = number < 0 ? "-" : ""
+  let scaled = Math.abs(number)
+  let step = 0
+  while (scaled >= 1024 && step < BYTE_UNITS.length - 1) {
+    scaled /= 1024
+    step += 1
+  }
+  const digits = scaled >= 100 || step === 0 ? 0 : 1
+  return `${sign}${new Intl.NumberFormat(locale, { maximumFractionDigits: digits }).format(scaled)} ${BYTE_UNITS[step]}${suffix}`
+}
+
+/** A CPU counter arrives as ticks per second; a person reads cores. */
+export function cores(cell: Cell, locale: Locale, ticksPerSecond: number | null): string {
+  const number = asNumber(cell)
+  if (number === null || ticksPerSecond === null || ticksPerSecond <= 0) return "—"
+  return new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(number / ticksPerSecond)
+}
+
+/** Nanoseconds per second is a share of time: milliseconds of every second. */
+export function millisecondsPerSecond(cell: Cell, locale: Locale): string {
+  const number = asNumber(cell)
+  if (number === null) return "—"
+  return new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(number / 1_000_000)
+}
+
 export function activityFor(
   process: DataRow | null,
   activities: readonly DataRow[],

@@ -56,7 +56,7 @@ const EMPTY_DATA: HourData = {
  *  that view's own sections. Nothing asks for an hour of everything. */
 const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
   system: [...TIMELINE_REQUESTS, ...SYSTEM_REQUESTS],
-  processes: [...TIMELINE_REQUESTS, { section: "os_process" }, { section: "pg_stat_activity" }],
+  processes: [...TIMELINE_REQUESTS, { section: "os_process" }, { section: "pg_stat_activity" }, { section: "instance_metadata" }],
   "postgresql:overview": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlOverview.map(section)],
   "postgresql:activity": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlActivity.map(section)],
   "postgresql:statements": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlStatements.map(section)],
@@ -214,6 +214,12 @@ function App() {
   }, [])
 
   const processRows = useMemo(() => snapshot(data.processes, cursor), [cursor, data.processes])
+  // A CPU counter is ticks per second, and the machine says how many ticks its
+  // second holds.
+  const ticksPerSecond = useMemo(() => {
+    const metadata = (data.sections.instance_metadata ?? [])[0]
+    return metadata === undefined ? null : asNumber(value(metadata, "clock_ticks_per_sec"))
+  }, [data.sections])
   const pgRows = useMemo(() => snapshot(data.activities, cursor), [cursor, data.activities])
   const linkedPids = useMemo(() => new Set(pgRows.flatMap((row) => {
     const pid = asNumber(value(row, "pid"))
@@ -334,9 +340,9 @@ function App() {
           </div>
           <span>{processRows[0] === undefined ? t("status.no_data") : formatUtc(processRows[0].timestamp)}</span>
         </div>
-        <ProcessSummary lens={lens} linkedPids={linkedPids} locale={locale} rows={processRows} t={t} />
+        <ProcessSummary lens={lens} linkedPids={linkedPids} locale={locale} rows={processRows} t={t} ticksPerSecond={ticksPerSecond} />
         <div className={selectedProcess === null ? "process-layout process-layout-table" : "process-layout"}>
-          <ProcessTable lens={lens} linkedPids={linkedPids} locale={locale} onSelect={selectProcess} rows={processRows} selectedKey={selectedKey} t={t} />
+          <ProcessTable lens={lens} linkedPids={linkedPids} locale={locale} onSelect={selectProcess} rows={processRows} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
           {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} hour={hour} lens={lens} locale={locale} onClose={() => { setDockClosed(true); setSelectedKey(null) }} process={selectedProcess} processHistory={processHistory} t={t} />}
         </div>
       </>}

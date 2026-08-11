@@ -52,3 +52,14 @@ test("finding fields select the matching process lens", () => {
   assert.equal(processLens("rundelay_ns"), "cpu")
   assert.equal(processLens("state"), "generic")
 })
+
+test("counters that arrive as rates are read in units a person thinks in", async () => {
+  const model = await import("../src/model.ts")
+  assert.equal(model.humanBytes(1_572_864, "en"), "1.5 MiB")
+  assert.equal(model.humanBytes(512, "en"), "512 B")
+  assert.equal(model.humanBytes(null, "en"), "—")
+  assert.equal(model.cores(161.01, "en", 100), "1.61")
+  assert.equal(model.cores(161.01, "en", null), "—")
+  assert.equal(model.cores(161.01, "en", 0), "—")
+  assert.equal(model.millisecondsPerSecond(111_622_111.53, "en"), "111.6")
+})
