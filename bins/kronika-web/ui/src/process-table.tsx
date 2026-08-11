@@ -71,6 +71,13 @@ const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
   ],
 }
 
+export function ProcessSummary({ lens, linkedPids, locale, rows, t }: { readonly lens: Lens; readonly linkedPids: ReadonlySet<number>; readonly locale: Locale; readonly rows: readonly DataRow[]; readonly t: Translate }) {
+  const metrics = summaryMetrics(rows, lens, linkedPids)
+  return <section aria-label={t("process.summary.title")} className="process-summary">
+    {metrics.map(({ key, output, unit }) => <article key={key}><span>{t(key)}</span><strong>{output === null ? "—" : measure(output, locale, unit)}</strong></article>)}
+  </section>
+}
+
 export function ProcessTable({
   lens,
   linkedPids,
@@ -191,6 +198,47 @@ function defaultSort(lens: Lens): string {
   if (lens === "memory") return "rmem_kb"
   if (lens === "disk") return "read_bytes"
   return "pid"
+}
+
+function summaryMetrics(rows: readonly DataRow[], lens: Lens, linkedPids: ReadonlySet<number>): readonly { readonly key: string; readonly output: number | null; readonly unit: string }[] {
+  if (lens === "generic") return [
+    { key: "process.summary.processes", output: rows.length, unit: "" },
+    { key: "process.summary.threads", output: sum(rows, "num_threads"), unit: "" },
+    { key: "process.summary.running", output: rows.filter((row) => stateText(value(row, "state")) === "R").length, unit: "" },
+    { key: "process.summary.postgresql", output: rows.filter((row) => linkedPids.has(asNumber(value(row, "pid")) ?? -1)).length, unit: "" },
+  ]
+  if (lens === "cpu") return [
+    { key: "process.summary.user_time", output: sum(rows, "utime"), unit: " ticks" },
+    { key: "process.summary.system_time", output: sum(rows, "stime"), unit: " ticks" },
+    { key: "process.summary.run_delay", output: sum(rows, "rundelay_ns"), unit: " ns" },
+    { key: "process.summary.context_switches", output: combine(rows, "nvcsw", "nivcsw"), unit: "" },
+  ]
+  if (lens === "memory") return [
+    { key: "process.summary.resident", output: sum(rows, "rmem_kb"), unit: " KiB" },
+    { key: "process.summary.virtual", output: sum(rows, "vmem_kb"), unit: " KiB" },
+    { key: "process.summary.swap", output: sum(rows, "vswap_kb"), unit: " KiB" },
+    { key: "process.summary.major_faults", output: sum(rows, "majflt"), unit: "" },
+  ]
+  return [
+    { key: "process.summary.read", output: sum(rows, "read_bytes"), unit: " B" },
+    { key: "process.summary.written", output: sum(rows, "write_bytes"), unit: " B" },
+    { key: "process.summary.read_calls", output: sum(rows, "syscr"), unit: "" },
+    { key: "process.summary.write_calls", output: sum(rows, "syscw"), unit: "" },
+  ]
+}
+
+function sum(rows: readonly DataRow[], field: string): number | null {
+  const values = rows.flatMap((row) => {
+    const number = asNumber(value(row, field))
+    return number === null ? [] : [number]
+  })
+  return values.length === 0 ? null : values.reduce((total, number) => total + number, 0)
+}
+
+function combine(rows: readonly DataRow[], left: string, right: string): number | null {
+  const leftValue = sum(rows, left)
+  const rightValue = sum(rows, right)
+  return leftValue === null && rightValue === null ? null : (leftValue ?? 0) + (rightValue ?? 0)
 }
 
 function idField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "id", size } }

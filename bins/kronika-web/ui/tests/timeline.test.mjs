@@ -12,7 +12,7 @@ const compiled = await build({
   format: "esm",
   platform: "node",
   stdin: {
-    contents: 'export { findingShape, groupFindings } from "../src/timeline.tsx"',
+    contents: 'export { findingShape, groupFindings, seriesYAt, timelineRuns } from "../src/timeline.tsx"',
     loader: "tsx",
     resolveDir: directory,
   },
@@ -26,6 +26,7 @@ function finding(kind, timestamp, ordinal) {
     category: null,
     fieldOrdinal: 0,
     kind,
+    logicalName: "os_process",
     rowOrdinal: ordinal,
     segmentId: "segment-a",
     timestamp,
@@ -48,10 +49,40 @@ test("timeline markers aggregate only identical kind and timestamp", () => {
     { count: 1, kind: "known_bad", timestamp: 200 },
   ])
   assert.equal(grouped[1].finding, first)
+  assert.deepEqual(grouped[1].findings.map((finding) => finding.rowOrdinal), ["7", "8"])
 })
 
 test("finding kinds have non-color shape identities", () => {
   assert.equal(helpers.findingShape("event"), "circle")
   assert.equal(helpers.findingShape("known_bad"), "diamond")
   assert.equal(helpers.findingShape("spike"), "triangle")
+})
+
+test("timeline series break at null samples without dropping zero", () => {
+  const runs = [...helpers.timelineRuns([
+    { segmentId: "host-a", timestamp: 100, value: 10 },
+    { segmentId: "host-a", timestamp: 200, value: null },
+    { segmentId: "host-a", timestamp: 300, value: 0 },
+  ]).values()]
+  assert.deepEqual(runs.map((run) => run.map((point) => point.value)), [[10], [0]])
+  assert.equal(
+    helpers.seriesYAt([
+      { segmentId: "host-a", timestamp: 100, value: 10 },
+      { segmentId: "host-a", timestamp: 200, value: null },
+      { segmentId: "host-a", timestamp: 300, value: 90 },
+    ], "host-a", 200, 0),
+    helpers.seriesYAt([{ segmentId: "host-a", timestamp: 100, value: 10 }], "host-a", 100, 0),
+  )
+})
+
+test("a finding from another source family sits on the nearest healthline segment", () => {
+  const points = [
+    { segmentId: "host-a", timestamp: 100, value: 20 },
+    { segmentId: "host-a", timestamp: 200, value: 40 },
+    { segmentId: "host-b", timestamp: 800, value: 90 },
+  ]
+  assert.equal(
+    helpers.seriesYAt(points, "postgresql-a", 150, 0),
+    helpers.seriesYAt(points, "host-a", 150, 0),
+  )
 })

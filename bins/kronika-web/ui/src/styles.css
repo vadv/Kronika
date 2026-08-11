@@ -119,6 +119,10 @@ h2 { font-size: 16px; }
 .lens-tabs { border: 1px solid #28333e; display: flex; }
 .lens-tabs button { background: transparent; border: 0; color: #778493; cursor: pointer; font-size: 9px; min-width: 78px; padding: 7px 10px; text-transform: uppercase; }
 .lens-tabs button[aria-pressed="true"] { background: #182630; color: #a5f3fc; }
+.process-summary { border-left: 1px solid #202832; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.process-summary article { background: #090e12; border-bottom: 1px solid #202832; border-right: 1px solid #202832; min-height: 55px; padding: 8px 10px; }
+.process-summary span { color: #74808d; display: block; font-size: 7px; text-transform: uppercase; }
+.process-summary strong { color: #e1e6eb; display: block; font-size: 14px; font-weight: 560; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .process-layout { display: grid; grid-template-columns: minmax(0, 1fr) 390px; margin-top: 8px; min-width: 0; }
 .process-layout-table { grid-template-columns: minmax(0, 1fr); }
 .process-table { background: #080c10; border: 1px solid #202832; min-width: 0; overflow: hidden; }
@@ -202,8 +206,9 @@ h2 { font-size: 16px; }
 .entity-head { background: #111820; display: flex; height: 31px; min-width: 100%; position: sticky; top: 0; z-index: 30; }
 .entity-header-cell, .entity-cell { border-bottom: 1px solid #1b242d; border-right: 1px solid #1b242d; flex: 0 0 auto; min-width: 0; overflow: hidden; padding: 0 7px; }
 .entity-header-cell { align-items: center; color: #7c8996; display: flex; font-size: 7px; letter-spacing: .025em; text-transform: uppercase; }
-.entity-header-cell button { align-items: center; background: transparent; border: 0; color: inherit; cursor: pointer; display: flex; height: 100%; justify-content: space-between; min-width: 0; padding: 0; text-align: left; text-transform: inherit; width: 100%; }
-.entity-header-cell button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entity-header-cell .entity-sort { align-items: center; background: transparent; border: 0; color: inherit; cursor: pointer; display: flex; flex: 1 1 auto; height: 100%; justify-content: space-between; min-width: 0; padding: 0; text-align: left; text-transform: inherit; }
+.entity-header-cell .entity-sort span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entity-header-cell > .label-help { flex: 0 0 auto; margin-left: 4px; }
 .entity-header-cell i { color: #67e8f9; font-style: normal; margin-left: 5px; }
 .entity-row { background: #090e12; cursor: default; display: flex; left: 0; min-width: 100%; position: absolute; top: 0; }
 .entity-row:nth-child(even) { background: #0b1116; }
@@ -223,7 +228,7 @@ h2 { font-size: 16px; }
 .pg-tabs button[aria-current="page"] { background: #17232d; box-shadow: inset 0 -2px #22d3ee; color: #bceff7; }
 .pg-tabs button:disabled { cursor: not-allowed; opacity: .35; }
 .pg-overview { margin-top: 8px; padding: 8px; }
-.overview-metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.overview-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
 .overview-metrics article { background: #090e12; border: 1px solid #1e2831; min-height: 58px; padding: 8px; }
 .overview-metrics article + article { border-left: 0; }
 .overview-metrics span { color: #74808d; display: block; font-size: 7px; text-transform: uppercase; }
@@ -257,12 +262,14 @@ h2 { font-size: 16px; }
 .event-filters button[aria-pressed="true"] { background: #182630; color: #a5f3fc; }
 .events-tools label { align-items: center; border: 1px solid #28333e; color: #677483; display: flex; font-size: 0; height: 29px; padding-left: 7px; }
 .events-tools input { background: transparent; border: 0; color: #d1d8df; font-size: 9px; height: 27px; margin-left: 6px; outline: 0; width: min(280px, 30vw); }
+.events-show-all { background: #111a22; border: 1px solid #34414e; color: #a5f3fc; cursor: pointer; font-size: 8px; min-height: 29px; padding: 0 9px; text-transform: uppercase; }
 .events-layout { display: grid; grid-template-columns: minmax(360px, .78fr) minmax(0, 1.22fr); min-height: 430px; }
-.event-list { border-right: 1px solid #202832; height: min(570px, calc(100vh - 360px)); list-style: none; margin: 0; min-height: 390px; overflow: auto; padding: 0; }
-.event-list li { border-bottom: 1px solid #1b242d; }
-.event-list li > button { align-items: center; background: #090e12; border: 0; color: #aeb7c2; cursor: pointer; display: grid; gap: 8px; grid-template-columns: 18px minmax(0, 1fr) auto; min-height: 44px; padding: 6px 9px; text-align: left; width: 100%; }
-.event-list li > button:hover { background: #101b23; }
-.event-list li > button[aria-pressed="true"] { background: #13252d; box-shadow: inset 2px 0 #22d3ee; }
+.event-list { border-right: 1px solid #202832; height: min(570px, calc(100vh - 360px)); min-height: 390px; overflow: auto; }
+.event-list-body { position: relative; }
+.event-item { border-bottom: 1px solid #1b242d; left: 0; position: absolute; top: 0; width: 100%; }
+.event-item > button { align-items: center; background: #090e12; border: 0; color: #aeb7c2; cursor: pointer; display: grid; gap: 8px; grid-template-columns: 18px minmax(0, 1fr) auto; height: 100%; min-height: 44px; padding: 6px 9px; text-align: left; width: 100%; }
+.event-item > button:hover { background: #101b23; }
+.event-item > button[aria-pressed="true"] { background: #13252d; box-shadow: inset 2px 0 #22d3ee; }
 .event-list strong { display: block; font-size: 8px; font-weight: 500; text-transform: uppercase; }
 .event-list small { color: #758190; display: block; font-size: 8px; margin-top: 3px; }
 .event-list time { color: #8e9aa7; font-size: 8px; white-space: nowrap; }
@@ -301,6 +308,7 @@ h2 { font-size: 16px; }
   .lensbar > span { margin: 7px 5px 2px; }
   .lens-tabs { width: 100%; }
   .lens-tabs button { flex: 1; min-width: 0; padding-left: 4px; padding-right: 4px; }
+  .process-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sticky-command { box-shadow: none; position: static; }
   .process-header-cell.sticky-command { position: static; }
   .status-strip .cursor-time { margin-left: 0; }

@@ -34,7 +34,7 @@ test("project dictionaries cover the active UI keys", async () => {
   validateDictionaries(english, russian)
 
   const roots = new Set()
-  const literalKey = /["']((?:app|nav|section|status|hour|locale|help|common|lens|system|lane|locator|table|col|detail|pg|events)\.[a-z0-9_.]+)["']/g
+  const literalKey = /["']((?:app|nav|section|status|hour|locale|help|common|lens|process|system|lane|locator|table|col|detail|pg|events)\.[a-z0-9_.]+)["']/g
   const sourceFiles = [
     "app.tsx",
     "detail.tsx",
@@ -48,6 +48,12 @@ test("project dictionaries cover the active UI keys", async () => {
   for (const file of sourceFiles) {
     const source = await readFile(new URL(`../src/${file}`, import.meta.url), "utf8")
     for (const match of source.matchAll(literalKey)) roots.add(match[1])
+    const dynamicPrefix = file === "system-view.tsx" ? "system.field" : file === "postgres-view.tsx" ? "pg.field" : null
+    if (dynamicPrefix !== null) {
+      for (const match of source.matchAll(/(?:text|number|id|bytes|milliseconds|timestamp|boolean)\("([a-z0-9_]+)"/g)) {
+        roots.add(`${dynamicPrefix}.${match[1]}`)
+      }
+    }
   }
 
   const required = new Set([

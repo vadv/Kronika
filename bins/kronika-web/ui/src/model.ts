@@ -3,6 +3,13 @@ import type { Cell, DataRow } from "./api"
 export type Locale = "en" | "ru"
 export type Lens = "generic" | "cpu" | "memory" | "disk"
 
+export function processLens(field: string | null): Lens {
+  if (["rmem_kb", "vmem_kb", "vswap_kb", "minflt", "majflt"].includes(field ?? "")) return "memory"
+  if (["read_bytes", "write_bytes", "cancelled_write_bytes", "syscr", "syscw", "rchar", "wchar"].includes(field ?? "")) return "disk"
+  if (["utime", "stime", "rundelay_ns", "blkdelay_ticks", "nvcsw", "nivcsw", "nice", "prio", "rtprio", "policy", "curcpu"].includes(field ?? "")) return "cpu"
+  return "generic"
+}
+
 export function floorHour(timestamp: number): number {
   return Math.floor(timestamp / 3_600_000_000) * 3_600_000_000
 }

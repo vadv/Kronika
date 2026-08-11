@@ -460,7 +460,7 @@ metric groups and virtualized Processes lenses; PostgreSQL contains Overview,
 Activity, Statements, Locks and Databases whenever their sections are present.
 Events expands the same findings drawn on the shared healthline. The timeline
 always spans the complete hour, leaves gaps blank and drives every view with one
-cursor. Marker shape identifies log events, large or bad values, and spikes.
+cursor. Marker shape identifies log events, threshold crossings, and spikes.
 
 System tables contain only entities such as devices, mounts, interfaces and CPU
 topology. Selecting a metric opens its one-hour history. A selected Linux

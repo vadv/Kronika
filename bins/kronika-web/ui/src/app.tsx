@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client"
 
 import {
   discoverLatestHour,
+  fieldNameForLocator,
   loadHour,
   resolveLocator,
   type DataRow,
@@ -23,6 +24,7 @@ import {
   inputHour,
   interpolate,
   processKey,
+  processLens,
   selectedHour,
   snapshot,
   value,
@@ -30,7 +32,7 @@ import {
   type Locale,
 } from "./model"
 import { PostgresView, type PostgresSection } from "./postgres-view"
-import { ProcessTable } from "./process-table"
+import { ProcessSummary, ProcessTable } from "./process-table"
 import { SystemView } from "./system-view"
 import { Timeline } from "./timeline"
 
@@ -48,10 +50,12 @@ const HELP_SYSTEM = [
   { label: "system.group.load", help: "system.group.load.help" },
   { label: "system.group.memory", help: "system.group.memory.help" },
   { label: "system.group.pressure", help: "system.group.pressure.help" },
+  { label: "system.group.storage", help: "system.group.storage.help" },
   { label: "lane.health.label", help: "lane.health.help" },
   { label: "lane.load.label", help: "lane.load.help" },
   { label: "lane.memory.label", help: "lane.memory.help" },
   { label: "lane.pressure.label", help: "lane.pressure.help" },
+  { label: "system.metric.filesystem_free_min.label", help: "system.metric.filesystem_free_min.help" },
 ] as const
 
 const HELP_PROCESS = [
@@ -60,6 +64,20 @@ const HELP_PROCESS = [
   { label: "col.command.label", help: "col.command.help" },
   { label: "detail.pg.title", help: "detail.pg.help" },
   { label: "pg.query.label", help: "pg.query.help" },
+] as const
+
+const HELP_POSTGRESQL = [
+  { label: "pg.pid.label", help: "pg.pid.help" },
+  { label: "pg.backend_type.label", help: "pg.backend_type.help" },
+  { label: "pg.state.label", help: "pg.state.help" },
+  { label: "pg.wait_event.label", help: "pg.wait_event.help" },
+  { label: "pg.query.label", help: "pg.query.help" },
+] as const
+
+const HELP_EVENTS = [
+  { label: "locator.event", help: "locator.event.help" },
+  { label: "locator.known_bad", help: "locator.known_bad.help" },
+  { label: "locator.spike", help: "locator.spike.help" },
 ] as const
 
 function App() {
@@ -76,6 +94,7 @@ function App() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [dockClosed, setDockClosed] = useState(false)
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
+  const [eventScope, setEventScope] = useState<readonly Finding[] | null>(null)
   const [pgFocus, setPgFocus] = useState<DataRow | null>(null)
   const [systemFocus, setSystemFocus] = useState<Finding | null>(null)
   const [helpOpen, setHelpOpen] = useState(false)
@@ -110,6 +129,7 @@ function App() {
     setError(null)
     setDockClosed(false)
     setSelectedFinding(null)
+    setEventScope(null)
     setPgFocus(null)
     setSystemFocus(null)
     void loadHour(hour, controller.signal).then((loaded) => {
@@ -162,14 +182,21 @@ function App() {
     setDockClosed(false)
     setSelectedKey(processKey(row))
   }, [])
-  const selectFinding = useCallback((finding: Finding) => {
+  const selectFinding = useCallback((finding: Finding, grouped: readonly Finding[] = [finding]) => {
     setCursor(finding.timestamp)
     setSelectedFinding(finding)
+    if (grouped.length > 1) {
+      setEventScope(grouped)
+      setSource("events")
+      return
+    }
+    setEventScope(null)
     const resolved = resolveLocator(data, finding)
     const logicalName = finding.logicalName
     if (logicalName === "os_process") {
       setSource("host")
       setHostSection("processes")
+      setLens(processLens(fieldNameForLocator(finding)))
       setDockClosed(false)
       if (resolved !== null) setSelectedKey(processKey(resolved.row))
       return
@@ -182,17 +209,30 @@ function App() {
     }
     const section = postgresSection(logicalName)
     if (section !== null) {
+      if (resolved === null) {
+        setSource("events")
+        return
+      }
       setSource("postgresql")
       setPgSection(section)
-      setPgFocus(resolved?.row ?? null)
+      setPgFocus(resolved.row)
       return
     }
     setSource("events")
   }, [data])
   const day = hour === null ? "" : inputDay(hour)
   const hourNumber = hour === null ? 0 : inputHour(hour)
-  const pgPresent = data.activities.length !== 0 || data.availableSections.some((name) => name.startsWith("pg_"))
+  const pgPresent = data.activities.length !== 0 || data.availableSections.some((name) => name.startsWith("pg_") && !name.startsWith("pg_log_"))
   const eventsPresent = data.findings.length !== 0
+  const helpItems = source === "postgresql"
+    ? HELP_POSTGRESQL
+    : source === "events"
+      ? HELP_EVENTS
+      : hostSection === "processes" ? [...HELP_SYSTEM, ...HELP_PROCESS] : HELP_SYSTEM
+  useEffect(() => {
+    if (source === "postgresql" && !pgPresent) setSource("host")
+    if (source === "events" && !eventsPresent) setSource("host")
+  }, [eventsPresent, pgPresent, source])
 
   return <main className="app-shell">
     <header className="topbar">
@@ -213,7 +253,7 @@ function App() {
     <nav aria-label={t("nav.sources")} className="source-tabs">
       <button aria-current={source === "host" ? "page" : undefined} className={source === "host" ? "source-active" : undefined} onClick={() => setSource("host")} type="button">{t("nav.host")}</button>
       <button aria-current={source === "postgresql" ? "page" : undefined} className={source === "postgresql" ? "source-active" : undefined} disabled={!pgPresent} onClick={() => setSource("postgresql")} title={pgPresent ? undefined : t("nav.no_data")} type="button">{t("nav.postgresql")}</button>
-      {eventsPresent && <button aria-current={source === "events" ? "page" : undefined} className={source === "events" ? "source-active" : undefined} onClick={() => setSource("events")} type="button">{t("nav.events")}</button>}
+      {eventsPresent && <button aria-current={source === "events" ? "page" : undefined} className={source === "events" ? "source-active" : undefined} onClick={() => { setEventScope(null); setSource("events") }} type="button">{t("nav.events")}</button>}
     </nav>
 
     <section className="toolbar">
@@ -244,16 +284,17 @@ function App() {
           </div>
           <span>{processRows[0] === undefined ? t("status.no_data") : formatUtc(processRows[0].timestamp)}</span>
         </div>
+        <ProcessSummary lens={lens} linkedPids={linkedPids} locale={locale} rows={processRows} t={t} />
         <div className={selectedProcess === null ? "process-layout process-layout-table" : "process-layout"}>
           <ProcessTable lens={lens} linkedPids={linkedPids} locale={locale} onSelect={selectProcess} rows={processRows} selectedKey={selectedKey} t={t} />
-          {selectedProcess !== null && <DetailDock activity={joinedActivity.row} hour={hour} lens={lens} locale={locale} onClose={() => { setDockClosed(true); setSelectedKey(null) }} process={selectedProcess} processHistory={processHistory} t={t} />}
+          {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} hour={hour} lens={lens} locale={locale} onClose={() => { setDockClosed(true); setSelectedKey(null) }} process={selectedProcess} processHistory={processHistory} t={t} />}
         </div>
       </>}
-      {!loading && error === null && hour !== null && source === "postgresql" && <PostgresView cursor={cursor} data={data} focus={pgFocus} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} onSection={setPgSection} section={pgSection} t={t} />}
-      {!loading && error === null && hour !== null && source === "events" && <EventsView cursor={cursor} data={data} hour={hour} onCursor={setCursor} onFinding={selectFinding} resolve={(finding) => resolveLocator(data, finding)?.row ?? null} selected={selectedFinding} t={t} />}
+      {!loading && error === null && hour !== null && source === "postgresql" && <PostgresView cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} onSection={setPgSection} section={pgSection} t={t} />}
+      {!loading && error === null && hour !== null && source === "events" && <EventsView cursor={cursor} data={data} hour={hour} onCursor={setCursor} onFinding={selectFinding} onShowAll={() => setEventScope(null)} resolve={(finding) => resolveLocator(data, finding)?.row ?? null} scope={eventScope} selected={selectedFinding} t={t} />}
     </section>
 
-    {helpOpen && <HelpPanel items={hostSection === "processes" ? [...HELP_SYSTEM, ...HELP_PROCESS] : HELP_SYSTEM} onClose={() => setHelpOpen(false)} t={t} />}
+    {helpOpen && <HelpPanel items={helpItems} onClose={() => setHelpOpen(false)} t={t} />}
   </main>
 }
 

@@ -68,16 +68,34 @@ const PROCESS_HISTORY: Readonly<Record<Lens, readonly HistoryField[]>> = {
   cpu: [
     { field: "utime", key: "col.utime", unit: "" },
     { field: "stime", key: "col.stime", unit: "" },
+    { field: "rundelay_ns", key: "col.rundelay", unit: " ns" },
+    { field: "blkdelay_ticks", key: "col.blkdelay", unit: "" },
+    { field: "nvcsw", key: "col.nvcsw", unit: "" },
+    { field: "nivcsw", key: "col.nivcsw", unit: "" },
+    { field: "minflt", key: "col.minflt", unit: "" },
+    { field: "majflt", key: "col.majflt", unit: "" },
   ],
-  memory: [{ field: "rmem_kb", key: "col.rmem", unit: " KiB" }],
+  memory: [
+    { field: "rmem_kb", key: "col.rmem", unit: " KiB" },
+    { field: "vmem_kb", key: "col.vmem", unit: " KiB" },
+    { field: "vswap_kb", key: "col.vswap", unit: " KiB" },
+    { field: "minflt", key: "col.minflt", unit: "" },
+    { field: "majflt", key: "col.majflt", unit: "" },
+  ],
   disk: [
     { field: "read_bytes", key: "col.read_bytes", unit: " B" },
     { field: "write_bytes", key: "col.write_bytes", unit: " B" },
+    { field: "cancelled_write_bytes", key: "col.cancelled_write", unit: " B" },
+    { field: "syscr", key: "col.syscr", unit: "" },
+    { field: "syscw", key: "col.syscw", unit: "" },
+    { field: "rchar", key: "col.rchar", unit: "" },
+    { field: "wchar", key: "col.wchar", unit: "" },
+    { field: "blkdelay_ticks", key: "col.blkdelay", unit: "" },
   ],
 }
 
 const ACTIVITY_FIELDS = [
-  ["backend_type", "pg.backend_type", "text"], ["datname", "pg.datname", "text"],
+  ["leader_pid", "pg.leader_pid", "id"], ["backend_type", "pg.backend_type", "text"], ["datname", "pg.datname", "text"],
   ["usename", "pg.usename", "text"],
   ["application_name", "pg.application_name", "text"], ["client_addr", "pg.client_addr", "text"],
   ["state", "pg.state", "text"],
@@ -85,10 +103,13 @@ const ACTIVITY_FIELDS = [
   ["backend_start", "pg.backend_start", "time"],
   ["xact_start", "pg.xact_start", "time"], ["query_start", "pg.query_start", "time"],
   ["state_change", "pg.state_change", "time"],
+  ["query_id", "pg.query_id", "id"], ["backend_xid_age", "pg.backend_xid_age", "number"],
+  ["backend_xmin_age", "pg.backend_xmin_age", "number"],
 ] as const
 
 export function DetailDock({
   activity,
+  activityTime,
   hour,
   lens,
   locale,
@@ -98,6 +119,7 @@ export function DetailDock({
   t,
 }: {
   readonly activity: DataRow | null
+  readonly activityTime: number | null
   readonly hour: number
   readonly lens: Lens
   readonly locale: Locale
@@ -159,6 +181,7 @@ export function DetailDock({
           ? <p className="pg-empty">{t("detail.pg_none")}</p>
           : <>
             <dl className="detail-list">
+              <DetailField help="detail.pg_snapshot.help" label="detail.pg_snapshot.label" t={t} value={activityTime === null ? "—" : <Timestamp raw={activityTime} t={t} />} />
               {ACTIVITY_FIELDS.map(([field, key, kind]) => <DetailField help={`${key}.help`} key={field} label={`${key}.label`} t={t} value={formatActivity(value(activity, field), kind, locale, t)} />)}
             </dl>
             <section className="query-block">

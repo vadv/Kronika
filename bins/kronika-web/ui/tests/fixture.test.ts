@@ -45,6 +45,18 @@ test("the approved real hour converts without losing entity relationships", () =
   }
   const joined = hour?.activities.filter((row) => nearestProcesses.get(row.timestamp)?.has(row.values.pid)).length
   assert.equal(joined, 2_755)
+  const resolvedFindings = (hour?.findings ?? []).filter((finding) =>
+    Object.values(hour?.sections ?? {}).some((rows) => rows.some((row) =>
+      row.segmentId === finding.segmentId
+        && row.typeId === finding.typeId
+        && row.ordinal === finding.rowOrdinal
+        && row.timestamp === finding.timestamp,
+    )),
+  )
+  assert.equal(resolvedFindings.length, 294)
+  assert.equal((hour?.findings.length ?? 0) - resolvedFindings.length, 2_590)
+  assert.ok(hour?.findings.some((finding) => finding.logicalName === "pg_stat_statements"))
+  assert.ok(hour?.findings.some((finding) => finding.logicalName.startsWith("pg_log_")))
 })
 
 test("the production path has no fixture when no approved bundle is injected", () => {

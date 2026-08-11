@@ -14,12 +14,13 @@ const PLOT_BOTTOM = TOP + LANE_COUNT * LANE_HEIGHT
 interface SeriesPoint {
   readonly segmentId: string
   readonly timestamp: number
-  readonly value: number
+  readonly value: number | null
 }
 
 export interface GroupedFinding {
   readonly count: number
   readonly finding: Finding
+  readonly findings: readonly Finding[]
   readonly kind: Finding["kind"]
   readonly timestamp: number
 }
@@ -45,7 +46,7 @@ export function Timeline({
   readonly load: readonly DataRow[]
   readonly memory: readonly DataRow[]
   readonly onCursor: (timestamp: number) => void
-  readonly onFinding: (finding: Finding) => void
+  readonly onFinding: (finding: Finding, grouped?: readonly Finding[]) => void
   readonly pressure: readonly DataRow[]
   readonly t: Translate
 }) {
@@ -130,14 +131,15 @@ export function Timeline({
         {markers.map((marker, index) => {
           const slot = markerSlots.get(`${marker.timestamp}:${marker.kind}`) ?? { index: 0, total: 1 }
           const offset = (slot.index - (slot.total - 1) / 2) * 11
-          const x = scaleX(marker.timestamp, hour, end)
-          const y = seriesYAt(healthPoints, marker.finding.segmentId, marker.timestamp, 0) + offset
+          const x = Math.max(0, Math.min(WIDTH, scaleX(marker.timestamp, hour, end) + offset))
+          const displayTimestamp = hour + x / WIDTH * (end - hour)
+          const y = seriesYAt(healthPoints, marker.finding.segmentId, displayTimestamp, 0)
           return <FindingMarker
             key={`${marker.timestamp}:${marker.kind}:${index}`}
             marker={marker}
             onActivate={() => {
               onCursor(marker.timestamp)
-              onFinding(marker.finding)
+              onFinding(marker.finding, marker.findings)
             }}
             t={t}
             x={x}
@@ -220,13 +222,7 @@ function SeriesLine({
 }) {
   if (points.length === 0) return null
   const range = seriesRange(points)
-  const bySegment = new Map<string, SeriesPoint[]>()
-  for (const point of points) {
-    const current = bySegment.get(point.segmentId) ?? []
-    current.push(point)
-    bySegment.set(point.segmentId, current)
-  }
-  return <>{[...bySegment.entries()].map(([segmentId, stored]) => {
+  return <>{[...timelineRuns(points).entries()].map(([runId, stored]) => {
     const path = stored
       .slice()
       .sort((left, right) => left.timestamp - right.timestamp)
@@ -236,7 +232,7 @@ function SeriesLine({
         return `${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`
       })
       .join(" ")
-    return <path className={`series-line series-${color}`} d={path} key={segmentId} />
+    return <path className={`series-line series-${color}`} d={path} key={runId} />
   })}</>
 }
 
@@ -245,10 +241,38 @@ function series(rows: readonly DataRow[], field: string): readonly SeriesPoint[]
 }
 
 function preferredSeries(rows: readonly DataRow[], fields: readonly string[]): readonly SeriesPoint[] {
-  return rows.flatMap((row) => {
+  return rows.map((row) => {
     const number = fields.reduce<number | null>((selected, field) => selected ?? asNumber(value(row, field)), null)
-    return number === null ? [] : [{ segmentId: row.segmentId, timestamp: row.timestamp, value: number }]
+    return { segmentId: row.segmentId, timestamp: row.timestamp, value: number }
   })
+}
+
+export function timelineRuns(points: readonly SeriesPoint[]): ReadonlyMap<string, readonly (SeriesPoint & { readonly value: number })[]> {
+  const bySegment = new Map<string, SeriesPoint[]>()
+  for (const point of points) {
+    const stored = bySegment.get(point.segmentId) ?? []
+    stored.push(point)
+    bySegment.set(point.segmentId, stored)
+  }
+  const runs = new Map<string, readonly (SeriesPoint & { readonly value: number })[]>()
+  for (const [segmentId, stored] of bySegment) {
+    let run: (SeriesPoint & { readonly value: number })[] = []
+    let index = 0
+    const flush = () => {
+      if (run.length !== 0) runs.set(`${segmentId}:${index}`, run)
+      run = []
+      index += 1
+    }
+    for (const point of stored.slice().sort((left, right) => left.timestamp - right.timestamp)) {
+      if (point.value === null || !Number.isFinite(point.value)) {
+        flush()
+      } else {
+        run.push(point as SeriesPoint & { readonly value: number })
+      }
+    }
+    flush()
+  }
+  return runs
 }
 
 export function groupFindings(findings: readonly Finding[]): readonly GroupedFinding[] {
@@ -259,6 +283,7 @@ export function groupFindings(findings: readonly Finding[]): readonly GroupedFin
     groups.set(key, {
       count: (current?.count ?? 0) + 1,
       finding: current?.finding ?? finding,
+      findings: [...(current?.findings ?? []), finding],
       kind: finding.kind,
       timestamp: finding.timestamp,
     })
@@ -298,25 +323,41 @@ function markerShapeStyle(kind: Finding["kind"]): React.CSSProperties {
   }
 }
 
-function seriesYAt(points: readonly SeriesPoint[], segmentId: string, timestamp: number, lane: number): number {
+export function seriesYAt(points: readonly SeriesPoint[], segmentId: string, timestamp: number, lane: number): number {
   if (points.length === 0) return TOP + lane * LANE_HEIGHT + LANE_HEIGHT / 2
   const range = seriesRange(points)
-  const stored = points
-    .filter((point) => point.segmentId === segmentId)
-    .slice()
-    .sort((left, right) => left.timestamp - right.timestamp)
-  if (stored.length === 0) return TOP + lane * LANE_HEIGHT + LANE_HEIGHT / 2
+  const numeric = points.filter((point): point is SeriesPoint & { readonly value: number } => point.value !== null && Number.isFinite(point.value))
+  if (numeric.length === 0) return TOP + lane * LANE_HEIGHT + LANE_HEIGHT / 2
+  const runs = [...timelineRuns(points).values()]
+  const matching = runs.find((run) => run[0]?.segmentId === segmentId && contains(run, timestamp))
+    ?? runs.find((run) => contains(run, timestamp))
+  if (matching === undefined) {
+    const nearest = numeric.reduce((selected, point) => {
+      const distance = Math.abs(point.timestamp - timestamp)
+      const selectedDistance = Math.abs(selected.timestamp - timestamp)
+      return distance < selectedDistance || (distance === selectedDistance && point.timestamp < selected.timestamp) ? point : selected
+    })
+    return seriesY(nearest.value, lane, range.low, range.span)
+  }
+  const stored = matching.slice().sort((left, right) => left.timestamp - right.timestamp)
   const rightIndex = stored.findIndex((point) => point.timestamp >= timestamp)
-  const right = rightIndex < 0 ? stored.at(-1) : stored[rightIndex]
-  const left = rightIndex < 0 ? stored.at(-1) : rightIndex === 0 ? stored[0] : stored[rightIndex - 1]
+  const right = stored[rightIndex]
+  const left = rightIndex <= 0 ? stored[0] : stored[rightIndex - 1]
   if (left === undefined || right === undefined) return TOP + lane * LANE_HEIGHT + LANE_HEIGHT / 2
   const duration = right.timestamp - left.timestamp
   const ratio = duration === 0 ? 0 : (timestamp - left.timestamp) / duration
   return seriesY(left.value + (right.value - left.value) * ratio, lane, range.low, range.span)
 }
 
+function contains(run: readonly SeriesPoint[], timestamp: number): boolean {
+  const first = run[0]
+  const last = run.at(-1)
+  return first !== undefined && last !== undefined && first.timestamp <= timestamp && last.timestamp >= timestamp
+}
+
 function seriesRange(points: readonly SeriesPoint[]): { readonly low: number; readonly span: number } {
-  const values = points.map((point) => point.value)
+  const values = points.flatMap((point) => point.value === null || !Number.isFinite(point.value) ? [] : [point.value])
+  if (values.length === 0) return { low: 0, span: 1 }
   const low = Math.min(...values)
   return { low, span: Math.max(...values) - low || 1 }
 }

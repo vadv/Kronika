@@ -33,7 +33,9 @@ test("process history follows PID and start time and keeps null distinct from ze
     row(50, { pid: 78, starttime: 10, utime: 99, stime: 99 }, "segment-a", "4"),
   ], process, "cpu")
 
-  assert.deepEqual(series.map((item) => item.field), ["utime", "stime"])
+  assert.deepEqual(series.map((item) => item.field), [
+    "utime", "stime", "rundelay_ns", "blkdelay_ticks", "nvcsw", "nivcsw", "minflt", "majflt",
+  ])
   assert.deepEqual(series[0].points.map((point) => point.value), [0, 3, null])
   assert.deepEqual(series[1].points.map((point) => point.value), [2, 3, 4])
 })

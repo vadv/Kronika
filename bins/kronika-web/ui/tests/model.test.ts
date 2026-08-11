@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { Cell, DataRow } from "../src/api.ts"
-import { activityFor, formatUtc, identifier, measure, nearestTime, processCommand, rawText, selectedHour } from "../src/model.ts"
+import { activityFor, formatUtc, identifier, measure, nearestTime, processCommand, processLens, rawText, selectedHour, stateText } from "../src/model.ts"
 
 function row(timestamp: number): DataRow {
   return { segmentId: "7", logicalName: "os_process", typeId: "1100001", ordinal: "0", timestamp, values: {} }
@@ -23,6 +23,7 @@ test("null is a dash while zero remains data and identifiers are ungrouped", () 
   assert.equal(measure(null, "en"), "—")
   assert.equal(measure(0, "en"), "0")
   assert.equal(identifier("1234567"), "1234567")
+  assert.equal(stateText(82), "R")
 })
 
 test("text payloads retain their exact text value", () => {
@@ -43,4 +44,11 @@ test("activity linking uses the cursor-nearest PG snapshot and exact PID", () =>
   assert.equal(linked.snapshotTime, 300)
   assert.equal(linked.row?.values.backend_type, "nearest")
   assert.equal(processCommand(process), "worker")
+})
+
+test("finding fields select the matching process lens", () => {
+  assert.equal(processLens("read_bytes"), "disk")
+  assert.equal(processLens("rmem_kb"), "memory")
+  assert.equal(processLens("rundelay_ns"), "cpu")
+  assert.equal(processLens("state"), "generic")
 })

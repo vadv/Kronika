@@ -8,6 +8,8 @@ export interface ChartPoint {
   readonly value: number | null
 }
 
+type NumericChartPoint = ChartPoint & { readonly value: number }
+
 export function SeriesChart({
   hour,
   label,
@@ -23,17 +25,12 @@ export function SeriesChart({
 }) {
   const title = useId()
   const end = hour + 3_600_000_000
-  const numeric = points.filter((point): point is ChartPoint & { readonly value: number } => point.value !== null && Number.isFinite(point.value))
+  const numeric = points.filter((point): point is NumericChartPoint => point.value !== null && Number.isFinite(point.value))
   const values = numeric.map((point) => point.value)
   const low = values.length === 0 ? 0 : Math.min(...values)
   const high = values.length === 0 ? 0 : Math.max(...values)
   const span = high - low || 1
-  const paths = new Map<string, (ChartPoint & { readonly value: number })[]>()
-  for (const point of numeric) {
-    const current = paths.get(point.segmentId) ?? []
-    current.push(point)
-    paths.set(point.segmentId, current)
-  }
+  const paths = chartRuns(points)
   return <figure className="series-chart">
     <figcaption id={title}>
       <span>{label}</span>
@@ -53,6 +50,34 @@ export function SeriesChart({
       {[0, 1, 2, 3, 4, 5, 6].map((tick) => <text className="mini-tick" key={tick} textAnchor={tick === 0 ? "start" : tick === 6 ? "end" : "middle"} x={tick / 6 * 920} y="122">{formatUtc(hour + tick * 600_000_000).slice(11, 16)}</text>)}
     </svg>
   </figure>
+}
+
+export function chartRuns(points: readonly ChartPoint[]): ReadonlyMap<string, readonly NumericChartPoint[]> {
+  const bySegment = new Map<string, ChartPoint[]>()
+  for (const point of points) {
+    const stored = bySegment.get(point.segmentId) ?? []
+    stored.push(point)
+    bySegment.set(point.segmentId, stored)
+  }
+  const runs = new Map<string, readonly NumericChartPoint[]>()
+  for (const [segmentId, stored] of bySegment) {
+    let run: NumericChartPoint[] = []
+    let index = 0
+    const flush = () => {
+      if (run.length !== 0) runs.set(`${segmentId}:${index}`, run)
+      run = []
+      index += 1
+    }
+    for (const point of stored.slice().sort((left, right) => left.timestamp - right.timestamp)) {
+      if (point.value === null || !Number.isFinite(point.value)) {
+        flush()
+      } else {
+        run.push(point as NumericChartPoint)
+      }
+    }
+    flush()
+  }
+  return runs
 }
 
 function number(value: number, locale: Locale): string {
