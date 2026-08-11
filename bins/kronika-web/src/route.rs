@@ -4,6 +4,8 @@ const DEFAULT_PAGE_SIZE: usize = 100;
 const MAX_PAGE_SIZE: usize = 1_000;
 const MAX_QUERY_BYTES: usize = 64 * 1024;
 const MAX_SECTION_BYTES: usize = 128;
+/// A screen draws a handful of tables; more than this is not a screen.
+const MAX_SNAPSHOT_SECTIONS: usize = 16;
 const MAX_FIELDS: usize = 256;
 const MAX_FILTERS: usize = 64;
 
@@ -18,6 +20,16 @@ pub(crate) enum Route {
     History(DataRequest),
     /// One stable page of physical rows in one explicit segment.
     Rows(RowsRequest),
+    /// One moment of several sections, counters already turned into rates.
+    Snapshot(SnapshotRequest),
+}
+
+/// One moment of one explicit segment, across the sections a screen draws.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SnapshotRequest {
+    pub(crate) segment_id: i64,
+    pub(crate) at: i64,
+    pub(crate) sections: Vec<String>,
 }
 
 /// Optional timestamp bounds for catalog listing only.
@@ -109,6 +121,9 @@ pub(crate) fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError
         .strip_prefix("/api/segments/")
         .ok_or(RouteError::NoSuchPath)?;
     let pieces: Vec<&str> = tail.split('/').collect();
+    if pieces.len() == 2 && pieces[1] == "snapshot" && !pieces[0].is_empty() {
+        return parse_snapshot(number("segment_id", pieces[0])?, query).map(Route::Snapshot);
+    }
     if pieces.len() != 4 || pieces[1] != "sections" || pieces.iter().any(|piece| piece.is_empty()) {
         return Err(RouteError::NoSuchPath);
     }
@@ -128,6 +143,35 @@ pub(crate) fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError
         "rows" => parse_rows(segment, query).map(Route::Rows),
         _ => Err(RouteError::NoSuchPath),
     }
+}
+
+fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, RouteError> {
+    let mut at = None;
+    let mut sections = Vec::new();
+    for (raw_name, raw_value) in pairs(query)? {
+        match raw_name {
+            "at" if at.is_none() => at = Some(number("at", raw_value)?),
+            "section" => {
+                let section = decoded("section", raw_value, false)?;
+                if section.is_empty() || section.len() > MAX_SECTION_BYTES {
+                    return Err(RouteError::BadParameter("section".to_owned()));
+                }
+                if sections.contains(&section) || sections.len() >= MAX_SNAPSHOT_SECTIONS {
+                    return Err(RouteError::BadParameter("section".to_owned()));
+                }
+                sections.push(section);
+            }
+            _other => return Err(RouteError::BadParameter(raw_name.to_owned())),
+        }
+    }
+    if sections.is_empty() {
+        return Err(RouteError::BadParameter("section".to_owned()));
+    }
+    Ok(SnapshotRequest {
+        segment_id,
+        at: at.ok_or_else(|| RouteError::BadParameter("at".to_owned()))?,
+        sections,
+    })
 }
 
 fn parse_catalog(query: &str) -> Result<Window, RouteError> {

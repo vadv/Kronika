@@ -14,6 +14,7 @@ mod index;
 mod query;
 mod render;
 mod rows;
+mod snapshot;
 
 /// Cache policy applied centrally after preparation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +61,7 @@ pub(crate) enum Prepared {
     Index(index::PreparedIndex),
     History(history::PreparedHistory),
     Rows(rows::PreparedRows),
+    Snapshot(snapshot::PreparedSnapshot),
     Empty(ResponseMeta),
 }
 
@@ -71,6 +73,7 @@ impl Prepared {
             Self::Index(prepared) => prepared.meta(),
             Self::History(prepared) => prepared.meta(),
             Self::Rows(prepared) => prepared.meta(),
+            Self::Snapshot(prepared) => prepared.meta(),
             Self::Empty(meta) => meta.clone(),
         }
     }
@@ -86,6 +89,7 @@ impl Prepared {
             Self::Index(prepared) => prepared.stream(emit, cancelled),
             Self::History(prepared) => prepared.stream(emit, cancelled),
             Self::Rows(prepared) => prepared.stream(emit, cancelled),
+            Self::Snapshot(prepared) => prepared.stream(emit, cancelled),
             Self::Empty(_meta) => Ok(()),
         }
     }
@@ -182,6 +186,7 @@ pub(crate) fn prepare(
         Route::Index(request) => index::prepare(root, request, if_none_match),
         Route::History(request) => history::prepare(root, request).map(Prepared::History),
         Route::Rows(request) => rows::prepare(root, request).map(Prepared::Rows),
+        Route::Snapshot(request) => snapshot::prepare(root, request).map(Prepared::Snapshot),
     }
 }
 
