@@ -115,7 +115,7 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [source, setSource] = useState<Source>("host")
-  const [hostSection, setHostSection] = useState<HostSection>("system")
+  const [hostSection, setHostSection] = useState<HostSection>("processes")
   const [pgSection, setPgSection] = useState<PostgresSection>("overview")
   const [lens, setLens] = useState<Lens>("generic")
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
