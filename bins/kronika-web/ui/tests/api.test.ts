@@ -79,7 +79,7 @@ test("the hour loader uses registry fields, bounded requests and exact locators"
 
     const hour = await api.loadHour(START, new AbortController().signal)
     assert.ok(maximumActive > 1)
-    assert.ok(maximumActive <= 4)
+    assert.ok(maximumActive <= 8)
     assert.deepEqual(hour.availableSections, [
       "os_loadavg", "pg_stat_database", "pg_log_errors", "health",
     ])

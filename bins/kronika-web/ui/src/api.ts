@@ -32,7 +32,29 @@ export const PRODUCT_SECTION_GROUPS = {
 
 const UI_SECTION_NAMES = unique(Object.values(PRODUCT_SECTION_GROUPS).flat())
 const UI_SECTION_NAME_SET = new Set(UI_SECTION_NAMES)
-const REQUEST_CONCURRENCY = 4
+
+/** Every view draws the timeline, so these four are the floor. */
+const TIMELINE_SECTIONS = ["health", "os_loadavg", "os_meminfo", "os_psi"] as const
+
+/** What each view actually reads. Asking for a section a view never draws
+ *  costs a full round trip and, for the ones that carry no index block, a
+ *  guaranteed 404. */
+export const VIEW_SECTIONS: Readonly<Record<string, readonly string[]>> = {
+  system: [...TIMELINE_SECTIONS, "os_cpu", "os_diskstats", "os_mountinfo", "os_netdev", "os_process"],
+  processes: [...TIMELINE_SECTIONS, "os_process", "pg_stat_activity"],
+  "postgresql:overview": [...TIMELINE_SECTIONS, ...PRODUCT_SECTION_GROUPS.postgresqlOverview],
+  "postgresql:activity": [...TIMELINE_SECTIONS, ...PRODUCT_SECTION_GROUPS.postgresqlActivity],
+  "postgresql:statements": [...TIMELINE_SECTIONS, ...PRODUCT_SECTION_GROUPS.postgresqlStatements],
+  "postgresql:locks": [...TIMELINE_SECTIONS, ...PRODUCT_SECTION_GROUPS.postgresqlLocks],
+  "postgresql:databases": [...TIMELINE_SECTIONS, ...PRODUCT_SECTION_GROUPS.postgresqlDatabases],
+  events: [...TIMELINE_SECTIONS, ...PRODUCT_SECTION_GROUPS.events],
+}
+
+// The link to a monitored host is the slow part: a request costs about a second
+// of latency whatever it returns, while the host answers one in a quarter of
+// that on a single core. Deep enough to hide the latency, shallow enough not to
+// queue behind that core.
+const REQUEST_CONCURRENCY = 8
 
 export interface DataRow {
   readonly segmentId: string
@@ -153,7 +175,11 @@ export async function discoverLatestHour(signal: AbortSignal): Promise<number> {
   return (await discoverHourSelection(signal)).latest
 }
 
-export async function loadHour(start: number, signal: AbortSignal): Promise<HourData> {
+export async function loadHour(
+  start: number,
+  signal: AbortSignal,
+  wanted?: readonly string[],
+): Promise<HourData> {
   const fixture = bundledFixtureHour(start)
   if (fixture !== null) return fixture
   const end = start + 3_600_000_000
@@ -163,7 +189,7 @@ export async function loadHour(start: number, signal: AbortSignal): Promise<Hour
   )
   const sourceFamilies = catalog
     .find((record) => record.record === "catalog")?.source_families as readonly SourceFamily[] | undefined
-  const tasks = segments.flatMap(segmentTasks)
+  const tasks = segments.flatMap((segment) => segmentTasks(segment, wanted))
   const loaded = await mapLimited(tasks, REQUEST_CONCURRENCY, (task) => runTask(task, signal))
   const within = (row: { readonly timestamp: number }) => row.timestamp >= start && row.timestamp < end
   const grouped: Record<string, DataRow[]> = {}
@@ -189,6 +215,23 @@ export async function loadHour(start: number, signal: AbortSignal): Promise<Hour
     findings: findings.sort(findingOrder),
     sourceFamilies: sourceFamilies ?? [],
     segmentCount: segments.length,
+  })
+}
+
+/** Add a later view's sections to what is already on screen. The caller only
+ *  ever asks for names it does not hold, so rows never arrive twice. */
+export function mergeHourData(before: HourData, after: HourData): HourData {
+  const sections: Record<string, readonly DataRow[]> = { ...before.sections }
+  for (const [name, rows] of Object.entries(after.sections)) {
+    sections[name] = [...(sections[name] ?? []), ...rows]
+  }
+  return hourData({
+    sections,
+    availableSections: unique([...before.availableSections, ...after.availableSections]),
+    points: [...before.points, ...after.points].sort(pointOrder),
+    findings: [...before.findings, ...after.findings].sort(findingOrder),
+    sourceFamilies: after.sourceFamilies.length === 0 ? before.sourceFamilies : after.sourceFamilies,
+    segmentCount: Math.max(before.segmentCount, after.segmentCount),
   })
 }
 
@@ -264,15 +307,16 @@ type LoadResult =
   | { readonly kind: "history"; readonly logicalName: string; readonly rows: readonly DataRow[] }
   | { readonly kind: "index"; readonly points: readonly Point[]; readonly findings: readonly Finding[] }
 
-function segmentTasks(segment: Segment): readonly LoadTask[] {
-  const names = segmentSectionNames(segment)
+function segmentTasks(segment: Segment, wanted?: readonly string[]): readonly LoadTask[] {
+  const keep = wanted === undefined ? null : new Set(wanted)
+  const names = segmentSectionNames(segment).filter((name) => keep === null || keep.has(name))
   const tasks: LoadTask[] = names.map((logicalName) => ({
     kind: "history",
     segmentId: segment.id,
     logicalName,
   }))
   for (const logicalName of names) tasks.push({ kind: "index", segmentId: segment.id, logicalName })
-  if (names.some((name) => name.startsWith("os_"))) {
+  if ((keep === null || keep.has("health")) && segmentSectionNames(segment).some((name) => name.startsWith("os_"))) {
     tasks.push(
       { kind: "history", segmentId: segment.id, logicalName: "health" },
       { kind: "index", segmentId: segment.id, logicalName: "health" },

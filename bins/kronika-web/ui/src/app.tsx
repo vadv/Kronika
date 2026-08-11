@@ -1,12 +1,14 @@
 import { Activity, HelpCircle, Languages, Moon, Sun } from "lucide-react"
 import { dictionaries } from "kronika:i18n"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client"
 
 import {
+  VIEW_SECTIONS,
   discoverHourSelection,
   fieldNameForLocator,
   loadHour,
+  mergeHourData,
   resolveLocator,
   type DataRow,
   type Finding,
@@ -126,32 +128,48 @@ function App() {
     })
     return () => controller.abort()
   }, [])
+  // One view is on screen at a time, so one view's sections are what a load
+  // fetches. Switching views adds the difference instead of reloading the hour.
+  const viewKey = source === "host" ? hostSection : source === "postgresql" ? `postgresql:${pgSection}` : "events"
+  const loaded = useRef({ hour: null as number | null, names: new Set<string>() })
   useEffect(() => {
     if (hour === null) return
-    const controller = new AbortController()
-    setLoading(true)
-    setError(null)
     setDockClosed(false)
     setSelectedFinding(null)
     setEventScope(null)
     setPgFocus(null)
     setSystemFocus(null)
-    void loadHour(hour, controller.signal).then((loaded) => {
-      const times = [loaded.processes, loaded.health, loaded.load, loaded.memory, loaded.pressure, loaded.activities]
-        .flatMap((rows) => rows.map((row) => row.timestamp))
-      setData(loaded)
-      setCursor(times.length === 0 ? hour : Math.max(...times))
+  }, [hour])
+  useEffect(() => {
+    if (hour === null) return
+    const fresh = loaded.current.hour !== hour
+    if (fresh) loaded.current = { hour, names: new Set() }
+    const wanted = VIEW_SECTIONS[viewKey] ?? []
+    const missing = wanted.filter((name) => !loaded.current.names.has(name))
+    if (missing.length === 0) return
+    for (const name of missing) loaded.current.names.add(name)
+    const controller = new AbortController()
+    setLoading(true)
+    setError(null)
+    void loadHour(hour, controller.signal, missing).then((incoming) => {
+      setData((before) => {
+        const next = fresh ? incoming : mergeHourData(before, incoming)
+        const times = [next.processes, next.health, next.load, next.memory, next.pressure, next.activities]
+          .flatMap((rows) => rows.map((row) => row.timestamp))
+        if (fresh) setCursor(times.length === 0 ? hour : Math.max(...times))
+        return next
+      })
       setLoading(false)
     }).catch((reason: unknown) => {
       if (!controller.signal.aborted) {
-        setData(EMPTY_DATA)
-        setCursor(hour)
+        for (const name of missing) loaded.current.names.delete(name)
+        if (fresh) { setData(EMPTY_DATA); setCursor(hour) }
         setError(reason instanceof Error ? reason.message : String(reason))
         setLoading(false)
       }
     })
     return () => controller.abort()
-  }, [hour])
+  }, [hour, viewKey])
   useEffect(() => {
     const shortcuts = (event: KeyboardEvent) => {
       const target = event.target
