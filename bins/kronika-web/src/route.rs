@@ -257,6 +257,30 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
             }
         }
     }
+    validate_snapshot_shape(&sections, &fields, &by, top, &filters, type_id, row_ordinal)?;
+    Ok(SnapshotRequest {
+        segment_id,
+        at: at.ok_or_else(|| RouteError::BadParameter("at".to_owned()))?,
+        sections,
+        fields,
+        by,
+        top,
+        text,
+        filters,
+        type_id,
+        row_ordinal,
+    })
+}
+
+fn validate_snapshot_shape(
+    sections: &[String],
+    fields: &[String],
+    by: &[String],
+    top: Option<usize>,
+    filters: &[Filter],
+    type_id: Option<u32>,
+    row_ordinal: Option<u64>,
+) -> Result<(), RouteError> {
     if sections.is_empty() {
         return Err(RouteError::BadParameter("section".to_owned()));
     }
@@ -277,18 +301,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
     {
         return Err(RouteError::BadParameter("row_ordinal".to_owned()));
     }
-    Ok(SnapshotRequest {
-        segment_id,
-        at: at.ok_or_else(|| RouteError::BadParameter("at".to_owned()))?,
-        sections,
-        fields,
-        by,
-        top,
-        text,
-        filters,
-        type_id,
-        row_ordinal,
-    })
+    Ok(())
 }
 
 fn parse_catalog(query: &str) -> Result<Window, RouteError> {

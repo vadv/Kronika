@@ -147,21 +147,7 @@ impl PreparedSnapshot {
         emit: &mut impl FnMut(Vec<u8>) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<bool, ApiError> {
-        let fields = plan
-            .fields
-            .iter()
-            .map(|field| {
-                (
-                    field.name.as_str(),
-                    field.column.and_then(|name| plan.contract.column(name)),
-                )
-            })
-            .collect::<Vec<_>>();
-        if !emit(record(json!({
-            "record": "layout",
-            "layout": projected_layout(&section.logical_name, plan.contract, &fields),
-            "rates": rate_columns(plan),
-        }))?) {
+        if !Self::emit_layout(section, plan, emit)? {
             return Ok(false);
         }
         if !plan.applies() {
@@ -202,7 +188,7 @@ impl PreparedSnapshot {
         let elapsed = moments
             .current
             .checked_sub(before_at.unwrap_or(moments.current))
-            .filter(|gap| *gap > 0);
+            .filter(|delta| *delta > 0);
         let mut failure = None;
         let mut rows = Vec::new();
         let (start_row, row_count) = self
@@ -254,6 +240,28 @@ impl PreparedSnapshot {
             }
         }
         Ok(true)
+    }
+
+    fn emit_layout(
+        section: &SectionPlans,
+        plan: &Plan,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+    ) -> Result<bool, ApiError> {
+        let fields = plan
+            .fields
+            .iter()
+            .map(|field| {
+                (
+                    field.name.as_str(),
+                    field.column.and_then(|name| plan.contract.column(name)),
+                )
+            })
+            .collect::<Vec<_>>();
+        Ok(emit(record(json!({
+            "record": "layout",
+            "layout": projected_layout(&section.logical_name, plan.contract, &fields),
+            "rates": rate_columns(plan),
+        }))?))
     }
 
     /// Sections without a timestamp hold one state, so the snapshot is the
