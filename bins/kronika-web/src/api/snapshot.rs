@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use kronika_reader::{Cell, Row, Segment, SegmentKind};
+use kronika_reader::{Cell, Reader, Row, Segment, SegmentKind, SegmentRef};
 use kronika_registry::ColumnClass;
 use serde_json::{Value, json};
 
@@ -18,11 +18,17 @@ use crate::route::{DataRequest, SegmentRequest, SnapshotRequest};
 
 pub(crate) struct PreparedSnapshot {
     segment: Segment,
+    /// The segment before this one, for the moment a rate is measured against
+    /// when the cursor rests on the first sample this one holds.
+    earlier: Option<Segment>,
     at: i64,
     sections: Vec<SectionPlans>,
     by: Option<String>,
     top: Option<usize>,
 }
+
+/// Counter readings of one moment, keyed by the identity they belong to.
+type Readings = BTreeMap<Vec<String>, BTreeMap<&'static str, f64>>;
 
 struct SectionPlans {
     logical_name: String,
@@ -32,6 +38,7 @@ struct SectionPlans {
 pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedSnapshot, ApiError> {
     let (reader, segment_ref) = explicit_segment(root, request.segment_id)?;
     let segment = reader.open_segment(&segment_ref)?;
+    let earlier = preceding(&reader, &segment_ref)?;
     let mut sections = Vec::with_capacity(request.sections.len());
     for logical_name in request.sections {
         let data = DataRequest {
@@ -59,6 +66,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
     }
     Ok(PreparedSnapshot {
         segment,
+        earlier,
         at: request.at,
         sections,
         by: request.by,
@@ -134,11 +142,17 @@ impl PreparedSnapshot {
         let Some(moments) = self.moments(plan, timestamp, cancelled)? else {
             return Ok(true);
         };
-        let previous = self.collect(plan, timestamp, moments.previous, cancelled)?;
+        let (previous, before_at) = match moments.previous {
+            Some(previous) => (
+                Self::collect(&self.segment, plan, timestamp, previous, cancelled)?,
+                Some(previous),
+            ),
+            None => self.earlier_moment(plan, timestamp, cancelled)?,
+        };
         let dictionary = self.segment.dictionary()?;
         let elapsed = moments
             .current
-            .checked_sub(moments.previous.unwrap_or(moments.current))
+            .checked_sub(before_at.unwrap_or(moments.current))
             .filter(|gap| *gap > 0);
         let mut failure = None;
         let mut rows = Vec::new();
@@ -268,21 +282,18 @@ impl PreparedSnapshot {
 
     /// The preceding moment's rows, keyed by identity, for the subtraction.
     fn collect(
-        &self,
+        segment: &Segment,
         plan: &Plan,
         timestamp: &'static str,
-        at: Option<i64>,
+        at: i64,
         cancelled: &impl Fn() -> bool,
-    ) -> Result<BTreeMap<Vec<String>, BTreeMap<&'static str, f64>>, ApiError> {
+    ) -> Result<Readings, ApiError> {
         let mut collected = BTreeMap::new();
-        let Some(at) = at else {
-            return Ok(collected);
-        };
         let counters = rate_columns(plan);
         if counters.is_empty() {
             return Ok(collected);
         }
-        self.segment.visit_rows(
+        segment.visit_rows(
             plan.type_id,
             &plan.projection,
             0,
@@ -308,6 +319,44 @@ impl PreparedSnapshot {
             },
         )?;
         Ok(collected)
+    }
+
+    /// The last moment of the segment before this one. Without it the first
+    /// sample of every segment would carry no rate at all.
+    fn earlier_moment(
+        &self,
+        plan: &Plan,
+        timestamp: &'static str,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(Readings, Option<i64>), ApiError> {
+        let Some(earlier) = self.earlier.as_ref() else {
+            return Ok((BTreeMap::new(), None));
+        };
+        let mut last: Option<i64> = None;
+        earlier.visit_rows(
+            plan.type_id,
+            &[timestamp],
+            0,
+            usize::MAX,
+            |_ordinal, row| {
+                if cancelled() {
+                    return false;
+                }
+                if let Some(stored) = row_timestamp(&row, timestamp)
+                    && last.is_none_or(|chosen| stored > chosen)
+                {
+                    last = Some(stored);
+                }
+                true
+            },
+        )?;
+        let Some(at) = last else {
+            return Ok((BTreeMap::new(), None));
+        };
+        Ok((
+            Self::collect(earlier, plan, timestamp, at, cancelled)?,
+            Some(at),
+        ))
     }
 
     fn row_record(
@@ -359,6 +408,23 @@ fn sort_value(row: &Value, column: &str) -> f64 {
         .and_then(|values| values.get(column))
         .and_then(Value::as_f64)
         .unwrap_or(f64::NEG_INFINITY)
+}
+
+/// The finished segment closest before this one. A counter is only a rate
+/// against an earlier reading, and the first sample of a segment has none
+/// inside it.
+fn preceding(reader: &Reader, segment_ref: &SegmentRef) -> Result<Option<Segment>, ApiError> {
+    let listing = reader.catalog_segments(..)?;
+    let chosen = listing
+        .segments
+        .into_iter()
+        .filter(|candidate| candidate.id() != segment_ref.id())
+        .filter(|candidate| candidate.max_ts() <= segment_ref.min_ts())
+        .max_by_key(SegmentRef::max_ts);
+    chosen
+        .map(|candidate| reader.open_segment(&candidate))
+        .transpose()
+        .map_err(ApiError::from)
 }
 
 struct Moments {

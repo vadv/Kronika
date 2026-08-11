@@ -631,3 +631,47 @@ fn an_order_needs_one_section_to_name_a_column_in() {
     assert!(crate::route::parse(&path, Some("at=1&section=a&section=b&top=5")).is_err());
     assert!(crate::route::parse(&path, Some("at=1&section=a&by=x&top=5")).is_ok());
 }
+
+#[test]
+fn the_first_moment_of_a_segment_rates_against_the_segment_before_it() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let root = DataRoot::open(directory.path()).expect("data root");
+    let writer = root
+        .acquire_writer(LayoutLimits::default())
+        .expect("acquire writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("open journal");
+
+    let first = SegmentAddress::new(SegmentId::new(SEGMENT_ID).expect("first id")).expect("first");
+    let mut buffers = SectionBuffers::new();
+    buffers.push(diskstats(100, 0, 10)).expect("row fits");
+    let part = buffers.flush(&[]).expect("encode").expect("nonempty");
+    journal.append(first.id, &part).expect("append first");
+    write_segment(&journal, &writer, first).expect("finish first");
+    journal.reset().expect("close the first segment");
+
+    let second = SegmentAddress::new(SegmentId::new(SEGMENT_ID + 1_000).expect("second id"))
+        .expect("second");
+    let mut buffers = SectionBuffers::new();
+    buffers.push(diskstats(200, 0, 30)).expect("row fits");
+    let part = buffers.flush(&[]).expect("encode").expect("nonempty");
+    journal.append(second.id, &part).expect("append second");
+    write_segment(&journal, &writer, second).expect("finish second");
+
+    let target = format!(
+        "/api/segments/{}/snapshot?at=200&section=os_diskstats&field=reads",
+        SEGMENT_ID + 1_000
+    );
+    let path = target.split('?').next().expect("path");
+    let query = target.split_once('?').expect("query").1;
+    let route = crate::route::parse(path, Some(query)).expect("route");
+    let prepared =
+        crate::api::prepare(directory.path(), SOURCES, route, None).expect("prepare snapshot");
+    let records = stream(prepared).expect("snapshot body");
+    let rows = records
+        .iter()
+        .filter(|record| record["record"] == "row")
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 1);
+    // Twenty reads across a hundred microseconds is two hundred thousand a second.
+    assert_eq!(rows[0]["values"]["reads"], serde_json::json!(200_000.0));
+}
