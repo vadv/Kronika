@@ -41,10 +41,17 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
             filters: Vec::new(),
             after: None,
         };
-        sections.push(SectionPlans {
-            plans: plans(&segment, &data, false)?,
-            logical_name,
-        });
+        // A section reaches an active segment only with its first sample, so
+        // a young one is missing most of them. An absent section is an empty
+        // table, not a failed request for every other section beside it.
+        match plans(&segment, &data, false) {
+            Ok(plans) => sections.push(SectionPlans {
+                logical_name,
+                plans,
+            }),
+            Err(ApiError::NoSuchSection) => {}
+            Err(error) => return Err(error),
+        }
     }
     Ok(PreparedSnapshot {
         segment,

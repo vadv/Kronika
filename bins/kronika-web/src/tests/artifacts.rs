@@ -541,3 +541,29 @@ fn postgres_health_counts_every_active_backend_and_adds_its_penalty() {
     assert_eq!(points("overall_health")[1]["value"], 30);
     assert_eq!(points("active_backends").len(), 0);
 }
+
+#[test]
+fn a_snapshot_answers_for_the_sections_that_are_there() {
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_health(3);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_activity&section=os_diskstats"
+    );
+    let prepared = fixture.prepare(&target, None);
+    assert_eq!(prepared.meta().status, StatusCode::OK);
+    let records = stream(prepared).expect("snapshot body");
+    let sections = records
+        .iter()
+        .filter(|record| record["record"] == "layout")
+        .map(|record| record["layout"]["logical_name"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(sections, [serde_json::json!("pg_stat_activity")]);
+    let rows = records
+        .iter()
+        .filter(|record| record["record"] == "row")
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 4);
+    assert!(rows.iter().all(|row| row["timestamp"] == "150"));
+}
