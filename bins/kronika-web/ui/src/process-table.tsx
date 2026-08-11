@@ -1,5 +1,6 @@
 import {
   type ColumnDef,
+  type ColumnSizingState,
   flexRender,
   getCoreRowModel,
   getSortedRowModel,
@@ -7,9 +8,10 @@ import {
   useReactTable,
 } from "@tanstack/react-table"
 import { useVirtualizer } from "@tanstack/react-virtual"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import type { Cell, DataRow } from "./api"
+import { fittedWidth, widestCell } from "./column-size"
 import { LabelHelp, type Translate } from "./help"
 import {
   asNumber,
@@ -102,6 +104,7 @@ export function ProcessTable({
   readonly ticksPerSecond: number | null
 }) {
   const [sorting, setSorting] = useState<SortingState>([])
+  const [sizing, setSizing] = useState<ColumnSizingState>({})
   useEffect(() => {
     setSorting(lens === "generic" ? [{ id: "pid", desc: false }] : [{ id: defaultSort(lens), desc: true }])
   }, [lens])
@@ -129,18 +132,31 @@ export function ProcessTable({
     getCoreRowModel: getCoreRowModel(),
     getRowId: processKey,
     getSortedRowModel: getSortedRowModel(),
+    columnResizeMode: "onChange",
+    enableColumnResizing: true,
+    onColumnSizingChange: setSizing,
     onSortingChange: setSorting,
-    state: { sorting },
+    state: { columnSizing: sizing, sorting },
   })
   const displayed = table.getRowModel().rows
   const scroll = useRef<HTMLDivElement>(null)
+  // A grip is dragged to resize and double clicked to fit: the width of the
+  // widest cell on screen, which is what a person means by "fit".
+  const fit = useCallback((id: string, index: number) => {
+    const root = scroll.current
+    if (root === null) return
+    setSizing((current) => ({ ...current, [id]: fittedWidth(widestCell(root, index)) }))
+  }, [])
   const virtual = useVirtualizer({ count: displayed.length, estimateSize: () => 23, getScrollElement: () => scroll.current, overscan: 14 })
   const width = table.getTotalSize()
   return (
     <div aria-label={t("table.processes")} className="process-table" data-testid="process-table" role="table">
       <div className="process-scroll" ref={scroll}>
         <div className="process-head" role="row" style={{ width }}>
-          {table.getHeaderGroups()[0]?.headers.map((header) => <div className={stickyClass(header.column.columnDef.meta, true)} key={header.id} role="columnheader" style={{ width: header.getSize() }}>{flexRender(header.column.columnDef.header, header.getContext())}</div>)}
+          {table.getHeaderGroups()[0]?.headers.map((header, index) => <div className={stickyClass(header.column.columnDef.meta, true)} key={header.id} role="columnheader" style={{ width: header.getSize() }}>
+            {flexRender(header.column.columnDef.header, header.getContext())}
+            <span className="column-grip" onDoubleClick={() => fit(header.column.id, index)} onMouseDown={header.getResizeHandler()} onTouchStart={header.getResizeHandler()} />
+          </div>)}
         </div>
         {displayed.length === 0
           ? <p className="table-empty">{t("table.empty")}</p>

@@ -159,6 +159,9 @@ h2 { font-size: var(--t-md); }
 .workspace { padding: 8px 10px 20px; }
 .cursor-time { color: var(--accent3); flex: 0 0 auto; font-size: var(--t-sm); font-variant-numeric: tabular-nums; }
 .shown-line { stroke: var(--accent3); stroke-width: 1; }
+.process-head [role="columnheader"], .entity-head [role="columnheader"] { position: relative; user-select: none; }
+.column-grip { bottom: 0; cursor: col-resize; position: absolute; right: 0; top: 0; touch-action: none; width: 7px; }
+.column-grip:hover { background: var(--accent3); opacity: 0.5; }
 .cursor-missing { color: var(--warn); font-size: var(--t-xs); margin-left: 8px; text-transform: uppercase; }
 .cursor-behind { animation: cursor-behind-pulse 1.1s ease-in-out infinite; color: var(--fg3); font-size: var(--t-xs); margin-left: 8px; text-transform: uppercase; }
 @keyframes cursor-behind-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }

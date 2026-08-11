@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { Cell, DataRow } from "../src/api.ts"
+import { fittedWidth } from "../src/column-size.ts"
 import { activityFor, formatUtc, identifier, measure, nearestTime, processCommand, processLens, rawText, shownMoment, selectedHour, stateText } from "../src/model.ts"
 
 function row(timestamp: number): DataRow {
@@ -72,4 +73,11 @@ test("the shown moment is the last sample at or before the cursor", () => {
   assert.equal(shownMoment(sections, 90), 90)
   assert.equal(shownMoment(sections, 5), null)
   assert.equal(shownMoment({}, 50), null)
+})
+
+test("a fitted column takes the widest cell within bounds", () => {
+  assert.equal(fittedWidth(200), 210)
+  assert.equal(fittedWidth(0), 64)
+  assert.equal(fittedWidth(4000), 720)
+  assert.equal(fittedWidth(120.2), 131)
 })

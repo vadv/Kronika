@@ -1,5 +1,6 @@
 import {
   type ColumnDef,
+  type ColumnSizingState,
   flexRender,
   getCoreRowModel,
   getSortedRowModel,
@@ -7,9 +8,10 @@ import {
   useReactTable,
 } from "@tanstack/react-table"
 import { useVirtualizer } from "@tanstack/react-virtual"
-import { useMemo, useRef, useState } from "react"
+import { useCallback, useMemo, useRef, useState } from "react"
 
 import type { Cell, DataRow } from "./api"
+import { fittedWidth, widestCell } from "./column-size"
 import { LabelHelp, type Translate } from "./help"
 import { asNumber, formatUtc, identifier, measure, rawText, value, type Locale } from "./model"
 
@@ -63,6 +65,7 @@ export function EntityTable({
   // the visible two hundred by another column answers a different question
   // than the two hundred largest by that column.
   const [sorting, setSorting] = useState<SortingState>([])
+  const [sizing, setSizing] = useState<ColumnSizingState>({})
   const ordering: SortingState = order === undefined
     ? sorting
     : [{ id: order.column, desc: order.descending }]
@@ -100,15 +103,25 @@ export function EntityTable({
       const first = next[0]
       onOrder?.(first === undefined ? null : { column: first.id, descending: first.desc })
     },
-    state: { sorting: ordering },
+    columnResizeMode: "onChange",
+    enableColumnResizing: true,
+    onColumnSizingChange: setSizing,
+    state: { columnSizing: sizing, sorting: ordering },
   })
+  // A grip is dragged to resize and double clicked to fit: the width of the
+  // widest cell on screen, which is what a person means by "fit".
+  const fit = useCallback((id: string, index: number) => {
+    const root = parent.current
+    if (root === null) return
+    setSizing((current) => ({ ...current, [id]: fittedWidth(widestCell(root, index)) }))
+  }, [])
   const rendered = table.getRowModel().rows
   const virtual = useVirtualizer({ count: rendered.length, estimateSize: () => 23, getScrollElement: () => parent.current, overscan: 10 })
   const width = table.getTotalSize()
   return <section aria-label={label} className="entity-table" data-testid={testId}>
     <div className="entity-scroll" ref={parent} role="table">
       <div className="entity-head" role="row" style={{ width }}>
-        {table.getHeaderGroups()[0]?.headers.map((header) => {
+        {table.getHeaderGroups()[0]?.headers.map((header, index) => {
           const sorted = header.column.getIsSorted()
           return <div className={sticky(header.column.columnDef.meta, true)} key={header.id} role="columnheader" style={{ left: stickyLeft(header.column.columnDef.meta), width: header.getSize() }}>
             <button className="entity-sort" onClick={header.column.getToggleSortingHandler()} type="button">
@@ -116,6 +129,7 @@ export function EntityTable({
               {sorted !== false && <i>{sorted === "asc" ? "↑" : "↓"}</i>}
             </button>
             {t !== undefined && columnHelp(header.column.columnDef.meta) !== null && <LabelHelp helpKey={columnHelp(header.column.columnDef.meta)!.help} iconOnly labelKey={columnHelp(header.column.columnDef.meta)!.label} t={t} />}
+            <span className="column-grip" onDoubleClick={() => fit(header.column.id, index)} onMouseDown={header.getResizeHandler()} onTouchStart={header.getResizeHandler()} />
           </div>
         })}
       </div>
