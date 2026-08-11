@@ -257,7 +257,7 @@ export function SystemView({
         <header><span>{t("system.history")}</span><strong>{selectedMetric === undefined ? "—" : t(selectedMetric.spec.label)}</strong></header>
         {selectedMetric === undefined
           ? <p className="table-empty">{t("system.no_metrics")}</p>
-          : <SeriesChart hour={hour} label={t(selectedMetric.spec.label)} locale={locale} points={selectedPoints} unit={selectedMetric.spec.unit} />}
+          : <SeriesChart hour={hour} label={t(selectedMetric.spec.label)} locale={locale} points={selectedPoints} />}
       </section>
     </section>
     <section className="entity-panels">

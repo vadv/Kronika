@@ -23,15 +23,12 @@ function row(timestamp, values, segmentId = "segment-a", ordinal = "0") {
   return { segmentId, typeId: "1100001", ordinal, timestamp, values }
 }
 
-test("process history follows PID and start time and keeps null distinct from zero", () => {
-  const process = row(20, { pid: 77, starttime: 10 })
+test("process history reads in time order and keeps null distinct from zero", () => {
   const series = detail.processLensHistory([
     row(30, { pid: 77, starttime: 10, utime: null, stime: 4 }, "segment-a", "2"),
     row(10, { pid: 77, starttime: 10, utime: 0, stime: 2 }, "segment-a", "0"),
-    row(40, { pid: 77, starttime: 11, utime: 99, stime: 99 }, "segment-a", "3"),
     row(20, { pid: 77, starttime: 10, utime: 3, stime: 3 }, "segment-a", "1"),
-    row(50, { pid: 78, starttime: 10, utime: 99, stime: 99 }, "segment-a", "4"),
-  ], process, "cpu")
+  ], "cpu")
 
   assert.deepEqual(series.map((item) => item.field), [
     "utime", "stime", "rundelay_ns", "blkdelay_ticks", "nvcsw", "nivcsw", "minflt", "majflt",
@@ -41,12 +38,11 @@ test("process history follows PID and start time and keeps null distinct from ze
 })
 
 test("null values split rendered history runs while later zero stays numeric", () => {
-  const process = row(10, { pid: 77, starttime: 10 })
   const [series] = detail.processLensHistory([
     row(10, { pid: 77, starttime: 10, rmem_kb: 1 }),
     row(20, { pid: 77, starttime: 10, rmem_kb: null }),
     row(30, { pid: 77, starttime: 10, rmem_kb: 0 }),
-  ], process, "memory")
+  ], "memory")
 
   assert.equal(series.points[0].segmentId, series.points[1].segmentId)
   assert.notEqual(series.points[1].segmentId, series.points[2].segmentId)

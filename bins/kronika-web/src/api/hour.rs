@@ -19,7 +19,7 @@ use super::index::stream_series;
 use super::query::plans;
 use super::render::record;
 use super::{ApiError, CachePolicy, ResponseMeta};
-use crate::route::{DataRequest, SegmentRequest, Window};
+use crate::route::{DataRequest, HourRequest, SegmentRequest, SeriesRequest, Window};
 
 const SERIES: &str = "health";
 
@@ -42,13 +42,15 @@ pub(crate) struct PreparedHour {
     segments: Vec<SegmentRef>,
     window: Window,
     hours: Vec<i64>,
+    series: Option<SeriesRequest>,
 }
 
 pub(super) fn prepare(
     root: &Path,
-    requested: Window,
+    request: HourRequest,
     configured_sources: u32,
 ) -> Result<PreparedHour, ApiError> {
+    let requested = request.window;
     let reader = Reader::open(root)?;
     let stored = reader.catalog_segments(..)?;
     let hours = hours_of(&stored.segments);
@@ -73,6 +75,7 @@ pub(super) fn prepare(
         segments,
         window,
         hours,
+        series: request.series,
     })
 }
 
@@ -137,8 +140,19 @@ impl PreparedHour {
             reader,
             catalog,
             segments,
+            series,
             ..
         } = self;
+        // A named section is one object's series across the hour, and it needs
+        // neither the catalog nor the lanes drawn beside the line.
+        if let Some(series) = series {
+            for segment in &segments {
+                if cancelled() || !emit_series(&reader, segment, &series, emit, cancelled)? {
+                    return Ok(());
+                }
+            }
+            return Ok(());
+        }
         catalog.stream(emit, cancelled)?;
         for segment in &segments {
             if cancelled() {
@@ -168,6 +182,30 @@ impl PreparedHour {
             started.elapsed().as_micros(),
         );
         Ok(())
+    }
+}
+
+fn emit_series(
+    reader: &Reader,
+    segment_ref: &SegmentRef,
+    series: &SeriesRequest,
+    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    cancelled: &impl Fn() -> bool,
+) -> Result<bool, ApiError> {
+    let segment = reader.open_segment(segment_ref)?;
+    let request = DataRequest {
+        segment: SegmentRequest {
+            segment_id: segment_ref.id(),
+            section: series.section.clone(),
+        },
+        fields: series.fields.clone(),
+        filters: series.filters.clone(),
+        after: None,
+    };
+    match plans(&segment, &request, true) {
+        Ok(plans) => stream_plans(&segment, &series.section, &plans, emit, cancelled),
+        Err(ApiError::NoSuchSection) => Ok(true),
+        Err(error) => Err(error),
     }
 }
 

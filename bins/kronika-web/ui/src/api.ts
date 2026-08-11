@@ -335,6 +335,42 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
   }
 }
 
+/** One object's rows across the whole hour: what a chart in the detail panel
+ *  draws. A snapshot is one moment, and a moment is not a line. */
+export async function loadSeries(
+  hour: number,
+  section: string,
+  where: Readonly<Record<string, string>>,
+  fields: readonly string[],
+  signal: AbortSignal,
+): Promise<readonly DataRow[]> {
+  const query = [
+    `from=${hour}`,
+    `to=${hour + 3_600_000_000 - 1}`,
+    `section=${encodeURIComponent(section)}`,
+    ...fields.map((name) => `field=${encodeURIComponent(name)}`),
+    ...Object.entries(where).map(([column, value]) => `where.${encodeURIComponent(column)}=${encodeURIComponent(value)}`),
+  ].join("&")
+  const records = await request(`/api/hour?${query}`, signal)
+  const layouts = new Map<string, readonly string[]>()
+  const rows: DataRow[] = []
+  for (const record of records) {
+    if (record.record === "layout") {
+      const layout = record.layout as { readonly type_id: unknown; readonly columns: readonly { readonly name: unknown }[] }
+      if (Array.isArray(layout.columns)) {
+        layouts.set(
+          requiredText(layout.type_id, "layout type_id"),
+          layout.columns.map((column) => requiredText(column.name, "column name")),
+        )
+      }
+    } else if (record.record === "row") {
+      const row = laneRow(record, "", layouts)
+      if (row !== null) rows.push(row)
+    }
+  }
+  return rows
+}
+
 /** A lane row of the hour. Its section comes from the layout the row names,
  *  the same way history reads one. */
 function laneRow(

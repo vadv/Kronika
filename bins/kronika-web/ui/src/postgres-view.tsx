@@ -6,7 +6,7 @@ import { EntityTable, type EntityColumn } from "./entity-table"
 import type { Translate } from "./help"
 import { fieldNameForLocator } from "./api"
 import { LabelHelp } from "./help"
-import { asNumber, formatUtc, identifier, measure, rawText, snapshot, value, type Locale } from "./model"
+import { asNumber, formatUtc, humanBytes, identifier, measure, rawText, snapshot, value, type Locale } from "./model"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 
@@ -125,7 +125,7 @@ function Overview({ cursor, data, hour, locale, t }: { readonly cursor: number; 
   const overviewSections = groupSections(data.pgOverview)
   return <section className="pg-overview">
     <div className="overview-metrics">{totals.map(([label, output]) => <article key={label}><span>{t(label)}</span><strong>{measure(output, locale)}</strong></article>)}</div>
-    {history.length !== 0 && <SeriesChart hour={hour} label={t("pg.overview.backend_history")} locale={locale} points={history} unit="" />}
+    {history.length !== 0 && <SeriesChart hour={hour} label={t("pg.overview.backend_history")} locale={locale} points={history} />}
     {overviewSections.map(([logicalName, allRows]) => {
       const rows = snapshot(allRows, cursor)
       if (rows.length === 0) return null
@@ -200,7 +200,7 @@ function PgDetail({ allRows, columns, historyField, hour, locale, onClose, row, 
     <header><div><span>{t(`pg.section.${sectionName(section)}`)}</span><h2>{detailTitle(row, section, t)}</h2></div><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
     <dl>{fields.map((column) => <div key={column.field}><dt>{column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}</dt><dd>{display(value(row, column.field), column, locale, t)}</dd></div>)}</dl>
     {query !== null && <section className="query-block"><span>{t("pg.query.label")}<button className="copy-raw" onClick={() => void navigator.clipboard?.writeText(query)} type="button">{t("common.raw")}</button></span><pre data-testid="pg-exact-query">{query}</pre></section>}
-    {historyField !== null && <SeriesChart hour={hour} label={t(historyColumn?.label ?? historyField)} locale={locale} points={history} unit={columnUnit(historyColumn?.kind)} />}
+    {historyField !== null && <SeriesChart hour={hour} label={t(historyColumn?.label ?? historyField)} locale={locale} format={chartFormat(historyColumn?.kind)} points={history} />}
   </aside>
 }
 
@@ -253,8 +253,8 @@ function display(cell: ReturnType<typeof value>, column: EntityColumn, locale: L
     return timestamp === null ? "—" : <TimestampValue t={t} timestamp={timestamp} />
   }
   if (column.kind === "id") return rawText(cell) ?? "—"
-  if (column.kind === "bytes") return measure(cell, locale, " B")
-  if (column.kind === "kib") return measure(cell, locale, " KiB")
+  if (column.kind === "bytes") return humanBytes(cell, locale)
+  if (column.kind === "kib") return humanBytes(asNumber(cell) === null ? null : (asNumber(cell) ?? 0) * 1024, locale)
   if (column.kind === "milliseconds") return measure(cell, locale, " ms")
   if (column.kind === "microseconds") return measure(cell, locale, " μs")
   if (column.kind === "percent") return measure(cell, locale, "%")
@@ -322,13 +322,11 @@ function findingHistoryField(columns: readonly EntityColumn[], finding: Finding 
   const column = columns.find((candidate) => candidate.field === field)
   return column === undefined || column.kind === "text" || column.kind === "timestamp" || column.kind === "boolean" ? fallback : column.field
 }
-function columnUnit(kind: EntityColumn["kind"]): string {
-  if (kind === "bytes") return " B"
-  if (kind === "kib") return " KiB"
-  if (kind === "milliseconds") return " ms"
-  if (kind === "microseconds") return " μs"
-  if (kind === "percent") return "%"
-  return ""
+function chartFormat(kind: EntityColumn["kind"]): ((value: number, locale: Locale) => string) | undefined {
+  if (kind === "bytes") return (value, locale) => humanBytes(value, locale)
+  if (kind === "kib") return (value, locale) => humanBytes(value * 1024, locale)
+  if (kind === "microseconds") return (value, locale) => measure(value / 1_000, locale, " ms")
+  return undefined
 }
 function sectionName(section: string): PostgresSection {
   if (section === "pg_stat_activity") return "activity"

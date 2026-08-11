@@ -6,8 +6,10 @@ import { LabelHelp, type Translate } from "./help"
 import {
   asNumber,
   formatUtc,
+  humanBytes,
   identifier,
   measure,
+  millisecondsPerSecond,
   processCommand,
   rawText,
   stateText,
@@ -56,41 +58,63 @@ const PROCESS_DETAIL: Readonly<Record<Lens, readonly ProcessField[]>> = {
 interface HistoryField {
   readonly field: string
   readonly key: string
-  readonly unit: string
+  readonly format: (value: number, locale: Locale) => string
 }
 
 export interface ProcessHistorySeries extends HistoryField {
   readonly points: readonly ChartPoint[]
 }
 
+/** The extremes of a chart read in the unit of the column it draws. Every
+ *  cumulative one is already a rate, so these are per second. */
+function plain(value: number, locale: Locale): string {
+  return measure(value, locale)
+}
+
+function ticks(value: number, locale: Locale): string {
+  return measure(value, locale, " tick/s")
+}
+
+function delay(value: number, locale: Locale): string {
+  return millisecondsPerSecond(value, locale) + " ms/s"
+}
+
+function bytes(value: number, locale: Locale): string {
+  return humanBytes(value, locale, "/s")
+}
+
+function kibibytes(value: number, locale: Locale): string {
+  return humanBytes(value * 1024, locale)
+}
+
 const PROCESS_HISTORY: Readonly<Record<Lens, readonly HistoryField[]>> = {
-  generic: [{ field: "num_threads", key: "col.threads", unit: "" }],
+  generic: [{ field: "num_threads", key: "col.threads", format: plain }],
   cpu: [
-    { field: "utime", key: "col.utime", unit: "" },
-    { field: "stime", key: "col.stime", unit: "" },
-    { field: "rundelay_ns", key: "col.rundelay", unit: " ns" },
-    { field: "blkdelay_ticks", key: "col.blkdelay", unit: "" },
-    { field: "nvcsw", key: "col.nvcsw", unit: "" },
-    { field: "nivcsw", key: "col.nivcsw", unit: "" },
-    { field: "minflt", key: "col.minflt", unit: "" },
-    { field: "majflt", key: "col.majflt", unit: "" },
+    { field: "utime", key: "col.utime", format: ticks },
+    { field: "stime", key: "col.stime", format: ticks },
+    { field: "rundelay_ns", key: "col.rundelay", format: delay },
+    { field: "blkdelay_ticks", key: "col.blkdelay", format: plain },
+    { field: "nvcsw", key: "col.nvcsw", format: plain },
+    { field: "nivcsw", key: "col.nivcsw", format: plain },
+    { field: "minflt", key: "col.minflt", format: plain },
+    { field: "majflt", key: "col.majflt", format: plain },
   ],
   memory: [
-    { field: "rmem_kb", key: "col.rmem", unit: " KiB" },
-    { field: "vmem_kb", key: "col.vmem", unit: " KiB" },
-    { field: "vswap_kb", key: "col.vswap", unit: " KiB" },
-    { field: "minflt", key: "col.minflt", unit: "" },
-    { field: "majflt", key: "col.majflt", unit: "" },
+    { field: "rmem_kb", key: "col.rmem", format: kibibytes },
+    { field: "vmem_kb", key: "col.vmem", format: kibibytes },
+    { field: "vswap_kb", key: "col.vswap", format: kibibytes },
+    { field: "minflt", key: "col.minflt", format: plain },
+    { field: "majflt", key: "col.majflt", format: plain },
   ],
   disk: [
-    { field: "read_bytes", key: "col.read_bytes", unit: " B" },
-    { field: "write_bytes", key: "col.write_bytes", unit: " B" },
-    { field: "cancelled_write_bytes", key: "col.cancelled_write", unit: " B" },
-    { field: "syscr", key: "col.syscr", unit: "" },
-    { field: "syscw", key: "col.syscw", unit: "" },
-    { field: "rchar", key: "col.rchar", unit: "" },
-    { field: "wchar", key: "col.wchar", unit: "" },
-    { field: "blkdelay_ticks", key: "col.blkdelay", unit: "" },
+    { field: "read_bytes", key: "col.read_bytes", format: bytes },
+    { field: "write_bytes", key: "col.write_bytes", format: bytes },
+    { field: "cancelled_write_bytes", key: "col.cancelled_write", format: bytes },
+    { field: "syscr", key: "col.syscr", format: plain },
+    { field: "syscw", key: "col.syscw", format: plain },
+    { field: "rchar", key: "col.rchar", format: bytes },
+    { field: "wchar", key: "col.wchar", format: bytes },
+    { field: "blkdelay_ticks", key: "col.blkdelay", format: plain },
   ],
 }
 
@@ -132,8 +156,8 @@ export function DetailDock({
   const pid = identifier(value(process, "pid"))
   const commandPath = rawText(commandCell)?.trim() ? `/proc/${pid}/cmdline` : `/proc/${pid}/comm`
   const history = useMemo(
-    () => processLensHistory(processHistory, process, lens),
-    [lens, process, processHistory],
+    () => processLensHistory(processHistory, lens),
+    [lens, processHistory],
   )
   return (
     <aside
@@ -167,8 +191,8 @@ export function DetailDock({
             key={series.field}
             label={t(`${series.key}.label`)}
             locale={locale}
+            format={series.format}
             points={series.points}
-            unit={series.unit}
           />
         ))}
       </section>
@@ -207,9 +231,9 @@ function Timestamp({ cell, raw, t }: { readonly cell?: Cell; readonly raw?: numb
 function formatProcess(cell: Cell, kind: ProcessField["kind"], locale: Locale): string {
   if (kind === "id") return identifier(cell)
   if (kind === "state") return stateText(cell)
-  if (kind === "kib") return measure(cell, locale, " KiB")
-  if (kind === "bytes") return measure(cell, locale, " B")
-  if (kind === "ns") return measure(cell, locale, " ns")
+  if (kind === "kib") return humanBytes(asNumber(cell) === null ? null : (asNumber(cell) ?? 0) * 1024, locale)
+  if (kind === "bytes") return humanBytes(cell, locale, "/s")
+  if (kind === "ns") return millisecondsPerSecond(cell, locale) + " ms/s"
   return measure(cell, locale)
 }
 
@@ -224,15 +248,13 @@ function processField(field: string, key: string, kind: ProcessField["kind"]): P
   return { field, key, kind }
 }
 
+/// The rows are already one process: they were asked for by identity, and a
+/// second filter here only hides a mismatch instead of showing it.
 export function processLensHistory(
   rows: readonly DataRow[],
-  process: DataRow,
   lens: Lens,
 ): readonly ProcessHistorySeries[] {
-  const pid = identifier(value(process, "pid"))
-  const starttime = identifier(value(process, "starttime"))
   const selected = rows
-    .filter((row) => identifier(value(row, "pid")) === pid && identifier(value(row, "starttime")) === starttime)
     .slice()
     .sort((left, right) => left.timestamp - right.timestamp || left.ordinal.localeCompare(right.ordinal))
   return PROCESS_HISTORY[lens].map((field) => ({

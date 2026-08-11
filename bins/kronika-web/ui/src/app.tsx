@@ -6,6 +6,8 @@ import { createRoot } from "react-dom/client"
 import {
   TIMELINE_REQUESTS,
   loadTimeline,
+  loadSeries,
+  PROCESS_FIELDS,
   hourOf,
   loadSnapshot,
   segmentAt,
@@ -32,6 +34,7 @@ import {
   interpolate,
   processKey,
   processLens,
+  rawText,
   snapshot,
   value,
   type Lens,
@@ -236,7 +239,22 @@ function App() {
   }, [dockClosed, linkedPids, processRows, selectedKey])
   const selectedProcess = processRows.find((row) => processKey(row) === selectedKey) ?? null
   const joinedActivity = activityFor(selectedProcess, data.activities, selectedProcess?.timestamp ?? cursor)
-  const processHistory = selectedProcess === null ? [] : data.processes.filter((row) => processKey(row) === processKey(selectedProcess))
+  // A table holds one moment, so the charts of the selected process are their
+  // own request across the hour.
+  const [processHistory, setProcessHistory] = useState<readonly DataRow[]>([])
+  const selectedPid = selectedProcess === null ? null : rawText(value(selectedProcess, "pid"))
+  const selectedStart = selectedProcess === null ? null : rawText(value(selectedProcess, "starttime"))
+  useEffect(() => {
+    if (hour === null || selectedPid === null || selectedStart === null) {
+      setProcessHistory([])
+      return
+    }
+    const controller = new AbortController()
+    void loadSeries(hour, "os_process", { pid: selectedPid, starttime: selectedStart }, PROCESS_FIELDS, controller.signal)
+      .then(setProcessHistory)
+      .catch(() => { /* the panel stands without its charts */ })
+    return () => controller.abort()
+  }, [hour, selectedPid, selectedStart])
   const changeHour = useCallback((next: number) => setHour(floorHour(next)), [])
   const selectProcess = useCallback((row: DataRow) => {
     setDockClosed(false)

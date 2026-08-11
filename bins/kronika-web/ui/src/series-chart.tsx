@@ -15,14 +15,15 @@ export function SeriesChart({
   hour,
   label,
   locale,
+  format,
   points,
-  unit,
 }: {
   readonly hour: number
   readonly label: string
   readonly locale: Locale
+  /** How the extremes read: a chart of bytes says bytes, not a bare number. */
+  readonly format?: ((value: number, locale: Locale) => string) | undefined
   readonly points: readonly ChartPoint[]
-  readonly unit: string
 }) {
   const title = useId()
   const end = hour + 3_600_000_000
@@ -35,7 +36,7 @@ export function SeriesChart({
   return <figure className="series-chart">
     <figcaption id={title}>
       <span>{label}</span>
-      <span>{values.length === 0 ? "—" : `${number(low, locale)}–${number(high, locale)}${unit}`}</span>
+      <span>{values.length === 0 ? "—" : `${(format ?? number)(low, locale)}–${(format ?? number)(high, locale)}`}</span>
     </figcaption>
     <svg aria-labelledby={title} preserveAspectRatio="none" role="img" viewBox="0 0 920 126">
       {[0, 1, 2, 3, 4, 5, 6].map((tick) => <line className="mini-grid" key={tick} x1={tick / 6 * 920} x2={tick / 6 * 920} y1="5" y2="105" />)}

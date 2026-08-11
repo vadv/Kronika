@@ -189,7 +189,7 @@ pub(crate) fn prepare(
         Route::Catalog(window) => catalog::prepare(root, window, sources).map(Prepared::Catalog),
         Route::Index(request) => index::prepare(root, request, if_none_match),
         Route::History(request) => history::prepare(root, request).map(Prepared::History),
-        Route::Hour(window) => hour::prepare(root, window, sources).map(Prepared::Hour),
+        Route::Hour(request) => hour::prepare(root, request, sources).map(Prepared::Hour),
         Route::Rows(request) => rows::prepare(root, request).map(Prepared::Rows),
         Route::Snapshot(request) => snapshot::prepare(root, request).map(Prepared::Snapshot),
     }

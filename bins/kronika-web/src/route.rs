@@ -14,8 +14,8 @@ const MAX_FILTERS: usize = 64;
 pub(crate) enum Route {
     /// Actual finished/current segment catalog.
     Catalog(Window),
-    /// One hour of the timeline: its segments, health line and marks.
-    Hour(Window),
+    /// One hour: the timeline, or one object's series across it.
+    Hour(HourRequest),
     /// One logical indexed series in one explicit segment.
     Index(SegmentRequest),
     /// Projected full-resolution history in one explicit segment.
@@ -38,6 +38,21 @@ pub(crate) struct SnapshotRequest {
     pub(crate) by: Option<String>,
     /// How many of those rows to return.
     pub(crate) top: Option<usize>,
+}
+
+/// One hour, either as a timeline or as the series of a single object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HourRequest {
+    pub(crate) window: Window,
+    pub(crate) series: Option<SeriesRequest>,
+}
+
+/// The rows of one object of one section across the whole hour.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SeriesRequest {
+    pub(crate) section: String,
+    pub(crate) fields: Vec<String>,
+    pub(crate) filters: Vec<Filter>,
 }
 
 /// Optional timestamp bounds for catalog listing only.
@@ -126,7 +141,7 @@ pub(crate) fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError
         return parse_catalog(query).map(Route::Catalog);
     }
     if path == "/api/hour" {
-        return parse_catalog(query).map(Route::Hour);
+        return parse_hour(query).map(Route::Hour);
     }
     let tail = path
         .strip_prefix("/api/segments/")
@@ -230,6 +245,51 @@ fn parse_catalog(query: &str) -> Result<Window, RouteError> {
         return Err(RouteError::BadParameter("from".to_owned()));
     }
     Ok(window)
+}
+
+fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
+    let (fields, filters, extras) = data_parameters(query)?;
+    let mut window = Window::default();
+    let mut section = None;
+    for (name, value) in extras {
+        match name.as_str() {
+            "from" if window.from.is_none() => window.from = Some(number("from", &value)?),
+            "to" if window.to.is_none() => window.to = Some(number("to", &value)?),
+            "section" if section.is_none() => {
+                if value.is_empty() || value.len() > MAX_SECTION_BYTES {
+                    return Err(RouteError::BadParameter("section".to_owned()));
+                }
+                section = Some(value);
+            }
+            _ => return Err(RouteError::BadParameter(name)),
+        }
+    }
+    if window
+        .from
+        .zip(window.to)
+        .is_some_and(|(from, to)| from > to)
+    {
+        return Err(RouteError::BadParameter("from".to_owned()));
+    }
+    // Columns and predicates name one section, and the timeline form of the
+    // hour has no section to name them in.
+    let Some(section) = section else {
+        if fields.is_empty() && filters.is_empty() {
+            return Ok(HourRequest {
+                window,
+                series: None,
+            });
+        }
+        return Err(RouteError::BadParameter("section".to_owned()));
+    };
+    Ok(HourRequest {
+        window,
+        series: Some(SeriesRequest {
+            section,
+            fields,
+            filters,
+        }),
+    })
 }
 
 fn parse_data(segment: SegmentRequest, query: &str) -> Result<DataRequest, RouteError> {
