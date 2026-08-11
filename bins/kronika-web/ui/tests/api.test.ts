@@ -209,3 +209,34 @@ test("the health line survives the first snapshot merged into the hour", async (
   const merged = api.mergeHourData(hour, snapshot)
   assert.equal(merged.health.length, 1, "a snapshot without the health section must not erase the line")
 })
+
+test("a snapshot is keyed on the stored sample the cursor rests on", async () => {
+  const api = await bundledApi()
+  const line = [START + 3_000_000, START + 6_000_000, START + 9_000_000].map((timestamp, index) => ({
+    segmentId: "7", logicalName: "health", typeId: "0", ordinal: String(index), timestamp, values: {},
+  }))
+  assert.equal(api.sampleAt(line, START + 7_500_000), START + 6_000_000, "between samples the earlier one answers")
+  assert.equal(api.sampleAt(line, START + 6_000_000), START + 6_000_000, "on a sample it is itself")
+  assert.equal(api.sampleAt(line, START + 1_000_000), START + 3_000_000, "before the first, the first")
+  assert.equal(api.sampleAt([], START), null)
+})
+
+test("a snapshot replaces the section it carries instead of piling moments up", async () => {
+  const api = await bundledApi()
+  const row = (timestamp: number) => ({
+    segmentId: "7", logicalName: "os_process", typeId: "1100001", ordinal: "0", timestamp, values: { pid: 1 },
+  })
+  const before = api.mergeHourData(
+    api.hourOf({
+      hour: START, availableHours: [START], segments: [], lanes: {}, health: [],
+      points: [], findings: [], sourceFamilies: [], availableSections: [],
+    }),
+    { sections: { os_process: [row(START + 1)] }, availableSections: ["os_process"], points: [], findings: [], sourceFamilies: [], segmentCount: 1 },
+  )
+  const after = api.replaceSections(before, {
+    sections: { os_process: [row(START + 2)] }, availableSections: ["os_process"],
+    points: [], findings: [], sourceFamilies: [], segmentCount: 1,
+  })
+  assert.equal(after.processes.length, 1)
+  assert.equal(after.processes[0].timestamp, START + 2)
+})

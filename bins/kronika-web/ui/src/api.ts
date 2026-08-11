@@ -248,6 +248,32 @@ export function hourOf(timeline: TimelineData): HourData {
   })
 }
 
+/** A snapshot replaces the sections it carries: it is one moment, and keeping
+ *  the moments visited before it grows without bound and lets a table draw a
+ *  moment the cursor has left. */
+/** The stored sample at or before a moment. The line carries every sample of
+ *  the hour, so it is what says where a cursor actually landed. */
+export function sampleAt(line: readonly DataRow[], cursor: number): number | null {
+  let chosen: number | null = null
+  for (const row of line) {
+    if (row.timestamp <= cursor && (chosen === null || row.timestamp > chosen)) chosen = row.timestamp
+  }
+  return chosen ?? (line.length === 0 ? null : Math.min(...line.map((row) => row.timestamp)))
+}
+
+export function replaceSections(before: HourData, after: HourData): HourData {
+  const sections: Record<string, readonly DataRow[]> = { ...before.sections }
+  for (const [name, rows] of Object.entries(after.sections)) sections[name] = rows
+  return hourData({
+    sections,
+    availableSections: unique([...before.availableSections, ...after.availableSections]),
+    points: before.points,
+    findings: before.findings,
+    sourceFamilies: before.sourceFamilies,
+    segmentCount: before.segmentCount,
+  })
+}
+
 export function mergeHourData(before: HourData, after: HourData): HourData {
   const sections: Record<string, readonly DataRow[]> = { ...before.sections }
   for (const [name, rows] of Object.entries(after.sections)) {

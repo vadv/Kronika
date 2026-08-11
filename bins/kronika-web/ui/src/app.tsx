@@ -11,9 +11,10 @@ import {
   hourOf,
   loadSnapshot,
   segmentAt,
+  sampleAt,
   fieldNameForLocator,
   loadHour,
-  mergeHourData,
+  replaceSections,
   resolveLocator,
   PRODUCT_SECTION_GROUPS,
   type DataRow,
@@ -187,23 +188,31 @@ function App() {
     return () => controller.abort()
   }, [hour])
 
-  const cursorSegment = useMemo(() => segmentAt(segments, cursor), [cursor, segments])
+  // A table shows the moment under the cursor, and the samples are what the
+  // cursor lands on: between two of them the answer is the same one, so the
+  // sample is what a load is keyed on rather than the pixel or the segment.
+  const sampledAt = useMemo(() => sampleAt(data.health, cursor), [cursor, data.health])
+  const cursorSegment = useMemo(() => segmentAt(segments, sampledAt ?? cursor), [cursor, sampledAt, segments])
   useEffect(() => {
-    if (hour === null || cursorSegment === null) return
+    if (hour === null || cursorSegment === null || sampledAt === null) return
     const wanted = (VIEW_REQUESTS[viewKey] ?? []).filter((request) => request.section !== "health")
-    const missing = wanted.filter((request) => !loaded.current.keys.has(`${cursorSegment}:${request.section}`))
-    if (missing.length === 0) return
-    for (const request of missing) loaded.current.keys.add(`${cursorSegment}:${request.section}`)
+    const key = `${cursorSegment}:${sampledAt}:${viewKey}`
+    if (loaded.current.keys.has(key) || wanted.length === 0) return
     const controller = new AbortController()
-    void loadSnapshot(cursorSegment, cursor, missing.map((request) => request.section), controller.signal)
-      .then((incoming) => setData((before) => mergeHourData(before, incoming)))
-      .catch((reason: unknown) => {
-        if (controller.signal.aborted) return
-        for (const request of missing) loaded.current.keys.delete(`${cursorSegment}:${request.section}`)
-        setError(reason instanceof Error ? reason.message : String(reason))
-      })
-    return () => controller.abort()
-  }, [cursorSegment, hour, viewKey])
+    // Dragging the cursor crosses many samples; only the one it rests on is
+    // worth a round trip over a link that costs more than a second.
+    const timer = setTimeout(() => {
+      loaded.current.keys.add(key)
+      void loadSnapshot(cursorSegment, sampledAt, wanted.map((request) => request.section), controller.signal)
+        .then((incoming) => setData((before) => replaceSections(before, incoming)))
+        .catch((reason: unknown) => {
+          if (controller.signal.aborted) return
+          loaded.current.keys.delete(key)
+          setError(reason instanceof Error ? reason.message : String(reason))
+        })
+    }, 250)
+    return () => { clearTimeout(timer); controller.abort() }
+  }, [cursorSegment, hour, sampledAt, viewKey])
 
   useEffect(() => {
     const shortcuts = (event: KeyboardEvent) => {
