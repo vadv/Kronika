@@ -10,6 +10,7 @@ use crate::route::{ActiveCursor, Route};
 
 mod catalog;
 mod history;
+mod hour;
 mod index;
 mod query;
 mod render;
@@ -60,6 +61,7 @@ pub(crate) enum Prepared {
     Catalog(catalog::PreparedCatalog),
     Index(index::PreparedIndex),
     History(history::PreparedHistory),
+    Hour(hour::PreparedHour),
     Rows(rows::PreparedRows),
     Snapshot(snapshot::PreparedSnapshot),
     Empty(ResponseMeta),
@@ -72,6 +74,7 @@ impl Prepared {
             Self::Catalog(_prepared) => catalog::PreparedCatalog::meta(),
             Self::Index(prepared) => prepared.meta(),
             Self::History(prepared) => prepared.meta(),
+            Self::Hour(prepared) => prepared.meta(),
             Self::Rows(prepared) => prepared.meta(),
             Self::Snapshot(prepared) => prepared.meta(),
             Self::Empty(meta) => meta.clone(),
@@ -88,6 +91,7 @@ impl Prepared {
             Self::Catalog(prepared) => prepared.stream(emit, cancelled),
             Self::Index(prepared) => prepared.stream(emit, cancelled),
             Self::History(prepared) => prepared.stream(emit, cancelled),
+            Self::Hour(prepared) => prepared.stream(emit, cancelled),
             Self::Rows(prepared) => prepared.stream(emit, cancelled),
             Self::Snapshot(prepared) => prepared.stream(emit, cancelled),
             Self::Empty(_meta) => Ok(()),
@@ -185,6 +189,7 @@ pub(crate) fn prepare(
         Route::Catalog(window) => catalog::prepare(root, window, sources).map(Prepared::Catalog),
         Route::Index(request) => index::prepare(root, request, if_none_match),
         Route::History(request) => history::prepare(root, request).map(Prepared::History),
+        Route::Hour(window) => hour::prepare(root, window, sources).map(Prepared::Hour),
         Route::Rows(request) => rows::prepare(root, request).map(Prepared::Rows),
         Route::Snapshot(request) => snapshot::prepare(root, request).map(Prepared::Snapshot),
     }

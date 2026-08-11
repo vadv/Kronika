@@ -5,8 +5,7 @@ import { createRoot } from "react-dom/client"
 
 import {
   TIMELINE_REQUESTS,
-  discoverHourSelection,
-  listSegments,
+  loadTimeline,
   loadSnapshot,
   segmentAt,
   fieldNameForLocator,
@@ -138,27 +137,12 @@ function App() {
     document.documentElement.dataset.theme = theme
     try { localStorage.setItem("kronika.theme", theme) } catch { /* storage can be disabled */ }
   }, [theme])
-  useEffect(() => {
-    const controller = new AbortController()
-    void discoverHourSelection(controller.signal).then((selection) => {
-      setAvailableHours(selection.available)
-      setHour(selection.latest)
-      setCursor(selection.latest)
-    }).catch((reason: unknown) => {
-      if (!controller.signal.aborted) {
-        const current = floorHour(Date.now() * 1_000)
-        setError(reason instanceof Error ? reason.message : String(reason))
-        setHour(current)
-        setCursor(current)
-      }
-    })
-    return () => controller.abort()
-  }, [])
   // One view is on screen at a time, so one view's sections are what a load
   // fetches. Switching views adds the difference instead of reloading the hour.
   const viewKey = source === "host" ? hostSection : source === "postgresql" ? `postgresql:${pgSection}` : "events"
   const [segments, setSegments] = useState<readonly SegmentBound[]>([])
   const loaded = useRef({ hour: null as number | null, keys: new Set<string>() })
+  const drawn = useRef<number | null>(null)
   useEffect(() => {
     if (hour === null) return
     setDockClosed(false)
@@ -167,33 +151,32 @@ function App() {
     setPgFocus(null)
     setSystemFocus(null)
   }, [hour])
-  // Two loads, and they are different in kind. The health line spans the hour
-  // and is a few kilobytes. A table shows the snapshot under the cursor, so it
-  // wants the one segment holding it — not the nine an hour contains.
+  // Two loads, and they are different in kind. The line, its marks and the
+  // segments of the hour are one request. A table shows the snapshot under the
+  // cursor, so it wants the one segment holding it — not the nine an hour has.
   useEffect(() => {
-    if (hour === null) return
+    if (hour !== null && drawn.current === hour) return
     const controller = new AbortController()
     setLoading(true)
     setError(null)
     loaded.current = { hour, keys: new Set() }
-    void listSegments(hour, controller.signal).then((bounds) => {
-      setSegments(bounds)
-      return loadHour(hour, controller.signal, TIMELINE_REQUESTS, undefined, ["history"])
-    }).then((incoming) => {
-      setData(incoming)
-      const times = incoming.health.map((row) => row.timestamp)
-      setCursor(times.length === 0 ? hour : Math.max(...times))
+    void loadTimeline(hour, controller.signal).then((timeline) => {
+      drawn.current = timeline.hour
+      setAvailableHours(timeline.availableHours)
+      setHour(timeline.hour)
+      setSegments(timeline.segments)
+      setData({ ...EMPTY_DATA, ...timeline, segmentCount: timeline.segments.length })
+      const times = timeline.health.map((row) => row.timestamp)
+      setCursor(times.length === 0 ? timeline.hour : Math.max(...times))
       setLoading(false)
-      // The marks live in index resources, and asking for one builds it. They
-      // come after the line is on screen rather than in front of it.
-      void loadHour(hour, controller.signal, TIMELINE_REQUESTS, undefined, ["index"])
-        .then((marks) => setData((before) => mergeHourData(before, marks)))
-        .catch(() => { /* the line stands without its marks */ })
     }).catch((reason: unknown) => {
       if (controller.signal.aborted) return
+      const fallback = hour ?? floorHour(Date.now() * 1_000)
+      drawn.current = fallback
+      setHour(fallback)
       setSegments([])
       setData(EMPTY_DATA)
-      setCursor(hour)
+      setCursor(fallback)
       setError(reason instanceof Error ? reason.message : String(reason))
       setLoading(false)
     })

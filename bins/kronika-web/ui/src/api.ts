@@ -126,6 +126,17 @@ export interface HourData {
   readonly segmentCount: number
 }
 
+export interface TimelineData {
+  readonly hour: number
+  readonly availableHours: readonly number[]
+  readonly segments: readonly SegmentBound[]
+  readonly health: readonly DataRow[]
+  readonly points: readonly Point[]
+  readonly findings: readonly Finding[]
+  readonly sourceFamilies: readonly SourceFamily[]
+  readonly availableSections: readonly string[]
+}
+
 export interface ResolvedLocator {
   readonly logicalName: string
   readonly row: DataRow
@@ -241,6 +252,77 @@ export interface SegmentBound {
   readonly id: string
   readonly minTs: number
   readonly maxTs: number
+}
+
+/** The whole timeline of one hour in one request: which segments it touches,
+ *  the health line and the marks. A round trip over the debugging link costs
+ *  more than a second, so the count of requests is what the wait is made of. */
+export async function loadTimeline(start: number | null, signal: AbortSignal): Promise<TimelineData> {
+  const fixture = bundledFixtureHour(start ?? bundledFixtureRange()?.from ?? 0)
+  const range = bundledFixtureRange()
+  if (fixture !== null && range !== null) {
+    return {
+      hour: floorHour(range.from), availableHours: unique([floorHour(range.from), floorHour(range.to)]),
+      segments: [], health: fixture.health, points: fixture.points,
+      findings: fixture.findings, sourceFamilies: fixture.sourceFamilies,
+      availableSections: fixture.availableSections,
+    }
+  }
+  const window = start === null ? "" : `?from=${start}&to=${start + 3_600_000_000 - 1}`
+  const records = await request(`/api/hour${window}`, signal)
+  const header = records.find((record) => record.record === "hour")
+  const hour = header?.from === null || header?.from === undefined
+    ? floorHour(Date.now() * 1_000)
+    : integer(header.from, "hour start")
+  const end = hour + 3_600_000_000
+  const all = catalogSegments(records)
+  const segments = all
+    .filter((segment) => Number(segment.min_ts) < end && Number(segment.max_ts) >= hour)
+    .map((segment) => ({ id: segment.id, minTs: Number(segment.min_ts), maxTs: Number(segment.max_ts) }))
+    .sort((left, right) => left.minTs - right.minTs)
+  const points: Point[] = []
+  const findings: Finding[] = []
+  let segmentId = ""
+  for (const record of records) {
+    if (record.record === "index") {
+      segmentId = requiredText((record.segment as { readonly id: unknown }).id, "index segment id")
+    } else if (record.record === "point") {
+      points.push(indexPoint(record, segmentId, HEALTH))
+    } else if (isFindingRecord(record)) {
+      findings.push(indexFinding(record, segmentId, HEALTH))
+    }
+  }
+  return {
+    hour,
+    availableHours: ((header?.available_hours ?? []) as readonly string[])
+      .map((value) => integer(value, "available hour")),
+    segments,
+    health: healthRows(points),
+    points,
+    findings,
+    sourceFamilies: sourceFamiliesOf(records),
+    availableSections: availableSectionNames(all),
+  }
+}
+
+/** The line reads a row per moment, and the index carries a point per series,
+ *  so the series of one moment become the fields of one row. */
+function healthRows(points: readonly Point[]): readonly DataRow[] {
+  const byMoment = new Map<string, DataRow & { values: Record<string, Cell> }>()
+  for (const point of points) {
+    const key = `${point.segmentId}:${point.timestamp}`
+    const stored = byMoment.get(key) ?? {
+      segmentId: point.segmentId,
+      logicalName: HEALTH,
+      typeId: point.typeId,
+      ordinal: key,
+      timestamp: point.timestamp,
+      values: {},
+    }
+    stored.values[point.series] = point.value
+    byMoment.set(key, stored)
+  }
+  return [...byMoment.values()].sort((left, right) => left.timestamp - right.timestamp)
 }
 
 /** The segments an hour touches, in order. Held for the hour so that moving the
@@ -490,33 +572,48 @@ async function readIndex(segmentId: string, logicalName: string, signal: AbortSi
   const points: Point[] = []
   const findings: Finding[] = []
   for (const record of records) {
-    if (record.record === "point") {
-      const typeId = requiredText(record.type_id, "point type_id")
-      points.push({
-        segmentId,
-        logicalName,
-        typeId,
-        series: requiredText(record.series, "point series"),
-        timestamp: integer(record.ts, "point timestamp"),
-        identity: cellRecord(record.identity),
-        value: record.value === null ? null : finiteNumber(record.value, "point value"),
-      })
-    } else if (record.record === "finding"
-      && (record.kind === "known_bad" || record.kind === "spike" || record.kind === "event")) {
-      const typeId = requiredText(record.type_id, "finding type_id")
-      findings.push({
-        segmentId,
-        logicalName: logicalNameForTypeId(typeId) ?? logicalName,
-        kind: record.kind,
-        typeId,
-        timestamp: integer(record.ts, "finding timestamp"),
-        category: typeof record.category === "number" ? record.category : null,
-        rowOrdinal: requiredText(record.row_ordinal, "finding row ordinal"),
-        fieldOrdinal: integer(record.field_ordinal, "finding field ordinal"),
-      })
-    }
+    if (record.record === "point") points.push(indexPoint(record, segmentId, logicalName))
+    else if (isFindingRecord(record)) findings.push(indexFinding(record, segmentId, logicalName))
   }
   return { points, findings }
+}
+
+const HEALTH = "health"
+
+function isFindingRecord(record: Record<string, unknown>): boolean {
+  return record.record === "finding"
+    && (record.kind === "known_bad" || record.kind === "spike" || record.kind === "event")
+}
+
+function indexPoint(record: Record<string, unknown>, segmentId: string, logicalName: string): Point {
+  return {
+    segmentId,
+    logicalName,
+    typeId: requiredText(record.type_id, "point type_id"),
+    series: requiredText(record.series, "point series"),
+    timestamp: integer(record.ts, "point timestamp"),
+    identity: cellRecord(record.identity),
+    value: record.value === null ? null : finiteNumber(record.value, "point value"),
+  }
+}
+
+function indexFinding(record: Record<string, unknown>, segmentId: string, logicalName: string): Finding {
+  const typeId = requiredText(record.type_id, "finding type_id")
+  return {
+    segmentId,
+    logicalName: logicalNameForTypeId(typeId) ?? logicalName,
+    kind: record.kind as Finding["kind"],
+    typeId,
+    timestamp: integer(record.ts, "finding timestamp"),
+    category: typeof record.category === "number" ? record.category : null,
+    rowOrdinal: requiredText(record.row_ordinal, "finding row ordinal"),
+    fieldOrdinal: integer(record.field_ordinal, "finding field ordinal"),
+  }
+}
+
+function sourceFamiliesOf(records: readonly Record<string, unknown>[]): readonly SourceFamily[] {
+  const found = records.find((record) => record.record === "catalog")?.source_families
+  return (found as readonly SourceFamily[] | undefined) ?? []
 }
 
 async function request(path: string, signal: AbortSignal): Promise<readonly Record<string, unknown>[]> {

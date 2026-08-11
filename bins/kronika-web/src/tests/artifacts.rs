@@ -567,3 +567,34 @@ fn a_snapshot_answers_for_the_sections_that_are_there() {
     assert_eq!(rows.len(), 4);
     assert!(rows.iter().all(|row| row["timestamp"] == "150"));
 }
+
+#[test]
+fn an_hour_carries_its_segments_and_its_line_in_one_response() {
+    let mut fixture = Fixture::new();
+    fixture.append_health();
+    fixture.finish();
+
+    let prepared = fixture.prepare("/api/hour?from=0&to=1000", None);
+    assert_eq!(prepared.meta().status, StatusCode::OK);
+    assert_eq!(prepared.meta().cache, CachePolicy::Immutable);
+    let records = stream(prepared).expect("hour body");
+    let kinds = records
+        .iter()
+        .map(|record| record["record"].as_str().expect("record kind"))
+        .collect::<Vec<_>>();
+    assert!(kinds.contains(&"catalog"), "{kinds:?}");
+    assert!(kinds.contains(&"finished_segment"), "{kinds:?}");
+    assert!(kinds.contains(&"index"), "{kinds:?}");
+    let points = records
+        .iter()
+        .filter(|record| record["record"] == "point")
+        .collect::<Vec<_>>();
+    assert!(!points.is_empty());
+    assert!(points.iter().all(|point| point["series"] != Value::Null));
+    let segment = records
+        .iter()
+        .find(|record| record["record"] == "index")
+        .expect("index header");
+    assert_eq!(segment["segment"]["id"], SEGMENT_ID.to_string());
+    assert_eq!(segment["logical_name"], "health");
+}

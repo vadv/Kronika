@@ -14,6 +14,8 @@ const MAX_FILTERS: usize = 64;
 pub(crate) enum Route {
     /// Actual finished/current segment catalog.
     Catalog(Window),
+    /// One hour of the timeline: its segments, health line and marks.
+    Hour(Window),
     /// One logical indexed series in one explicit segment.
     Index(SegmentRequest),
     /// Projected full-resolution history in one explicit segment.
@@ -116,6 +118,9 @@ pub(crate) fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError
     }
     if path == "/api/catalog" {
         return parse_catalog(query).map(Route::Catalog);
+    }
+    if path == "/api/hour" {
+        return parse_catalog(query).map(Route::Hour);
     }
     let tail = path
         .strip_prefix("/api/segments/")

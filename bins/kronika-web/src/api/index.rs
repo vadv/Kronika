@@ -84,20 +84,33 @@ impl PreparedIndex {
         {
             return Ok(());
         }
-        for block in self.resource.index.blocks {
+        stream_series(&self.logical_name, self.resource, emit, cancelled).map(|_connected| ())
+    }
+}
+
+/// The points and marks of one resource, without the header naming it. The
+/// hour emits many of these under one header of its own.
+pub(super) fn stream_series(
+    logical_name: &str,
+    resource: ResourceIndex,
+    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    cancelled: &impl Fn() -> bool,
+) -> Result<bool, ApiError> {
+    {
+        for block in resource.index.blocks {
             if let SeriesBlock::Findings(block) = block {
                 if !stream_findings(block, emit, cancelled)? {
-                    return Ok(());
+                    return Ok(false);
                 }
                 continue;
             }
             if cancelled()
                 || !emit(record(json!({
                     "record": "layout",
-                    "layout": block_layout(&self.logical_name, &block)?,
+                    "layout": block_layout(logical_name, &block)?,
                 }))?)
             {
-                return Ok(());
+                return Ok(false);
             }
             let health_series = match &block {
                 SeriesBlock::OsHealth(_) => Some("os_health"),
@@ -121,7 +134,7 @@ impl PreparedIndex {
                                 "value": point.value,
                             }))?)
                         {
-                            return Ok(());
+                            return Ok(false);
                         }
                     }
                 }
@@ -137,7 +150,7 @@ impl PreparedIndex {
                                 "value": point.value,
                             }))?)
                         {
-                            return Ok(());
+                            return Ok(false);
                         }
                     }
                 }
@@ -153,14 +166,14 @@ impl PreparedIndex {
                                 "value": point.count,
                             }))?)
                         {
-                            return Ok(());
+                            return Ok(false);
                         }
                     }
                 }
                 SeriesBlock::Findings(_) => return Err(ApiError::NoSuchSection),
             }
         }
-        Ok(())
+        Ok(true)
     }
 }
 
