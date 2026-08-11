@@ -370,11 +370,7 @@ fn rate(stored: &BTreeMap<i64, i64>, scale: impl Fn(f64, f64) -> f64) -> Vec<(i6
             let seconds = (ts - before_ts) as f64 / 1_000_000.0;
             #[expect(clippy::cast_precision_loss, reason = "counters stay below 2^53")]
             let delta = (value - before) as f64;
-            if seconds > 0.0 && delta >= 0.0 {
-                Some(scale(delta, seconds))
-            } else {
-                None
-            }
+            (seconds > 0.0 && delta >= 0.0).then(|| scale(delta, seconds))
         } else {
             None
         };
