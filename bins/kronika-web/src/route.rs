@@ -38,6 +38,10 @@ pub(crate) struct SnapshotRequest {
     pub(crate) by: Option<String>,
     /// How many of those rows to return.
     pub(crate) top: Option<usize>,
+    /// Characters kept of every text value; absent keeps them whole.
+    pub(crate) text: Option<usize>,
+    /// Rows to keep, by exact column value.
+    pub(crate) filters: Vec<Filter>,
 }
 
 /// One hour, either as a timeline or as the series of a single object.
@@ -177,6 +181,8 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
     let mut fields = Vec::new();
     let mut by = None;
     let mut top = None;
+    let mut text = None;
+    let mut filters: Vec<Filter> = Vec::new();
     for (raw_name, raw_value) in pairs(query)? {
         match raw_name {
             "at" if at.is_none() => at = Some(number("at", raw_value)?),
@@ -198,6 +204,13 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
                 fields.push(field);
             }
             "by" if by.is_none() => by = Some(decoded("by", raw_value, true)?),
+            "text" if text.is_none() => {
+                let kept = number("text", raw_value)?;
+                if kept <= 0 {
+                    return Err(RouteError::BadParameter("text".to_owned()));
+                }
+                text = Some(usize::try_from(kept).unwrap_or(usize::MAX));
+            }
             "top" if top.is_none() => {
                 let count = number("top", raw_value)?;
                 if count <= 0 {
@@ -205,7 +218,22 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
                 }
                 top = Some(usize::try_from(count).unwrap_or(usize::MAX));
             }
-            _other => return Err(RouteError::BadParameter(raw_name.to_owned())),
+            other => {
+                let name = decoded("parameter", other, true)?;
+                let Some(column) = name.strip_prefix("where.") else {
+                    return Err(RouteError::BadParameter(name));
+                };
+                if column.is_empty()
+                    || filters.len() >= MAX_FILTERS
+                    || filters.iter().any(|filter| filter.column == column)
+                {
+                    return Err(RouteError::BadParameter("where".to_owned()));
+                }
+                filters.push(Filter {
+                    column: column.to_owned(),
+                    value: decoded(&name, raw_value, true)?,
+                });
+            }
         }
     }
     if sections.is_empty() {
@@ -213,7 +241,9 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
     }
     // A projection and an order name columns, and columns belong to one
     // section. Several sections at once are the plain form of the request.
-    if sections.len() != 1 && (!fields.is_empty() || by.is_some() || top.is_some()) {
+    if sections.len() != 1
+        && (!fields.is_empty() || by.is_some() || top.is_some() || !filters.is_empty())
+    {
         return Err(RouteError::BadParameter("section".to_owned()));
     }
     Ok(SnapshotRequest {
@@ -223,6 +253,8 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
         fields,
         by,
         top,
+        text,
+        filters,
     })
 }
 

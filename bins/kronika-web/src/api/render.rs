@@ -100,6 +100,19 @@ fn finite(value: f64) -> Value {
     )
 }
 
+/// A list carries a query text per row, and one text outweighs every number
+/// beside it. Cut to what a cell shows; the full text is a request away.
+pub(super) fn shorten(value: Value, limit: usize) -> Value {
+    let Value::String(text) = &value else {
+        return value;
+    };
+    if text.chars().count() <= limit {
+        return value;
+    }
+    let kept: String = text.chars().take(limit).collect();
+    Value::String(format!("{kept}…"))
+}
+
 fn bytes_value(bytes: &[u8]) -> Value {
     std::str::from_utf8(bytes).map_or_else(
         |_invalid| {

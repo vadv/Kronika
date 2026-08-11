@@ -107,6 +107,8 @@ export interface HourSelection {
 export interface HourData {
   /** Rows keyed by their registry logical section name. */
   readonly sections: Readonly<Record<string, readonly DataRow[]>>
+  /** Columns the server divided by the interval: they read per second. */
+  readonly rateColumns: Readonly<Record<string, readonly string[]>>
   /** Catalog-backed names, including present sections that have no row in this hour. */
   readonly availableSections: readonly string[]
   readonly processes: readonly DataRow[]
@@ -278,6 +280,7 @@ export function replaceSections(before: HourData, after: HourData): HourData {
   for (const [name, rows] of Object.entries(after.sections)) sections[name] = rows
   return hourData({
     sections,
+    rateColumns: { ...before.rateColumns, ...after.rateColumns },
     availableSections: unique([...before.availableSections, ...after.availableSections]),
     points: before.points,
     lanePoints: before.lanePoints,
@@ -294,6 +297,7 @@ export function mergeHourData(before: HourData, after: HourData): HourData {
   }
   return hourData({
     sections,
+    rateColumns: { ...before.rateColumns, ...after.rateColumns },
     availableSections: unique([...before.availableSections, ...after.availableSections]),
     points: [...before.points, ...after.points].sort(pointOrder),
     lanePoints: before.lanePoints.length === 0 ? after.lanePoints : before.lanePoints,
@@ -522,6 +526,7 @@ export function resolveLocator(data: Pick<HourData, "sections">, finding: Findin
 
 function hourData(input: {
   readonly sections: Readonly<Record<string, readonly DataRow[]>>
+  readonly rateColumns?: Readonly<Record<string, readonly string[]>>
   readonly availableSections: readonly string[]
   readonly points: readonly Point[]
   readonly lanePoints: readonly LanePoint[]
@@ -533,6 +538,7 @@ function hourData(input: {
   const flatten = (names: readonly string[]) => names.flatMap(rows)
   return {
     ...input,
+    rateColumns: input.rateColumns ?? {},
     processes: rows("os_process"),
     activities: rows("pg_stat_activity"),
     load: rows("os_loadavg"),
@@ -613,21 +619,36 @@ const SECTION_ORDER: Readonly<Record<string, { readonly by: string; readonly top
   pg_stat_statements: { by: "total_exec_time", top: 200 },
 }
 
-function orderFor(section: string | undefined): readonly string[] {
-  const order = section === undefined ? undefined : SECTION_ORDER[section]
-  return order === undefined ? [] : [`by=${encodeURIComponent(order.by)}`, `top=${order.top}`]
+function orderFor(
+  section: string | undefined,
+  chosen?: { readonly column: string; readonly descending: boolean } | undefined,
+): readonly string[] {
+  const cut = section === undefined ? undefined : SECTION_ORDER[section]
+  if (cut === undefined) return []
+  // Ascending is what the server does not do: the top of a cut table is the
+  // largest, and the smallest two hundred of anything answer nothing.
+  const by = chosen === undefined || !chosen.descending ? cut.by : chosen.column
+  return [`by=${encodeURIComponent(by)}`, `top=${cut.top}`]
 }
+
+/** Characters of a text a table cell can show; a query is fetched whole on demand. */
+const CELL_TEXT = 160
 
 export async function loadSnapshot(
   segmentId: string,
   at: number,
   sections: readonly string[],
   signal: AbortSignal,
+  order?: { readonly column: string; readonly descending: boolean } | undefined,
+  filters?: Readonly<Record<string, string>> | undefined,
 ): Promise<HourData> {
+  const whole = filters !== undefined
   const query = [
     `at=${at}`,
     ...sections.map((name) => `section=${encodeURIComponent(name)}`),
-    ...(sections.length === 1 ? orderFor(sections[0]) : []),
+    ...(sections.length === 1 ? orderFor(sections[0], order) : []),
+    ...(whole ? [] : [`text=${CELL_TEXT}`]),
+    ...Object.entries(filters ?? {}).map(([column, value]) => `where.${encodeURIComponent(column)}=${encodeURIComponent(value)}`),
   ].join("&")
   const records = await request(
     `/api/segments/${encodeURIComponent(segmentId)}/snapshot?${query}`,
@@ -635,11 +656,14 @@ export async function loadSnapshot(
   )
   const named = new Map<string, string>()
   const grouped: Record<string, DataRow[]> = {}
+  const rateColumns: Record<string, readonly string[]> = {}
   for (const name of sections) grouped[name] = []
   for (const record of records) {
     if (record.record === "layout") {
       const layout = record.layout as { readonly type_id: unknown; readonly logical_name: unknown }
-      named.set(requiredText(layout.type_id, "layout type_id"), requiredText(layout.logical_name, "logical name"))
+      const logicalName = requiredText(layout.logical_name, "logical name")
+      named.set(requiredText(layout.type_id, "layout type_id"), logicalName)
+      if (Array.isArray(record.rates)) rateColumns[logicalName] = record.rates as readonly string[]
     } else if (record.record === "row") {
       const typeId = requiredText(record.type_id, "row type_id")
       const logicalName = named.get(typeId)
@@ -661,6 +685,7 @@ export async function loadSnapshot(
   }
   return hourData({
     sections: grouped,
+    rateColumns,
     availableSections: sections,
     points: [],
     lanePoints: [],

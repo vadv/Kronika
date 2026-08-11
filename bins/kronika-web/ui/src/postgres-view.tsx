@@ -2,9 +2,9 @@ import { Activity, BarChart3, Database, KeyRound, LockKeyhole, X } from "lucide-
 import { useEffect, useMemo, useState, type ReactNode } from "react"
 
 import type { DataRow, Finding, HourData } from "./api"
-import { EntityTable, type EntityColumn } from "./entity-table"
+import { EntityTable, unit, type EntityColumn, type TableOrder } from "./entity-table"
 import type { Translate } from "./help"
-import { fieldNameForLocator } from "./api"
+import { fieldNameForLocator, loadSnapshot } from "./api"
 import { LabelHelp } from "./help"
 import { asNumber, formatUtc, humanBytes, identifier, measure, rawText, snapshot, value, type Locale } from "./model"
 import { SeriesChart, type ChartPoint } from "./series-chart"
@@ -20,13 +20,19 @@ export const ACTIVITY_COLUMNS: readonly EntityColumn[] = [
   pgText("query", "pg.query", 420),
 ]
 
+// What the reader sorts by comes first, then the query itself; the identifiers
+// that name the row are in the detail panel, where they are looked up rather
+// than scanned. Half the width used to be dbid, userid and toplevel.
 export const STATEMENT_COLUMNS: readonly EntityColumn[] = [
-  id("queryid", 155, true), id("dbid", 120), id("userid", 120), boolean("toplevel", 105), text("datname", 145, true), text("usename", 130), text("query", 440),
-  number("calls"), legacyMilliseconds("total_time", "total_exec_time", 155), legacyMilliseconds("mean_time", "mean_exec_time", 155), legacyMilliseconds("max_time", "max_exec_time", 145),
-  milliseconds("total_exec_time", 155), milliseconds("mean_exec_time", 155), milliseconds("max_exec_time", 145),
-  number("rows"), number("shared_blks_hit", 145), number("shared_blks_read", 145), number("shared_blks_written", 155),
+  milliseconds("total_exec_time", 130), milliseconds("mean_exec_time", 130), number("calls", 110),
+  text("query", 560, true), number("rows", 105),
+  legacyMilliseconds("total_time", "total_exec_time", 130), legacyMilliseconds("mean_time", "mean_exec_time", 130),
+  milliseconds("max_exec_time", 130), legacyMilliseconds("max_time", "max_exec_time", 130),
+  number("shared_blks_hit", 145), number("shared_blks_read", 145), number("shared_blks_written", 155),
   number("temp_blks_read", 145), number("temp_blks_written", 155), bytes("wal_bytes", 145), number("wal_records", 135),
-  number("plans"), milliseconds("total_plan_time", 155), timestamp("stats_since", 210),
+  number("plans"), milliseconds("total_plan_time", 155),
+  text("datname", 145), text("usename", 130), id("queryid", 155), id("dbid", 120), id("userid", 120),
+  boolean("toplevel", 105), timestamp("stats_since", 210),
 ]
 
 const LOCK_COLUMNS: readonly EntityColumn[] = [
@@ -53,6 +59,8 @@ const TABS: readonly { readonly id: PostgresSection; readonly icon: ReactNode; r
 ]
 
 export function PostgresView({
+  onOrder,
+  order,
   cursor,
   data,
   focus,
@@ -65,6 +73,8 @@ export function PostgresView({
   section,
   t,
 }: {
+  readonly onOrder: (order: TableOrder | null) => void
+  readonly order: TableOrder | undefined
   readonly cursor: number
   readonly data: HourData
   readonly focus: DataRow | null
@@ -77,12 +87,14 @@ export function PostgresView({
   readonly section: PostgresSection
   readonly t: Translate
 }) {
-  const available = (name: string) => (data.sections[name] ?? []).length !== 0
+  // What the hour holds, not what has been fetched: a tab is loaded when it is
+  // opened, so judging it by loaded rows left it disabled for good.
+  const available = (name: string) => data.availableSections.includes(name)
   useEffect(() => {
     const tab = TABS.find((candidate) => candidate.id === section)
     if (tab?.sections === undefined || tab.sections.some(available)) return
     onSection("overview")
-  }, [data.sections, onSection, section])
+  }, [data.availableSections, onSection, section])
   return <>
     <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={onCursor} onFinding={onFinding} t={t} />
     <nav aria-label={t("pg.sections")} className="pg-tabs">
@@ -94,7 +106,7 @@ export function PostgresView({
     {section === "overview" && <Overview cursor={cursor} data={data} hour={hour} locale={locale} t={t} />}
     {section === "activity" && available("pg_stat_activity") && <PgEntityView columns={ACTIVITY_COLUMNS} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_activity" ? focusFinding : null} focus={focus} historyField="backend_xid_age" locale={locale} section="pg_stat_activity" t={t} />}
     {section === "activity" && available("pg_stat_progress_vacuum") && <PgPreview cursor={cursor} data={data} focus={focusFinding?.logicalName === "pg_stat_progress_vacuum" ? focus : null} locale={locale} section="pg_stat_progress_vacuum" t={t} />}
-    {section === "statements" && <PgEntityView columns={STATEMENT_COLUMNS} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField="calls" locale={locale} section="pg_stat_statements" t={t} />}
+    {section === "statements" && <PgEntityView columns={STATEMENT_COLUMNS} onOrder={onOrder} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField="calls" locale={locale} section="pg_stat_statements" t={t} />}
     {section === "locks" && <PgEntityView columns={LOCK_COLUMNS} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_locks" ? focusFinding : null} focus={focus} historyField={null} locale={locale} section="pg_locks" t={t} />}
     {section === "databases" && <PgEntityView columns={DATABASE_COLUMNS} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_database" ? focusFinding : null} focus={focus} historyField="xact_commit" locale={locale} section="pg_stat_database" t={t} />}
   </>
@@ -149,8 +161,11 @@ function OverviewMetrics({ locale, logicalName, row }: { readonly locale: Locale
 /** One empty array for the whole module: `?? []` is a new reference every
  *  render, and every memo downstream of it recomputes. */
 const NO_ROWS: readonly DataRow[] = []
+const NO_RATES: readonly string[] = []
 
 function PgEntityView({
+  onOrder,
+  order,
   columns,
   cursor,
   data,
@@ -169,11 +184,18 @@ function PgEntityView({
   readonly historyField: string | null
   readonly locale: Locale
   readonly section: string
+  readonly onOrder?: ((order: TableOrder | null) => void) | undefined
+  readonly order?: TableOrder | undefined
   readonly t: Translate
 }) {
   const allRows = data.sections[section] ?? NO_ROWS
   const rows = useMemo(() => snapshot(allRows, cursor), [allRows, cursor])
-  const visibleColumns = useMemo(() => columns.filter((column) => allRows.some((row) => Object.hasOwn(row.values, column.field))), [allRows, columns])
+  const rates = data.rateColumns[section] ?? NO_RATES
+  const visibleColumns = useMemo(
+    () => columns.filter((column) => allRows.some((row) => Object.hasOwn(row.values, column.field)))
+      .map((column) => rates.includes(column.field) ? { ...column, rate: true } : column),
+    [allRows, columns, rates],
+  )
   const [selected, setSelected] = useState<DataRow | null>(null)
   useEffect(() => {
     setSelected((current) => selectedEntity(rows, current, focus, section))
@@ -181,7 +203,7 @@ function PgEntityView({
   const selectedKey = selected === null ? null : rowKey(selected)
   const selectedHistoryField = findingHistoryField(visibleColumns, finding, historyField)
   return <div className={selected === null ? "pg-entity-layout pg-table-only" : "pg-entity-layout"} data-pg-section={sectionName(section)} data-testid="pg-entity-layout">
-    <EntityTable columns={visibleColumns} empty={t("table.no_rows")} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onSelect={setSelected} rows={rows} selectedKey={selectedKey} t={t} testId={`pg-${sectionName(section)}-table`} />
+    <EntityTable columns={visibleColumns} empty={t("table.no_rows")} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onOrder={onOrder} onSelect={setSelected} order={order} rows={rows} selectedKey={selectedKey} t={t} testId={`pg-${sectionName(section)}-table`} />
     {selected !== null && <PgDetail allRows={allRows} columns={visibleColumns} historyField={selectedHistoryField} hour={Math.floor(cursor / 3_600_000_000) * 3_600_000_000} locale={locale} onClose={() => setSelected(null)} row={selected} section={section} t={t} />}
   </div>
 }
@@ -194,7 +216,7 @@ function PgDetail({ allRows, columns, historyField, hour, locale, onClose, row, 
     value: asNumber(value(candidate, historyField)),
   }))
   const historyColumn = columns.find((column) => column.field === historyField)
-  const query = rawText(value(row, "query"))
+  const query = useWholeText(row, section, "query")
   const fields = columns.filter((column) => column.field !== "query")
   return <aside className="pg-detail" data-testid="pg-detail">
     <header><div><span>{t(`pg.section.${sectionName(section)}`)}</span><h2>{detailTitle(row, section, t)}</h2></div><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
@@ -202,6 +224,27 @@ function PgDetail({ allRows, columns, historyField, hour, locale, onClose, row, 
     {query !== null && <section className="query-block"><span>{t("pg.query.label")}<button className="copy-raw" onClick={() => void navigator.clipboard?.writeText(query)} type="button">{t("common.raw")}</button></span><pre data-testid="pg-exact-query">{query}</pre></section>}
     {historyField !== null && <SeriesChart hour={hour} label={t(historyColumn?.label ?? historyField)} locale={locale} format={chartFormat(historyColumn?.kind)} points={history} />}
   </aside>
+}
+
+/** Tables carry texts cut to a cell; the panel shows one whole, so it asks for it. */
+function useWholeText(row: DataRow, section: string, field: string): string | null {
+  const shown = rawText(value(row, field))
+  const [whole, setWhole] = useState<string | null>(null)
+  useEffect(() => {
+    setWhole(null)
+    if (shown === null || !shown.endsWith("…")) return
+    const controller = new AbortController()
+    const filters = Object.fromEntries(identityFields(section)
+      .map((name) => [name, rawText(value(row, name)) ?? ""]))
+    void loadSnapshot(row.segmentId, row.timestamp, [section], controller.signal, undefined, filters)
+      .then((data) => {
+        const text = rawText(value(data.sections[section]?.[0] ?? row, field))
+        if (text !== null) setWhole(text)
+      })
+      .catch(() => { /* the cut text stands */ })
+    return () => controller.abort()
+  }, [field, row, section, shown])
+  return whole ?? shown
 }
 
 function countHistory(rows: readonly DataRow[]): readonly ChartPoint[] {
@@ -253,13 +296,13 @@ function display(cell: ReturnType<typeof value>, column: EntityColumn, locale: L
     return timestamp === null ? "—" : <TimestampValue t={t} timestamp={timestamp} />
   }
   if (column.kind === "id") return rawText(cell) ?? "—"
-  if (column.kind === "bytes") return humanBytes(cell, locale)
-  if (column.kind === "kib") return humanBytes(asNumber(cell) === null ? null : (asNumber(cell) ?? 0) * 1024, locale)
-  if (column.kind === "milliseconds") return measure(cell, locale, " ms")
-  if (column.kind === "microseconds") return measure(cell, locale, " μs")
-  if (column.kind === "percent") return measure(cell, locale, "%")
+  if (column.kind === "bytes") return unit(humanBytes(cell, locale), column.rate)
+  if (column.kind === "kib") return unit(humanBytes(asNumber(cell) === null ? null : (asNumber(cell) ?? 0) * 1024, locale), column.rate)
+  if (column.kind === "milliseconds") return measure(cell, locale, unit(" ms", column.rate))
+  if (column.kind === "microseconds") return measure(cell, locale, unit(" μs", column.rate))
+  if (column.kind === "percent") return measure(cell, locale, unit("%", column.rate))
   if (column.kind === "boolean" && typeof cell === "boolean") return locale === "ru" ? cell ? "да" : "нет" : String(cell)
-  if (typeof cell === "number") return measure(cell, locale)
+  if (typeof cell === "number") return measure(cell, locale, unit("", column.rate))
   return rawText(cell) ?? "—"
 }
 

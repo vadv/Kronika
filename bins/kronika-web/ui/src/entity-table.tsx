@@ -17,9 +17,17 @@ export interface EntityColumn {
   readonly field: string
   readonly label: string
   readonly help?: string
+  /** The server divided this column by the interval: it reads per second. */
+  readonly rate?: boolean
   readonly kind?: "id" | "number" | "text" | "timestamp" | "bytes" | "kib" | "milliseconds" | "microseconds" | "percent" | "boolean"
   readonly width?: number
   readonly sticky?: boolean
+}
+
+/** A column and a direction, as the server understands them. */
+export interface TableOrder {
+  readonly column: string
+  readonly descending: boolean
 }
 
 export function EntityTable({
@@ -27,7 +35,9 @@ export function EntityTable({
   empty,
   label,
   locale,
+  onOrder,
   onSelect,
+  order,
   rowKey = defaultKey,
   rows,
   selectedKey,
@@ -38,18 +48,28 @@ export function EntityTable({
   readonly empty: string
   readonly label: string
   readonly locale: Locale
+  /** Set when the server ordered and cut the rows; the header then asks it
+   *  for another order rather than reshuffling what arrived. */
+  readonly onOrder?: ((order: TableOrder | null) => void) | undefined
   readonly onSelect?: (row: DataRow) => void
+  readonly order?: TableOrder | undefined
   readonly rowKey?: (row: DataRow) => string
   readonly rows: readonly DataRow[]
   readonly selectedKey?: string | null
   readonly testId?: string
   readonly t?: Translate
 }) {
+  // A table the server cut to its top rows cannot be reordered here: sorting
+  // the visible two hundred by another column answers a different question
+  // than the two hundred largest by that column.
   const [sorting, setSorting] = useState<SortingState>([])
+  const ordering: SortingState = order === undefined
+    ? sorting
+    : [{ id: order.column, desc: order.descending }]
   const parent = useRef<HTMLDivElement>(null)
   const columns = useMemo<ColumnDef<DataRow>[]>(() => fields.map((field, index) => ({
     accessorFn: (row) => sortable(value(row, field.field), field.kind),
-    cell: ({ row }) => <Cell cell={value(row.original, field.field)} kind={field.kind} locale={locale} />,
+    cell: ({ row }) => <Cell cell={value(row.original, field.field)} kind={field.kind} locale={locale} rate={field.rate} />,
     header: () => t === undefined ? field.label : t(field.label),
     id: field.field,
     meta: {
@@ -70,8 +90,17 @@ export function EntityTable({
     getCoreRowModel: getCoreRowModel(),
     getRowId: (row) => rowKey(row),
     getSortedRowModel: getSortedRowModel(),
-    onSortingChange: setSorting,
-    state: { sorting },
+    manualSorting: order !== undefined,
+    onSortingChange: (updater) => {
+      const next = typeof updater === "function" ? updater(ordering) : updater
+      if (order === undefined) {
+        setSorting(next)
+        return
+      }
+      const first = next[0]
+      onOrder?.(first === undefined ? null : { column: first.id, descending: first.desc })
+    },
+    state: { sorting: ordering },
   })
   const rendered = table.getRowModel().rows
   const virtual = useVirtualizer({ count: rendered.length, estimateSize: () => 23, getScrollElement: () => parent.current, overscan: 10 })
@@ -119,20 +148,24 @@ export function EntityTable({
   </section>
 }
 
-function Cell({ cell, kind = "text", locale }: { readonly cell: Cell; readonly kind?: EntityColumn["kind"]; readonly locale: Locale }) {
+export function unit(base: string, rate: boolean | undefined): string {
+  return rate === true ? `${base}/s` : base
+}
+
+function Cell({ cell, kind = "text", locale, rate }: { readonly cell: Cell; readonly kind?: EntityColumn["kind"]; readonly locale: Locale; readonly rate?: boolean | undefined }) {
   if (cell === null) return <span className="null-cell">—</span>
   if (kind === "id") return <span className="entity-value id-value">{identifier(cell)}</span>
   if (kind === "timestamp") {
     const timestamp = asNumber(cell)
     return <span className="entity-value">{timestamp === null ? "—" : formatUtc(timestamp)}</span>
   }
-  if (kind === "bytes") return <span className="entity-value">{measure(cell, locale, " B")}</span>
-  if (kind === "kib") return <span className="entity-value">{measure(cell, locale, " KiB")}</span>
-  if (kind === "milliseconds") return <span className="entity-value">{measure(cell, locale, " ms")}</span>
-  if (kind === "microseconds") return <span className="entity-value">{measure(cell, locale, " μs")}</span>
-  if (kind === "percent") return <span className="entity-value">{measure(cell, locale, "%")}</span>
+  if (kind === "bytes") return <span className="entity-value">{measure(cell, locale, unit(" B", rate))}</span>
+  if (kind === "kib") return <span className="entity-value">{measure(cell, locale, unit(" KiB", rate))}</span>
+  if (kind === "milliseconds") return <span className="entity-value">{measure(cell, locale, unit(" ms", rate))}</span>
+  if (kind === "microseconds") return <span className="entity-value">{measure(cell, locale, unit(" μs", rate))}</span>
+  if (kind === "percent") return <span className="entity-value">{measure(cell, locale, unit("%", rate))}</span>
   if (kind === "boolean") return <span className="entity-value">{cell === true ? locale === "ru" ? "да" : "true" : cell === false ? locale === "ru" ? "нет" : "false" : rawText(cell) ?? "—"}</span>
-  if (kind === "number") return <span className="entity-value">{measure(cell, locale)}</span>
+  if (kind === "number") return <span className="entity-value">{measure(cell, locale, unit("", rate))}</span>
   return <span className="entity-value text-value" title={rawText(cell) ?? "—"}>{rawText(cell) ?? "—"}</span>
 }
 

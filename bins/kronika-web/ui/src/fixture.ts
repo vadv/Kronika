@@ -107,6 +107,7 @@ export function bundledFixtureHour(start: number): HourData | null {
   }
   return {
     sections,
+    rateColumns: {},
     availableSections: ["os_process", "pg_stat_activity", "health"],
     processes,
     activities,

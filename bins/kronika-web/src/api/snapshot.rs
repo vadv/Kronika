@@ -12,7 +12,7 @@ use kronika_registry::ColumnClass;
 use serde_json::{Value, json};
 
 use super::query::{Plan, plans};
-use super::render::{cell, projected_layout, record};
+use super::render::{cell, projected_layout, record, shorten};
 use super::{ApiError, CachePolicy, ResponseMeta, explicit_segment};
 use crate::route::{DataRequest, SegmentRequest, SnapshotRequest};
 
@@ -25,6 +25,7 @@ pub(crate) struct PreparedSnapshot {
     sections: Vec<SectionPlans>,
     by: Option<String>,
     top: Option<usize>,
+    text: Option<usize>,
 }
 
 /// Counter readings of one moment, keyed by the identity they belong to.
@@ -47,7 +48,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
                 section: logical_name.clone(),
             },
             fields: request.fields.clone(),
-            filters: Vec::new(),
+            filters: request.filters.clone(),
             after: None,
         };
         // A section reaches an active segment only with its first sample, so
@@ -71,6 +72,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
         sections,
         by: request.by,
         top: request.top,
+        text: request.text,
     })
 }
 
@@ -183,11 +185,14 @@ impl PreparedSnapshot {
                 if cancelled() {
                     return false;
                 }
-                if row_timestamp(&row, timestamp) != Some(moments.current) {
+                if row_timestamp(&row, timestamp) != Some(moments.current)
+                    || !plan.matches(&row, &dictionary)
+                {
                     return true;
                 }
                 let before = identity_of(plan, &row).and_then(|key| previous.get(&key));
-                match Self::row_record(plan, &row, before, elapsed, ordinal, &dictionary) {
+                match Self::row_record(plan, &row, before, elapsed, ordinal, &dictionary, self.text)
+                {
                     Ok(value) => rows.push(value),
                     Err(error) => failure = Some(error),
                 }
@@ -238,7 +243,10 @@ impl PreparedSnapshot {
                     connected = false;
                     return false;
                 }
-                match Self::row_record(plan, &row, None, None, ordinal, &dictionary) {
+                if !plan.matches(&row, &dictionary) {
+                    return true;
+                }
+                match Self::row_record(plan, &row, None, None, ordinal, &dictionary, self.text) {
                     Ok(value) => match record(&value) {
                         Ok(bytes) => connected = emit(bytes),
                         Err(error) => failure = Some(error),
@@ -385,6 +393,7 @@ impl PreparedSnapshot {
         elapsed: Option<i64>,
         ordinal: u64,
         dictionary: &kronika_reader::Dictionary,
+        text_limit: Option<usize>,
     ) -> Result<Value, ApiError> {
         let stamped = plan.timestamp.and_then(|column| row_timestamp(row, column));
         let mut values = serde_json::Map::new();
@@ -402,11 +411,15 @@ impl PreparedSnapshot {
                 values.insert(field.name.clone(), rate(stored, before, column, elapsed));
                 continue;
             }
+            let rendered = match stored {
+                Some(stored) => cell(stored, dictionary)?,
+                None => Value::Null,
+            };
             values.insert(
                 field.name.clone(),
-                match stored {
-                    Some(stored) => cell(stored, dictionary)?,
-                    None => Value::Null,
+                match text_limit {
+                    Some(limit) => shorten(rendered, limit),
+                    None => rendered,
                 },
             );
         }

@@ -22,6 +22,7 @@ import {
   type Finding,
   type HourData,
 } from "./api"
+import type { TableOrder } from "./entity-table"
 import { DetailDock } from "./detail"
 import { EventsView } from "./events-view"
 import { HelpPanel, type Translate } from "./help"
@@ -50,7 +51,7 @@ type Theme = "dark" | "light"
 type HostSection = "system" | "processes"
 
 const EMPTY_DATA: HourData = {
-  sections: {}, availableSections: [], processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
+  sections: {}, rateColumns: {}, availableSections: [], processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
   pgOverview: [], pgStatements: [], pgLocks: [], pgDatabases: [], pgEvents: [], points: [], lanePoints: [], findings: [],
   sourceFamilies: [], segmentCount: 0,
 }
@@ -121,6 +122,9 @@ function App() {
   const [hostSection, setHostSection] = useState<HostSection>("processes")
   const [pgSection, setPgSection] = useState<PostgresSection>("overview")
   const [lens, setLens] = useState<Lens>("generic")
+  // The statement table is ordered and cut by the server, so its header asks
+  // for a different order rather than reshuffling the rows that arrived.
+  const [order, setOrder] = useState<TableOrder | null>(null)
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [dockClosed, setDockClosed] = useState(false)
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
@@ -194,14 +198,14 @@ function App() {
   useEffect(() => {
     if (hour === null || cursorSegment === null) return
     const wanted = (VIEW_REQUESTS[viewKey] ?? []).filter((request) => request.section !== "health")
-    const key = `${cursorSegment}:${cursor}:${viewKey}`
+    const key = `${cursorSegment}:${cursor}:${viewKey}:${order?.column ?? ""}:${order?.descending ?? ""}`
     if (loaded.current.keys.has(key) || wanted.length === 0) return
     const controller = new AbortController()
     // Dragging the cursor crosses many samples; only the one it rests on is
     // worth a round trip over a link that costs more than a second.
     const timer = setTimeout(() => {
       loaded.current.keys.add(key)
-      void loadSnapshot(cursorSegment, cursor, wanted.map((request) => request.section), controller.signal)
+      void loadSnapshot(cursorSegment, cursor, wanted.map((request) => request.section), controller.signal, order ?? undefined)
         .then((incoming) => setData((before) => replaceSections(before, incoming)))
         .catch((reason: unknown) => {
           if (controller.signal.aborted) return
@@ -210,7 +214,7 @@ function App() {
         })
     }, 250)
     return () => { clearTimeout(timer); controller.abort() }
-  }, [cursor, cursorSegment, hour, viewKey])
+  }, [cursor, cursorSegment, hour, order, viewKey])
 
   useEffect(() => {
     const shortcuts = (event: KeyboardEvent) => {
@@ -371,7 +375,7 @@ function App() {
           {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onClose={() => { setDockClosed(true); setSelectedKey(null) }} process={selectedProcess} processHistory={processHistory} t={t} />}
         </div>
       </>}
-      {!loading && error === null && hour !== null && source === "postgresql" && <PostgresView cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} onSection={setPgSection} section={pgSection} t={t} />}
+      {!loading && error === null && hour !== null && source === "postgresql" && <PostgresView onOrder={setOrder} order={order ?? undefined} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} onSection={setPgSection} section={pgSection} t={t} />}
       {!loading && error === null && hour !== null && source === "events" && <EventsView cursor={cursor} data={data} hour={hour} onCursor={setCursor} onFinding={selectFinding} onShowAll={() => setEventScope(null)} resolve={(finding) => resolveLocator(data, finding)?.row ?? null} scope={eventScope} selected={selectedFinding} t={t} />}
     </section>
 
