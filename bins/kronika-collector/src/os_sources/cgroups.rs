@@ -2,6 +2,7 @@ use super::{
     DueSet, Instant, Interner, OsSources, ProcFs, SourceKind, SysFs, cgroup, intern_str,
     log_collection_finish, log_degraded, process_facts,
 };
+use kronika_source_os::OsScope;
 
 pub(super) fn collect_cgroup_sections(
     sys: &SysFs,
@@ -50,6 +51,12 @@ pub(super) fn collect_cgroup_sections(
             os.cgroup_io
                 .push(cgroup::to_io_section(row, scope, cgroup_path));
         }
+    }
+    // Pressure of our own group stands beside the host rows of the same
+    // section, told apart by the scope each row carries. In a pod the host
+    // rows describe the node, and these describe us.
+    for row in &rows.psi {
+        os.psi.push(row.to_section(OsScope::Pod.as_u8()));
     }
     for row in &rows.pids {
         if let Some(cgroup_path) =

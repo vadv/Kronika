@@ -10,6 +10,8 @@ mod sections;
 
 pub use model::{CgroupCollection, CgroupCpuRow, CgroupIoRow, CgroupMemoryRow, CgroupPidsRow};
 pub use parse::{parse_blkio_service_stats, parse_cpu_max, parse_cpu_stat, parse_io_stat};
+
+use crate::proc::pressure::{PsiRow, parse_pressure};
 pub use sections::{to_cpu_section, to_io_section, to_memory_section, to_pids_section};
 
 use parse::{
@@ -58,8 +60,26 @@ fn collect_v2(sys: &SysFs, ts: i64) -> CgroupCollection {
         if let Ok(content) = sys.read(&rel(&path, "io.stat")) {
             out.io.extend(parse_io_stat(&content, ts, &path));
         }
+        // Our own group, and only it: under a cgroup namespace "/" is the pod
+        // itself, and on a machine it is the root. Host pressure is already
+        // read from procfs.
+        if path == "/" {
+            out.psi = read_pressure_v2(sys, ts, &path);
+        }
     }
     out
+}
+
+/// Pressure of one cgroup. Same format as `/proc/pressure/*`, and cgroup v1
+/// does not have it at all.
+fn read_pressure_v2(sys: &SysFs, ts: i64, path: &str) -> Vec<PsiRow> {
+    let cpu = sys.read(&rel(path, "cpu.pressure")).ok();
+    let memory = sys.read(&rel(path, "memory.pressure")).ok();
+    let io = sys.read(&rel(path, "io.pressure")).ok();
+    if cpu.is_none() && memory.is_none() && io.is_none() {
+        return Vec::new();
+    }
+    parse_pressure(cpu.as_deref(), memory.as_deref(), io.as_deref(), ts).unwrap_or_default()
 }
 
 fn collect_v1(sys: &SysFs, ts: i64, clock_ticks_per_sec: i64) -> CgroupCollection {
@@ -99,7 +119,31 @@ fn read_cpu_v2(sys: &SysFs, ts: i64, path: &str) -> Option<CgroupCpuRow> {
         row.quota_usec = quota;
         row.period_usec = period;
     }
+    row.cpuset_cpus = sys
+        .read(&rel(path, "cpuset.cpus.effective"))
+        .ok()
+        .and_then(|content| count_cpus(&content));
     Some(row)
+}
+
+/// How many CPUs a `cpuset` list names: `0-3,8` is five. An empty file means
+/// the group inherits every CPU, which is not a ceiling of its own.
+fn count_cpus(content: &str) -> Option<i64> {
+    let mut total = 0_i64;
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    for part in trimmed.split(',') {
+        let (first, last) = part.split_once('-').unwrap_or((part, part));
+        let first: i64 = first.trim().parse().ok()?;
+        let last: i64 = last.trim().parse().ok()?;
+        if last < first {
+            return None;
+        }
+        total += last - first + 1;
+    }
+    Some(total)
 }
 
 fn read_cpu_v1(sys: &SysFs, ts: i64, path: &str, clock_ticks_per_sec: i64) -> Option<CgroupCpuRow> {
@@ -113,6 +157,7 @@ fn read_cpu_v1(sys: &SysFs, ts: i64, path: &str, clock_ticks_per_sec: i64) -> Op
         nr_throttled: 0,
         quota_usec: -1,
         period_usec: DEFAULT_CPU_PERIOD_USEC,
+        cpuset_cpus: None,
     };
     let usage_found =
         read_first_v1(sys, CPU_V1_DIRS, path, "cpuacct.usage").is_some_and(|content| {
@@ -150,6 +195,7 @@ fn read_memory_v2(sys: &SysFs, ts: i64, path: &str) -> Option<CgroupMemoryRow> {
         file: 0,
         kernel: 0,
         slab: 0,
+        shmem: 0,
         low_events: 0,
         high_events: 0,
         max_events: 0,
@@ -182,6 +228,7 @@ fn read_memory_v1(sys: &SysFs, ts: i64, path: &str) -> Option<CgroupMemoryRow> {
         file: 0,
         kernel: 0,
         slab: 0,
+        shmem: 0,
         low_events: 0,
         high_events: 0,
         max_events: 0,

@@ -170,6 +170,7 @@ fn section_conversions_preserve_metric_fields() {
         nr_throttled: 2,
         quota_usec: -1,
         period_usec: 100_000,
+        cpuset_cpus: Some(4),
     };
     let memory = CgroupMemoryRow {
         ts: 7,
@@ -180,6 +181,7 @@ fn section_conversions_preserve_metric_fields() {
         file: 200,
         kernel: 50,
         slab: 20,
+        shmem: 8,
         low_events: 1,
         high_events: 2,
         max_events: 3,
@@ -223,4 +225,65 @@ fn section_conversions_preserve_metric_fields() {
     let pids_section = to_pids_section(&pids, 2, cgroup_path);
     assert_eq!(pids_section.current, 9);
     assert_eq!(pids_section.max, Some(128));
+}
+
+#[test]
+fn pressure_of_our_own_group_is_collected_and_other_groups_are_not() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let cgroup = root.path().join("fs/cgroup");
+    std::fs::create_dir_all(cgroup.join("workload")).expect("tree");
+    std::fs::write(cgroup.join("cgroup.controllers"), "cpu memory io\n").expect("controllers");
+    std::fs::write(
+        cgroup.join("cpu.pressure"),
+        "some avg10=1.00 avg60=2.00 avg300=3.00 total=400\n",
+    )
+    .expect("cpu pressure");
+    std::fs::write(
+        cgroup.join("io.pressure"),
+        "some avg10=0.10 avg60=0.20 avg300=0.30 total=40\nfull avg10=0.05 avg60=0.06 avg300=0.07 total=8\n",
+    )
+    .expect("io pressure");
+    std::fs::write(
+        cgroup.join("workload/cpu.pressure"),
+        "some avg10=9.00 avg60=9.00 avg300=9.00 total=900\n",
+    )
+    .expect("other group pressure");
+
+    let sys = SysFs::new(root.path().to_path_buf());
+    let rows = collect(&sys, 100, 100);
+
+    let resources: Vec<u8> = rows.psi.iter().map(|row| row.resource).collect();
+    assert_eq!(
+        resources,
+        vec![0, 2],
+        "cpu and io of our own group, memory absent"
+    );
+    assert_eq!(rows.psi[0].some_total, 400);
+    assert_eq!(rows.psi[1].full_total, Some(8));
+}
+
+#[test]
+fn a_group_without_pressure_files_reports_none() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let cgroup = root.path().join("fs/cgroup");
+    std::fs::create_dir_all(&cgroup).expect("tree");
+    std::fs::write(cgroup.join("cgroup.controllers"), "cpu\n").expect("controllers");
+
+    let sys = SysFs::new(root.path().to_path_buf());
+    assert!(collect(&sys, 100, 100).psi.is_empty());
+}
+
+#[test]
+fn a_cpuset_list_counts_the_cpus_it_names() {
+    assert_eq!(count_cpus("0-3\n"), Some(4));
+    assert_eq!(count_cpus("0-3,8\n"), Some(5));
+    assert_eq!(count_cpus("2\n"), Some(1));
+    assert_eq!(count_cpus("0-1,4-5,10\n"), Some(5));
+    assert_eq!(
+        count_cpus("\n"),
+        None,
+        "an empty list is no ceiling of its own"
+    );
+    assert_eq!(count_cpus("3-1\n"), None);
+    assert_eq!(count_cpus("what\n"), None);
 }
