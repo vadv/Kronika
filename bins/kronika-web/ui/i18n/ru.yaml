@@ -317,7 +317,6 @@ detail.cmdline.help: "Полная командная строка процес�
 detail.pg.title: "PostgreSQL"
 detail.pg_pid: "PostgreSQL PID {pid}"
 detail.pg.help: "Процесс PostgreSQL с тем же PID в выборке активности, ближайшей к курсору. Проверьте состояние, событие ожидания, запрос и время."
-detail.pg_none: "Рядом с курсором нет строки активности PostgreSQL с этим PID"
 detail.pg_snapshot.label: "Время активности"
 detail.pg_snapshot.help: "Время выборки активности, по которой сопоставлен PID. Сопоставьте его с курсором и временем запуска процесса Linux."
 pg.sections: "Разделы PostgreSQL"

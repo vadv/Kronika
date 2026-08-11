@@ -255,7 +255,6 @@ h2 { font-size: var(--t-md); }
 .pg-title { align-items: center; display: flex; }
 .pg-title .label-help { color: var(--fg); font-size: var(--t-sm); text-transform: uppercase; }
 .backend-type { color: var(--accent2); font-size: var(--t-sm); margin: 9px 0 0; }
-.pg-empty { color: var(--fg3); font-size: var(--t-sm); line-height: 1.5; }
 .query-block pre { color: var(--event-edge); font: inherit; font-size: var(--t-sm); line-height: 1.55; margin: 8px 0 0; max-height: 170px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 
 /* Dense operator consoles */

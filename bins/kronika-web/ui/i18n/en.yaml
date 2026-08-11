@@ -317,7 +317,6 @@ detail.cmdline.help: "Full process command line, including arguments. Inspect it
 detail.pg.title: "PostgreSQL activity"
 detail.pg_pid: "PostgreSQL PID {pid}"
 detail.pg.help: "PostgreSQL backend with the same PID in the activity sample nearest the cursor. Inspect its state, wait event, query, and timestamps."
-detail.pg_none: "No PostgreSQL activity row with this PID near the cursor"
 detail.pg_snapshot.label: "Activity sampled"
 detail.pg_snapshot.help: "Time of the activity sample used to match the PID. Compare it with the cursor and the Linux process start time."
 pg.sections: "PostgreSQL sections"

@@ -197,23 +197,19 @@ export function DetailDock({
         ))}
       </section>
 
-      <section className="pg-section">
+      {activity !== null && <section className="pg-section">
         <div className="pg-title">
-          <h3>{activity === null ? t("detail.pg.title") : t("detail.pg_pid", { pid: identifier(value(activity, "pid")) })}</h3>
+          <h3>{t("detail.pg_pid", { pid: identifier(value(activity, "pid")) })}</h3>
         </div>
-        {activity === null
-          ? <p className="pg-empty">{t("detail.pg_none")}</p>
-          : <>
-            <dl className="detail-list">
-              <DetailField help="detail.pg_snapshot.help" label="detail.pg_snapshot.label" t={t} value={activityTime === null ? "—" : <Timestamp raw={activityTime} t={t} />} />
-              {ACTIVITY_FIELDS.map(([field, key, kind]) => <DetailField help={`${key}.help`} key={field} label={`${key}.label`} t={t} value={formatActivity(value(activity, field), kind, locale, t)} />)}
-            </dl>
-            <section className="query-block">
-              <LabelHelp helpKey="pg.query.help" labelKey="pg.query.label" t={t} />
-              <pre data-testid="pg-exact-query">{rawText(value(activity, "query")) ?? "—"}</pre>
-            </section>
-          </>}
-      </section>
+        <dl className="detail-list">
+          <DetailField help="detail.pg_snapshot.help" label="detail.pg_snapshot.label" t={t} value={activityTime === null ? "—" : <Timestamp raw={activityTime} t={t} />} />
+          {ACTIVITY_FIELDS.map(([field, key, kind]) => <DetailField help={`${key}.help`} key={field} label={`${key}.label`} t={t} value={formatActivity(value(activity, field), kind, locale, t)} />)}
+        </dl>
+        <section className="query-block">
+          <LabelHelp helpKey="pg.query.help" labelKey="pg.query.label" t={t} />
+          <pre data-testid="pg-exact-query">{rawText(value(activity, "query")) ?? "—"}</pre>
+        </section>
+      </section>}
     </aside>
   )
 }
