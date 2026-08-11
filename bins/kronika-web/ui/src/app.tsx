@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client"
 import {
   TIMELINE_REQUESTS,
   loadTimeline,
+  hourOf,
   loadSnapshot,
   segmentAt,
   fieldNameForLocator,
@@ -165,7 +166,7 @@ function App() {
       setAvailableHours(timeline.availableHours)
       setHour(timeline.hour)
       setSegments(timeline.segments)
-      setData({ ...EMPTY_DATA, ...timeline, segmentCount: timeline.segments.length })
+      setData(hourOf(timeline))
       const times = timeline.health.map((row) => row.timestamp)
       setCursor(times.length === 0 ? timeline.hour : Math.max(...times))
       setLoading(false)

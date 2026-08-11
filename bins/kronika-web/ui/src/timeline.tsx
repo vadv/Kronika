@@ -8,9 +8,7 @@ import { TimeTicks } from "./time-ticks"
 const WIDTH = 920
 const HEIGHT = 170
 const LANE_HEIGHT = 36
-const LANE_COUNT = 4
 const TOP = 8
-const PLOT_BOTTOM = TOP + LANE_COUNT * LANE_HEIGHT
 const MARKER_CLUSTER_PX = 38
 
 interface SeriesPoint {
@@ -68,6 +66,23 @@ export function Timeline({
     pressure.filter((row) => asNumber(value(row, "resource")) === resource),
     "some_avg10",
   )), [pressure])
+  // A labelled lane with nothing in it is a line of chrome that says nothing.
+  const lanes = useMemo(() => [
+    { key: "health", series: [{ color: "cyan" as const, points: healthPoints }] },
+    { key: "load", series: [{ color: "amber" as const, points: loadPoints }] },
+    { key: "memory", series: [{ color: "violet" as const, points: memoryPoints }] },
+    {
+      key: "pressure",
+      series: [
+        { color: "cyan" as const, points: pressurePoints[0] ?? [] },
+        { color: "violet" as const, points: pressurePoints[1] ?? [] },
+        { color: "amber" as const, points: pressurePoints[2] ?? [] },
+      ],
+    },
+  ].filter((lane) => lane.series.some((series) => series.points.some((point) => point.value !== null))),
+  [healthPoints, loadPoints, memoryPoints, pressurePoints])
+  const healthLane = lanes.findIndex((lane) => lane.key === "health")
+  const plotBottom = TOP + Math.max(1, lanes.length) * LANE_HEIGHT
   const markers = useMemo(
     () => groupFindings(findings, hour, end, plotWidth),
     [end, findings, hour, plotWidth],
@@ -98,12 +113,9 @@ export function Timeline({
       <div
         aria-hidden="false"
         className="timeline-labels"
-        style={{ gridTemplateRows: `repeat(${LANE_COUNT}, ${LANE_HEIGHT}px)` }}
+        style={{ gridTemplateRows: `repeat(${Math.max(1, lanes.length)}, ${LANE_HEIGHT}px)` }}
       >
-        <LaneLabel label="lane.health.label" help="lane.health.help" t={t} />
-        <LaneLabel label="lane.load.label" help="lane.load.help" t={t} />
-        <LaneLabel label="lane.memory.label" help="lane.memory.help" t={t} />
-        <LaneLabel label="lane.pressure.label" help="lane.pressure.help" t={t} />
+        {lanes.map((lane) => <LaneLabel help={`lane.${lane.key}.help`} key={lane.key} label={`lane.${lane.key}.label`} t={t} />)}
       </div>
       <div className="timeline-plot" ref={plot} style={{ height: `${HEIGHT}px`, position: "relative" }}>
         <div
@@ -127,26 +139,23 @@ export function Timeline({
           <svg aria-hidden="true" preserveAspectRatio="none" style={{ height: `${HEIGHT}px` }} viewBox={`0 0 ${WIDTH} ${HEIGHT}`}>
             {[0, 1, 2, 3, 4, 5, 6].map((tick) => {
               const x = tick / 6 * WIDTH
-              return <line className="timeline-grid" key={tick} x1={x} x2={x} y1={0} y2={PLOT_BOTTOM} />
+              return <line className="timeline-grid" key={tick} x1={x} x2={x} y1={0} y2={plotBottom} />
             })}
-            {[0, 1, 2, 3, 4].map((lane) => {
-              const y = TOP + lane * LANE_HEIGHT
-              return <line className="lane-line" key={lane} x1={0} x2={WIDTH} y1={y} y2={y} />
+            {lanes.map((_lane, index) => {
+              const y = TOP + index * LANE_HEIGHT
+              return <line className="lane-line" key={y} x1={0} x2={WIDTH} y1={y} y2={y} />
             })}
-            <SeriesLine color="cyan" end={end} hour={hour} lane={0} points={healthPoints} />
-            <SeriesLine color="amber" end={end} hour={hour} lane={1} points={loadPoints} />
-            <SeriesLine color="violet" end={end} hour={hour} lane={2} points={memoryPoints} />
-            <SeriesLine color="cyan" end={end} hour={hour} lane={3} points={pressurePoints[0] ?? []} />
-            <SeriesLine color="violet" end={end} hour={hour} lane={3} points={pressurePoints[1] ?? []} />
-            <SeriesLine color="amber" end={end} hour={hour} lane={3} points={pressurePoints[2] ?? []} />
-            <line className="cursor-line" x1={cursorX} x2={cursorX} y1={0} y2={PLOT_BOTTOM} />
+            {lanes.flatMap((lane, index) => lane.series.map((series, ordinal) => (
+              <SeriesLine color={series.color} end={end} hour={hour} key={`${lane.key}:${ordinal}`} lane={index} points={series.points} />
+            )))}
+            <line className="cursor-line" x1={cursorX} x2={cursorX} y1={0} y2={plotBottom} />
           </svg>
           <TimeTicks className="timeline-time-ticks" hour={hour} />
         </div>
         {markers.map((marker, index) => {
           const x = scaleX(marker.timestamp, hour, end)
           const displayTimestamp = hour + x / WIDTH * (end - hour)
-          const y = seriesYAt(healthPoints, marker.finding.segmentId, displayTimestamp, 0)
+          const y = seriesYAt(healthPoints, marker.finding.segmentId, displayTimestamp, Math.max(0, healthLane))
           return <FindingMarker
             key={`${marker.timestamp}:${marker.kind}:${index}`}
             marker={marker}

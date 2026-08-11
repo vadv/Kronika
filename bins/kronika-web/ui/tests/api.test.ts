@@ -182,3 +182,29 @@ function indexResponse(logicalName: string): Response {
 function ndjson(records: readonly unknown[]): Response {
   return new Response(`${records.map((record) => JSON.stringify(record)).join("\n")}\n`, { status: 200 })
 }
+
+test("the health line survives the first snapshot merged into the hour", async () => {
+  const api = await bundledApi()
+  const line = {
+    segmentId: "7",
+    logicalName: "health",
+    typeId: "0",
+    ordinal: "7:1",
+    timestamp: START + 1,
+    values: { os_health: 91 },
+  }
+  const hour = api.hourOf({
+    hour: START,
+    availableHours: [START],
+    segments: [{ id: "7", minTs: START, maxTs: START + 1_000 }],
+    health: [line],
+    points: [],
+    findings: [],
+    sourceFamilies: [],
+    availableSections: ["health"],
+  })
+  assert.equal(hour.health.length, 1)
+  const snapshot = { ...hour, sections: { os_loadavg: [] }, health: [] }
+  const merged = api.mergeHourData(hour, snapshot)
+  assert.equal(merged.health.length, 1, "a snapshot without the health section must not erase the line")
+})

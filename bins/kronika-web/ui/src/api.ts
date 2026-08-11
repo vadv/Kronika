@@ -233,6 +233,19 @@ export async function loadHour(
 
 /** Add a later view's sections to what is already on screen. The caller only
  *  ever asks for names it does not hold, so rows never arrive twice. */
+/** The hour as the rest of the screen holds it. The line goes in beside every
+ *  other section, or the first snapshot to arrive merges it away. */
+export function hourOf(timeline: TimelineData): HourData {
+  return hourData({
+    sections: { health: timeline.health },
+    availableSections: timeline.availableSections,
+    points: timeline.points,
+    findings: timeline.findings,
+    sourceFamilies: timeline.sourceFamilies,
+    segmentCount: timeline.segments.length,
+  })
+}
+
 export function mergeHourData(before: HourData, after: HourData): HourData {
   const sections: Record<string, readonly DataRow[]> = { ...before.sections }
   for (const [name, rows] of Object.entries(after.sections)) {
