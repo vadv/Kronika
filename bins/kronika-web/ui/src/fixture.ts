@@ -1,4 +1,4 @@
-import type { Cell, DataRow, Finding, HourData, Point, SourceFamily } from "./api"
+import type { Cell, DataRow, Finding, HourData, LanePoint, Point, SourceFamily } from "./api"
 
 interface FixtureTable {
   readonly columns: readonly string[]
@@ -84,6 +84,7 @@ export function bundledFixtureHour(start: number): HourData | null {
     }),
   ).filter((row) => within(row.timestamp))
   const points = fixturePoints(fixture, segmentAt).filter((point) => within(point.timestamp))
+  const lanePoints = fixtureLanePoints(points, activities)
   const findings = fixture.findings.map((finding) => ({
     segmentId: finding.segment_id,
     logicalName: fixtureLogicalName(finding.type_id),
@@ -122,11 +123,80 @@ export function bundledFixtureHour(start: number): HourData | null {
     pgDatabases: [],
     pgEvents: [],
     points,
-    lanePoints: [],
+    lanePoints,
     findings,
     sourceFamilies,
     segmentCount: fixture.meta.segments,
   }
+}
+
+function fixtureLanePoints(points: readonly Point[], activities: readonly DataRow[]): readonly LanePoint[] {
+  const lanes: LanePoint[] = points.flatMap((point) => {
+    const lane = point.series === "os_cpu_busy_percent"
+      ? "cpu_busy"
+      : point.series === "os_mem_available_percent" ? "memory" : null
+    return lane === null ? [] : [{
+      segmentId: point.segmentId,
+      lane,
+      timestamp: point.timestamp,
+      value: lane === "memory" && point.value !== null ? 100 - point.value : point.value,
+    }]
+  })
+  const activity = new Map<string, {
+    readonly segmentId: string
+    readonly timestamp: number
+    running: number
+    waiting: number
+    oldest: number | null
+  }>()
+  for (const row of activities) {
+    const key = `${row.segmentId}:${row.timestamp}`
+    const stored = activity.get(key) ?? {
+      segmentId: row.segmentId,
+      timestamp: row.timestamp,
+      running: 0,
+      waiting: 0,
+      oldest: null,
+    }
+    const started = cellNumber(row.values.xact_start)
+    if (started !== null) {
+      const age = Math.max(0, (row.timestamp - started) / 1_000_000)
+      stored.oldest = Math.max(stored.oldest ?? 0, age)
+    }
+    const client = cellText(row.values.backend_type) === "client backend"
+    const leader = row.values.leader_pid !== null && row.values.leader_pid !== undefined
+    if (client && !leader && cellText(row.values.state) === "active") {
+      if (row.values.wait_event_type === null || row.values.wait_event_type === undefined) stored.running += 1
+      else stored.waiting += 1
+    }
+    activity.set(key, stored)
+  }
+  for (const stored of activity.values()) {
+    lanes.push(
+      { segmentId: stored.segmentId, lane: "pg_running", timestamp: stored.timestamp, value: stored.running },
+      { segmentId: stored.segmentId, lane: "pg_waiting", timestamp: stored.timestamp, value: stored.waiting },
+    )
+    if (stored.oldest !== null) {
+      lanes.push({
+        segmentId: stored.segmentId,
+        lane: "pg_oldest_xact",
+        timestamp: stored.timestamp,
+        value: stored.oldest,
+      })
+    }
+  }
+  return lanes.sort((left, right) => left.timestamp - right.timestamp || left.lane.localeCompare(right.lane))
+}
+
+function cellText(value: Cell | undefined): string | null {
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+    ? String(value)
+    : null
+}
+
+function cellNumber(value: Cell | undefined): number | null {
+  const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN
+  return Number.isFinite(number) ? number : null
 }
 
 function rawFixture(): RealHourFixture | null {

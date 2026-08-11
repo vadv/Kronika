@@ -229,12 +229,13 @@ export interface SegmentSection {
  *  the health line and the marks. A round trip over the debugging link costs
  *  more than a second, so the count of requests is what the wait is made of. */
 export async function loadTimeline(start: number | null, signal: AbortSignal): Promise<TimelineData> {
-  const fixture = bundledFixtureHour(start ?? bundledFixtureRange()?.from ?? 0)
   const range = bundledFixtureRange()
+  const requested = floorHour(start ?? range?.from ?? 0)
+  const fixture = bundledFixtureHour(requested)
   if (fixture !== null && range !== null) {
     return {
-      hour: floorHour(range.from), availableHours: unique([floorHour(range.from), floorHour(range.to)]),
-      segments: [], lanePoints: [], lanes: fixture.sections, health: fixture.health, points: fixture.points,
+      hour: requested, availableHours: unique([floorHour(range.from), floorHour(range.to)]),
+      segments: [], lanePoints: fixture.lanePoints, lanes: fixture.sections, health: fixture.health, points: fixture.points,
       findings: fixture.findings, sourceFamilies: fixture.sourceFamilies,
       availableSections: fixture.availableSections,
     }
@@ -318,6 +319,14 @@ export async function loadSeries(
   signal: AbortSignal,
   typeId?: string | undefined,
 ): Promise<readonly DataRow[]> {
+  signal.throwIfAborted()
+  const fixture = bundledFixtureHour(hour)
+  if (fixture !== null) {
+    const fieldsToKeep = unique([...fields, ...Object.keys(where)])
+    return (fixture.sections[section] ?? [])
+      .filter((row) => row.typeId === (typeId ?? row.typeId) && fixtureMatches(row, where))
+      .map((row) => projectFixtureRow(row, fieldsToKeep))
+  }
   const query = [
     `from=${hour}`,
     `to=${hour + 3_600_000_000 - 1}`,
@@ -559,6 +568,9 @@ export async function loadSnapshot(
       throw new Error(`the ${section.section} projection has no physical fields`)
     }
   }
+  signal.throwIfAborted()
+  const fixture = fixtureSnapshot(segmentId, at, requests, chosen, order)
+  if (fixture !== null) return fixture
   const plain = requests.filter((section) => plainSnapshotSection(section))
   const individual = requests.filter((section) => !plainSnapshotSection(section))
   const batches = chosen.filters !== undefined || chosen.typeId !== undefined || chosen.rowOrdinal !== undefined
@@ -629,6 +641,82 @@ export async function loadSnapshot(
     sourceFamilies: [],
     segmentCount: 1,
   })
+}
+
+function fixtureSnapshot(
+  segmentId: string,
+  at: number,
+  requests: readonly SectionRequest[],
+  options: SnapshotOptions,
+  order: SnapshotOrder | undefined,
+): HourData | null {
+  const fixture = bundledFixtureHour(floorHour(at))
+  if (fixture === null) return null
+  const grouped: Record<string, readonly DataRow[]> = {}
+  for (const request of requests) {
+    const typeId = request.typeId ?? options.typeId
+    let rows = (fixture.sections[request.section] ?? [])
+      .filter((row) => row.segmentId === segmentId)
+      .filter((row) => typeId === undefined || row.typeId === typeId)
+      .filter((row) => fixtureMatches(row, options.filters ?? {}))
+      .filter((row) => options.rowOrdinal === undefined
+        || (row.ordinal === options.rowOrdinal && row.timestamp === at))
+    if (options.rowOrdinal === undefined && rows.length !== 0) {
+      const before = rows.filter((row) => row.timestamp <= at)
+      rows = before.length === 0
+        ? []
+        : rows.filter((row) => row.timestamp === Math.max(...before.map((row) => row.timestamp)))
+    }
+    const orderFields = snapshotOrder(request, order)
+    const orderField = orderFields.find((field) => rows.some((row) => row.values[field] !== undefined))
+    if (orderField !== undefined) {
+      rows = rows.slice().sort((left, right) => fixtureOrder(right.values[orderField], left.values[orderField]))
+    }
+    if (request.top !== undefined) rows = rows.slice(0, request.top)
+    const fields = request.fields === undefined
+      ? undefined
+      : unique([...request.fields, ...Object.keys(options.filters ?? {})])
+    const selected = fields === undefined
+      ? rows
+      : rows.map((row) => projectFixtureRow(row, fields))
+    grouped[request.section] = [...(grouped[request.section] ?? []), ...selected]
+  }
+  return hourData({
+    sections: grouped,
+    rateColumns: {},
+    availableSections: unique(requests.map((request) => request.section)),
+    points: [],
+    lanePoints: [],
+    findings: [],
+    sourceFamilies: [],
+    segmentCount: 1,
+  })
+}
+
+function fixtureMatches(row: DataRow, filters: Readonly<Record<string, string>>): boolean {
+  return Object.entries(filters).every(([field, expected]) => fixtureText(row.values[field]) === expected)
+}
+
+function fixtureText(cell: Cell | undefined): string | null {
+  return typeof cell === "string" || typeof cell === "number" || typeof cell === "boolean"
+    ? String(cell)
+    : null
+}
+
+function fixtureOrder(left: Cell | undefined, right: Cell | undefined): number {
+  const leftNumber = typeof left === "number" ? left : typeof left === "string" ? Number(left) : Number.NaN
+  const rightNumber = typeof right === "number" ? right : typeof right === "string" ? Number(right) : Number.NaN
+  if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) return leftNumber - rightNumber
+  return (fixtureText(left) ?? "").localeCompare(fixtureText(right) ?? "")
+}
+
+function projectFixtureRow(row: DataRow, fields: readonly string[]): DataRow {
+  return {
+    ...row,
+    values: Object.fromEntries(fields.flatMap((field) => Object.hasOwn(row.values, field)
+      ? [[field, row.values[field] ?? null]]
+      : [])),
+  }
 }
 
 function plainSnapshotSection(section: SectionRequest): boolean {

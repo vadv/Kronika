@@ -27,6 +27,11 @@ test("the approved real hour converts without losing entity relationships", () =
   assert.ok(hour?.health.every((row) => hour.processes.some((process) => process.segmentId === row.segmentId)))
   assert.ok(hour?.points.some((point) => point.series === "os_oom_kills"))
   assert.ok(hour?.points.some((point) => point.series === "os_psi_some_avg10" && point.identity.resource === 0))
+  assert.deepEqual(
+    [...new Set(hour?.lanePoints.map((point) => point.lane))].sort(),
+    ["cpu_busy", "memory", "pg_oldest_xact", "pg_running", "pg_waiting"],
+  )
+  assert.ok(hour?.lanePoints.every((point) => point.segmentId !== "fixture"))
   const processByTime = new Map<number, Set<unknown>>()
   for (const row of hour?.processes ?? []) {
     const pids = processByTime.get(row.timestamp) ?? new Set()

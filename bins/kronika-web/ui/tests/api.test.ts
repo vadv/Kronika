@@ -323,6 +323,131 @@ function ndjson(records: readonly unknown[]): Response {
   return new Response(`${records.map((record) => JSON.stringify(record)).join("\n")}\n`, { status: 200 })
 }
 
+test("the bundled review fixture answers detail reads without HTTP", async () => {
+  const api = await bundledApi()
+  Object.assign(globalThis, { __KRONIKA_REAL_HOUR__: apiFixture() })
+  const originalFetch = globalThis.fetch
+  let fetches = 0
+  globalThis.fetch = async () => {
+    fetches += 1
+    throw new Error("the bundled fixture reached HTTP")
+  }
+  try {
+    const timeline = await api.loadTimeline(START, new AbortController().signal)
+    assert.deepEqual(
+      [...new Set(timeline.lanePoints.map((point) => point.lane))].sort(),
+      ["cpu_busy", "memory", "pg_oldest_xact", "pg_running", "pg_waiting"],
+    )
+    assert.equal(timeline.lanePoints.find((point) => point.lane === "memory")?.value, 40)
+    const series = await api.loadSeries(
+      START,
+      "os_process",
+      { pid: "41", starttime: "99" },
+      ["read_bytes"],
+      new AbortController().signal,
+    )
+    assert.equal(series.length, 2)
+    assert.deepEqual(series[1]?.values, { read_bytes: 160, pid: 41, starttime: "99" })
+    const snapshot = await api.loadSnapshot(
+      "segment-a",
+      START + 2,
+      [{ section: "pg_stat_activity", fields: ["query"], typeId: "1001003" }],
+      new AbortController().signal,
+      undefined,
+      { filters: { pid: "7" }, typeId: "1001003", fullText: true },
+    )
+    assert.deepEqual(snapshot.activities[0]?.values, { query: "select exact", pid: 7 })
+    const beforeFirstSample = await api.loadSnapshot(
+      "segment-a",
+      START,
+      ["pg_stat_activity"],
+      new AbortController().signal,
+    )
+    assert.equal(beforeFirstSample.activities.length, 0)
+    const repeated = await api.loadSnapshot(
+      "segment-a",
+      START + 2,
+      [
+        { section: "pg_stat_activity", fields: ["pid"], typeId: "1001003" },
+        { section: "pg_stat_activity", fields: ["query"], typeId: "1001003" },
+      ],
+      new AbortController().signal,
+    )
+    assert.deepEqual(repeated.activities.map((row) => row.values), [{ pid: 7 }, { query: "select exact" }])
+    const boundary = apiFixture()
+    const secondHour = START + 3_600_000_000
+    boundary.meta.captureToUs = String(secondHour + 2)
+    boundary.os.snapshots.push({
+      segment_id: "segment-a",
+      ts: String(secondHour + 1),
+      type_id: "1100001",
+      rows: [[String(secondHour + 1), "6", 42, "100", 170]],
+    })
+    boundary.system.cpuBusy.push([String(secondHour + 1), 35, "segment-a"])
+    Object.assign(globalThis, { __KRONIKA_REAL_HOUR__: boundary })
+    const selectedHour = await api.loadTimeline(secondHour, new AbortController().signal)
+    assert.equal(selectedHour.hour, secondHour)
+    assert.ok(selectedHour.lanes.os_process?.every((row) =>
+      row.timestamp >= secondHour && row.timestamp < secondHour + 3_600_000_000))
+    assert.ok(selectedHour.points.every((point) =>
+      point.timestamp >= secondHour && point.timestamp < secondHour + 3_600_000_000))
+    assert.equal(fetches, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+    Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  }
+})
+
+function apiFixture() {
+  const point = (offset: number, value: number | null) => [String(START + offset), value, "segment-a"]
+  return {
+    meta: {
+      captureFromUs: String(START),
+      captureToUs: String(START + 2),
+      segments: 1,
+    },
+    findings: [],
+    os: {
+      columns: ["ts", "ordinal", "pid", "starttime", "read_bytes"],
+      snapshots: [
+        {
+          segment_id: "segment-a",
+          ts: String(START + 1),
+          type_id: "1100001",
+          rows: [[String(START + 1), "4", 41, "99", 100]],
+        },
+        {
+          segment_id: "segment-a",
+          ts: String(START + 2),
+          type_id: "1100001",
+          rows: [[String(START + 2), "5", 41, "99", 160]],
+        },
+      ],
+    },
+    pg: {
+      columns: [
+        "ts", "ordinal", "pid", "leader_pid", "backend_type", "state",
+        "wait_event_type", "xact_start", "query",
+      ],
+      snapshots: [{
+        segment_id: "segment-a",
+        ts: String(START + 1),
+        type_id: "1001003",
+        rows: [[String(START + 1), "8", 7, null, "client backend", "active", null, String(START), "select exact"]],
+      }],
+    },
+    system: {
+      cpuBusy: [point(1, 25)],
+      health: [point(1, 75)],
+      load1: [point(1, 1)],
+      memAvailable: [point(1, 60)],
+      minFsFree: [point(1, 80)],
+      oom: [point(1, 0)],
+      psi: {},
+    },
+  }
+}
+
 test("a snapshot is keyed on the stored sample the cursor rests on", async () => {
   const api = await bundledApi()
   const line = [START + 3_000_000, START + 6_000_000, START + 9_000_000].map((timestamp, index) => ({
