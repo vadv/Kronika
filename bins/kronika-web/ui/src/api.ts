@@ -128,6 +128,8 @@ export interface HourData {
 
 export interface TimelineData {
   readonly hour: number
+  /** Whole-hour rows keyed by section: the line and the lanes beside it. */
+  readonly lanes: Readonly<Record<string, readonly DataRow[]>>
   readonly availableHours: readonly number[]
   readonly segments: readonly SegmentBound[]
   readonly health: readonly DataRow[]
@@ -237,7 +239,7 @@ export async function loadHour(
  *  other section, or the first snapshot to arrive merges it away. */
 export function hourOf(timeline: TimelineData): HourData {
   return hourData({
-    sections: { health: timeline.health },
+    sections: timeline.lanes,
     availableSections: timeline.availableSections,
     points: timeline.points,
     findings: timeline.findings,
@@ -276,7 +278,7 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
   if (fixture !== null && range !== null) {
     return {
       hour: floorHour(range.from), availableHours: unique([floorHour(range.from), floorHour(range.to)]),
-      segments: [], health: fixture.health, points: fixture.points,
+      segments: [], lanes: fixture.sections, health: fixture.health, points: fixture.points,
       findings: fixture.findings, sourceFamilies: fixture.sourceFamilies,
       availableSections: fixture.availableSections,
     }
@@ -295,6 +297,8 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
     .sort((left, right) => left.minTs - right.minTs)
   const points: Point[] = []
   const findings: Finding[] = []
+  const lanes: Record<string, DataRow[]> = { [HEALTH]: [] }
+  const layouts = new Map<string, readonly string[]>()
   let segmentId = ""
   for (const record of records) {
     if (record.record === "index") {
@@ -303,18 +307,56 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
       points.push(indexPoint(record, segmentId, HEALTH))
     } else if (isFindingRecord(record)) {
       findings.push(indexFinding(record, segmentId, HEALTH))
+    } else if (record.record === "layout") {
+      const layout = record.layout as { readonly type_id: unknown; readonly columns: readonly { readonly name: unknown }[] }
+      if (Array.isArray(layout.columns)) {
+        layouts.set(
+          requiredText(layout.type_id, "layout type_id"),
+          layout.columns.map((column) => requiredText(column.name, "column name")),
+        )
+      }
+    } else if (record.record === "row") {
+      const row = laneRow(record, segmentId, layouts)
+      if (row !== null) (lanes[row.logicalName] ??= []).push(row)
     }
   }
+  lanes[HEALTH] = healthRows(points) as DataRow[]
   return {
     hour,
+    lanes,
     availableHours: ((header?.available_hours ?? []) as readonly string[])
       .map((value) => integer(value, "available hour")),
     segments,
-    health: healthRows(points),
+    health: lanes[HEALTH] ?? [],
     points,
     findings,
     sourceFamilies: sourceFamiliesOf(records),
     availableSections: availableSectionNames(all),
+  }
+}
+
+/** A lane row of the hour. Its section comes from the layout the row names,
+ *  the same way history reads one. */
+function laneRow(
+  record: Record<string, unknown>,
+  segmentId: string,
+  layouts: ReadonlyMap<string, readonly string[]>,
+): DataRow | null {
+  const typeId = requiredText(record.type_id, "row type_id")
+  const names = layouts.get(typeId)
+  const logicalName = logicalNameForTypeId(typeId)
+  const values = record.values
+  if (names === undefined || logicalName === null || !Array.isArray(values)) return null
+  return {
+    segmentId,
+    logicalName,
+    typeId,
+    ordinal: requiredText(record.ordinal, "row ordinal"),
+    timestamp: integer(record.timestamp, "row timestamp"),
+    values: Object.fromEntries(names.map((name, index) => [
+      name,
+      index < values.length ? values[index] as Cell : null,
+    ])),
   }
 }
 

@@ -84,7 +84,7 @@ export function PostgresView({
     onSection("overview")
   }, [data.sections, onSection, section])
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} load={[]} memory={[]} onCursor={onCursor} onFinding={onFinding} pressure={[]} t={t} />
+    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} load={data.load} memory={data.memory} onCursor={onCursor} onFinding={onFinding} pressure={data.pressure} t={t} />
     <nav aria-label={t("pg.sections")} className="pg-tabs">
       {TABS.map((tab) => {
         const enabled = tab.sections === undefined || tab.sections.some(available)

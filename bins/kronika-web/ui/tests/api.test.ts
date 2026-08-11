@@ -197,6 +197,7 @@ test("the health line survives the first snapshot merged into the hour", async (
     hour: START,
     availableHours: [START],
     segments: [{ id: "7", minTs: START, maxTs: START + 1_000 }],
+    lanes: { health: [line] },
     health: [line],
     points: [],
     findings: [],

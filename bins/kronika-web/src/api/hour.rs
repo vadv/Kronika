@@ -14,12 +14,23 @@ use kronika_reader::{Reader, SegmentKind, SegmentRef};
 use serde_json::json;
 
 use super::catalog::PreparedCatalog;
+use super::history::stream_plans;
 use super::index::stream_series;
+use super::query::plans;
 use super::render::record;
 use super::{ApiError, CachePolicy, ResponseMeta};
-use crate::route::Window;
+use crate::route::{DataRequest, SegmentRequest, Window};
 
 const SERIES: &str = "health";
+
+/// The lanes drawn beside the health line, and the columns each one reads.
+/// Whole-hour series, a handful of rows a sample, and they arrive with the
+/// line rather than as a request per section per segment.
+const LANES: [(&str, &[&str]); 3] = [
+    ("os_loadavg", &["load1"]),
+    ("os_meminfo", &["mem_available"]),
+    ("os_psi", &["resource", "some_avg10"]),
+];
 
 /// Microseconds in an hour.
 const HOUR: i64 = 3_600_000_000;
@@ -121,15 +132,22 @@ impl PreparedHour {
         {
             return Ok(());
         }
-        self.catalog.stream(emit, cancelled)?;
-        for segment in &self.segments {
+        let Self {
+            root,
+            reader,
+            catalog,
+            segments,
+            ..
+        } = self;
+        catalog.stream(emit, cancelled)?;
+        for segment in &segments {
             if cancelled() {
                 return Ok(());
             }
             if series_keys(segment, SERIES).is_empty() {
                 continue;
             }
-            let resource = resource(&self.root, &self.reader, segment, SERIES)?;
+            let resource = resource(&root, &reader, segment, SERIES)?;
             if !emit(record(json!({
                 "record": "index",
                 "segment": { "id": segment.id().to_string() },
@@ -141,6 +159,9 @@ impl PreparedHour {
             if !stream_series(SERIES, resource, emit, cancelled)? {
                 return Ok(());
             }
+            if !emit_lanes(&reader, segment, emit, cancelled)? {
+                return Ok(());
+            }
         }
         eprintln!(
             "kronika-web: hour segments={count} elapsed_us={}",
@@ -148,4 +169,33 @@ impl PreparedHour {
         );
         Ok(())
     }
+}
+
+fn emit_lanes(
+    reader: &Reader,
+    segment_ref: &SegmentRef,
+    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    cancelled: &impl Fn() -> bool,
+) -> Result<bool, ApiError> {
+    let segment = reader.open_segment(segment_ref)?;
+    for (logical_name, fields) in LANES {
+        let request = DataRequest {
+            segment: SegmentRequest {
+                segment_id: segment_ref.id(),
+                section: (*logical_name).to_owned(),
+            },
+            fields: fields.iter().map(|name| (*name).to_owned()).collect(),
+            filters: Vec::new(),
+            after: None,
+        };
+        let plans = match plans(&segment, &request, true) {
+            Ok(plans) => plans,
+            Err(ApiError::NoSuchSection | ApiError::NoSuchColumn(_)) => continue,
+            Err(error) => return Err(error),
+        };
+        if !stream_plans(&segment, logical_name, &plans, emit, cancelled)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
