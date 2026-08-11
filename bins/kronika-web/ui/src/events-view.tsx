@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { DataRow, Finding, HourData } from "./api"
 import type { Translate } from "./help"
-import { asNumber, formatUtc, rawText } from "./model"
+import { asNumber, formatUtc, rawText, shownMoment } from "./model"
 import { Timeline } from "./timeline"
 
 type Filter = "all" | Finding["kind"]
@@ -62,8 +62,9 @@ export function EventsView({
     const index = visible.findIndex((finding) => findingKey(finding) === findingKey(active))
     if (index >= 0) virtual.scrollToIndex(index, { align: "auto" })
   }, [active, virtual, visible])
+  const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={onCursor} onFinding={onFinding} t={t} />
+    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={onCursor} onFinding={onFinding} shownAt={shownAt} t={t} />
     <section className="events-console">
       <header className="events-tools">
         <div className="event-filters" role="group">

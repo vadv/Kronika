@@ -35,6 +35,7 @@ import {
   processKey,
   processLens,
   rawText,
+  shownMoment,
   snapshot,
   value,
   type Lens,
@@ -194,22 +195,36 @@ function App() {
   // its own schedule: asking for the cursor lets the server pick the last
   // sample of that section, rather than a moment borrowed from another one.
   const cursorSegment = useMemo(() => segmentAt(segments, cursor), [cursor, segments])
+  // Dragging moves the cursor at once and the tables a round trip later, and
+  // the cursor can rest where nothing was sampled at all. Both are said out
+  // loud beside the clock instead of being left to guess.
+  const [cursorState, setCursorState] = useState<"ready" | "loading" | "missing">("ready")
   useEffect(() => {
     if (hour === null || cursorSegment === null) return
     const wanted = (VIEW_REQUESTS[viewKey] ?? []).filter((request) => request.section !== "health")
     const key = `${cursorSegment}:${cursor}:${viewKey}:${order?.column ?? ""}:${order?.descending ?? ""}`
-    if (loaded.current.keys.has(key) || wanted.length === 0) return
+    if (loaded.current.keys.has(key) || wanted.length === 0) {
+      setCursorState("ready")
+      return
+    }
+    setCursorState("loading")
     const controller = new AbortController()
     // Dragging the cursor crosses many samples; only the one it rests on is
     // worth a round trip over a link that costs more than a second.
     const timer = setTimeout(() => {
       loaded.current.keys.add(key)
       void loadSnapshot(cursorSegment, cursor, wanted.map((request) => request.section), controller.signal, order ?? undefined)
-        .then((incoming) => setData((before) => replaceSections(before, incoming)))
+        .then((incoming) => {
+          setData((before) => replaceSections(before, incoming))
+          setCursorState("ready")
+        })
+        // A moment the collector never reached is an ordinary answer, not a
+        // broken screen: the tables keep the last moment they hold.
         .catch((reason: unknown) => {
           if (controller.signal.aborted) return
           loaded.current.keys.delete(key)
-          setError(reason instanceof Error ? reason.message : String(reason))
+          setCursorState("missing")
+          console.error("kronika: snapshot at the cursor failed", reason)
         })
     }, 250)
     return () => { clearTimeout(timer); controller.abort() }
@@ -226,6 +241,7 @@ function App() {
     return () => window.removeEventListener("keydown", shortcuts)
   }, [])
 
+  const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   const processRows = useMemo(() => snapshot(data.processes, cursor), [cursor, data.processes])
   // A CPU counter is ticks per second, and the machine says how many ticks its
   // second holds.
@@ -337,7 +353,9 @@ function App() {
       </div>}
 
       <HourPicker availableHours={availableHours} changeHour={changeHour} hour={hour} locale={locale} t={t} />
-      <span className="cursor-time">{formatUtc(cursor)}</span>
+      <span className="cursor-time">{formatUtc(cursor)}
+        {cursorState !== "ready" && <span className={cursorState === "loading" ? "cursor-behind" : "cursor-missing"} data-testid="cursor-behind">{t(cursorState === "loading" ? "status.updating" : "status.no_sample")}</span>}
+      </span>
 
       <div className="top-actions">
         <button aria-label={t("common.theme.switch")} className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title={t(theme === "dark" ? "common.theme.light" : "common.theme.dark")} type="button">
@@ -351,7 +369,7 @@ function App() {
       </div>
     </header>
 
-    <section className="workspace">
+    <section className={cursorState === "loading" ? "workspace workspace-behind" : "workspace"}>
       <p aria-live="polite" className="live-note">
         {t(`nav.${source}`)}
         {source === "host" ? ` · ${t(`section.${hostSection}`)}` : ""}
@@ -361,7 +379,7 @@ function App() {
       {!loading && error !== null && <StateCard message={t("status.error")} />}
       {!loading && error === null && hour !== null && source === "host" && hostSection === "system" && <SystemView cursor={cursor} data={data} focus={systemFocus} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} t={t} />}
       {!loading && error === null && hour !== null && source === "host" && hostSection === "processes" && <>
-        <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={setCursor} onFinding={selectFinding} t={t} />
+        <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={setCursor} onFinding={selectFinding} shownAt={shownAt} t={t} />
         <div className="lensbar">
           <div aria-label={t("section.processes")} className="lens-tabs" role="group">
             {(["generic", "cpu", "memory", "disk"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => setLens(choice)} type="button">{t(`lens.${choice}`)}</button>)}

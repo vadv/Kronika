@@ -6,7 +6,7 @@ import { EntityTable, unit, type EntityColumn, type TableOrder } from "./entity-
 import type { Translate } from "./help"
 import { fieldNameForLocator, loadSnapshot } from "./api"
 import { LabelHelp } from "./help"
-import { asNumber, formatUtc, humanBytes, identifier, measure, rawText, snapshot, value, type Locale } from "./model"
+import { asNumber, formatUtc, humanBytes, identifier, measure, rawText, snapshot, value, type Locale, shownMoment } from "./model"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 
@@ -95,8 +95,9 @@ export function PostgresView({
     if (tab?.sections === undefined || tab.sections.some(available)) return
     onSection("overview")
   }, [data.availableSections, onSection, section])
+  const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={onCursor} onFinding={onFinding} t={t} />
+    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={onCursor} onFinding={onFinding} shownAt={shownAt} t={t} />
     <nav aria-label={t("pg.sections")} className="pg-tabs">
       {TABS.map((tab) => {
         const enabled = tab.sections === undefined || tab.sections.some(available)

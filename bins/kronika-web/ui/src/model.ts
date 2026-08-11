@@ -3,6 +3,21 @@ import type { Cell, DataRow } from "./api"
 export type Locale = "en" | "ru"
 export type Lens = "generic" | "cpu" | "memory" | "disk"
 
+/** The moment the tables are showing: the last sample at or before the cursor
+ *  across everything loaded. Past the last sample the two part ways. */
+export function shownMoment(
+  sections: Readonly<Record<string, readonly DataRow[]>>,
+  cursor: number,
+): number | null {
+  let latest: number | null = null
+  for (const rows of Object.values(sections)) {
+    for (const row of rows) {
+      if (row.timestamp <= cursor && (latest === null || row.timestamp > latest)) latest = row.timestamp
+    }
+  }
+  return latest
+}
+
 export function processLens(field: string | null): Lens {
   if (["rmem_kb", "vmem_kb", "vswap_kb", "minflt", "majflt"].includes(field ?? "")) return "memory"
   if (["read_bytes", "write_bytes", "cancelled_write_bytes", "syscr", "syscw", "rchar", "wchar"].includes(field ?? "")) return "disk"

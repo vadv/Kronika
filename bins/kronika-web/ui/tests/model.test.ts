@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { Cell, DataRow } from "../src/api.ts"
-import { activityFor, formatUtc, identifier, measure, nearestTime, processCommand, processLens, rawText, selectedHour, stateText } from "../src/model.ts"
+import { activityFor, formatUtc, identifier, measure, nearestTime, processCommand, processLens, rawText, shownMoment, selectedHour, stateText } from "../src/model.ts"
 
 function row(timestamp: number): DataRow {
   return { segmentId: "7", logicalName: "os_process", typeId: "1100001", ordinal: "0", timestamp, values: {} }
@@ -62,4 +62,14 @@ test("counters that arrive as rates are read in units a person thinks in", async
   assert.equal(model.cores(161.01, "en", null), "—")
   assert.equal(model.cores(161.01, "en", 0), "—")
   assert.equal(model.millisecondsPerSecond(111_622_111.53, "en"), "111.6")
+})
+
+test("the shown moment is the last sample at or before the cursor", () => {
+  const row = (timestamp: number) => ({ segmentId: "s", logicalName: "os_cpu", typeId: "1", ordinal: "0", timestamp, values: {} })
+  const sections = { os_cpu: [row(10), row(30)], pg_stat_activity: [row(20), row(90)] }
+
+  assert.equal(shownMoment(sections, 50), 30)
+  assert.equal(shownMoment(sections, 90), 90)
+  assert.equal(shownMoment(sections, 5), null)
+  assert.equal(shownMoment({}, 50), null)
 })

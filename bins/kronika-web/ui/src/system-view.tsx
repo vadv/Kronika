@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { fieldNameForLocator, resolveLocator, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
 import { EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
-import { asNumber, measure, snapshot, stateText, value, type Locale } from "./model"
+import { asNumber, measure, snapshot, stateText, value, type Locale, shownMoment } from "./model"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 
@@ -229,8 +229,9 @@ export function SystemView({
   }, [available, data, focus])
   const selectedMetric = available.find(({ spec }) => spec.id === selected) ?? available[0]
   const selectedPoints = selectedMetric?.points ?? []
+  const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={onCursor} onFinding={onFinding} t={t} />
+    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={onCursor} onFinding={onFinding} shownAt={shownAt} t={t} />
     <section className="system-console">
       <div className="metric-groups">
         {GROUP_COLUMNS.map((column, index) => <div className="metric-column" key={index}>

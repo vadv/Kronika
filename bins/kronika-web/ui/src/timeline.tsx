@@ -47,6 +47,7 @@ export function Timeline({
   lanePoints,
   onCursor,
   onFinding,
+  shownAt,
   t,
 }: {
   readonly cursor: number
@@ -56,6 +57,9 @@ export function Timeline({
   readonly lanePoints: readonly LanePoint[]
   readonly onCursor: (timestamp: number) => void
   readonly onFinding: (finding: Finding, grouped?: readonly Finding[]) => void
+  /** The moment the tables below are showing, which is not the cursor when the
+   *  cursor rests where nothing was sampled. */
+  readonly shownAt?: number | null
   readonly t: Translate
 }) {
   const plot = useRef<HTMLDivElement>(null)
@@ -111,6 +115,7 @@ export function Timeline({
     onCursor(Math.min(end - 1_000, Math.round(hour + ratio * (end - hour))))
   }
   const cursorX = shareOf(cursor, hour, end) * plotWidth
+  const shownX = shownAt === undefined || shownAt === null ? null : shareOf(shownAt, hour, end) * plotWidth
   return (
     <section
       aria-label={t("hour.range", { start: formatUtc(hour).slice(11, 16), end: formatUtc(end).slice(11, 16) })}
@@ -173,6 +178,8 @@ export function Timeline({
             {lanes.flatMap((lane, index) => lane.series.map((series, ordinal) => (
               <SeriesLine color={series.color} domain={lane.domain} end={end} hour={hour} key={`${lane.key}:${ordinal}`} lane={index} points={series.points} width={plotWidth} />
             )))}
+            {shownX !== null && Math.abs(shownX - cursorX) > 1
+              && <line className="shown-line" x1={shownX} x2={shownX} y1={0} y2={plotBottom}><title>{t("hour.shown", { time: formatUtc(shownAt ?? 0) })}</title></line>}
             <line className="cursor-line" x1={cursorX} x2={cursorX} y1={0} y2={plotBottom} />
           </svg>
           <TimeTicks className="timeline-time-ticks" hour={hour} />
