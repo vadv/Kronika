@@ -379,6 +379,55 @@ export function fieldsForLogicalName(logicalName: string): readonly string[] {
     .filter((name) => name !== "ts"))
 }
 
+/** One request for a moment across several sections. Counters arrive already
+ *  divided by the interval, so nothing is subtracted here. */
+export async function loadSnapshot(
+  segmentId: string,
+  at: number,
+  sections: readonly string[],
+  signal: AbortSignal,
+): Promise<HourData> {
+  const query = [`at=${at}`, ...sections.map((name) => `section=${encodeURIComponent(name)}`)].join("&")
+  const records = await request(
+    `/api/segments/${encodeURIComponent(segmentId)}/snapshot?${query}`,
+    signal,
+  )
+  const named = new Map<string, string>()
+  const grouped: Record<string, DataRow[]> = {}
+  for (const name of sections) grouped[name] = []
+  for (const record of records) {
+    if (record.record === "layout") {
+      const layout = record.layout as { readonly type_id: unknown; readonly logical_name: unknown }
+      named.set(requiredText(layout.type_id, "layout type_id"), requiredText(layout.logical_name, "logical name"))
+    } else if (record.record === "row") {
+      const typeId = requiredText(record.type_id, "row type_id")
+      const logicalName = named.get(typeId)
+      const values = record.values
+      if (logicalName === undefined || values === null || typeof values !== "object") {
+        throw new Error(`row for layout ${typeId} arrived before its layout`)
+      }
+      const rows = grouped[logicalName] ?? []
+      rows.push({
+        segmentId,
+        logicalName,
+        typeId,
+        ordinal: requiredText(record.ordinal, "row ordinal"),
+        timestamp: record.timestamp === null ? at : integer(record.timestamp, "row timestamp"),
+        values: values as Readonly<Record<string, Cell>>,
+      })
+      grouped[logicalName] = rows
+    }
+  }
+  return hourData({
+    sections: grouped,
+    availableSections: sections,
+    points: [],
+    findings: [],
+    sourceFamilies: [],
+    segmentCount: 1,
+  })
+}
+
 async function readHistory(
   segmentId: string,
   logicalName: string,

@@ -277,6 +277,7 @@ impl PreparedSnapshot {
         ordinal: u64,
         dictionary: &kronika_reader::Dictionary,
     ) -> Result<Value, ApiError> {
+        let stamped = plan.timestamp.and_then(|column| row_timestamp(row, column));
         let mut values = serde_json::Map::new();
         for field in &plan.fields {
             let Some(column) = field.column else {
@@ -304,6 +305,7 @@ impl PreparedSnapshot {
             "record": "row",
             "type_id": plan.type_id.to_string(),
             "ordinal": ordinal.to_string(),
+            "timestamp": stamped.map(|stored| stored.to_string()),
             "values": Value::Object(values),
         }))
     }

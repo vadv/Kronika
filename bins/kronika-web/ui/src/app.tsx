@@ -7,6 +7,7 @@ import {
   TIMELINE_REQUESTS,
   discoverHourSelection,
   listSegments,
+  loadSnapshot,
   segmentAt,
   fieldNameForLocator,
   loadHour,
@@ -197,12 +198,12 @@ function App() {
   const cursorSegment = useMemo(() => segmentAt(segments, cursor), [cursor, segments])
   useEffect(() => {
     if (hour === null || cursorSegment === null) return
-    const wanted = VIEW_REQUESTS[viewKey] ?? []
+    const wanted = (VIEW_REQUESTS[viewKey] ?? []).filter((request) => request.section !== "health")
     const missing = wanted.filter((request) => !loaded.current.keys.has(`${cursorSegment}:${request.section}`))
     if (missing.length === 0) return
     for (const request of missing) loaded.current.keys.add(`${cursorSegment}:${request.section}`)
     const controller = new AbortController()
-    void loadHour(hour, controller.signal, missing, [cursorSegment])
+    void loadSnapshot(cursorSegment, cursor, missing.map((request) => request.section), controller.signal)
       .then((incoming) => setData((before) => mergeHourData(before, incoming)))
       .catch((reason: unknown) => {
         if (controller.signal.aborted) return
