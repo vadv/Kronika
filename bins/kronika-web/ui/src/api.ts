@@ -41,12 +41,10 @@ export interface SectionRequest {
 }
 
 /** Every view draws the timeline, so these four are the floor. */
-export const TIMELINE_REQUESTS: readonly SectionRequest[] = [
-  { section: "health" },
-  { section: "os_loadavg" },
-  { section: "os_meminfo" },
-  { section: "os_psi" },
-]
+/** The one series drawn end to end. The other lanes were three more sections
+ *  times every segment in the hour, for lines beside the one being navigated
+ *  by; they come from the snapshot under the cursor instead. */
+export const TIMELINE_REQUESTS: readonly SectionRequest[] = [{ section: "health" }]
 
 // The link to a monitored host is the slow part: a request costs about a second
 // of latency whatever it returns, while the host answers one in a quarter of

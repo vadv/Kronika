@@ -230,7 +230,7 @@ export function SystemView({
   const selectedMetric = available.find(({ spec }) => spec.id === selected) ?? available[0]
   const selectedPoints = selectedMetric?.points ?? []
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} load={data.load} memory={data.memory} onCursor={onCursor} onFinding={onFinding} pressure={data.pressure} t={t} />
+    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} load={[]} memory={[]} onCursor={onCursor} onFinding={onFinding} pressure={[]} t={t} />
     <section className="system-console">
       <div className="metric-groups">
         {GROUP_COLUMNS.map((column, index) => <div className="metric-column" key={index}>
