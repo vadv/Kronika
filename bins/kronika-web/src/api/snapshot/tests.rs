@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use kronika_reader::Cell;
 use serde_json::{Value, json};
 
-use super::rate;
+use super::{available_field_index, rate};
+use crate::api::query::OutputField;
 
 const COLUMN: &str = "counter";
 
@@ -74,5 +75,30 @@ fn a_missing_predecessor_has_no_rate() {
     assert_eq!(
         rate(Some(&now), Some(&BTreeMap::new()), COLUMN, Some(1_000_000),),
         Value::Null
+    );
+}
+
+#[test]
+fn ordering_uses_the_first_candidate_present_in_the_physical_layout() {
+    let fields = [
+        OutputField {
+            name: "total_time".to_owned(),
+            column: None,
+        },
+        OutputField {
+            name: "total_exec_time".to_owned(),
+            column: Some("total_exec_time"),
+        },
+        OutputField {
+            name: "calls".to_owned(),
+            column: Some("calls"),
+        },
+    ];
+    assert_eq!(available_field_index(&fields, "total_time"), None);
+    assert_eq!(
+        ["total_time", "total_exec_time", "calls"]
+            .iter()
+            .find_map(|name| available_field_index(&fields, name)),
+        Some(1)
     );
 }

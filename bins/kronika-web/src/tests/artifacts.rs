@@ -682,6 +682,72 @@ fn a_snapshot_orders_by_a_column_and_returns_only_the_top_of_it() {
 }
 
 #[test]
+fn a_snapshot_projects_one_exact_physical_source_row() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[
+        (100, 0, 1),
+        (100, 1, 9),
+        (100, 2, 5),
+        (200, 0, 2),
+        (200, 1, 30),
+        (200, 2, 11),
+    ]);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_diskstats&field=minor&field=reads&type_id=1108001&row_ordinal=3"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("exact projected snapshot");
+    let layout = records
+        .iter()
+        .find(|record| record["record"] == "layout")
+        .expect("layout");
+    assert_eq!(layout["layout"]["type_id"], "1108001");
+    assert_eq!(
+        layout["layout"]["columns"],
+        serde_json::json!([
+            {"name": "minor", "type": "i32", "class": "label", "unit": "none", "nullable": false, "available": true},
+            {"name": "reads", "type": "i64", "class": "cumulative", "unit": "count", "nullable": false, "available": true}
+        ])
+    );
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["ordinal"], "3");
+    assert_eq!(rows[0]["timestamp"], "200");
+    assert_eq!(rows[0]["values"], serde_json::json!([1, 210_000.0]));
+}
+
+#[test]
+fn an_exact_source_pointer_must_name_a_finished_row_at_its_timestamp() {
+    let mut active = Fixture::new();
+    active.append_diskstats(&[(200, 0, 2)]);
+    for query in [
+        "at=200&section=os_diskstats&field=minor&type_id=1108001&row_ordinal=0",
+        "at=199&section=os_diskstats&field=minor&type_id=1108001&row_ordinal=0",
+    ] {
+        let path = format!("/api/segments/{SEGMENT_ID}/snapshot");
+        let route = crate::route::parse(&path, Some(query)).expect("exact route");
+        assert!(matches!(
+            crate::api::prepare(active.root(), SOURCES, route, None),
+            Err(ApiError::BadCursor)
+        ));
+    }
+
+    active.finish();
+    for query in [
+        "at=199&section=os_diskstats&field=minor&type_id=1108001&row_ordinal=0",
+        "at=200&section=os_diskstats&field=minor&type_id=1108001&row_ordinal=1",
+    ] {
+        let path = format!("/api/segments/{SEGMENT_ID}/snapshot");
+        let route = crate::route::parse(&path, Some(query)).expect("exact route");
+        assert!(matches!(
+            crate::api::prepare(active.root(), SOURCES, route, None),
+            Err(ApiError::BadCursor)
+        ));
+    }
+}
+
+#[test]
 fn a_snapshot_keeps_only_the_rows_a_filter_names() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[(100, 0, 1), (100, 1, 9), (200, 0, 2), (200, 1, 30)]);

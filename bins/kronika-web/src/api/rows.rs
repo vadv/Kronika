@@ -441,6 +441,9 @@ impl Cursor {
 fn binding(request: &RowsRequest) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     hash_bytes(&mut hash, request.data.segment.section.as_bytes());
+    if let Some(type_id) = request.data.type_id {
+        hash_bytes(&mut hash, &type_id.to_le_bytes());
+    }
     hash_byte(
         &mut hash,
         match request.order {

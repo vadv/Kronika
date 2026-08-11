@@ -8,6 +8,7 @@ const MAX_SECTION_BYTES: usize = 128;
 const MAX_SNAPSHOT_SECTIONS: usize = 16;
 const MAX_FIELDS: usize = 256;
 const MAX_FILTERS: usize = 64;
+const MAX_ORDER_FIELDS: usize = 16;
 
 /// The requests the server answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,13 +36,17 @@ pub(crate) struct SnapshotRequest {
     /// Columns to return; empty is all of them.
     pub(crate) fields: Vec<String>,
     /// Column the rows are ordered by, largest first.
-    pub(crate) by: Option<String>,
+    pub(crate) by: Vec<String>,
     /// How many of those rows to return.
     pub(crate) top: Option<usize>,
     /// Characters kept of every text value; absent keeps them whole.
     pub(crate) text: Option<usize>,
     /// Rows to keep, by exact column value.
     pub(crate) filters: Vec<Filter>,
+    /// One exact physical layout, when the caller already has its provenance.
+    pub(crate) type_id: Option<u32>,
+    /// One exact physical source row. This is paired with `type_id`.
+    pub(crate) row_ordinal: Option<u64>,
 }
 
 /// One hour, either as a timeline or as the series of a single object.
@@ -57,6 +62,7 @@ pub(crate) struct SeriesRequest {
     pub(crate) section: String,
     pub(crate) fields: Vec<String>,
     pub(crate) filters: Vec<Filter>,
+    pub(crate) type_id: Option<u32>,
 }
 
 /// Optional timestamp bounds for catalog listing only.
@@ -93,6 +99,7 @@ pub(crate) struct DataRequest {
     pub(crate) segment: SegmentRequest,
     pub(crate) fields: Vec<String>,
     pub(crate) filters: Vec<Filter>,
+    pub(crate) type_id: Option<u32>,
     pub(crate) after: Option<ActiveCursor>,
 }
 
@@ -179,10 +186,12 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
     let mut at = None;
     let mut sections = Vec::new();
     let mut fields = Vec::new();
-    let mut by = None;
+    let mut by = Vec::new();
     let mut top = None;
     let mut text = None;
     let mut filters: Vec<Filter> = Vec::new();
+    let mut type_id = None;
+    let mut row_ordinal = None;
     for (raw_name, raw_value) in pairs(query)? {
         match raw_name {
             "at" if at.is_none() => at = Some(number("at", raw_value)?),
@@ -203,7 +212,19 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
                 }
                 fields.push(field);
             }
-            "by" if by.is_none() => by = Some(decoded("by", raw_value, true)?),
+            "by" => {
+                let field = decoded("by", raw_value, true)?;
+                if field.is_empty() || by.contains(&field) || by.len() >= MAX_ORDER_FIELDS {
+                    return Err(RouteError::BadParameter("by".to_owned()));
+                }
+                by.push(field);
+            }
+            "type_id" if type_id.is_none() => {
+                type_id = Some(unsigned_32("type_id", raw_value)?);
+            }
+            "row_ordinal" if row_ordinal.is_none() => {
+                row_ordinal = Some(unsigned_64("row_ordinal", raw_value)?);
+            }
             "text" if text.is_none() => {
                 let kept = number("text", raw_value)?;
                 if kept <= 0 {
@@ -242,9 +263,19 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
     // A projection and an order name columns, and columns belong to one
     // section. Several sections at once are the plain form of the request.
     if sections.len() != 1
-        && (!fields.is_empty() || by.is_some() || top.is_some() || !filters.is_empty())
+        && (!fields.is_empty()
+            || !by.is_empty()
+            || top.is_some()
+            || !filters.is_empty()
+            || type_id.is_some()
+            || row_ordinal.is_some())
     {
         return Err(RouteError::BadParameter("section".to_owned()));
+    }
+    if row_ordinal.is_some()
+        && (type_id.is_none() || !by.is_empty() || top.is_some() || !filters.is_empty())
+    {
+        return Err(RouteError::BadParameter("row_ordinal".to_owned()));
     }
     Ok(SnapshotRequest {
         segment_id,
@@ -255,6 +286,8 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
         top,
         text,
         filters,
+        type_id,
+        row_ordinal,
     })
 }
 
@@ -283,6 +316,7 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
     let (fields, filters, extras) = data_parameters(query)?;
     let mut window = Window::default();
     let mut section = None;
+    let mut type_id = None;
     for (name, value) in extras {
         match name.as_str() {
             "from" if window.from.is_none() => window.from = Some(number("from", &value)?),
@@ -293,6 +327,7 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
                 }
                 section = Some(value);
             }
+            "type_id" if type_id.is_none() => type_id = Some(unsigned_32("type_id", &value)?),
             _ => return Err(RouteError::BadParameter(name)),
         }
     }
@@ -306,7 +341,7 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
     // Columns and predicates name one section, and the timeline form of the
     // hour has no section to name them in.
     let Some(section) = section else {
-        if fields.is_empty() && filters.is_empty() {
+        if fields.is_empty() && filters.is_empty() && type_id.is_none() {
             return Ok(HourRequest {
                 window,
                 series: None,
@@ -320,6 +355,7 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
             section,
             fields,
             filters,
+            type_id,
         }),
     })
 }
@@ -327,9 +363,11 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
 fn parse_data(segment: SegmentRequest, query: &str) -> Result<DataRequest, RouteError> {
     let (fields, filters, extras) = data_parameters(query)?;
     let mut after = None;
+    let mut type_id = None;
     for (name, value) in extras {
         match name.as_str() {
             "after" if after.is_none() => after = Some(active_cursor(&value)?),
+            "type_id" if type_id.is_none() => type_id = Some(unsigned_32("type_id", &value)?),
             _ => return Err(RouteError::BadParameter(name)),
         }
     }
@@ -338,6 +376,7 @@ fn parse_data(segment: SegmentRequest, query: &str) -> Result<DataRequest, Route
         segment,
         fields,
         filters,
+        type_id,
         after,
     })
 }
@@ -348,6 +387,7 @@ fn parse_rows(segment: SegmentRequest, query: &str) -> Result<RowsRequest, Route
     let mut page_size = DEFAULT_PAGE_SIZE;
     let mut cursor = None;
     let mut after = None;
+    let mut type_id = None;
     let mut saw_order = false;
     let mut saw_page_size = false;
     for (name, value) in extras {
@@ -370,6 +410,7 @@ fn parse_rows(segment: SegmentRequest, query: &str) -> Result<RowsRequest, Route
             }
             "cursor" if cursor.is_none() && !value.is_empty() => cursor = Some(value),
             "after" if after.is_none() => after = Some(active_cursor(&value)?),
+            "type_id" if type_id.is_none() => type_id = Some(unsigned_32("type_id", &value)?),
             _ => return Err(RouteError::BadParameter(name)),
         }
     }
@@ -379,6 +420,7 @@ fn parse_rows(segment: SegmentRequest, query: &str) -> Result<RowsRequest, Route
             segment,
             fields,
             filters,
+            type_id,
             after,
         },
         order,
@@ -490,6 +532,18 @@ fn decoded(name: &str, value: &str, plus_as_space: bool) -> Result<String, Route
 }
 
 fn number(name: &str, value: &str) -> Result<i64, RouteError> {
+    value
+        .parse()
+        .map_err(|_error| RouteError::BadParameter(name.to_owned()))
+}
+
+fn unsigned_32(name: &str, value: &str) -> Result<u32, RouteError> {
+    value
+        .parse()
+        .map_err(|_error| RouteError::BadParameter(name.to_owned()))
+}
+
+fn unsigned_64(name: &str, value: &str) -> Result<u64, RouteError> {
     value
         .parse()
         .map_err(|_error| RouteError::BadParameter(name.to_owned()))

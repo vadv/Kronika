@@ -102,15 +102,26 @@ fn finite(value: f64) -> Value {
 
 /// A list carries a query text per row, and one text outweighs every number
 /// beside it. Cut to what a cell shows; the full text is a request away.
-pub(super) fn shorten(value: Value, limit: usize) -> Value {
-    let Value::String(text) = &value else {
-        return value;
-    };
-    if text.chars().count() <= limit {
-        return value;
+pub(super) fn shorten(mut value: Value, limit: usize) -> Value {
+    match &mut value {
+        Value::String(text) => shorten_text(text, limit),
+        Value::Object(payload) if payload.get("representation") == Some(&json!("text")) => {
+            if let Some(Value::String(text)) = payload.get_mut("stored_text") {
+                shorten_text(text, limit);
+            }
+        }
+        _ => {}
     }
-    let kept: String = text.chars().take(limit).collect();
-    Value::String(format!("{kept}…"))
+    value
+}
+
+fn shorten_text(text: &mut String, limit: usize) {
+    if text.chars().count() <= limit {
+        return;
+    }
+    let mut kept: String = text.chars().take(limit).collect();
+    kept.push('…');
+    *text = kept;
 }
 
 fn bytes_value(bytes: &[u8]) -> Value {

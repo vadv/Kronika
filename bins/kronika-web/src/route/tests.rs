@@ -60,9 +60,77 @@ fn repeated_fields_and_exact_where_parameters_keep_request_order() {
                     value: "9".to_owned(),
                 },
             ],
+            type_id: None,
             after: None,
         })
     );
+}
+
+#[test]
+fn physical_layout_selection_is_available_to_every_generic_row_resource() {
+    let Route::History(history) = parse(
+        "/api/segments/7/sections/pg_stat_statements/history",
+        Some("field=calls&type_id=1002001"),
+    )
+    .expect("typed history") else {
+        panic!("history route");
+    };
+    assert_eq!(history.type_id, Some(1_002_001));
+
+    let Route::Rows(rows) = parse(
+        "/api/segments/7/sections/pg_store_plans/rows",
+        Some("field=plan&type_id=1004001"),
+    )
+    .expect("typed rows") else {
+        panic!("rows route");
+    };
+    assert_eq!(rows.data.type_id, Some(1_004_001));
+
+    let Route::Hour(hour) = parse(
+        "/api/hour",
+        Some("from=1&to=2&section=pg_stat_statements&field=calls&type_id=1002002"),
+    )
+    .expect("typed hour") else {
+        panic!("hour route");
+    };
+    assert_eq!(
+        hour.series.and_then(|series| series.type_id),
+        Some(1_002_002)
+    );
+}
+
+#[test]
+fn snapshot_accepts_order_candidates_and_one_exact_locator() {
+    let Route::Snapshot(ordered) = parse(
+        "/api/segments/7/snapshot",
+        Some("at=9&section=pg_stat_statements&field=total_time&field=total_exec_time&field=calls&by=total_time&by=total_exec_time&by=calls&top=200"),
+    )
+    .expect("candidate order") else {
+        panic!("snapshot route");
+    };
+    assert_eq!(ordered.by, ["total_time", "total_exec_time", "calls"]);
+
+    let Route::Snapshot(locator) = parse(
+        "/api/segments/7/snapshot",
+        Some("at=9&section=pg_stat_statements&field=query&type_id=1002001&row_ordinal=18446744073709551615"),
+    )
+    .expect("exact locator") else {
+        panic!("snapshot route");
+    };
+    assert_eq!(locator.type_id, Some(1_002_001));
+    assert_eq!(locator.row_ordinal, Some(u64::MAX));
+
+    for query in [
+        "at=9&section=pg_stat_statements&row_ordinal=1",
+        "at=9&section=pg_stat_statements&type_id=1002001&row_ordinal=1&top=1",
+        "at=9&section=pg_stat_statements&type_id=1002001&row_ordinal=1&where.queryid=2",
+    ] {
+        assert_eq!(
+            parse("/api/segments/7/snapshot", Some(query)),
+            Err(RouteError::BadParameter("row_ordinal".to_owned())),
+            "{query}",
+        );
+    }
 }
 
 #[test]

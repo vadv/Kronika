@@ -193,10 +193,19 @@ fn emit_series(
         },
         fields: series.fields.clone(),
         filters: series.filters.clone(),
+        type_id: series.type_id,
         after: None,
     };
     match plans(&segment, &request, true) {
-        Ok(plans) => stream_plans(&segment, &series.section, &plans, emit, cancelled),
+        Ok(plans) => {
+            if !emit(record(json!({
+                "record": "series_segment",
+                "segment": { "id": segment_ref.id().to_string() },
+            }))?) {
+                return Ok(false);
+            }
+            stream_plans(&segment, &series.section, &plans, emit, cancelled)
+        }
         Err(ApiError::NoSuchSection) => Ok(true),
         Err(error) => Err(error),
     }

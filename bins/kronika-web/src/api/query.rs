@@ -46,8 +46,10 @@ pub(super) fn plans(
     request: &DataRequest,
     history_coordinates: bool,
 ) -> Result<Vec<Plan>, ApiError> {
-    let layouts: Vec<(u32, kronika_reader::Section)> =
-        segment.layouts(&request.segment.section).collect();
+    let layouts: Vec<(u32, kronika_reader::Section)> = segment
+        .layouts(&request.segment.section)
+        .filter(|(type_id, _section)| request.type_id.is_none_or(|wanted| wanted == *type_id))
+        .collect();
     if layouts.is_empty() {
         return Err(ApiError::NoSuchSection);
     }

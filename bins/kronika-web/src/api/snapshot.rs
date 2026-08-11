@@ -23,9 +23,10 @@ pub(crate) struct PreparedSnapshot {
     earlier: Option<Segment>,
     at: i64,
     sections: Vec<SectionPlans>,
-    by: Option<String>,
+    by: Vec<String>,
     top: Option<usize>,
     text: Option<usize>,
+    row_ordinal: Option<u64>,
 }
 
 /// Counter readings of one moment, keyed by the identity they belong to.
@@ -50,6 +51,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
             },
             fields: request.fields.clone(),
             filters: request.filters.clone(),
+            type_id: request.type_id,
             after: None,
         };
         // A section reaches an active segment only with its first sample, so
@@ -66,6 +68,31 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
             Err(error) => return Err(error),
         }
     }
+    if let Some(ordinal) = request.row_ordinal {
+        if segment.kind() != SegmentKind::Finished {
+            return Err(ApiError::BadCursor);
+        }
+        let [section] = sections.as_slice() else {
+            return Err(ApiError::BadCursor);
+        };
+        let [plan] = section.plans.as_slice() else {
+            return Err(ApiError::BadCursor);
+        };
+        let Some(timestamp) = plan.timestamp else {
+            return Err(ApiError::BadCursor);
+        };
+        if ordinal >= plan.rows {
+            return Err(ApiError::BadCursor);
+        }
+        let mut exact = false;
+        segment.visit_rows(plan.type_id, &[timestamp], ordinal, 1, |_stored, row| {
+            exact = row_timestamp(&row, timestamp) == Some(request.at);
+            false
+        })?;
+        if !exact {
+            return Err(ApiError::BadCursor);
+        }
+    }
     Ok(PreparedSnapshot {
         segment,
         earlier,
@@ -74,6 +101,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
         by: request.by,
         top: request.top,
         text: request.text,
+        row_ordinal: request.row_ordinal,
     })
 }
 
@@ -177,11 +205,14 @@ impl PreparedSnapshot {
             .filter(|gap| *gap > 0);
         let mut failure = None;
         let mut rows = Vec::new();
+        let (start_row, row_count) = self
+            .row_ordinal
+            .map_or((0, usize::MAX), |ordinal| (ordinal, 1));
         source.visit_rows(
             plan.type_id,
             &plan.projection,
-            0,
-            usize::MAX,
+            start_row,
+            row_count,
             |ordinal, row| {
                 if cancelled() {
                     return false;
@@ -203,7 +234,11 @@ impl PreparedSnapshot {
         if let Some(error) = failure {
             return Err(error);
         }
-        if let Some(by) = self.by.as_deref().and_then(|name| field_index(plan, name)) {
+        if let Some(by) = self
+            .by
+            .iter()
+            .find_map(|name| available_field_index(&plan.fields, name))
+        {
             rows.sort_by(|left, right| {
                 sort_value(right, by)
                     .partial_cmp(&sort_value(left, by))
@@ -234,11 +269,14 @@ impl PreparedSnapshot {
         let dictionary = self.segment.dictionary()?;
         let mut failure = None;
         let mut connected = true;
+        let (start_row, row_count) = self
+            .row_ordinal
+            .map_or((0, usize::MAX), |ordinal| (ordinal, 1));
         self.segment.visit_rows(
             plan.type_id,
             &plan.projection,
-            0,
-            usize::MAX,
+            start_row,
+            row_count,
             |ordinal, row| {
                 if cancelled() {
                     connected = false;
@@ -440,8 +478,10 @@ fn sort_value(row: &Value, field: usize) -> f64 {
         .unwrap_or(f64::NEG_INFINITY)
 }
 
-fn field_index(plan: &Plan, name: &str) -> Option<usize> {
-    plan.fields.iter().position(|field| field.name == name)
+fn available_field_index(fields: &[super::query::OutputField], name: &str) -> Option<usize> {
+    fields
+        .iter()
+        .position(|field| field.name == name && field.column.is_some())
 }
 
 /// The finished segment closest before this one. A counter is only a rate
