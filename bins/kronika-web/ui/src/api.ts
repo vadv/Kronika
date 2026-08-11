@@ -26,6 +26,7 @@ export const PRODUCT_SECTION_GROUPS = {
   postgresqlOverview: POSTGRESQL_OVERVIEW,
   postgresqlActivity: ["pg_stat_activity", "pg_stat_progress_vacuum"] as const,
   postgresqlStatements: ["pg_stat_statements"] as const,
+  postgresqlPlans: ["pg_store_plans", "pg_store_plans_info"] as const,
   postgresqlLocks: ["pg_locks"] as const,
   postgresqlDatabases: ["pg_stat_database"] as const,
   events: REGISTRY_LOGICAL_NAMES.filter((name) => name.startsWith("pg_log_") || name === "pgbouncer_events"),
@@ -39,6 +40,20 @@ const UI_SECTION_NAME_SET = new Set(UI_SECTION_NAMES)
 export interface SectionRequest {
   readonly section: string
   readonly fields?: readonly string[]
+  /** Registry layouts this semantic request knows how to present. */
+  readonly typeIds?: readonly string[]
+  /** Curated physical projection for each supported registry layout. */
+  readonly fieldsByType?: Readonly<Record<string, readonly string[]>>
+  /** One exact physical layout, assigned for a request at the cursor. */
+  readonly typeId?: string
+  /** Maximum rows after the server has ordered the physical table. */
+  readonly top?: number
+  /** Physical candidates for the normal high-demand order. */
+  readonly defaultOrder?: readonly string[]
+  /** A semantic UI column mapped to the physical candidates that can carry it. */
+  readonly order?: Readonly<Record<string, readonly string[]>>
+  /** Used only when the current physical layout has none of the chosen candidates. */
+  readonly fallbackOrder?: readonly string[]
 }
 
 /** Every view draws the timeline, so these four are the floor. */
@@ -79,6 +94,7 @@ export interface Finding {
 
 interface Section {
   readonly logical_name: string | null
+  readonly type_id: string
 }
 
 interface Segment {
@@ -109,6 +125,7 @@ export interface HourData {
   readonly health: readonly DataRow[]
   readonly pgOverview: readonly DataRow[]
   readonly pgStatements: readonly DataRow[]
+  readonly pgPlans: readonly DataRow[]
   readonly pgLocks: readonly DataRow[]
   readonly pgDatabases: readonly DataRow[]
   readonly pgEvents: readonly DataRow[]
@@ -186,7 +203,7 @@ export function replaceSections(before: HourData, after: HourData): HourData {
   for (const [name, rows] of Object.entries(after.sections)) sections[name] = rows
   return hourData({
     sections,
-    rateColumns: { ...before.rateColumns, ...after.rateColumns },
+    rateColumns: mergeRateColumns(before.rateColumns, after.rateColumns ?? {}),
     availableSections: unique([...before.availableSections, ...after.availableSections]),
     points: before.points,
     lanePoints: before.lanePoints,
@@ -200,6 +217,12 @@ export interface SegmentBound {
   readonly id: string
   readonly minTs: number
   readonly maxTs: number
+  readonly sections: readonly SegmentSection[]
+}
+
+export interface SegmentSection {
+  readonly logicalName: string
+  readonly typeId: string
 }
 
 /** The whole timeline of one hour in one request: which segments it touches,
@@ -226,7 +249,15 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
   const all = catalogSegments(records)
   const segments = all
     .filter((segment) => Number(segment.min_ts) < end && Number(segment.max_ts) >= hour)
-    .map((segment) => ({ id: segment.id, minTs: Number(segment.min_ts), maxTs: Number(segment.max_ts) }))
+    .map((segment) => ({
+      id: segment.id,
+      minTs: Number(segment.min_ts),
+      maxTs: Number(segment.max_ts),
+      sections: segment.sections.flatMap((section) => section.logical_name === null ? [] : [{
+        logicalName: section.logical_name,
+        typeId: section.type_id,
+      }]),
+    }))
     .sort((left, right) => left.minTs - right.minTs)
   const points: Point[] = []
   const findings: Finding[] = []
@@ -285,6 +316,7 @@ export async function loadSeries(
   where: Readonly<Record<string, string>>,
   fields: readonly string[],
   signal: AbortSignal,
+  typeId?: string | undefined,
 ): Promise<readonly DataRow[]> {
   const query = [
     `from=${hour}`,
@@ -292,12 +324,16 @@ export async function loadSeries(
     `section=${encodeURIComponent(section)}`,
     ...fields.map((name) => `field=${encodeURIComponent(name)}`),
     ...Object.entries(where).map(([column, value]) => `where.${encodeURIComponent(column)}=${encodeURIComponent(value)}`),
+    ...(typeId === undefined ? [] : [`type_id=${encodeURIComponent(typeId)}`]),
   ].join("&")
   const records = await request(`/api/hour?${query}`, signal)
   const layouts = new Map<string, readonly string[]>()
   const rows: DataRow[] = []
+  let segmentId = ""
   for (const record of records) {
-    if (record.record === "layout") {
+    if (record.record === "series_segment") {
+      segmentId = requiredText((record.segment as { readonly id: unknown }).id, "series segment id")
+    } else if (record.record === "layout") {
       const layout = record.layout as { readonly type_id: unknown; readonly columns: readonly { readonly name: unknown }[] }
       if (Array.isArray(layout.columns)) {
         layouts.set(
@@ -306,7 +342,7 @@ export async function loadSeries(
         )
       }
     } else if (record.record === "row") {
-      const row = laneRow(record, "", layouts)
+      const row = laneRow(record, segmentId, layouts)
       if (row !== null) rows.push(row)
     }
   }
@@ -361,8 +397,52 @@ function healthRows(points: readonly Point[]): readonly DataRow[] {
 /** The segment holding a moment, or the last one before it. A table shows one
  *  snapshot, so it needs one segment and not the hour around it. */
 export function segmentAt(segments: readonly SegmentBound[], at: number): string | null {
-  const holding = segments.find((segment) => segment.minTs <= at && segment.maxTs >= at)
-  return holding?.id ?? segments.at(-1)?.id ?? null
+  return segmentBoundAt(segments, at)?.id ?? null
+}
+
+export function segmentBoundAt(segments: readonly SegmentBound[], at: number): SegmentBound | null {
+  return segments.find((segment) => segment.minTs <= at && segment.maxTs >= at)
+    ?? segments.at(-1)
+    ?? null
+}
+
+/** Restrict a curated projection and its order aliases to physical columns
+ *  carried by the registry layouts in the segment under the cursor. */
+export function requestsForSegment(
+  requests: readonly SectionRequest[],
+  segment: SegmentBound,
+): readonly SectionRequest[] {
+  return requests.flatMap((request) => {
+    const typeIds = segment.sections
+      .filter((section) => section.logicalName === request.section)
+      .map((section) => section.typeId)
+      .filter((typeId) => request.typeIds === undefined || request.typeIds.includes(typeId))
+    if (typeIds.length === 0) return []
+    if (request.fields === undefined && request.fieldsByType === undefined) return [request]
+    const { fieldsByType: _fieldsByType, typeIds: _typeIds, ...base } = request
+    return unique(typeIds).flatMap((typeId) => {
+      const physical = new Set(
+        REGISTRY_BY_TYPE_ID.get(typeId)?.columns.map((column) => column.name) ?? [],
+      )
+      const projection = request.fieldsByType?.[typeId] ?? request.fields ?? []
+      const fields = unique(projection.filter((field) => physical.has(field)))
+      // Sending no field parameter means every physical column. A projected
+      // request with no matching column must therefore be omitted.
+      if (fields.length === 0) return []
+      const keep = (candidates: readonly string[]) => candidates.filter((field) => physical.has(field))
+      const order = request.order === undefined
+        ? undefined
+        : Object.fromEntries(Object.entries(request.order).map(([name, candidates]) => [name, keep(candidates)]))
+      return [{
+        ...base,
+        typeId,
+        fields,
+        ...(request.defaultOrder === undefined ? {} : { defaultOrder: keep(request.defaultOrder) }),
+        ...(order === undefined ? {} : { order }),
+        ...(request.fallbackOrder === undefined ? {} : { fallbackOrder: keep(request.fallbackOrder) }),
+      }]
+    })
+  })
 }
 
 export function sectionRows(data: HourData, logicalName: string): readonly DataRow[] {
@@ -425,59 +505,77 @@ function hourData(input: {
     health: rows("health"),
     pgOverview: flatten(PRODUCT_SECTION_GROUPS.postgresqlOverview),
     pgStatements: flatten(PRODUCT_SECTION_GROUPS.postgresqlStatements),
+    pgPlans: flatten(PRODUCT_SECTION_GROUPS.postgresqlPlans),
     pgLocks: flatten(PRODUCT_SECTION_GROUPS.postgresqlLocks),
     pgDatabases: flatten(PRODUCT_SECTION_GROUPS.postgresqlDatabases),
     pgEvents: flatten(PRODUCT_SECTION_GROUPS.events),
   }
 }
 
-/** One request for a moment across several sections. Counters arrive already
- *  divided by the interval, so nothing is subtracted here. */
-/** A statement table on a busy server is thousands of rows and megabytes of
- *  query text, and a screen holds a few dozen. The server orders and cuts. */
-const SECTION_ORDER: Readonly<Record<string, { readonly by: string; readonly top: number }>> = {
-  pg_stat_statements: { by: "total_exec_time", top: 200 },
-}
-
-function orderFor(
-  section: string | undefined,
-  chosen?: { readonly column: string; readonly descending: boolean } | undefined,
-): readonly string[] {
-  const cut = section === undefined ? undefined : SECTION_ORDER[section]
-  if (cut === undefined) return []
-  // Ascending is what the server does not do: the top of a cut table is the
-  // largest, and the smallest two hundred of anything answer nothing.
-  const by = chosen === undefined || !chosen.descending ? cut.by : chosen.column
-  return [`by=${encodeURIComponent(by)}`, `top=${cut.top}`]
-}
-
 /** Characters of a text a table cell can show; a query is fetched whole on demand. */
 const CELL_TEXT = 160
+
+export interface SnapshotOptions {
+  readonly filters?: Readonly<Record<string, string>>
+  readonly typeId?: string
+  readonly rowOrdinal?: string
+  readonly fullText?: boolean
+}
+
+interface SnapshotOrder {
+  readonly column: string
+  readonly descending: boolean
+}
 
 export async function loadSnapshot(
   segmentId: string,
   at: number,
-  sections: readonly string[],
+  sections: readonly (SectionRequest | string)[],
   signal: AbortSignal,
-  order?: { readonly column: string; readonly descending: boolean } | undefined,
-  filters?: Readonly<Record<string, string>> | undefined,
+  order?: SnapshotOrder | undefined,
+  options?: SnapshotOptions | Readonly<Record<string, string>> | undefined,
 ): Promise<HourData> {
-  const whole = filters !== undefined
-  const query = [
-    `at=${at}`,
-    ...sections.map((name) => `section=${encodeURIComponent(name)}`),
-    ...(sections.length === 1 ? orderFor(sections[0], order) : []),
-    ...(whole ? [] : [`text=${CELL_TEXT}`]),
-    ...Object.entries(filters ?? {}).map(([column, value]) => `where.${encodeURIComponent(column)}=${encodeURIComponent(value)}`),
-  ].join("&")
-  const records = await request(
-    `/api/segments/${encodeURIComponent(segmentId)}/snapshot?${query}`,
-    signal,
-  )
+  const requests = sections.map((section) => typeof section === "string" ? { section } : section)
+  const chosen = snapshotOptions(options)
+  if (requests.length === 0) return emptyHour()
+  if ((chosen.filters !== undefined || chosen.typeId !== undefined || chosen.rowOrdinal !== undefined)
+    && requests.length !== 1) {
+    throw new Error("a filtered or exact snapshot needs one section")
+  }
+  if (chosen.rowOrdinal !== undefined && chosen.typeId === undefined && requests[0]?.typeId === undefined) {
+    throw new Error("an exact snapshot row needs typeId")
+  }
+  if (chosen.rowOrdinal !== undefined && chosen.filters !== undefined) {
+    throw new Error("an exact snapshot row cannot carry filters")
+  }
+  for (const section of requests) {
+    if (section.fieldsByType !== undefined) {
+      throw new Error(`the ${section.section} projection needs the cursor segment`)
+    }
+    if (section.typeId !== undefined && chosen.typeId !== undefined && section.typeId !== chosen.typeId) {
+      throw new Error(`the ${section.section} snapshot has conflicting type IDs`)
+    }
+    if (section.fields !== undefined && section.fields.length === 0) {
+      throw new Error(`the ${section.section} projection has no physical fields`)
+    }
+  }
+  const plain = requests.filter((section) => plainSnapshotSection(section))
+  const individual = requests.filter((section) => !plainSnapshotSection(section))
+  const batches = chosen.filters !== undefined || chosen.typeId !== undefined || chosen.rowOrdinal !== undefined
+    ? requests.map((section) => [section] as const)
+    : [
+        ...(plain.length === 0 ? [] : [plain]),
+        ...individual.map((section) => [section] as const),
+      ]
+  const responses = await Promise.all(batches.map(async (batch) => {
+    const query = snapshotQuery(at, batch, order, chosen)
+    return request(`/api/segments/${encodeURIComponent(segmentId)}/snapshot?${query}`, signal)
+  }))
+  const records = responses.flat()
   const layouts = new Map<string, { readonly logicalName: string; readonly columns: readonly string[] }>()
   const grouped: Record<string, DataRow[]> = {}
   const rateColumns: Record<string, readonly string[]> = {}
-  for (const name of sections) grouped[name] = []
+  for (const section of requests) grouped[section.section] = []
   for (const record of records) {
     if (record.record === "layout") {
       const layout = record.layout as {
@@ -492,7 +590,12 @@ export async function loadSnapshot(
         logicalName,
         columns: layout.columns.map((column) => requiredText(column.name, "column name")),
       })
-      if (Array.isArray(record.rates)) rateColumns[logicalName] = record.rates as readonly string[]
+      if (Array.isArray(record.rates)) {
+        rateColumns[logicalName] = unique([
+          ...(rateColumns[logicalName] ?? []),
+          ...record.rates.map((name) => requiredText(name, "rate column")),
+        ])
+      }
     } else if (record.record === "row") {
       const typeId = requiredText(record.type_id, "row type_id")
       const layout = layouts.get(typeId)
@@ -519,7 +622,75 @@ export async function loadSnapshot(
   return hourData({
     sections: grouped,
     rateColumns,
-    availableSections: sections,
+    availableSections: unique(requests.map((section) => section.section)),
+    points: [],
+    lanePoints: [],
+    findings: [],
+    sourceFamilies: [],
+    segmentCount: 1,
+  })
+}
+
+function plainSnapshotSection(section: SectionRequest): boolean {
+  return section.fields === undefined
+    && section.typeId === undefined
+    && section.top === undefined
+    && section.defaultOrder === undefined
+    && section.order === undefined
+    && section.fallbackOrder === undefined
+}
+
+function snapshotQuery(
+  at: number,
+  sections: readonly SectionRequest[],
+  order: SnapshotOrder | undefined,
+  options: SnapshotOptions,
+): string {
+  const section = sections.length === 1 ? sections[0] : undefined
+  const typeId = section?.typeId ?? options.typeId
+  const ordered = section === undefined || options.rowOrdinal !== undefined
+    ? []
+    : snapshotOrder(section, order)
+  return [
+    `at=${at}`,
+    ...sections.map((request) => `section=${encodeURIComponent(request.section)}`),
+    ...(section?.fields ?? []).map((field) => `field=${encodeURIComponent(field)}`),
+    ...ordered.map((field) => `by=${encodeURIComponent(field)}`),
+    ...(section?.top === undefined || options.rowOrdinal !== undefined ? [] : [`top=${section.top}`]),
+    ...(options.fullText === true ? [] : [`text=${CELL_TEXT}`]),
+    ...Object.entries(options.filters ?? {}).map(([column, value]) =>
+      `where.${encodeURIComponent(column)}=${encodeURIComponent(value)}`),
+    ...(typeId === undefined ? [] : [`type_id=${encodeURIComponent(typeId)}`]),
+    ...(options.rowOrdinal === undefined ? [] : [`row_ordinal=${encodeURIComponent(options.rowOrdinal)}`]),
+  ].join("&")
+}
+
+function snapshotOrder(section: SectionRequest, chosen: SnapshotOrder | undefined): readonly string[] {
+  // The server exposes the largest rows of a cut table. When a header cycles
+  // to ascending, keep the normal demand order instead of claiming that the
+  // smallest visible slice is the smallest slice of the physical table.
+  const requested = chosen !== undefined && chosen.descending
+    ? section.order?.[chosen.column]
+    : section.defaultOrder
+  if (requested !== undefined && requested.length > 0) return unique(requested)
+  return unique(section.fallbackOrder ?? [])
+}
+
+function snapshotOptions(
+  value: SnapshotOptions | Readonly<Record<string, string>> | undefined,
+): SnapshotOptions {
+  if (value === undefined) return {}
+  if ("filters" in value || "typeId" in value || "rowOrdinal" in value || "fullText" in value) {
+    return value as SnapshotOptions
+  }
+  return { filters: value as Readonly<Record<string, string>> }
+}
+
+function emptyHour(): HourData {
+  return hourData({
+    sections: {},
+    rateColumns: {},
+    availableSections: [],
     points: [],
     lanePoints: [],
     findings: [],
@@ -618,6 +789,17 @@ function cellRecord(value: unknown): Readonly<Record<string, Cell>> {
 
 function unique<Value>(values: readonly Value[]): Value[] {
   return [...new Set(values)]
+}
+
+function mergeRateColumns(
+  left: Readonly<Record<string, readonly string[]>>,
+  right: Readonly<Record<string, readonly string[]>>,
+): Readonly<Record<string, readonly string[]>> {
+  const merged: Record<string, readonly string[]> = { ...left }
+  for (const [section, fields] of Object.entries(right)) {
+    merged[section] = unique([...(merged[section] ?? []), ...fields])
+  }
+  return merged
 }
 
 function floorHour(timestamp: number): number {
