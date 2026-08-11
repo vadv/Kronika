@@ -24,8 +24,8 @@ export const ACTIVITY_COLUMNS: readonly EntityColumn[] = [
 // that name the row are in the detail panel, where they are looked up rather
 // than scanned. Half the width used to be dbid, userid and toplevel.
 export const STATEMENT_COLUMNS: readonly EntityColumn[] = [
-  milliseconds("total_exec_time", 130), milliseconds("mean_exec_time", 130), number("calls", 110),
-  text("query", 560, true), number("rows", 105),
+  milliseconds("total_exec_time", 170), milliseconds("mean_exec_time", 170), number("calls", 110),
+  text("query", 440, true), number("rows", 105),
   legacyMilliseconds("total_time", "total_exec_time", 130), legacyMilliseconds("mean_time", "mean_exec_time", 130),
   milliseconds("max_exec_time", 130), legacyMilliseconds("max_time", "max_exec_time", 130),
   number("shared_blks_hit", 145), number("shared_blks_read", 145), number("shared_blks_written", 155),
@@ -220,8 +220,8 @@ function PgDetail({ allRows, columns, historyField, hour, locale, onClose, row, 
   const fields = columns.filter((column) => column.field !== "query")
   return <aside className="pg-detail" data-testid="pg-detail">
     <header><div><span>{t(`pg.section.${sectionName(section)}`)}</span><h2>{detailTitle(row, section, t)}</h2></div><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
-    <dl>{fields.map((column) => <div key={column.field}><dt>{column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}</dt><dd>{display(value(row, column.field), column, locale, t)}</dd></div>)}</dl>
     {query !== null && <section className="query-block"><span>{t("pg.query.label")}<button className="copy-raw" onClick={() => void navigator.clipboard?.writeText(query)} type="button">{t("common.raw")}</button></span><pre data-testid="pg-exact-query">{query}</pre></section>}
+    <dl>{fields.map((column) => <div key={column.field}><dt>{column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}</dt><dd>{display(value(row, column.field), column, locale, t)}</dd></div>)}</dl>
     {historyField !== null && <SeriesChart hour={hour} label={t(historyColumn?.label ?? historyField)} locale={locale} format={chartFormat(historyColumn?.kind)} points={history} />}
   </aside>
 }

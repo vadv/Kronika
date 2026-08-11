@@ -121,6 +121,13 @@ const PROCESS_HISTORY: Readonly<Record<Lens, readonly HistoryField[]>> = {
   ],
 }
 
+/** What the charts of every lens read, and nothing else: a dictionary column
+ *  costs seconds per segment to resolve, and no chart draws a string. */
+export const PROCESS_HISTORY_FIELDS: readonly string[] = [
+  "pid", "starttime",
+  ...new Set(Object.values(PROCESS_HISTORY).flatMap((lens) => lens.map((field) => field.field))),
+]
+
 const ACTIVITY_FIELDS = [
   ["leader_pid", "pg.leader_pid", "id"], ["backend_type", "pg.backend_type", "text"], ["datname", "pg.datname", "text"],
   ["usename", "pg.usename", "text"],

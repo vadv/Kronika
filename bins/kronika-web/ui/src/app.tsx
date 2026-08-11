@@ -7,7 +7,6 @@ import {
   TIMELINE_REQUESTS,
   loadTimeline,
   loadSeries,
-  PROCESS_FIELDS,
   hourOf,
   loadSnapshot,
   segmentAt,
@@ -23,7 +22,7 @@ import {
   type HourData,
 } from "./api"
 import type { TableOrder } from "./entity-table"
-import { DetailDock } from "./detail"
+import { DetailDock, PROCESS_HISTORY_FIELDS } from "./detail"
 import { EventsView } from "./events-view"
 import { HelpPanel, type Translate } from "./help"
 import { HourPicker } from "./hour-picker"
@@ -261,7 +260,7 @@ function App() {
       return
     }
     const controller = new AbortController()
-    void loadSeries(hour, "os_process", { pid: selectedPid, starttime: selectedStart }, PROCESS_FIELDS, controller.signal)
+    void loadSeries(hour, "os_process", { pid: selectedPid, starttime: selectedStart }, PROCESS_HISTORY_FIELDS, controller.signal)
       .then(setProcessHistory)
       .catch(() => { /* the panel stands without its charts */ })
     return () => controller.abort()

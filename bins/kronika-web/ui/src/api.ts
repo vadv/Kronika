@@ -157,14 +157,6 @@ export interface ResolvedLocator {
   readonly fieldName: string | null
 }
 
-export const PROCESS_FIELDS = [
-  "pid", "starttime", "ppid", "uid", "euid", "gid", "egid", "state", "num_threads",
-  "tty", "comm", "cmdline", "utime", "stime", "nice", "prio", "rtprio", "policy",
-  "curcpu", "rundelay_ns", "blkdelay_ticks", "nvcsw", "nivcsw", "minflt", "majflt",
-  "vmem_kb", "rmem_kb", "vswap_kb", "syscr", "syscw", "rchar", "wchar", "read_bytes",
-  "write_bytes", "cancelled_write_bytes", "exit_signal", "scope",
-] as const
-
 export const ACTIVITY_FIELDS = [
   "pid", "leader_pid", "datname", "usename", "application_name", "client_addr", "backend_type",
   "state", "wait_event_type", "wait_event", "query", "query_id", "backend_xid_age",
