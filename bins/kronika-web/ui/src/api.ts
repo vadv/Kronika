@@ -671,6 +671,7 @@ function snapshotOrder(section: SectionRequest, chosen: SnapshotOrder | undefine
   // smallest visible slice is the smallest slice of the physical table.
   const requested = chosen !== undefined && chosen.descending
     ? section.order?.[chosen.column]
+      ?? (section.fields?.includes(chosen.column) === true ? [chosen.column] : undefined)
     : section.defaultOrder
   if (requested !== undefined && requested.length > 0) return unique(requested)
   return unique(section.fallbackOrder ?? [])
