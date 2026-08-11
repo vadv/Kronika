@@ -31,7 +31,7 @@ import {
   type Locale,
 } from "./model"
 
-interface Field {
+export interface Field {
   readonly id: string
   readonly field?: string
   readonly label: string
@@ -46,7 +46,7 @@ const START: Field = { id: "starttime", field: "starttime", label: "col.starttim
 const COMMAND: Field = { id: "command", label: "col.command.label", help: "col.command.help", kind: "command", size: 300, sticky: "command" }
 const STATE: Field = { id: "state", field: "state", label: "col.state.label", help: "col.state.help", kind: "state", size: 60 }
 
-const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
+export const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
   generic: [
     PID, START, COMMAND, STATE,
     idField("ppid", "col.ppid", 70), idField("uid", "col.uid", 70), idField("euid", "col.euid", 70),
@@ -191,7 +191,7 @@ export function ProcessTable({
   )
 }
 
-function CellValue({ field, linked, locale, row, t, ticksPerSecond }: { readonly field: Field; readonly linked: boolean; readonly locale: Locale; readonly row: DataRow; readonly t: Translate; readonly ticksPerSecond: number | null }) {
+export function CellValue({ field, linked, locale, row, t, ticksPerSecond }: { readonly field: Field; readonly linked: boolean; readonly locale: Locale; readonly row: DataRow; readonly t: Translate; readonly ticksPerSecond: number | null }) {
   const cell = field.field === undefined ? null : value(row, field.field)
   let output: string
   switch (field.kind) {

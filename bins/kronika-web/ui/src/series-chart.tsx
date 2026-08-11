@@ -24,7 +24,7 @@ export function SeriesChart({
   readonly hour: number
   readonly label: string
   readonly locale: Locale
-  /** How the extremes read: a chart of bytes says bytes, not a bare number. */
+  /** How a reading reads: a chart of bytes says bytes, not a bare number. */
   readonly format?: ((value: number, locale: Locale) => string) | undefined
   readonly points: readonly ChartPoint[]
 }) {
@@ -36,10 +36,11 @@ export function SeriesChart({
   const high = values.length === 0 ? 0 : Math.max(...values)
   const span = high - low || 1
   const paths = chartRuns(points)
+  const reading = readingAt(numeric, cursor)
   return <figure className="series-chart">
     <figcaption id={title}>
       <span>{label}</span>
-      <span>{values.length === 0 ? "—" : `${(format ?? number)(low, locale)}–${(format ?? number)(high, locale)}`}</span>
+      <span>{reading === null ? "—" : (format ?? number)(reading, locale)}</span>
     </figcaption>
     <svg aria-labelledby={title} preserveAspectRatio="none" role="img" viewBox="0 0 920 126">
       {[0, 1, 2, 3, 4, 5, 6].map((tick) => <line className="mini-grid" key={tick} x1={tick / 6 * 920} x2={tick / 6 * 920} y1="5" y2="105" />)}
@@ -57,6 +58,17 @@ export function SeriesChart({
     </svg>
     <TimeTicks className="mini-time-ticks" hour={hour} />
   </figure>
+}
+
+/** What the series reads where the cursor stands: the caption of a chart this
+ *  narrow says one number, and the useful one is the one being pointed at. */
+function readingAt(points: readonly NumericChartPoint[], cursor: number | undefined): number | null {
+  let chosen: NumericChartPoint | null = null
+  for (const point of points) {
+    if (cursor !== undefined && point.timestamp > cursor) continue
+    if (chosen === null || point.timestamp > chosen.timestamp) chosen = point
+  }
+  return chosen?.value ?? null
 }
 
 export function chartRuns(points: readonly ChartPoint[]): ReadonlyMap<string, readonly NumericChartPoint[]> {

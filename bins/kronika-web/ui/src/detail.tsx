@@ -1,4 +1,4 @@
-import { X } from "lucide-react"
+import { Copy, X } from "lucide-react"
 import { useMemo, type ReactNode } from "react"
 
 import type { Cell, DataRow } from "./api"
@@ -17,44 +17,9 @@ import {
   type Lens,
   type Locale,
 } from "./model"
+import { CellValue, LENS_FIELDS } from "./process-table"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 import { TimeTicks } from "./time-ticks"
-
-interface ProcessField {
-  readonly field: string
-  readonly key: string
-  readonly kind: "id" | "number" | "kib" | "bytes" | "ns" | "state"
-}
-
-const PROCESS_DETAIL: Readonly<Record<Lens, readonly ProcessField[]>> = {
-  generic: [
-    processField("state", "col.state", "state"), processField("ppid", "col.ppid", "id"),
-    processField("uid", "col.uid", "id"), processField("euid", "col.euid", "id"),
-    processField("gid", "col.gid", "id"), processField("egid", "col.egid", "id"),
-    processField("num_threads", "col.threads", "number"), processField("tty", "col.tty", "id"),
-    processField("exit_signal", "col.exit_signal", "id"),
-  ],
-  cpu: [
-    processField("state", "col.state", "state"), processField("curcpu", "col.curcpu", "id"),
-    processField("utime", "col.utime", "number"), processField("stime", "col.stime", "number"),
-    processField("rundelay_ns", "col.rundelay", "ns"), processField("blkdelay_ticks", "col.blkdelay", "number"),
-    processField("nvcsw", "col.nvcsw", "number"), processField("nivcsw", "col.nivcsw", "number"),
-    processField("nice", "col.nice", "number"), processField("prio", "col.prio", "number"),
-    processField("rtprio", "col.rtprio", "number"), processField("policy", "col.policy", "id"),
-  ],
-  memory: [
-    processField("state", "col.state", "state"), processField("rmem_kb", "col.rmem", "kib"),
-    processField("vmem_kb", "col.vmem", "kib"), processField("vswap_kb", "col.vswap", "kib"),
-    processField("minflt", "col.minflt", "number"), processField("majflt", "col.majflt", "number"),
-  ],
-  disk: [
-    processField("state", "col.state", "state"), processField("read_bytes", "col.read_bytes", "bytes"),
-    processField("write_bytes", "col.write_bytes", "bytes"), processField("cancelled_write_bytes", "col.cancelled_write", "bytes"),
-    processField("syscr", "col.syscr", "number"), processField("syscw", "col.syscw", "number"),
-    processField("rchar", "col.rchar", "number"), processField("wchar", "col.wchar", "number"),
-    processField("blkdelay_ticks", "col.blkdelay", "number"),
-  ],
-}
 
 interface HistoryField {
   readonly field: string
@@ -72,6 +37,10 @@ export interface ProcessHistorySeries extends HistoryField {
  *  cumulative one is already a rate, so these are per second. */
 function plain(value: number, locale: Locale): string {
   return measure(value, locale)
+}
+
+function perSecond(value: number, locale: Locale): string {
+  return measure(value, locale, "/s")
 }
 
 function ticks(value: number, locale: Locale): string {
@@ -96,28 +65,28 @@ const PROCESS_HISTORY: Readonly<Record<Lens, readonly HistoryField[]>> = {
     { counter: true, field: "utime", key: "col.utime", format: ticks },
     { counter: true, field: "stime", key: "col.stime", format: ticks },
     { counter: true, field: "rundelay_ns", key: "col.rundelay", format: delay },
-    { counter: true, field: "blkdelay_ticks", key: "col.blkdelay", format: plain },
-    { counter: true, field: "nvcsw", key: "col.nvcsw", format: plain },
-    { counter: true, field: "nivcsw", key: "col.nivcsw", format: plain },
-    { counter: true, field: "minflt", key: "col.minflt", format: plain },
-    { counter: true, field: "majflt", key: "col.majflt", format: plain },
+    { counter: true, field: "blkdelay_ticks", key: "col.blkdelay", format: perSecond },
+    { counter: true, field: "nvcsw", key: "col.nvcsw", format: perSecond },
+    { counter: true, field: "nivcsw", key: "col.nivcsw", format: perSecond },
+    { counter: true, field: "minflt", key: "col.minflt", format: perSecond },
+    { counter: true, field: "majflt", key: "col.majflt", format: perSecond },
   ],
   memory: [
     { field: "rmem_kb", key: "col.rmem", format: kibibytes },
     { field: "vmem_kb", key: "col.vmem", format: kibibytes },
     { field: "vswap_kb", key: "col.vswap", format: kibibytes },
-    { counter: true, field: "minflt", key: "col.minflt", format: plain },
-    { counter: true, field: "majflt", key: "col.majflt", format: plain },
+    { counter: true, field: "minflt", key: "col.minflt", format: perSecond },
+    { counter: true, field: "majflt", key: "col.majflt", format: perSecond },
   ],
   disk: [
     { counter: true, field: "read_bytes", key: "col.read_bytes", format: bytes },
     { counter: true, field: "write_bytes", key: "col.write_bytes", format: bytes },
     { counter: true, field: "cancelled_write_bytes", key: "col.cancelled_write", format: bytes },
-    { counter: true, field: "syscr", key: "col.syscr", format: plain },
-    { counter: true, field: "syscw", key: "col.syscw", format: plain },
+    { counter: true, field: "syscr", key: "col.syscr", format: perSecond },
+    { counter: true, field: "syscw", key: "col.syscw", format: perSecond },
     { counter: true, field: "rchar", key: "col.rchar", format: bytes },
     { counter: true, field: "wchar", key: "col.wchar", format: bytes },
-    { counter: true, field: "blkdelay_ticks", key: "col.blkdelay", format: plain },
+    { counter: true, field: "blkdelay_ticks", key: "col.blkdelay", format: perSecond },
   ],
 }
 
@@ -152,6 +121,7 @@ export function DetailDock({
   process,
   processHistory,
   t,
+  ticksPerSecond,
 }: {
   readonly activity: DataRow | null
   readonly activityTime: number | null
@@ -162,6 +132,7 @@ export function DetailDock({
   readonly onClose: () => void
   readonly process: DataRow
   readonly processHistory: readonly DataRow[]
+  readonly ticksPerSecond: number | null
   readonly t: Translate
 }) {
   const commandCell = value(process, "cmdline")
@@ -184,20 +155,17 @@ export function DetailDock({
         </div>
         <button aria-label={t("common.close")} className="icon-button dock-close" onClick={onClose} type="button"><X aria-hidden="true" size={15} /></button>
       </div>
-      <section className="command-block">
-        <div className="command-heading">
-          <LabelHelp helpKey="detail.cmdline.help" labelKey="detail.cmdline.label" t={t} />
-          <code>{commandPath}</code>
-        </div>
+      <section className="command-block" title={commandPath}>
         <code data-testid="process-cmdline">{processCommand(process)}</code>
+        <button aria-label={t("common.raw")} className="copy-raw" onClick={() => void navigator.clipboard?.writeText(processCommand(process))} type="button"><Copy aria-hidden="true" size={12} /></button>
       </section>
       <dl className="detail-list">
         <DetailField help="col.pid.help" label="col.pid.label" t={t} value={identifier(value(process, "pid"))} />
         <DetailField help="col.starttime.help" label="col.starttime.label" t={t} value={<Timestamp cell={value(process, "starttime")} t={t} />} />
-        {PROCESS_DETAIL[lens].map((field) => <DetailField help={`${field.key}.help`} key={field.field} label={`${field.key}.label`} t={t} value={formatProcess(value(process, field.field), field.kind, locale)} />)}
+        {LENS_FIELDS[lens].filter((field) => field.id !== "command" && field.id !== "pid" && field.id !== "starttime" && field.field !== undefined && value(process, field.field) !== null).map((field) => <DetailField help={field.help} key={field.id} label={field.label} t={t} value={<CellValue field={field} linked={false} locale={locale} row={process} t={t} ticksPerSecond={ticksPerSecond} />} />)}
       </dl>
       <section aria-label={t(`lens.${lens}`)} className="process-history" data-testid="process-history">
-        {history.map((series) => (
+        {history.filter((series) => series.points.some((point) => point.value !== null)).map((series) => (
           <SeriesChart
             cursor={cursor}
             hour={hour}
@@ -235,16 +203,7 @@ function DetailField({ help, label, t, value: output }: { readonly help: string;
 function Timestamp({ cell, raw, t }: { readonly cell?: Cell; readonly raw?: number; readonly t: Translate }) {
   const timestamp = raw ?? asNumber(cell ?? null)
   if (timestamp === null || timestamp === undefined) return <>—</>
-  return <span className="timestamp-value"><span>{formatUtc(timestamp)}</span><button aria-label={t("common.raw")} onClick={() => void navigator.clipboard?.writeText(String(timestamp))} type="button">{t("common.raw")}</button></span>
-}
-
-function formatProcess(cell: Cell, kind: ProcessField["kind"], locale: Locale): string {
-  if (kind === "id") return identifier(cell)
-  if (kind === "state") return stateText(cell)
-  if (kind === "kib") return humanBytes(asNumber(cell) === null ? null : (asNumber(cell) ?? 0) * 1024, locale)
-  if (kind === "bytes") return humanBytes(cell, locale, "/s")
-  if (kind === "ns") return millisecondsPerSecond(cell, locale) + " ms/s"
-  return measure(cell, locale)
+  return <span className="timestamp-value"><span>{formatUtc(timestamp)}</span><button aria-label={t("common.raw")} onClick={() => void navigator.clipboard?.writeText(String(timestamp))} type="button"><Copy aria-hidden="true" size={12} /></button></span>
 }
 
 function formatActivity(cell: Cell, kind: string, locale: Locale, t: Translate): ReactNode {
@@ -254,9 +213,6 @@ function formatActivity(cell: Cell, kind: string, locale: Locale, t: Translate):
   return rawText(cell) ?? "—"
 }
 
-function processField(field: string, key: string, kind: ProcessField["kind"]): ProcessField {
-  return { field, key, kind }
-}
 
 /// The rows are already one process: they were asked for by identity, and a
 /// second filter here only hides a mismatch instead of showing it.

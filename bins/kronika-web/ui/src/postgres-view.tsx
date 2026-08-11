@@ -1,4 +1,4 @@
-import { Activity, BarChart3, Database, KeyRound, LockKeyhole, X } from "lucide-react"
+import { Activity, BarChart3, Copy, Database, KeyRound, LockKeyhole, X } from "lucide-react"
 import { useEffect, useMemo, useState, type ReactNode } from "react"
 
 import type { DataRow, Finding, HourData } from "./api"
@@ -217,13 +217,13 @@ function PgDetail({ allRows, columns, historyField, hour, locale, onClose, row, 
     value: asNumber(value(candidate, historyField)),
   }))
   const historyColumn = columns.find((column) => column.field === historyField)
-  const query = useWholeText(row, section, "query")
+  const query = useWholeText(row, section, "query")?.trim() || null
   const fields = columns.filter((column) => column.field !== "query")
   return <aside className="pg-detail" data-testid="pg-detail">
     <header><div><span>{t(`pg.section.${sectionName(section)}`)}</span><h2>{detailTitle(row, section, t)}</h2></div><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
-    {query !== null && <section className="query-block"><span>{t("pg.query.label")}<button className="copy-raw" onClick={() => void navigator.clipboard?.writeText(query)} type="button">{t("common.raw")}</button></span><pre data-testid="pg-exact-query">{query}</pre></section>}
-    <dl>{fields.map((column) => <div key={column.field}><dt>{column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}</dt><dd>{display(value(row, column.field), column, locale, t)}</dd></div>)}</dl>
-    {historyField !== null && <SeriesChart hour={hour} label={t(historyColumn?.label ?? historyField)} locale={locale} format={chartFormat(historyColumn?.kind)} points={history} />}
+    {query !== null && <section className="query-block"><span>{t("pg.query.label")}<button aria-label={t("common.raw")} className="copy-raw" onClick={() => void navigator.clipboard?.writeText(query)} type="button"><Copy aria-hidden="true" size={12} /></button></span><pre data-testid="pg-exact-query">{query}</pre></section>}
+    <dl>{fields.filter((column) => told(value(row, column.field))).map((column) => <div key={column.field}><dt>{column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}</dt><dd>{display(value(row, column.field), column, locale, t)}</dd></div>)}</dl>
+    {historyField !== null && history.some((point) => point.value !== null) && <SeriesChart hour={hour} label={t(historyColumn?.label ?? historyField)} locale={locale} format={chartFormat(historyColumn?.kind)} points={history} />}
   </aside>
 }
 
@@ -246,6 +246,13 @@ function useWholeText(row: DataRow, section: string, field: string): string | nu
     return () => controller.abort()
   }, [field, row, section, shown])
   return whole ?? shown
+}
+
+/** A field the row does not answer is not a row of its own: an empty panel of
+ *  dashes says less than a short one. */
+function told(cell: ReturnType<typeof value>): boolean {
+  if (cell === null) return false
+  return rawText(cell)?.trim() !== ""
 }
 
 function countHistory(rows: readonly DataRow[]): readonly ChartPoint[] {
@@ -308,7 +315,7 @@ function display(cell: ReturnType<typeof value>, column: EntityColumn, locale: L
 }
 
 function TimestampValue({ t, timestamp }: { readonly t: Translate; readonly timestamp: number }) {
-  return <span className="timestamp-value"><span>{formatUtc(timestamp)}</span><button aria-label={t("common.raw")} onClick={() => void navigator.clipboard?.writeText(String(timestamp))} type="button">{t("common.raw")}</button></span>
+  return <span className="timestamp-value"><span>{formatUtc(timestamp)}</span><button aria-label={t("common.raw")} onClick={() => void navigator.clipboard?.writeText(String(timestamp))} type="button"><Copy aria-hidden="true" size={12} /></button></span>
 }
 
 function groupSections(rows: readonly DataRow[]): readonly [string, readonly DataRow[]][] {
