@@ -11,7 +11,6 @@ import {
   hourOf,
   loadSnapshot,
   segmentAt,
-  sampleAt,
   fieldNameForLocator,
   loadHour,
   replaceSections,
@@ -188,22 +187,21 @@ function App() {
     return () => controller.abort()
   }, [hour])
 
-  // A table shows the moment under the cursor, and the samples are what the
-  // cursor lands on: between two of them the answer is the same one, so the
-  // sample is what a load is keyed on rather than the pixel or the segment.
-  const sampledAt = useMemo(() => sampleAt(data.health, cursor), [cursor, data.health])
-  const cursorSegment = useMemo(() => segmentAt(segments, sampledAt ?? cursor), [cursor, sampledAt, segments])
+  // A table shows the moment under the cursor, and each section is sampled on
+  // its own schedule: asking for the cursor lets the server pick the last
+  // sample of that section, rather than a moment borrowed from another one.
+  const cursorSegment = useMemo(() => segmentAt(segments, cursor), [cursor, segments])
   useEffect(() => {
-    if (hour === null || cursorSegment === null || sampledAt === null) return
+    if (hour === null || cursorSegment === null) return
     const wanted = (VIEW_REQUESTS[viewKey] ?? []).filter((request) => request.section !== "health")
-    const key = `${cursorSegment}:${sampledAt}:${viewKey}`
+    const key = `${cursorSegment}:${cursor}:${viewKey}`
     if (loaded.current.keys.has(key) || wanted.length === 0) return
     const controller = new AbortController()
     // Dragging the cursor crosses many samples; only the one it rests on is
     // worth a round trip over a link that costs more than a second.
     const timer = setTimeout(() => {
       loaded.current.keys.add(key)
-      void loadSnapshot(cursorSegment, sampledAt, wanted.map((request) => request.section), controller.signal)
+      void loadSnapshot(cursorSegment, cursor, wanted.map((request) => request.section), controller.signal)
         .then((incoming) => setData((before) => replaceSections(before, incoming)))
         .catch((reason: unknown) => {
           if (controller.signal.aborted) return
@@ -212,7 +210,7 @@ function App() {
         })
     }, 250)
     return () => { clearTimeout(timer); controller.abort() }
-  }, [cursorSegment, hour, sampledAt, viewKey])
+  }, [cursor, cursorSegment, hour, viewKey])
 
   useEffect(() => {
     const shortcuts = (event: KeyboardEvent) => {

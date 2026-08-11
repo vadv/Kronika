@@ -139,24 +139,42 @@ impl PreparedSnapshot {
         let Some(timestamp) = plan.timestamp else {
             return self.emit_untimed(section, plan, emit, cancelled);
         };
-        let Some(moments) = self.moments(plan, timestamp, cancelled)? else {
+        // Sections are sampled on their own schedules, so the moment a cursor
+        // rests on can be earlier than the first sample this segment holds for
+        // this one. The last state before it is then in the segment before.
+        let here = Self::moments(&self.segment, plan, timestamp, self.at, cancelled)?;
+        let own = here.is_some();
+        let source = if own {
+            &self.segment
+        } else {
+            let Some(earlier) = self.earlier.as_ref() else {
+                return Ok(true);
+            };
+            earlier
+        };
+        let Some(moments) = (if own {
+            here
+        } else {
+            Self::moments(source, plan, timestamp, self.at, cancelled)?
+        }) else {
             return Ok(true);
         };
         let (previous, before_at) = match moments.previous {
             Some(previous) => (
-                Self::collect(&self.segment, plan, timestamp, previous, cancelled)?,
+                Self::collect(source, plan, timestamp, previous, cancelled)?,
                 Some(previous),
             ),
-            None => self.earlier_moment(plan, timestamp, cancelled)?,
+            None if own => self.earlier_moment(plan, timestamp, cancelled)?,
+            None => (Readings::new(), None),
         };
-        let dictionary = self.segment.dictionary()?;
+        let dictionary = source.dictionary()?;
         let elapsed = moments
             .current
             .checked_sub(before_at.unwrap_or(moments.current))
             .filter(|gap| *gap > 0);
         let mut failure = None;
         let mut rows = Vec::new();
-        self.segment.visit_rows(
+        source.visit_rows(
             plan.type_id,
             &plan.projection,
             0,
@@ -238,14 +256,15 @@ impl PreparedSnapshot {
 
     /// The stored moment at or before `at`, and the one before that.
     fn moments(
-        &self,
+        segment: &Segment,
         plan: &Plan,
         timestamp: &'static str,
+        at: i64,
         cancelled: &impl Fn() -> bool,
     ) -> Result<Option<Moments>, ApiError> {
         let mut current: Option<i64> = None;
         let mut previous: Option<i64> = None;
-        self.segment.visit_rows(
+        segment.visit_rows(
             plan.type_id,
             &[timestamp],
             0,
@@ -257,7 +276,7 @@ impl PreparedSnapshot {
                 let Some(stored) = row_timestamp(&row, timestamp) else {
                     return true;
                 };
-                if stored > self.at {
+                if stored > at {
                     return true;
                 }
                 match current {

@@ -675,3 +675,48 @@ fn the_first_moment_of_a_segment_rates_against_the_segment_before_it() {
     // Twenty reads across a hundred microseconds is two hundred thousand a second.
     assert_eq!(rows[0]["values"]["reads"], serde_json::json!(200_000.0));
 }
+
+#[test]
+fn a_moment_before_the_first_sample_here_is_answered_from_the_segment_before() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let root = DataRoot::open(directory.path()).expect("data root");
+    let writer = root
+        .acquire_writer(LayoutLimits::default())
+        .expect("acquire writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("open journal");
+
+    let first = SegmentAddress::new(SegmentId::new(SEGMENT_ID).expect("first id")).expect("first");
+    let mut buffers = SectionBuffers::new();
+    buffers.push(diskstats(100, 0, 7)).expect("row fits");
+    let part = buffers.flush(&[]).expect("encode").expect("nonempty");
+    journal.append(first.id, &part).expect("append first");
+    write_segment(&journal, &writer, first).expect("finish first");
+    journal.reset().expect("close the first segment");
+
+    // The second segment opens before this section is sampled again, so a
+    // cursor resting between the two has nothing here and a state there.
+    let second = SegmentAddress::new(SegmentId::new(SEGMENT_ID + 1_000).expect("second id"))
+        .expect("second");
+    let mut buffers = SectionBuffers::new();
+    buffers.push(diskstats(900, 0, 9)).expect("row fits");
+    let part = buffers.flush(&[]).expect("encode").expect("nonempty");
+    journal.append(second.id, &part).expect("append second");
+    write_segment(&journal, &writer, second).expect("finish second");
+
+    let path = format!("/api/segments/{}/snapshot", SEGMENT_ID + 1_000);
+    let route =
+        crate::route::parse(&path, Some("at=400&section=os_diskstats&field=reads")).expect("route");
+    let prepared =
+        crate::api::prepare(directory.path(), SOURCES, route, None).expect("prepare snapshot");
+    let records = stream(prepared).expect("snapshot body");
+    let rows = records
+        .iter()
+        .filter(|record| record["record"] == "row")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows.len(),
+        1,
+        "the earlier segment answers instead of nothing"
+    );
+    assert_eq!(rows[0]["timestamp"], "100");
+}
