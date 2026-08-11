@@ -16,6 +16,7 @@ export type View =
   | "pg.overview"
   | "pg.activity"
   | "pg.statements"
+  | "pg.plans"
   | "pg.locks"
   | "pg.databases"
   | "events"
@@ -24,7 +25,7 @@ type Lens = "generic" | "cpu" | "memory" | "disk"
 
 const VIEWS: readonly View[] = [
   "host.system", "host.processes",
-  "pg.overview", "pg.activity", "pg.statements", "pg.locks", "pg.databases",
+  "pg.overview", "pg.activity", "pg.statements", "pg.plans", "pg.locks", "pg.databases",
   "events",
 ]
 
@@ -90,9 +91,9 @@ export function hostSectionOf(view: View): "system" | "processes" {
   return view === "host.system" ? "system" : "processes"
 }
 
-export function pgSectionOf(view: View): "overview" | "activity" | "statements" | "locks" | "databases" {
+export function pgSectionOf(view: View): "overview" | "activity" | "statements" | "plans" | "locks" | "databases" {
   const section = view.startsWith("pg.") ? view.slice(3) : "overview"
-  return section as "overview" | "activity" | "statements" | "locks" | "databases"
+  return section as "overview" | "activity" | "statements" | "plans" | "locks" | "databases"
 }
 
 /** Everything but the moment: two addresses that differ only in `at` are the

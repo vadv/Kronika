@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { DEFAULT_ADDRESS, readAddress, writeAddress } from "../src/address.ts"
+import { DEFAULT_ADDRESS, pgSectionOf, readAddress, sourceOf, viewOf, writeAddress } from "../src/address.ts"
 
 test("an address survives a round trip through the query string", () => {
   const address = {
@@ -41,4 +41,14 @@ test("ascending sort has no marker and descending has a minus", () => {
   assert.equal(writeAddress({ ...DEFAULT_ADDRESS, sort: { column: "rmem_kb", descending: false } }), "/?sort=rmem_kb")
   assert.deepEqual(readAddress("sort=rmem_kb").sort, { column: "rmem_kb", descending: false })
   assert.deepEqual(readAddress("sort=-rmem_kb").sort, { column: "rmem_kb", descending: true })
+})
+
+test("PostgreSQL plans have a stable address", () => {
+  const address = { ...DEFAULT_ADDRESS, view: "pg.plans" as const }
+
+  assert.equal(writeAddress(address), "/?view=pg.plans")
+  assert.equal(readAddress("view=pg.plans").view, "pg.plans")
+  assert.equal(sourceOf(address.view), "postgresql")
+  assert.equal(pgSectionOf(address.view), "plans")
+  assert.equal(viewOf("postgresql", "processes", "plans"), "pg.plans")
 })

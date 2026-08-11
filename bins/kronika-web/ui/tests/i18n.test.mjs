@@ -62,7 +62,7 @@ test("project dictionaries cover the active UI keys", async () => {
     ...["system", "processes"].map((name) => `section.${name}`),
     ...["generic", "cpu", "memory", "disk"].map((name) => `lens.${name}`),
     ...["event", "known_bad", "spike"].map((name) => `locator.${name}`),
-    ...["overview", "activity", "statements", "locks", "databases"].map((name) => `pg.section.${name}`),
+    ...["overview", "activity", "statements", "plans", "locks", "databases"].map((name) => `pg.section.${name}`),
   ])
   for (const root of roots) {
     if (Object.hasOwn(english, root)) {
@@ -78,6 +78,22 @@ test("project dictionaries cover the active UI keys", async () => {
   assert.equal(Object.keys(english).some((key) => key.startsWith("system_table.")), false)
   assert.equal(Object.hasOwn(english, "detail.os_layout.label"), false)
   assert.equal(Object.hasOwn(english, "detail.pg_layout.label"), false)
+})
+
+test("plan copy identifies unavailable values and vadv attribution", async () => {
+  const [englishSource, russianSource] = await Promise.all([
+    readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8"),
+  ])
+  const english = parseDictionary(englishSource, "en.yaml")
+  const russian = parseDictionary(russianSource, "ru.yaml")
+
+  assert.equal(english["common.unavailable"], "—")
+  assert.equal(russian["common.unavailable"], "—")
+  assert.equal(english["pg.section.plans"], "Plans")
+  assert.equal(russian["pg.section.plans"], "Планы")
+  assert.match(english["pg.field.queryid_stat_statements.help"], /vadv-only.*last attributed.*not an exact join key/)
+  assert.match(russian["pg.field.queryid_stat_statements.help"], /только в vadv.*последнего связанного.*не точный ключ соединения/)
 })
 
 test("help copy is concise and directs the reader to adjacent data", async () => {
