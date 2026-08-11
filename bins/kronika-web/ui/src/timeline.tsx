@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
 import type { DataRow, Finding } from "./api"
 import { LabelHelp, type Translate } from "./help"
@@ -10,6 +10,7 @@ const LANE_HEIGHT = 36
 const LANE_COUNT = 4
 const TOP = 8
 const PLOT_BOTTOM = TOP + LANE_COUNT * LANE_HEIGHT
+const MARKER_CLUSTER_PX = 38
 
 interface SeriesPoint {
   readonly segmentId: string
@@ -22,6 +23,9 @@ export interface GroupedFinding {
   readonly finding: Finding
   readonly findings: readonly Finding[]
   readonly kind: Finding["kind"]
+  readonly kinds: readonly Finding["kind"][]
+  readonly startTimestamp: number
+  readonly endTimestamp: number
   readonly timestamp: number
 }
 
@@ -51,6 +55,7 @@ export function Timeline({
   readonly t: Translate
 }) {
   const plot = useRef<HTMLDivElement>(null)
+  const [plotWidth, setPlotWidth] = useState(WIDTH)
   const end = hour + 3_600_000_000
   const healthPoints = useMemo(() => series(health, "os_health"), [health])
   const loadPoints = useMemo(() => series(load, "load1"), [load])
@@ -62,8 +67,20 @@ export function Timeline({
     pressure.filter((row) => asNumber(value(row, "resource")) === resource),
     "some_avg10",
   )), [pressure])
-  const markers = useMemo(() => groupFindings(findings), [findings])
-  const markerSlots = useMemo(() => findingSlots(markers), [markers])
+  const markers = useMemo(
+    () => groupFindings(findings, hour, end, plotWidth),
+    [end, findings, hour, plotWidth],
+  )
+  useEffect(() => {
+    const element = plot.current
+    if (element === null) return
+    const update = () => setPlotWidth(Math.max(1, element.clientWidth))
+    update()
+    if (typeof ResizeObserver === "undefined") return
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
   const setFromClient = (clientX: number) => {
     const bounds = plot.current?.getBoundingClientRect()
     if (bounds === undefined) return
@@ -129,9 +146,7 @@ export function Timeline({
           </svg>
         </div>
         {markers.map((marker, index) => {
-          const slot = markerSlots.get(`${marker.timestamp}:${marker.kind}`) ?? { index: 0, total: 1 }
-          const offset = (slot.index - (slot.total - 1) / 2) * 11
-          const x = Math.max(0, Math.min(WIDTH, scaleX(marker.timestamp, hour, end) + offset))
+          const x = scaleX(marker.timestamp, hour, end)
           const displayTimestamp = hour + x / WIDTH * (end - hour)
           const y = seriesYAt(healthPoints, marker.finding.segmentId, displayTimestamp, 0)
           return <FindingMarker
@@ -173,10 +188,18 @@ function FindingMarker({
     event.stopPropagation()
     onActivate()
   }
+  const kindSummary = marker.kinds.map((kind) => {
+    const count = marker.findings.filter((finding) => finding.kind === kind).length
+    return `${t(`locator.${kind}`)} ×${count}`
+  }).join(" · ")
+  const timeSummary = marker.startTimestamp === marker.endTimestamp
+    ? formatUtc(marker.startTimestamp)
+    : `${formatUtc(marker.startTimestamp)}–${formatUtc(marker.endTimestamp)}`
   return <button
-    aria-label={`${t(`locator.${marker.kind}`)} · ${formatUtc(marker.timestamp)}${marker.count > 1 ? ` · ×${marker.count}` : ""}`}
-    className={`marker-button marker-${marker.kind}`}
-    data-marker-shape={findingShape(marker.kind)}
+    aria-label={`${kindSummary} · ${timeSummary} · ×${marker.count}`}
+    className={`marker-button${marker.count === 1 ? ` marker-${marker.kind}` : " marker-aggregate"}`}
+    data-marker-count={marker.count}
+    data-marker-kinds={marker.kinds.join(" ")}
     onClick={activate}
     onKeyDown={(event) => {
       event.stopPropagation()
@@ -189,21 +212,23 @@ function FindingMarker({
       border: 0,
       cursor: "pointer",
       display: "flex",
-      height: "20px",
+      height: "30px",
       justifyContent: "center",
       left: `${x / WIDTH * 100}%`,
       padding: 0,
       position: "absolute",
       top: `${y}px`,
       transform: "translate(-50%, -50%)",
-      width: "20px",
+      width: "34px",
       zIndex: 2,
     }}
-    title={`${t(`locator.${marker.kind}`)} · ${formatUtc(marker.timestamp)}`}
+    title={`${kindSummary} · ${timeSummary} · ×${marker.count}`}
     type="button"
   >
-    <span aria-hidden="true" style={markerShapeStyle(marker.kind)} />
-    {marker.count > 1 && <span aria-hidden="true" className="marker-count" style={{ color: "#b7c0cb", left: "15px", position: "absolute", top: "6px" }}>{marker.count}</span>}
+    <span aria-hidden="true" className="marker-shape-stack">
+      {marker.kinds.map((kind) => <span data-marker-shape={findingShape(kind)} key={kind} style={markerShapeStyle(kind)} />)}
+    </span>
+    {marker.count > 1 && <span aria-hidden="true" className="marker-count">{marker.count}</span>}
   </button>
 }
 
@@ -275,40 +300,67 @@ export function timelineRuns(points: readonly SeriesPoint[]): ReadonlyMap<string
   return runs
 }
 
-export function groupFindings(findings: readonly Finding[]): readonly GroupedFinding[] {
-  const groups = new Map<string, GroupedFinding>()
-  for (const finding of findings) {
-    const key = `${finding.timestamp}:${finding.kind}`
-    const current = groups.get(key)
-    groups.set(key, {
-      count: (current?.count ?? 0) + 1,
-      finding: current?.finding ?? finding,
-      findings: [...(current?.findings ?? []), finding],
-      kind: finding.kind,
-      timestamp: finding.timestamp,
-    })
+export function groupFindings(
+  findings: readonly Finding[],
+  hour: number,
+  end: number,
+  pixelWidth: number,
+  clusterWidth = MARKER_CLUSTER_PX,
+): readonly GroupedFinding[] {
+  const duration = Math.max(1, end - hour)
+  const width = Math.max(1, pixelWidth)
+  const ordered = findings.slice().sort(findingOrder)
+  const stored: Finding[][] = []
+  let active: Finding[] = []
+  let anchor = 0
+  for (const finding of ordered) {
+    const x = Math.max(0, Math.min(width, (finding.timestamp - hour) / duration * width))
+    if (active.length === 0 || x - anchor <= clusterWidth) {
+      if (active.length === 0) anchor = x
+      active.push(finding)
+    } else {
+      stored.push(active)
+      active = [finding]
+      anchor = x
+    }
   }
-  return [...groups.values()].sort((left, right) => left.timestamp - right.timestamp || left.kind.localeCompare(right.kind))
+  if (active.length !== 0) stored.push(active)
+  return stored.map((group) => {
+    const first = group[0]
+    const last = group.at(-1)
+    if (first === undefined || last === undefined) throw new Error("empty marker cluster")
+    const kinds = FINDING_KINDS.filter((kind) => group.some((finding) => finding.kind === kind))
+    return {
+      count: group.length,
+      finding: first,
+      findings: group,
+      kind: first.kind,
+      kinds,
+      startTimestamp: first.timestamp,
+      endTimestamp: last.timestamp,
+      timestamp: first.timestamp,
+    }
+  })
 }
+
+const FINDING_KINDS = ["event", "known_bad", "spike"] as const satisfies readonly Finding["kind"][]
+
+function findingOrder(left: Finding, right: Finding): number {
+  return left.timestamp - right.timestamp
+    || FINDING_KINDS.indexOf(left.kind) - FINDING_KINDS.indexOf(right.kind)
+    || textOrder(left.segmentId, right.segmentId)
+    || textOrder(left.typeId, right.typeId)
+    || textOrder(left.rowOrdinal, right.rowOrdinal)
+    || left.fieldOrdinal - right.fieldOrdinal
+    || textOrder(left.logicalName, right.logicalName)
+}
+
+function textOrder(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0 }
 
 export function findingShape(kind: Finding["kind"]): FindingShape {
   if (kind === "known_bad") return "diamond"
   if (kind === "spike") return "triangle"
   return "circle"
-}
-
-function findingSlots(markers: readonly GroupedFinding[]): ReadonlyMap<string, { readonly index: number; readonly total: number }> {
-  const byTime = new Map<number, GroupedFinding[]>()
-  for (const marker of markers) {
-    const current = byTime.get(marker.timestamp) ?? []
-    current.push(marker)
-    byTime.set(marker.timestamp, current)
-  }
-  const slots = new Map<string, { readonly index: number; readonly total: number }>()
-  for (const [timestamp, stored] of byTime) {
-    stored.forEach((marker, index) => slots.set(`${timestamp}:${marker.kind}`, { index, total: stored.length }))
-  }
-  return slots
 }
 
 function markerShapeStyle(kind: Finding["kind"]): React.CSSProperties {

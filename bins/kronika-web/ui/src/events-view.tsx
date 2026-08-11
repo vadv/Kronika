@@ -56,7 +56,7 @@ export function EventsView({
   const active = selected !== null && visible.some((finding) => findingKey(finding) === findingKey(selected)) ? selected : visible[0] ?? null
   const row = active === null ? null : resolve(active)
   const list = useRef<HTMLDivElement>(null)
-  const virtual = useVirtualizer({ count: visible.length, estimateSize: () => 44, getScrollElement: () => list.current, overscan: 12 })
+  const virtual = useVirtualizer({ count: visible.length, estimateSize: () => scope === null ? 44 : 72, getScrollElement: () => list.current, overscan: 12 })
   useEffect(() => {
     if (active === null) return
     const index = visible.findIndex((finding) => findingKey(finding) === findingKey(active))
@@ -82,7 +82,7 @@ export function EventsView({
               return <div className="event-item" key={findingKey(finding)} role="listitem" style={{ height: item.size, transform: `translateY(${item.start}px)` }}>
                 <button aria-pressed={active !== null && findingKey(active) === findingKey(finding)} onClick={() => onFinding(finding)} type="button">
                   <KindIcon kind={finding.kind} />
-                  <span><strong>{t(`locator.${finding.kind}`)}</strong><small>{finding.logicalName}</small></span>
+                  <span><strong>{t(`locator.${finding.kind}`)}</strong><small>{finding.logicalName}{scope !== null && <code>{locatorText(finding, t)}</code>}</small></span>
                   <time>{formatUtc(finding.timestamp)}</time>
                 </button>
               </div>
@@ -113,6 +113,15 @@ function KindIcon({ kind }: { readonly kind: Finding["kind"] }): ReactNode {
 
 function findingKey(finding: Finding): string {
   return `${finding.segmentId}:${finding.typeId}:${finding.rowOrdinal}:${finding.fieldOrdinal}:${finding.timestamp}:${finding.kind}`
+}
+
+export function locatorText(finding: Finding, t: Translate): string {
+  return t("events.locator", {
+    field: finding.fieldOrdinal,
+    row: finding.rowOrdinal,
+    segment: finding.segmentId,
+    type: finding.typeId,
+  })
 }
 
 export function categoryLabel(category: number, t: Translate): string {

@@ -34,22 +34,51 @@ function finding(kind, timestamp, ordinal) {
   }
 }
 
-test("timeline markers aggregate only identical kind and timestamp", () => {
-  const first = finding("event", 200, "7")
-  const grouped = helpers.groupFindings([
-    finding("spike", 100, "1"),
-    first,
-    finding("event", 200, "8"),
-    finding("known_bad", 200, "9"),
-  ])
+test("timeline markers cluster at the rendered scale and expand to every exact locator", () => {
+  const input = [
+    finding("spike", 150, "3"),
+    finding("event", 100, "1"),
+    finding("known_bad", 100, "2"),
+    finding("event", 205, "4"),
+    finding("event", 900, "5"),
+  ]
+  const grouped = helpers.groupFindings(input, 0, 1_000, 100, 10)
 
-  assert.deepEqual(grouped.map(({ count, kind, timestamp }) => ({ count, kind, timestamp })), [
-    { count: 1, kind: "spike", timestamp: 100 },
-    { count: 2, kind: "event", timestamp: 200 },
-    { count: 1, kind: "known_bad", timestamp: 200 },
+  assert.deepEqual(grouped.map(({ count, kinds, startTimestamp, endTimestamp }) => ({ count, kinds, startTimestamp, endTimestamp })), [
+    { count: 3, kinds: ["event", "known_bad", "spike"], startTimestamp: 100, endTimestamp: 150 },
+    { count: 1, kinds: ["event"], startTimestamp: 205, endTimestamp: 205 },
+    { count: 1, kinds: ["event"], startTimestamp: 900, endTimestamp: 900 },
   ])
-  assert.equal(grouped[1].finding, first)
-  assert.deepEqual(grouped[1].findings.map((finding) => finding.rowOrdinal), ["7", "8"])
+  const locator = (item) => `${item.segmentId}:${item.typeId}:${item.rowOrdinal}:${item.fieldOrdinal}:${item.timestamp}:${item.kind}`
+  assert.deepEqual(
+    grouped.flatMap((marker) => marker.findings).map(locator).sort(),
+    input.map(locator).sort(),
+  )
+})
+
+test("marker clustering is deterministic and separates locators when more pixels are available", () => {
+  const input = [
+    finding("spike", 150, "3"),
+    finding("event", 100, "1"),
+    finding("known_bad", 100, "2"),
+    finding("event", 205, "4"),
+  ]
+  const snapshot = (groups) => groups.map((marker) => ({
+    count: marker.count,
+    locators: marker.findings.map((item) => `${item.timestamp}:${item.kind}:${item.rowOrdinal}`),
+    timestamp: marker.timestamp,
+  }))
+  const compact = helpers.groupFindings(input, 0, 1_000, 100, 10)
+  assert.deepEqual(snapshot(compact), snapshot(helpers.groupFindings(input.toReversed(), 0, 1_000, 100, 10)))
+  for (let index = 1; index < compact.length; index += 1) {
+    const previous = compact[index - 1]
+    const current = compact[index]
+    assert.ok((current.timestamp - previous.timestamp) / 1_000 * 100 > 10)
+  }
+  assert.deepEqual(
+    helpers.groupFindings(input, 0, 1_000, 1_000, 10).map((marker) => marker.count),
+    [2, 1, 1],
+  )
 })
 
 test("finding kinds have non-color shape identities", () => {
