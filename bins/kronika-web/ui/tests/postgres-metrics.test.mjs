@@ -1,0 +1,192 @@
+import assert from "node:assert/strict"
+import { Buffer } from "node:buffer"
+import { dirname } from "node:path"
+import { fileURLToPath } from "node:url"
+import test from "node:test"
+
+import { build } from "esbuild"
+
+const directory = dirname(fileURLToPath(import.meta.url))
+
+const blocks = [
+  "shared_blks_hit", "shared_blks_read", "shared_blks_dirtied", "shared_blks_written",
+  "local_blks_hit", "local_blks_read", "local_blks_dirtied", "local_blks_written",
+  "temp_blks_read", "temp_blks_written",
+]
+const statementBase = ["datname", "usename", "query", "calls", "rows", ...blocks]
+const oldTiming = ["blk_read_time", "blk_write_time"]
+const splitTiming = [
+  "shared_blk_read_time", "shared_blk_write_time", "local_blk_read_time", "local_blk_write_time",
+  "temp_blk_read_time", "temp_blk_write_time",
+]
+const planning = ["plans", "total_plan_time"]
+const wal = ["wal_records", "wal_fpi", "wal_bytes"]
+
+function layout(typeId, logicalName, identity, columns) {
+  return {
+    typeId, logicalName, identity,
+    columns: ["ts", ...columns, "mean_time", "private_text"].map((name) => ({ name })),
+  }
+}
+
+const registry = [
+  layout("1002001", "pg_stat_statements", ["queryid", "userid", "dbid"], ["queryid", "userid", "dbid", ...statementBase, "total_time", ...oldTiming]),
+  layout("1002002", "pg_stat_statements", ["queryid", "userid", "dbid"], ["queryid", "userid", "dbid", ...statementBase, "total_exec_time", ...planning, ...oldTiming, ...wal]),
+  layout("1002003", "pg_stat_statements", ["queryid", "userid", "dbid", "toplevel"], ["queryid", "userid", "dbid", "toplevel", ...statementBase, "total_exec_time", ...planning, ...oldTiming, ...wal]),
+  layout("1002004", "pg_stat_statements", ["queryid", "userid", "dbid", "toplevel"], ["queryid", "userid", "dbid", "toplevel", ...statementBase, "total_exec_time", ...planning, ...oldTiming, "temp_blk_read_time", "temp_blk_write_time", ...wal]),
+  layout("1002005", "pg_stat_statements", ["queryid", "userid", "dbid", "toplevel"], ["queryid", "userid", "dbid", "toplevel", ...statementBase, "total_exec_time", ...planning, ...splitTiming, ...wal]),
+  layout("1002006", "pg_stat_statements", ["queryid", "userid", "dbid", "toplevel"], ["queryid", "userid", "dbid", "toplevel", ...statementBase, "total_exec_time", ...planning, ...splitTiming, ...wal, "wal_buffers_full"]),
+  layout("1003001", "pg_store_plans", ["userid", "dbid", "queryid", "planid"], ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls", "total_time", "rows", ...blocks, ...splitTiming]),
+  layout("1004001", "pg_store_plans", ["userid", "dbid", "queryid", "planid"], ["userid", "dbid", "queryid", "planid", "queryid_stat_statements", "datname", "usename", "plan", "calls", "slow_log_calls", "total_time", "rows", ...blocks, ...oldTiming, "total_plan_time"]),
+  layout("1018001", "pg_store_plans", ["userid", "dbid", "queryid", "planid"], ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "relids", "cmd_type", "calls", "total_time", "rows", ...blocks, ...splitTiming]),
+  layout("1016001", "pg_store_plans_info", [], ["dealloc", "stats_reset"]),
+]
+
+const compiled = await build({
+  bundle: true,
+  format: "esm",
+  platform: "node",
+  plugins: [{
+    name: "registry",
+    setup(context) {
+      context.onResolve({ filter: /^kronika:registry$/ }, () => ({ namespace: "registry", path: "registry" }))
+      context.onLoad({ filter: /.*/, namespace: "registry" }, () => ({
+        contents: `export const registry=${JSON.stringify(registry)}`,
+      }))
+    },
+  }],
+  stdin: {
+    contents: 'export * from "../src/postgres-metrics.ts"',
+    loader: "ts",
+    resolveDir: directory,
+  },
+  treeShaking: true,
+  write: false,
+})
+const metrics = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString("base64")}`)
+
+function row(typeId, timestamp, values, segmentId = "s") {
+  return { segmentId, logicalName: typeId.startsWith("1002") ? "pg_stat_statements" : "pg_store_plans", typeId, ordinal: "0", timestamp, values }
+}
+
+test("all six statement layouts keep exact registry identity, aliases, projections, and order", () => {
+  const matrix = [
+    ["1002001", ["queryid", "userid", "dbid"], "total_time", "blk_read_time", null, null, false],
+    ["1002002", ["queryid", "userid", "dbid"], "total_exec_time", "blk_read_time", null, null, true],
+    ["1002003", ["queryid", "userid", "dbid", "toplevel"], "total_exec_time", "blk_read_time", null, null, true],
+    ["1002004", ["queryid", "userid", "dbid", "toplevel"], "total_exec_time", "blk_read_time", null, "temp_blk_read_time", true],
+    ["1002005", ["queryid", "userid", "dbid", "toplevel"], "total_exec_time", "shared_blk_read_time", "local_blk_read_time", "temp_blk_read_time", true],
+    ["1002006", ["queryid", "userid", "dbid", "toplevel"], "total_exec_time", "shared_blk_read_time", "local_blk_read_time", "temp_blk_read_time", true],
+  ]
+  for (const [typeId, identity, execution, shared, local, temp, hasPlanning] of matrix) {
+    assert.deepEqual(metrics.postgresIdentity(typeId), identity)
+    assert.equal(metrics.physicalField(typeId, "execution_ms_per_second"), execution)
+    assert.equal(metrics.physicalField(typeId, "shared_blk_read_ms_per_second"), shared)
+    assert.equal(metrics.physicalField(typeId, "local_blk_read_ms_per_second"), local)
+    assert.equal(metrics.physicalField(typeId, "temp_blk_read_ms_per_second"), temp)
+    assert.deepEqual(metrics.postgresOrder(typeId), [execution])
+    assert.deepEqual(metrics.postgresOrder(typeId, "planning_ms_per_second"), hasPlanning ? ["total_plan_time"] : ["calls"])
+    const projection = metrics.postgresProjection(typeId)
+    assert.deepEqual(projection.slice(0, identity.length), identity)
+    assert.ok(projection.includes("query"))
+    assert.ok(projection.includes(execution))
+    assert.equal(projection.includes(execution === "total_time" ? "total_exec_time" : "total_time"), false)
+    assert.equal(projection.includes("mean_time"), false)
+    assert.equal(projection.includes("private_text"), false)
+  }
+  const request = metrics.POSTGRES_SECTION_REQUESTS.find(({ section }) => section === "pg_stat_statements")
+  assert.deepEqual(request.defaultOrder, ["total_time", "total_exec_time"])
+  assert.deepEqual(request.fallbackOrder, ["calls"])
+  assert.deepEqual(request.fieldsByType["1002001"], metrics.postgresProjection("1002001"))
+})
+
+test("the three plan layouts and info use their exact physical variants", () => {
+  const identity = ["userid", "dbid", "queryid", "planid"]
+  const matrix = [
+    ["1003001", "shared_blk_read_time", "local_blk_read_time", false],
+    ["1004001", "blk_read_time", null, true],
+    ["1018001", "shared_blk_read_time", "local_blk_read_time", false],
+  ]
+  for (const [typeId, shared, local, isVadv] of matrix) {
+    assert.deepEqual(metrics.postgresIdentity(typeId), identity)
+    assert.equal(metrics.physicalField(typeId, "execution_ms_per_second"), "total_time")
+    assert.equal(metrics.physicalField(typeId, "shared_blk_read_ms_per_second"), shared)
+    assert.equal(metrics.physicalField(typeId, "local_blk_read_ms_per_second"), local)
+    assert.equal(metrics.postgresProjection(typeId).includes("queryid_stat_statements"), isVadv)
+    assert.equal(metrics.postgresProjection(typeId).includes("plan"), true)
+  }
+  assert.deepEqual(metrics.postgresProjection("1016001"), ["dealloc", "stats_reset"])
+  assert.deepEqual(metrics.postgresIdentity("1016001"), [])
+})
+
+test("snapshot decoration preserves physical cells and derives only available rates", () => {
+  const decorated = metrics.decoratePostgresIntervalRow(row("1002005", 10, {
+    calls: 4,
+    rows: 12,
+    total_exec_time: 30,
+    total_plan_time: 2,
+    shared_blk_read_time: 6,
+    query: "select 1",
+  }))
+  assert.equal(decorated.values.total_exec_time, 30)
+  assert.equal(decorated.values.query, "select 1")
+  assert.equal(decorated.values.calls_per_second, 4)
+  assert.equal(decorated.values.rows_per_second, 12)
+  assert.equal(decorated.values.execution_ms_per_second, 30)
+  assert.equal(decorated.values.mean_exec_ms_per_call, 7.5)
+  assert.equal(decorated.values.shared_blk_read_ms_per_second, 6)
+  assert.equal(decorated.values.local_blk_read_ms_per_second, null)
+})
+
+test("history subtracts exact counters before conversion and rejects unusable intervals", () => {
+  const before = row("1002002", 1_000_000, {
+    calls: "9007199254740992", rows: "9007199254740990", total_exec_time: 100.25,
+  })
+  const after = row("1002002", 3_000_000, {
+    calls: "9007199254740995", rows: "9007199254740994", total_exec_time: 130.25,
+  })
+  assert.equal(metrics.exactCounterDelta(before.values.calls, after.values.calls), 3n)
+  assert.equal(metrics.intervalMetric(before, after, "calls"), 1.5)
+  assert.deepEqual(metrics.postgresInterval(before, after), {
+    calls_per_second: 1.5,
+    execution_ms_per_second: 15,
+    mean_exec_ms_per_call: 10,
+    rows_per_second: 2,
+    planning_ms_per_second: null,
+    shared_blk_read_ms_per_second: null,
+    shared_blk_write_ms_per_second: null,
+    local_blk_read_ms_per_second: null,
+    local_blk_write_ms_per_second: null,
+    temp_blk_read_ms_per_second: null,
+    temp_blk_write_ms_per_second: null,
+  })
+  const history = metrics.postgresHistory([after, before])
+  assert.equal(history[0].mean_exec_ms_per_call, null)
+  assert.equal(history[1].mean_exec_ms_per_call, 10)
+
+  const reset = row("1002002", 4_000_000, { calls: "2", total_exec_time: 1 })
+  assert.equal(metrics.postgresInterval(after, reset).mean_exec_ms_per_call, null)
+  assert.equal(metrics.postgresInterval(after, reset).calls_per_second, null)
+  const missing = row("1002002", 4_000_000, { total_exec_time: 140 })
+  assert.equal(metrics.postgresInterval(after, missing).mean_exec_ms_per_call, null)
+  const zero = row("1002002", 4_000_000, { calls: after.values.calls, total_exec_time: 140 })
+  assert.equal(metrics.postgresInterval(after, zero).mean_exec_ms_per_call, null)
+  const backwards = row("1002002", 2_000_000, { calls: "9007199254740996", total_exec_time: 140 })
+  assert.equal(metrics.postgresInterval(after, backwards).mean_exec_ms_per_call, null)
+  const executionReset = row("1002002", 4_000_000, { calls: "9007199254740996", total_exec_time: 1 })
+  assert.equal(metrics.postgresInterval(after, executionReset).execution_ms_per_second, null)
+  assert.equal(metrics.postgresInterval(after, executionReset).mean_exec_ms_per_call, null)
+})
+
+test("a physical statement spike selects the derived mean cell", () => {
+  assert.equal(metrics.findingSemanticField("1002001", "total_time"), "mean_exec_ms_per_call")
+  assert.equal(metrics.findingSemanticField("1002005", "total_exec_time"), "mean_exec_ms_per_call")
+  assert.deepEqual(metrics.physicalFields(metrics.PG_STAT_STATEMENTS_TYPE_IDS, "execution_ms_per_second"), {
+    "1002001": "total_time",
+    "1002002": "total_exec_time",
+    "1002003": "total_exec_time",
+    "1002004": "total_exec_time",
+    "1002005": "total_exec_time",
+    "1002006": "total_exec_time",
+  })
+})
