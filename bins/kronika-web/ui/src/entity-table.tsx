@@ -60,9 +60,13 @@ export function EntityTable({
     },
     size: field.width ?? 128,
   })), [fields, locale, t])
+  // The table keeps its own model keyed on this reference. A fresh array every
+  // render rebuilds that model every render, and the process table next door
+  // does not do it.
+  const data = useMemo(() => [...rows], [rows])
   const table = useReactTable({
     columns,
-    data: [...rows],
+    data,
     getCoreRowModel: getCoreRowModel(),
     getRowId: (row) => rowKey(row),
     getSortedRowModel: getSortedRowModel(),

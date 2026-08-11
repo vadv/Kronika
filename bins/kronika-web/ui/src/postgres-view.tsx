@@ -146,6 +146,10 @@ function OverviewMetrics({ locale, logicalName, row }: { readonly locale: Locale
   </section>
 }
 
+/** One empty array for the whole module: `?? []` is a new reference every
+ *  render, and every memo downstream of it recomputes. */
+const NO_ROWS: readonly DataRow[] = []
+
 function PgEntityView({
   columns,
   cursor,
@@ -167,7 +171,7 @@ function PgEntityView({
   readonly section: string
   readonly t: Translate
 }) {
-  const allRows = data.sections[section] ?? []
+  const allRows = data.sections[section] ?? NO_ROWS
   const rows = useMemo(() => snapshot(allRows, cursor), [allRows, cursor])
   const visibleColumns = useMemo(() => columns.filter((column) => allRows.some((row) => Object.hasOwn(row.values, column.field))), [allRows, columns])
   const [selected, setSelected] = useState<DataRow | null>(null)
