@@ -34,8 +34,8 @@ const registry = [
   layout("1002002", "pg_stat_statements", ["queryid", "userid", "dbid"], ["queryid", "userid", "dbid", ...statementBase, "total_exec_time", ...planning, ...oldTiming, ...wal]),
   layout("1002003", "pg_stat_statements", ["queryid", "userid", "dbid", "toplevel"], ["queryid", "userid", "dbid", "toplevel", ...statementBase, "total_exec_time", ...planning, ...oldTiming, ...wal]),
   layout("1002004", "pg_stat_statements", ["queryid", "userid", "dbid", "toplevel"], ["queryid", "userid", "dbid", "toplevel", ...statementBase, "total_exec_time", ...planning, ...oldTiming, "temp_blk_read_time", "temp_blk_write_time", ...wal]),
-  layout("1002005", "pg_stat_statements", ["queryid", "userid", "dbid", "toplevel"], ["queryid", "userid", "dbid", "toplevel", ...statementBase, "total_exec_time", ...planning, ...splitTiming, ...wal]),
-  layout("1002006", "pg_stat_statements", ["queryid", "userid", "dbid", "toplevel"], ["queryid", "userid", "dbid", "toplevel", ...statementBase, "total_exec_time", ...planning, ...splitTiming, ...wal, "wal_buffers_full"]),
+  layout("1002005", "pg_stat_statements", ["queryid", "userid", "dbid", "toplevel"], ["queryid", "userid", "dbid", "toplevel", ...statementBase, "total_exec_time", ...planning, ...splitTiming, ...wal, "stats_since"]),
+  layout("1002006", "pg_stat_statements", ["queryid", "userid", "dbid", "toplevel"], ["queryid", "userid", "dbid", "toplevel", ...statementBase, "total_exec_time", ...planning, ...splitTiming, ...wal, "wal_buffers_full", "stats_since"]),
   layout("1003001", "pg_store_plans", ["userid", "dbid", "queryid", "planid"], ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls", "total_time", "rows", ...blocks, ...splitTiming]),
   layout("1004001", "pg_store_plans", ["userid", "dbid", "queryid", "planid"], ["userid", "dbid", "queryid", "planid", "queryid_stat_statements", "datname", "usename", "plan", "calls", "slow_log_calls", "total_time", "rows", ...blocks, ...oldTiming, "total_plan_time"]),
   layout("1018001", "pg_store_plans", ["userid", "dbid", "queryid", "planid"], ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "relids", "cmd_type", "calls", "total_time", "rows", ...blocks, ...splitTiming]),
@@ -98,6 +98,8 @@ test("all six statement layouts keep exact registry identity, aliases, projectio
   assert.deepEqual(request.defaultOrder, ["total_time", "total_exec_time"])
   assert.deepEqual(request.fallbackOrder, ["calls"])
   assert.deepEqual(request.fieldsByType["1002001"], metrics.postgresProjection("1002001"))
+  assert.equal(metrics.postgresProjection("1002004").includes("stats_since"), false)
+  assert.equal(metrics.postgresProjection("1002005").includes("stats_since"), true)
 })
 
 test("the three plan layouts and info use their exact physical variants", () => {
@@ -169,6 +171,8 @@ test("history subtracts exact counters before conversion and rejects unusable in
   assert.equal(metrics.postgresInterval(after, reset).calls_per_second, null)
   const missing = row("1002002", 4_000_000, { total_exec_time: 140 })
   assert.equal(metrics.postgresInterval(after, missing).mean_exec_ms_per_call, null)
+  const unavailable = row("1002002", 4_000_000, { calls: null, total_exec_time: null })
+  assert.equal(metrics.postgresInterval(after, unavailable).mean_exec_ms_per_call, null)
   const zero = row("1002002", 4_000_000, { calls: after.values.calls, total_exec_time: 140 })
   assert.equal(metrics.postgresInterval(after, zero).mean_exec_ms_per_call, null)
   const backwards = row("1002002", 2_000_000, { calls: "9007199254740996", total_exec_time: 140 })

@@ -43,6 +43,7 @@ const STATEMENT_FIELDS = [
   "blk_read_time", "blk_write_time", "shared_blk_read_time", "shared_blk_write_time",
   "local_blk_read_time", "local_blk_write_time", "temp_blk_read_time", "temp_blk_write_time",
   "wal_records", "wal_fpi", "wal_bytes", "wal_buffers_full",
+  "stats_since",
 ] as const
 
 const PLAN_FIELDS = [

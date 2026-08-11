@@ -9,7 +9,8 @@ import {
   loadSeries,
   hourOf,
   loadSnapshot,
-  segmentAt,
+  segmentBoundAt,
+  requestsForSegment,
   fieldNameForLocator,
   replaceSections,
   resolveLocator,
@@ -42,6 +43,7 @@ import {
   type Locale,
 } from "./model"
 import { PostgresView, type PostgresSection } from "./postgres-view"
+import { POSTGRES_SECTION_REQUESTS, postgresProjection } from "./postgres-metrics"
 import { ProcessSummary, ProcessTable } from "./process-table"
 import { SYSTEM_REQUESTS, SystemView } from "./system-view"
 import { Timeline } from "./timeline"
@@ -52,7 +54,7 @@ type HostSection = "system" | "processes"
 
 const EMPTY_DATA: HourData = {
   sections: {}, rateColumns: {}, availableSections: [], processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
-  pgOverview: [], pgStatements: [], pgLocks: [], pgDatabases: [], pgEvents: [], points: [], lanePoints: [], findings: [],
+  pgOverview: [], pgStatements: [], pgPlans: [], pgLocks: [], pgDatabases: [], pgEvents: [], points: [], lanePoints: [], findings: [],
   sourceFamilies: [], segmentCount: 0,
 }
 
@@ -63,7 +65,8 @@ const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
   processes: [...TIMELINE_REQUESTS, { section: "os_process" }, { section: "pg_stat_activity" }, { section: "instance_metadata" }],
   "postgresql:overview": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlOverview.map(section)],
   "postgresql:activity": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlActivity.map(section)],
-  "postgresql:statements": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlStatements.map(section)],
+  "postgresql:statements": [...TIMELINE_REQUESTS, ...POSTGRES_SECTION_REQUESTS.filter((request) => request.section === "pg_stat_statements")],
+  "postgresql:plans": [...TIMELINE_REQUESTS, ...POSTGRES_SECTION_REQUESTS.filter((request) => request.section === "pg_store_plans" || request.section === "pg_store_plans_info")],
   "postgresql:locks": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlLocks.map(section)],
   "postgresql:databases": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlDatabases.map(section)],
   events: [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.events.map(section)],
@@ -199,15 +202,18 @@ function App() {
   // A table shows the moment under the cursor, and each section is sampled on
   // its own schedule: asking for the cursor lets the server pick the last
   // sample of that section, rather than a moment borrowed from another one.
-  const cursorSegment = useMemo(() => segmentAt(segments, cursor), [cursor, segments])
+  const cursorSegment = useMemo(() => segmentBoundAt(segments, cursor), [cursor, segments])
   // Dragging moves the cursor at once and the tables a round trip later, and
   // the cursor can rest where nothing was sampled at all. Both are said out
   // loud beside the clock instead of being left to guess.
   const [cursorState, setCursorState] = useState<"ready" | "loading" | "missing">("ready")
   useEffect(() => {
     if (hour === null || cursorSegment === null) return
-    const wanted = (VIEW_REQUESTS[viewKey] ?? []).filter((request) => request.section !== "health")
-    const key = `${cursorSegment}:${cursor}:${viewKey}:${order?.column ?? ""}:${order?.descending ?? ""}`
+    const wanted = requestsForSegment(
+      (VIEW_REQUESTS[viewKey] ?? []).filter((request) => request.section !== "health"),
+      cursorSegment,
+    )
+    const key = `${cursorSegment.id}:${cursor}:${viewKey}:${order?.column ?? ""}:${order?.descending ?? ""}`
     if (loaded.current.keys.has(key) || wanted.length === 0) {
       setCursorState("ready")
       return
@@ -218,7 +224,7 @@ function App() {
     // worth a round trip over a link that costs more than a second.
     const timer = setTimeout(() => {
       loaded.current.keys.add(key)
-      void loadSnapshot(cursorSegment, cursor, wanted.map((request) => request.section), controller.signal, order ?? undefined)
+      void loadSnapshot(cursorSegment.id, cursor, wanted, controller.signal, order ?? undefined)
         .then((incoming) => {
           setData((before) => replaceSections(before, incoming))
           setCursorState("ready")
@@ -281,7 +287,26 @@ function App() {
   useEffect(() => {
     if (selectedFinding === null || postgresSection(selectedFinding.logicalName) === null) return
     const exact = resolveLocator(data, selectedFinding)?.row
-    if (exact !== undefined) setPgFocus(exact)
+    if (exact !== undefined) {
+      setPgFocus(exact)
+      return
+    }
+    if (selectedFinding.logicalName !== "pg_stat_statements" && selectedFinding.logicalName !== "pg_store_plans") return
+    const fields = postgresProjection(selectedFinding.typeId)
+    if (fields.length === 0) return
+    const controller = new AbortController()
+    void loadSnapshot(
+      selectedFinding.segmentId,
+      selectedFinding.timestamp,
+      [{ section: selectedFinding.logicalName, fields, typeId: selectedFinding.typeId }],
+      controller.signal,
+      undefined,
+      { typeId: selectedFinding.typeId, rowOrdinal: selectedFinding.rowOrdinal },
+    ).then((incoming) => {
+      const row = incoming.sections[selectedFinding.logicalName]?.[0]
+      if (row !== undefined) setPgFocus(row)
+    }).catch(() => { /* the marker remains routed to its table */ })
+    return () => controller.abort()
   }, [data, selectedFinding])
   const joinedActivity = activityFor(selectedProcess, data.activities, selectedProcess?.timestamp ?? cursor)
   // A table holds one moment, so the charts of the selected process are their
@@ -465,6 +490,7 @@ function StateCard({ message }: { readonly message: string }) {
 function postgresSection(logicalName: string): PostgresSection | null {
   if (logicalName === "pg_stat_activity" || logicalName === "pg_stat_progress_vacuum") return "activity"
   if (logicalName === "pg_stat_statements") return "statements"
+  if (logicalName === "pg_store_plans" || logicalName === "pg_store_plans_info") return "plans"
   if (logicalName === "pg_locks") return "locks"
   if (logicalName === "pg_stat_database") return "databases"
   if (logicalName.startsWith("pg_") && !logicalName.startsWith("pg_log_")) return "overview"

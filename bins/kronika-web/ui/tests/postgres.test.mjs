@@ -156,6 +156,8 @@ test("dense PostgreSQL columns and the Plans tab stay available by section", asy
   assert.match(source, /section === "plans" && available\("pg_store_plans"\)/)
   assert.match(source, /section === "plans" && available\("pg_store_plans_info"\)/)
   assert.match(source, /!current\.some[\s\S]*\[\.\.\.current, focus\]/)
+  assert.match(source, /loadSeries\(hour, section, filters, fields, controller\.signal, row\.typeId\)/)
+  assert.match(source, /\{ section, fields: \[field\], typeId: row\.typeId \}[\s\S]*fullText: true/)
 })
 
 test("an exact finding row wins over the previous PostgreSQL selection", () => {

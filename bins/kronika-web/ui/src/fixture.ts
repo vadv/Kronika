@@ -117,6 +117,7 @@ export function bundledFixtureHour(start: number): HourData | null {
     health,
     pgOverview: [],
     pgStatements: [],
+    pgPlans: [],
     pgLocks: [],
     pgDatabases: [],
     pgEvents: [],
