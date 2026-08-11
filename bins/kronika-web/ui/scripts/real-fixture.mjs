@@ -2,7 +2,9 @@ import { createHash } from "node:crypto"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { gunzipSync, gzipSync } from "node:zlib"
+import { gunzipSync } from "node:zlib"
+
+import { gzipSync } from "fflate"
 
 const scriptsDirectory = dirname(fileURLToPath(import.meta.url))
 const uiDirectory = resolve(scriptsDirectory, "..")
@@ -222,7 +224,7 @@ function integerText(value) {
 }
 
 function gzip(raw) {
-  const compressed = gzipSync(raw, { level: 9, mtime: 0 })
+  const compressed = Buffer.from(gzipSync(raw, { level: 9, mtime: 0 }))
   validateGzipHeader(compressed)
   return compressed
 }
