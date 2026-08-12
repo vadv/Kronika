@@ -1,24 +1,9 @@
 import assert from "node:assert/strict"
-import { dirname } from "node:path"
-import { fileURLToPath } from "node:url"
 import test from "node:test"
 
-import { build } from "esbuild"
+import { importModule } from "./import-module.mjs"
 
-const directory = dirname(fileURLToPath(import.meta.url))
-const compiled = await build({
-  bundle: true,
-  format: "esm",
-  platform: "node",
-  stdin: {
-    contents: 'export { reading } from "../src/use-table.tsx"',
-    loader: "tsx",
-    resolveDir: directory,
-  },
-  treeShaking: true,
-  write: false,
-})
-const { reading } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString("base64")}`)
+const { reading } = await importModule('export { reading } from "../src/use-table.tsx"')
 
 test("a resource reading carries the unit of what it measures", () => {
   assert.equal(reading(61.06, "en", "share", "/s"), "61.06%")

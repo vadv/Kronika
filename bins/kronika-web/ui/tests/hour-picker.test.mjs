@@ -1,25 +1,10 @@
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
-import { dirname } from "node:path"
-import { fileURLToPath } from "node:url"
 import test from "node:test"
 
-import { build } from "esbuild"
+import { importModule } from "./import-module.mjs"
 
-const directory = dirname(fileURLToPath(import.meta.url))
-const compiled = await build({
-  bundle: true,
-  format: "esm",
-  platform: "node",
-  stdin: {
-    contents: 'export { hourHasData, pickerDateLabel, pickerFocusHour, pickerRangeLabel } from "../src/hour-picker.tsx"',
-    loader: "tsx",
-    resolveDir: directory,
-  },
-  treeShaking: true,
-  write: false,
-})
-const picker = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString("base64")}`)
+const picker = await importModule('export { hourHasData, pickerDateLabel, pickerFocusHour, pickerRangeLabel } from "../src/hour-picker.tsx"')
 
 const HOUR = 3_600_000_000
 const START = Date.UTC(2026, 7, 10, 15) * 1_000

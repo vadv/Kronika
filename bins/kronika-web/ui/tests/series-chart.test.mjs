@@ -1,24 +1,9 @@
 import assert from "node:assert/strict"
-import { dirname } from "node:path"
-import { fileURLToPath } from "node:url"
 import test from "node:test"
 
-import { build } from "esbuild"
+import { importModule } from "./import-module.mjs"
 
-const directory = dirname(fileURLToPath(import.meta.url))
-const compiled = await build({
-  bundle: true,
-  format: "esm",
-  platform: "node",
-  stdin: {
-    contents: 'export { chartDomain, chartRuns, numericChartPoints, readingAt } from "../src/series-chart.tsx"',
-    loader: "tsx",
-    resolveDir: directory,
-  },
-  treeShaking: true,
-  write: false,
-})
-const helpers = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString("base64")}`)
+const helpers = await importModule('export { chartDomain, chartRuns, numericChartPoints, readingAt } from "../src/series-chart.tsx"')
 
 test("chart domains keep percentages exact and give counts and durations a zero-based nice ceiling", () => {
   assert.deepEqual(helpers.chartDomain([42], "percent"), { low: 0, high: 100 })

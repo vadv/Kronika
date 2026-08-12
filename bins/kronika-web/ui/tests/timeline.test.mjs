@@ -1,33 +1,12 @@
 import assert from "node:assert/strict"
-import { dirname } from "node:path"
-import { fileURLToPath } from "node:url"
 import test from "node:test"
 
-import { build } from "esbuild"
+import { importModule, registryPlugin } from "./import-module.mjs"
 
-const directory = dirname(fileURLToPath(import.meta.url))
-const compiled = await build({
-  bundle: true,
-  format: "esm",
-  platform: "node",
-  plugins: [{
-    name: "registry",
-    setup(context) {
-      context.onResolve({ filter: /^kronika:registry$/ }, () => ({ namespace: "registry", path: "registry" }))
-      context.onLoad({ filter: /.*/, namespace: "registry" }, () => ({
-        contents: 'export const registry=[{typeId:"1104001",logicalName:"os_meminfo",columns:["ts","mem_total","mem_available"]}]',
-      }))
-    },
-  }],
-  stdin: {
-    contents: 'export { findingShape, findingTrack, groupFindings, healthThreshold, laneRange, overviewLaneCount, sampleWindow, seriesYAt, timelineRuns, valueAt } from "../src/timeline.tsx"',
-    loader: "tsx",
-    resolveDir: directory,
-  },
-  treeShaking: true,
-  write: false,
-})
-const helpers = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString("base64")}`)
+const helpers = await importModule(
+  'export { findingShape, findingTrack, groupFindings, healthThreshold, laneRange, overviewLaneCount, sampleWindow, seriesYAt, timelineRuns, valueAt } from "../src/timeline.tsx"',
+  { plugins: [registryPlugin([{ typeId: "1104001", logicalName: "os_meminfo", columns: ["ts", "mem_total", "mem_available"] }])] },
+)
 
 function finding(kind, timestamp, ordinal) {
   return {

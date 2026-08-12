@@ -1,23 +1,9 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { Buffer } from "node:buffer"
-import { fileURLToPath } from "node:url"
 
-import { build } from "esbuild"
+import { importFile } from "./import-module.mjs"
 
-const entry = fileURLToPath(new URL("../src/detail.tsx", import.meta.url))
-const result = await build({
-  bundle: true,
-  entryPoints: [entry],
-  format: "esm",
-  jsx: "automatic",
-  logLevel: "silent",
-  platform: "node",
-  write: false,
-})
-const source = result.outputFiles[0]
-assert.ok(source)
-const detail = await import(`data:text/javascript;base64,${Buffer.from(source.text).toString("base64")}`)
+const detail = await importFile("../src/detail.tsx")
 
 function row(timestamp, values, segmentId = "segment-a", ordinal = "0") {
   return { segmentId, typeId: "1100001", ordinal, timestamp, values }

@@ -87,11 +87,6 @@ export function snapshot(rows: readonly DataRow[], target: number): readonly Dat
   return timestamp === null ? [] : rows.filter((row) => row.timestamp === timestamp)
 }
 
-export function nearestRow(rows: readonly DataRow[], target: number): DataRow | null {
-  const timestamp = nearestTime(rows, target)
-  return timestamp === null ? null : rows.find((row) => row.timestamp === timestamp) ?? null
-}
-
 export function value(row: DataRow | null, field: string): Cell {
   return row?.values[field] ?? null
 }

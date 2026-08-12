@@ -1,11 +1,8 @@
 import assert from "node:assert/strict"
-import { Buffer } from "node:buffer"
-import { fileURLToPath } from "node:url"
 import test from "node:test"
 
-import { build } from "esbuild"
-
 import { readNdjson } from "../src/wire.ts"
+import { importFile, registryPlugin } from "./import-module.mjs"
 
 test("the NDJSON reader handles chunked UTF-8, line endings, and a final line", async () => {
   const body = '\n{"record":"row","value":"Привет"}\r\n\r\n{"record":"page"}'
@@ -234,7 +231,7 @@ test("a curated snapshot follows the registry layout and physical order", async 
     const hour = await api.loadSnapshot("77", START, requests, new AbortController().signal, {
       column: "wal_demand", descending: true,
     })
-    assert.equal(hour.pgStatements.length, 1)
+    assert.equal(hour.sections.pg_stat_statements?.length, 1)
     assert.deepEqual(hour.rateColumns.pg_stat_statements, ["calls", "total_time"])
   } finally {
     globalThis.fetch = originalFetch
@@ -310,7 +307,7 @@ test("exact V1 and V2 query text requests carry only query and exact identity", 
         undefined,
         { filters: { queryid: "9007199254740999", userid: "10", dbid: "20" }, typeId, fullText: true },
       )
-      assert.equal(hour.pgStatements[0]?.values.query, "select exact")
+      assert.equal(hour.sections.pg_stat_statements?.[0]?.values.query, "select exact")
     }
     for (const [index, typeId] of ["1002001", "1002002"].entries()) {
       const url = seen[index]
@@ -361,34 +358,14 @@ test("an exact locator uses the generic projected snapshot contract", async () =
       undefined,
       { rowOrdinal: "9223372036854775807" },
     )
-    assert.equal(hour.pgStatements[0]?.ordinal, "9223372036854775807")
+    assert.equal(hour.sections.pg_stat_statements?.[0]?.ordinal, "9223372036854775807")
   } finally {
     globalThis.fetch = originalFetch
   }
 })
 
 async function bundledApi() {
-  const result = await build({
-    entryPoints: [fileURLToPath(new URL("../src/api.ts", import.meta.url))],
-    bundle: true,
-    format: "esm",
-    platform: "node",
-    write: false,
-    plugins: [{
-      name: "test-registry",
-      setup(context) {
-        context.onResolve({ filter: /^kronika:registry$/ }, () => ({ path: "registry", namespace: "test" }))
-        context.onLoad({ filter: /.*/, namespace: "test" }, () => ({
-          contents: `export const registry=${JSON.stringify(TEST_REGISTRY)}`,
-          loader: "js",
-        }))
-      },
-    }],
-  })
-  const output = result.outputFiles[0]
-  assert.notEqual(output, undefined)
-  const source = Buffer.from(output?.contents ?? []).toString("base64")
-  return import(`data:text/javascript;base64,${source}`)
+  return importFile("../src/api.ts", { plugins: [registryPlugin(TEST_REGISTRY)] })
 }
 
 function ndjson(records: readonly unknown[]): Response {
@@ -539,15 +516,15 @@ test("the current view replaces every prior snapshot while the hour line remains
   const health = row("health", START + 1)
   const timeline = api.hourOf({
     hour: START, availableHours: [START], segments: [], lanes: { health: [health] }, health: [health],
-    points: [], lanePoints: [], findings: [], sourceFamilies: [], availableSections: ["os_process", "pg_stat_activity"],
+    points: [], lanePoints: [], findings: [], availableSections: ["os_process", "pg_stat_activity"],
   })
   const processView = api.viewData(timeline, {
     sections: { os_process: [row("os_process", START + 2)] }, availableSections: ["os_process"],
-    points: [], lanePoints: [], findings: [], sourceFamilies: [], segmentCount: 1,
+    points: [], lanePoints: [], findings: [],
   })
   const activityView = api.viewData(timeline, {
     sections: { pg_stat_activity: [row("pg_stat_activity", START + 3)] }, availableSections: ["pg_stat_activity"],
-    points: [], lanePoints: [], findings: [], sourceFamilies: [], segmentCount: 1,
+    points: [], lanePoints: [], findings: [],
   })
   assert.equal(processView.processes[0]?.timestamp, START + 2)
   assert.equal(activityView.processes.length, 0)

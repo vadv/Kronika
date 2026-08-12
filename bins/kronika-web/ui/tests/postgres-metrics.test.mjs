@@ -1,12 +1,7 @@
 import assert from "node:assert/strict"
-import { Buffer } from "node:buffer"
-import { dirname } from "node:path"
-import { fileURLToPath } from "node:url"
 import test from "node:test"
 
-import { build } from "esbuild"
-
-const directory = dirname(fileURLToPath(import.meta.url))
+import { importModule, registryPlugin } from "./import-module.mjs"
 
 const blocks = [
   "shared_blks_hit", "shared_blks_read", "shared_blks_dirtied", "shared_blks_written",
@@ -42,28 +37,10 @@ const registry = [
   layout("1016001", "pg_store_plans_info", [], ["dealloc", "stats_reset"]),
 ]
 
-const compiled = await build({
-  bundle: true,
-  format: "esm",
-  platform: "node",
-  plugins: [{
-    name: "registry",
-    setup(context) {
-      context.onResolve({ filter: /^kronika:registry$/ }, () => ({ namespace: "registry", path: "registry" }))
-      context.onLoad({ filter: /.*/, namespace: "registry" }, () => ({
-        contents: `export const registry=${JSON.stringify(registry)}`,
-      }))
-    },
-  }],
-  stdin: {
-    contents: 'export * from "../src/postgres-metrics.ts"',
-    loader: "ts",
-    resolveDir: directory,
-  },
-  treeShaking: true,
-  write: false,
+const metrics = await importModule('export * from "../src/postgres-metrics.ts"', {
+  loader: "ts",
+  plugins: [registryPlugin(registry)],
 })
-const metrics = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString("base64")}`)
 
 function row(typeId, timestamp, values, segmentId = "s") {
   return { segmentId, logicalName: typeId.startsWith("1002") ? "pg_stat_statements" : "pg_store_plans", typeId, ordinal: "0", timestamp, values }
@@ -71,21 +48,19 @@ function row(typeId, timestamp, values, segmentId = "s") {
 
 test("all six statement layouts keep exact registry identity, aliases, projections, and order", () => {
   const matrix = [
-    ["1002001", ["queryid", "userid", "dbid"], "total_time", "blk_read_time", null, null, false],
-    ["1002002", ["queryid", "userid", "dbid"], "total_exec_time", "blk_read_time", null, null, true],
-    ["1002003", ["queryid", "userid", "dbid", "toplevel"], "total_exec_time", "blk_read_time", null, null, true],
-    ["1002004", ["queryid", "userid", "dbid", "toplevel"], "total_exec_time", "blk_read_time", null, "temp_blk_read_time", true],
-    ["1002005", ["queryid", "userid", "dbid", "toplevel"], "total_exec_time", "shared_blk_read_time", "local_blk_read_time", "temp_blk_read_time", true],
-    ["1002006", ["queryid", "userid", "dbid", "toplevel"], "total_exec_time", "shared_blk_read_time", "local_blk_read_time", "temp_blk_read_time", true],
+    ["1002001", ["queryid", "userid", "dbid"], "total_time", "blk_read_time", null, null],
+    ["1002002", ["queryid", "userid", "dbid"], "total_exec_time", "blk_read_time", null, null],
+    ["1002003", ["queryid", "userid", "dbid", "toplevel"], "total_exec_time", "blk_read_time", null, null],
+    ["1002004", ["queryid", "userid", "dbid", "toplevel"], "total_exec_time", "blk_read_time", null, "temp_blk_read_time"],
+    ["1002005", ["queryid", "userid", "dbid", "toplevel"], "total_exec_time", "shared_blk_read_time", "local_blk_read_time", "temp_blk_read_time"],
+    ["1002006", ["queryid", "userid", "dbid", "toplevel"], "total_exec_time", "shared_blk_read_time", "local_blk_read_time", "temp_blk_read_time"],
   ]
-  for (const [typeId, identity, execution, shared, local, temp, hasPlanning] of matrix) {
+  for (const [typeId, identity, execution, shared, local, temp] of matrix) {
     assert.deepEqual(metrics.postgresIdentity(typeId), identity)
     assert.equal(metrics.physicalField(typeId, "execution_ms_per_second"), execution)
     assert.equal(metrics.physicalField(typeId, "shared_blk_read_ms_per_second"), shared)
     assert.equal(metrics.physicalField(typeId, "local_blk_read_ms_per_second"), local)
     assert.equal(metrics.physicalField(typeId, "temp_blk_read_ms_per_second"), temp)
-    assert.deepEqual(metrics.postgresOrder(typeId), [execution])
-    assert.deepEqual(metrics.postgresOrder(typeId, "planning_ms_per_second"), hasPlanning ? ["total_plan_time"] : ["calls"])
     const projection = metrics.postgresProjection(typeId)
     assert.deepEqual(projection.slice(0, identity.length), identity)
     assert.ok(projection.includes("query"))
@@ -94,10 +69,7 @@ test("all six statement layouts keep exact registry identity, aliases, projectio
     assert.equal(projection.includes("mean_time"), typeId === "1002001")
     assert.equal(projection.includes("private_text"), false)
   }
-  const request = metrics.POSTGRES_SECTION_REQUESTS.find(({ section }) => section === "pg_stat_statements")
-  assert.deepEqual(request.defaultOrder, ["total_time", "total_exec_time"])
-  assert.deepEqual(request.fallbackOrder, ["calls"])
-  assert.deepEqual(request.fieldsByType["1002001"], metrics.postgresProjection("1002001"))
+  assert.equal(metrics.statementRequest("load").defaultOrder.includes("total_time"), true)
   assert.equal(metrics.postgresProjection("1002004").includes("stats_since"), false)
   assert.equal(metrics.postgresProjection("1002005").includes("stats_since"), true)
 })
@@ -119,6 +91,7 @@ test("the three plan layouts and info use their exact physical variants", () => 
   }
   assert.deepEqual(metrics.postgresProjection("1016001"), ["dealloc", "stats_reset"])
   assert.deepEqual(metrics.postgresIdentity("1016001"), [])
+  assert.deepEqual(metrics.PLAN_INFO_REQUEST.fieldsByType["1016001"], ["dealloc", "stats_reset"])
 })
 
 test("snapshot decoration preserves physical cells and derives only available rates", () => {
@@ -234,9 +207,9 @@ test("plan lenses keep bounded rows and direct per-plan statistics", () => {
   const identity = metrics.planRequest("identity")
   assert.ok(identity.fieldsByType["1004001"].includes("queryid_stat_statements"))
   assert.equal(identity.fieldsByType["1003001"].includes("mean_time"), false)
-  const decorated = metrics.decoratePostgresRows([
+  const decorated = metrics.decoratePostgresIntervalRow(
     row("1003001", 10, { calls: 2, total_time: 20, min_time: 2, max_time: 15, mean_time: 10, stddev_time: 3 }, "a"),
-  ], "pg_store_plans")[0]
+  )
   assert.equal(decorated.values.mean_exec_time_ms, 10)
   assert.equal(decorated.values.max_exec_time_ms, 15)
   assert.equal(Object.hasOwn(decorated.values, "plan_count"), false)

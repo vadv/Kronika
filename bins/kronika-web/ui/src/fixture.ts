@@ -1,4 +1,4 @@
-import type { Cell, DataRow, Finding, HourData, LanePoint, Point, SourceFamily } from "./api"
+import type { Cell, DataRow, Finding, HourData, LanePoint, Point } from "./api"
 
 interface FixtureTable {
   readonly columns: readonly string[]
@@ -95,12 +95,6 @@ export function bundledFixtureHour(start: number): HourData | null {
     rowOrdinal: String(finding.row_ordinal),
     fieldOrdinal: finding.field_ordinal,
   })).filter((finding) => within(finding.timestamp))
-  const sourceFamilies: readonly SourceFamily[] = [
-    { name: "os", configured: true, present: processes.length !== 0 },
-    { name: "postgresql", configured: true, present: activities.length !== 0 },
-    { name: "pgbouncer", configured: false, present: false },
-    { name: "clickhouse", configured: false, present: false },
-  ]
   const sections = {
     os_process: processes,
     pg_stat_activity: activities,
@@ -117,16 +111,9 @@ export function bundledFixtureHour(start: number): HourData | null {
     pressure,
     health,
     pgOverview: [],
-    pgStatements: [],
-    pgPlans: [],
-    pgLocks: [],
-    pgDatabases: [],
-    pgEvents: [],
     points,
     lanePoints,
     findings,
-    sourceFamilies,
-    segmentCount: fixture.meta.segments,
   }
 }
 

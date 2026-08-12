@@ -1,33 +1,14 @@
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
-import { dirname } from "node:path"
-import { fileURLToPath } from "node:url"
 import test from "node:test"
 import { gunzipSync } from "node:zlib"
 
-import { build } from "esbuild"
+import { importModule, registryPlugin } from "./import-module.mjs"
 
-const directory = dirname(fileURLToPath(import.meta.url))
-const compiled = await build({
-  bundle: true,
-  format: "esm",
-  platform: "node",
-  plugins: [{
-    name: "registry",
-    setup(context) {
-      context.onResolve({ filter: /^kronika:registry$/ }, () => ({ namespace: "registry", path: "registry" }))
-      context.onLoad({ filter: /.*/, namespace: "registry" }, () => ({ contents: "export const registry = []" }))
-    },
-  }],
-  stdin: {
-    contents: 'export { currentValue, fallbackMetric, hasMetric, metricPoints, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
-    loader: "tsx",
-    resolveDir: directory,
-  },
-  treeShaking: true,
-  write: false,
-})
-const helpers = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString("base64")}`)
+const helpers = await importModule(
+  'export { currentValue, fallbackMetric, hasMetric, metricPoints, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
+  { plugins: [registryPlugin([])] },
+)
 
 const data = {
   points: [

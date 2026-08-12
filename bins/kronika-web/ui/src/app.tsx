@@ -46,7 +46,7 @@ import {
   type Locale,
 } from "./model"
 import { PostgresView, type PostgresSection } from "./postgres-view"
-import { POSTGRES_SECTION_REQUESTS, planRequest, postgresProjection, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
+import { PLAN_INFO_REQUEST, planRequest, postgresProjection, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
 import { ProcessSummary, ProcessTable } from "./process-table"
 import { SYSTEM_REQUESTS, SystemView } from "./system-view"
 import { Timeline } from "./timeline"
@@ -57,8 +57,7 @@ type HostSection = "system" | "processes"
 
 const EMPTY_DATA: HourData = {
   sections: {}, rateColumns: {}, availableSections: [], processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
-  pgOverview: [], pgStatements: [], pgPlans: [], pgLocks: [], pgDatabases: [], pgEvents: [], points: [], lanePoints: [], findings: [],
-  sourceFamilies: [], segmentCount: 0,
+  pgOverview: [], points: [], lanePoints: [], findings: [],
 }
 
 const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
@@ -155,7 +154,7 @@ function App() {
     if (source === "postgresql" && pgSection === "plans") return [
       ...TIMELINE_REQUESTS,
       planRequest(planLens),
-      ...POSTGRES_SECTION_REQUESTS.filter((request) => request.section === "pg_store_plans_info"),
+      PLAN_INFO_REQUEST,
     ]
     return VIEW_REQUESTS[baseViewKey] ?? []
   }, [baseViewKey, pgSection, planLens, source, statementLens])

@@ -7,7 +7,7 @@ import type { Translate } from "./help"
 import { fieldNameForLocator, loadSeries, loadSnapshot } from "./api"
 import { LabelHelp } from "./help"
 import { asNumber, formatUtc, humanBytes, humanDuration, identifier, measure, rawText, snapshot, value, type Locale, shownMoment } from "./model"
-import { decoratePostgresRows, findingSemanticField, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, physicalField, physicalFields, postgresHistory, postgresIdentity, type PlanLens, type PostgresSemanticField, type StatementLens } from "./postgres-metrics"
+import { decoratePostgresIntervalRow, findingSemanticField, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, physicalField, physicalFields, postgresHistory, postgresIdentity, type PlanLens, type PostgresSemanticField, type StatementLens } from "./postgres-metrics"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 
@@ -402,7 +402,7 @@ function PgEntityView({
       ? [...current, focus]
       : current
     const transformed = transformRows === undefined ? focused : transformRows(focused)
-    return dense ? decoratePostgresRows(transformed, section) : transformed
+    return dense ? transformed.map(decoratePostgresIntervalRow) : transformed
   }, [allRows, cursor, dense, focus, section, transformRows])
   const rates = data.rateColumns[section] ?? NO_RATES
   const visibleColumns = useMemo(

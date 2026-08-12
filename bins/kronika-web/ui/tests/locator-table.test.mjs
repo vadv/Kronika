@@ -1,12 +1,9 @@
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
-import { dirname } from "node:path"
-import { fileURLToPath } from "node:url"
 import test from "node:test"
 
-import { build } from "esbuild"
+import { importModule, registryPlugin } from "./import-module.mjs"
 
-const directory = dirname(fileURLToPath(import.meta.url))
 const statementIdentity = ["queryid", "userid", "dbid"]
 const statementFields = ["ts", ...statementIdentity, "query", "calls", "rows", "total_exec_time", "blk_read_time"]
 const planIdentity = ["userid", "dbid", "queryid", "planid"]
@@ -23,28 +20,10 @@ const registry = [
   layout("1018001", "pg_store_plans", planIdentity, ["ts", ...planIdentity, "plan", "calls", "total_time", "shared_blk_read_time", "relids", "cmd_type"]),
   layout("1016001", "pg_store_plans_info", [], ["ts", "dealloc", "stats_reset"]),
 ]
-const compiled = await build({
-  bundle: true,
-  format: "esm",
-  platform: "node",
-  plugins: [{
-    name: "registry",
-    setup(context) {
-      context.onResolve({ filter: /^kronika:registry$/ }, () => ({ namespace: "registry", path: "registry" }))
-      context.onLoad({ filter: /.*/, namespace: "registry" }, () => ({
-        contents: `export const registry=${JSON.stringify(registry)}`,
-      }))
-    },
-  }],
-  stdin: {
-    contents: 'export { locatorMatchesColumn } from "../src/entity-table.tsx"; export { rowMatchesLocator } from "../src/locator.ts"; export { PLAN_COLUMNS, STATEMENT_COLUMNS } from "../src/postgres-view.tsx"',
-    loader: "tsx",
-    resolveDir: directory,
-  },
-  treeShaking: true,
-  write: false,
-})
-const helpers = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString("base64")}`)
+const helpers = await importModule(
+  'export { locatorMatchesColumn } from "../src/entity-table.tsx"; export { rowMatchesLocator } from "../src/locator.ts"; export { PLAN_COLUMNS, STATEMENT_COLUMNS } from "../src/postgres-view.tsx"',
+  { plugins: [registryPlugin(registry)] },
+)
 
 function layout(typeId, logicalName, identity, fields) {
   return { typeId, logicalName, identity, columns: [...new Set(fields)] }

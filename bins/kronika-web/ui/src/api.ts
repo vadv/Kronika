@@ -98,12 +98,6 @@ interface Segment {
   readonly sections: readonly Section[]
 }
 
-export interface SourceFamily {
-  readonly name: string
-  readonly configured: boolean
-  readonly present: boolean
-}
-
 export interface HourData {
   readonly sections: Readonly<Record<string, readonly DataRow[]>>
   readonly rateColumns: Readonly<Record<string, readonly string[]>>
@@ -115,16 +109,9 @@ export interface HourData {
   readonly pressure: readonly DataRow[]
   readonly health: readonly DataRow[]
   readonly pgOverview: readonly DataRow[]
-  readonly pgStatements: readonly DataRow[]
-  readonly pgPlans: readonly DataRow[]
-  readonly pgLocks: readonly DataRow[]
-  readonly pgDatabases: readonly DataRow[]
-  readonly pgEvents: readonly DataRow[]
   readonly points: readonly Point[]
   readonly lanePoints: readonly LanePoint[]
   readonly findings: readonly Finding[]
-  readonly sourceFamilies: readonly SourceFamily[]
-  readonly segmentCount: number
 }
 
 export interface LanePoint {
@@ -143,7 +130,6 @@ export interface TimelineData {
   readonly health: readonly DataRow[]
   readonly points: readonly Point[]
   readonly findings: readonly Finding[]
-  readonly sourceFamilies: readonly SourceFamily[]
   readonly availableSections: readonly string[]
 }
 
@@ -166,8 +152,6 @@ export function hourOf(timeline: TimelineData): HourData {
     points: timeline.points,
     lanePoints: timeline.lanePoints,
     findings: timeline.findings,
-    sourceFamilies: timeline.sourceFamilies,
-    segmentCount: timeline.segments.length,
   })
 }
 
@@ -187,8 +171,6 @@ export function viewData(timeline: HourData, current: HourData): HourData {
     points: timeline.points,
     lanePoints: timeline.lanePoints,
     findings: timeline.findings,
-    sourceFamilies: timeline.sourceFamilies,
-    segmentCount: timeline.segmentCount,
   })
 }
 
@@ -212,7 +194,7 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
     return {
       hour: requested, availableHours: unique([floorHour(range.from), floorHour(range.to)]),
       segments: [], lanePoints: fixture.lanePoints, lanes: fixture.sections, health: fixture.health, points: fixture.points,
-      findings: fixture.findings, sourceFamilies: fixture.sourceFamilies,
+      findings: fixture.findings,
       availableSections: fixture.availableSections,
     }
   }
@@ -243,20 +225,15 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
   const layouts = new Map<string, readonly string[]>()
   let segmentId = ""
   for (const record of records) {
+    const layout = layoutRecord(record)
     if (record.record === "index") {
       segmentId = requiredText((record.segment as { readonly id: unknown }).id, "index segment id")
     } else if (record.record === "point") {
       points.push(indexPoint(record, segmentId, HEALTH))
     } else if (isFindingRecord(record)) {
       findings.push(indexFinding(record, segmentId, HEALTH))
-    } else if (record.record === "layout") {
-      const layout = record.layout as { readonly type_id: unknown; readonly columns: readonly { readonly name: unknown }[] }
-      if (Array.isArray(layout.columns)) {
-        layouts.set(
-          requiredText(layout.type_id, "layout type_id"),
-          layout.columns.map((column) => requiredText(column.name, "column name")),
-        )
-      }
+    } else if (layout !== null) {
+      layouts.set(layout.typeId, layout.columns)
     } else if (record.record === "row") {
       const row = laneRow(record, segmentId, layouts)
       if (row !== null) (lanes[row.logicalName] ??= []).push(row)
@@ -280,7 +257,6 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
     health: lanes[HEALTH] ?? [],
     points,
     findings,
-    sourceFamilies: sourceFamiliesOf(records),
     availableSections: availableSectionNames(all),
   }
 }
@@ -314,16 +290,11 @@ export async function loadSeries(
   const rows: DataRow[] = []
   let segmentId = ""
   for (const record of records) {
+    const layout = layoutRecord(record)
     if (record.record === "series_segment") {
       segmentId = requiredText((record.segment as { readonly id: unknown }).id, "series segment id")
-    } else if (record.record === "layout") {
-      const layout = record.layout as { readonly type_id: unknown; readonly columns: readonly { readonly name: unknown }[] }
-      if (Array.isArray(layout.columns)) {
-        layouts.set(
-          requiredText(layout.type_id, "layout type_id"),
-          layout.columns.map((column) => requiredText(column.name, "column name")),
-        )
-      }
+    } else if (layout !== null) {
+      layouts.set(layout.typeId, layout.columns)
     } else if (record.record === "row") {
       const row = laneRow(record, segmentId, layouts)
       if (row !== null) rows.push(row)
@@ -471,8 +442,6 @@ function hourData(input: {
   readonly points: readonly Point[]
   readonly lanePoints: readonly LanePoint[]
   readonly findings: readonly Finding[]
-  readonly sourceFamilies: readonly SourceFamily[]
-  readonly segmentCount: number
 }): HourData {
   const rows = (name: string) => input.sections[name] ?? []
   const flatten = (names: readonly string[]) => names.flatMap(rows)
@@ -486,11 +455,6 @@ function hourData(input: {
     pressure: rows("os_psi"),
     health: rows("health"),
     pgOverview: flatten(PRODUCT_SECTION_GROUPS.postgresqlOverview),
-    pgStatements: flatten(PRODUCT_SECTION_GROUPS.postgresqlStatements),
-    pgPlans: flatten(PRODUCT_SECTION_GROUPS.postgresqlPlans),
-    pgLocks: flatten(PRODUCT_SECTION_GROUPS.postgresqlLocks),
-    pgDatabases: flatten(PRODUCT_SECTION_GROUPS.postgresqlDatabases),
-    pgEvents: flatten(PRODUCT_SECTION_GROUPS.events),
   }
 }
 
@@ -563,18 +527,12 @@ export async function loadSnapshot(
   const rateColumns: Record<string, readonly string[]> = {}
   for (const section of requests) grouped[section.section] = []
   for (const record of records) {
-    if (record.record === "layout") {
-      const layout = record.layout as {
-        readonly type_id: unknown
-        readonly logical_name: unknown
-        readonly columns: readonly { readonly name: unknown }[]
-      }
-      const typeId = requiredText(layout.type_id, "layout type_id")
-      const logicalName = requiredText(layout.logical_name, "logical name")
-      if (!Array.isArray(layout.columns)) throw new Error(`layout ${typeId} has no columns`)
-      layouts.set(typeId, {
+    const layout = layoutRecord(record)
+    if (layout !== null) {
+      const logicalName = requiredText(layout.logicalName, "logical name")
+      layouts.set(layout.typeId, {
         logicalName,
-        columns: layout.columns.map((column) => requiredText(column.name, "column name")),
+        columns: layout.columns,
       })
       if (Array.isArray(record.rates)) {
         rateColumns[logicalName] = unique([
@@ -612,8 +570,6 @@ export async function loadSnapshot(
     points: [],
     lanePoints: [],
     findings: [],
-    sourceFamilies: [],
-    segmentCount: 1,
   })
 }
 
@@ -662,8 +618,6 @@ function fixtureSnapshot(
     points: [],
     lanePoints: [],
     findings: [],
-    sourceFamilies: [],
-    segmentCount: 1,
   })
 }
 
@@ -755,8 +709,6 @@ function emptyHour(): HourData {
     points: [],
     lanePoints: [],
     findings: [],
-    sourceFamilies: [],
-    segmentCount: 1,
   })
 }
 
@@ -795,9 +747,24 @@ function indexFinding(record: Record<string, unknown>, segmentId: string, logica
   }
 }
 
-function sourceFamiliesOf(records: readonly Record<string, unknown>[]): readonly SourceFamily[] {
-  const found = records.find((record) => record.record === "catalog")?.source_families
-  return (found as readonly SourceFamily[] | undefined) ?? []
+function layoutRecord(record: Record<string, unknown>): {
+  readonly typeId: string
+  readonly logicalName: unknown
+  readonly columns: readonly string[]
+} | null {
+  if (record.record !== "layout") return null
+  const layout = record.layout as {
+    readonly type_id: unknown
+    readonly logical_name?: unknown
+    readonly columns?: readonly { readonly name: unknown }[]
+  }
+  const typeId = requiredText(layout.type_id, "layout type_id")
+  if (!Array.isArray(layout.columns)) throw new Error(`layout ${typeId} has no columns`)
+  return {
+    typeId,
+    logicalName: layout.logical_name,
+    columns: layout.columns.map((column) => requiredText(column.name, "column name")),
+  }
 }
 
 async function request(path: string, signal: AbortSignal): Promise<readonly Record<string, unknown>[]> {

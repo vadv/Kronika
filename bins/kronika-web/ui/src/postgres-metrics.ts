@@ -186,16 +186,6 @@ export function findingSemanticField(typeId: string, physical: string): Postgres
   return null
 }
 
-export function postgresOrder(
-  typeId: string,
-  semantic: PostgresSemanticField = "execution_ms_per_second",
-): readonly string[] {
-  const physical = semantic === "mean_exec_ms_per_call"
-    ? physicalField(typeId, "execution_ms_per_second")
-    : physicalField(typeId, semantic)
-  return physical === null ? ["calls"] : [physical]
-}
-
 function fieldsByType(typeIds: readonly string[], wanted?: readonly string[]): Readonly<Record<string, readonly string[]>> {
   return Object.fromEntries(typeIds.map((typeId) => {
     const projection = postgresProjection(typeId)
@@ -272,31 +262,11 @@ export interface PostgresSectionRequest {
   readonly fallbackOrder?: readonly string[]
 }
 
-function denseRequest(
-  section: "pg_stat_statements" | "pg_store_plans",
-  typeIds: readonly string[],
-): PostgresSectionRequest {
-  const order = orderMap(typeIds)
-  return {
-    section,
-    typeIds,
-    fieldsByType: fieldsByType(typeIds),
-    top: 200,
-    ...(order.execution_ms_per_second === undefined ? {} : { defaultOrder: order.execution_ms_per_second }),
-    order,
-    fallbackOrder: ["calls"],
-  }
+export const PLAN_INFO_REQUEST: PostgresSectionRequest = {
+  section: "pg_store_plans_info",
+  typeIds: PG_STORE_PLANS_INFO_TYPE_IDS,
+  fieldsByType: fieldsByType(PG_STORE_PLANS_INFO_TYPE_IDS),
 }
-
-export const POSTGRES_SECTION_REQUESTS: readonly PostgresSectionRequest[] = [
-  denseRequest("pg_stat_statements", PG_STAT_STATEMENTS_TYPE_IDS),
-  denseRequest("pg_store_plans", PG_STORE_PLANS_TYPE_IDS),
-  {
-    section: "pg_store_plans_info",
-    typeIds: PG_STORE_PLANS_INFO_TYPE_IDS,
-    fieldsByType: fieldsByType(PG_STORE_PLANS_INFO_TYPE_IDS),
-  },
-] as const
 
 const STATEMENT_LENS_FIELDS: Readonly<Record<StatementLens, readonly string[]>> = {
   load: ["queryid", "dbid", "userid", "toplevel", "datname", "usename", "query", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"],
@@ -403,10 +373,6 @@ export function decoratePostgresIntervalRow(row: DataRow): DataRow {
   values.stddev_exec_time_ms = finiteRate(values[oldNames ? "stddev_time" : "stddev_exec_time"] ?? values.stddev_time)
   values.cv = ratio(values.stddev_exec_time_ms, finiteRate(values.mean_exec_time_ms))
   return { ...row, values }
-}
-
-export function decoratePostgresRows(rows: readonly DataRow[], _section: string): readonly DataRow[] {
-  return rows.map(decoratePostgresIntervalRow)
 }
 
 function ratio(numerator: Cell | undefined, denominator: number | null): number | null {

@@ -1,5 +1,6 @@
 import { useId } from "react"
 
+import { niceCeiling, numericRuns, svgPath, type NumericPoint } from "./chart"
 import type { Locale } from "./model"
 import { TimeTicks } from "./time-ticks"
 
@@ -9,7 +10,7 @@ export interface ChartPoint {
   readonly value: number | null
 }
 
-type NumericChartPoint = ChartPoint & { readonly value: number }
+type NumericChartPoint = NumericPoint<ChartPoint>
 export type ChartScale = "auto" | "percent" | "count" | "duration"
 
 export function SeriesChart({
@@ -56,19 +57,17 @@ export function SeriesChart({
       {cursor !== undefined && cursor >= hour && cursor < end
         && <line className="cursor-line" x1={(cursor - hour) / (end - hour) * 920} x2={(cursor - hour) / (end - hour) * 920} y1="5" y2="105" />}
       {[...companion.entries()].map(([segmentId, stored]) => {
-        const path = stored.slice().sort((left, right) => left.timestamp - right.timestamp).map((point, index) => {
-          const x = Math.max(0, Math.min(920, (point.timestamp - hour) / (end - hour) * 920))
-          const y = 101 - (point.value - low) / span * 92
-          return `${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`
-        }).join(" ")
+        const path = svgPath(stored.slice().sort((left, right) => left.timestamp - right.timestamp), (point) => [
+          Math.max(0, Math.min(920, (point.timestamp - hour) / (end - hour) * 920)),
+          101 - (point.value - low) / span * 92,
+        ])
         return <path className="mini-series mini-second" d={path} key={`second:${segmentId}`} />
       })}
       {[...paths.entries()].map(([segmentId, stored]) => {
-        const path = stored.slice().sort((left, right) => left.timestamp - right.timestamp).map((point, index) => {
-          const x = Math.max(0, Math.min(920, (point.timestamp - hour) / (end - hour) * 920))
-          const y = 101 - (point.value - low) / span * 92
-          return `${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`
-        }).join(" ")
+        const path = svgPath(stored.slice().sort((left, right) => left.timestamp - right.timestamp), (point) => [
+          Math.max(0, Math.min(920, (point.timestamp - hour) / (end - hour) * 920)),
+          101 - (point.value - low) / span * 92,
+        ])
         return <path className="mini-series" d={path} key={segmentId} />
       })}
       </svg>
@@ -105,31 +104,8 @@ export function chartDomain(values: readonly number[], scale: ChartScale): { rea
   return { low, high: high === low ? low + 1 : high }
 }
 
-function niceCeiling(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) return 1
-  const magnitude = 10 ** Math.floor(Math.log10(value))
-  const normalized = value / magnitude
-  return (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10) * magnitude
-}
-
 export function chartRuns(points: readonly ChartPoint[]): ReadonlyMap<string, readonly NumericChartPoint[]> {
-  const runs = new Map<string, readonly NumericChartPoint[]>()
-  let run: NumericChartPoint[] = []
-  let index = 0
-  const flush = () => {
-    if (run.length !== 0) runs.set(String(index), run)
-    run = []
-    index += 1
-  }
-  for (const point of points.slice().sort((left, right) => left.timestamp - right.timestamp || left.segmentId.localeCompare(right.segmentId))) {
-    if (point.value === null || !Number.isFinite(point.value)) {
-      flush()
-    } else {
-      run.push(point as NumericChartPoint)
-    }
-  }
-  flush()
-  return runs
+  return numericRuns(points, (left, right) => left.localeCompare(right))
 }
 
 function number(value: number, locale: Locale): string {

@@ -1,24 +1,9 @@
 import assert from "node:assert/strict"
-import { dirname } from "node:path"
-import { fileURLToPath } from "node:url"
 import test from "node:test"
 
-import { build } from "esbuild"
+import { importModule } from "./import-module.mjs"
 
-const directory = dirname(fileURLToPath(import.meta.url))
-const compiled = await build({
-  bundle: true,
-  format: "esm",
-  platform: "node",
-  stdin: {
-    contents: 'export { locatorText } from "../src/events-view.tsx"',
-    loader: "tsx",
-    resolveDir: directory,
-  },
-  treeShaking: true,
-  write: false,
-})
-const helpers = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString("base64")}`)
+const helpers = await importModule('export { locatorText } from "../src/events-view.tsx"')
 
 function finding(rowOrdinal, fieldOrdinal) {
   return {

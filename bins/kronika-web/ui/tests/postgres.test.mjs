@@ -1,12 +1,9 @@
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
-import { dirname } from "node:path"
-import { fileURLToPath } from "node:url"
 import test from "node:test"
 
-import { build } from "esbuild"
+import { importModule, registryPlugin } from "./import-module.mjs"
 
-const directory = dirname(fileURLToPath(import.meta.url))
 const BLOCK_COUNTERS = [
   "shared_blks_hit", "shared_blks_read", "shared_blks_dirtied", "shared_blks_written",
   "local_blks_hit", "local_blks_read", "local_blks_dirtied", "local_blks_written",
@@ -27,26 +24,10 @@ const TEST_REGISTRY = [
   layout("1018001", "pg_store_plans", ["userid", "dbid", "queryid", "planid"], [...PLAN_BASE, "relids", "cmd_type", "shared_blk_read_time", "shared_blk_write_time", "local_blk_read_time", "local_blk_write_time", "temp_blk_read_time", "temp_blk_write_time"]),
   layout("1016001", "pg_store_plans_info", [], ["ts", "dealloc", "stats_reset"]),
 ]
-const compiled = await build({
-  bundle: true,
-  format: "esm",
-  platform: "node",
-  plugins: [{
-    name: "registry",
-    setup(context) {
-      context.onResolve({ filter: /^kronika:registry$/ }, () => ({ namespace: "registry", path: "registry" }))
-      context.onLoad({ filter: /.*/, namespace: "registry" }, () => ({ contents: `export const registry=${JSON.stringify(TEST_REGISTRY)}` }))
-    },
-  }],
-  stdin: {
-    contents: 'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationMs, columnsFor, isIdleActivity, isSystemActivity, isTimestampField, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, postgresIdentity, postgresProjection } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
-    loader: "tsx",
-    resolveDir: directory,
-  },
-  treeShaking: true,
-  write: false,
-})
-const helpers = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString("base64")}`)
+const helpers = await importModule(
+  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationMs, columnsFor, isIdleActivity, isSystemActivity, isTimestampField, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, postgresIdentity, postgresProjection } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+  { plugins: [registryPlugin(TEST_REGISTRY)] },
+)
 
 function layout(typeId, logicalName, identity, fields) {
   return { typeId, logicalName, identity, columns: [...new Set(fields)] }

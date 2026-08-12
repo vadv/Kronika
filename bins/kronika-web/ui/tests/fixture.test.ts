@@ -17,7 +17,6 @@ test("the approved real hour converts without losing entity relationships", () =
   assert.equal(hour?.processes.length, 111_673)
   assert.equal(hour?.activities.length, 2_888)
   assert.equal(hour?.findings.length, 2_884)
-  assert.equal(hour?.sourceFamilies.find((source) => source.name === "postgresql")?.present, true)
   assert.deepEqual(hour?.availableSections, ["os_process", "pg_stat_activity", "health"])
   assert.equal(hour?.sections.os_process, hour?.processes)
   assert.equal(hour?.sections.pg_stat_activity, hour?.activities)

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
 import type { DataRow, Finding, LanePoint } from "./api"
+import { niceCeiling, numericRuns, svgPath, type NumericPoint } from "./chart"
 import { LabelHelp, type Translate } from "./help"
 import { moveCursor } from "./keyboard"
 import { asNumber, formatUtc, humanBytes, value } from "./model"
@@ -406,15 +407,10 @@ function SeriesLine({
 }) {
   if (points.length === 0) return null
   return <>{[...timelineRuns(points).entries()].map(([runId, stored]) => {
-    const path = stored
-      .slice()
-      .sort((left, right) => left.timestamp - right.timestamp)
-      .map((point, index) => {
-        const x = shareOf(point.timestamp, hour, end) * width
-        const y = seriesY(point.value, top, height, range.low, range.span)
-        return `${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`
-      })
-      .join(" ")
+    const path = svgPath(stored.slice().sort((left, right) => left.timestamp - right.timestamp), (point) => [
+      shareOf(point.timestamp, hour, end) * width,
+      seriesY(point.value, top, height, range.low, range.span),
+    ])
     const area = primary && stored.length > 1
       ? `${path} L${(shareOf(stored.at(-1)?.timestamp ?? hour, hour, end) * width).toFixed(2)} ${(top + height - 6).toFixed(2)} L${(shareOf(stored[0]?.timestamp ?? hour, hour, end) * width).toFixed(2)} ${(top + height - 6).toFixed(2)} Z`
       : null
@@ -444,24 +440,8 @@ function preferredSeries(rows: readonly DataRow[], fields: readonly string[]): r
   })
 }
 
-export function timelineRuns(points: readonly SeriesPoint[]): ReadonlyMap<string, readonly (SeriesPoint & { readonly value: number })[]> {
-  const runs = new Map<string, readonly (SeriesPoint & { readonly value: number })[]>()
-  let run: (SeriesPoint & { readonly value: number })[] = []
-  let index = 0
-  const flush = () => {
-    if (run.length !== 0) runs.set(String(index), run)
-    run = []
-    index += 1
-  }
-  for (const point of points.slice().sort((left, right) => left.timestamp - right.timestamp || textOrder(left.segmentId, right.segmentId))) {
-    if (point.value === null || !Number.isFinite(point.value)) {
-      flush()
-    } else {
-      run.push(point as SeriesPoint & { readonly value: number })
-    }
-  }
-  flush()
-  return runs
+export function timelineRuns(points: readonly SeriesPoint[]): ReadonlyMap<string, readonly NumericPoint<SeriesPoint>[]> {
+  return numericRuns(points, textOrder)
 }
 
 export function sampleWindow(lanes: readonly { readonly series: readonly { readonly points: readonly SeriesPoint[] }[] }[]): { readonly start: number; readonly end: number } | null {
@@ -600,14 +580,6 @@ export function laneRange(
   const minimum = lane.minimumSpan ?? 1
   if (values.length === 0) return { low: 0, span: minimum }
   return { low: 0, span: Math.max(minimum, niceCeiling(Math.max(...values, 0))) }
-}
-
-export function niceCeiling(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) return 1
-  const magnitude = 10 ** Math.floor(Math.log10(value))
-  const normalized = value / magnitude
-  const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10
-  return step * magnitude
 }
 
 export function healthThreshold(field: string): number | null {
