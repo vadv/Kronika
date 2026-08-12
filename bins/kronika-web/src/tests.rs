@@ -35,6 +35,14 @@ fn request(method: Method, target: &str) -> Request<()> {
         .expect("request")
 }
 
+fn public_request(method: Method, target: &str) -> Request<()> {
+    Request::builder()
+        .method(method)
+        .uri(target)
+        .body(())
+        .expect("request")
+}
+
 fn rejection(method: Method, target: &str) -> hyper::Response<super::WebBody> {
     route_request(&account(), &request(method, target))
         .expect_err("request is rejected")
@@ -43,35 +51,55 @@ fn rejection(method: Method, target: &str) -> hyper::Response<super::WebBody> {
 
 #[test]
 fn authentication_is_mandatory_and_central() {
-    let request = Request::builder()
-        .uri("/api/catalog")
-        .body(())
-        .expect("request");
-    let response = route_request(&account(), &request)
-        .expect_err("missing credentials")
-        .response();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    for target in ["/api", "/api/", "/api/catalog", "/api/not-a-resource"] {
+        let response = route_request(&account(), &public_request(Method::GET, target))
+            .expect_err("missing credentials")
+            .response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{target}");
+        assert_eq!(
+            response.headers().get(WWW_AUTHENTICATE),
+            Some(&hyper::header::HeaderValue::from_static(
+                "Basic realm=\"kronika\""
+            )),
+            "{target}"
+        );
+        assert_eq!(response.headers().get(VARY), Some(&auth_header()));
+        assert!(
+            !response
+                .headers()
+                .contains_key("access-control-allow-origin")
+        );
+    }
+}
+
+#[test]
+fn the_shell_is_public_even_with_invalid_authorization() {
+    let root = public_request(Method::GET, "/");
     assert_eq!(
-        response.headers().get(WWW_AUTHENTICATE),
-        Some(&hyper::header::HeaderValue::from_static(
-            "Basic realm=\"kronika\""
-        ))
-    );
-    assert_eq!(response.headers().get(VARY), Some(&auth_header()));
-    assert!(
-        !response
-            .headers()
-            .contains_key("access-control-allow-origin")
+        route_request(&account(), &root),
+        Ok(RequestTarget::Ui { head: false })
     );
 
-    let request = Request::builder().uri("/").body(()).expect("UI request");
-    assert_eq!(
-        route_request(&account(), &request)
-            .expect_err("UI also requires credentials")
-            .response()
-            .status(),
-        StatusCode::UNAUTHORIZED
+    let mut index = public_request(Method::HEAD, "/index.html");
+    index.headers_mut().insert(
+        hyper::header::AUTHORIZATION,
+        hyper::header::HeaderValue::from_static("Basic invalid"),
     );
+    assert_eq!(
+        route_request(&account(), &index),
+        Ok(RequestTarget::Ui { head: true })
+    );
+}
+
+#[test]
+fn public_non_api_paths_are_not_found() {
+    for target in ["/health", "/index.html/", "/api-not-a-resource"] {
+        let response = route_request(&account(), &public_request(Method::GET, target))
+            .expect_err("unknown public path")
+            .response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{target}");
+        assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+    }
 }
 
 #[test]
@@ -129,7 +157,9 @@ fn only_the_two_exact_ui_paths_admit_get_and_head() {
         })
     ));
 
-    let post = rejection(Method::POST, "/");
+    let post = route_request(&account(), &public_request(Method::POST, "/"))
+        .expect_err("shell POST is rejected")
+        .response();
     assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
     assert_eq!(
         post.headers().get(ALLOW),

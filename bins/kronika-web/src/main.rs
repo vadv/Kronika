@@ -87,10 +87,8 @@ fn route_request<B>(
     account: &config::Account,
     request: &Request<B>,
 ) -> Result<RequestTarget, RequestError> {
-    if !auth::admits(account, authorization(request.headers())) {
-        return Err(RequestError::Unauthorized);
-    }
-    if ui::is_path(request.uri().path()) {
+    let path = request.uri().path();
+    if ui::is_path(path) {
         if request.method() != Method::GET && request.method() != Method::HEAD {
             return Err(RequestError::MethodNotAllowed("GET, HEAD"));
         }
@@ -103,8 +101,13 @@ fn route_request<B>(
             head: request.method() == Method::HEAD,
         });
     }
-    let route =
-        route::parse(request.uri().path(), request.uri().query()).map_err(RequestError::Route)?;
+    if path != "/api" && !path.starts_with("/api/") {
+        return Err(RequestError::Route(RouteError::NoSuchPath));
+    }
+    if !auth::admits(account, authorization(request.headers())) {
+        return Err(RequestError::Unauthorized);
+    }
+    let route = route::parse(path, request.uri().query()).map_err(RequestError::Route)?;
     if request.method() != Method::GET {
         return Err(RequestError::MethodNotAllowed("GET"));
     }

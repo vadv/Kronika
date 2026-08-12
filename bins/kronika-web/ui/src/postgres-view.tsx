@@ -397,9 +397,9 @@ function PgEntityView({
 }) {
   const allRows = data.sections[section] ?? NO_ROWS
   const dense = section === "pg_stat_statements" || section === "pg_store_plans"
-  const activeOrder = order !== undefined && columns.some((column) => column.field === order.column && column.sortable === true)
+  const activeOrder = useMemo(() => order !== undefined && columns.some((column) => column.field === order.column && column.sortable === true)
     ? { column: order.column, descending: true }
-    : defaultOrder
+    : defaultOrder, [columns, defaultOrder, order])
   const ranked = useMemo(() => dense
     ? rankDenseRows(allRows, activeOrder, 200)
     : snapshot(allRows, cursor), [activeOrder, allRows, cursor, dense])

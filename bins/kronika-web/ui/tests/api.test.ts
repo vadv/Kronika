@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { readNdjson } from "../src/wire.ts"
-import { importFile, registryPlugin } from "./import-module.mjs"
+import { importModule, registryPlugin } from "./import-module.mjs"
 
 test("the NDJSON reader handles chunked UTF-8, line endings, and a final line", async () => {
   const body = '\n{"record":"row","value":"Привет"}\r\n\r\n{"record":"page"}'
@@ -379,7 +379,18 @@ test("an exact locator uses the generic projected snapshot contract", async () =
 })
 
 async function bundledApi() {
-  return importFile("../src/api.ts", { plugins: [registryPlugin(TEST_REGISTRY)] })
+  const api = await importModule(
+    'export * from "../src/api.ts"; export { signInBasic } from "../src/session.ts"',
+    { plugins: [registryPlugin(TEST_REGISTRY)] },
+  )
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(null, { status: 204 })
+  try {
+    await api.signInBasic("test", "test", new AbortController().signal)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+  return api
 }
 
 function ndjson(records: readonly unknown[]): Response {

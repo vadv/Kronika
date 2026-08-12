@@ -31,7 +31,18 @@ async fn get_and_head_share_the_exact_gzip_representation_headers() {
         get.headers().get(VARY),
         Some(&HeaderValue::from_static("Authorization, Accept-Encoding"))
     );
-    assert!(get.headers().contains_key(CONTENT_SECURITY_POLICY));
+    assert_eq!(
+        get.headers()
+            .get(CONTENT_SECURITY_POLICY)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.split(';').any(|directive| {
+                directive
+                    .trim()
+                    .split_ascii_whitespace()
+                    .eq(["form-action", "'none'"])
+            })),
+        Some(true)
+    );
     assert!(get.headers().contains_key(ETAG));
     assert_eq!(
         get.into_body()

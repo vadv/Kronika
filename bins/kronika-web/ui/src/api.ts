@@ -2,6 +2,7 @@ import { registry } from "kronika:registry"
 
 import { bundledFixtureHour, bundledFixtureRange } from "./fixture"
 import { rowMatchesLocator } from "./locator"
+import { apiFetch } from "./session"
 import { readNdjson } from "./wire"
 
 export type Cell = null | boolean | number | string | readonly number[] | { readonly [key: string]: unknown }
@@ -878,7 +879,7 @@ function layoutRecord(record: Record<string, unknown>): {
 }
 
 async function request(path: string, signal: AbortSignal): Promise<readonly Record<string, unknown>[]> {
-  const response = await fetch(path, { headers: { Accept: "application/x-ndjson" }, signal })
+  const response = await apiFetch(path, { headers: { Accept: "application/x-ndjson" }, signal })
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} for ${path}`)
   }

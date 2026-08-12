@@ -1,6 +1,6 @@
-import { Activity, HelpCircle, Languages, Moon, Sun } from "lucide-react"
+import { Activity, HelpCircle, Languages, LogOut, Moon, Sun } from "lucide-react"
 import { dictionaries } from "kronika:i18n"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
 import { createRoot } from "react-dom/client"
 
 import {
@@ -30,6 +30,7 @@ import { findingHistory, findingHistoryRequest, findingProjection } from "./find
 import { HelpPanel, type Translate } from "./help"
 import { HourPicker } from "./hour-picker"
 import { keyboardTargetOwnsArrows, moveCursor } from "./keyboard"
+import { Login } from "./login"
 import {
   activityFor,
   asNumber,
@@ -50,6 +51,7 @@ import { PostgresView, type PostgresSection } from "./postgres-view"
 import { PLAN_INFO_REQUEST, planRequest, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
 import { ProcessSummary, ProcessTable } from "./process-table"
 import type { ChartPoint } from "./series-chart"
+import { getSessionSnapshot, logout, subscribeSession } from "./session"
 import { SYSTEM_REQUESTS, SystemView } from "./system-view"
 import { Timeline } from "./timeline"
 
@@ -106,9 +108,28 @@ const HELP_EVENTS = [
   { label: "locator.spike", help: "locator.spike.help" },
 ] as const
 
-function App() {
-  const opened = useRef(readAddress(window.location.search))
+function Kronika() {
+  const session = useSyncExternalStore(subscribeSession, getSessionSnapshot, getSessionSnapshot)
   const [locale, setLocale] = useState<Locale>(initialLocale)
+  const t = useMemo<Translate>(() => (key, slots = {}) => {
+    const template = dictionaries[locale][key as keyof typeof dictionaries.en] ?? dictionaries.en[key as keyof typeof dictionaries.en] ?? key
+    return interpolate(template, slots)
+  }, [locale])
+  useEffect(() => {
+    document.documentElement.lang = locale
+    try { localStorage.setItem("kronika.locale", locale) } catch {}
+  }, [locale])
+  return session === "signed-in"
+    ? <App locale={locale} onLocale={setLocale} t={t} />
+    : <Login expired={session === "expired"} locale={locale} onLocale={setLocale} t={t} />
+}
+
+function App({ locale, onLocale, t }: {
+  readonly locale: Locale
+  readonly onLocale: (locale: Locale) => void
+  readonly t: Translate
+}) {
+  const opened = useRef(readAddress(window.location.search))
   const [theme, setTheme] = useState<Theme>(initialTheme)
   const [hour, setHour] = useState<number | null>(opened.current.at === null ? null : floorHour(opened.current.at))
   const wanted = useRef(opened.current.at)
@@ -135,15 +156,6 @@ function App() {
   const [findingPoints, setFindingPoints] = useState<readonly ChartPoint[]>([])
   const [systemFocus, setSystemFocus] = useState<Finding | null>(null)
   const [helpOpen, setHelpOpen] = useState(false)
-  const t = useMemo<Translate>(() => (key, slots = {}) => {
-    const template = dictionaries[locale][key as keyof typeof dictionaries.en] ?? dictionaries.en[key as keyof typeof dictionaries.en] ?? key
-    return interpolate(template, slots)
-  }, [locale])
-
-  useEffect(() => {
-    document.documentElement.lang = locale
-    try { localStorage.setItem("kronika.locale", locale) } catch {}
-  }, [locale])
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     try { localStorage.setItem("kronika.theme", theme) } catch {}
@@ -483,8 +495,9 @@ function App() {
         </button>
         <div aria-label={t("locale.switch")} className="locale-switch" role="group">
           <Languages aria-hidden="true" size={13} />
-          {(["ru", "en"] as const).map((choice) => <button aria-pressed={locale === choice} data-testid={`locale-${choice}`} key={choice} onClick={() => setLocale(choice)} type="button">{t(`locale.${choice}`)}</button>)}
+          {(["ru", "en"] as const).map((choice) => <button aria-pressed={locale === choice} data-testid={`locale-${choice}`} key={choice} onClick={() => onLocale(choice)} type="button">{t(`locale.${choice}`)}</button>)}
         </div>
+        <button aria-label={t("auth.logout")} className="icon-button" onClick={logout} title={t("auth.logout")} type="button"><LogOut aria-hidden="true" size={15} /></button>
         <button aria-expanded={helpOpen} aria-label={t("help.open")} className="icon-button" data-testid="help-trigger" onClick={() => setHelpOpen((current) => !current)} type="button"><HelpCircle aria-hidden="true" size={15} /></button>
       </div>
     </header>
@@ -564,4 +577,4 @@ function initialLocale(): Locale {
 
 const root = document.getElementById("root")
 if (root === null) throw new Error("Kronika UI root is missing")
-createRoot(root).render(<App />)
+createRoot(root).render(<Kronika />)
