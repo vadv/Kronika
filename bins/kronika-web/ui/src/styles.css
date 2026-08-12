@@ -1,10 +1,3 @@
-@import "tailwindcss";
-@source "./*.tsx";
-
-@theme {
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
-}
-
 /* One role per token. Two value sets, identical role names, so a component
    rule never names a colour and never knows which theme is on. */
 :root, [data-theme="dark"] {

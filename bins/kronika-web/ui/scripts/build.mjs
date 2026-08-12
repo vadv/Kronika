@@ -1,10 +1,9 @@
 import { execFileSync } from "node:child_process"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { build } from "esbuild"
+import { build, transform } from "esbuild"
 import { gzipSync } from "fflate"
 import { gunzipSync } from "node:zlib"
 
@@ -21,8 +20,6 @@ if (fixtureOutputAt >= 0 && (fixtureOutput === undefined || process.argv.length 
 const artifact = fixtureOutput === null ? join(uiDirectory, "kronika-ui.html.gz") : resolve(fixtureOutput)
 const checkOnly = process.argv.includes("--check")
 if (checkOnly && fixtureOutput !== null) throw new Error("--check and --fixture-output cannot be combined")
-// The contextual timeline plus registry-aware statement and plan tables stay
-// within this measured single-file budget, including both operator languages.
 const maximumRawBytes = fixtureOutput === null ? 930_000 : 40_000_000
 const maximumGzipBytes = fixtureOutput === null ? 232_000 : 8_000_000
 const rustToolchain = process.env.RUST_TOOLCHAIN ?? "1.96.0"
@@ -32,46 +29,41 @@ if (rustHost === undefined) {
   throw new Error("rustc did not report its host target")
 }
 
-const temporary = await mkdtemp(join(tmpdir(), "kronika-ui-"))
-try {
-  const registry = execFileSync(
-    "cargo",
-    [`+${rustToolchain}`, "run", "--locked", "--quiet", "--target", rustHost, "-p", "kronika-registry", "--example", "ui_metadata"],
-    { cwd: repository, encoding: "utf8", env: { ...process.env, CARGO_TERM_COLOR: "never" } },
+const registry = execFileSync(
+  "cargo",
+  [`+${rustToolchain}`, "run", "--locked", "--quiet", "--target", rustHost, "-p", "kronika-registry", "--example", "ui_metadata"],
+  { cwd: repository, encoding: "utf8", env: { ...process.env, CARGO_TERM_COLOR: "never" } },
+)
+const translations = await dictionaryModule(new URL("./", import.meta.url))
+const javascript = await bundleJavascript(registry, translations)
+const stylesheet = await compileStylesheet()
+const latinFont = await readFile(join(uiDirectory, "assets/JetBrainsMono-Latin.woff2"))
+const cyrillicFont = await readFile(join(uiDirectory, "assets/JetBrainsMono-Cyrillic.woff2"))
+const template = await readFile(join(uiDirectory, "src/index.html"), "utf8")
+const fixture = fixtureOutput === null ? "" : await fixtureScript()
+const html = template
+  .replaceAll("{{KRONIKA_STYLE}}", () => `${fontFaces(latinFont, cyrillicFont)}\n${stylesheet}`)
+  .replaceAll("{{KRONIKA_DATA}}", () => fixture)
+  .replaceAll("{{KRONIKA_SCRIPT}}", () => javascript)
+
+validateHtml(html)
+const compressed = Buffer.from(gzipSync(Buffer.from(html), { level: 9, mtime: 0 }))
+validateGzipHeader(compressed)
+if (Buffer.byteLength(html) > maximumRawBytes || compressed.length > maximumGzipBytes) {
+  throw new Error(
+    `the UI exceeds its measured size bounds: raw ${Buffer.byteLength(html)}/${maximumRawBytes}, gzip ${compressed.length}/${maximumGzipBytes}`,
   )
-  const translations = await dictionaryModule(new URL("./", import.meta.url))
-  const javascript = await bundleJavascript(registry, translations)
-  const stylesheet = await compileStylesheet(temporary)
-  const latinFont = await readFile(join(uiDirectory, "assets/JetBrainsMono-Latin.woff2"))
-  const cyrillicFont = await readFile(join(uiDirectory, "assets/JetBrainsMono-Cyrillic.woff2"))
-  const template = await readFile(join(uiDirectory, "src/index.html"), "utf8")
-  const fixture = fixtureOutput === null ? "" : await fixtureScript()
-  const html = template
-    .replaceAll("{{KRONIKA_STYLE}}", () => `${fontFaces(latinFont, cyrillicFont)}\n${stylesheet}`)
-    .replaceAll("{{KRONIKA_DATA}}", () => fixture)
-    .replaceAll("{{KRONIKA_SCRIPT}}", () => javascript)
-
-  validateHtml(html)
-  const compressed = Buffer.from(gzipSync(Buffer.from(html), { level: 9, mtime: 0 }))
-  validateGzipHeader(compressed)
-  if (Buffer.byteLength(html) > maximumRawBytes || compressed.length > maximumGzipBytes) {
-    throw new Error(
-      `the UI exceeds its measured size bounds: raw ${Buffer.byteLength(html)}/${maximumRawBytes}, gzip ${compressed.length}/${maximumGzipBytes}`,
-    )
-  }
-
-  if (checkOnly) {
-    const committed = await readFile(artifact)
-    if (!committed.equals(compressed)) {
-      throw new Error("kronika-ui.html.gz differs from the reproducible build")
-    }
-  } else {
-    await writeFile(artifact, compressed)
-  }
-  process.stdout.write(`kronika-ui raw=${Buffer.byteLength(html)} gzip=${compressed.length}\n`)
-} finally {
-  await rm(temporary, { recursive: true, force: true })
 }
+
+if (checkOnly) {
+  const committed = await readFile(artifact)
+  if (!committed.equals(compressed)) {
+    throw new Error("kronika-ui.html.gz differs from the reproducible build")
+  }
+} else {
+  await writeFile(artifact, compressed)
+}
+process.stdout.write(`kronika-ui raw=${Buffer.byteLength(html)} gzip=${compressed.length}\n`)
 
 async function bundleJavascript(registry, translations) {
   const result = await build({
@@ -124,14 +116,9 @@ async function fixtureScript() {
   return `globalThis.__KRONIKA_REAL_HOUR__=${safe};`
 }
 
-async function compileStylesheet(temporary) {
-  const output = join(temporary, "kronika.css")
-  execFileSync(
-    join(uiDirectory, "node_modules/.bin/tailwindcss"),
-    ["-i", join(uiDirectory, "src/styles.css"), "-o", output, "--minify"],
-    { cwd: uiDirectory, stdio: "pipe" },
-  )
-  return readFile(output, "utf8")
+async function compileStylesheet() {
+  const source = await readFile(join(uiDirectory, "src/styles.css"), "utf8")
+  return (await transform(source, { loader: "css", minify: true })).code
 }
 
 function fontFaces(latin, cyrillic) {
