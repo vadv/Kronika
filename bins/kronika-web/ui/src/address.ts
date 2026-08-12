@@ -75,7 +75,7 @@ export function writeAddress(address: Address): string {
   if (address.lens !== DEFAULT_ADDRESS.lens && address.view === "host.processes") parameters.set("lens", address.lens)
   if (address.pgLens !== DEFAULT_ADDRESS.pgLens && (address.view === "pg.statements" || address.view === "pg.plans")) parameters.set("pg_lens", address.pgLens)
   if (address.sort !== null) parameters.set("sort", `${address.sort.descending ? "-" : ""}${address.sort.column}`)
-  if (address.row !== null && address.row !== "") parameters.set("row", address.row)
+  if (address.view === "host.processes" && address.row !== null && address.row !== "") parameters.set("row", address.row)
   if (address.find !== "") parameters.set("find", address.find)
   const query = parameters.toString()
   return query === "" ? "/" : `/?${query}`

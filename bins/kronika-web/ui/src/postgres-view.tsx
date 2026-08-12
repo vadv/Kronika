@@ -530,7 +530,7 @@ export function selectedEntity(rows: readonly DataRow[], current: DataRow | null
     const advanced = rows.find((row) => sameEntity(row, current, section))
     if (advanced !== undefined) return advanced
   }
-  return rows[0] ?? null
+  return null
 }
 
 export function postgresDatabaseCount(rows: readonly DataRow[]): number {

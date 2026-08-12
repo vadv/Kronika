@@ -226,6 +226,12 @@ test("an exact finding row wins over the previous PostgreSQL selection", () => {
   assert.equal(helpers.selectedEntity([first, focus], first, focus, "pg_stat_activity"), focus)
 })
 
+test("PostgreSQL detail never opens a row that was not selected", () => {
+  const first = { ...row("1002006", { queryid: 7, userid: 8, dbid: 9, toplevel: true }), ordinal: "0" }
+  assert.equal(helpers.selectedEntity([first], null, null, "pg_stat_statements"), null)
+  assert.equal(helpers.selectedEntity([], first, null, "pg_stat_statements"), null)
+})
+
 test("database totals omit PostgreSQL's shared-object statistics row", () => {
   const shared = { ...row("1003001", { datid: 0 }), logicalName: "pg_stat_database" }
   const database = { ...row("1003001", { datid: 16_384 }), logicalName: "pg_stat_database" }

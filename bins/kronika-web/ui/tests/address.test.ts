@@ -29,6 +29,11 @@ test("the lens is written only where it means something", () => {
   assert.equal(written, "/?view=pg.activity")
 })
 
+test("a process row never leaks into a PostgreSQL address", () => {
+  const written = writeAddress({ ...DEFAULT_ADDRESS, row: "1244346:1784523346370000", view: "pg.statements" })
+  assert.equal(written, "/?view=pg.statements")
+})
+
 test("an unreadable value falls back instead of failing", () => {
   const address = readAddress("at=tomorrow&view=host.klingon&lens=quantum&sort=")
 
