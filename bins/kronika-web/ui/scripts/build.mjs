@@ -79,7 +79,6 @@ async function bundleJavascript(registry, translations, includeFixture) {
     define: { "process.env.NODE_ENV": '"production"' },
     format: "iife",
     legalComments: "none",
-    mangleProps: /^(?:accessorFn|allRows|available(?:Hours|Sections)|boundary|category|cell|changeHour|column|columnDef|columns|context(?:Label|Row)|counter|cursor|d(?:efaultOrder|ensePageState|etailColumns)|derive|domain|eligible|empty|estimateSize|field|fieldOrdinal|fields|fieldsByType|filterValue|finding|findingField|findingGroups|findings|focusFinding|g[a]p|get(?:Context|HeaderGroups|RowModel|ScrollElement|Size|TotalSize|VirtualItems|VisibleCells)|group|hasMore|header|health|help|history|historyField|hour|identity|kind|label|lane|lanePoints|lanes|linkedPids|locale|logicalName|low|marker|maxTs|minTs|minimumSpan|nextCursor|numeric|on(?:ContextClear|Cursor|Finding|LoadMore|Locale|NearEnd|Order|Pattern|PlanLens|Retry|Section|ShowAll|StatementLens|Theme)|orderBy|orderDirection|ordinal|original|overscan|pageSize|pgLens|planLens|points|previousSegments|primary|primaryLane|processHistory|rate|rateColumns|returned|row|rowOrdinal|rows|scale|scrollToIndex|second|section|sections|segmentId|selectedKey|series|serverSorted|showIdle|showSystem|shown|snapshotRows|sortValue|span|spec|statementLens|sticky|stickyLeft|testId|threshold|ticksPerSecond|timeline|timestamp|totalHits|transformRows|truncated|typeId|unit)$/,
     minify: true,
     platform: "browser",
     sourcemap: false,
