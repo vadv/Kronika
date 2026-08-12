@@ -449,21 +449,38 @@ test("a snapshot is keyed on the stored sample the cursor rests on", async () =>
   assert.equal(api.sampleAt([], START), null)
 })
 
-test("a snapshot replaces the section it carries instead of piling moments up", async () => {
+test("the current view replaces every prior snapshot while the hour line remains", async () => {
   const api = await bundledApi()
-  const row = (timestamp: number) => ({
-    segmentId: "7", logicalName: "os_process", typeId: "1100001", ordinal: "0", timestamp, values: { pid: 1 },
+  const row = (logicalName: string, timestamp: number) => ({
+    segmentId: "7", logicalName, typeId: "1100001", ordinal: "0", timestamp, values: { pid: 1 },
   })
-  const before = api.hourOf({
-    hour: START, availableHours: [START], segments: [], lanes: { os_process: [row(START + 1)] }, health: [],
-    points: [], lanePoints: [], findings: [], sourceFamilies: [], availableSections: ["os_process"],
+  const health = row("health", START + 1)
+  const timeline = api.hourOf({
+    hour: START, availableHours: [START], segments: [], lanes: { health: [health] }, health: [health],
+    points: [], lanePoints: [], findings: [], sourceFamilies: [], availableSections: ["os_process", "pg_stat_activity"],
   })
-  const after = api.replaceSections(before, {
-    sections: { os_process: [row(START + 2)] }, availableSections: ["os_process"],
+  const processView = api.viewData(timeline, {
+    sections: { os_process: [row("os_process", START + 2)] }, availableSections: ["os_process"],
     points: [], lanePoints: [], findings: [], sourceFamilies: [], segmentCount: 1,
   })
-  assert.equal(after.processes.length, 1)
-  assert.equal(after.processes[0].timestamp, START + 2)
+  const activityView = api.viewData(timeline, {
+    sections: { pg_stat_activity: [row("pg_stat_activity", START + 3)] }, availableSections: ["pg_stat_activity"],
+    points: [], lanePoints: [], findings: [], sourceFamilies: [], segmentCount: 1,
+  })
+  assert.equal(processView.processes[0]?.timestamp, START + 2)
+  assert.equal(activityView.processes.length, 0)
+  assert.equal(activityView.activities[0]?.timestamp, START + 3)
+  assert.deepEqual(activityView.health, [health])
+  assert.deepEqual(activityView.availableSections, ["os_process", "pg_stat_activity"])
+})
+
+test("PostgreSQL Overview requests current operational rows and no statement top list", async () => {
+  const api = await bundledApi()
+  const requests = api.POSTGRESQL_OVERVIEW_REQUESTS
+  assert.equal(requests.some(({ section }) => section === "pg_stat_statements"), false)
+  assert.deepEqual(requests.find(({ section }) => section === "pg_stat_activity")?.fields, ["state", "wait_event"])
+  assert.deepEqual(requests.find(({ section }) => section === "pg_locks")?.fields, ["pid"])
+  assert.ok(requests.some(({ section }) => section === "pg_stat_database"))
 })
 
 test("section findings replace only their section and keep a stable locator order", async () => {

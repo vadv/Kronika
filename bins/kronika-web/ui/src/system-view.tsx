@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { fieldNameForLocator, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
 import { EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
-import { asNumber, humanBytes, measure, shownMoment, snapshot, stateText, value, type Locale } from "./model"
+import { asNumber, humanBytes, measure, shownMoment, snapshot, value, type Locale } from "./model"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 import { UseTable } from "./use-table"
@@ -20,20 +20,6 @@ interface MetricSpec {
     | "cpu_busy"
     | "mem_available_percent"
     | "filesystem_free_min"
-    | "process_count"
-    | "process_running"
-    | "process_blocked"
-    | "process_threads"
-    | "process_context_switches"
-    | "process_run_delay"
-    | "process_resident"
-    | "process_virtual"
-    | "process_swap"
-    | "process_minor_faults"
-    | "process_major_faults"
-    | "process_read"
-    | "process_write"
-    | "process_block_delay"
     | "device_count"
     | "device_active_io"
     | "filesystem_count"
@@ -50,12 +36,6 @@ interface MetricSpec {
 export const SYSTEM_METRICS: readonly MetricSpec[] = [
   metric("health", "cpu", "system.metric.health", "health", "os_health", "%"),
   derivedMetric("cpu_busy", "cpu", "system.metric.cpu_busy", "os_cpu_busy_percent", "cpu_busy", "%"),
-  derivedMetric("process_count", "cpu", "system.metric.process_count", "os_process_count", "process_count", ""),
-  derivedMetric("process_running", "cpu", "system.metric.process_running", "os_process_running", "process_running", ""),
-  derivedMetric("process_blocked", "cpu", "system.metric.process_blocked", "os_process_blocked", "process_blocked", ""),
-  derivedMetric("process_threads", "cpu", "system.metric.process_threads", "os_process_threads", "process_threads", ""),
-  derivedMetric("process_context_switches", "cpu", "system.metric.process_context_switches", "os_process_context_switches", "process_context_switches", ""),
-  derivedMetric("process_run_delay", "cpu", "system.metric.process_run_delay", "os_process_run_delay", "process_run_delay", " ns"),
   metric("procs_running", "cpu", "system.metric.procs_running", "os_stat", "procs_running", ""),
   metric("procs_blocked", "cpu", "system.metric.procs_blocked", "os_stat", "procs_blocked", ""),
   metric("context_switches", "cpu", "system.metric.context_switches", "os_stat", "ctxt", ""),
@@ -70,19 +50,11 @@ export const SYSTEM_METRICS: readonly MetricSpec[] = [
   metric("cached", "memory", "system.metric.cached", "os_meminfo", "cached", " KiB"),
   metric("swap_free", "memory", "system.metric.swap_free", "os_meminfo", "swap_free", " KiB"),
   metric("swap_total", "memory", "system.metric.swap_total", "os_meminfo", "swap_total", " KiB"),
-  derivedMetric("process_resident", "memory", "system.metric.process_resident", "os_process_resident", "process_resident", " KiB"),
-  derivedMetric("process_virtual", "memory", "system.metric.process_virtual", "os_process_virtual", "process_virtual", " KiB"),
-  derivedMetric("process_swap", "memory", "system.metric.process_swap", "os_process_swap", "process_swap", " KiB"),
-  derivedMetric("process_minor_faults", "memory", "system.metric.process_minor_faults", "os_process_minor_faults", "process_minor_faults", ""),
-  derivedMetric("process_major_faults", "memory", "system.metric.process_major_faults", "os_process_major_faults", "process_major_faults", ""),
   seriesSectionMetric("oom_kill", "memory", "system.metric.oom_kill", "os_oom_kills", "os_vmstat", "oom_kill", ""),
   pressureMetric("cpu_pressure", "system.metric.cpu_pressure", 0),
   pressureMetric("memory_pressure", "system.metric.memory_pressure", 1),
   pressureMetric("io_pressure", "system.metric.io_pressure", 2),
   derivedMetric("filesystem_free_min", "storage", "system.metric.filesystem_free_min", "os_min_filesystem_free_percent", "filesystem_free_min", "%"),
-  derivedMetric("process_read", "storage", "system.metric.process_read", "os_process_read", "process_read", " B"),
-  derivedMetric("process_write", "storage", "system.metric.process_write", "os_process_write", "process_write", " B"),
-  derivedMetric("process_block_delay", "storage", "system.metric.process_block_delay", "os_process_block_delay", "process_block_delay", " ticks"),
   derivedMetric("device_count", "storage", "system.metric.device_count", "os_device_count", "device_count", ""),
   derivedMetric("device_active_io", "storage", "system.metric.device_active_io", "os_device_active_io", "device_active_io", ""),
   derivedMetric("filesystem_count", "storage", "system.metric.filesystem_count", "os_filesystem_count", "filesystem_count", ""),
@@ -108,20 +80,6 @@ const DERIVE_INPUTS: Readonly<Record<NonNullable<MetricSpec["derive"]>, readonly
   cpu_busy: ["os_cpu", ["cpu_id", "scope", "user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal"]],
   mem_available_percent: ["os_meminfo", ["mem_total", "mem_available"]],
   filesystem_free_min: ["os_mountinfo", ["total_bytes", "free_bytes"]],
-  process_count: ["os_process", []],
-  process_running: ["os_process", ["state"]],
-  process_blocked: ["os_process", ["state"]],
-  process_threads: ["os_process", ["num_threads"]],
-  process_context_switches: ["os_process", ["nvcsw", "nivcsw"]],
-  process_run_delay: ["os_process", ["rundelay_ns"]],
-  process_resident: ["os_process", ["rmem_kb"]],
-  process_virtual: ["os_process", ["vmem_kb"]],
-  process_swap: ["os_process", ["vswap_kb"]],
-  process_minor_faults: ["os_process", ["minflt"]],
-  process_major_faults: ["os_process", ["majflt"]],
-  process_read: ["os_process", ["read_bytes"]],
-  process_write: ["os_process", ["write_bytes"]],
-  process_block_delay: ["os_process", ["blkdelay_ticks"]],
   device_count: ["os_diskstats", []],
   device_active_io: ["os_diskstats", ["io_in_progress"]],
   filesystem_count: ["os_mountinfo", []],
@@ -182,7 +140,7 @@ function systemRequests(): readonly SectionRequest[] {
   return [...wanted].map(([section, fields]) => ({ section, fields: [...fields] }))
 }
 
-export const SYSTEM_REQUESTS = systemRequests().filter((request) => request.section !== "os_process")
+export const SYSTEM_REQUESTS = systemRequests()
 
 export function SystemView({
   cursor,
@@ -274,7 +232,7 @@ function timelineLane(metric: string | undefined): string {
   if (metric === "cpu_busy") return "cpu_busy"
   if (metric === "cpu_pressure") return "cpu_stall"
   if (metric === "io_pressure") return "io_stall"
-  if (metric?.startsWith("mem_") === true || metric?.startsWith("process_resident") === true || metric?.startsWith("process_swap") === true) return "memory"
+  if (metric?.startsWith("mem_") === true) return "memory"
   return "health"
 }
 
@@ -312,20 +270,6 @@ function derivedPoints(data: HourData, derive: NonNullable<MetricSpec["derive"]>
     })
     return percentages.some((number) => number === null) ? null : Math.min(...percentages as number[])
   })
-  if (derive === "process_count") return aggregateRows(data.processes, (rows) => rows.length)
-  if (derive === "process_running") return aggregateRows(data.processes, (rows) => countState(rows, "R"))
-  if (derive === "process_blocked") return aggregateRows(data.processes, (rows) => countState(rows, "D"))
-  if (derive === "process_threads") return aggregateRows(data.processes, (rows) => sumFields(rows, ["num_threads"]))
-  if (derive === "process_context_switches") return aggregateRows(data.processes, (rows) => sumFields(rows, ["nvcsw", "nivcsw"]))
-  if (derive === "process_run_delay") return aggregateRows(data.processes, (rows) => sumFields(rows, ["rundelay_ns"]))
-  if (derive === "process_resident") return aggregateRows(data.processes, (rows) => sumFields(rows, ["rmem_kb"]))
-  if (derive === "process_virtual") return aggregateRows(data.processes, (rows) => sumFields(rows, ["vmem_kb"]))
-  if (derive === "process_swap") return aggregateRows(data.processes, (rows) => sumFields(rows, ["vswap_kb"]))
-  if (derive === "process_minor_faults") return aggregateRows(data.processes, (rows) => sumFields(rows, ["minflt"]))
-  if (derive === "process_major_faults") return aggregateRows(data.processes, (rows) => sumFields(rows, ["majflt"]))
-  if (derive === "process_read") return aggregateRows(data.processes, (rows) => sumFields(rows, ["read_bytes"]))
-  if (derive === "process_write") return aggregateRows(data.processes, (rows) => sumFields(rows, ["write_bytes"]))
-  if (derive === "process_block_delay") return aggregateRows(data.processes, (rows) => sumFields(rows, ["blkdelay_ticks"]))
   if (derive === "device_count") return aggregateRows(sectionRows(data, "os_diskstats"), (rows) => rows.length)
   if (derive === "device_active_io") return aggregateRows(sectionRows(data, "os_diskstats"), (rows) => sumFields(rows, ["io_in_progress"]))
   if (derive === "filesystem_count") return aggregateRows(sectionRows(data, "os_mountinfo"), (rows) => rows.length)
@@ -359,16 +303,6 @@ function sumFields(rows: readonly DataRow[], fields: readonly string[]): number 
     }
   }
   return total
-}
-
-function countState(rows: readonly DataRow[], selected: string): number | null {
-  let count = 0
-  for (const row of rows) {
-    const state = stateText(value(row, "state"))
-    if (state === "—") return null
-    if (state === selected) count += 1
-  }
-  return count
 }
 
 function cpuBusyPoints(rows: readonly DataRow[]): readonly ChartPoint[] {

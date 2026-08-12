@@ -20,7 +20,7 @@ const compiled = await build({
     },
   }],
   stdin: {
-    contents: 'export { currentValue, fallbackMetric, hasMetric, metricPoints, SYSTEM_METRICS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
+    contents: 'export { currentValue, fallbackMetric, hasMetric, metricPoints, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
     loader: "tsx",
     resolveDir: directory,
   },
@@ -101,35 +101,16 @@ test("system cards derive production values when fixture-only series are absent"
   assert.deepEqual(derived("network_drops"), [5])
 })
 
-test("system groups use dense real process metrics with strict null handling", () => {
-  const process = (timestamp, ordinal, values) => ({
-    logicalName: "os_process", ordinal, segmentId: "a", timestamp, typeId: "1100001", values,
-  })
-  const processes = [
-    process(100, "0", { blkdelay_ticks: 0, majflt: 0, minflt: 2, nivcsw: 3, num_threads: 2, nvcsw: 4, read_bytes: null, rmem_kb: 10, rundelay_ns: 5, state: "R", vmem_kb: 20, vswap_kb: 0, write_bytes: null }),
-    process(100, "1", { blkdelay_ticks: 7, majflt: 1, minflt: 3, nivcsw: 1, num_threads: 3, nvcsw: 2, read_bytes: 9, rmem_kb: 30, rundelay_ns: 6, state: "D", vmem_kb: 40, vswap_kb: 4, write_bytes: 8 }),
-    process(200, "2", { blkdelay_ticks: 0, majflt: 0, minflt: 0, nivcsw: 0, num_threads: 1, nvcsw: 0, read_bytes: 0, rmem_kb: 0, rundelay_ns: 0, state: "S", vmem_kb: 0, vswap_kb: 0, write_bytes: 0 }),
-  ]
-  const hour = { points: [], processes, sections: {} }
-  const derived = (name) => helpers.metricPoints(hour, { derive: name, group: "cpu", help: "x.help", id: name, label: "x.label", series: "missing", unit: "" }).map((point) => point.value)
-
-  assert.deepEqual(derived("process_count"), [2, 1])
-  assert.deepEqual(derived("process_running"), [1, 0])
-  assert.deepEqual(derived("process_blocked"), [1, 0])
-  assert.deepEqual(derived("process_threads"), [5, 1])
-  assert.deepEqual(derived("process_context_switches"), [10, 0])
-  assert.deepEqual(derived("process_resident"), [40, 0])
-  assert.deepEqual(derived("process_swap"), [4, 0])
-  assert.deepEqual(derived("process_read"), [null, 0])
+test("System never depends on process rows loaded by another view", () => {
+  assert.equal(helpers.SYSTEM_REQUESTS.some(({ section }) => section === "os_process"), false)
+  assert.equal(helpers.SYSTEM_METRICS.some(({ id }) => id.startsWith("process_")), false)
 
   const grouped = new Map(helpers.SYSTEM_METRICS.map((metric) => [metric.id, metric.group]))
-  for (const id of ["process_count", "process_running", "process_threads", "process_context_switches", "process_run_delay"]) assert.equal(grouped.get(id), "cpu")
-  for (const id of ["process_resident", "process_virtual", "process_swap", "process_major_faults"]) assert.equal(grouped.get(id), "memory")
   for (const id of ["device_count", "filesystem_count"]) assert.equal(grouped.get(id), "storage")
   for (const id of ["interface_count", "network_rx", "network_tx", "network_errors", "network_drops"]) assert.equal(grouped.get(id), "network")
 })
 
-test("the committed hour supplies a dense honest System set and complete selected histories", async () => {
+test("the committed hour supplies only honest System metrics with complete histories", async () => {
   const encoded = await readFile(new URL("../fixtures/real-hour.json.gz", import.meta.url))
   const fixture = JSON.parse(gunzipSync(encoded).toString("utf8"))
   Object.assign(globalThis, { __KRONIKA_REAL_HOUR__: fixture })
@@ -139,7 +120,7 @@ test("the committed hour supplies a dense honest System set and complete selecte
 
   const available = helpers.SYSTEM_METRICS.map((metric) => ({ metric, points: helpers.metricPoints(hour, metric) }))
     .filter(({ points }) => points.some((point) => point.value !== null && Number.isFinite(point.value)))
-  assert.ok(available.length >= 20)
+  assert.ok(available.length >= 9)
   assert.deepEqual([...new Set(available.map(({ metric }) => metric.group))], ["cpu", "load", "memory", "pressure", "storage"])
 
   const health = available.find(({ metric }) => metric.id === "health")?.points ?? []

@@ -13,10 +13,11 @@ import {
   segmentBoundAt,
   requestsForSegment,
   fieldNameForLocator,
-  replaceSections,
+  viewData,
   replaceFindings,
   resolveLocator,
   PRODUCT_SECTION_GROUPS,
+  POSTGRESQL_OVERVIEW_REQUESTS,
   type DataRow,
   type SectionRequest,
   type SegmentBound,
@@ -65,7 +66,7 @@ const EMPTY_DATA: HourData = {
 const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
   system: [...TIMELINE_REQUESTS, ...SYSTEM_REQUESTS],
   processes: [...TIMELINE_REQUESTS, { section: "os_process" }, { section: "pg_stat_activity" }, { section: "instance_metadata" }],
-  "postgresql:overview": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlOverview.map(section)],
+  "postgresql:overview": [...TIMELINE_REQUESTS, ...POSTGRESQL_OVERVIEW_REQUESTS],
   "postgresql:activity": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlActivity.map(section)],
   "postgresql:locks": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlLocks.map(section)],
   "postgresql:databases": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlDatabases.map(section)],
@@ -118,7 +119,9 @@ function App() {
   const wanted = useRef(opened.current.at)
   const [availableHours, setAvailableHours] = useState<readonly number[]>([])
   const [cursor, setCursor] = useState(0)
-  const [data, setData] = useState<HourData>(EMPTY_DATA)
+  const [timelineData, setTimelineData] = useState<HourData>(EMPTY_DATA)
+  const [currentData, setCurrentData] = useState<HourData>(EMPTY_DATA)
+  const data = useMemo(() => viewData(timelineData, currentData), [currentData, timelineData])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [source, setSource] = useState<Source>(sourceOf(opened.current.view))
@@ -150,8 +153,6 @@ function App() {
     document.documentElement.dataset.theme = theme
     try { localStorage.setItem("kronika.theme", theme) } catch { /* storage can be disabled */ }
   }, [theme])
-  // One view is on screen at a time, so one view's sections are what a load
-  // fetches. Switching views adds the difference instead of reloading the hour.
   const baseViewKey = source === "host" ? hostSection : source === "postgresql" ? `postgresql:${pgSection}` : "events"
   const viewKey = pgSection === "statements" && source === "postgresql"
     ? `${baseViewKey}:${statementLens}`
@@ -168,6 +169,13 @@ function App() {
   const [segments, setSegments] = useState<readonly SegmentBound[]>([])
   const loadedFindingSections = useRef(new Set<string>())
   const drawn = useRef<number | null>(null)
+  const previousView = useRef(baseViewKey)
+  useEffect(() => {
+    if (previousView.current === baseViewKey) return
+    previousView.current = baseViewKey
+    setFind("")
+    setOrder(null)
+  }, [baseViewKey])
   useEffect(() => {
     if (hour === null) return
     setSelectedFinding(null)
@@ -189,7 +197,8 @@ function App() {
       setAvailableHours(timeline.availableHours)
       setHour(timeline.hour)
       setSegments(timeline.segments)
-      setData(hourOf(timeline))
+      setTimelineData(hourOf(timeline))
+      setCurrentData(EMPTY_DATA)
       const times = timeline.health.map((row) => row.timestamp)
       const asked = wanted.current
       wanted.current = null
@@ -203,7 +212,8 @@ function App() {
       drawn.current = fallback
       setHour(fallback)
       setSegments([])
-      setData(EMPTY_DATA)
+      setTimelineData(EMPTY_DATA)
+      setCurrentData(EMPTY_DATA)
       setCursor(fallback)
       setError(reason instanceof Error ? reason.message : String(reason))
       setLoading(false)
@@ -220,11 +230,16 @@ function App() {
   // loud beside the clock instead of being left to guess.
   const [cursorState, setCursorState] = useState<"ready" | "loading" | "missing">("ready")
   useEffect(() => {
-    if (hour === null || cursorSegment === null) return
+    if (hour === null || cursorSegment === null) {
+      setCurrentData(EMPTY_DATA)
+      setCursorState("missing")
+      return
+    }
     const wanted = requestsForSegment(
       viewRequests.filter((request) => request.section !== "health"),
       cursorSegment,
     )
+    setCurrentData(EMPTY_DATA)
     if (wanted.length === 0) {
       setCursorState("ready")
       return
@@ -236,15 +251,13 @@ function App() {
     const timer = setTimeout(() => {
       void loadSnapshot(cursorSegment.id, cursor, wanted, controller.signal, order ?? undefined)
         .then((incoming) => {
-          setData((before) => replaceSections(before, incoming))
+          if (controller.signal.aborted) return
+          setCurrentData(incoming)
           setCursorState("ready")
         })
         .catch((reason: unknown) => {
           if (controller.signal.aborted) return
-          setData((before) => replaceSections(before, {
-            ...EMPTY_DATA,
-            sections: Object.fromEntries(wanted.map((request) => [request.section, []])),
-          }))
+          setCurrentData(EMPTY_DATA)
           setCursorState("missing")
           console.error("kronika: snapshot at the cursor failed", reason)
         })
@@ -263,7 +276,7 @@ function App() {
     loadedFindingSections.current.add(key)
     const controller = new AbortController()
     void loadSectionFindings(segments, findingSection, controller.signal)
-      .then((findings) => setData((before) => replaceFindings(before, findingSection, findings)))
+      .then((findings) => setTimelineData((before) => replaceFindings(before, findingSection, findings)))
       .catch((reason: unknown) => {
         loadedFindingSections.current.delete(key)
         if (!controller.signal.aborted) console.error("kronika: section findings failed", reason)

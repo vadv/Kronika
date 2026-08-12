@@ -56,6 +56,13 @@ export interface SectionRequest {
   readonly fallbackOrder?: readonly string[]
 }
 
+export const POSTGRESQL_OVERVIEW_REQUESTS: readonly SectionRequest[] = [
+  ...POSTGRESQL_OVERVIEW.map((section) => ({ section })),
+  { section: "pg_stat_activity", fields: ["state", "wait_event"] },
+  { section: "pg_stat_database" },
+  { section: "pg_locks", fields: ["pid"] },
+]
+
 /** Every view draws the timeline, so these four are the floor. */
 /** The one series drawn end to end. The other lanes were three more sections
  *  times every segment in the hour, for lines beside the one being navigated
@@ -171,8 +178,6 @@ export const ACTIVITY_FIELDS = [
   "backend_xmin_age", "backend_start", "xact_start", "query_start", "state_change",
 ] as const
 
-/** The hour as the rest of the screen holds it. The line goes in beside every
- *  other section, or the first snapshot to arrive merges it away. */
 export function hourOf(timeline: TimelineData): HourData {
   return hourData({
     sections: timeline.lanes,
@@ -185,9 +190,6 @@ export function hourOf(timeline: TimelineData): HourData {
   })
 }
 
-/** A snapshot replaces the sections it carries: it is one moment, and keeping
- *  the moments visited before it grows without bound and lets a table draw a
- *  moment the cursor has left. */
 /** The stored sample at or before a moment. The line carries every sample of
  *  the hour, so it is what says where a cursor actually landed. */
 export function sampleAt(line: readonly DataRow[], cursor: number): number | null {
@@ -198,18 +200,16 @@ export function sampleAt(line: readonly DataRow[], cursor: number): number | nul
   return chosen ?? (line.length === 0 ? null : Math.min(...line.map((row) => row.timestamp)))
 }
 
-export function replaceSections(before: HourData, after: HourData): HourData {
-  const sections: Record<string, readonly DataRow[]> = { ...before.sections }
-  for (const [name, rows] of Object.entries(after.sections)) sections[name] = rows
+export function viewData(timeline: HourData, current: HourData): HourData {
   return hourData({
-    sections,
-    rateColumns: mergeRateColumns(before.rateColumns, after.rateColumns ?? {}),
-    availableSections: unique([...before.availableSections, ...after.availableSections]),
-    points: before.points,
-    lanePoints: before.lanePoints,
-    findings: before.findings,
-    sourceFamilies: before.sourceFamilies,
-    segmentCount: before.segmentCount,
+    sections: { ...timeline.sections, ...current.sections },
+    rateColumns: current.rateColumns,
+    availableSections: timeline.availableSections,
+    points: timeline.points,
+    lanePoints: timeline.lanePoints,
+    findings: timeline.findings,
+    sourceFamilies: timeline.sourceFamilies,
+    segmentCount: timeline.segmentCount,
   })
 }
 
@@ -914,17 +914,6 @@ function cellRecord(value: unknown): Readonly<Record<string, Cell>> {
 
 function unique<Value>(values: readonly Value[]): Value[] {
   return [...new Set(values)]
-}
-
-function mergeRateColumns(
-  left: Readonly<Record<string, readonly string[]>>,
-  right: Readonly<Record<string, readonly string[]>>,
-): Readonly<Record<string, readonly string[]>> {
-  const merged: Record<string, readonly string[]> = { ...left }
-  for (const [section, fields] of Object.entries(right)) {
-    merged[section] = unique([...(merged[section] ?? []), ...fields])
-  }
-  return merged
 }
 
 function floorHour(timestamp: number): number {

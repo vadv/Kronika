@@ -198,7 +198,7 @@ export function PostgresView({
         return <button aria-current={section === tab.id ? "page" : undefined} disabled={!enabled} key={tab.id} onClick={() => { if (section !== tab.id) onOrder(null); onSection(tab.id) }} title={enabled ? undefined : t("pg.no_section_data")} type="button">{tab.icon}<span>{t(`pg.section.${tab.id}`)}</span></button>
       })}
     </nav>
-    {section === "overview" && <Overview cursor={cursor} data={data} hour={hour} locale={locale} t={t} />}
+    {section === "overview" && <Overview cursor={cursor} data={data} locale={locale} t={t} />}
     {section === "activity" && available("pg_stat_activity") && <ActivityView onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_activity" ? focusFinding : null} focus={focus} locale={locale} t={t} />}
     {section === "activity" && available("pg_stat_progress_vacuum") && <PgPreview cursor={cursor} data={data} focus={focusFinding?.logicalName === "pg_stat_progress_vacuum" ? focus : null} locale={locale} section="pg_stat_progress_vacuum" t={t} />}
     {section === "statements" && <><PostgresLensBar active={statementLens} choices={["load", "per_call", "io", "resources", "stability"]} onChange={onStatementLens} prefix="statement" t={t} /><PgEntityView columns={statementColumns(statementLens)} onOrder={onOrder} onPattern={onPattern} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField={statementLens === "stability" ? "cv" : "mean_exec_ms_per_call"} locale={locale} section="pg_stat_statements" t={t} /></>}
@@ -319,10 +319,9 @@ function PlanInfo({ cursor, data, locale, t }: { readonly cursor: number; readon
   </section>
 }
 
-function Overview({ cursor, data, hour, locale, t }: { readonly cursor: number; readonly data: HourData; readonly hour: number; readonly locale: Locale; readonly t: Translate }) {
+function Overview({ cursor, data, locale, t }: { readonly cursor: number; readonly data: HourData; readonly locale: Locale; readonly t: Translate }) {
   const activity = snapshot(data.sections.pg_stat_activity ?? [], cursor)
   const databases = snapshot(data.sections.pg_stat_database ?? [], cursor)
-  const statements = snapshot(data.sections.pg_stat_statements ?? [], cursor)
   const locks = snapshot(data.sections.pg_locks ?? [], cursor)
   const active = activity.filter((row) => rawText(value(row, "state")) === "active").length
   const waiting = activity.filter((row) => rawText(value(row, "wait_event")) !== null).length
@@ -330,13 +329,10 @@ function Overview({ cursor, data, hour, locale, t }: { readonly cursor: number; 
   const totals: [string, number][] = []
   if (activity.length !== 0) totals.push(["pg.overview.backends", activity.length], ["pg.overview.active", active], ["pg.overview.waiting", waiting])
   if (databases.length !== 0) totals.push(["pg.overview.databases", databaseCount])
-  if (statements.length !== 0) totals.push(["pg.overview.statements", statements.length])
   if (locks.length !== 0) totals.push(["pg.overview.lock_rows", locks.length])
-  const history = countHistory(data.sections.pg_stat_activity ?? [])
   const overviewSections = groupSections(data.pgOverview)
   return <section className="pg-overview">
     <div className="overview-metrics">{totals.map(([label, output]) => <article key={label}><span>{t(label)}</span><strong>{measure(output, locale)}</strong></article>)}</div>
-    {history.length !== 0 && <SeriesChart hour={hour} label={t("pg.overview.backend_history")} locale={locale} points={history} scale="count" />}
     {overviewSections.map(([logicalName, allRows]) => {
       const rows = snapshot(allRows, cursor)
       if (rows.length === 0) return null
@@ -538,16 +534,6 @@ function useWholeText(row: DataRow, section: string, field: string): string | nu
 function told(cell: ReturnType<typeof value>): boolean {
   if (cell === null) return false
   return rawText(cell)?.trim() !== ""
-}
-
-function countHistory(rows: readonly DataRow[]): readonly ChartPoint[] {
-  const counts = new Map<string, ChartPoint>()
-  for (const row of rows) {
-    const key = `${row.segmentId}:${row.timestamp}`
-    const current = counts.get(key)
-    counts.set(key, { segmentId: row.segmentId, timestamp: row.timestamp, value: (current?.value ?? 0) + 1 })
-  }
-  return [...counts.values()]
 }
 
 export function sameEntity(left: DataRow, right: DataRow, section: string): boolean {
