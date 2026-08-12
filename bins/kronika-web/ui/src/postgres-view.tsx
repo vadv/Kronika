@@ -10,7 +10,7 @@ import type { Translate } from "./help"
 import { fieldNameForLocator, loadSeries, loadSnapshot } from "./api"
 import { LabelHelp } from "./help"
 import { asNumber, formatUtc, humanBytes, humanDuration, identifier, measure, rawText, snapshot, value, type Locale, shownMoment } from "./model"
-import { decoratePostgresIntervalRow, findingSemanticField, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, physicalField, physicalFields, planDefaultOrder, postgresHistory, postgresIdentity, statementDefaultOrder, type PlanLens, type PostgresSemanticField, type StatementLens } from "./postgres-metrics"
+import { decoratePostgresIntervalRow, findingSemanticField, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, physicalField, physicalFields, planDefaultOrder, postgresHistory, postgresIdentity, statementDefaultOrder, unique, type PlanLens, type PostgresSemanticField, type StatementLens } from "./postgres-metrics"
 import { PostgresRelationsView } from "./postgres-relations-view"
 import type { RelationGroup, RelationLens, RelationNavigation } from "./postgres-relations"
 import { SeriesChart, type ChartPoint } from "./series-chart"
@@ -590,7 +590,7 @@ function isSemanticField(field: string): field is PostgresSemanticField {
 }
 
 function uniqueText(values: readonly (string | null)[]): readonly string[] {
-  return [...new Set(values.filter((field): field is string => field !== null))]
+  return unique(values.filter((field): field is string => field !== null))
 }
 
 function useWholeText(row: DataRow, section: string, field: string): string | null {
@@ -654,7 +654,7 @@ function detailTitle(row: DataRow, section: string, t: Translate): string {
   return rawText(value(row, "datname")) ?? identifier(value(row, "datid"))
 }
 
-function display(cell: ReturnType<typeof value>, column: EntityColumn, locale: Locale, t: Translate): ReactNode {
+export function display(cell: ReturnType<typeof value>, column: EntityColumn, locale: Locale, t: Translate): ReactNode {
   if (cell === null) return "—"
   if (column.kind === "timestamp") {
     const timestamp = asNumber(cell)
@@ -747,7 +747,7 @@ function findingHistoryField(columns: readonly EntityColumn[], finding: Finding 
   const column = columns.find((candidate) => candidate.field === (semantic ?? field))
   return column === undefined || column.kind === "text" || column.kind === "timestamp" || column.kind === "boolean" ? fallback : column.field
 }
-function chartFormat(kind: EntityColumn["kind"]): ((value: number, locale: Locale) => string) | undefined {
+export function chartFormat(kind: EntityColumn["kind"]): ((value: number, locale: Locale) => string) | undefined {
   if (kind === "bytes") return (value, locale) => humanBytes(value, locale)
   if (kind === "kib") return (value, locale) => humanBytes(value * 1024, locale)
   if (kind === "microseconds") return (value, locale) => measure(value / 1_000, locale, " ms")

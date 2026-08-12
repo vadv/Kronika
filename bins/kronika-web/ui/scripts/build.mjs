@@ -76,6 +76,7 @@ async function bundleJavascript(registry, translations, includeFixture) {
     absWorkingDir: uiDirectory,
     entryPoints: ["src/app.tsx"],
     bundle: true,
+    charset: "utf8",
     define: { "process.env.NODE_ENV": '"production"' },
     format: "iife",
     legalComments: "none",

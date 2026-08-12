@@ -2,8 +2,8 @@ import { registry } from "kronika:registry"
 
 import { bundledFixtureHour, bundledFixtureRange } from "./fixture"
 import { rowMatchesLocator } from "./locator"
-import { decoratePostgresIntervalRow, intervalMetric, postgresIdentity, supportsPostgresDerivedOrder } from "./postgres-metrics"
-import { parseRelationLayout, parseRelationRow, relationLayoutKey, relationRowKey, type RelationGroup, type RelationLayout, type RelationRow } from "./postgres-relations"
+import { decoratePostgresIntervalRow, intervalMetric, postgresIdentity, supportsPostgresDerivedOrder, unique } from "./postgres-metrics"
+import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey, relationRowKey, type RelationGroup, type RelationLayout, type RelationRow } from "./postgres-relations"
 import { apiFetch } from "./session"
 import { readNdjson } from "./wire"
 
@@ -150,7 +150,7 @@ export interface SnapshotRows {
 }
 
 export function snapshotRowKey(row: DataRow): string {
-  if (row.relation !== undefined) return `${row.segmentId}:${relationRowKey(row.relation)}`
+  if (row.relation !== undefined) return `${row.segmentId}:${relationRowKey(row)}`
   return `${row.segmentId}:${row.typeId}:${row.ordinal}`
 }
 
@@ -683,20 +683,11 @@ export async function loadSnapshot(
         ])
       }
     } else if (record.record === "relation") {
-      const relation = parseRelationRow(record, relationLayouts, segmentId)
-      if (relation === null) throw new Error("relation record is invalid")
-      const { logicalName, source } = relation
-      const rows = grouped[logicalName] ?? []
-      rows.push({
-        segmentId,
-        logicalName,
-        typeId: source?.typeId ?? "",
-        ordinal: source?.ordinal ?? "",
-        timestamp: source?.timestamp ?? relation.sampleTo ?? at,
-        values: relation.values,
-        relation,
-      })
-      grouped[logicalName] = rows
+      const row = parseRelationRow(record, relationLayouts, segmentId, at)
+      if (row === null) throw new Error("relation record is invalid")
+      const rows = grouped[row.logicalName] ?? []
+      rows.push(row)
+      grouped[row.logicalName] = rows
     } else if (record.record === "row") {
       const typeId = requiredText(record.type_id, "row type_id")
       const layout = layouts.get(typeId)
@@ -1001,11 +992,6 @@ function layoutRecord(record: Record<string, unknown>): {
   }
 }
 
-function relationGroup(value: unknown): RelationGroup {
-  if (value === "database" || value === "schema" || value === "object") return value
-  throw new Error("relation group is invalid")
-}
-
 async function request(path: string, signal: AbortSignal): Promise<readonly Record<string, unknown>[]> {
   const response = await apiFetch(path, { headers: { Accept: "application/x-ndjson" }, signal })
   if (!response.ok) {
@@ -1061,10 +1047,6 @@ function finiteNumber(value: unknown, name: string): number {
 function cellRecord(value: unknown): Readonly<Record<string, Cell>> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return {}
   return value as Readonly<Record<string, Cell>>
-}
-
-function unique<Value>(values: readonly Value[]): Value[] {
-  return [...new Set(values)]
 }
 
 function floorHour(timestamp: number): number {

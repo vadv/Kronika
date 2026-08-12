@@ -82,13 +82,11 @@ test("wire rows preserve explicit aggregate identity and never invent a physical
     { datid: "42", datname: "app" },
     { table_count: 12, main_fork_bytes: 4096 },
   ), databaseLayout)
-  assert.deepEqual(row.key, { datid: "42", datname: "app" })
+  assert.deepEqual(row.relation, { group: "database" })
   assert.deepEqual(row.values, { datid: "42", datname: "app", table_count: 12, main_fork_bytes: 4096 })
-  assert.equal(row.source, null)
-  assert.equal(Object.hasOwn(row, "typeId"), false)
-  assert.equal(Object.hasOwn(row, "ordinal"), false)
-  assert.equal(row.sampleFrom, 1_000_000)
-  assert.equal(row.sampleTo, 2_000_000)
+  assert.equal(row.typeId, "")
+  assert.equal(row.ordinal, "")
+  assert.equal(row.timestamp, 2_000_000)
 })
 
 test("same schema names in different databases remain distinct", () => {
@@ -112,6 +110,21 @@ test("same schema names in different databases remain distinct", () => {
   })
 })
 
+test("wire identity changes always produce a distinct row key", () => {
+  const storedLayout = layout(layoutRecord("pg_stat_user_tables", "object", []))
+  const first = parseRow(relationRecord(
+    "pg_stat_user_tables", "object",
+    { datid: "11", datname: "one", schemaname: "public", relid: "42", relname: "before" }, {},
+    { type_id: "1013001", ordinal: "1", timestamp: "2000000" },
+  ), storedLayout)
+  const renamed = parseRow(relationRecord(
+    "pg_stat_user_tables", "object",
+    { datid: "11", datname: "one", schemaname: "archive", relid: "42", relname: "after" }, {},
+    { type_id: "1013001", ordinal: "2", timestamp: "2000000" },
+  ), storedLayout)
+  assert.notEqual(relation.relationRowKey(first), relation.relationRowKey(renamed))
+})
+
 test("object source locators are exact and index definitions stay lazy and object-only", () => {
   const storedLayout = layout(layoutRecord("pg_stat_user_indexes", "object", [
     column("idx_scan", "number", "per_second"),
@@ -124,12 +137,10 @@ test("object source locators are exact and index definitions stay lazy and objec
     { type_id: "1014002", ordinal: "17", timestamp: "2000000" },
   ), storedLayout)
   const target = relation.relationDetailTarget(row)
-  assert.equal(target.segmentId, "segment-a")
   assert.equal(target.at, 2_000_000)
   assert.equal(target.request.typeId, "1014002")
   assert.equal(target.request.fields, undefined)
   assert.deepEqual(target.options, { typeId: "1014002", rowOrdinal: "17", fullText: true })
-  assert.equal(relation.intervalHasNoScans(row), true)
 
   assert.throws(() => relation.parseRelationLayout(layoutRecord(
     "pg_stat_user_indexes", "schema", [column("indexdef", "text", "none")],
@@ -165,7 +176,7 @@ test("table and index navigation uses exact database-scoped table identity", () 
   ), indexLayout)
   const back = relation.linkedRelation(index)
   assert.deepEqual(back?.filters, { datid: "42", relid: "9001" })
-  assert.equal(back?.selectedKey, relation.relationRowKey(table))
+  assert.equal(back?.selectedKey, null)
 })
 
 test("detail requests the exact physical row without assuming a layout", () => {
@@ -229,10 +240,9 @@ test("the relation view consumes only rows with the authoritative discriminator"
   const relationRow = parseRow(relationRecord(
     "pg_stat_user_tables", "database", { datid: "42", datname: "app" }, { table_count: 2 },
   ), storedLayout)
-  const adapted = { segmentId: "segment-a", logicalName: relationRow.logicalName, typeId: "", ordinal: "", timestamp: 2_000_000, values: relationRow.values, relation: relationRow }
-  const physical = { ...adapted, relation: undefined }
-  assert.deepEqual(view.relationDataRows([adapted, physical], "pg_stat_user_tables", "database"), [adapted])
-  assert.deepEqual(view.relationDataRows([adapted], "pg_stat_user_tables", "schema"), [])
+  const physical = { ...relationRow, relation: undefined }
+  assert.deepEqual(view.relationDataRows([relationRow, physical], "pg_stat_user_tables", "database"), [relationRow])
+  assert.deepEqual(view.relationDataRows([relationRow], "pg_stat_user_tables", "schema"), [])
 })
 
 test("detail, empty, navigation, and paging behavior stays on generic exact APIs", async () => {
@@ -240,15 +250,14 @@ test("detail, empty, navigation, and paging behavior stays on generic exact APIs
   const postgres = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
   assert.match(source, /serverSorted/)
   assert.match(source, /emptyHourStatusKey\(hour\)/)
-  assert.match(source, /relationDrill\(relation\)/)
+  assert.match(source, /relationDrill\(row\)/)
   assert.match(source, /linkedRelation\(row\)/)
   assert.match(source, /relationDetailTarget\(row\)/)
-  assert.match(source, /loadSnapshot\(target\.segmentId, target\.at, \[target\.request\]/)
+  assert.match(source, /loadSnapshot\(row\.segmentId, target\.at, \[target\.request\]/)
   assert.match(source, /loadSeries\(hour, row\.logicalName, historyFilters\(row\), \[historyField\], controller\.signal, undefined, target\.at\)/)
   assert.match(source, /data-testid="pg-exact-indexdef"/)
   assert.match(source, /pg\.relation\.scope\.database/)
-  assert.match(source, /pg\.relation\.search\.active/)
-  assert.match(source, /pg\.relation\.loading/)
+  assert.match(source, /tableState\(metadata/)
   assert.doesNotMatch(source, /\$\{name\}=\$\{stored\}|metadata\?\.orderBy/)
   assert.doesNotMatch(source, /DROP|drop recommendation|unused index/i)
   assert.match(postgres, /id: "tables"[\s\S]*sections: \["pg_stat_user_tables"\]/)

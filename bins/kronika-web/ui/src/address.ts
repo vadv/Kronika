@@ -81,27 +81,25 @@ export function readAddress(search: string): Address {
     relid: relation && pgLevel === "object" && datid !== null ? oid("relid") : null,
     indexrelid: resolvedView === "pg.indexes" && pgLevel === "object" && datid !== null ? oid("indexrelid") : null,
     sort: column === "" ? null : { column, descending: sort.startsWith("-") },
-    row: resolvedView === "host.processes" || resolvedView === "pg.tables" || resolvedView === "pg.indexes"
-      ? parameters.get("row")
-      : null,
+    row: resolvedView === "host.processes" || relation ? parameters.get("row") : null,
     find: parameters.get("find") ?? "",
   }
 }
 
 export function writeAddress(address: Address): string {
   const parameters = new URLSearchParams()
+  const relation = address.view === "pg.tables" || address.view === "pg.indexes"
   if (address.at !== null) parameters.set("at", String(address.at))
   if (address.view !== DEFAULT_ADDRESS.view) parameters.set("view", address.view)
   if (address.lens !== DEFAULT_ADDRESS.lens && address.view === "host.processes") parameters.set("lens", address.lens)
-  if (address.pgLens !== DEFAULT_ADDRESS.pgLens && ["pg.statements", "pg.plans", "pg.tables", "pg.indexes"].includes(address.view)) parameters.set("pg_lens", address.pgLens)
-  if ((address.view === "pg.tables" || address.view === "pg.indexes") && address.pgLevel !== "database") parameters.set("level", address.pgLevel)
-  const relation = address.view === "pg.tables" || address.view === "pg.indexes"
+  if (address.pgLens !== DEFAULT_ADDRESS.pgLens && (relation || address.view === "pg.statements" || address.view === "pg.plans")) parameters.set("pg_lens", address.pgLens)
+  if (relation && address.pgLevel !== "database") parameters.set("level", address.pgLevel)
   if (relation && address.pgLevel !== "database" && address.datid !== null) parameters.set("datid", address.datid)
   if (relation && address.pgLevel === "object" && address.schema !== null) parameters.set("schema", address.schema)
   if (relation && address.pgLevel === "object" && address.relid !== null) parameters.set("relid", address.relid)
   if (address.view === "pg.indexes" && address.pgLevel === "object" && address.indexrelid !== null) parameters.set("indexrelid", address.indexrelid)
   if (address.sort !== null) parameters.set("sort", `${address.sort.descending ? "-" : ""}${address.sort.column}`)
-  if ((address.view === "host.processes" || address.view === "pg.tables" || address.view === "pg.indexes")
+  if ((address.view === "host.processes" || relation)
     && address.row !== null && address.row !== "") parameters.set("row", address.row)
   if (address.find !== "") parameters.set("find", address.find)
   const query = parameters.toString()

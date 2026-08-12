@@ -506,6 +506,6 @@ function numeric(value: bigint | number): number {
   return typeof value === "bigint" ? Number(value) : value
 }
 
-function unique<T>(values: readonly T[]): T[] {
+export function unique<T>(values: readonly T[]): T[] {
   return [...new Set(values)]
 }

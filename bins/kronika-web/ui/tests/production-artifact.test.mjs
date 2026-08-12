@@ -53,6 +53,8 @@ test("the production artifact preserves wire keys and exact finding page state",
         } else {
           ndjson(response, statementRecords(true, filtered ? 1 : 0))
         }
+      } else if (sections.includes("pg_stat_user_tables")) {
+        ndjson(response, relationRecords())
       } else if (sections.includes("pg_stat_activity")) {
         ndjson(response, snapshotRecords())
       } else {
@@ -135,6 +137,18 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(rendered.missing, null)
     assert.ok(requests.some(({ path }) => path === `/api/segments/${SEGMENT}/snapshot`))
     assert.ok(requests.every(({ authorization }) => authorization === "Basic YXJ0aWZhY3Q6d2lyZQ=="))
+
+    await cdp.evaluate(`([...document.querySelectorAll(".pg-tabs button")].find((button) => button.textContent === "Tables")).click()`)
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-tables-table"] .entity-row').length === 1`, "the relation wire row")
+    const relationRow = await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-row').textContent`)
+    assert.match(relationRow, /artifact_db/)
+    assert.match(relationRow, /3/)
+    const relationRequest = requests.find(({ query }) => query.includes("section=pg_stat_user_tables") && query.includes("group=database"))
+    assert.notEqual(relationRequest, undefined, JSON.stringify(requests.map(({ query }) => query), null, 2))
+    const relationQuery = new URLSearchParams(relationRequest.query)
+    assert.equal(relationQuery.get("group"), "database")
+    assert.equal(relationQuery.get("page_size"), "200")
+    assert.equal(relationQuery.getAll("field").includes("table_count"), true)
 
     await cdp.evaluate(`([...document.querySelectorAll(".source-tabs button")].find((button) => button.textContent === "Events")).click()`)
     await cdp.waitFor(`document.querySelector(".event-item button") !== null`, "the statement finding")
@@ -242,6 +256,9 @@ function timelineRecords() {
       }, {
         logical_name: "pg_stat_statements", physical_name: "pg_stat_statements", type_id: "1002003",
         implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "512",
+      }, {
+        logical_name: "pg_stat_user_tables", physical_name: "pg_stat_user_tables", type_id: "1013001",
+        implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256",
       }],
     },
     { record: "index", segment: { id: SEGMENT }, logical_name: "health", checksum: null },
@@ -253,6 +270,26 @@ function timelineRecords() {
     {
       record: "finding", logical_name: "pg_stat_statements", kind: "spike", type_id: "1002003",
       field_ordinal: 11, row_ordinal: "91", ts: String(AT),
+    },
+  ]
+}
+
+function relationRecords() {
+  return [
+    {
+      record: "relation_layout", logical_name: "pg_stat_user_tables", group: "database",
+      columns: [{ name: "table_count", kind: "number", unit: "count", nullable: false }],
+    },
+    {
+      record: "relation", logical_name: "pg_stat_user_tables", group: "database",
+      key: { datid: "42", datname: "artifact_db" }, values: { table_count: 3 },
+      sample_from: String(AT - 5_000_000), sample_to: String(AT), source: null,
+    },
+    {
+      record: "snapshot_page", logical_name: "pg_stat_user_tables", group: "database",
+      eligible: "1", returned: "1", has_more: false, truncated: false, next_cursor: null,
+      page_size: 200, order_by: ["seq_scan"], order_direction: "desc",
+      from: String(AT - 5_000_000), to: String(AT),
     },
   ]
 }

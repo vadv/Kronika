@@ -53,9 +53,19 @@ export async function dictionaryModule(directory) {
   ])
   const english = parseDictionary(englishSource, "en.yaml")
   const russian = parseDictionary(russianSource, "ru.yaml")
+  const reversed = (value) => [...value].reverse().join("")
   const keys = validateDictionaries(english, russian)
-  const messages = Object.fromEntries(keys.map((key) => [key, [english[key], russian[key]]]))
-  return `const messages=${JSON.stringify(messages)} as const;export type TranslationKey=keyof typeof messages;export const translation=(locale:"en"|"ru",key:string)=>messages[key as TranslationKey]?.[locale==="ru"?1:0];`
+    .sort((left, right) => compare(reversed(russian[left]), reversed(russian[right])) || compare(reversed(english[left]), reversed(english[right])) || compare(left, right))
+  const keyType = keys.map(JSON.stringify).join("|")
+  const messages = [keys.map((key) => russian[key]), keys.map((key) => english[key])]
+  if (keys.some((key) => key.includes(",")) || messages.flat().some((message) => message.includes("\t"))) {
+    throw new Error("translation dictionaries contain reserved separators")
+  }
+  return `const messages=${JSON.stringify(messages.flat().join("\t"))}.split("\\t"),indexes=new Map(${JSON.stringify(keys.join(","))}.split(",").map((key,index)=>[key,index]));export type TranslationKey=${keyType};export const translation=(locale:"en"|"ru",key:string)=>messages[indexes.get(key)!+(locale==="ru"?0:${keys.length})];`
+}
+
+function compare(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0
 }
 
 function placeholders(value) {
