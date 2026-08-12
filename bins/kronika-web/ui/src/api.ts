@@ -447,7 +447,7 @@ export function segmentAt(segments: readonly SegmentBound[], at: number): string
 
 export function segmentBoundAt(segments: readonly SegmentBound[], at: number): SegmentBound | null {
   return segments.find((segment) => segment.minTs <= at && segment.maxTs >= at)
-    ?? segments.at(-1)
+    ?? segments.filter((segment) => segment.maxTs <= at).at(-1)
     ?? null
 }
 

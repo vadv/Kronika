@@ -559,6 +559,18 @@ test("timeline lanes retain their segment and a recorded null", async () => {
   }
 })
 
+test("snapshot segment selection never jumps from blank early time to the final segment", async () => {
+  const api = await bundledApi()
+  const segments = [
+    { id: "first", minTs: 100, maxTs: 200, sections: [] },
+    { id: "second", minTs: 300, maxTs: 400, sections: [] },
+  ]
+  assert.equal(api.segmentBoundAt(segments, 50), null)
+  assert.equal(api.segmentBoundAt(segments, 150)?.id, "first")
+  assert.equal(api.segmentBoundAt(segments, 250)?.id, "first")
+  assert.equal(api.segmentBoundAt(segments, 350)?.id, "second")
+})
+
 test("projected history retains segment provenance and exact type", async () => {
   const api = await bundledApi()
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
