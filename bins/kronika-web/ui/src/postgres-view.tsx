@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { registry } from "kronika:registry"
 
 import type { DataRow, Finding, HourData, SnapshotRows } from "./api"
+import { contextualRows, type EntityContext } from "./entity-context"
 import { EntityTable, unit, type EntityColumn, type TableOrder } from "./entity-table"
 import type { Translate } from "./help"
 import { fieldNameForLocator, loadSeries, loadSnapshot } from "./api"
@@ -142,6 +143,7 @@ const TABS: readonly { readonly id: PostgresSection; readonly icon: ReactNode; r
 ]
 
 export function PostgresView({
+  context,
   densePageState,
   onLoadMore,
   onRetry,
@@ -156,6 +158,7 @@ export function PostgresView({
   hour,
   locale,
   onCursor,
+  onContextClear,
   onFinding,
   onPlanLens,
   onSection,
@@ -165,6 +168,7 @@ export function PostgresView({
   statementLens,
   t,
 }: {
+  readonly context: EntityContext | null
   readonly densePageState: "idle" | "loading" | "error"
   readonly onLoadMore: () => void
   readonly onRetry: () => void
@@ -179,6 +183,7 @@ export function PostgresView({
   readonly hour: number
   readonly locale: Locale
   readonly onCursor: (timestamp: number) => void
+  readonly onContextClear: () => void
   readonly onFinding: (finding: Finding) => void
   readonly onSection: (section: PostgresSection) => void
   readonly section: PostgresSection
@@ -204,15 +209,15 @@ export function PostgresView({
       })}
     </nav>
     {section === "overview" && <Overview cursor={cursor} data={data} locale={locale} t={t} />}
-    {section === "activity" && available("pg_stat_activity") && <ActivityView onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_activity" ? focusFinding : null} focus={focus} locale={locale} t={t} />}
+    {section === "activity" && available("pg_stat_activity") && <ActivityView context={context} onContextClear={onContextClear} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_activity" ? focusFinding : null} focus={focus} locale={locale} t={t} />}
     {section === "activity" && available("pg_stat_progress_vacuum") && <PgPreview cursor={cursor} data={data} focus={focusFinding?.logicalName === "pg_stat_progress_vacuum" ? focus : null} locale={locale} section="pg_stat_progress_vacuum" t={t} />}
-    {section === "statements" && <><PostgresLensBar active={statementLens} choices={["load", "per_call", "io", "resources", "stability"]} onChange={onStatementLens} prefix="statement" t={t} /><PgEntityView columns={statementColumns(statementLens)} defaultOrder={{ column: statementDefaultOrder(statementLens), descending: true }} densePageState={densePageState} onLoadMore={onLoadMore} onRetry={onRetry} onOrder={onOrder} onPattern={onPattern} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField={statementLens === "stability" ? "cv" : "mean_exec_ms_per_call"} locale={locale} section="pg_stat_statements" t={t} /></>}
+    {section === "statements" && <><PostgresLensBar active={statementLens} choices={["load", "per_call", "io", "resources", "stability"]} onChange={onStatementLens} prefix="statement" t={t} /><PgEntityView columns={statementColumns(statementLens)} context={context} defaultOrder={{ column: statementDefaultOrder(statementLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onLoadMore={onLoadMore} onRetry={onRetry} onOrder={onOrder} onPattern={onPattern} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField={statementLens === "stability" ? "cv" : "mean_exec_ms_per_call"} locale={locale} section="pg_stat_statements" t={t} /></>}
     {section === "plans" && available("pg_store_plans_info") && <PlanInfo cursor={cursor} data={data} locale={locale} t={t} />}
     {section === "plans" && <PostgresLensBar active={planLens} choices={["load", "timing", "io", "identity"]} onChange={onPlanLens} prefix="plan" t={t} />}
-    {section === "plans" && available("pg_store_plans") && <PgEntityView columns={planColumns(planLens)} defaultOrder={{ column: planDefaultOrder(planLens), descending: true }} densePageState={densePageState} onLoadMore={onLoadMore} onRetry={onRetry} onOrder={onOrder} onPattern={onPattern} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_store_plans" ? focusFinding : null} focus={focus} historyField="mean_exec_ms_per_call" locale={locale} section="pg_store_plans" t={t} />}
+    {section === "plans" && available("pg_store_plans") && <PgEntityView columns={planColumns(planLens)} context={context} defaultOrder={{ column: planDefaultOrder(planLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onLoadMore={onLoadMore} onRetry={onRetry} onOrder={onOrder} onPattern={onPattern} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_store_plans" ? focusFinding : null} focus={focus} historyField="mean_exec_ms_per_call" locale={locale} section="pg_store_plans" t={t} />}
     {section === "plans" && !available("pg_store_plans") && <p className="pg-empty" data-testid="pg-plans-empty">{t("pg.plans.empty")}</p>}
-    {section === "locks" && <PgEntityView columns={LOCK_COLUMNS} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_locks" ? focusFinding : null} focus={focus} historyField={null} locale={locale} section="pg_locks" t={t} />}
-    {section === "databases" && <PgEntityView columns={DATABASE_COLUMNS} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_database" ? focusFinding : null} focus={focus} historyField="xact_commit" locale={locale} section="pg_stat_database" t={t} />}
+    {section === "locks" && <PgEntityView columns={LOCK_COLUMNS} context={context} onContextClear={onContextClear} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_locks" ? focusFinding : null} focus={focus} historyField={null} locale={locale} section="pg_locks" t={t} />}
+    {section === "databases" && <PgEntityView columns={DATABASE_COLUMNS} context={context} onContextClear={onContextClear} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_database" ? focusFinding : null} focus={focus} historyField="xact_commit" locale={locale} section="pg_stat_database" t={t} />}
   </>
 }
 
@@ -273,12 +278,14 @@ export function visibleActivityRows(
     })
 }
 
-function ActivityView({ cursor, data, finding, focus, locale, onOrder, onPattern, order, pattern, t }: {
+function ActivityView({ context, cursor, data, finding, focus, locale, onContextClear, onOrder, onPattern, order, pattern, t }: {
+  readonly context: EntityContext | null
   readonly cursor: number
   readonly data: HourData
   readonly finding: Finding | null
   readonly focus: DataRow | null
   readonly locale: Locale
+  readonly onContextClear: () => void
   readonly onOrder: (order: TableOrder | null) => void
   readonly onPattern: (pattern: string) => void
   readonly order: TableOrder | undefined
@@ -300,7 +307,7 @@ function ActivityView({ cursor, data, finding, focus, locale, onOrder, onPattern
         <button aria-pressed={showIdle} data-testid="activity-filter-idle" onClick={() => setShowIdle((shown) => !shown)} type="button">{t("pg.activity.idle")}</button>
       </div>
     </div>
-    <PgEntityView columns={columns} cursor={cursor} data={data} defaultOrder={ACTIVITY_DEFAULT_ORDER} detailColumns={ACTIVITY_DETAIL_COLUMNS} finding={finding} focus={focus} historyField={null} locale={locale} onOrder={onOrder} onPattern={onPattern} order={activityOrder} pattern={pattern} section="pg_stat_activity" t={t} transformRows={transformRows} />
+    <PgEntityView columns={columns} context={context} cursor={cursor} data={data} defaultOrder={ACTIVITY_DEFAULT_ORDER} detailColumns={ACTIVITY_DETAIL_COLUMNS} finding={finding} focus={focus} historyField={null} locale={locale} onContextClear={onContextClear} onOrder={onOrder} onPattern={onPattern} order={activityOrder} pattern={pattern} section="pg_stat_activity" t={t} transformRows={transformRows} />
   </>
 }
 
@@ -367,6 +374,7 @@ const NO_ROWS: readonly DataRow[] = []
 const NO_RATES: readonly string[] = []
 
 function PgEntityView({
+  context,
   onOrder,
   order,
   columns,
@@ -384,9 +392,11 @@ function PgEntityView({
   defaultOrder,
   densePageState,
   onLoadMore,
+  onContextClear,
   onRetry,
   transformRows,
 }: {
+  readonly context?: EntityContext | null | undefined
   readonly columns: readonly EntityColumn[]
   readonly detailColumns?: readonly EntityColumn[] | undefined
   readonly cursor: number
@@ -404,6 +414,7 @@ function PgEntityView({
   readonly defaultOrder?: TableOrder | undefined
   readonly densePageState?: "idle" | "loading" | "error" | undefined
   readonly onLoadMore?: (() => void) | undefined
+  readonly onContextClear?: (() => void) | undefined
   readonly onRetry?: (() => void) | undefined
   readonly transformRows?: ((rows: readonly DataRow[]) => readonly DataRow[]) | undefined
 }) {
@@ -416,11 +427,13 @@ function PgEntityView({
     ? allRows.map(decoratePostgresIntervalRow)
     : snapshot(allRows, cursor), [allRows, cursor, dense])
   const rows = useMemo(() => {
-    const focused = focus !== null && focus.logicalName === section && !ranked.some((row) => rowKey(row) === rowKey(focus))
-      ? [...ranked, dense ? decoratePostgresIntervalRow(focus) : focus]
-      : ranked
-    return transformRows === undefined ? focused : transformRows(focused)
-  }, [dense, focus, ranked, section, transformRows])
+    const active = context?.logicalName === section ? context : null
+    const exact = focus === null || focus.logicalName !== section || (dense && pattern?.trim() !== "")
+      ? null : dense ? decoratePostgresIntervalRow(focus) : focus
+    const contextual = contextualRows(ranked, active, exact)
+    return transformRows === undefined ? contextual : transformRows(contextual)
+  }, [context, dense, focus, pattern, ranked, section, transformRows])
+  const activeContext = context?.logicalName === section ? context : null
   const rates = data.rateColumns[section] ?? NO_RATES
   const visibleColumns = useMemo(
     () => visibleEntityColumns(columns, rows, rates),
@@ -447,7 +460,7 @@ function PgEntityView({
     </button>
     : undefined
   return <div className={selected === null ? "pg-entity-layout pg-table-only" : "pg-entity-layout"} data-pg-section={sectionName(section)} data-testid="pg-entity-layout">
-    <EntityTable columns={visibleColumns} empty={t("table.no_rows")} finding={finding} findingField={finding === null || finding === undefined ? null : fieldNameForLocator(finding)} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onNearEnd={densePageState === "idle" && canLoadMore ? onLoadMore : undefined} onOrder={onOrder} onPattern={onPattern} onSelect={setSelected} order={activeOrder} pattern={pattern} serverSorted={dense} rows={rows} selectedKey={selectedKey} status={snapshotStatus} t={t} testId={`pg-${sectionName(section)}-table`} />
+    <EntityTable columns={visibleColumns} contextLabel={activeContext?.label} empty={t("table.no_rows")} finding={finding} findingField={finding === null || finding === undefined ? null : fieldNameForLocator(finding)} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onContextClear={activeContext === null ? undefined : onContextClear} onNearEnd={densePageState === "idle" && canLoadMore ? onLoadMore : undefined} onOrder={onOrder} onPattern={onPattern} onSelect={setSelected} order={activeOrder} pattern={pattern} serverSorted={dense} rows={rows} selectedKey={selectedKey} status={snapshotStatus} t={t} testId={`pg-${sectionName(section)}-table`} />
     {paging !== undefined && <div className="lens-tabs" data-testid="table-paging">{paging}</div>}
     {selected !== null && <PgDetail allRows={allRows} columns={visibleDetailColumns} historyField={selectedHistoryField} hour={Math.floor(cursor / 3_600_000_000) * 3_600_000_000} locale={locale} onClose={() => setSelected(null)} row={selected} section={section} t={t} />}
   </div>

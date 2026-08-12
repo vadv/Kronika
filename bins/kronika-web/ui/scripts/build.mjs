@@ -79,7 +79,7 @@ async function bundleJavascript(registry, translations, includeFixture) {
     define: { "process.env.NODE_ENV": '"production"' },
     format: "iife",
     legalComments: "none",
-    mangleProps: /^g[a]p$/,
+    mangleProps: /^(?:context(?:Label|Row)|d(?:efaultOrder|ensePageState|etailColumns)|findingField|focusFinding|g[a]p|historyField|linkedPids|on(?:ContextClear|LoadMore|Locale|NearEnd|Order|Pattern|PlanLens|Retry|Section|StatementLens|Theme)|planLens|primaryLane|processHistory|selectedKey|serverSorted|statementLens|testId|ticksPerSecond|transformRows)$/,
     minify: true,
     platform: "browser",
     sourcemap: false,

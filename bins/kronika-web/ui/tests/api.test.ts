@@ -337,6 +337,38 @@ test("snapshot pages append once in server order and deduplicate physical coordi
   assert.deepEqual(api.appendSnapshotRows(appended, next), appended)
 })
 
+test("paged entity context intersects search and clears independently", async () => {
+  const api = await bundledApi()
+  const seen: URL[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input), "http://kronika.invalid")
+    seen.push(url)
+    return ndjson([
+      { record: "layout", rates: ["calls"], layout: { type_id: "1002001", logical_name: "pg_stat_statements", columns: ["queryid", "userid", "dbid", "query", "calls"].map((name) => ({ name })) } },
+      { record: "snapshot_page", logical_name: "pg_stat_statements", eligible: "0", returned: "0", has_more: false, truncated: false, next_cursor: null, page_size: 200, order_by: ["calls"], order_direction: "desc", from: null, to: null },
+    ])
+  }
+  const request = { section: "pg_stat_statements", fields: ["queryid", "userid", "dbid", "query", "calls"], pageSize: 200, defaultOrder: ["calls"] }
+  try {
+    await api.loadSnapshot("77", START, [request], new AbortController().signal, undefined, {
+      filters: { queryid: "9007199254740997", userid: "10", dbid: "11" },
+      search: ["vacuum*"], typeId: "1002001",
+    })
+    await api.loadSnapshot("77", START, [request], new AbortController().signal, undefined, { search: ["vacuum*"] })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+  assert.equal(seen.length, 2)
+  assert.equal(seen[0]?.searchParams.get("type_id"), "1002001")
+  assert.equal(seen[0]?.searchParams.get("where.queryid"), "9007199254740997")
+  assert.equal(seen[0]?.searchParams.get("where.userid"), "10")
+  assert.equal(seen[0]?.searchParams.get("where.dbid"), "11")
+  assert.deepEqual(seen.map((url) => url.searchParams.getAll("search")), [["vacuum*"], ["vacuum*"]])
+  assert.equal(seen[1]?.searchParams.has("type_id"), false)
+  assert.equal([...seen[1]!.searchParams.keys()].some((key) => key.startsWith("where.")), false)
+})
+
 test("exact V1 and V2 query text requests carry only query and exact identity", async () => {
   const api = await bundledApi()
   const originalFetch = globalThis.fetch

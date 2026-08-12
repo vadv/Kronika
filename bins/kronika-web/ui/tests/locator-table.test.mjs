@@ -8,7 +8,7 @@ const statementIdentity = ["queryid", "userid", "dbid"]
 const statementFields = ["ts", ...statementIdentity, "query", "calls", "rows", "total_exec_time", "blk_read_time"]
 const planIdentity = ["userid", "dbid", "queryid", "planid"]
 const registry = [
-  layout("1100001", "os_process", ["pid"], ["ts", "pid", "read_bytes"]),
+  layout("1100001", "os_process", ["pid", "starttime"], ["ts", "pid", "starttime", "read_bytes"]),
   layout("1002001", "pg_stat_statements", statementIdentity, ["ts", ...statementIdentity, "query", "calls", "rows", "total_time", "blk_read_time"]),
   layout("1002002", "pg_stat_statements", statementIdentity, statementFields),
   layout("1002003", "pg_stat_statements", [...statementIdentity, "toplevel"], [...statementFields, "toplevel"]),
@@ -21,7 +21,7 @@ const registry = [
   layout("1016001", "pg_store_plans_info", [], ["ts", "dealloc", "stats_reset"]),
 ]
 const helpers = await importModule(
-  'export { filterTableRows, locatorMatchesColumn, nextServerOrder } from "../src/entity-table.tsx"; export { rowMatchesLocator } from "../src/locator.ts"; export { PLAN_COLUMNS, STATEMENT_COLUMNS } from "../src/postgres-view.tsx"',
+  'export { filterTableRows, locatorMatchesColumn, nextServerOrder } from "../src/entity-table.tsx"; export { contextualRows, entityContext } from "../src/entity-context.ts"; export { rowMatchesLocator } from "../src/locator.ts"; export { PLAN_COLUMNS, STATEMENT_COLUMNS } from "../src/postgres-view.tsx"',
   { plugins: [registryPlugin(registry)] },
 )
 
@@ -29,7 +29,7 @@ function layout(typeId, logicalName, identity, fields) {
   return { typeId, logicalName, identity, columns: [...new Set(fields)] }
 }
 
-const row = { segmentId: "segment-a", logicalName: "os_process", typeId: "1100001", ordinal: "7", timestamp: 100, values: { pid: 9, read_bytes: 12 } }
+const row = { segmentId: "segment-a", logicalName: "os_process", typeId: "1100001", ordinal: "7", timestamp: 100, values: { pid: 9, starttime: "80", read_bytes: 12 } }
 const finding = { segmentId: "segment-a", logicalName: "os_process", typeId: "1100001", rowOrdinal: "7", timestamp: 100, fieldOrdinal: 2, kind: "spike", category: null }
 
 test("physical locators match the exact loaded row and mapped cell", () => {
@@ -93,6 +93,33 @@ test("server-filtered pages are not filtered again over the loaded subset", () =
   const columns = [{ field: "pid", kind: "id", label: "PID" }]
   assert.deepEqual(helpers.filterTableRows(rows, columns, "9", false).map(({ ordinal }) => ordinal), ["1"])
   assert.deepEqual(helpers.filterTableRows(rows, columns, "missing", true), rows)
+})
+
+test("an exact context intersects text search and clearing it preserves that search", () => {
+  const rows = [
+    { ...row, ordinal: "1", values: { ...row.values, pid: 9, cmdline: "postgres writer" } },
+    { ...row, ordinal: "2", values: { ...row.values, pid: 10, starttime: "90", cmdline: "postgres checkpointer" } },
+    { ...row, ordinal: "3", values: { ...row.values, pid: 11, starttime: "91", cmdline: "shell" } },
+  ]
+  const context = helpers.entityContext({ ...finding, rowOrdinal: "1" }, rows[0])
+  const columns = [{ field: "cmdline", kind: "text", label: "Command" }]
+  const intersection = helpers.filterTableRows(helpers.contextualRows(rows, context), columns, "postgres*", false)
+  assert.deepEqual(intersection.map(({ ordinal }) => ordinal), ["1"])
+  const afterClear = helpers.filterTableRows(helpers.contextualRows(rows, null), columns, "postgres*", false)
+  assert.deepEqual(afterClear.map(({ ordinal }) => ordinal), ["1", "2"])
+})
+
+test("the context chip is visible and removable without changing row selection", async () => {
+  const [tableFilter, entity, app] = await Promise.all([
+    readFile(new URL("../src/table-filter.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/entity-table.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/app.tsx", import.meta.url), "utf8"),
+  ])
+  assert.match(tableFilter, /data-testid="entity-context-filter"/)
+  assert.match(tableFilter, /filter\.show_all/)
+  assert.match(entity, /onClick=\{\(\) => onSelect\?\.\(row\.original\)\}/)
+  assert.match(app, /Object\.fromEntries\(pageContext\.identity\)/)
+  assert.doesNotMatch(app, /setFind\(""\)/)
 })
 
 test("paged tables keep virtualization and trigger the guarded near-end callback", async () => {

@@ -285,6 +285,8 @@ filter.hint: "Looked for anywhere in a value; * stands for any run of characters
 filter.kept: "{kept} of {total}"
 filter.clear: "Clear the filter"
 filter.none: "No rows match the filter"
+filter.entity: "Entity: {entity}"
+filter.show_all: "Show all entities"
 col.pid.label: "PID"
 col.pid.help: "Linux process identifier. Inspect it with the command, state, and parent PID."
 col.command.label: "Command"

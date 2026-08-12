@@ -1,10 +1,13 @@
 import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
 import test from "node:test"
+import { createElement } from "react"
+import { renderToStaticMarkup } from "react-dom/server"
 
 import { importModule, registryPlugin } from "./import-module.mjs"
 
 const helpers = await importModule(
-  'export { findingShape, findingTrack, groupFindings, healthThreshold, healthTimelineSeries, laneRange, overviewLaneCount, sampleWindow, seriesYAt, timelineRuns, valueAt } from "../src/timeline.tsx"',
+  'export { FindingMarker, MARKER_CLUSTER_PX, findingShape, findingTrack, groupFindings, healthThreshold, healthTimelineSeries, laneRange, overviewLaneCount, sampleWindow, seriesYAt, timelineRuns, valueAt } from "../src/timeline.tsx"',
   { plugins: [registryPlugin([{ typeId: "1104001", logicalName: "os_meminfo", columns: ["ts", "mem_total", "mem_free", "mem_available"] }])] },
 )
 
@@ -21,7 +24,25 @@ function finding(kind, timestamp, ordinal) {
   }
 }
 
-test("timeline markers cluster at the rendered scale and expand to every exact locator", () => {
+test("one timeline mark stays an unlabeled shape", () => {
+  const [marker] = helpers.groupFindings([finding("event", 100, "1")], 0, 1_000, 100, 10)
+  assert.equal(marker.findings.length, 1)
+  assert.deepEqual(marker.composition, [{ count: 1, kind: "event" }])
+  assert.deepEqual(marker.findings, [finding("event", 100, "1")])
+  const markup = renderToStaticMarkup(createElement(helpers.FindingMarker, { marker, onActivate() {}, share: 0.1, t: (key) => key }))
+  assert.match(markup, /data-marker-shape="circle"[^>]*aria-hidden="true"|aria-hidden="true"[^>]*data-marker-shape="circle"/)
+  assert.equal(markup.replace(/<[^>]+>/g, ""), "")
+})
+
+test("dense coincident marks become one compact count", () => {
+  const input = [finding("event", 100, "3"), finding("event", 100, "1"), finding("event", 100, "2")]
+  const [marker] = helpers.groupFindings(input, 0, 1_000, 100, 10)
+  assert.equal(marker.findings.length, 3)
+  assert.deepEqual(marker.composition, [{ count: 3, kind: "event" }])
+  assert.deepEqual(marker.findings.map(({ rowOrdinal }) => rowOrdinal), ["1", "2", "3"])
+})
+
+test("timeline markers cluster at rendered density with exact ordered locators", () => {
   const input = [
     finding("spike", 150, "3"),
     finding("event", 100, "1"),
@@ -31,17 +52,28 @@ test("timeline markers cluster at the rendered scale and expand to every exact l
   ]
   const grouped = helpers.groupFindings(input, 0, 1_000, 100, 10)
 
-  assert.deepEqual(grouped.map(({ count, kinds, placement, startTimestamp, endTimestamp }) => ({ count, kinds, placement, startTimestamp, endTimestamp })), [
-    { count: 1, kinds: ["event"], placement: "event", startTimestamp: 100, endTimestamp: 100 },
-    { count: 2, kinds: ["known_bad", "spike"], placement: "neutral", startTimestamp: 100, endTimestamp: 150 },
-    { count: 1, kinds: ["event"], startTimestamp: 205, endTimestamp: 205 },
-    { count: 1, kinds: ["event"], startTimestamp: 900, endTimestamp: 900 },
-  ].map((item) => ({ placement: "event", ...item })))
+  assert.deepEqual(grouped.map(({ composition, findings }) => ({
+    composition,
+    count: findings.length,
+    endTimestamp: findings.at(-1)?.timestamp,
+    kinds: composition.map(({ kind }) => kind),
+    startTimestamp: findings[0]?.timestamp,
+  })), [
+    { composition: [{ count: 1, kind: "event" }, { count: 1, kind: "known_bad" }, { count: 1, kind: "spike" }], count: 3, kinds: ["event", "known_bad", "spike"], startTimestamp: 100, endTimestamp: 150 },
+    { composition: [{ count: 1, kind: "event" }], count: 1, kinds: ["event"], startTimestamp: 205, endTimestamp: 205 },
+    { composition: [{ count: 1, kind: "event" }], count: 1, kinds: ["event"], startTimestamp: 900, endTimestamp: 900 },
+  ])
   const locator = (item) => `${item.segmentId}:${item.typeId}:${item.rowOrdinal}:${item.fieldOrdinal}:${item.timestamp}:${item.kind}`
   assert.deepEqual(
-    grouped.flatMap((marker) => marker.findings).map(locator).sort(),
-    input.map(locator).sort(),
+    grouped.flatMap((marker) => marker.findings).map(locator),
+    [input[1], input[2], input[0], input[3], input[4]].map(locator),
   )
+})
+
+test("duplicate locators keep their exact multiplicity and order", () => {
+  const duplicate = finding("event", 100, "1")
+  const [marker] = helpers.groupFindings([duplicate, finding("spike", 100, "2"), duplicate], 0, 1_000, 100, 10)
+  assert.deepEqual(marker.findings, [duplicate, duplicate, finding("spike", 100, "2")])
 })
 
 test("marker clustering is deterministic and separates locators when more pixels are available", () => {
@@ -58,23 +90,52 @@ test("marker clustering is deterministic and separates locators when more pixels
   }))
   const compact = helpers.groupFindings(input, 0, 1_000, 100, 10)
   assert.deepEqual(snapshot(compact), snapshot(helpers.groupFindings(input.toReversed(), 0, 1_000, 100, 10)))
-  for (let index = 1; index < compact.length; index += 1) {
-    const previous = compact[index - 1]
-    const current = compact[index]
-    if (current.placement === previous.placement && current.track === previous.track) {
-      assert.ok((current.timestamp - previous.timestamp) / 1_000 * 100 > 10)
-    }
-  }
+  assert.equal(compact.length, 2)
   assert.deepEqual(
-    helpers.groupFindings(input, 0, 1_000, 1_000, 10).map((marker) => marker.count),
-    [1, 1, 1, 1],
+    helpers.groupFindings(input, 0, 1_000, 1_000, 10).map((marker) => marker.findings.length),
+    [2, 1, 1],
   )
+})
+
+test("mixed clusters show numeric composition without rail labels or a band", async () => {
+  const findings = [
+    ...Array.from({ length: 12 }, (_, index) => finding("event", 100, String(index))),
+    ...Array.from({ length: 11 }, (_, index) => finding("known_bad", 100, String(index + 20))),
+    ...Array.from({ length: 10 }, (_, index) => finding("spike", 100, String(index + 40))),
+  ]
+  const [marker] = helpers.groupFindings(findings, 0, 1_000, 100, 10)
+  const markup = renderToStaticMarkup(createElement(helpers.FindingMarker, {
+    marker,
+    onActivate() {},
+    share: 0.1,
+    t: (key) => ({ "locator.event": "Event", "locator.known_bad": "Known bad", "locator.spike": "Spike", "events.source.process": "Process" })[key] ?? key,
+  }))
+  assert.equal((markup.match(/data-marker-shape=/g) ?? []).length, 3)
+  assert.match(markup, /data-marker-composition="event:12 known_bad:11 spike:10"/)
+  assert.match(markup, />12<.*>11<.*>10<.*>33</)
+  assert.match(markup, new RegExp(`clamp\\(${helpers.MARKER_CLUSTER_PX / 2}px`))
+  assert.doesNotMatch(markup.replace(/aria-label="[^"]*"|title="[^"]*"/g, ""), /Event|Known bad|Spike|Process/)
+  const [source, styles] = await Promise.all([
+    readFile(new URL("../src/timeline.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+  ])
+  assert.doesNotMatch(source, /marker-cluster-summary|className="finding-rail"/)
+  assert.doesNotMatch(styles, /\.marker-cluster-summary|\.finding-rail|\.neutral-rail/)
+  assert.match(styles, new RegExp(`width: ${helpers.MARKER_CLUSTER_PX - 8}px`))
+  assert.deepEqual(helpers.groupFindings([], 0, 1_000, 100), [])
 })
 
 test("finding kinds have non-color shape identities", () => {
   assert.equal(helpers.findingShape("event"), "circle")
   assert.equal(helpers.findingShape("known_bad"), "diamond")
   assert.equal(helpers.findingShape("spike"), "triangle")
+  const render = (kind) => {
+    const [marker] = helpers.groupFindings([finding(kind, 100, "1")], 0, 1_000, 100, 10)
+    return renderToStaticMarkup(createElement(helpers.FindingMarker, { marker, onActivate() {}, share: 0.1, t: (key) => key }))
+  }
+  assert.match(render("event"), /fill="var\(--event\)"/)
+  assert.match(render("known_bad"), /fill="var\(--bad\)"/)
+  assert.match(render("spike"), /stroke="var\(--warn\)"/)
 })
 
 test("timeline series cross segment boundaries and break only at stored nulls", () => {
@@ -137,8 +198,8 @@ test("only overall health owns the below-50 band and exact findings map to track
   assert.equal(helpers.findingTrack({ ...finding("known_bad", 100, "1"), logicalName: "health", typeId: "0", fieldOrdinal: 1 }), "health")
   assert.equal(helpers.findingTrack({ ...finding("known_bad", 100, "1"), logicalName: "health", typeId: "0", fieldOrdinal: 0 }), null)
   assert.equal(helpers.findingTrack({ ...finding("known_bad", 100, "1"), logicalName: "os_meminfo", typeId: "1104001", fieldOrdinal: 3 }), "memory")
-  assert.equal(helpers.groupFindings([finding("event", 100, "1")], 0, 1_000, 100)[0].placement, "event")
-  assert.equal(helpers.groupFindings([finding("spike", 100, "1")], 0, 1_000, 100)[0].placement, "neutral")
+  assert.equal(helpers.groupFindings([finding("event", 100, "1")], 0, 1_000, 100)[0].findings[0]?.kind, "event")
+  assert.equal(helpers.groupFindings([finding("spike", 100, "1")], 0, 1_000, 100)[0].findings[0]?.kind, "spike")
 })
 
 test("timeline domains and overview density are explicit", () => {

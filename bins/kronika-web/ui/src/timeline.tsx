@@ -12,12 +12,10 @@ const WIDTH = 920
 const TICK_ROW = 18
 const PRIMARY_HEIGHT = 132
 const OVERVIEW_HEIGHT = 27
-const MARKER_RAIL = 14
-const NEUTRAL_RAIL = 14
-const TOP = MARKER_RAIL + NEUTRAL_RAIL + 8
-const MARKER_CLUSTER_PX = 38
+const MARKER_RAIL = 34
+const TOP = MARKER_RAIL + 8
+export const MARKER_CLUSTER_PX = 88
 const MARKER_RAIL_Y = MARKER_RAIL / 2
-const NEUTRAL_RAIL_Y = MARKER_RAIL + NEUTRAL_RAIL / 2
 const SHARE: readonly [number, number] = [0, 100]
 
 interface SeriesPoint {
@@ -27,16 +25,8 @@ interface SeriesPoint {
 }
 
 export interface GroupedFinding {
-  readonly count: number
-  readonly finding: Finding
+  readonly composition: readonly { readonly count: number; readonly kind: Finding["kind"] }[]
   readonly findings: readonly Finding[]
-  readonly kind: Finding["kind"]
-  readonly kinds: readonly Finding["kind"][]
-  readonly startTimestamp: number
-  readonly endTimestamp: number
-  readonly timestamp: number
-  readonly placement: "event" | "neutral" | "track"
-  readonly track: string | null
 }
 
 interface TimelineSeries {
@@ -108,6 +98,11 @@ export function Timeline({
       { domain: undefined, key: "oldest_xact", series: one("violet", "pg_oldest_xact", of("pg_oldest_xact")) },
     ].filter((lane) => lane.series.some((series) => series.points.some((point) => point.value !== null)))
   }, [healthTrack, lanePoints])
+  const markers = useMemo(
+    () => groupFindings(findings, hour, end, plotWidth),
+    [end, findings, hour, plotWidth],
+  )
+  const top = markers.length === 0 ? 0 : TOP
   useEffect(() => {
     if (lanes.some((lane) => lane.key === primaryLane)) setSelectedLane(primaryLane)
   }, [lanes, primaryLane])
@@ -119,23 +114,19 @@ export function Timeline({
     const primary = lanes.find((lane) => lane.key === selectedLane) ?? lanes[0]
     if (primary === undefined) return []
     const overview = lanes.filter((lane) => lane.key !== primary.key).slice(0, overviewLaneCount(plotWidth))
-    let top = TOP
+    let laneTop = top
     return [primary, ...overview].map((lane, index) => {
       const height = index === 0 ? PRIMARY_HEIGHT : OVERVIEW_HEIGHT
-      const displayedLane = { ...lane, height, primary: index === 0, top }
-      top += height
+      const displayedLane = { ...lane, height, primary: index === 0, top: laneTop }
+      laneTop += height
       return displayedLane
     })
-  }, [lanes, plotWidth, selectedLane])
+  }, [lanes, plotWidth, selectedLane, top])
   const plotBottom = displayed.at(-1) === undefined
-    ? TOP + PRIMARY_HEIGHT
-    : (displayed.at(-1)?.top ?? TOP) + (displayed.at(-1)?.height ?? PRIMARY_HEIGHT)
+    ? top + PRIMARY_HEIGHT
+    : (displayed.at(-1)?.top ?? top) + (displayed.at(-1)?.height ?? PRIMARY_HEIGHT)
   const height = plotBottom + TICK_ROW
   const window = sampleWindow(lanes)
-  const markers = useMemo(
-    () => groupFindings(findings, hour, end, plotWidth),
-    [end, findings, hour, plotWidth],
-  )
   useEffect(() => {
     const element = plot.current
     if (element === null) return
@@ -171,7 +162,7 @@ export function Timeline({
       <div
         aria-hidden="false"
         className="timeline-labels"
-        style={{ gridTemplateRows: displayed.map((lane) => `${lane.height}px`).join(" ") }}
+        style={{ gridTemplateRows: displayed.map((lane) => `${lane.height}px`).join(" "), paddingTop: `${top}px` }}
       >
         {displayed.map((lane) => <LaneLabel
           help={`lane.${lane.key}.help`}
@@ -215,20 +206,18 @@ export function Timeline({
           <svg aria-hidden="true" preserveAspectRatio="none" style={{ height: `${height}px` }} viewBox={`0 0 ${plotWidth} ${height}`}>
             {window !== null && window.start > hour && <rect
               className="data-unavailable"
-              height={plotBottom - TOP}
+              height={plotBottom - top}
               width={shareOf(window.start, hour, end) * plotWidth}
               x={0}
-              y={TOP}
+              y={top}
             />}
             {window !== null && window.end < end && <rect
               className="data-unavailable"
-              height={plotBottom - TOP}
+              height={plotBottom - top}
               width={(1 - shareOf(window.end, hour, end)) * plotWidth}
               x={shareOf(window.end, hour, end) * plotWidth}
-              y={TOP}
+              y={top}
             />}
-            <line className="finding-rail event-rail" x1={0} x2={plotWidth} y1={MARKER_RAIL_Y} y2={MARKER_RAIL_Y} />
-            <line className="finding-rail neutral-rail" x1={0} x2={plotWidth} y1={NEUTRAL_RAIL_Y} y2={NEUTRAL_RAIL_Y} />
             {[0, 1, 2, 3, 4, 5, 6].map((tick) => {
               const x = tick / 6 * plotWidth
               return <line className="timeline-grid" key={tick} x1={x} x2={x} y1={0} y2={plotBottom} />
@@ -274,21 +263,17 @@ export function Timeline({
           <TimeTicks className="timeline-time-ticks" hour={hour} />
         </div>
         {markers.map((marker, index) => {
-          const share = shareOf(marker.timestamp, hour, end)
-          const lane = marker.track === null ? undefined : displayed.find((candidate) => candidate.key === marker.track)
-          const y = marker.placement === "event"
-            ? MARKER_RAIL_Y
-            : lane === undefined ? NEUTRAL_RAIL_Y : findingY(marker.finding, lane)
+          const first = marker.findings[0]
+          if (first === undefined) return null
           return <FindingMarker
-            key={`${marker.timestamp}:${marker.kind}:${index}`}
+            key={`${first.timestamp}:${first.kind}:${index}`}
             marker={marker}
             onActivate={() => {
-              onCursor(marker.timestamp)
-              onFinding(marker.finding, marker.findings)
+              onCursor(first.timestamp)
+              onFinding(first, marker.findings)
             }}
             t={t}
-            share={share}
-            y={y ?? NEUTRAL_RAIL_Y}
+            share={shareOf(first.timestamp, hour, end)}
           />
         })}
       </div>
@@ -328,65 +313,51 @@ function laneReading(lane: TimelineLane, cursor: number, locale: Locale, t: Tran
   }).join(" · ")
 }
 
-function FindingMarker({
+export function FindingMarker({
   marker,
   onActivate,
   share,
   t,
-  y,
 }: {
   readonly marker: GroupedFinding
   readonly onActivate: () => void
   readonly t: Translate
   readonly share: number
-  readonly y: number
 }) {
   const activate = (event: { preventDefault(): void; stopPropagation(): void }) => {
     event.preventDefault()
     event.stopPropagation()
     onActivate()
   }
+  const first = marker.findings[0]
+  const last = marker.findings.at(-1)
+  if (first === undefined || last === undefined) return null
+  const count = marker.findings.length
   const kindSummary = findingSummary(marker.findings, t)
-  const timeSummary = marker.startTimestamp === marker.endTimestamp
-    ? formatUtc(marker.startTimestamp)
-    : `${formatUtc(marker.startTimestamp)}–${formatUtc(marker.endTimestamp)}`
+  const timeSummary = first.timestamp === last.timestamp
+    ? formatUtc(first.timestamp)
+    : `${formatUtc(first.timestamp)}–${formatUtc(last.timestamp)}`
   return <button
-    aria-label={`${kindSummary} · ${timeSummary} · ×${marker.count}`}
-    className={`marker-button${marker.count === 1 ? ` marker-${marker.kind}` : " marker-aggregate"}`}
-    data-marker-count={marker.count}
-    data-marker-kinds={marker.kinds.join(" ")}
+    aria-label={`${kindSummary} · ${timeSummary} · ×${count}`}
+    className={`marker-button${count === 1 ? ` marker-${first.kind}` : " marker-aggregate"}`}
+    data-marker-composition={marker.composition.map(({ count, kind }) => `${kind}:${count}`).join(" ")}
+    data-marker-count={count}
+    data-marker-kinds={marker.composition.map(({ kind }) => kind).join(" ")}
     onClick={activate}
     onKeyDown={(event) => {
       event.stopPropagation()
       if (event.key === "Enter" || event.key === " ") activate(event)
     }}
     onPointerDown={(event) => event.stopPropagation()}
-    style={{
-      alignItems: "center",
-      background: "transparent",
-      border: 0,
-      cursor: "pointer",
-      display: "flex",
-      height: "30px",
-      justifyContent: "center",
-      left: `${share * 100}%`,
-      padding: 0,
-      position: "absolute",
-      top: `${y}px`,
-      transform: "translate(-50%, -50%)",
-      maxWidth: marker.count > 1 ? "220px" : "34px",
-      minWidth: "34px",
-      width: marker.count > 1 ? "max-content" : "34px",
-      zIndex: 2,
-    }}
-    title={`${kindSummary} · ${timeSummary} · ×${marker.count}`}
+    style={{ left: `clamp(${MARKER_CLUSTER_PX / 2}px, ${share * 100}%, calc(100% - ${MARKER_CLUSTER_PX / 2}px))` }}
     type="button"
   >
-    <span aria-hidden="true" className="marker-shape-stack">
-      {marker.kinds.map((kind) => <FindingGlyph key={kind} kind={kind} />)}
-    </span>
-    {marker.count > 1 && <span className="marker-cluster-summary">{kindSummary}</span>}
-    {marker.count > 1 && <span aria-hidden="true" className="marker-count">{marker.count}</span>}
+    {count === 1
+      ? <FindingGlyph kind={first.kind} />
+      : <span aria-hidden="true" className="marker-cluster-badge">
+        <span className="marker-composition">{marker.composition.map(({ count, kind }) => <span className="marker-kind-count" key={kind}><FindingGlyph kind={kind} /><small>{count}</small></span>)}</span>
+        <strong className="marker-count">{count}</strong>
+      </span>}
   </button>
 }
 
@@ -472,64 +443,35 @@ export function groupFindings(
 ): readonly GroupedFinding[] {
   const duration = Math.max(1, end - hour)
   const width = Math.max(1, pixelWidth)
-  const buckets = new Map<string, { readonly placement: GroupedFinding["placement"]; readonly track: string | null; readonly findings: Finding[] }>()
-  for (const finding of findings.slice().sort(findingOrder)) {
-    const track = findingTrack(finding)
-    const placement = finding.kind === "event" ? "event" : track === null ? "neutral" : "track"
-    const key = placement === "track" ? `track:${track}` : placement
-    const bucket = buckets.get(key) ?? { placement, track, findings: [] }
-    bucket.findings.push(finding)
-    buckets.set(key, bucket)
-  }
-  const grouped: GroupedFinding[] = []
-  for (const bucket of buckets.values()) {
-    const stored: Finding[][] = []
-    let active: Finding[] = []
-    let anchor = 0
-    for (const finding of bucket.findings) {
-      const x = Math.max(0, Math.min(width, (finding.timestamp - hour) / duration * width))
-      if (active.length === 0 || x - anchor <= clusterWidth) {
-        if (active.length === 0) anchor = x
-        active.push(finding)
-      } else {
-        stored.push(active)
-        active = [finding]
-        anchor = x
-      }
-    }
-    if (active.length !== 0) stored.push(active)
-    for (const group of stored) {
-      const first = group[0]
-      const last = group.at(-1)
-      if (first === undefined || last === undefined) throw new Error("empty marker cluster")
-      const kinds = FINDING_KINDS.filter((kind) => group.some((finding) => finding.kind === kind))
-      grouped.push({
-        count: group.length,
-        finding: first,
-        findings: group,
-        kind: first.kind,
-        kinds,
-        placement: bucket.placement,
-        startTimestamp: first.timestamp,
-        endTimestamp: last.timestamp,
-        timestamp: first.timestamp,
-        track: bucket.track,
-      })
+  const ordered = findings.slice().sort(findingOrder)
+  const stored: Finding[][] = []
+  let active: Finding[] = []
+  let anchor = 0
+  for (const finding of ordered) {
+    const edge = Math.min(width / 2, clusterWidth / 2)
+    const x = Math.max(edge, Math.min(width - edge, (finding.timestamp - hour) / duration * width))
+    if (active.length === 0 || x - anchor <= clusterWidth) {
+      if (active.length === 0) anchor = x
+      active.push(finding)
+    } else {
+      stored.push(active)
+      active = [finding]
+      anchor = x
     }
   }
-  return grouped.sort((left, right) => left.timestamp - right.timestamp
-    || placementOrder(left.placement) - placementOrder(right.placement)
-    || textOrder(left.track ?? "", right.track ?? "")
-    || findingOrder(left.finding, right.finding))
+  if (active.length !== 0) stored.push(active)
+  return stored.map((group) => {
+    const composition = FINDING_KINDS.flatMap((kind) => {
+      const count = group.filter((finding) => finding.kind === kind).length
+      return count === 0 ? [] : [{ count, kind }]
+    })
+    return { composition, findings: group }
+  })
 }
 
 const FINDING_KINDS = ["event", "known_bad", "spike"] as const satisfies readonly Finding["kind"][]
 
 function textOrder(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0 }
-
-function placementOrder(placement: GroupedFinding["placement"]): number {
-  return placement === "event" ? 0 : placement === "track" ? 1 : 2
-}
 
 export function findingTrack(finding: Finding): string | null {
   if (finding.kind === "event") return null
@@ -546,9 +488,9 @@ export function findingShape(kind: Finding["kind"]): FindingShape {
 }
 
 function FindingGlyph({ kind }: { readonly kind: Finding["kind"] }) {
-  if (kind === "known_bad") return <svg data-marker-shape="diamond" height="11" viewBox="0 0 12 12" width="11"><path d="M6 1 11 6 6 11 1 6Z" fill="var(--bad)" stroke="var(--bad-edge)" /></svg>
-  if (kind === "spike") return <svg data-marker-shape="triangle" height="11" viewBox="0 0 12 12" width="12"><path d="M6 1 11 10.5H1Z" fill="none" stroke="var(--warn)" strokeWidth="1.5" /></svg>
-  return <svg data-marker-shape="circle" height="10" viewBox="0 0 12 12" width="10"><circle cx="6" cy="6" fill="var(--event)" r="4.5" stroke="var(--event-edge)" /></svg>
+  if (kind === "known_bad") return <svg aria-hidden="true" data-marker-shape="diamond" height="11" viewBox="0 0 12 12" width="11"><path d="M6 1 11 6 6 11 1 6Z" fill="var(--bad)" stroke="var(--bad-edge)" /></svg>
+  if (kind === "spike") return <svg aria-hidden="true" data-marker-shape="triangle" height="11" viewBox="0 0 12 12" width="12"><path d="M6 1 11 10.5H1Z" fill="none" stroke="var(--warn)" strokeWidth="1.5" /></svg>
+  return <svg aria-hidden="true" data-marker-shape="circle" height="10" viewBox="0 0 12 12" width="10"><circle cx="6" cy="6" fill="var(--event)" r="4.5" stroke="var(--event-edge)" /></svg>
 }
 
 export function seriesYAt(points: readonly SeriesPoint[], segmentId: string, timestamp: number, lane = 0): number | null {
@@ -559,22 +501,6 @@ export function seriesYAt(points: readonly SeriesPoint[], segmentId: string, tim
   const top = lane === 0 ? TOP : TOP + PRIMARY_HEIGHT + (lane - 1) * OVERVIEW_HEIGHT
   const height = lane === 0 ? PRIMARY_HEIGHT : OVERVIEW_HEIGHT
   return seriesY(point.value, top, height, range.low, range.span)
-}
-
-function findingY(finding: Finding, lane: DisplayedLane): number | null {
-  const range = laneRange(lane)
-  const healthField = finding.logicalName === "health" && finding.typeId === "0"
-    ? finding.fieldOrdinal === 0 ? "os_health" : finding.fieldOrdinal === 1 ? "overall_health" : null
-    : null
-  for (const series of lane.series) {
-    if (healthField !== null && series.field !== healthField) continue
-    const point = series.points.find((candidate) => candidate.segmentId === finding.segmentId
-      && candidate.timestamp === finding.timestamp && candidate.value !== null && Number.isFinite(candidate.value))
-    if (point?.value !== null && point?.value !== undefined) {
-      return seriesY(point.value, lane.top, lane.height, range.low, range.span)
-    }
-  }
-  return null
 }
 
 export function laneRange(

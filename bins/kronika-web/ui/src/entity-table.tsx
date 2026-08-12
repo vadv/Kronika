@@ -42,6 +42,7 @@ export interface TableOrder {
 export function EntityTable({
   className,
   columns: fields,
+  contextLabel,
   empty,
   finding,
   findingField,
@@ -50,6 +51,7 @@ export function EntityTable({
   onOrder,
   onPattern,
   onNearEnd,
+  onContextClear,
   onSelect,
   order,
   pattern = "",
@@ -64,6 +66,7 @@ export function EntityTable({
 }: {
   readonly className?: string | undefined
   readonly columns: readonly EntityColumn[]
+  readonly contextLabel?: string | undefined
   readonly empty: string
   readonly finding?: Finding | null | undefined
   readonly findingField?: string | null | undefined
@@ -72,6 +75,7 @@ export function EntityTable({
   readonly onOrder?: ((order: TableOrder | null) => void) | undefined
   readonly onPattern?: ((pattern: string) => void) | undefined
   readonly onNearEnd?: (() => void) | undefined
+  readonly onContextClear?: (() => void) | undefined
   readonly onSelect?: (row: DataRow) => void
   readonly pattern?: string | undefined
   readonly order?: TableOrder | undefined
@@ -173,7 +177,7 @@ export function EntityTable({
   const width = table.getTotalSize()
   return <section className={`entity-table${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
     {status !== undefined && <div className="table-status" data-testid="table-status">{status}</div>}
-    {t !== undefined && onPattern !== undefined && <TableFilter kept={serverSorted === true ? -1 : data.length} onPattern={onPattern} pattern={pattern} t={t} total={rows.length} />}
+    {t !== undefined && (onPattern !== undefined || contextLabel !== undefined) && <TableFilter context={contextLabel} kept={serverSorted === true ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} t={t} total={rows.length} />}
     <div aria-label={label} className="entity-scroll" ref={parent} role="table">
       <div className="entity-head" ref={head} role="row" style={{ width }}>
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {

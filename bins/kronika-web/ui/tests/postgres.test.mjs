@@ -336,7 +336,9 @@ test("dense paging resets, ignores stale work, and preserves retry state", async
   assert.match(source, /pageCursor === undefined[\s\S]*mergeSnapshotData\(companion[\s\S]*mergeSnapshotData\(current/)
   assert.match(source, /action\.failed = pageCursor[\s\S]*setDensePageState\("error"\)/)
   assert.match(source, /return \(\) => \{ clearTimeout\(timer\); controller\.abort\(\) \}/)
-  assert.match(source, /\}, \[cursor, cursorSegment, densePattern, hour, order, viewRequests\]\)/)
+  assert.match(source, /\}, \[context, cursor, cursorSegment, densePattern, hour, order, viewRequests\]\)/)
+  assert.match(source, /typeIds: \[context\.typeId\]/)
+  assert.match(source, /Object\.fromEntries\(pageContext\.identity\)/)
   assert.match(source, /denseMetadata\?\.hasMore === true \? denseMetadata\.nextCursor/)
   assert.match(source, /action\.load\(action\.failed\)/)
 })
@@ -345,6 +347,13 @@ test("an exact finding row wins over the previous PostgreSQL selection", () => {
   const first = { ...row("1001001", { pid: 7 }), ordinal: "0" }
   const focus = { ...row("1001001", { pid: 8 }), ordinal: "1" }
   assert.equal(helpers.selectedEntity([first, focus], first, focus, "pg_stat_activity"), focus)
+})
+
+test("an off-page finding is contextualized without appending to the ranked page", async () => {
+  const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
+  assert.match(source, /contextualRows\(ranked, active, exact\)/)
+  assert.doesNotMatch(source, /\[\.\.\.ranked,[^\]]*focus/)
+  assert.match(source, /contextLabel=\{activeContext\?\.label\}/)
 })
 
 test("PostgreSQL detail never opens a row that was not selected", () => {

@@ -285,6 +285,8 @@ filter.hint: "Ищется в любом месте значения; * — лю
 filter.kept: "{kept} из {total}"
 filter.clear: "Очистить фильтр"
 filter.none: "Под фильтр не подходит ни одна строка"
+filter.entity: "Объект: {entity}"
+filter.show_all: "Показать все объекты"
 col.pid.label: "PID"
 col.pid.help: "Идентификатор процесса Linux. Проверьте команду, состояние и PID родителя."
 col.command.label: "Команда"

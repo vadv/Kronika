@@ -7,7 +7,7 @@ import { importModule, registryPlugin } from "./import-module.mjs"
 
 const helpers = await importModule(
   'export { currentValue, fallbackMetric, hasMetric, metricPoints, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
-  { plugins: [registryPlugin([])] },
+  { plugins: [registryPlugin([{ typeId: "1108001", logicalName: "os_diskstats", identity: ["major", "minor"], columns: ["ts", "major", "minor", "device", "io_in_progress"] }])] },
 )
 
 const data = {
@@ -82,13 +82,18 @@ test("system cards derive production values when fixture-only series are absent"
   assert.deepEqual(derived("network_drops"), [5])
 })
 
-test("System never depends on process rows loaded by another view", () => {
+test("System never depends on process rows loaded by another view", async () => {
   assert.equal(helpers.SYSTEM_REQUESTS.some(({ section }) => section === "os_process"), false)
   assert.equal(helpers.SYSTEM_METRICS.some(({ id }) => id.startsWith("process_")), false)
 
   const grouped = new Map(helpers.SYSTEM_METRICS.map((metric) => [metric.id, metric.group]))
   for (const id of ["device_count", "filesystem_count"]) assert.equal(grouped.get(id), "storage")
   for (const id of ["interface_count", "network_rx", "network_tx", "network_errors", "network_drops"]) assert.equal(grouped.get(id), "network")
+  const disk = helpers.SYSTEM_REQUESTS.find(({ section }) => section === "os_diskstats")
+  assert.ok(disk.fields.includes("major"))
+  assert.ok(disk.fields.includes("minor"))
+  const source = await readFile(new URL("../src/system-view.tsx", import.meta.url), "utf8")
+  assert.match(source, /rows\.length === 0 && activeContext === null/)
 })
 
 test("the committed hour supplies only honest System metrics with complete histories", async () => {

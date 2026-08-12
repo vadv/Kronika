@@ -1,7 +1,9 @@
 import { Activity, Cpu, Database, Gauge, HardDrive, MemoryStick, Network } from "lucide-react"
+import { registry } from "kronika:registry"
 import { useEffect, useMemo, useState, type ReactNode } from "react"
 
 import { fieldNameForLocator, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
+import { contextualRows, type EntityContext } from "./entity-context"
 import { EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import { asNumber, humanBytes, measure, shownMoment, snapshot, value, type Locale } from "./model"
@@ -133,28 +135,37 @@ function systemRequests(): readonly SectionRequest[] {
       need(spec.section, spec.resource === undefined ? [spec.field] : [spec.field, "resource"])
     }
   }
-  for (const panel of ENTITIES) need(panel.section, panel.columns.map((column: EntityColumn) => column.field))
+  for (const panel of ENTITIES) need(panel.section, [
+    ...panel.columns.map((column: EntityColumn) => column.field),
+    ...registry.filter((layout) => layout.logicalName === panel.section).flatMap((layout) => layout.identity),
+  ])
   return [...wanted].map(([section, fields]) => ({ section, fields: [...fields] }))
 }
 
 export const SYSTEM_REQUESTS = systemRequests()
 
 export function SystemView({
+  context,
+  contextRow,
   cursor,
   data,
   focus,
   hour,
   locale,
   onCursor,
+  onContextClear,
   onFinding,
   t,
 }: {
+  readonly context: EntityContext | null
+  readonly contextRow: DataRow | null
   readonly cursor: number
   readonly data: HourData
   readonly focus: Finding | null
   readonly hour: number
   readonly locale: Locale
   readonly onCursor: (timestamp: number) => void
+  readonly onContextClear: () => void
   readonly onFinding: (finding: Finding) => void
   readonly t: Translate
 }) {
@@ -213,12 +224,14 @@ export function SystemView({
     <UseTable cursor={cursor} hour={hour} lanePoints={data.lanePoints} locale={locale} t={t} />
     <section className="entity-panels">
       {ENTITIES.map((entity) => {
-        const rows = snapshot(sectionRows(data, entity.section), cursor)
-        if (rows.length === 0) return null
+        const allRows = snapshot(sectionRows(data, entity.section), cursor)
+        const activeContext = context?.logicalName === entity.section ? context : null
+        const rows = contextualRows(allRows, activeContext, activeContext === null ? null : contextRow)
+        if (rows.length === 0 && activeContext === null) return null
         const finding = focus?.logicalName === entity.section ? focus : null
         return <section className="entity-panel" key={entity.section}>
           <h2>{entity.icon}<span>{t(entity.label)}</span></h2>
-          <EntityTable columns={entity.columns} empty={t("table.no_rows")} finding={finding} findingField={finding === null ? null : fieldNameForLocator(finding)} label={t(entity.label)} locale={locale} rows={rows} t={t} testId={`system-${entity.section}`} />
+          <EntityTable columns={entity.columns} contextLabel={activeContext?.label} empty={t("table.no_rows")} finding={finding} findingField={finding === null ? null : fieldNameForLocator(finding)} label={t(entity.label)} locale={locale} onContextClear={activeContext === null ? undefined : onContextClear} rows={rows} t={t} testId={`system-${entity.section}`} />
         </section>
       })}
     </section>

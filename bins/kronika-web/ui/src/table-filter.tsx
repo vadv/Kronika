@@ -1,28 +1,33 @@
 import { Search, X } from "lucide-react"
-import { useId } from "react"
 
 import type { Translate } from "./help"
 
 export function TableFilter({
+  context,
   kept,
+  onContextClear,
   onPattern,
   pattern,
   t,
   total,
 }: {
+  readonly context?: string | undefined
   readonly kept: number
-  readonly onPattern: (pattern: string) => void
+  readonly onContextClear?: (() => void) | undefined
+  readonly onPattern?: ((pattern: string) => void) | undefined
   readonly pattern: string
   readonly t: Translate
   readonly total: number
 }) {
-  const id = useId()
   return <div className="table-filter">
-    <Search aria-hidden="true" size={12} />
-    <input
+    {context !== undefined && <span className="entity-context-filter" data-testid="entity-context-filter">
+      {t("filter.entity", { entity: context })}
+      <button aria-label={t("filter.show_all")} onClick={onContextClear} type="button"><X aria-hidden="true" size={11} /></button>
+    </span>}
+    {onPattern !== undefined && <><Search aria-hidden="true" size={12} />
+      <input
       aria-label={t("filter.label")}
       data-testid="table-filter"
-      id={id}
       onChange={(event) => onPattern(event.target.value)}
       placeholder={t("filter.placeholder")}
       spellCheck={false}
@@ -33,6 +38,6 @@ export function TableFilter({
     {pattern !== "" && <>
       {kept >= 0 && <span className="table-filter-count">{t("filter.kept", { kept: String(kept), total: String(total) })}</span>}
       <button aria-label={t("filter.clear")} onClick={() => onPattern("")} type="button"><X aria-hidden="true" size={12} /></button>
-    </>}
+    </>}</>}
   </div>
 }

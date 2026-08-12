@@ -73,12 +73,14 @@ export function ProcessSummary({ lens, linkedPids, locale, rows, t, ticksPerSeco
 }
 
 export function ProcessTable({
+  contextLabel,
   finding,
   findingField,
   lens,
   linkedPids,
   locale,
   onOrder,
+  onContextClear,
   onPattern,
   onSelect,
   order,
@@ -88,12 +90,14 @@ export function ProcessTable({
   t,
   ticksPerSecond,
 }: {
+  readonly contextLabel?: string | undefined
   readonly finding?: Finding | null
   readonly findingField?: string | null | undefined
   readonly lens: Lens
   readonly linkedPids: ReadonlySet<number>
   readonly locale: Locale
   readonly onOrder: (order: TableOrder | null) => void
+  readonly onContextClear?: (() => void) | undefined
   readonly onPattern: (pattern: string) => void
   readonly order: TableOrder | null
   readonly onSelect: (row: DataRow) => void
@@ -120,12 +124,14 @@ export function ProcessTable({
   return <EntityTable
     className="process-table"
     columns={columns}
+    contextLabel={contextLabel}
     empty={t("table.empty")}
     finding={finding}
     findingField={findingField}
     label={t("table.processes")}
     locale={locale}
     onOrder={onOrder}
+    onContextClear={onContextClear}
     onPattern={onPattern}
     onSelect={onSelect}
     order={order ?? defaultOrder}
