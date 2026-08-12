@@ -213,7 +213,7 @@ function historyPoints(
     }
     const number = asNumber(value(row, field))
     const drawn = counter ? rate(earlier, number, row.timestamp) : number
-    if (counter && number !== null) earlier = { value: number, timestamp: row.timestamp }
+    if (counter) earlier = number === null ? null : { value: number, timestamp: row.timestamp }
     const point = {
       segmentId: `${row.segmentId}:${run}`,
       timestamp: row.timestamp,

@@ -17,6 +17,9 @@ use crate::route::{DataRequest, HourRequest, SegmentRequest, SeriesRequest, Wind
 
 mod lanes;
 
+#[cfg(test)]
+mod tests;
+
 const SERIES: &str = "health";
 
 const HOUR: i64 = 3_600_000_000;
@@ -44,7 +47,7 @@ pub(super) fn prepare(
         || latest_hour(&hours),
         |from| Window {
             from: Some(from),
-            to: requested.to.or(Some(from + HOUR - 1)),
+            to: Some(requested.to.unwrap_or_else(|| hour_end(from))),
         },
     );
     let catalog = super::catalog::prepare(root, window, configured_sources)?;
@@ -66,10 +69,25 @@ pub(super) fn prepare(
 }
 
 fn hours_of(segments: &[SegmentRef]) -> Vec<i64> {
-    let mut hours: Vec<i64> = segments
-        .iter()
-        .flat_map(|segment| [floor_hour(segment.min_ts()), floor_hour(segment.max_ts())])
-        .collect();
+    hours_of_ranges(
+        segments
+            .iter()
+            .map(|segment| (segment.min_ts(), segment.max_ts())),
+    )
+}
+
+fn hours_of_ranges(ranges: impl IntoIterator<Item = (i64, i64)>) -> Vec<i64> {
+    let mut hours = Vec::new();
+    for (min_ts, max_ts) in ranges {
+        if min_ts > max_ts {
+            continue;
+        }
+        for bucket in min_ts.div_euclid(HOUR)..=max_ts.div_euclid(HOUR) {
+            if let Some(hour) = bucket.checked_mul(HOUR) {
+                hours.push(hour);
+            }
+        }
+    }
     hours.sort_unstable();
     hours.dedup();
     hours
@@ -78,12 +96,12 @@ fn hours_of(segments: &[SegmentRef]) -> Vec<i64> {
 fn latest_hour(hours: &[i64]) -> Window {
     hours.last().map_or_else(Window::default, |from| Window {
         from: Some(*from),
-        to: Some(from + HOUR - 1),
+        to: Some(hour_end(*from)),
     })
 }
 
-const fn floor_hour(timestamp: i64) -> i64 {
-    timestamp - timestamp.rem_euclid(HOUR)
+const fn hour_end(from: i64) -> i64 {
+    from.saturating_add(HOUR - 1)
 }
 
 impl PreparedHour {

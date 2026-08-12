@@ -25,7 +25,7 @@ function row(timestamp, values, segmentId = "segment-a", ordinal = "0") {
 
 test("a counter is drawn as the rate between two readings", () => {
   const series = detail.processLensHistory([
-    row(3_000_000, { pid: 77, starttime: 10, stime: 30 }, "segment-a", "2"),
+    row(3_000_000, { pid: 77, starttime: 10, stime: 30 }, "segment-b", "2"),
     row(1_000_000, { pid: 77, starttime: 10, stime: 10 }, "segment-a", "0"),
     row(2_000_000, { pid: 77, starttime: 10, stime: 14 }, "segment-a", "1"),
   ], "cpu")
@@ -34,6 +34,17 @@ test("a counter is drawn as the rate between two readings", () => {
     "utime", "stime", "rundelay_ns", "blkdelay_ticks", "nvcsw", "nivcsw", "minflt", "majflt",
   ])
   assert.deepEqual(series[1].points.map((point) => point.value), [null, 4, 16])
+})
+
+test("a missing counter reading resets the next rate", () => {
+  const series = detail.processLensHistory([
+    row(1_000_000, { pid: 77, starttime: 10, stime: 10 }, "segment-a", "0"),
+    row(2_000_000, { pid: 77, starttime: 10, stime: null }, "segment-a", "1"),
+    row(3_000_000, { pid: 77, starttime: 10, stime: 30 }, "segment-b", "2"),
+    row(4_000_000, { pid: 77, starttime: 10, stime: 34 }, "segment-b", "3"),
+  ], "cpu")
+
+  assert.deepEqual(series[1].points.map((point) => point.value), [null, null, null, 4])
 })
 
 test("null values split rendered history runs while later zero stays numeric", () => {
