@@ -1056,6 +1056,51 @@ fn a_snapshot_answers_for_the_sections_that_are_there() {
 }
 
 #[test]
+fn a_multi_section_snapshot_applies_the_shared_projection_per_section() {
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_health(3);
+    fixture.append_diskstats(&[(200, 0, 7)]);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_activity&section=os_diskstats&section=not_recorded&field=pid&field=minor"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("projected snapshot");
+    let layouts = records
+        .iter()
+        .filter(|record| record["record"] == "layout")
+        .map(|record| {
+            (
+                record["layout"]["logical_name"].clone(),
+                record["layout"]["columns"]
+                    .as_array()
+                    .expect("layout columns")
+                    .iter()
+                    .map(|column| column["name"].clone())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        layouts,
+        [
+            (
+                serde_json::json!("pg_stat_activity"),
+                vec![serde_json::json!("pid")]
+            ),
+            (
+                serde_json::json!("os_diskstats"),
+                vec![serde_json::json!("minor")]
+            ),
+        ]
+    );
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), 5);
+    assert_eq!(rows[0]["values"], serde_json::json!([0]));
+    assert_eq!(rows[4]["values"], serde_json::json!([0]));
+}
+
+#[test]
 fn snapshot_rows_align_positional_values_with_layout_columns() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(

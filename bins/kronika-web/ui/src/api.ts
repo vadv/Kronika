@@ -394,6 +394,14 @@ export function requestsForSegment(
       .filter((typeId) => request.typeIds === undefined || request.typeIds.includes(typeId))
     if (typeIds.length === 0) return []
     if (request.fields === undefined && request.fieldsByType === undefined) return [request]
+    if (request.fields !== undefined
+      && request.fieldsByType === undefined
+      && request.typeIds === undefined
+      && batchableSnapshotSection(request)) {
+      const physical = new Set(typeIds.flatMap((typeId) => REGISTRY_BY_TYPE_ID.get(typeId)?.columns ?? []))
+      const fields = unique(request.fields.filter((field) => physical.has(field)))
+      return fields.length === 0 ? [] : [{ section: request.section, fields }]
+    }
     const { fieldsByType: _fieldsByType, typeIds: _typeIds, ...base } = request
     return unique(typeIds).flatMap((typeId) => {
       const physical = new Set(
@@ -535,12 +543,14 @@ export async function loadSnapshot(
   signal.throwIfAborted()
   const fixture = fixtureSnapshot(segmentId, at, requests, chosen, order)
   if (fixture !== null) return fixture
-  const plain = requests.filter((section) => plainSnapshotSection(section))
-  const individual = requests.filter((section) => !plainSnapshotSection(section))
+  const whole = requests.filter((section) => batchableSnapshotSection(section) && section.fields === undefined)
+  const projected = requests.filter((section) => batchableSnapshotSection(section) && section.fields !== undefined)
+  const individual = requests.filter((section) => !batchableSnapshotSection(section))
   const batches = chosen.filters !== undefined || chosen.typeId !== undefined || chosen.rowOrdinal !== undefined
     ? requests.map((section) => [section] as const)
     : [
-        ...(plain.length === 0 ? [] : [plain]),
+        ...(whole.length === 0 ? [] : [whole]),
+        ...(projected.length === 0 ? [] : [projected]),
         ...individual.map((section) => [section] as const),
       ]
   const responses = await Promise.all(batches.map(async (batch) => {
@@ -683,9 +693,8 @@ function projectFixtureRow(row: DataRow, fields: readonly string[]): DataRow {
   }
 }
 
-function plainSnapshotSection(section: SectionRequest): boolean {
-  return section.fields === undefined
-    && section.typeId === undefined
+function batchableSnapshotSection(section: SectionRequest): boolean {
+  return section.typeId === undefined
     && section.top === undefined
     && section.defaultOrder === undefined
     && section.order === undefined
@@ -700,13 +709,14 @@ function snapshotQuery(
 ): string {
   const section = sections.length === 1 ? sections[0] : undefined
   const typeId = section?.typeId ?? options.typeId
+  const fields = section?.fields ?? unique(sections.flatMap((request) => request.fields ?? []))
   const ordered = section === undefined || options.rowOrdinal !== undefined
     ? []
     : snapshotOrder(section, order)
   return [
     `at=${at}`,
     ...sections.map((request) => `section=${encodeURIComponent(request.section)}`),
-    ...(section?.fields ?? []).map((field) => `field=${encodeURIComponent(field)}`),
+    ...fields.map((field) => `field=${encodeURIComponent(field)}`),
     ...ordered.map((field) => `by=${encodeURIComponent(field)}`),
     ...(section?.top === undefined || options.rowOrdinal !== undefined ? [] : [`top=${section.top}`]),
     ...(options.fullText === true ? [] : [`text=${CELL_TEXT}`]),

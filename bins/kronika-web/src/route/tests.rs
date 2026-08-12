@@ -134,6 +134,32 @@ fn snapshot_accepts_order_candidates_and_one_exact_locator() {
 }
 
 #[test]
+fn snapshot_shares_only_a_projection_between_sections() {
+    let Route::Snapshot(projected) = parse(
+        "/api/segments/7/snapshot",
+        Some("at=9&section=os_cpu&section=os_meminfo&field=user&field=mem_total"),
+    )
+    .expect("shared projection") else {
+        panic!("snapshot route");
+    };
+    assert_eq!(projected.sections, ["os_cpu", "os_meminfo"]);
+    assert_eq!(projected.fields, ["user", "mem_total"]);
+
+    for query in [
+        "at=9&section=os_cpu&section=os_meminfo&by=user",
+        "at=9&section=os_cpu&section=os_meminfo&top=1",
+        "at=9&section=os_cpu&section=os_meminfo&where.cpu_id=-1",
+        "at=9&section=os_cpu&section=os_meminfo&type_id=1102001",
+    ] {
+        assert_eq!(
+            parse("/api/segments/7/snapshot", Some(query)),
+            Err(RouteError::BadParameter("section".to_owned())),
+            "{query}",
+        );
+    }
+}
+
+#[test]
 fn active_tail_is_one_strict_physical_cursor() {
     let Route::History(request) = parse(
         "/api/segments/7/sections/os_diskstats/history",

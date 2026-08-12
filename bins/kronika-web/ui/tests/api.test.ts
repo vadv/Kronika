@@ -132,6 +132,53 @@ test("snapshot rows use each physical layout's positional columns", async () => 
   }
 })
 
+test("ten compatible snapshot projections share one request and keep physical columns", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const requests = Array.from({ length: 10 }, (_, index) => ({
+    section: `section_${index}`,
+    fields: [`metric_${index}`],
+  }))
+  const originalFetch = globalThis.fetch
+  let fetches = 0
+  globalThis.fetch = async (input) => {
+    fetches += 1
+    const url = new URL(String(input), "http://kronika.invalid")
+    assert.deepEqual(url.searchParams.getAll("section"), requests.map(({ section }) => section))
+    assert.deepEqual(url.searchParams.getAll("field"), requests.map(({ fields }) => fields[0]))
+    return ndjson([
+      {
+        record: "layout",
+        layout: {
+          type_id: "1", logical_name: "section_0",
+          columns: [{ name: "metric_0" }],
+        },
+      },
+      { record: "row", type_id: "1", ordinal: "0", timestamp: String(START), values: [10] },
+    ])
+  }
+
+  try {
+    const snapshot = await api.loadSnapshot("77", START, requests, new AbortController().signal)
+    assert.equal(fetches, 1)
+    assert.deepEqual(snapshot.sections.section_0?.map((row) => row.values), [{ metric_0: 10 }])
+    assert.deepEqual(snapshot.sections.section_9, [])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("a compatible projection stays untyped after catalog resolution", async () => {
+  const api = await bundledApi()
+  assert.deepEqual(api.requestsForSegment(
+    [{ section: "os_loadavg", fields: ["load1", "missing"] }],
+    {
+      id: "77", minTs: START, maxTs: START,
+      sections: [{ logicalName: "os_loadavg", typeId: "1105001" }],
+    },
+  ), [{ section: "os_loadavg", fields: ["load1"] }])
+})
+
 test("a curated snapshot follows the registry layout and physical order", async () => {
   const api = await bundledApi()
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")

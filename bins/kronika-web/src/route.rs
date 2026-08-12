@@ -245,7 +245,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
             }
         }
     }
-    validate_snapshot_shape(&sections, &fields, &by, top, &filters, type_id, row_ordinal)?;
+    validate_snapshot_shape(&sections, &by, top, &filters, type_id, row_ordinal)?;
     Ok(SnapshotRequest {
         segment_id,
         at: at.ok_or_else(|| RouteError::BadParameter("at".to_owned()))?,
@@ -262,7 +262,6 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
 
 fn validate_snapshot_shape(
     sections: &[String],
-    fields: &[String],
     by: &[String],
     top: Option<usize>,
     filters: &[Filter],
@@ -273,8 +272,7 @@ fn validate_snapshot_shape(
         return Err(RouteError::BadParameter("section".to_owned()));
     }
     if sections.len() != 1
-        && (!fields.is_empty()
-            || !by.is_empty()
+        && (!by.is_empty()
             || top.is_some()
             || !filters.is_empty()
             || type_id.is_some()

@@ -5,12 +5,12 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use kronika_reader::{Cell, Dictionary, Reader, Row, Segment, SegmentKind, SegmentRef};
-use kronika_registry::ColumnClass;
+use kronika_registry::{ColumnClass, contract};
 use serde_json::{Value, json};
 
 use super::query::{Plan, plans, resolved_dictionary};
 use super::render::{cell, projected_layout, record, shorten};
-use super::{ApiError, CachePolicy, ResponseMeta, explicit_segment};
+use super::{ApiError, CachePolicy, ResponseMeta, explicit_segment_with_listing};
 use crate::route::{DataRequest, SegmentRequest, SnapshotRequest};
 
 pub(crate) struct PreparedSnapshot {
@@ -60,17 +60,29 @@ struct SectionPlans {
 }
 
 pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedSnapshot, ApiError> {
-    let (reader, segment_ref) = explicit_segment(root, request.segment_id)?;
+    let (reader, segment_ref, segments) = explicit_segment_with_listing(root, request.segment_id)?;
     let segment = reader.open_segment(&segment_ref)?;
-    let earlier = preceding(&reader, &segment_ref)?;
+    let earlier = preceding(&reader, &segment_ref, segments)?;
+    let shared_projection = request.sections.len() > 1 && !request.fields.is_empty();
+    if shared_projection {
+        validate_shared_projection(&segment, &request.sections, &request.fields)?;
+    }
     let mut sections = Vec::with_capacity(request.sections.len());
     for logical_name in request.sections {
+        let fields = if shared_projection {
+            section_projection(&segment, &logical_name, &request.fields)
+        } else {
+            request.fields.clone()
+        };
+        if shared_projection && fields.is_empty() {
+            continue;
+        }
         let data = DataRequest {
             segment: SegmentRequest {
                 segment_id: request.segment_id,
                 section: logical_name.clone(),
             },
-            fields: request.fields.clone(),
+            fields,
             filters: request.filters.clone(),
             type_id: request.type_id,
             after: None,
@@ -596,18 +608,51 @@ fn available_field_index(fields: &[super::query::OutputField], name: &str) -> Op
         .position(|field| field.name == name && field.column.is_some())
 }
 
-fn preceding(reader: &Reader, segment_ref: &SegmentRef) -> Result<Option<Segment>, ApiError> {
-    let listing = reader.catalog_segments(..)?;
-    let chosen = listing
-        .segments
+fn preceding(
+    reader: &Reader,
+    segment_ref: &SegmentRef,
+    segments: Vec<SegmentRef>,
+) -> Result<Option<Segment>, ApiError> {
+    let chosen = segments
         .into_iter()
-        .filter(|candidate| candidate.id() != segment_ref.id())
         .filter(|candidate| candidate.max_ts() <= segment_ref.min_ts())
         .max_by_key(SegmentRef::max_ts);
     chosen
         .map(|candidate| reader.open_segment(&candidate))
         .transpose()
         .map_err(ApiError::from)
+}
+
+fn validate_shared_projection(
+    segment: &Segment,
+    sections: &[String],
+    fields: &[String],
+) -> Result<(), ApiError> {
+    for field in fields {
+        let known = sections.iter().any(|section| {
+            segment
+                .layouts(section)
+                .filter_map(|(type_id, _section)| contract(type_id))
+                .any(|layout| layout.column(field).is_some())
+        });
+        if !known {
+            return Err(ApiError::NoSuchColumn(field.clone()));
+        }
+    }
+    Ok(())
+}
+
+fn section_projection(segment: &Segment, logical_name: &str, fields: &[String]) -> Vec<String> {
+    let columns = segment
+        .layouts(logical_name)
+        .filter_map(|(type_id, _section)| contract(type_id))
+        .flat_map(|layout| layout.columns.iter().map(|column| column.name))
+        .collect::<HashSet<_>>();
+    fields
+        .iter()
+        .filter(|field| columns.contains(field.as_str()))
+        .cloned()
+        .collect()
 }
 
 struct Moments {
