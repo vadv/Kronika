@@ -39,7 +39,7 @@ const compiled = await build({
     },
   }],
   stdin: {
-    contents: 'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, activityDurationMs, columnsFor, isIdleActivity, isSystemActivity, isTimestampField, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, postgresIdentity, postgresProjection } from "../src/postgres-metrics.ts"',
+    contents: 'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationMs, columnsFor, isIdleActivity, isSystemActivity, isTimestampField, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, postgresIdentity, postgresProjection } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
     loader: "tsx",
     resolveDir: directory,
   },
@@ -80,7 +80,7 @@ test("PostgreSQL durations are not formatted as Unix timestamps", () => {
   assert.equal(helpers.columnsFor([row("1", { max_age_us: 123.4 })])[0].kind, "microseconds")
 })
 
-test("activity keeps an explicit compact sticky PID header", () => {
+test("activity keeps a compact operator table and moves diagnostics to detail", () => {
   assert.deepEqual(
     helpers.ACTIVITY_COLUMNS[0],
     { field: "pid", help: "pg.field.pid.help", kind: "id", label: "pg.field.pid.label", sticky: true, width: 78 },
@@ -88,47 +88,86 @@ test("activity keeps an explicit compact sticky PID header", () => {
   assert.deepEqual(helpers.ACTIVITY_COLUMNS[1], {
     field: "query_duration_ms",
     help: "pg.field.query_duration_ms.help",
-    kind: "milliseconds",
+    kind: "duration",
     label: "pg.field.query_duration_ms.label",
     sticky: false,
     width: 145,
   })
+  assert.deepEqual(helpers.ACTIVITY_COLUMNS[2], {
+    field: "transaction_duration_ms",
+    help: "pg.field.transaction_duration_ms.help",
+    kind: "duration",
+    label: "pg.field.transaction_duration_ms.label",
+    sticky: false,
+    width: 155,
+  })
+  assert.deepEqual(
+    helpers.ACTIVITY_COLUMNS.map(({ field }) => field),
+    ["pid", "query_duration_ms", "transaction_duration_ms", "state", "wait_event_type", "wait_event", "datname", "usename", "application_name", "client_addr", "query"],
+  )
+  for (const field of ["backend_type", "leader_pid", "query_id", "backend_xid_age", "backend_xmin_age", "backend_start", "xact_start", "query_start", "state_change"]) {
+    assert.equal(helpers.ACTIVITY_COLUMNS.some((column) => column.field === field), false)
+    assert.equal(helpers.ACTIVITY_DETAIL_COLUMNS.some((column) => column.field === field), true)
+  }
+  assert.deepEqual(helpers.activityColumns(false), helpers.ACTIVITY_COLUMNS)
+  assert.deepEqual(helpers.activityColumns(true).slice(0, 3).map(({ field }) => field), ["pid", "backend_type", "query_duration_ms"])
   assert.deepEqual(helpers.ACTIVITY_DEFAULT_ORDER, { column: "query_duration_ms", descending: true })
 })
 
-test("activity defaults to running client work and derives its current duration", () => {
-  const active = activityRow("1", { backend_type: "client backend", state: "active", query_start: "4000000" })
-  const idle = activityRow("2", { backend_type: "client backend", state: "idle", query_start: "1000000" })
-  const idleTransaction = activityRow("3", { backend_type: "client backend", state: "idle in transaction", query_start: "2000000" })
+test("activity hides only ordinary idle and derives query and transaction time from the row", () => {
+  const active = activityRow("1", { backend_type: "client backend", state: "active", query_start: "4000000", xact_start: "1000000" })
+  const idle = activityRow("2", { backend_type: "client backend", state: "idle", query_start: "1000000", xact_start: null })
+  const idleTransaction = activityRow("3", { backend_type: "client backend", state: "idle in transaction", query_start: "2000000", xact_start: "2000000" })
+  const aborted = activityRow("6", { backend_type: "client backend", state: "idle in transaction (aborted)", query_start: "3000000", xact_start: "3000000" })
   const system = activityRow("4", { backend_type: "checkpointer", state: null, query_start: null })
-  const legacy = activityRow("5", { backend_type: null, state: "active", query_start: "9000000" })
+  const legacy = activityRow("5", { backend_type: null, state: "active", query_start: "9000000", xact_start: "8000000" })
 
   assert.equal(helpers.isSystemActivity(active), false)
   assert.equal(helpers.isSystemActivity(system), true)
   assert.equal(helpers.isSystemActivity(legacy), false)
   assert.equal(helpers.isIdleActivity(idle), true)
-  assert.equal(helpers.isIdleActivity(idleTransaction), true)
+  assert.equal(helpers.isIdleActivity(idleTransaction), false)
+  assert.equal(helpers.isIdleActivity(aborted), false)
   assert.equal(helpers.activityDurationMs(active), 6_000)
   assert.equal(helpers.activityDurationMs(idle), null)
+  assert.equal(helpers.activityDurationMs(idleTransaction), null)
+  assert.equal(helpers.transactionDurationMs(active), 9_000)
+  assert.equal(helpers.transactionDurationMs(idleTransaction), 8_000)
+  assert.equal(helpers.transactionDurationMs(aborted), 7_000)
+  assert.equal(helpers.transactionDurationMs(idle), null)
   assert.equal(helpers.activityDurationMs(activityRow("6", { state: "active", query_start: "11000000" })), null)
+  assert.equal(helpers.transactionDurationMs(activityRow("7", { xact_start: "11000000" })), null)
+  assert.equal(helpers.transactionDurationMs(activityRow("8", { xact_start: "0" })), null)
 
-  const rows = [active, idle, idleTransaction, system, legacy]
+  const rows = [active, idle, idleTransaction, aborted, system, legacy]
   const defaults = helpers.visibleActivityRows(rows, { showIdle: false, showSystem: false })
-  assert.deepEqual(defaults.map(({ ordinal }) => ordinal), ["1", "5"])
+  assert.deepEqual(defaults.map(({ ordinal }) => ordinal), ["1", "5", "3", "6"])
   assert.equal(defaults[0].values.query_duration_ms, 6_000)
+  assert.equal(defaults[0].values.transaction_duration_ms, 9_000)
   assert.equal(defaults[1].values.query_duration_ms, 1_000)
+  assert.equal(defaults[2].values.query_duration_ms, null)
+  assert.equal(defaults[2].values.transaction_duration_ms, 8_000)
   assert.deepEqual(
     helpers.visibleActivityRows(rows, { showIdle: true, showSystem: false }).map(({ ordinal }) => ordinal),
-    ["1", "5", "2", "3"],
+    ["1", "5", "3", "6", "2"],
   )
   assert.deepEqual(
     helpers.visibleActivityRows(rows, { showIdle: false, showSystem: true }).map(({ ordinal }) => ordinal),
-    ["1", "5", "4"],
+    ["1", "5", "3", "6", "4"],
   )
   assert.deepEqual(
     helpers.visibleActivityRows(rows, { showIdle: false, showSystem: false }, system).map(({ ordinal }) => ordinal),
-    ["1", "5", "4"],
+    ["1", "5", "3", "6", "4"],
   )
+})
+
+test("elapsed Activity values use compact wall-time formatting", () => {
+  assert.equal(helpers.humanDuration(850, "en"), "850 ms")
+  assert.equal(helpers.humanDuration(5_200, "en"), "5.2 s")
+  assert.equal(helpers.humanDuration(194_000, "en"), "3m 14s")
+  assert.equal(helpers.humanDuration(7_560_000, "en"), "2h 06m")
+  assert.equal(helpers.humanDuration(5_200, "ru"), "5,2 с")
+  assert.equal(helpers.humanDuration(null, "ru"), "—")
 })
 
 test("all statement layouts use their registered identity and timing names", () => {
@@ -203,7 +242,8 @@ test("dense PostgreSQL columns and the Plans tab stay available by section", asy
   assert.match(source, /id: "plans"[\s\S]*sections: \["pg_store_plans", "pg_store_plans_info"\]/)
   assert.match(source, /tab\.id === "plans"/)
   assert.match(source, /pg-plans-empty/)
-  assert.match(source, /ACTIVITY_COLUMNS\.some\(\(\{ field \}\) => field === order\.column\)/)
+  assert.match(source, /columns\.some\(\(\{ field \}\) => field === order\.column\)/)
+  assert.match(source, /detailColumns=\{ACTIVITY_DETAIL_COLUMNS\}/)
   assert.match(source, /section === "plans" && available\("pg_store_plans_info"\)/)
   assert.match(source, /!current\.some[\s\S]*\[\.\.\.current, focus\]/)
   assert.match(source, /loadSeries\(hour, section, filters, fields, controller\.signal, row\.typeId\)/)

@@ -6,7 +6,7 @@ import { EntityTable, unit, type EntityColumn, type TableOrder } from "./entity-
 import type { Translate } from "./help"
 import { fieldNameForLocator, loadSeries, loadSnapshot } from "./api"
 import { LabelHelp } from "./help"
-import { asNumber, formatUtc, humanBytes, identifier, measure, rawText, snapshot, value, type Locale, shownMoment } from "./model"
+import { asNumber, formatUtc, humanBytes, humanDuration, identifier, measure, rawText, snapshot, value, type Locale, shownMoment } from "./model"
 import { decoratePostgresRows, findingSemanticField, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, physicalField, physicalFields, postgresHistory, postgresIdentity, type PlanLens, type PostgresSemanticField, type StatementLens } from "./postgres-metrics"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
@@ -15,13 +15,24 @@ export type PostgresSection = "overview" | "activity" | "statements" | "plans" |
 
 export const ACTIVITY_DEFAULT_ORDER: TableOrder = { column: "query_duration_ms", descending: true }
 
+const ACTIVITY_PID = pgId("pid", "pg.field.pid", 78, true)
+const ACTIVITY_BACKEND_TYPE = pgText("backend_type", "pg.backend_type", 150, true)
+
 export const ACTIVITY_COLUMNS: readonly EntityColumn[] = [
-  pgId("pid", "pg.field.pid", 78, true), milliseconds("query_duration_ms", 145), pgId("leader_pid", "pg.leader_pid", 105), pgText("backend_type", "pg.backend_type", 150, true), pgText("datname", "pg.datname", 145), pgText("usename", "pg.usename", 130),
-  pgText("application_name", "pg.application_name", 180), pgText("client_addr", "pg.client_addr", 150), pgText("state", "pg.state", 110), pgText("wait_event_type", "pg.wait_event_type", 135),
-  pgText("wait_event", "pg.wait_event", 155), pgId("query_id", "pg.query_id", 150), pgNumber("backend_xid_age", "pg.backend_xid_age", 145), pgNumber("backend_xmin_age", "pg.backend_xmin_age", 145),
-  pgTimestamp("backend_start", "pg.backend_start", 210), pgTimestamp("xact_start", "pg.xact_start", 210), pgTimestamp("query_start", "pg.query_start", 210), pgTimestamp("state_change", "pg.state_change", 210),
-  pgText("query", "pg.query", 420),
+  ACTIVITY_PID, duration("query_duration_ms", 145), duration("transaction_duration_ms", 155), pgText("state", "pg.state", 140),
+  pgText("wait_event_type", "pg.wait_event_type", 135), pgText("wait_event", "pg.wait_event", 155), pgText("datname", "pg.datname", 145), pgText("usename", "pg.usename", 130),
+  pgText("application_name", "pg.application_name", 180), pgText("client_addr", "pg.client_addr", 150), pgText("query", "pg.query", 420),
 ]
+
+export const ACTIVITY_DETAIL_COLUMNS: readonly EntityColumn[] = [
+  ...ACTIVITY_COLUMNS, ACTIVITY_BACKEND_TYPE, pgId("leader_pid", "pg.leader_pid", 105), pgId("query_id", "pg.query_id", 150),
+  pgNumber("backend_xmin_age", "pg.backend_xmin_age", 145), pgNumber("backend_xid_age", "pg.backend_xid_age", 145),
+  pgTimestamp("backend_start", "pg.backend_start", 210), pgTimestamp("xact_start", "pg.xact_start", 210), pgTimestamp("query_start", "pg.query_start", 210), pgTimestamp("state_change", "pg.state_change", 210),
+]
+
+export function activityColumns(showSystem: boolean): readonly EntityColumn[] {
+  return showSystem ? [ACTIVITY_PID, ACTIVITY_BACKEND_TYPE, ...ACTIVITY_COLUMNS.slice(1)] : ACTIVITY_COLUMNS
+}
 
 export const STATEMENT_COLUMNS: readonly EntityColumn[] = [
   rateNumber("calls_per_second", 120),
@@ -211,12 +222,20 @@ export function isSystemActivity(row: DataRow): boolean {
 }
 
 export function isIdleActivity(row: DataRow): boolean {
-  return rawText(value(row, "state"))?.startsWith("idle") === true
+  return rawText(value(row, "state")) === "idle"
 }
 
 export function activityDurationMs(row: DataRow): number | null {
   if (rawText(value(row, "state")) !== "active") return null
-  const started = asNumber(value(row, "query_start"))
+  return elapsedSince(row, "query_start")
+}
+
+export function transactionDurationMs(row: DataRow): number | null {
+  return elapsedSince(row, "xact_start")
+}
+
+function elapsedSince(row: DataRow, field: string): number | null {
+  const started = asNumber(value(row, field))
   return started === null || started <= 0 || started > row.timestamp ? null : (row.timestamp - started) / 1_000
 }
 
@@ -230,11 +249,14 @@ export function visibleActivityRows(
     .filter((row) => rowKey(row) === focusKey
       || (visibility.showSystem || !isSystemActivity(row))
         && (visibility.showIdle || !isIdleActivity(row)))
-    .map((row) => ({ ...row, values: { ...row.values, query_duration_ms: activityDurationMs(row) } }))
+    .map((row) => ({ ...row, values: { ...row.values, query_duration_ms: activityDurationMs(row), transaction_duration_ms: transactionDurationMs(row) } }))
     .sort((left, right) => {
       const leftDuration = asNumber(value(left, "query_duration_ms"))
       const rightDuration = asNumber(value(right, "query_duration_ms"))
-      if (leftDuration === null) return rightDuration === null ? 0 : 1
+      if (leftDuration === null && rightDuration === null) {
+        return (asNumber(value(right, "transaction_duration_ms")) ?? -1) - (asNumber(value(left, "transaction_duration_ms")) ?? -1)
+      }
+      if (leftDuration === null) return 1
       if (rightDuration === null) return -1
       return rightDuration - leftDuration
     })
@@ -254,7 +276,8 @@ function ActivityView({ cursor, data, finding, focus, locale, onOrder, onPattern
 }) {
   const [showSystem, setShowSystem] = useState(false)
   const [showIdle, setShowIdle] = useState(false)
-  const activityOrder = order !== undefined && ACTIVITY_COLUMNS.some(({ field }) => field === order.column) ? order : undefined
+  const columns = activityColumns(showSystem)
+  const activityOrder = order !== undefined && columns.some(({ field }) => field === order.column) ? order : undefined
   const transformRows = useCallback(
     (rows: readonly DataRow[]) => visibleActivityRows(rows, { showIdle, showSystem }, focus),
     [focus, showIdle, showSystem],
@@ -266,7 +289,7 @@ function ActivityView({ cursor, data, finding, focus, locale, onOrder, onPattern
         <button aria-pressed={showIdle} data-testid="activity-filter-idle" onClick={() => setShowIdle((shown) => !shown)} type="button">{t("pg.activity.idle")}</button>
       </div>
     </div>
-    <PgEntityView columns={ACTIVITY_COLUMNS} cursor={cursor} data={data} defaultOrder={ACTIVITY_DEFAULT_ORDER} finding={finding} focus={focus} historyField={null} locale={locale} onOrder={onOrder} onPattern={onPattern} order={activityOrder} pattern={pattern} section="pg_stat_activity" t={t} transformRows={transformRows} />
+    <PgEntityView columns={columns} cursor={cursor} data={data} defaultOrder={ACTIVITY_DEFAULT_ORDER} detailColumns={ACTIVITY_DETAIL_COLUMNS} finding={finding} focus={focus} historyField={null} locale={locale} onOrder={onOrder} onPattern={onPattern} order={activityOrder} pattern={pattern} section="pg_stat_activity" t={t} transformRows={transformRows} />
   </>
 }
 
@@ -343,6 +366,7 @@ function PgEntityView({
   onOrder,
   order,
   columns,
+  detailColumns,
   cursor,
   data,
   focus,
@@ -357,6 +381,7 @@ function PgEntityView({
   transformRows,
 }: {
   readonly columns: readonly EntityColumn[]
+  readonly detailColumns?: readonly EntityColumn[] | undefined
   readonly cursor: number
   readonly data: HourData
   readonly focus: DataRow | null
@@ -384,9 +409,12 @@ function PgEntityView({
   }, [allRows, cursor, dense, focus, section, transformRows])
   const rates = data.rateColumns[section] ?? NO_RATES
   const visibleColumns = useMemo(
-    () => columns.filter((column) => rows.some((row) => Object.hasOwn(row.values, column.field)))
-      .map((column) => column.rate === true || rates.includes(column.field) ? { ...column, rate: true } : column),
+    () => visibleEntityColumns(columns, rows, rates),
     [columns, rates, rows],
+  )
+  const visibleDetailColumns = useMemo(
+    () => visibleEntityColumns(detailColumns ?? columns, rows, rates),
+    [columns, detailColumns, rates, rows],
   )
   const [selected, setSelected] = useState<DataRow | null>(null)
   useEffect(() => {
@@ -396,8 +424,13 @@ function PgEntityView({
   const selectedHistoryField = findingHistoryField(visibleColumns, finding, historyField)
   return <div className={selected === null ? "pg-entity-layout pg-table-only" : "pg-entity-layout"} data-pg-section={sectionName(section)} data-testid="pg-entity-layout">
     <EntityTable columns={visibleColumns} empty={t("table.no_rows")} finding={finding} findingField={finding === null || finding === undefined ? null : fieldNameForLocator(finding)} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onOrder={onOrder} onPattern={onPattern} onSelect={setSelected} order={order ?? defaultOrder} pattern={pattern} serverSorted={dense} rows={rows} selectedKey={selectedKey} t={t} testId={`pg-${sectionName(section)}-table`} />
-    {selected !== null && <PgDetail allRows={allRows} columns={visibleColumns} historyField={selectedHistoryField} hour={Math.floor(cursor / 3_600_000_000) * 3_600_000_000} locale={locale} onClose={() => setSelected(null)} row={selected} section={section} t={t} />}
+    {selected !== null && <PgDetail allRows={allRows} columns={visibleDetailColumns} historyField={selectedHistoryField} hour={Math.floor(cursor / 3_600_000_000) * 3_600_000_000} locale={locale} onClose={() => setSelected(null)} row={selected} section={section} t={t} />}
   </div>
+}
+
+function visibleEntityColumns(columns: readonly EntityColumn[], rows: readonly DataRow[], rates: readonly string[]): readonly EntityColumn[] {
+  return columns.filter((column) => rows.some((row) => Object.hasOwn(row.values, column.field)))
+    .map((column) => column.rate === true || rates.includes(column.field) ? { ...column, rate: true } : column)
 }
 
 function PgDetail({ allRows, columns, historyField, hour, locale, onClose, row, section, t }: { readonly allRows: readonly DataRow[]; readonly columns: readonly EntityColumn[]; readonly historyField: string | null; readonly hour: number; readonly locale: Locale; readonly onClose: () => void; readonly row: DataRow; readonly section: string; readonly t: Translate }) {
@@ -561,6 +594,7 @@ function display(cell: ReturnType<typeof value>, column: EntityColumn, locale: L
   if (column.kind === "bytes") return unit(humanBytes(cell, locale), column.rate, per)
   if (column.kind === "kib") return unit(humanBytes(asNumber(cell) === null ? null : (asNumber(cell) ?? 0) * 1024, locale), column.rate, per)
   if (column.kind === "milliseconds") return measure(cell, locale, unit(t("unit.ms"), column.rate, per))
+  if (column.kind === "duration") return humanDuration(cell, locale)
   if (column.kind === "microseconds") return measure(cell, locale, unit(t("unit.us"), column.rate, per))
   if (column.kind === "percent") return measure(cell, locale, unit("%", column.rate, per))
   if (column.kind === "boolean" && typeof cell === "boolean") return locale === "ru" ? cell ? "да" : "нет" : String(cell)
@@ -632,6 +666,7 @@ function chartFormat(kind: EntityColumn["kind"]): ((value: number, locale: Local
   if (kind === "bytes") return (value, locale) => humanBytes(value, locale)
   if (kind === "kib") return (value, locale) => humanBytes(value * 1024, locale)
   if (kind === "microseconds") return (value, locale) => measure(value / 1_000, locale, " ms")
+  if (kind === "duration") return humanDuration
   return undefined
 }
 function sectionName(section: string): PostgresSection {
@@ -649,6 +684,7 @@ function number(field: string, width = 125): EntityColumn { return pgColumn(fiel
 function id(field: string, width = 110, sticky = false): EntityColumn { return pgColumn(field, "id", width, sticky) }
 function bytes(field: string, width = 140): EntityColumn { return pgColumn(field, "bytes", width) }
 function milliseconds(field: string, width = 145): EntityColumn { return pgColumn(field, "milliseconds", width) }
+function duration(field: string, width = 145): EntityColumn { return pgColumn(field, "duration", width) }
 function percent(field: string, width = 125): EntityColumn { return pgColumn(field, "percent", width) }
 function rateNumber(field: string, width = 125): EntityColumn { return { ...number(field, width), rate: true, sortable: true } }
 function rateBytes(field: string, width = 140): EntityColumn { return { ...bytes(field, width), rate: true, sortable: true } }

@@ -16,7 +16,7 @@ import { globMatcher } from "./glob"
 import { LabelHelp, type Translate } from "./help"
 import { rowMatchesLocator } from "./locator"
 import { TableFilter } from "./table-filter"
-import { asNumber, formatUtc, identifier, measure, rawText, value, type Locale } from "./model"
+import { asNumber, formatUtc, humanDuration, identifier, measure, rawText, value, type Locale } from "./model"
 import { semanticValueTone } from "./value-tone"
 
 export interface EntityColumn {
@@ -27,7 +27,7 @@ export interface EntityColumn {
   readonly help?: string
   /** The server divided this column by the interval: it reads per second. */
   readonly rate?: boolean
-  readonly kind?: "id" | "number" | "text" | "timestamp" | "bytes" | "kib" | "milliseconds" | "microseconds" | "percent" | "boolean"
+  readonly kind?: "id" | "number" | "text" | "timestamp" | "bytes" | "kib" | "milliseconds" | "duration" | "microseconds" | "percent" | "boolean"
   readonly width?: number
   readonly sticky?: boolean
   /** The server can order this exact value. Derived ratios and text stay off. */
@@ -235,7 +235,7 @@ export function locatorMatchesColumn(column: EntityColumn, typeId: string, findi
 
 /** A number is read by comparing digits: numbers line up on the right, names
  *  on the left, header included. */
-const NUMERIC_KINDS = new Set(["number", "bytes", "kib", "milliseconds", "microseconds", "percent"])
+const NUMERIC_KINDS = new Set(["number", "bytes", "kib", "milliseconds", "duration", "microseconds", "percent"])
 
 export function unit(base: string, rate: boolean | undefined, perSecond = "/s"): string {
   return rate === true ? `${base}${perSecond}` : base
@@ -252,6 +252,7 @@ function Cell({ cell, kind = "text", locale, rate, t }: { readonly cell: Cell; r
   if (kind === "bytes") return <span className="entity-value">{measure(cell, locale, unit(t === undefined ? " B" : t("unit.byte"), rate, per))}</span>
   if (kind === "kib") return <span className="entity-value">{measure(cell, locale, unit(" KiB", rate, per))}</span>
   if (kind === "milliseconds") return <span className="entity-value">{measure(cell, locale, unit(t === undefined ? " ms" : t("unit.ms"), rate, per))}</span>
+  if (kind === "duration") return <span className="entity-value">{humanDuration(cell, locale)}</span>
   if (kind === "microseconds") return <span className="entity-value">{measure(cell, locale, unit(t === undefined ? " μs" : t("unit.us"), rate, per))}</span>
   if (kind === "percent") return <span className="entity-value">{measure(cell, locale, unit("%", rate, per))}</span>
   if (kind === "boolean") return <span className="entity-value">{cell === true ? locale === "ru" ? "да" : "true" : cell === false ? locale === "ru" ? "нет" : "false" : rawText(cell) ?? "—"}</span>

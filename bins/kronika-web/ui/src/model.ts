@@ -138,6 +138,23 @@ export function measure(cell: Cell, locale: Locale, suffix = ""): string {
   return `${compact(number, locale)}${suffix}`
 }
 
+/** Elapsed wall time should read as time, not as a large millisecond count. */
+export function humanDuration(cell: Cell, locale: Locale): string {
+  const milliseconds = asNumber(cell)
+  if (milliseconds === null) return "—"
+  const units = locale === "ru"
+    ? { hour: "ч", minute: "м", millisecond: "мс", second: "с" }
+    : { hour: "h", minute: "m", millisecond: "ms", second: "s" }
+  if (Math.abs(milliseconds) < 1_000) return `${compact(milliseconds, locale)} ${units.millisecond}`
+  if (Math.abs(milliseconds) < 60_000) return `${decimals(milliseconds / 1_000, locale, 1)} ${units.second}`
+  const seconds = Math.floor(Math.abs(milliseconds) / 1_000)
+  const sign = milliseconds < 0 ? "−" : ""
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${sign}${minutes}${units.minute} ${String(seconds % 60).padStart(2, "0")}${units.second}`
+  const hours = Math.floor(minutes / 60)
+  return `${sign}${hours}${units.hour} ${String(minutes % 60).padStart(2, "0")}${units.minute}`
+}
+
 const SCALES: readonly (readonly [string, number])[] = [["T", 1e12], ["G", 1e9], ["M", 1e6], ["k", 1e3]]
 
 /** Four digits are read at a glance; seven are counted digit by digit, and a

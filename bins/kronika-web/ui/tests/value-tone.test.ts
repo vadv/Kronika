@@ -40,6 +40,7 @@ test("statement stability and planning use exact inclusive boundaries", () => {
 
 test("workload volume and identifiers stay neutral", () => {
   assert.equal(semanticValueTone("execution_ms_per_second", 10_000), null)
+  assert.equal(semanticValueTone("transaction_duration_ms", 86_400_000), null)
   assert.equal(semanticValueTone("planid", 4), null)
 })
 
