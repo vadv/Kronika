@@ -30,6 +30,18 @@ use crate::encoding::AcceptedEncodings;
 const SEGMENT_ID: i64 = 1_709_164_800_000_000;
 const SOURCES: u32 = 0b11;
 
+type NamedIndexSnapshot<'a> = (
+    i64,
+    u32,
+    u32,
+    i64,
+    &'a str,
+    &'a str,
+    &'a str,
+    &'a str,
+    &'a str,
+);
+
 struct Fixture {
     directory: tempfile::TempDir,
     writer: WriterOwner,
@@ -464,6 +476,104 @@ impl Fixture {
                 .expect("V2 index snapshot row fits");
         }
         self.append(buffers);
+    }
+
+    fn append_named_table_snapshots(&mut self, rows: &[(i64, u32, u32, i64, &str, &str, &str)]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let tablespace = StrId(
+            interner
+                .intern(b"pg_default")
+                .expect("intern tablespace")
+                .get(),
+        );
+        let mut buffers = SectionBuffers::new();
+        for &(ts, datid, relid, seq_scan, datname, schemaname, relname) in rows {
+            let mut row = user_table(ts, datid, relid, seq_scan);
+            row.datname = StrId(
+                interner
+                    .intern(datname.as_bytes())
+                    .expect("intern database")
+                    .get(),
+            );
+            row.schemaname = StrId(
+                interner
+                    .intern(schemaname.as_bytes())
+                    .expect("intern schema")
+                    .get(),
+            );
+            row.relname = StrId(
+                interner
+                    .intern(relname.as_bytes())
+                    .expect("intern table")
+                    .get(),
+            );
+            row.tablespace = tablespace;
+            buffers.push(row).expect("named table row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("encode relation dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode named table snapshots")
+            .expect("nonempty named table snapshots");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append named table snapshots");
+    }
+
+    fn append_named_index_snapshots(&mut self, rows: &[NamedIndexSnapshot<'_>]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let tablespace = StrId(
+            interner
+                .intern(b"pg_default")
+                .expect("intern tablespace")
+                .get(),
+        );
+        let amname = StrId(interner.intern(b"btree").expect("intern AM").get());
+        let mut buffers = SectionBuffers::new();
+        for &(ts, datid, indexrelid, idx_scan, datname, schema, table, index, definition) in rows {
+            let mut row = user_index_v2(ts, datid, indexrelid, idx_scan);
+            row.datname = StrId(
+                interner
+                    .intern(datname.as_bytes())
+                    .expect("intern database")
+                    .get(),
+            );
+            row.schemaname = StrId(
+                interner
+                    .intern(schema.as_bytes())
+                    .expect("intern schema")
+                    .get(),
+            );
+            row.relname = StrId(
+                interner
+                    .intern(table.as_bytes())
+                    .expect("intern table")
+                    .get(),
+            );
+            row.indexrelname = StrId(
+                interner
+                    .intern(index.as_bytes())
+                    .expect("intern index")
+                    .get(),
+            );
+            row.tablespace = tablespace;
+            row.amname = amname;
+            row.indexdef = Some(StrId(
+                interner
+                    .intern(definition.as_bytes())
+                    .expect("intern index definition")
+                    .get(),
+            ));
+            buffers.push(row).expect("named index row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("encode index dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode named index snapshots")
+            .expect("nonempty named index snapshots");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append named index snapshots");
     }
 
     fn append_log_error(&mut self, at: i64) {
@@ -926,6 +1036,13 @@ fn row_records(records: &[Value]) -> Vec<&Value> {
     records
         .iter()
         .filter(|record| record["record"] == "row")
+        .collect()
+}
+
+fn relation_records(records: &[Value]) -> Vec<&Value> {
+    records
+        .iter()
+        .filter(|record| record["record"] == "relation")
         .collect()
 }
 
@@ -2293,6 +2410,215 @@ fn index_snapshot_never_borrows_a_database_or_layout_predecessor() {
         ),
         "an older physical layout is not used as the predecessor"
     );
+}
+
+#[test]
+fn relation_groups_keep_database_scope_and_sum_staggered_rates() {
+    let mut fixture = Fixture::new();
+    fixture.append_named_table_snapshots(&[
+        (10_000_000, 1, 11, 10, "first", "public", "orders"),
+        (30_000_000, 1, 11, 30, "first", "public", "orders"),
+        (20_000_000, 2, 21, 5, "second", "public", "orders"),
+        (25_000_000, 2, 21, 15, "second", "public", "orders"),
+    ]);
+    fixture.finish();
+
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=30000000&section=pg_stat_user_tables&field=table_count&field=seq_scan&by=seq_scan&direction=desc"
+    );
+    let databases =
+        stream(fixture.prepare(&format!("{base}&group=database"), None)).expect("database groups");
+    let rows = relation_records(&databases);
+    assert_eq!(
+        rows.len(),
+        2,
+        "the root has database rows, not a global total"
+    );
+    assert_eq!(rows[0]["key"]["datid"], "2");
+    assert_eq!(rows[0]["values"]["table_count"], "1");
+    assert_eq!(rows[0]["values"]["seq_scan"], 2.0);
+    assert!(rows.iter().all(|row| row["source"].is_null()));
+
+    let schemas =
+        stream(fixture.prepare(&format!("{base}&group=schema"), None)).expect("schema groups");
+    let rows = relation_records(&schemas);
+    assert_eq!(rows.len(), 2, "same-named schemas stay database-scoped");
+    assert!(rows.iter().all(|row| row["key"]["schemaname"] == "public"));
+
+    let objects =
+        stream(fixture.prepare(&format!("{base}&group=object"), None)).expect("object groups");
+    let rows = relation_records(&objects);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["key"]["relid"], "21");
+    assert_eq!(rows[0]["key"]["relname"], "orders");
+    assert!(rows[0]["source"]["ordinal"].is_string());
+}
+
+#[test]
+fn relation_search_runs_before_group_sort_and_page() {
+    let mut fixture = Fixture::new();
+    let mut rows = Vec::new();
+    for relid in 1..=205 {
+        let name = if relid == 1 {
+            "needle_outside_unfiltered_page"
+        } else {
+            "ordinary"
+        };
+        rows.push((100, 1, relid, 0, "db", "public", name));
+        rows.push((200, 1, relid, i64::from(relid), "db", "public", name));
+    }
+    fixture.append_named_table_snapshots(&rows);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_tables&group=object&field=seq_scan&by=seq_scan&page_size=200&search=needle_outside"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("searched relation page");
+    let rows = relation_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["key"]["relid"], "1");
+    let page = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("relation trailer");
+    assert_eq!(page["eligible"], "1");
+    assert_eq!(page["returned"], "1");
+    assert_eq!(page["has_more"], false);
+}
+
+#[test]
+fn index_definition_is_full_search_input_but_never_an_aggregate_value() {
+    let mut fixture = Fixture::new();
+    let definition = "CREATE UNIQUE INDEX exact_fixture_idx ON public.orders USING btree (tenant_id, created_at) WHERE archived_at IS NULL";
+    fixture.append_named_index_snapshots(&[
+        (
+            100,
+            1,
+            51,
+            0,
+            "db",
+            "public",
+            "orders",
+            "exact_fixture_idx",
+            definition,
+        ),
+        (
+            200,
+            1,
+            51,
+            3,
+            "db",
+            "public",
+            "orders",
+            "exact_fixture_idx",
+            definition,
+        ),
+    ]);
+    fixture.finish();
+
+    let aggregate_target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_indexes&group=database&field=index_count&search=archived_at"
+    );
+    let aggregate = stream(fixture.prepare(&aggregate_target, None)).expect("definition search");
+    let rows = relation_records(&aggregate);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"]["index_count"], "1");
+    assert!(rows[0]["values"].get("indexdef").is_none());
+    assert!(rows[0]["source"].is_null());
+
+    let object_target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_indexes&group=object&field=indexrelname&field=relid&field=relname&field=idx_scan&search=archived_at"
+    );
+    let object = stream(fixture.prepare(&object_target, None)).expect("index object");
+    let rows = relation_records(&object);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["key"]["indexrelname"], "exact_fixture_idx");
+    assert_eq!(rows[0]["key"]["relid"], "50");
+    assert!(rows[0]["values"].get("indexdef").is_none());
+
+    let source = rows[0]["source"].as_object().expect("physical source");
+    let detail_target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at={}&section=pg_stat_user_indexes&field=indexdef&type_id={}&row_ordinal={}&text=65536",
+        source["timestamp"].as_str().unwrap(),
+        source["type_id"].as_str().unwrap(),
+        source["ordinal"].as_str().unwrap(),
+    );
+    let detail = stream(fixture.prepare(&detail_target, None)).expect("exact definition detail");
+    assert_eq!(row_records(&detail)[0]["values"][0], definition);
+}
+
+#[test]
+fn low_activity_filters_exact_object_deltas_before_grouping_and_paging() {
+    let mut fixture = Fixture::new();
+    fixture.append_named_index_snapshots(&[
+        (
+            100,
+            1,
+            51,
+            3,
+            "db",
+            "public",
+            "orders",
+            "inactive_idx",
+            "CREATE INDEX inactive_idx ON public.orders (id)",
+        ),
+        (
+            200,
+            1,
+            51,
+            3,
+            "db",
+            "public",
+            "orders",
+            "inactive_idx",
+            "CREATE INDEX inactive_idx ON public.orders (id)",
+        ),
+        (
+            100,
+            1,
+            61,
+            0,
+            "db",
+            "public",
+            "events",
+            "active_idx",
+            "CREATE INDEX active_idx ON public.events (id)",
+        ),
+        (
+            200,
+            1,
+            61,
+            8,
+            "db",
+            "public",
+            "events",
+            "active_idx",
+            "CREATE INDEX active_idx ON public.events (id)",
+        ),
+    ]);
+    fixture.finish();
+
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_indexes&field=index_count&field=idx_scan&where.no_scans=true&page_size=1"
+    );
+    let objects = stream(fixture.prepare(&format!("{base}&group=object"), None))
+        .expect("low-activity objects");
+    let rows = relation_records(&objects);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["key"]["indexrelname"], "inactive_idx");
+    assert_eq!(rows[0]["values"]["idx_scan"], 0.0);
+    let page = objects
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("low-activity page");
+    assert_eq!(page["eligible"], "1");
+    assert_eq!(page["has_more"], false);
+
+    let databases = stream(fixture.prepare(&format!("{base}&group=database"), None))
+        .expect("low-activity database rollup");
+    let rows = relation_records(&databases);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"]["index_count"], "1");
 }
 
 #[test]

@@ -11,88 +11,10 @@ use super::{
     RelationGroup, SectionPlans, SnapshotCursor, add_ordered, compare_page_order_values,
     counter_delta, identity_of, record, resolved_dictionary, search_matches, stored_bytes,
 };
+use crate::route::{Filter, SnapshotRequest};
 
 const TABLES: &str = "pg_stat_user_tables";
 const INDEXES: &str = "pg_stat_user_indexes";
-
-const TABLE_INPUTS: &[&str] = &[
-    "ts",
-    "datid",
-    "datname",
-    "relid",
-    "schemaname",
-    "relname",
-    "tablespace",
-    "seq_scan",
-    "seq_tup_read",
-    "idx_scan",
-    "idx_tup_fetch",
-    "n_tup_ins",
-    "n_tup_upd",
-    "n_tup_del",
-    "n_tup_hot_upd",
-    "n_tup_newpage_upd",
-    "n_live_tup",
-    "n_dead_tup",
-    "n_mod_since_analyze",
-    "n_ins_since_vacuum",
-    "vacuum_count",
-    "autovacuum_count",
-    "analyze_count",
-    "autoanalyze_count",
-    "last_vacuum",
-    "last_autovacuum",
-    "last_analyze",
-    "last_autoanalyze",
-    "last_seq_scan",
-    "last_idx_scan",
-    "total_vacuum_time",
-    "total_autovacuum_time",
-    "total_analyze_time",
-    "total_autoanalyze_time",
-    "main_fork_bytes",
-    "toast_bytes",
-    "toast_n_live_tup",
-    "toast_n_dead_tup",
-    "toast_last_autovacuum",
-    "xid_age",
-    "mxid_age",
-    "reltuples",
-    "heap_blks_read",
-    "heap_blks_hit",
-    "idx_blks_read",
-    "idx_blks_hit",
-    "toast_blks_read",
-    "toast_blks_hit",
-    "tidx_blks_read",
-    "tidx_blks_hit",
-];
-
-const INDEX_INPUTS: &[&str] = &[
-    "ts",
-    "datid",
-    "datname",
-    "indexrelid",
-    "relid",
-    "schemaname",
-    "relname",
-    "indexrelname",
-    "tablespace",
-    "idx_scan",
-    "idx_tup_read",
-    "idx_tup_fetch",
-    "main_fork_bytes",
-    "last_idx_scan",
-    "indisunique",
-    "indisprimary",
-    "indisvalid",
-    "indisexclusion",
-    "indisready",
-    "amname",
-    "indexdef",
-    "idx_blks_read",
-    "idx_blks_hit",
-];
 
 const TABLE_RATES: &[&str] = &[
     "seq_scan",
@@ -370,13 +292,6 @@ impl RelationKind {
         }
     }
 
-    const fn inputs(self) -> &'static [&'static str] {
-        match self {
-            Self::Tables => TABLE_INPUTS,
-            Self::Indexes => INDEX_INPUTS,
-        }
-    }
-
     const fn fields(self, group: RelationGroup) -> &'static [FieldSpec] {
         match (self, group) {
             (Self::Tables, RelationGroup::Object) => TABLE_OBJECT_FIELDS,
@@ -467,15 +382,28 @@ pub(super) fn output_fields(
     Ok(output)
 }
 
-pub(super) fn physical_projection(
-    logical_name: &str,
-    _group: RelationGroup,
-) -> Result<Vec<String>, ApiError> {
-    Ok(RelationKind::from_name(logical_name)?
-        .inputs()
-        .iter()
-        .map(|name| (*name).to_owned())
-        .collect())
+pub(super) fn split_filters(
+    request: &SnapshotRequest,
+) -> Result<(Vec<Filter>, Vec<Filter>), ApiError> {
+    if request.group.is_none() {
+        return Ok((request.filters.clone(), Vec::new()));
+    }
+    let [section] = request.sections.as_slice() else {
+        return Err(ApiError::BadFilter("where".to_owned()));
+    };
+    let mut physical = Vec::new();
+    let mut derived = Vec::new();
+    for filter in &request.filters {
+        if filter.column == "no_scans" {
+            if section != INDEXES || filter.value != "true" {
+                return Err(ApiError::BadFilter(filter.column.clone()));
+            }
+            derived.push(filter.clone());
+        } else {
+            physical.push(filter.clone());
+        }
+    }
+    Ok((physical, derived))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -571,6 +499,30 @@ impl GroupKey {
             }
         }
         Value::Object(key)
+    }
+
+    fn for_group(mut self, kind: RelationKind, group: RelationGroup) -> Self {
+        match group {
+            RelationGroup::Database => {
+                self.schemaname = None;
+                self.relid = None;
+                self.relname = None;
+                self.indexrelid = None;
+                self.indexrelname = None;
+            }
+            RelationGroup::Schema => {
+                self.relid = None;
+                self.relname = None;
+                self.indexrelid = None;
+                self.indexrelname = None;
+            }
+            RelationGroup::Object if kind == RelationKind::Tables => {
+                self.indexrelid = None;
+                self.indexrelname = None;
+            }
+            RelationGroup::Object => {}
+        }
+        self
     }
 
     fn metric(&self, name: &str) -> Option<Metric> {
@@ -1082,6 +1034,19 @@ impl Aggregate {
         Ok(())
     }
 
+    fn matches_derived_filters(&self, kind: RelationKind, filters: &[Filter]) -> bool {
+        filters
+            .iter()
+            .all(|filter| match (kind, filter.column.as_str()) {
+                (RelationKind::Indexes, "no_scans") => self
+                    .rates
+                    .get("idx_scan")
+                    .and_then(|rate| rate.metric())
+                    .is_some_and(|metric| metric_is_zero(&metric)),
+                _ => false,
+            })
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "the fixed relation contract keeps every audited reducer in one exhaustive match"
@@ -1221,6 +1186,14 @@ impl Aggregate {
             };
             Metric::Integer(i128::from(count))
         })
+    }
+}
+
+fn metric_is_zero(metric: &Metric) -> bool {
+    match metric {
+        Metric::Rate(RateValue::Exact { numerator, .. }) => *numerator == 0,
+        Metric::Rate(RateValue::Float(value)) => *value == 0.0,
+        _ => false,
     }
 }
 
@@ -1498,6 +1471,10 @@ impl PreparedSnapshot {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one bounded scan preserves filter-search-delta-group ordering"
+)]
 fn scan_context(
     prepared: &PreparedSnapshot,
     kind: RelationKind,
@@ -1556,7 +1533,9 @@ fn scan_context(
             let Some(identity) = identity_of(context.plan, &row) else {
                 continue;
             };
-            let Some(key) = GroupKey::from_row(kind, group, &row, &dictionary)? else {
+            let Some(object_key) =
+                GroupKey::from_row(kind, RelationGroup::Object, &row, &dictionary)?
+            else {
                 continue;
             };
             let Some(timestamp) = context
@@ -1576,6 +1555,22 @@ fn scan_context(
                 .previous
                 .as_ref()
                 .and_then(|previous| previous.get(&identity));
+            if !prepared.relation_filters.is_empty() {
+                let mut object = Aggregate::new(object_key.clone(), source);
+                object.add(
+                    kind,
+                    context.plan,
+                    &row,
+                    before,
+                    context.elapsed_for(&row),
+                    &dictionary,
+                    source,
+                )?;
+                if !object.matches_derived_filters(kind, &prepared.relation_filters) {
+                    continue;
+                }
+            }
+            let key = object_key.for_group(kind, group);
             aggregates
                 .entry(key.clone())
                 .or_insert_with(|| Aggregate::new(key, source))
@@ -1854,6 +1849,67 @@ mod tests {
     }
 
     #[test]
+    fn low_activity_filter_is_one_fixed_true_indexes_predicate() {
+        let mut request = SnapshotRequest {
+            segment_id: 1,
+            at: 2,
+            sections: vec![INDEXES.to_owned()],
+            fields: Vec::new(),
+            by: Vec::new(),
+            direction: Order::Asc,
+            group: Some(RelationGroup::Object),
+            page_size: Some(200),
+            cursor: None,
+            search: Vec::new(),
+            text: None,
+            filters: vec![Filter {
+                column: "no_scans".to_owned(),
+                value: "true".to_owned(),
+            }],
+            type_id: None,
+            row_ordinal: None,
+        };
+        let (physical, derived) = split_filters(&request).unwrap();
+        assert!(physical.is_empty());
+        assert_eq!(derived, request.filters);
+
+        request.filters[0].value = "false".to_owned();
+        assert!(matches!(
+            split_filters(&request),
+            Err(ApiError::BadFilter(name)) if name == "no_scans"
+        ));
+        request.filters[0].value = "true".to_owned();
+        request.sections[0] = TABLES.to_owned();
+        assert!(matches!(
+            split_filters(&request),
+            Err(ApiError::BadFilter(name)) if name == "no_scans"
+        ));
+
+        let mut zero = aggregate();
+        let mut scan_rate = RateAggregate::default();
+        add_rate(&mut scan_rate, 0);
+        zero.rates.insert("idx_scan", scan_rate);
+        assert!(zero.matches_derived_filters(
+            RelationKind::Indexes,
+            &[Filter {
+                column: "no_scans".to_owned(),
+                value: "true".to_owned()
+            }]
+        ));
+        zero.rates
+            .get_mut("idx_scan")
+            .unwrap()
+            .add(Input::Unavailable, Some(1_000_000));
+        assert!(!zero.matches_derived_filters(
+            RelationKind::Indexes,
+            &[Filter {
+                column: "no_scans".to_owned(),
+                value: "true".to_owned()
+            }]
+        ));
+    }
+
+    #[test]
     fn object_keys_are_minimal_and_display_identity_is_a_value() {
         let table_key = key(7).json(RelationKind::Tables, RelationGroup::Object);
         assert_eq!(
@@ -1905,13 +1961,6 @@ mod tests {
             ),
             Err(ApiError::NoSuchColumn(name)) if name == "indexdef"
         ));
-        assert!(
-            physical_projection(INDEXES, RelationGroup::Object)
-                .unwrap()
-                .iter()
-                .any(|name| name == "indexdef"),
-            "the full definition participates in exact search and lazy physical detail only"
-        );
     }
 
     #[test]

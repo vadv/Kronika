@@ -21,6 +21,7 @@ pub(crate) struct PreparedSnapshot {
     earlier: Option<Segment>,
     at: i64,
     sections: Vec<SectionPlans>,
+    relation_filters: Vec<crate::route::Filter>,
     by: Vec<String>,
     direction: Order,
     group: Option<RelationGroup>,
@@ -267,7 +268,10 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
         .map(|group| relation::output_fields(&request.sections, group, &request.fields))
         .transpose()?
         .unwrap_or_default();
-    let sections = section_plans(&segment, &request)?;
+    let (physical_filters, relation_filters) = relation::split_filters(&request)?;
+    let mut physical_request = request.clone();
+    physical_request.filters = physical_filters;
+    let sections = section_plans(&segment, &physical_request)?;
     validate_search_projection(&request, &sections)?;
     validate_exact_locator(&segment, &request, &sections)?;
     Ok(PreparedSnapshot {
@@ -275,6 +279,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
         earlier,
         at: request.at,
         sections,
+        relation_filters,
         by: request.by,
         direction: request.direction,
         group: request.group,
@@ -302,8 +307,12 @@ fn section_plans(
     }
     let mut sections = Vec::with_capacity(request.sections.len());
     for logical_name in &request.sections {
-        let fields = if let Some(group) = request.group {
-            relation::physical_projection(logical_name, group)?
+        let fields = if request.group.is_some() {
+            // Relation reducers need the complete union of columns carried by
+            // the layouts actually present in this segment. An empty generic
+            // projection asks `plans` for exactly that union and keeps older
+            // layouts honest when newer PostgreSQL fields do not exist.
+            Vec::new()
         } else if shared_projection {
             section_projection(segment, logical_name, &request.fields)
         } else {
