@@ -146,7 +146,7 @@ export function humanDuration(cell: Cell, locale: Locale): string {
     ? { hour: "ч", minute: "м", millisecond: "мс", second: "с" }
     : { hour: "h", minute: "m", millisecond: "ms", second: "s" }
   if (Math.abs(milliseconds) < 1_000) return `${compact(milliseconds, locale)} ${units.millisecond}`
-  if (Math.abs(milliseconds) < 60_000) return `${decimals(milliseconds / 1_000, locale, 1)} ${units.second}`
+  if (Math.abs(milliseconds) < 60_000) return `${decimals(Math.trunc(milliseconds / 100) / 10, locale, 1)} ${units.second}`
   const seconds = Math.floor(Math.abs(milliseconds) / 1_000)
   const sign = milliseconds < 0 ? "−" : ""
   const minutes = Math.floor(seconds / 60)
