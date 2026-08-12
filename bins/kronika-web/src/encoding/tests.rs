@@ -1,7 +1,7 @@
 use hyper::HeaderMap;
 use hyper::header::{ACCEPT_ENCODING, HeaderValue};
 
-use super::{AcceptedEncodings, ContentCoding};
+use super::{AcceptedEncodings, ContentCoding, etag_matches};
 
 fn accepted(value: Option<&str>) -> Option<AcceptedEncodings> {
     let mut headers = HeaderMap::new();
@@ -85,4 +85,19 @@ fn repeated_field_lines_are_combined() {
     let encodings = AcceptedEncodings::from_headers(&headers).expect("second field permits gzip");
     assert_eq!(encodings.for_small(), ContentCoding::Gzip);
     assert_eq!(encodings.for_large(), ContentCoding::Gzip);
+}
+
+#[test]
+fn gzip_admission_and_entity_tags_use_the_shared_parser() {
+    assert!(accepted(None).expect("default encodings").allows_gzip());
+    assert!(!accepted(Some("identity")).expect("identity").allows_gzip());
+    for offered in [
+        "\"1234abcd\"",
+        "W/\"1234abcd\"",
+        "\"other\", W/\"1234abcd\"",
+        "*",
+    ] {
+        assert!(etag_matches(offered, "W/\"1234abcd\""), "{offered}");
+    }
+    assert!(!etag_matches("\"1234abce\"", "W/\"1234abcd\""));
 }

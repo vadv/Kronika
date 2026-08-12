@@ -94,7 +94,9 @@ fn route_request<B>(
         if request.method() != Method::GET && request.method() != Method::HEAD {
             return Err(RequestError::MethodNotAllowed("GET, HEAD"));
         }
-        if !ui::accepts_gzip(request.headers()) {
+        let accepted = AcceptedEncodings::from_headers(request.headers())
+            .ok_or(RequestError::EncodingNotAcceptable)?;
+        if !accepted.allows_gzip() {
             return Err(RequestError::EncodingNotAcceptable);
         }
         return Ok(RequestTarget::Ui {

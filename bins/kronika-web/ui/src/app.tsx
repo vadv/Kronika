@@ -132,7 +132,6 @@ function App() {
   // for a different order rather than reshuffling the rows that arrived.
   const [order, setOrder] = useState<TableOrder | null>(opened.current.sort)
   const [selectedKey, setSelectedKey] = useState<string | null>(opened.current.row)
-  const [dockClosed, setDockClosed] = useState(false)
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
   const [eventScope, setEventScope] = useState<readonly Finding[] | null>(null)
   const [pgFocus, setPgFocus] = useState<DataRow | null>(null)
@@ -167,12 +166,10 @@ function App() {
     return VIEW_REQUESTS[baseViewKey] ?? []
   }, [baseViewKey, pgSection, planLens, source, statementLens])
   const [segments, setSegments] = useState<readonly SegmentBound[]>([])
-  const loaded = useRef({ hour: null as number | null, keys: new Set<string>() })
   const loadedFindingSections = useRef(new Set<string>())
   const drawn = useRef<number | null>(null)
   useEffect(() => {
     if (hour === null) return
-    setDockClosed(false)
     setSelectedFinding(null)
     setEventScope(null)
     setPgFocus(null)
@@ -186,7 +183,6 @@ function App() {
     const controller = new AbortController()
     setLoading(true)
     setError(null)
-    loaded.current = { hour, keys: new Set() }
     loadedFindingSections.current.clear()
     void loadTimeline(hour, controller.signal).then((timeline) => {
       drawn.current = timeline.hour
@@ -229,9 +225,7 @@ function App() {
       viewRequests.filter((request) => request.section !== "health"),
       cursorSegment,
     )
-    const key = `${cursorSegment.id}:${cursor}:${viewKey}:${order?.column ?? ""}:${order?.descending ?? ""}`
-    const projected = source === "postgresql" && (pgSection === "statements" || pgSection === "plans")
-    if ((!projected && loaded.current.keys.has(key)) || wanted.length === 0) {
+    if (wanted.length === 0) {
       setCursorState("ready")
       return
     }
@@ -240,17 +234,17 @@ function App() {
     // Dragging the cursor crosses many samples; only the one it rests on is
     // worth a round trip over a link that costs more than a second.
     const timer = setTimeout(() => {
-      if (!projected) loaded.current.keys.add(key)
       void loadSnapshot(cursorSegment.id, cursor, wanted, controller.signal, order ?? undefined)
         .then((incoming) => {
           setData((before) => replaceSections(before, incoming))
           setCursorState("ready")
         })
-        // A moment the collector never reached is an ordinary answer, not a
-        // broken screen: the tables keep the last moment they hold.
         .catch((reason: unknown) => {
-          loaded.current.keys.delete(key)
           if (controller.signal.aborted) return
+          setData((before) => replaceSections(before, {
+            ...EMPTY_DATA,
+            sections: Object.fromEntries(wanted.map((request) => [request.section, []])),
+          }))
           setCursorState("missing")
           console.error("kronika: snapshot at the cursor failed", reason)
         })
@@ -301,17 +295,6 @@ function App() {
     const pid = asNumber(value(row, "pid"))
     return pid === null ? [] : [pid]
   })), [pgRows])
-  useEffect(() => {
-    if (selectedKey !== null && processRows.some((row) => processKey(row) === selectedKey)) return
-    // Before the table has rows there is nothing to fall back to, and falling
-    // back anyway would throw away the row the link asked for.
-    if (processRows.length === 0 || dockClosed) return
-    const preferred = processRows.find((row) => {
-      const pid = asNumber(value(row, "pid"))
-      return pid !== null && linkedPids.has(pid)
-    }) ?? processRows[0]
-    setSelectedKey(preferred === undefined ? null : processKey(preferred))
-  }, [dockClosed, linkedPids, processRows, selectedKey])
   const selectedProcess = processRows.find((row) => processKey(row) === selectedKey) ?? null
   useEffect(() => {
     if (selectedFinding?.logicalName !== "os_process") return
@@ -403,7 +386,6 @@ function App() {
   }, [])
   const changeHour = useCallback((next: number) => setHour(floorHour(next)), [])
   const selectProcess = useCallback((row: DataRow) => {
-    setDockClosed(false)
     setSelectedKey(processKey(row))
   }, [])
   const selectFinding = useCallback((finding: Finding, grouped: readonly Finding[] = [finding]) => {
@@ -422,7 +404,6 @@ function App() {
       setSource("host")
       setHostSection("processes")
       setLens(processLens(fieldNameForLocator(finding)))
-      setDockClosed(false)
       setSystemFocus(null)
       if (resolved !== null) setSelectedKey(processKey(resolved.row))
       return
@@ -512,7 +493,7 @@ function App() {
         <ProcessSummary lens={lens} linkedPids={linkedPids} locale={locale} rows={processRows} t={t} ticksPerSecond={ticksPerSecond} />
         <div className={selectedProcess === null ? "process-layout process-layout-table" : "process-layout"}>
           <ProcessTable finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} onOrder={setOrder} onPattern={setFind} onSelect={selectProcess} order={order} pattern={find} rows={processRows} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
-          {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onClose={() => { setDockClosed(true); setSelectedKey(null) }} process={selectedProcess} processHistory={processHistory} t={t} ticksPerSecond={ticksPerSecond} />}
+          {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onClose={() => setSelectedKey(null)} process={selectedProcess} processHistory={processHistory} t={t} ticksPerSecond={ticksPerSecond} />}
         </div>
       </>}
       {!loading && error === null && hour !== null && source === "postgresql" && <PostgresView onOrder={setOrder} onPattern={setFind} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onSection={setPgSection} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} section={pgSection} statementLens={statementLens} t={t} />}

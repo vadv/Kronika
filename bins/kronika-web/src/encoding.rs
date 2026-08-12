@@ -77,6 +77,10 @@ impl AcceptedEncodings {
             ContentCoding::Gzip
         }
     }
+
+    pub(crate) const fn allows_gzip(self) -> bool {
+        self.gzip
+    }
 }
 
 impl ContentCoding {
@@ -123,6 +127,16 @@ fn qvalue(value: &str) -> Option<u16> {
         "1" if fraction.bytes().all(|byte| byte == b'0') => Some(1_000),
         _ => None,
     }
+}
+
+/// Compare cache validators using the weak comparison required by
+/// `If-None-Match` on GET and HEAD requests.
+pub(crate) fn etag_matches(offered: &str, current: &str) -> bool {
+    let current = current.strip_prefix("W/").unwrap_or(current).trim();
+    offered.split(',').any(|candidate| {
+        let candidate = candidate.trim();
+        candidate == "*" || candidate.strip_prefix("W/").unwrap_or(candidate).trim() == current
+    })
 }
 
 #[cfg(test)]

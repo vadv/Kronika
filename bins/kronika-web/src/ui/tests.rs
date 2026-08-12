@@ -1,11 +1,11 @@
 use http_body_util::BodyExt as _;
 use hyper::StatusCode;
 use hyper::header::{
-    ACCEPT_ENCODING, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_SECURITY_POLICY,
-    CONTENT_TYPE, ETAG, HeaderMap, HeaderValue, VARY,
+    CACHE_CONTROL, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_SECURITY_POLICY, CONTENT_TYPE, ETAG,
+    HeaderValue, VARY,
 };
 
-use super::{UI_GZIP, accepts_gzip, response};
+use super::{UI_GZIP, response};
 
 #[tokio::test]
 async fn get_and_head_share_the_exact_gzip_representation_headers() {
@@ -101,32 +101,6 @@ async fn matching_entity_tags_return_the_same_empty_304_representation() {
         );
     }
     assert_eq!(response(false, Some("\"old\"")).status(), StatusCode::OK);
-}
-
-#[test]
-fn absent_gzip_and_wildcard_encodings_select_the_embedded_representation() {
-    assert!(accepts_gzip(&HeaderMap::new()));
-    for value in ["gzip", "br, GZip; q=0.4", "*;q=1", "gzip;q=0, *;q=1"] {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            ACCEPT_ENCODING,
-            HeaderValue::from_str(value).expect("encoding"),
-        );
-        let expected = value != "gzip;q=0, *;q=1";
-        assert_eq!(accepts_gzip(&headers), expected, "{value}");
-    }
-}
-
-#[test]
-fn disabled_or_unlisted_gzip_is_not_acceptable() {
-    for value in ["", "identity", "br", "gzip;q=0", "*;q=0", "gzip;q=2"] {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            ACCEPT_ENCODING,
-            HeaderValue::from_str(value).expect("encoding"),
-        );
-        assert!(!accepts_gzip(&headers), "{value}");
-    }
 }
 
 #[test]

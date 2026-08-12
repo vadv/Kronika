@@ -2,21 +2,8 @@ use hyper::StatusCode;
 use kronika_index::{Finding, FindingBlock, FindingKind};
 use kronika_reader::SegmentKind;
 
-use super::{etag_matches, health_layout, resource_meta, section_layout, stream_findings};
+use super::{health_layout, resource_meta, section_layout, stream_findings};
 use crate::api::CachePolicy;
-
-#[test]
-fn entity_tag_matching_accepts_lists_wildcards_and_weak_validators() {
-    for offered in [
-        "\"1234abcd\"",
-        "W/\"1234abcd\"",
-        "\"other\", W/\"1234abcd\"",
-        "*",
-    ] {
-        assert!(etag_matches(offered, "W/\"1234abcd\""), "{offered}");
-    }
-    assert!(!etag_matches("\"1234abce\"", "W/\"1234abcd\""));
-}
 
 #[test]
 fn a_finished_index_is_kept_by_the_browser_as_long_as_its_segment_lasts() {

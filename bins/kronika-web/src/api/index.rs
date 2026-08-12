@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 
 use super::render::record;
 use super::{ApiError, CachePolicy, Prepared, ResponseMeta, explicit_segment};
+use crate::encoding::etag_matches;
 use crate::route::SegmentRequest;
 
 pub(crate) struct PreparedIndex {
@@ -344,17 +345,6 @@ fn health_layout(series: &str) -> Value {
                 "1001003",
             ],
         },
-    })
-}
-
-fn etag_matches(offered: &str, current: &str) -> bool {
-    let current = current.strip_prefix("W/").unwrap_or(current).trim();
-    offered.split(',').any(|candidate| {
-        let candidate = candidate.trim();
-        if candidate == "*" {
-            return true;
-        }
-        candidate.strip_prefix("W/").unwrap_or(candidate).trim() == current
     })
 }
 
