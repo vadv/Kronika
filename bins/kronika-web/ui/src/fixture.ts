@@ -68,7 +68,7 @@ export function bundledFixtureHour(start: number): HourData | null {
   const segmentAt = segmentForTimestamp(fixture.os)
   const processes = tableRows(fixture.os, "os_process").filter((row) => within(row.timestamp))
   const activities = tableRows(fixture.pg, "pg_stat_activity").filter((row) => within(row.timestamp))
-  const health = seriesRows(fixture.system.health, "health", "0", { field: "os_health", segmentAt })
+  const health = seriesRows(fixture.system["health"], "health", "0", { field: "os_health", segmentAt })
     .filter((row) => within(row.timestamp))
   const load = seriesRows(fixture.system.load1, "os_loadavg", "1105001", { field: "load1", segmentAt })
     .filter((row) => within(row.timestamp))
@@ -85,13 +85,13 @@ export function bundledFixtureHour(start: number): HourData | null {
   ).filter((row) => within(row.timestamp))
   const points = fixturePoints(fixture, segmentAt, activities).filter((point) => within(point.timestamp))
   const lanePoints = fixtureLanePoints(points, activities)
-  const findings = fixture.findings.map((finding) => ({
+  const findings = fixture["findings"].map((finding) => ({
     segmentId: finding.segment_id,
     logicalName: fixtureLogicalName(finding.type_id),
-    kind: finding.kind,
+    kind: finding["kind"],
     typeId: finding.type_id,
     timestamp: Number(finding.t),
-    category: finding.category ?? null,
+    category: finding["category"] ?? null,
     rowOrdinal: String(finding.row_ordinal),
     fieldOrdinal: finding.field_ordinal,
   })).filter((finding) => within(finding.timestamp))
@@ -216,9 +216,9 @@ function isFixture(value: unknown): value is RealHourFixture {
     && typeof candidate.meta.captureToUs === "string"
     && Number.isSafeInteger(candidate.meta.segments)
     && table(candidate.os) && table(candidate.pg)
-    && Array.isArray(candidate.findings)
+    && Array.isArray(candidate["findings"])
     && candidate.system !== undefined
-    && Array.isArray(candidate.system.health)
+    && Array.isArray(candidate.system["health"])
     && Array.isArray(candidate.system.load1)
     && Array.isArray(candidate.system.memAvailable)
     && candidate.system.psi !== null
@@ -273,7 +273,7 @@ function seriesRows(
 function fixturePoints(fixture: RealHourFixture, segmentAt: (timestamp: number) => string, activities: readonly DataRow[]): readonly Point[] {
   const series: readonly [string, string, string, readonly FixturePoint[]][] = [
     ["os_cpu", "1102001", "os_cpu_busy_percent", fixture.system.cpuBusy],
-    ["health", "0", "os_health", fixture.system.health],
+    ["health", "0", "os_health", fixture.system["health"]],
     ["os_loadavg", "1105001", "os_load1", fixture.system.load1],
     ["os_meminfo", "1104001", "os_mem_available_percent", fixture.system.memAvailable],
     ["os_mountinfo", "1112001", "os_min_filesystem_free_percent", fixture.system.minFsFree],

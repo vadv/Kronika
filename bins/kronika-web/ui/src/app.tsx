@@ -22,6 +22,7 @@ import {
   type SegmentBound,
   type Finding,
   type HourData,
+  type TimelineData,
 } from "./api"
 import type { TableOrder } from "./entity-table"
 import { hostSectionOf, pgSectionOf, readAddress, sourceOf, stepOf, viewOf, writeAddress, type PgLens } from "./address"
@@ -53,6 +54,7 @@ import {
 import { PostgresView, type PostgresSection } from "./postgres-view"
 import { PLAN_INFO_REQUEST, planRequest, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
 import { ProcessSummary, ProcessTable } from "./process-table"
+import { latestTimelineTimestamp, refreshedCursor, scheduleRefresh } from "./refresh"
 import type { ChartPoint } from "./series-chart"
 import { getSessionSnapshot, logout, subscribeSession } from "./session"
 import { SYSTEM_REQUESTS, SystemView } from "./system-view"
@@ -138,6 +140,7 @@ function App({ locale, onLocale, t }: {
   const wanted = useRef(opened.current.at)
   const [availableHours, setAvailableHours] = useState<readonly number[]>([])
   const [cursor, setCursor] = useState(0)
+  const followsLatest = useRef(opened.current.at === null)
   const [timelineData, setTimelineData] = useState<HourData>(EMPTY_DATA)
   const [currentData, setCurrentData] = useState<HourData>(EMPTY_DATA)
   const data = useMemo(() => viewData(timelineData, currentData), [currentData, timelineData])
@@ -187,6 +190,45 @@ function App({ locale, onLocale, t }: {
   }, [baseViewKey, pgSection, planLens, source, statementLens])
   const [segments, setSegments] = useState<readonly SegmentBound[]>([])
   const drawn = useRef<number | null>(null)
+  const selectedHour = useRef(hour)
+  selectedHour.current = hour
+  const refreshRequested = useRef(false)
+  const [refreshVersion, setRefreshVersion] = useState(0)
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshFailed, setRefreshFailed] = useState(false)
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null)
+  const refreshAwaitingSnapshot = useRef(false)
+  const segmentsRef = useRef(segments)
+  segmentsRef.current = segments
+  const pendingRefresh = useRef<{ readonly timeline: TimelineData; readonly previousSegments: readonly SegmentBound[] } | null>(null)
+  const [snapshotRefreshVersion, setSnapshotRefreshVersion] = useState(0)
+  const finishRefresh = useCallback((succeeded: boolean) => {
+    if (!refreshRequested.current) return
+    const pending = pendingRefresh.current
+    if (succeeded && pending !== null) {
+      drawn.current = pending.timeline.hour
+      setAvailableHours(pending.timeline.availableHours)
+      setSegments(pending.timeline.segments)
+      setTimelineData(hourOf(pending.timeline))
+    } else if (pending !== null) {
+      setSegments(pending.previousSegments)
+    }
+    pendingRefresh.current = null
+    refreshRequested.current = false
+    refreshAwaitingSnapshot.current = false
+    setRefreshing(false)
+    setRefreshFailed(!succeeded)
+    if (succeeded) setLastUpdated(Date.now() * 1_000)
+  }, [])
+  const requestRefresh = useCallback(() => {
+    if (refreshRequested.current || drawn.current === null || drawn.current !== selectedHour.current) return
+    refreshRequested.current = true
+    setRefreshVersion((current) => current + 1)
+  }, [])
+  const chooseCursor = useCallback((next: number) => {
+    followsLatest.current = false
+    setCursor(next)
+  }, [])
   const previousView = useRef(baseViewKey)
   useEffect(() => {
     if (previousView.current === baseViewKey) return
@@ -198,26 +240,51 @@ function App({ locale, onLocale, t }: {
     clearEntityContext()
   }, [clearEntityContext, hour])
   useEffect(() => {
-    if (hour !== null && drawn.current === hour) return
+    const refresh = refreshRequested.current && hour !== null && drawn.current === hour
+    if (!refresh) {
+      refreshRequested.current = false
+      refreshAwaitingSnapshot.current = false
+      pendingRefresh.current = null
+    }
+    if (hour !== null && drawn.current === hour && !refresh) return
     const controller = new AbortController()
-    setLoading(true)
-    setError(null)
+    setRefreshFailed(false)
+    if (refresh) setRefreshing(true)
+    else {
+      setLoading(true)
+      setRefreshing(false)
+      setError(null)
+    }
     void loadTimeline(hour, controller.signal).then((timeline) => {
-      drawn.current = timeline.hour
-      setAvailableHours(timeline.availableHours)
-      setHour(timeline.hour)
-      setSegments(timeline.segments)
-      setTimelineData(hourOf(timeline))
-      setCurrentData(EMPTY_DATA)
-      const times = timeline.health.map((row) => row.timestamp)
       const asked = wanted.current
       wanted.current = null
-      setCursor(asked !== null && floorHour(asked) === timeline.hour
-        ? asked
-        : times.length === 0 ? timeline.hour : Math.max(...times))
+      const latest = latestTimelineTimestamp(timeline)
+      if (refresh) {
+        pendingRefresh.current = { timeline, previousSegments: segmentsRef.current }
+        setSegments(timeline.segments)
+        setCursor((current) => refreshedCursor(current, followsLatest.current, timeline))
+        refreshAwaitingSnapshot.current = true
+        setSnapshotRefreshVersion((current) => current + 1)
+      } else {
+        drawn.current = timeline.hour
+        setAvailableHours(timeline.availableHours)
+        setHour(timeline.hour)
+        setSegments(timeline.segments)
+        setTimelineData(hourOf(timeline))
+        setCurrentData(EMPTY_DATA)
+        followsLatest.current = asked === null || floorHour(asked) !== timeline.hour
+        setCursor(followsLatest.current ? latest : asked ?? latest)
+        setLastUpdated(Date.now() * 1_000)
+        setRefreshing(false)
+      }
       setLoading(false)
     }).catch((reason: unknown) => {
       if (controller.signal.aborted) return
+      if (refresh) {
+        console.error("kronika: refresh failed", reason)
+        finishRefresh(false)
+        return
+      }
       const fallback = hour ?? floorHour(Date.now() * 1_000)
       drawn.current = fallback
       setHour(fallback)
@@ -229,7 +296,8 @@ function App({ locale, onLocale, t }: {
       setLoading(false)
     })
     return () => controller.abort()
-  }, [hour])
+  }, [finishRefresh, hour, refreshVersion])
+  useEffect(() => hour === null ? undefined : scheduleRefresh(hour, requestRefresh), [hour, requestRefresh])
 
   const cursorSegment = useMemo(() => segmentBoundAt(segments, cursor), [cursor, segments])
   const [cursorState, setCursorState] = useState<"ready" | "loading" | "missing">("ready")
@@ -242,11 +310,13 @@ function App({ locale, onLocale, t }: {
   const densePattern = viewRequests.some((request) => request.pageSize !== undefined) ? find.trim() : ""
   useEffect(() => {
     const generation = ++snapshotGeneration.current
+    const completesRefresh = refreshAwaitingSnapshot.current
     densePage.current = null
     if (hour === null || cursorSegment === null) {
-      setCurrentData(EMPTY_DATA)
+      if (!completesRefresh) setCurrentData(EMPTY_DATA)
       setCursorState("missing")
       setDensePageState("idle")
+      if (completesRefresh) finishRefresh(false)
       return
     }
     const wanted = requestsForSegment(
@@ -255,9 +325,10 @@ function App({ locale, onLocale, t }: {
       cursorSegment,
     )
     if (wanted.length === 0) {
-      setCurrentData(EMPTY_DATA)
+      if (!completesRefresh) setCurrentData(EMPTY_DATA)
       setCursorState("ready")
       setDensePageState("idle")
+      if (completesRefresh) finishRefresh(true)
       return
     }
     setCursorState("loading")
@@ -273,10 +344,12 @@ function App({ locale, onLocale, t }: {
           if (stale()) return
           setCurrentData(incoming)
           setCursorState("ready")
+          if (completesRefresh) finishRefresh(true)
         })
         .catch((reason: unknown) => {
           if (stale()) return
           setCursorState("missing")
+          if (completesRefresh) finishRefresh(false)
           console.error("kronika: snapshot at the cursor failed", reason)
         })
         return
@@ -285,6 +358,7 @@ function App({ locale, onLocale, t }: {
         ? Promise.resolve(EMPTY_DATA)
         : loadSnapshot(cursorSegment.id, cursor, ordinary, controller.signal, order ?? undefined)
           .catch((reason: unknown) => {
+            if (completesRefresh) throw reason
             if (!controller.signal.aborted) console.error("kronika: snapshot companion failed", reason)
             return EMPTY_DATA
           })
@@ -312,11 +386,13 @@ function App({ locale, onLocale, t }: {
               : mergeSnapshotData(current, incoming, request.section))
             setDensePageState("idle")
             setCursorState("ready")
+            if (completesRefresh && pageCursor === undefined) finishRefresh(true)
           }).catch((reason: unknown) => {
             if (stale()) return
             action.failed = pageCursor
             setDensePageState("error")
             setCursorState("ready")
+            if (completesRefresh && pageCursor === undefined) finishRefresh(false)
             console.error("kronika: snapshot page failed", reason)
           }).finally(() => { inFlight = false })
         },
@@ -325,7 +401,7 @@ function App({ locale, onLocale, t }: {
       action.load()
     }, 250)
     return () => { clearTimeout(timer); controller.abort() }
-  }, [context, cursor, cursorSegment, densePattern, hour, order, viewRequests])
+  }, [context, cursor, cursorSegment, densePattern, finishRefresh, hour, order, snapshotRefreshVersion, viewRequests])
   const denseMetadata = currentData.snapshotRows[0]
   const loadMoreDense = useCallback(() => {
     const next = denseMetadata?.hasMore === true ? denseMetadata.nextCursor : null
@@ -342,6 +418,7 @@ function App({ locale, onLocale, t }: {
       if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && hour !== null) {
         if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || keyboardTargetOwnsArrows(event.target)) return
         event.preventDefault()
+        followsLatest.current = false
         setCursor((current) => moveCursor(current, hour, event.key))
         return
       }
@@ -473,6 +550,7 @@ function App({ locale, onLocale, t }: {
       setFind(opening.find)
       clearEntityContext()
       if (opening.at !== null) {
+        followsLatest.current = false
         wanted.current = opening.at
         setCursor(opening.at)
         setHour(floorHour(opening.at))
@@ -481,11 +559,15 @@ function App({ locale, onLocale, t }: {
     window.addEventListener("popstate", back)
     return () => window.removeEventListener("popstate", back)
   }, [clearEntityContext])
-  const changeHour = useCallback((next: number) => setHour(floorHour(next)), [])
+  const changeHour = useCallback((next: number) => {
+    followsLatest.current = true
+    setHour(floorHour(next))
+  }, [])
   const selectProcess = useCallback((row: DataRow) => {
     setSelectedKey(processKey(row))
   }, [])
   const selectFinding = useCallback((finding: Finding, grouped: readonly Finding[] = [finding]) => {
+    followsLatest.current = false
     setCursor(finding.timestamp)
     setFindingRow(null)
     setFindingResolution("loading")
@@ -561,13 +643,16 @@ function App({ locale, onLocale, t }: {
       </div>}
 
       <HourPicker availableHours={availableHours} changeHour={changeHour} hour={hour} locale={locale} t={t} />
-      <div className="cursor-time">
+      <div aria-live="polite" className="cursor-time">
         <span><b>{t("hour.cursor_label")}</b>{cursor === 0 ? "—" : shortUtc(cursor)}</span>
         <span><b>{t("hour.sample_label")}</b>{shownAt === null ? "—" : shortUtc(shownAt)}</span>
+        {lastUpdated !== null && <span><b>{t("refresh.updated")}</b>{shortUtc(lastUpdated)}</span>}
+        {refreshFailed && <span>{t("refresh.error")}</span>}
         {cursorState !== "ready" && <span className={cursorState === "loading" ? "cursor-behind" : "cursor-missing"} data-testid="cursor-behind">{t(cursorState === "loading" ? "status.updating" : "status.no_sample")}</span>}
       </div>
 
       <div className="top-actions">
+        <button aria-label={t("refresh.action")} className="icon-button" disabled={loading || refreshing} onClick={requestRefresh} title={t("refresh.action")} type="button">↻</button>
         <button aria-label={t("common.theme.switch")} className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title={t(theme === "dark" ? "common.theme.light" : "common.theme.dark")} type="button">
           {theme === "dark" ? <Sun aria-hidden="true" size={15} /> : <Moon aria-hidden="true" size={15} />}
         </button>
@@ -588,9 +673,9 @@ function App({ locale, onLocale, t }: {
       </p>
       {loading && <StateCard message={t("status.loading")} />}
       {!loading && error !== null && <StateCard message={t("status.error")} />}
-      {!loading && error === null && hour !== null && source === "host" && hostSection === "system" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} hour={hour} locale={locale} onContextClear={clearEntityContext} onCursor={setCursor} onFinding={selectFinding} t={t} />}
+      {!loading && error === null && hour !== null && source === "host" && hostSection === "system" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} hour={hour} locale={locale} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} t={t} />}
       {!loading && error === null && hour !== null && source === "host" && hostSection === "processes" && <>
-        <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={setCursor} onFinding={selectFinding} primaryLane={lens === "cpu" ? "cpu_busy" : lens === "memory" ? "memory" : lens === "disk" ? "io_stall" : "health"} shownAt={shownAt} t={t} />
+        <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} primaryLane={lens === "cpu" ? "cpu_busy" : lens === "memory" ? "memory" : lens === "disk" ? "io_stall" : "health"} shownAt={shownAt} t={t} />
         <div className="lensbar">
           <div aria-label={t("section.processes")} className="lens-tabs" role="group">
             {(["cpu", "memory", "disk", "generic"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => { if (choice !== lens) setOrder(null); setLens(choice) }} type="button">{t(`lens.${choice}`)}</button>)}
@@ -603,8 +688,8 @@ function App({ locale, onLocale, t }: {
           {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onClose={() => setSelectedKey(null)} process={selectedProcess} processHistory={processHistory} t={t} ticksPerSecond={ticksPerSecond} />}
         </div>
       </>}
-      {!loading && error === null && hour !== null && source === "postgresql" && <PostgresView context={context} densePageState={densePageState} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onOrder={setOrder} onPattern={setFind} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onSection={setPgSection} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} section={pgSection} statementLens={statementLens} t={t} />}
-      {!loading && error === null && hour !== null && source === "events" && <EventsView cursor={cursor} data={data} history={findingPoints} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} onShowAll={() => { setEventScope(null); setSelectedFinding(null) }} resolution={findingResolution} resolved={findingRow} scope={eventScope} selected={selectedFinding} t={t} />}
+      {!loading && error === null && hour !== null && source === "postgresql" && <PostgresView context={context} densePageState={densePageState} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onOrder={setOrder} onPattern={setFind} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} hour={hour} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onSection={setPgSection} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} section={pgSection} statementLens={statementLens} t={t} />}
+      {!loading && error === null && hour !== null && source === "events" && <EventsView cursor={cursor} data={data} history={findingPoints} hour={hour} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} onShowAll={() => { setEventScope(null); setSelectedFinding(null) }} resolution={findingResolution} resolved={findingRow} scope={eventScope} selected={selectedFinding} t={t} />}
     </section>
 
     {helpOpen && <HelpPanel items={helpItems} onClose={() => setHelpOpen(false)} t={t} />}

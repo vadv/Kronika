@@ -476,7 +476,7 @@ export function tableState(
   t: Translate,
 ): ReactNode {
   const count = (value: number) => new Intl.NumberFormat(locale).format(value)
-  const shown = t("pg.table.shown", { returned: count(rowCount), eligible: count(metadata?.eligible ?? rowCount) })
+  const shown = t("pg.table.shown", { "returned": count(rowCount), "eligible": count(metadata?.eligible ?? rowCount) })
   const semanticOrder = order?.column ?? null
   const serverOrder = metadata?.orderBy.join(", ") ?? null
   const interval = metadata === undefined || metadata.from === null || metadata.to === null

@@ -79,7 +79,7 @@ async function bundleJavascript(registry, translations, includeFixture) {
     define: { "process.env.NODE_ENV": '"production"' },
     format: "iife",
     legalComments: "none",
-    mangleProps: /^(?:availableSections|context(?:Label|Row)|d(?:efaultOrder|ensePageState|etailColumns)|fieldsByType|findingField|findingGroups|focusFinding|g[a]p|historyField|lanePoints|linkedPids|on(?:ContextClear|LoadMore|Locale|NearEnd|Order|Pattern|PlanLens|Retry|Section|StatementLens|Theme)|planLens|primaryLane|processHistory|rateColumns|selectedKey|serverSorted|snapshotRows|statementLens|testId|ticksPerSecond|transformRows)$/,
+    mangleProps: /^(?:available(?:Hours|Sections)|boundary|category|changeHour|context(?:Label|Row)|counter|d(?:efaultOrder|ensePageState|etailColumns)|derive|domain|eligible|field|fieldOrdinal|fields|fieldsByType|filterValue|findingField|findingGroups|findings|focusFinding|g[a]p|group|hasMore|health|help|historyField|identity|kind|label|lane|lanePoints|lanes|linkedPids|logicalName|maxTs|minTs|minimumSpan|nextCursor|numeric|on(?:ContextClear|Cursor|Finding|LoadMore|Locale|NearEnd|Order|Pattern|PlanLens|Retry|Section|ShowAll|StatementLens|Theme)|orderBy|orderDirection|ordinal|pageSize|planLens|points|previousSegments|primary|primaryLane|processHistory|rate|rateColumns|returned|rowOrdinal|section|sections|segmentId|selectedKey|series|serverSorted|shown|snapshotRows|sortValue|spec|statementLens|sticky|stickyLeft|testId|threshold|ticksPerSecond|timeline|timestamp|totalHits|transformRows|truncated|typeId)$/,
     minify: true,
     platform: "browser",
     sourcemap: false,

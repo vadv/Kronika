@@ -350,7 +350,7 @@ test("dense paging resets, ignores stale work, and preserves retry state", async
   assert.match(source, /pageCursor === undefined[\s\S]*mergeSnapshotData\(companion[\s\S]*mergeSnapshotData\(current/)
   assert.match(source, /action\.failed = pageCursor[\s\S]*setDensePageState\("error"\)/)
   assert.match(source, /return \(\) => \{ clearTimeout\(timer\); controller\.abort\(\) \}/)
-  assert.match(source, /\}, \[context, cursor, cursorSegment, densePattern, hour, order, viewRequests\]\)/)
+  assert.match(source, /\}, \[context, cursor, cursorSegment, densePattern, finishRefresh, hour, order, snapshotRefreshVersion, viewRequests\]\)/)
   assert.match(source, /typeIds: \[context\.typeId\]/)
   assert.match(source, /Object\.fromEntries\(pageContext\.identity\)/)
   assert.match(source, /denseMetadata\?\.hasMore === true \? denseMetadata\.nextCursor/)

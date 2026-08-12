@@ -280,7 +280,7 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
       id: segment.id,
       minTs: Number(segment.min_ts),
       maxTs: Number(segment.max_ts),
-      sections: segment.sections.flatMap((section) => section.logical_name === null ? [] : [{
+      sections: segment["sections"].flatMap((section) => section.logical_name === null ? [] : [{
         logicalName: section.logical_name,
         typeId: section.type_id,
       }]),
@@ -307,14 +307,14 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
         ? record.logical_name
         : logicalNameForTypeId(typeId) ?? HEALTH
       const totalHits = integer(record.total_hits, "finding hit count")
-      if (typeof record.truncated !== "boolean") throw new Error("finding truncation flag is invalid")
+      if (typeof record["truncated"] !== "boolean") throw new Error("finding truncation flag is invalid")
       findingGroups.push({
         segmentId,
         logicalName,
         typeId,
         totalHits,
         shown: 0,
-        truncated: record.truncated,
+        truncated: record["truncated"],
       })
     } else if (layout !== null) {
       layouts.set(layout.typeId, layout.columns)
@@ -324,7 +324,7 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
     } else if (record.record === "lane") {
       lanePoints.push({
         segmentId: requiredText(record.segment_id, "lane segment id"),
-        lane: requiredText(record.lane, "lane name"),
+        lane: requiredText(record["lane"], "lane name"),
         timestamp: integer(record.ts, "lane timestamp"),
         value: record.value === null ? null : finiteNumber(record.value, "lane value"),
       })
@@ -681,17 +681,17 @@ export async function loadSnapshot(
       const logicalName = requiredText(record.logical_name, "snapshot page logical name")
       if (record.order_direction !== "desc"
         || typeof record.has_more !== "boolean"
-        || typeof record.truncated !== "boolean"
+        || typeof record["truncated"] !== "boolean"
         || !Array.isArray(record.order_by)
         || (record.next_cursor !== null && typeof record.next_cursor !== "string")) {
         throw new Error(`snapshot page for ${logicalName} is invalid`)
       }
       snapshotRows.push({
         logicalName,
-        eligible: integer(record.eligible, "eligible row count"),
-        returned: integer(record.returned, "returned row count"),
+        eligible: integer(record["eligible"], "eligible row count"),
+        returned: integer(record["returned"], "returned row count"),
         hasMore: record.has_more,
-        truncated: record.truncated,
+        truncated: record["truncated"],
         nextCursor: record.next_cursor,
         pageSize: integer(record.page_size, "snapshot page size"),
         orderBy: record.order_by.map((field) => requiredText(field, "snapshot order field")),
@@ -904,7 +904,7 @@ const HEALTH = "health"
 
 function isFindingRecord(record: Record<string, unknown>): boolean {
   return record.record === "finding"
-    && (record.kind === "known_bad" || record.kind === "spike" || record.kind === "event")
+    && (record["kind"] === "known_bad" || record["kind"] === "spike" || record["kind"] === "event")
 }
 
 function indexPoint(record: Record<string, unknown>, segmentId: string, logicalName: string): Point {
@@ -913,7 +913,7 @@ function indexPoint(record: Record<string, unknown>, segmentId: string, logicalN
     segmentId,
     logicalName: logicalNameForTypeId(typeId) ?? logicalName,
     typeId,
-    series: requiredText(record.series, "point series"),
+    series: requiredText(record["series"], "point series"),
     timestamp: integer(record.ts, "point timestamp"),
     identity: cellRecord(record.identity),
     value: record.value === null ? null : finiteNumber(record.value, "point value"),
@@ -927,10 +927,10 @@ function indexFinding(record: Record<string, unknown>, segmentId: string, logica
     logicalName: typeof record.logical_name === "string"
       ? record.logical_name
       : logicalNameForTypeId(typeId) ?? logicalName,
-    kind: record.kind as Finding["kind"],
+    kind: record["kind"] as Finding["kind"],
     typeId,
     timestamp: integer(record.ts, "finding timestamp"),
-    category: typeof record.category === "number" ? record.category : null,
+    category: typeof record["category"] === "number" ? record["category"] : null,
     rowOrdinal: requiredText(record.row_ordinal, "finding row ordinal"),
     fieldOrdinal: integer(record.field_ordinal, "finding field ordinal"),
   }
@@ -971,7 +971,7 @@ function catalogSegments(records: readonly Record<string, unknown>[]): readonly 
 }
 
 function segmentSectionNames(segment: Segment): string[] {
-  const present = new Set(segment.sections.flatMap((section) =>
+  const present = new Set(segment["sections"].flatMap((section) =>
     section.logical_name !== null && UI_SECTION_NAME_SET.has(section.logical_name) ? [section.logical_name] : [],
   ))
   return UI_SECTION_NAMES.filter((name) => present.has(name))

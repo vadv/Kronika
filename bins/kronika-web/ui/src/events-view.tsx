@@ -99,7 +99,7 @@ export function EventsView({
         <div className="event-filters" role="group" aria-label={t("events.filters")}>
           {(["all", "event", "known_bad", "spike"] as const).map((choice) => <button aria-pressed={filter === choice} key={choice} onClick={() => setFilter(choice)} type="button">{choice === "all" ? t("events.all") : t(`locator.${choice}`)}</button>)}
         </div>
-        <span className="events-count">{t("events.count", { shown: visible.length, total: original })}{omitted > 0 ? ` · ${t("events.omitted", { count: omitted })}` : ""}</span>
+        <span className="events-count">{t("events.count", { "shown": visible.length, total: original })}{omitted > 0 ? ` · ${t("events.omitted", { count: omitted })}` : ""}</span>
         {scope !== null && <button className="events-show-all" onClick={onShowAll} type="button">{t("events.show_all", { count: scope.length })}</button>}
         <label><Search aria-hidden="true" size={13} /><span>{t("events.search")}</span><input aria-label={t("events.search")} onChange={(event) => setSearch(event.target.value)} type="search" value={search} /></label>
       </header>
@@ -146,13 +146,13 @@ function FindingDetail({ data, finding, history, locale, resolution, row, t }: {
     {resolution === "unavailable" && <p className="event-resolution">{t("events.row_unavailable")}</p>}
     {resolution === "ready" && row !== null && <>
       {entity !== null && <p className="event-entity">{entity}</p>}
-      {finding.category !== null && <p className="event-category">{t("events.category", { category: categoryLabel(finding.category, t) })}</p>}
+      {finding.category !== null && <p className="event-category">{t("events.category", { "category": categoryLabel(finding.category, t) })}</p>}
       {metric.field !== null && <section className="event-change" aria-label={t("events.change")}>
         <span>{metric.label}</span>
         <strong>{readings.previous === null
           ? formatMetric(readings.current, metric.unit, locale, t)
           : `${formatMetric(readings.previous, metric.unit, locale, t)} → ${formatMetric(readings.current, metric.unit, locale, t)}`}</strong>
-        {metric.boundary !== null && <small>{t("events.boundary", { boundary: metric.boundary })}</small>}
+        {metric.boundary !== null && <small>{t("events.boundary", { "boundary": metric.boundary })}</small>}
       </section>}
       <dl>{findingDetailFields(row, finding).map(([field, cell]) => <div key={field}><dt>{eventFieldLabel(field, t)}</dt><dd>{eventValue(finding, field, cell, locale, t)}</dd></div>)}</dl>
     </>}
