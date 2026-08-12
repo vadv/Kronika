@@ -468,7 +468,7 @@ function usePostgresMetricHistory(row: DataRow, section: string, semantic: strin
         timestamp: point.timestamp,
         value: point[semantic],
       }))))
-      .catch(() => { /* the detail remains useful without a chart */ })
+      .catch(() => {})
     return () => controller.abort()
   }, [dense, hour, row, section, semantic])
   return dense ? history ?? [] : null
@@ -518,7 +518,7 @@ function useWholeText(row: DataRow, section: string, field: string): string | nu
         const text = rawText(value(data.sections[section]?.[0] ?? row, field))
         if (text !== null) setWhole(text)
       })
-      .catch(() => { /* the cut text stands */ })
+      .catch(() => {})
     return () => controller.abort()
   }, [field, row, section, shown])
   return whole ?? shown

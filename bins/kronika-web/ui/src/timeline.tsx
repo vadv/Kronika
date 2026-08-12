@@ -209,9 +209,6 @@ export function Timeline({
           style={{ height: `${height}px` }}
           tabIndex={0}
         >
-          {/* One unit is one pixel: a fixed viewBox stretched X by the width of
-              the window and left Y alone, so every slope was wrong by however
-              wide the browser happened to be. */}
           <svg aria-hidden="true" preserveAspectRatio="none" style={{ height: `${height}px` }} viewBox={`0 0 ${plotWidth} ${height}`}>
             {window !== null && window.start > hour && <rect
               className="data-unavailable"
@@ -306,7 +303,6 @@ function LaneLabel({ label, help, onSelect, primary, reading, t }: { readonly la
     : <button className="lane-label lane-overview" onClick={onSelect} type="button">{content}</button>
 }
 
-/** Returns the latest stored sample, including null. */
 export function valueAt(points: readonly SeriesPoint[], cursor: number): number | null {
   let chosen: SeriesPoint | null = null
   for (const point of points) {
@@ -569,7 +565,6 @@ function FindingGlyph({ kind }: { readonly kind: Finding["kind"] }) {
   return <svg data-marker-shape="circle" height="10" viewBox="0 0 12 12" width="10"><circle cx="6" cy="6" fill="var(--event)" r="4.5" stroke="var(--event-edge)" /></svg>
 }
 
-/** Findings use only an exact stored sample. */
 export function seriesYAt(points: readonly SeriesPoint[], segmentId: string, timestamp: number, lane = 0): number | null {
   const range = laneRange({ series: [{ points }] })
   const point = points.find((candidate) => candidate.segmentId === segmentId

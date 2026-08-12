@@ -2,8 +2,14 @@ import type { Cell } from "./api"
 
 export type ValueTone = "good" | "warning" | "critical" | "inactive"
 
-/** Workload volume stays neutral; only explicit display rules add color. */
 export function semanticValueTone(field: string, cell: Cell, rate = false): ValueTone | null {
+  const text = typeof cell === "string" ? cell.trim() : null
+  if (field === "state") {
+    if (text === "idle in transaction (aborted)") return "critical"
+    if (text === "idle in transaction") return "warning"
+  }
+  if (field === "wait_event_type" && text !== null && text !== "") return "warning"
+
   const number = numericCell(cell)
   if (number === null) return null
   if (rate && number === 0) return "inactive"
@@ -11,8 +17,13 @@ export function semanticValueTone(field: string, cell: Cell, rate = false): Valu
   switch (field) {
     case "mean_exec_ms_per_call":
     case "mean_exec_time_ms":
-    case "query_duration_ms":
       return number >= 5_000 ? "critical" : null
+    case "query_duration_ms":
+      if (number >= 5_000) return "critical"
+      return number >= 1_000 ? "warning" : null
+    case "transaction_duration_ms":
+      if (number >= 60_000) return "critical"
+      return number >= 5_000 ? "warning" : null
     case "hit_pct":
       if (number < 90) return "critical"
       return number < 99 ? "warning" : "good"

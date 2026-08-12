@@ -138,11 +138,11 @@ function App() {
 
   useEffect(() => {
     document.documentElement.lang = locale
-    try { localStorage.setItem("kronika.locale", locale) } catch { /* storage can be disabled */ }
+    try { localStorage.setItem("kronika.locale", locale) } catch {}
   }, [locale])
   useEffect(() => {
     document.documentElement.dataset.theme = theme
-    try { localStorage.setItem("kronika.theme", theme) } catch { /* storage can be disabled */ }
+    try { localStorage.setItem("kronika.theme", theme) } catch {}
   }, [theme])
   const baseViewKey = source === "host" ? hostSection : source === "postgresql" ? `postgresql:${pgSection}` : "events"
   const viewKey = pgSection === "statements" && source === "postgresql"
@@ -294,7 +294,7 @@ function App() {
     ).then((incoming) => {
       const row = incoming.sections[selectedFinding.logicalName]?.[0]
       if (row !== undefined) setPgFocus(row)
-    }).catch(() => { /* the marker remains routed to its table */ })
+    }).catch(() => {})
     return () => controller.abort()
   }, [data, selectedFinding])
   const joinedActivity = activityFor(selectedProcess, data.activities, selectedProcess?.timestamp ?? cursor)
@@ -309,7 +309,7 @@ function App() {
     const controller = new AbortController()
     void loadSeries(hour, "os_process", { pid: selectedPid, starttime: selectedStart }, PROCESS_HISTORY_FIELDS, controller.signal)
       .then(setProcessHistory)
-      .catch(() => { /* the panel stands without its charts */ })
+      .catch(() => {})
     return () => controller.abort()
   }, [hour, selectedPid, selectedStart])
   const address = useMemo(() => writeAddress({
@@ -493,7 +493,7 @@ function initialTheme(): Theme {
   try {
     const saved = localStorage.getItem("kronika.theme")
     if (saved === "dark" || saved === "light") return saved
-  } catch { /* storage can be disabled */ }
+  } catch {}
   return matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"
 }
 
@@ -501,7 +501,7 @@ function initialLocale(): Locale {
   try {
     const saved = localStorage.getItem("kronika.locale")
     if (saved === "ru" || saved === "en") return saved
-  } catch { /* storage can be disabled */ }
+  } catch {}
   for (const language of navigator.languages) {
     if (language.toLowerCase().startsWith("ru")) return "ru"
     if (language.toLowerCase().startsWith("en")) return "en"

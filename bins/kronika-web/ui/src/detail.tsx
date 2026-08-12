@@ -198,7 +198,6 @@ export function processLensHistory(
   }))
 }
 
-/** Counter points are per-second deltas; invalid predecessors remain null. */
 function historyPoints(
   rows: readonly DataRow[],
   field: string,
