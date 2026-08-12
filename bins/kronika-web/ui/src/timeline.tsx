@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 
 import type { DataRow, Finding, LanePoint } from "./api"
 import { LabelHelp, type Translate } from "./help"
+import { moveCursor } from "./keyboard"
 import { asNumber, formatUtc, humanBytes, value } from "./model"
 import { TimeTicks } from "./time-ticks"
 
@@ -44,6 +45,7 @@ interface TimelineSeries {
 interface TimelineLane {
   readonly domain?: readonly [number, number] | undefined
   readonly key: string
+  readonly minimumSpan?: number | undefined
   readonly series: readonly TimelineSeries[]
   readonly threshold?: number | undefined
 }
@@ -102,8 +104,8 @@ export function Timeline({
       { domain: SHARE, key: "cpu_stall", series: one("amber", of("cpu_stall")) },
       { domain: SHARE, key: "memory", series: one("violet", of("memory")) },
       { domain: SHARE, key: "io_stall", series: one("cyan", of("io_stall")) },
-      { domain: undefined, key: "pg_running", series: one("cyan", of("pg_running")) },
-      { domain: undefined, key: "pg_waiting", series: one("amber", of("pg_waiting")) },
+      { domain: undefined, key: "pg_running", minimumSpan: 5, series: one("cyan", of("pg_running")) },
+      { domain: undefined, key: "pg_waiting", minimumSpan: 5, series: one("amber", of("pg_waiting")) },
       { domain: undefined, key: "oldest_xact", series: one("violet", of("pg_oldest_xact")) },
     ].filter((lane) => lane.series.some((series) => series.points.some((point) => point.value !== null)))
   }, [healthTrack, lanePoints])
@@ -145,6 +147,9 @@ export function Timeline({
     observer.observe(element)
     return () => observer.disconnect()
   }, [])
+  if (lanes.length === 0 && findings.length === 0) {
+    return <section className="timeline-empty" data-testid="timeline-empty">{t("status.no_data")}</section>
+  }
   const timestampFromClient = (clientX: number): number | null => {
     const bounds = plot.current?.getBoundingClientRect()
     if (bounds === undefined) return null
@@ -190,8 +195,7 @@ export function Timeline({
           onKeyDown={(event) => {
             if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return
             event.preventDefault()
-            const direction = event.key === "ArrowLeft" ? -1 : 1
-            onCursor(Math.max(hour, Math.min(end - 1_000, cursor + direction * 60_000_000)))
+            onCursor(moveCursor(cursor, hour, event.key))
           }}
           onPointerDown={(event) => {
             event.currentTarget.setPointerCapture(event.pointerId)
@@ -588,13 +592,14 @@ function findingY(finding: Finding, lane: DisplayedLane): number | null {
 }
 
 export function laneRange(
-  lane: { readonly domain?: readonly [number, number] | undefined; readonly series: readonly { readonly points: readonly SeriesPoint[] }[] },
+  lane: { readonly domain?: readonly [number, number] | undefined; readonly minimumSpan?: number | undefined; readonly series: readonly { readonly points: readonly SeriesPoint[] }[] },
 ): { readonly low: number; readonly span: number } {
   if (lane.domain !== undefined) return { low: lane.domain[0], span: lane.domain[1] - lane.domain[0] }
   const values = lane.series.flatMap((series) => series.points)
     .flatMap((point) => point.value === null || !Number.isFinite(point.value) ? [] : [point.value])
-  if (values.length === 0) return { low: 0, span: 1 }
-  return { low: 0, span: niceCeiling(Math.max(...values, 0)) }
+  const minimum = lane.minimumSpan ?? 1
+  if (values.length === 0) return { low: 0, span: minimum }
+  return { low: 0, span: Math.max(minimum, niceCeiling(Math.max(...values, 0))) }
 }
 
 export function niceCeiling(value: number): number {

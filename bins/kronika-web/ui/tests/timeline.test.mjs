@@ -150,5 +150,7 @@ test("only overall health owns the below-50 band and exact findings map to track
 test("timeline domains and overview density are explicit", () => {
   assert.deepEqual(helpers.laneRange({ domain: [0, 100], series: [{ points: [{ segmentId: "a", timestamp: 1, value: 3 }] }] }), { low: 0, span: 100 })
   assert.deepEqual(helpers.laneRange({ series: [{ points: [{ segmentId: "a", timestamp: 1, value: 12 }] }] }), { low: 0, span: 20 })
+  assert.deepEqual(helpers.laneRange({ minimumSpan: 5, series: [{ points: [{ segmentId: "a", timestamp: 1, value: 1 }] }] }), { low: 0, span: 5 })
+  assert.deepEqual(helpers.laneRange({ minimumSpan: 5, series: [{ points: [{ segmentId: "a", timestamp: 1, value: 12 }] }] }), { low: 0, span: 20 })
   assert.deepEqual([helpers.overviewLaneCount(1_200), helpers.overviewLaneCount(900), helpers.overviewLaneCount(600)], [4, 3, 2])
 })

@@ -11,7 +11,7 @@ const compiled = await build({
   format: "esm",
   platform: "node",
   stdin: {
-    contents: 'export { chartDomain, chartRuns, readingAt } from "../src/series-chart.tsx"',
+    contents: 'export { chartDomain, chartRuns, numericChartPoints, readingAt } from "../src/series-chart.tsx"',
     loader: "tsx",
     resolveDir: directory,
   },
@@ -40,4 +40,13 @@ test("mini charts split paths around a recorded null", () => {
     { segmentId: "b", timestamp: 4, value: 3 },
   ]).values()]
   assert.deepEqual(runs.map((run) => run.map((point) => point.value)), [[2], [0, 3]])
+})
+
+test("an all-null chart has no drawable samples while zero remains data", () => {
+  assert.equal(helpers.numericChartPoints([
+    { segmentId: "a", timestamp: 1, value: null },
+  ]).length, 0)
+  assert.equal(helpers.numericChartPoints([
+    { segmentId: "a", timestamp: 1, value: 0 },
+  ]).length, 1)
 })

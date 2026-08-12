@@ -34,7 +34,7 @@ const PG_LENSES: readonly PgLens[] = ["load", "per_call", "io", "resources", "st
 export const DEFAULT_ADDRESS: Address = {
   at: null,
   view: "host.processes",
-  lens: "generic",
+  lens: "cpu",
   pgLens: "load",
   sort: null,
   row: null,

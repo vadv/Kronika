@@ -28,6 +28,7 @@ import { DetailDock, PROCESS_HISTORY_FIELDS } from "./detail"
 import { EventsView } from "./events-view"
 import { HelpPanel, type Translate } from "./help"
 import { HourPicker } from "./hour-picker"
+import { keyboardTargetOwnsArrows, moveCursor } from "./keyboard"
 import {
   activityFor,
   asNumber,
@@ -37,6 +38,7 @@ import {
   processKey,
   processLens,
   rawText,
+  shortUtc,
   shownMoment,
   snapshot,
   value,
@@ -245,14 +247,20 @@ function App() {
 
   useEffect(() => {
     const shortcuts = (event: KeyboardEvent) => {
-      const target = event.target
-      if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement) return
+      if (event.defaultPrevented) return
+      if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && hour !== null) {
+        if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || keyboardTargetOwnsArrows(event.target)) return
+        event.preventDefault()
+        setCursor((current) => moveCursor(current, hour, event.key))
+        return
+      }
+      if (keyboardTargetOwnsArrows(event.target)) return
       if (event.key === "?") setHelpOpen((current) => !current)
       if (event.key === "Escape") setHelpOpen(false)
     }
     window.addEventListener("keydown", shortcuts)
     return () => window.removeEventListener("keydown", shortcuts)
-  }, [])
+  }, [hour])
 
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   const processRows = useMemo(() => snapshot(data.processes, cursor), [cursor, data.processes])
@@ -420,9 +428,11 @@ function App() {
       </div>}
 
       <HourPicker availableHours={availableHours} changeHour={changeHour} hour={hour} locale={locale} t={t} />
-      <span className="cursor-time">{formatUtc(cursor)}
+      <div className="cursor-time">
+        <span><b>{t("hour.cursor_label")}</b>{cursor === 0 ? "—" : shortUtc(cursor)}</span>
+        <span><b>{t("hour.sample_label")}</b>{shownAt === null ? "—" : shortUtc(shownAt)}</span>
         {cursorState !== "ready" && <span className={cursorState === "loading" ? "cursor-behind" : "cursor-missing"} data-testid="cursor-behind">{t(cursorState === "loading" ? "status.updating" : "status.no_sample")}</span>}
-      </span>
+      </div>
 
       <div className="top-actions">
         <button aria-label={t("common.theme.switch")} className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title={t(theme === "dark" ? "common.theme.light" : "common.theme.dark")} type="button">
@@ -449,7 +459,7 @@ function App() {
         <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={setCursor} onFinding={selectFinding} primaryLane={lens === "cpu" ? "cpu_busy" : lens === "memory" ? "memory" : lens === "disk" ? "io_stall" : "health"} shownAt={shownAt} t={t} />
         <div className="lensbar">
           <div aria-label={t("section.processes")} className="lens-tabs" role="group">
-            {(["generic", "cpu", "memory", "disk"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => setLens(choice)} type="button">{t(`lens.${choice}`)}</button>)}
+            {(["cpu", "memory", "disk", "generic"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => { if (choice !== lens) setOrder(null); setLens(choice) }} type="button">{t(`lens.${choice}`)}</button>)}
           </div>
           <span>{processRows[0] === undefined ? t("status.no_data") : formatUtc(processRows[0].timestamp)}</span>
         </div>

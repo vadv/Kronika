@@ -23,6 +23,16 @@ export function processLens(field: string | null): Lens {
   return "generic"
 }
 
+export function processDefaultSort(lens: Lens, rows: readonly DataRow[]): string {
+  if (lens === "cpu") return "utime"
+  if (lens === "memory") return "rmem_kb"
+  if (lens !== "disk") return "pid"
+  const fields = ["read_bytes", "write_bytes", "syscr", "syscw"] as const
+  return fields.find((field) => rows.some((row) => (asNumber(value(row, field)) ?? 0) > 0))
+    ?? fields.find((field) => rows.some((row) => asNumber(value(row, field)) !== null))
+    ?? fields[0]
+}
+
 export function floorHour(timestamp: number): number {
   return Math.floor(timestamp / 3_600_000_000) * 3_600_000_000
 }

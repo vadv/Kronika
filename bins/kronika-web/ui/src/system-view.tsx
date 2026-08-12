@@ -207,7 +207,7 @@ export function SystemView({
         <header><span>{t("system.history")}</span><strong>{selectedMetric === undefined ? "—" : t(selectedMetric.spec.label)}</strong></header>
         {selectedMetric === undefined
           ? <p className="table-empty">{t("system.no_metrics")}</p>
-          : <SeriesChart cursor={cursor} format={(reading, place) => metricValue(reading, place, selectedMetric.spec.unit, t("unit.per_second"))} hour={hour} label={t(selectedMetric.spec.label)} locale={locale} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "auto"} />}
+          : <SeriesChart cursor={cursor} empty={t("status.no_data")} format={(reading, place) => metricValue(reading, place, selectedMetric.spec.unit, t("unit.per_second"))} hour={hour} label={t(selectedMetric.spec.label)} locale={locale} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "auto"} />}
       </section>
     </section>
     <UseTable cursor={cursor} hour={hour} lanePoints={data.lanePoints} locale={locale} t={t} />

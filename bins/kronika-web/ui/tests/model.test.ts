@@ -3,7 +3,7 @@ import test from "node:test"
 
 import type { Cell, DataRow } from "../src/api.ts"
 import { fittedWidth } from "../src/column-size.ts"
-import { activityFor, compact, formatUtc, identifier, measure, nearestTime, processCommand, processLens, rawText, shownMoment, selectedHour, stateText } from "../src/model.ts"
+import { activityFor, compact, formatUtc, identifier, measure, nearestTime, processCommand, processDefaultSort, processLens, rawText, shownMoment, selectedHour, stateText } from "../src/model.ts"
 
 function row(timestamp: number): DataRow {
   return { segmentId: "7", logicalName: "os_process", typeId: "1100001", ordinal: "0", timestamp, values: {} }
@@ -52,6 +52,14 @@ test("finding fields select the matching process lens", () => {
   assert.equal(processLens("rmem_kb"), "memory")
   assert.equal(processLens("rundelay_ns"), "cpu")
   assert.equal(processLens("state"), "generic")
+})
+
+test("process tables start with CPU and disk sorting chooses the first active signal", () => {
+  const process = (values: DataRow["values"]): DataRow => ({ ...row(100), values })
+  assert.equal(processDefaultSort("cpu", []), "utime")
+  assert.equal(processDefaultSort("disk", [process({ read_bytes: 0, write_bytes: 4, syscr: 9 })]), "write_bytes")
+  assert.equal(processDefaultSort("disk", [process({ read_bytes: 0, write_bytes: 0, syscr: 9 })]), "syscr")
+  assert.equal(processDefaultSort("disk", [process({ read_bytes: 0, write_bytes: 0, syscr: 0, syscw: 0 })]), "read_bytes")
 })
 
 test("counters that arrive as rates are read in units a person thinks in", async () => {

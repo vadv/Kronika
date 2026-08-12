@@ -223,6 +223,12 @@ export function isIdleActivity(row: DataRow): boolean {
   return rawText(value(row, "state")) === "idle"
 }
 
+export function overviewBackendCounts(rows: readonly DataRow[]): { readonly active: number; readonly idle: number; readonly total: number } {
+  const clients = rows.filter((row) => !isSystemActivity(row))
+  const active = clients.filter((row) => rawText(value(row, "state")) === "active").length
+  return { active, idle: clients.length - active, total: clients.length }
+}
+
 export function activityDurationMs(row: DataRow): number | null {
   if (rawText(value(row, "state")) !== "active") return null
   return elapsedSince(row, "query_start")
@@ -321,11 +327,10 @@ function Overview({ cursor, data, locale, t }: { readonly cursor: number; readon
   const activity = snapshot(data.sections.pg_stat_activity ?? [], cursor)
   const databases = snapshot(data.sections.pg_stat_database ?? [], cursor)
   const locks = snapshot(data.sections.pg_locks ?? [], cursor)
-  const active = activity.filter((row) => rawText(value(row, "state")) === "active").length
-  const waiting = activity.filter((row) => rawText(value(row, "wait_event")) !== null).length
+  const backends = overviewBackendCounts(activity)
   const databaseCount = postgresDatabaseCount(databases)
   const totals: [string, number][] = []
-  if (activity.length !== 0) totals.push(["pg.overview.backends", activity.length], ["pg.overview.active", active], ["pg.overview.waiting", waiting])
+  if (activity.length !== 0) totals.push(["pg.overview.backends", backends.total], ["pg.overview.active", backends.active], ["pg.overview.idle", backends.idle])
   if (databases.length !== 0) totals.push(["pg.overview.databases", databaseCount])
   if (locks.length !== 0) totals.push(["pg.overview.lock_rows", locks.length])
   const overviewSections = groupSections(data.pgOverview)

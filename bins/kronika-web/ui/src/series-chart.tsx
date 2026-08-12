@@ -14,6 +14,7 @@ export type ChartScale = "auto" | "percent" | "count" | "duration"
 
 export function SeriesChart({
   cursor,
+  empty = "—",
   hour,
   label,
   locale,
@@ -23,6 +24,7 @@ export function SeriesChart({
   second,
 }: {
   readonly cursor?: number | undefined
+  readonly empty?: string | undefined
   readonly hour: number
   readonly label: string
   readonly locale: Locale
@@ -33,20 +35,22 @@ export function SeriesChart({
 }) {
   const title = useId()
   const end = hour + 3_600_000_000
-  const both = second === undefined ? points : [...points, ...second]
-  const numeric = both.filter((point): point is NumericChartPoint => point.value !== null && Number.isFinite(point.value))
+  const numeric = numericChartPoints(points, second)
   const values = numeric.map((point) => point.value)
   const { low, high } = chartDomain(values, scale)
   const span = high - low || 1
   const paths = chartRuns(points)
   const companion: ReadonlyMap<string, readonly NumericChartPoint[]> = second === undefined ? new Map() : chartRuns(second)
   const reading = readingAt(points, cursor)
+  const hasData = numeric.length !== 0
   return <figure className="series-chart">
     <figcaption id={title}>
       <span>{label}</span>
       <span>{reading === null ? "—" : (format ?? number)(reading, locale)}</span>
     </figcaption>
-    <svg aria-labelledby={title} preserveAspectRatio="none" role="img" viewBox="0 0 920 126">
+    {!hasData
+      ? <p className="series-empty">{empty}</p>
+      : <><svg aria-labelledby={title} preserveAspectRatio="none" role="img" viewBox="0 0 920 126">
       {[0, 1, 2, 3, 4, 5, 6].map((tick) => <line className="mini-grid" key={tick} x1={tick / 6 * 920} x2={tick / 6 * 920} y1="5" y2="105" />)}
       <line className="mini-zero" x1="0" x2="920" y1="105" y2="105" />
       {cursor !== undefined && cursor >= hour && cursor < end
@@ -67,11 +71,19 @@ export function SeriesChart({
         }).join(" ")
         return <path className="mini-series" d={path} key={segmentId} />
       })}
-    </svg>
-    <span aria-hidden="true" className="series-ceiling">{values.length === 0 ? "" : (format ?? number)(high, locale)}</span>
-    {low !== 0 && <span aria-hidden="true" className="series-floor">{(format ?? number)(low, locale)}</span>}
-    <TimeTicks className="mini-time-ticks" hour={hour} />
+      </svg>
+      <span aria-hidden="true" className="series-ceiling">{(format ?? number)(high, locale)}</span>
+      {low !== 0 && <span aria-hidden="true" className="series-floor">{(format ?? number)(low, locale)}</span>}
+      <TimeTicks className="mini-time-ticks" hour={hour} /></>}
   </figure>
+}
+
+export function numericChartPoints(
+  points: readonly ChartPoint[],
+  second?: readonly ChartPoint[] | undefined,
+): readonly NumericChartPoint[] {
+  const both = second === undefined ? points : [...points, ...second]
+  return both.filter((point): point is NumericChartPoint => point.value !== null && Number.isFinite(point.value))
 }
 
 export function readingAt(points: readonly ChartPoint[], cursor: number | undefined): number | null {

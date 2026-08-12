@@ -105,6 +105,7 @@ function UseCell({
   return <span className="use-cell">
     <SeriesChart
       cursor={cursor}
+      empty={t("status.no_data")}
       format={format}
       hour={hour}
       label={t(`use.lane.${cell.lane}`)}

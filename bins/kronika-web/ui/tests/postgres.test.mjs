@@ -39,7 +39,7 @@ const compiled = await build({
     },
   }],
   stdin: {
-    contents: 'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationMs, columnsFor, isIdleActivity, isSystemActivity, isTimestampField, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, postgresIdentity, postgresProjection } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+    contents: 'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationMs, columnsFor, isIdleActivity, isSystemActivity, isTimestampField, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, postgresIdentity, postgresProjection } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
     loader: "tsx",
     resolveDir: directory,
   },
@@ -159,6 +159,7 @@ test("activity hides only ordinary idle and derives query and transaction time f
     helpers.visibleActivityRows(rows, { showIdle: false, showSystem: false }, system).map(({ ordinal }) => ordinal),
     ["1", "5", "3", "6", "4"],
   )
+  assert.deepEqual(helpers.overviewBackendCounts(rows), { active: 2, idle: 3, total: 5 })
 })
 
 test("elapsed Activity values use compact wall-time formatting", () => {

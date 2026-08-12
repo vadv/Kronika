@@ -15,7 +15,7 @@ test("an address survives a round trip through the query string", () => {
   }
   const written = writeAddress(address)
 
-  assert.equal(written, "/?at=1786445580254226&lens=cpu&sort=-utime&row=1244346%3A1784523346370000&find=postgres*")
+  assert.equal(written, "/?at=1786445580254226&sort=-utime&row=1244346%3A1784523346370000&find=postgres*")
   assert.deepEqual(readAddress(written.slice(1)), address)
 })
 
@@ -27,6 +27,7 @@ test("a plain screen keeps a plain link", () => {
 test("the lens is written only where it means something", () => {
   const written = writeAddress({ ...DEFAULT_ADDRESS, lens: "disk", view: "pg.activity" })
   assert.equal(written, "/?view=pg.activity")
+  assert.equal(writeAddress({ ...DEFAULT_ADDRESS, lens: "generic" }), "/?lens=generic")
 })
 
 test("a process row never leaks into a PostgreSQL address", () => {
@@ -40,7 +41,7 @@ test("an unreadable value falls back instead of failing", () => {
 
   assert.equal(address.at, null)
   assert.equal(address.view, "host.processes")
-  assert.equal(address.lens, "generic")
+  assert.equal(address.lens, "cpu")
   assert.equal(address.sort, null)
 })
 

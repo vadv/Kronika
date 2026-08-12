@@ -12,6 +12,7 @@ import {
   measure,
   millisecondsPerSecond,
   processCommand,
+  processDefaultSort,
   processKey,
   rawText,
   stateText,
@@ -117,7 +118,7 @@ export function ProcessTable({
   })), [lens, linkedPids, locale, t, ticksPerSecond])
   const defaultOrder = lens === "generic"
     ? { column: "pid", descending: false }
-    : { column: defaultSort(lens), descending: true }
+    : { column: processDefaultSort(lens, rows), descending: true }
   return <EntityTable
     className="process-table"
     columns={columns}
@@ -174,13 +175,6 @@ function entityKind(kind: Field["kind"]): NonNullable<EntityColumn["kind"]> {
   if (kind === "time") return "timestamp"
   if (kind === "command" || kind === "state") return "text"
   return "number"
-}
-
-function defaultSort(lens: Lens): string {
-  if (lens === "cpu") return "utime"
-  if (lens === "memory") return "rmem_kb"
-  if (lens === "disk") return "read_bytes"
-  return "pid"
 }
 
 function summaryMetrics(
