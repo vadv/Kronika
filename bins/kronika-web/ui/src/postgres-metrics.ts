@@ -191,6 +191,22 @@ export function findingSemanticField(typeId: string, physical: string): Postgres
   return null
 }
 
+export function supportsPostgresDerivedOrder(typeId: string, token: string): boolean {
+  const field = token.startsWith("derived.") ? token.slice("derived.".length) : null
+  if (field === null || !["mean_exec_ms_per_call", "rows_per_call", "blocks_per_call", "hit_pct", "wal_per_call", "plan_time_pct", "cv"].includes(field)) return false
+  const layout = postgresLayout(typeId)
+  if (layout === null) return false
+  const has = (...names: string[]) => names.every((name) => layout.fields.includes(name))
+  const semantic = (name: PostgresSemanticField) => physicalField(typeId, name) !== null
+  if (field === "mean_exec_ms_per_call") return semantic("execution_ms_per_second") && semantic("calls_per_second")
+  if (field === "rows_per_call") return semantic("rows_per_second") && semantic("calls_per_second")
+  if (field === "blocks_per_call") return has("shared_blks_hit", "shared_blks_read", "local_blks_hit", "local_blks_read") && semantic("calls_per_second")
+  if (field === "hit_pct") return has("shared_blks_hit", "shared_blks_read")
+  if (field === "wal_per_call") return has("wal_bytes") && semantic("calls_per_second")
+  if (field === "plan_time_pct") return semantic("planning_ms_per_second") && semantic("execution_ms_per_second")
+  return has(...rowExecutionStats(typeId, ["mean", "stddev"]))
+}
+
 function fieldsByType(typeIds: readonly string[], wanted?: readonly string[]): Readonly<Record<string, readonly string[]>> {
   return Object.fromEntries(typeIds.map((typeId) => {
     const projection = postgresProjection(typeId)
@@ -244,6 +260,7 @@ function physicalDependencies(typeId: string, field: string): readonly string[] 
     const physical = physicalField(typeId, candidate)
     return physical === null ? [] : [physical]
   }))
+  if (field === "mean_exec_ms_per_call") return semantic("execution_ms_per_second", "calls_per_second")
   if (field === "rows_per_call") return semantic("rows_per_second", "calls_per_second")
   if (field === "blocks_per_call") return ["shared_blks_hit", "shared_blks_read", "local_blks_hit", "local_blks_read", ...semantic("calls_per_second")]
   if (field === "hit_pct") return ["shared_blks_hit", "shared_blks_read"]
@@ -357,30 +374,31 @@ export function decoratePostgresIntervalRow(row: DataRow): DataRow {
   for (const semantic of SEMANTIC_FIELDS) {
     if (semantic === "mean_exec_ms_per_call") continue
     const physical = aliases[semantic]
-    values[semantic] = physical === undefined ? null : finiteRate(row.values[physical])
+    if (physical !== undefined && Object.hasOwn(row.values, physical)) values[semantic] = finiteRate(row.values[physical])
   }
   const calls = finiteRate(values.calls_per_second)
   const execution = finiteRate(values.execution_ms_per_second)
-  values.mean_exec_ms_per_call = calls !== null && calls > 0 && execution !== null && execution >= 0
-    ? execution / calls
-    : null
-  values.rows_per_call = ratio(values.rows_per_second, calls)
-  const blockRates = ["shared_blks_hit", "shared_blks_read", "local_blks_hit", "local_blks_read"]
-    .map((field) => finiteRate(values[field]))
-    .filter((cell): cell is number => cell !== null)
-  values.blocks_per_call = blockRates.length === 0 ? null : ratio(blockRates.reduce((total, cell) => total + cell, 0), calls)
+  if (Object.hasOwn(values, "calls_per_second") && Object.hasOwn(values, "execution_ms_per_second")) {
+    values.mean_exec_ms_per_call = calls !== null && calls > 0 && execution !== null && execution >= 0
+      ? execution / calls
+      : null
+  }
+  if (Object.hasOwn(values, "rows_per_second") && Object.hasOwn(values, "calls_per_second")) values.rows_per_call = ratio(values.rows_per_second, calls)
+  const blockFields = ["shared_blks_hit", "shared_blks_read", "local_blks_hit", "local_blks_read"]
+  const blockRates = blockFields.map((field) => finiteRate(values[field])).filter((cell): cell is number => cell !== null)
+  if (Object.hasOwn(values, "calls_per_second") && blockFields.some((field) => Object.hasOwn(values, field))) {
+    values.blocks_per_call = blockRates.length === 0 ? null : ratio(blockRates.reduce((total, cell) => total + cell, 0), calls)
+  }
   const hits = finiteRate(values.shared_blks_hit)
   const reads = finiteRate(values.shared_blks_read)
-  values.hit_pct = hits === null || reads === null || hits + reads <= 0 ? null : (100 * hits) / (hits + reads)
-  values.wal_per_call = ratio(values.wal_bytes, calls)
+  if (Object.hasOwn(values, "shared_blks_hit") && Object.hasOwn(values, "shared_blks_read")) values.hit_pct = hits === null || reads === null || hits + reads <= 0 ? null : (100 * hits) / (hits + reads)
+  if (Object.hasOwn(values, "wal_bytes") && Object.hasOwn(values, "calls_per_second")) values.wal_per_call = ratio(values.wal_bytes, calls)
   const planning = finiteRate(values.planning_ms_per_second)
-  values.plan_time_pct = planning === null || execution === null || planning + execution <= 0 ? null : (100 * planning) / (planning + execution)
+  if (Object.hasOwn(values, "planning_ms_per_second") && Object.hasOwn(values, "execution_ms_per_second")) values.plan_time_pct = planning === null || execution === null || planning + execution <= 0 ? null : (100 * planning) / (planning + execution)
   const oldNames = row.typeId === "1002001" || row.logicalName === "pg_store_plans"
-  values.min_exec_time_ms = finiteRate(values[oldNames ? "min_time" : "min_exec_time"])
-  values.max_exec_time_ms = finiteRate(values[oldNames ? "max_time" : "max_exec_time"])
-  values.mean_exec_time_ms = finiteRate(values[oldNames ? "mean_time" : "mean_exec_time"] ?? values.mean_time)
-  values.stddev_exec_time_ms = finiteRate(values[oldNames ? "stddev_time" : "stddev_exec_time"] ?? values.stddev_time)
-  values.cv = ratio(values.stddev_exec_time_ms, finiteRate(values.mean_exec_time_ms))
+  const executionStats = [["min_exec_time_ms", oldNames ? "min_time" : "min_exec_time"], ["max_exec_time_ms", oldNames ? "max_time" : "max_exec_time"], ["mean_exec_time_ms", oldNames ? "mean_time" : "mean_exec_time"], ["stddev_exec_time_ms", oldNames ? "stddev_time" : "stddev_exec_time"]] as const
+  for (const [semantic, physical] of executionStats) if (Object.hasOwn(values, physical)) values[semantic] = finiteRate(values[physical])
+  if (Object.hasOwn(values, "stddev_exec_time_ms") && Object.hasOwn(values, "mean_exec_time_ms")) values.cv = ratio(values.stddev_exec_time_ms, finiteRate(values.mean_exec_time_ms))
   return { ...row, values }
 }
 

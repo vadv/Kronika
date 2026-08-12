@@ -342,6 +342,29 @@ test("derived snapshot orders survive physical layout resolution", async () => {
     mean_exec_ms_per_call: ["derived.mean_exec_ms_per_call"],
   })
   assert.ok(resolved)
+  const [old] = api.requestsForSegment([{
+    section: "pg_stat_statements",
+    typeIds: ["1002001", "1002002"],
+    fieldsByType: {
+      "1002001": ["queryid", "calls", "total_time"],
+      "1002002": ["queryid", "calls", "total_exec_time", "wal_bytes"],
+    },
+    pageSize: 200,
+    defaultOrder: ["calls"],
+    order: {
+      mean_exec_ms_per_call: ["derived.mean_exec_ms_per_call"],
+      wal_per_call: ["derived.wal_per_call"],
+      plan_time_pct: ["derived.plan_time_pct"],
+    },
+  }], {
+    id: "v1", minTs: START, maxTs: START,
+    sections: [{ logicalName: "pg_stat_statements", typeId: "1002001" }],
+  })
+  assert.deepEqual(old?.order, {
+    mean_exec_ms_per_call: ["derived.mean_exec_ms_per_call"],
+    wal_per_call: [],
+    plan_time_pct: [],
+  })
 
   const seen: URL[] = []
   const originalFetch = globalThis.fetch
@@ -361,6 +384,22 @@ test("derived snapshot orders survive physical layout resolution", async () => {
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test("fixture composite ordering uses interval deltas instead of cumulative operands", async () => {
+  const api = await bundledApi()
+  const row = (ordinal: string, timestamp: number, values: Readonly<Record<string, number | string>>) => ({
+    segmentId: "v2", logicalName: "pg_stat_statements", typeId: "1002002", ordinal, timestamp, values: {
+      queryid: ordinal, userid: 1, dbid: 1, ...values,
+    },
+  })
+  const beforeA = row("a", START, { calls: 0, total_exec_time: 0 })
+  const afterA = row("a", START + 1_000_000, { calls: 10, total_exec_time: 100 })
+  const beforeB = row("b", START, { calls: 0, total_exec_time: 0 })
+  const afterB = row("b", START + 1_000_000, { calls: 2, total_exec_time: 30 })
+  const rows = [beforeA, afterA, beforeB, afterB]
+  assert.equal(api.fixtureDerivedOrderValue(afterA, rows, "mean_exec_ms_per_call"), 10)
+  assert.equal(api.fixtureDerivedOrderValue(afterB, rows, "mean_exec_ms_per_call"), 15)
 })
 
 test("snapshot pages append once in server order and deduplicate physical coordinates", async () => {

@@ -110,7 +110,19 @@ test("snapshot decoration preserves physical cells and derives only available ra
   assert.equal(decorated.values.execution_ms_per_second, 30)
   assert.equal(decorated.values.mean_exec_ms_per_call, 7.5)
   assert.equal(decorated.values.shared_blk_read_ms_per_second, 6)
-  assert.equal(decorated.values.local_blk_read_ms_per_second, null)
+  assert.equal(Object.hasOwn(decorated.values, "local_blk_read_ms_per_second"), false)
+})
+
+test("unavailable composite values and orders stay absent", () => {
+  const old = metrics.decoratePostgresIntervalRow(row("1002001", 10, {
+    calls: 4, total_time: 20, rows: 8,
+  }))
+  assert.equal(Object.hasOwn(old.values, "wal_per_call"), false)
+  assert.equal(Object.hasOwn(old.values, "plan_time_pct"), false)
+  assert.equal(metrics.supportsPostgresDerivedOrder("1002001", "derived.mean_exec_ms_per_call"), true)
+  assert.equal(metrics.supportsPostgresDerivedOrder("1002001", "derived.wal_per_call"), false)
+  assert.equal(metrics.supportsPostgresDerivedOrder("1002001", "derived.plan_time_pct"), false)
+  assert.equal(metrics.supportsPostgresDerivedOrder("1002002", "derived.wal_per_call"), true)
 })
 
 test("history subtracts exact counters before conversion and rejects unusable intervals", () => {

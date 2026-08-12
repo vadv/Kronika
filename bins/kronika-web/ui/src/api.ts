@@ -2,7 +2,7 @@ import { registry } from "kronika:registry"
 
 import { bundledFixtureHour, bundledFixtureRange } from "./fixture"
 import { rowMatchesLocator } from "./locator"
-import { decoratePostgresIntervalRow } from "./postgres-metrics"
+import { decoratePostgresIntervalRow, intervalMetric, postgresIdentity, supportsPostgresDerivedOrder } from "./postgres-metrics"
 import { apiFetch } from "./session"
 import { readNdjson } from "./wire"
 
@@ -476,7 +476,9 @@ export function requestsForSegment(
       const fields = unique(projection.filter((field) => physical.has(field)))
       // An empty projection would request every column.
       if (fields.length === 0) return []
-      const keep = (candidates: readonly string[]) => candidates.filter((field) => field.startsWith("derived.") || physical.has(field))
+      const keep = (candidates: readonly string[]) => candidates.filter((field) => field.startsWith("derived.")
+        ? types.some((typeId) => supportsPostgresDerivedOrder(typeId, field))
+        : physical.has(field))
       const order = request.order === undefined
         ? undefined
         : Object.fromEntries(Object.entries(request.order).map(([name, candidates]) => [name, keep(candidates)]))
@@ -730,7 +732,8 @@ function fixtureSnapshot(
   const snapshotRows: SnapshotRows[] = []
   for (const request of requests) {
     const typeId = request.typeId ?? options.typeId
-    let rows = (fixture.sections[request.section] ?? [])
+    const sourceRows = fixture.sections[request.section] ?? []
+    let rows = sourceRows
       .filter((row) => row.segmentId === segmentId)
       .filter((row) => typeId === undefined || row.typeId === typeId)
       .filter((row) => fixtureMatches(row, options.filters ?? {}))
@@ -747,7 +750,7 @@ function fixtureSnapshot(
     const orderField = orderFields.find((field) => field.startsWith("derived.") || rows.some((row) => row.values[field] !== undefined))
     if (orderField !== undefined) {
       const value = (row: DataRow) => orderField.startsWith("derived.")
-        ? decoratePostgresIntervalRow(row).values[orderField.slice("derived.".length)]
+        ? fixtureDerivedOrderValue(row, sourceRows, orderField.slice("derived.".length))
         : row.values[orderField]
       rows = rows.slice().sort((left, right) => fixtureOrder(value(right), value(left)))
     }
@@ -785,6 +788,19 @@ function fixtureSnapshot(
     findings: [],
     findingGroups: [],
   })
+}
+
+export function fixtureDerivedOrderValue(row: DataRow, rows: readonly DataRow[], field: string): Cell {
+  if (field === "cv") return decoratePostgresIntervalRow(row).values.cv ?? null
+  const identity = postgresIdentity(row.typeId)
+  const before = rows
+    .filter((candidate) => candidate.typeId === row.typeId && candidate.timestamp < row.timestamp
+      && identity.every((name) => JSON.stringify(candidate.values[name]) === JSON.stringify(row.values[name])))
+    .sort((left, right) => left.timestamp - right.timestamp)
+    .at(-1)
+  if (before === undefined) return null
+  const values = Object.fromEntries(Object.keys(row.values).map((name) => [name, intervalMetric(before, row, name)]))
+  return decoratePostgresIntervalRow({ ...row, values }).values[field] ?? null
 }
 
 function fixtureMatches(row: DataRow, filters: Readonly<Record<string, string>>): boolean {
