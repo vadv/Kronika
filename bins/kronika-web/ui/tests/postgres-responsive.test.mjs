@@ -31,3 +31,8 @@ test("PostgreSQL keeps its dock beside the table at 1024 pixels", () => {
   assert.match(postgresOverlay, /\.pg-entity-layout \{ grid-template-columns: minmax\(0, 1fr\); \}/)
   assert.match(postgresOverlay, /\.pg-detail \{[^}]*position: fixed;/)
 })
+
+test("the operator bar wraps before its controls can widen a 1024 pixel page", () => {
+  const compactShell = mediaBlock("max-width: 1179px")
+  assert.match(compactShell, /\.topbar \{[^}]*flex-wrap: wrap;/)
+})

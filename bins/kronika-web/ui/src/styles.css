@@ -533,6 +533,7 @@ h2 { font-size: var(--t-md); }
 }
 
 @media (max-width: 1179px) {
+  .topbar { flex-wrap: wrap; padding: 4px 8px; row-gap: 4px; }
   .process-layout { grid-template-columns: minmax(0, 1fr); }
   .detail-dock { border-left: 1px solid var(--line3); bottom: 10px; box-shadow: -15px 0 45px var(--shadow-a); max-height: calc(100vh - 160px); max-width: 430px; position: fixed; right: 10px; top: 150px; width: min(430px, calc(100vw - 20px)); z-index: 80; }
 }
