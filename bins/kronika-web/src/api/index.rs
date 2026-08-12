@@ -270,13 +270,15 @@ fn resource_meta(kind: SegmentKind, checksum: Option<u32>) -> Result<ResponseMet
     }
 }
 
-fn block_layout(logical_name: &str, block: &SeriesBlock) -> Result<Value, ApiError> {
+fn block_layout(_logical_name: &str, block: &SeriesBlock) -> Result<Value, ApiError> {
     match block {
         SeriesBlock::OsHealth(_) => Ok(health_layout("os_health")),
         SeriesBlock::OverallHealth(_) => Ok(health_layout("overall_health")),
         SeriesBlock::PostgresHealth(_) => Ok(health_layout("postgres_health")),
-        SeriesBlock::PgTransactions { type_id, .. }
-        | SeriesBlock::PgActiveBackends { type_id, .. } => section_layout(logical_name, *type_id),
+        SeriesBlock::PgTransactions { type_id, .. } => section_layout("pg_stat_database", *type_id),
+        SeriesBlock::PgActiveBackends { type_id, .. } => {
+            section_layout("pg_stat_activity", *type_id)
+        }
         SeriesBlock::Findings(_) => Err(ApiError::NoSuchSection),
     }
 }

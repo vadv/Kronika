@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
-import type { DataRow, Finding, LanePoint } from "./api"
+import { fieldNameForLocator, type DataRow, type Finding, type LanePoint } from "./api"
 import { niceCeiling, numericRuns, svgPath, type NumericPoint } from "./chart"
+import { findingOrder, findingSummary } from "./finding-presentation"
 import { LabelHelp, type Translate } from "./help"
 import { moveCursor } from "./keyboard"
 import { asNumber, compact, formatUtc, humanBytes, type Locale, value } from "./model"
@@ -345,10 +346,7 @@ function FindingMarker({
     event.stopPropagation()
     onActivate()
   }
-  const kindSummary = marker.kinds.map((kind) => {
-    const count = marker.findings.filter((finding) => finding.kind === kind).length
-    return `${t(`locator.${kind}`)} ×${count}`
-  }).join(" · ")
+  const kindSummary = findingSummary(marker.findings, t)
   const timeSummary = marker.startTimestamp === marker.endTimestamp
     ? formatUtc(marker.startTimestamp)
     : `${formatUtc(marker.startTimestamp)}–${formatUtc(marker.endTimestamp)}`
@@ -376,7 +374,9 @@ function FindingMarker({
       position: "absolute",
       top: `${y}px`,
       transform: "translate(-50%, -50%)",
-      width: "34px",
+      maxWidth: marker.count > 1 ? "220px" : "34px",
+      minWidth: "34px",
+      width: marker.count > 1 ? "max-content" : "34px",
       zIndex: 2,
     }}
     title={`${kindSummary} · ${timeSummary} · ×${marker.count}`}
@@ -385,6 +385,7 @@ function FindingMarker({
     <span aria-hidden="true" className="marker-shape-stack">
       {marker.kinds.map((kind) => <FindingGlyph key={kind} kind={kind} />)}
     </span>
+    {marker.count > 1 && <span className="marker-cluster-summary">{kindSummary}</span>}
     {marker.count > 1 && <span aria-hidden="true" className="marker-count">{marker.count}</span>}
   </button>
 }
@@ -524,16 +525,6 @@ export function groupFindings(
 
 const FINDING_KINDS = ["event", "known_bad", "spike"] as const satisfies readonly Finding["kind"][]
 
-function findingOrder(left: Finding, right: Finding): number {
-  return left.timestamp - right.timestamp
-    || FINDING_KINDS.indexOf(left.kind) - FINDING_KINDS.indexOf(right.kind)
-    || textOrder(left.segmentId, right.segmentId)
-    || textOrder(left.typeId, right.typeId)
-    || textOrder(left.rowOrdinal, right.rowOrdinal)
-    || left.fieldOrdinal - right.fieldOrdinal
-    || textOrder(left.logicalName, right.logicalName)
-}
-
 function textOrder(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0 }
 
 function placementOrder(placement: GroupedFinding["placement"]): number {
@@ -542,8 +533,9 @@ function placementOrder(placement: GroupedFinding["placement"]): number {
 
 export function findingTrack(finding: Finding): string | null {
   if (finding.kind === "event") return null
-  if (finding.logicalName === "health" && finding.typeId === "0" && finding.fieldOrdinal === 1) return "health"
-  if (finding.logicalName === "os_meminfo" && finding.fieldOrdinal === 2) return "memory"
+  const field = fieldNameForLocator(finding)
+  if (finding.logicalName === "health" && field === "overall_health") return "health"
+  if (finding.logicalName === "os_meminfo" && field === "mem_available") return "memory"
   return null
 }
 

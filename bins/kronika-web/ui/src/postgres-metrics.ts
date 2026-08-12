@@ -217,9 +217,9 @@ function orderMap(typeIds: readonly string[]): Readonly<Record<string, readonly 
   const semantic = Object.fromEntries(SEMANTIC_FIELDS.map((field) => [field, orderCandidates(typeIds, field)]))
   return {
     ...semantic,
-    exec_load: semantic.execution_ms_per_second ?? [],
     rows_per_call: semantic.rows_per_second ?? [],
     shared_blks_read: ["shared_blks_read"],
+    wal_bytes: ["wal_bytes"],
     blocks_per_call: unique(["shared_blks_read", "shared_blks_hit"]),
     hit_pct: unique(["shared_blks_hit", "shared_blks_read"]),
     wal_per_call: ["wal_bytes"],
@@ -233,7 +233,6 @@ function physicalDependencies(typeId: string, field: string): readonly string[] 
     const physical = physicalField(typeId, candidate)
     return physical === null ? [] : [physical]
   }))
-  if (field === "exec_load") return semantic("execution_ms_per_second")
   if (field === "rows_per_call") return semantic("rows_per_second", "calls_per_second")
   if (field === "blocks_per_call") return ["shared_blks_hit", "shared_blks_read", "local_blks_hit", "local_blks_read", ...semantic("calls_per_second")]
   if (field === "hit_pct") return ["shared_blks_hit", "shared_blks_read"]
@@ -280,15 +279,15 @@ const PLAN_LENS_FIELDS: Readonly<Record<PlanLens, readonly string[]>> = {
   load: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"],
   timing: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", "min_time", "max_time", "mean_time", "stddev_time", "first_call", "last_call"],
   io: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", "shared_blks_read", "shared_blks_hit", "shared_blks_dirtied", "local_blks_hit", "local_blks_read", "temp_blks_read"],
-  identity: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "cmd_type", "relids", "queryid_stat_statements"],
+  identity: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", "cmd_type", "relids", "queryid_stat_statements"],
 }
 
 export function statementRequest(lens: StatementLens): PostgresSectionRequest {
-  return denseLensRequest("pg_stat_statements", PG_STAT_STATEMENTS_TYPE_IDS, STATEMENT_LENS_FIELDS[lens], statementLensOrder(lens))
+  return denseLensRequest("pg_stat_statements", PG_STAT_STATEMENTS_TYPE_IDS, STATEMENT_LENS_FIELDS[lens], statementDefaultOrder(lens))
 }
 
 export function planRequest(lens: PlanLens): PostgresSectionRequest {
-  return denseLensRequest("pg_store_plans", PG_STORE_PLANS_TYPE_IDS, PLAN_LENS_FIELDS[lens], planLensOrder(lens))
+  return denseLensRequest("pg_store_plans", PG_STORE_PLANS_TYPE_IDS, PLAN_LENS_FIELDS[lens], planDefaultOrder(lens))
 }
 
 function denseLensRequest(
@@ -309,18 +308,18 @@ function denseLensRequest(
   }
 }
 
-function statementLensOrder(lens: StatementLens): string {
-  if (lens === "per_call") return "mean_exec_ms_per_call"
+export function statementDefaultOrder(lens: StatementLens): string {
+  if (lens === "per_call") return "calls_per_second"
   if (lens === "io") return "shared_blks_read"
-  if (lens === "resources") return "wal_per_call"
-  if (lens === "stability") return "cv"
+  if (lens === "resources") return "wal_bytes"
+  if (lens === "stability") return "calls_per_second"
   return "execution_ms_per_second"
 }
 
-function planLensOrder(lens: PlanLens): string {
+export function planDefaultOrder(lens: PlanLens): string {
   if (lens === "io") return "shared_blks_read"
-  if (lens === "identity") return "calls_per_second"
-  return "execution_ms_per_second"
+  if (lens === "load") return "execution_ms_per_second"
+  return "calls_per_second"
 }
 
 function isPostgresSemanticField(field: string): field is PostgresSemanticField {
@@ -354,7 +353,6 @@ export function decoratePostgresIntervalRow(row: DataRow): DataRow {
   values.mean_exec_ms_per_call = calls !== null && calls > 0 && execution !== null && execution >= 0
     ? execution / calls
     : null
-  values.exec_load = execution === null ? null : execution / 1_000
   values.rows_per_call = ratio(values.rows_per_second, calls)
   const blockRates = ["shared_blks_hit", "shared_blks_read", "local_blks_hit", "local_blks_read"]
     .map((field) => finiteRate(values[field]))

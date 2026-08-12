@@ -25,7 +25,8 @@ import {
 import type { TableOrder } from "./entity-table"
 import { hostSectionOf, pgSectionOf, readAddress, sourceOf, stepOf, viewOf, writeAddress, type PgLens } from "./address"
 import { DetailDock, PROCESS_HISTORY_FIELDS } from "./detail"
-import { EventsView } from "./events-view"
+import { EventsView, type FindingResolution } from "./events-view"
+import { findingHistory, findingHistoryRequest, findingProjection } from "./finding-presentation"
 import { HelpPanel, type Translate } from "./help"
 import { HourPicker } from "./hour-picker"
 import { keyboardTargetOwnsArrows, moveCursor } from "./keyboard"
@@ -46,8 +47,9 @@ import {
   type Locale,
 } from "./model"
 import { PostgresView, type PostgresSection } from "./postgres-view"
-import { PLAN_INFO_REQUEST, planRequest, postgresProjection, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
+import { PLAN_INFO_REQUEST, planRequest, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
 import { ProcessSummary, ProcessTable } from "./process-table"
+import type { ChartPoint } from "./series-chart"
 import { SYSTEM_REQUESTS, SystemView } from "./system-view"
 import { Timeline } from "./timeline"
 
@@ -56,8 +58,8 @@ type Theme = "dark" | "light"
 type HostSection = "system" | "processes"
 
 const EMPTY_DATA: HourData = {
-  sections: {}, rateColumns: {}, availableSections: [], processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
-  pgOverview: [], points: [], lanePoints: [], findings: [],
+  sections: {}, rateColumns: {}, snapshotRows: [], availableSections: [], processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
+  pgOverview: [], points: [], lanePoints: [], findings: [], findingGroups: [],
 }
 
 const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
@@ -67,7 +69,7 @@ const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
   "postgresql:activity": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlActivity.map(section)],
   "postgresql:locks": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlLocks.map(section)],
   "postgresql:databases": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlDatabases.map(section)],
-  events: [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.events.map(section)],
+  events: TIMELINE_REQUESTS,
 }
 
 function section(name: string): SectionRequest { return { section: name } }
@@ -128,7 +130,9 @@ function App() {
   const [selectedKey, setSelectedKey] = useState<string | null>(opened.current.row)
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
   const [eventScope, setEventScope] = useState<readonly Finding[] | null>(null)
-  const [pgFocus, setPgFocus] = useState<DataRow | null>(null)
+  const [findingRow, setFindingRow] = useState<DataRow | null>(null)
+  const [findingResolution, setFindingResolution] = useState<FindingResolution>("idle")
+  const [findingPoints, setFindingPoints] = useState<readonly ChartPoint[]>([])
   const [systemFocus, setSystemFocus] = useState<Finding | null>(null)
   const [helpOpen, setHelpOpen] = useState(false)
   const t = useMemo<Translate>(() => (key, slots = {}) => {
@@ -170,7 +174,9 @@ function App() {
     if (hour === null) return
     setSelectedFinding(null)
     setEventScope(null)
-    setPgFocus(null)
+    setFindingRow(null)
+    setFindingResolution("idle")
+    setFindingPoints([])
     setSystemFocus(null)
   }, [hour])
   useEffect(() => {
@@ -280,15 +286,25 @@ function App() {
     }
   }, [data, processRows, selectedFinding])
   useEffect(() => {
-    if (selectedFinding === null || postgresSection(selectedFinding.logicalName) === null) return
-    const exact = resolveLocator(data, selectedFinding)?.row
-    if (exact !== undefined) {
-      setPgFocus(exact)
+    if (selectedFinding === null) {
+      setFindingRow(null)
+      setFindingResolution("idle")
       return
     }
-    if (selectedFinding.logicalName !== "pg_stat_statements" && selectedFinding.logicalName !== "pg_store_plans") return
-    const fields = postgresProjection(selectedFinding.typeId)
-    if (fields.length === 0) return
+    const loaded = resolveLocator(data, selectedFinding)?.row ?? null
+    if (loaded !== null) {
+      setFindingRow(loaded)
+      setFindingResolution("ready")
+      return
+    }
+    const fields = findingProjection(selectedFinding)
+    if (selectedFinding.typeId === "0" || fields.length === 0) {
+      setFindingRow(null)
+      setFindingResolution("unavailable")
+      return
+    }
+    setFindingRow(null)
+    setFindingResolution("loading")
     const controller = new AbortController()
     void loadSnapshot(
       selectedFinding.segmentId,
@@ -296,13 +312,33 @@ function App() {
       [{ section: selectedFinding.logicalName, fields, typeId: selectedFinding.typeId }],
       controller.signal,
       undefined,
-      { typeId: selectedFinding.typeId, rowOrdinal: selectedFinding.rowOrdinal },
+      { typeId: selectedFinding.typeId, rowOrdinal: selectedFinding.rowOrdinal, fullText: true },
     ).then((incoming) => {
-      const row = incoming.sections[selectedFinding.logicalName]?.[0]
-      if (row !== undefined) setPgFocus(row)
-    }).catch(() => {})
+      if (controller.signal.aborted) return
+      const row = incoming.sections[selectedFinding.logicalName]?.[0] ?? null
+      setFindingRow(row)
+      setFindingResolution(row === null ? "unavailable" : "ready")
+    }).catch(() => {
+      if (!controller.signal.aborted) setFindingResolution("unavailable")
+    })
     return () => controller.abort()
   }, [data, selectedFinding])
+  useEffect(() => {
+    setFindingPoints([])
+    if (selectedFinding === null || findingRow === null) return
+    const request = findingHistoryRequest(selectedFinding, findingRow)
+    if (request === null) {
+      setFindingPoints(findingHistory(selectedFinding, [findingRow], data))
+      return
+    }
+    const controller = new AbortController()
+    const from = Math.max(0, selectedFinding.timestamp - 900_000_000)
+    void loadSeries(from, selectedFinding.logicalName, request.where, request.fields, controller.signal, selectedFinding.typeId, selectedFinding.timestamp)
+      .then((rows) => setFindingPoints(findingHistory(selectedFinding, rows, data)))
+      .catch(() => { if (!controller.signal.aborted) setFindingPoints([]) })
+    return () => controller.abort()
+  }, [data, findingRow, selectedFinding])
+  const pgFocus = selectedFinding !== null && postgresSection(selectedFinding.logicalName) !== null ? findingRow : null
   const joinedActivity = activityFor(selectedProcess, data.activities, selectedProcess?.timestamp ?? cursor)
   const [processHistory, setProcessHistory] = useState<readonly DataRow[]>([])
   const selectedPid = selectedProcess === null ? null : rawText(value(selectedProcess, "pid"))
@@ -361,15 +397,24 @@ function App() {
   }, [])
   const selectFinding = useCallback((finding: Finding, grouped: readonly Finding[] = [finding]) => {
     setCursor(finding.timestamp)
-    setSelectedFinding(finding)
     setFind("")
+    setFindingRow(null)
+    setFindingResolution("loading")
+    setFindingPoints([])
     if (grouped.length > 1) {
+      setSelectedFinding(null)
+      setFindingResolution("idle")
       setEventScope(grouped)
       setSource("events")
       return
     }
+    setSelectedFinding(finding)
     setEventScope(null)
     const resolved = resolveLocator(data, finding)
+    if (resolved !== null) {
+      setFindingRow(resolved.row)
+      setFindingResolution("ready")
+    }
     const logicalName = finding.logicalName
     if (logicalName === "os_process") {
       setSource("host")
@@ -391,7 +436,7 @@ function App() {
       setPgSection(section)
       if (logicalName === "pg_stat_statements") setStatementLens("load")
       setSystemFocus(null)
-      setPgFocus(resolved?.row ?? null)
+      setFindingRow(resolved?.row ?? null)
       return
     }
     setSource("events")
@@ -417,7 +462,7 @@ function App() {
       <nav aria-label={t("nav.sources")} className="source-tabs">
         <button aria-current={source === "host" ? "page" : undefined} className={source === "host" ? "source-active" : undefined} onClick={() => setSource("host")} type="button">{t("nav.host")}</button>
         <button aria-current={source === "postgresql" ? "page" : undefined} className={source === "postgresql" ? "source-active" : undefined} disabled={!pgPresent} onClick={() => setSource("postgresql")} title={pgPresent ? undefined : t("nav.no_data")} type="button">{t("nav.postgresql")}</button>
-        {eventsPresent && <button aria-current={source === "events" ? "page" : undefined} className={source === "events" ? "source-active" : undefined} onClick={() => { setEventScope(null); setSource("events") }} type="button">{t("nav.events")}</button>}
+        {eventsPresent && <button aria-current={source === "events" ? "page" : undefined} className={source === "events" ? "source-active" : undefined} onClick={() => { setEventScope(null); setSelectedFinding(null); setSource("events") }} type="button">{t("nav.events")}</button>}
       </nav>
 
       {source === "host" && <div className="section-tabs" role="tablist">
@@ -468,7 +513,7 @@ function App() {
         </div>
       </>}
       {!loading && error === null && hour !== null && source === "postgresql" && <PostgresView onOrder={setOrder} onPattern={setFind} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onSection={setPgSection} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} section={pgSection} statementLens={statementLens} t={t} />}
-      {!loading && error === null && hour !== null && source === "events" && <EventsView cursor={cursor} data={data} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} onShowAll={() => setEventScope(null)} resolve={(finding) => resolveLocator(data, finding)?.row ?? null} scope={eventScope} selected={selectedFinding} t={t} />}
+      {!loading && error === null && hour !== null && source === "events" && <EventsView cursor={cursor} data={data} history={findingPoints} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} onShowAll={() => { setEventScope(null); setSelectedFinding(null) }} resolution={findingResolution} resolved={findingRow} scope={eventScope} selected={selectedFinding} t={t} />}
     </section>
 
     {helpOpen && <HelpPanel items={helpItems} onClose={() => setHelpOpen(false)} t={t} />}

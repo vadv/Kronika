@@ -5,7 +5,7 @@ import { importModule, registryPlugin } from "./import-module.mjs"
 
 const helpers = await importModule(
   'export { findingShape, findingTrack, groupFindings, healthThreshold, healthTimelineSeries, laneRange, overviewLaneCount, sampleWindow, seriesYAt, timelineRuns, valueAt } from "../src/timeline.tsx"',
-  { plugins: [registryPlugin([{ typeId: "1104001", logicalName: "os_meminfo", columns: ["ts", "mem_total", "mem_available"] }])] },
+  { plugins: [registryPlugin([{ typeId: "1104001", logicalName: "os_meminfo", columns: ["ts", "mem_total", "mem_free", "mem_available"] }])] },
 )
 
 function finding(kind, timestamp, ordinal) {
@@ -136,7 +136,7 @@ test("only overall health owns the below-50 band and exact findings map to track
   assert.equal(helpers.healthThreshold("postgres_health"), null)
   assert.equal(helpers.findingTrack({ ...finding("known_bad", 100, "1"), logicalName: "health", typeId: "0", fieldOrdinal: 1 }), "health")
   assert.equal(helpers.findingTrack({ ...finding("known_bad", 100, "1"), logicalName: "health", typeId: "0", fieldOrdinal: 0 }), null)
-  assert.equal(helpers.findingTrack({ ...finding("known_bad", 100, "1"), logicalName: "os_meminfo", typeId: "1104001", fieldOrdinal: 2 }), "memory")
+  assert.equal(helpers.findingTrack({ ...finding("known_bad", 100, "1"), logicalName: "os_meminfo", typeId: "1104001", fieldOrdinal: 3 }), "memory")
   assert.equal(helpers.groupFindings([finding("event", 100, "1")], 0, 1_000, 100)[0].placement, "event")
   assert.equal(helpers.groupFindings([finding("spike", 100, "1")], 0, 1_000, 100)[0].placement, "neutral")
 })

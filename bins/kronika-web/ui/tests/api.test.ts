@@ -208,7 +208,7 @@ test("a curated snapshot follows the registry layout and physical order", async 
     const url = new URL(String(input), "http://kronika.invalid")
     assert.deepEqual(url.searchParams.getAll("section"), ["pg_stat_statements"])
     assert.deepEqual(url.searchParams.getAll("field"), ["queryid", "userid", "dbid", "query", "calls", "total_time"])
-    assert.deepEqual(url.searchParams.getAll("by"), ["calls"])
+    assert.deepEqual(url.searchParams.getAll("by"), ["total_time"])
     assert.equal(url.searchParams.get("top"), "200")
     assert.equal(url.searchParams.get("type_id"), "1002001")
     assert.equal(url.searchParams.get("text"), "160")
@@ -225,6 +225,11 @@ test("a curated snapshot follows the registry layout and physical order", async 
         record: "row", type_id: "1002001", ordinal: "3", timestamp: String(START),
         values: ["41", "10", "20", { stored_text: "select 1", original_length: 8 }, 2, 3],
       },
+      {
+        record: "snapshot_rows", type_id: "1002001", eligible: "4873", returned: "200",
+        truncated: true, limit: 200, order_by: "total_time", order_direction: "desc",
+        from: String(START - 10_000_000), to: String(START),
+      },
     ])
   }
   try {
@@ -233,6 +238,11 @@ test("a curated snapshot follows the registry layout and physical order", async 
     })
     assert.equal(hour.sections.pg_stat_statements?.length, 1)
     assert.deepEqual(hour.rateColumns.pg_stat_statements, ["calls", "total_time"])
+    assert.deepEqual(hour.snapshotRows, [{
+      logicalName: "pg_stat_statements", typeId: "1002001", eligible: 4873, returned: 200,
+      truncated: true, limit: 200, orderBy: "total_time", orderDirection: "desc",
+      from: START - 10_000_000, to: START,
+    }])
   } finally {
     globalThis.fetch = originalFetch
   }

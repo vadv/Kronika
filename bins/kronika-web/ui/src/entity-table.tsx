@@ -57,6 +57,7 @@ export function EntityTable({
   rowLabel,
   rows,
   selectedKey,
+  status,
   testId,
   t,
 }: {
@@ -77,6 +78,7 @@ export function EntityTable({
   readonly rowLabel?: ((row: DataRow) => string) | undefined
   readonly rows: readonly DataRow[]
   readonly selectedKey?: string | null
+  readonly status?: ReactNode | undefined
   readonly testId?: string
   readonly t?: Translate
 }) {
@@ -169,6 +171,7 @@ export function EntityTable({
   }, [finding, locatedIndex, virtual])
   const width = table.getTotalSize()
   return <section className={`entity-table${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
+    {status !== undefined && <div className="table-status" data-testid="table-status">{status}</div>}
     {t !== undefined && onPattern !== undefined && <TableFilter kept={data.length} onPattern={onPattern} pattern={pattern} t={t} total={rows.length} />}
     <div aria-label={label} className="entity-scroll" ref={parent} role="table">
       <div className="entity-head" ref={head} role="row" style={{ width }}>

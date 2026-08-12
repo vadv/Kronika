@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import test from "node:test"
+import { renderToStaticMarkup } from "react-dom/server"
 
 import { importModule, registryPlugin } from "./import-module.mjs"
 
@@ -25,7 +26,7 @@ const TEST_REGISTRY = [
   layout("1016001", "pg_store_plans_info", [], ["ts", "dealloc", "stats_reset"]),
 ]
 const helpers = await importModule(
-  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationMs, columnsFor, isIdleActivity, isSystemActivity, isTimestampField, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, registryCardFields, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, postgresIdentity, postgresProjection } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationMs, columnsFor, isIdleActivity, isSystemActivity, isTimestampField, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, rankDenseRows, registryCardFields, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, postgresIdentity, postgresProjection, statementDefaultOrder } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
   { plugins: [registryPlugin(TEST_REGISTRY)] },
 )
 
@@ -243,19 +244,86 @@ test("dense PostgreSQL columns and the Plans tab stay available by section", asy
   assert.match(source, /columns\.some\(\(\{ field \}\) => field === order\.column\)/)
   assert.match(source, /detailColumns=\{ACTIVITY_DETAIL_COLUMNS\}/)
   assert.match(source, /section === "plans" && available\("pg_store_plans_info"\)/)
-  assert.match(source, /!current\.some[\s\S]*\[\.\.\.current, focus\]/)
-  assert.match(source, /loadSeries\(hour, section, filters, fields, controller\.signal, row\.typeId\)/)
+  assert.match(source, /rankDenseRows\(allRows, activeOrder, 200\)/)
+  assert.match(source, /loadSeries\(Math\.max\(0, row\.timestamp - 900_000_000\), section, filters, fields, controller\.signal, row\.typeId, row\.timestamp\)/)
   assert.match(source, /\{ section, fields: \[field\], typeId: row\.typeId \}[\s\S]*fullText: true/)
 })
 
 test("statement and plan lenses have compact ordered columns", () => {
-  assert.deepEqual(helpers.statementColumns("load").slice(0, 4).map(({ field }) => field), ["query", "calls_per_second", "execution_ms_per_second", "exec_load"])
+  assert.deepEqual(helpers.statementColumns("load").slice(0, 5).map(({ field }) => field), ["query", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"])
+  assert.equal(helpers.statementColumns("load").some(({ field }) => field === "exec_load"), false)
+  assert.equal(helpers.planColumns("load").some(({ field }) => field === "exec_load"), false)
   assert.deepEqual(helpers.statementColumns("per_call").slice(0, 4).map(({ field }) => field), ["query", "mean_exec_ms_per_call", "rows_per_call", "blocks_per_call"])
   assert.ok(helpers.statementColumns("io").some(({ field }) => field === "hit_pct"))
   assert.ok(helpers.statementColumns("resources").some(({ field }) => field === "plan_time_pct"))
   assert.ok(helpers.statementColumns("stability").some(({ field }) => field === "cv"))
   assert.ok(helpers.planColumns("timing").some(({ field }) => field === "stddev_exec_time_ms"))
   assert.ok(helpers.planColumns("identity").some(({ field }) => field === "queryid_stat_statements"))
+  assert.ok(helpers.planColumns("identity").some(({ field }) => field === "calls_per_second"))
+  assert.equal(helpers.statementDefaultOrder("load"), "execution_ms_per_second")
+  assert.equal(helpers.statementDefaultOrder("per_call"), "calls_per_second")
+  assert.equal(helpers.statementDefaultOrder("io"), "shared_blks_read")
+  assert.equal(helpers.statementDefaultOrder("resources"), "wal_bytes")
+  assert.equal(helpers.statementDefaultOrder("stability"), "calls_per_second")
+  assert.equal(helpers.planDefaultOrder("timing"), "calls_per_second")
+})
+
+test("dense rows retain every layout and apply one global bounded ranking", () => {
+  const oldest = { ...row("1002001", { total_time: 5, query: "old" }), ordinal: "1", timestamp: 100 }
+  const middle = { ...row("1002001", { total_time: 7, query: "middle" }), ordinal: "2", timestamp: 100 }
+  const newest = { ...row("1002002", { total_exec_time: 9, query: "new" }), ordinal: "3", timestamp: 200 }
+  const ranked = helpers.rankDenseRows(
+    [oldest, newest, middle],
+    { column: "execution_ms_per_second", descending: true },
+    2,
+  )
+  assert.deepEqual(ranked.map(({ ordinal }) => ordinal), ["3", "2"])
+  assert.deepEqual(ranked.map(({ timestamp }) => timestamp), [200, 100])
+})
+
+test("dense table state names cursor, interval, filter, physical server order, and bounded count", () => {
+  const dictionary = {
+    "pg.table.cursor": "Cursor {time}", "pg.table.interval": "Interval {from} to {to}",
+    "pg.table.intervals": "Intervals {intervals}",
+    "pg.table.filter": "Filter {pattern}", "pg.table.no_filter": "No filter",
+    "pg.table.order": "Order {semantic}; {physical}; {direction}", "pg.table.order_default": "Default order",
+    "pg.table.desc": "descending", "pg.table.shown": "Showing {returned} of {eligible}; top {limit}",
+    "pg.table.first_limit": "First {returned}; limit {limit}", "pg.table.interval_unavailable": "No interval",
+    "pg.field.execution_ms_per_second.label": "Execution ms/s",
+  }
+  const t = (key, slots = {}) => Object.entries(slots).reduce((text, [name, value]) => text.replace(`{${name}}`, value), dictionary[key] ?? key)
+  const markup = renderToStaticMarkup(helpers.tableState([{
+    logicalName: "pg_stat_statements", typeId: "1002006", eligible: 4873, returned: 200,
+    truncated: true, limit: 200, orderBy: "total_exec_time", orderDirection: "desc",
+    from: 1_800_000_000_000_000, to: 1_800_000_010_000_000,
+  }], 200, 1_800_000_010_000_000, "vacuum*", { column: "execution_ms_per_second", descending: true }, "en", t))
+  assert.match(markup, /Cursor .* UTC/)
+  assert.match(markup, /Interval .* UTC to .* UTC/)
+  assert.match(markup, /Filter vacuum\*/)
+  assert.match(markup, /Execution ms\/s; total_exec_time; descending/)
+  assert.match(markup, /Showing 200 of 4,873; top 200/)
+})
+
+test("multi-layout table state reports the global result count and exact intervals", () => {
+  const dictionary = {
+    "pg.table.cursor": "Cursor {time}", "pg.table.interval": "Interval {from} to {to}",
+    "pg.table.intervals": "Intervals {intervals}", "pg.table.interval_unavailable": "No interval",
+    "pg.table.filter": "Filter {pattern}", "pg.table.no_filter": "No filter",
+    "pg.table.order": "Order {semantic}; {physical}; {direction}", "pg.table.order_default": "Default order",
+    "pg.table.desc": "descending", "pg.table.shown": "Showing {returned} of {eligible}; top {limit}",
+    "pg.table.first_limit": "First {returned}; limit {limit}",
+    "pg.field.execution_ms_per_second.label": "Execution ms/s",
+  }
+  const t = (key, slots = {}) => Object.entries(slots).reduce((text, [name, value]) => text.replace(`{${name}}`, value), dictionary[key] ?? key)
+  const metadata = [
+    { logicalName: "pg_stat_statements", typeId: "1002001", eligible: 3000, returned: 200, truncated: true, limit: 200, orderBy: "total_time", orderDirection: "desc", from: 1_000_000, to: 2_000_000 },
+    { logicalName: "pg_stat_statements", typeId: "1002006", eligible: 1873, returned: 200, truncated: true, limit: 200, orderBy: "total_exec_time", orderDirection: "desc", from: 3_000_000, to: 4_000_000 },
+  ]
+  const markup = renderToStaticMarkup(helpers.tableState(metadata, 200, 210, "", { column: "execution_ms_per_second", descending: true }, "en", t))
+  assert.match(markup, /Showing 200 of 4,873; top 200/)
+  assert.match(markup, /1002001: .* UTC → .* UTC · 1002006: .* UTC → .* UTC/)
+  assert.match(markup, /total_time, total_exec_time/)
+  assert.doesNotMatch(markup, /Showing 400/)
 })
 
 test("an exact finding row wins over the previous PostgreSQL selection", () => {

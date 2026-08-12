@@ -83,7 +83,7 @@ export function bundledFixtureHour(start: number): HourData | null {
       segmentAt,
     }),
   ).filter((row) => within(row.timestamp))
-  const points = fixturePoints(fixture, segmentAt).filter((point) => within(point.timestamp))
+  const points = fixturePoints(fixture, segmentAt, activities).filter((point) => within(point.timestamp))
   const lanePoints = fixtureLanePoints(points, activities)
   const findings = fixture.findings.map((finding) => ({
     segmentId: finding.segment_id,
@@ -95,6 +95,21 @@ export function bundledFixtureHour(start: number): HourData | null {
     rowOrdinal: String(finding.row_ordinal),
     fieldOrdinal: finding.field_ordinal,
   })).filter((finding) => within(finding.timestamp))
+  const groupedFindings = new Map<string, { readonly first: typeof findings[number]; count: number }>()
+  for (const finding of findings) {
+    const key = `${finding.segmentId}:${finding.typeId}`
+    const group = groupedFindings.get(key)
+    if (group === undefined) groupedFindings.set(key, { first: finding, count: 1 })
+    else group.count += 1
+  }
+  const findingGroups = [...groupedFindings.values()].map(({ first, count }) => ({
+    segmentId: first.segmentId,
+    logicalName: first.logicalName,
+    typeId: first.typeId,
+    totalHits: count,
+    shown: count,
+    truncated: false,
+  }))
   const sections = {
     os_process: processes,
     pg_stat_activity: activities,
@@ -103,6 +118,7 @@ export function bundledFixtureHour(start: number): HourData | null {
   return {
     sections,
     rateColumns: {},
+    snapshotRows: [],
     availableSections: ["os_process", "pg_stat_activity", "health"],
     processes,
     activities,
@@ -114,6 +130,7 @@ export function bundledFixtureHour(start: number): HourData | null {
     points,
     lanePoints,
     findings,
+    findingGroups,
   }
 }
 
@@ -253,7 +270,7 @@ function seriesRows(
   }))
 }
 
-function fixturePoints(fixture: RealHourFixture, segmentAt: (timestamp: number) => string): readonly Point[] {
+function fixturePoints(fixture: RealHourFixture, segmentAt: (timestamp: number) => string, activities: readonly DataRow[]): readonly Point[] {
   const series: readonly [string, string, string, readonly FixturePoint[]][] = [
     ["os_cpu", "1102001", "os_cpu_busy_percent", fixture.system.cpuBusy],
     ["health", "0", "os_health", fixture.system.health],
@@ -273,7 +290,23 @@ function fixturePoints(fixture: RealHourFixture, segmentAt: (timestamp: number) 
       value,
     })),
   )
-  return points.concat(Object.entries(fixture.system.psi).flatMap(([resource, values]) =>
+  const active = new Map<string, { readonly segmentId: string; readonly timestamp: number; readonly typeId: string; count: number }>()
+  for (const row of activities) {
+    if (cellText(row.values.state) !== "active") continue
+    const key = `${row.segmentId}:${row.typeId}:${row.timestamp}`
+    const stored = active.get(key) ?? { segmentId: row.segmentId, timestamp: row.timestamp, typeId: row.typeId, count: 0 }
+    stored.count += 1
+    active.set(key, stored)
+  }
+  return points.concat([...active.values()].map((stored) => ({
+    segmentId: stored.segmentId,
+    logicalName: "pg_stat_activity",
+    typeId: stored.typeId,
+    series: "active_backends",
+    timestamp: stored.timestamp,
+    identity: {},
+    value: stored.count,
+  })), Object.entries(fixture.system.psi).flatMap(([resource, values]) =>
     values.map(([timestamp, value]) => ({
       segmentId: segmentAt(Number(timestamp)),
       logicalName: "os_psi",

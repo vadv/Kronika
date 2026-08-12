@@ -1,9 +1,14 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { importModule } from "./import-module.mjs"
+import { importModule, registryPlugin } from "./import-module.mjs"
 
-const helpers = await importModule('export { locatorText } from "../src/events-view.tsx"')
+const helpers = await importModule('export { locatorText } from "../src/events-view.tsx"', {
+  plugins: [registryPlugin([{
+    typeId: "2001001", logicalName: "pg_log_errors", identity: [],
+    columns: ["ts", "severity", "category", "message"],
+  }])],
+})
 
 function finding(rowOrdinal, fieldOrdinal) {
   return {

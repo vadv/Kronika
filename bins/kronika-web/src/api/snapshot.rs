@@ -122,9 +122,6 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
         }
     }
     if let Some(ordinal) = request.row_ordinal {
-        if segment.kind() != SegmentKind::Finished {
-            return Err(ApiError::BadCursor);
-        }
         let [section] = sections.as_slice() else {
             return Err(ApiError::BadCursor);
         };
@@ -429,6 +426,7 @@ impl PreparedSnapshot {
         let selection_dictionary = resolved_dictionary(source, &selection_ids)?;
         let text_ranks = lexical_ranks(&selection_dictionary, &order_ids);
         let mut top_rows = TopRows::new(order.limit);
+        let mut eligible = 0_usize;
         source.visit_rows(
             plan.type_id,
             &plan.projection,
@@ -448,6 +446,7 @@ impl PreparedSnapshot {
                 let Some(identity) = identity_of(plan, &row) else {
                     return true;
                 };
+                eligible += 1;
                 let staged = StagedRow {
                     ordinal,
                     row,
@@ -463,7 +462,43 @@ impl PreparedSnapshot {
         if cancelled() {
             return Ok(false);
         }
-        self.emit_staged_rows(source, plan, top_rows.finish(), rates, emit, cancelled)
+        let staged = top_rows.finish();
+        let returned = staged.len();
+        if !self.emit_staged_rows(source, plan, staged, rates, emit, cancelled)? {
+            return Ok(false);
+        }
+        Self::emit_selection(plan, window, order, rates, eligible, returned, emit)
+    }
+
+    fn emit_selection(
+        plan: &Plan,
+        window: RowWindow,
+        order: BoundedOrder,
+        rates: RateContext<'_>,
+        eligible: usize,
+        returned: usize,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+    ) -> Result<bool, ApiError> {
+        let (from, to) = window.moment.map_or((None, None), |(_timestamp, current)| {
+            (
+                rates
+                    .elapsed
+                    .and_then(|elapsed| current.checked_sub(elapsed)),
+                Some(current),
+            )
+        });
+        Ok(emit(record(json!({
+            "record": "snapshot_rows",
+            "type_id": plan.type_id.to_string(),
+            "eligible": eligible.to_string(),
+            "returned": returned.to_string(),
+            "truncated": eligible > returned,
+            "limit": order.limit,
+            "order_by": order.column,
+            "order_direction": "desc",
+            "from": from.map(|value: i64| value.to_string()),
+            "to": to.map(|value| value.to_string()),
+        }))?))
     }
 
     fn emit_rows(

@@ -171,7 +171,8 @@ test("a physical statement spike selects interval mean execution time", () => {
 test("statement lenses project only their exact physical operands", () => {
   const perCall = metrics.statementRequest("per_call")
   assert.equal(perCall.top, 200)
-  assert.deepEqual(perCall.defaultOrder, ["total_time", "total_exec_time"])
+  assert.deepEqual(perCall.defaultOrder, ["calls"])
+  assert.equal(metrics.statementDefaultOrder("per_call"), "calls_per_second")
   assert.ok(perCall.fieldsByType["1002001"].includes("rows"))
   assert.ok(perCall.fieldsByType["1002001"].includes("calls"))
   assert.ok(perCall.fieldsByType["1002001"].includes("shared_blks_hit"))
@@ -185,12 +186,15 @@ test("statement lenses project only their exact physical operands", () => {
   const resources = metrics.statementRequest("resources")
   assert.ok(resources.fieldsByType["1002006"].includes("temp_blks_written"))
   assert.equal(resources.fieldsByType["1002006"].includes("temp_blks_read"), false)
+  assert.deepEqual(resources.defaultOrder, ["wal_bytes"])
+  assert.equal(metrics.statementDefaultOrder("resources"), "wal_bytes")
 
   const stability = metrics.statementRequest("stability")
   assert.ok(stability.fieldsByType["1002001"].includes("mean_time"))
   assert.ok(stability.fieldsByType["1002001"].includes("stddev_time"))
   assert.ok(stability.fieldsByType["1002006"].includes("mean_exec_time"))
   assert.ok(stability.fieldsByType["1002006"].includes("stddev_exec_time"))
+  assert.deepEqual(stability.defaultOrder, ["calls"])
 })
 
 test("plan lenses keep bounded rows and direct per-plan statistics", () => {
@@ -206,6 +210,8 @@ test("plan lenses keep bounded rows and direct per-plan statistics", () => {
   assert.equal(timing.fieldsByType["1003001"].includes("queryid_stat_statements"), false)
   const identity = metrics.planRequest("identity")
   assert.ok(identity.fieldsByType["1004001"].includes("queryid_stat_statements"))
+  assert.ok(identity.fieldsByType["1003001"].includes("calls"))
+  assert.deepEqual(identity.defaultOrder, ["calls"])
   assert.equal(identity.fieldsByType["1003001"].includes("mean_time"), false)
   const decorated = metrics.decoratePostgresIntervalRow(
     row("1003001", 10, { calls: 2, total_time: 20, min_time: 2, max_time: 15, mean_time: 10, stddev_time: 3 }, "a"),

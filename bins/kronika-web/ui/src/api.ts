@@ -86,6 +86,15 @@ export interface Finding {
   readonly fieldOrdinal: number
 }
 
+export interface FindingGroup {
+  readonly segmentId: string
+  readonly logicalName: string
+  readonly typeId: string
+  readonly totalHits: number
+  readonly shown: number
+  readonly truncated: boolean
+}
+
 interface Section {
   readonly logical_name: string | null
   readonly type_id: string
@@ -101,6 +110,7 @@ interface Segment {
 export interface HourData {
   readonly sections: Readonly<Record<string, readonly DataRow[]>>
   readonly rateColumns: Readonly<Record<string, readonly string[]>>
+  readonly snapshotRows: readonly SnapshotRows[]
   readonly availableSections: readonly string[]
   readonly processes: readonly DataRow[]
   readonly activities: readonly DataRow[]
@@ -112,6 +122,20 @@ export interface HourData {
   readonly points: readonly Point[]
   readonly lanePoints: readonly LanePoint[]
   readonly findings: readonly Finding[]
+  readonly findingGroups: readonly FindingGroup[]
+}
+
+export interface SnapshotRows {
+  readonly logicalName: string
+  readonly typeId: string
+  readonly eligible: number
+  readonly returned: number
+  readonly truncated: boolean
+  readonly limit: number
+  readonly orderBy: string
+  readonly orderDirection: "desc"
+  readonly from: number | null
+  readonly to: number | null
 }
 
 export interface LanePoint {
@@ -130,6 +154,7 @@ export interface TimelineData {
   readonly health: readonly DataRow[]
   readonly points: readonly Point[]
   readonly findings: readonly Finding[]
+  readonly findingGroups: readonly FindingGroup[]
   readonly availableSections: readonly string[]
 }
 
@@ -152,6 +177,7 @@ export function hourOf(timeline: TimelineData): HourData {
     points: timeline.points,
     lanePoints: timeline.lanePoints,
     findings: timeline.findings,
+    findingGroups: timeline.findingGroups,
   })
 }
 
@@ -167,10 +193,12 @@ export function viewData(timeline: HourData, current: HourData): HourData {
   return hourData({
     sections: { ...timeline.sections, ...current.sections },
     rateColumns: current.rateColumns,
+    snapshotRows: current.snapshotRows,
     availableSections: timeline.availableSections,
     points: timeline.points,
     lanePoints: timeline.lanePoints,
     findings: timeline.findings,
+    findingGroups: timeline.findingGroups,
   })
 }
 
@@ -195,6 +223,7 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
       hour: requested, availableHours: unique([floorHour(range.from), floorHour(range.to)]),
       segments: [], lanePoints: fixture.lanePoints, lanes: fixture.sections, health: fixture.health, points: fixture.points,
       findings: fixture.findings,
+      findingGroups: fixture.findingGroups,
       availableSections: fixture.availableSections,
     }
   }
@@ -220,6 +249,7 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
     .sort((left, right) => left.minTs - right.minTs)
   const points: Point[] = []
   const findings: Finding[] = []
+  const findingGroups: FindingGroup[] = []
   const lanePoints: LanePoint[] = []
   const lanes: Record<string, DataRow[]> = { [HEALTH]: [] }
   const layouts = new Map<string, readonly string[]>()
@@ -232,6 +262,21 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
       points.push(indexPoint(record, segmentId, HEALTH))
     } else if (isFindingRecord(record)) {
       findings.push(indexFinding(record, segmentId, HEALTH))
+    } else if (record.record === "findings") {
+      const typeId = requiredText(record.type_id, "finding group type_id")
+      const logicalName = typeof record.logical_name === "string"
+        ? record.logical_name
+        : logicalNameForTypeId(typeId) ?? HEALTH
+      const totalHits = integer(record.total_hits, "finding hit count")
+      if (typeof record.truncated !== "boolean") throw new Error("finding truncation flag is invalid")
+      findingGroups.push({
+        segmentId,
+        logicalName,
+        typeId,
+        totalHits,
+        shown: 0,
+        truncated: record.truncated,
+      })
     } else if (layout !== null) {
       layouts.set(layout.typeId, layout.columns)
     } else if (record.record === "row") {
@@ -247,6 +292,10 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
     }
   }
   lanes[HEALTH] = healthRows(points) as DataRow[]
+  const resolvedFindingGroups = findingGroups.map((group) => ({
+    ...group,
+    shown: findings.filter((finding) => finding.segmentId === group.segmentId && finding.typeId === group.typeId).length,
+  }))
   return {
     hour,
     lanePoints,
@@ -257,29 +306,36 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
     health: lanes[HEALTH] ?? [],
     points,
     findings,
+    findingGroups: resolvedFindingGroups,
     availableSections: availableSectionNames(all),
   }
 }
 
 export async function loadSeries(
-  hour: number,
+  from: number,
   section: string,
   where: Readonly<Record<string, string>>,
   fields: readonly string[],
   signal: AbortSignal,
   typeId?: string | undefined,
+  to = from + 3_600_000_000 - 1,
 ): Promise<readonly DataRow[]> {
   signal.throwIfAborted()
-  const fixture = bundledFixtureHour(hour)
-  if (fixture !== null) {
+  if (bundledFixtureRange() !== null) {
     const fieldsToKeep = unique([...fields, ...Object.keys(where)])
-    return (fixture.sections[section] ?? [])
+    const rows: DataRow[] = []
+    for (let hour = floorHour(from); hour <= floorHour(to); hour += 3_600_000_000) {
+      const fixture = bundledFixtureHour(hour)
+      if (fixture !== null) rows.push(...(fixture.sections[section] ?? []))
+    }
+    return [...new Map(rows.map((row) => [`${row.segmentId}:${row.typeId}:${row.ordinal}`, row])).values()]
+      .filter((row) => row.timestamp >= from && row.timestamp <= to)
       .filter((row) => row.typeId === (typeId ?? row.typeId) && fixtureMatches(row, where))
       .map((row) => projectFixtureRow(row, fieldsToKeep))
   }
   const query = [
-    `from=${hour}`,
-    `to=${hour + 3_600_000_000 - 1}`,
+    `from=${from}`,
+    `to=${to}`,
     `section=${encodeURIComponent(section)}`,
     ...fields.map((name) => `field=${encodeURIComponent(name)}`),
     ...Object.entries(where).map(([column, value]) => `where.${encodeURIComponent(column)}=${encodeURIComponent(value)}`),
@@ -423,28 +479,38 @@ export function resolveLoadedRow(
 }
 
 export function resolveLocator(data: Pick<HourData, "sections">, finding: Finding): ResolvedLocator | null {
-  const row = resolveLoadedRow(data, finding)
+  const fieldName = fieldNameForLocator(finding)
+  const row = finding.typeId === "0"
+    ? (data.sections.health ?? []).find((candidate) => candidate.segmentId === finding.segmentId
+      && candidate.timestamp === finding.timestamp
+      && fieldName !== null
+      && Object.hasOwn(candidate.values, fieldName)) ?? null
+    : resolveLoadedRow(data, finding)
   if (row === null) return null
   return {
     logicalName: row.logicalName,
     row,
-    fieldName: fieldNameForLocator(finding),
+    fieldName,
   }
 }
 
 function hourData(input: {
   readonly sections: Readonly<Record<string, readonly DataRow[]>>
   readonly rateColumns?: Readonly<Record<string, readonly string[]>>
+  readonly snapshotRows?: readonly SnapshotRows[]
   readonly availableSections: readonly string[]
   readonly points: readonly Point[]
   readonly lanePoints: readonly LanePoint[]
   readonly findings: readonly Finding[]
+  readonly findingGroups?: readonly FindingGroup[]
 }): HourData {
   const rows = (name: string) => input.sections[name] ?? []
   const flatten = (names: readonly string[]) => names.flatMap(rows)
   return {
     ...input,
     rateColumns: input.rateColumns ?? {},
+    snapshotRows: input.snapshotRows ?? [],
+    findingGroups: input.findingGroups ?? [],
     processes: rows("os_process"),
     activities: rows("pg_stat_activity"),
     load: rows("os_loadavg"),
@@ -522,6 +588,7 @@ export async function loadSnapshot(
   const layouts = new Map<string, { readonly logicalName: string; readonly columns: readonly string[] }>()
   const grouped: Record<string, DataRow[]> = {}
   const rateColumns: Record<string, readonly string[]> = {}
+  const snapshotRows: SnapshotRows[] = []
   for (const section of requests) grouped[section.section] = []
   for (const record of records) {
     const layout = layoutRecord(record)
@@ -555,15 +622,36 @@ export async function loadSnapshot(
         values: rowValues(columns, values),
       })
       grouped[logicalName] = rows
+    } else if (record.record === "snapshot_rows") {
+      const typeId = requiredText(record.type_id, "snapshot row type_id")
+      const layout = layouts.get(typeId)
+      if (layout === undefined) throw new Error(`snapshot row counts for unknown layout ${typeId}`)
+      if (record.order_direction !== "desc" || typeof record.truncated !== "boolean") {
+        throw new Error(`snapshot row counts for layout ${typeId} are invalid`)
+      }
+      snapshotRows.push({
+        logicalName: layout.logicalName,
+        typeId,
+        eligible: integer(record.eligible, "eligible row count"),
+        returned: integer(record.returned, "returned row count"),
+        truncated: record.truncated,
+        limit: integer(record.limit, "snapshot row limit"),
+        orderBy: requiredText(record.order_by, "snapshot order field"),
+        orderDirection: record.order_direction,
+        from: record.from === null ? null : integer(record.from, "snapshot interval start"),
+        to: record.to === null ? null : integer(record.to, "snapshot interval end"),
+      })
     }
   }
   return hourData({
     sections: grouped,
     rateColumns,
+    snapshotRows,
     availableSections: unique(requests.map((section) => section.section)),
     points: [],
     lanePoints: [],
     findings: [],
+    findingGroups: [],
   })
 }
 
@@ -583,6 +671,7 @@ function fixtureSnapshot(
   const fixture = bundledFixtureHour(floorHour(at))
   if (fixture === null) return null
   const grouped: Record<string, readonly DataRow[]> = {}
+  const snapshotRows: SnapshotRows[] = []
   for (const request of requests) {
     const typeId = request.typeId ?? options.typeId
     let rows = (fixture.sections[request.section] ?? [])
@@ -597,12 +686,28 @@ function fixtureSnapshot(
         ? []
         : rows.filter((row) => row.timestamp === Math.max(...before.map((row) => row.timestamp)))
     }
+    const eligible = rows.length
     const orderFields = snapshotOrder(request, order)
     const orderField = orderFields.find((field) => rows.some((row) => row.values[field] !== undefined))
     if (orderField !== undefined) {
       rows = rows.slice().sort((left, right) => fixtureOrder(right.values[orderField], left.values[orderField]))
     }
     if (request.top !== undefined) rows = rows.slice(0, request.top)
+    if (request.top !== undefined && orderField !== undefined) {
+      const typeId = request.typeId ?? options.typeId ?? rows[0]?.typeId
+      if (typeId !== undefined) snapshotRows.push({
+        logicalName: request.section,
+        typeId,
+        eligible,
+        returned: rows.length,
+        truncated: eligible > rows.length,
+        limit: request.top,
+        orderBy: orderField,
+        orderDirection: "desc",
+        from: null,
+        to: rows[0]?.timestamp ?? null,
+      })
+    }
     const fields = request.fields === undefined
       ? undefined
       : unique([...request.fields, ...Object.keys(options.filters ?? {})])
@@ -614,10 +719,12 @@ function fixtureSnapshot(
   return hourData({
     sections: grouped,
     rateColumns: {},
+    snapshotRows,
     availableSections: unique(requests.map((request) => request.section)),
     points: [],
     lanePoints: [],
     findings: [],
+    findingGroups: [],
   })
 }
 
@@ -687,6 +794,9 @@ function snapshotOrder(section: SectionRequest, chosen: SnapshotOrder | undefine
       ?? (section.fields?.includes(chosen.column) === true ? [chosen.column] : undefined)
     : section.defaultOrder
   if (requested !== undefined && requested.length > 0) return unique(requested)
+  if (chosen !== undefined && section.defaultOrder !== undefined && section.defaultOrder.length > 0) {
+    return unique(section.defaultOrder)
+  }
   return unique(section.fallbackOrder ?? [])
 }
 
@@ -719,10 +829,11 @@ function isFindingRecord(record: Record<string, unknown>): boolean {
 }
 
 function indexPoint(record: Record<string, unknown>, segmentId: string, logicalName: string): Point {
+  const typeId = requiredText(record.type_id, "point type_id")
   return {
     segmentId,
-    logicalName,
-    typeId: requiredText(record.type_id, "point type_id"),
+    logicalName: logicalNameForTypeId(typeId) ?? logicalName,
+    typeId,
     series: requiredText(record.series, "point series"),
     timestamp: integer(record.ts, "point timestamp"),
     identity: cellRecord(record.identity),

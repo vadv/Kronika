@@ -1319,6 +1319,18 @@ fn a_snapshot_orders_by_a_column_and_returns_only_the_top_of_it() {
         minors,
         [serde_json::json!([8, 2]), serde_json::json!([8, 1])]
     );
+    let selection = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_rows")
+        .expect("snapshot row counts");
+    assert_eq!(selection["eligible"], "3");
+    assert_eq!(selection["returned"], "2");
+    assert_eq!(selection["truncated"], true);
+    assert_eq!(selection["limit"], 2);
+    assert_eq!(selection["order_by"], "minor");
+    assert_eq!(selection["order_direction"], "desc");
+    assert_eq!(selection["from"], "100");
+    assert_eq!(selection["to"], "200");
 }
 
 #[test]
@@ -1343,6 +1355,12 @@ fn a_snapshot_orders_stored_text_lexicographically_and_breaks_ties_by_ordinal() 
             serde_json::json!([0, "beta"]),
         ]
     );
+    let selection = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_rows")
+        .expect("snapshot row counts");
+    assert_eq!(selection["from"], Value::Null);
+    assert_eq!(selection["to"], "100");
 }
 
 #[test]
@@ -1427,20 +1445,25 @@ fn a_snapshot_projects_one_exact_physical_source_row() {
 }
 
 #[test]
-fn an_exact_source_pointer_must_name_a_finished_row_at_its_timestamp() {
+fn an_exact_source_pointer_must_name_a_captured_row_at_its_timestamp() {
     let mut active = Fixture::new();
     active.append_diskstats(&[(200, 0, 2)]);
-    for query in [
-        "at=200&section=os_diskstats&field=minor&type_id=1108001&row_ordinal=0",
-        "at=199&section=os_diskstats&field=minor&type_id=1108001&row_ordinal=0",
-    ] {
-        let path = format!("/api/segments/{SEGMENT_ID}/snapshot");
-        let route = crate::route::parse(&path, Some(query)).expect("exact route");
-        assert!(matches!(
-            crate::api::prepare(active.root(), SOURCES, route, None),
-            Err(ApiError::BadCursor)
-        ));
-    }
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_diskstats&field=minor&type_id=1108001&row_ordinal=0"
+    );
+    let records = stream(active.prepare(&target, None)).expect("captured active row");
+    assert_eq!(row_records(&records)[0]["values"], serde_json::json!([0]));
+
+    let path = format!("/api/segments/{SEGMENT_ID}/snapshot");
+    let route = crate::route::parse(
+        &path,
+        Some("at=199&section=os_diskstats&field=minor&type_id=1108001&row_ordinal=0"),
+    )
+    .expect("exact route");
+    assert!(matches!(
+        crate::api::prepare(active.root(), SOURCES, route, None),
+        Err(ApiError::BadCursor)
+    ));
 
     active.finish();
     for query in [

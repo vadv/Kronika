@@ -43,6 +43,7 @@ export function SeriesChart({
   const paths = chartRuns(points)
   const companion: ReadonlyMap<string, readonly NumericChartPoint[]> = second === undefined ? new Map() : chartRuns(second)
   const reading = readingAt(points, cursor)
+  const exact = cursor === undefined ? undefined : numeric.find((point) => point.timestamp === cursor)
   const hasData = numeric.length !== 0
   return <figure className="series-chart">
     <figcaption id={title}>
@@ -70,6 +71,7 @@ export function SeriesChart({
         ])
         return <path className="mini-series" d={path} key={segmentId} />
       })}
+      {exact !== undefined && <circle className="mini-selected-point" cx={Math.max(0, Math.min(920, (exact.timestamp - hour) / (end - hour) * 920))} cy={101 - (exact.value - low) / span * 92} r="3.5" />}
       </svg>
       <span aria-hidden="true" className="series-ceiling">{(format ?? compact)(high, locale)}</span>
       {low !== 0 && <span aria-hidden="true" className="series-floor">{(format ?? compact)(low, locale)}</span>}

@@ -173,6 +173,7 @@ impl PreparedHour {
                 return Ok(());
             }
             let mut keys = series_keys(segment, SERIES);
+            keys.extend(series_keys(segment, "pg_stat_activity"));
             keys.extend(finding_keys(segment));
             keys.sort_unstable();
             keys.dedup();
