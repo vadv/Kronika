@@ -392,6 +392,7 @@ h2 { font-size: var(--t-md); }
 .entity-header-cell, .entity-cell { border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); flex: 0 0 auto; min-width: 0; overflow: hidden; padding: 0 7px; }
 .entity-header-cell { align-items: center; color: var(--fg3); display: flex; font-size: var(--t-xs); letter-spacing: .025em; text-transform: uppercase; }
 .entity-header-cell .entity-sort { align-items: center; background: transparent; border: 0; color: inherit; cursor: pointer; display: flex; flex: 1 1 auto; height: 100%; justify-content: space-between; min-width: 0; padding: 0; text-align: left; text-transform: inherit; }
+.entity-header-cell .entity-sort:disabled { cursor: default; }
 .entity-header-cell .entity-sort span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .entity-header-cell > .label-help { flex: 0 0 auto; margin-left: 4px; }
 .entity-header-cell i { color: var(--accent2); font-style: normal; margin-left: 5px; }

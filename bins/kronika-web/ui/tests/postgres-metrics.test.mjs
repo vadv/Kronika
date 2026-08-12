@@ -182,7 +182,7 @@ test("history subtracts exact counters before conversion and rejects unusable in
   assert.equal(metrics.postgresInterval(after, executionReset).mean_exec_ms_per_call, null)
 })
 
-test("a physical statement spike selects the derived mean cell", () => {
+test("a physical statement spike selects interval mean execution time", () => {
   assert.equal(metrics.findingSemanticField("1002001", "total_time"), "mean_exec_ms_per_call")
   assert.equal(metrics.findingSemanticField("1002005", "total_exec_time"), "mean_exec_ms_per_call")
   assert.deepEqual(metrics.physicalFields(metrics.PG_STAT_STATEMENTS_TYPE_IDS, "execution_ms_per_second"), {
@@ -203,6 +203,15 @@ test("statement lenses project only their exact physical operands", () => {
   assert.ok(perCall.fieldsByType["1002001"].includes("calls"))
   assert.ok(perCall.fieldsByType["1002001"].includes("shared_blks_hit"))
   assert.equal(perCall.fieldsByType["1002001"].includes("wal_bytes"), false)
+  assert.equal(perCall.fieldsByType["1002001"].includes("shared_blks_dirtied"), false)
+
+  const io = metrics.statementRequest("io")
+  assert.ok(io.fieldsByType["1002001"].includes("shared_blks_dirtied"))
+  assert.equal(io.fieldsByType["1002001"].includes("blk_read_time"), false)
+
+  const resources = metrics.statementRequest("resources")
+  assert.ok(resources.fieldsByType["1002006"].includes("temp_blks_written"))
+  assert.equal(resources.fieldsByType["1002006"].includes("temp_blks_read"), false)
 
   const stability = metrics.statementRequest("stability")
   assert.ok(stability.fieldsByType["1002001"].includes("mean_time"))
@@ -212,15 +221,19 @@ test("statement lenses project only their exact physical operands", () => {
 })
 
 test("plan lenses keep bounded rows and direct per-plan statistics", () => {
-  for (const lens of ["load", "regression", "io", "compare"]) {
+  for (const lens of ["load", "timing", "io", "identity"]) {
     const request = metrics.planRequest(lens)
     assert.equal(request.top, 200)
     assert.ok(request.fieldsByType["1003001"].includes("plan"))
   }
-  const regression = metrics.planRequest("regression")
+  const timing = metrics.planRequest("timing")
   for (const field of ["min_time", "max_time", "mean_time", "stddev_time", "first_call", "last_call"]) {
-    assert.ok(regression.fieldsByType["1003001"].includes(field))
+    assert.ok(timing.fieldsByType["1003001"].includes(field))
   }
+  assert.equal(timing.fieldsByType["1003001"].includes("queryid_stat_statements"), false)
+  const identity = metrics.planRequest("identity")
+  assert.ok(identity.fieldsByType["1004001"].includes("queryid_stat_statements"))
+  assert.equal(identity.fieldsByType["1003001"].includes("mean_time"), false)
   const decorated = metrics.decoratePostgresRows([
     row("1003001", 10, { calls: 2, total_time: 20, min_time: 2, max_time: 15, mean_time: 10, stddev_time: 3 }, "a"),
   ], "pg_store_plans")[0]

@@ -8,6 +8,7 @@ test("an address survives a round trip through the query string", () => {
     at: 1_786_445_580_254_226,
     view: "host.processes" as const,
     lens: "cpu" as const,
+    pgLens: "load" as const,
     sort: { column: "utime", descending: true },
     row: "1244346:1784523346370000",
     find: "postgres*",
@@ -51,4 +52,13 @@ test("PostgreSQL plans have a stable address", () => {
   assert.equal(sourceOf(address.view), "postgresql")
   assert.equal(pgSectionOf(address.view), "plans")
   assert.equal(viewOf("postgresql", "processes", "plans"), "pg.plans")
+})
+
+test("PostgreSQL lenses survive navigation only on their tables", () => {
+  assert.equal(writeAddress({ ...DEFAULT_ADDRESS, view: "pg.statements", pgLens: "stability" }), "/?view=pg.statements&pg_lens=stability")
+  assert.equal(readAddress("view=pg.statements&pg_lens=stability").pgLens, "stability")
+  assert.equal(writeAddress({ ...DEFAULT_ADDRESS, view: "pg.plans", pgLens: "timing" }), "/?view=pg.plans&pg_lens=timing")
+  assert.equal(readAddress("view=pg.plans&pg_lens=timing").pgLens, "timing")
+  assert.equal(writeAddress({ ...DEFAULT_ADDRESS, view: "host.system", pgLens: "io" }), "/?view=host.system")
+  assert.equal(readAddress("view=pg.plans&pg_lens=regression").pgLens, "load")
 })

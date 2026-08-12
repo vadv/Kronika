@@ -24,7 +24,7 @@ import {
   type HourData,
 } from "./api"
 import type { TableOrder } from "./entity-table"
-import { hostSectionOf, pgSectionOf, readAddress, sourceOf, stepOf, viewOf, writeAddress } from "./address"
+import { hostSectionOf, pgSectionOf, readAddress, sourceOf, stepOf, viewOf, writeAddress, type PgLens } from "./address"
 import { DetailDock, PROCESS_HISTORY_FIELDS } from "./detail"
 import { EventsView } from "./events-view"
 import { HelpPanel, type Translate } from "./help"
@@ -124,8 +124,8 @@ function App() {
   const [source, setSource] = useState<Source>(sourceOf(opened.current.view))
   const [hostSection, setHostSection] = useState<HostSection>(hostSectionOf(opened.current.view))
   const [pgSection, setPgSection] = useState<PostgresSection>(pgSectionOf(opened.current.view))
-  const [statementLens, setStatementLens] = useState<StatementLens>("load")
-  const [planLens, setPlanLens] = useState<PlanLens>("load")
+  const [statementLens, setStatementLens] = useState<StatementLens>(statementLensOf(opened.current.pgLens))
+  const [planLens, setPlanLens] = useState<PlanLens>(planLensOf(opened.current.pgLens))
   const [lens, setLens] = useState<Lens>(opened.current.lens)
   const [find, setFind] = useState(opened.current.find)
   // The statement table is ordered and cut by the server, so its header asks
@@ -230,7 +230,8 @@ function App() {
       cursorSegment,
     )
     const key = `${cursorSegment.id}:${cursor}:${viewKey}:${order?.column ?? ""}:${order?.descending ?? ""}`
-    if (loaded.current.keys.has(key) || wanted.length === 0) {
+    const projected = source === "postgresql" && (pgSection === "statements" || pgSection === "plans")
+    if ((!projected && loaded.current.keys.has(key)) || wanted.length === 0) {
       setCursorState("ready")
       return
     }
@@ -239,7 +240,7 @@ function App() {
     // Dragging the cursor crosses many samples; only the one it rests on is
     // worth a round trip over a link that costs more than a second.
     const timer = setTimeout(() => {
-      loaded.current.keys.add(key)
+      if (!projected) loaded.current.keys.add(key)
       void loadSnapshot(cursorSegment.id, cursor, wanted, controller.signal, order ?? undefined)
         .then((incoming) => {
           setData((before) => replaceSections(before, incoming))
@@ -248,14 +249,14 @@ function App() {
         // A moment the collector never reached is an ordinary answer, not a
         // broken screen: the tables keep the last moment they hold.
         .catch((reason: unknown) => {
-          if (controller.signal.aborted) return
           loaded.current.keys.delete(key)
+          if (controller.signal.aborted) return
           setCursorState("missing")
           console.error("kronika: snapshot at the cursor failed", reason)
         })
     }, 250)
     return () => { clearTimeout(timer); controller.abort() }
-  }, [cursor, cursorSegment, hour, order, viewKey, viewRequests])
+  }, [cursor, cursorSegment, hour, order, pgSection, source, viewKey, viewRequests])
 
   const findingSection = source !== "postgresql" ? null
     : pgSection === "activity" ? "pg_stat_activity"
@@ -367,10 +368,11 @@ function App() {
     at: cursor === 0 ? null : cursor,
     view: viewOf(source, hostSection, pgSection),
     lens,
+    pgLens: source === "postgresql" && pgSection === "plans" ? planLens : statementLens,
     sort: order,
     row: selectedKey,
     find,
-  }), [cursor, find, hostSection, lens, order, pgSection, selectedKey, source])
+  }), [cursor, find, hostSection, lens, order, pgSection, planLens, selectedKey, source, statementLens])
   const steps = useRef<string | null>(null)
   useEffect(() => {
     if (window.location.pathname + window.location.search === address) return
@@ -385,6 +387,8 @@ function App() {
       setHostSection(hostSectionOf(opening.view))
       setPgSection(pgSectionOf(opening.view))
       setLens(opening.lens)
+      setStatementLens(statementLensOf(opening.pgLens))
+      setPlanLens(planLensOf(opening.pgLens))
       setOrder(opening.sort)
       setSelectedKey(opening.row)
       setFind(opening.find)
@@ -531,6 +535,14 @@ function postgresSection(logicalName: string): PostgresSection | null {
   if (logicalName === "pg_stat_database") return "databases"
   if (logicalName.startsWith("pg_") && !logicalName.startsWith("pg_log_")) return "overview"
   return null
+}
+
+function statementLensOf(lens: PgLens): StatementLens {
+  return lens === "per_call" || lens === "io" || lens === "resources" || lens === "stability" ? lens : "load"
+}
+
+function planLensOf(lens: PgLens): PlanLens {
+  return lens === "timing" || lens === "io" || lens === "identity" ? lens : "load"
 }
 
 function initialTheme(): Theme {

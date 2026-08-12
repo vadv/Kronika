@@ -79,9 +79,9 @@ const PLAN_DERIVED_COLUMNS: readonly EntityColumn[] = [
 
 const PLAN_LENSES: Readonly<Record<PlanLens, readonly string[]>> = {
   load: ["plan", "calls_per_second", "execution_ms_per_second", "exec_load", "mean_exec_ms_per_call", "rows_per_second", "datname", "usename", "queryid", "planid"],
-  regression: ["plan", "queryid", "planid", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "stddev_exec_time_ms", "calls_per_second", "first_call", "last_call", "datname", "queryid_stat_statements"],
+  timing: ["plan", "queryid", "planid", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "stddev_exec_time_ms", "calls_per_second", "first_call", "last_call", "datname"],
   io: ["plan", "queryid", "planid", "shared_blks_read", "shared_blks_hit", "hit_pct", "blocks_per_call", "shared_blks_dirtied", "local_blks_read", "temp_blks_read", "datname"],
-  compare: ["plan", "queryid", "planid", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "calls_per_second", "first_call", "last_call", "datname", "queryid_stat_statements"],
+  identity: ["plan", "queryid", "planid", "dbid", "userid", "datname", "usename", "cmd_type", "relids", "queryid_stat_statements"],
 }
 
 const STATEMENT_ALL_COLUMNS = [...STATEMENT_COLUMNS, ...STATEMENT_DERIVED_COLUMNS]
@@ -190,7 +190,7 @@ export function PostgresView({
     {section === "activity" && available("pg_stat_progress_vacuum") && <PgPreview cursor={cursor} data={data} focus={focusFinding?.logicalName === "pg_stat_progress_vacuum" ? focus : null} locale={locale} section="pg_stat_progress_vacuum" t={t} />}
     {section === "statements" && <><PostgresLensBar active={statementLens} choices={["load", "per_call", "io", "resources", "stability"]} onChange={onStatementLens} prefix="statement" t={t} /><PgEntityView columns={statementColumns(statementLens)} onOrder={onOrder} onPattern={onPattern} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField={statementLens === "stability" ? "cv" : "mean_exec_ms_per_call"} locale={locale} section="pg_stat_statements" t={t} /></>}
     {section === "plans" && available("pg_store_plans_info") && <PlanInfo cursor={cursor} data={data} locale={locale} t={t} />}
-    {section === "plans" && <PostgresLensBar active={planLens} choices={["load", "regression", "io", "compare"]} onChange={onPlanLens} prefix="plan" t={t} />}
+    {section === "plans" && <PostgresLensBar active={planLens} choices={["load", "timing", "io", "identity"]} onChange={onPlanLens} prefix="plan" t={t} />}
     {section === "plans" && available("pg_store_plans") && <PgEntityView columns={planColumns(planLens)} onOrder={onOrder} onPattern={onPattern} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_store_plans" ? focusFinding : null} focus={focus} historyField="mean_exec_ms_per_call" locale={locale} section="pg_store_plans" t={t} />}
     {section === "plans" && !available("pg_store_plans") && <p className="pg-empty" data-testid="pg-plans-empty">{t("pg.plans.empty")}</p>}
     {section === "locks" && <PgEntityView columns={LOCK_COLUMNS} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_locks" ? focusFinding : null} focus={focus} historyField={null} locale={locale} section="pg_locks" t={t} />}
@@ -573,9 +573,9 @@ function id(field: string, width = 110, sticky = false): EntityColumn { return p
 function bytes(field: string, width = 140): EntityColumn { return pgColumn(field, "bytes", width) }
 function milliseconds(field: string, width = 145): EntityColumn { return pgColumn(field, "milliseconds", width) }
 function percent(field: string, width = 125): EntityColumn { return pgColumn(field, "percent", width) }
-function rateNumber(field: string, width = 125): EntityColumn { return { ...number(field, width), rate: true } }
-function rateBytes(field: string, width = 140): EntityColumn { return { ...bytes(field, width), rate: true } }
-function rateMilliseconds(field: string, width = 145): EntityColumn { return { ...milliseconds(field, width), rate: true } }
+function rateNumber(field: string, width = 125): EntityColumn { return { ...number(field, width), rate: true, sortable: true } }
+function rateBytes(field: string, width = 140): EntityColumn { return { ...bytes(field, width), rate: true, sortable: true } }
+function rateMilliseconds(field: string, width = 145): EntityColumn { return { ...milliseconds(field, width), rate: true, sortable: true } }
 function timestamp(field: string, width = 210): EntityColumn { return pgColumn(field, "timestamp", width) }
 function boolean(field: string, width = 125): EntityColumn { return pgColumn(field, "boolean", width) }
 function pgText(field: string, key: string, width = 130, sticky = false): EntityColumn { return { field, label: `${key}.label`, help: `${key}.help`, kind: "text", width, sticky } }

@@ -10,7 +10,7 @@ export const PG_STORE_PLANS_TYPE_IDS = ["1003001", "1004001", "1018001"] as cons
 export const PG_STORE_PLANS_INFO_TYPE_IDS = ["1016001"] as const
 
 export type StatementLens = "load" | "per_call" | "io" | "resources" | "stability"
-export type PlanLens = "load" | "regression" | "io" | "compare"
+export type PlanLens = "load" | "timing" | "io" | "identity"
 
 export type PostgresSemanticField =
   | "calls_per_second"
@@ -176,6 +176,8 @@ export function physicalFields(
 
 export function findingSemanticField(typeId: string, physical: string): PostgresSemanticField | null {
   const execution = physicalField(typeId, "execution_ms_per_second")
+  // The sparse locator points at the stored total-time operand, while the
+  // statement spike itself is delta(total time) / delta(calls).
   if (physical === execution) return "mean_exec_ms_per_call"
   const layout = postgresLayout(typeId)
   if (layout === null) return null
@@ -234,9 +236,6 @@ function orderMap(typeIds: readonly string[]): Readonly<Record<string, readonly 
     wal_per_call: ["wal_bytes"],
     plan_time_pct: semantic.planning_ms_per_second ?? [],
     cv: ["stddev_time", "stddev_exec_time"],
-    time_ratio: semantic.execution_ms_per_second ?? [],
-    plan_count: ["calls"],
-    pct_calls: ["calls"],
   }
 }
 
@@ -302,17 +301,17 @@ export const POSTGRES_SECTION_REQUESTS: readonly PostgresSectionRequest[] = [
 
 const STATEMENT_LENS_FIELDS: Readonly<Record<StatementLens, readonly string[]>> = {
   load: ["queryid", "dbid", "userid", "toplevel", "datname", "usename", "query", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"],
-  per_call: ["queryid", "dbid", "userid", "toplevel", "datname", "usename", "query", "calls_per_second", "execution_ms_per_second", "rows_per_second", ...BLOCK_COUNTERS],
-  io: ["queryid", "dbid", "userid", "toplevel", "datname", "usename", "query", "calls_per_second", ...BLOCK_COUNTERS, "shared_blk_read_ms_per_second", "shared_blk_write_ms_per_second", "local_blk_read_ms_per_second", "local_blk_write_ms_per_second", "temp_blk_read_ms_per_second", "temp_blk_write_ms_per_second"],
-  resources: ["queryid", "dbid", "userid", "toplevel", "datname", "usename", "query", "calls_per_second", "execution_ms_per_second", "planning_ms_per_second", "temp_blks_read", "temp_blks_written", "wal_bytes", "wal_records", "wal_fpi", "wal_buffers_full"],
+  per_call: ["queryid", "dbid", "userid", "toplevel", "datname", "usename", "query", "calls_per_second", "execution_ms_per_second", "rows_per_second", "shared_blks_hit", "shared_blks_read", "local_blks_hit", "local_blks_read"],
+  io: ["queryid", "dbid", "userid", "toplevel", "datname", "usename", "query", "calls_per_second", "shared_blks_read", "shared_blks_hit", "shared_blks_dirtied", "shared_blks_written", "local_blks_hit", "local_blks_read", "temp_blks_read", "temp_blks_written"],
+  resources: ["queryid", "dbid", "userid", "toplevel", "datname", "usename", "query", "calls_per_second", "execution_ms_per_second", "planning_ms_per_second", "temp_blks_written", "wal_bytes", "wal_records", "wal_fpi", "wal_buffers_full"],
   stability: ["queryid", "dbid", "userid", "toplevel", "datname", "usename", "query", "calls_per_second", "mean_time", "stddev_time", "min_time", "max_time", "mean_exec_time", "stddev_exec_time", "min_exec_time", "max_exec_time"],
 }
 
 const PLAN_LENS_FIELDS: Readonly<Record<PlanLens, readonly string[]>> = {
   load: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"],
-  regression: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "min_time", "max_time", "mean_time", "stddev_time", "first_call", "last_call", "queryid_stat_statements"],
-  io: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", ...BLOCK_COUNTERS, "shared_blk_read_ms_per_second", "shared_blk_write_ms_per_second", "local_blk_read_ms_per_second", "local_blk_write_ms_per_second", "temp_blk_read_ms_per_second", "temp_blk_write_ms_per_second"],
-  compare: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "min_time", "max_time", "mean_time", "stddev_time", "first_call", "last_call", "queryid_stat_statements"],
+  timing: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", "min_time", "max_time", "mean_time", "stddev_time", "first_call", "last_call"],
+  io: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", "shared_blks_read", "shared_blks_hit", "shared_blks_dirtied", "local_blks_hit", "local_blks_read", "temp_blks_read"],
+  identity: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "cmd_type", "relids", "queryid_stat_statements"],
 }
 
 export function statementRequest(lens: StatementLens): PostgresSectionRequest {
@@ -351,7 +350,7 @@ function statementLensOrder(lens: StatementLens): string {
 
 function planLensOrder(lens: PlanLens): string {
   if (lens === "io") return "shared_blks_read"
-  if (lens === "compare") return "calls_per_second"
+  if (lens === "identity") return "calls_per_second"
   return "execution_ms_per_second"
 }
 

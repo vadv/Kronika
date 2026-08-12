@@ -18,8 +18,9 @@ test("statement duration marks only the inclusive five-second boundary", () => {
   assert.equal(semanticValueTone("mean_exec_time_ms", 5_000), "critical")
 })
 
-test("cache hit tones retain an explicit inactive zero", () => {
-  assert.equal(semanticValueTone("hit_pct", 0), "inactive")
+test("cache hit tones distinguish no accesses from a real zero-percent hit rate", () => {
+  assert.equal(semanticValueTone("hit_pct", null), null)
+  assert.equal(semanticValueTone("hit_pct", 0), "critical")
   assert.equal(semanticValueTone("hit_pct", 89.999), "critical")
   assert.equal(semanticValueTone("hit_pct", 90), "warning")
   assert.equal(semanticValueTone("hit_pct", 98.999), "warning")
@@ -35,14 +36,9 @@ test("statement stability and planning use exact inclusive boundaries", () => {
   assert.equal(semanticValueTone("plan_time_pct", 80), "critical")
 })
 
-test("plan comparison and plan count use exact inclusive boundaries", () => {
-  assert.equal(semanticValueTone("time_ratio", 1.999), "good")
-  assert.equal(semanticValueTone("time_ratio", 2), "warning")
-  assert.equal(semanticValueTone("time_ratio", 10), "critical")
-  assert.equal(semanticValueTone("plan_count", 1), "good")
-  assert.equal(semanticValueTone("plan_count", 2), "warning")
-  assert.equal(semanticValueTone("plan_count", 3), "warning")
-  assert.equal(semanticValueTone("plan_count", 4), "critical")
+test("workload volume and identifiers stay neutral", () => {
+  assert.equal(semanticValueTone("execution_ms_per_second", 10_000), null)
+  assert.equal(semanticValueTone("planid", 4), null)
 })
 
 test("semantic tones coexist with exact locator classes", async () => {

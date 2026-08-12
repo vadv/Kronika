@@ -167,8 +167,8 @@ test("statement and plan lenses have compact ordered columns", () => {
   assert.ok(helpers.statementColumns("io").some(({ field }) => field === "hit_pct"))
   assert.ok(helpers.statementColumns("resources").some(({ field }) => field === "plan_time_pct"))
   assert.ok(helpers.statementColumns("stability").some(({ field }) => field === "cv"))
-  assert.ok(helpers.planColumns("regression").some(({ field }) => field === "stddev_exec_time_ms"))
-  assert.equal(helpers.planColumns("compare").some(({ field }) => field === "plan_count"), false)
+  assert.ok(helpers.planColumns("timing").some(({ field }) => field === "stddev_exec_time_ms"))
+  assert.ok(helpers.planColumns("identity").some(({ field }) => field === "queryid_stat_statements"))
 })
 
 test("an exact finding row wins over the previous PostgreSQL selection", () => {

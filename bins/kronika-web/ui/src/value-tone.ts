@@ -14,7 +14,6 @@ export function semanticValueTone(field: string, cell: Cell, rate = false): Valu
     case "mean_exec_time_ms":
       return number >= 5_000 ? "critical" : null
     case "hit_pct":
-      if (number === 0) return "inactive"
       if (number < 90) return "critical"
       return number < 99 ? "warning" : "good"
     case "cv":
@@ -23,12 +22,6 @@ export function semanticValueTone(field: string, cell: Cell, rate = false): Valu
     case "plan_time_pct":
       if (number < 50) return "good"
       return number < 80 ? "warning" : "critical"
-    case "time_ratio":
-      if (number < 2) return "good"
-      return number < 10 ? "warning" : "critical"
-    case "plan_count":
-      if (number <= 1) return "good"
-      return number <= 3 ? "warning" : "critical"
     default:
       return null
   }

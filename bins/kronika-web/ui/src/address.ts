@@ -5,6 +5,7 @@ export interface Address {
   readonly at: number | null
   readonly view: View
   readonly lens: Lens
+  readonly pgLens: PgLens
   readonly sort: { readonly column: string; readonly descending: boolean } | null
   readonly row: string | null
   readonly find: string
@@ -22,6 +23,7 @@ export type View =
   | "events"
 
 type Lens = "generic" | "cpu" | "memory" | "disk"
+export type PgLens = "load" | "per_call" | "io" | "resources" | "stability" | "timing" | "identity"
 
 const VIEWS: readonly View[] = [
   "host.system", "host.processes",
@@ -30,11 +32,13 @@ const VIEWS: readonly View[] = [
 ]
 
 const LENSES: readonly Lens[] = ["generic", "cpu", "memory", "disk"]
+const PG_LENSES: readonly PgLens[] = ["load", "per_call", "io", "resources", "stability", "timing", "identity"]
 
 export const DEFAULT_ADDRESS: Address = {
   at: null,
   view: "host.processes",
   lens: "generic",
+  pgLens: "load",
   sort: null,
   row: null,
   find: "",
@@ -48,12 +52,14 @@ export function readAddress(search: string): Address {
   const at = Number.parseInt(parameters.get("at") ?? "", 10)
   const view = parameters.get("view")
   const lens = parameters.get("lens")
+  const pgLens = parameters.get("pg_lens")
   const sort = parameters.get("sort") ?? ""
   const column = sort.startsWith("-") ? sort.slice(1) : sort
   return {
     at: Number.isSafeInteger(at) && at > 0 ? at : null,
     view: VIEWS.find((known) => known === view) ?? DEFAULT_ADDRESS.view,
     lens: LENSES.find((known) => known === lens) ?? DEFAULT_ADDRESS.lens,
+    pgLens: PG_LENSES.find((known) => known === pgLens) ?? DEFAULT_ADDRESS.pgLens,
     sort: column === "" ? null : { column, descending: sort.startsWith("-") },
     row: parameters.get("row"),
     find: parameters.get("find") ?? "",
@@ -67,6 +73,7 @@ export function writeAddress(address: Address): string {
   if (address.at !== null) parameters.set("at", String(address.at))
   if (address.view !== DEFAULT_ADDRESS.view) parameters.set("view", address.view)
   if (address.lens !== DEFAULT_ADDRESS.lens && address.view === "host.processes") parameters.set("lens", address.lens)
+  if (address.pgLens !== DEFAULT_ADDRESS.pgLens && (address.view === "pg.statements" || address.view === "pg.plans")) parameters.set("pg_lens", address.pgLens)
   if (address.sort !== null) parameters.set("sort", `${address.sort.descending ? "-" : ""}${address.sort.column}`)
   if (address.row !== null && address.row !== "") parameters.set("row", address.row)
   if (address.find !== "") parameters.set("find", address.find)

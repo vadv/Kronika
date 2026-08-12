@@ -30,6 +30,8 @@ export interface EntityColumn {
   readonly kind?: "id" | "number" | "text" | "timestamp" | "bytes" | "kib" | "milliseconds" | "microseconds" | "percent" | "boolean"
   readonly width?: number
   readonly sticky?: boolean
+  /** The server can order this exact value. Derived ratios and text stay off. */
+  readonly sortable?: boolean
 }
 
 /** A column and a direction, as the server understands them. */
@@ -85,6 +87,7 @@ export function EntityTable({
     cell: ({ row }) => <Cell cell={value(row.original, field.field)} kind={field.kind} locale={locale} rate={field.rate} t={t} />,
     header: () => t === undefined ? field.label : t(field.label),
     id: field.field,
+    enableSorting: serverSorted === true ? field.sortable === true : field.sortable !== false,
     meta: {
       numeric: NUMERIC_KINDS.has(field.kind ?? "text"),
       sticky: field.sticky === true,
@@ -93,7 +96,7 @@ export function EntityTable({
       label: field.label,
     },
     size: field.width ?? 128,
-  })), [fields, locale, t])
+  })), [fields, locale, serverSorted, t])
   // The table keeps its own model keyed on this reference. A fresh array every
   // render rebuilds that model every render, and the process table next door
   // does not do it.
@@ -177,7 +180,7 @@ export function EntityTable({
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {
           const sorted = header.column.getIsSorted()
           return <div className={sticky(header.column.columnDef.meta, true)} key={header.id} role="columnheader" style={{ left: stickyLeft(header.column.columnDef.meta), width: header.getSize() }}>
-            <button className="entity-sort" onClick={header.column.getToggleSortingHandler()} type="button">
+            <button className="entity-sort" disabled={!header.column.getCanSort()} onClick={header.column.getToggleSortingHandler()} type="button">
               <span>{flexRender(header.column.columnDef.header, header.getContext())}</span>
               {sorted !== false && <i>{sorted === "asc" ? "↑" : "↓"}</i>}
             </button>
