@@ -6,7 +6,6 @@ import type { Translate } from "./help"
 import {
   asNumber,
   cores,
-  formatUtcCell,
   humanBytes,
   identifier,
   measure,
@@ -26,26 +25,25 @@ export interface Field {
   readonly field?: string
   readonly label: string
   readonly help: string
-  readonly kind: "id" | "command" | "state" | "time" | "number" | "rate" | "cores" | "kib" | "bytes" | "ns"
+  readonly kind: "id" | "command" | "state" | "number" | "rate" | "cores" | "kib" | "bytes" | "ns"
   readonly size: number
-  readonly sticky?: "pid" | "start" | "command"
+  readonly sticky?: "pid" | "command"
 }
 
 const PID: Field = { id: "pid", field: "pid", label: "col.pid.label", help: "col.pid.help", kind: "id", size: 62, sticky: "pid" }
-const START: Field = { id: "starttime", field: "starttime", label: "col.starttime.label", help: "col.starttime.help", kind: "time", size: 142, sticky: "start" }
 const COMMAND: Field = { id: "command", label: "col.command.label", help: "col.command.help", kind: "command", size: 300, sticky: "command" }
 const STATE: Field = { id: "state", field: "state", label: "col.state.label", help: "col.state.help", kind: "state", size: 60 }
 
 export const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
   generic: [
-    PID, START, COMMAND, STATE,
+    PID, COMMAND, STATE,
     idField("ppid", "col.ppid", 70), idField("uid", "col.uid", 70), idField("euid", "col.euid", 70),
     idField("gid", "col.gid", 70), idField("egid", "col.egid", 70),
     numberField("num_threads", "col.threads", 84), idField("tty", "col.tty", 70),
     idField("exit_signal", "col.exit_signal", 70),
   ],
   cpu: [
-    PID, START, COMMAND, STATE,
+    PID, COMMAND, STATE,
     idField("curcpu", "col.curcpu", 70), coresField("utime", "col.utime", 84),
     coresField("stime", "col.stime", 84), nsField("rundelay_ns", "col.rundelay", 96),
     rateField("blkdelay_ticks", "col.blkdelay", 84), rateField("nvcsw", "col.nvcsw", 84),
@@ -53,13 +51,13 @@ export const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
     numberField("prio", "col.prio", 84), numberField("rtprio", "col.rtprio", 84), idField("policy", "col.policy", 70),
   ],
   memory: [
-    PID, START, COMMAND, STATE,
+    PID, COMMAND, STATE,
     kibField("rmem_kb", "col.rmem", 96), kibField("vmem_kb", "col.vmem", 96),
     kibField("vswap_kb", "col.vswap", 96), rateField("minflt", "col.minflt", 84),
     rateField("majflt", "col.majflt", 84),
   ],
   disk: [
-    PID, START, COMMAND, STATE,
+    PID, COMMAND, STATE,
     bytesField("read_bytes", "col.read_bytes", 96), bytesField("write_bytes", "col.write_bytes", 96),
     bytesField("cancelled_write_bytes", "col.cancelled_write", 96), rateField("syscr", "col.syscr", 84),
     rateField("syscw", "col.syscw", 84), bytesField("rchar", "col.rchar", 96),
@@ -144,7 +142,6 @@ export function ProcessTable({
 export function formatCell(kind: Field["kind"], cell: Cell, locale: Locale, t: Translate, ticksPerSecond: number | null): string {
   switch (kind) {
     case "state": return stateText(cell)
-    case "time": return formatUtcCell(asNumber(cell))
     case "number": return measure(cell, locale)
     case "rate": return measure(cell, locale, t("unit.per_second"))
     case "cores": return cores(cell, locale, ticksPerSecond) + t("unit.cores")
@@ -172,7 +169,6 @@ function sortable(row: DataRow, field: Field): string | number | null {
 
 function entityKind(kind: Field["kind"]): NonNullable<EntityColumn["kind"]> {
   if (kind === "id") return "id"
-  if (kind === "time") return "timestamp"
   if (kind === "command" || kind === "state") return "text"
   return "number"
 }

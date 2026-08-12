@@ -132,7 +132,7 @@ test("obsolete status and internal collection copy stay out of the UI", async ()
   ])
   const english = parseDictionary(englishSource, "en.yaml")
   const russian = parseDictionary(russianSource, "ru.yaml")
-  const removed = ["app.kicker", "app.offline", "help.intro", "col.scope.label", "col.scope.help"]
+  const removed = ["app.kicker", "app.offline", "help.intro", "col.scope.label", "col.scope.help", "col.starttime.label", "col.starttime.help"]
   for (const key of removed) {
     assert.equal(Object.hasOwn(english, key), false)
     assert.equal(Object.hasOwn(russian, key), false)
@@ -150,4 +150,6 @@ test("obsolete status and internal collection copy stay out of the UI", async ()
   assert.doesNotMatch(helpSource, /help\.intro|help-intro/)
   assert.doesNotMatch(processSource, /col\.scope|idField\("scope"/)
   assert.doesNotMatch(detailSource, /col\.scope|processField\("scope"/)
+  assert.doesNotMatch(processSource, /col\.starttime/)
+  assert.doesNotMatch(detailSource, /col\.starttime/)
 })

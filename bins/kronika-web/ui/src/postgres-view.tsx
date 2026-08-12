@@ -1,5 +1,6 @@
 import { Activity, BarChart3, Copy, Database, KeyRound, LockKeyhole, ScrollText, X } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
+import { registry } from "kronika:registry"
 
 import type { DataRow, Finding, HourData } from "./api"
 import { EntityTable, unit, type EntityColumn, type TableOrder } from "./entity-table"
@@ -352,7 +353,7 @@ function Overview({ cursor, data, locale, t }: { readonly cursor: number; readon
 function OverviewMetrics({ locale, logicalName, row }: { readonly locale: Locale; readonly logicalName: string; readonly row: DataRow }) {
   return <section className="pg-overview-section">
     <h2>{logicalName}</h2>
-    <dl>{Object.entries(row.values).map(([field, cell]) => <div key={field}><dt>{field}</dt><dd>{overviewValue(cell, field, locale)}</dd></div>)}</dl>
+    <dl>{registryCardFields(row).map(([field, cell]) => <div key={field}><dt>{field}</dt><dd>{overviewValue(cell, field, locale)}</dd></div>)}</dl>
   </section>
 }
 
@@ -601,7 +602,7 @@ function groupSections(rows: readonly DataRow[]): readonly [string, readonly Dat
 }
 
 export function columnsFor(rows: readonly DataRow[]): readonly EntityColumn[] {
-  const fields = [...new Set(rows.flatMap((row) => Object.keys(row.values)))]
+  const fields = [...new Set(rows.flatMap((row) => Object.keys(row.values)))].filter((field) => !isInternalField(field))
   return fields.map((field, index) => {
     const sample = rows.find((row) => value(row, field) !== null)
     const cell = sample === undefined ? null : value(sample, field)
@@ -618,6 +619,20 @@ export function columnsFor(rows: readonly DataRow[]): readonly EntityColumn[] {
         : typeof cell === "number" ? "number" : typeof cell === "boolean" ? "boolean" : "text"
     return { field, label: field, kind, sticky: index === 0, width: kind === "text" ? 190 : kind === "timestamp" ? 210 : 135 }
   })
+}
+
+const REGISTRY_IDENTITIES = new Map(registry.map((layout) => [layout.typeId, new Set(layout.identity)]))
+const INTERNAL_FIELDS = new Set(["ts", "ordinal", "segment_id", "type_id", "row_ordinal", "field_ordinal"])
+
+export function registryCardFields(row: DataRow): readonly (readonly [string, ReturnType<typeof value>])[] {
+  const identity = REGISTRY_IDENTITIES.get(row.typeId)
+  return Object.entries(row.values).filter(([field]) => !isInternalField(field)
+    && identity?.has(field) !== true
+    && !isTimestampField(field))
+}
+
+function isInternalField(field: string): boolean {
+  return INTERNAL_FIELDS.has(field)
 }
 
 export function overviewValue(cell: ReturnType<typeof value>, field: string, locale: Locale): string {

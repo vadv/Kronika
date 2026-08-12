@@ -25,7 +25,7 @@ const TEST_REGISTRY = [
   layout("1016001", "pg_store_plans_info", [], ["ts", "dealloc", "stats_reset"]),
 ]
 const helpers = await importModule(
-  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationMs, columnsFor, isIdleActivity, isSystemActivity, isTimestampField, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, postgresIdentity, postgresProjection } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationMs, columnsFor, isIdleActivity, isSystemActivity, isTimestampField, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, registryCardFields, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, postgresIdentity, postgresProjection } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
   { plugins: [registryPlugin(TEST_REGISTRY)] },
 )
 
@@ -59,6 +59,20 @@ test("PostgreSQL durations are not formatted as Unix timestamps", () => {
   assert.equal(helpers.overviewValue(true, "datallowconn", "ru"), "да")
   assert.equal(helpers.columnsFor([row("1", { write_time: 123.4 })])[0].kind, "milliseconds")
   assert.equal(helpers.columnsFor([row("1", { max_age_us: 123.4 })])[0].kind, "microseconds")
+})
+
+test("generic registry cards never present raw collection or identity fields as metrics", () => {
+  const stored = row("1002003", {
+    ts: "1720000000000000",
+    queryid: "42",
+    userid: "10",
+    dbid: "20",
+    toplevel: true,
+    stats_since: "1719990000000000",
+    calls: 7,
+  })
+  assert.deepEqual(helpers.registryCardFields(stored).map(([field]) => field), ["calls"])
+  assert.equal(helpers.columnsFor([stored]).some(({ field }) => field === "ts"), false)
 })
 
 test("activity keeps a compact operator table and moves diagnostics to detail", () => {

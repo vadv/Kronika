@@ -4,7 +4,7 @@ import test from "node:test"
 import { importModule, registryPlugin } from "./import-module.mjs"
 
 const helpers = await importModule(
-  'export { findingShape, findingTrack, groupFindings, healthThreshold, laneRange, overviewLaneCount, sampleWindow, seriesYAt, timelineRuns, valueAt } from "../src/timeline.tsx"',
+  'export { findingShape, findingTrack, groupFindings, healthThreshold, healthTimelineSeries, laneRange, overviewLaneCount, sampleWindow, seriesYAt, timelineRuns, valueAt } from "../src/timeline.tsx"',
   { plugins: [registryPlugin([{ typeId: "1104001", logicalName: "os_meminfo", columns: ["ts", "mem_total", "mem_available"] }])] },
 )
 
@@ -84,8 +84,23 @@ test("timeline series cross segment boundaries and break only at stored nulls", 
     { segmentId: "host-a", timestamp: 300, value: 0 },
     { segmentId: "host-b", timestamp: 400, value: 12 },
   ]).values()]
-  assert.deepEqual(runs.map((run) => run.map((point) => point.value)), [[10], [0, 12]])
-  assert.deepEqual(runs[1].map((point) => point.segmentId), ["host-a", "host-b"])
+  assert.deepEqual(runs.map((run) => run.map((point) => point.value)), [[0, 12]])
+  assert.deepEqual(runs[0].map((point) => point.segmentId), ["host-a", "host-b"])
+})
+
+test("health metrics remain three exact series", () => {
+  const rows = [
+    { logicalName: "health", ordinal: "0", segmentId: "a", timestamp: 100, typeId: "0", values: { os_health: 81, overall_health: 62 } },
+    { logicalName: "health", ordinal: "1", segmentId: "a", timestamp: 150, typeId: "0", values: { postgres_health: 77 } },
+    { logicalName: "health", ordinal: "2", segmentId: "b", timestamp: 200, typeId: "0", values: { os_health: 83, overall_health: null } },
+  ]
+  const health = helpers.healthTimelineSeries(rows)
+  assert.deepEqual(health.series.map(({ field, points }) => [field, points.map(({ value }) => value)]), [
+    ["overall_health", [62, null]],
+    ["os_health", [81, 83]],
+    ["postgres_health", [77]],
+  ])
+  assert.equal(health.threshold, 50)
 })
 
 test("the displayed sample window ends at the last stored number", () => {

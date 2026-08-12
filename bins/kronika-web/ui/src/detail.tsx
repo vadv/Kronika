@@ -132,8 +132,7 @@ export function DetailDock({
       </section>
       <dl className="detail-list">
         <DetailField help="col.pid.help" label="col.pid.label" t={t} value={identifier(value(process, "pid"))} />
-        <DetailField help="col.starttime.help" label="col.starttime.label" t={t} value={<Timestamp cell={value(process, "starttime")} t={t} />} />
-        {LENS_FIELDS[lens].filter((field) => field.id !== "command" && field.id !== "pid" && field.id !== "starttime" && field.field !== undefined && value(process, field.field) !== null).map((field) => <DetailField help={field.help} key={field.id} label={field.label} t={t} value={<CellValue field={field} linked={false} locale={locale} row={process} t={t} ticksPerSecond={ticksPerSecond} />} />)}
+        {LENS_FIELDS[lens].filter((field) => field.id !== "command" && field.id !== "pid" && field.field !== undefined && value(process, field.field) !== null).map((field) => <DetailField help={field.help} key={field.id} label={field.label} t={t} value={<CellValue field={field} linked={false} locale={locale} row={process} t={t} ticksPerSecond={ticksPerSecond} />} />)}
       </dl>
       <section aria-label={t(`lens.${lens}`)} className="process-history" data-testid="process-history">
         {history.filter((series) => series.points.some((point) => point.value !== null)).map((series) => (
@@ -203,24 +202,16 @@ function historyPoints(
   field: string,
   counter: boolean,
 ): readonly ChartPoint[] {
-  let previousSegment: string | null = null
-  let run = 0
   let earlier: { readonly value: number; readonly timestamp: number } | null = null
   return rows.map((row) => {
-    if (row.segmentId !== previousSegment) {
-      previousSegment = row.segmentId
-      run = 0
-    }
     const number = asNumber(value(row, field))
     const drawn = counter ? rate(earlier, number, row.timestamp) : number
     if (counter) earlier = number === null ? null : { value: number, timestamp: row.timestamp }
-    const point = {
-      segmentId: `${row.segmentId}:${run}`,
+    return {
+      segmentId: row.segmentId,
       timestamp: row.timestamp,
       value: drawn,
     }
-    if (drawn === null) run += 1
-    return point
   })
 }
 

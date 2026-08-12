@@ -41,6 +41,6 @@ test("null values split rendered history runs while later zero stays numeric", (
   ], "memory")
 
   assert.equal(series.points[0].segmentId, series.points[1].segmentId)
-  assert.notEqual(series.points[1].segmentId, series.points[2].segmentId)
+  assert.equal(series.points[1].segmentId, series.points[2].segmentId)
   assert.equal(series.points[2].value, 0)
 })

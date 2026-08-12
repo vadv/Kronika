@@ -8,7 +8,7 @@ export function numericRuns<Point extends { readonly segmentId: string; readonly
   let run: NumericPoint<Point>[] = []
   let index = 0
   const flush = () => {
-    if (run.length !== 0) runs.set(String(index), run)
+    if (run.length > 1) runs.set(String(index), run)
     run = []
     index += 1
   }

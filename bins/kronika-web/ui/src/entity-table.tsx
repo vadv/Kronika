@@ -214,8 +214,13 @@ export function EntityTable({
               {row.getVisibleCells().map((cell) => {
                 const field = fields.find((candidate) => candidate.field === cell.column.id)
                 const exact = activeFinding !== null && field !== undefined && locatorMatchesColumn(field, row.original.typeId, findingField ?? null)
-                const tone = field === undefined ? null : semanticValueTone(field.field, value(row.original, field.field), field.rate)
-                return <div className={`${sticky(cell.column.columnDef.meta, false)}${tone === null ? "" : ` value-tone-${tone}`}${exact ? ` locator-cell locator-${activeFinding.kind}` : ""}`} data-locator-cell={exact || undefined} data-value-tone={tone ?? undefined} key={cell.id} role="cell" style={{ left: stickyLeft(cell.column.columnDef.meta), width: cell.column.getSize() }}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</div>
+                const stored = field === undefined ? null : value(row.original, field.field)
+                const tone = field === undefined ? null : semanticValueTone(field.field, stored, field.rate, row.original)
+                const toneText = tone === null || tone === "inactive" || t === undefined ? null : t(`pg.value.${tone}`)
+                return <div aria-label={toneText === null ? undefined : `${toneText}: ${rawText(stored) ?? "—"}`} className={`${sticky(cell.column.columnDef.meta, false)}${tone === null ? "" : ` value-tone-${tone}`}${exact ? ` locator-cell locator-${activeFinding.kind}` : ""}`} data-locator-cell={exact || undefined} data-value-tone={tone ?? undefined} key={cell.id} role="cell" style={{ left: stickyLeft(cell.column.columnDef.meta), width: cell.column.getSize() }}>
+                  {toneText !== null && <span aria-hidden="true" className="value-tone-mark" />}
+                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                </div>
               })}
             </div>
           })}

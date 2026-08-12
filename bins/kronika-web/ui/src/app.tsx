@@ -85,7 +85,6 @@ const HELP_SYSTEM = [
 
 const HELP_PROCESS = [
   { label: "col.pid.label", help: "col.pid.help" },
-  { label: "col.starttime.label", help: "col.starttime.help" },
   { label: "col.command.label", help: "col.command.help" },
   { label: "detail.pg.title", help: "detail.pg.help" },
   { label: "pg.query.label", help: "pg.query.help" },

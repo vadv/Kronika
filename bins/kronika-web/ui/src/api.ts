@@ -319,10 +319,7 @@ function laneRow(
     typeId,
     ordinal: requiredText(record.ordinal, "row ordinal"),
     timestamp: integer(record.timestamp, "row timestamp"),
-    values: Object.fromEntries(names.map((name, index) => [
-      name,
-      index < values.length ? values[index] as Cell : null,
-    ])),
+    values: rowValues(names, values),
   }
 }
 
@@ -555,10 +552,7 @@ export async function loadSnapshot(
         typeId,
         ordinal: requiredText(record.ordinal, "row ordinal"),
         timestamp: record.timestamp === null ? at : integer(record.timestamp, "row timestamp"),
-        values: Object.fromEntries(columns.map((name, index) => [
-          name,
-          index < values.length ? values[index] as Cell : null,
-        ])),
+        values: rowValues(columns, values),
       })
       grouped[logicalName] = rows
     }
@@ -571,6 +565,12 @@ export async function loadSnapshot(
     lanePoints: [],
     findings: [],
   })
+}
+
+function rowValues(columns: readonly string[], cells: readonly unknown[]): Readonly<Record<string, Cell>> {
+  return Object.fromEntries(columns.flatMap((name, index) => name === "ts"
+    ? []
+    : [[name, index < cells.length ? cells[index] as Cell : null]]))
 }
 
 function fixtureSnapshot(

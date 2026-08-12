@@ -274,9 +274,9 @@ h2 { font-size: var(--t-md); }
 .numeric-cell { font-variant-numeric: tabular-nums; }
 .command-cell { color: var(--fg); width: 100%; }
 .pg-badge { background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent2); display: inline-block; font-size: var(--t-xs); font-weight: 700; letter-spacing: .06em; margin-right: 6px; padding: 2px 4px; vertical-align: 1px; }
-.sticky-pid, .sticky-start, .sticky-command { background: inherit; position: sticky; z-index: 10; }
+.sticky-pid, .sticky-command { background: inherit; position: sticky; z-index: 10; }
 .sticky-command { box-shadow: 5px 0 8px var(--shadow-b); }
-.process-table .entity-header-cell.sticky-pid, .process-table .entity-header-cell.sticky-start, .process-table .entity-header-cell.sticky-command { background: var(--s2); z-index: 40; }
+.process-table .entity-header-cell.sticky-pid, .process-table .entity-header-cell.sticky-command { background: var(--s2); z-index: 40; }
 .virtual-body { position: relative; }
 .table-empty { color: var(--fg4); font-size: var(--t-sm); padding: 22px; }
 .detail-dock { background: var(--s2); border: 1px solid var(--line3); border-left: 0; max-height: min(570px, calc(100vh - 370px)); overflow-y: auto; padding: 13px; }
@@ -382,9 +382,7 @@ h2 { font-size: var(--t-md); }
 .entity-cell.value-tone-warning .entity-value { color: var(--warn); }
 .entity-cell.value-tone-critical .entity-value { color: var(--bad); }
 .entity-cell.value-tone-inactive .entity-value { color: var(--fg4); }
-.entity-cell.value-tone-good { box-shadow: inset 0 -1px color-mix(in srgb, var(--ok) 42%, transparent); }
-.entity-cell.value-tone-warning { box-shadow: inset 0 -1px color-mix(in srgb, var(--warn) 54%, transparent); }
-.entity-cell.value-tone-critical { box-shadow: inset 0 -1px color-mix(in srgb, var(--bad) 62%, transparent); }
+.value-tone-mark { border-left: 2px solid currentColor; flex: 0 0 2px; height: 10px; margin-right: 5px; }
 .entity-cell.locator-known_bad .entity-value { color: var(--fg-hi); }
 .text-value { color: var(--fg); }
 .id-value { color: var(--fg2); }

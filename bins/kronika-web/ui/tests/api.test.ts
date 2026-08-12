@@ -97,7 +97,7 @@ test("snapshot rows use each physical layout's positional columns", async () => 
         layout: {
           type_id: "1105001",
           logical_name: "os_loadavg",
-          columns: [{ name: "load1" }, { name: "load5" }],
+          columns: [{ name: "ts" }, { name: "load1" }, { name: "load5" }],
         },
       },
       {
@@ -110,7 +110,7 @@ test("snapshot rows use each physical layout's positional columns", async () => 
       },
       {
         record: "row", type_id: "1105001", ordinal: "4",
-        timestamp: String(START + 1), values: [1, 5],
+        timestamp: String(START + 1), values: [String(START + 1), 1, 5],
       },
       {
         record: "row", type_id: "1105002", ordinal: "8",

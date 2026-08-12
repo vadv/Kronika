@@ -17,14 +17,20 @@ test("a recorded null is the reading at its timestamp", () => {
   assert.equal(helpers.readingAt(points, 3), 12)
 })
 
-test("mini charts split paths around a recorded null", () => {
+test("mini charts join storage segments but do not draw isolated samples around a recorded null", () => {
   const runs = [...helpers.chartRuns([
     { segmentId: "a", timestamp: 1, value: 2 },
     { segmentId: "a", timestamp: 2, value: null },
     { segmentId: "a", timestamp: 3, value: 0 },
     { segmentId: "b", timestamp: 4, value: 3 },
   ]).values()]
-  assert.deepEqual(runs.map((run) => run.map((point) => point.value)), [[2], [0, 3]])
+  assert.deepEqual(runs.map((run) => run.map((point) => point.value)), [[0, 3]])
+  assert.deepEqual(runs[0].map((point) => point.segmentId), ["a", "b"])
+})
+
+test("an unavailable middle sample produces no fake line stubs", () => {
+  const points = [10, null, 12].map((value, index) => ({ segmentId: "a", timestamp: index + 1, value }))
+  assert.equal(helpers.chartRuns(points).size, 0)
 })
 
 test("an all-null chart has no drawable samples while zero remains data", () => {

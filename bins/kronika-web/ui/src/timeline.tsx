@@ -40,6 +40,7 @@ export interface GroupedFinding {
 
 interface TimelineSeries {
   readonly color: "cyan" | "amber" | "violet"
+  readonly field: string
   readonly points: readonly SeriesPoint[]
 }
 
@@ -89,27 +90,21 @@ export function Timeline({
   const [hover, setHover] = useState<number | null>(null)
   const [selectedLane, setSelectedLane] = useState(primaryLane)
   const end = hour + 3_600_000_000
-  const healthTrack = useMemo(() => {
-    const overall = series(health, "overall_health")
-    if (overall.some((point) => point.value !== null)) {
-      return { points: overall, threshold: healthThreshold("overall_health") ?? undefined }
-    }
-    return { points: series(health, "os_health"), threshold: undefined }
-  }, [health])
+  const healthTrack = useMemo(() => healthTimelineSeries(health), [health])
   const lanes = useMemo<readonly TimelineLane[]>(() => {
     const of = (name: string) => lanePoints
       .filter((point) => point.lane === name)
       .map((point) => ({ segmentId: point.segmentId, timestamp: point.timestamp, value: point.value }))
-    const one = (color: TimelineSeries["color"], points: readonly SeriesPoint[]): readonly [TimelineSeries] => [{ color, points }]
+    const one = (color: TimelineSeries["color"], field: string, points: readonly SeriesPoint[]): readonly [TimelineSeries] => [{ color, field, points }]
     return [
-      { domain: SHARE, key: "health", series: one("cyan", healthTrack.points), threshold: healthTrack.threshold },
-      { domain: SHARE, key: "cpu_busy", series: one("cyan", of("cpu_busy")) },
-      { domain: SHARE, key: "cpu_stall", series: one("amber", of("cpu_stall")) },
-      { domain: SHARE, key: "memory", series: one("violet", of("memory")) },
-      { domain: SHARE, key: "io_stall", series: one("cyan", of("io_stall")) },
-      { domain: undefined, key: "pg_running", minimumSpan: 5, series: one("cyan", of("pg_running")) },
-      { domain: undefined, key: "pg_waiting", minimumSpan: 5, series: one("amber", of("pg_waiting")) },
-      { domain: undefined, key: "oldest_xact", series: one("violet", of("pg_oldest_xact")) },
+      { domain: SHARE, key: "health", series: healthTrack.series, threshold: healthTrack.threshold },
+      { domain: SHARE, key: "cpu_busy", series: one("cyan", "cpu_busy", of("cpu_busy")) },
+      { domain: SHARE, key: "cpu_stall", series: one("amber", "cpu_stall", of("cpu_stall")) },
+      { domain: SHARE, key: "memory", series: one("violet", "memory", of("memory")) },
+      { domain: SHARE, key: "io_stall", series: one("cyan", "io_stall", of("io_stall")) },
+      { domain: undefined, key: "pg_running", minimumSpan: 5, series: one("cyan", "pg_running", of("pg_running")) },
+      { domain: undefined, key: "pg_waiting", minimumSpan: 5, series: one("amber", "pg_waiting", of("pg_waiting")) },
+      { domain: undefined, key: "oldest_xact", series: one("violet", "pg_oldest_xact", of("pg_oldest_xact")) },
     ].filter((lane) => lane.series.some((series) => series.points.some((point) => point.value !== null)))
   }, [healthTrack, lanePoints])
   useEffect(() => {
@@ -183,7 +178,7 @@ export function Timeline({
           label={`lane.${lane.key}.label`}
           onSelect={lane.primary ? undefined : () => setSelectedLane(lane.key)}
           primary={lane.primary}
-          reading={lane.series.map((series) => valueAt(series.points, cursor)).map((number) => number === null ? "—" : format(number, lane.key, locale)).join(" · ")}
+          reading={laneReading(lane, cursor, locale, t)}
           t={t}
         />)}
       </div>
@@ -271,7 +266,7 @@ export function Timeline({
           {hover !== null && <div className="timeline-hover" style={{ left: `${Math.max(6, Math.min(94, shareOf(hover, hour, end) * 100))}%` }}>
             <time>{formatUtc(hover)}</time>
             {displayed.map((lane) => {
-              const reading = lane.series.map((series) => valueAt(series.points, hover)).map((number) => number === null ? "—" : format(number, lane.key, locale)).join(" · ")
+              const reading = laneReading(lane, hover, locale, t)
               return <span key={lane.key}>{t(`lane.${lane.key}.label`)} <strong>{reading}</strong></span>
             })}
           </div>}
@@ -322,6 +317,14 @@ function format(number: number, key: string, locale: Locale): string {
   if (key === "oldest_xact") return `${compact(number, locale)} s`
   if (key === "backends" || key === "pg_running" || key === "pg_waiting") return compact(number, locale)
   return `${compact(number, locale)}%`
+}
+
+function laneReading(lane: TimelineLane, cursor: number, locale: Locale, t: Translate): string {
+  return lane.series.map((series) => {
+    const number = valueAt(series.points, cursor)
+    const output = number === null ? "—" : format(number, lane.key, locale)
+    return lane.key === "health" ? `${t(`lane.health.${series.field}`)} ${output}` : output
+  }).join(" · ")
 }
 
 function FindingMarker({
@@ -416,17 +419,9 @@ function SeriesLine({
     const area = primary && stored.length > 1
       ? `${path} L${(shareOf(stored.at(-1)?.timestamp ?? hour, hour, end) * width).toFixed(2)} ${(top + height - 6).toFixed(2)} L${(shareOf(stored[0]?.timestamp ?? hour, hour, end) * width).toFixed(2)} ${(top + height - 6).toFixed(2)} Z`
       : null
-    const singleton = stored.length === 1 ? stored[0] : undefined
     return <g key={runId}>
       {area !== null && <path className={`series-area area-${color}`} d={area} />}
-      {singleton === undefined
-        ? <path className={`series-line series-${color}${primary ? " series-primary" : " series-overview"}`} d={path} />
-        : <circle
-          className={`series-dot series-${color}`}
-          cx={shareOf(singleton.timestamp, hour, end) * width}
-          cy={seriesY(singleton.value, top, height, range.low, range.span)}
-          r={primary ? 2 : 1.4}
-        />}
+      <path className={`series-line series-${color}${primary ? " series-primary" : " series-overview"}`} d={path} />
     </g>
   })}</>
 }
@@ -436,7 +431,7 @@ function series(rows: readonly DataRow[], field: string): readonly SeriesPoint[]
 }
 
 function preferredSeries(rows: readonly DataRow[], fields: readonly string[]): readonly SeriesPoint[] {
-  return rows.map((row) => {
+  return rows.filter((row) => fields.some((field) => Object.hasOwn(row.values, field))).map((row) => {
     const number = fields.reduce<number | null>((selected, field) => selected ?? asNumber(value(row, field)), null)
     return { segmentId: row.segmentId, timestamp: row.timestamp, value: number }
   })
@@ -444,6 +439,19 @@ function preferredSeries(rows: readonly DataRow[], fields: readonly string[]): r
 
 export function timelineRuns(points: readonly SeriesPoint[]): ReadonlyMap<string, readonly NumericPoint<SeriesPoint>[]> {
   return numericRuns(points, textOrder)
+}
+
+export function healthTimelineSeries(rows: readonly DataRow[]): { readonly series: readonly TimelineSeries[]; readonly threshold?: number } {
+  const candidates: readonly TimelineSeries[] = [
+    { color: "cyan", field: "overall_health", points: series(rows, "overall_health") },
+    { color: "amber", field: "os_health", points: series(rows, "os_health") },
+    { color: "violet", field: "postgres_health", points: series(rows, "postgres_health") },
+  ]
+  const shown = candidates.filter((candidate) => candidate.points.some((point) => point.value !== null))
+  return {
+    series: shown,
+    ...(shown.some((candidate) => candidate.field === "overall_health") ? { threshold: 50 } : {}),
+  }
 }
 
 export function sampleWindow(lanes: readonly { readonly series: readonly { readonly points: readonly SeriesPoint[] }[] }[]): { readonly start: number; readonly end: number } | null {
@@ -563,7 +571,11 @@ export function seriesYAt(points: readonly SeriesPoint[], segmentId: string, tim
 
 function findingY(finding: Finding, lane: DisplayedLane): number | null {
   const range = laneRange(lane)
+  const healthField = finding.logicalName === "health" && finding.typeId === "0"
+    ? finding.fieldOrdinal === 0 ? "os_health" : finding.fieldOrdinal === 1 ? "overall_health" : null
+    : null
   for (const series of lane.series) {
+    if (healthField !== null && series.field !== healthField) continue
     const point = series.points.find((candidate) => candidate.segmentId === finding.segmentId
       && candidate.timestamp === finding.timestamp && candidate.value !== null && Number.isFinite(candidate.value))
     if (point?.value !== null && point?.value !== undefined) {
