@@ -116,10 +116,12 @@ test("activity hides only ordinary idle and derives query and transaction time f
   const idleTransaction = activityRow("3", { backend_type: "client backend", state: "idle in transaction", query_start: "2000000", xact_start: "2000000" })
   const aborted = activityRow("6", { backend_type: "client backend", state: "idle in transaction (aborted)", query_start: "3000000", xact_start: "3000000" })
   const system = activityRow("4", { backend_type: "checkpointer", state: null, query_start: null })
+  const walsender = activityRow("7", { backend_type: "walsender", state: null, query_start: null })
   const legacy = activityRow("5", { backend_type: null, state: "active", query_start: "9000000", xact_start: "8000000" })
 
   assert.equal(helpers.isSystemActivity(active), false)
   assert.equal(helpers.isSystemActivity(system), true)
+  assert.equal(helpers.isSystemActivity(walsender), true)
   assert.equal(helpers.isSystemActivity(legacy), false)
   assert.equal(helpers.isIdleActivity(idle), true)
   assert.equal(helpers.isIdleActivity(idleTransaction), false)
@@ -135,7 +137,7 @@ test("activity hides only ordinary idle and derives query and transaction time f
   assert.equal(helpers.transactionDurationMs(activityRow("7", { xact_start: "11000000" })), null)
   assert.equal(helpers.transactionDurationMs(activityRow("8", { xact_start: "0" })), null)
 
-  const rows = [active, idle, idleTransaction, aborted, system, legacy]
+  const rows = [active, idle, idleTransaction, aborted, system, walsender, legacy]
   const defaults = helpers.visibleActivityRows(rows, { showIdle: false, showSystem: false })
   assert.deepEqual(defaults.map(({ ordinal }) => ordinal), ["1", "5", "3", "6"])
   assert.equal(defaults[0].values.query_duration_ms, 6_000)
@@ -149,7 +151,7 @@ test("activity hides only ordinary idle and derives query and transaction time f
   )
   assert.deepEqual(
     helpers.visibleActivityRows(rows, { showIdle: false, showSystem: true }).map(({ ordinal }) => ordinal),
-    ["1", "5", "3", "6", "4"],
+    ["1", "5", "3", "6", "4", "7"],
   )
   assert.deepEqual(
     helpers.visibleActivityRows(rows, { showIdle: false, showSystem: false }, system).map(({ ordinal }) => ordinal),

@@ -3,7 +3,7 @@ import test from "node:test"
 
 import type { Cell, DataRow } from "../src/api.ts"
 import { fittedWidth } from "../src/column-size.ts"
-import { activityFor, compact, formatUtc, identifier, measure, nearestTime, processCommand, processDefaultSort, processLens, rawText, shownMoment, selectedHour, stateText } from "../src/model.ts"
+import { activityFor, compact, formatUtc, identifier, measure, nearestTime, processCommand, processDefaultSort, processKey, processLens, rawText, shownMoment, selectedHour, stateText } from "../src/model.ts"
 
 function row(timestamp: number): DataRow {
   return { segmentId: "7", logicalName: "os_process", typeId: "1100001", ordinal: "0", timestamp, values: {} }
@@ -52,6 +52,15 @@ test("finding fields select the matching process lens", () => {
   assert.equal(processLens("rmem_kb"), "memory")
   assert.equal(processLens("rundelay_ns"), "cpu")
   assert.equal(processLens("state"), "generic")
+})
+
+test("process identity includes the captured start time", () => {
+  const process = (pid: number, starttime: string): DataRow => ({
+    ...row(100),
+    values: { pid, starttime },
+  })
+  assert.equal(processKey(process(41, "99")), processKey(process(41, "99")))
+  assert.notEqual(processKey(process(41, "99")), processKey(process(41, "100")))
 })
 
 test("process tables start with CPU and disk sorting chooses the first active signal", () => {

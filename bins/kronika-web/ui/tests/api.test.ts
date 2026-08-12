@@ -122,6 +122,7 @@ test("snapshot rows use each physical layout's positional columns", async () => 
   try {
     const hour = await api.loadSnapshot("77", START, ["os_loadavg"], new AbortController().signal)
     assert.equal(hour.load.length, 2)
+    assert.equal(hour.load[0]?.timestamp, START + 1)
     assert.deepEqual(hour.load[0]?.values, { load1: 1, load5: 5 })
     assert.deepEqual(hour.load[1]?.values, { load5: 50, load1: 10 })
   } finally {
@@ -618,11 +619,16 @@ test("timeline lanes retain their segment and a recorded null", async () => {
       sections: [{ logical_name: "pg_stat_statements", type_id: "1002002" }],
     },
     { record: "index", segment: { id: "segment-a" }, logical_name: "health", checksum: null },
+    { record: "point", type_id: "0", series: "overall_health", ts: String(START + 2), identity: {}, value: null },
+    { record: "point", type_id: "0", series: "overall_health", ts: String(START + 2), identity: {}, value: 42 },
+    { record: "point", type_id: "0", series: "overall_health", ts: String(START + 3), identity: {}, value: 42 },
+    { record: "point", type_id: "0", series: "overall_health", ts: String(START + 3), identity: {}, value: null },
     { record: "lane", segment_id: "segment-a", lane: "cpu_busy", ts: String(START + 1), value: null },
   ])
   try {
     const timeline = await api.loadTimeline(START, new AbortController().signal)
     assert.deepEqual(timeline.lanePoints, [{ segmentId: "segment-a", lane: "cpu_busy", timestamp: START + 1, value: null }])
+    assert.deepEqual(timeline.health.map((row) => row.values.overall_health), [null, null])
     assert.deepEqual(timeline.segments[0]?.sections, [{ logicalName: "pg_stat_statements", typeId: "1002002" }])
     assert.equal(api.fieldNameForLocator({ typeId: "0", fieldOrdinal: 0 }), "os_health")
     assert.equal(api.fieldNameForLocator({ typeId: "0", fieldOrdinal: 1 }), "overall_health")

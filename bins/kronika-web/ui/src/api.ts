@@ -392,7 +392,9 @@ function healthRows(points: readonly Point[]): readonly DataRow[] {
       timestamp: point.timestamp,
       values: {},
     }
-    stored.values[point.series] = point.value
+    if (!Object.hasOwn(stored.values, point.series) || point.value === null) {
+      stored.values[point.series] = point.value
+    }
     byMoment.set(key, stored)
   }
   return [...byMoment.values()].sort((left, right) => left.timestamp - right.timestamp)
