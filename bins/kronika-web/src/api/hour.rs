@@ -1,10 +1,9 @@
 //! Composes one hour of timeline data into one response.
 
-use std::ops::Bound::{Included, Unbounded};
 use std::path::{Path, PathBuf};
 
 use kronika_index::{finding_keys, resource_selected, series_keys};
-use kronika_reader::{Reader, SegmentKind, SegmentRef};
+use kronika_reader::{Listing, Reader, SegmentKind, SegmentRef};
 use serde_json::json;
 
 use super::catalog::PreparedCatalog;
@@ -27,7 +26,7 @@ const HOUR: i64 = 3_600_000_000;
 pub(crate) struct PreparedHour {
     root: PathBuf,
     reader: Reader,
-    catalog: PreparedCatalog,
+    catalog: Option<PreparedCatalog>,
     segments: Vec<SegmentRef>,
     window: Window,
     hours: Vec<i64>,
@@ -39,6 +38,7 @@ pub(super) fn prepare(
     request: HourRequest,
     configured_sources: u32,
 ) -> Result<PreparedHour, ApiError> {
+    let started = std::time::Instant::now();
     let requested = request.window;
     let reader = Reader::open(root)?;
     let stored = reader.catalog_segments(..)?;
@@ -50,13 +50,23 @@ pub(super) fn prepare(
             to: Some(requested.to.unwrap_or_else(|| hour_end(from))),
         },
     );
-    let catalog = super::catalog::prepare(root, window, configured_sources)?;
-    let listing = reader.catalog_segments((
-        window.from.map_or(Unbounded, Included),
-        window.to.map_or(Unbounded, Included),
-    ))?;
-    let mut segments = listing.segments;
+    let mut segments = stored
+        .segments
+        .into_iter()
+        .filter(|segment| overlaps_window(segment.min_ts(), segment.max_ts(), window))
+        .collect::<Vec<_>>();
     segments.sort_by_key(SegmentRef::min_ts);
+    super::catalog::log_open(segments.len(), &stored.warnings, started);
+    let catalog = request.series.is_none().then(|| {
+        PreparedCatalog::from_listing(
+            Listing {
+                segments: segments.clone(),
+                warnings: stored.warnings,
+            },
+            window,
+            configured_sources,
+        )
+    });
     Ok(PreparedHour {
         root: root.to_path_buf(),
         reader,
@@ -66,6 +76,10 @@ pub(super) fn prepare(
         hours,
         series: request.series,
     })
+}
+
+fn overlaps_window(min_ts: i64, max_ts: i64, window: Window) -> bool {
+    window.from.is_none_or(|from| max_ts >= from) && window.to.is_none_or(|to| min_ts <= to)
 }
 
 fn hours_of(segments: &[SegmentRef]) -> Vec<i64> {
@@ -150,7 +164,9 @@ impl PreparedHour {
             }
             return Ok(());
         }
-        catalog.stream(emit, cancelled)?;
+        if let Some(catalog) = catalog {
+            catalog.stream(emit, cancelled)?;
+        }
         let mut lane_state = lanes::State::default();
         for segment in &segments {
             if cancelled() {
