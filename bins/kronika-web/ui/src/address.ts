@@ -55,13 +55,14 @@ export function readAddress(search: string): Address {
   const pgLens = parameters.get("pg_lens")
   const sort = parameters.get("sort") ?? ""
   const column = sort.startsWith("-") ? sort.slice(1) : sort
+  const resolvedView = VIEWS.find((known) => known === view) ?? DEFAULT_ADDRESS.view
   return {
     at: Number.isSafeInteger(at) && at > 0 ? at : null,
-    view: VIEWS.find((known) => known === view) ?? DEFAULT_ADDRESS.view,
+    view: resolvedView,
     lens: LENSES.find((known) => known === lens) ?? DEFAULT_ADDRESS.lens,
     pgLens: PG_LENSES.find((known) => known === pgLens) ?? DEFAULT_ADDRESS.pgLens,
     sort: column === "" ? null : { column, descending: sort.startsWith("-") },
-    row: parameters.get("row"),
+    row: resolvedView === "host.processes" ? parameters.get("row") : null,
     find: parameters.get("find") ?? "",
   }
 }
