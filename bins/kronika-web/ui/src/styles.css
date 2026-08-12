@@ -1,3 +1,10 @@
+@import "tailwindcss";
+@source "./*.tsx";
+
+@theme {
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
 :root, [data-theme="dark"] {
   color-scheme: dark;
   --bg: #070a0d;

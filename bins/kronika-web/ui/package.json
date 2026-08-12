@@ -8,6 +8,7 @@
     "check": "node scripts/build.mjs --check",
     "fixture:check": "node scripts/real-fixture.mjs --check",
     "test": "node --experimental-strip-types --test tests/*.test.mjs tests/*.test.ts",
+    "test:browser:corrections": "node tests/browser-corrections.mjs",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
@@ -21,10 +22,12 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
+    "@tailwindcss/cli": "4.3.3",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
     "esbuild": "0.28.2",
     "fflate": "0.8.2",
+    "tailwindcss": "4.3.3",
     "typescript": "7.0.2"
   }
 }
