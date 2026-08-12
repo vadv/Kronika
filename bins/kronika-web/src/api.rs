@@ -190,7 +190,7 @@ pub(crate) fn prepare(
         Route::History(request) => history::prepare(root, request).map(Prepared::History),
         Route::Hour(request) => hour::prepare(root, request, sources).map(Prepared::Hour),
         Route::Rows(request) => rows::prepare(root, request).map(Prepared::Rows),
-        Route::Snapshot(request) => snapshot::prepare(root, request).map(Prepared::Snapshot),
+        Route::Snapshot(request) => snapshot::prepare(root, *request).map(Prepared::Snapshot),
     }
 }
 

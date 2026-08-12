@@ -9,6 +9,7 @@ import {
   loadSeries,
   hourOf,
   loadSnapshot,
+  mergeSnapshotData,
   segmentBoundAt,
   requestsForSegment,
   fieldNameForLocator,
@@ -227,39 +228,105 @@ function App({ locale, onLocale, t }: {
 
   const cursorSegment = useMemo(() => segmentBoundAt(segments, cursor), [cursor, segments])
   const [cursorState, setCursorState] = useState<"ready" | "loading" | "missing">("ready")
+  const [densePageState, setDensePageState] = useState<"idle" | "loading" | "error">("idle")
+  const snapshotGeneration = useRef(0)
+  const densePage = useRef<{
+    failed: string | undefined
+    load: (cursor?: string) => void
+  } | null>(null)
+  const densePattern = viewRequests.some((request) => request.pageSize !== undefined) ? find.trim() : ""
   useEffect(() => {
+    const generation = ++snapshotGeneration.current
+    densePage.current = null
     if (hour === null || cursorSegment === null) {
       setCurrentData(EMPTY_DATA)
       setCursorState("missing")
+      setDensePageState("idle")
       return
     }
     const wanted = requestsForSegment(
       viewRequests.filter((request) => request.section !== "health"),
       cursorSegment,
     )
-    setCurrentData(EMPTY_DATA)
     if (wanted.length === 0) {
+      setCurrentData(EMPTY_DATA)
       setCursorState("ready")
+      setDensePageState("idle")
       return
     }
     setCursorState("loading")
+    setDensePageState(wanted.some((request) => request.pageSize !== undefined) ? "loading" : "idle")
     const controller = new AbortController()
+    const stale = () => controller.signal.aborted || generation !== snapshotGeneration.current
     const timer = setTimeout(() => {
-      void loadSnapshot(cursorSegment.id, cursor, wanted, controller.signal, order ?? undefined)
+      const request = wanted.find((request) => request.pageSize !== undefined)
+      const ordinary = wanted.filter((request) => request.pageSize === undefined)
+      if (request === undefined) {
+        void loadSnapshot(cursorSegment.id, cursor, ordinary, controller.signal, order ?? undefined)
         .then((incoming) => {
-          if (controller.signal.aborted) return
+          if (stale()) return
           setCurrentData(incoming)
           setCursorState("ready")
         })
         .catch((reason: unknown) => {
-          if (controller.signal.aborted) return
-          setCurrentData(EMPTY_DATA)
+          if (stale()) return
           setCursorState("missing")
           console.error("kronika: snapshot at the cursor failed", reason)
         })
+        return
+      }
+      const base = ordinary.length === 0
+        ? Promise.resolve(EMPTY_DATA)
+        : loadSnapshot(cursorSegment.id, cursor, ordinary, controller.signal, order ?? undefined)
+          .catch((reason: unknown) => {
+            if (!controller.signal.aborted) console.error("kronika: snapshot companion failed", reason)
+            return EMPTY_DATA
+          })
+      let inFlight = false
+      const action = {
+        failed: undefined as string | undefined,
+        load: (pageCursor?: string) => {
+          if (inFlight || stale()) return
+          inFlight = true
+          action.failed = undefined
+          setDensePageState("loading")
+          const options = {
+            ...(pageCursor === undefined ? {} : { cursor: pageCursor }),
+            ...(densePattern === "" ? {} : { search: [densePattern] }),
+          }
+          void Promise.all([
+            pageCursor === undefined ? base : Promise.resolve(null),
+            loadSnapshot(cursorSegment.id, cursor, [request], controller.signal, order ?? undefined, options),
+          ]).then(([companion, incoming]) => {
+            if (stale()) return
+            setCurrentData((current) => pageCursor === undefined
+              ? mergeSnapshotData(companion ?? EMPTY_DATA, incoming)
+              : mergeSnapshotData(current, incoming, request.section))
+            setDensePageState("idle")
+            setCursorState("ready")
+          }).catch((reason: unknown) => {
+            if (stale()) return
+            action.failed = pageCursor
+            setDensePageState("error")
+            setCursorState("ready")
+            console.error("kronika: snapshot page failed", reason)
+          }).finally(() => { inFlight = false })
+        },
+      }
+      densePage.current = action
+      action.load()
     }, 250)
     return () => { clearTimeout(timer); controller.abort() }
-  }, [cursor, cursorSegment, hour, order, pgSection, source, viewKey, viewRequests])
+  }, [cursor, cursorSegment, densePattern, hour, order, viewRequests])
+  const denseMetadata = currentData.snapshotRows[0]
+  const loadMoreDense = useCallback(() => {
+    const next = denseMetadata?.hasMore === true ? denseMetadata.nextCursor : null
+    if (next != null) densePage.current?.load(next)
+  }, [denseMetadata])
+  const retryDense = useCallback(() => {
+    const action = densePage.current
+    if (action !== null) action.load(action.failed)
+  }, [])
 
   useEffect(() => {
     const shortcuts = (event: KeyboardEvent) => {
@@ -525,7 +592,7 @@ function App({ locale, onLocale, t }: {
           {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onClose={() => setSelectedKey(null)} process={selectedProcess} processHistory={processHistory} t={t} ticksPerSecond={ticksPerSecond} />}
         </div>
       </>}
-      {!loading && error === null && hour !== null && source === "postgresql" && <PostgresView onOrder={setOrder} onPattern={setFind} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onSection={setPgSection} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} section={pgSection} statementLens={statementLens} t={t} />}
+      {!loading && error === null && hour !== null && source === "postgresql" && <PostgresView densePageState={densePageState} onLoadMore={loadMoreDense} onRetry={retryDense} onOrder={setOrder} onPattern={setFind} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onSection={setPgSection} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} section={pgSection} statementLens={statementLens} t={t} />}
       {!loading && error === null && hour !== null && source === "events" && <EventsView cursor={cursor} data={data} history={findingPoints} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} onShowAll={() => { setEventScope(null); setSelectedFinding(null) }} resolution={findingResolution} resolved={findingRow} scope={eventScope} selected={selectedFinding} t={t} />}
     </section>
 

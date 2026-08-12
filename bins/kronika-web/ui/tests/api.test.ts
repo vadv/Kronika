@@ -183,7 +183,7 @@ test("a curated snapshot follows the registry layout and physical order", async 
   const statement = {
     section: "pg_stat_statements",
     typeIds: ["1002001", "1002002"],
-    top: 200,
+    pageSize: 200,
     defaultOrder: ["total_time", "total_exec_time"],
     order: { wal_demand: ["wal_bytes"] },
     fallbackOrder: ["calls"],
@@ -194,24 +194,34 @@ test("a curated snapshot follows the registry layout and physical order", async 
   }
   const segment = {
     id: "77", minTs: START, maxTs: START + 10,
-    sections: [{ logicalName: "pg_stat_statements", typeId: "1002001" }],
+    sections: [
+      { logicalName: "pg_stat_statements", typeId: "1002001" },
+      { logicalName: "pg_stat_statements", typeId: "1002002" },
+    ],
   }
   const requests = api.requestsForSegment([statement], segment)
   assert.equal(requests.length, 1)
-  assert.equal(requests[0]?.typeId, "1002001")
-  assert.deepEqual(requests[0]?.fields, ["queryid", "userid", "dbid", "query", "calls", "total_time"])
-  assert.deepEqual(requests[0]?.defaultOrder, ["total_time"])
-  assert.deepEqual(requests[0]?.order, { wal_demand: [] })
+  assert.equal(requests[0]?.typeId, undefined)
+  assert.deepEqual(requests[0]?.fields, [
+    "queryid", "userid", "dbid", "query", "calls", "total_time", "wal_bytes", "total_exec_time",
+  ])
+  assert.deepEqual(requests[0]?.defaultOrder, ["total_time", "total_exec_time"])
+  assert.deepEqual(requests[0]?.order, { wal_demand: ["wal_bytes"] })
   assert.deepEqual(requests[0]?.fallbackOrder, ["calls"])
 
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (input) => {
     const url = new URL(String(input), "http://kronika.invalid")
     assert.deepEqual(url.searchParams.getAll("section"), ["pg_stat_statements"])
-    assert.deepEqual(url.searchParams.getAll("field"), ["queryid", "userid", "dbid", "query", "calls", "total_time"])
-    assert.deepEqual(url.searchParams.getAll("by"), ["total_time"])
-    assert.equal(url.searchParams.get("top"), "200")
-    assert.equal(url.searchParams.get("type_id"), "1002001")
+    assert.deepEqual(url.searchParams.getAll("field"), [
+      "queryid", "userid", "dbid", "query", "calls", "total_time", "wal_bytes", "total_exec_time",
+    ])
+    assert.deepEqual(url.searchParams.getAll("by"), ["wal_bytes"])
+    assert.equal(url.searchParams.get("page_size"), "200")
+    assert.equal(url.searchParams.has("top"), false)
+    assert.equal(url.searchParams.has("type_id"), false)
+    assert.equal(url.searchParams.get("cursor"), "opaque+/=")
+    assert.deepEqual(url.searchParams.getAll("search"), ["vacuum*", "db?name"])
     assert.equal(url.searchParams.get("text"), "160")
     assert.equal(url.searchParams.has("plan"), false)
     return ndjson([
@@ -223,12 +233,24 @@ test("a curated snapshot follows the registry layout and physical order", async 
         },
       },
       {
+        record: "layout", rates: ["calls", "total_exec_time"],
+        layout: {
+          type_id: "1002002", logical_name: "pg_stat_statements",
+          columns: ["queryid", "userid", "dbid", "query", "calls", "wal_bytes", "total_exec_time"].map((name) => ({ name })),
+        },
+      },
+      {
         record: "row", type_id: "1002001", ordinal: "3", timestamp: String(START),
         values: ["41", "10", "20", { stored_text: "select 1", original_length: 8 }, 2, 3],
       },
       {
-        record: "snapshot_rows", type_id: "1002001", eligible: "4873", returned: "200",
-        truncated: true, limit: 200, order_by: "total_time", order_direction: "desc",
+        record: "row", type_id: "1002002", ordinal: "4", timestamp: String(START),
+        values: ["42", "10", "20", "vacuum t", 5, "9007199254740995", 7],
+      },
+      {
+        record: "snapshot_page", logical_name: "pg_stat_statements", eligible: "4873", returned: "2",
+        has_more: true, truncated: true, next_cursor: "next+/=", page_size: 200,
+        order_by: ["wal_bytes", "total_time"], order_direction: "desc",
         from: String(START - 10_000_000), to: String(START),
       },
     ])
@@ -236,12 +258,15 @@ test("a curated snapshot follows the registry layout and physical order", async 
   try {
     const hour = await api.loadSnapshot("77", START, requests, new AbortController().signal, {
       column: "wal_demand", descending: true,
+    }, {
+      cursor: "opaque+/=", search: ["vacuum*", "db?name"],
     })
-    assert.equal(hour.sections.pg_stat_statements?.length, 1)
-    assert.deepEqual(hour.rateColumns.pg_stat_statements, ["calls", "total_time"])
+    assert.equal(hour.sections.pg_stat_statements?.length, 2)
+    assert.deepEqual(hour.rateColumns.pg_stat_statements, ["calls", "total_time", "total_exec_time"])
     assert.deepEqual(hour.snapshotRows, [{
-      logicalName: "pg_stat_statements", typeId: "1002001", eligible: 4873, returned: 200,
-      truncated: true, limit: 200, orderBy: "total_time", orderDirection: "desc",
+      logicalName: "pg_stat_statements", eligible: 4873, returned: 2,
+      hasMore: true, truncated: true, nextCursor: "next+/=", pageSize: 200,
+      orderBy: ["wal_bytes", "total_time"], orderDirection: "desc",
       from: START - 10_000_000, to: START,
     }])
   } finally {
@@ -253,7 +278,7 @@ test("physical execution aliases are selected before the calls fallback", async 
   const api = await bundledApi()
   const statement = {
     section: "pg_stat_statements",
-    top: 200,
+    pageSize: 200,
     defaultOrder: ["total_time", "total_exec_time"],
     fallbackOrder: ["calls"],
     fieldsByType: {
@@ -294,6 +319,22 @@ test("physical execution aliases are selected before the calls fallback", async 
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test("snapshot pages append once in server order and deduplicate physical coordinates", async () => {
+  const api = await bundledApi()
+  const make = (ordinal: string, timestamp: number, typeId = "1002002") => ({
+    segmentId: "77", logicalName: "pg_stat_statements", typeId, ordinal, timestamp, values: { queryid: ordinal },
+  })
+  const first = [make("1", START), make("2", START)]
+  const next = [make("2", START), make("3", START), make("3", START + 1)]
+  const appended = api.appendSnapshotRows(first, next)
+  assert.deepEqual(appended.map((row) => [row.typeId, row.ordinal, row.timestamp]), [
+    ["1002002", "1", START],
+    ["1002002", "2", START],
+    ["1002002", "3", START],
+  ])
+  assert.deepEqual(api.appendSnapshotRows(appended, next), appended)
 })
 
 test("exact V1 and V2 query text requests carry only query and exact identity", async () => {
@@ -349,6 +390,9 @@ test("an exact locator uses the generic projected snapshot contract", async () =
     assert.equal(url.searchParams.get("row_ordinal"), "9223372036854775807")
     assert.equal(url.searchParams.get("text"), "160")
     assert.equal(url.searchParams.has("top"), false)
+    assert.equal(url.searchParams.has("page_size"), false)
+    assert.equal(url.searchParams.has("cursor"), false)
+    assert.equal(url.searchParams.has("search"), false)
     assert.equal(url.searchParams.has("by"), false)
     return ndjson([
       {

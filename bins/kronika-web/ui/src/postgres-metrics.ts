@@ -255,7 +255,7 @@ export interface PostgresSectionRequest {
   readonly section: LayoutKind["section"]
   readonly typeIds: readonly string[]
   readonly fieldsByType: Readonly<Record<string, readonly string[]>>
-  readonly top?: number
+  readonly pageSize?: number
   readonly defaultOrder?: readonly string[]
   readonly order?: Readonly<Record<string, readonly string[]>>
   readonly fallbackOrder?: readonly string[]
@@ -301,7 +301,7 @@ function denseLensRequest(
     section,
     typeIds,
     fieldsByType: fieldsByType(typeIds, wanted),
-    top: 200,
+    pageSize: 200,
     defaultOrder: order[defaultSemantic] ?? [],
     order,
     fallbackOrder: ["calls"],

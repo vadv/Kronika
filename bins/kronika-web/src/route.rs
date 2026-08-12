@@ -2,11 +2,13 @@
 
 const DEFAULT_PAGE_SIZE: usize = 100;
 const MAX_PAGE_SIZE: usize = 1_000;
+const DEFAULT_SNAPSHOT_PAGE_SIZE: usize = 200;
 const MAX_QUERY_BYTES: usize = 64 * 1024;
 const MAX_SECTION_BYTES: usize = 128;
 const MAX_SNAPSHOT_SECTIONS: usize = 16;
-/// Maximum rows retained by one snapshot top-K ranking.
-const MAX_SNAPSHOT_TOP: usize = 5_000;
+const MAX_SNAPSHOT_PAGE_SIZE: usize = 5_000;
+const MAX_SEARCH_PATTERNS: usize = 8;
+const MAX_SEARCH_PATTERN_CHARS: usize = 256;
 const MAX_FIELDS: usize = 256;
 const MAX_FILTERS: usize = 64;
 const MAX_ORDER_FIELDS: usize = 16;
@@ -23,7 +25,7 @@ pub(crate) enum Route {
     History(DataRequest),
     /// One stable page of physical rows in one explicit segment.
     Rows(RowsRequest),
-    Snapshot(SnapshotRequest),
+    Snapshot(Box<SnapshotRequest>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +35,10 @@ pub(crate) struct SnapshotRequest {
     pub(crate) sections: Vec<String>,
     pub(crate) fields: Vec<String>,
     pub(crate) by: Vec<String>,
-    pub(crate) top: Option<usize>,
+    /// Present only for the paged single-section form.
+    pub(crate) page_size: Option<usize>,
+    pub(crate) cursor: Option<String>,
+    pub(crate) search: Vec<String>,
     pub(crate) text: Option<usize>,
     pub(crate) filters: Vec<Filter>,
     pub(crate) type_id: Option<u32>,
@@ -149,7 +154,9 @@ pub(crate) fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError
         .ok_or(RouteError::NoSuchPath)?;
     let pieces: Vec<&str> = tail.split('/').collect();
     if pieces.len() == 2 && pieces[1] == "snapshot" && !pieces[0].is_empty() {
-        return parse_snapshot(number("segment_id", pieces[0])?, query).map(Route::Snapshot);
+        return parse_snapshot(number("segment_id", pieces[0])?, query)
+            .map(Box::new)
+            .map(Route::Snapshot);
     }
     if pieces.len() != 4 || pieces[1] != "sections" || pieces.iter().any(|piece| piece.is_empty()) {
         return Err(RouteError::NoSuchPath);
@@ -177,7 +184,9 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
     let mut sections = Vec::new();
     let mut fields = Vec::new();
     let mut by = Vec::new();
-    let mut top = None;
+    let mut page_size = None;
+    let mut cursor = None;
+    let mut search = Vec::new();
     let mut text = None;
     let mut filters: Vec<Filter> = Vec::new();
     let mut type_id = None;
@@ -222,14 +231,18 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
                 }
                 text = Some(usize::try_from(kept).unwrap_or(usize::MAX));
             }
-            "top" if top.is_none() => {
-                let count = number("top", raw_value)?;
-                top = Some(
-                    usize::try_from(count)
-                        .ok()
-                        .filter(|count| (1..=MAX_SNAPSHOT_TOP).contains(count))
-                        .ok_or_else(|| RouteError::BadParameter("top".to_owned()))?,
-                );
+            "page_size" if page_size.is_none() => {
+                page_size = Some(snapshot_page_size(raw_value)?);
+            }
+            "cursor" if cursor.is_none() => {
+                let value = decoded("cursor", raw_value, true)?;
+                if value.is_empty() {
+                    return Err(RouteError::BadParameter("cursor".to_owned()));
+                }
+                cursor = Some(value);
+            }
+            "search" => {
+                push_snapshot_search(&mut search, raw_value)?;
             }
             other => {
                 let name = decoded("parameter", other, true)?;
@@ -249,14 +262,17 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
             }
         }
     }
-    validate_snapshot_shape(&sections, &by, top, &filters, type_id, row_ordinal)?;
+    let paged = page_size.is_some() || cursor.is_some() || !search.is_empty() || !by.is_empty();
+    validate_snapshot_shape(&sections, paged, &filters, type_id, row_ordinal)?;
     Ok(SnapshotRequest {
         segment_id,
         at: at.ok_or_else(|| RouteError::BadParameter("at".to_owned()))?,
         sections,
         fields,
         by,
-        top,
+        page_size: paged.then_some(page_size.unwrap_or(DEFAULT_SNAPSHOT_PAGE_SIZE)),
+        cursor,
+        search,
         text,
         filters,
         type_id,
@@ -264,10 +280,29 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
     })
 }
 
+fn snapshot_page_size(raw: &str) -> Result<usize, RouteError> {
+    raw.parse::<usize>()
+        .ok()
+        .filter(|size| (1..=MAX_SNAPSHOT_PAGE_SIZE).contains(size))
+        .ok_or_else(|| RouteError::BadParameter("page_size".to_owned()))
+}
+
+fn push_snapshot_search(search: &mut Vec<String>, raw: &str) -> Result<(), RouteError> {
+    let value = decoded("search", raw, true)?;
+    let value = value.trim();
+    if value.is_empty()
+        || value.chars().count() > MAX_SEARCH_PATTERN_CHARS
+        || search.len() >= MAX_SEARCH_PATTERNS
+    {
+        return Err(RouteError::BadParameter("search".to_owned()));
+    }
+    search.push(value.to_owned());
+    Ok(())
+}
+
 fn validate_snapshot_shape(
     sections: &[String],
-    by: &[String],
-    top: Option<usize>,
+    paged: bool,
     filters: &[Filter],
     type_id: Option<u32>,
     row_ordinal: Option<u64>,
@@ -276,17 +311,11 @@ fn validate_snapshot_shape(
         return Err(RouteError::BadParameter("section".to_owned()));
     }
     if sections.len() != 1
-        && (!by.is_empty()
-            || top.is_some()
-            || !filters.is_empty()
-            || type_id.is_some()
-            || row_ordinal.is_some())
+        && (paged || !filters.is_empty() || type_id.is_some() || row_ordinal.is_some())
     {
         return Err(RouteError::BadParameter("section".to_owned()));
     }
-    if row_ordinal.is_some()
-        && (type_id.is_none() || !by.is_empty() || top.is_some() || !filters.is_empty())
-    {
+    if row_ordinal.is_some() && (type_id.is_none() || paged || !filters.is_empty()) {
         return Err(RouteError::BadParameter("row_ordinal".to_owned()));
     }
     Ok(())

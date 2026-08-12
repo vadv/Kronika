@@ -246,12 +246,6 @@ impl Plan {
         resolved_dictionary(segment, &ids)
     }
 
-    pub(super) fn selection_needs_dictionary(&self) -> bool {
-        self.filters
-            .iter()
-            .any(|filter| matches!(filter, TypedFilter::Bytes { .. }))
-    }
-
     pub(super) fn add_selection_ids(&self, row: &Row, ids: &mut HashSet<u64>) {
         for filter in &self.filters {
             if let TypedFilter::Bytes { column, .. } = filter
@@ -260,6 +254,18 @@ impl Plan {
                 ids.insert(*id);
             }
         }
+    }
+
+    /// Add physical inputs needed for computation without exposing them as
+    /// output fields.
+    pub(super) fn add_projection_columns(&mut self, names: &[String]) {
+        self.projection.extend(
+            names
+                .iter()
+                .filter_map(|name| self.contract.column(name).map(|column| column.name)),
+        );
+        self.projection.sort_unstable();
+        self.projection.dedup();
     }
 }
 

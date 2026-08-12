@@ -142,6 +142,9 @@ const TABS: readonly { readonly id: PostgresSection; readonly icon: ReactNode; r
 ]
 
 export function PostgresView({
+  densePageState,
+  onLoadMore,
+  onRetry,
   onPattern,
   pattern,
   onOrder,
@@ -162,6 +165,9 @@ export function PostgresView({
   statementLens,
   t,
 }: {
+  readonly densePageState: "idle" | "loading" | "error"
+  readonly onLoadMore: () => void
+  readonly onRetry: () => void
   readonly onOrder: (order: TableOrder | null) => void
   readonly onPattern: (pattern: string) => void
   readonly order: TableOrder | undefined
@@ -200,10 +206,10 @@ export function PostgresView({
     {section === "overview" && <Overview cursor={cursor} data={data} locale={locale} t={t} />}
     {section === "activity" && available("pg_stat_activity") && <ActivityView onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_activity" ? focusFinding : null} focus={focus} locale={locale} t={t} />}
     {section === "activity" && available("pg_stat_progress_vacuum") && <PgPreview cursor={cursor} data={data} focus={focusFinding?.logicalName === "pg_stat_progress_vacuum" ? focus : null} locale={locale} section="pg_stat_progress_vacuum" t={t} />}
-    {section === "statements" && <><PostgresLensBar active={statementLens} choices={["load", "per_call", "io", "resources", "stability"]} onChange={onStatementLens} prefix="statement" t={t} /><PgEntityView columns={statementColumns(statementLens)} defaultOrder={{ column: statementDefaultOrder(statementLens), descending: true }} onOrder={onOrder} onPattern={onPattern} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField={statementLens === "stability" ? "cv" : "mean_exec_ms_per_call"} locale={locale} section="pg_stat_statements" t={t} /></>}
+    {section === "statements" && <><PostgresLensBar active={statementLens} choices={["load", "per_call", "io", "resources", "stability"]} onChange={onStatementLens} prefix="statement" t={t} /><PgEntityView columns={statementColumns(statementLens)} defaultOrder={{ column: statementDefaultOrder(statementLens), descending: true }} densePageState={densePageState} onLoadMore={onLoadMore} onRetry={onRetry} onOrder={onOrder} onPattern={onPattern} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField={statementLens === "stability" ? "cv" : "mean_exec_ms_per_call"} locale={locale} section="pg_stat_statements" t={t} /></>}
     {section === "plans" && available("pg_store_plans_info") && <PlanInfo cursor={cursor} data={data} locale={locale} t={t} />}
     {section === "plans" && <PostgresLensBar active={planLens} choices={["load", "timing", "io", "identity"]} onChange={onPlanLens} prefix="plan" t={t} />}
-    {section === "plans" && available("pg_store_plans") && <PgEntityView columns={planColumns(planLens)} defaultOrder={{ column: planDefaultOrder(planLens), descending: true }} onOrder={onOrder} onPattern={onPattern} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_store_plans" ? focusFinding : null} focus={focus} historyField="mean_exec_ms_per_call" locale={locale} section="pg_store_plans" t={t} />}
+    {section === "plans" && available("pg_store_plans") && <PgEntityView columns={planColumns(planLens)} defaultOrder={{ column: planDefaultOrder(planLens), descending: true }} densePageState={densePageState} onLoadMore={onLoadMore} onRetry={onRetry} onOrder={onOrder} onPattern={onPattern} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_store_plans" ? focusFinding : null} focus={focus} historyField="mean_exec_ms_per_call" locale={locale} section="pg_store_plans" t={t} />}
     {section === "plans" && !available("pg_store_plans") && <p className="pg-empty" data-testid="pg-plans-empty">{t("pg.plans.empty")}</p>}
     {section === "locks" && <PgEntityView columns={LOCK_COLUMNS} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_locks" ? focusFinding : null} focus={focus} historyField={null} locale={locale} section="pg_locks" t={t} />}
     {section === "databases" && <PgEntityView columns={DATABASE_COLUMNS} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_database" ? focusFinding : null} focus={focus} historyField="xact_commit" locale={locale} section="pg_stat_database" t={t} />}
@@ -376,6 +382,9 @@ function PgEntityView({
   section,
   t,
   defaultOrder,
+  densePageState,
+  onLoadMore,
+  onRetry,
   transformRows,
 }: {
   readonly columns: readonly EntityColumn[]
@@ -393,6 +402,9 @@ function PgEntityView({
   readonly order?: TableOrder | undefined
   readonly t: Translate
   readonly defaultOrder?: TableOrder | undefined
+  readonly densePageState?: "idle" | "loading" | "error" | undefined
+  readonly onLoadMore?: (() => void) | undefined
+  readonly onRetry?: (() => void) | undefined
   readonly transformRows?: ((rows: readonly DataRow[]) => readonly DataRow[]) | undefined
 }) {
   const allRows = data.sections[section] ?? NO_ROWS
@@ -401,8 +413,8 @@ function PgEntityView({
     ? { column: order.column, descending: true }
     : defaultOrder, [columns, defaultOrder, order])
   const ranked = useMemo(() => dense
-    ? rankDenseRows(allRows, activeOrder, 200)
-    : snapshot(allRows, cursor), [activeOrder, allRows, cursor, dense])
+    ? allRows.map(decoratePostgresIntervalRow)
+    : snapshot(allRows, cursor), [allRows, cursor, dense])
   const rows = useMemo(() => {
     const focused = focus !== null && focus.logicalName === section && !ranked.some((row) => rowKey(row) === rowKey(focus))
       ? [...ranked, dense ? decoratePostgresIntervalRow(focus) : focus]
@@ -424,43 +436,25 @@ function PgEntityView({
   }, [focus, rows, section])
   const selectedKey = selected === null ? null : rowKey(selected)
   const selectedHistoryField = findingHistoryField(visibleColumns, finding, historyField)
+  const metadata = data.snapshotRows.find((meta) => meta.logicalName === section)
   const snapshotStatus = dense
-    ? tableState(data.snapshotRows.filter((meta) => meta.logicalName === section), ranked.length, cursor, pattern, activeOrder, locale, t)
+    ? tableState(metadata, ranked.length, cursor, pattern, activeOrder, locale, t)
+    : undefined
+  const canLoadMore = metadata?.hasMore === true && metadata.nextCursor !== null
+  const paging = dense && (densePageState !== "idle" || canLoadMore)
+    ? <button disabled={densePageState === "loading"} onClick={densePageState === "error" ? onRetry : onLoadMore} type="button">
+      {densePageState === "loading" ? "…" : densePageState === "error" ? "↻" : "+"}
+    </button>
     : undefined
   return <div className={selected === null ? "pg-entity-layout pg-table-only" : "pg-entity-layout"} data-pg-section={sectionName(section)} data-testid="pg-entity-layout">
-    <EntityTable columns={visibleColumns} empty={t("table.no_rows")} finding={finding} findingField={finding === null || finding === undefined ? null : fieldNameForLocator(finding)} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onOrder={onOrder} onPattern={onPattern} onSelect={setSelected} order={activeOrder} pattern={pattern} serverSorted={dense} rows={rows} selectedKey={selectedKey} status={snapshotStatus} t={t} testId={`pg-${sectionName(section)}-table`} />
+    <EntityTable columns={visibleColumns} empty={t("table.no_rows")} finding={finding} findingField={finding === null || finding === undefined ? null : fieldNameForLocator(finding)} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onNearEnd={densePageState === "idle" && canLoadMore ? onLoadMore : undefined} onOrder={onOrder} onPattern={onPattern} onSelect={setSelected} order={activeOrder} pattern={pattern} serverSorted={dense} rows={rows} selectedKey={selectedKey} status={snapshotStatus} t={t} testId={`pg-${sectionName(section)}-table`} />
+    {paging !== undefined && <div className="lens-tabs" data-testid="table-paging">{paging}</div>}
     {selected !== null && <PgDetail allRows={allRows} columns={visibleDetailColumns} historyField={selectedHistoryField} hour={Math.floor(cursor / 3_600_000_000) * 3_600_000_000} locale={locale} onClose={() => setSelected(null)} row={selected} section={section} t={t} />}
   </div>
 }
 
-export function rankDenseRows(
-  rows: readonly DataRow[],
-  order: TableOrder | undefined,
-  limit: number,
-): readonly DataRow[] {
-  const decorated = rows.map(decoratePostgresIntervalRow)
-  if (order === undefined) return decorated.slice(0, limit)
-  return decorated.slice().sort((left, right) => {
-    const leftNumber = asNumber(value(left, order.column))
-    const rightNumber = asNumber(value(right, order.column))
-    if (leftNumber !== null || rightNumber !== null) {
-      if (leftNumber === null) return 1
-      if (rightNumber === null) return -1
-      if (leftNumber !== rightNumber) return order.descending ? rightNumber - leftNumber : leftNumber - rightNumber
-    } else {
-      const leftText = rawText(value(left, order.column))
-      const rightText = rawText(value(right, order.column))
-      if (leftText === null) return rightText === null ? rowKey(left).localeCompare(rowKey(right)) : 1
-      if (rightText === null) return -1
-      const compared = leftText.localeCompare(rightText)
-      if (compared !== 0) return order.descending ? -compared : compared
-    }
-    return rowKey(left).localeCompare(rowKey(right))
-  }).slice(0, limit)
-}
-
 export function tableState(
-  metadata: readonly SnapshotRows[],
+  metadata: SnapshotRows | undefined,
   rowCount: number,
   cursor: number,
   pattern: string | undefined,
@@ -468,29 +462,18 @@ export function tableState(
   locale: Locale,
   t: Translate,
 ): ReactNode {
-  const eligible = metadata.reduce((total, item) => total + item.eligible, 0)
-  const limit = metadata.length === 0 ? 200 : Math.max(...metadata.map((item) => item.limit))
   const count = (value: number) => new Intl.NumberFormat(locale).format(value)
-  const shown = metadata.length === 0
-    ? t("pg.table.first_limit", { returned: count(rowCount), limit: count(limit) })
-    : t("pg.table.shown", { returned: count(rowCount), eligible: count(eligible), limit: count(limit) })
+  const shown = t("pg.table.shown", { returned: count(rowCount), eligible: count(metadata?.eligible ?? rowCount) })
   const semanticOrder = order?.column ?? null
-  const serverOrder = metadata.length === 0 ? null : [...new Set(metadata.map((item) => item.orderBy))].join(", ")
-  const intervals = [...new Set(metadata.map((item) => item.from === null || item.to === null
-    ? null
-    : `${formatUtc(item.from)} → ${formatUtc(item.to)}`))]
-  const interval = intervals.length === 0 || intervals.some((value) => value === null)
+  const serverOrder = metadata?.orderBy.join(", ") ?? null
+  const interval = metadata === undefined || metadata.from === null || metadata.to === null
     ? t("pg.table.interval_unavailable")
-    : intervals.length === 1
-      ? t("pg.table.interval", { from: formatUtc(metadata[0]?.from ?? null), to: formatUtc(metadata[0]?.to ?? null) })
-      : t("pg.table.intervals", {
-          intervals: metadata.map((item) => `${item.typeId}: ${item.from === null || item.to === null ? "—" : `${formatUtc(item.from)} → ${formatUtc(item.to)}`}`).join(" · "),
-        })
+    : t("pg.table.interval", { from: formatUtc(metadata.from), to: formatUtc(metadata.to) })
   return <>
     <span>{t("pg.table.cursor", { time: formatUtc(cursor) })}</span>
     <span>{interval}</span>
     <span>{pattern?.trim() ? t("pg.table.filter", { pattern: pattern.trim() }) : t("pg.table.no_filter")}</span>
-    <span>{semanticOrder === null || metadata.length === 0 || serverOrder === null
+    <span>{semanticOrder === null || serverOrder === null
       ? t("pg.table.order_default")
       : t("pg.table.order", { semantic: t(`pg.field.${semanticOrder}.label`), physical: serverOrder, direction: t("pg.table.desc") })}</span>
     <strong>{shown}</strong>

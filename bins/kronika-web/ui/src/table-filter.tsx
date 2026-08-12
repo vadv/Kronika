@@ -31,7 +31,7 @@ export function TableFilter({
       value={pattern}
     />
     {pattern !== "" && <>
-      <span className="table-filter-count">{t("filter.kept", { kept: String(kept), total: String(total) })}</span>
+      {kept >= 0 && <span className="table-filter-count">{t("filter.kept", { kept: String(kept), total: String(total) })}</span>}
       <button aria-label={t("filter.clear")} onClick={() => onPattern("")} type="button"><X aria-hidden="true" size={12} /></button>
     </>}
   </div>

@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::path::Path;
 
 use kronika_reader::{Cell, Dictionary, Reader, Resolved, Row, Segment, SegmentKind, SegmentRef};
-use kronika_registry::{ColumnClass, ColumnType, contract};
+use kronika_registry::{ColumnClass, contract};
 use serde_json::{Value, json};
 
 use super::query::{Plan, plans, resolved_dictionary};
@@ -20,7 +20,10 @@ pub(crate) struct PreparedSnapshot {
     at: i64,
     sections: Vec<SectionPlans>,
     by: Vec<String>,
-    top: Option<usize>,
+    page_size: Option<usize>,
+    cursor: Option<SnapshotCursor>,
+    binding: u64,
+    search: Vec<GlobPattern>,
     text: Option<usize>,
     row_ordinal: Option<u64>,
 }
@@ -49,26 +52,42 @@ struct StagedRow {
     identity: Vec<IdentityCell>,
 }
 
-struct RankedRow {
-    staged: StagedRow,
-    value: Option<OrderValue>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SnapshotCursor {
+    segment_id: i64,
+    active_position: u64,
+    layout_index: usize,
+    ordinal: u64,
+    binding: u64,
 }
 
-struct TopRows {
+struct PageRows {
     limit: usize,
-    rows: BinaryHeap<Reverse<RankedRow>>,
+    rows: BinaryHeap<Reverse<PageRankedRow>>,
 }
 
-#[derive(Clone, Copy)]
-struct BoundedOrder {
-    column: &'static str,
-    limit: usize,
+struct PageRankedRow {
+    staged: PageStagedRow,
+    value: Option<PageOrderValue>,
+}
+
+struct PageStagedRow {
+    layout_index: usize,
+    ordinal: u64,
+    row: Row,
+    identity: Vec<IdentityCell>,
+}
+
+enum PageOrderValue {
+    Integer(i128),
+    Float(f64),
+    IntegerRate { delta: i128, elapsed: i64 },
+    FloatRate(f64),
+    Text(Vec<u8>),
 }
 
 #[derive(Clone, Copy)]
 struct RowWindow {
-    start: u64,
-    count: usize,
     moment: Option<(&'static str, i64)>,
 }
 
@@ -83,18 +102,91 @@ struct SectionPlans {
     plans: Vec<Plan>,
 }
 
+struct PageContext<'a> {
+    layout_index: usize,
+    plan: &'a Plan,
+    source: &'a Segment,
+    rows: u64,
+    window: RowWindow,
+    previous: Option<Readings>,
+    elapsed: Option<i64>,
+    order_column: Option<&'static str>,
+    search_columns: Vec<&'static str>,
+}
+
+struct PageMetadata {
+    eligible: u64,
+    returned: usize,
+    has_more: bool,
+    next_cursor: Option<String>,
+    page_size: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GlobPattern(Vec<GlobToken>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlobToken {
+    Star,
+    Any,
+    Literal(char),
+}
+
+const SNAPSHOT_CHUNK_ROWS: usize = 16;
+
 pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedSnapshot, ApiError> {
-    let (reader, segment_ref, segments) = explicit_segment_with_listing(root, request.segment_id)?;
+    let binding = snapshot_binding(&request);
+    let parsed = request
+        .cursor
+        .as_deref()
+        .map(SnapshotCursor::parse)
+        .transpose()?
+        .filter(|cursor| cursor.segment_id == request.segment_id && cursor.binding == binding);
+    if request.cursor.is_some() && parsed.is_none() {
+        return Err(ApiError::BadCursor);
+    }
+    let (reader, current, segments) = explicit_segment_with_listing(root, request.segment_id)?;
+    let segment_ref = pin(current, parsed)?;
     let segment = reader.open_segment(&segment_ref)?;
+    let active_position = segment.active_position().unwrap_or(0);
+    if parsed.is_some_and(|cursor| cursor.active_position != active_position) {
+        return Err(ApiError::BadCursor);
+    }
     let earlier = preceding(&reader, &segment_ref, segments)?;
+    let sections = section_plans(&segment, &request)?;
+    validate_search_projection(&request, &sections)?;
+    validate_exact_locator(&segment, &request, &sections)?;
+    Ok(PreparedSnapshot {
+        segment,
+        earlier,
+        at: request.at,
+        sections,
+        by: request.by,
+        page_size: request.page_size,
+        cursor: parsed,
+        binding,
+        search: request
+            .search
+            .iter()
+            .map(|raw| GlobPattern::new(raw))
+            .collect(),
+        text: request.text,
+        row_ordinal: request.row_ordinal,
+    })
+}
+
+fn section_plans(
+    segment: &Segment,
+    request: &SnapshotRequest,
+) -> Result<Vec<SectionPlans>, ApiError> {
     let shared_projection = request.sections.len() > 1 && !request.fields.is_empty();
     if shared_projection {
-        validate_shared_projection(&segment, &request.sections, &request.fields)?;
+        validate_shared_projection(segment, &request.sections, &request.fields)?;
     }
     let mut sections = Vec::with_capacity(request.sections.len());
-    for logical_name in request.sections {
+    for logical_name in &request.sections {
         let fields = if shared_projection {
-            section_projection(&segment, &logical_name, &request.fields)
+            section_projection(segment, logical_name, &request.fields)
         } else {
             request.fields.clone()
         };
@@ -112,17 +204,51 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
             after: None,
         };
         // Missing sections are empty so one source cannot fail the snapshot.
-        match plans(&segment, &data, true) {
-            Ok(plans) => sections.push(SectionPlans {
-                logical_name,
-                plans,
-            }),
+        match plans(segment, &data, true) {
+            Ok(mut plans) => {
+                for plan in &mut plans {
+                    plan.add_projection_columns(&request.by);
+                }
+                sections.push(SectionPlans {
+                    logical_name: logical_name.clone(),
+                    plans,
+                });
+            }
             Err(ApiError::NoSuchSection) => {}
             Err(error) => return Err(error),
         }
     }
+    Ok(sections)
+}
+
+fn validate_search_projection(
+    request: &SnapshotRequest,
+    sections: &[SectionPlans],
+) -> Result<(), ApiError> {
+    if request.page_size.is_some() {
+        let [section] = sections else {
+            return Err(ApiError::BadCursor);
+        };
+        if !request.search.is_empty()
+            && (request.fields.is_empty()
+                || !section
+                    .plans
+                    .iter()
+                    .any(|plan| !search_columns(&section.logical_name, plan).is_empty()))
+        {
+            return Err(ApiError::BadFilter("search".to_owned()));
+        }
+    }
+    Ok(())
+}
+
+fn validate_exact_locator(
+    segment: &Segment,
+    request: &SnapshotRequest,
+    sections: &[SectionPlans],
+) -> Result<(), ApiError> {
     if let Some(ordinal) = request.row_ordinal {
-        let [section] = sections.as_slice() else {
+        let [section] = sections else {
             return Err(ApiError::BadCursor);
         };
         let [plan] = section.plans.as_slice() else {
@@ -143,16 +269,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
             return Err(ApiError::BadCursor);
         }
     }
-    Ok(PreparedSnapshot {
-        segment,
-        earlier,
-        at: request.at,
-        sections,
-        by: request.by,
-        top: request.top,
-        text: request.text,
-        row_ordinal: request.row_ordinal,
-    })
+    Ok(())
 }
 
 impl PreparedSnapshot {
@@ -176,6 +293,9 @@ impl PreparedSnapshot {
             }))?)
         {
             return Ok(());
+        }
+        if self.page_size.is_some() {
+            return self.emit_page(emit, cancelled);
         }
         for section in &self.sections {
             for plan in &section.plans {
@@ -226,10 +346,10 @@ impl PreparedSnapshot {
         };
         let (previous, before_at) = match moments.previous {
             Some(previous) => (
-                Self::collect(source, plan, timestamp, previous, cancelled)?,
+                Self::collect(source, plan, timestamp, previous, None, cancelled)?,
                 Some(previous),
             ),
-            None if own => self.earlier_moment(plan, timestamp, cancelled)?,
+            None if own => self.earlier_moment(plan, timestamp, None, cancelled)?,
             None => (Readings::new(), None),
         };
         let elapsed = moments
@@ -243,20 +363,6 @@ impl PreparedSnapshot {
             previous: Some(&previous),
             elapsed,
         };
-        if let Some(order) = self.bounded_order(plan) {
-            return self.emit_bounded_rows(
-                source,
-                plan,
-                RowWindow {
-                    start: start_row,
-                    count: row_count,
-                    moment: Some((timestamp, moments.current)),
-                },
-                order,
-                rates,
-                (emit, cancelled),
-            );
-        }
         let mut rows = Vec::new();
         source.visit_rows(
             plan.type_id,
@@ -280,34 +386,10 @@ impl PreparedSnapshot {
         self.emit_rows(source, plan, rows, rates, emit, cancelled)
     }
 
-    fn bounded_order(&self, plan: &Plan) -> Option<BoundedOrder> {
-        self.order_column(plan)
-            .zip(self.top)
-            .map(|(column, limit)| BoundedOrder { column, limit })
-    }
-
     fn order_column(&self, plan: &Plan) -> Option<&'static str> {
-        self.by.iter().find_map(|name| {
-            available_field_index(&plan.fields, name).and_then(|index| plan.fields[index].column)
-        })
-    }
-
-    fn order_and_truncate(
-        &self,
-        plan: &Plan,
-        rates: RateContext<'_>,
-        column: Option<&'static str>,
-        text_ranks: &TextRanks,
-        rows: &mut Vec<StagedRow>,
-    ) {
-        if let Some(column) = column {
-            rows.sort_by(|left, right| {
-                compare_staged(plan, column, right, left, rates, text_ranks)
-            });
-        }
-        if let Some(top) = self.top {
-            rows.truncate(top);
-        }
+        self.by
+            .iter()
+            .find_map(|name| plan.contract.column(name).map(|column| column.name))
     }
 
     fn emit_layout(
@@ -345,20 +427,6 @@ impl PreparedSnapshot {
             previous: None,
             elapsed: None,
         };
-        if let Some(order) = self.bounded_order(plan) {
-            return self.emit_bounded_rows(
-                &self.segment,
-                plan,
-                RowWindow {
-                    start: start_row,
-                    count: row_count,
-                    moment: None,
-                },
-                order,
-                rates,
-                (emit, cancelled),
-            );
-        }
         let mut rows = Vec::new();
         self.segment.visit_rows(
             plan.type_id,
@@ -379,128 +447,6 @@ impl PreparedSnapshot {
         self.emit_rows(&self.segment, plan, rows, rates, emit, cancelled)
     }
 
-    fn emit_bounded_rows<E, C>(
-        &self,
-        source: &Segment,
-        plan: &Plan,
-        window: RowWindow,
-        order: BoundedOrder,
-        rates: RateContext<'_>,
-        output: (&mut E, &C),
-    ) -> Result<bool, ApiError>
-    where
-        E: FnMut(Vec<u8>) -> bool,
-        C: Fn() -> bool,
-    {
-        let (emit, cancelled) = output;
-        let mut selection_ids = HashSet::new();
-        let mut order_ids = HashSet::new();
-        let text_order = is_text_column(plan, order.column);
-        if plan.selection_needs_dictionary() || text_order {
-            source.visit_rows(
-                plan.type_id,
-                &plan.projection,
-                window.start,
-                window.count,
-                |_ordinal, row| {
-                    if cancelled() {
-                        return false;
-                    }
-                    if window
-                        .moment
-                        .is_none_or(|(timestamp, at)| row_timestamp(&row, timestamp) == Some(at))
-                    {
-                        plan.add_selection_ids(&row, &mut selection_ids);
-                        if text_order && let Some(Cell::StrId(id)) = row.get(order.column) {
-                            order_ids.insert(*id);
-                        }
-                    }
-                    true
-                },
-            )?;
-            if cancelled() {
-                return Ok(false);
-            }
-        }
-        selection_ids.extend(order_ids.iter().copied());
-        let selection_dictionary = resolved_dictionary(source, &selection_ids)?;
-        let text_ranks = lexical_ranks(&selection_dictionary, &order_ids);
-        let mut top_rows = TopRows::new(order.limit);
-        let mut eligible = 0_usize;
-        source.visit_rows(
-            plan.type_id,
-            &plan.projection,
-            window.start,
-            window.count,
-            |ordinal, row| {
-                if cancelled() {
-                    return false;
-                }
-                if window
-                    .moment
-                    .is_some_and(|(timestamp, at)| row_timestamp(&row, timestamp) != Some(at))
-                    || !plan.matches(&row, &selection_dictionary)
-                {
-                    return true;
-                }
-                let Some(identity) = identity_of(plan, &row) else {
-                    return true;
-                };
-                eligible += 1;
-                let staged = StagedRow {
-                    ordinal,
-                    row,
-                    identity,
-                };
-                top_rows.push(RankedRow {
-                    value: order_value(plan, order.column, &staged, rates, &text_ranks),
-                    staged,
-                });
-                true
-            },
-        )?;
-        if cancelled() {
-            return Ok(false);
-        }
-        let staged = top_rows.finish();
-        let returned = staged.len();
-        if !self.emit_staged_rows(source, plan, staged, rates, emit, cancelled)? {
-            return Ok(false);
-        }
-        Self::emit_selection(plan, window, order, rates, eligible, returned, emit)
-    }
-
-    fn emit_selection(
-        plan: &Plan,
-        window: RowWindow,
-        order: BoundedOrder,
-        rates: RateContext<'_>,
-        eligible: usize,
-        returned: usize,
-        emit: &mut impl FnMut(Vec<u8>) -> bool,
-    ) -> Result<bool, ApiError> {
-        let (from, to) = window.moment.map_or((None, None), |(_timestamp, current)| {
-            (
-                rates
-                    .elapsed
-                    .and_then(|elapsed| current.checked_sub(elapsed)),
-                Some(current),
-            )
-        });
-        Ok(emit(record(json!({
-            "record": "snapshot_rows",
-            "type_id": plan.type_id.to_string(),
-            "eligible": eligible.to_string(),
-            "returned": returned.to_string(),
-            "truncated": eligible > returned,
-            "limit": order.limit,
-            "order_by": order.column,
-            "order_direction": "desc",
-            "from": from.map(|value: i64| value.to_string()),
-            "to": to.map(|value| value.to_string()),
-        }))?))
-    }
-
     fn emit_rows(
         &self,
         source: &Segment,
@@ -511,7 +457,6 @@ impl PreparedSnapshot {
         cancelled: &impl Fn() -> bool,
     ) -> Result<bool, ApiError> {
         let selection_dictionary = plan.selection_dictionary(source, &rows)?;
-        let order_column = self.order_column(plan);
         let mut staged = Vec::with_capacity(rows.len());
         for (ordinal, row) in rows {
             if !plan.matches(&row, &selection_dictionary) {
@@ -526,21 +471,6 @@ impl PreparedSnapshot {
                 identity,
             });
         }
-        let text_ranks = match order_column.filter(|column| is_text_column(plan, column)) {
-            Some(column) => {
-                let ids = staged
-                    .iter()
-                    .filter_map(|staged| match staged.row.get(column) {
-                        Some(Cell::StrId(id)) => Some(*id),
-                        _ => None,
-                    })
-                    .collect::<HashSet<_>>();
-                let dictionary = resolved_dictionary(source, &ids)?;
-                lexical_ranks(&dictionary, &ids)
-            }
-            None => TextRanks::new(),
-        };
-        self.order_and_truncate(plan, rates, order_column, &text_ranks, &mut staged);
         self.emit_staged_rows(source, plan, staged, rates, emit, cancelled)
     }
 
@@ -572,6 +502,346 @@ impl PreparedSnapshot {
             }
         }
         Ok(true)
+    }
+
+    fn emit_page(
+        &self,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(), ApiError> {
+        let [section] = self.sections.as_slice() else {
+            return Err(ApiError::BadCursor);
+        };
+        for plan in &section.plans {
+            if cancelled() || !Self::emit_layout(section, plan, emit)? {
+                return Ok(());
+            }
+        }
+        let contexts = self.page_contexts(section, cancelled)?;
+        if cancelled() {
+            return Ok(());
+        }
+        let anchor = self
+            .cursor
+            .map(|cursor| self.cursor_anchor(&contexts, cursor))
+            .transpose()?;
+        let page_size = self.page_size.ok_or(ApiError::BadCursor)?;
+        let mut page = PageRows::new(page_size.saturating_add(1));
+        let mut eligible = 0_u64;
+        for context in &contexts {
+            self.scan_page(
+                context,
+                anchor.as_ref(),
+                &mut page,
+                &mut eligible,
+                cancelled,
+            )?;
+            if cancelled() {
+                return Ok(());
+            }
+        }
+        let mut ranked = page.finish();
+        let has_more = ranked.len() > page_size;
+        let next_cursor = has_more.then(|| {
+            let row = &ranked[page_size].staged;
+            SnapshotCursor {
+                segment_id: self.segment.id(),
+                active_position: self.segment.active_position().unwrap_or(0),
+                layout_index: row.layout_index,
+                ordinal: row.ordinal,
+                binding: self.binding,
+            }
+            .encode()
+        });
+        ranked.truncate(page_size);
+        let returned = ranked.len();
+        if !self.emit_page_rows(section, &contexts, ranked, emit, cancelled)? {
+            return Ok(());
+        }
+        Self::emit_page_trailer(
+            section,
+            &contexts,
+            &PageMetadata {
+                eligible,
+                returned,
+                has_more,
+                next_cursor,
+                page_size,
+            },
+            emit,
+        )?;
+        Ok(())
+    }
+
+    fn emit_page_rows(
+        &self,
+        section: &SectionPlans,
+        contexts: &[PageContext<'_>],
+        ranked: Vec<PageRankedRow>,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<bool, ApiError> {
+        let mut ids_by_layout = (0..section.plans.len())
+            .map(|_| HashSet::new())
+            .collect::<Vec<_>>();
+        for ranked in &ranked {
+            for (_name, value) in ranked.staged.row.iter() {
+                if let Cell::StrId(id) = value {
+                    ids_by_layout[ranked.staged.layout_index].insert(*id);
+                }
+            }
+        }
+        let dictionaries = contexts
+            .iter()
+            .map(|context| {
+                resolved_dictionary(context.source, &ids_by_layout[context.layout_index])
+                    .map(|dictionary| (context.layout_index, dictionary))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
+        for ranked in ranked {
+            let context = contexts
+                .iter()
+                .find(|context| context.layout_index == ranked.staged.layout_index)
+                .ok_or(ApiError::BadCursor)?;
+            let dictionary = dictionaries
+                .get(&context.layout_index)
+                .ok_or(ApiError::BadCursor)?;
+            let before = context
+                .previous
+                .as_ref()
+                .and_then(|previous| previous.get(&ranked.staged.identity));
+            let value = Self::row_record(
+                context.plan,
+                &ranked.staged.row,
+                before,
+                context.elapsed,
+                ranked.staged.ordinal,
+                dictionary,
+                self.text,
+            )?;
+            if cancelled() || !emit(record(&value)?) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn emit_page_trailer(
+        section: &SectionPlans,
+        contexts: &[PageContext<'_>],
+        metadata: &PageMetadata,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+    ) -> Result<(), ApiError> {
+        let mut order_by = Vec::new();
+        for context in contexts {
+            if let Some(column) = context.order_column
+                && !order_by.contains(&column)
+            {
+                order_by.push(column);
+            }
+        }
+        let from = contexts
+            .iter()
+            .filter_map(|context| {
+                context.window.moment.and_then(|(_timestamp, current)| {
+                    context
+                        .elapsed
+                        .and_then(|elapsed| current.checked_sub(elapsed))
+                })
+            })
+            .min();
+        let to = contexts
+            .iter()
+            .filter_map(|context| context.window.moment.map(|(_timestamp, current)| current))
+            .max();
+        let _connected = emit(record(json!({
+            "record": "snapshot_page",
+            "logical_name": section.logical_name,
+            "eligible": metadata.eligible.to_string(),
+            "returned": metadata.returned.to_string(),
+            "has_more": metadata.has_more,
+            "truncated": metadata.eligible > metadata.returned as u64,
+            "next_cursor": metadata.next_cursor,
+            "page_size": metadata.page_size,
+            "order_by": order_by,
+            "order_direction": "desc",
+            "from": from.map(|value| value.to_string()),
+            "to": to.map(|value| value.to_string()),
+        }))?);
+        Ok(())
+    }
+
+    fn page_contexts<'a>(
+        &'a self,
+        section: &'a SectionPlans,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Vec<PageContext<'a>>, ApiError> {
+        let mut contexts = Vec::with_capacity(section.plans.len());
+        for (layout_index, plan) in section.plans.iter().enumerate() {
+            if !plan.applies() || cancelled() {
+                continue;
+            }
+            let order_column = self.order_column(plan);
+            let columns = search_columns(&section.logical_name, plan);
+            let Some(timestamp) = plan.timestamp else {
+                contexts.push(PageContext {
+                    layout_index,
+                    plan,
+                    source: &self.segment,
+                    rows: self.segment.rows_of(plan.type_id).unwrap_or(0),
+                    window: RowWindow { moment: None },
+                    previous: None,
+                    elapsed: None,
+                    order_column,
+                    search_columns: columns,
+                });
+                continue;
+            };
+            let here = Self::moments(&self.segment, plan, timestamp, self.at, cancelled)?;
+            let own = here.is_some();
+            let source = if own {
+                &self.segment
+            } else if let Some(earlier) = self.earlier.as_ref() {
+                earlier
+            } else {
+                continue;
+            };
+            let Some(moments) = (if own {
+                here
+            } else {
+                Self::moments(source, plan, timestamp, self.at, cancelled)?
+            }) else {
+                continue;
+            };
+            let (previous, before_at) = match moments.previous {
+                Some(previous) => (
+                    Self::collect(source, plan, timestamp, previous, order_column, cancelled)?,
+                    Some(previous),
+                ),
+                None if own => self.earlier_moment(plan, timestamp, order_column, cancelled)?,
+                None => (Readings::new(), None),
+            };
+            let elapsed = moments
+                .current
+                .checked_sub(before_at.unwrap_or(moments.current))
+                .filter(|delta| *delta > 0);
+            contexts.push(PageContext {
+                layout_index,
+                plan,
+                source,
+                rows: source.rows_of(plan.type_id).unwrap_or(0),
+                window: RowWindow {
+                    moment: Some((timestamp, moments.current)),
+                },
+                previous: Some(previous),
+                elapsed,
+                order_column,
+                search_columns: columns,
+            });
+        }
+        Ok(contexts)
+    }
+
+    fn cursor_anchor(
+        &self,
+        contexts: &[PageContext<'_>],
+        cursor: SnapshotCursor,
+    ) -> Result<PageRankedRow, ApiError> {
+        let context = contexts
+            .iter()
+            .find(|context| context.layout_index == cursor.layout_index)
+            .ok_or(ApiError::BadCursor)?;
+        if cursor.ordinal >= context.rows {
+            return Err(ApiError::BadCursor);
+        }
+        let mut stored = None;
+        context.source.visit_rows(
+            context.plan.type_id,
+            &context.plan.projection,
+            cursor.ordinal,
+            1,
+            |ordinal, row| {
+                stored = Some((ordinal, row));
+                false
+            },
+        )?;
+        let (ordinal, row) = stored.ok_or(ApiError::BadCursor)?;
+        let dictionary = page_dictionary(context, std::slice::from_ref(&(ordinal, row.clone())))?;
+        self.page_candidate(context, ordinal, row, &dictionary)
+            .ok_or(ApiError::BadCursor)
+    }
+
+    fn scan_page(
+        &self,
+        context: &PageContext<'_>,
+        anchor: Option<&PageRankedRow>,
+        page: &mut PageRows,
+        eligible: &mut u64,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(), ApiError> {
+        let mut offset = 0;
+        while offset < context.rows && !cancelled() {
+            let remaining = context.rows.saturating_sub(offset);
+            let limit = usize::try_from(remaining.min(SNAPSHOT_CHUNK_ROWS as u64))
+                .map_err(|_overflow| ApiError::BadCursor)?;
+            let mut chunk = Vec::with_capacity(limit);
+            context.source.visit_rows(
+                context.plan.type_id,
+                &context.plan.projection,
+                offset,
+                limit,
+                |ordinal, row| {
+                    chunk.push((ordinal, row));
+                    !cancelled()
+                },
+            )?;
+            if cancelled() {
+                return Ok(());
+            }
+            let dictionary = page_dictionary(context, &chunk)?;
+            for (ordinal, row) in chunk {
+                let Some(candidate) = self.page_candidate(context, ordinal, row, &dictionary)
+                else {
+                    continue;
+                };
+                *eligible = eligible.saturating_add(1);
+                if anchor.is_none_or(|anchor| candidate.cmp(anchor) != Ordering::Greater) {
+                    page.push(candidate);
+                }
+            }
+            offset = offset.saturating_add(limit as u64);
+        }
+        Ok(())
+    }
+
+    fn page_candidate(
+        &self,
+        context: &PageContext<'_>,
+        ordinal: u64,
+        row: Row,
+        dictionary: &Dictionary,
+    ) -> Option<PageRankedRow> {
+        if context
+            .window
+            .moment
+            .is_some_and(|(timestamp, at)| row_timestamp(&row, timestamp) != Some(at))
+            || !context.plan.matches(&row, dictionary)
+            || !self.search.is_empty()
+                && !search_matches(&row, dictionary, &context.search_columns, &self.search)
+        {
+            return None;
+        }
+        let identity = identity_of(context.plan, &row)?;
+        let value = page_order_value(context, &row, &identity, dictionary);
+        Some(PageRankedRow {
+            staged: PageStagedRow {
+                layout_index: context.layout_index,
+                ordinal,
+                row,
+                identity,
+            },
+            value,
+        })
     }
 
     fn moments(
@@ -623,10 +893,21 @@ impl PreparedSnapshot {
         plan: &Plan,
         timestamp: &'static str,
         at: i64,
+        extra_counter: Option<&'static str>,
         cancelled: &impl Fn() -> bool,
     ) -> Result<Readings, ApiError> {
         let mut collected = BTreeMap::new();
         let counters = rate_columns(plan);
+        let mut counters = counters;
+        if let Some(column) = extra_counter
+            && plan
+                .contract
+                .column(column)
+                .is_some_and(|declared| declared.class == ColumnClass::Cumulative)
+            && !counters.contains(&column)
+        {
+            counters.push(column);
+        }
         if counters.is_empty() {
             return Ok(collected);
         }
@@ -668,6 +949,7 @@ impl PreparedSnapshot {
         &self,
         plan: &Plan,
         timestamp: &'static str,
+        extra_counter: Option<&'static str>,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(Readings, Option<i64>), ApiError> {
         let Some(earlier) = self.earlier.as_ref() else {
@@ -695,7 +977,7 @@ impl PreparedSnapshot {
             return Ok((BTreeMap::new(), None));
         };
         Ok((
-            Self::collect(earlier, plan, timestamp, at, cancelled)?,
+            Self::collect(earlier, plan, timestamp, at, extra_counter, cancelled)?,
             Some(at),
         ))
     }
@@ -744,45 +1026,7 @@ impl PreparedSnapshot {
     }
 }
 
-fn compare_staged(
-    plan: &Plan,
-    column: &'static str,
-    left: &StagedRow,
-    right: &StagedRow,
-    rates: RateContext<'_>,
-    text_ranks: &TextRanks,
-) -> Ordering {
-    compare_order_values(
-        order_value(plan, column, left, rates, text_ranks),
-        order_value(plan, column, right, rates, text_ranks),
-    )
-}
-
-fn order_value(
-    plan: &Plan,
-    column: &'static str,
-    staged: &StagedRow,
-    rates: RateContext<'_>,
-    text_ranks: &TextRanks,
-) -> Option<OrderValue> {
-    let stored = staged.row.get(column)?;
-    let cumulative = plan
-        .contract
-        .column(column)
-        .is_some_and(|declared| declared.class == ColumnClass::Cumulative);
-    if cumulative {
-        rates.elapsed?;
-        let earlier = rates.previous?.get(&staged.identity)?.get(column)?;
-        counter_delta(stored, earlier).map(OrderValue::Number)
-    } else {
-        match stored {
-            Cell::StrId(id) => text_ranks.get(id).copied().map(OrderValue::Text),
-            _ => ordered_cell(stored).map(OrderValue::Number),
-        }
-    }
-}
-
-impl TopRows {
+impl PageRows {
     const fn new(limit: usize) -> Self {
         Self {
             limit,
@@ -790,7 +1034,7 @@ impl TopRows {
         }
     }
 
-    fn push(&mut self, row: RankedRow) {
+    fn push(&mut self, row: PageRankedRow) {
         if self.limit == 0 {
             return;
         }
@@ -807,10 +1051,10 @@ impl TopRows {
         }
     }
 
-    fn finish(self) -> Vec<StagedRow> {
-        let mut rows: Vec<RankedRow> = self.rows.into_iter().map(|Reverse(row)| row).collect();
+    fn finish(self) -> Vec<PageRankedRow> {
+        let mut rows: Vec<PageRankedRow> = self.rows.into_iter().map(|Reverse(row)| row).collect();
         rows.sort_by(|left, right| right.cmp(left));
-        rows.into_iter().map(|row| row.staged).collect()
+        rows
     }
 
     #[cfg(test)]
@@ -819,39 +1063,58 @@ impl TopRows {
     }
 }
 
-impl PartialEq for RankedRow {
+impl PartialEq for PageRankedRow {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
     }
 }
 
-impl Eq for RankedRow {}
+impl Eq for PageRankedRow {}
 
-impl PartialOrd for RankedRow {
+impl PartialOrd for PageRankedRow {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for RankedRow {
+impl Ord for PageRankedRow {
     fn cmp(&self, other: &Self) -> Ordering {
-        compare_order_values(self.value, other.value)
+        compare_page_order_values(self.value.as_ref(), other.value.as_ref())
+            .then_with(|| other.staged.layout_index.cmp(&self.staged.layout_index))
             .then_with(|| other.staged.ordinal.cmp(&self.staged.ordinal))
     }
 }
 
-fn compare_order_values(left: Option<OrderValue>, right: Option<OrderValue>) -> Ordering {
+fn compare_page_order_values(
+    left: Option<&PageOrderValue>,
+    right: Option<&PageOrderValue>,
+) -> Ordering {
     match (left, right) {
-        (Some(OrderValue::Number(left)), Some(OrderValue::Number(right))) => {
-            compare_ordered(Some(left), Some(right))
+        (Some(PageOrderValue::Integer(left)), Some(PageOrderValue::Integer(right))) => {
+            left.cmp(right)
         }
-        (Some(OrderValue::Text(left)), Some(OrderValue::Text(right))) => left.cmp(&right),
+        (Some(PageOrderValue::Float(left)), Some(PageOrderValue::Float(right)))
+        | (Some(PageOrderValue::FloatRate(left)), Some(PageOrderValue::FloatRate(right))) => {
+            left.partial_cmp(right).unwrap_or(Ordering::Equal)
+        }
+        (
+            Some(PageOrderValue::IntegerRate {
+                delta: left,
+                elapsed: left_elapsed,
+            }),
+            Some(PageOrderValue::IntegerRate {
+                delta: right,
+                elapsed: right_elapsed,
+            }),
+        ) => (left * i128::from(*right_elapsed)).cmp(&(right * i128::from(*left_elapsed))),
+        (Some(PageOrderValue::Text(left)), Some(PageOrderValue::Text(right))) => left.cmp(right),
         (Some(_), Some(_)) | (None, None) => Ordering::Equal,
         (Some(_), None) => Ordering::Greater,
         (None, Some(_)) => Ordering::Less,
     }
 }
 
+#[cfg(test)]
 fn compare_ordered(left: Option<OrderedNumber>, right: Option<OrderedNumber>) -> Ordering {
     match (left, right) {
         (Some(OrderedNumber::Integer(left)), Some(OrderedNumber::Integer(right))) => {
@@ -879,49 +1142,269 @@ fn ordered_cell(cell: &Cell) -> Option<OrderedNumber> {
     }
 }
 
-type TextRanks = HashMap<u64, u64>;
-
-#[derive(Clone, Copy)]
-enum OrderValue {
-    Number(OrderedNumber),
-    Text(u64),
-}
-
-fn is_text_column(plan: &Plan, column: &'static str) -> bool {
-    plan.contract
-        .column(column)
-        .is_some_and(|declared| declared.ty == ColumnType::StrId)
-}
-
-/// Assign equal stored text equal ranks without copying it into every row.
-fn lexical_ranks(dictionary: &Dictionary, ids: &HashSet<u64>) -> TextRanks {
-    let mut values = ids
-        .iter()
-        .filter_map(|id| {
-            dictionary
-                .resolve(*id)
-                .map(|resolved| (*id, stored_bytes(resolved)))
-        })
-        .collect::<Vec<_>>();
-    values.sort_unstable_by(|left, right| left.1.cmp(right.1).then_with(|| left.0.cmp(&right.0)));
-
-    let mut ranks = TextRanks::with_capacity(values.len());
-    let mut rank = 0_u64;
-    let mut previous: Option<&[u8]> = None;
-    for (id, bytes) in values {
-        if previous.is_some_and(|previous| previous != bytes) {
-            rank = rank.saturating_add(1);
-        }
-        ranks.insert(id, rank);
-        previous = Some(bytes);
-    }
-    ranks
-}
-
 const fn stored_bytes(resolved: Resolved<'_>) -> &[u8] {
     match resolved {
         Resolved::Str(bytes) => bytes,
         Resolved::Blob(blob) => blob.stored_bytes,
+    }
+}
+
+fn page_dictionary(context: &PageContext<'_>, rows: &[(u64, Row)]) -> Result<Dictionary, ApiError> {
+    let mut ids = HashSet::new();
+    for (_ordinal, row) in rows {
+        if context
+            .window
+            .moment
+            .is_some_and(|(timestamp, at)| row_timestamp(row, timestamp) != Some(at))
+        {
+            continue;
+        }
+        context.plan.add_selection_ids(row, &mut ids);
+        for column in context
+            .search_columns
+            .iter()
+            .copied()
+            .chain(context.order_column)
+        {
+            if let Some(Cell::StrId(id)) = row.get(column) {
+                ids.insert(*id);
+            }
+        }
+    }
+    resolved_dictionary(context.source, &ids)
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "an interval of 2^52 microseconds is 142 years"
+)]
+fn page_order_value(
+    context: &PageContext<'_>,
+    row: &Row,
+    identity: &[IdentityCell],
+    dictionary: &Dictionary,
+) -> Option<PageOrderValue> {
+    let column = context.order_column?;
+    let stored = row.get(column)?;
+    let cumulative = context
+        .plan
+        .contract
+        .column(column)
+        .is_some_and(|declared| declared.class == ColumnClass::Cumulative);
+    if cumulative {
+        let elapsed = context.elapsed?;
+        let earlier = context.previous.as_ref()?.get(identity)?.get(column)?;
+        return match counter_delta(stored, earlier)? {
+            OrderedNumber::Integer(delta) => Some(PageOrderValue::IntegerRate { delta, elapsed }),
+            OrderedNumber::Float(delta) => {
+                let seconds = elapsed as f64 / 1_000_000.0;
+                let rate = delta / seconds;
+                rate.is_finite().then_some(PageOrderValue::FloatRate(rate))
+            }
+        };
+    }
+    match stored {
+        Cell::StrId(id) => dictionary
+            .resolve(*id)
+            .map(stored_bytes)
+            .map(<[u8]>::to_vec)
+            .map(PageOrderValue::Text),
+        _ => match ordered_cell(stored)? {
+            OrderedNumber::Integer(value) => Some(PageOrderValue::Integer(value)),
+            OrderedNumber::Float(value) => Some(PageOrderValue::Float(value)),
+        },
+    }
+}
+
+fn search_columns(logical_name: &str, plan: &Plan) -> Vec<&'static str> {
+    let allowed: &[&str] = match logical_name {
+        "pg_stat_statements" => &[
+            "query", "queryid", "dbid", "userid", "datname", "usename", "toplevel",
+        ],
+        "pg_store_plans" => &[
+            "plan",
+            "planid",
+            "queryid",
+            "queryid_stat_statements",
+            "dbid",
+            "userid",
+            "datname",
+            "usename",
+        ],
+        _ => &[],
+    };
+    plan.fields
+        .iter()
+        .filter_map(|field| field.column.filter(|column| allowed.contains(column)))
+        .collect()
+}
+
+fn search_matches(
+    row: &Row,
+    dictionary: &Dictionary,
+    columns: &[&'static str],
+    patterns: &[GlobPattern],
+) -> bool {
+    columns.iter().any(|column| {
+        row.get(column)
+            .and_then(|value| searchable_text(value, dictionary))
+            .is_some_and(|text| patterns.iter().any(|pattern| pattern.matches(&text)))
+    })
+}
+
+fn searchable_text(value: &Cell, dictionary: &Dictionary) -> Option<String> {
+    match value {
+        Cell::I16(value) => Some(value.to_string()),
+        Cell::I32(value) => Some(value.to_string()),
+        Cell::I64(value) | Cell::Ts(value) => Some(value.to_string()),
+        Cell::U32(value) => Some(value.to_string()),
+        Cell::U64(value) => Some(value.to_string()),
+        Cell::F64(value) if value.is_finite() => Some(value.to_string()),
+        Cell::Bool(value) => Some(value.to_string()),
+        Cell::StrId(id) => dictionary
+            .resolve(*id)
+            .and_then(|resolved| std::str::from_utf8(stored_bytes(resolved)).ok())
+            .map(ToOwned::to_owned),
+        Cell::Null | Cell::ListI32(_) | Cell::F64(_) => None,
+    }
+}
+
+impl GlobPattern {
+    fn new(raw: &str) -> Self {
+        let mut tokens = vec![GlobToken::Star];
+        for character in raw.chars() {
+            let token = match character {
+                '*' => GlobToken::Star,
+                '?' => GlobToken::Any,
+                literal => GlobToken::Literal(literal),
+            };
+            if token != GlobToken::Star || tokens.last() != Some(&GlobToken::Star) {
+                tokens.push(token);
+            }
+        }
+        if tokens.last() != Some(&GlobToken::Star) {
+            tokens.push(GlobToken::Star);
+        }
+        Self(tokens)
+    }
+
+    fn matches(&self, candidate: &str) -> bool {
+        let candidate = candidate.chars().collect::<Vec<_>>();
+        let mut pattern_index = 0;
+        let mut candidate_index = 0;
+        let mut star = None;
+        let mut retry = 0;
+        while candidate_index < candidate.len() {
+            match self.0.get(pattern_index) {
+                Some(GlobToken::Literal(wanted))
+                    if unicode_char_equal(*wanted, candidate[candidate_index]) =>
+                {
+                    pattern_index += 1;
+                    candidate_index += 1;
+                }
+                Some(GlobToken::Any) => {
+                    pattern_index += 1;
+                    candidate_index += 1;
+                }
+                Some(GlobToken::Star) => {
+                    star = Some(pattern_index);
+                    pattern_index += 1;
+                    retry = candidate_index;
+                }
+                _ if star.is_some() => {
+                    retry += 1;
+                    candidate_index = retry;
+                    pattern_index = star.unwrap_or(0) + 1;
+                }
+                _ => return false,
+            }
+        }
+        while self.0.get(pattern_index) == Some(&GlobToken::Star) {
+            pattern_index += 1;
+        }
+        pattern_index == self.0.len()
+    }
+}
+
+fn unicode_char_equal(left: char, right: char) -> bool {
+    left.to_lowercase().eq(right.to_lowercase())
+}
+
+impl SnapshotCursor {
+    fn parse(raw: &str) -> Result<Self, ApiError> {
+        let fields = raw.split(',').collect::<Vec<_>>();
+        if fields.len() != 5 {
+            return Err(ApiError::BadCursor);
+        }
+        Ok(Self {
+            segment_id: fields[0].parse().map_err(|_error| ApiError::BadCursor)?,
+            active_position: fields[1].parse().map_err(|_error| ApiError::BadCursor)?,
+            layout_index: fields[2].parse().map_err(|_error| ApiError::BadCursor)?,
+            ordinal: fields[3].parse().map_err(|_error| ApiError::BadCursor)?,
+            binding: fields[4].parse().map_err(|_error| ApiError::BadCursor)?,
+        })
+    }
+
+    fn encode(self) -> String {
+        format!(
+            "{},{},{},{},{}",
+            self.segment_id, self.active_position, self.layout_index, self.ordinal, self.binding
+        )
+    }
+}
+
+fn pin(current: SegmentRef, cursor: Option<SnapshotCursor>) -> Result<SegmentRef, ApiError> {
+    let Some(cursor) = cursor else {
+        return Ok(current);
+    };
+    match current.kind() {
+        SegmentKind::Finished if cursor.active_position == 0 => Ok(current),
+        SegmentKind::Active => current
+            .at_active_position(cursor.active_position)
+            .map_err(|_error| ApiError::BadCursor),
+        SegmentKind::Finished => Err(ApiError::BadCursor),
+    }
+}
+
+fn snapshot_binding(request: &SnapshotRequest) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    hash_part(&mut hash, b"segment", &request.segment_id.to_le_bytes());
+    hash_part(&mut hash, b"at", &request.at.to_le_bytes());
+    for section in &request.sections {
+        hash_part(&mut hash, b"section", section.as_bytes());
+    }
+    if let Some(type_id) = request.type_id {
+        hash_part(&mut hash, b"type", &type_id.to_le_bytes());
+    }
+    for field in &request.fields {
+        hash_part(&mut hash, b"field", field.as_bytes());
+    }
+    if let Some(text) = request.text {
+        hash_part(&mut hash, b"text", &text.to_le_bytes());
+    }
+    for filter in &request.filters {
+        hash_part(&mut hash, b"filter-column", filter.column.as_bytes());
+        hash_part(&mut hash, b"filter-value", filter.value.as_bytes());
+    }
+    for search in &request.search {
+        hash_part(&mut hash, b"search", search.as_bytes());
+    }
+    for by in &request.by {
+        hash_part(&mut hash, b"by", by.as_bytes());
+    }
+    hash_part(&mut hash, b"direction", b"desc");
+    hash
+}
+
+fn hash_part(hash: &mut u64, tag: &[u8], bytes: &[u8]) {
+    hash_bytes(hash, tag);
+    hash_bytes(hash, bytes);
+}
+
+fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
+    for byte in bytes.len().to_le_bytes().iter().chain(bytes) {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
 }
 
@@ -937,6 +1420,7 @@ fn retained_dictionary(segment: &Segment, rows: &[StagedRow]) -> Result<Dictiona
     resolved_dictionary(segment, &ids)
 }
 
+#[cfg(test)]
 fn available_field_index(fields: &[super::query::OutputField], name: &str) -> Option<usize> {
     fields
         .iter()

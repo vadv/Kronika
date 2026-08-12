@@ -16,6 +16,7 @@ use kronika_registry::os_psi::OsPsi;
 use kronika_registry::pg_log::PgLogErrors;
 use kronika_registry::pg_stat_activity::PgStatActivityV3;
 use kronika_registry::pg_stat_statements::PgStatStatementsV2;
+use kronika_registry::pg_store_plans::PgStorePlansOsscV1;
 use kronika_registry::{StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use serde_json::Value;
@@ -279,6 +280,64 @@ impl Fixture {
             .expect("append finding rows");
     }
 
+    fn append_statement_universe(&mut self, rows: i64) {
+        let mut interner = Interner::new(DictLimits::default());
+        let mut buffers = SectionBuffers::new();
+        for queryid in 0..rows {
+            let text = if queryid == 0 {
+                "owner blocker-needle outside page one".to_owned()
+            } else {
+                format!("fixture statement {queryid}")
+            };
+            let query = StrId(
+                interner
+                    .intern(text.as_bytes())
+                    .expect("intern statement text")
+                    .get(),
+            );
+            let mut row = statement(100, 1, 1.0, query);
+            row.queryid = Some(queryid);
+            buffers.push(row).expect("statement row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("statement dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode statements")
+            .expect("nonempty statements");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append statements");
+    }
+
+    fn append_plan_universe(&mut self, rows: i64) {
+        let mut interner = Interner::new(DictLimits::default());
+        let mut buffers = SectionBuffers::new();
+        for queryid in 0..rows {
+            let text = if queryid == 0 {
+                "owner plan-needle outside page one".to_owned()
+            } else {
+                format!("fixture plan {queryid}")
+            };
+            let plan_text = StrId(
+                interner
+                    .intern(text.as_bytes())
+                    .expect("intern plan text")
+                    .get(),
+            );
+            buffers
+                .push(store_plan(100, queryid, plan_text))
+                .expect("plan row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("plan dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode plans")
+            .expect("nonempty plans");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append plans");
+    }
+
     fn append_log_error(&mut self, at: i64) {
         let mut interner = Interner::new(DictLimits::default());
         let label = StrId(interner.intern(b"fixture").expect("intern label").get());
@@ -480,6 +539,44 @@ fn statement(ts: i64, calls: i64, total_exec_time: f64, label: StrId) -> PgStatS
         wal_records: 0,
         wal_fpi: 0,
         wal_bytes: 0,
+    }
+}
+
+fn store_plan(ts: i64, queryid: i64, plan: StrId) -> PgStorePlansOsscV1 {
+    PgStorePlansOsscV1 {
+        ts: Ts(ts),
+        queryid,
+        planid: -7,
+        userid: 10,
+        dbid: 11,
+        datname: None,
+        usename: None,
+        plan: Some(plan),
+        calls: 4,
+        total_time: 99.5,
+        min_time: 1.0,
+        max_time: 50.0,
+        mean_time: 24.9,
+        stddev_time: 2.2,
+        rows: 40,
+        shared_blks_hit: 1,
+        shared_blks_read: 2,
+        shared_blks_dirtied: 3,
+        shared_blks_written: 4,
+        local_blks_hit: 5,
+        local_blks_read: 6,
+        local_blks_dirtied: 7,
+        local_blks_written: 8,
+        temp_blks_read: 9,
+        temp_blks_written: 10,
+        shared_blk_read_time: 1.5,
+        shared_blk_write_time: 2.5,
+        local_blk_read_time: 3.5,
+        local_blk_write_time: 4.5,
+        temp_blk_read_time: 5.5,
+        temp_blk_write_time: 6.5,
+        first_call: Ts(ts - 1_000),
+        last_call: Ts(ts - 1),
     }
 }
 
@@ -1294,7 +1391,7 @@ fn snapshot_cache_policy_tracks_active_and_finished_inputs() {
 }
 
 #[test]
-fn a_snapshot_orders_by_a_column_and_returns_only_the_top_of_it() {
+fn a_snapshot_orders_by_a_column_and_returns_one_page() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[
         (100, 0, 1),
@@ -1307,7 +1404,7 @@ fn a_snapshot_orders_by_a_column_and_returns_only_the_top_of_it() {
     fixture.finish();
 
     let target = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_diskstats&field=major&field=minor&by=minor&top=2"
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_diskstats&field=major&field=minor&by=minor&page_size=2"
     );
     let records = stream(fixture.prepare(&target, None)).expect("ordered snapshot");
     let minors = records
@@ -1321,13 +1418,15 @@ fn a_snapshot_orders_by_a_column_and_returns_only_the_top_of_it() {
     );
     let selection = records
         .iter()
-        .find(|record| record["record"] == "snapshot_rows")
+        .find(|record| record["record"] == "snapshot_page")
         .expect("snapshot row counts");
     assert_eq!(selection["eligible"], "3");
     assert_eq!(selection["returned"], "2");
     assert_eq!(selection["truncated"], true);
-    assert_eq!(selection["limit"], 2);
-    assert_eq!(selection["order_by"], "minor");
+    assert_eq!(selection["page_size"], 2);
+    assert_eq!(selection["has_more"], true);
+    assert!(selection["next_cursor"].is_string());
+    assert_eq!(selection["order_by"], serde_json::json!(["minor"]));
     assert_eq!(selection["order_direction"], "desc");
     assert_eq!(selection["from"], "100");
     assert_eq!(selection["to"], "200");
@@ -1340,7 +1439,7 @@ fn a_snapshot_orders_stored_text_lexicographically_and_breaks_ties_by_ordinal() 
     fixture.finish();
 
     let target = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=os_diskstats&field=minor&field=device&by=device&top=3"
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=os_diskstats&field=minor&field=device&by=device&page_size=3"
     );
     let records = stream(fixture.prepare(&target, None)).expect("text-ranked snapshot");
     let values = row_records(&records)
@@ -1357,14 +1456,14 @@ fn a_snapshot_orders_stored_text_lexicographically_and_breaks_ties_by_ordinal() 
     );
     let selection = records
         .iter()
-        .find(|record| record["record"] == "snapshot_rows")
+        .find(|record| record["record"] == "snapshot_page")
         .expect("snapshot row counts");
     assert_eq!(selection["from"], Value::Null);
     assert_eq!(selection["to"], "100");
 }
 
 #[test]
-fn a_snapshot_ranks_counter_rates_before_applying_top() {
+fn a_snapshot_ranks_counter_rates_before_slicing_a_page() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[
         (100, 0, 1),
@@ -1377,7 +1476,7 @@ fn a_snapshot_ranks_counter_rates_before_applying_top() {
     fixture.finish();
 
     let target = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_diskstats&field=minor&field=reads&by=reads&top=2"
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_diskstats&field=minor&field=reads&by=reads&page_size=2"
     );
     let records = stream(fixture.prepare(&target, None)).expect("counter-ranked snapshot");
     let values = row_records(&records)
@@ -1394,13 +1493,295 @@ fn a_snapshot_ranks_counter_rates_before_applying_top() {
 }
 
 #[test]
-fn snapshot_resolves_text_only_after_top_rows_are_selected() {
+fn snapshot_pages_with_tied_rates_have_no_duplicates_or_omissions() {
+    let mut fixture = Fixture::new();
+    let mut rows = Vec::new();
+    for minor in 0..5 {
+        rows.push((100, minor, 10));
+        rows.push((200, minor, 11));
+    }
+    fixture.append_diskstats(&rows);
+    fixture.finish();
+
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_diskstats&field=minor&field=reads&by=reads&page_size=2"
+    );
+    let mut cursor = None;
+    let mut seen = Vec::new();
+    let mut pages = 0;
+    loop {
+        let target = cursor
+            .as_ref()
+            .map_or_else(|| base.clone(), |cursor| format!("{base}&cursor={cursor}"));
+        let records = stream(fixture.prepare(&target, None)).expect("snapshot page");
+        let page = records
+            .iter()
+            .find(|record| record["record"] == "snapshot_page")
+            .expect("page trailer");
+        let page_rows = row_records(&records);
+        assert_eq!(page["eligible"], "5");
+        assert_eq!(page["returned"], page_rows.len().to_string());
+        assert_eq!(page["truncated"], page_rows.len() < 5);
+        for row in page_rows {
+            let ordinal = row["ordinal"].as_str().expect("ordinal").to_owned();
+            assert!(!seen.contains(&ordinal), "a cursor must not repeat a row");
+            seen.push(ordinal);
+        }
+        pages += 1;
+        cursor = page["next_cursor"].as_str().map(ToOwned::to_owned);
+        assert_eq!(page["has_more"], cursor.is_some());
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(pages, 3);
+    assert_eq!(seen, ["1", "3", "5", "7", "9"]);
+}
+
+#[test]
+fn active_snapshot_cursor_pins_the_original_wal_prefix() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 1), (100, 1, 1), (100, 2, 1)]);
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=os_diskstats&field=minor&by=minor&page_size=2"
+    );
+    let first = stream(fixture.prepare(&base, None)).expect("first active page");
+    let cursor = first
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .and_then(|page| page["next_cursor"].as_str())
+        .expect("active cursor")
+        .to_owned();
+
+    fixture.append_diskstats(&[(100, 3, 1), (100, 4, 1)]);
+    let continued = stream(fixture.prepare(&format!("{base}&cursor={cursor}"), None))
+        .expect("pinned active page");
+    assert_eq!(row_records(&continued)[0]["values"], serde_json::json!([0]));
+    let page = continued
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("continued page trailer");
+    assert_eq!(page["eligible"], "3");
+    assert_eq!(page["returned"], "1");
+    assert_eq!(page["has_more"], false);
+
+    let fresh = stream(fixture.prepare(&base, None)).expect("fresh active page");
+    let page = fresh
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("fresh page trailer");
+    assert_eq!(page["eligible"], "5");
+}
+
+#[test]
+fn exact_large_deltas_resets_and_missing_predecessors_survive_pages() {
+    let mut fixture = Fixture::new();
+    let base = 1_i64 << 53;
+    fixture.append_diskstats(&[
+        (100, 0, base),
+        (200, 0, base + 1),
+        (100, 1, base),
+        (200, 1, base + 2),
+        (100, 2, 20),
+        (200, 2, 10),
+        (200, 3, 7),
+    ]);
+    fixture.finish();
+
+    let base_target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_diskstats&field=minor&field=reads&by=reads&page_size=2"
+    );
+    let first = stream(fixture.prepare(&base_target, None)).expect("first exact page");
+    assert_eq!(
+        row_records(&first)
+            .into_iter()
+            .map(|row| row["values"].clone())
+            .collect::<Vec<_>>(),
+        [
+            serde_json::json!([1, 20_000.0]),
+            serde_json::json!([0, 10_000.0]),
+        ]
+    );
+    let cursor = first
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .and_then(|page| page["next_cursor"].as_str())
+        .expect("second page cursor");
+    let second = stream(fixture.prepare(&format!("{base_target}&cursor={cursor}"), None))
+        .expect("second exact page");
+    assert_eq!(
+        row_records(&second)
+            .into_iter()
+            .map(|row| row["values"].clone())
+            .collect::<Vec<_>>(),
+        [serde_json::json!([2, null]), serde_json::json!([3, null])]
+    );
+}
+
+#[test]
+fn statement_search_finds_a_match_outside_the_old_first_two_hundred() {
+    let mut fixture = Fixture::new();
+    fixture.append_statement_universe(205);
+    fixture.finish();
+
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=pg_stat_statements&field=queryid&field=query&by=queryid&page_size=200"
+    );
+    let first = stream(fixture.prepare(&base, None)).expect("first statement page");
+    let rows = row_records(&first);
+    assert_eq!(rows.len(), 200);
+    assert!(rows.iter().all(|row| row["values"][0] != "0"));
+    let page = first
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("statement page trailer");
+    assert_eq!(page["eligible"], "205");
+    assert_eq!(page["has_more"], true);
+
+    let searched = stream(fixture.prepare(&format!("{base}&search=OWNER*BLOCKER%3FNEEDLE"), None))
+        .expect("server-side statement search");
+    let rows = row_records(&searched);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"][0], "0");
+    let page = searched
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("search page trailer");
+    assert_eq!(page["eligible"], "1");
+    assert_eq!(page["returned"], "1");
+    assert_eq!(page["has_more"], false);
+    assert_eq!(page["truncated"], false);
+}
+
+#[test]
+fn plan_search_finds_a_match_outside_the_old_first_two_hundred() {
+    let mut fixture = Fixture::new();
+    fixture.append_plan_universe(205);
+    fixture.finish();
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=pg_store_plans&field=queryid&field=plan&by=queryid&page_size=200"
+    );
+    let first = stream(fixture.prepare(&base, None)).expect("first plan page");
+    assert_eq!(row_records(&first).len(), 200);
+    assert!(
+        row_records(&first)
+            .iter()
+            .all(|row| row["values"][0] != "0")
+    );
+
+    let searched = stream(fixture.prepare(&format!("{base}&search=PLAN%3FNEEDLE"), None))
+        .expect("server-side plan search");
+    let rows = row_records(&searched);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"][0], "0");
+    let page = searched
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("plan search trailer");
+    assert_eq!(page["eligible"], "1");
+    assert_eq!(page["returned"], "1");
+    assert_eq!(page["has_more"], false);
+}
+
+#[test]
+fn snapshot_cursor_rejects_every_bound_query_shape_mismatch() {
+    let mut fixture = Fixture::new();
+    fixture.append_statement_universe(5);
+    fixture.finish();
+    let path = format!("/api/segments/{SEGMENT_ID}/snapshot");
+    let shape = "at=100&section=pg_stat_statements&field=queryid&field=query&by=queryid&by=userid&page_size=1&search=fixture&search=statement&text=80&where.dbid=73&where.userid=72&type_id=1002002";
+    let first = stream(fixture.prepare(&format!("{path}?{shape}"), None)).expect("bound page");
+    let cursor = first
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .and_then(|page| page["next_cursor"].as_str())
+        .expect("bound cursor");
+
+    let mismatches = [
+        (SEGMENT_ID + 1, shape.to_owned()),
+        (SEGMENT_ID, shape.replacen("at=100", "at=99", 1)),
+        (
+            SEGMENT_ID,
+            shape.replacen("section=pg_stat_statements", "section=os_diskstats", 1),
+        ),
+        (
+            SEGMENT_ID,
+            shape.replacen("field=queryid&field=query", "field=query&field=queryid", 1),
+        ),
+        (
+            SEGMENT_ID,
+            shape.replacen("by=queryid&by=userid", "by=userid&by=queryid", 1),
+        ),
+        (
+            SEGMENT_ID,
+            shape.replacen(
+                "search=fixture&search=statement",
+                "search=statement&search=fixture",
+                1,
+            ),
+        ),
+        (SEGMENT_ID, shape.replacen("text=80", "text=81", 1)),
+        (
+            SEGMENT_ID,
+            shape.replacen("where.dbid=73", "where.dbid=74", 1),
+        ),
+        (
+            SEGMENT_ID,
+            shape.replacen(
+                "where.dbid=73&where.userid=72",
+                "where.userid=72&where.dbid=73",
+                1,
+            ),
+        ),
+        (
+            SEGMENT_ID,
+            shape.replacen("type_id=1002002", "type_id=1002001", 1),
+        ),
+    ];
+    for (segment_id, query) in mismatches {
+        let path = format!("/api/segments/{segment_id}/snapshot");
+        let query = format!("{query}&cursor={cursor}");
+        let route = crate::route::parse(&path, Some(&query)).expect("mismatch route");
+        assert!(matches!(
+            crate::api::prepare(fixture.root(), SOURCES, route, None),
+            Err(ApiError::BadCursor)
+        ));
+    }
+
+    let compatible_size = shape.replacen("page_size=1", "page_size=4", 1);
+    let query = format!("{compatible_size}&cursor={cursor}");
+    let route = crate::route::parse(&path, Some(&query)).expect("compatible route");
+    assert!(crate::api::prepare(fixture.root(), SOURCES, route, None).is_ok());
+}
+
+#[test]
+fn snapshot_search_needs_an_explicit_allowlisted_projection() {
+    let mut fixture = Fixture::new();
+    fixture.append_statement_universe(1);
+    fixture.append_diskstats(&[(100, 0, 1)]);
+    fixture.finish();
+    let path = format!("/api/segments/{SEGMENT_ID}/snapshot");
+    for query in [
+        "at=100&section=pg_stat_statements&field=calls&search=needle",
+        "at=100&section=pg_stat_statements&search=needle",
+        "at=100&section=os_diskstats&field=device&search=needle",
+    ] {
+        let route = crate::route::parse(&path, Some(query)).expect("search route");
+        assert!(matches!(
+            crate::api::prepare(fixture.root(), SOURCES, route, None),
+            Err(ApiError::BadFilter(parameter)) if parameter == "search"
+        ));
+    }
+}
+
+#[test]
+fn snapshot_resolves_text_only_after_page_rows_are_selected() {
     let mut fixture = Fixture::new();
     fixture.append_ranked_diskstats_with_unreadable_loser();
     fixture.finish();
 
     let target = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=os_diskstats&field=minor&field=device&by=minor&top=1"
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=os_diskstats&field=minor&field=device&by=minor&page_size=1"
     );
     let records = stream(fixture.prepare(&target, None)).expect("top row snapshot");
     let rows = row_records(&records);
@@ -1501,8 +1882,8 @@ fn a_snapshot_keeps_only_the_rows_a_filter_names() {
 fn an_order_needs_one_section_to_name_a_column_in() {
     let path = format!("/api/segments/{SEGMENT_ID}/snapshot");
     assert!(crate::route::parse(&path, Some("at=1&section=a&section=b&by=x")).is_err());
-    assert!(crate::route::parse(&path, Some("at=1&section=a&section=b&top=5")).is_err());
-    assert!(crate::route::parse(&path, Some("at=1&section=a&by=x&top=5")).is_ok());
+    assert!(crate::route::parse(&path, Some("at=1&section=a&section=b&page_size=5")).is_err());
+    assert!(crate::route::parse(&path, Some("at=1&section=a&by=x&page_size=5")).is_ok());
 }
 
 #[test]

@@ -42,7 +42,7 @@ export interface SectionRequest {
   readonly typeIds?: readonly string[]
   readonly fieldsByType?: Readonly<Record<string, readonly string[]>>
   readonly typeId?: string
-  readonly top?: number
+  readonly pageSize?: number
   readonly defaultOrder?: readonly string[]
   readonly order?: Readonly<Record<string, readonly string[]>>
   readonly fallbackOrder?: readonly string[]
@@ -128,15 +128,52 @@ export interface HourData {
 
 export interface SnapshotRows {
   readonly logicalName: string
-  readonly typeId: string
   readonly eligible: number
   readonly returned: number
+  readonly hasMore: boolean
   readonly truncated: boolean
-  readonly limit: number
-  readonly orderBy: string
+  readonly nextCursor: string | null
+  readonly pageSize: number
+  readonly orderBy: readonly string[]
   readonly orderDirection: "desc"
   readonly from: number | null
   readonly to: number | null
+}
+
+export function snapshotRowKey(row: DataRow): string {
+  return `${row.segmentId}:${row.typeId}:${row.ordinal}`
+}
+
+export function appendSnapshotRows(
+  current: readonly DataRow[],
+  incoming: readonly DataRow[],
+): readonly DataRow[] {
+  const seen = new Set(current.map(snapshotRowKey))
+  return [...current, ...incoming.filter((row) => {
+    const key = snapshotRowKey(row)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })]
+}
+
+export function mergeSnapshotData(current: HourData, incoming: HourData, appendSection?: string): HourData {
+  const sections = { ...current.sections, ...incoming.sections }
+  if (appendSection !== undefined) {
+    sections[appendSection] = appendSnapshotRows(
+      current.sections[appendSection] ?? [],
+      incoming.sections[appendSection] ?? [],
+    )
+  }
+  return hourData({
+    sections,
+    rateColumns: { ...current.rateColumns, ...incoming.rateColumns },
+    snapshotRows: incoming.snapshotRows.length === 0 ? current.snapshotRows : incoming.snapshotRows,
+    availableSections: unique([...current.availableSections, ...incoming.availableSections]),
+    points: [],
+    lanePoints: [],
+    findings: [],
+  })
 }
 
 export interface LanePoint {
@@ -429,12 +466,12 @@ export function requestsForSegment(
       const fields = unique(request.fields.filter((field) => physical.has(field)))
       return fields.length === 0 ? [] : [{ section: request.section, fields }]
     }
+    const global = request.pageSize !== undefined && request.fieldsByType !== undefined
     const { fieldsByType: _fieldsByType, typeIds: _typeIds, ...base } = request
-    return unique(typeIds).flatMap((typeId) => {
-      const physical = new Set(
-        REGISTRY_BY_TYPE_ID.get(typeId)?.columns ?? [],
-      )
-      const projection = request.fieldsByType?.[typeId] ?? request.fields ?? []
+    const groups = global ? [unique(typeIds)] : unique(typeIds).map((typeId) => [typeId])
+    return groups.flatMap((types) => {
+      const physical = new Set(types.flatMap((typeId) => REGISTRY_BY_TYPE_ID.get(typeId)?.columns ?? []))
+      const projection = types.flatMap((typeId) => request.fieldsByType?.[typeId] ?? request.fields ?? [])
       const fields = unique(projection.filter((field) => physical.has(field)))
       // An empty projection would request every column.
       if (fields.length === 0) return []
@@ -444,7 +481,7 @@ export function requestsForSegment(
         : Object.fromEntries(Object.entries(request.order).map(([name, candidates]) => [name, keep(candidates)]))
       return [{
         ...base,
-        typeId,
+        ...(global ? {} : { typeId: types[0] }),
         fields,
         ...(request.defaultOrder === undefined ? {} : { defaultOrder: keep(request.defaultOrder) }),
         ...(order === undefined ? {} : { order }),
@@ -531,6 +568,8 @@ export interface SnapshotOptions {
   readonly typeId?: string
   readonly rowOrdinal?: string
   readonly fullText?: boolean
+  readonly cursor?: string
+  readonly search?: readonly string[]
 }
 
 interface SnapshotOrder {
@@ -549,15 +588,25 @@ export async function loadSnapshot(
   const requests = sections.map((section) => typeof section === "string" ? { section } : section)
   const chosen = snapshotOptions(options)
   if (requests.length === 0) return emptyHour()
-  if ((chosen.filters !== undefined || chosen.typeId !== undefined || chosen.rowOrdinal !== undefined)
+  if ((chosen.filters !== undefined || chosen.typeId !== undefined || chosen.rowOrdinal !== undefined
+      || chosen.cursor !== undefined || chosen.search !== undefined)
     && requests.length !== 1) {
-    throw new Error("a filtered or exact snapshot needs one section")
+    throw new Error("a filtered, searched, paged, or exact snapshot needs one section")
+  }
+  if (requests.some((request) => request.pageSize !== undefined) && requests.length !== 1) {
+    throw new Error("a paged snapshot needs one section")
   }
   if (chosen.rowOrdinal !== undefined && chosen.typeId === undefined && requests[0]?.typeId === undefined) {
     throw new Error("an exact snapshot row needs typeId")
   }
   if (chosen.rowOrdinal !== undefined && chosen.filters !== undefined) {
     throw new Error("an exact snapshot row cannot carry filters")
+  }
+  if (chosen.rowOrdinal !== undefined && (chosen.cursor !== undefined || chosen.search !== undefined)) {
+    throw new Error("an exact snapshot row cannot carry paging or search")
+  }
+  if (chosen.cursor !== undefined && requests[0]?.pageSize === undefined) {
+    throw new Error("a snapshot cursor needs a paged section")
   }
   for (const section of requests) {
     if (section.fieldsByType !== undefined) {
@@ -625,21 +674,24 @@ export async function loadSnapshot(
         values: rowValues(columns, values),
       })
       grouped[logicalName] = rows
-    } else if (record.record === "snapshot_rows") {
-      const typeId = requiredText(record.type_id, "snapshot row type_id")
-      const layout = layouts.get(typeId)
-      if (layout === undefined) throw new Error(`snapshot row counts for unknown layout ${typeId}`)
-      if (record.order_direction !== "desc" || typeof record.truncated !== "boolean") {
-        throw new Error(`snapshot row counts for layout ${typeId} are invalid`)
+    } else if (record.record === "snapshot_page") {
+      const logicalName = requiredText(record.logical_name, "snapshot page logical name")
+      if (record.order_direction !== "desc"
+        || typeof record.has_more !== "boolean"
+        || typeof record.truncated !== "boolean"
+        || !Array.isArray(record.order_by)
+        || (record.next_cursor !== null && typeof record.next_cursor !== "string")) {
+        throw new Error(`snapshot page for ${logicalName} is invalid`)
       }
       snapshotRows.push({
-        logicalName: layout.logicalName,
-        typeId,
+        logicalName,
         eligible: integer(record.eligible, "eligible row count"),
         returned: integer(record.returned, "returned row count"),
+        hasMore: record.has_more,
         truncated: record.truncated,
-        limit: integer(record.limit, "snapshot row limit"),
-        orderBy: requiredText(record.order_by, "snapshot order field"),
+        nextCursor: record.next_cursor,
+        pageSize: integer(record.page_size, "snapshot page size"),
+        orderBy: record.order_by.map((field) => requiredText(field, "snapshot order field")),
         orderDirection: record.order_direction,
         from: record.from === null ? null : integer(record.from, "snapshot interval start"),
         to: record.to === null ? null : integer(record.to, "snapshot interval end"),
@@ -695,17 +747,17 @@ function fixtureSnapshot(
     if (orderField !== undefined) {
       rows = rows.slice().sort((left, right) => fixtureOrder(right.values[orderField], left.values[orderField]))
     }
-    if (request.top !== undefined) rows = rows.slice(0, request.top)
-    if (request.top !== undefined && orderField !== undefined) {
-      const typeId = request.typeId ?? options.typeId ?? rows[0]?.typeId
-      if (typeId !== undefined) snapshotRows.push({
+    if (request.pageSize !== undefined) rows = rows.slice(0, request.pageSize)
+    if (request.pageSize !== undefined && orderField !== undefined) {
+      if ((request.typeId ?? options.typeId ?? rows[0]?.typeId) !== undefined) snapshotRows.push({
         logicalName: request.section,
-        typeId,
         eligible,
         returned: rows.length,
+        hasMore: eligible > rows.length,
         truncated: eligible > rows.length,
-        limit: request.top,
-        orderBy: orderField,
+        nextCursor: null,
+        pageSize: request.pageSize,
+        orderBy: [orderField],
         orderDirection: "desc",
         from: null,
         to: rows[0]?.timestamp ?? null,
@@ -759,7 +811,7 @@ function projectFixtureRow(row: DataRow, fields: readonly string[]): DataRow {
 
 function batchableSnapshotSection(section: SectionRequest): boolean {
   return section.typeId === undefined
-    && section.top === undefined
+    && section.pageSize === undefined
     && section.defaultOrder === undefined
     && section.order === undefined
     && section.fallbackOrder === undefined
@@ -782,8 +834,10 @@ function snapshotQuery(
     ...sections.map((request) => `section=${encodeURIComponent(request.section)}`),
     ...fields.map((field) => `field=${encodeURIComponent(field)}`),
     ...ordered.map((field) => `by=${encodeURIComponent(field)}`),
-    ...(section?.top === undefined || options.rowOrdinal !== undefined ? [] : [`top=${section.top}`]),
+    ...(section?.pageSize === undefined || options.rowOrdinal !== undefined ? [] : [`page_size=${section.pageSize}`]),
     ...(options.fullText === true ? [] : [`text=${CELL_TEXT}`]),
+    ...(options.cursor === undefined ? [] : [`cursor=${encodeURIComponent(options.cursor)}`]),
+    ...(options.search ?? []).map((pattern) => `search=${encodeURIComponent(pattern)}`),
     ...Object.entries(options.filters ?? {}).map(([column, value]) =>
       `where.${encodeURIComponent(column)}=${encodeURIComponent(value)}`),
     ...(typeId === undefined ? [] : [`type_id=${encodeURIComponent(typeId)}`]),
@@ -807,7 +861,8 @@ function snapshotOptions(
   value: SnapshotOptions | Readonly<Record<string, string>> | undefined,
 ): SnapshotOptions {
   if (value === undefined) return {}
-  if ("filters" in value || "typeId" in value || "rowOrdinal" in value || "fullText" in value) {
+  if ("filters" in value || "typeId" in value || "rowOrdinal" in value || "fullText" in value
+    || "cursor" in value || "search" in value) {
     return value as SnapshotOptions
   }
   return { filters: value as Readonly<Record<string, string>> }

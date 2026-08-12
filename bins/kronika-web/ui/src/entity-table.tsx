@@ -49,6 +49,7 @@ export function EntityTable({
   locale,
   onOrder,
   onPattern,
+  onNearEnd,
   onSelect,
   order,
   pattern = "",
@@ -70,6 +71,7 @@ export function EntityTable({
   readonly locale: Locale
   readonly onOrder?: ((order: TableOrder | null) => void) | undefined
   readonly onPattern?: ((pattern: string) => void) | undefined
+  readonly onNearEnd?: (() => void) | undefined
   readonly onSelect?: (row: DataRow) => void
   readonly pattern?: string | undefined
   readonly order?: TableOrder | undefined
@@ -103,15 +105,10 @@ export function EntityTable({
     size: field.width ?? 128,
     ...(field.sortValue === undefined ? {} : { sortUndefined: "last" as const }),
   })), [fields, locale, serverSorted, t])
-  const data = useMemo(() => {
-    const match = globMatcher(pattern)
-    if (match === null) return [...rows]
-    const texts = fields.filter((field) => field.filterValue !== undefined || field.kind === undefined || field.kind === "text" || field.kind === "id")
-    return rows.filter((row) => texts.some((field) => {
-      const text = field.filterValue === undefined ? rawText(value(row, field.field)) : field.filterValue(row)
-      return text !== null && match(text)
-    }))
-  }, [fields, pattern, rows])
+  const data = useMemo(
+    () => filterTableRows(rows, fields, pattern, serverSorted === true),
+    [fields, pattern, rows, serverSorted],
+  )
   const table = useReactTable({
     columns,
     data,
@@ -163,6 +160,10 @@ export function EntityTable({
   }, [])
   const rendered = table.getRowModel().rows
   const virtual = useVirtualizer({ count: rendered.length, estimateSize: () => 23, getScrollElement: () => parent.current, overscan: 10 })
+  const lastVirtualIndex = virtual.getVirtualItems().at(-1)?.index ?? -1
+  useEffect(() => {
+    if (onNearEnd !== undefined && rendered.length !== 0 && lastVirtualIndex >= rendered.length - 10) onNearEnd()
+  }, [lastVirtualIndex, onNearEnd, rendered.length])
   const locatedIndex = finding === null || finding === undefined
     ? -1
     : rendered.findIndex((row) => rowMatchesLocator(row.original, finding))
@@ -172,7 +173,7 @@ export function EntityTable({
   const width = table.getTotalSize()
   return <section className={`entity-table${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
     {status !== undefined && <div className="table-status" data-testid="table-status">{status}</div>}
-    {t !== undefined && onPattern !== undefined && <TableFilter kept={data.length} onPattern={onPattern} pattern={pattern} t={t} total={rows.length} />}
+    {t !== undefined && onPattern !== undefined && <TableFilter kept={serverSorted === true ? -1 : data.length} onPattern={onPattern} pattern={pattern} t={t} total={rows.length} />}
     <div aria-label={label} className="entity-scroll" ref={parent} role="table">
       <div className="entity-head" ref={head} role="row" style={{ width }}>
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {
@@ -234,6 +235,22 @@ export function EntityTable({
 
 export function nextServerOrder(current: TableOrder | undefined, column: string): TableOrder | null {
   return current?.column === column && current.descending ? null : { column, descending: true }
+}
+
+export function filterTableRows(
+  rows: readonly DataRow[],
+  fields: readonly EntityColumn[],
+  pattern: string,
+  serverFiltered: boolean,
+): DataRow[] {
+  if (serverFiltered) return [...rows]
+  const match = globMatcher(pattern)
+  if (match === null) return [...rows]
+  const searchable = fields.filter((field) => field.filterValue !== undefined || field.kind === undefined || field.kind === "text" || field.kind === "id")
+  return rows.filter((row) => searchable.some((field) => {
+    const text = field.filterValue === undefined ? rawText(value(row, field.field)) : field.filterValue(row)
+    return text !== null && match(text)
+  }))
 }
 
 export function locatorMatchesColumn(column: EntityColumn, typeId: string, findingField: string | null): boolean {

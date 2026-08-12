@@ -170,7 +170,7 @@ test("a physical statement spike selects interval mean execution time", () => {
 
 test("statement lenses project only their exact physical operands", () => {
   const perCall = metrics.statementRequest("per_call")
-  assert.equal(perCall.top, 200)
+  assert.equal(perCall.pageSize, 200)
   assert.deepEqual(perCall.defaultOrder, ["calls"])
   assert.equal(metrics.statementDefaultOrder("per_call"), "calls_per_second")
   assert.ok(perCall.fieldsByType["1002001"].includes("rows"))
@@ -200,7 +200,7 @@ test("statement lenses project only their exact physical operands", () => {
 test("plan lenses keep bounded rows and direct per-plan statistics", () => {
   for (const lens of ["load", "timing", "io", "identity"]) {
     const request = metrics.planRequest(lens)
-    assert.equal(request.top, 200)
+    assert.equal(request.pageSize, 200)
     assert.ok(request.fieldsByType["1003001"].includes("plan"))
   }
   const timing = metrics.planRequest("timing")

@@ -21,7 +21,7 @@ const registry = [
   layout("1016001", "pg_store_plans_info", [], ["ts", "dealloc", "stats_reset"]),
 ]
 const helpers = await importModule(
-  'export { locatorMatchesColumn, nextServerOrder } from "../src/entity-table.tsx"; export { rowMatchesLocator } from "../src/locator.ts"; export { PLAN_COLUMNS, STATEMENT_COLUMNS } from "../src/postgres-view.tsx"',
+  'export { filterTableRows, locatorMatchesColumn, nextServerOrder } from "../src/entity-table.tsx"; export { rowMatchesLocator } from "../src/locator.ts"; export { PLAN_COLUMNS, STATEMENT_COLUMNS } from "../src/postgres-view.tsx"',
   { plugins: [registryPlugin(registry)] },
 )
 
@@ -83,4 +83,23 @@ test("server-ranked tables offer only descending order or no order", () => {
     column: "rows_per_second",
     descending: true,
   })
+})
+
+test("server-filtered pages are not filtered again over the loaded subset", () => {
+  const rows = [
+    { ...row, ordinal: "1", values: { pid: 9, read_bytes: 12 } },
+    { ...row, ordinal: "2", values: { pid: 10, read_bytes: 24 } },
+  ]
+  const columns = [{ field: "pid", kind: "id", label: "PID" }]
+  assert.deepEqual(helpers.filterTableRows(rows, columns, "9", false).map(({ ordinal }) => ordinal), ["1"])
+  assert.deepEqual(helpers.filterTableRows(rows, columns, "missing", true), rows)
+})
+
+test("paged tables keep virtualization and trigger the guarded near-end callback", async () => {
+  const source = await readFile(new URL("../src/entity-table.tsx", import.meta.url), "utf8")
+  const postgres = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
+  assert.match(source, /useVirtualizer/)
+  assert.match(source, /lastVirtualIndex >= rendered\.length - 10/)
+  assert.match(source, /onNearEnd\(\)/)
+  assert.match(postgres, /data-testid="table-paging"/)
 })

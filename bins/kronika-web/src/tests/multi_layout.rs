@@ -205,3 +205,67 @@ fn textual_filter_and_missing_field_work_across_physical_layouts() {
         "the same requested field is rendered from V4"
     );
 }
+
+#[test]
+fn snapshot_pages_sort_and_count_across_compatible_physical_layouts() {
+    let directory = finished_multi_layout_segment();
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=300&section=pg_stat_database&field=datid&field={FIELD}&by=datid&page_size=1"
+    );
+    let (path, query) = base.split_once('?').expect("snapshot query");
+    let route = crate::route::parse(path, Some(query)).expect("snapshot route");
+    let first =
+        stream(crate::api::prepare(directory.path(), 0b10, route, None).expect("first mixed page"));
+    let first_row_position = first
+        .iter()
+        .position(|record| record["record"] == "row")
+        .expect("first row");
+    assert_eq!(
+        first[..first_row_position]
+            .iter()
+            .filter(|record| record["record"] == "layout")
+            .count(),
+        2,
+        "all compatible layouts precede globally sorted rows"
+    );
+    let first_row = &first[first_row_position];
+    assert_eq!(
+        first_row["type_id"],
+        PgStatDatabaseV4::CONTRACT.type_id.get().to_string()
+    );
+    assert_eq!(first_row["values"][0], 43);
+    let first_page = first
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("first page trailer");
+    assert_eq!(first_page["eligible"], "2");
+    assert_eq!(first_page["returned"], "1");
+    assert_eq!(first_page["has_more"], true);
+    assert_eq!(first_page["truncated"], true);
+    assert_eq!(first_page["order_by"], json!(["datid"]));
+
+    let cursor = first_page["next_cursor"].as_str().expect("next cursor");
+    let continued = format!("{base}&cursor={cursor}");
+    let (path, query) = continued.split_once('?').expect("continued query");
+    let route = crate::route::parse(path, Some(query)).expect("continued route");
+    let second = stream(
+        crate::api::prepare(directory.path(), 0b10, route, None).expect("second mixed page"),
+    );
+    let second_row = second
+        .iter()
+        .find(|record| record["record"] == "row")
+        .expect("second row");
+    assert_eq!(
+        second_row["type_id"],
+        PgStatDatabaseV1::CONTRACT.type_id.get().to_string()
+    );
+    assert_eq!(second_row["values"], json!([42, null]));
+    let second_page = second
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("second page trailer");
+    assert_eq!(second_page["eligible"], "2");
+    assert_eq!(second_page["returned"], "1");
+    assert_eq!(second_page["has_more"], false);
+    assert_eq!(second_page["truncated"], true);
+}
