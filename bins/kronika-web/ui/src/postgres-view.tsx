@@ -171,6 +171,11 @@ export function PostgresView({
   // What the hour holds, not what has been fetched: a tab is loaded when it is
   // opened, so judging it by loaded rows left it disabled for good.
   const available = (name: string) => data.availableSections.includes(name)
+  useEffect(() => {
+    const tab = TABS.find((candidate) => candidate.id === section)
+    if (tab === undefined || tab.id === "plans" || tab.sections === undefined || tab.sections.some(available)) return
+    onSection("overview")
+  }, [data.availableSections, onSection, section])
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   return <>
     <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={onCursor} onFinding={onFinding} primaryLane={section === "activity" ? "backends" : "health"} shownAt={shownAt} t={t} />

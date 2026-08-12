@@ -9,10 +9,12 @@ import {
   loadSeries,
   hourOf,
   loadSnapshot,
+  loadSectionFindings,
   segmentBoundAt,
   requestsForSegment,
   fieldNameForLocator,
   replaceSections,
+  replaceFindings,
   resolveLocator,
   PRODUCT_SECTION_GROUPS,
   type DataRow,
@@ -166,6 +168,7 @@ function App() {
   }, [baseViewKey, pgSection, planLens, source, statementLens])
   const [segments, setSegments] = useState<readonly SegmentBound[]>([])
   const loaded = useRef({ hour: null as number | null, keys: new Set<string>() })
+  const loadedFindingSections = useRef(new Set<string>())
   const drawn = useRef<number | null>(null)
   useEffect(() => {
     if (hour === null) return
@@ -184,6 +187,7 @@ function App() {
     setLoading(true)
     setError(null)
     loaded.current = { hour, keys: new Set() }
+    loadedFindingSections.current.clear()
     void loadTimeline(hour, controller.signal).then((timeline) => {
       drawn.current = timeline.hour
       setAvailableHours(timeline.availableHours)
@@ -252,6 +256,25 @@ function App() {
     }, 250)
     return () => { clearTimeout(timer); controller.abort() }
   }, [cursor, cursorSegment, hour, order, viewKey, viewRequests])
+
+  const findingSection = source !== "postgresql" ? null
+    : pgSection === "activity" ? "pg_stat_activity"
+      : pgSection === "statements" ? "pg_stat_statements"
+        : pgSection === "databases" ? "pg_stat_database" : null
+  useEffect(() => {
+    if (hour === null || findingSection === null || segments.length === 0) return
+    const key = `${hour}:${findingSection}`
+    if (loadedFindingSections.current.has(key)) return
+    loadedFindingSections.current.add(key)
+    const controller = new AbortController()
+    void loadSectionFindings(segments, findingSection, controller.signal)
+      .then((findings) => setData((before) => replaceFindings(before, findingSection, findings)))
+      .catch((reason: unknown) => {
+        loadedFindingSections.current.delete(key)
+        if (!controller.signal.aborted) console.error("kronika: section findings failed", reason)
+      })
+    return () => controller.abort()
+  }, [findingSection, hour, segments])
 
   useEffect(() => {
     const shortcuts = (event: KeyboardEvent) => {
@@ -410,6 +433,7 @@ function App() {
     if (section !== null) {
       setSource("postgresql")
       setPgSection(section)
+      if (logicalName === "pg_stat_statements") setStatementLens("load")
       setSystemFocus(null)
       setPgFocus(resolved?.row ?? null)
       return
