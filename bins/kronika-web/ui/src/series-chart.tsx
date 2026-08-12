@@ -1,7 +1,7 @@
 import { useId } from "react"
 
 import { niceCeiling, numericRuns, svgPath, type NumericPoint } from "./chart"
-import type { Locale } from "./model"
+import { compact, type Locale } from "./model"
 import { TimeTicks } from "./time-ticks"
 
 export interface ChartPoint {
@@ -47,7 +47,7 @@ export function SeriesChart({
   return <figure className="series-chart">
     <figcaption id={title}>
       <span>{label}</span>
-      <span>{reading === null ? "—" : (format ?? number)(reading, locale)}</span>
+      <span>{reading === null ? "—" : (format ?? compact)(reading, locale)}</span>
     </figcaption>
     {!hasData
       ? <p className="series-empty">{empty}</p>
@@ -71,8 +71,8 @@ export function SeriesChart({
         return <path className="mini-series" d={path} key={segmentId} />
       })}
       </svg>
-      <span aria-hidden="true" className="series-ceiling">{(format ?? number)(high, locale)}</span>
-      {low !== 0 && <span aria-hidden="true" className="series-floor">{(format ?? number)(low, locale)}</span>}
+      <span aria-hidden="true" className="series-ceiling">{(format ?? compact)(high, locale)}</span>
+      {low !== 0 && <span aria-hidden="true" className="series-floor">{(format ?? compact)(low, locale)}</span>}
       <TimeTicks className="mini-time-ticks" hour={hour} /></>}
   </figure>
 }
@@ -106,9 +106,4 @@ export function chartDomain(values: readonly number[], scale: ChartScale): { rea
 
 export function chartRuns(points: readonly ChartPoint[]): ReadonlyMap<string, readonly NumericChartPoint[]> {
   return numericRuns(points, (left, right) => left.localeCompare(right))
-}
-
-function number(value: number, locale: Locale): string {
-  if (Math.abs(value) >= 1_000_000) return value.toExponential(2)
-  return new Intl.NumberFormat(locale, { maximumFractionDigits: 2, useGrouping: false }).format(value)
 }

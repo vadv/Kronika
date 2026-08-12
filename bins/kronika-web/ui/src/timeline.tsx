@@ -4,7 +4,7 @@ import type { DataRow, Finding, LanePoint } from "./api"
 import { niceCeiling, numericRuns, svgPath, type NumericPoint } from "./chart"
 import { LabelHelp, type Translate } from "./help"
 import { moveCursor } from "./keyboard"
-import { asNumber, formatUtc, humanBytes, value } from "./model"
+import { asNumber, compact, formatUtc, humanBytes, type Locale, value } from "./model"
 import { TimeTicks } from "./time-ticks"
 
 const WIDTH = 920
@@ -65,6 +65,7 @@ export function Timeline({
   health,
   hour,
   lanePoints,
+  locale,
   onCursor,
   onFinding,
   primaryLane = "health",
@@ -76,6 +77,7 @@ export function Timeline({
   readonly health: readonly DataRow[]
   readonly hour: number
   readonly lanePoints: readonly LanePoint[]
+  readonly locale: Locale
   readonly onCursor: (timestamp: number) => void
   readonly onFinding: (finding: Finding, grouped?: readonly Finding[]) => void
   readonly primaryLane?: string | undefined
@@ -181,7 +183,7 @@ export function Timeline({
           label={`lane.${lane.key}.label`}
           onSelect={lane.primary ? undefined : () => setSelectedLane(lane.key)}
           primary={lane.primary}
-          reading={lane.series.map((series) => valueAt(series.points, cursor)).map((number) => number === null ? "—" : format(number, lane.key)).join(" · ")}
+          reading={lane.series.map((series) => valueAt(series.points, cursor)).map((number) => number === null ? "—" : format(number, lane.key, locale)).join(" · ")}
           t={t}
         />)}
       </div>
@@ -262,14 +264,14 @@ export function Timeline({
           {displayed.filter((lane) => lane.primary).map((lane) => {
             const range = laneRange(lane)
             return <div className="primary-scale" key={lane.key} style={{ height: `${lane.height - 12}px`, top: `${lane.top + 6}px` }}>
-              <span>{format(range.low + range.span, lane.key)}</span>
-              <span>{format(range.low, lane.key)}</span>
+              <span>{format(range.low + range.span, lane.key, locale)}</span>
+              <span>{format(range.low, lane.key, locale)}</span>
             </div>
           })}
           {hover !== null && <div className="timeline-hover" style={{ left: `${Math.max(6, Math.min(94, shareOf(hover, hour, end) * 100))}%` }}>
             <time>{formatUtc(hover)}</time>
             {displayed.map((lane) => {
-              const reading = lane.series.map((series) => valueAt(series.points, hover)).map((number) => number === null ? "—" : format(number, lane.key)).join(" · ")
+              const reading = lane.series.map((series) => valueAt(series.points, hover)).map((number) => number === null ? "—" : format(number, lane.key, locale)).join(" · ")
               return <span key={lane.key}>{t(`lane.${lane.key}.label`)} <strong>{reading}</strong></span>
             })}
           </div>}
@@ -316,10 +318,10 @@ export function valueAt(points: readonly SeriesPoint[], cursor: number): number 
   return chosen?.value ?? null
 }
 
-function format(number: number, key: string): string {
-  if (key === "oldest_xact") return `${Math.round(number)} s`
-  if (key === "backends" || key === "pg_running" || key === "pg_waiting") return String(Math.round(number))
-  return `${Math.round(number)}%`
+function format(number: number, key: string, locale: Locale): string {
+  if (key === "oldest_xact") return `${compact(number, locale)} s`
+  if (key === "backends" || key === "pg_running" || key === "pg_waiting") return compact(number, locale)
+  return `${compact(number, locale)}%`
 }
 
 function FindingMarker({

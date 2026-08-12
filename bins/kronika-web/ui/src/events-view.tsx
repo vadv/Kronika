@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { DataRow, Finding, HourData } from "./api"
 import type { Translate } from "./help"
-import { asNumber, formatUtc, rawText, shownMoment } from "./model"
+import { asNumber, formatUtc, type Locale, rawText, shownMoment } from "./model"
 import { Timeline } from "./timeline"
 
 type Filter = "all" | Finding["kind"]
@@ -20,6 +20,7 @@ export function EventsView({
   cursor,
   data,
   hour,
+  locale,
   onCursor,
   onFinding,
   onShowAll,
@@ -31,6 +32,7 @@ export function EventsView({
   readonly cursor: number
   readonly data: HourData
   readonly hour: number
+  readonly locale: Locale
   readonly onCursor: (timestamp: number) => void
   readonly onFinding: (finding: Finding) => void
   readonly onShowAll: () => void
@@ -64,7 +66,7 @@ export function EventsView({
   }, [active, virtual, visible])
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={onCursor} onFinding={onFinding} primaryLane="health" shownAt={shownAt} t={t} />
+    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane="health" shownAt={shownAt} t={t} />
     <section className="events-console">
       <header className="events-tools">
         <div className="event-filters" role="group">
