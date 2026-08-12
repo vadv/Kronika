@@ -1,5 +1,7 @@
 //! Reads one snapshot and derives counter rates.
 
+mod relation;
+
 use std::cmp::Ordering;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
@@ -12,7 +14,7 @@ use serde_json::{Value, json};
 use super::query::{Plan, plans, resolved_dictionary};
 use super::render::{cell, projected_layout, record, shorten};
 use super::{ApiError, CachePolicy, ResponseMeta, explicit_segment_with_listing};
-use crate::route::{DataRequest, Order, SegmentRequest, SnapshotRequest};
+use crate::route::{DataRequest, Order, RelationGroup, SegmentRequest, SnapshotRequest};
 
 pub(crate) struct PreparedSnapshot {
     segment: Segment,
@@ -21,6 +23,8 @@ pub(crate) struct PreparedSnapshot {
     sections: Vec<SectionPlans>,
     by: Vec<String>,
     direction: Order,
+    group: Option<RelationGroup>,
+    relation_fields: Vec<String>,
     page_size: Option<usize>,
     cursor: Option<SnapshotCursor>,
     binding: u64,
@@ -258,6 +262,11 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
         return Err(ApiError::BadCursor);
     }
     let earlier = preceding(&reader, &segment_ref, segments)?;
+    let relation_fields = request
+        .group
+        .map(|group| relation::output_fields(&request.sections, group, &request.fields))
+        .transpose()?
+        .unwrap_or_default();
     let sections = section_plans(&segment, &request)?;
     validate_search_projection(&request, &sections)?;
     validate_exact_locator(&segment, &request, &sections)?;
@@ -268,6 +277,8 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
         sections,
         by: request.by,
         direction: request.direction,
+        group: request.group,
+        relation_fields,
         page_size: request.page_size,
         cursor: parsed,
         binding,
@@ -291,7 +302,9 @@ fn section_plans(
     }
     let mut sections = Vec::with_capacity(request.sections.len());
     for logical_name in &request.sections {
-        let fields = if shared_projection {
+        let fields = if let Some(group) = request.group {
+            relation::physical_projection(logical_name, group)?
+        } else if shared_projection {
             section_projection(segment, logical_name, &request.fields)
         } else {
             request.fields.clone()
@@ -341,8 +354,8 @@ impl PageOrder {
                 numerator,
                 denominator,
                 ..
-            } => numerator.iter().chain(denominator).copied().collect(),
-            PageOrderKind::ValueRatio {
+            }
+            | PageOrderKind::ValueRatio {
                 numerator,
                 denominator,
                 ..
@@ -370,6 +383,10 @@ fn page_order(logical_name: &str, plan: &Plan, requested: &[String]) -> Option<P
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "all fixed derived sort tokens remain visibly allowlisted together"
+)]
 fn derived_page_order(logical_name: &str, plan: &Plan, token: &str) -> Option<PageOrder> {
     let supported = match logical_name {
         "pg_stat_statements" => matches!(plan.type_id, 1_002_001..=1_002_006),
@@ -600,6 +617,9 @@ impl PreparedSnapshot {
             return Ok(());
         }
         if self.page_size.is_some() {
+            if self.group.is_some() {
+                return self.emit_relation_page(emit, cancelled);
+            }
             return self.emit_page(emit, cancelled);
         }
         for section in &self.sections {
@@ -1773,7 +1793,10 @@ impl PartialOrd for PageRankedRow {
 
 impl Ord for PageRankedRow {
     fn cmp(&self, other: &Self) -> Ordering {
-        debug_assert_eq!(self.direction, other.direction);
+        debug_assert_eq!(
+            self.direction, other.direction,
+            "one page heap cannot compare opposite sort directions"
+        );
         compare_page_order_values(self.value.as_ref(), other.value.as_ref(), self.direction)
             .then_with(|| other.staged.context_index.cmp(&self.staged.context_index))
             .then_with(|| other.staged.ordinal.cmp(&self.staged.ordinal))
@@ -1819,6 +1842,24 @@ fn compare_page_order_values(
             *right_numerator,
             *right_denominator,
         ),
+        (
+            Some(PageOrderValue::IntegerRatio {
+                numerator,
+                denominator,
+            }),
+            Some(PageOrderValue::FloatRatio(right)),
+        ) => integer_ratio_as_f64(*numerator, *denominator)
+            .partial_cmp(right)
+            .unwrap_or(Ordering::Equal),
+        (
+            Some(PageOrderValue::FloatRatio(left)),
+            Some(PageOrderValue::IntegerRatio {
+                numerator,
+                denominator,
+            }),
+        ) => left
+            .partial_cmp(&integer_ratio_as_f64(*numerator, *denominator))
+            .unwrap_or(Ordering::Equal),
         (Some(PageOrderValue::Text(left)), Some(PageOrderValue::Text(right))) => left.cmp(right),
         (Some(_), Some(_)) | (None, None) => Ordering::Equal,
         (Some(_), None) => return Ordering::Greater,
@@ -1828,6 +1869,14 @@ fn compare_page_order_values(
         Order::Asc => ordered.reverse(),
         Order::Desc => ordered,
     }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "this path compares an exact ratio with an already inexact floating source"
+)]
+fn integer_ratio_as_f64(numerator: u128, denominator: u128) -> f64 {
+    numerator as f64 / denominator as f64
 }
 
 fn compare_u128_ratios(
@@ -1999,7 +2048,7 @@ fn counter_sum(
         };
         if neutral_nulls && matches!((now, earlier), (Cell::Null, Cell::Null)) {
             continue;
-        };
+        }
         let value = counter_delta(now, earlier)?;
         sum = Some(add_ordered(sum, value)?);
     }
@@ -2291,6 +2340,17 @@ fn snapshot_binding(request: &SnapshotRequest) -> u64 {
     }
     for by in &request.by {
         hash_part(&mut hash, b"by", by.as_bytes());
+    }
+    if let Some(group) = request.group {
+        hash_part(
+            &mut hash,
+            b"group",
+            match group {
+                RelationGroup::Database => b"database",
+                RelationGroup::Schema => b"schema",
+                RelationGroup::Object => b"object",
+            },
+        );
     }
     hash_part(
         &mut hash,

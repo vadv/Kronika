@@ -122,6 +122,16 @@ fn snapshot_paging_inputs_enable_one_bounded_page() {
         panic!("snapshot route");
     };
     assert_eq!(ascending.direction, Order::Asc);
+
+    let Route::Snapshot(grouped) = parse(
+        "/api/segments/7/snapshot",
+        Some("at=9&section=pg_stat_user_tables&group=schema"),
+    )
+    .expect("relation group") else {
+        panic!("snapshot route");
+    };
+    assert_eq!(grouped.group, Some(super::RelationGroup::Schema));
+    assert_eq!(grouped.page_size, Some(DEFAULT_SNAPSHOT_PAGE_SIZE));
     for query in [
         "at=9&section=pg_stat_user_indexes&direction=sideways",
         "at=9&section=pg_stat_user_indexes&direction=asc&direction=desc",
@@ -131,6 +141,27 @@ fn snapshot_paging_inputs_enable_one_bounded_page() {
             Err(RouteError::BadParameter("direction".to_owned())),
         );
     }
+    assert_eq!(
+        parse(
+            "/api/segments/7/snapshot",
+            Some("at=9&section=pg_stat_activity&group=database"),
+        ),
+        Err(RouteError::BadParameter("group".to_owned())),
+    );
+    assert_eq!(
+        parse(
+            "/api/segments/7/snapshot",
+            Some("at=9&section=pg_stat_user_tables&group=object&type_id=1013004"),
+        ),
+        Err(RouteError::BadParameter("type_id".to_owned())),
+    );
+    assert_eq!(
+        parse(
+            "/api/segments/7/snapshot",
+            Some("at=9&section=pg_stat_user_tables&section=pg_stat_user_indexes&group=database"),
+        ),
+        Err(RouteError::BadParameter("section".to_owned())),
+    );
 
     let Route::Snapshot(searched) = parse(
         "/api/segments/7/snapshot",

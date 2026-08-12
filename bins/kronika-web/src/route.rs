@@ -36,6 +36,7 @@ pub(crate) struct SnapshotRequest {
     pub(crate) fields: Vec<String>,
     pub(crate) by: Vec<String>,
     pub(crate) direction: Order,
+    pub(crate) group: Option<RelationGroup>,
     /// Present only for the paged single-section form.
     pub(crate) page_size: Option<usize>,
     pub(crate) cursor: Option<String>,
@@ -104,6 +105,13 @@ pub(crate) struct DataRequest {
 pub(crate) enum Order {
     Asc,
     Desc,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RelationGroup {
+    Database,
+    Schema,
+    Object,
 }
 
 /// Bounded page request.
@@ -180,12 +188,17 @@ pub(crate) fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the bounded snapshot query grammar is deliberately parsed in one strict pass"
+)]
 fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, RouteError> {
     let mut at = None;
     let mut sections = Vec::new();
     let mut fields = Vec::new();
     let mut by = Vec::new();
     let mut direction = None;
+    let mut group = None;
     let mut page_size = None;
     let mut cursor = None;
     let mut search = Vec::new();
@@ -225,6 +238,14 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
                     "asc" => Order::Asc,
                     "desc" => Order::Desc,
                     _ => return Err(RouteError::BadParameter("direction".to_owned())),
+                });
+            }
+            "group" if group.is_none() => {
+                group = Some(match raw_value {
+                    "database" => RelationGroup::Database,
+                    "schema" => RelationGroup::Schema,
+                    "object" => RelationGroup::Object,
+                    _ => return Err(RouteError::BadParameter("group".to_owned())),
                 });
             }
             "type_id" if type_id.is_none() => {
@@ -275,8 +296,9 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
         || cursor.is_some()
         || !search.is_empty()
         || !by.is_empty()
-        || direction.is_some();
-    validate_snapshot_shape(&sections, paged, &filters, type_id, row_ordinal)?;
+        || direction.is_some()
+        || group.is_some();
+    validate_snapshot_shape(&sections, paged, &filters, type_id, row_ordinal, group)?;
     Ok(SnapshotRequest {
         segment_id,
         at: at.ok_or_else(|| RouteError::BadParameter("at".to_owned()))?,
@@ -284,6 +306,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
         fields,
         by,
         direction: direction.unwrap_or(Order::Desc),
+        group,
         page_size: paged.then_some(page_size.unwrap_or(DEFAULT_SNAPSHOT_PAGE_SIZE)),
         cursor,
         search,
@@ -320,6 +343,7 @@ fn validate_snapshot_shape(
     filters: &[Filter],
     type_id: Option<u32>,
     row_ordinal: Option<u64>,
+    group: Option<RelationGroup>,
 ) -> Result<(), RouteError> {
     if sections.is_empty() {
         return Err(RouteError::BadParameter("section".to_owned()));
@@ -331,6 +355,16 @@ fn validate_snapshot_shape(
     }
     if row_ordinal.is_some() && (type_id.is_none() || paged || !filters.is_empty()) {
         return Err(RouteError::BadParameter("row_ordinal".to_owned()));
+    }
+    if group.is_some() && type_id.is_some() {
+        return Err(RouteError::BadParameter("type_id".to_owned()));
+    }
+    if group.is_some()
+        && (!paged
+            || row_ordinal.is_some()
+            || !matches!(sections, [section] if section == "pg_stat_user_tables" || section == "pg_stat_user_indexes"))
+    {
+        return Err(RouteError::BadParameter("group".to_owned()));
     }
     Ok(())
 }

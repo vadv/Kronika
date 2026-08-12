@@ -10,7 +10,7 @@ use super::{
     available_field_index, compare_ordered, ordered_cell, rate, snapshot_binding,
 };
 use crate::api::query::OutputField;
-use crate::route::{Filter, Order, SnapshotRequest};
+use crate::route::{Filter, Order, RelationGroup, SnapshotRequest};
 
 const COLUMN: &str = "counter";
 
@@ -356,6 +356,7 @@ fn request() -> SnapshotRequest {
         fields: vec!["queryid".to_owned(), "query".to_owned()],
         by: vec!["calls".to_owned()],
         direction: Order::Desc,
+        group: None,
         page_size: Some(200),
         cursor: None,
         search: vec!["needle*".to_owned()],
@@ -396,6 +397,9 @@ fn cursor_binding_covers_query_shape_but_excludes_page_size_and_cursor() {
     variants.push(changed);
     let mut changed = baseline.clone();
     changed.direction = Order::Asc;
+    variants.push(changed);
+    let mut changed = baseline.clone();
+    changed.group = Some(RelationGroup::Schema);
     variants.push(changed);
     let mut changed = baseline.clone();
     changed.search.push("second".to_owned());
