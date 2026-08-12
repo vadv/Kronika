@@ -192,14 +192,6 @@ export function viewData(timeline: HourData, current: HourData): HourData {
   })
 }
 
-export function replaceFindings(before: HourData, logicalName: string, findings: readonly Finding[]): HourData {
-  return {
-    ...before,
-    findings: [...before.findings.filter((finding) => finding.logicalName !== logicalName), ...findings]
-      .sort(compareFindings),
-  }
-}
-
 export interface SegmentBound {
   readonly id: string
   readonly minTs: number
@@ -210,31 +202,6 @@ export interface SegmentBound {
 export interface SegmentSection {
   readonly logicalName: string
   readonly typeId: string
-}
-
-export async function loadSectionFindings(
-  segments: readonly SegmentBound[],
-  logicalName: string,
-  signal: AbortSignal,
-): Promise<readonly Finding[]> {
-  const relevant = segments.filter((segment) => segment.sections.some((section) => section.logicalName === logicalName))
-  const batches = await Promise.all(relevant.map(async (segment) => {
-    const records = await request(
-      `/api/segments/${encodeURIComponent(segment.id)}/sections/${encodeURIComponent(logicalName)}/index`,
-      signal,
-    )
-    return records.filter(isFindingRecord).map((record) => indexFinding(record, segment.id, logicalName))
-  }))
-  return batches.flat().sort(compareFindings)
-}
-
-function compareFindings(left: Finding, right: Finding): number {
-  return left.timestamp - right.timestamp
-    || left.segmentId.localeCompare(right.segmentId)
-    || left.typeId.localeCompare(right.typeId)
-    || left.rowOrdinal.localeCompare(right.rowOrdinal)
-    || left.fieldOrdinal - right.fieldOrdinal
-    || left.kind.localeCompare(right.kind)
 }
 
 export async function loadTimeline(start: number | null, signal: AbortSignal): Promise<TimelineData> {
@@ -806,7 +773,9 @@ function indexFinding(record: Record<string, unknown>, segmentId: string, logica
   const typeId = requiredText(record.type_id, "finding type_id")
   return {
     segmentId,
-    logicalName: logicalNameForTypeId(typeId) ?? logicalName,
+    logicalName: typeof record.logical_name === "string"
+      ? record.logical_name
+      : logicalNameForTypeId(typeId) ?? logicalName,
     kind: record.kind as Finding["kind"],
     typeId,
     timestamp: integer(record.ts, "finding timestamp"),

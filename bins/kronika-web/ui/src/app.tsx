@@ -9,12 +9,10 @@ import {
   loadSeries,
   hourOf,
   loadSnapshot,
-  loadSectionFindings,
   segmentBoundAt,
   requestsForSegment,
   fieldNameForLocator,
   viewData,
-  replaceFindings,
   resolveLocator,
   PRODUCT_SECTION_GROUPS,
   POSTGRESQL_OVERVIEW_REQUESTS,
@@ -160,7 +158,6 @@ function App() {
     return VIEW_REQUESTS[baseViewKey] ?? []
   }, [baseViewKey, pgSection, planLens, source, statementLens])
   const [segments, setSegments] = useState<readonly SegmentBound[]>([])
-  const loadedFindingSections = useRef(new Set<string>())
   const drawn = useRef<number | null>(null)
   const previousView = useRef(baseViewKey)
   useEffect(() => {
@@ -181,7 +178,6 @@ function App() {
     const controller = new AbortController()
     setLoading(true)
     setError(null)
-    loadedFindingSections.current.clear()
     void loadTimeline(hour, controller.signal).then((timeline) => {
       drawn.current = timeline.hour
       setAvailableHours(timeline.availableHours)
@@ -246,25 +242,6 @@ function App() {
     }, 250)
     return () => { clearTimeout(timer); controller.abort() }
   }, [cursor, cursorSegment, hour, order, pgSection, source, viewKey, viewRequests])
-
-  const findingSection = source !== "postgresql" ? null
-    : pgSection === "activity" ? "pg_stat_activity"
-      : pgSection === "statements" ? "pg_stat_statements"
-        : pgSection === "databases" ? "pg_stat_database" : null
-  useEffect(() => {
-    if (hour === null || findingSection === null || segments.length === 0) return
-    const key = `${hour}:${findingSection}`
-    if (loadedFindingSections.current.has(key)) return
-    loadedFindingSections.current.add(key)
-    const controller = new AbortController()
-    void loadSectionFindings(segments, findingSection, controller.signal)
-      .then((findings) => setTimelineData((before) => replaceFindings(before, findingSection, findings)))
-      .catch((reason: unknown) => {
-        loadedFindingSections.current.delete(key)
-        if (!controller.signal.aborted) console.error("kronika: section findings failed", reason)
-      })
-    return () => controller.abort()
-  }, [findingSection, hour, segments])
 
   useEffect(() => {
     const shortcuts = (event: KeyboardEvent) => {

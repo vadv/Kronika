@@ -11,8 +11,11 @@ use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOw
 use kronika_registry::instance_metadata::InstanceMetadata;
 use kronika_registry::os_diskstats::OsDiskstats;
 use kronika_registry::os_netdev::OsNetdev;
+use kronika_registry::os_process::OsProcess;
 use kronika_registry::os_psi::OsPsi;
+use kronika_registry::pg_log::PgLogErrors;
 use kronika_registry::pg_stat_activity::PgStatActivityV3;
+use kronika_registry::pg_stat_statements::PgStatStatementsV2;
 use kronika_registry::{StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use serde_json::Value;
@@ -162,6 +165,10 @@ impl Fixture {
     }
 
     fn append_postgres_health(&mut self, active: u32) {
+        self.append_postgres_health_at(100, active);
+    }
+
+    fn append_postgres_health_at(&mut self, at: i64, active: u32) {
         let mut interner = Interner::new(DictLimits::default());
         let active_state = StrId(interner.intern(b"active").expect("active state").get());
         let idle_state = StrId(interner.intern(b"idle").expect("idle state").get());
@@ -175,7 +182,7 @@ impl Fixture {
         let mut buffers = SectionBuffers::new();
         buffers
             .push(InstanceMetadata {
-                ts: Ts(100),
+                ts: Ts(at),
                 hostname: StrId(901),
                 kernel_version: StrId(902),
                 environment: 0,
@@ -189,19 +196,19 @@ impl Fixture {
             })
             .expect("metadata row fits");
         for row in [
-            psi(100, 0, 0),
-            psi(100, 1, 0),
-            psi(100, 2, 0),
-            psi(200, 0, 50),
-            psi(200, 1, 20),
-            psi(200, 2, 0),
+            psi(at, 0, 0),
+            psi(at, 1, 0),
+            psi(at, 2, 0),
+            psi(at + 100, 0, 50),
+            psi(at + 100, 1, 20),
+            psi(at + 100, 2, 0),
         ] {
             buffers.push(row).expect("psi row fits");
         }
         for pid in 0..active {
             buffers
                 .push(activity(
-                    150,
+                    at + 50,
                     i32::try_from(pid).expect("fixture pid"),
                     active_state,
                     query,
@@ -209,7 +216,7 @@ impl Fixture {
                 .expect("active row fits");
         }
         buffers
-            .push(activity(150, 10_000, idle_state, query))
+            .push(activity(at + 50, 10_000, idle_state, query))
             .expect("idle row fits");
         let part = buffers
             .flush(&dictionary)
@@ -218,6 +225,74 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append health fixture");
+    }
+
+    fn append_finding_rows(
+        &mut self,
+        process_rows: &[(i64, Option<i64>)],
+        statement_rows: &[(i64, i64, f64)],
+    ) {
+        let mut interner = Interner::new(DictLimits::default());
+        let label = StrId(interner.intern(b"fixture").expect("intern label").get());
+        let dictionary = dict::encode(interner.window()).expect("finding dictionary");
+        let mut buffers = SectionBuffers::new();
+        for &(ts, read_bytes) in process_rows {
+            buffers
+                .push(process(ts, read_bytes, label))
+                .expect("process row fits");
+        }
+        for &(ts, calls, total_exec_time) in statement_rows {
+            buffers
+                .push(statement(ts, calls, total_exec_time, label))
+                .expect("statement row fits");
+        }
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode finding rows")
+            .expect("nonempty finding rows");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append finding rows");
+    }
+
+    fn append_log_error(&mut self, at: i64) {
+        let mut interner = Interner::new(DictLimits::default());
+        let label = StrId(interner.intern(b"fixture").expect("intern label").get());
+        let dictionary = dict::encode(interner.window()).expect("log dictionary");
+        let mut buffers = SectionBuffers::new();
+        buffers
+            .push(PgLogErrors {
+                ts: Ts(at),
+                system_identifier: None,
+                source_file: label,
+                severity: 0,
+                category: 8,
+                sqlstate: None,
+                pattern: label,
+                count: 1,
+                sample: label,
+                detail: None,
+                hint: None,
+                context: None,
+                statement: None,
+                database: None,
+                username: None,
+            })
+            .expect("log row fits");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode log row")
+            .expect("nonempty log row");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append log row");
+    }
+
+    fn finish_and_continue(&mut self, segment_id: i64) {
+        write_segment(&self.journal, &self.writer, self.address).expect("finish segment");
+        self.journal.reset().expect("reset journal");
+        self.address = SegmentAddress::new(SegmentId::new(segment_id).expect("segment id"))
+            .expect("segment address");
     }
 
     fn append(&mut self, mut buffers: SectionBuffers) {
@@ -298,6 +373,89 @@ fn netdev(ts: i64, iface: StrId, rx_bytes: i64) -> OsNetdev {
         speed_mbit: None,
         duplex: 0,
         scope: 0,
+    }
+}
+
+fn process(ts: i64, read_bytes: Option<i64>, label: StrId) -> OsProcess {
+    OsProcess {
+        ts: Ts(ts),
+        pid: 41,
+        starttime: Ts(SEGMENT_ID - 1_000_000),
+        ppid: 1,
+        uid: 1_000,
+        euid: 1_000,
+        gid: 1_000,
+        egid: 1_000,
+        state: b'S',
+        num_threads: 1,
+        tty: 0,
+        comm: label,
+        cmdline: Some(label),
+        utime: 0,
+        stime: 0,
+        nice: 0,
+        prio: 20,
+        rtprio: 0,
+        policy: 0,
+        curcpu: 0,
+        rundelay_ns: 0,
+        blkdelay_ticks: 0,
+        nvcsw: 0,
+        nivcsw: 0,
+        minflt: 0,
+        majflt: 0,
+        vmem_kb: 0,
+        rmem_kb: 0,
+        vswap_kb: 0,
+        syscr: None,
+        syscw: None,
+        rchar: None,
+        wchar: None,
+        read_bytes,
+        write_bytes: None,
+        cancelled_write_bytes: None,
+        exit_signal: 17,
+        scope: 0,
+    }
+}
+
+fn statement(ts: i64, calls: i64, total_exec_time: f64, label: StrId) -> PgStatStatementsV2 {
+    PgStatStatementsV2 {
+        ts: Ts(ts),
+        queryid: Some(71),
+        userid: 72,
+        dbid: 73,
+        datname: None,
+        usename: None,
+        query: Some(label),
+        calls,
+        rows: 0,
+        plans: 0,
+        total_exec_time,
+        total_plan_time: 0.0,
+        min_exec_time: 0.0,
+        max_exec_time: 0.0,
+        mean_exec_time: 0.0,
+        stddev_exec_time: 0.0,
+        min_plan_time: 0.0,
+        max_plan_time: 0.0,
+        mean_plan_time: 0.0,
+        stddev_plan_time: 0.0,
+        shared_blks_hit: 0,
+        shared_blks_read: 0,
+        shared_blks_dirtied: 0,
+        shared_blks_written: 0,
+        local_blks_hit: 0,
+        local_blks_read: 0,
+        local_blks_dirtied: 0,
+        local_blks_written: 0,
+        temp_blks_read: 0,
+        temp_blks_written: 0,
+        blk_read_time: 0.0,
+        blk_write_time: 0.0,
+        wal_records: 0,
+        wal_fpi: 0,
+        wal_bytes: 0,
     }
 }
 
@@ -982,6 +1140,73 @@ fn an_hour_carries_its_segments_and_its_line_in_one_response() {
         .expect("index header");
     assert_eq!(segment["segment"]["id"], SEGMENT_ID.to_string());
     assert_eq!(segment["logical_name"], "health");
+}
+
+#[test]
+fn an_hour_reads_one_index_resource_per_segment_and_carries_every_finding() {
+    const STEP: i64 = 5 * 60 * 1_000_000;
+
+    let mut fixture = Fixture::new();
+    let process_prior = (0_i64..6)
+        .map(|at| (SEGMENT_ID + at * STEP, Some(at * 300)))
+        .collect::<Vec<_>>();
+    let statement_prior = (0_i32..6)
+        .map(|at| {
+            (
+                SEGMENT_ID + i64::from(at) * STEP,
+                i64::from(at),
+                f64::from(at) * 100.0,
+            )
+        })
+        .collect::<Vec<_>>();
+    fixture.append_finding_rows(&process_prior, &statement_prior);
+
+    let spike_at = SEGMENT_ID + 6 * STEP;
+    fixture.finish_and_continue(spike_at);
+    fixture.append_finding_rows(&[(spike_at, Some(301_500))], &[(spike_at, 6, 10_500.0)]);
+    fixture.append_postgres_health_at(spike_at, 5);
+    fixture.append_log_error(spike_at + 60);
+    fixture.finish();
+
+    let records = stream(fixture.prepare(
+        &format!(
+            "/api/hour?from={SEGMENT_ID}&to={}",
+            SEGMENT_ID + 3_600_000_000 - 1
+        ),
+        None,
+    ))
+    .expect("hour with findings");
+    let index_segments = records
+        .iter()
+        .filter(|record| record["record"] == "index")
+        .map(|record| record["segment"]["id"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        index_segments,
+        [SEGMENT_ID.to_string(), spike_at.to_string()].map(Value::from)
+    );
+
+    let findings = records
+        .iter()
+        .filter(|record| record["record"] == "finding")
+        .collect::<Vec<_>>();
+    for (logical_name, kind) in [
+        ("os_process", "spike"),
+        ("pg_stat_activity", "known_bad"),
+        ("pg_stat_statements", "spike"),
+        ("pg_log_errors", "event"),
+    ] {
+        assert!(
+            findings.iter().any(|finding| {
+                finding["logical_name"] == logical_name && finding["kind"] == kind
+            })
+        );
+    }
+    let error = findings
+        .iter()
+        .find(|finding| finding["logical_name"] == "pg_log_errors")
+        .expect("error event");
+    assert_eq!(error["category"], 8);
 }
 
 #[test]

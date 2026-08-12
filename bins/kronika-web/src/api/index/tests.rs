@@ -71,6 +71,7 @@ fn event_stream_contains_only_sparse_locator_facts() {
     };
     let mut rows = Vec::new();
     let streamed = stream_findings(
+        "pg_log_lifecycle",
         block,
         &mut |line| {
             rows.push(serde_json::from_slice::<serde_json::Value>(&line).expect("finding JSON"));
@@ -85,6 +86,7 @@ fn event_stream_contains_only_sparse_locator_facts() {
         rows[0],
         serde_json::json!({
             "record": "findings",
+            "logical_name": "pg_log_lifecycle",
             "type_id": "2006001",
             "total_hits": 1,
             "truncated": false,
@@ -94,6 +96,7 @@ fn event_stream_contains_only_sparse_locator_facts() {
         rows[1],
         serde_json::json!({
             "record": "finding",
+            "logical_name": "pg_log_lifecycle",
             "kind": "event",
             "type_id": "2006001",
             "field_ordinal": 0,
@@ -130,6 +133,7 @@ fn error_event_stream_exposes_only_the_stored_category_and_locator() {
     };
     let mut rows = Vec::new();
     stream_findings(
+        "pg_log_errors",
         block,
         &mut |line| {
             rows.push(serde_json::from_slice::<serde_json::Value>(&line).expect("finding JSON"));
@@ -142,6 +146,7 @@ fn error_event_stream_exposes_only_the_stored_category_and_locator() {
         rows[1],
         serde_json::json!({
             "record": "finding",
+            "logical_name": "pg_log_errors",
             "kind": "event",
             "type_id": "2001001",
             "field_ordinal": 0,

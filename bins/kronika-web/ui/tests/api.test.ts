@@ -483,29 +483,7 @@ test("PostgreSQL Overview requests current operational rows and no statement top
   assert.ok(requests.some(({ section }) => section === "pg_stat_database"))
 })
 
-test("section findings replace only their section and keep a stable locator order", async () => {
-  const api = await bundledApi()
-  const finding = (logicalName: string, segmentId: string, rowOrdinal: string, fieldOrdinal: number) => ({
-    segmentId, logicalName, kind: "spike" as const, typeId: "1002002", timestamp: START + 1,
-    category: null, rowOrdinal, fieldOrdinal,
-  })
-  const before = api.hourOf({
-    hour: START, availableHours: [START], segments: [], lanes: {}, health: [], points: [], lanePoints: [],
-    findings: [finding("health", "a", "0", 1), finding("pg_stat_statements", "old", "9", 10)],
-    sourceFamilies: [], availableSections: ["pg_stat_statements"],
-  })
-  const after = api.replaceFindings(before, "pg_stat_statements", [
-    finding("pg_stat_statements", "b", "2", 11),
-    finding("pg_stat_statements", "a", "2", 10),
-  ])
-  assert.deepEqual(after.findings.map((item) => [item.logicalName, item.segmentId, item.fieldOrdinal]), [
-    ["health", "a", 1],
-    ["pg_stat_statements", "a", 10],
-    ["pg_stat_statements", "b", 11],
-  ])
-})
-
-test("a table loads its sparse finding indexes from each matching segment", async () => {
+test("the timeline carries every finding without per-section index requests", async () => {
   const api = await bundledApi()
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
   const originalFetch = globalThis.fetch
@@ -513,28 +491,32 @@ test("a table loads its sparse finding indexes from each matching segment", asyn
   globalThis.fetch = async (input) => {
     const url = new URL(String(input), "http://kronika.invalid")
     seen.push(url.pathname)
-    const segmentId = url.pathname.split("/")[3]
     return ndjson([
-      { record: "findings", type_id: "1002002", total_hits: "1", truncated: false },
+      { record: "hour", from: String(START), to: String(START + 3_600_000_000 - 1), available_hours: [String(START)] },
       {
-        record: "finding", kind: "spike", type_id: "1002002", field_ordinal: 10,
-        row_ordinal: segmentId === "7" ? "5" : "3", ts: String(START + (segmentId === "7" ? 2 : 1)),
+        record: "finished_segment", id: "7", min_ts: String(START), max_ts: String(START + 10),
+        sections: [
+          { logical_name: "os_process", type_id: "1100001" },
+          { logical_name: "pg_stat_activity", type_id: "1001003" },
+          { logical_name: "pg_stat_statements", type_id: "1002002" },
+          { logical_name: "pg_log_errors", type_id: "2001001" },
+        ],
       },
+      { record: "index", segment: { id: "7" }, logical_name: "health", checksum: null },
+      { record: "finding", logical_name: "os_process", kind: "spike", type_id: "1100001", field_ordinal: 33, row_ordinal: "1", ts: String(START + 1) },
+      { record: "finding", logical_name: "pg_stat_activity", kind: "known_bad", type_id: "1001003", field_ordinal: 0, row_ordinal: "2", ts: String(START + 2) },
+      { record: "finding", logical_name: "pg_stat_statements", kind: "spike", type_id: "1002002", field_ordinal: 10, row_ordinal: "3", ts: String(START + 3) },
+      { record: "finding", logical_name: "pg_log_errors", kind: "event", type_id: "2001001", field_ordinal: 0, row_ordinal: "4", ts: String(START + 4), category: 8 },
     ])
   }
   try {
-    const findings = await api.loadSectionFindings([
-      { id: "7", minTs: START, maxTs: START + 10, sections: [{ logicalName: "pg_stat_statements", typeId: "1002002" }] },
-      { id: "8", minTs: START + 11, maxTs: START + 20, sections: [{ logicalName: "pg_stat_statements", typeId: "1002002" }] },
-      { id: "9", minTs: START + 21, maxTs: START + 30, sections: [{ logicalName: "os_process", typeId: "1100001" }] },
-    ], "pg_stat_statements", new AbortController().signal)
-    assert.deepEqual(seen, [
-      "/api/segments/7/sections/pg_stat_statements/index",
-      "/api/segments/8/sections/pg_stat_statements/index",
-    ])
-    assert.deepEqual(findings.map((item) => [item.segmentId, item.logicalName, item.rowOrdinal]), [
-      ["8", "pg_stat_statements", "3"],
-      ["7", "pg_stat_statements", "5"],
+    const timeline = await api.loadTimeline(START, new AbortController().signal)
+    assert.deepEqual(seen, ["/api/hour"])
+    assert.deepEqual(timeline.findings.map((item) => [item.segmentId, item.logicalName, item.rowOrdinal]), [
+      ["7", "os_process", "1"],
+      ["7", "pg_stat_activity", "2"],
+      ["7", "pg_stat_statements", "3"],
+      ["7", "pg_log_errors", "4"],
     ])
   } finally {
     globalThis.fetch = originalFetch

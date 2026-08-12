@@ -9,7 +9,7 @@ use kronika_index::{
     series_keys,
 };
 use kronika_reader::{SegmentKind, SegmentRef};
-use kronika_registry::{contract, section_implementation};
+use kronika_registry::{contract, logical_section_name, section_implementation};
 use serde_json::{Value, json};
 
 use super::render::record;
@@ -98,7 +98,12 @@ pub(super) fn stream_series(
     {
         for block in resource.index.blocks {
             if let SeriesBlock::Findings(block) = block {
-                if !stream_findings(block, emit, cancelled)? {
+                let finding_logical_name = if block.type_id == 0 {
+                    "health"
+                } else {
+                    logical_section_name(block.type_id).ok_or(ApiError::NoSuchSection)?
+                };
+                if !stream_findings(finding_logical_name, block, emit, cancelled)? {
                     return Ok(false);
                 }
                 continue;
@@ -177,6 +182,7 @@ pub(super) fn stream_series(
 }
 
 fn stream_findings(
+    logical_name: &str,
     block: FindingBlock,
     emit: &mut impl FnMut(Vec<u8>) -> bool,
     cancelled: &impl Fn() -> bool,
@@ -184,6 +190,7 @@ fn stream_findings(
     if cancelled()
         || !emit(record(json!({
             "record": "findings",
+            "logical_name": logical_name,
             "type_id": block.type_id.to_string(),
             "total_hits": block.total_hits,
             "truncated": block.truncated,
@@ -197,6 +204,7 @@ fn stream_findings(
         }
         let mut value = json!({
             "record": "finding",
+            "logical_name": logical_name,
             "kind": finding_kind(finding.kind),
             "type_id": block.type_id.to_string(),
             "field_ordinal": finding.field_ordinal,

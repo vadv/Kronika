@@ -123,12 +123,26 @@ pub fn resource(
     logical_name: &str,
 ) -> Result<ResourceIndex, LoadError> {
     let keys = series_keys(segment_ref, logical_name);
+    resource_selected(root, reader, segment_ref, &keys)
+}
+
+/// Load selected blocks through the same validated resource path.
+///
+/// # Errors
+///
+/// Returns reader, index, layout, build, or publication failures.
+pub fn resource_selected(
+    root: &Path,
+    reader: &Reader,
+    segment_ref: &SegmentRef,
+    keys: &[SeriesKey],
+) -> Result<ResourceIndex, LoadError> {
     match segment_ref.kind() {
         SegmentKind::Active => {
             let segment = reader.open_segment(segment_ref)?;
-            let index = build_selected_from_reader(reader, segment_ref, &segment, &keys)?;
+            let index = build_selected_from_reader(reader, segment_ref, &segment, keys)?;
             Ok(ResourceIndex {
-                index: targeted(index, &keys, None),
+                index: targeted(index, keys, None),
                 persisted: false,
             })
         }
@@ -138,8 +152,8 @@ pub fn resource(
             // Give a concurrent publisher one short recheck.
             for wait in [true, false] {
                 if let Some(mut file) = data_root.open_idx(address)?
-                    && let Ok(selected) = read_target(&mut file, &keys)
-                    && contains_targets(&selected, &keys)
+                    && let Ok(selected) = read_target(&mut file, keys)
+                    && contains_targets(&selected, keys)
                 {
                     return Ok(ResourceIndex {
                         index: selected,
@@ -159,7 +173,7 @@ pub fn resource(
                         drop(temporary.try_clone_file()?);
                         temporary.publish()?;
                         return Ok(ResourceIndex {
-                            index: targeted(index, &keys, Some(checksum)),
+                            index: targeted(index, keys, Some(checksum)),
                             persisted: true,
                         });
                     }
@@ -180,11 +194,32 @@ pub fn resource(
             let bytes = index.encode().map_err(LoadError::Bad)?;
             let checksum = encoded_checksum(&bytes)?;
             Ok(ResourceIndex {
-                index: targeted(index, &keys, Some(checksum)),
+                index: targeted(index, keys, Some(checksum)),
                 persisted: false,
             })
         }
     }
+}
+
+/// Return every sparse-finding block present in one segment.
+#[must_use]
+pub fn finding_keys(segment: &SegmentRef) -> Vec<SeriesKey> {
+    let mut keys = segment
+        .sections()
+        .iter()
+        .filter(|section| finding_layout(section.type_id))
+        .map(|section| SeriesKey {
+            kind: SeriesKind::Findings,
+            type_id: section.type_id,
+        })
+        .collect::<Vec<_>>();
+    keys.push(SeriesKey {
+        kind: SeriesKind::Findings,
+        type_id: 0,
+    });
+    keys.sort_unstable();
+    keys.dedup();
+    keys
 }
 
 /// Return the allowlisted series exposed by one logical section.

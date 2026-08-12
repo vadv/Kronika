@@ -3,7 +3,7 @@
 use std::ops::Bound::{Included, Unbounded};
 use std::path::{Path, PathBuf};
 
-use kronika_index::{resource, series_keys};
+use kronika_index::{finding_keys, resource_selected, series_keys};
 use kronika_reader::{Reader, SegmentKind, SegmentRef};
 use serde_json::json;
 
@@ -138,10 +138,11 @@ impl PreparedHour {
             if cancelled() {
                 return Ok(());
             }
-            if series_keys(segment, SERIES).is_empty() {
-                continue;
-            }
-            let resource = resource(&root, &reader, segment, SERIES)?;
+            let mut keys = series_keys(segment, SERIES);
+            keys.extend(finding_keys(segment));
+            keys.sort_unstable();
+            keys.dedup();
+            let resource = resource_selected(&root, &reader, segment, &keys)?;
             if !emit(record(json!({
                 "record": "index",
                 "segment": { "id": segment.id().to_string() },
