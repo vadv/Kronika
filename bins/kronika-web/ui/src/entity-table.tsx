@@ -106,7 +106,6 @@ export function EntityTable({
     getCoreRowModel: getCoreRowModel(),
     getRowId: (row) => rowKey(row),
     getSortedRowModel: getSortedRowModel(),
-    // Server-truncated rows must also be sorted by the server.
     manualSorting: serverSorted === true,
     onSortingChange: (updater) => {
       const next = typeof updater === "function" ? updater(ordering) : updater

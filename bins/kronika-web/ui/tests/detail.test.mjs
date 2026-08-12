@@ -24,7 +24,6 @@ function row(timestamp, values, segmentId = "segment-a", ordinal = "0") {
 }
 
 test("a counter is drawn as the rate between two readings", () => {
-  // Two seconds apart, in microseconds; the first reading has nothing before it.
   const series = detail.processLensHistory([
     row(3_000_000, { pid: 77, starttime: 10, stime: 30 }, "segment-a", "2"),
     row(1_000_000, { pid: 77, starttime: 10, stime: 10 }, "segment-a", "0"),
