@@ -1,5 +1,5 @@
 import { Activity, HelpCircle, Languages, LogOut, Moon, Sun } from "lucide-react"
-import { dictionaries } from "kronika:i18n"
+import { translation } from "kronika:i18n"
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
 import { createRoot } from "react-dom/client"
 
@@ -117,7 +117,7 @@ function Kronika() {
   const session = useSyncExternalStore(subscribeSession, getSessionSnapshot, getSessionSnapshot)
   const [locale, setLocale] = useState<Locale>(initialLocale)
   const t = useMemo<Translate>(() => (key, slots = {}) => {
-    const template = dictionaries[locale][key as keyof typeof dictionaries.en] ?? dictionaries.en[key as keyof typeof dictionaries.en] ?? key
+    const template = translation(locale, key) ?? key
     return interpolate(template, slots)
   }, [locale])
   useEffect(() => {
@@ -161,7 +161,7 @@ function App({ locale, onLocale, t }: {
   const [findingResolution, setFindingResolution] = useState<FindingResolution>("idle")
   const [findingPoints, setFindingPoints] = useState<readonly ChartPoint[]>([])
   const [systemFocus, setSystemFocus] = useState<Finding | null>(null)
-  const context = useMemo(() => selectedFinding === null ? null : entityContext(selectedFinding, findingRow), [findingRow, selectedFinding])
+  const context = useMemo(() => selectedFinding === null ? null : entityContext(selectedFinding, findingRow, t), [findingRow, selectedFinding, t])
   const clearEntityContext = useCallback(() => {
     setSelectedFinding(null)
     setEventScope(null)
@@ -453,13 +453,13 @@ function App({ locale, onLocale, t }: {
       setFindingResolution("idle")
       return
     }
-    const loaded = resolveLocator(data, selectedFinding)?.row ?? null
-    if (loaded !== null) {
-      setFindingRow(loaded)
+    if (findingRow !== null && rowMatchesLocator(findingRow, selectedFinding)) {
       setFindingResolution("ready")
       return
     }
-    if (findingRow !== null && rowMatchesLocator(findingRow, selectedFinding)) {
+    const loaded = resolveLocator(data, selectedFinding)?.row ?? null
+    if (loaded !== null) {
+      setFindingRow(loaded)
       setFindingResolution("ready")
       return
     }

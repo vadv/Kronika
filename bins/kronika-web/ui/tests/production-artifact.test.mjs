@@ -12,9 +12,12 @@ const AT = HOUR + 1_800_000_000
 const SEGMENT = "artifact-wire-segment"
 const ARTIFACT = process.env.KRONIKA_UI_ARTIFACT ?? new URL("../kronika-ui.html.gz", import.meta.url)
 
-test("the production artifact reads external snapshot row keys", { timeout: 30_000 }, async () => {
+test("the production artifact preserves wire keys and exact finding page state", { timeout: 30_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const requests = []
+  let heldContextPage = null
+  let contextPageRequested
+  const contextPage = new Promise((resolve) => { contextPageRequested = resolve })
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
     if (url.pathname === "/") {
@@ -34,7 +37,22 @@ test("the production artifact reads external snapshot row keys", { timeout: 30_0
     }
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
       requests.push({ authorization: request.headers.authorization, path: url.pathname, query: url.search })
-      ndjson(response, snapshotRecords())
+      const sections = url.searchParams.getAll("section")
+      if (url.searchParams.has("row_ordinal")) {
+        ndjson(response, statementRecords(false))
+      } else if (sections.includes("pg_stat_statements")) {
+        const filtered = ["queryid", "userid", "dbid", "toplevel"].every((field) => url.searchParams.has(`where.${field}`))
+        if (filtered && heldContextPage === null) {
+          heldContextPage = response
+          contextPageRequested()
+        } else {
+          ndjson(response, statementRecords(true, filtered ? 1 : 0))
+        }
+      } else if (sections.includes("pg_stat_activity")) {
+        ndjson(response, snapshotRecords())
+      } else {
+        ndjson(response, [])
+      }
       return
     }
     response.writeHead(404)
@@ -112,6 +130,49 @@ test("the production artifact reads external snapshot row keys", { timeout: 30_0
     assert.equal(rendered.missing, null)
     assert.ok(requests.some(({ path }) => path === `/api/segments/${SEGMENT}/snapshot`))
     assert.ok(requests.every(({ authorization }) => authorization === "Basic YXJ0aWZhY3Q6d2lyZQ=="))
+
+    await cdp.evaluate(`([...document.querySelectorAll(".source-tabs button")].find((button) => button.textContent === "Events")).click()`)
+    await cdp.waitFor(`document.querySelector(".event-item button") !== null`, "the statement finding")
+    await cdp.evaluate(`document.querySelector(".event-item button").click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="entity-context-filter"]') !== null`, "the exact statement context")
+    await contextPage
+    const preview = await cdp.evaluate(`(() => ({
+      chip: document.querySelector('[data-testid="entity-context-filter"]')?.textContent ?? "",
+      detail: document.querySelector(".pg-detail") !== null,
+      row: document.querySelector('[data-testid="pg-statements-table"] .entity-row')?.textContent ?? "",
+      search: document.querySelector('[data-testid="table-filter"]')?.getAttribute("aria-label") ?? "",
+      status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent ?? "",
+    }))()`)
+    assert.match(preview.chip, /Query 9007199254740991 · operators · reporterShow all/)
+    assert.doesNotMatch(preview.chip, /queryid=|userid=|dbid=|toplevel=/)
+    assert.match(preview.row, /select artifact_exact_context/)
+    assert.match(preview.search, /Filter rows by text/)
+    assert.match(preview.status, /filtered page is loading/i)
+    assert.doesNotMatch(preview.status, /Loaded 0 of 0/)
+    assert.equal(preview.detail, false)
+
+    ndjson(heldContextPage, statementRecords(true, 1))
+    heldContextPage = null
+    await cdp.waitFor(
+      `document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent.includes("Loaded 1 of 1") === true`,
+      "the settled identity-filtered page count",
+    )
+    const identityRequest = requests.find(({ query }) => query.includes("where.queryid=") && query.includes("page_size=200"))
+    assert.notEqual(identityRequest, undefined, JSON.stringify(requests.map(({ query }) => query), null, 2))
+    const identityQuery = new URLSearchParams(identityRequest.query)
+    assert.equal(identityQuery.get("where.queryid"), "9007199254740991")
+    assert.equal(identityQuery.get("where.userid"), "10")
+    assert.equal(identityQuery.get("where.dbid"), "20")
+    assert.equal(identityQuery.get("where.toplevel"), "true")
+    assert.equal(identityQuery.get("type_id"), "1002003")
+    assert.equal(identityQuery.get("page_size"), "200")
+    const exactRequest = requests.find(({ query }) => query.includes("row_ordinal=91"))
+    assert.notEqual(exactRequest, undefined)
+    assert.equal(new URLSearchParams(exactRequest.query).has("page_size"), false)
+    await delay(600)
+    assert.equal(requests.filter(({ query }) => query.includes("where.queryid=") && query.includes("page_size=200")).length, 1)
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-statements-table"] .entity-row').click()`)
+    await cdp.waitFor(`document.querySelector(".pg-detail") !== null`, "detail after explicit row selection")
     assert.deepEqual(errors, [])
     assert.deepEqual(external, [])
   } finally {
@@ -134,9 +195,16 @@ function timelineRecords() {
       sections: [{
         logical_name: "pg_stat_activity", physical_name: "pg_stat_activity", type_id: "1001003",
         implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256",
+      }, {
+        logical_name: "pg_stat_statements", physical_name: "pg_stat_statements", type_id: "1002003",
+        implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "512",
       }],
     },
     { record: "index", segment: { id: SEGMENT }, logical_name: "health", checksum: null },
+    {
+      record: "finding", logical_name: "pg_stat_statements", kind: "spike", type_id: "1002003",
+      field_ordinal: 11, row_ordinal: "91", ts: String(AT),
+    },
   ]
 }
 
@@ -159,6 +227,25 @@ function snapshotRecords() {
         String(AT - 60_000_000), String(AT - 30_000_000), String(AT - 5_000_000), String(AT - 1_000_000),
       ],
     },
+  ]
+}
+
+function statementRecords(page, eligible = 1) {
+  const columns = ["ts", "queryid", "userid", "dbid", "toplevel", "datname", "usename", "query", "calls", "rows", "total_exec_time"]
+  return [
+    {
+      record: "layout", rates: ["calls", "rows", "total_exec_time"],
+      layout: { type_id: "1002003", logical_name: "pg_stat_statements", columns: columns.map((name) => ({ name })) },
+    },
+    ...(eligible === 0 ? [] : [{
+      record: "row", type_id: "1002003", ordinal: "91", timestamp: String(AT),
+      values: [String(AT), "9007199254740991", 10, 20, true, "operators", "reporter", "select artifact_exact_context", 2, 1, 7.5],
+    }]),
+    ...(page ? [{
+      record: "snapshot_page", logical_name: "pg_stat_statements", eligible: String(eligible), returned: String(eligible),
+      has_more: false, truncated: false, next_cursor: null, page_size: 200,
+      order_by: ["total_exec_time", "calls"], order_direction: "desc", from: String(AT - 5_000_000), to: String(AT),
+    }] : []),
   ]
 }
 

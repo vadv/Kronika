@@ -1,6 +1,7 @@
 import { registry } from "kronika:registry"
 
 import { type DataRow, type Finding } from "./api"
+import type { Translate } from "./help"
 import { rawText, value } from "./model"
 
 export interface EntityContext {
@@ -12,7 +13,7 @@ export interface EntityContext {
 
 export type FindingRoute = "activity" | "databases" | "events" | "locks" | "overview" | "plans" | "processes" | "statements" | "system"
 
-export function entityContext(finding: Finding, row: DataRow | null): EntityContext | null {
+export function entityContext(finding: Finding, row: DataRow | null, t?: Translate): EntityContext | null {
   const layout = registry.find((candidate) => candidate.typeId === finding.typeId)
   if (row === null || row.logicalName !== finding.logicalName || row.typeId !== finding.typeId
     || layout === undefined) return null
@@ -23,7 +24,7 @@ export function entityContext(finding: Finding, row: DataRow | null): EntityCont
   const exact = identity as readonly (readonly [string, string])[]
   return {
     identity: exact,
-    label: contextLabel(row, exact),
+    label: contextLabel(row, exact, t),
     logicalName: finding.logicalName,
     typeId: finding.typeId,
   }
@@ -56,8 +57,22 @@ export function findingRoute(finding: Finding): FindingRoute {
   return name.startsWith("pg_") && !name.startsWith("pg_log_") ? "overview" : "events"
 }
 
-function contextLabel(row: DataRow, identity: readonly (readonly [string, string])[]): string {
+function contextLabel(row: DataRow, identity: readonly (readonly [string, string])[], t?: Translate): string {
   const pid = rawText(value(row, "pid"))
   if ((row.logicalName === "os_process" || row.logicalName === "pg_stat_activity") && pid !== null) return `PID ${pid}`
+  const subject = row.logicalName === "pg_stat_statements"
+    ? translated(t, "filter.context.query", "Query {id}", { id: rawText(value(row, "queryid")) ?? "—" })
+    : row.logicalName === "pg_store_plans"
+      ? translated(t, "filter.context.plan", "Plan {id}", { id: rawText(value(row, "planid")) ?? "—" })
+      : null
+  if (subject !== null) {
+    const scope = [rawText(value(row, "datname")), rawText(value(row, "usename"))].filter((part): part is string => part !== null && part !== "")
+    return [subject, ...scope].join(" · ")
+  }
   return identity.map(([field, stored]) => `${field}=${stored}`).join(" · ")
+}
+
+function translated(t: Translate | undefined, key: string, fallback: string, slots: Readonly<Record<string, string>>): string {
+  const template = t?.(key, slots) ?? Object.entries(slots).reduce((text, [name, stored]) => text.replace(`{${name}}`, stored), fallback)
+  return template
 }

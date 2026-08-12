@@ -53,8 +53,9 @@ export async function dictionaryModule(directory) {
   ])
   const english = parseDictionary(englishSource, "en.yaml")
   const russian = parseDictionary(russianSource, "ru.yaml")
-  validateDictionaries(english, russian)
-  return `export const dictionaries=${JSON.stringify({ en: english, ru: russian })} as const;export type TranslationKey=keyof typeof dictionaries.en;`
+  const keys = validateDictionaries(english, russian)
+  const messages = Object.fromEntries(keys.map((key) => [key, [english[key], russian[key]]]))
+  return `const messages=${JSON.stringify(messages)} as const;export type TranslationKey=keyof typeof messages;export const translation=(locale:"en"|"ru",key:string)=>messages[key as TranslationKey]?.[locale==="ru"?1:0];`
 }
 
 function placeholders(value) {

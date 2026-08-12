@@ -21,10 +21,11 @@ export function TableFilter({
 }) {
   return <div className="table-filter">
     {context !== undefined && <span className="entity-context-filter" data-testid="entity-context-filter">
-      {t("filter.entity", { entity: context })}
-      <button aria-label={t("filter.show_all")} onClick={onContextClear} type="button"><X aria-hidden="true" size={11} /></button>
+      <strong>{context}</strong>
+      <button onClick={onContextClear} type="button"><X aria-hidden="true" size={11} />{t("filter.show_all")}</button>
     </span>}
-    {onPattern !== undefined && <><Search aria-hidden="true" size={12} />
+    {context !== undefined && onPattern !== undefined && <span className="filter-intersection">{t("filter.and")}</span>}
+    {onPattern !== undefined && <><span className="table-text-search"><Search aria-hidden="true" size={12} /><span>{t("filter.text")}</span></span>
       <input
       aria-label={t("filter.label")}
       data-testid="table-filter"

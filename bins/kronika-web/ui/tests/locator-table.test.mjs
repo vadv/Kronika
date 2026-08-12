@@ -120,6 +120,21 @@ test("the context chip is visible and removable without changing row selection",
   assert.match(entity, /onClick=\{\(\) => onSelect\?\.\(row\.original\)\}/)
   assert.match(app, /Object\.fromEntries\(pageContext\.identity\)/)
   assert.doesNotMatch(app, /setFind\(""\)/)
+  assert.ok(
+    app.indexOf("findingRow !== null && rowMatchesLocator(findingRow, selectedFinding)")
+      < app.indexOf("const loaded = resolveLocator(data, selectedFinding)?.row ?? null"),
+    "the stable exact locator must win before a newly allocated paged row",
+  )
+})
+
+test("the human context chip and ordinary search are visibly intersected", async () => {
+  const source = await readFile(new URL("../src/table-filter.tsx", import.meta.url), "utf8")
+  assert.match(source, /<strong>\{context\}<\/strong>/)
+  assert.match(source, /filter\.show_all/)
+  assert.match(source, /filter\.and/)
+  assert.match(source, /filter\.text/)
+  assert.match(source, /value=\{pattern\}/)
+  assert.doesNotMatch(source, /filter\.entity/)
 })
 
 test("paged tables keep virtualization and trigger the guarded near-end callback", async () => {

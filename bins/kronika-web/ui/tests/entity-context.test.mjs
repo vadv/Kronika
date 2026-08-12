@@ -21,6 +21,16 @@ function row(logicalName, typeId, ordinal, values) {
 function finding(stored, fieldOrdinal = 1) {
   return { category: null, fieldOrdinal, kind: "known_bad", logicalName: stored.logicalName, rowOrdinal: stored.ordinal, segmentId: stored.segmentId, timestamp: stored.timestamp, typeId: stored.typeId }
 }
+function translator(locale) {
+  const messages = {
+    en: { "filter.context.query": "Query {id}", "filter.context.plan": "Plan {id}" },
+    ru: { "filter.context.query": "Запрос {id}", "filter.context.plan": "План {id}" },
+  }
+  return (key, slots = {}) => Object.entries(slots).reduce(
+    (text, [name, stored]) => text.replace(`{${name}}`, stored),
+    messages[locale][key] ?? key,
+  )
+}
 
 test("finding routes choose the shared entity lens", () => {
   assert.equal(helpers.findingRoute(finding(row("os_process", "1100001", "1", {}), 3)), "processes")
@@ -33,8 +43,8 @@ test("finding routes choose the shared entity lens", () => {
 test("context keeps the complete physical identity and type", () => {
   const process = row("os_process", "1100001", "1", { pid: 41, starttime: "9007199254740997", read_bytes: 3 })
   const oldStatement = row("pg_stat_statements", "1002001", "2", { queryid: "9", userid: "10", dbid: "11", query: "select 1" })
-  const newStatement = row("pg_stat_statements", "1002003", "3", { queryid: "9", userid: "10", dbid: "11", toplevel: false, query: "select 1" })
-  const plan = row("pg_store_plans", "1003001", "4", { userid: "10", dbid: "11", queryid: "9", planid: "12", plan: "Scan t" })
+  const newStatement = row("pg_stat_statements", "1002003", "3", { queryid: "9", userid: "10", dbid: "11", toplevel: false, datname: "app", usename: "reporter", query: "select 1" })
+  const plan = row("pg_store_plans", "1003001", "4", { userid: "10", dbid: "11", queryid: "9", planid: "12", datname: "app", usename: "reporter", plan: "Scan t" })
   const database = row("pg_stat_database", "1005001", "5", { datid: "16384", datname: "app" })
   const device = row("os_diskstats", "1108001", "6", { major: 8, minor: 1, device: "sda1" })
   const activity = row("pg_stat_activity", "1001003", "7", { pid: 42, backend_start: "9007199254740999", query: "select 1" })
@@ -43,10 +53,15 @@ test("context keeps the complete physical identity and type", () => {
   assert.equal(processContext.label, "PID 41")
   assert.deepEqual(processContext.identity, [["pid", "41"], ["starttime", "9007199254740997"]])
   assert.deepEqual(helpers.entityContext(finding(oldStatement), oldStatement).identity, [["queryid", "9"], ["userid", "10"], ["dbid", "11"]])
-  const statementContext = helpers.entityContext(finding(newStatement), newStatement)
+  const statementContext = helpers.entityContext(finding(newStatement), newStatement, translator("en"))
   assert.equal(statementContext.typeId, "1002003")
+  assert.equal(statementContext.label, "Query 9 · app · reporter")
+  assert.doesNotMatch(statementContext.label, /queryid=|userid=|dbid=|toplevel=/)
   assert.deepEqual(statementContext.identity, [["queryid", "9"], ["userid", "10"], ["dbid", "11"], ["toplevel", "false"]])
-  assert.deepEqual(helpers.entityContext(finding(plan), plan).identity, [["userid", "10"], ["dbid", "11"], ["queryid", "9"], ["planid", "12"]])
+  const planContext = helpers.entityContext(finding(plan), plan, translator("ru"))
+  assert.equal(planContext.label, "План 12 · app · reporter")
+  assert.doesNotMatch(planContext.label, /queryid=|userid=|dbid=|planid=/)
+  assert.deepEqual(planContext.identity, [["userid", "10"], ["dbid", "11"], ["queryid", "9"], ["planid", "12"]])
   assert.deepEqual(helpers.entityContext(finding(database), database).identity, [["datid", "16384"]])
   assert.deepEqual(helpers.entityContext(finding(device), device).identity, [["major", "8"], ["minor", "1"]])
   const activityContext = helpers.entityContext(finding(activity), activity)

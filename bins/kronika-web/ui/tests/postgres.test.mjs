@@ -357,23 +357,45 @@ test("dense paging resets, ignores stale work, and preserves retry state", async
   assert.match(source, /action\.load\(action\.failed\)/)
 })
 
-test("an exact finding row wins over the previous PostgreSQL selection", () => {
+test("an exact finding never opens PostgreSQL detail without an explicit row selection", () => {
   const first = { ...row("1001001", { pid: 7 }), ordinal: "0" }
   const focus = { ...row("1001001", { pid: 8 }), ordinal: "1" }
-  assert.equal(helpers.selectedEntity([first, focus], first, focus, "pg_stat_activity"), focus)
+  assert.equal(helpers.selectedEntity([first, focus], null, "pg_stat_activity"), null)
+  assert.equal(helpers.selectedEntity([first, focus], first, "pg_stat_activity"), first)
 })
 
 test("an off-page finding is contextualized without appending to the ranked page", async () => {
   const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
-  assert.match(source, /contextualRows\(ranked, active, exact\)/)
+  assert.match(source, /contextualRows\(ranked, activeContext, exactFocus\)/)
   assert.doesNotMatch(source, /\[\.\.\.ranked,[^\]]*focus/)
   assert.match(source, /contextLabel=\{activeContext\?\.label\}/)
 })
 
 test("PostgreSQL detail never opens a row that was not selected", () => {
   const first = { ...row("1002006", { queryid: 7, userid: 8, dbid: 9, toplevel: true }), ordinal: "0" }
-  assert.equal(helpers.selectedEntity([first], null, null, "pg_stat_statements"), null)
-  assert.equal(helpers.selectedEntity([], first, null, "pg_stat_statements"), null)
+  assert.equal(helpers.selectedEntity([first], null, "pg_stat_statements"), null)
+  assert.equal(helpers.selectedEntity([], first, "pg_stat_statements"), null)
+})
+
+test("an exact locator preview never inherits settled zero page counts", () => {
+  const dictionary = {
+    "pg.table.cursor": "Cursor {time}", "pg.table.focus_loading": "Exact result; page loading",
+    "pg.table.focus_outside": "Exact result outside page", "pg.table.focus_exact": "Exact focused result",
+    "pg.table.interval": "Interval {from} to {to}", "pg.table.interval_unavailable": "No interval",
+    "pg.table.filter": "Filter {pattern}", "pg.table.no_filter": "No filter", "pg.table.order_default": "Default",
+    "pg.table.shown": "Loaded {returned} of {eligible}",
+  }
+  const t = (key, slots = {}) => Object.entries(slots).reduce((text, [name, value]) => text.replace(`{${name}}`, value), dictionary[key] ?? key)
+  const loading = renderToStaticMarkup(helpers.tableState(undefined, 0, 1_800_000_000_000_000, "", undefined, "en", t, "loading"))
+  assert.match(loading, /Exact result; page loading/)
+  assert.match(loading, /Exact focused result/)
+  assert.doesNotMatch(loading, /Loaded 0 of 0/)
+
+  const settled = renderToStaticMarkup(helpers.tableState({
+    logicalName: "pg_stat_stat_statements", eligible: 1, returned: 1, hasMore: false, truncated: false,
+    nextCursor: null, pageSize: 200, orderBy: ["total_exec_time"], orderDirection: "desc", from: 1, to: 2,
+  }, 1, 1_800_000_000_000_000, "", undefined, "en", t))
+  assert.match(settled, /Loaded 1 of 1/)
 })
 
 test("database totals omit PostgreSQL's shared-object statistics row", () => {

@@ -4,7 +4,7 @@ import { registry } from "kronika:registry"
 
 import type { DataRow, Finding, HourData, SnapshotRows } from "./api"
 import { buildMetricSamples } from "./chart"
-import { contextualRows, type EntityContext } from "./entity-context"
+import { contextMatches, contextualRows, type EntityContext } from "./entity-context"
 import { EntityTable, unit, type EntityColumn, type TableOrder } from "./entity-table"
 import type { Translate } from "./help"
 import { fieldNameForLocator, loadSeries, loadSnapshot } from "./api"
@@ -427,14 +427,13 @@ function PgEntityView({
   const ranked = useMemo(() => dense
     ? allRows.map(decoratePostgresIntervalRow)
     : snapshot(allRows, cursor), [allRows, cursor, dense])
-  const rows = useMemo(() => {
-    const active = context?.logicalName === section ? context : null
-    const exact = focus === null || focus.logicalName !== section || (dense && pattern?.trim() !== "")
-      ? null : dense ? decoratePostgresIntervalRow(focus) : focus
-    const contextual = contextualRows(ranked, active, exact)
-    return transformRows === undefined ? contextual : transformRows(contextual)
-  }, [context, dense, focus, pattern, ranked, section, transformRows])
   const activeContext = context?.logicalName === section ? context : null
+  const exactFocus = useMemo(() => focus === null || focus.logicalName !== section || (dense && pattern?.trim() !== "")
+    ? null : dense ? decoratePostgresIntervalRow(focus) : focus, [dense, focus, pattern, section])
+  const rows = useMemo(() => {
+    const contextual = contextualRows(ranked, activeContext, exactFocus)
+    return transformRows === undefined ? contextual : transformRows(contextual)
+  }, [activeContext, exactFocus, ranked, transformRows])
   const rates = data.rateColumns[section] ?? NO_RATES
   const visibleColumns = useMemo(
     () => visibleEntityColumns(columns, rows, rates),
@@ -446,13 +445,17 @@ function PgEntityView({
   )
   const [selected, setSelected] = useState<DataRow | null>(null)
   useEffect(() => {
-    setSelected((current) => selectedEntity(rows, current, focus, section))
-  }, [focus, rows, section])
+    setSelected((current) => selectedEntity(rows, current, section))
+  }, [rows, section])
   const selectedKey = selected === null ? null : rowKey(selected)
   const selectedHistoryField = findingHistoryField(visibleColumns, finding, historyField)
   const metadata = data.snapshotRows.find((meta) => meta.logicalName === section)
+  const focusPreview = exactFocus !== null && activeContext !== null
+    && (densePageState === "loading" || !ranked.some((row) => contextMatches(row, activeContext)))
+    ? densePageState === "loading" ? "loading" : "outside"
+    : null
   const snapshotStatus = dense
-    ? tableState(metadata, ranked.length, cursor, pattern, activeOrder, locale, t)
+    ? tableState(metadata, ranked.length, cursor, pattern, activeOrder, locale, t, focusPreview)
     : undefined
   const canLoadMore = metadata?.hasMore === true && metadata.nextCursor !== null
   const paging = dense && (densePageState !== "idle" || canLoadMore)
@@ -475,6 +478,7 @@ export function tableState(
   order: TableOrder | undefined,
   locale: Locale,
   t: Translate,
+  focusPreview: "loading" | "outside" | null = null,
 ): ReactNode {
   const count = (value: number) => new Intl.NumberFormat(locale).format(value)
   const shown = t("pg.table.shown", { "returned": count(rowCount), "eligible": count(metadata?.eligible ?? rowCount) })
@@ -485,12 +489,15 @@ export function tableState(
     : t("pg.table.interval", { from: formatUtc(metadata.from), to: formatUtc(metadata.to) })
   return <>
     <span>{t("pg.table.cursor", { time: formatUtc(cursor) })}</span>
-    <span>{interval}</span>
-    <span>{pattern?.trim() ? t("pg.table.filter", { pattern: pattern.trim() }) : t("pg.table.no_filter")}</span>
-    <span>{semanticOrder === null || serverOrder === null
-      ? t("pg.table.order_default")
-      : t("pg.table.order", { semantic: t(`pg.field.${semanticOrder}.label`), physical: serverOrder, direction: t("pg.table.desc") })}</span>
-    <strong>{shown}</strong>
+    {focusPreview !== null && <span>{t(`pg.table.focus_${focusPreview}`)}</span>}
+    {focusPreview === null && <>
+      <span>{interval}</span>
+      <span>{pattern?.trim() ? t("pg.table.filter", { pattern: pattern.trim() }) : t("pg.table.no_filter")}</span>
+      <span>{semanticOrder === null || serverOrder === null
+        ? t("pg.table.order_default")
+        : t("pg.table.order", { semantic: t(`pg.field.${semanticOrder}.label`), physical: serverOrder, direction: t("pg.table.desc") })}</span>
+    </>}
+    <strong>{focusPreview === null ? shown : t("pg.table.focus_exact")}</strong>
   </>
 }
 
@@ -602,11 +609,7 @@ export function sameEntity(left: DataRow, right: DataRow, section: string): bool
   return left.typeId === right.typeId && identityFields(section, left.typeId).every((field) => rawText(value(left, field)) === rawText(value(right, field)))
 }
 
-export function selectedEntity(rows: readonly DataRow[], current: DataRow | null, focus: DataRow | null, section: string): DataRow | null {
-  if (focus !== null) {
-    const exact = rows.find((row) => rowKey(row) === rowKey(focus))
-    if (exact !== undefined) return exact
-  }
+export function selectedEntity(rows: readonly DataRow[], current: DataRow | null, section: string): DataRow | null {
   if (current !== null) {
     const advanced = rows.find((row) => sameEntity(row, current, section))
     if (advanced !== undefined) return advanced
