@@ -19,45 +19,35 @@ const TEST_REGISTRY = [
   {
     typeId: "1105001",
     logicalName: "os_loadavg",
-    columns: [{ name: "ts" }, { name: "load1" }, { name: "load5" }],
+    columns: ["ts", "load1", "load5"],
   },
   {
     typeId: "1005001",
     logicalName: "pg_stat_database",
-    columns: [{ name: "ts" }, { name: "datid" }, { name: "datname" }, { name: "xact_commit" }],
+    columns: ["ts", "datid", "datname", "xact_commit"],
   },
   {
     typeId: "2001001",
     logicalName: "pg_log_errors",
-    columns: [{ name: "ts" }, { name: "message" }, { name: "category" }],
+    columns: ["ts", "message", "category"],
   },
   {
     typeId: "1002001",
     logicalName: "pg_stat_statements",
     identity: ["queryid", "userid", "dbid"],
-    columns: [
-      { name: "ts" }, { name: "queryid" }, { name: "userid" }, { name: "dbid" },
-      { name: "query" }, { name: "calls" }, { name: "total_time" }, { name: "rows" },
-    ],
+    columns: ["ts", "queryid", "userid", "dbid", "query", "calls", "total_time", "rows"],
   },
   {
     typeId: "1002002",
     logicalName: "pg_stat_statements",
     identity: ["queryid", "userid", "dbid"],
-    columns: [
-      { name: "ts" }, { name: "queryid" }, { name: "userid" }, { name: "dbid" },
-      { name: "query" }, { name: "calls" }, { name: "total_exec_time" }, { name: "rows" },
-      { name: "wal_bytes" },
-    ],
+    columns: ["ts", "queryid", "userid", "dbid", "query", "calls", "total_exec_time", "rows", "wal_bytes"],
   },
   {
     typeId: "1003001",
     logicalName: "pg_store_plans",
     identity: ["userid", "dbid", "queryid", "planid"],
-    columns: [
-      { name: "ts" }, { name: "userid" }, { name: "dbid" }, { name: "queryid" },
-      { name: "planid" }, { name: "plan" }, { name: "calls" }, { name: "total_time" },
-    ],
+    columns: ["ts", "userid", "dbid", "queryid", "planid", "plan", "calls", "total_time"],
   },
 ]
 

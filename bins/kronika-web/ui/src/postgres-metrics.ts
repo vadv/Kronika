@@ -137,7 +137,7 @@ export function postgresLayout(typeId: string): PostgresLayout | null {
   const kind = LAYOUT_KINDS[typeId]
   const layout = REGISTRY_BY_TYPE_ID.get(typeId)
   if (kind === undefined || layout === undefined || layout.logicalName !== kind.section) return null
-  const available = new Set(layout.columns.map((column) => column.name))
+  const available = new Set(layout.columns)
   return {
     typeId,
     section: kind.section,

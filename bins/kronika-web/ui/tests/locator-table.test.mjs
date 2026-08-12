@@ -47,7 +47,7 @@ const compiled = await build({
 const helpers = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString("base64")}`)
 
 function layout(typeId, logicalName, identity, fields) {
-  return { typeId, logicalName, identity, columns: [...new Set(fields)].map((name) => ({ name })) }
+  return { typeId, logicalName, identity, columns: [...new Set(fields)] }
 }
 
 const row = { segmentId: "segment-a", logicalName: "os_process", typeId: "1100001", ordinal: "7", timestamp: 100, values: { pid: 9, read_bytes: 12 } }

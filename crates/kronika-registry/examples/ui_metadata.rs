@@ -8,7 +8,7 @@ use arrow_schema as _;
 use arrow_select as _;
 use bytes as _;
 use kronika_derive as _;
-use kronika_registry::{logical_section_name, registry, section_implementation};
+use kronika_registry::{logical_section_name, registry};
 use parquet as _;
 use serde_json::json;
 use thrift as _;
@@ -20,19 +20,8 @@ fn main() -> io::Result<()> {
             json!({
                 "typeId": contract.type_id.get().to_string(),
                 "logicalName": logical_section_name(contract.type_id.get()),
-                "physicalName": contract.name,
-                "implementation": section_implementation(contract.type_id.get()),
-                "semantics": contract.semantics.code(),
-                "deprecated": contract.deprecated,
-                "sortKey": contract.sort_key,
                 "identity": contract.identity,
-                "columns": contract.columns.iter().map(|column| json!({
-                    "name": column.name,
-                    "type": column.ty.code(),
-                    "class": column.class.code(),
-                    "unit": column.unit.map_or("none", kronika_registry::Unit::code),
-                    "nullable": column.nullable,
-                })).collect::<Vec<_>>(),
+                "columns": contract.columns.iter().map(|column| column.name).collect::<Vec<_>>(),
             })
         })
         .collect::<Vec<_>>();

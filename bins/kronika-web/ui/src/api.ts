@@ -467,7 +467,7 @@ export function requestsForSegment(
     const { fieldsByType: _fieldsByType, typeIds: _typeIds, ...base } = request
     return unique(typeIds).flatMap((typeId) => {
       const physical = new Set(
-        REGISTRY_BY_TYPE_ID.get(typeId)?.columns.map((column) => column.name) ?? [],
+        REGISTRY_BY_TYPE_ID.get(typeId)?.columns ?? [],
       )
       const projection = request.fieldsByType?.[typeId] ?? request.fields ?? []
       const fields = unique(projection.filter((field) => physical.has(field)))
@@ -505,7 +505,7 @@ export function fieldNameForLocator(locator: Pick<Finding, "typeId" | "fieldOrdi
     if (locator.fieldOrdinal === 1) return "overall_health"
     return null
   }
-  return REGISTRY_BY_TYPE_ID.get(locator.typeId)?.columns[locator.fieldOrdinal]?.name ?? null
+  return REGISTRY_BY_TYPE_ID.get(locator.typeId)?.columns[locator.fieldOrdinal] ?? null
 }
 
 export function resolveLoadedRow(

@@ -15,7 +15,7 @@ const compiled = await build({
     setup(context) {
       context.onResolve({ filter: /^kronika:registry$/ }, () => ({ namespace: "registry", path: "registry" }))
       context.onLoad({ filter: /.*/, namespace: "registry" }, () => ({
-        contents: 'export const registry=[{typeId:"1104001",logicalName:"os_meminfo",columns:[{name:"ts"},{name:"mem_total"},{name:"mem_available"}]}]',
+        contents: 'export const registry=[{typeId:"1104001",logicalName:"os_meminfo",columns:["ts","mem_total","mem_available"]}]',
       }))
     },
   }],

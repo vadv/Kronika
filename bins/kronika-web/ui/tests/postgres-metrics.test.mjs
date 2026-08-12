@@ -25,7 +25,7 @@ const wal = ["wal_records", "wal_fpi", "wal_bytes"]
 function layout(typeId, logicalName, identity, columns) {
   return {
     typeId, logicalName, identity,
-    columns: ["ts", ...columns, "private_text"].map((name) => ({ name })),
+    columns: ["ts", ...columns, "private_text"],
   }
 }
 
