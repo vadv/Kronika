@@ -6,7 +6,7 @@
 //! means one thing on a machine and another inside a container is worse than
 //! no lane at all, so every one of them is a share of its own ceiling.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use kronika_reader::{Cell, Dictionary, Resolved, Row, Segment};
 use kronika_registry::{contract, logical_section_name};
@@ -46,40 +46,49 @@ struct Counters {
     oldest_xact: BTreeMap<i64, f64>,
 }
 
+/// Raw readings carried across physical segment boundaries for this one-hour
+/// response. A file boundary is not a missing snapshot.
+#[derive(Default)]
+pub(super) struct State {
+    counters: Counters,
+}
+
 /// Read the sections a timeline is drawn from and return its lanes.
 pub(super) fn collect(
     segment: &Segment,
     ticks_per_second: i64,
     cpu_count: i64,
+    state: &mut State,
 ) -> Result<Vec<LanePoint>, ApiError> {
-    let mut counters = Counters::default();
-    for type_id in sections(segment) {
+    for (type_id, _rows) in segment.sections() {
         let Some(name) = logical_section_name(type_id) else {
             continue;
         };
         match name {
-            "os_cpu" => read_cpu(segment, type_id, &mut counters)?,
-            "os_psi" => read_psi(segment, type_id, &mut counters)?,
-            "os_meminfo" => read_memory(segment, type_id, &mut counters)?,
-            "os_diskstats" => read_disk(segment, type_id, &mut counters)?,
-            "os_netdev" => read_network(segment, type_id, &mut counters)?,
-            "os_vmstat" => read_vmstat(segment, type_id, &mut counters)?,
-            "pg_stat_activity" => read_activity(segment, type_id, &mut counters)?,
+            "os_cpu" => read_cpu(segment, type_id, &mut state.counters)?,
+            "os_psi" => read_psi(segment, type_id, &mut state.counters)?,
+            "os_meminfo" => read_memory(segment, type_id, &mut state.counters)?,
+            "os_diskstats" => read_disk(segment, type_id, &mut state.counters)?,
+            "os_netdev" => read_network(segment, type_id, &mut state.counters)?,
+            "os_vmstat" => read_vmstat(segment, type_id, &mut state.counters)?,
+            "pg_stat_activity" => read_activity(segment, type_id, &mut state.counters)?,
             _other => {}
         }
     }
-    Ok(points(&counters, ticks_per_second, cpu_count))
-}
-
-fn sections(segment: &Segment) -> Vec<u32> {
-    segment.sections().map(|(type_id, _rows)| type_id).collect()
+    Ok(current_points(
+        &state.counters,
+        ticks_per_second,
+        cpu_count,
+        segment.min_ts(),
+        segment.max_ts(),
+    ))
 }
 
 /// Busy is what the CPUs were made to do: idle is not work, and neither is
 /// time the hypervisor took away or a guest burnt on our behalf inside user.
 fn read_cpu(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
     const FIELDS: [&str; 6] = ["ts", "cpu_id", "user", "nice", "system", "irq"];
-    let projection = with_columns(type_id, &FIELDS, &["softirq"]);
+    let projection = with_columns(type_id, &FIELDS, &["softirq", "guest", "guest_nice"]);
     let names: Vec<&'static str> = projection.clone();
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
         let (Some(ts), Some(cpu_id)) = (timestamp(&row, "ts"), number(&row, "cpu_id")) else {
@@ -92,13 +101,16 @@ fn read_cpu(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<
         let busy = ["user", "nice", "system", "irq", "softirq"]
             .iter()
             .filter_map(|name| number(&row, name))
-            .sum::<f64>();
+            .sum::<f64>()
+            - number(&row, "guest").unwrap_or(0.0)
+            - number(&row, "guest_nice").unwrap_or(0.0);
         #[expect(clippy::cast_possible_truncation, reason = "tick counters stay small")]
+        let busy = busy.max(0.0) as i64;
         counters
             .busy_ticks
             .entry(ts)
-            .and_modify(|total| *total += busy as i64)
-            .or_insert(busy as i64);
+            .and_modify(|total| *total += busy)
+            .or_insert(busy);
         true
     })?;
     Ok(())
@@ -247,13 +259,34 @@ fn read_activity(segment: &Segment, type_id: u32, counters: &mut Counters) -> Re
         ],
         &["leader_pid"],
     );
-    let dictionary = segment.dictionary()?;
+    let mut rows = Vec::new();
+    let mut ids = HashSet::new();
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
+        ids.extend(["backend_type", "state"].iter().filter_map(|column| {
+            if let Some(Cell::StrId(id)) = row.get(column) {
+                Some(*id)
+            } else {
+                None
+            }
+        }));
+        rows.push(row);
+        true
+    })?;
+    let dictionary = segment.dictionary_for(&ids)?;
+    for row in rows {
         let Some(ts) = timestamp(&row, "ts") else {
-            return true;
+            continue;
         };
         counters.running.entry(ts).or_insert(0.0);
         counters.waiting.entry(ts).or_insert(0.0);
+        let kind = text(&row, "backend_type", &dictionary);
+        // A parallel worker is part of one query, and a background process is
+        // not a query at all; counting either makes the lane a function of
+        // max_parallel_workers rather than of the work in flight.
+        if kind != Some(b"client backend".as_slice()) || row.get("leader_pid").is_some_and(present)
+        {
+            continue;
+        }
         if let Some(started) = timestamp(&row, "xact_start") {
             #[expect(clippy::cast_precision_loss, reason = "an hour is far below 2^53")]
             let age = (ts - started) as f64 / 1_000_000.0;
@@ -267,16 +300,9 @@ fn read_activity(segment: &Segment, type_id: u32, counters: &mut Counters) -> Re
                 })
                 .or_insert_with(|| age.max(0.0));
         }
-        let kind = text(&row, "backend_type", &dictionary);
-        // A parallel worker is part of one query, and a background process is
-        // not a query at all; counting either makes the lane a function of
-        // max_parallel_workers rather than of the work in flight.
-        if kind.as_deref() != Some("client backend") || row.get("leader_pid").is_some_and(present) {
-            return true;
-        }
         let state = text(&row, "state", &dictionary);
-        if state.as_deref() != Some("active") {
-            return true;
+        if state != Some(b"active".as_slice()) {
+            continue;
         }
         let stuck = row.get("wait_event_type").is_some_and(present);
         let lane = if stuck {
@@ -285,9 +311,21 @@ fn read_activity(segment: &Segment, type_id: u32, counters: &mut Counters) -> Re
             &mut counters.running
         };
         *lane.entry(ts).or_insert(0.0) += 1.0;
-        true
-    })?;
+    }
     Ok(())
+}
+
+fn current_points(
+    counters: &Counters,
+    ticks_per_second: i64,
+    cpu_count: i64,
+    from: i64,
+    to: i64,
+) -> Vec<LanePoint> {
+    points(counters, ticks_per_second, cpu_count)
+        .into_iter()
+        .filter(|point| point.ts >= from && point.ts <= to)
+        .collect()
 }
 
 fn points(counters: &Counters, ticks_per_second: i64, cpu_count: i64) -> Vec<LanePoint> {
@@ -428,10 +466,10 @@ const fn present(cell: &Cell) -> bool {
 
 /// The text a dictionary reference stands for. A blob is never one of the
 /// short labels these lanes compare against.
-fn text(row: &Row, column: &str, dictionary: &Dictionary) -> Option<String> {
+fn text<'a>(row: &Row, column: &str, dictionary: &'a Dictionary) -> Option<&'a [u8]> {
     match row.get(column) {
         Some(Cell::StrId(id)) => match dictionary.resolve(*id) {
-            Some(Resolved::Str(bytes)) => String::from_utf8(bytes.to_vec()).ok(),
+            Some(Resolved::Str(bytes)) => Some(bytes),
             _other => None,
         },
         _other => None,

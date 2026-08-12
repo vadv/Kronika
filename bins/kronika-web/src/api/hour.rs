@@ -146,6 +146,7 @@ impl PreparedHour {
             return Ok(());
         }
         catalog.stream(emit, cancelled)?;
+        let mut lane_state = lanes::State::default();
         for segment in &segments {
             if cancelled() {
                 return Ok(());
@@ -165,7 +166,7 @@ impl PreparedHour {
             if !stream_series(SERIES, resource, emit, cancelled)? {
                 return Ok(());
             }
-            if !emit_lanes(&reader, segment, emit, cancelled)? {
+            if !emit_lanes(&reader, segment, &mut lane_state, emit, cancelled)? {
                 return Ok(());
             }
         }
@@ -215,12 +216,13 @@ fn emit_series(
 fn emit_lanes(
     reader: &Reader,
     segment_ref: &SegmentRef,
+    state: &mut lanes::State,
     emit: &mut impl FnMut(Vec<u8>) -> bool,
     cancelled: &impl Fn() -> bool,
 ) -> Result<bool, ApiError> {
     let segment = reader.open_segment(segment_ref)?;
     let facts = lanes::facts(&segment)?;
-    for point in lanes::collect(&segment, facts.ticks_per_second, facts.cpu_count)? {
+    for point in lanes::collect(&segment, facts.ticks_per_second, facts.cpu_count, state)? {
         if cancelled()
             || !emit(record(json!({
                 "record": "lane",
