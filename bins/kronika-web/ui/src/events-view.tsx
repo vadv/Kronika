@@ -169,7 +169,7 @@ function KindIcon({ kind }: { readonly kind: Finding["kind"] }): ReactNode {
 export function locatorText(finding: Finding, t: Translate): string {
   return t("events.locator", {
     field: finding.fieldOrdinal,
-    row: finding.rowOrdinal,
+    "row": finding.rowOrdinal,
     segment: finding.segmentId,
     type: finding.typeId,
   })

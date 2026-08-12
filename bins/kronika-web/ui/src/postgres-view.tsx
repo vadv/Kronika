@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { registry } from "kronika:registry"
 
 import type { DataRow, Finding, HourData, SnapshotRows } from "./api"
+import { buildMetricSamples } from "./chart"
 import { contextualRows, type EntityContext } from "./entity-context"
 import { EntityTable, unit, type EntityColumn, type TableOrder } from "./entity-table"
 import type { Translate } from "./help"
@@ -500,11 +501,10 @@ function visibleEntityColumns(columns: readonly EntityColumn[], rows: readonly D
 
 function PgDetail({ allRows, columns, historyField, hour, locale, onClose, row, section, t }: { readonly allRows: readonly DataRow[]; readonly columns: readonly EntityColumn[]; readonly historyField: string | null; readonly hour: number; readonly locale: Locale; readonly onClose: () => void; readonly row: DataRow; readonly section: string; readonly t: Translate }) {
   const identity = identityFields(section, row.typeId)
-  const loadedHistory = historyField === null ? [] : allRows.filter((candidate) => candidate.typeId === row.typeId && identity.every((field) => rawText(value(candidate, field)) === rawText(value(row, field)))).map((candidate) => ({
-    segmentId: candidate.segmentId,
-    timestamp: candidate.timestamp,
-    value: asNumber(value(candidate, historyField)),
-  }))
+  const loadedHistory = historyField === null ? [] : buildMetricSamples(
+    allRows.filter((candidate) => candidate.typeId === row.typeId && identity.every((field) => rawText(value(candidate, field)) === rawText(value(row, field)))),
+    (candidate) => Object.hasOwn(candidate.values, historyField) ? asNumber(value(candidate, historyField)) : undefined,
+  )
   const exactHistory = usePostgresMetricHistory(row, section, historyField, hour)
   const history = exactHistory ?? loadedHistory
   const historyColumn = columns.find((column) => column.field === historyField)
@@ -515,7 +515,7 @@ function PgDetail({ allRows, columns, historyField, hour, locale, onClose, row, 
     <header><div><span>{t(`pg.section.${sectionName(section)}`)}</span><h2>{detailTitle(row, section, t)}</h2></div><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
     {exactText !== null && <section className="query-block"><span>{t(section === "pg_store_plans" ? "pg.plan.label" : "pg.query.label")}<button aria-label={t("common.raw")} className="copy-raw" onClick={() => void navigator.clipboard?.writeText(exactText)} type="button"><Copy aria-hidden="true" size={12} /></button></span><pre data-testid={section === "pg_store_plans" ? "pg-exact-plan" : "pg-exact-query"}>{exactText}</pre></section>}
     <dl>{fields.filter((column) => told(value(row, column.field))).map((column) => <div key={column.field}><dt>{column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}</dt><dd>{display(value(row, column.field), column, locale, t)}</dd></div>)}</dl>
-    {historyField !== null && history.some((point) => point.value !== null) && <SeriesChart cursor={row.timestamp} hour={hour} label={t(historyColumn?.label ?? historyField)} locale={locale} format={chartFormat(historyColumn?.kind)} points={history} />}
+    {historyField !== null && history.some((point) => point.value !== null) && <SeriesChart cursor={row.timestamp} hour={hour} label={t(historyColumn?.label ?? historyField)} locale={locale} format={chartFormat(historyColumn?.kind)} points={history} scale={historyColumn?.kind === "percent" ? "percent" : "auto"} />}
   </aside>
 }
 
@@ -535,12 +535,8 @@ function usePostgresMetricHistory(row: DataRow, section: string, semantic: strin
     setHistory([])
     const controller = new AbortController()
     const filters = Object.fromEntries(postgresIdentity(row.typeId).map((name) => [name, rawText(value(row, name)) ?? ""]))
-    void loadSeries(Math.max(0, row.timestamp - 900_000_000), section, filters, fields, controller.signal, row.typeId, row.timestamp)
-      .then((rows) => setHistory(postgresHistory(rows).map((point) => ({
-        segmentId: point.segmentId,
-        timestamp: point.timestamp,
-        value: point[semantic],
-      }))))
+    void loadSeries(hour, section, filters, fields, controller.signal, row.typeId, row.timestamp)
+      .then((rows) => setHistory(buildMetricSamples(postgresHistory(rows), (point) => Object.hasOwn(point, semantic) ? point[semantic] : undefined)))
       .catch(() => {})
     return () => controller.abort()
   }, [dense, hour, row, section, semantic])

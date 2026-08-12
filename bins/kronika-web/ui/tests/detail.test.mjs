@@ -22,7 +22,7 @@ test("a counter is drawn as the rate between two readings", () => {
   assert.deepEqual(series[1].points.map((point) => point.value), [null, 4, 16])
 })
 
-test("a missing counter reading resets the next rate", () => {
+test("an explicit null counter resets the next rate", () => {
   const series = detail.processLensHistory([
     row(1_000_000, { pid: 77, starttime: 10, stime: 10 }, "segment-a", "0"),
     row(2_000_000, { pid: 77, starttime: 10, stime: null }, "segment-a", "1"),
@@ -31,6 +31,16 @@ test("a missing counter reading resets the next rate", () => {
   ], "cpu")
 
   assert.deepEqual(series[1].points.map((point) => point.value), [null, null, null, 4])
+})
+
+test("a row that does not own the counter neither creates a null nor resets the rate", () => {
+  const series = detail.processLensHistory([
+    row(1_000_000, { pid: 77, starttime: 10, stime: 10 }, "segment-a", "0"),
+    row(2_000_000, { pid: 77, starttime: 10, utime: 99 }, "segment-a", "1"),
+    row(3_000_000, { pid: 77, starttime: 10, stime: 30 }, "segment-b", "2"),
+  ], "cpu")
+
+  assert.deepEqual(series[1].points.map((point) => [point.timestamp, point.value]), [[1_000_000, null], [3_000_000, 10]])
 })
 
 test("null values split rendered history runs while later zero stays numeric", () => {

@@ -19,13 +19,28 @@ const data = {
 }
 const spec = { group: "cpu", help: "x.help", id: "x", label: "x.label", series: "test", unit: "" }
 
-test("system current values preserve null and zero at the nearest observation", () => {
+test("system current values use the stored observation at or before the cursor", () => {
+  assert.equal(helpers.currentValue(data, spec, 150, "en"), "5")
   assert.equal(helpers.currentValue(data, spec, 200, "en"), "—")
   assert.equal(helpers.currentValue(data, spec, 300, "en"), "0")
   assert.equal(helpers.hasMetric({ points: [{ segmentId: "a", series: "test", timestamp: 1, value: null }] }, spec), false)
   assert.equal(helpers.hasMetric(data, spec), true)
   assert.equal(helpers.fallbackMetric("os_mountinfo"), null)
   assert.equal(helpers.fallbackMetric("os_diskstats"), null)
+})
+
+test("system histories omit rows whose layout does not own the selected field", () => {
+  const direct = {
+    points: [],
+    sections: {
+      os_vmstat: [
+        { segmentId: "a", timestamp: 1, values: { oom_kill: 1 } },
+        { segmentId: "a", timestamp: 2, values: { other: null } },
+        { segmentId: "b", timestamp: 3, values: { oom_kill: null } },
+      ],
+    },
+  }
+  assert.deepEqual(helpers.metricPoints(direct, { ...spec, field: "oom_kill", section: "os_vmstat", series: "missing" }).map((point) => [point.timestamp, point.value]), [[1, 1], [3, null]])
 })
 
 test("system cards derive production values when fixture-only series are absent", () => {

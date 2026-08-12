@@ -1,5 +1,26 @@
 export type NumericPoint<Point extends { readonly value: number | null }> = Point & { readonly value: number }
 
+export interface MetricSample {
+  readonly segmentId: string
+  readonly timestamp: number
+  readonly value: number | null
+}
+
+export function buildMetricSamples<Row extends { readonly segmentId: string; readonly timestamp: number }>(
+  rows: readonly Row[],
+  read: (row: Row) => number | null | undefined,
+): readonly MetricSample[] {
+  return rows.flatMap((row) => {
+    const stored = read(row)
+    if (stored === undefined) return []
+    return [{
+      segmentId: row.segmentId,
+      timestamp: row.timestamp,
+      value: stored === null || Number.isFinite(stored) ? stored : null,
+    }]
+  })
+}
+
 export function numericRuns<Point extends { readonly segmentId: string; readonly timestamp: number; readonly value: number | null }>(
   points: readonly Point[],
   compareSegments: (left: string, right: string) => number,

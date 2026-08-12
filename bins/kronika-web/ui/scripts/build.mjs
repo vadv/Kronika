@@ -79,7 +79,7 @@ async function bundleJavascript(registry, translations, includeFixture) {
     define: { "process.env.NODE_ENV": '"production"' },
     format: "iife",
     legalComments: "none",
-    mangleProps: /^(?:available(?:Hours|Sections)|boundary|category|changeHour|context(?:Label|Row)|counter|d(?:efaultOrder|ensePageState|etailColumns)|derive|domain|eligible|field|fieldOrdinal|fields|fieldsByType|filterValue|findingField|findingGroups|findings|focusFinding|g[a]p|group|hasMore|health|help|historyField|identity|kind|label|lane|lanePoints|lanes|linkedPids|logicalName|maxTs|minTs|minimumSpan|nextCursor|numeric|on(?:ContextClear|Cursor|Finding|LoadMore|Locale|NearEnd|Order|Pattern|PlanLens|Retry|Section|ShowAll|StatementLens|Theme)|orderBy|orderDirection|ordinal|pageSize|planLens|points|previousSegments|primary|primaryLane|processHistory|rate|rateColumns|returned|rowOrdinal|section|sections|segmentId|selectedKey|series|serverSorted|shown|snapshotRows|sortValue|spec|statementLens|sticky|stickyLeft|testId|threshold|ticksPerSecond|timeline|timestamp|totalHits|transformRows|truncated|typeId)$/,
+    mangleProps: /^(?:accessorFn|allRows|available(?:Hours|Sections)|boundary|category|cell|changeHour|column|columnDef|columns|context(?:Label|Row)|counter|cursor|d(?:efaultOrder|ensePageState|etailColumns)|derive|domain|eligible|empty|estimateSize|field|fieldOrdinal|fields|fieldsByType|filterValue|finding|findingField|findingGroups|findings|focusFinding|g[a]p|get(?:Context|HeaderGroups|RowModel|ScrollElement|Size|TotalSize|VirtualItems|VisibleCells)|group|hasMore|header|health|help|history|historyField|hour|identity|kind|label|lane|lanePoints|lanes|linkedPids|locale|logicalName|low|marker|maxTs|minTs|minimumSpan|nextCursor|numeric|on(?:ContextClear|Cursor|Finding|LoadMore|Locale|NearEnd|Order|Pattern|PlanLens|Retry|Section|ShowAll|StatementLens|Theme)|orderBy|orderDirection|ordinal|original|overscan|pageSize|pgLens|planLens|points|previousSegments|primary|primaryLane|processHistory|rate|rateColumns|returned|row|rowOrdinal|rows|scale|scrollToIndex|second|section|sections|segmentId|selectedKey|series|serverSorted|showIdle|showSystem|shown|snapshotRows|sortValue|span|spec|statementLens|sticky|stickyLeft|testId|threshold|ticksPerSecond|timeline|timestamp|totalHits|transformRows|truncated|typeId|unit)$/,
     minify: true,
     platform: "browser",
     sourcemap: false,
@@ -103,7 +103,7 @@ async function bundleJavascript(registry, translations, includeFixture) {
           namespace: "kronika",
         }))
         context.onLoad({ filter: /.*/, namespace: "kronika" }, () => ({
-          contents: registry,
+          contents: registry.replace(/"(columns|identity|logicalName|typeId)":/g, "$1:"),
           loader: "ts",
         }))
         context.onResolve({ filter: /^kronika:i18n$/ }, () => ({

@@ -1,6 +1,7 @@
 import { registry } from "kronika:registry"
 
 import { fieldNameForLocator, type Cell, type DataRow, type Finding, type HourData, type LanePoint } from "./api"
+import { buildMetricSamples } from "./chart"
 import type { Translate } from "./help"
 import { asNumber, rawText, value } from "./model"
 import { processLensHistory } from "./detail"
@@ -164,28 +165,23 @@ export function findingHistory(
   if (finding.typeId === "0") {
     const field = fieldNameForLocator(finding)
     if (field === null) return []
-    return data.health.filter((row) => Object.hasOwn(row.values, field)).map((row) => ({
-      segmentId: row.segmentId,
-      timestamp: row.timestamp,
-      value: asNumber(value(row, field)),
-    }))
+    return buildMetricSamples(data.health, (row) => Object.hasOwn(row.values, field) ? asNumber(value(row, field)) : undefined)
   }
   if (finding.logicalName === "pg_stat_statements") {
     const physical = fieldNameForLocator(finding)
     const semantic = physical === null ? null : findingSemanticField(finding.typeId, physical)
     if (semantic === null) return []
-    return postgresHistory(rows).map((point) => ({ segmentId: point.segmentId, timestamp: point.timestamp, value: point[semantic] }))
+    return buildMetricSamples(postgresHistory(rows), (point) => Object.hasOwn(point, semantic) ? point[semantic] : undefined)
   }
   if (finding.logicalName === "os_process") {
     return processLensHistory(rows, "disk").find((series) => series.field === "read_bytes")?.points ?? []
   }
   const field = fieldNameForLocator(finding)
   if (field === null) return []
-  return rows.slice().sort((left, right) => left.timestamp - right.timestamp).map((item) => ({
-    segmentId: item.segmentId,
-    timestamp: item.timestamp,
-    value: directValue(finding, item),
-  }))
+  return buildMetricSamples(
+    rows.slice().sort((left, right) => left.timestamp - right.timestamp),
+    (item) => ownsMetric(finding, item) ? directValue(finding, item) : undefined,
+  )
 }
 
 export function findingReadings(
@@ -246,6 +242,13 @@ function directValue(finding: Finding, row: DataRow): number | null {
   }
   const field = finding.logicalName === "pg_log_slow_queries" ? "max_duration_ms" : fieldNameForLocator(finding)
   return field === null ? null : asNumber(value(row, field))
+}
+
+function ownsMetric(finding: Finding, row: DataRow): boolean {
+  if (finding.logicalName === "os_mountinfo") return Object.hasOwn(row.values, "total_bytes") && Object.hasOwn(row.values, "free_bytes")
+  if (finding.logicalName === "os_meminfo") return Object.hasOwn(row.values, "mem_total") && Object.hasOwn(row.values, "mem_available")
+  const field = finding.logicalName === "pg_log_slow_queries" ? "max_duration_ms" : fieldNameForLocator(finding)
+  return field !== null && Object.hasOwn(row.values, field)
 }
 
 function laneFor(finding: Finding): string | null {

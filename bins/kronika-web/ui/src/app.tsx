@@ -491,19 +491,18 @@ function App({ locale, onLocale, t }: {
   }, [data, findingRow, selectedFinding])
   useEffect(() => {
     setFindingPoints([])
-    if (selectedFinding === null || findingRow === null) return
+    if (selectedFinding === null || findingRow === null || hour === null) return
     const request = findingHistoryRequest(selectedFinding, findingRow)
     if (request === null) {
       setFindingPoints(findingHistory(selectedFinding, [findingRow], data))
       return
     }
     const controller = new AbortController()
-    const from = Math.max(0, selectedFinding.timestamp - 900_000_000)
-    void loadSeries(from, selectedFinding.logicalName, request.where, request.fields, controller.signal, selectedFinding.typeId, selectedFinding.timestamp)
+    void loadSeries(hour, selectedFinding.logicalName, request.where, request.fields, controller.signal, selectedFinding.typeId, selectedFinding.timestamp)
       .then((rows) => setFindingPoints(findingHistory(selectedFinding, rows, data)))
       .catch(() => { if (!controller.signal.aborted) setFindingPoints([]) })
     return () => controller.abort()
-  }, [data, findingRow, selectedFinding])
+  }, [data, findingRow, hour, selectedFinding])
   const pgFocus = selectedFinding !== null && selectedFinding.logicalName.startsWith("pg_") ? contextRow : null
   const joinedActivity = activityFor(selectedProcess, data.activities, selectedProcess?.timestamp ?? cursor)
   const [processHistory, setProcessHistory] = useState<readonly DataRow[]>([])
@@ -534,7 +533,7 @@ function App({ locale, onLocale, t }: {
     if (window.location.pathname + window.location.search === address) return
     const dragging = steps.current !== null && stepOf(steps.current) === stepOf(address)
     steps.current = address
-    window.history[dragging ? "replaceState" : "pushState"]({}, "", address)
+    window["history"][dragging ? "replaceState" : "pushState"]({}, "", address)
   }, [address])
   useEffect(() => {
     const back = () => {

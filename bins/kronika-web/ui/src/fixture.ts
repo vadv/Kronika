@@ -228,15 +228,15 @@ function isFixture(value: unknown): value is RealHourFixture {
 function table(value: unknown): value is FixtureTable {
   if (value === null || typeof value !== "object") return false
   const candidate = value as Partial<FixtureTable>
-  return Array.isArray(candidate.columns) && Array.isArray(candidate.snapshots)
+  return Array.isArray(candidate["columns"]) && Array.isArray(candidate.snapshots)
 }
 
 function tableRows(table: FixtureTable, logicalName: string): readonly DataRow[] {
-  const columns = new Map(table.columns.map((name, index) => [name, index]))
+  const columns = new Map(table["columns"].map((name, index) => [name, index]))
   const ordinalIndex = columns.get("ordinal")
   const timestampIndex = columns.get("ts")
-  return table.snapshots.flatMap((snapshot) => snapshot.rows.map((cells, rowIndex) => {
-    const values = Object.fromEntries(table.columns.flatMap((name, index) =>
+  return table.snapshots.flatMap((snapshot) => snapshot["rows"].map((cells, rowIndex) => {
+    const values = Object.fromEntries(table["columns"].flatMap((name, index) =>
       name === "ordinal" || name === "ts" ? [] : [[name, cells[index] ?? null]],
     ))
     return {

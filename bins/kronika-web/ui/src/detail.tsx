@@ -2,6 +2,7 @@ import { Copy, X } from "lucide-react"
 import { useMemo, type ReactNode } from "react"
 
 import type { Cell, DataRow } from "./api"
+import { buildMetricSamples } from "./chart"
 import { LabelHelp, type Translate } from "./help"
 import {
   asNumber,
@@ -203,13 +204,14 @@ function historyPoints(
   counter: boolean,
 ): readonly ChartPoint[] {
   let earlier: { readonly value: number; readonly timestamp: number } | null = null
-  return rows.map((row) => {
-    const number = asNumber(value(row, field))
-    const drawn = counter ? rate(earlier, number, row.timestamp) : number
-    if (counter) earlier = number === null ? null : { value: number, timestamp: row.timestamp }
+  return buildMetricSamples(rows, (row) => Object.hasOwn(row.values, field)
+    ? asNumber(value(row, field))
+    : undefined).map((sample) => {
+    const drawn = counter ? rate(earlier, sample.value, sample.timestamp) : sample.value
+    if (counter) earlier = sample.value === null ? null : { value: sample.value, timestamp: sample.timestamp }
     return {
-      segmentId: row.segmentId,
-      timestamp: row.timestamp,
+      segmentId: sample.segmentId,
+      timestamp: sample.timestamp,
       value: drawn,
     }
   })

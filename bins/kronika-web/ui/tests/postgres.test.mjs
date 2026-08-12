@@ -251,7 +251,7 @@ test("dense PostgreSQL columns and the Plans tab stay available by section", asy
   assert.match(source, /serverSorted=\{dense\}/)
   assert.match(source, /onNearEnd=\{densePageState === "idle" && canLoadMore \? onLoadMore : undefined\}/)
   assert.match(source, /densePageState === "error" \? onRetry : onLoadMore/)
-  assert.match(source, /loadSeries\(Math\.max\(0, row\.timestamp - 900_000_000\), section, filters, fields, controller\.signal, row\.typeId, row\.timestamp\)/)
+  assert.match(source, /loadSeries\(hour, section, filters, fields, controller\.signal, row\.typeId, row\.timestamp\)/)
   assert.match(source, /\{ section, fields: \[field\], typeId: row\.typeId \}[\s\S]*fullText: true/)
 })
 

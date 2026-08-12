@@ -948,11 +948,11 @@ function layoutRecord(record: Record<string, unknown>): {
     readonly columns?: readonly { readonly name: unknown }[]
   }
   const typeId = requiredText(layout.type_id, "layout type_id")
-  if (!Array.isArray(layout.columns)) throw new Error(`layout ${typeId} has no columns`)
+  if (!Array.isArray(layout["columns"])) throw new Error(`layout ${typeId} has no columns`)
   return {
     typeId,
     logicalName: layout.logical_name,
-    columns: layout.columns.map((column) => requiredText(column.name, "column name")),
+    columns: layout["columns"].map((column) => requiredText(column.name, "column name")),
   }
 }
 

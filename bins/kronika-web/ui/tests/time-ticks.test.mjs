@@ -52,4 +52,7 @@ test("responsive plot SVGs contain lines only while HTML owns time glyphs", asyn
   assert.match(styles, /\.time-ticks[^}]*font-stretch:\s*normal/s)
   assert.match(styles, /\.time-ticks[^}]*letter-spacing:\s*normal/s)
   assert.match(styles, /\.time-ticks[^}]*pointer-events:\s*none/s)
+  assert.match(styles, /\.series-chart svg \{[^}]*height:\s*200px/s)
+  assert.match(styles, /\.process-history \.series-chart svg \{[^}]*height:\s*200px/s)
+  assert.match(styles, /\.mini-uncollected \{[^}]*fill:/s)
 })

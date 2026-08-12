@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
 import { fieldNameForLocator, type DataRow, type Finding, type LanePoint } from "./api"
-import { niceCeiling, numericRuns, svgPath, type NumericPoint } from "./chart"
+import { buildMetricSamples, niceCeiling, numericRuns, svgPath, type NumericPoint } from "./chart"
 import { findingOrder, findingSummary } from "./finding-presentation"
 import { LabelHelp, type Translate } from "./help"
 import { moveCursor } from "./keyboard"
@@ -403,9 +403,9 @@ function series(rows: readonly DataRow[], field: string): readonly SeriesPoint[]
 }
 
 function preferredSeries(rows: readonly DataRow[], fields: readonly string[]): readonly SeriesPoint[] {
-  return rows.filter((row) => fields.some((field) => Object.hasOwn(row.values, field))).map((row) => {
-    const number = fields.reduce<number | null>((selected, field) => selected ?? asNumber(value(row, field)), null)
-    return { segmentId: row.segmentId, timestamp: row.timestamp, value: number }
+  return buildMetricSamples(rows, (row) => {
+    const field = fields.find((candidate) => Object.hasOwn(row.values, candidate))
+    return field === undefined ? undefined : asNumber(value(row, field))
   })
 }
 

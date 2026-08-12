@@ -3,11 +3,12 @@ import { registry } from "kronika:registry"
 import { useEffect, useMemo, useState, type ReactNode } from "react"
 
 import { fieldNameForLocator, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
+import { buildMetricSamples } from "./chart"
 import { contextualRows, type EntityContext } from "./entity-context"
 import { EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import { asNumber, humanBytes, measure, shownMoment, snapshot, value, type Locale } from "./model"
-import { SeriesChart, type ChartPoint } from "./series-chart"
+import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 import { UseTable } from "./use-table"
 
@@ -254,10 +255,9 @@ export function metricPoints(data: HourData, spec: MetricSpec): readonly ChartPo
   if (spec.derive !== undefined) return derivedPoints(data, spec.derive)
   if (spec.section === undefined || spec.field === undefined) return []
   const field = spec.field
-  return sectionRows(data, spec.section).flatMap((row) => {
-    if (spec.resource !== undefined && asNumber(value(row, "resource")) !== spec.resource) return []
-    const number = asNumber(value(row, field))
-    return [{ segmentId: row.segmentId, timestamp: row.timestamp, value: number }]
+  return buildMetricSamples(sectionRows(data, spec.section), (row) => {
+    if (spec.resource !== undefined && asNumber(value(row, "resource")) !== spec.resource) return undefined
+    return storedNumber(row, field)
   })
 }
 
@@ -267,17 +267,20 @@ export function hasMetric(data: HourData, spec: MetricSpec): boolean {
 
 function derivedPoints(data: HourData, derive: NonNullable<MetricSpec["derive"]>): readonly ChartPoint[] {
   if (derive === "cpu_busy") return cpuBusyPoints(sectionRows(data, "os_cpu"))
-  if (derive === "mem_available_percent") return sectionRows(data, "os_meminfo").map((row) => {
-    const available = asNumber(value(row, "mem_available"))
-    const total = asNumber(value(row, "mem_total"))
-    return { segmentId: row.segmentId, timestamp: row.timestamp, value: available === null || total === null || total <= 0 ? null : available / total * 100 }
+  if (derive === "mem_available_percent") return buildMetricSamples(sectionRows(data, "os_meminfo"), (row) => {
+    const available = storedNumber(row, "mem_available")
+    const total = storedNumber(row, "mem_total")
+    if (available === undefined || total === undefined) return undefined
+    return available === null || total === null || total <= 0 ? null : available / total * 100
   })
   if (derive === "filesystem_free_min") return aggregateRows(sectionRows(data, "os_mountinfo"), (rows) => {
     const percentages = rows.map((row) => {
-      const total = asNumber(value(row, "total_bytes"))
-      const free = asNumber(value(row, "free_bytes"))
+      const total = storedNumber(row, "total_bytes")
+      const free = storedNumber(row, "free_bytes")
+      if (total === undefined || free === undefined) return undefined
       return total === null || free === null || total <= 0 ? null : free / total * 100
     })
+    if (percentages.some((number) => number === undefined)) return undefined
     return percentages.some((number) => number === null) ? null : Math.min(...percentages as number[])
   })
   if (derive === "device_count") return aggregateRows(sectionRows(data, "os_diskstats"), (rows) => rows.length)
@@ -290,7 +293,7 @@ function derivedPoints(data: HourData, derive: NonNullable<MetricSpec["derive"]>
   return aggregateRows(sectionRows(data, "os_netdev"), (rows) => sumFields(rows, ["rx_drop", "tx_drop"]))
 }
 
-function aggregateRows(rows: readonly DataRow[], aggregate: (rows: readonly DataRow[]) => number | null): readonly ChartPoint[] {
+function aggregateRows(rows: readonly DataRow[], aggregate: (rows: readonly DataRow[]) => number | null | undefined): readonly ChartPoint[] {
   const groups = new Map<string, { readonly rows: DataRow[]; readonly segmentId: string; readonly timestamp: number }>()
   for (const row of rows) {
     const key = `${row.segmentId}:${row.timestamp}`
@@ -298,16 +301,18 @@ function aggregateRows(rows: readonly DataRow[], aggregate: (rows: readonly Data
     stored.rows.push(row)
     groups.set(key, stored)
   }
-  return [...groups.values()]
-    .sort((left, right) => left.timestamp - right.timestamp || left.segmentId.localeCompare(right.segmentId))
-    .map((stored) => ({ segmentId: stored.segmentId, timestamp: stored.timestamp, value: aggregate(stored.rows) }))
+  return buildMetricSamples(
+    [...groups.values()].sort((left, right) => left.timestamp - right.timestamp || left.segmentId.localeCompare(right.segmentId)),
+    (stored) => aggregate(stored.rows),
+  )
 }
 
-function sumFields(rows: readonly DataRow[], fields: readonly string[]): number | null {
+function sumFields(rows: readonly DataRow[], fields: readonly string[]): number | null | undefined {
   let total = 0
   for (const row of rows) {
     for (const field of fields) {
-      const number = asNumber(value(row, field))
+      const number = storedNumber(row, field)
+      if (number === undefined) return undefined
       if (number === null) return null
       total += number
     }
@@ -328,16 +333,17 @@ function cpuBusyPoints(rows: readonly DataRow[]): readonly ChartPoint[] {
   for (const [segmentId, stored] of bySegment) {
     let previous: readonly number[] | null = null
     for (const row of stored.slice().sort((left, right) => left.timestamp - right.timestamp)) {
-      const counters = fields.map((field) => asNumber(value(row, field)))
+      const counters = fields.map((field) => storedNumber(row, field))
+      if (counters.some((counter) => counter === undefined)) continue
       let output: number | null = null
-      if (previous !== null && counters.every((counter): counter is number => counter !== null)) {
+      if (previous !== null && counters.every((counter): counter is number => counter !== null && counter !== undefined)) {
         const deltas = counters.map((counter, index) => counter - (previous?.[index] ?? counter))
         const total = deltas.reduce((sum, delta) => sum + delta, 0)
         const idle = (deltas[3] ?? 0) + (deltas[4] ?? 0)
         if (total > 0 && deltas.every((delta) => delta >= 0)) output = (total - idle) / total * 100
       }
       points.push({ segmentId, timestamp: row.timestamp, value: output })
-      previous = counters.every((counter): counter is number => counter !== null) ? counters : null
+      previous = counters.every((counter): counter is number => counter !== null && counter !== undefined) ? counters : null
     }
   }
   return points
@@ -348,12 +354,11 @@ export function currentValue(data: HourData, spec: MetricSpec, cursor: number, l
 }
 
 function currentPointValue(points: readonly ChartPoint[], cursor: number, locale: Locale, unit: string, perSecond: string): string {
-  let nearest: ChartPoint | null = null
-  for (const candidate of points) {
-    if (nearest === null || Math.abs(candidate.timestamp - cursor) < Math.abs(nearest.timestamp - cursor)
-      || (Math.abs(candidate.timestamp - cursor) === Math.abs(nearest.timestamp - cursor) && candidate.timestamp < nearest.timestamp)) nearest = candidate
-  }
-  return nearest === null ? "—" : metricValue(nearest.value, locale, unit, perSecond)
+  return metricValue(readingAt(points, cursor), locale, unit, perSecond)
+}
+
+function storedNumber(row: DataRow, field: string): number | null | undefined {
+  return Object.hasOwn(row.values, field) ? asNumber(value(row, field)) : undefined
 }
 
 export function metricValue(value: Cell, locale: Locale, unit: string, perSecond = "/s"): string {

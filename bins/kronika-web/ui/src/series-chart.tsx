@@ -1,7 +1,7 @@
 import { useId } from "react"
 
 import { niceCeiling, numericRuns, svgPath, type NumericPoint } from "./chart"
-import { compact, type Locale } from "./model"
+import { compact, floorHour, type Locale } from "./model"
 import { TimeTicks } from "./time-ticks"
 
 export interface ChartPoint {
@@ -43,7 +43,8 @@ export function SeriesChart({
   const paths = chartRuns(points)
   const companion: ReadonlyMap<string, readonly NumericChartPoint[]> = second === undefined ? new Map() : chartRuns(second)
   const reading = readingAt(points, cursor)
-  const exact = cursor === undefined ? undefined : numeric.find((point) => point.timestamp === cursor)
+  const selected = cursor === undefined ? null : sampleAtOrBefore(points, cursor)
+  const future = uncollectedStart(second === undefined ? points : [...points, ...second], hour)
   const hasData = numeric.length !== 0
   return <figure className="series-chart">
     <figcaption id={title}>
@@ -53,6 +54,7 @@ export function SeriesChart({
     {!hasData
       ? <p className="series-empty">{empty}</p>
       : <><svg aria-labelledby={title} preserveAspectRatio="none" role="img" viewBox="0 0 920 126">
+      {future !== null && future < end && <rect className="mini-uncollected" height="100" width={(end - future) / (end - hour) * 920} x={(future - hour) / (end - hour) * 920} y="5" />}
       {[0, 1, 2, 3, 4, 5, 6].map((tick) => <line className="mini-grid" key={tick} x1={tick / 6 * 920} x2={tick / 6 * 920} y1="5" y2="105" />)}
       <line className="mini-zero" x1="0" x2="920" y1="105" y2="105" />
       {cursor !== undefined && cursor >= hour && cursor < end
@@ -71,7 +73,7 @@ export function SeriesChart({
         ])
         return <path className="mini-series" d={path} key={segmentId} />
       })}
-      {exact !== undefined && <circle className="mini-selected-point" cx={Math.max(0, Math.min(920, (exact.timestamp - hour) / (end - hour) * 920))} cy={101 - (exact.value - low) / span * 92} r="3.5" />}
+      {selected !== null && selected.value !== null && Number.isFinite(selected.value) && <circle className="mini-selected-point" cx={Math.max(0, Math.min(920, (selected.timestamp - hour) / (end - hour) * 920))} cy={101 - (selected.value - low) / span * 92} r="3.5" />}
       </svg>
       <span aria-hidden="true" className="series-ceiling">{(format ?? compact)(high, locale)}</span>
       {low !== 0 && <span aria-hidden="true" className="series-floor">{(format ?? compact)(low, locale)}</span>}
@@ -88,12 +90,26 @@ export function numericChartPoints(
 }
 
 export function readingAt(points: readonly ChartPoint[], cursor: number | undefined): number | null {
+  return sampleAtOrBefore(points, cursor)?.value ?? null
+}
+
+export function sampleAtOrBefore(points: readonly ChartPoint[], cursor: number | undefined): ChartPoint | null {
   let chosen: ChartPoint | null = null
   for (const point of points) {
     if (cursor !== undefined && point.timestamp > cursor) continue
-    if (chosen === null || point.timestamp > chosen.timestamp) chosen = point
+    if (chosen === null || point.timestamp >= chosen.timestamp) chosen = point
   }
-  return chosen?.value ?? null
+  return chosen
+}
+
+export function uncollectedStart(points: readonly ChartPoint[], hour: number, now = Date.now() * 1_000): number | null {
+  if (floorHour(now) !== hour) return null
+  const end = hour + 3_600_000_000
+  let latest = hour
+  for (const point of points) {
+    if (point.timestamp >= hour && point.timestamp < end) latest = Math.max(latest, point.timestamp)
+  }
+  return latest
 }
 
 export function chartDomain(values: readonly number[], scale: ChartScale): { readonly low: number; readonly high: number } {
