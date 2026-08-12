@@ -25,7 +25,7 @@ test("a wildcard pattern is looked for inside the value, not against all of it",
   assert.equal(single("cpuhp/"), false)
 })
 
-test("a pattern spanning a gap matches what lies between", () => {
+test("a wildcard matches intervening characters", () => {
   const match = globMatcher("postgres*checkpointer")
   assert.ok(match !== null)
   assert.equal(match("postgres: sgerp checkpointer"), true)

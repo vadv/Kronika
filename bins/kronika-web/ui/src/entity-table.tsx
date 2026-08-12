@@ -81,7 +81,9 @@ export function EntityTable({
   readonly t?: Translate
 }) {
   const [sizing, setSizing] = useState<ColumnSizingState>({})
-  const ordering = useMemo<SortingState>(() => order === undefined ? [] : [{ id: order.column, desc: order.descending }], [order])
+  const ordering = useMemo<SortingState>(() => order === undefined
+    ? []
+    : [{ id: order.column, desc: serverSorted === true ? true : order.descending }], [order, serverSorted])
   const parent = useRef<HTMLDivElement>(null)
   const columns = useMemo<ColumnDef<DataRow>[]>(() => fields.map((field, index) => ({
     accessorFn: (row) => field.sortValue === undefined ? sortable(value(row, field.field), field.kind) : field.sortValue(row),
@@ -125,6 +127,11 @@ export function EntityTable({
     onColumnSizingChange: setSizing,
     state: { columnSizing: sizing, sorting: ordering },
   })
+  useEffect(() => {
+    if (serverSorted === true && order !== undefined && !order.descending) {
+      onOrder?.({ column: order.column, descending: true })
+    }
+  }, [onOrder, order, serverSorted])
   const head = useRef<HTMLDivElement>(null)
   const automatic = useRef<ColumnSizingState>({})
   useEffect(() => {
@@ -168,7 +175,9 @@ export function EntityTable({
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {
           const sorted = header.column.getIsSorted()
           return <div className={sticky(header.column.columnDef.meta, true)} key={header.id} role="columnheader" style={{ left: stickyLeft(header.column.columnDef.meta), width: header.getSize() }}>
-            <button className="entity-sort" disabled={!header.column.getCanSort()} onClick={header.column.getToggleSortingHandler()} type="button">
+            <button className="entity-sort" disabled={!header.column.getCanSort()} onClick={serverSorted === true
+              ? () => onOrder?.(nextServerOrder(order, header.column.id))
+              : header.column.getToggleSortingHandler()} type="button">
               <span>{flexRender(header.column.columnDef.header, header.getContext())}</span>
               {sorted !== false && <i>{sorted === "asc" ? "↑" : "↓"}</i>}
             </button>
@@ -213,6 +222,10 @@ export function EntityTable({
         </div>}
     </div>
   </section>
+}
+
+export function nextServerOrder(current: TableOrder | undefined, column: string): TableOrder | null {
+  return current?.column === column && current.descending ? null : { column, descending: true }
 }
 
 export function locatorMatchesColumn(column: EntityColumn, typeId: string, findingField: string | null): boolean {

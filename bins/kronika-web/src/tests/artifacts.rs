@@ -69,6 +69,30 @@ impl Fixture {
         self.append(buffers);
     }
 
+    fn append_named_diskstats(&mut self, rows: &[(i32, &str)]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let mut buffers = SectionBuffers::new();
+        for &(minor, device) in rows {
+            let device = StrId(
+                interner
+                    .intern(device.as_bytes())
+                    .expect("intern device")
+                    .get(),
+            );
+            buffers
+                .push(diskstats_with_device(100, minor, 1, device))
+                .expect("named diskstats row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("encode device dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode named diskstats fixture")
+            .expect("nonempty named diskstats fixture");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append named diskstats fixture");
+    }
+
     fn append_blob_diskstats(&mut self, bytes: &[u8], reads: i64) {
         let mut interner =
             Interner::new(DictLimits::new(8, 16).expect("fixture dictionary limits"));
@@ -1294,6 +1318,30 @@ fn a_snapshot_orders_by_a_column_and_returns_only_the_top_of_it() {
     assert_eq!(
         minors,
         [serde_json::json!([8, 2]), serde_json::json!([8, 1])]
+    );
+}
+
+#[test]
+fn a_snapshot_orders_stored_text_lexicographically_and_breaks_ties_by_ordinal() {
+    let mut fixture = Fixture::new();
+    fixture.append_named_diskstats(&[(0, "beta"), (1, "alpha"), (2, "gamma"), (3, "gamma")]);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=os_diskstats&field=minor&field=device&by=device&top=3"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("text-ranked snapshot");
+    let values = row_records(&records)
+        .into_iter()
+        .map(|row| row["values"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        values,
+        [
+            serde_json::json!([2, "gamma"]),
+            serde_json::json!([3, "gamma"]),
+            serde_json::json!([0, "beta"]),
+        ]
     );
 }
 

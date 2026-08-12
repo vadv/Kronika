@@ -133,7 +133,7 @@ fn ranked(
             row: Row::new(contract, Vec::new()),
             identity: Vec::new(),
         },
-        value,
+        value: value.map(super::OrderValue::Number),
     }
 }
 

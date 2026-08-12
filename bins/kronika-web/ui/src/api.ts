@@ -682,8 +682,7 @@ function snapshotQuery(
 }
 
 function snapshotOrder(section: SectionRequest, chosen: SnapshotOrder | undefined): readonly string[] {
-  // Ascending a server-truncated table still uses its default top order.
-  const requested = chosen !== undefined && chosen.descending
+  const requested = chosen !== undefined
     ? section.order?.[chosen.column]
       ?? (section.fields?.includes(chosen.column) === true ? [chosen.column] : undefined)
     : section.defaultOrder

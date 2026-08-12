@@ -21,7 +21,7 @@ const registry = [
   layout("1016001", "pg_store_plans_info", [], ["ts", "dealloc", "stats_reset"]),
 ]
 const helpers = await importModule(
-  'export { locatorMatchesColumn } from "../src/entity-table.tsx"; export { rowMatchesLocator } from "../src/locator.ts"; export { PLAN_COLUMNS, STATEMENT_COLUMNS } from "../src/postgres-view.tsx"',
+  'export { locatorMatchesColumn, nextServerOrder } from "../src/entity-table.tsx"; export { rowMatchesLocator } from "../src/locator.ts"; export { PLAN_COLUMNS, STATEMENT_COLUMNS } from "../src/postgres-view.tsx"',
   { plugins: [registryPlugin(registry)] },
 )
 
@@ -67,4 +67,20 @@ test("locator classes, scrolling, and selection state are independent", async ()
   assert.match(entity, /scrollToIndex\(locatedIndex/)
   assert.match(process, /<EntityTable/)
   assert.doesNotMatch(process, /useReactTable|useVirtualizer|locator-row/)
+})
+
+test("server-ranked tables offer only descending order or no order", () => {
+  assert.deepEqual(helpers.nextServerOrder(undefined, "calls_per_second"), {
+    column: "calls_per_second",
+    descending: true,
+  })
+  assert.equal(helpers.nextServerOrder({ column: "calls_per_second", descending: true }, "calls_per_second"), null)
+  assert.deepEqual(helpers.nextServerOrder({ column: "calls_per_second", descending: false }, "calls_per_second"), {
+    column: "calls_per_second",
+    descending: true,
+  })
+  assert.deepEqual(helpers.nextServerOrder({ column: "calls_per_second", descending: true }, "rows_per_second"), {
+    column: "rows_per_second",
+    descending: true,
+  })
 })

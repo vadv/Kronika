@@ -5,6 +5,8 @@ const MAX_PAGE_SIZE: usize = 1_000;
 const MAX_QUERY_BYTES: usize = 64 * 1024;
 const MAX_SECTION_BYTES: usize = 128;
 const MAX_SNAPSHOT_SECTIONS: usize = 16;
+/// Maximum rows retained by one snapshot top-K ranking.
+const MAX_SNAPSHOT_TOP: usize = 5_000;
 const MAX_FIELDS: usize = 256;
 const MAX_FILTERS: usize = 64;
 const MAX_ORDER_FIELDS: usize = 16;
@@ -222,10 +224,12 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
             }
             "top" if top.is_none() => {
                 let count = number("top", raw_value)?;
-                if count <= 0 {
-                    return Err(RouteError::BadParameter("top".to_owned()));
-                }
-                top = Some(usize::try_from(count).unwrap_or(usize::MAX));
+                top = Some(
+                    usize::try_from(count)
+                        .ok()
+                        .filter(|count| (1..=MAX_SNAPSHOT_TOP).contains(count))
+                        .ok_or_else(|| RouteError::BadParameter("top".to_owned()))?,
+                );
             }
             other => {
                 let name = decoded("parameter", other, true)?;

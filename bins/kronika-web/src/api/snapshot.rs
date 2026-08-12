@@ -2,11 +2,11 @@
 
 use std::cmp::Ordering;
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashSet};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::path::Path;
 
-use kronika_reader::{Cell, Dictionary, Reader, Row, Segment, SegmentKind, SegmentRef};
-use kronika_registry::{ColumnClass, contract};
+use kronika_reader::{Cell, Dictionary, Reader, Resolved, Row, Segment, SegmentKind, SegmentRef};
+use kronika_registry::{ColumnClass, ColumnType, contract};
 use serde_json::{Value, json};
 
 use super::query::{Plan, plans, resolved_dictionary};
@@ -51,7 +51,7 @@ struct StagedRow {
 
 struct RankedRow {
     staged: StagedRow,
-    value: Option<OrderedNumber>,
+    value: Option<OrderValue>,
 }
 
 struct TopRows {
@@ -300,10 +300,13 @@ impl PreparedSnapshot {
         plan: &Plan,
         rates: RateContext<'_>,
         column: Option<&'static str>,
+        text_ranks: &TextRanks,
         rows: &mut Vec<StagedRow>,
     ) {
         if let Some(column) = column {
-            rows.sort_by(|left, right| compare_staged(plan, column, right, left, rates));
+            rows.sort_by(|left, right| {
+                compare_staged(plan, column, right, left, rates, text_ranks)
+            });
         }
         if let Some(top) = self.top {
             rows.truncate(top);
@@ -394,7 +397,9 @@ impl PreparedSnapshot {
     {
         let (emit, cancelled) = output;
         let mut selection_ids = HashSet::new();
-        if plan.selection_needs_dictionary() {
+        let mut order_ids = HashSet::new();
+        let text_order = is_text_column(plan, order.column);
+        if plan.selection_needs_dictionary() || text_order {
             source.visit_rows(
                 plan.type_id,
                 &plan.projection,
@@ -409,6 +414,9 @@ impl PreparedSnapshot {
                         .is_none_or(|(timestamp, at)| row_timestamp(&row, timestamp) == Some(at))
                     {
                         plan.add_selection_ids(&row, &mut selection_ids);
+                        if text_order && let Some(Cell::StrId(id)) = row.get(order.column) {
+                            order_ids.insert(*id);
+                        }
                     }
                     true
                 },
@@ -417,7 +425,9 @@ impl PreparedSnapshot {
                 return Ok(false);
             }
         }
+        selection_ids.extend(order_ids.iter().copied());
         let selection_dictionary = resolved_dictionary(source, &selection_ids)?;
+        let text_ranks = lexical_ranks(&selection_dictionary, &order_ids);
         let mut top_rows = TopRows::new(order.limit);
         source.visit_rows(
             plan.type_id,
@@ -444,7 +454,7 @@ impl PreparedSnapshot {
                     identity,
                 };
                 top_rows.push(RankedRow {
-                    value: order_value(plan, order.column, &staged, rates),
+                    value: order_value(plan, order.column, &staged, rates, &text_ranks),
                     staged,
                 });
                 true
@@ -481,7 +491,21 @@ impl PreparedSnapshot {
                 identity,
             });
         }
-        self.order_and_truncate(plan, rates, order_column, &mut staged);
+        let text_ranks = match order_column.filter(|column| is_text_column(plan, column)) {
+            Some(column) => {
+                let ids = staged
+                    .iter()
+                    .filter_map(|staged| match staged.row.get(column) {
+                        Some(Cell::StrId(id)) => Some(*id),
+                        _ => None,
+                    })
+                    .collect::<HashSet<_>>();
+                let dictionary = resolved_dictionary(source, &ids)?;
+                lexical_ranks(&dictionary, &ids)
+            }
+            None => TextRanks::new(),
+        };
+        self.order_and_truncate(plan, rates, order_column, &text_ranks, &mut staged);
         self.emit_staged_rows(source, plan, staged, rates, emit, cancelled)
     }
 
@@ -691,10 +715,11 @@ fn compare_staged(
     left: &StagedRow,
     right: &StagedRow,
     rates: RateContext<'_>,
+    text_ranks: &TextRanks,
 ) -> Ordering {
-    compare_ordered(
-        order_value(plan, column, left, rates),
-        order_value(plan, column, right, rates),
+    compare_order_values(
+        order_value(plan, column, left, rates, text_ranks),
+        order_value(plan, column, right, rates, text_ranks),
     )
 }
 
@@ -703,7 +728,8 @@ fn order_value(
     column: &'static str,
     staged: &StagedRow,
     rates: RateContext<'_>,
-) -> Option<OrderedNumber> {
+    text_ranks: &TextRanks,
+) -> Option<OrderValue> {
     let stored = staged.row.get(column)?;
     let cumulative = plan
         .contract
@@ -712,9 +738,12 @@ fn order_value(
     if cumulative {
         rates.elapsed?;
         let earlier = rates.previous?.get(&staged.identity)?.get(column)?;
-        counter_delta(stored, earlier)
+        counter_delta(stored, earlier).map(OrderValue::Number)
     } else {
-        ordered_cell(stored)
+        match stored {
+            Cell::StrId(id) => text_ranks.get(id).copied().map(OrderValue::Text),
+            _ => ordered_cell(stored).map(OrderValue::Number),
+        }
     }
 }
 
@@ -771,8 +800,20 @@ impl PartialOrd for RankedRow {
 
 impl Ord for RankedRow {
     fn cmp(&self, other: &Self) -> Ordering {
-        compare_ordered(self.value, other.value)
+        compare_order_values(self.value, other.value)
             .then_with(|| other.staged.ordinal.cmp(&self.staged.ordinal))
+    }
+}
+
+fn compare_order_values(left: Option<OrderValue>, right: Option<OrderValue>) -> Ordering {
+    match (left, right) {
+        (Some(OrderValue::Number(left)), Some(OrderValue::Number(right))) => {
+            compare_ordered(Some(left), Some(right))
+        }
+        (Some(OrderValue::Text(left)), Some(OrderValue::Text(right))) => left.cmp(&right),
+        (Some(_), Some(_)) | (None, None) => Ordering::Equal,
+        (Some(_), None) => Ordering::Greater,
+        (None, Some(_)) => Ordering::Less,
     }
 }
 
@@ -800,6 +841,52 @@ fn ordered_cell(cell: &Cell) -> Option<OrderedNumber> {
         Cell::F64(value) if value.is_finite() => Some(OrderedNumber::Float(*value)),
         Cell::Bool(value) => Some(OrderedNumber::Integer(i128::from(*value))),
         Cell::F64(_) | Cell::StrId(_) | Cell::ListI32(_) | Cell::Null => None,
+    }
+}
+
+type TextRanks = HashMap<u64, u64>;
+
+#[derive(Clone, Copy)]
+enum OrderValue {
+    Number(OrderedNumber),
+    Text(u64),
+}
+
+fn is_text_column(plan: &Plan, column: &'static str) -> bool {
+    plan.contract
+        .column(column)
+        .is_some_and(|declared| declared.ty == ColumnType::StrId)
+}
+
+/// Assign equal stored text equal ranks without copying it into every row.
+fn lexical_ranks(dictionary: &Dictionary, ids: &HashSet<u64>) -> TextRanks {
+    let mut values = ids
+        .iter()
+        .filter_map(|id| {
+            dictionary
+                .resolve(*id)
+                .map(|resolved| (*id, stored_bytes(resolved)))
+        })
+        .collect::<Vec<_>>();
+    values.sort_unstable_by(|left, right| left.1.cmp(right.1).then_with(|| left.0.cmp(&right.0)));
+
+    let mut ranks = TextRanks::with_capacity(values.len());
+    let mut rank = 0_u64;
+    let mut previous: Option<&[u8]> = None;
+    for (id, bytes) in values {
+        if previous.is_some_and(|previous| previous != bytes) {
+            rank = rank.saturating_add(1);
+        }
+        ranks.insert(id, rank);
+        previous = Some(bytes);
+    }
+    ranks
+}
+
+const fn stored_bytes(resolved: Resolved<'_>) -> &[u8] {
+    match resolved {
+        Resolved::Str(bytes) => bytes,
+        Resolved::Blob(blob) => blob.stored_bytes,
     }
 }
 

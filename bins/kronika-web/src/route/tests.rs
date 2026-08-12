@@ -1,5 +1,6 @@
 use super::{
-    ActiveCursor, DataRequest, Filter, Order, Route, RouteError, SegmentRequest, Window, parse,
+    ActiveCursor, DataRequest, Filter, MAX_SNAPSHOT_TOP, Order, Route, RouteError, SegmentRequest,
+    Window, parse,
 };
 
 #[test]
@@ -128,6 +129,25 @@ fn snapshot_accepts_order_candidates_and_one_exact_locator() {
         assert_eq!(
             parse("/api/segments/7/snapshot", Some(query)),
             Err(RouteError::BadParameter("row_ordinal".to_owned())),
+            "{query}",
+        );
+    }
+}
+
+#[test]
+fn snapshot_top_is_positive_and_bounded() {
+    let path = "/api/segments/7/snapshot";
+    let accepted = format!("at=9&section=pg_stat_statements&top={MAX_SNAPSHOT_TOP}");
+    let Route::Snapshot(snapshot) = parse(path, Some(&accepted)).expect("maximum top") else {
+        panic!("snapshot route");
+    };
+    assert_eq!(snapshot.top, Some(MAX_SNAPSHOT_TOP));
+
+    for top in [0, MAX_SNAPSHOT_TOP + 1] {
+        let query = format!("at=9&section=pg_stat_statements&top={top}");
+        assert_eq!(
+            parse(path, Some(&query)),
+            Err(RouteError::BadParameter("top".to_owned())),
             "{query}",
         );
     }

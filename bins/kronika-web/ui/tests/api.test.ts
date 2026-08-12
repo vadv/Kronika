@@ -273,9 +273,13 @@ test("physical execution aliases are selected before the calls fallback", async 
     await api.loadSnapshot("v2", START, v2, new AbortController().signal, {
       column: "total_exec_time", descending: true,
     })
+    await api.loadSnapshot("v2", START, v2, new AbortController().signal, {
+      column: "calls", descending: false,
+    })
     assert.deepEqual(seen[0]?.searchParams.getAll("by"), ["total_time"])
     assert.deepEqual(seen[1]?.searchParams.getAll("by"), ["total_exec_time"])
     assert.deepEqual(seen[2]?.searchParams.getAll("by"), ["total_exec_time"])
+    assert.deepEqual(seen[3]?.searchParams.getAll("by"), ["calls"])
   } finally {
     globalThis.fetch = originalFetch
   }

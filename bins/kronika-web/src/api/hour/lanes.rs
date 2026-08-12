@@ -28,8 +28,8 @@ struct Counters {
     net_tx: BTreeMap<i64, i64>,
     net_drop: BTreeMap<i64, i64>,
     net_errors: BTreeMap<i64, i64>,
-    swap: BTreeMap<i64, i64>,
-    oom: BTreeMap<i64, i64>,
+    swap: BTreeMap<i64, Option<i64>>,
+    oom: BTreeMap<i64, Option<i64>>,
     running: BTreeMap<i64, f64>,
     waiting: BTreeMap<i64, f64>,
     oldest_xact: BTreeMap<i64, f64>,
@@ -72,33 +72,36 @@ pub(super) fn collect(
 }
 
 fn read_cpu(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
-    const FIELDS: [&str; 6] = ["ts", "cpu_id", "user", "nice", "system", "irq"];
-    let projection = with_columns(type_id, &FIELDS, &["softirq", "guest", "guest_nice"]);
-    let names: Vec<&'static str> = projection.clone();
+    const FIELDS: [&str; 8] = [
+        "ts", "cpu_id", "user", "nice", "system", "irq", "softirq", "steal",
+    ];
+    let names = with_columns(type_id, &FIELDS, &["scope"]);
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
-        let (Some(ts), Some(cpu_id)) = (timestamp(&row, "ts"), number(&row, "cpu_id")) else {
+        let Some(ts) = timestamp(&row, "ts") else {
             return true;
         };
-        // Ignore the aggregate row; the per-CPU rows are summed below.
-        if cpu_id < 0.0 {
+        if !matches!(row.get("cpu_id"), Some(Cell::I32(-1)))
+            || !matches!(row.get("scope"), None | Some(Cell::U32(0)))
+        {
             return true;
         }
-        let busy = ["user", "nice", "system", "irq", "softirq"]
-            .iter()
-            .filter_map(|name| number(&row, name))
-            .sum::<f64>()
-            - number(&row, "guest").unwrap_or(0.0)
-            - number(&row, "guest_nice").unwrap_or(0.0);
-        #[expect(clippy::cast_possible_truncation, reason = "tick counters stay small")]
-        let busy = busy.max(0.0) as i64;
-        counters
-            .busy_ticks
-            .entry(ts)
-            .and_modify(|total| *total += busy)
-            .or_insert(busy);
+        if let Some(busy) = cpu_busy_ticks(&row) {
+            counters.busy_ticks.insert(ts, busy);
+        }
         true
     })?;
     Ok(())
+}
+
+fn cpu_busy_ticks(row: &Row) -> Option<i64> {
+    ["user", "nice", "system", "irq", "softirq", "steal"]
+        .iter()
+        .try_fold(0_i64, |total, name| {
+            let Cell::I64(value) = row.get(name)? else {
+                return None;
+            };
+            total.checked_add(*value)
+        })
 }
 
 fn read_psi(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
@@ -198,17 +201,22 @@ fn read_vmstat(segment: &Segment, type_id: u32, counters: &mut Counters) -> Resu
         let Some(ts) = timestamp(&row, "ts") else {
             return true;
         };
-        let swapped: f64 = ["pswpin", "pswpout"]
-            .iter()
-            .filter_map(|name| number(&row, name))
-            .sum();
-        add(&mut counters.swap, ts, swapped);
-        if let Some(killed) = number(&row, "oom_kill") {
-            add(&mut counters.oom, ts, killed);
-        }
+        counters
+            .swap
+            .insert(ts, counter_sum(&row, &["pswpin", "pswpout"]));
+        counters.oom.insert(ts, counter_sum(&row, &["oom_kill"]));
         true
     })?;
     Ok(())
+}
+
+fn counter_sum(row: &Row, columns: &[&str]) -> Option<i64> {
+    columns.iter().try_fold(0_i64, |total, column| {
+        let Cell::I64(value) = row.get(column)? else {
+            return None;
+        };
+        total.checked_add(*value)
+    })
 }
 
 #[expect(
@@ -345,10 +353,13 @@ fn points(counters: &Counters, ticks_per_second: i64, cpu_count: i64) -> Vec<Lan
         ("net_tx", &counters.net_tx, 1.0),
         ("net_drop", &counters.net_drop, 1.0),
         ("net_errors", &counters.net_errors, 1.0),
-        ("mem_swap", &counters.swap, 1.0),
-        ("mem_oom", &counters.oom, 1.0),
     ] {
         for (ts, value) in rate(stored, |value, seconds| value / scale / seconds) {
+            out.push(LanePoint { key, ts, value });
+        }
+    }
+    for (key, stored) in [("mem_swap", &counters.swap), ("mem_oom", &counters.oom)] {
+        for (ts, value) in nullable_rate(stored, |value, seconds| value / seconds) {
             out.push(LanePoint { key, ts, value });
         }
     }
@@ -372,9 +383,38 @@ fn points(counters: &Counters, ticks_per_second: i64, cpu_count: i64) -> Vec<Lan
 
 /// Returns per-second deltas; the first or unusable sample is null.
 fn rate(stored: &BTreeMap<i64, i64>, scale: impl Fn(f64, f64) -> f64) -> Vec<(i64, Option<f64>)> {
-    let mut out = Vec::with_capacity(stored.len());
+    rate_samples(
+        stored.iter().map(|(ts, value)| (*ts, Some(*value))),
+        stored.len(),
+        scale,
+    )
+}
+
+/// Returns per-second deltas and starts again after an explicit null sample.
+fn nullable_rate(
+    stored: &BTreeMap<i64, Option<i64>>,
+    scale: impl Fn(f64, f64) -> f64,
+) -> Vec<(i64, Option<f64>)> {
+    rate_samples(
+        stored.iter().map(|(ts, value)| (*ts, *value)),
+        stored.len(),
+        scale,
+    )
+}
+
+fn rate_samples(
+    samples: impl Iterator<Item = (i64, Option<i64>)>,
+    len: usize,
+    scale: impl Fn(f64, f64) -> f64,
+) -> Vec<(i64, Option<f64>)> {
+    let mut out = Vec::with_capacity(len);
     let mut earlier: Option<(i64, i64)> = None;
-    for (ts, value) in stored {
+    for (ts, value) in samples {
+        let Some(value) = value else {
+            out.push((ts, None));
+            earlier = None;
+            continue;
+        };
         let point = if let Some((before_ts, before)) = earlier {
             #[expect(clippy::cast_precision_loss, reason = "an hour is far below 2^53")]
             let seconds = (ts - before_ts) as f64 / 1_000_000.0;
@@ -384,8 +424,8 @@ fn rate(stored: &BTreeMap<i64, i64>, scale: impl Fn(f64, f64) -> f64) -> Vec<(i6
         } else {
             None
         };
-        out.push((*ts, point));
-        earlier = Some((*ts, *value));
+        out.push((ts, point));
+        earlier = Some((ts, value));
     }
     out
 }
