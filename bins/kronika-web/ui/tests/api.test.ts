@@ -5,14 +5,49 @@ import test from "node:test"
 
 import { build } from "esbuild"
 
-import { parseNdjson } from "../src/wire.ts"
+import { readNdjson } from "../src/wire.ts"
 
-test("a streamed error record rejects an otherwise successful response", () => {
-  assert.throws(
-    () => parseNdjson('{"record":"rows"}\n{"record":"error","error":"unreadable"}\n', "/api/example"),
+test("the NDJSON reader handles chunked UTF-8, line endings, and a final line", async () => {
+  const body = '\n{"record":"row","value":"Привет"}\r\n\r\n{"record":"page"}'
+  const bytes = new TextEncoder().encode(body)
+  const response = chunkedResponse(bytes, Array.from({ length: bytes.length - 1 }, (_, index) => index + 1))
+
+  assert.deepEqual(
+    await readNdjson(response, "/api/example", new AbortController().signal),
+    [{ record: "row", value: "Привет" }, { record: "page" }],
+  )
+})
+
+test("a streamed error record rejects an otherwise successful response", async () => {
+  const body = new TextEncoder().encode('{"record":"rows"}\n{"record":"error","error":"unreadable"}\n')
+  await assert.rejects(
+    readNdjson(chunkedResponse(body, [5, 23, 47]), "/api/example", new AbortController().signal),
     /unreadable.*\/api\/example/,
   )
 })
+
+test("an aborted NDJSON read rejects", async () => {
+  const abort = new AbortController()
+  const response = new Response(new ReadableStream<Uint8Array>({
+    pull(controller) {
+      controller.enqueue(new TextEncoder().encode('{"record":"rows"}\n'))
+      abort.abort()
+    },
+  }))
+  await assert.rejects(readNdjson(response, "/api/example", abort.signal), { name: "AbortError" })
+})
+
+function chunkedResponse(bytes: Uint8Array, cuts: readonly number[]): Response {
+  const boundaries = [...new Set([0, ...cuts, bytes.length])].sort((left, right) => left - right)
+  return new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (let index = 1; index < boundaries.length; index += 1) {
+        controller.enqueue(bytes.slice(boundaries[index - 1], boundaries[index]))
+      }
+      controller.close()
+    },
+  }))
+}
 
 const START = 1_800_000_000_000_000
 const TEST_REGISTRY = [

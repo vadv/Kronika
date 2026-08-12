@@ -2,7 +2,7 @@ import { registry } from "kronika:registry"
 
 import { bundledFixtureHour, bundledFixtureRange } from "./fixture"
 import { rowMatchesLocator } from "./locator"
-import { parseNdjson } from "./wire"
+import { readNdjson } from "./wire"
 
 export type Cell = null | boolean | number | string | readonly number[] | { readonly [key: string]: unknown }
 
@@ -795,8 +795,7 @@ async function request(path: string, signal: AbortSignal): Promise<readonly Reco
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} for ${path}`)
   }
-  const body = await response.text()
-  return parseNdjson(body, path)
+  return readNdjson(response, path, signal)
 }
 
 function catalogSegments(records: readonly Record<string, unknown>[]): readonly Segment[] {
