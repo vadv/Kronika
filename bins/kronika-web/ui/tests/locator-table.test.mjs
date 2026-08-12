@@ -37,7 +37,7 @@ const compiled = await build({
     },
   }],
   stdin: {
-    contents: 'export { locatorMatchesColumn } from "../src/entity-table.tsx"; export { processFieldMatches } from "../src/process-table.tsx"; export { rowMatchesLocator } from "../src/locator.ts"; export { PLAN_COLUMNS, STATEMENT_COLUMNS } from "../src/postgres-view.tsx"',
+    contents: 'export { locatorMatchesColumn } from "../src/entity-table.tsx"; export { rowMatchesLocator } from "../src/locator.ts"; export { PLAN_COLUMNS, STATEMENT_COLUMNS } from "../src/postgres-view.tsx"',
     loader: "tsx",
     resolveDir: directory,
   },
@@ -59,7 +59,6 @@ test("physical locators match the exact loaded row and mapped cell", () => {
   assert.equal(helpers.rowMatchesLocator({ ...row, ordinal: "8" }, finding), false)
   assert.equal(helpers.locatorMatchesColumn({ field: "read_rate", label: "Read", physicalField: { "1100001": "read_bytes" } }, row.typeId, "read_bytes"), true)
   assert.equal(helpers.locatorMatchesColumn({ field: "write_bytes", label: "Write" }, row.typeId, "read_bytes"), false)
-  assert.equal(helpers.processFieldMatches({ id: "read_bytes", field: "read_bytes", label: "Read", help: "Read", kind: "bytes", size: 90 }, row.typeId, "read_bytes"), true)
 })
 
 test("statement execution findings select the interval mean cell", () => {
@@ -83,10 +82,10 @@ test("statement execution findings select the interval mean cell", () => {
 test("locator classes, scrolling, and selection state are independent", async () => {
   const entity = await readFile(new URL("../src/entity-table.tsx", import.meta.url), "utf8")
   const process = await readFile(new URL("../src/process-table.tsx", import.meta.url), "utf8")
-  for (const source of [entity, process]) {
-    assert.match(source, /aria-selected=/)
-    assert.match(source, /locator-row/)
-    assert.match(source, /locator-cell/)
-    assert.match(source, /scrollToIndex\(locatedIndex/)
-  }
+  assert.match(entity, /aria-selected=/)
+  assert.match(entity, /locator-row/)
+  assert.match(entity, /locator-cell/)
+  assert.match(entity, /scrollToIndex\(locatedIndex/)
+  assert.match(process, /<EntityTable/)
+  assert.doesNotMatch(process, /useReactTable|useVirtualizer|locator-row/)
 })

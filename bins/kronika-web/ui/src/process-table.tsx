@@ -1,26 +1,11 @@
-import {
-  type ColumnDef,
-  type ColumnSizingState,
-  flexRender,
-  getCoreRowModel,
-  getSortedRowModel,
-  type SortingState,
-  useReactTable,
-} from "@tanstack/react-table"
-import { useVirtualizer } from "@tanstack/react-virtual"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useMemo } from "react"
 
 import type { Cell, DataRow, Finding } from "./api"
-import { fittedWidth, headerWidths, widestCell } from "./column-size"
-import type { TableOrder } from "./entity-table"
-import { TableFilter } from "./table-filter"
-import { globMatcher } from "./glob"
-import { LabelHelp, type Translate } from "./help"
-import { rowMatchesLocator } from "./locator"
+import { EntityTable, type EntityColumn, type TableOrder } from "./entity-table"
+import type { Translate } from "./help"
 import {
   asNumber,
   cores,
-  formatUtc,
   formatUtcCell,
   humanBytes,
   identifier,
@@ -38,7 +23,6 @@ import {
 export interface Field {
   readonly id: string
   readonly field?: string
-  readonly physicalField?: string | Readonly<Record<string, string>>
   readonly label: string
   readonly help: string
   readonly kind: "id" | "command" | "state" | "time" | "number" | "rate" | "cores" | "kib" | "bytes" | "ns"
@@ -120,149 +104,40 @@ export function ProcessTable({
   readonly t: Translate
   readonly ticksPerSecond: number | null
 }) {
-  const [sizing, setSizing] = useState<ColumnSizingState>({})
-  const sorting = useMemo<SortingState>(() => order === null
-    ? [lens === "generic" ? { id: "pid", desc: false } : { id: defaultSort(lens), desc: true }]
-    : [{ id: order.column, desc: order.descending }], [lens, order])
-  const columns = useMemo<ColumnDef<DataRow>[]>(() => LENS_FIELDS[lens].map((field) => ({
-    id: field.id,
-    accessorFn: (row) => sortable(row, field),
-    size: field.size,
-    sortUndefined: "last",
-    header: ({ column }) => (
-      <div className="column-head">
-        <button
-          aria-label={column.getIsSorted() === "asc" ? t("common.sort_desc") : t("common.sort_asc")}
-          onClick={column.getToggleSortingHandler()}
-          type="button"
-        >{t(field.label)}<span className="sort-mark">{column.getIsSorted() === "asc" ? "↑" : column.getIsSorted() === "desc" ? "↓" : ""}</span></button>
-        <span className="column-help"><LabelHelp helpKey={field.help} iconOnly labelKey={field.label} t={t} /></span>
-      </div>
-    ),
-    cell: ({ row }) => <CellValue field={field} locale={locale} linked={linkedPids.has(asNumber(value(row.original, "pid")) ?? -1)} row={row.original} t={t} ticksPerSecond={ticksPerSecond} />,
-    meta: { numeric: isNumeric(field.kind), sticky: field.sticky },
+  const columns = useMemo<readonly EntityColumn[]>(() => LENS_FIELDS[lens].map((field) => ({
+    field: field.id,
+    ...(field.kind === "command" ? { filterValue: processCommand } : {}),
+    help: field.help,
+    kind: entityKind(field.kind),
+    label: field.label,
+    render: (row) => <CellValue field={field} locale={locale} linked={linkedPids.has(asNumber(value(row, "pid")) ?? -1)} row={row} t={t} ticksPerSecond={ticksPerSecond} />,
+    sortValue: (row) => sortable(row, field),
+    ...(field.sticky === undefined ? {} : { sticky: `sticky-${field.sticky}` }),
+    width: field.size,
   })), [lens, linkedPids, locale, t, ticksPerSecond])
-  const visible = useMemo(() => {
-    const match = globMatcher(pattern)
-    if (match === null) return rows as DataRow[]
-    const texts = LENS_FIELDS[lens].filter((field) => field.kind === "command" || field.kind === "state" || field.kind === "id")
-    return (rows as DataRow[]).filter((row) => texts.some((field) => {
-      const text = field.kind === "command" ? processCommand(row) : rawText(field.field === undefined ? null : value(row, field.field))
-      return text !== null && match(text)
-    }))
-  }, [lens, pattern, rows])
-  const table = useReactTable({
-    columns,
-    data: visible,
-    getCoreRowModel: getCoreRowModel(),
-    getRowId: processKey,
-    getSortedRowModel: getSortedRowModel(),
-    columnResizeMode: "onChange",
-    enableColumnResizing: true,
-    onColumnSizingChange: setSizing,
-    onSortingChange: (updater) => {
-      const next = typeof updater === "function" ? updater(sorting) : updater
-      const first = next[0]
-      onOrder(first === undefined ? null : { column: first.id, descending: first.desc })
-    },
-    state: { columnSizing: sizing, sorting },
-  })
-  const displayed = table.getRowModel().rows
-  const scroll = useRef<HTMLDivElement>(null)
-  const head = useRef<HTMLDivElement>(null)
-  const automatic = useRef<ColumnSizingState>({})
-  useEffect(() => {
-    const row = head.current
-    if (row === null) return
-    const wanted = headerWidths(row)
-    setSizing((current) => {
-      const next = { ...current }
-      LENS_FIELDS[lens].forEach((field, index) => {
-        const needed = wanted[index]
-        const own = current[field.id] === undefined || current[field.id] === automatic.current[field.id]
-        if (needed === undefined || !own) return
-        if (needed > field.size) {
-          next[field.id] = needed
-          automatic.current[field.id] = needed
-        } else {
-          delete next[field.id]
-        }
-      })
-      return next
-    })
-  }, [lens, locale])
-  const fit = useCallback((id: string, index: number) => {
-    const root = scroll.current
-    if (root === null) return
-    setSizing((current) => ({ ...current, [id]: fittedWidth(widestCell(root, index)) }))
-  }, [])
-  const virtual = useVirtualizer({ count: displayed.length, estimateSize: () => 23, getScrollElement: () => scroll.current, overscan: 14 })
-  const locatedIndex = finding === null || finding === undefined
-    ? -1
-    : displayed.findIndex((row) => rowMatchesLocator(row.original, finding))
-  useEffect(() => {
-    if (locatedIndex >= 0) virtual.scrollToIndex(locatedIndex, { align: "center" })
-  }, [finding, locatedIndex, virtual])
-  const width = table.getTotalSize()
-  const pinnedWidths = PINNED_ORDER.map((name) => {
-    const column = table.getAllColumns().find((candidate) => (candidate.columnDef.meta as { readonly sticky?: string } | undefined)?.sticky === name)
-    return column === undefined ? 0 : column.getSize()
-  })
-  return (
-    <div aria-label={t("table.processes")} className="process-table" data-testid="process-table" role="table">
-      <TableFilter kept={visible.length} onPattern={onPattern} pattern={pattern} t={t} total={rows.length} />
-      <div className="process-scroll" ref={scroll}>
-        <div className="process-head" ref={head} role="row" style={{ width }}>
-          {table.getHeaderGroups()[0]?.headers.map((header, index) => <div className={stickyClass(header.column.columnDef.meta, true)} key={header.id} role="columnheader" style={{ left: stickyLeft(header.column.columnDef.meta, pinnedWidths), width: header.getSize() }}>
-            {flexRender(header.column.columnDef.header, header.getContext())}
-            <span className="column-grip" onDoubleClick={() => fit(header.column.id, index)} onMouseDown={header.getResizeHandler()} onTouchStart={header.getResizeHandler()} />
-          </div>)}
-        </div>
-        {displayed.length === 0
-          ? <p className="table-empty">{t(pattern === "" ? "table.empty" : "filter.none")}</p>
-          : <div className="virtual-body" style={{ height: virtual.getTotalSize(), width }}>
-            {virtual.getVirtualItems().map((item) => {
-              const row = displayed[item.index]
-              if (row === undefined) return null
-              const pid = asNumber(value(row.original, "pid"))
-              const linked = pid !== null && linkedPids.has(pid)
-              const selected = processKey(row.original) === selectedKey
-              const located = finding !== null && finding !== undefined && rowMatchesLocator(row.original, finding)
-              const activeFinding = located ? finding : null
-              return (
-                <div
-                  aria-label={t("table.activate", { pid: identifier(value(row.original, "pid")) })}
-                  aria-selected={selected}
-                  className={`process-row${activeFinding === null ? "" : ` locator-row locator-${activeFinding.kind}`}`}
-                  data-locator-row={located || undefined}
-                  data-pg-linked={linked || undefined}
-                  data-testid={linked ? "pg-linked-row" : undefined}
-                  key={row.id}
-                  onClick={() => onSelect(row.original)}
-                  onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(row.original) } }}
-                  role="row"
-                  style={{ height: item.size, transform: `translateY(${item.start}px)`, width }}
-                  tabIndex={0}
-                >
-                  {row.getVisibleCells().map((cell) => {
-                    const field = LENS_FIELDS[lens].find((candidate) => candidate.id === cell.column.id)
-                    const exact = activeFinding !== null && field !== undefined && processFieldMatches(field, row.original.typeId, findingField ?? null)
-                    return <div className={`${stickyClass(cell.column.columnDef.meta, false)}${exact ? ` locator-cell locator-${activeFinding?.kind ?? ""}` : ""}`} data-locator-cell={exact || undefined} key={cell.id} role="cell" style={{ left: stickyLeft(cell.column.columnDef.meta, pinnedWidths), width: cell.column.getSize() }}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</div>
-                  })}
-                </div>
-              )
-            })}
-          </div>}
-      </div>
-    </div>
-  )
-}
-
-export function processFieldMatches(field: Field, typeId: string, findingField: string | null): boolean {
-  const physical = typeof field.physicalField === "string"
-    ? field.physicalField
-    : field.physicalField?.[typeId] ?? field.field ?? null
-  return findingField !== null && physical !== null && physical === findingField
+  const defaultOrder = lens === "generic"
+    ? { column: "pid", descending: false }
+    : { column: defaultSort(lens), descending: true }
+  return <EntityTable
+    className="process-table"
+    columns={columns}
+    empty={t("table.empty")}
+    finding={finding}
+    findingField={findingField}
+    label={t("table.processes")}
+    locale={locale}
+    onOrder={onOrder}
+    onPattern={onPattern}
+    onSelect={onSelect}
+    order={order ?? defaultOrder}
+    pattern={pattern}
+    rowKey={processKey}
+    rowLabel={(row) => t("table.activate", { pid: identifier(value(row, "pid")) })}
+    rows={rows}
+    selectedKey={selectedKey}
+    t={t}
+    testId="process-table"
+  />
 }
 
 export function formatCell(kind: Field["kind"], cell: Cell, locale: Locale, t: Translate, ticksPerSecond: number | null): string {
@@ -292,6 +167,13 @@ function sortable(row: DataRow, field: Field): string | number | null {
   if (field.kind === "state") return stateText(cell)
   if (field.kind === "id" && field.id !== "pid") return rawText(cell)
   return asNumber(cell) ?? rawText(cell)
+}
+
+function entityKind(kind: Field["kind"]): NonNullable<EntityColumn["kind"]> {
+  if (kind === "id") return "id"
+  if (kind === "time") return "timestamp"
+  if (kind === "command" || kind === "state") return "text"
+  return "number"
 }
 
 function defaultSort(lens: Lens): string {
@@ -364,28 +246,3 @@ function numberField(field: string, key: string, size: number): Field { return {
 function kibField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "kib", size } }
 function bytesField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "bytes", size } }
 function nsField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "ns", size } }
-
-function stickyClass(meta: unknown, head: boolean): string {
-  const cell = meta as { readonly sticky?: "pid" | "start" | "command"; readonly numeric?: boolean } | undefined
-  const sticky = cell?.sticky
-  return [
-    head ? "process-header-cell" : "process-cell",
-    cell?.numeric === true ? "align-right" : "",
-    sticky === "pid" ? "sticky-pid" : "",
-    sticky === "start" ? "sticky-start" : "",
-    sticky === "command" ? "sticky-command" : "",
-  ].filter(Boolean).join(" ")
-}
-
-function stickyLeft(meta: unknown, pinnedWidths: readonly number[]): number | undefined {
-  const pinned = (meta as { readonly sticky?: "pid" | "start" | "command" } | undefined)?.sticky
-  if (pinned === undefined) return undefined
-  const index = PINNED_ORDER.indexOf(pinned)
-  return pinnedWidths.slice(0, index).reduce((left, width) => left + width, 0)
-}
-
-const PINNED_ORDER = ["pid", "start", "command"] as const
-
-export function isNumeric(kind: Field["kind"]): boolean {
-  return kind === "number" || kind === "rate" || kind === "cores" || kind === "kib" || kind === "bytes" || kind === "ns"
-}

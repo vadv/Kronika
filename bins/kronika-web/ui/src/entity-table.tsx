@@ -8,7 +8,7 @@ import {
   useReactTable,
 } from "@tanstack/react-table"
 import { useVirtualizer } from "@tanstack/react-virtual"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { Cell, DataRow, Finding } from "./api"
 import { fittedWidth, headerWidths, widestCell } from "./column-size"
@@ -24,10 +24,13 @@ export interface EntityColumn {
   readonly physicalField?: string | Readonly<Record<string, string>>
   readonly label: string
   readonly help?: string
+  readonly render?: (row: DataRow) => ReactNode
+  readonly filterValue?: (row: DataRow) => string | null
+  readonly sortValue?: (row: DataRow) => string | number | boolean | null
   readonly rate?: boolean
   readonly kind?: "id" | "number" | "text" | "timestamp" | "bytes" | "kib" | "milliseconds" | "duration" | "microseconds" | "percent" | "boolean"
   readonly width?: number
-  readonly sticky?: boolean
+  readonly sticky?: boolean | string
   readonly sortable?: boolean
 }
 
@@ -37,6 +40,7 @@ export interface TableOrder {
 }
 
 export function EntityTable({
+  className,
   columns: fields,
   empty,
   finding,
@@ -50,11 +54,13 @@ export function EntityTable({
   pattern = "",
   serverSorted,
   rowKey = defaultKey,
+  rowLabel,
   rows,
   selectedKey,
   testId,
   t,
 }: {
+  readonly className?: string | undefined
   readonly columns: readonly EntityColumn[]
   readonly empty: string
   readonly finding?: Finding | null | undefined
@@ -68,6 +74,7 @@ export function EntityTable({
   readonly order?: TableOrder | undefined
   readonly serverSorted?: boolean | undefined
   readonly rowKey?: (row: DataRow) => string
+  readonly rowLabel?: ((row: DataRow) => string) | undefined
   readonly rows: readonly DataRow[]
   readonly selectedKey?: string | null
   readonly testId?: string
@@ -77,26 +84,27 @@ export function EntityTable({
   const ordering = useMemo<SortingState>(() => order === undefined ? [] : [{ id: order.column, desc: order.descending }], [order])
   const parent = useRef<HTMLDivElement>(null)
   const columns = useMemo<ColumnDef<DataRow>[]>(() => fields.map((field, index) => ({
-    accessorFn: (row) => sortable(value(row, field.field), field.kind),
-    cell: ({ row }) => <Cell cell={value(row.original, field.field)} kind={field.kind} locale={locale} rate={field.rate} t={t} />,
+    accessorFn: (row) => field.sortValue === undefined ? sortable(value(row, field.field), field.kind) : field.sortValue(row),
+    cell: ({ row }) => field.render === undefined ? <Cell cell={value(row.original, field.field)} kind={field.kind} locale={locale} rate={field.rate} t={t} /> : field.render(row.original),
     header: () => t === undefined ? field.label : t(field.label),
     id: field.field,
     enableSorting: serverSorted === true ? field.sortable === true : field.sortable !== false,
     meta: {
       numeric: NUMERIC_KINDS.has(field.kind ?? "text"),
-      sticky: field.sticky === true,
-      stickyLeft: fields.slice(0, index).reduce((left, candidate) => left + (candidate.sticky === true ? candidate.width ?? 128 : 0), 0),
+      sticky: field.sticky,
+      stickyLeft: fields.slice(0, index).reduce((left, candidate) => left + (candidate.sticky === undefined || candidate.sticky === false ? 0 : candidate.width ?? 128), 0),
       help: field.help,
       label: field.label,
     },
     size: field.width ?? 128,
+    ...(field.sortValue === undefined ? {} : { sortUndefined: "last" as const }),
   })), [fields, locale, serverSorted, t])
   const data = useMemo(() => {
     const match = globMatcher(pattern)
     if (match === null) return [...rows]
-    const texts = fields.filter((field) => field.kind === undefined || field.kind === "text" || field.kind === "id")
+    const texts = fields.filter((field) => field.filterValue !== undefined || field.kind === undefined || field.kind === "text" || field.kind === "id")
     return rows.filter((row) => texts.some((field) => {
-      const text = rawText(value(row, field.field))
+      const text = field.filterValue === undefined ? rawText(value(row, field.field)) : field.filterValue(row)
       return text !== null && match(text)
     }))
   }, [fields, pattern, rows])
@@ -153,9 +161,9 @@ export function EntityTable({
     if (locatedIndex >= 0) virtual.scrollToIndex(locatedIndex, { align: "center" })
   }, [finding, locatedIndex, virtual])
   const width = table.getTotalSize()
-  return <section aria-label={label} className="entity-table" data-testid={testId}>
+  return <section className={`entity-table${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
     {t !== undefined && onPattern !== undefined && <TableFilter kept={data.length} onPattern={onPattern} pattern={pattern} t={t} total={rows.length} />}
-    <div className="entity-scroll" ref={parent} role="table">
+    <div aria-label={label} className="entity-scroll" ref={parent} role="table">
       <div className="entity-head" ref={head} role="row" style={{ width }}>
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {
           const sorted = header.column.getIsSorted()
@@ -179,6 +187,7 @@ export function EntityTable({
             const located = finding !== null && finding !== undefined && rowMatchesLocator(row.original, finding)
             const activeFinding = located ? finding : null
             return <div
+              aria-label={rowLabel?.(row.original)}
               aria-selected={selectedKey === key}
               className={`entity-row${activeFinding === null ? "" : ` locator-row locator-${activeFinding.kind}`}`}
               data-locator-row={located || undefined}
@@ -245,17 +254,17 @@ function sortable(cell: Cell, kind: EntityColumn["kind"]): string | number | boo
 }
 
 function sticky(meta: unknown, head: boolean): string {
-  const cell = meta as { readonly sticky?: boolean; readonly numeric?: boolean } | undefined
+  const cell = meta as { readonly sticky?: boolean | string; readonly numeric?: boolean } | undefined
   return [
     head ? "entity-header-cell" : "entity-cell",
     cell?.numeric === true ? "align-right" : "",
-    cell?.sticky === true ? "entity-sticky" : "",
+    cell?.sticky === true ? "entity-sticky" : typeof cell?.sticky === "string" ? cell.sticky : "",
   ].filter(Boolean).join(" ")
 }
 
 function stickyLeft(meta: unknown): number | undefined {
-  const value = meta as { readonly sticky?: boolean; readonly stickyLeft?: number } | undefined
-  return value?.sticky === true ? value.stickyLeft ?? 0 : undefined
+  const value = meta as { readonly sticky?: boolean | string; readonly stickyLeft?: number } | undefined
+  return value?.sticky === undefined || value.sticky === false ? undefined : value.stickyLeft ?? 0
 }
 
 function columnHelp(meta: unknown): { readonly help: string; readonly label: string } | null {
