@@ -472,9 +472,6 @@ h2 { font-size: var(--t-md); }
 .event-change { background: var(--s2); border: 1px solid var(--line3); display: grid; gap: 4px; margin-top: 9px; padding: 7px 9px; }
 .event-change span, .event-change small { color: var(--fg3); font-size: var(--t-xs); }
 .event-change strong { color: var(--fg); font-size: var(--t-sm); font-variant-numeric: tabular-nums; }
-.event-technical { border-top: 1px solid var(--line2); color: var(--fg3); font-size: var(--t-xs); margin-top: 12px; padding-top: 8px; }
-.event-technical summary { cursor: pointer; }
-.event-technical code { display: block; line-height: 1.45; margin-top: 6px; overflow-wrap: anywhere; white-space: normal; }
 .mini-selected-point { fill: var(--accent3); stroke: var(--s0); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 
 .process-history { border-top: 1px solid var(--line3); display: grid; gap: 6px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 10px; padding-top: 6px; }

@@ -24,6 +24,21 @@ test("locale validation checks key and placeholder parity", () => {
   )
 })
 
+test("hour empty states are provisional only while the selected hour is open", async () => {
+  const [englishSource, russianSource] = await Promise.all([
+    readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8"),
+  ])
+  const english = parseDictionary(englishSource, "en.yaml")
+  const russian = parseDictionary(russianSource, "ru.yaml")
+  validateDictionaries(english, russian)
+
+  assert.equal(english["status.no_data_current"], "No data yet. Refresh may show new data.")
+  assert.equal(english["status.no_data_completed"], "No data was recorded in this hour.")
+  assert.equal(russian["status.no_data_current"], "Данных пока нет. После обновления они могут появиться.")
+  assert.equal(russian["status.no_data_completed"], "За этот час данные не записаны.")
+})
+
 test("project dictionaries cover the active UI keys", async () => {
   const [englishSource, russianSource] = await Promise.all([
     readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),

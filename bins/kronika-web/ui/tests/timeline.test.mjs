@@ -24,6 +24,11 @@ function finding(kind, timestamp, ordinal) {
   }
 }
 
+test("the shared empty timeline uses the hour-aware status", async () => {
+  const source = await readFile(new URL("../src/timeline.tsx", import.meta.url), "utf8")
+  assert.match(source, /t\(emptyHourStatusKey\(hour\)\)/)
+})
+
 test("one timeline mark stays an unlabeled shape", () => {
   const [marker] = helpers.groupFindings([finding("event", 100, "1")], 0, 1_000, 100, 10)
   assert.equal(marker.findings.length, 1)

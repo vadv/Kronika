@@ -156,7 +156,6 @@ function FindingDetail({ data, finding, history, locale, resolution, row, t }: {
       </section>}
       <dl>{findingDetailFields(row, finding).map(([field, cell]) => <div key={field}><dt>{eventFieldLabel(field, t)}</dt><dd>{eventValue(finding, field, cell, locale, t)}</dd></div>)}</dl>
     </>}
-    <details className="event-technical"><summary>{t("events.technical")}</summary><code>{locatorText(finding, t)}</code></details>
   </aside>
 }
 
@@ -164,15 +163,6 @@ function KindIcon({ kind }: { readonly kind: Finding["kind"] }): ReactNode {
   if (kind === "event") return <CircleAlert aria-hidden="true" className="kind-event" size={15} />
   if (kind === "known_bad") return <Diamond aria-hidden="true" className="kind-known_bad" size={15} />
   return <TriangleAlert aria-hidden="true" className="kind-spike" size={15} />
-}
-
-export function locatorText(finding: Finding, t: Translate): string {
-  return t("events.locator", {
-    field: finding.fieldOrdinal,
-    "row": finding.rowOrdinal,
-    segment: finding.segmentId,
-    type: finding.typeId,
-  })
 }
 
 export function categoryLabel(category: number, t: Translate): string {

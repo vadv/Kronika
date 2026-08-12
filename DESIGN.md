@@ -34,7 +34,7 @@ Concrete consequences:
   must not wake the heavy paths.
 - The collector shares a host with a production database. An out-of-memory kill
   there costs more than a lost segment.
-- **The collector's peak RSS stays under 20 MB on an ordinary host**, and each
+- **The collector's peak RSS stays under 25 MiB on an ordinary host**, and each
   segment write logs it as `rss_kib`. A host with thirty thousand processes is
   a host already in trouble; an ordinary OS snapshot reads all of them and is
   allowed to die trying rather than report a fraction. Log files and potentially

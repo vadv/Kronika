@@ -6,6 +6,7 @@ import { findingOrder, findingSummary } from "./finding-presentation"
 import { LabelHelp, type Translate } from "./help"
 import { moveCursor } from "./keyboard"
 import { asNumber, compact, formatUtc, humanBytes, type Locale, value } from "./model"
+import { emptyHourStatusKey } from "./refresh"
 import { TimeTicks } from "./time-ticks"
 
 const WIDTH = 920
@@ -138,7 +139,7 @@ export function Timeline({
     return () => observer.disconnect()
   }, [])
   if (lanes.length === 0 && findings.length === 0) {
-    return <section className="timeline-empty" data-testid="timeline-empty">{t("status.no_data")}</section>
+    return <section className="timeline-empty" data-testid="timeline-empty">{t(emptyHourStatusKey(hour))}</section>
   }
   const timestampFromClient = (clientX: number): number | null => {
     const bounds = plot.current?.getBoundingClientRect()

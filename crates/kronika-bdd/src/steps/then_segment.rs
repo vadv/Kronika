@@ -406,13 +406,13 @@ fn segment_time_span(world: &mut BddWorld) -> Result<()> {
     Ok(())
 }
 
-#[then(regex = r"^its peak RSS stays under (\d+) MB$")]
-fn peak_rss(world: &mut BddWorld, limit_mb: u64) -> Result<()> {
+#[then(regex = r"^its peak RSS stays under (\d+) MiB$")]
+fn peak_rss(world: &mut BddWorld, maximum_mib: u64) -> Result<()> {
     let run = world.run.as_ref().context("a collector was started")?;
     let peak = run
         .peak_rss_kib()
         .context("the run recorded no peak RSS; it may not have been stopped")?;
-    let limit_kib = limit_mb * 1024;
+    let limit_kib = maximum_mib * 1024;
     anyhow::ensure!(
         peak <= limit_kib,
         "peak RSS was {peak} KiB, above the {limit_kib} KiB the scenario allows"

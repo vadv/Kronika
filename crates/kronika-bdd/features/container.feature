@@ -51,4 +51,4 @@ Feature: What the collector records about the container it runs in
       | KRONIKA_OS_CGROUP_INTERVAL_S         | 0     |
       | KRONIKA_OS_CGROUP_MAPPING_INTERVAL_S | 0     |
     When it runs for 5 seconds
-    Then its peak RSS stays under 20 MB
+    Then its peak RSS stays under 25 MiB

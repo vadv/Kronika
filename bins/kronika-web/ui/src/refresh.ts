@@ -18,6 +18,10 @@ export function isCurrentHour(hour: number, now = Date.now() * 1_000): boolean {
   return hour === floorHour(now)
 }
 
+export function emptyHourStatusKey(hour: number, now = Date.now() * 1_000): "status.no_data_current" | "status.no_data_completed" {
+  return isCurrentHour(hour, now) ? "status.no_data_current" : "status.no_data_completed"
+}
+
 export function latestTimelineTimestamp(timeline: TimelineData): number {
   const end = timeline.hour + 3_600_000_000
   let latest = timeline.hour

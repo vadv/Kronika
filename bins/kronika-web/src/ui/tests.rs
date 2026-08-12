@@ -132,7 +132,10 @@ fn content_security_policy_allows_both_inline_scripts() {
     let mut scripts = Vec::new();
     let mut tail = html.as_str();
     while let Some(start) = tail.find("<script>") {
-        let body = &tail[start + "<script>".len()..];
+        let body = tail
+            .get(start..)
+            .and_then(|script| script.strip_prefix("<script>"))
+            .expect("script starts at a UTF-8 boundary");
         let (script, rest) = body
             .split_once("</script>")
             .expect("complete inline script");

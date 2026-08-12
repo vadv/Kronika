@@ -3,7 +3,7 @@ import test from "node:test"
 
 import { importFile } from "./import-module.mjs"
 
-const { isCurrentHour, latestTimelineTimestamp, REFRESH_INTERVAL_MS, refreshedCursor, scheduleRefresh } = await importFile("../src/refresh.ts")
+const { emptyHourStatusKey, isCurrentHour, latestTimelineTimestamp, REFRESH_INTERVAL_MS, refreshedCursor, scheduleRefresh } = await importFile("../src/refresh.ts")
 
 const HOUR = 1_800_000_000_000_000
 
@@ -43,6 +43,11 @@ test("only the current calendar hour schedules the shared fifteen-second refresh
 
   scheduleRefresh(HOUR - 3_600_000_000, () => { refreshes += 1 }, visibility, intervals, () => HOUR + 1)
   assert.equal(intervals.delays.size, 0)
+})
+
+test("an empty open hour stays provisional while a completed hour is definitive", () => {
+  assert.equal(emptyHourStatusKey(HOUR, HOUR + 1), "status.no_data_current")
+  assert.equal(emptyHourStatusKey(HOUR - 3_600_000_000, HOUR + 1), "status.no_data_completed")
 })
 
 test("a hidden page stops polling and refreshes once when it becomes visible", () => {
