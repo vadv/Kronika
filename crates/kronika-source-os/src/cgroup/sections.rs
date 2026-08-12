@@ -21,7 +21,6 @@ pub const fn to_cpu_section(row: &CgroupCpuRow, scope: u8, cgroup_path: StrId) -
         nr_throttled: row.nr_throttled,
         quota_usec: row.quota_usec,
         period_usec: row.period_usec,
-        cpuset_cpus: row.cpuset_cpus,
         scope,
     }
 }
@@ -42,7 +41,6 @@ pub const fn to_memory_section(
         file: row.file,
         kernel: row.kernel,
         slab: row.slab,
-        shmem: row.shmem,
         low_events: row.low_events,
         high_events: row.high_events,
         max_events: row.max_events,

@@ -33,7 +33,6 @@ pub fn parse_cpu_stat(content: &str, ts: i64, cgroup_path: &str) -> CgroupCpuRow
         nr_throttled: 0,
         quota_usec: -1,
         period_usec: DEFAULT_CPU_PERIOD_USEC,
-        cpuset_cpus: None,
     };
     for (key, value) in key_value_lines(content) {
         match key {
@@ -76,7 +75,6 @@ pub(super) fn parse_memory_stat_v2(content: &str, row: &mut CgroupMemoryRow) {
             "file" => row.file = value,
             "kernel" => row.kernel = value,
             "slab" => row.slab = value,
-            "shmem" => row.shmem = value,
             _ => {}
         }
     }
@@ -86,7 +84,6 @@ pub(super) fn parse_memory_stat_v1(content: &str, row: &mut CgroupMemoryRow) {
     let mut kernel_stack = 0_i64;
     for (key, value) in key_value_lines(content) {
         match key {
-            "shmem" | "total_shmem" => row.shmem = value,
             "rss" | "total_rss" => row.anon = value,
             "cache" | "total_cache" => row.file = value,
             "slab" | "total_slab" => row.slab = value,
@@ -274,7 +271,6 @@ mod tests {
             file: 0,
             kernel: 0,
             slab: 0,
-            shmem: 0,
             low_events: 0,
             high_events: 0,
             max_events: 0,

@@ -1,7 +1,7 @@
 //! Cgroup rows before string interning.
 
 /// Cgroup collection output before string interning.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CgroupCollection {
     /// CPU rows.
     pub cpu: Vec<CgroupCpuRow>,
@@ -11,8 +11,6 @@ pub struct CgroupCollection {
     pub io: Vec<CgroupIoRow>,
     /// PIDs rows.
     pub pids: Vec<CgroupPidsRow>,
-    /// Pressure of our own group, empty where the kernel does not expose it.
-    pub psi: Vec<crate::proc::pressure::PsiRow>,
 }
 
 /// CPU metrics for one cgroup.
@@ -36,8 +34,6 @@ pub struct CgroupCpuRow {
     pub quota_usec: i64,
     /// Period, microseconds.
     pub period_usec: i64,
-    /// CPUs in `cpuset.cpus.effective`; `None` where the file is absent.
-    pub cpuset_cpus: Option<i64>,
 }
 
 /// Memory metrics for one cgroup.
@@ -59,8 +55,6 @@ pub struct CgroupMemoryRow {
     pub kernel: i64,
     /// Slab memory, bytes.
     pub slab: i64,
-    /// Shared memory, bytes; counted inside `file`.
-    pub shmem: i64,
     /// Low memory events.
     pub low_events: i64,
     /// High memory events.
