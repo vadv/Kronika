@@ -7,7 +7,7 @@ import type { Translate } from "./help"
 import { fieldNameForLocator, loadSeries, loadSnapshot } from "./api"
 import { LabelHelp } from "./help"
 import { asNumber, formatUtc, humanBytes, identifier, measure, rawText, snapshot, value, type Locale, shownMoment } from "./model"
-import { decoratePostgresIntervalRow, findingSemanticField, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, physicalField, physicalFields, postgresHistory, postgresIdentity, type PostgresSemanticField } from "./postgres-metrics"
+import { decoratePostgresRows, findingSemanticField, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, physicalField, physicalFields, postgresHistory, postgresIdentity, type PlanLens, type PostgresSemanticField, type StatementLens } from "./postgres-metrics"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 
@@ -38,6 +38,21 @@ export const STATEMENT_COLUMNS: readonly EntityColumn[] = [
   boolean("toplevel", 105), timestamp("stats_since", 210),
 ]
 
+const STATEMENT_DERIVED_COLUMNS: readonly EntityColumn[] = [
+  number("exec_load", 125), number("rows_per_call", 130), number("blocks_per_call", 140),
+  percent("hit_pct", 115), bytes("wal_per_call", 135), percent("plan_time_pct", 130),
+  number("cv", 90), milliseconds("min_exec_time_ms", 125), milliseconds("max_exec_time_ms", 125),
+  milliseconds("mean_exec_time_ms", 135), milliseconds("stddev_exec_time_ms", 145),
+]
+
+const STATEMENT_LENSES: Readonly<Record<StatementLens, readonly string[]>> = {
+  load: ["query", "calls_per_second", "execution_ms_per_second", "exec_load", "mean_exec_ms_per_call", "rows_per_second", "datname", "usename", "queryid", "toplevel"],
+  per_call: ["query", "mean_exec_ms_per_call", "rows_per_call", "blocks_per_call", "calls_per_second", "datname", "usename", "queryid", "toplevel"],
+  io: ["query", "shared_blks_read", "shared_blks_hit", "hit_pct", "blocks_per_call", "shared_blks_dirtied", "shared_blks_written", "local_blks_read", "temp_blks_read", "temp_blks_written", "datname", "queryid"],
+  resources: ["query", "temp_blks_written", "wal_bytes", "wal_per_call", "planning_ms_per_second", "plan_time_pct", "calls_per_second", "execution_ms_per_second", "datname", "queryid"],
+  stability: ["query", "cv", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "stddev_exec_time_ms", "calls_per_second", "datname", "queryid"],
+}
+
 export const PLAN_COLUMNS: readonly EntityColumn[] = [
   rateNumber("calls_per_second", 120),
   rateMilliseconds("execution_ms_per_second", 165),
@@ -54,6 +69,39 @@ export const PLAN_COLUMNS: readonly EntityColumn[] = [
   text("datname", 145), text("usename", 130), id("dbid", 120), id("userid", 120),
   text("cmd_type", 125), text("relids", 190), id("queryid_stat_statements", 220),
 ]
+
+const PLAN_DERIVED_COLUMNS: readonly EntityColumn[] = [
+  number("exec_load", 125), number("rows_per_call", 130), number("blocks_per_call", 140), percent("hit_pct", 115),
+  percent("plan_time_pct", 130), milliseconds("min_exec_time_ms", 125), milliseconds("max_exec_time_ms", 125),
+  milliseconds("mean_exec_time_ms", 135), milliseconds("stddev_exec_time_ms", 145),
+  timestamp("first_call", 190), timestamp("last_call", 190),
+]
+
+const PLAN_LENSES: Readonly<Record<PlanLens, readonly string[]>> = {
+  load: ["plan", "calls_per_second", "execution_ms_per_second", "exec_load", "mean_exec_ms_per_call", "rows_per_second", "datname", "usename", "queryid", "planid"],
+  regression: ["plan", "queryid", "planid", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "stddev_exec_time_ms", "calls_per_second", "first_call", "last_call", "datname", "queryid_stat_statements"],
+  io: ["plan", "queryid", "planid", "shared_blks_read", "shared_blks_hit", "hit_pct", "blocks_per_call", "shared_blks_dirtied", "local_blks_read", "temp_blks_read", "datname"],
+  compare: ["plan", "queryid", "planid", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "calls_per_second", "first_call", "last_call", "datname", "queryid_stat_statements"],
+}
+
+const STATEMENT_ALL_COLUMNS = [...STATEMENT_COLUMNS, ...STATEMENT_DERIVED_COLUMNS]
+const PLAN_ALL_COLUMNS = [...PLAN_COLUMNS, ...PLAN_DERIVED_COLUMNS]
+
+export function statementColumns(lens: StatementLens): readonly EntityColumn[] {
+  return columnsInOrder(STATEMENT_ALL_COLUMNS, STATEMENT_LENSES[lens])
+}
+
+export function planColumns(lens: PlanLens): readonly EntityColumn[] {
+  return columnsInOrder(PLAN_ALL_COLUMNS, PLAN_LENSES[lens])
+}
+
+function columnsInOrder(columns: readonly EntityColumn[], fields: readonly string[]): readonly EntityColumn[] {
+  const byField = new Map(columns.map((column) => [column.field, column]))
+  return fields.flatMap((field) => {
+    const column = byField.get(field)
+    return column === undefined ? [] : [{ ...column, sticky: field === "query" || field === "plan" }]
+  })
+}
 
 const LOCK_COLUMNS: readonly EntityColumn[] = [
   id("pid", 78, true), text("datname", 145, true), text("usename", 130), text("application_name", 180),
@@ -92,8 +140,12 @@ export function PostgresView({
   locale,
   onCursor,
   onFinding,
+  onPlanLens,
   onSection,
+  onStatementLens,
+  planLens,
   section,
+  statementLens,
   t,
 }: {
   readonly onOrder: (order: TableOrder | null) => void
@@ -110,34 +162,39 @@ export function PostgresView({
   readonly onFinding: (finding: Finding) => void
   readonly onSection: (section: PostgresSection) => void
   readonly section: PostgresSection
+  readonly statementLens: StatementLens
+  readonly planLens: PlanLens
+  readonly onStatementLens: (lens: StatementLens) => void
+  readonly onPlanLens: (lens: PlanLens) => void
   readonly t: Translate
 }) {
   // What the hour holds, not what has been fetched: a tab is loaded when it is
   // opened, so judging it by loaded rows left it disabled for good.
   const available = (name: string) => data.availableSections.includes(name)
-  useEffect(() => {
-    const tab = TABS.find((candidate) => candidate.id === section)
-    if (tab?.sections === undefined || tab.sections.some(available)) return
-    onSection("overview")
-  }, [data.availableSections, onSection, section])
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   return <>
     <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={onCursor} onFinding={onFinding} primaryLane={section === "activity" ? "backends" : "health"} shownAt={shownAt} t={t} />
     <nav aria-label={t("pg.sections")} className="pg-tabs">
       {TABS.map((tab) => {
-        const enabled = tab.sections === undefined || tab.sections.some(available)
+        const enabled = tab.id === "plans" || tab.sections === undefined || tab.sections.some(available)
         return <button aria-current={section === tab.id ? "page" : undefined} disabled={!enabled} key={tab.id} onClick={() => onSection(tab.id)} title={enabled ? undefined : t("pg.no_section_data")} type="button">{tab.icon}<span>{t(`pg.section.${tab.id}`)}</span></button>
       })}
     </nav>
     {section === "overview" && <Overview cursor={cursor} data={data} hour={hour} locale={locale} t={t} />}
     {section === "activity" && available("pg_stat_activity") && <PgEntityView columns={ACTIVITY_COLUMNS} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_activity" ? focusFinding : null} focus={focus} historyField="backend_xid_age" locale={locale} section="pg_stat_activity" t={t} />}
     {section === "activity" && available("pg_stat_progress_vacuum") && <PgPreview cursor={cursor} data={data} focus={focusFinding?.logicalName === "pg_stat_progress_vacuum" ? focus : null} locale={locale} section="pg_stat_progress_vacuum" t={t} />}
-    {section === "statements" && <PgEntityView columns={STATEMENT_COLUMNS} onOrder={onOrder} onPattern={onPattern} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField="mean_exec_ms_per_call" locale={locale} section="pg_stat_statements" t={t} />}
+    {section === "statements" && <><PostgresLensBar active={statementLens} choices={["load", "per_call", "io", "resources", "stability"]} onChange={onStatementLens} prefix="statement" t={t} /><PgEntityView columns={statementColumns(statementLens)} onOrder={onOrder} onPattern={onPattern} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField={statementLens === "stability" ? "cv" : "mean_exec_ms_per_call"} locale={locale} section="pg_stat_statements" t={t} /></>}
     {section === "plans" && available("pg_store_plans_info") && <PlanInfo cursor={cursor} data={data} locale={locale} t={t} />}
-    {section === "plans" && available("pg_store_plans") && <PgEntityView columns={PLAN_COLUMNS} onOrder={onOrder} onPattern={onPattern} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_store_plans" ? focusFinding : null} focus={focus} historyField="mean_exec_ms_per_call" locale={locale} section="pg_store_plans" t={t} />}
+    {section === "plans" && <PostgresLensBar active={planLens} choices={["load", "regression", "io", "compare"]} onChange={onPlanLens} prefix="plan" t={t} />}
+    {section === "plans" && available("pg_store_plans") && <PgEntityView columns={planColumns(planLens)} onOrder={onOrder} onPattern={onPattern} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_store_plans" ? focusFinding : null} focus={focus} historyField="mean_exec_ms_per_call" locale={locale} section="pg_store_plans" t={t} />}
+    {section === "plans" && !available("pg_store_plans") && <p className="pg-empty" data-testid="pg-plans-empty">{t("pg.plans.empty")}</p>}
     {section === "locks" && <PgEntityView columns={LOCK_COLUMNS} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_locks" ? focusFinding : null} focus={focus} historyField={null} locale={locale} section="pg_locks" t={t} />}
     {section === "databases" && <PgEntityView columns={DATABASE_COLUMNS} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_database" ? focusFinding : null} focus={focus} historyField="xact_commit" locale={locale} section="pg_stat_database" t={t} />}
   </>
+}
+
+function PostgresLensBar<L extends string>({ active, choices, onChange, prefix, t }: { readonly active: L; readonly choices: readonly L[]; readonly onChange: (lens: L) => void; readonly prefix: "statement" | "plan"; readonly t: Translate }) {
+  return <div className="lensbar pg-lensbar"><span>{t("pg.lens.label")}</span><div className="lens-tabs" role="group" aria-label={t("pg.lens.label")}>{choices.map((choice) => <button aria-pressed={active === choice} data-testid={`${prefix}-lens-${choice}`} key={choice} onClick={() => onChange(choice)} type="button">{t(`pg.lens.${choice}`)}</button>)}</div><div className="value-tone-legend" aria-label={t("pg.value.legend")}><i className="tone-good" />{t("pg.value.good")}<i className="tone-warning" />{t("pg.value.warning")}<i className="tone-critical" />{t("pg.value.critical")}</div></div>
 }
 
 function PgPreview({ cursor, data, focus, locale, section, t }: { readonly cursor: number; readonly data: HourData; readonly focus: DataRow | null; readonly locale: Locale; readonly section: string; readonly t: Translate }) {
@@ -241,7 +298,7 @@ function PgEntityView({
     const focused = focus !== null && focus.logicalName === section && !current.some((row) => rowKey(row) === rowKey(focus))
       ? [...current, focus]
       : current
-    return dense ? focused.map(decoratePostgresIntervalRow) : focused
+    return dense ? decoratePostgresRows(focused, section) : focused
   }, [allRows, cursor, dense, focus, section])
   const rates = data.rateColumns[section] ?? NO_RATES
   const visibleColumns = useMemo(
@@ -510,6 +567,7 @@ function number(field: string, width = 125): EntityColumn { return pgColumn(fiel
 function id(field: string, width = 110, sticky = false): EntityColumn { return pgColumn(field, "id", width, sticky) }
 function bytes(field: string, width = 140): EntityColumn { return pgColumn(field, "bytes", width) }
 function milliseconds(field: string, width = 145): EntityColumn { return pgColumn(field, "milliseconds", width) }
+function percent(field: string, width = 125): EntityColumn { return pgColumn(field, "percent", width) }
 function rateNumber(field: string, width = 125): EntityColumn { return { ...number(field, width), rate: true } }
 function rateBytes(field: string, width = 140): EntityColumn { return { ...bytes(field, width), rate: true } }
 function rateMilliseconds(field: string, width = 145): EntityColumn { return { ...milliseconds(field, width), rate: true } }

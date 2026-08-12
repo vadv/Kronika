@@ -236,6 +236,13 @@ h2 { font-size: var(--t-md); }
 .lens-tabs { border: 1px solid var(--line3); display: flex; }
 .lens-tabs button { background: transparent; border: 0; color: var(--fg3); cursor: pointer; font-size: var(--t-xs); min-width: 58px; padding: 4px 8px; text-transform: uppercase; }
 .lens-tabs button[aria-pressed="true"] { background: var(--s4); color: var(--accent3); }
+.pg-lensbar { flex-wrap: wrap; }
+.value-tone-legend { align-items: center; color: var(--fg4); display: flex; font-size: var(--t-xs); gap: 5px; margin-left: auto; }
+.value-tone-legend i { border-radius: 50%; display: inline-block; height: 6px; margin-left: 8px; width: 6px; }
+.value-tone-legend .tone-good { background: var(--ok); }
+.value-tone-legend .tone-warning { background: var(--warn); }
+.value-tone-legend .tone-critical { background: var(--bad); }
+.pg-empty { border: 1px solid var(--line2); color: var(--fg3); font-size: var(--t-sm); margin: 0; padding: 22px; }
 .process-summary { border-left: 1px solid var(--line2); display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .process-summary article { background: var(--s1); border-bottom: 1px solid var(--line2); border-right: 1px solid var(--line2); min-height: 55px; padding: 8px 10px; }
 .process-summary span { color: var(--fg3); display: block; font-size: var(--t-xs); text-transform: uppercase; }

@@ -39,7 +39,7 @@ const compiled = await build({
     },
   }],
   stdin: {
-    contents: 'export { ACTIVITY_COLUMNS, columnsFor, isTimestampField, overviewValue, PLAN_COLUMNS, postgresDatabaseCount, sameEntity, selectedEntity, STATEMENT_COLUMNS } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, postgresIdentity, postgresProjection } from "../src/postgres-metrics.ts"',
+    contents: 'export { ACTIVITY_COLUMNS, columnsFor, isTimestampField, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, postgresIdentity, postgresProjection } from "../src/postgres-metrics.ts"',
     loader: "tsx",
     resolveDir: directory,
   },
@@ -153,11 +153,22 @@ test("dense PostgreSQL columns and the Plans tab stay available by section", asy
   }
   const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
   assert.match(source, /id: "plans"[\s\S]*sections: \["pg_store_plans", "pg_store_plans_info"\]/)
-  assert.match(source, /section === "plans" && available\("pg_store_plans"\)/)
+  assert.match(source, /tab\.id === "plans"/)
+  assert.match(source, /pg-plans-empty/)
   assert.match(source, /section === "plans" && available\("pg_store_plans_info"\)/)
   assert.match(source, /!current\.some[\s\S]*\[\.\.\.current, focus\]/)
   assert.match(source, /loadSeries\(hour, section, filters, fields, controller\.signal, row\.typeId\)/)
   assert.match(source, /\{ section, fields: \[field\], typeId: row\.typeId \}[\s\S]*fullText: true/)
+})
+
+test("statement and plan lenses have compact ordered columns", () => {
+  assert.deepEqual(helpers.statementColumns("load").slice(0, 4).map(({ field }) => field), ["query", "calls_per_second", "execution_ms_per_second", "exec_load"])
+  assert.deepEqual(helpers.statementColumns("per_call").slice(0, 4).map(({ field }) => field), ["query", "mean_exec_ms_per_call", "rows_per_call", "blocks_per_call"])
+  assert.ok(helpers.statementColumns("io").some(({ field }) => field === "hit_pct"))
+  assert.ok(helpers.statementColumns("resources").some(({ field }) => field === "plan_time_pct"))
+  assert.ok(helpers.statementColumns("stability").some(({ field }) => field === "cv"))
+  assert.ok(helpers.planColumns("regression").some(({ field }) => field === "stddev_exec_time_ms"))
+  assert.equal(helpers.planColumns("compare").some(({ field }) => field === "plan_count"), false)
 })
 
 test("an exact finding row wins over the previous PostgreSQL selection", () => {

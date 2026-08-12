@@ -43,7 +43,7 @@ import {
   type Locale,
 } from "./model"
 import { PostgresView, type PostgresSection } from "./postgres-view"
-import { POSTGRES_SECTION_REQUESTS, postgresProjection } from "./postgres-metrics"
+import { POSTGRES_SECTION_REQUESTS, planRequest, postgresProjection, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
 import { ProcessSummary, ProcessTable } from "./process-table"
 import { SYSTEM_REQUESTS, SystemView } from "./system-view"
 import { Timeline } from "./timeline"
@@ -65,8 +65,6 @@ const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
   processes: [...TIMELINE_REQUESTS, { section: "os_process" }, { section: "pg_stat_activity" }, { section: "instance_metadata" }],
   "postgresql:overview": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlOverview.map(section)],
   "postgresql:activity": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlActivity.map(section)],
-  "postgresql:statements": [...TIMELINE_REQUESTS, ...POSTGRES_SECTION_REQUESTS.filter((request) => request.section === "pg_stat_statements")],
-  "postgresql:plans": [...TIMELINE_REQUESTS, ...POSTGRES_SECTION_REQUESTS.filter((request) => request.section === "pg_store_plans" || request.section === "pg_store_plans_info")],
   "postgresql:locks": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlLocks.map(section)],
   "postgresql:databases": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlDatabases.map(section)],
   events: [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.events.map(section)],
@@ -124,6 +122,8 @@ function App() {
   const [source, setSource] = useState<Source>(sourceOf(opened.current.view))
   const [hostSection, setHostSection] = useState<HostSection>(hostSectionOf(opened.current.view))
   const [pgSection, setPgSection] = useState<PostgresSection>(pgSectionOf(opened.current.view))
+  const [statementLens, setStatementLens] = useState<StatementLens>("load")
+  const [planLens, setPlanLens] = useState<PlanLens>("load")
   const [lens, setLens] = useState<Lens>(opened.current.lens)
   const [find, setFind] = useState(opened.current.find)
   // The statement table is ordered and cut by the server, so its header asks
@@ -151,7 +151,19 @@ function App() {
   }, [theme])
   // One view is on screen at a time, so one view's sections are what a load
   // fetches. Switching views adds the difference instead of reloading the hour.
-  const viewKey = source === "host" ? hostSection : source === "postgresql" ? `postgresql:${pgSection}` : "events"
+  const baseViewKey = source === "host" ? hostSection : source === "postgresql" ? `postgresql:${pgSection}` : "events"
+  const viewKey = pgSection === "statements" && source === "postgresql"
+    ? `${baseViewKey}:${statementLens}`
+    : pgSection === "plans" && source === "postgresql" ? `${baseViewKey}:${planLens}` : baseViewKey
+  const viewRequests = useMemo(() => {
+    if (source === "postgresql" && pgSection === "statements") return [...TIMELINE_REQUESTS, statementRequest(statementLens)]
+    if (source === "postgresql" && pgSection === "plans") return [
+      ...TIMELINE_REQUESTS,
+      planRequest(planLens),
+      ...POSTGRES_SECTION_REQUESTS.filter((request) => request.section === "pg_store_plans_info"),
+    ]
+    return VIEW_REQUESTS[baseViewKey] ?? []
+  }, [baseViewKey, pgSection, planLens, source, statementLens])
   const [segments, setSegments] = useState<readonly SegmentBound[]>([])
   const loaded = useRef({ hour: null as number | null, keys: new Set<string>() })
   const drawn = useRef<number | null>(null)
@@ -210,7 +222,7 @@ function App() {
   useEffect(() => {
     if (hour === null || cursorSegment === null) return
     const wanted = requestsForSegment(
-      (VIEW_REQUESTS[viewKey] ?? []).filter((request) => request.section !== "health"),
+      viewRequests.filter((request) => request.section !== "health"),
       cursorSegment,
     )
     const key = `${cursorSegment.id}:${cursor}:${viewKey}:${order?.column ?? ""}:${order?.descending ?? ""}`
@@ -239,7 +251,7 @@ function App() {
         })
     }, 250)
     return () => { clearTimeout(timer); controller.abort() }
-  }, [cursor, cursorSegment, hour, order, viewKey])
+  }, [cursor, cursorSegment, hour, order, viewKey, viewRequests])
 
   useEffect(() => {
     const shortcuts = (event: KeyboardEvent) => {
@@ -475,7 +487,7 @@ function App() {
           {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onClose={() => { setDockClosed(true); setSelectedKey(null) }} process={selectedProcess} processHistory={processHistory} t={t} ticksPerSecond={ticksPerSecond} />}
         </div>
       </>}
-      {!loading && error === null && hour !== null && source === "postgresql" && <PostgresView onOrder={setOrder} onPattern={setFind} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} onSection={setPgSection} section={pgSection} t={t} />}
+      {!loading && error === null && hour !== null && source === "postgresql" && <PostgresView onOrder={setOrder} onPattern={setFind} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} hour={hour} locale={locale} onCursor={setCursor} onFinding={selectFinding} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onSection={setPgSection} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} section={pgSection} statementLens={statementLens} t={t} />}
       {!loading && error === null && hour !== null && source === "events" && <EventsView cursor={cursor} data={data} hour={hour} onCursor={setCursor} onFinding={selectFinding} onShowAll={() => setEventScope(null)} resolve={(finding) => resolveLocator(data, finding)?.row ?? null} scope={eventScope} selected={selectedFinding} t={t} />}
     </section>
 

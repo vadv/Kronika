@@ -25,20 +25,20 @@ const wal = ["wal_records", "wal_fpi", "wal_bytes"]
 function layout(typeId, logicalName, identity, columns) {
   return {
     typeId, logicalName, identity,
-    columns: ["ts", ...columns, "mean_time", "private_text"].map((name) => ({ name })),
+    columns: ["ts", ...columns, "private_text"].map((name) => ({ name })),
   }
 }
 
 const registry = [
-  layout("1002001", "pg_stat_statements", ["queryid", "userid", "dbid"], ["queryid", "userid", "dbid", ...statementBase, "total_time", ...oldTiming]),
-  layout("1002002", "pg_stat_statements", ["queryid", "userid", "dbid"], ["queryid", "userid", "dbid", ...statementBase, "total_exec_time", ...planning, ...oldTiming, ...wal]),
-  layout("1002003", "pg_stat_statements", ["queryid", "userid", "dbid", "toplevel"], ["queryid", "userid", "dbid", "toplevel", ...statementBase, "total_exec_time", ...planning, ...oldTiming, ...wal]),
-  layout("1002004", "pg_stat_statements", ["queryid", "userid", "dbid", "toplevel"], ["queryid", "userid", "dbid", "toplevel", ...statementBase, "total_exec_time", ...planning, ...oldTiming, "temp_blk_read_time", "temp_blk_write_time", ...wal]),
-  layout("1002005", "pg_stat_statements", ["queryid", "userid", "dbid", "toplevel"], ["queryid", "userid", "dbid", "toplevel", ...statementBase, "total_exec_time", ...planning, ...splitTiming, ...wal, "stats_since"]),
-  layout("1002006", "pg_stat_statements", ["queryid", "userid", "dbid", "toplevel"], ["queryid", "userid", "dbid", "toplevel", ...statementBase, "total_exec_time", ...planning, ...splitTiming, ...wal, "wal_buffers_full", "stats_since"]),
-  layout("1003001", "pg_store_plans", ["userid", "dbid", "queryid", "planid"], ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls", "total_time", "rows", ...blocks, ...splitTiming]),
-  layout("1004001", "pg_store_plans", ["userid", "dbid", "queryid", "planid"], ["userid", "dbid", "queryid", "planid", "queryid_stat_statements", "datname", "usename", "plan", "calls", "slow_log_calls", "total_time", "rows", ...blocks, ...oldTiming, "total_plan_time"]),
-  layout("1018001", "pg_store_plans", ["userid", "dbid", "queryid", "planid"], ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "relids", "cmd_type", "calls", "total_time", "rows", ...blocks, ...splitTiming]),
+  layout("1002001", "pg_stat_statements", ["queryid", "userid", "dbid"], ["queryid", "userid", "dbid", ...statementBase, "total_time", "min_time", "max_time", "mean_time", "stddev_time", ...oldTiming]),
+  layout("1002002", "pg_stat_statements", ["queryid", "userid", "dbid"], ["queryid", "userid", "dbid", ...statementBase, "total_exec_time", "min_exec_time", "max_exec_time", "mean_exec_time", "stddev_exec_time", ...planning, ...oldTiming, ...wal]),
+  layout("1002003", "pg_stat_statements", ["queryid", "userid", "dbid", "toplevel"], ["queryid", "userid", "dbid", "toplevel", ...statementBase, "total_exec_time", "min_exec_time", "max_exec_time", "mean_exec_time", "stddev_exec_time", ...planning, ...oldTiming, ...wal]),
+  layout("1002004", "pg_stat_statements", ["queryid", "userid", "dbid", "toplevel"], ["queryid", "userid", "dbid", "toplevel", ...statementBase, "total_exec_time", "min_exec_time", "max_exec_time", "mean_exec_time", "stddev_exec_time", ...planning, ...oldTiming, "temp_blk_read_time", "temp_blk_write_time", ...wal]),
+  layout("1002005", "pg_stat_statements", ["queryid", "userid", "dbid", "toplevel"], ["queryid", "userid", "dbid", "toplevel", ...statementBase, "total_exec_time", "min_exec_time", "max_exec_time", "mean_exec_time", "stddev_exec_time", ...planning, ...splitTiming, ...wal, "stats_since"]),
+  layout("1002006", "pg_stat_statements", ["queryid", "userid", "dbid", "toplevel"], ["queryid", "userid", "dbid", "toplevel", ...statementBase, "total_exec_time", "min_exec_time", "max_exec_time", "mean_exec_time", "stddev_exec_time", ...planning, ...splitTiming, ...wal, "wal_buffers_full", "stats_since"]),
+  layout("1003001", "pg_store_plans", ["userid", "dbid", "queryid", "planid"], ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls", "total_time", "min_time", "max_time", "mean_time", "stddev_time", "rows", ...blocks, ...splitTiming, "first_call", "last_call"]),
+  layout("1004001", "pg_store_plans", ["userid", "dbid", "queryid", "planid"], ["userid", "dbid", "queryid", "planid", "queryid_stat_statements", "datname", "usename", "plan", "calls", "slow_log_calls", "total_time", "min_time", "max_time", "mean_time", "stddev_time", "rows", ...blocks, ...oldTiming, "total_plan_time", "first_call", "last_call"]),
+  layout("1018001", "pg_store_plans", ["userid", "dbid", "queryid", "planid"], ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "relids", "cmd_type", "calls", "total_time", "min_time", "max_time", "mean_time", "stddev_time", "rows", ...blocks, ...splitTiming, "first_call", "last_call"]),
   layout("1016001", "pg_store_plans_info", [], ["dealloc", "stats_reset"]),
 ]
 
@@ -91,7 +91,7 @@ test("all six statement layouts keep exact registry identity, aliases, projectio
     assert.ok(projection.includes("query"))
     assert.ok(projection.includes(execution))
     assert.equal(projection.includes(execution === "total_time" ? "total_exec_time" : "total_time"), false)
-    assert.equal(projection.includes("mean_time"), false)
+    assert.equal(projection.includes("mean_time"), typeId === "1002001")
     assert.equal(projection.includes("private_text"), false)
   }
   const request = metrics.POSTGRES_SECTION_REQUESTS.find(({ section }) => section === "pg_stat_statements")
@@ -193,4 +193,39 @@ test("a physical statement spike selects the derived mean cell", () => {
     "1002005": "total_exec_time",
     "1002006": "total_exec_time",
   })
+})
+
+test("statement lenses project only their exact physical operands", () => {
+  const perCall = metrics.statementRequest("per_call")
+  assert.equal(perCall.top, 200)
+  assert.deepEqual(perCall.defaultOrder, ["total_time", "total_exec_time"])
+  assert.ok(perCall.fieldsByType["1002001"].includes("rows"))
+  assert.ok(perCall.fieldsByType["1002001"].includes("calls"))
+  assert.ok(perCall.fieldsByType["1002001"].includes("shared_blks_hit"))
+  assert.equal(perCall.fieldsByType["1002001"].includes("wal_bytes"), false)
+
+  const stability = metrics.statementRequest("stability")
+  assert.ok(stability.fieldsByType["1002001"].includes("mean_time"))
+  assert.ok(stability.fieldsByType["1002001"].includes("stddev_time"))
+  assert.ok(stability.fieldsByType["1002006"].includes("mean_exec_time"))
+  assert.ok(stability.fieldsByType["1002006"].includes("stddev_exec_time"))
+})
+
+test("plan lenses keep bounded rows and direct per-plan statistics", () => {
+  for (const lens of ["load", "regression", "io", "compare"]) {
+    const request = metrics.planRequest(lens)
+    assert.equal(request.top, 200)
+    assert.ok(request.fieldsByType["1003001"].includes("plan"))
+  }
+  const regression = metrics.planRequest("regression")
+  for (const field of ["min_time", "max_time", "mean_time", "stddev_time", "first_call", "last_call"]) {
+    assert.ok(regression.fieldsByType["1003001"].includes(field))
+  }
+  const decorated = metrics.decoratePostgresRows([
+    row("1003001", 10, { calls: 2, total_time: 20, min_time: 2, max_time: 15, mean_time: 10, stddev_time: 3 }, "a"),
+  ], "pg_store_plans")[0]
+  assert.equal(decorated.values.mean_exec_time_ms, 10)
+  assert.equal(decorated.values.max_exec_time_ms, 15)
+  assert.equal(Object.hasOwn(decorated.values, "plan_count"), false)
+  assert.equal(Object.hasOwn(decorated.values, "time_ratio"), false)
 })

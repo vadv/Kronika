@@ -9,6 +9,9 @@ export const PG_STAT_STATEMENTS_TYPE_IDS = [
 export const PG_STORE_PLANS_TYPE_IDS = ["1003001", "1004001", "1018001"] as const
 export const PG_STORE_PLANS_INFO_TYPE_IDS = ["1016001"] as const
 
+export type StatementLens = "load" | "per_call" | "io" | "resources" | "stability"
+export type PlanLens = "load" | "regression" | "io" | "compare"
+
 export type PostgresSemanticField =
   | "calls_per_second"
   | "execution_ms_per_second"
@@ -21,6 +24,13 @@ export type PostgresSemanticField =
   | "local_blk_write_ms_per_second"
   | "temp_blk_read_ms_per_second"
   | "temp_blk_write_ms_per_second"
+
+const SEMANTIC_FIELDS: readonly PostgresSemanticField[] = [
+  "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second",
+  "planning_ms_per_second", "shared_blk_read_ms_per_second", "shared_blk_write_ms_per_second",
+  "local_blk_read_ms_per_second", "local_blk_write_ms_per_second",
+  "temp_blk_read_ms_per_second", "temp_blk_write_ms_per_second",
+]
 
 type PhysicalAliases = Readonly<Partial<Record<PostgresSemanticField, string>>>
 
@@ -43,7 +53,8 @@ const STATEMENT_FIELDS = [
   "blk_read_time", "blk_write_time", "shared_blk_read_time", "shared_blk_write_time",
   "local_blk_read_time", "local_blk_write_time", "temp_blk_read_time", "temp_blk_write_time",
   "wal_records", "wal_fpi", "wal_bytes", "wal_buffers_full",
-  "stats_since",
+  "min_time", "max_time", "mean_time", "stddev_time",
+  "min_exec_time", "max_exec_time", "mean_exec_time", "stddev_exec_time", "stats_since",
 ] as const
 
 const PLAN_FIELDS = [
@@ -51,7 +62,7 @@ const PLAN_FIELDS = [
   "plan", "relids", "cmd_type", "calls", "slow_log_calls", "total_time", "rows", ...BLOCK_COUNTERS,
   "blk_read_time", "blk_write_time", "shared_blk_read_time", "shared_blk_write_time",
   "local_blk_read_time", "local_blk_write_time", "temp_blk_read_time", "temp_blk_write_time",
-  "total_plan_time",
+  "total_plan_time", "min_time", "max_time", "mean_time", "stddev_time", "first_call", "last_call",
 ] as const
 
 const BASE_ALIASES = {
@@ -184,8 +195,22 @@ export function postgresOrder(
   return physical === null ? ["calls"] : [physical]
 }
 
-function fieldsByType(typeIds: readonly string[]): Readonly<Record<string, readonly string[]>> {
-  return Object.fromEntries(typeIds.map((typeId) => [typeId, postgresProjection(typeId)]))
+function fieldsByType(typeIds: readonly string[], wanted?: readonly string[]): Readonly<Record<string, readonly string[]>> {
+  return Object.fromEntries(typeIds.map((typeId) => {
+    const projection = postgresProjection(typeId)
+    if (wanted === undefined) return [typeId, projection]
+    const layout = postgresLayout(typeId)
+    const physical = new Set(wanted.flatMap((field) => {
+      if (isPostgresSemanticField(field)) {
+        return unique([
+          physicalField(typeId, field),
+          ...(field === "mean_exec_ms_per_call" ? [physicalField(typeId, "calls_per_second")] : []),
+        ].filter((candidate): candidate is string => candidate !== null))
+      }
+      return physicalDependencies(typeId, field)
+    }))
+    return [typeId, projection.filter((field) => layout?.identity.includes(field) === true || physical.has(field))]
+  }))
 }
 
 function orderCandidates(typeIds: readonly string[], semantic: PostgresSemanticField): readonly string[] {
@@ -197,13 +222,46 @@ function orderCandidates(typeIds: readonly string[], semantic: PostgresSemanticF
   }))
 }
 
-function orderMap(typeIds: readonly string[]): Readonly<Record<PostgresSemanticField, readonly string[]>> {
-  return Object.fromEntries([
-    "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second",
-    "planning_ms_per_second", "shared_blk_read_ms_per_second", "shared_blk_write_ms_per_second",
-    "local_blk_read_ms_per_second", "local_blk_write_ms_per_second",
-    "temp_blk_read_ms_per_second", "temp_blk_write_ms_per_second",
-  ].map((semantic) => [semantic, orderCandidates(typeIds, semantic as PostgresSemanticField)])) as unknown as Readonly<Record<PostgresSemanticField, readonly string[]>>
+function orderMap(typeIds: readonly string[]): Readonly<Record<string, readonly string[]>> {
+  const semantic = Object.fromEntries(SEMANTIC_FIELDS.map((field) => [field, orderCandidates(typeIds, field)]))
+  return {
+    ...semantic,
+    exec_load: semantic.execution_ms_per_second ?? [],
+    rows_per_call: semantic.rows_per_second ?? [],
+    shared_blks_read: ["shared_blks_read"],
+    blocks_per_call: unique(["shared_blks_read", "shared_blks_hit"]),
+    hit_pct: unique(["shared_blks_hit", "shared_blks_read"]),
+    wal_per_call: ["wal_bytes"],
+    plan_time_pct: semantic.planning_ms_per_second ?? [],
+    cv: ["stddev_time", "stddev_exec_time"],
+    time_ratio: semantic.execution_ms_per_second ?? [],
+    plan_count: ["calls"],
+    pct_calls: ["calls"],
+  }
+}
+
+function physicalDependencies(typeId: string, field: string): readonly string[] {
+  const semantic = (...fields: PostgresSemanticField[]) => unique(fields.flatMap((candidate) => {
+    const physical = physicalField(typeId, candidate)
+    return physical === null ? [] : [physical]
+  }))
+  if (field === "exec_load") return semantic("execution_ms_per_second")
+  if (field === "rows_per_call") return semantic("rows_per_second", "calls_per_second")
+  if (field === "blocks_per_call") return ["shared_blks_hit", "shared_blks_read", "local_blks_hit", "local_blks_read", ...semantic("calls_per_second")]
+  if (field === "hit_pct") return ["shared_blks_hit", "shared_blks_read"]
+  if (field === "wal_per_call") return ["wal_bytes", ...semantic("calls_per_second")]
+  if (field === "plan_time_pct") return semantic("planning_ms_per_second", "execution_ms_per_second")
+  if (field === "cv") return rowExecutionStats(typeId, ["mean", "stddev"])
+  if (field === "min_exec_time_ms") return rowExecutionStats(typeId, ["min"])
+  if (field === "max_exec_time_ms") return rowExecutionStats(typeId, ["max"])
+  if (field === "mean_exec_time_ms") return rowExecutionStats(typeId, ["mean"])
+  if (field === "stddev_exec_time_ms") return rowExecutionStats(typeId, ["stddev"])
+  return [field]
+}
+
+function rowExecutionStats(typeId: string, names: readonly ("min" | "max" | "mean" | "stddev")[]): readonly string[] {
+  const old = typeId === "1002001" || PG_STORE_PLANS_TYPE_IDS.includes(typeId as typeof PG_STORE_PLANS_TYPE_IDS[number])
+  return names.map((name) => old ? `${name}_time` : `${name}_exec_time`)
 }
 
 export interface PostgresSectionRequest {
@@ -226,7 +284,7 @@ function denseRequest(
     typeIds,
     fieldsByType: fieldsByType(typeIds),
     top: 200,
-    defaultOrder: order.execution_ms_per_second,
+    ...(order.execution_ms_per_second === undefined ? {} : { defaultOrder: order.execution_ms_per_second }),
     order,
     fallbackOrder: ["calls"],
   }
@@ -242,6 +300,65 @@ export const POSTGRES_SECTION_REQUESTS: readonly PostgresSectionRequest[] = [
   },
 ] as const
 
+const STATEMENT_LENS_FIELDS: Readonly<Record<StatementLens, readonly string[]>> = {
+  load: ["queryid", "dbid", "userid", "toplevel", "datname", "usename", "query", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"],
+  per_call: ["queryid", "dbid", "userid", "toplevel", "datname", "usename", "query", "calls_per_second", "execution_ms_per_second", "rows_per_second", ...BLOCK_COUNTERS],
+  io: ["queryid", "dbid", "userid", "toplevel", "datname", "usename", "query", "calls_per_second", ...BLOCK_COUNTERS, "shared_blk_read_ms_per_second", "shared_blk_write_ms_per_second", "local_blk_read_ms_per_second", "local_blk_write_ms_per_second", "temp_blk_read_ms_per_second", "temp_blk_write_ms_per_second"],
+  resources: ["queryid", "dbid", "userid", "toplevel", "datname", "usename", "query", "calls_per_second", "execution_ms_per_second", "planning_ms_per_second", "temp_blks_read", "temp_blks_written", "wal_bytes", "wal_records", "wal_fpi", "wal_buffers_full"],
+  stability: ["queryid", "dbid", "userid", "toplevel", "datname", "usename", "query", "calls_per_second", "mean_time", "stddev_time", "min_time", "max_time", "mean_exec_time", "stddev_exec_time", "min_exec_time", "max_exec_time"],
+}
+
+const PLAN_LENS_FIELDS: Readonly<Record<PlanLens, readonly string[]>> = {
+  load: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"],
+  regression: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "min_time", "max_time", "mean_time", "stddev_time", "first_call", "last_call", "queryid_stat_statements"],
+  io: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", ...BLOCK_COUNTERS, "shared_blk_read_ms_per_second", "shared_blk_write_ms_per_second", "local_blk_read_ms_per_second", "local_blk_write_ms_per_second", "temp_blk_read_ms_per_second", "temp_blk_write_ms_per_second"],
+  compare: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "min_time", "max_time", "mean_time", "stddev_time", "first_call", "last_call", "queryid_stat_statements"],
+}
+
+export function statementRequest(lens: StatementLens): PostgresSectionRequest {
+  return denseLensRequest("pg_stat_statements", PG_STAT_STATEMENTS_TYPE_IDS, STATEMENT_LENS_FIELDS[lens], statementLensOrder(lens))
+}
+
+export function planRequest(lens: PlanLens): PostgresSectionRequest {
+  return denseLensRequest("pg_store_plans", PG_STORE_PLANS_TYPE_IDS, PLAN_LENS_FIELDS[lens], planLensOrder(lens))
+}
+
+function denseLensRequest(
+  section: "pg_stat_statements" | "pg_store_plans",
+  typeIds: readonly string[],
+  wanted: readonly string[],
+  defaultSemantic: string,
+): PostgresSectionRequest {
+  const order = orderMap(typeIds)
+  return {
+    section,
+    typeIds,
+    fieldsByType: fieldsByType(typeIds, wanted),
+    top: 200,
+    defaultOrder: order[defaultSemantic] ?? [],
+    order,
+    fallbackOrder: ["calls"],
+  }
+}
+
+function statementLensOrder(lens: StatementLens): string {
+  if (lens === "per_call") return "mean_exec_ms_per_call"
+  if (lens === "io") return "shared_blks_read"
+  if (lens === "resources") return "wal_per_call"
+  if (lens === "stability") return "cv"
+  return "execution_ms_per_second"
+}
+
+function planLensOrder(lens: PlanLens): string {
+  if (lens === "io") return "shared_blks_read"
+  if (lens === "compare") return "calls_per_second"
+  return "execution_ms_per_second"
+}
+
+function isPostgresSemanticField(field: string): field is PostgresSemanticField {
+  return SEMANTIC_FIELDS.includes(field as PostgresSemanticField)
+}
+
 export interface PostgresIntervalValues extends Readonly<Record<PostgresSemanticField, number | null>> {
   readonly calls_per_second: number | null
   readonly execution_ms_per_second: number | null
@@ -256,8 +373,6 @@ export interface PostgresIntervalValues extends Readonly<Record<PostgresSemantic
   readonly temp_blk_write_ms_per_second: number | null
 }
 
-const SEMANTIC_FIELDS = Object.keys(orderMap([])) as readonly PostgresSemanticField[]
-
 export function decoratePostgresIntervalRow(row: DataRow): DataRow {
   const aliases = postgresLayout(row.typeId)?.aliases ?? {}
   const values: Record<string, Cell> = { ...row.values }
@@ -271,7 +386,34 @@ export function decoratePostgresIntervalRow(row: DataRow): DataRow {
   values.mean_exec_ms_per_call = calls !== null && calls > 0 && execution !== null && execution >= 0
     ? execution / calls
     : null
+  values.exec_load = execution === null ? null : execution / 1_000
+  values.rows_per_call = ratio(values.rows_per_second, calls)
+  const blockRates = ["shared_blks_hit", "shared_blks_read", "local_blks_hit", "local_blks_read"]
+    .map((field) => finiteRate(values[field]))
+    .filter((cell): cell is number => cell !== null)
+  values.blocks_per_call = blockRates.length === 0 ? null : ratio(blockRates.reduce((total, cell) => total + cell, 0), calls)
+  const hits = finiteRate(values.shared_blks_hit)
+  const reads = finiteRate(values.shared_blks_read)
+  values.hit_pct = hits === null || reads === null || hits + reads <= 0 ? null : (100 * hits) / (hits + reads)
+  values.wal_per_call = ratio(values.wal_bytes, calls)
+  const planning = finiteRate(values.planning_ms_per_second)
+  values.plan_time_pct = planning === null || execution === null || planning + execution <= 0 ? null : (100 * planning) / (planning + execution)
+  const oldNames = row.typeId === "1002001" || row.logicalName === "pg_store_plans"
+  values.min_exec_time_ms = finiteRate(values[oldNames ? "min_time" : "min_exec_time"])
+  values.max_exec_time_ms = finiteRate(values[oldNames ? "max_time" : "max_exec_time"])
+  values.mean_exec_time_ms = finiteRate(values[oldNames ? "mean_time" : "mean_exec_time"] ?? values.mean_time)
+  values.stddev_exec_time_ms = finiteRate(values[oldNames ? "stddev_time" : "stddev_exec_time"] ?? values.stddev_time)
+  values.cv = ratio(values.stddev_exec_time_ms, finiteRate(values.mean_exec_time_ms))
   return { ...row, values }
+}
+
+export function decoratePostgresRows(rows: readonly DataRow[], _section: string): readonly DataRow[] {
+  return rows.map(decoratePostgresIntervalRow)
+}
+
+function ratio(numerator: Cell | undefined, denominator: number | null): number | null {
+  const left = finiteRate(numerator)
+  return left === null || denominator === null || denominator <= 0 ? null : left / denominator
 }
 
 export function exactCounterDelta(earlier: Cell, later: Cell): bigint | null {
