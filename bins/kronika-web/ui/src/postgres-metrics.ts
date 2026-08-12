@@ -46,6 +46,11 @@ const BLOCK_COUNTERS = [
   "temp_blks_read", "temp_blks_written",
 ] as const
 
+const DIRECT_ORDER_FIELDS = [
+  ...BLOCK_COUNTERS, "plans", "wal_bytes", "wal_records", "wal_fpi", "wal_buffers_full",
+  "slow_log_calls", "stats_since", "first_call", "last_call",
+] as const
+
 const STATEMENT_FIELDS = [
   "queryid", "userid", "dbid", "toplevel", "datname", "usename", "query",
   "calls", "rows", "plans", "total_time", "total_exec_time", "total_plan_time",
@@ -205,26 +210,32 @@ function fieldsByType(typeIds: readonly string[], wanted?: readonly string[]): R
 }
 
 function orderCandidates(typeIds: readonly string[], semantic: PostgresSemanticField): readonly string[] {
+  if (semantic === "mean_exec_ms_per_call") return ["derived.mean_exec_ms_per_call"]
   return unique(typeIds.flatMap((typeId) => {
-    const physical = semantic === "mean_exec_ms_per_call"
-      ? physicalField(typeId, "execution_ms_per_second")
-      : physicalField(typeId, semantic)
+    const physical = physicalField(typeId, semantic)
     return physical === null ? [] : [physical]
   }))
 }
 
 function orderMap(typeIds: readonly string[]): Readonly<Record<string, readonly string[]>> {
   const semantic = Object.fromEntries(SEMANTIC_FIELDS.map((field) => [field, orderCandidates(typeIds, field)]))
+  const derived = (field: string) => [`derived.${field}`]
+  const executionStats = (names: readonly ("min" | "max" | "mean" | "stddev")[]) => unique(
+    typeIds.flatMap((typeId) => rowExecutionStats(typeId, names)),
+  )
   return {
+    ...Object.fromEntries(DIRECT_ORDER_FIELDS.map((field) => [field, [field]])),
     ...semantic,
-    rows_per_call: semantic.rows_per_second ?? [],
-    shared_blks_read: ["shared_blks_read"],
-    wal_bytes: ["wal_bytes"],
-    blocks_per_call: unique(["shared_blks_read", "shared_blks_hit"]),
-    hit_pct: unique(["shared_blks_hit", "shared_blks_read"]),
-    wal_per_call: ["wal_bytes"],
-    plan_time_pct: semantic.planning_ms_per_second ?? [],
-    cv: ["stddev_time", "stddev_exec_time"],
+    rows_per_call: derived("rows_per_call"),
+    blocks_per_call: derived("blocks_per_call"),
+    hit_pct: derived("hit_pct"),
+    wal_per_call: derived("wal_per_call"),
+    plan_time_pct: derived("plan_time_pct"),
+    cv: derived("cv"),
+    min_exec_time_ms: executionStats(["min"]),
+    max_exec_time_ms: executionStats(["max"]),
+    mean_exec_time_ms: executionStats(["mean"]),
+    stddev_exec_time_ms: executionStats(["stddev"]),
   }
 }
 

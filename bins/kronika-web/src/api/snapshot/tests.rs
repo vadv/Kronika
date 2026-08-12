@@ -234,6 +234,54 @@ fn integer_rate_ordering_cross_multiplies_elapsed_time_exactly() {
 }
 
 #[test]
+fn integer_ratio_ordering_is_exact_without_cross_product_overflow() {
+    let larger = PageOrderValue::IntegerRatio {
+        numerator: u128::MAX - 1,
+        denominator: u128::MAX - 2,
+    };
+    let smaller = PageOrderValue::IntegerRatio {
+        numerator: u128::MAX,
+        denominator: u128::MAX - 1,
+    };
+    assert_eq!(
+        super::compare_page_order_values(Some(&larger), Some(&smaller)),
+        Ordering::Greater
+    );
+
+    let ratio_winner = PageOrderValue::IntegerRatio {
+        numerator: 60,
+        denominator: 2,
+    };
+    let raw_winner = PageOrderValue::IntegerRatio {
+        numerator: 100,
+        denominator: 10,
+    };
+    assert_eq!(
+        super::compare_page_order_values(Some(&ratio_winner), Some(&raw_winner)),
+        Ordering::Greater
+    );
+
+    for left_numerator in 0..30 {
+        for left_denominator in 1..30 {
+            for right_numerator in 0..30 {
+                for right_denominator in 1..30 {
+                    assert_eq!(
+                        super::compare_u128_ratios(
+                            left_numerator,
+                            left_denominator,
+                            right_numerator,
+                            right_denominator,
+                        ),
+                        (left_numerator * right_denominator)
+                            .cmp(&(right_numerator * left_denominator))
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn cursor_round_trips_and_rejects_malformed_values() {
     let cursor = SnapshotCursor {
         segment_id: -4,

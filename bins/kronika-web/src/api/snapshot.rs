@@ -83,7 +83,29 @@ enum PageOrderValue {
     Float(f64),
     IntegerRate { delta: i128, elapsed: i64 },
     FloatRate(f64),
+    IntegerRatio { numerator: u128, denominator: u128 },
+    FloatRatio(f64),
     Text(Vec<u8>),
+}
+
+#[derive(Clone)]
+struct PageOrder {
+    name: &'static str,
+    kind: PageOrderKind,
+}
+
+#[derive(Clone)]
+enum PageOrderKind {
+    Column(&'static str),
+    CounterRatio {
+        numerator: Vec<&'static str>,
+        denominator: Vec<&'static str>,
+        partial_numerator: bool,
+    },
+    ValueRatio {
+        numerator: &'static str,
+        denominator: &'static str,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -110,7 +132,7 @@ struct PageContext<'a> {
     window: RowWindow,
     previous: Option<Readings>,
     elapsed: Option<i64>,
-    order_column: Option<&'static str>,
+    order: Option<PageOrder>,
     search_columns: Vec<&'static str>,
 }
 
@@ -207,7 +229,10 @@ fn section_plans(
         match plans(segment, &data, true) {
             Ok(mut plans) => {
                 for plan in &mut plans {
-                    plan.add_projection_columns(&request.by);
+                    let order = page_order(logical_name, plan, &request.by);
+                    plan.add_projection_columns(
+                        &order.as_ref().map_or_else(Vec::new, PageOrder::columns),
+                    );
                 }
                 sections.push(SectionPlans {
                     logical_name: logical_name.clone(),
@@ -219,6 +244,122 @@ fn section_plans(
         }
     }
     Ok(sections)
+}
+
+impl PageOrder {
+    fn columns(&self) -> Vec<&'static str> {
+        match &self.kind {
+            PageOrderKind::Column(column) => vec![*column],
+            PageOrderKind::CounterRatio {
+                numerator,
+                denominator,
+                ..
+            } => numerator.iter().chain(denominator).copied().collect(),
+            PageOrderKind::ValueRatio {
+                numerator,
+                denominator,
+            } => vec![*numerator, *denominator],
+        }
+    }
+
+    const fn dictionary_column(&self) -> Option<&'static str> {
+        match &self.kind {
+            PageOrderKind::Column(column) => Some(*column),
+            PageOrderKind::CounterRatio { .. } | PageOrderKind::ValueRatio { .. } => None,
+        }
+    }
+}
+
+fn page_order(logical_name: &str, plan: &Plan, requested: &[String]) -> Option<PageOrder> {
+    requested.iter().find_map(|name| {
+        plan.contract
+            .column(name)
+            .map(|column| PageOrder {
+                name: column.name,
+                kind: PageOrderKind::Column(column.name),
+            })
+            .or_else(|| derived_page_order(logical_name, plan, name))
+    })
+}
+
+fn derived_page_order(logical_name: &str, plan: &Plan, token: &str) -> Option<PageOrder> {
+    let supported = match logical_name {
+        "pg_stat_statements" => matches!(plan.type_id, 1_002_001..=1_002_006),
+        "pg_store_plans" => matches!(plan.type_id, 1_003_001 | 1_004_001 | 1_018_001),
+        _ => false,
+    };
+    if !supported {
+        return None;
+    }
+    let column = |names: &[&str]| {
+        names
+            .iter()
+            .find_map(|name| plan.contract.column(name).map(|column| column.name))
+    };
+    let counters = |name, numerator: Vec<&'static str>, denominator: Vec<&'static str>, partial| {
+        (!numerator.is_empty() && !denominator.is_empty()).then_some(PageOrder {
+            name,
+            kind: PageOrderKind::CounterRatio {
+                numerator,
+                denominator,
+                partial_numerator: partial,
+            },
+        })
+    };
+    let one_over = |name, numerator: &[&str], denominator: &[&str]| {
+        counters(
+            name,
+            vec![column(numerator)?],
+            vec![column(denominator)?],
+            false,
+        )
+    };
+    match token {
+        "derived.mean_exec_ms_per_call" => one_over(
+            "mean_exec_ms_per_call",
+            &["total_exec_time", "total_time"],
+            &["calls"],
+        ),
+        "derived.rows_per_call" => one_over("rows_per_call", &["rows"], &["calls"]),
+        "derived.blocks_per_call" => counters(
+            "blocks_per_call",
+            [
+                "shared_blks_hit",
+                "shared_blks_read",
+                "local_blks_hit",
+                "local_blks_read",
+            ]
+            .iter()
+            .filter_map(|name| column(&[*name]))
+            .collect(),
+            vec![column(&["calls"])?],
+            true,
+        ),
+        "derived.hit_pct" => {
+            let hit = column(&["shared_blks_hit"])?;
+            let read = column(&["shared_blks_read"])?;
+            counters("hit_pct", vec![hit], vec![hit, read], false)
+        }
+        "derived.wal_per_call" => one_over("wal_per_call", &["wal_bytes"], &["calls"]),
+        "derived.plan_time_pct" => {
+            let planning = column(&["total_plan_time"])?;
+            let execution = column(&["total_exec_time", "total_time"])?;
+            counters(
+                "plan_time_pct",
+                vec![planning],
+                vec![planning, execution],
+                false,
+            )
+        }
+        "derived.cv" => Some(PageOrder {
+            name: "cv",
+            kind: PageOrderKind::ValueRatio {
+                numerator: column(&["stddev_exec_time", "stddev_time"])?,
+                denominator: column(&["mean_exec_time", "mean_time"])?,
+            },
+        }),
+        _ => None,
+    }
 }
 
 fn validate_search_projection(
@@ -346,10 +487,10 @@ impl PreparedSnapshot {
         };
         let (previous, before_at) = match moments.previous {
             Some(previous) => (
-                Self::collect(source, plan, timestamp, previous, None, cancelled)?,
+                Self::collect(source, plan, timestamp, previous, &[], cancelled)?,
                 Some(previous),
             ),
-            None if own => self.earlier_moment(plan, timestamp, None, cancelled)?,
+            None if own => self.earlier_moment(plan, timestamp, &[], cancelled)?,
             None => (Readings::new(), None),
         };
         let elapsed = moments
@@ -384,12 +525,6 @@ impl PreparedSnapshot {
             return Ok(false);
         }
         self.emit_rows(source, plan, rows, rates, emit, cancelled)
-    }
-
-    fn order_column(&self, plan: &Plan) -> Option<&'static str> {
-        self.by
-            .iter()
-            .find_map(|name| plan.contract.column(name).map(|column| column.name))
     }
 
     fn emit_layout(
@@ -634,10 +769,10 @@ impl PreparedSnapshot {
     ) -> Result<(), ApiError> {
         let mut order_by = Vec::new();
         for context in contexts {
-            if let Some(column) = context.order_column
-                && !order_by.contains(&column)
+            if let Some(order) = &context.order
+                && !order_by.contains(&order.name)
             {
-                order_by.push(column);
+                order_by.push(order.name);
             }
         }
         let from = contexts
@@ -681,7 +816,8 @@ impl PreparedSnapshot {
             if !plan.applies() || cancelled() {
                 continue;
             }
-            let order_column = self.order_column(plan);
+            let order = page_order(&section.logical_name, plan, &self.by);
+            let order_columns = order.as_ref().map_or_else(Vec::new, PageOrder::columns);
             let columns = search_columns(&section.logical_name, plan);
             let Some(timestamp) = plan.timestamp else {
                 contexts.push(PageContext {
@@ -692,7 +828,7 @@ impl PreparedSnapshot {
                     window: RowWindow { moment: None },
                     previous: None,
                     elapsed: None,
-                    order_column,
+                    order,
                     search_columns: columns,
                 });
                 continue;
@@ -715,10 +851,10 @@ impl PreparedSnapshot {
             };
             let (previous, before_at) = match moments.previous {
                 Some(previous) => (
-                    Self::collect(source, plan, timestamp, previous, order_column, cancelled)?,
+                    Self::collect(source, plan, timestamp, previous, &order_columns, cancelled)?,
                     Some(previous),
                 ),
-                None if own => self.earlier_moment(plan, timestamp, order_column, cancelled)?,
+                None if own => self.earlier_moment(plan, timestamp, &order_columns, cancelled)?,
                 None => (Readings::new(), None),
             };
             let elapsed = moments
@@ -735,7 +871,7 @@ impl PreparedSnapshot {
                 },
                 previous: Some(previous),
                 elapsed,
-                order_column,
+                order,
                 search_columns: columns,
             });
         }
@@ -893,20 +1029,21 @@ impl PreparedSnapshot {
         plan: &Plan,
         timestamp: &'static str,
         at: i64,
-        extra_counter: Option<&'static str>,
+        extra_columns: &[&'static str],
         cancelled: &impl Fn() -> bool,
     ) -> Result<Readings, ApiError> {
         let mut collected = BTreeMap::new();
         let counters = rate_columns(plan);
         let mut counters = counters;
-        if let Some(column) = extra_counter
-            && plan
+        for column in extra_columns {
+            if plan
                 .contract
                 .column(column)
                 .is_some_and(|declared| declared.class == ColumnClass::Cumulative)
-            && !counters.contains(&column)
-        {
-            counters.push(column);
+                && !counters.contains(column)
+            {
+                counters.push(column);
+            }
         }
         if counters.is_empty() {
             return Ok(collected);
@@ -949,7 +1086,7 @@ impl PreparedSnapshot {
         &self,
         plan: &Plan,
         timestamp: &'static str,
-        extra_counter: Option<&'static str>,
+        extra_columns: &[&'static str],
         cancelled: &impl Fn() -> bool,
     ) -> Result<(Readings, Option<i64>), ApiError> {
         let Some(earlier) = self.earlier.as_ref() else {
@@ -977,7 +1114,7 @@ impl PreparedSnapshot {
             return Ok((BTreeMap::new(), None));
         };
         Ok((
-            Self::collect(earlier, plan, timestamp, at, extra_counter, cancelled)?,
+            Self::collect(earlier, plan, timestamp, at, extra_columns, cancelled)?,
             Some(at),
         ))
     }
@@ -1094,7 +1231,8 @@ fn compare_page_order_values(
             left.cmp(right)
         }
         (Some(PageOrderValue::Float(left)), Some(PageOrderValue::Float(right)))
-        | (Some(PageOrderValue::FloatRate(left)), Some(PageOrderValue::FloatRate(right))) => {
+        | (Some(PageOrderValue::FloatRate(left)), Some(PageOrderValue::FloatRate(right)))
+        | (Some(PageOrderValue::FloatRatio(left)), Some(PageOrderValue::FloatRatio(right))) => {
             left.partial_cmp(right).unwrap_or(Ordering::Equal)
         }
         (
@@ -1107,10 +1245,54 @@ fn compare_page_order_values(
                 elapsed: right_elapsed,
             }),
         ) => (left * i128::from(*right_elapsed)).cmp(&(right * i128::from(*left_elapsed))),
+        (
+            Some(PageOrderValue::IntegerRatio {
+                numerator: left_numerator,
+                denominator: left_denominator,
+            }),
+            Some(PageOrderValue::IntegerRatio {
+                numerator: right_numerator,
+                denominator: right_denominator,
+            }),
+        ) => compare_u128_ratios(
+            *left_numerator,
+            *left_denominator,
+            *right_numerator,
+            *right_denominator,
+        ),
         (Some(PageOrderValue::Text(left)), Some(PageOrderValue::Text(right))) => left.cmp(right),
         (Some(_), Some(_)) | (None, None) => Ordering::Equal,
         (Some(_), None) => Ordering::Greater,
         (None, Some(_)) => Ordering::Less,
+    }
+}
+
+fn compare_u128_ratios(
+    mut left_numerator: u128,
+    mut left_denominator: u128,
+    mut right_numerator: u128,
+    mut right_denominator: u128,
+) -> Ordering {
+    let mut reverse = false;
+    loop {
+        let whole = (left_numerator / left_denominator).cmp(&(right_numerator / right_denominator));
+        if whole != Ordering::Equal {
+            return if reverse { whole.reverse() } else { whole };
+        }
+        let left_remainder = left_numerator % left_denominator;
+        let right_remainder = right_numerator % right_denominator;
+        let ended = match (left_remainder == 0, right_remainder == 0) {
+            (true, true) => return Ordering::Equal,
+            (true, false) => Some(Ordering::Less),
+            (false, true) => Some(Ordering::Greater),
+            (false, false) => None,
+        };
+        if let Some(ended) = ended {
+            return if reverse { ended.reverse() } else { ended };
+        }
+        (left_numerator, left_denominator) = (left_denominator, left_remainder);
+        (right_numerator, right_denominator) = (right_denominator, right_remainder);
+        reverse = !reverse;
     }
 }
 
@@ -1160,12 +1342,12 @@ fn page_dictionary(context: &PageContext<'_>, rows: &[(u64, Row)]) -> Result<Dic
             continue;
         }
         context.plan.add_selection_ids(row, &mut ids);
-        for column in context
-            .search_columns
-            .iter()
-            .copied()
-            .chain(context.order_column)
-        {
+        for column in context.search_columns.iter().copied().chain(
+            context
+                .order
+                .as_ref()
+                .and_then(PageOrder::dictionary_column),
+        ) {
             if let Some(Cell::StrId(id)) = row.get(column) {
                 ids.insert(*id);
             }
@@ -1174,17 +1356,49 @@ fn page_dictionary(context: &PageContext<'_>, rows: &[(u64, Row)]) -> Result<Dic
     resolved_dictionary(context.source, &ids)
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "an interval of 2^52 microseconds is 142 years"
-)]
 fn page_order_value(
     context: &PageContext<'_>,
     row: &Row,
     identity: &[IdentityCell],
     dictionary: &Dictionary,
 ) -> Option<PageOrderValue> {
-    let column = context.order_column?;
+    let order = context.order.as_ref()?;
+    match &order.kind {
+        PageOrderKind::Column(column) => {
+            column_order_value(context, row, identity, dictionary, column)
+        }
+        PageOrderKind::CounterRatio {
+            numerator,
+            denominator,
+            partial_numerator,
+        } => {
+            let _elapsed = context.elapsed?;
+            let before = context.previous.as_ref()?.get(identity)?;
+            let numerator = counter_sum(row, before, numerator, *partial_numerator)?;
+            let denominator = counter_sum(row, before, denominator, false)?;
+            ratio_order_value(numerator, denominator)
+        }
+        PageOrderKind::ValueRatio {
+            numerator,
+            denominator,
+        } => ratio_order_value(
+            ordered_cell(row.get(numerator)?)?,
+            ordered_cell(row.get(denominator)?)?,
+        ),
+    }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "an interval of 2^52 microseconds is 142 years"
+)]
+fn column_order_value(
+    context: &PageContext<'_>,
+    row: &Row,
+    identity: &[IdentityCell],
+    dictionary: &Dictionary,
+    column: &'static str,
+) -> Option<PageOrderValue> {
     let stored = row.get(column)?;
     let cumulative = context
         .plan
@@ -1213,6 +1427,63 @@ fn page_order_value(
             OrderedNumber::Integer(value) => Some(PageOrderValue::Integer(value)),
             OrderedNumber::Float(value) => Some(PageOrderValue::Float(value)),
         },
+    }
+}
+
+fn counter_sum(
+    row: &Row,
+    before: &CounterReadings,
+    columns: &[&'static str],
+    partial: bool,
+) -> Option<OrderedNumber> {
+    let mut sum = None;
+    for column in columns {
+        let value = row
+            .get(column)
+            .zip(before.get(column))
+            .and_then(|(now, earlier)| counter_delta(now, earlier));
+        let Some(value) = value else {
+            if partial {
+                continue;
+            }
+            return None;
+        };
+        sum = Some(add_ordered(sum, value)?);
+    }
+    sum
+}
+
+fn add_ordered(left: Option<OrderedNumber>, right: OrderedNumber) -> Option<OrderedNumber> {
+    match (left, right) {
+        (None, right) => Some(right),
+        (Some(OrderedNumber::Integer(left)), OrderedNumber::Integer(right)) => {
+            left.checked_add(right).map(OrderedNumber::Integer)
+        }
+        (Some(left), right) => {
+            let sum = left.as_f64() + right.as_f64();
+            sum.is_finite().then_some(OrderedNumber::Float(sum))
+        }
+    }
+}
+
+fn ratio_order_value(
+    numerator: OrderedNumber,
+    denominator: OrderedNumber,
+) -> Option<PageOrderValue> {
+    match (numerator, denominator) {
+        (OrderedNumber::Integer(numerator), OrderedNumber::Integer(denominator))
+            if numerator >= 0 && denominator > 0 =>
+        {
+            Some(PageOrderValue::IntegerRatio {
+                numerator: u128::try_from(numerator).ok()?,
+                denominator: u128::try_from(denominator).ok()?,
+            })
+        }
+        (numerator, denominator) => {
+            let denominator = denominator.as_f64();
+            let ratio = numerator.as_f64() / denominator;
+            (denominator > 0.0 && ratio.is_finite()).then_some(PageOrderValue::FloatRatio(ratio))
+        }
     }
 }
 

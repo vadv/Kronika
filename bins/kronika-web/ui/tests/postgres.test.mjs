@@ -26,7 +26,7 @@ const TEST_REGISTRY = [
   layout("1016001", "pg_store_plans_info", [], ["ts", "dealloc", "stats_reset"]),
 ]
 const helpers = await importModule(
-  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationMs, columnsFor, isIdleActivity, isSystemActivity, isTimestampField, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, registryCardFields, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, postgresIdentity, postgresProjection, statementDefaultOrder } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationMs, columnsFor, isIdleActivity, isSystemActivity, isTimestampField, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, registryCardFields, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
   { plugins: [registryPlugin(TEST_REGISTRY)] },
 )
 
@@ -272,6 +272,20 @@ test("statement and plan lenses have compact ordered columns", () => {
   assert.equal(helpers.statementDefaultOrder("resources"), "wal_bytes")
   assert.equal(helpers.statementDefaultOrder("stability"), "calls_per_second")
   assert.equal(helpers.planDefaultOrder("timing"), "calls_per_second")
+})
+
+test("dense numeric columns advertise server sorting and text identities do not", () => {
+  const lenses = [
+    ...["load", "per_call", "io", "resources", "stability"].map((lens) => [helpers.statementColumns(lens), helpers.statementRequest(lens)]),
+    ...["load", "timing", "io", "identity"].map((lens) => [helpers.planColumns(lens), helpers.planRequest(lens)]),
+  ]
+  for (const [columns, request] of lenses) {
+    for (const column of columns) {
+      const quantitative = ["number", "bytes", "milliseconds", "percent", "timestamp"].includes(column.kind)
+      assert.equal(column.sortable === true, quantitative, column.field)
+      if (quantitative) assert.ok(request.order[column.field]?.length > 0, column.field)
+    }
+  }
 })
 
 test("dense rows retain the physical server order across layouts", () => {

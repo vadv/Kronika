@@ -258,12 +258,8 @@ impl Plan {
 
     /// Add physical inputs needed for computation without exposing them as
     /// output fields.
-    pub(super) fn add_projection_columns(&mut self, names: &[String]) {
-        self.projection.extend(
-            names
-                .iter()
-                .filter_map(|name| self.contract.column(name).map(|column| column.name)),
-        );
+    pub(super) fn add_projection_columns(&mut self, names: &[&'static str]) {
+        self.projection.extend(names.iter().copied());
         self.projection.sort_unstable();
         self.projection.dedup();
     }

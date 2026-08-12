@@ -338,6 +338,106 @@ impl Fixture {
             .expect("append plans");
     }
 
+    fn append_ranked_statements(&mut self) {
+        let mut interner = Interner::new(DictLimits::default());
+        let mut buffers = SectionBuffers::new();
+        let readings = [
+            (1, 10, 100.0, 100, 80, 20, 0, 0, 100, 100.0, 10.0, 9.0),
+            (2, 2, 30.0, 60, 9, 1, 40, 0, 60, 40.0, 1.0, 2.0),
+            (3, 1, 5.0, 1, 1, 2, 0, 0, 5, 1.0, 5.0, 1.0),
+        ];
+        for (
+            queryid,
+            calls,
+            execution,
+            rows,
+            hit,
+            read,
+            local_hit,
+            local_read,
+            wal,
+            planning,
+            mean,
+            deviation,
+        ) in readings
+        {
+            let text = format!("ranked statement {queryid}");
+            let query = StrId(
+                interner
+                    .intern(text.as_bytes())
+                    .expect("intern ranked statement")
+                    .get(),
+            );
+            for ts in [100, 200] {
+                let current = ts == 200;
+                let mut row = statement(
+                    ts,
+                    if current { calls } else { 0 },
+                    if current { execution } else { 0.0 },
+                    query,
+                );
+                row.queryid = Some(queryid);
+                row.rows = if current { rows } else { 0 };
+                row.shared_blks_hit = if current { hit } else { 0 };
+                row.shared_blks_read = if current { read } else { 0 };
+                row.local_blks_hit = if current { local_hit } else { 0 };
+                row.local_blks_read = if current { local_read } else { 0 };
+                row.wal_bytes = if current { wal } else { 0 };
+                row.total_plan_time = if current { planning } else { 0.0 };
+                row.mean_exec_time = mean;
+                row.stddev_exec_time = deviation;
+                buffers.push(row).expect("ranked statement row fits");
+            }
+        }
+        let dictionary = dict::encode(interner.window()).expect("ranked statement dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode ranked statements")
+            .expect("nonempty ranked statements");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append ranked statements");
+    }
+
+    fn append_ranked_plans(&mut self) {
+        let mut interner = Interner::new(DictLimits::default());
+        let mut buffers = SectionBuffers::new();
+        let readings = [
+            (1, 10, 100.0, 100, 80, 20, 0, 0),
+            (2, 2, 30.0, 60, 9, 1, 40, 0),
+            (3, 1, 5.0, 1, 1, 2, 0, 0),
+        ];
+        for (queryid, calls, execution, rows, hit, read, local_hit, local_read) in readings {
+            let text = format!("ranked plan {queryid}");
+            let plan_text = StrId(
+                interner
+                    .intern(text.as_bytes())
+                    .expect("intern ranked plan")
+                    .get(),
+            );
+            for ts in [100, 200] {
+                let current = ts == 200;
+                let mut row = store_plan(ts, queryid, plan_text);
+                row.calls = if current { calls } else { 0 };
+                row.total_time = if current { execution } else { 0.0 };
+                row.rows = if current { rows } else { 0 };
+                row.shared_blks_hit = if current { hit } else { 0 };
+                row.shared_blks_read = if current { read } else { 0 };
+                row.local_blks_hit = if current { local_hit } else { 0 };
+                row.local_blks_read = if current { local_read } else { 0 };
+                buffers.push(row).expect("ranked plan row fits");
+            }
+        }
+        let dictionary = dict::encode(interner.window()).expect("ranked plan dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode ranked plans")
+            .expect("nonempty ranked plans");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append ranked plans");
+    }
+
     fn append_log_error(&mut self, at: i64) {
         let mut interner = Interner::new(DictLimits::default());
         let label = StrId(interner.intern(b"fixture").expect("intern label").get());
@@ -1488,6 +1588,98 @@ fn a_snapshot_ranks_counter_rates_before_slicing_a_page() {
         [
             serde_json::json!([1, 210_000.0]),
             serde_json::json!([2, 60_000.0])
+        ]
+    );
+}
+
+#[test]
+fn statement_pages_rank_each_displayed_composite_before_slicing() {
+    let mut fixture = Fixture::new();
+    fixture.append_ranked_statements();
+    fixture.finish();
+
+    for (token, semantic) in [
+        ("derived.mean_exec_ms_per_call", "mean_exec_ms_per_call"),
+        ("derived.rows_per_call", "rows_per_call"),
+        ("derived.blocks_per_call", "blocks_per_call"),
+        ("derived.hit_pct", "hit_pct"),
+        ("derived.wal_per_call", "wal_per_call"),
+        ("derived.plan_time_pct", "plan_time_pct"),
+        ("derived.cv", "cv"),
+    ] {
+        let target = format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_statements&field=queryid&by={token}&page_size=1"
+        );
+        let records = stream(fixture.prepare(&target, None)).expect("composite statement page");
+        assert_eq!(row_records(&records)[0]["values"], serde_json::json!(["2"]));
+        let page = records
+            .iter()
+            .find(|record| record["record"] == "snapshot_page")
+            .expect("composite statement trailer");
+        assert_eq!(page["eligible"], "3");
+        assert_eq!(page["has_more"], true);
+        assert_eq!(page["order_by"], serde_json::json!([semantic]));
+        assert_eq!(page["order_direction"], "desc");
+    }
+}
+
+#[test]
+fn plan_pages_rank_each_displayed_composite_before_slicing() {
+    let mut fixture = Fixture::new();
+    fixture.append_ranked_plans();
+    fixture.finish();
+
+    for (token, semantic) in [
+        ("derived.mean_exec_ms_per_call", "mean_exec_ms_per_call"),
+        ("derived.rows_per_call", "rows_per_call"),
+        ("derived.blocks_per_call", "blocks_per_call"),
+        ("derived.hit_pct", "hit_pct"),
+    ] {
+        let target = format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_store_plans&field=queryid&by={token}&page_size=1"
+        );
+        let records = stream(fixture.prepare(&target, None)).expect("composite plan page");
+        assert_eq!(row_records(&records)[0]["values"], serde_json::json!(["2"]));
+        let page = records
+            .iter()
+            .find(|record| record["record"] == "snapshot_page")
+            .expect("composite plan trailer");
+        assert_eq!(page["eligible"], "3");
+        assert_eq!(page["order_by"], serde_json::json!([semantic]));
+    }
+}
+
+#[test]
+fn composite_statement_cursor_keeps_the_exact_global_order() {
+    let mut fixture = Fixture::new();
+    fixture.append_ranked_statements();
+    fixture.finish();
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_statements&field=queryid&by=derived.mean_exec_ms_per_call&page_size=1"
+    );
+    let mut cursor = None;
+    let mut queryids = Vec::new();
+    loop {
+        let target = cursor
+            .as_ref()
+            .map_or_else(|| base.clone(), |cursor| format!("{base}&cursor={cursor}"));
+        let records = stream(fixture.prepare(&target, None)).expect("composite statement cursor");
+        queryids.push(row_records(&records)[0]["values"][0].clone());
+        cursor = records
+            .iter()
+            .find(|record| record["record"] == "snapshot_page")
+            .and_then(|page| page["next_cursor"].as_str())
+            .map(ToOwned::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(
+        queryids,
+        [
+            serde_json::json!("2"),
+            serde_json::json!("1"),
+            serde_json::json!("3"),
         ]
     );
 }

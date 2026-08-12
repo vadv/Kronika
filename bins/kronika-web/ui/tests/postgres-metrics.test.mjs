@@ -178,16 +178,23 @@ test("statement lenses project only their exact physical operands", () => {
   assert.ok(perCall.fieldsByType["1002001"].includes("shared_blks_hit"))
   assert.equal(perCall.fieldsByType["1002001"].includes("wal_bytes"), false)
   assert.equal(perCall.fieldsByType["1002001"].includes("shared_blks_dirtied"), false)
+  assert.deepEqual(perCall.order.mean_exec_ms_per_call, ["derived.mean_exec_ms_per_call"])
+  assert.deepEqual(perCall.order.rows_per_call, ["derived.rows_per_call"])
+  assert.deepEqual(perCall.order.blocks_per_call, ["derived.blocks_per_call"])
 
   const io = metrics.statementRequest("io")
   assert.ok(io.fieldsByType["1002001"].includes("shared_blks_dirtied"))
   assert.equal(io.fieldsByType["1002001"].includes("blk_read_time"), false)
+  assert.deepEqual(io.order.hit_pct, ["derived.hit_pct"])
+  assert.deepEqual(io.order.shared_blks_dirtied, ["shared_blks_dirtied"])
 
   const resources = metrics.statementRequest("resources")
   assert.ok(resources.fieldsByType["1002006"].includes("temp_blks_written"))
   assert.equal(resources.fieldsByType["1002006"].includes("temp_blks_read"), false)
   assert.deepEqual(resources.defaultOrder, ["wal_bytes"])
   assert.equal(metrics.statementDefaultOrder("resources"), "wal_bytes")
+  assert.deepEqual(resources.order.wal_per_call, ["derived.wal_per_call"])
+  assert.deepEqual(resources.order.plan_time_pct, ["derived.plan_time_pct"])
 
   const stability = metrics.statementRequest("stability")
   assert.ok(stability.fieldsByType["1002001"].includes("mean_time"))
@@ -195,6 +202,8 @@ test("statement lenses project only their exact physical operands", () => {
   assert.ok(stability.fieldsByType["1002006"].includes("mean_exec_time"))
   assert.ok(stability.fieldsByType["1002006"].includes("stddev_exec_time"))
   assert.deepEqual(stability.defaultOrder, ["calls"])
+  assert.deepEqual(stability.order.cv, ["derived.cv"])
+  assert.deepEqual(stability.order.mean_exec_time_ms, ["mean_time", "mean_exec_time"])
 })
 
 test("plan lenses keep bounded rows and direct per-plan statistics", () => {
@@ -208,6 +217,8 @@ test("plan lenses keep bounded rows and direct per-plan statistics", () => {
     assert.ok(timing.fieldsByType["1003001"].includes(field))
   }
   assert.equal(timing.fieldsByType["1003001"].includes("queryid_stat_statements"), false)
+  assert.deepEqual(timing.order.mean_exec_time_ms, ["mean_time"])
+  assert.deepEqual(timing.order.first_call, ["first_call"])
   const identity = metrics.planRequest("identity")
   assert.ok(identity.fieldsByType["1004001"].includes("queryid_stat_statements"))
   assert.ok(identity.fieldsByType["1003001"].includes("calls"))

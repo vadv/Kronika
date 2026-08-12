@@ -321,6 +321,48 @@ test("physical execution aliases are selected before the calls fallback", async 
   }
 })
 
+test("derived snapshot orders survive physical layout resolution", async () => {
+  const api = await bundledApi()
+  const [resolved] = api.requestsForSegment([{
+    section: "pg_stat_statements",
+    typeIds: ["1002002"],
+    fieldsByType: { "1002002": ["queryid", "calls", "total_exec_time"] },
+    pageSize: 200,
+    defaultOrder: ["calls"],
+    order: {
+      query: [],
+      mean_exec_ms_per_call: ["derived.mean_exec_ms_per_call"],
+    },
+  }], {
+    id: "v2", minTs: START, maxTs: START,
+    sections: [{ logicalName: "pg_stat_statements", typeId: "1002002" }],
+  })
+  assert.deepEqual(resolved?.order, {
+    query: [],
+    mean_exec_ms_per_call: ["derived.mean_exec_ms_per_call"],
+  })
+  assert.ok(resolved)
+
+  const seen: URL[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    seen.push(new URL(String(input), "http://kronika.invalid"))
+    return ndjson([])
+  }
+  try {
+    await api.loadSnapshot("v2", START, [resolved], new AbortController().signal, {
+      column: "mean_exec_ms_per_call", descending: true,
+    })
+    await api.loadSnapshot("v2", START, [resolved], new AbortController().signal, {
+      column: "query", descending: true,
+    })
+    assert.deepEqual(seen[0]?.searchParams.getAll("by"), ["derived.mean_exec_ms_per_call"])
+    assert.deepEqual(seen[1]?.searchParams.getAll("by"), ["calls"])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test("snapshot pages append once in server order and deduplicate physical coordinates", async () => {
   const api = await bundledApi()
   const make = (ordinal: string, timestamp: number, typeId = "1002002") => ({

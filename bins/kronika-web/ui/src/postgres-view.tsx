@@ -746,16 +746,16 @@ function pgColumn(field: string, kind: NonNullable<EntityColumn["kind"]>, width:
   return { field, label: `pg.field.${field}.label`, help: `pg.field.${field}.help`, kind, width, sticky }
 }
 function text(field: string, width = 130, sticky = false): EntityColumn { return pgColumn(field, "text", width, sticky) }
-function number(field: string, width = 125): EntityColumn { return pgColumn(field, "number", width) }
+function number(field: string, width = 125): EntityColumn { return { ...pgColumn(field, "number", width), sortable: true } }
 function id(field: string, width = 110, sticky = false): EntityColumn { return pgColumn(field, "id", width, sticky) }
-function bytes(field: string, width = 140): EntityColumn { return pgColumn(field, "bytes", width) }
-function milliseconds(field: string, width = 145): EntityColumn { return pgColumn(field, "milliseconds", width) }
+function bytes(field: string, width = 140): EntityColumn { return { ...pgColumn(field, "bytes", width), sortable: true } }
+function milliseconds(field: string, width = 145): EntityColumn { return { ...pgColumn(field, "milliseconds", width), sortable: true } }
 function duration(field: string, width = 145): EntityColumn { return pgColumn(field, "duration", width) }
-function percent(field: string, width = 125): EntityColumn { return pgColumn(field, "percent", width) }
+function percent(field: string, width = 125): EntityColumn { return { ...pgColumn(field, "percent", width), sortable: true } }
 function rateNumber(field: string, width = 125): EntityColumn { return { ...number(field, width), rate: true, sortable: true } }
 function rateBytes(field: string, width = 140): EntityColumn { return { ...bytes(field, width), rate: true, sortable: true } }
 function rateMilliseconds(field: string, width = 145): EntityColumn { return { ...milliseconds(field, width), rate: true, sortable: true } }
-function timestamp(field: string, width = 210): EntityColumn { return pgColumn(field, "timestamp", width) }
+function timestamp(field: string, width = 210): EntityColumn { return { ...pgColumn(field, "timestamp", width), sortable: true } }
 function boolean(field: string, width = 125): EntityColumn { return pgColumn(field, "boolean", width) }
 function pgText(field: string, key: string, width = 130, sticky = false): EntityColumn { return { field, label: `${key}.label`, help: `${key}.help`, kind: "text", width, sticky } }
 function pgNumber(field: string, key: string, width = 125): EntityColumn { return { field, label: `${key}.label`, help: `${key}.help`, kind: "number", width } }

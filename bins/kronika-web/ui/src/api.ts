@@ -2,6 +2,7 @@ import { registry } from "kronika:registry"
 
 import { bundledFixtureHour, bundledFixtureRange } from "./fixture"
 import { rowMatchesLocator } from "./locator"
+import { decoratePostgresIntervalRow } from "./postgres-metrics"
 import { apiFetch } from "./session"
 import { readNdjson } from "./wire"
 
@@ -475,7 +476,7 @@ export function requestsForSegment(
       const fields = unique(projection.filter((field) => physical.has(field)))
       // An empty projection would request every column.
       if (fields.length === 0) return []
-      const keep = (candidates: readonly string[]) => candidates.filter((field) => physical.has(field))
+      const keep = (candidates: readonly string[]) => candidates.filter((field) => field.startsWith("derived.") || physical.has(field))
       const order = request.order === undefined
         ? undefined
         : Object.fromEntries(Object.entries(request.order).map(([name, candidates]) => [name, keep(candidates)]))
@@ -743,9 +744,12 @@ function fixtureSnapshot(
     }
     const eligible = rows.length
     const orderFields = snapshotOrder(request, order)
-    const orderField = orderFields.find((field) => rows.some((row) => row.values[field] !== undefined))
+    const orderField = orderFields.find((field) => field.startsWith("derived.") || rows.some((row) => row.values[field] !== undefined))
     if (orderField !== undefined) {
-      rows = rows.slice().sort((left, right) => fixtureOrder(right.values[orderField], left.values[orderField]))
+      const value = (row: DataRow) => orderField.startsWith("derived.")
+        ? decoratePostgresIntervalRow(row).values[orderField.slice("derived.".length)]
+        : row.values[orderField]
+      rows = rows.slice().sort((left, right) => fixtureOrder(value(right), value(left)))
     }
     if (request.pageSize !== undefined) rows = rows.slice(0, request.pageSize)
     if (request.pageSize !== undefined && orderField !== undefined) {
@@ -757,7 +761,7 @@ function fixtureSnapshot(
         truncated: eligible > rows.length,
         nextCursor: null,
         pageSize: request.pageSize,
-        orderBy: [orderField],
+        orderBy: [orderField.replace(/^derived\./, "")],
         orderDirection: "desc",
         from: null,
         to: rows[0]?.timestamp ?? null,
@@ -847,8 +851,9 @@ function snapshotQuery(
 
 function snapshotOrder(section: SectionRequest, chosen: SnapshotOrder | undefined): readonly string[] {
   const requested = chosen !== undefined
-    ? section.order?.[chosen.column]
-      ?? (section.fields?.includes(chosen.column) === true ? [chosen.column] : undefined)
+    ? section.order === undefined
+      ? section.fields?.includes(chosen.column) === true ? [chosen.column] : undefined
+      : section.order[chosen.column]
     : section.defaultOrder
   if (requested !== undefined && requested.length > 0) return unique(requested)
   if (chosen !== undefined && section.defaultOrder !== undefined && section.defaultOrder.length > 0) {
