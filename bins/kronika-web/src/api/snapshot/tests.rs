@@ -1,10 +1,14 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
-use kronika_reader::Cell;
+use kronika_reader::{Cell, Row};
+use kronika_registry::{TypeContract, contract};
 use serde_json::{Value, json};
 
-use super::{available_field_index, compare_ordered, ordered_cell, rate};
+use super::{
+    OrderedNumber, RankedRow, StagedRow, TopRows, available_field_index, compare_ordered,
+    ordered_cell, rate,
+};
 use crate::api::query::OutputField;
 
 const COLUMN: &str = "counter";
@@ -114,4 +118,94 @@ fn ordering_keeps_integer_precision_above_two_to_the_fifty_third() {
         ),
         Ordering::Greater
     );
+    assert!(ordered_cell(&Cell::F64(f64::NAN)).is_none());
+    assert!(ordered_cell(&Cell::F64(f64::INFINITY)).is_none());
+}
+
+fn ranked(
+    contract: &'static TypeContract,
+    ordinal: u64,
+    value: Option<OrderedNumber>,
+) -> RankedRow {
+    RankedRow {
+        staged: StagedRow {
+            ordinal,
+            row: Row::new(contract, Vec::new()),
+            identity: Vec::new(),
+        },
+        value,
+    }
+}
+
+fn reference_top(values: &[Option<OrderedNumber>], limit: usize) -> Vec<u64> {
+    let mut rows = values
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(ordinal, value)| (u64::try_from(ordinal).expect("fixture ordinal"), value))
+        .collect::<Vec<_>>();
+    rows.sort_by(|(left_ordinal, left), (right_ordinal, right)| {
+        compare_ordered(*right, *left).then_with(|| left_ordinal.cmp(right_ordinal))
+    });
+    rows.truncate(limit);
+    rows.into_iter().map(|(ordinal, _value)| ordinal).collect()
+}
+
+fn bounded_top(
+    contract: &'static TypeContract,
+    values: &[Option<OrderedNumber>],
+    limit: usize,
+) -> (Vec<u64>, usize) {
+    let mut rows = TopRows::new(limit);
+    let mut peak = 0;
+    for (ordinal, value) in values.iter().copied().enumerate() {
+        rows.push(ranked(
+            contract,
+            u64::try_from(ordinal).expect("fixture ordinal"),
+            value,
+        ));
+        peak = peak.max(rows.retained_len());
+    }
+    (
+        rows.finish().into_iter().map(|row| row.ordinal).collect(),
+        peak,
+    )
+}
+
+#[test]
+fn bounded_top_k_matches_full_sort_for_large_statement_and_plan_sections() {
+    const ROWS: usize = 5_000;
+    const LIMIT: usize = 200;
+    for type_id in [1_002_006, 1_003_001] {
+        let contract = contract(type_id).expect("fixture contract");
+        let values = (0..ROWS)
+            .map(|ordinal| {
+                (ordinal % 37 != 0).then_some(OrderedNumber::Float(f64::from(
+                    u32::try_from((ordinal * 7_919) % 997).expect("fixture value"),
+                )))
+            })
+            .collect::<Vec<_>>();
+        let expected = reference_top(&values, LIMIT);
+        let (actual, peak) = bounded_top(contract, &values, LIMIT);
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), LIMIT);
+        assert_eq!(peak, LIMIT);
+    }
+}
+
+#[test]
+fn bounded_top_k_orders_exact_large_integers_and_nulls_deterministically() {
+    let contract = contract(1_002_006).expect("fixture contract");
+    let base = i128::from(1_u64 << 53);
+    let values = [
+        None,
+        Some(OrderedNumber::Integer(base)),
+        Some(OrderedNumber::Integer(base + 1)),
+        Some(OrderedNumber::Integer(base + 1)),
+        Some(OrderedNumber::Integer(base - 1)),
+    ];
+    let (actual, peak) = bounded_top(contract, &values, 4);
+    assert_eq!(actual, [2, 3, 1, 4]);
+    assert_eq!(peak, 4);
+    assert_eq!(actual, reference_top(&values, 4));
 }

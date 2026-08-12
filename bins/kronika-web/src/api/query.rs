@@ -241,15 +241,25 @@ impl Plan {
     ) -> Result<Dictionary, ApiError> {
         let mut ids = HashSet::new();
         for (_ordinal, row) in rows {
-            for filter in &self.filters {
-                if let TypedFilter::Bytes { column, .. } = filter
-                    && let Some(Cell::StrId(id)) = row.get(column)
-                {
-                    ids.insert(*id);
-                }
-            }
+            self.add_selection_ids(row, &mut ids);
         }
         resolved_dictionary(segment, &ids)
+    }
+
+    pub(super) fn selection_needs_dictionary(&self) -> bool {
+        self.filters
+            .iter()
+            .any(|filter| matches!(filter, TypedFilter::Bytes { .. }))
+    }
+
+    pub(super) fn add_selection_ids(&self, row: &Row, ids: &mut HashSet<u64>) {
+        for filter in &self.filters {
+            if let TypedFilter::Bytes { column, .. } = filter
+                && let Some(Cell::StrId(id)) = row.get(column)
+            {
+                ids.insert(*id);
+            }
+        }
     }
 }
 

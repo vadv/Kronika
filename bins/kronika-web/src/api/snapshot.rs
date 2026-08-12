@@ -1,7 +1,8 @@
 //! Reads one snapshot and derives counter rates.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashSet};
 use std::path::Path;
 
 use kronika_reader::{Cell, Dictionary, Reader, Row, Segment, SegmentKind, SegmentRef};
@@ -46,6 +47,29 @@ struct StagedRow {
     ordinal: u64,
     row: Row,
     identity: Vec<IdentityCell>,
+}
+
+struct RankedRow {
+    staged: StagedRow,
+    value: Option<OrderedNumber>,
+}
+
+struct TopRows {
+    limit: usize,
+    rows: BinaryHeap<Reverse<RankedRow>>,
+}
+
+#[derive(Clone, Copy)]
+struct BoundedOrder {
+    column: &'static str,
+    limit: usize,
+}
+
+#[derive(Clone, Copy)]
+struct RowWindow {
+    start: u64,
+    count: usize,
+    moment: Option<(&'static str, i64)>,
 }
 
 #[derive(Clone, Copy)]
@@ -218,6 +242,24 @@ impl PreparedSnapshot {
         let (start_row, row_count) = self
             .row_ordinal
             .map_or((0, usize::MAX), |ordinal| (ordinal, 1));
+        let rates = RateContext {
+            previous: Some(&previous),
+            elapsed,
+        };
+        if let Some(order) = self.bounded_order(plan) {
+            return self.emit_bounded_rows(
+                source,
+                plan,
+                RowWindow {
+                    start: start_row,
+                    count: row_count,
+                    moment: Some((timestamp, moments.current)),
+                },
+                order,
+                rates,
+                (emit, cancelled),
+            );
+        }
         let mut rows = Vec::new();
         source.visit_rows(
             plan.type_id,
@@ -238,23 +280,29 @@ impl PreparedSnapshot {
         if cancelled() {
             return Ok(false);
         }
-        self.emit_rows(
-            source,
-            plan,
-            rows,
-            RateContext {
-                previous: Some(&previous),
-                elapsed,
-            },
-            emit,
-            cancelled,
-        )
+        self.emit_rows(source, plan, rows, rates, emit, cancelled)
     }
 
-    fn order_and_truncate(&self, plan: &Plan, rates: RateContext<'_>, rows: &mut Vec<StagedRow>) {
-        if let Some(column) = self.by.iter().find_map(|name| {
+    fn bounded_order(&self, plan: &Plan) -> Option<BoundedOrder> {
+        self.order_column(plan)
+            .zip(self.top)
+            .map(|(column, limit)| BoundedOrder { column, limit })
+    }
+
+    fn order_column(&self, plan: &Plan) -> Option<&'static str> {
+        self.by.iter().find_map(|name| {
             available_field_index(&plan.fields, name).and_then(|index| plan.fields[index].column)
-        }) {
+        })
+    }
+
+    fn order_and_truncate(
+        &self,
+        plan: &Plan,
+        rates: RateContext<'_>,
+        column: Option<&'static str>,
+        rows: &mut Vec<StagedRow>,
+    ) {
+        if let Some(column) = column {
             rows.sort_by(|left, right| compare_staged(plan, column, right, left, rates));
         }
         if let Some(top) = self.top {
@@ -293,6 +341,24 @@ impl PreparedSnapshot {
         let (start_row, row_count) = self
             .row_ordinal
             .map_or((0, usize::MAX), |ordinal| (ordinal, 1));
+        let rates = RateContext {
+            previous: None,
+            elapsed: None,
+        };
+        if let Some(order) = self.bounded_order(plan) {
+            return self.emit_bounded_rows(
+                &self.segment,
+                plan,
+                RowWindow {
+                    start: start_row,
+                    count: row_count,
+                    moment: None,
+                },
+                order,
+                rates,
+                (emit, cancelled),
+            );
+        }
         let mut rows = Vec::new();
         self.segment.visit_rows(
             plan.type_id,
@@ -310,17 +376,84 @@ impl PreparedSnapshot {
         if cancelled() {
             return Ok(false);
         }
-        self.emit_rows(
-            &self.segment,
-            plan,
-            rows,
-            RateContext {
-                previous: None,
-                elapsed: None,
+        self.emit_rows(&self.segment, plan, rows, rates, emit, cancelled)
+    }
+
+    fn emit_bounded_rows<E, C>(
+        &self,
+        source: &Segment,
+        plan: &Plan,
+        window: RowWindow,
+        order: BoundedOrder,
+        rates: RateContext<'_>,
+        output: (&mut E, &C),
+    ) -> Result<bool, ApiError>
+    where
+        E: FnMut(Vec<u8>) -> bool,
+        C: Fn() -> bool,
+    {
+        let (emit, cancelled) = output;
+        let mut selection_ids = HashSet::new();
+        if plan.selection_needs_dictionary() {
+            source.visit_rows(
+                plan.type_id,
+                &plan.projection,
+                window.start,
+                window.count,
+                |_ordinal, row| {
+                    if cancelled() {
+                        return false;
+                    }
+                    if window
+                        .moment
+                        .is_none_or(|(timestamp, at)| row_timestamp(&row, timestamp) == Some(at))
+                    {
+                        plan.add_selection_ids(&row, &mut selection_ids);
+                    }
+                    true
+                },
+            )?;
+            if cancelled() {
+                return Ok(false);
+            }
+        }
+        let selection_dictionary = resolved_dictionary(source, &selection_ids)?;
+        let mut top_rows = TopRows::new(order.limit);
+        source.visit_rows(
+            plan.type_id,
+            &plan.projection,
+            window.start,
+            window.count,
+            |ordinal, row| {
+                if cancelled() {
+                    return false;
+                }
+                if window
+                    .moment
+                    .is_some_and(|(timestamp, at)| row_timestamp(&row, timestamp) != Some(at))
+                    || !plan.matches(&row, &selection_dictionary)
+                {
+                    return true;
+                }
+                let Some(identity) = identity_of(plan, &row) else {
+                    return true;
+                };
+                let staged = StagedRow {
+                    ordinal,
+                    row,
+                    identity,
+                };
+                top_rows.push(RankedRow {
+                    value: order_value(plan, order.column, &staged, rates),
+                    staged,
+                });
+                true
             },
-            emit,
-            cancelled,
-        )
+        )?;
+        if cancelled() {
+            return Ok(false);
+        }
+        self.emit_staged_rows(source, plan, top_rows.finish(), rates, emit, cancelled)
     }
 
     fn emit_rows(
@@ -333,6 +466,7 @@ impl PreparedSnapshot {
         cancelled: &impl Fn() -> bool,
     ) -> Result<bool, ApiError> {
         let selection_dictionary = plan.selection_dictionary(source, &rows)?;
+        let order_column = self.order_column(plan);
         let mut staged = Vec::with_capacity(rows.len());
         for (ordinal, row) in rows {
             if !plan.matches(&row, &selection_dictionary) {
@@ -347,7 +481,19 @@ impl PreparedSnapshot {
                 identity,
             });
         }
-        self.order_and_truncate(plan, rates, &mut staged);
+        self.order_and_truncate(plan, rates, order_column, &mut staged);
+        self.emit_staged_rows(source, plan, staged, rates, emit, cancelled)
+    }
+
+    fn emit_staged_rows(
+        &self,
+        source: &Segment,
+        plan: &Plan,
+        staged: Vec<StagedRow>,
+        rates: RateContext<'_>,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<bool, ApiError> {
         let dictionary = retained_dictionary(source, &staged)?;
         for staged in staged {
             let before = rates
@@ -546,21 +692,88 @@ fn compare_staged(
     right: &StagedRow,
     rates: RateContext<'_>,
 ) -> Ordering {
-    let value = |staged: &StagedRow| {
-        let stored = staged.row.get(column)?;
-        let cumulative = plan
-            .contract
-            .column(column)
-            .is_some_and(|declared| declared.class == ColumnClass::Cumulative);
-        if cumulative {
-            rates.elapsed?;
-            let earlier = rates.previous?.get(&staged.identity)?.get(column)?;
-            counter_delta(stored, earlier)
-        } else {
-            ordered_cell(stored)
+    compare_ordered(
+        order_value(plan, column, left, rates),
+        order_value(plan, column, right, rates),
+    )
+}
+
+fn order_value(
+    plan: &Plan,
+    column: &'static str,
+    staged: &StagedRow,
+    rates: RateContext<'_>,
+) -> Option<OrderedNumber> {
+    let stored = staged.row.get(column)?;
+    let cumulative = plan
+        .contract
+        .column(column)
+        .is_some_and(|declared| declared.class == ColumnClass::Cumulative);
+    if cumulative {
+        rates.elapsed?;
+        let earlier = rates.previous?.get(&staged.identity)?.get(column)?;
+        counter_delta(stored, earlier)
+    } else {
+        ordered_cell(stored)
+    }
+}
+
+impl TopRows {
+    const fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            rows: BinaryHeap::new(),
         }
-    };
-    compare_ordered(value(left), value(right))
+    }
+
+    fn push(&mut self, row: RankedRow) {
+        if self.limit == 0 {
+            return;
+        }
+        if self.rows.len() < self.limit {
+            self.rows.push(Reverse(row));
+            return;
+        }
+        let Some(worst) = self.rows.peek() else {
+            return;
+        };
+        if row > worst.0 {
+            self.rows.pop();
+            self.rows.push(Reverse(row));
+        }
+    }
+
+    fn finish(self) -> Vec<StagedRow> {
+        let mut rows: Vec<RankedRow> = self.rows.into_iter().map(|Reverse(row)| row).collect();
+        rows.sort_by(|left, right| right.cmp(left));
+        rows.into_iter().map(|row| row.staged).collect()
+    }
+
+    #[cfg(test)]
+    fn retained_len(&self) -> usize {
+        self.rows.len()
+    }
+}
+
+impl PartialEq for RankedRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for RankedRow {}
+
+impl PartialOrd for RankedRow {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RankedRow {
+    fn cmp(&self, other: &Self) -> Ordering {
+        compare_ordered(self.value, other.value)
+            .then_with(|| other.staged.ordinal.cmp(&self.staged.ordinal))
+    }
 }
 
 fn compare_ordered(left: Option<OrderedNumber>, right: Option<OrderedNumber>) -> Ordering {

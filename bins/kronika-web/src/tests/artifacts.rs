@@ -1298,6 +1298,36 @@ fn a_snapshot_orders_by_a_column_and_returns_only_the_top_of_it() {
 }
 
 #[test]
+fn a_snapshot_ranks_counter_rates_before_applying_top() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[
+        (100, 0, 1),
+        (100, 1, 9),
+        (100, 2, 5),
+        (200, 0, 2),
+        (200, 1, 30),
+        (200, 2, 11),
+    ]);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_diskstats&field=minor&field=reads&by=reads&top=2"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("counter-ranked snapshot");
+    let values = row_records(&records)
+        .into_iter()
+        .map(|row| row["values"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        values,
+        [
+            serde_json::json!([1, 210_000.0]),
+            serde_json::json!([2, 60_000.0])
+        ]
+    );
+}
+
+#[test]
 fn snapshot_resolves_text_only_after_top_rows_are_selected() {
     let mut fixture = Fixture::new();
     fixture.append_ranked_diskstats_with_unreadable_loser();
