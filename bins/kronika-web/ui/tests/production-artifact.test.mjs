@@ -21,8 +21,11 @@ test("the production artifact preserves wire keys and exact finding page state",
   const html = gunzipSync(await readFile(ARTIFACT))
   const requests = []
   let heldContextPage = null
+  let heldSystemPage = null
   let contextPageRequested
+  let systemPageRequested
   const contextPage = new Promise((resolve) => { contextPageRequested = resolve })
+  const systemPage = new Promise((resolve) => { systemPageRequested = resolve })
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
     if (url.pathname === "/") {
@@ -55,6 +58,9 @@ test("the production artifact preserves wire keys and exact finding page state",
         }
       } else if (sections.includes("pg_stat_user_tables")) {
         ndjson(response, relationRecords())
+      } else if (sections.includes("os_cpu")) {
+        heldSystemPage = response
+        systemPageRequested()
       } else if (sections.includes("pg_stat_activity")) {
         ndjson(response, snapshotRecords())
       } else {
@@ -149,6 +155,27 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(relationQuery.get("group"), "database")
     assert.equal(relationQuery.get("page_size"), "200")
     assert.equal(relationQuery.getAll("field").includes("table_count"), true)
+    await cdp.evaluate(`document.querySelector(".source-tabs button:first-child").click(); document.querySelector('[data-testid="locale-ru"]').click()`)
+    await cdp.waitFor(`document.querySelector(".section-tabs") !== null`, "the host tabs")
+    await cdp.evaluate(`document.querySelector('.section-tabs [role="tab"]:first-child').click()`)
+    await systemPage
+    await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]') !== null`, "the crowded Russian loading bar")
+    for (const [width, height] of [[1920, 1080], [1366, 768], [1024, 768]]) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
+      await cdp.evaluate("document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))")
+      const size = await cdp.evaluate(`(() => {
+        const clientWidth = document.documentElement.clientWidth
+        const overflow = [...document.querySelectorAll("body *")].flatMap((node) => {
+          const rect = node.getBoundingClientRect()
+          return rect.right > clientWidth + 0.5 ? [{ className: node.className, right: rect.right, tag: node.tagName }] : []
+        }).slice(0, 8)
+        return { clientWidth, overflow, scrollWidth: document.documentElement.scrollWidth }
+      })()`)
+      assert.ok(size.scrollWidth <= size.clientWidth, `${width}px document overflow: ${JSON.stringify(size)}`)
+    }
+    ndjson(heldSystemPage, [])
+    heldSystemPage = null
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
 
     await cdp.evaluate(`([...document.querySelectorAll(".source-tabs button")].find((button) => button.textContent === "Events")).click()`)
     await cdp.waitFor(`document.querySelector(".event-item button") !== null`, "the statement finding")
@@ -256,6 +283,9 @@ function timelineRecords() {
       }, {
         logical_name: "pg_stat_statements", physical_name: "pg_stat_statements", type_id: "1002003",
         implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "512",
+      }, {
+        logical_name: "os_cpu", physical_name: "os_cpu", type_id: "1102001",
+        implementation: "linux", source_family: "system", rows: "1", bytes: "128",
       }, {
         logical_name: "pg_stat_user_tables", physical_name: "pg_stat_user_tables", type_id: "1013001",
         implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256",

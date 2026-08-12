@@ -72,7 +72,7 @@ test("PostgreSQL lenses survive navigation only on their tables", () => {
 })
 
 test("relation drilldown keeps database-scoped identity", () => {
-  const selected = JSON.stringify(["pg_stat_user_indexes", "object", "16384", "24577"])
+  const selected = JSON.stringify(["pg_stat_user_indexes", "object", "16384", "app", "public spaces", "24576", "orders", "24577", "orders_pkey"])
   const address = {
     ...DEFAULT_ADDRESS,
     view: "pg.indexes" as const,
@@ -85,13 +85,13 @@ test("relation drilldown keeps database-scoped identity", () => {
     row: selected,
   }
   const written = writeAddress(address)
-  assert.equal(written, `/?view=pg.indexes&pg_lens=low_activity&level=object&datid=16384&schema=public+spaces&relid=24576&indexrelid=24577&row=${encodeURIComponent(selected)}`)
+  assert.equal(written, `/?view=pg.indexes&pg_lens=low_activity&level=object&datid=16384&schema=public+spaces&relid=24576&indexrelid=24577&${new URLSearchParams({ row: selected })}`)
   assert.deepEqual(readAddress(written.slice(1)), address)
   assert.equal(readAddress("view=pg.tables&level=schema&datid=oops").pgLevel, "database")
 })
 
 test("relation selection is separate from hierarchy filters", () => {
-  const selected = JSON.stringify(["pg_stat_user_tables", "object", "16384", "24576"])
+  const selected = JSON.stringify(["pg_stat_user_tables", "object", "16384", "app", "public", "24576", "orders"])
   const written = writeAddress({
     ...DEFAULT_ADDRESS,
     view: "pg.tables",

@@ -418,6 +418,20 @@ test("snapshot pages append once in server order and deduplicate physical coordi
   assert.deepEqual(api.appendSnapshotRows(appended, next), appended)
 })
 
+test("relation pages preserve same-named objects from different databases", async () => {
+  const api = await bundledApi()
+  const make = (datid: string, datname: string) => ({
+    segmentId: "77", logicalName: "pg_stat_user_indexes", typeId: "1014001", ordinal: datid, timestamp: START,
+    values: { datid, datname, schemaname: "public", relid: "42", relname: "orders", indexrelid: "43", indexrelname: "orders_pkey" },
+    relation: { group: "object" },
+  })
+  const first = make("11", "one")
+  const second = make("12", "two")
+  const appended = api.appendSnapshotRows([first], [first, second])
+  assert.deepEqual(appended, [first, second])
+  assert.deepEqual(api.appendSnapshotRows(appended, [first, second]), appended)
+})
+
 test("paged entity context intersects search and clears independently", async () => {
   const api = await bundledApi()
   const seen: URL[] = []

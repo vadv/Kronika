@@ -101,7 +101,8 @@ test("same schema names in different databases remain distinct", () => {
     { datid: "12", datname: "two", schemaname: "public" },
     { table_count: 3 },
   ), storedLayout)
-  assert.notEqual(relation.relationRowKey(first), relation.relationRowKey(second))
+  assert.equal(relation.relationRowKey(first), JSON.stringify(["pg_stat_user_tables", "schema", "11", "one", "public"]))
+  assert.equal(relation.relationRowKey(second), JSON.stringify(["pg_stat_user_tables", "schema", "12", "two", "public"]))
   assert.deepEqual(relation.relationDrill(first), {
     section: "pg_stat_user_tables",
     group: "object",
@@ -110,19 +111,29 @@ test("same schema names in different databases remain distinct", () => {
   })
 })
 
-test("wire identity changes always produce a distinct row key", () => {
+test("same-named tables and indexes in different databases keep their complete wire identity", () => {
   const storedLayout = layout(layoutRecord("pg_stat_user_tables", "object", []))
   const first = parseRow(relationRecord(
     "pg_stat_user_tables", "object",
-    { datid: "11", datname: "one", schemaname: "public", relid: "42", relname: "before" }, {},
+    { datid: "11", datname: "one", schemaname: "public", relid: "42", relname: "orders" }, {},
     { type_id: "1013001", ordinal: "1", timestamp: "2000000" },
   ), storedLayout)
-  const renamed = parseRow(relationRecord(
+  const second = parseRow(relationRecord(
     "pg_stat_user_tables", "object",
-    { datid: "11", datname: "one", schemaname: "archive", relid: "42", relname: "after" }, {},
+    { datid: "12", datname: "two", schemaname: "public", relid: "42", relname: "orders" }, {},
     { type_id: "1013001", ordinal: "2", timestamp: "2000000" },
   ), storedLayout)
-  assert.notEqual(relation.relationRowKey(first), relation.relationRowKey(renamed))
+  assert.equal(relation.relationRowKey(first), JSON.stringify(["pg_stat_user_tables", "object", "11", "one", "public", "42", "orders"]))
+  assert.notEqual(relation.relationRowKey(first), relation.relationRowKey(second))
+
+  const indexLayout = layout(layoutRecord("pg_stat_user_indexes", "object", []))
+  const indexes = [first, second].map((table, ordinal) => parseRow(relationRecord(
+    "pg_stat_user_indexes", "object",
+    { ...table.values, indexrelid: "43", indexrelname: "orders_pkey" }, {},
+    { type_id: "1014001", ordinal: String(ordinal), timestamp: "2000000" },
+  ), indexLayout))
+  assert.equal(relation.relationRowKey(indexes[0]), JSON.stringify(["pg_stat_user_indexes", "object", "11", "one", "public", "42", "orders", "43", "orders_pkey"]))
+  assert.notEqual(relation.relationRowKey(indexes[0]), relation.relationRowKey(indexes[1]))
 })
 
 test("object source locators are exact and index definitions stay lazy and object-only", () => {
@@ -176,7 +187,13 @@ test("table and index navigation uses exact database-scoped table identity", () 
   ), indexLayout)
   const back = relation.linkedRelation(index)
   assert.deepEqual(back?.filters, { datid: "42", relid: "9001" })
-  assert.equal(back?.selectedKey, null)
+  assert.equal(back?.selectedKey, relation.relationRowKey(table))
+  const otherDatabase = parseRow(relationRecord(
+    "pg_stat_user_tables", "object",
+    { datid: "43", datname: "other", schemaname: "sales", relid: "9001", relname: "orders" }, {},
+    { type_id: "1013004", ordinal: "11", timestamp: "2000000" },
+  ), tableLayout)
+  assert.notEqual(back?.selectedKey, relation.relationRowKey(otherDatabase))
 })
 
 test("detail requests the exact physical row without assuming a layout", () => {

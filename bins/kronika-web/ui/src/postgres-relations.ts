@@ -228,7 +228,7 @@ export function parseRelationRow(
 
 export function relationRowKey(row: DataRow): string {
   const group = row.relation!.group
-  return JSON.stringify([row.logicalName, group, ...relationKeyNames(row.logicalName as RelationSection, group).map((name) => row.values[name])])
+  return relationKeyString(row.logicalName as RelationSection, group, row.values)
 }
 
 export function relationDetailTarget(row: DataRow): RelationDetailTarget {
@@ -257,11 +257,12 @@ export function linkedRelation(row: DataRow): RelationNavigation | null {
   if (row.relation?.group !== "object") return null
   const datid = scalarText(row.values.datid)
   const relid = scalarText(row.values.relid)
+  const section = row.logicalName === "pg_stat_user_tables" ? "pg_stat_user_indexes" : "pg_stat_user_tables"
   return {
-    section: row.logicalName === "pg_stat_user_tables" ? "pg_stat_user_indexes" : "pg_stat_user_tables",
+    section,
     group: "object",
     filters: { datid, relid },
-    selectedKey: null,
+    selectedKey: section === "pg_stat_user_tables" ? relationKeyString(section, "object", row.values) : null,
   }
 }
 
@@ -322,6 +323,10 @@ function relationKeyNames(section: RelationSection, group: RelationGroup): reado
       : section === "pg_stat_user_tables"
         ? ["datid", "datname", "schemaname", "relid", "relname"]
         : ["datid", "datname", "schemaname", "relid", "relname", "indexrelid", "indexrelname"]
+}
+
+function relationKeyString(section: RelationSection, group: RelationGroup, values: Readonly<Record<string, Cell>>): string {
+  return JSON.stringify([section, group, ...relationKeyNames(section, group).map((name) => values[name])])
 }
 
 function moment(value: unknown): number | null {
