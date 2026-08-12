@@ -53,9 +53,14 @@ CPU, память, диски, точки монтирования и топол
 | `1_120_001` | `/proc/net/rpc/nfsd` | `snapshot_full` | `(ts)` |
 | `1_200_001` | cgroup: сопоставление процессов | `snapshot_full` | `(pid, starttime, ts)` |
 | `1_201_001` | cgroup: cpu | `snapshot_full` | `(cgroup_path, ts)` |
+| `1_201_002` | cgroup: cpu с эффективным cpuset, сохранённый формат чтения | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_202_001` | cgroup: memory | `snapshot_full` | `(cgroup_path, ts)` |
+| `1_202_002` | cgroup: memory с разделяемой памятью, сохранённый формат чтения | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_203_001` | cgroup: io | `snapshot_full` | `(cgroup_path, major, minor, ts)` |
 | `1_204_001` | cgroup: pids | `snapshot_full` | `(cgroup_path, ts)` |
+
+Сейчас коллектор записывает форматы `1_201_001` и `1_202_001`. Форматы `002`
+остаются в реестре, поскольку они встречаются в существующих файлах WAL и ZMS.
 
 Период сбора не входит в `type_id`. Планировщик коллектора задаёт его для
 каждого источника; интервалы и значения по умолчанию перечислены в

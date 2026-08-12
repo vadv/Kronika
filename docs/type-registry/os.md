@@ -52,9 +52,14 @@ The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 | `1_120_001` | `/proc/net/rpc/nfsd` | `snapshot_full` | `(ts)` |
 | `1_200_001` | cgroup: process mapping | `snapshot_full` | `(pid, starttime, ts)` |
 | `1_201_001` | cgroup: cpu | `snapshot_full` | `(cgroup_path, ts)` |
+| `1_201_002` | cgroup: cpu with effective cpuset, retained reader layout | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_202_001` | cgroup: memory | `snapshot_full` | `(cgroup_path, ts)` |
+| `1_202_002` | cgroup: memory with shared memory, retained reader layout | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_203_001` | cgroup: io | `snapshot_full` | `(cgroup_path, major, minor, ts)` |
 | `1_204_001` | cgroup: pids | `snapshot_full` | `(cgroup_path, ts)` |
+
+The collector currently writes the `1_201_001` and `1_202_001` layouts. The
+`002` layouts remain registered because existing WAL and ZMS files carry them.
 
 The collection period is not part of a `type_id`. The collector's scheduler
 sets it per source; the intervals and their defaults are listed in the
