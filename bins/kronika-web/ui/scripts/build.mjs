@@ -35,7 +35,7 @@ const registry = execFileSync(
   { cwd: repository, encoding: "utf8", env: { ...process.env, CARGO_TERM_COLOR: "never" } },
 )
 const translations = await dictionaryModule(new URL("./", import.meta.url))
-const javascript = await bundleJavascript(registry, translations)
+const javascript = await bundleJavascript(registry, translations, fixtureOutput !== null)
 const stylesheet = await compileStylesheet()
 const latinFont = await readFile(join(uiDirectory, "assets/JetBrainsMono-Latin.woff2"))
 const cyrillicFont = await readFile(join(uiDirectory, "assets/JetBrainsMono-Cyrillic.woff2"))
@@ -65,7 +65,7 @@ if (checkOnly) {
 }
 process.stdout.write(`kronika-ui raw=${Buffer.byteLength(html)} gzip=${compressed.length}\n`)
 
-async function bundleJavascript(registry, translations) {
+async function bundleJavascript(registry, translations, includeFixture) {
   const result = await build({
     absWorkingDir: uiDirectory,
     entryPoints: ["src/app.tsx"],
@@ -82,6 +82,16 @@ async function bundleJavascript(registry, translations) {
     plugins: [{
       name: "kronika-registry",
       setup(context) {
+        if (!includeFixture) {
+          context.onResolve({ filter: /^\.\/fixture$/ }, () => ({
+            path: "fixture.ts",
+            namespace: "kronika-empty-fixture",
+          }))
+          context.onLoad({ filter: /.*/, namespace: "kronika-empty-fixture" }, () => ({
+            contents: "export const bundledFixtureHour=()=>null;export const bundledFixtureRange=()=>null",
+            loader: "ts",
+          }))
+        }
         context.onResolve({ filter: /^kronika:registry$/ }, () => ({
           path: "registry.ts",
           namespace: "kronika",
