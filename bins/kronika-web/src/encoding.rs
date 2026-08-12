@@ -3,14 +3,12 @@
 use hyper::HeaderMap;
 use hyper::header::ACCEPT_ENCODING;
 
-/// The response codings the request permits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AcceptedEncodings {
     gzip: bool,
     identity: bool,
 }
 
-/// The coding selected for one response body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ContentCoding {
     Identity,
@@ -27,7 +25,6 @@ impl Default for AcceptedEncodings {
 }
 
 impl AcceptedEncodings {
-    /// Parse every field line as one combined `Accept-Encoding` list.
     pub(crate) fn from_headers(headers: &HeaderMap) -> Option<Self> {
         let mut saw_header = false;
         let mut gzip = None;

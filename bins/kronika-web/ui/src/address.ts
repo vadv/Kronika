@@ -1,6 +1,3 @@
-/** The screen as it can be written down: everything a person chose, and
- *  nothing that follows from it. The hour follows from `at`, the open dock
- *  follows from `row`, so neither is here. */
 export interface Address {
   readonly at: number | null
   readonly view: View
@@ -44,9 +41,6 @@ export const DEFAULT_ADDRESS: Address = {
   find: "",
 }
 
-/** A link out of a chat arrives with its tail cut off and its keys from a
- *  newer build. An unreadable value falls back; a white screen would be the
- *  worst answer a link can give. */
 export function readAddress(search: string): Address {
   const parameters = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search)
   const at = Number.parseInt(parameters.get("at") ?? "", 10)
@@ -67,8 +61,6 @@ export function readAddress(search: string): Address {
   }
 }
 
-/** Only what differs from the default is written, so a plain screen keeps a
- *  plain link. */
 export function writeAddress(address: Address): string {
   const parameters = new URLSearchParams()
   if (address.at !== null) parameters.set("at", String(address.at))
@@ -82,8 +74,6 @@ export function writeAddress(address: Address): string {
   return query === "" ? "/" : `/?${query}`
 }
 
-/** The screen is one source and one section; three parameters would allow a
- *  combination no screen corresponds to. */
 export function viewOf(source: string, hostSection: string, pgSection: string): View {
   if (source === "events") return "events"
   if (source === "postgresql") return `pg.${pgSection}` as View
@@ -104,8 +94,6 @@ export function pgSectionOf(view: View): "overview" | "activity" | "statements" 
   return section as "overview" | "activity" | "statements" | "plans" | "locks" | "databases"
 }
 
-/** Everything but the moment: two addresses that differ only in `at` are the
- *  same step of navigation, and one drag should not fill the history. */
 export function stepOf(address: string): string {
   return address.replace(/(\?|&)at=\d+&?/, "$1").replace(/[?&]$/, "")
 }

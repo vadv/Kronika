@@ -2,8 +2,7 @@ import type { Cell } from "./api"
 
 export type ValueTone = "good" | "warning" | "critical" | "inactive"
 
-/** Small display rules for values with an operator-useful interpretation.
- * Workload volume stays neutral: a high rate is not bad by itself. */
+/** Workload volume stays neutral; only explicit display rules add color. */
 export function semanticValueTone(field: string, cell: Cell, rate = false): ValueTone | null {
   const number = numericCell(cell)
   if (number === null) return null

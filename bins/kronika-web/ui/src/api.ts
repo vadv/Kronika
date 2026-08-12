@@ -35,24 +35,15 @@ export const PRODUCT_SECTION_GROUPS = {
 const UI_SECTION_NAMES = unique(Object.values(PRODUCT_SECTION_GROUPS).flat())
 const UI_SECTION_NAME_SET = new Set(UI_SECTION_NAMES)
 
-/** A view asks for the sections it draws and, where it only needs a few
- *  numbers, the fields it reads. A process row carries a command line. */
 export interface SectionRequest {
   readonly section: string
   readonly fields?: readonly string[]
-  /** Registry layouts this semantic request knows how to present. */
   readonly typeIds?: readonly string[]
-  /** Curated physical projection for each supported registry layout. */
   readonly fieldsByType?: Readonly<Record<string, readonly string[]>>
-  /** One exact physical layout, assigned for a request at the cursor. */
   readonly typeId?: string
-  /** Maximum rows after the server has ordered the physical table. */
   readonly top?: number
-  /** Physical candidates for the normal high-demand order. */
   readonly defaultOrder?: readonly string[]
-  /** A semantic UI column mapped to the physical candidates that can carry it. */
   readonly order?: Readonly<Record<string, readonly string[]>>
-  /** Used only when the current physical layout has none of the chosen candidates. */
   readonly fallbackOrder?: readonly string[]
 }
 
@@ -63,10 +54,6 @@ export const POSTGRESQL_OVERVIEW_REQUESTS: readonly SectionRequest[] = [
   { section: "pg_locks", fields: ["pid"] },
 ]
 
-/** Every view draws the timeline, so these four are the floor. */
-/** The one series drawn end to end. The other lanes were three more sections
- *  times every segment in the hour, for lines beside the one being navigated
- *  by; they come from the snapshot under the cursor instead. */
 export const TIMELINE_REQUESTS: readonly SectionRequest[] = [{ section: "health" }]
 
 export interface DataRow {
@@ -118,11 +105,8 @@ export interface SourceFamily {
 }
 
 export interface HourData {
-  /** Rows keyed by their registry logical section name. */
   readonly sections: Readonly<Record<string, readonly DataRow[]>>
-  /** Columns the server divided by the interval: they read per second. */
   readonly rateColumns: Readonly<Record<string, readonly string[]>>
-  /** Catalog-backed names, including present sections that have no row in this hour. */
   readonly availableSections: readonly string[]
   readonly processes: readonly DataRow[]
   readonly activities: readonly DataRow[]
@@ -143,8 +127,6 @@ export interface HourData {
   readonly segmentCount: number
 }
 
-/** One lane of the timeline: a share of the ceiling this machine lived under,
- *  computed by the server against the environment it ran in. */
 export interface LanePoint {
   readonly segmentId: string
   readonly lane: string
@@ -155,7 +137,6 @@ export interface LanePoint {
 export interface TimelineData {
   readonly hour: number
   readonly lanePoints: readonly LanePoint[]
-  /** Whole-hour rows keyed by section: the line and the lanes beside it. */
   readonly lanes: Readonly<Record<string, readonly DataRow[]>>
   readonly availableHours: readonly number[]
   readonly segments: readonly SegmentBound[]
@@ -190,8 +171,6 @@ export function hourOf(timeline: TimelineData): HourData {
   })
 }
 
-/** The stored sample at or before a moment. The line carries every sample of
- *  the hour, so it is what says where a cursor actually landed. */
 export function sampleAt(line: readonly DataRow[], cursor: number): number | null {
   let chosen: number | null = null
   for (const row of line) {
@@ -233,9 +212,6 @@ export interface SegmentSection {
   readonly typeId: string
 }
 
-/** Finding indexes are already sparse. A PostgreSQL table asks for its own
- * marks when opened instead of adding every high-cardinality section to the
- * hour response. */
 export async function loadSectionFindings(
   segments: readonly SegmentBound[],
   logicalName: string,
@@ -261,9 +237,6 @@ function compareFindings(left: Finding, right: Finding): number {
     || left.kind.localeCompare(right.kind)
 }
 
-/** The whole timeline of one hour in one request: which segments it touches,
- *  the health line and the marks. A round trip over the debugging link costs
- *  more than a second, so the count of requests is what the wait is made of. */
 export async function loadTimeline(start: number | null, signal: AbortSignal): Promise<TimelineData> {
   const range = bundledFixtureRange()
   const requested = floorHour(start ?? range?.from ?? 0)
@@ -345,8 +318,6 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
   }
 }
 
-/** One object's rows across the whole hour: what a chart in the detail panel
- *  draws. A snapshot is one moment, and a moment is not a line. */
 export async function loadSeries(
   hour: number,
   section: string,
@@ -394,8 +365,6 @@ export async function loadSeries(
   return rows
 }
 
-/** A lane row of the hour. Its section comes from the layout the row names,
- *  the same way history reads one. */
 function laneRow(
   record: Record<string, unknown>,
   segmentId: string,
@@ -419,8 +388,6 @@ function laneRow(
   }
 }
 
-/** The line reads a row per moment, and the index carries a point per series,
- *  so the series of one moment become the fields of one row. */
 function healthRows(points: readonly Point[]): readonly DataRow[] {
   const byMoment = new Map<string, DataRow & { values: Record<string, Cell> }>()
   for (const point of points) {
@@ -439,8 +406,6 @@ function healthRows(points: readonly Point[]): readonly DataRow[] {
   return [...byMoment.values()].sort((left, right) => left.timestamp - right.timestamp)
 }
 
-/** The segment holding a moment, or the last one before it. A table shows one
- *  snapshot, so it needs one segment and not the hour around it. */
 export function segmentAt(segments: readonly SegmentBound[], at: number): string | null {
   return segmentBoundAt(segments, at)?.id ?? null
 }
@@ -451,8 +416,6 @@ export function segmentBoundAt(segments: readonly SegmentBound[], at: number): S
     ?? null
 }
 
-/** Restrict a curated projection and its order aliases to physical columns
- *  carried by the registry layouts in the segment under the cursor. */
 export function requestsForSegment(
   requests: readonly SectionRequest[],
   segment: SegmentBound,
@@ -471,8 +434,7 @@ export function requestsForSegment(
       )
       const projection = request.fieldsByType?.[typeId] ?? request.fields ?? []
       const fields = unique(projection.filter((field) => physical.has(field)))
-      // Sending no field parameter means every physical column. A projected
-      // request with no matching column must therefore be omitted.
+      // An empty projection would request every column.
       if (fields.length === 0) return []
       const keep = (candidates: readonly string[]) => candidates.filter((field) => physical.has(field))
       const order = request.order === undefined
@@ -557,7 +519,6 @@ function hourData(input: {
   }
 }
 
-/** Characters of a text a table cell can show; a query is fetched whole on demand. */
 const CELL_TEXT = 160
 
 export interface SnapshotOptions {
@@ -790,9 +751,7 @@ function snapshotQuery(
 }
 
 function snapshotOrder(section: SectionRequest, chosen: SnapshotOrder | undefined): readonly string[] {
-  // The server exposes the largest rows of a cut table. When a header cycles
-  // to ascending, keep the normal demand order instead of claiming that the
-  // smallest visible slice is the smallest slice of the physical table.
+  // Ascending a server-truncated table still uses its default top order.
   const requested = chosen !== undefined && chosen.descending
     ? section.order?.[chosen.column]
       ?? (section.fields?.includes(chosen.column) === true ? [chosen.column] : undefined)

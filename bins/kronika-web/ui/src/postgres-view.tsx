@@ -181,8 +181,6 @@ export function PostgresView({
   readonly onPlanLens: (lens: PlanLens) => void
   readonly t: Translate
 }) {
-  // What the hour holds, not what has been fetched: a tab is loaded when it is
-  // opened, so judging it by loaded rows left it disabled for good.
   const available = (name: string) => data.availableSections.includes(name)
   useEffect(() => {
     const tab = TABS.find((candidate) => candidate.id === section)
@@ -353,8 +351,6 @@ function OverviewMetrics({ locale, logicalName, row }: { readonly locale: Locale
   </section>
 }
 
-/** One empty array for the whole module: `?? []` is a new reference every
- *  render, and every memo downstream of it recomputes. */
 const NO_ROWS: readonly DataRow[] = []
 const NO_RATES: readonly string[] = []
 
@@ -501,7 +497,6 @@ function uniqueText(values: readonly (string | null)[]): readonly string[] {
   return [...new Set(values.filter((field): field is string => field !== null))]
 }
 
-/** Tables carry texts cut to a cell; the panel shows one whole, so it asks for it. */
 function useWholeText(row: DataRow, section: string, field: string): string | null {
   const shown = rawText(value(row, field))
   const [whole, setWhole] = useState<string | null>(null)
@@ -529,8 +524,6 @@ function useWholeText(row: DataRow, section: string, field: string): string | nu
   return whole ?? shown
 }
 
-/** A field the row does not answer is not a row of its own: an empty panel of
- *  dashes says less than a short one. */
 function told(cell: ReturnType<typeof value>): boolean {
   if (cell === null) return false
   return rawText(cell)?.trim() !== ""

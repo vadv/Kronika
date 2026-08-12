@@ -266,8 +266,6 @@ fn emit_chunk(
     Ok(true)
 }
 
-/// One section of one segment, its layout and then its rows. The hour emits
-/// several of these under a header of its own.
 pub(super) fn stream_plans(
     segment: &Segment,
     logical_name: &str,

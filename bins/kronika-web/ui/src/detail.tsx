@@ -24,9 +24,7 @@ import { TimeTicks } from "./time-ticks"
 interface HistoryField {
   readonly field: string
   readonly key: string
-  /** Read the same way as the table column of the same field. */
   readonly kind: Field["kind"]
-  /** A counter only rises; what it means is how fast. */
   readonly counter?: true
 }
 
@@ -65,8 +63,6 @@ const PROCESS_HISTORY: Readonly<Record<Lens, readonly HistoryField[]>> = {
   ],
 }
 
-/** What the charts of every lens read, and nothing else: a dictionary column
- *  costs seconds per segment to resolve, and no chart draws a string. */
 export const PROCESS_HISTORY_FIELDS: readonly string[] = [
   "pid", "starttime",
   ...new Set(Object.values(PROCESS_HISTORY).flatMap((lens) => lens.map((field) => field.field))),
@@ -189,8 +185,6 @@ function formatActivity(cell: Cell, kind: string, locale: Locale, t: Translate):
 }
 
 
-/// The rows are already one process: they were asked for by identity, and a
-/// second filter here only hides a mismatch instead of showing it.
 export function processLensHistory(
   rows: readonly DataRow[],
   lens: Lens,
@@ -204,9 +198,7 @@ export function processLensHistory(
   }))
 }
 
-/** A gauge is drawn as read; a counter is drawn as the rate between two
- *  readings, which is what a person means by it. The first reading of a run
- *  has nothing before it, and a run breaks where a value is absent. */
+/** Counter points are per-second deltas; invalid predecessors remain null. */
 function historyPoints(
   rows: readonly DataRow[],
   field: string,

@@ -158,9 +158,7 @@ pub(crate) fn build_selected_from_reader(
 ) -> Result<Index, BuildError> {
     let mut finder = FindingBuilder::new(segment, requested)?;
     let listing = reader.catalog_segments(..segment_ref.min_ts())?;
-    // Bounded by what a comparison reaches back for, not by how much history
-    // the host holds: the fifteen minutes a spike compares against, plus one
-    // segment beyond them for a counter whose predecessor sits just outside.
+    // Include one segment before the 15-minute comparison window.
     let mut priors: Vec<_> = listing
         .segments
         .into_iter()

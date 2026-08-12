@@ -4,7 +4,6 @@ const DEFAULT_PAGE_SIZE: usize = 100;
 const MAX_PAGE_SIZE: usize = 1_000;
 const MAX_QUERY_BYTES: usize = 64 * 1024;
 const MAX_SECTION_BYTES: usize = 128;
-/// A screen draws a handful of tables; more than this is not a screen.
 const MAX_SNAPSHOT_SECTIONS: usize = 16;
 const MAX_FIELDS: usize = 256;
 const MAX_FILTERS: usize = 64;
@@ -15,7 +14,6 @@ const MAX_ORDER_FIELDS: usize = 16;
 pub(crate) enum Route {
     /// Actual finished/current segment catalog.
     Catalog(Window),
-    /// One hour: the timeline, or one object's series across it.
     Hour(HourRequest),
     /// One logical indexed series in one explicit segment.
     Index(SegmentRequest),
@@ -23,40 +21,30 @@ pub(crate) enum Route {
     History(DataRequest),
     /// One stable page of physical rows in one explicit segment.
     Rows(RowsRequest),
-    /// One moment of several sections, counters already turned into rates.
     Snapshot(SnapshotRequest),
 }
 
-/// One moment of one explicit segment, across the sections a screen draws.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SnapshotRequest {
     pub(crate) segment_id: i64,
     pub(crate) at: i64,
     pub(crate) sections: Vec<String>,
-    /// Columns to return; empty is all of them.
     pub(crate) fields: Vec<String>,
-    /// Column the rows are ordered by, largest first.
     pub(crate) by: Vec<String>,
-    /// How many of those rows to return.
     pub(crate) top: Option<usize>,
-    /// Characters kept of every text value; absent keeps them whole.
     pub(crate) text: Option<usize>,
-    /// Rows to keep, by exact column value.
     pub(crate) filters: Vec<Filter>,
-    /// One exact physical layout, when the caller already has its provenance.
     pub(crate) type_id: Option<u32>,
-    /// One exact physical source row. This is paired with `type_id`.
+    /// Requires `type_id` and addresses a finished source row.
     pub(crate) row_ordinal: Option<u64>,
 }
 
-/// One hour, either as a timeline or as the series of a single object.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HourRequest {
     pub(crate) window: Window,
     pub(crate) series: Option<SeriesRequest>,
 }
 
-/// The rows of one object of one section across the whole hour.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SeriesRequest {
     pub(crate) section: String,
@@ -284,8 +272,6 @@ fn validate_snapshot_shape(
     if sections.is_empty() {
         return Err(RouteError::BadParameter("section".to_owned()));
     }
-    // A projection and an order name columns, and columns belong to one
-    // section. Several sections at once are the plain form of the request.
     if sections.len() != 1
         && (!fields.is_empty()
             || !by.is_empty()
@@ -351,8 +337,6 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
     {
         return Err(RouteError::BadParameter("from".to_owned()));
     }
-    // Columns and predicates name one section, and the timeline form of the
-    // hour has no section to name them in.
     let Some(section) = section else {
         if fields.is_empty() && filters.is_empty() && type_id.is_none() {
             return Ok(HourRequest {

@@ -1,10 +1,4 @@
-/** A pattern typed into a table filter. It is looked for anywhere inside a
- *  value, with `*` standing for any run of characters and `?` for exactly one.
- *
- *  Anchoring a pattern to the whole value would be the shell rule, and it is
- *  the wrong one here: a command is a full path, so `kroni*` would have to
- *  match `/pgdata/.../bin/kronika-collector` from its first character and
- *  never would. */
+/** Matches a substring; `*` spans characters and `?` spans one character. */
 export function globMatcher(pattern: string): ((text: string) => boolean) | null {
   const wanted = pattern.trim()
   if (wanted === "") return null

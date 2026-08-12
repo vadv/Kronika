@@ -135,10 +135,7 @@ pub fn resource(
         SegmentKind::Finished => {
             let data_root = DataRoot::open(root)?;
             let address = address_of(segment_ref.id())?;
-            // A concurrent cold request may be publishing the same immutable
-            // bytes. Give it one short chance to finish, then answer from a
-            // local build instead of making an HTTP request wait on a
-            // root-wide lock.
+            // Give a concurrent publisher one short recheck.
             for wait in [true, false] {
                 if let Some(mut file) = data_root.open_idx(address)?
                     && let Ok(selected) = read_target(&mut file, &keys)
@@ -152,9 +149,7 @@ pub fn resource(
 
                 match data_root.acquire_index(LayoutLimits::default()) {
                     Ok(owner) => {
-                        // Capture the immutable source identity before opening
-                        // it through the reader. Publication revalidates this
-                        // exact identity after the complete build.
+                        // Publication revalidates this source identity.
                         let mut temporary = owner.create_idx_temp(address)?;
                         let segment = reader.open_segment(segment_ref)?;
                         let index = build_from_reader(reader, segment_ref, &segment)?;
@@ -168,10 +163,7 @@ pub fn resource(
                             persisted: true,
                         });
                     }
-                    // One writer holds the whole root, so concurrent callers
-                    // build in turn rather than at once. Waiting spends idle
-                    // time; building here would spend a core on bytes that
-                    // are thrown away, leaving the next caller to repeat it.
+                    // The root-wide writer lock avoids duplicate builds.
                     Err(LayoutError::OwnerContended {
                         owner: OwnerKind::Index,
                     }) if wait => std::thread::sleep(OWNER_RETRY),
@@ -182,8 +174,7 @@ pub fn resource(
                 }
             }
 
-            // The holder is still working. The checksum is the same stable
-            // tag a later publisher computes.
+            // Build locally when the publisher still holds the lock.
             let segment = reader.open_segment(segment_ref)?;
             let index = build_from_reader(reader, segment_ref, &segment)?;
             let bytes = index.encode().map_err(LoadError::Bad)?;

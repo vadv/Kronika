@@ -16,7 +16,6 @@ use crate::encoding::{AcceptedEncodings, ContentCoding};
 const STAGED_PREFIX_BYTES: usize = 8 * 1_024;
 const BODY_CHUNK_BYTES: usize = 8 * 1_024;
 
-/// A body failure after successful response headers were sent.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BodyError;
 
@@ -36,20 +35,17 @@ impl From<Infallible> for BodyError {
 
 pub(crate) type BodyItem = Result<Vec<u8>, BodyError>;
 
-/// Headers chosen by the blocking producer before the response begins.
 pub(crate) struct StreamHead {
     pub(crate) meta: ResponseMeta,
     pub(crate) coding: Option<ContentCoding>,
 }
 
 impl StreamHead {
-    /// A bodyless conditional response has no content coding.
     pub(crate) const fn not_modified(meta: ResponseMeta) -> Self {
         Self { meta, coding: None }
     }
 }
 
-/// Stages a small prefix, then streams identity or reproducible gzip chunks.
 pub(crate) struct BodyProducer {
     accepted: AcceptedEncodings,
     meta: Option<ResponseMeta>,
@@ -66,7 +62,6 @@ enum ProducerState {
 }
 
 impl BodyProducer {
-    /// Start with no response headers committed and at most one staged prefix.
     pub(crate) fn new(
         accepted: AcceptedEncodings,
         meta: ResponseMeta,
@@ -82,7 +77,6 @@ impl BodyProducer {
         }
     }
 
-    /// Accept one encoded NDJSON record from the blocking resource reader.
     pub(crate) fn emit(&mut self, bytes: &[u8]) -> bool {
         let state = std::mem::replace(&mut self.state, ProducerState::Stopped);
         match state {
@@ -111,7 +105,6 @@ impl BodyProducer {
         }
     }
 
-    /// Finish a successful resource stream and send any staged bytes.
     pub(crate) fn complete(mut self) {
         let state = std::mem::replace(&mut self.state, ProducerState::Stopped);
         match state {
@@ -130,7 +123,7 @@ impl BodyProducer {
         }
     }
 
-    /// Reject before headers or fail the body after a response began.
+    /// Reject before headers; abort the body after the response begins.
     pub(crate) fn fail(mut self, error: ApiError) {
         let state = std::mem::replace(&mut self.state, ProducerState::Stopped);
         match state {
@@ -322,7 +315,6 @@ fn disconnected() -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, "response body receiver closed")
 }
 
-/// The error-capable body backed by the bounded producer channel.
 pub(crate) struct ChannelBody {
     pub(crate) receiver: mpsc::Receiver<BodyItem>,
 }

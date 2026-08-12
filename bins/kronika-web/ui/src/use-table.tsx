@@ -3,9 +3,6 @@ import type { Translate } from "./help"
 import { humanBytes, measure, type Locale } from "./model"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 
-/** Every resource read the same three ways: how busy it was, how much work
- *  stood in line for it, and what it got wrong. A resource we do not measure
- *  in one of the three leaves that cell empty rather than pretending. */
 const RESOURCES: readonly Resource[] = [
   {
     key: "cpu",
@@ -36,7 +33,6 @@ const RESOURCES: readonly Resource[] = [
 interface Cell {
   readonly lane: string
   readonly kind: "share" | "rate" | "count" | "bytes"
-  /** A second series drawn in the same cell, as received against sent. */
   readonly second?: string
 }
 

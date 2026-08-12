@@ -121,8 +121,6 @@ export function ProcessTable({
   readonly ticksPerSecond: number | null
 }) {
   const [sizing, setSizing] = useState<ColumnSizingState>({})
-  // A lens has a column worth opening on, but a chosen order outranks it — and
-  // the choice lives outside so that the address can carry it.
   const sorting = useMemo<SortingState>(() => order === null
     ? [lens === "generic" ? { id: "pid", desc: false } : { id: defaultSort(lens), desc: true }]
     : [{ id: order.column, desc: order.descending }], [lens, order])
@@ -144,8 +142,6 @@ export function ProcessTable({
     cell: ({ row }) => <CellValue field={field} locale={locale} linked={linkedPids.has(asNumber(value(row.original, "pid")) ?? -1)} row={row.original} t={t} ticksPerSecond={ticksPerSecond} />,
     meta: { numeric: isNumeric(field.kind), sticky: field.sticky },
   })), [lens, linkedPids, locale, t, ticksPerSecond])
-  // Text of a row is what a person searches by: the command line, its state
-  // and the identifiers beside them.
   const visible = useMemo(() => {
     const match = globMatcher(pattern)
     if (match === null) return rows as DataRow[]
@@ -173,10 +169,6 @@ export function ProcessTable({
   })
   const displayed = table.getRowModel().rows
   const scroll = useRef<HTMLDivElement>(null)
-  // A grip is dragged to resize and double clicked to fit: the width of the
-  // widest cell on screen, which is what a person means by "fit".
-  // A header is the contract of its column: it is laid out first, and the
-  // column is widened to hold it before anything else decides the width.
   const head = useRef<HTMLDivElement>(null)
   const automatic = useRef<ColumnSizingState>({})
   useEffect(() => {
@@ -187,7 +179,6 @@ export function ProcessTable({
       const next = { ...current }
       LENS_FIELDS[lens].forEach((field, index) => {
         const needed = wanted[index]
-        // A width the reader chose by dragging or fitting outranks this one.
         const own = current[field.id] === undefined || current[field.id] === automatic.current[field.id]
         if (needed === undefined || !own) return
         if (needed > field.size) {
@@ -274,8 +265,6 @@ export function processFieldMatches(field: Field, typeId: string, findingField: 
   return findingField !== null && physical !== null && physical === findingField
 }
 
-/** One place decides how a kind reads, so a chart caption and the table cell
- *  above it cannot disagree about the unit. */
 export function formatCell(kind: Field["kind"], cell: Cell, locale: Locale, t: Translate, ticksPerSecond: number | null): string {
   switch (kind) {
     case "state": return stateText(cell)
@@ -312,8 +301,6 @@ function defaultSort(lens: Lens): string {
   return "pid"
 }
 
-/** Every cumulative column arrives as a rate, so a summary reads per second
- *  and in the unit a person thinks in: cores, bytes, milliseconds. */
 function summaryMetrics(
   rows: readonly DataRow[],
   lens: Lens,
@@ -390,8 +377,6 @@ function stickyClass(meta: unknown, head: boolean): string {
   ].filter(Boolean).join(" ")
 }
 
-/** Where a pinned column comes to rest: after the pinned columns before it,
- *  which moves when any of them is resized. */
 function stickyLeft(meta: unknown, pinnedWidths: readonly number[]): number | undefined {
   const pinned = (meta as { readonly sticky?: "pid" | "start" | "command" } | undefined)?.sticky
   if (pinned === undefined) return undefined
@@ -401,8 +386,6 @@ function stickyLeft(meta: unknown, pinnedWidths: readonly number[]): number | un
 
 const PINNED_ORDER = ["pid", "start", "command"] as const
 
-/** A number is read by comparing digits, so numbers line up on the right and
- *  names on the left, header included. */
 export function isNumeric(kind: Field["kind"]): boolean {
   return kind === "number" || kind === "rate" || kind === "cores" || kind === "kib" || kind === "bytes" || kind === "ns"
 }

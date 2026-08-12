@@ -22,16 +22,13 @@ export function SeriesChart({
   scale = "auto",
   second,
 }: {
-  /** The moment the tables below are showing, drawn on the same domain. */
   readonly cursor?: number | undefined
   readonly hour: number
   readonly label: string
   readonly locale: Locale
-  /** How a reading reads: a chart of bytes says bytes, not a bare number. */
   readonly format?: ((value: number, locale: Locale) => string) | undefined
   readonly points: readonly ChartPoint[]
   readonly scale?: ChartScale | undefined
-  /** A companion series on the same scale, as sent against received. */
   readonly second?: readonly ChartPoint[] | undefined
 }) {
   const title = useId()
@@ -39,8 +36,6 @@ export function SeriesChart({
   const both = second === undefined ? points : [...points, ...second]
   const numeric = both.filter((point): point is NumericChartPoint => point.value !== null && Number.isFinite(point.value))
   const values = numeric.map((point) => point.value)
-  // A chart that starts at its own minimum turns a flat line into a mountain
-  // range: the floor is zero, so height means the same thing in every card.
   const { low, high } = chartDomain(values, scale)
   const span = high - low || 1
   const paths = chartRuns(points)
@@ -79,8 +74,6 @@ export function SeriesChart({
   </figure>
 }
 
-/** What the series reads where the cursor stands: the caption of a chart this
- *  narrow says one number, and the useful one is the one being pointed at. */
 export function readingAt(points: readonly ChartPoint[], cursor: number | undefined): number | null {
   let chosen: ChartPoint | null = null
   for (const point of points) {

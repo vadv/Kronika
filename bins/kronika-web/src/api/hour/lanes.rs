@@ -1,10 +1,4 @@
-//! The lanes of the timeline, computed where the data is.
-//!
-//! Each lane is one number per stored sample, read against the ceiling of the
-//! environment the collector lived in: a share of the CPUs it could use, of
-//! the memory it was allowed, of the window it spent waiting. A number that
-//! means one thing on a machine and another inside a container is worse than
-//! no lane at all, so every one of them is a share of its own ceiling.
+//! Computes normalized timeline lanes from stored samples.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -16,23 +10,18 @@ use crate::api::ApiError;
 #[cfg(test)]
 mod tests;
 
-/// One lane's value at one stored moment.
 pub(super) struct LanePoint {
     pub(super) key: &'static str,
     pub(super) ts: i64,
     pub(super) value: Option<f64>,
 }
 
-/// Microseconds a resource spent stalled, and the CPU ticks burnt, are both
-/// counters: a lane reads the difference between two samples.
 #[derive(Default)]
 struct Counters {
     busy_ticks: BTreeMap<i64, i64>,
     stall_cpu: BTreeMap<i64, i64>,
     stall_io: BTreeMap<i64, i64>,
     memory: BTreeMap<i64, f64>,
-    /// Device busy time and weighted queue time, summed over the devices of
-    /// one moment: one machine has one storage layer.
     disk_busy: BTreeMap<i64, i64>,
     disk_queue: BTreeMap<i64, i64>,
     net_rx: BTreeMap<i64, i64>,
@@ -46,14 +35,12 @@ struct Counters {
     oldest_xact: BTreeMap<i64, f64>,
 }
 
-/// Raw readings carried across physical segment boundaries for this one-hour
-/// response. A file boundary is not a missing snapshot.
+/// Counter state is carried across segment boundaries.
 #[derive(Default)]
 pub(super) struct State {
     counters: Counters,
 }
 
-/// Read the sections a timeline is drawn from and return its lanes.
 pub(super) fn collect(
     segment: &Segment,
     ticks_per_second: i64,
@@ -84,8 +71,6 @@ pub(super) fn collect(
     ))
 }
 
-/// Busy is what the CPUs were made to do: idle is not work, and neither is
-/// time the hypervisor took away or a guest burnt on our behalf inside user.
 fn read_cpu(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
     const FIELDS: [&str; 6] = ["ts", "cpu_id", "user", "nice", "system", "irq"];
     let projection = with_columns(type_id, &FIELDS, &["softirq", "guest", "guest_nice"]);
@@ -94,7 +79,7 @@ fn read_cpu(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<
         let (Some(ts), Some(cpu_id)) = (timestamp(&row, "ts"), number(&row, "cpu_id")) else {
             return true;
         };
-        // The aggregate line repeats every core; counting both doubles the sum.
+        // Ignore the aggregate row; the per-CPU rows are summed below.
         if cpu_id < 0.0 {
             return true;
         }
@@ -159,9 +144,6 @@ fn read_memory(segment: &Segment, type_id: u32, counters: &mut Counters) -> Resu
     Ok(())
 }
 
-/// A storage layer is busy when any of its devices is: `io_time_ms` is the
-/// milliseconds a device had a request in flight, and the weighted time
-/// divided by the interval is the average depth of its queue.
 fn read_disk(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
     let names = with_columns(
         type_id,
@@ -183,8 +165,6 @@ fn read_disk(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result
     Ok(())
 }
 
-/// Traffic, what the interface could not take, and what it got wrong. Summed
-/// over interfaces: the question is whether the host's network is in trouble.
 fn read_network(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
     const FIELDS: [&str; 9] = [
         "ts", "rx_bytes", "tx_bytes", "rx_drop", "tx_drop", "rx_errs", "tx_errs", "rx_fifo",
@@ -212,8 +192,6 @@ fn read_network(segment: &Segment, type_id: u32, counters: &mut Counters) -> Res
     Ok(())
 }
 
-/// Pages moved to and from swap say memory is short before anything is killed;
-/// `oom_kill` says something already was.
 fn read_vmstat(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
     let names = with_columns(type_id, &["ts"], &["pswpin", "pswpout", "oom_kill"]);
     segment.visit_rows(type_id, &names, 0, usize::MAX, |_ordinal, row| {
@@ -245,8 +223,6 @@ fn add(store: &mut BTreeMap<i64, i64>, ts: i64, value: f64) {
         .or_insert(value);
 }
 
-/// Backends that are running and backends that are stuck, counted apart: the
-/// first says the database is working, the second that it is not.
 fn read_activity(segment: &Segment, type_id: u32, counters: &mut Counters) -> Result<(), ApiError> {
     let names = with_columns(
         type_id,
@@ -280,9 +256,7 @@ fn read_activity(segment: &Segment, type_id: u32, counters: &mut Counters) -> Re
         counters.running.entry(ts).or_insert(0.0);
         counters.waiting.entry(ts).or_insert(0.0);
         let kind = text(&row, "backend_type", &dictionary);
-        // A parallel worker is part of one query, and a background process is
-        // not a query at all; counting either makes the lane a function of
-        // max_parallel_workers rather than of the work in flight.
+        // Count client backends, not their parallel workers.
         if kind != Some(b"client backend".as_slice()) || row.get("leader_pid").is_some_and(present)
         {
             continue;
@@ -355,8 +329,7 @@ fn points(counters: &Counters, ticks_per_second: i64, cpu_count: i64) -> Vec<Lan
             out.push(LanePoint { key, ts, value });
         }
     }
-    // Busy time is milliseconds per second of wall clock: a hundred per cent
-    // is a device that never went idle. Queue depth is a count, not a share.
+    // io_time_ms per elapsed second is device busy percent.
     for (ts, value) in rate(&counters.disk_busy, |value, seconds| {
         (value / 1000.0 / seconds * 100.0).min(100.0)
     }) {
@@ -397,8 +370,7 @@ fn points(counters: &Counters, ticks_per_second: i64, cpu_count: i64) -> Vec<Lan
     out
 }
 
-/// A counter between two samples, per second. The first sample and an
-/// unusable subtraction stay null so the interface cannot join across them.
+/// Returns per-second deltas; the first or unusable sample is null.
 fn rate(stored: &BTreeMap<i64, i64>, scale: impl Fn(f64, f64) -> f64) -> Vec<(i64, Option<f64>)> {
     let mut out = Vec::with_capacity(stored.len());
     let mut earlier: Option<(i64, i64)> = None;
@@ -418,8 +390,6 @@ fn rate(stored: &BTreeMap<i64, i64>, scale: impl Fn(f64, f64) -> f64) -> Vec<(i6
     out
 }
 
-/// Columns a section is known to have, so a projection never names one that
-/// this layout of it does not carry.
 fn with_columns(
     type_id: u32,
     required: &[&'static str],
@@ -464,8 +434,6 @@ const fn present(cell: &Cell) -> bool {
     !matches!(cell, Cell::Null)
 }
 
-/// The text a dictionary reference stands for. A blob is never one of the
-/// short labels these lanes compare against.
 fn text<'a>(row: &Row, column: &str, dictionary: &'a Dictionary) -> Option<&'a [u8]> {
     match row.get(column) {
         Some(Cell::StrId(id)) => match dictionary.resolve(*id) {
@@ -476,8 +444,6 @@ fn text<'a>(row: &Row, column: &str, dictionary: &'a Dictionary) -> Option<&'a [
     }
 }
 
-/// What the machine says about itself: how many ticks a second holds and how
-/// many CPUs there are to burn them.
 pub(super) struct Facts {
     pub(super) ticks_per_second: i64,
     pub(super) cpu_count: i64,

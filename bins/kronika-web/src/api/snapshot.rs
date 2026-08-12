@@ -1,8 +1,4 @@
-//! One moment of several sections, with counters already turned into rates.
-//!
-//! A table shows a moment, not an hour, and it shows rates, not the running
-//! totals a counter carries. Doing both here is one request where the client
-//! would otherwise make one per section and then subtract for itself.
+//! Reads one snapshot and derives counter rates.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -18,8 +14,6 @@ use crate::route::{DataRequest, SegmentRequest, SnapshotRequest};
 
 pub(crate) struct PreparedSnapshot {
     segment: Segment,
-    /// The segment before this one, for the moment a rate is measured against
-    /// when the cursor rests on the first sample this one holds.
     earlier: Option<Segment>,
     at: i64,
     sections: Vec<SectionPlans>,
@@ -29,7 +23,6 @@ pub(crate) struct PreparedSnapshot {
     row_ordinal: Option<u64>,
 }
 
-/// Counter readings of one moment, keyed by the identity they belong to.
 type Readings = BTreeMap<Vec<String>, CounterReadings>;
 type CounterReadings = BTreeMap<&'static str, Cell>;
 
@@ -54,11 +47,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
             type_id: request.type_id,
             after: None,
         };
-        // A section reaches an active segment only with its first sample, so
-        // a young one is missing most of them. An absent section is an empty
-        // table, not a failed request for every other section beside it.
-        // A projection asked for by name still has to carry the timestamp and the
-        // identity: this reads a moment and subtracts the one before it.
+        // Missing sections are empty so one source cannot fail the snapshot.
         match plans(&segment, &data, true) {
             Ok(plans) => sections.push(SectionPlans {
                 logical_name,
@@ -156,9 +145,7 @@ impl PreparedSnapshot {
         let Some(timestamp) = plan.timestamp else {
             return self.emit_untimed(section, plan, emit, cancelled);
         };
-        // Sections are sampled on their own schedules, so the moment a cursor
-        // rests on can be earlier than the first sample this segment holds for
-        // this one. The last state before it is then in the segment before.
+        // A section's latest sample may be in the preceding segment.
         let here = Self::moments(&self.segment, plan, timestamp, self.at, cancelled)?;
         let own = here.is_some();
         let source = if own {
@@ -264,8 +251,6 @@ impl PreparedSnapshot {
         }))?))
     }
 
-    /// Sections without a timestamp hold one state, so the snapshot is the
-    /// whole of them and nothing is a rate.
     fn emit_untimed(
         &self,
         section: &SectionPlans,
@@ -309,7 +294,6 @@ impl PreparedSnapshot {
         Ok(connected)
     }
 
-    /// The stored moment at or before `at`, and the one before that.
     fn moments(
         segment: &Segment,
         plan: &Plan,
@@ -354,7 +338,6 @@ impl PreparedSnapshot {
         Ok(current.map(|current| Moments { current, previous }))
     }
 
-    /// The preceding moment's rows, keyed by identity, for the subtraction.
     fn collect(
         segment: &Segment,
         plan: &Plan,
@@ -395,8 +378,6 @@ impl PreparedSnapshot {
         Ok(collected)
     }
 
-    /// The last moment of the segment before this one. Without it the first
-    /// sample of every segment would carry no rate at all.
     fn earlier_moment(
         &self,
         plan: &Plan,
@@ -477,8 +458,6 @@ impl PreparedSnapshot {
     }
 }
 
-/// Absent and non-numeric sort last, so an ordered table starts with the rows
-/// that have something to say.
 fn sort_value(row: &Value, field: usize) -> f64 {
     row.get("values")
         .and_then(|values| values.get(field))
@@ -492,9 +471,6 @@ fn available_field_index(fields: &[super::query::OutputField], name: &str) -> Op
         .position(|field| field.name == name && field.column.is_some())
 }
 
-/// The finished segment closest before this one. A counter is only a rate
-/// against an earlier reading, and the first sample of a segment has none
-/// inside it.
 fn preceding(reader: &Reader, segment_ref: &SegmentRef) -> Result<Option<Segment>, ApiError> {
     let listing = reader.catalog_segments(..)?;
     let chosen = listing
@@ -514,8 +490,7 @@ struct Moments {
     previous: Option<i64>,
 }
 
-/// Per second, against the stored moment before this one. Absent without a
-/// predecessor, and absent rather than negative when a counter went backwards.
+/// Returns null without a valid nondecreasing predecessor.
 fn rate(
     stored: Option<&Cell>,
     before: Option<&CounterReadings>,

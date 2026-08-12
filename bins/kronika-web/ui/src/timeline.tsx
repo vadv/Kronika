@@ -6,21 +6,15 @@ import { asNumber, formatUtc, humanBytes, value } from "./model"
 import { TimeTicks } from "./time-ticks"
 
 const WIDTH = 920
-/** Room for the ticks under the last lane. */
 const TICK_ROW = 18
 const PRIMARY_HEIGHT = 132
 const OVERVIEW_HEIGHT = 27
-/** Events and findings without a displayed track keep separate rails. */
 const MARKER_RAIL = 14
 const NEUTRAL_RAIL = 14
 const TOP = MARKER_RAIL + NEUTRAL_RAIL + 8
 const MARKER_CLUSTER_PX = 38
-/** Marks sit on a rail of their own: on the health trace they covered the very
-    point they mark, and their 34px button stole ninety seconds of the hour
-    from the cursor. */
 const MARKER_RAIL_Y = MARKER_RAIL / 2
 const NEUTRAL_RAIL_Y = MARKER_RAIL + NEUTRAL_RAIL / 2
-/** Health, and the share of a ten-second window a resource stalled for. */
 const SHARE: readonly [number, number] = [0, 100]
 
 interface SeriesPoint {
@@ -82,8 +76,6 @@ export function Timeline({
   readonly onCursor: (timestamp: number) => void
   readonly onFinding: (finding: Finding, grouped?: readonly Finding[]) => void
   readonly primaryLane?: string | undefined
-  /** The moment the tables below are showing, which is not the cursor when the
-   *  cursor rests where nothing was sampled. */
   readonly shownAt?: number | null
   readonly t: Translate
 }) {
@@ -99,8 +91,6 @@ export function Timeline({
     }
     return { points: series(health, "os_health"), threshold: undefined }
   }, [health])
-  // What the machine lived under, then what the database was doing. Each is a
-  // share of its own ceiling, so a pod and a machine read the same way.
   const lanes = useMemo<readonly TimelineLane[]>(() => {
     const of = (name: string) => lanePoints
       .filter((point) => point.lane === name)
@@ -316,8 +306,7 @@ function LaneLabel({ label, help, onSelect, primary, reading, t }: { readonly la
     : <button className="lane-label lane-overview" onClick={onSelect} type="button">{content}</button>
 }
 
-/** The latest stored sample at or before a moment. A stored null wins over an
- * older number, just as zero does. */
+/** Returns the latest stored sample, including null. */
 export function valueAt(points: readonly SeriesPoint[], cursor: number): number | null {
   let chosen: SeriesPoint | null = null
   for (const point of points) {
@@ -411,8 +400,6 @@ function SeriesLine({
   readonly hour: number
   readonly points: readonly SeriesPoint[]
   readonly primary: boolean
-  /** The lane owns the scale: two lines of one lane drawn against their own
-   *  maxima would be the same height and mean different things. */
   readonly range: { readonly low: number; readonly span: number }
   readonly top: number
   readonly width: number
@@ -563,7 +550,6 @@ function placementOrder(placement: GroupedFinding["placement"]): number {
   return placement === "event" ? 0 : placement === "track" ? 1 : 2
 }
 
-/** Only a line derived from the exact mapped field receives a finding. */
 export function findingTrack(finding: Finding): string | null {
   if (finding.kind === "event") return null
   if (finding.logicalName === "health" && finding.typeId === "0" && finding.fieldOrdinal === 1) return "health"
@@ -583,8 +569,7 @@ function FindingGlyph({ kind }: { readonly kind: Finding["kind"] }) {
   return <svg data-marker-shape="circle" height="10" viewBox="0 0 12 12" width="10"><circle cx="6" cy="6" fill="var(--event)" r="4.5" stroke="var(--event-edge)" /></svg>
 }
 
-/** The Y coordinate of an exact stored sample. Findings never borrow a nearby
- * point and never interpolate between two observations. */
+/** Findings use only an exact stored sample. */
 export function seriesYAt(points: readonly SeriesPoint[], segmentId: string, timestamp: number, lane = 0): number | null {
   const range = laneRange({ series: [{ points }] })
   const point = points.find((candidate) => candidate.segmentId === segmentId
@@ -640,7 +625,6 @@ function seriesY(number: number, top: number, height: number, low: number, span:
   return laneBottom - (number - low) / span * (height - 12)
 }
 
-/** Where a moment sits in the hour, from 0 to 1. */
 function shareOf(timestamp: number, hour: number, end: number): number {
   return Math.max(0, Math.min(1, (timestamp - hour) / (end - hour)))
 }

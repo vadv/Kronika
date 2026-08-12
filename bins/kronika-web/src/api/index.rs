@@ -89,8 +89,6 @@ impl PreparedIndex {
     }
 }
 
-/// The points and marks of one resource, without the header naming it. The
-/// hour emits many of these under one header of its own.
 pub(super) fn stream_series(
     logical_name: &str,
     resource: ResourceIndex,

@@ -22,7 +22,6 @@ mod snapshot;
 pub(crate) enum CachePolicy {
     /// Mutable catalog, active data, and errors.
     NoStore,
-    /// Catalog and composed finished responses, revalidated before reuse.
     Revalidate,
     /// Immutable finished history or rows.
     Immutable,

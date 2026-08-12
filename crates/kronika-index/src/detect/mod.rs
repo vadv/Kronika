@@ -123,9 +123,7 @@ impl FindingBuilder {
         Ok(builder)
     }
 
-    /// How far back a comparison here reaches: fifteen minutes of prior
-    /// values, and one segment beyond them for the series too sparse to fill
-    /// that window.
+    /// Start of the 15-minute comparison window.
     pub(crate) const fn window_start(&self) -> i64 {
         self.cutoff
     }

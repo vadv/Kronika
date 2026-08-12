@@ -3,8 +3,6 @@ import type { Cell, DataRow } from "./api"
 export type Locale = "en" | "ru"
 export type Lens = "generic" | "cpu" | "memory" | "disk"
 
-/** The moment the tables are showing: the last sample at or before the cursor
- *  across everything loaded. Past the last sample the two part ways. */
 export function shownMoment(
   sections: Readonly<Record<string, readonly DataRow[]>>,
   cursor: number,
@@ -47,8 +45,6 @@ export function selectedHour(day: string, hour: number): number | null {
   return Number.isFinite(milliseconds) ? milliseconds * 1_000 : null
 }
 
-/** Table cells drop the milliseconds and the repeated UTC suffix: the whole
- *  interface is UTC and the header says so once. */
 export function formatUtcCell(timestamp: number | null): string {
   if (timestamp === null || !Number.isFinite(timestamp)) return "—"
   return new Date(Math.trunc(timestamp / 1_000)).toISOString().slice(0, 19).replace("T", " ")
@@ -138,7 +134,6 @@ export function measure(cell: Cell, locale: Locale, suffix = ""): string {
   return `${compact(number, locale)}${suffix}`
 }
 
-/** Elapsed wall time should read as time, not as a large millisecond count. */
 export function humanDuration(cell: Cell, locale: Locale): string {
   const milliseconds = asNumber(cell)
   if (milliseconds === null) return "—"
@@ -157,8 +152,6 @@ export function humanDuration(cell: Cell, locale: Locale): string {
 
 const SCALES: readonly (readonly [string, number])[] = [["T", 1e12], ["G", 1e9], ["M", 1e6], ["k", 1e3]]
 
-/** Four digits are read at a glance; seven are counted digit by digit, and a
- *  counter is never read that way. */
 export function compact(value: number, locale: Locale): string {
   const size = Math.abs(value)
   if (!Number.isFinite(value) || size < 10_000) return decimals(value, locale, 2)
@@ -177,7 +170,6 @@ function decimals(value: number, locale: Locale, digits: number): string {
 
 const BYTE_UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"] as const
 
-/** Bytes at the scale a person reads them at. */
 export function humanBytes(cell: Cell, locale: Locale, suffix = ""): string {
   const number = asNumber(cell)
   if (number === null) return "—"
@@ -192,14 +184,12 @@ export function humanBytes(cell: Cell, locale: Locale, suffix = ""): string {
   return `${sign}${new Intl.NumberFormat(locale, { maximumFractionDigits: digits }).format(scaled)} ${BYTE_UNITS[step]}${suffix}`
 }
 
-/** A CPU counter arrives as ticks per second; a person reads cores. */
 export function cores(cell: Cell, locale: Locale, ticksPerSecond: number | null): string {
   const number = asNumber(cell)
   if (number === null || ticksPerSecond === null || ticksPerSecond <= 0) return "—"
   return new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(number / ticksPerSecond)
 }
 
-/** Nanoseconds per second is a share of time: milliseconds of every second. */
 export function millisecondsPerSecond(cell: Cell, locale: Locale): string {
   const number = asNumber(cell)
   if (number === null) return "—"

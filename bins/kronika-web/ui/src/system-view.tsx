@@ -74,8 +74,6 @@ const GROUPS: readonly { readonly id: MetricSpec["group"]; readonly icon: ReactN
   { id: "network", icon: <Network size={14} />, label: "system.group.network" },
 ]
 
-/** What each derived metric reads. Kept beside the code that derives it, so a
- *  new metric cannot quietly ask the loader for a section it never declared. */
 const DERIVE_INPUTS: Readonly<Record<NonNullable<MetricSpec["derive"]>, readonly [string, readonly string[]]>> = {
   cpu_busy: ["os_cpu", ["cpu_id", "scope", "user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal"]],
   mem_available_percent: ["os_meminfo", ["mem_total", "mem_available"]],
@@ -120,7 +118,6 @@ const ENTITIES: readonly {
   },
 ]
 
-/** The sections and fields this view reads, and nothing more. */
 function systemRequests(): readonly SectionRequest[] {
   const wanted = new Map<string, Set<string>>()
   const need = (section: string, fields: readonly string[]) => {
@@ -346,8 +343,6 @@ function currentPointValue(points: readonly ChartPoint[], cursor: number, locale
   return nearest === null ? "—" : metricValue(nearest.value, locale, unit, perSecond)
 }
 
-/** Memory arrives in kibibytes and network in bytes per second: neither is
- *  read as a bare number with six digits in it. */
 export function metricValue(value: Cell, locale: Locale, unit: string, perSecond = "/s"): string {
   if (unit === " KiB") return humanBytes(asNumber(value) === null ? null : (asNumber(value) ?? 0) * 1024, locale)
   if (unit === " B") return humanBytes(value, locale, perSecond)

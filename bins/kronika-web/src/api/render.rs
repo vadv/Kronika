@@ -100,8 +100,6 @@ fn finite(value: f64) -> Value {
     )
 }
 
-/// A list carries a query text per row, and one text outweighs every number
-/// beside it. Cut to what a cell shows; the full text is a request away.
 pub(super) fn shorten(mut value: Value, limit: usize) -> Value {
     match &mut value {
         Value::String(text) => shorten_text(text, limit),

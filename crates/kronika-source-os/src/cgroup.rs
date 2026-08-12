@@ -61,9 +61,7 @@ fn collect_v2(sys: &SysFs, ts: i64) -> CgroupCollection {
         if let Ok(content) = sys.read(&rel(&path, "io.stat")) {
             out.io.extend(parse_io_stat(&content, ts, &path));
         }
-        // Our own group, and only it: under a cgroup namespace "/" is the pod
-        // itself, and on a machine it is the root. Host pressure is already
-        // read from procfs.
+        // "/" is the current cgroup namespace; host pressure comes from procfs.
         if path == "/" {
             out.psi = read_pressure_v2(sys, ts, &path);
         }
@@ -71,8 +69,6 @@ fn collect_v2(sys: &SysFs, ts: i64) -> CgroupCollection {
     out
 }
 
-/// Pressure of one cgroup. Same format as `/proc/pressure/*`, and cgroup v1
-/// does not have it at all.
 fn read_pressure_v2(sys: &SysFs, ts: i64, path: &str) -> Vec<PsiRow> {
     let cpu = sys.read(&rel(path, "cpu.pressure")).ok();
     let memory = sys.read(&rel(path, "memory.pressure")).ok();
@@ -127,8 +123,7 @@ fn read_cpu_v2(sys: &SysFs, ts: i64, path: &str) -> Option<CgroupCpuRow> {
     Some(row)
 }
 
-/// How many CPUs a `cpuset` list names: `0-3,8` is five. An empty file means
-/// the group inherits every CPU, which is not a ceiling of its own.
+/// Counts cpuset ranges; an empty set is inherited and returns `None`.
 fn count_cpus(content: &str) -> Option<i64> {
     let mut total = 0_i64;
     let trimmed = content.trim();

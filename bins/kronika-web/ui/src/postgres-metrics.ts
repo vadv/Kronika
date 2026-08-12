@@ -176,8 +176,7 @@ export function physicalFields(
 
 export function findingSemanticField(typeId: string, physical: string): PostgresSemanticField | null {
   const execution = physicalField(typeId, "execution_ms_per_second")
-  // The sparse locator points at the stored total-time operand, while the
-  // statement spike itself is delta(total time) / delta(calls).
+  // Statement spikes use total-time/calls, but the locator names total time.
   if (physical === execution) return "mean_exec_ms_per_call"
   const layout = postgresLayout(typeId)
   if (layout === null) return null

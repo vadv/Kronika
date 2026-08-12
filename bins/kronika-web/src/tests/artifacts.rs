@@ -1112,7 +1112,6 @@ fn the_first_moment_of_a_segment_rates_against_the_segment_before_it() {
         .filter(|record| record["record"] == "row")
         .collect::<Vec<_>>();
     assert_eq!(rows.len(), 1);
-    // Twenty reads across a hundred microseconds is two hundred thousand a second.
     assert_eq!(rows[0]["values"][0], serde_json::json!(200_000.0));
 }
 
@@ -1133,8 +1132,6 @@ fn a_moment_before_the_first_sample_here_is_answered_from_the_segment_before() {
     write_segment(&journal, &writer, first).expect("finish first");
     journal.reset().expect("close the first segment");
 
-    // The second segment opens before this section is sampled again, so a
-    // cursor resting between the two has nothing here and a state there.
     let second = SegmentAddress::new(SegmentId::new(SEGMENT_ID + 1_000).expect("second id"))
         .expect("second");
     let mut buffers = SectionBuffers::new();

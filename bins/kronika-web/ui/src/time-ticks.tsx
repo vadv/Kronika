@@ -2,8 +2,6 @@ import { formatUtc } from "./model"
 
 const MINUTE_US = 60_000_000
 
-/** Seven labels need the width of the timeline; in the detail dock they run
- *  into each other, and four say the same thing. */
 export function TimeTicks({ className, hour, ticks = 6 }: { readonly className: string; readonly hour: number; readonly ticks?: number }) {
   const step = 60 / ticks
   return <div aria-hidden="true" className={`time-ticks ${className}`}>

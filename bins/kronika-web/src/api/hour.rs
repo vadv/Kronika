@@ -1,10 +1,4 @@
-//! One hour of the timeline: which segments it touches, its health line and
-//! its marks, in a single request.
-//!
-//! The line spans an hour and the marks come from a derived index per segment,
-//! so drawing it used to cost one catalog request plus two per segment. Over a
-//! link where a round trip costs more than a second, the count of requests is
-//! the whole of the wait, and this is one.
+//! Composes one hour of timeline data into one response.
 
 use std::ops::Bound::{Included, Unbounded};
 use std::path::{Path, PathBuf};
@@ -25,7 +19,6 @@ mod lanes;
 
 const SERIES: &str = "health";
 
-/// Microseconds in an hour.
 const HOUR: i64 = 3_600_000_000;
 
 pub(crate) struct PreparedHour {
@@ -72,8 +65,6 @@ pub(super) fn prepare(
     })
 }
 
-/// Every hour any stored segment touches, so that a first load needs no
-/// separate catalog to know which hours can be picked.
 fn hours_of(segments: &[SegmentRef]) -> Vec<i64> {
     let mut hours: Vec<i64> = segments
         .iter()
@@ -96,8 +87,6 @@ const fn floor_hour(timestamp: i64) -> i64 {
 }
 
 impl PreparedHour {
-    /// An active hour still grows. A settled hour embeds the catalog and the
-    /// available-hour list, so it is revalidated rather than immutable.
     pub(super) fn meta(&self) -> ResponseMeta {
         let settled = self
             .segments
@@ -135,8 +124,6 @@ impl PreparedHour {
             series,
             ..
         } = self;
-        // A named section is one object's series across the hour, and it needs
-        // neither the catalog nor the lanes drawn beside the line.
         if let Some(series) = series {
             for segment in &segments {
                 if cancelled() || !emit_series(&reader, segment, &series, emit, cancelled)? {
@@ -211,8 +198,6 @@ fn emit_series(
     }
 }
 
-/// The lanes of one segment, each a share of the ceiling the collector lived
-/// under. Computed here because the client has no business summing cores.
 fn emit_lanes(
     reader: &Reader,
     segment_ref: &SegmentRef,

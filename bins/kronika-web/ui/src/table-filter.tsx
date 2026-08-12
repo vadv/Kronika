@@ -3,7 +3,6 @@ import { useId } from "react"
 
 import type { Translate } from "./help"
 
-/** The box above a table that narrows it to the rows whose text matches. */
 export function TableFilter({
   kept,
   onPattern,

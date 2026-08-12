@@ -52,9 +52,7 @@ pub(super) fn collect_cgroup_sections(
                 .push(cgroup::to_io_section(row, scope, cgroup_path));
         }
     }
-    // Pressure of our own group stands beside the host rows of the same
-    // section, told apart by the scope each row carries. In a pod the host
-    // rows describe the node, and these describe us.
+    // Scope distinguishes these cgroup pressure rows from host pressure.
     for row in &rows.psi {
         os.psi.push(row.to_section(OsScope::Pod.as_u8()));
     }

@@ -21,20 +21,16 @@ import { semanticValueTone } from "./value-tone"
 
 export interface EntityColumn {
   readonly field: string
-  /** The exact physical field represented by this semantic column. */
   readonly physicalField?: string | Readonly<Record<string, string>>
   readonly label: string
   readonly help?: string
-  /** The server divided this column by the interval: it reads per second. */
   readonly rate?: boolean
   readonly kind?: "id" | "number" | "text" | "timestamp" | "bytes" | "kib" | "milliseconds" | "duration" | "microseconds" | "percent" | "boolean"
   readonly width?: number
   readonly sticky?: boolean
-  /** The server can order this exact value. Derived ratios and text stay off. */
   readonly sortable?: boolean
 }
 
-/** A column and a direction, as the server understands them. */
 export interface TableOrder {
   readonly column: string
   readonly descending: boolean
@@ -65,8 +61,6 @@ export function EntityTable({
   readonly findingField?: string | null | undefined
   readonly label: string
   readonly locale: Locale
-  /** Set when the server ordered and cut the rows; the header then asks it
-   *  for another order rather than reshuffling what arrived. */
   readonly onOrder?: ((order: TableOrder | null) => void) | undefined
   readonly onPattern?: ((pattern: string) => void) | undefined
   readonly onSelect?: (row: DataRow) => void
@@ -97,11 +91,6 @@ export function EntityTable({
     },
     size: field.width ?? 128,
   })), [fields, locale, serverSorted, t])
-  // The table keeps its own model keyed on this reference. A fresh array every
-  // render rebuilds that model every render, and the process table next door
-  // does not do it.
-  // Text of a row is what a person searches by: a query, a database, a role,
-  // a wait event — every column that is not a number.
   const data = useMemo(() => {
     const match = globMatcher(pattern)
     if (match === null) return [...rows]
@@ -117,10 +106,7 @@ export function EntityTable({
     getCoreRowModel: getCoreRowModel(),
     getRowId: (row) => rowKey(row),
     getSortedRowModel: getSortedRowModel(),
-    // A table the server cut to its top rows cannot be reordered here: sorting
-    // the visible two hundred by another column answers a different question
-    // than the two hundred largest by that column. Every table reports its
-    // order outward all the same, so the address can carry it.
+    // Server-truncated rows must also be sorted by the server.
     manualSorting: serverSorted === true,
     onSortingChange: (updater) => {
       const next = typeof updater === "function" ? updater(ordering) : updater
@@ -132,10 +118,6 @@ export function EntityTable({
     onColumnSizingChange: setSizing,
     state: { columnSizing: sizing, sorting: ordering },
   })
-  // A grip is dragged to resize and double clicked to fit: the width of the
-  // widest cell on screen, which is what a person means by "fit".
-  // A header is the contract of its column: the column is widened to hold it
-  // before anything else decides the width.
   const head = useRef<HTMLDivElement>(null)
   const automatic = useRef<ColumnSizingState>({})
   useEffect(() => {
@@ -146,7 +128,6 @@ export function EntityTable({
       const next = { ...current }
       fields.forEach((field, index) => {
         const needed = wanted[index]
-        // A width the reader chose by dragging or fitting outranks this one.
         const own = current[field.field] === undefined || current[field.field] === automatic.current[field.field]
         if (needed === undefined || !own) return
         if (needed > (field.width ?? 128)) {
@@ -233,8 +214,6 @@ export function locatorMatchesColumn(column: EntityColumn, typeId: string, findi
   return findingField !== null && physical === findingField
 }
 
-/** A number is read by comparing digits: numbers line up on the right, names
- *  on the left, header included. */
 const NUMERIC_KINDS = new Set(["number", "bytes", "kib", "milliseconds", "duration", "microseconds", "percent"])
 
 export function unit(base: string, rate: boolean | undefined, perSecond = "/s"): string {

@@ -61,8 +61,6 @@ const EMPTY_DATA: HourData = {
   sourceFamilies: [], segmentCount: 0,
 }
 
-/** Each view is built from what it draws: the timeline every view shows, plus
- *  that view's own sections. Nothing asks for an hour of everything. */
 const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
   system: [...TIMELINE_REQUESTS, ...SYSTEM_REQUESTS],
   processes: [...TIMELINE_REQUESTS, { section: "os_process" }, { section: "pg_stat_activity" }, { section: "instance_metadata" }],
@@ -109,13 +107,10 @@ const HELP_EVENTS = [
 ] as const
 
 function App() {
-  // The address is read once. From then on it is written from the state:
-  // syncing both ways would be a loop.
   const opened = useRef(readAddress(window.location.search))
   const [locale, setLocale] = useState<Locale>(initialLocale)
   const [theme, setTheme] = useState<Theme>(initialTheme)
   const [hour, setHour] = useState<number | null>(opened.current.at === null ? null : floorHour(opened.current.at))
-  // The moment the link named, kept until the hour it belongs to has loaded.
   const wanted = useRef(opened.current.at)
   const [availableHours, setAvailableHours] = useState<readonly number[]>([])
   const [cursor, setCursor] = useState(0)
@@ -131,8 +126,6 @@ function App() {
   const [planLens, setPlanLens] = useState<PlanLens>(planLensOf(opened.current.pgLens))
   const [lens, setLens] = useState<Lens>(opened.current.lens)
   const [find, setFind] = useState(opened.current.find)
-  // The statement table is ordered and cut by the server, so its header asks
-  // for a different order rather than reshuffling the rows that arrived.
   const [order, setOrder] = useState<TableOrder | null>(opened.current.sort)
   const [selectedKey, setSelectedKey] = useState<string | null>(opened.current.row)
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
@@ -183,9 +176,6 @@ function App() {
     setPgFocus(null)
     setSystemFocus(null)
   }, [hour])
-  // Two loads, and they are different in kind. The line, its marks and the
-  // segments of the hour are one request. A table shows the snapshot under the
-  // cursor, so it wants the one segment holding it — not the nine an hour has.
   useEffect(() => {
     if (hour !== null && drawn.current === hour) return
     const controller = new AbortController()
@@ -221,13 +211,7 @@ function App() {
     return () => controller.abort()
   }, [hour])
 
-  // A table shows the moment under the cursor, and each section is sampled on
-  // its own schedule: asking for the cursor lets the server pick the last
-  // sample of that section, rather than a moment borrowed from another one.
   const cursorSegment = useMemo(() => segmentBoundAt(segments, cursor), [cursor, segments])
-  // Dragging moves the cursor at once and the tables a round trip later, and
-  // the cursor can rest where nothing was sampled at all. Both are said out
-  // loud beside the clock instead of being left to guess.
   const [cursorState, setCursorState] = useState<"ready" | "loading" | "missing">("ready")
   useEffect(() => {
     if (hour === null || cursorSegment === null) {
@@ -246,8 +230,6 @@ function App() {
     }
     setCursorState("loading")
     const controller = new AbortController()
-    // Dragging the cursor crosses many samples; only the one it rests on is
-    // worth a round trip over a link that costs more than a second.
     const timer = setTimeout(() => {
       void loadSnapshot(cursorSegment.id, cursor, wanted, controller.signal, order ?? undefined)
         .then((incoming) => {
@@ -297,8 +279,6 @@ function App() {
 
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   const processRows = useMemo(() => snapshot(data.processes, cursor), [cursor, data.processes])
-  // A CPU counter is ticks per second, and the machine says how many ticks its
-  // second holds.
   const ticksPerSecond = useMemo(() => {
     const metadata = (data.sections.instance_metadata ?? [])[0]
     return metadata === undefined ? null : asNumber(value(metadata, "clock_ticks_per_sec"))
@@ -341,8 +321,6 @@ function App() {
     return () => controller.abort()
   }, [data, selectedFinding])
   const joinedActivity = activityFor(selectedProcess, data.activities, selectedProcess?.timestamp ?? cursor)
-  // A table holds one moment, so the charts of the selected process are their
-  // own request across the hour.
   const [processHistory, setProcessHistory] = useState<readonly DataRow[]>([])
   const selectedPid = selectedProcess === null ? null : rawText(value(selectedProcess, "pid"))
   const selectedStart = selectedProcess === null ? null : rawText(value(selectedProcess, "starttime"))
@@ -357,9 +335,6 @@ function App() {
       .catch(() => { /* the panel stands without its charts */ })
     return () => controller.abort()
   }, [hour, selectedPid, selectedStart])
-  // The address follows the state. Dragging the cursor replaces the entry, so
-  // the back button does not walk back through every pixel of the drag;
-  // choosing a view or a row pushes one.
   const address = useMemo(() => writeAddress({
     at: cursor === 0 ? null : cursor,
     view: viewOf(source, hostSection, pgSection),
@@ -446,8 +421,6 @@ function App() {
       ? HELP_EVENTS
       : hostSection === "processes" ? HELP_PROCESS : HELP_SYSTEM
   useEffect(() => {
-    // While the hour is still loading nothing is present yet, and sending the
-    // reader to the host view would throw away the view their link asked for.
     if (loading) return
     if (source === "postgresql" && !pgPresent) setSource("host")
     if (source === "events" && !eventsPresent) setSource("host")
