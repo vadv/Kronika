@@ -24,10 +24,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     validate_html(&html)?;
 
     let etag = format!("\"{}\"", hex(&Sha256::digest(&compressed)));
-    let script = between(&html, "<script>", "</script>")?;
-    let script_hash = STANDARD.encode(Sha256::digest(script.as_bytes()));
+    let script_hashes = script_bodies(&html)?
+        .into_iter()
+        .map(|script| {
+            format!(
+                "'sha256-{}'",
+                STANDARD.encode(Sha256::digest(script.as_bytes()))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
     let csp = format!(
-        "default-src 'none'; script-src 'sha256-{script_hash}'; style-src 'unsafe-inline'; \
+        "default-src 'none'; script-src {script_hashes}; style-src 'unsafe-inline'; \
          font-src data:; img-src data:; connect-src 'self'; base-uri 'none'; \
          form-action 'none'; frame-ancestors 'none'; object-src 'none'"
     );
@@ -58,9 +66,9 @@ fn validate_html(html: &str) -> io::Result<()> {
             "{UI_GZIP} does not contain the production HTML document"
         )));
     }
-    if !html.contains("<script>") || html.matches("</script>").count() != 1 {
+    if script_bodies(html)?.len() != 2 || html.matches("</script>").count() != 2 {
         return Err(invalid(format!(
-            "{UI_GZIP} must contain one complete inline script"
+            "{UI_GZIP} must contain two complete inline scripts"
         )));
     }
     if html.contains("sourceMappingURL") {
@@ -83,19 +91,20 @@ fn validate_html(html: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn between<'a>(text: &'a str, before: &str, after: &str) -> io::Result<&'a str> {
-    let start = text
-        .find(before)
-        .map(|at| at + before.len())
-        .ok_or_else(|| invalid(format!("{UI_GZIP} has no {before}")))?;
-    let tail = text
-        .get(start..)
-        .ok_or_else(|| invalid(format!("{UI_GZIP} has an invalid {before} boundary")))?;
-    let end = tail
-        .find(after)
-        .ok_or_else(|| invalid(format!("{UI_GZIP} has no {after}")))?;
-    tail.get(..end)
-        .ok_or_else(|| invalid(format!("{UI_GZIP} has an invalid {after} boundary")))
+fn script_bodies(html: &str) -> io::Result<Vec<&str>> {
+    let mut bodies = Vec::new();
+    let mut tail = html;
+    while let Some(start) = tail.find("<script>") {
+        let body = tail
+            .get(start + "<script>".len()..)
+            .ok_or_else(|| invalid(format!("{UI_GZIP} has an invalid script boundary")))?;
+        let (script, rest) = body
+            .split_once("</script>")
+            .ok_or_else(|| invalid(format!("{UI_GZIP} has an incomplete inline script")))?;
+        bodies.push(script);
+        tail = rest;
+    }
+    Ok(bodies)
 }
 
 fn hex(bytes: &[u8]) -> String {

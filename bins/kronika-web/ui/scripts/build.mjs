@@ -79,7 +79,7 @@ async function bundleJavascript(registry, translations, includeFixture) {
     define: { "process.env.NODE_ENV": '"production"' },
     format: "iife",
     legalComments: "none",
-    mangleProps: /^(?:context(?:Label|Row)|d(?:efaultOrder|ensePageState|etailColumns)|findingField|focusFinding|g[a]p|historyField|linkedPids|on(?:ContextClear|LoadMore|Locale|NearEnd|Order|Pattern|PlanLens|Retry|Section|StatementLens|Theme)|planLens|primaryLane|processHistory|selectedKey|serverSorted|statementLens|testId|ticksPerSecond|transformRows)$/,
+    mangleProps: /^(?:availableSections|context(?:Label|Row)|d(?:efaultOrder|ensePageState|etailColumns)|fieldsByType|findingField|findingGroups|focusFinding|g[a]p|historyField|lanePoints|linkedPids|on(?:ContextClear|LoadMore|Locale|NearEnd|Order|Pattern|PlanLens|Retry|Section|StatementLens|Theme)|planLens|primaryLane|processHistory|rateColumns|selectedKey|serverSorted|snapshotRows|statementLens|testId|ticksPerSecond|transformRows)$/,
     minify: true,
     platform: "browser",
     sourcemap: false,
@@ -168,9 +168,24 @@ function validateHtml(html) {
       || /url\(\s*["']?\s*https?:\/\//i.test(html)) {
     throw new Error("the production UI contains an external asset URL")
   }
-  if (html.toLowerCase().includes("</script")
-      && html.toLowerCase().split("</script").length !== 2) {
-    throw new Error("the JavaScript bundle contains an HTML script terminator")
+  const scriptStarts = scriptBodies(html).length
+  const scriptEnds = html.toLowerCase().split("</script").length - 1
+  if (scriptStarts !== 2 || scriptEnds !== 2) {
+    throw new Error(`the production UI must contain two complete inline scripts (found ${scriptStarts}/${scriptEnds})`)
+  }
+}
+
+function scriptBodies(html) {
+  const bodies = []
+  let tail = html
+  for (;;) {
+    const start = tail.indexOf("<script>")
+    if (start < 0) return bodies
+    const body = tail.slice(start + "<script>".length)
+    const end = body.toLowerCase().indexOf("</script>")
+    if (end < 0) throw new Error("the production UI contains an incomplete inline script")
+    bodies.push(body.slice(0, end))
+    tail = body.slice(end + "</script>".length)
   }
 }
 
