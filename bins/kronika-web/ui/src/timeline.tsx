@@ -4,7 +4,7 @@ import { fieldNameForLocator, type DataRow, type Finding, type LanePoint } from 
 import { buildMetricSamples, niceCeiling, numericRuns, svgPath, type NumericPoint } from "./chart"
 import { findingOrder, findingSummary } from "./finding-presentation"
 import { LabelHelp, type Translate } from "./help"
-import { moveCursor } from "./keyboard"
+import { keyboardTargetOwnsArrows, moveCursor, nearestRecordedTime, orderedRecordedTimes } from "./keyboard"
 import { asNumber, compact, formatUtc, humanBytes, type Locale, value } from "./model"
 import { emptyHourStatusKey } from "./refresh"
 import { TimeTicks } from "./time-ticks"
@@ -123,11 +123,15 @@ export function Timeline({
       return displayedLane
     })
   }, [lanes, plotWidth, selectedLane, top])
+  const primaryTimes = useMemo(
+    () => selectedTimelineTimes(lanes, selectedLane),
+    [lanes, selectedLane],
+  )
   const plotBottom = displayed.at(-1) === undefined
     ? top + PRIMARY_HEIGHT
     : (displayed.at(-1)?.top ?? top) + (displayed.at(-1)?.height ?? PRIMARY_HEIGHT)
   const height = plotBottom + TICK_ROW
-  const window = sampleWindow(lanes)
+  const sampleRange = sampleWindow(lanes)
   useEffect(() => {
     const element = plot.current
     if (element === null) return
@@ -138,6 +142,18 @@ export function Timeline({
     observer.observe(element)
     return () => observer.disconnect()
   }, [])
+  useEffect(() => {
+    const move = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")
+        || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+        || keyboardTargetOwnsArrows(event.target) || primaryTimes.length === 0) return
+      event.preventDefault()
+      const timestamp = moveCursor(cursor, primaryTimes, event.key)
+      if (timestamp !== cursor) onCursor(timestamp)
+    }
+    window.addEventListener("keydown", move)
+    return () => window.removeEventListener("keydown", move)
+  }, [cursor, onCursor, primaryTimes])
   if (lanes.length === 0 && findings.length === 0) {
     return <section className="timeline-empty" data-testid="timeline-empty">{t(emptyHourStatusKey(hour))}</section>
   }
@@ -145,7 +161,8 @@ export function Timeline({
     const bounds = plot.current?.getBoundingClientRect()
     if (bounds === undefined) return null
     const ratio = Math.max(0, Math.min(1, (clientX - bounds.left) / bounds.width))
-    return Math.min(end - 1_000, Math.round(hour + ratio * (end - hour)))
+    const target = Math.min(end - 1_000, Math.round(hour + ratio * (end - hour)))
+    return nearestRecordedTime(primaryTimes, target)
   }
   const commitFromClient = (clientX: number) => {
     const timestamp = timestampFromClient(clientX)
@@ -184,9 +201,11 @@ export function Timeline({
           aria-valuetext={formatUtc(cursor)}
           data-testid="hour-timeline"
           onKeyDown={(event) => {
-            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return
+            if ((event.key !== "ArrowLeft" && event.key !== "ArrowRight")
+              || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || primaryTimes.length === 0) return
             event.preventDefault()
-            onCursor(moveCursor(cursor, hour, event.key))
+            const timestamp = moveCursor(cursor, primaryTimes, event.key)
+            if (timestamp !== cursor) onCursor(timestamp)
           }}
           onPointerDown={(event) => {
             event.currentTarget.setPointerCapture(event.pointerId)
@@ -205,18 +224,18 @@ export function Timeline({
           tabIndex={0}
         >
           <svg aria-hidden="true" preserveAspectRatio="none" style={{ height: `${height}px` }} viewBox={`0 0 ${plotWidth} ${height}`}>
-            {window !== null && window.start > hour && <rect
+            {sampleRange !== null && sampleRange.start > hour && <rect
               className="data-unavailable"
               height={plotBottom - top}
-              width={shareOf(window.start, hour, end) * plotWidth}
+              width={shareOf(sampleRange.start, hour, end) * plotWidth}
               x={0}
               y={top}
             />}
-            {window !== null && window.end < end && <rect
+            {sampleRange !== null && sampleRange.end < end && <rect
               className="data-unavailable"
               height={plotBottom - top}
-              width={(1 - shareOf(window.end, hour, end)) * plotWidth}
-              x={shareOf(window.end, hour, end) * plotWidth}
+              width={(1 - shareOf(sampleRange.end, hour, end)) * plotWidth}
+              x={shareOf(sampleRange.end, hour, end) * plotWidth}
               y={top}
             />}
             {[0, 1, 2, 3, 4, 5, 6].map((tick) => {
@@ -280,6 +299,17 @@ export function Timeline({
       </div>
     </section>
   )
+}
+
+export function timelineRecordedTimes(series: readonly { readonly points: readonly { readonly timestamp: number }[] }[]): readonly number[] {
+  return orderedRecordedTimes(series.flatMap((line) => line.points.map((point) => point.timestamp)))
+}
+
+export function selectedTimelineTimes(
+  lanes: readonly { readonly key: string; readonly series: readonly { readonly points: readonly { readonly timestamp: number }[] }[] }[],
+  selectedLane: string,
+): readonly number[] {
+  return timelineRecordedTimes((lanes.find((lane) => lane.key === selectedLane) ?? lanes[0])?.series ?? [])
 }
 
 function LaneLabel({ label, help, onSelect, primary, reading, t }: { readonly label: string; readonly help: string; readonly onSelect?: (() => void) | undefined; readonly primary: boolean; readonly reading: string; readonly t: Translate }) {

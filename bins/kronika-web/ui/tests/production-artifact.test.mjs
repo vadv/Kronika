@@ -11,6 +11,11 @@ const HOUR = 1_800_000_000_000_000
 const AT = HOUR + 1_800_000_000
 const SEGMENT = "artifact-wire-segment"
 const ARTIFACT = process.env.KRONIKA_UI_ARTIFACT ?? new URL("../kronika-ui.html.gz", import.meta.url)
+const BEFORE_AT = AT - 5_000_000
+const AFTER_AT = AT + 7_000_000
+const QUARTER = HOUR + 900_000_000
+const QUARTER_PREVIOUS = QUARTER - 5_000_000
+const QUARTER_NEXT = QUARTER + 5_000_000
 
 test("the production artifact preserves wire keys and exact finding page state", { timeout: 30_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
@@ -173,6 +178,45 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(requests.filter(({ query }) => query.includes("where.queryid=") && query.includes("page_size=200")).length, 1)
     await cdp.evaluate(`document.querySelector('[data-testid="pg-statements-table"] .entity-row').click()`)
     await cdp.waitFor(`document.querySelector(".pg-detail") !== null`, "detail after explicit row selection")
+
+    const hostClick = await cdp.evaluate(`(() => {
+      const button = document.querySelector(".source-tabs button:first-child")
+      button.click()
+      return button.textContent
+    })()`)
+    assert.equal(hostClick, "Host")
+    await cdp.evaluate(`document.querySelector('.section-tabs [role="tab"]:first-child').click()`)
+    await cdp.waitFor(`document.querySelector(".system-console") !== null`, "the System view")
+    const system = await cdp.evaluate(`(() => ({
+      buttons: [...document.querySelectorAll('[data-testid^="system-metric-"]')].map((button) => [button.dataset.testid, button.getAttribute("aria-pressed")]),
+      lane: document.querySelector(".lane-primary")?.textContent ?? null,
+      source: document.querySelector(".source-active")?.textContent ?? null,
+    }))()`)
+    assert.equal(system.source, "Host")
+    assert.equal(system.buttons.some(([id, pressed]) => id === "system-metric-health" && pressed === "true"), true, JSON.stringify(system))
+    assert.match(system.lane ?? "", /Health/)
+    const arrow = async (key, expected) => {
+      await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: ${JSON.stringify(key)} }))`)
+      await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"]')?.getAttribute("aria-valuenow") === "${expected}"`, `${key} to ${expected}`)
+    }
+    await arrow("ArrowLeft", BEFORE_AT)
+    await arrow("ArrowRight", AT)
+    await arrow("ArrowRight", AFTER_AT)
+    const drag = async (target, expected) => {
+      const mapped = await cdp.evaluate(`(() => {
+        const plot = document.querySelector(".timeline-plot")
+        const slider = document.querySelector('[data-testid="hour-timeline"]')
+        const bounds = plot.getBoundingClientRect()
+        const clientX = bounds.left + (${target} - ${HOUR}) / 3600000000 * bounds.width
+        const mapped = Math.min(${HOUR + 3_600_000_000 - 1_000}, Math.round(${HOUR} + (clientX - bounds.left) / bounds.width * 3600000000))
+        slider.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, buttons: 1, clientX, isPrimary: true, pointerId: 7, pointerType: "mouse" }))
+        return mapped
+      })()`)
+      assert.equal(mapped, target)
+      await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"]')?.getAttribute("aria-valuenow") === "${expected}"`, `pointer snap to ${expected}`)
+    }
+    await drag(QUARTER + 3_000_000, QUARTER_NEXT)
+    await drag(QUARTER, QUARTER_PREVIOUS)
     assert.deepEqual(errors, [])
     assert.deepEqual(external, [])
   } finally {
@@ -191,7 +235,7 @@ function timelineRecords() {
       source_families: [{ name: "postgresql", configured: true, present: true }],
     },
     {
-      record: "finished_segment", id: SEGMENT, min_ts: String(HOUR), max_ts: String(AT),
+      record: "finished_segment", id: SEGMENT, min_ts: String(HOUR), max_ts: String(AFTER_AT),
       sections: [{
         logical_name: "pg_stat_activity", physical_name: "pg_stat_activity", type_id: "1001003",
         implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256",
@@ -201,6 +245,11 @@ function timelineRecords() {
       }],
     },
     { record: "index", segment: { id: SEGMENT }, logical_name: "health", checksum: null },
+    { record: "point", type_id: "0", series: "os_health", ts: String(QUARTER_PREVIOUS), identity: {}, value: 71 },
+    { record: "point", type_id: "0", series: "os_health", ts: String(QUARTER_NEXT), identity: {}, value: 73 },
+    { record: "point", type_id: "0", series: "os_health", ts: String(BEFORE_AT), identity: {}, value: null },
+    { record: "point", type_id: "0", series: "os_health", ts: String(AT), identity: {}, value: 82 },
+    { record: "point", type_id: "0", series: "os_health", ts: String(AFTER_AT), identity: {}, value: 84 },
     {
       record: "finding", logical_name: "pg_stat_statements", kind: "spike", type_id: "1002003",
       field_ordinal: 11, row_ordinal: "91", ts: String(AT),

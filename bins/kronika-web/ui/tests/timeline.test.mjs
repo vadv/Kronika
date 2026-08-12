@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { importModule, registryPlugin } from "./import-module.mjs"
 
 const helpers = await importModule(
-  'export { FindingMarker, MARKER_CLUSTER_PX, findingShape, findingTrack, groupFindings, healthThreshold, healthTimelineSeries, laneRange, overviewLaneCount, sampleWindow, seriesYAt, timelineRuns, valueAt } from "../src/timeline.tsx"',
+  'export { FindingMarker, MARKER_CLUSTER_PX, findingShape, findingTrack, groupFindings, healthThreshold, healthTimelineSeries, laneRange, overviewLaneCount, sampleWindow, selectedTimelineTimes, seriesYAt, timelineRecordedTimes, timelineRuns, valueAt } from "../src/timeline.tsx"',
   { plugins: [registryPlugin([{ typeId: "1104001", logicalName: "os_meminfo", columns: ["ts", "mem_total", "mem_free", "mem_available"] }])] },
 )
 
@@ -27,6 +27,19 @@ function finding(kind, timestamp, ordinal) {
 test("the shared empty timeline uses the hour-aware status", async () => {
   const source = await readFile(new URL("../src/timeline.tsx", import.meta.url), "utf8")
   assert.match(source, /t\(emptyHourStatusKey\(hour\)\)/)
+})
+
+test("default arrows and pointer selection are owned by the selected recorded lane", async () => {
+  const [app, keyboard, timeline] = await Promise.all([
+    readFile(new URL("../src/app.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/keyboard.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/timeline.tsx", import.meta.url), "utf8"),
+  ])
+  assert.doesNotMatch(app, /moveCursor/)
+  assert.doesNotMatch(keyboard, /60_000_000|MINUTE/)
+  assert.match(timeline, /selectedTimelineTimes\(lanes, selectedLane\)/)
+  assert.match(timeline, /nearestRecordedTime\(primaryTimes, target\)/)
+  assert.match(timeline, /window\.addEventListener\("keydown", move\)/)
 })
 
 test("one timeline mark stays an unlabeled shape", () => {
@@ -178,6 +191,25 @@ test("the displayed sample window ends at the last stored number", () => {
   ]
   assert.deepEqual(helpers.sampleWindow([{ series: [{ points }] }]), { start: 200, end: 300 })
   assert.equal(helpers.sampleWindow([{ series: [{ points: points.map((point) => ({ ...point, value: null })) }] }]), null)
+})
+
+test("the selected lane owns exact heterogeneous timestamps including null observations", () => {
+  const health = [{ points: [
+    { timestamp: 100, value: 90 },
+    { timestamp: 105, value: null },
+    { timestamp: 111, value: 88 },
+  ] }, { points: [
+    { timestamp: 105, value: 91 },
+    { timestamp: 118, value: 89 },
+  ] }]
+  const cpu = [{ points: [
+    { timestamp: 102, value: 20 },
+    { timestamp: 107, value: 21 },
+  ] }]
+  const lanes = [{ key: "health", series: health }, { key: "cpu_busy", series: cpu }]
+  assert.deepEqual(helpers.selectedTimelineTimes(lanes, "health"), [100, 105, 111, 118])
+  assert.deepEqual(helpers.selectedTimelineTimes(lanes, "cpu_busy"), [102, 107])
+  assert.deepEqual(helpers.selectedTimelineTimes(lanes, "missing"), [100, 105, 111, 118])
 })
 
 test("a finding attaches only to an exact sample in the same segment", () => {

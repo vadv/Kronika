@@ -32,7 +32,7 @@ import { EventsView, type FindingResolution } from "./events-view"
 import { findingHistory, findingHistoryRequest, findingProjection } from "./finding-presentation"
 import { HelpPanel, type Translate } from "./help"
 import { HourPicker } from "./hour-picker"
-import { keyboardTargetOwnsArrows, moveCursor } from "./keyboard"
+import { keyboardTargetOwnsArrows } from "./keyboard"
 import { rowMatchesLocator } from "./locator"
 import { Login } from "./login"
 import {
@@ -415,20 +415,13 @@ function App({ locale, onLocale, t }: {
   useEffect(() => {
     const shortcuts = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return
-      if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && hour !== null) {
-        if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || keyboardTargetOwnsArrows(event.target)) return
-        event.preventDefault()
-        followsLatest.current = false
-        setCursor((current) => moveCursor(current, hour, event.key))
-        return
-      }
       if (keyboardTargetOwnsArrows(event.target)) return
       if (event.key === "?") setHelpOpen((current) => !current)
       if (event.key === "Escape") setHelpOpen(false)
     }
     window.addEventListener("keydown", shortcuts)
     return () => window.removeEventListener("keydown", shortcuts)
-  }, [hour])
+  }, [])
 
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   const contextRow = selectedFinding?.timestamp === cursor ? findingRow : null
