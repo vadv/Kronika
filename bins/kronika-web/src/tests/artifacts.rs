@@ -2195,7 +2195,7 @@ fn snapshot_cursor_rejects_every_bound_query_shape_mismatch() {
 }
 
 #[test]
-fn snapshot_search_needs_an_explicit_allowlisted_projection() {
+fn snapshot_search_uses_the_fixed_section_allowlist_outside_the_projection() {
     let mut fixture = Fixture::new();
     fixture.append_statement_universe(1);
     fixture.append_diskstats(&[(100, 0, 1)]);
@@ -2204,14 +2204,19 @@ fn snapshot_search_needs_an_explicit_allowlisted_projection() {
     for query in [
         "at=100&section=pg_stat_statements&field=calls&search=needle",
         "at=100&section=pg_stat_statements&search=needle",
-        "at=100&section=os_diskstats&field=device&search=needle",
     ] {
         let route = crate::route::parse(&path, Some(query)).expect("search route");
-        assert!(matches!(
-            crate::api::prepare(fixture.root(), SOURCES, route, None),
-            Err(ApiError::BadFilter(parameter)) if parameter == "search"
-        ));
+        assert!(crate::api::prepare(fixture.root(), SOURCES, route, None).is_ok());
     }
+    let route = crate::route::parse(
+        &path,
+        Some("at=100&section=os_diskstats&field=device&search=needle"),
+    )
+    .expect("unsupported search route");
+    assert!(matches!(
+        crate::api::prepare(fixture.root(), SOURCES, route, None),
+        Err(ApiError::BadFilter(parameter)) if parameter == "search"
+    ));
 }
 
 #[test]

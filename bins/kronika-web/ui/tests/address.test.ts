@@ -5,6 +5,7 @@ import { DEFAULT_ADDRESS, pgSectionOf, readAddress, sourceOf, viewOf, writeAddre
 
 test("an address survives a round trip through the query string", () => {
   const address = {
+    ...DEFAULT_ADDRESS,
     at: 1_786_445_580_254_226,
     view: "host.processes" as const,
     lens: "cpu" as const,
@@ -68,4 +69,40 @@ test("PostgreSQL lenses survive navigation only on their tables", () => {
   assert.equal(readAddress("view=pg.plans&pg_lens=timing").pgLens, "timing")
   assert.equal(writeAddress({ ...DEFAULT_ADDRESS, view: "host.system", pgLens: "io" }), "/?view=host.system")
   assert.equal(readAddress("view=pg.plans&pg_lens=regression").pgLens, "load")
+})
+
+test("relation drilldown keeps database-scoped identity", () => {
+  const selected = JSON.stringify(["pg_stat_user_indexes", "object", "16384", "24577"])
+  const address = {
+    ...DEFAULT_ADDRESS,
+    view: "pg.indexes" as const,
+    pgLens: "low_activity" as const,
+    pgLevel: "object" as const,
+    datid: "16384",
+    schema: "public spaces",
+    relid: "24576",
+    indexrelid: "24577",
+    row: selected,
+  }
+  const written = writeAddress(address)
+  assert.equal(written, `/?view=pg.indexes&pg_lens=low_activity&level=object&datid=16384&schema=public+spaces&relid=24576&indexrelid=24577&row=${encodeURIComponent(selected)}`)
+  assert.deepEqual(readAddress(written.slice(1)), address)
+  assert.equal(readAddress("view=pg.tables&level=schema&datid=oops").pgLevel, "database")
+})
+
+test("relation selection is separate from hierarchy filters", () => {
+  const selected = JSON.stringify(["pg_stat_user_tables", "object", "16384", "24576"])
+  const written = writeAddress({
+    ...DEFAULT_ADDRESS,
+    view: "pg.tables",
+    pgLens: "changes",
+    pgLevel: "object",
+    datid: "16384",
+    schema: "public",
+    row: selected,
+  })
+
+  assert.match(written, /row=/)
+  assert.equal(readAddress(written.slice(1)).row, selected)
+  assert.equal(readAddress("view=pg.statements&row=hidden").row, null)
 })

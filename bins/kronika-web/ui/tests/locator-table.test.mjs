@@ -69,16 +69,16 @@ test("locator classes, scrolling, and selection state are independent", async ()
   assert.doesNotMatch(process, /useReactTable|useVirtualizer|locator-row/)
 })
 
-test("server-ranked tables offer only descending order or no order", () => {
+test("server-ranked tables cycle descending, ascending, and no order", () => {
   assert.deepEqual(helpers.nextServerOrder(undefined, "calls_per_second"), {
     column: "calls_per_second",
     descending: true,
   })
-  assert.equal(helpers.nextServerOrder({ column: "calls_per_second", descending: true }, "calls_per_second"), null)
-  assert.deepEqual(helpers.nextServerOrder({ column: "calls_per_second", descending: false }, "calls_per_second"), {
+  assert.deepEqual(helpers.nextServerOrder({ column: "calls_per_second", descending: true }, "calls_per_second"), {
     column: "calls_per_second",
-    descending: true,
+    descending: false,
   })
+  assert.equal(helpers.nextServerOrder({ column: "calls_per_second", descending: false }, "calls_per_second"), null)
   assert.deepEqual(helpers.nextServerOrder({ column: "calls_per_second", descending: true }, "rows_per_second"), {
     column: "rows_per_second",
     descending: true,
@@ -119,7 +119,8 @@ test("the context chip is visible and removable without changing row selection",
   assert.match(tableFilter, /filter\.show_all/)
   assert.match(entity, /onClick=\{\(\) => onSelect\?\.\(row\.original\)\}/)
   assert.match(app, /Object\.fromEntries\(pageContext\.identity\)/)
-  assert.doesNotMatch(app, /setFind\(""\)/)
+  const clear = app.match(/const clearEntityContext = useCallback\(\(\) => \{([\s\S]*?)\n  \}, \[\]\)/)?.[1] ?? ""
+  assert.doesNotMatch(clear, /setFind\(/)
   assert.ok(
     app.indexOf("findingRow !== null && rowMatchesLocator(findingRow, selectedFinding)")
       < app.indexOf("const loaded = resolveLocator(data, selectedFinding)?.row ?? null"),

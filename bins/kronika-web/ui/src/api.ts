@@ -3,6 +3,7 @@ import { registry } from "kronika:registry"
 import { bundledFixtureHour, bundledFixtureRange } from "./fixture"
 import { rowMatchesLocator } from "./locator"
 import { decoratePostgresIntervalRow, intervalMetric, postgresIdentity, supportsPostgresDerivedOrder } from "./postgres-metrics"
+import { parseRelationLayout, parseRelationRow, relationLayoutKey, relationRowKey, type RelationGroup, type RelationLayout, type RelationRow } from "./postgres-relations"
 import { apiFetch } from "./session"
 import { readNdjson } from "./wire"
 
@@ -31,6 +32,8 @@ export const PRODUCT_SECTION_GROUPS = {
   postgresqlPlans: ["pg_store_plans", "pg_store_plans_info"] as const,
   postgresqlLocks: ["pg_locks"] as const,
   postgresqlDatabases: ["pg_stat_database"] as const,
+  postgresqlTables: ["pg_stat_user_tables"] as const,
+  postgresqlIndexes: ["pg_stat_user_indexes"] as const,
   events: REGISTRY_LOGICAL_NAMES.filter((name) => name.startsWith("pg_log_") || name === "pgbouncer_events"),
 } as const
 
@@ -47,6 +50,8 @@ export interface SectionRequest {
   readonly defaultOrder?: readonly string[]
   readonly order?: Readonly<Record<string, readonly string[]>>
   readonly fallbackOrder?: readonly string[]
+  readonly group?: RelationGroup
+  readonly filters?: Readonly<Record<string, string>>
 }
 
 export const POSTGRESQL_OVERVIEW_REQUESTS: readonly SectionRequest[] = [
@@ -65,6 +70,7 @@ export interface DataRow {
   readonly ordinal: string
   readonly timestamp: number
   readonly values: Readonly<Record<string, Cell>>
+  readonly relation?: RelationRow
 }
 
 export interface Point {
@@ -114,6 +120,7 @@ export interface HourData {
   readonly rateColumns: Readonly<Record<string, readonly string[]>>
   readonly snapshotRows: readonly SnapshotRows[]
   readonly availableSections: readonly string[]
+  readonly postgresqlConfigured?: boolean
   readonly processes: readonly DataRow[]
   readonly activities: readonly DataRow[]
   readonly load: readonly DataRow[]
@@ -136,12 +143,14 @@ export interface SnapshotRows {
   readonly nextCursor: string | null
   readonly pageSize: number
   readonly orderBy: readonly string[]
-  readonly orderDirection: "desc"
+  readonly orderDirection: "asc" | "desc"
   readonly from: number | null
   readonly to: number | null
+  readonly group?: RelationGroup
 }
 
 export function snapshotRowKey(row: DataRow): string {
+  if (row.relation !== undefined) return `${row.segmentId}:${relationRowKey(row.relation)}`
   return `${row.segmentId}:${row.typeId}:${row.ordinal}`
 }
 
@@ -171,6 +180,7 @@ export function mergeSnapshotData(current: HourData, incoming: HourData, appendS
     rateColumns: { ...current.rateColumns, ...incoming.rateColumns },
     snapshotRows: incoming.snapshotRows.length === 0 ? current.snapshotRows : incoming.snapshotRows,
     availableSections: unique([...current.availableSections, ...incoming.availableSections]),
+    postgresqlConfigured: current.postgresqlConfigured === true || incoming.postgresqlConfigured === true,
     points: [],
     lanePoints: [],
     findings: [],
@@ -195,6 +205,7 @@ export interface TimelineData {
   readonly findings: readonly Finding[]
   readonly findingGroups: readonly FindingGroup[]
   readonly availableSections: readonly string[]
+  readonly postgresqlConfigured?: boolean
 }
 
 export interface ResolvedLocator {
@@ -213,6 +224,7 @@ export function hourOf(timeline: TimelineData): HourData {
   return hourData({
     sections: timeline.lanes,
     availableSections: timeline.availableSections,
+    postgresqlConfigured: timeline.postgresqlConfigured ?? false,
     points: timeline.points,
     lanePoints: timeline.lanePoints,
     findings: timeline.findings,
@@ -234,6 +246,7 @@ export function viewData(timeline: HourData, current: HourData): HourData {
     rateColumns: current.rateColumns,
     snapshotRows: current.snapshotRows,
     availableSections: timeline.availableSections,
+    postgresqlConfigured: timeline.postgresqlConfigured ?? false,
     points: timeline.points,
     lanePoints: timeline.lanePoints,
     findings: timeline.findings,
@@ -264,11 +277,13 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
       findings: fixture.findings,
       findingGroups: fixture.findingGroups,
       availableSections: fixture.availableSections,
+      postgresqlConfigured: fixture.availableSections.some((name) => name.startsWith("pg_")),
     }
   }
   const window = start === null ? "" : `?from=${start}&to=${start + 3_600_000_000 - 1}`
   const records = await request(`/api/hour${window}`, signal)
   const header = records.find((record) => record.record === "hour")
+  const catalog = records.find((record) => record.record === "catalog")
   const hour = header?.from === null || header?.from === undefined
     ? floorHour(Date.now() * 1_000)
     : integer(header.from, "hour start")
@@ -347,6 +362,7 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
     findings,
     findingGroups: resolvedFindingGroups,
     availableSections: availableSectionNames(all),
+    postgresqlConfigured: sourceConfigured(catalog, "postgresql"),
   }
 }
 
@@ -458,6 +474,7 @@ export function requestsForSegment(
       .map((section) => section.typeId)
       .filter((typeId) => request.typeIds === undefined || request.typeIds.includes(typeId))
     if (typeIds.length === 0) return []
+    if (request.group !== undefined) return [request]
     if (request.fields === undefined && request.fieldsByType === undefined) return [request]
     if (request.fields !== undefined
       && request.fieldsByType === undefined
@@ -542,6 +559,7 @@ function hourData(input: {
   readonly rateColumns?: Readonly<Record<string, readonly string[]>>
   readonly snapshotRows?: readonly SnapshotRows[]
   readonly availableSections: readonly string[]
+  readonly postgresqlConfigured?: boolean
   readonly points: readonly Point[]
   readonly lanePoints: readonly LanePoint[]
   readonly findings: readonly Finding[]
@@ -551,6 +569,7 @@ function hourData(input: {
   const flatten = (names: readonly string[]) => names.flatMap(rows)
   return {
     ...input,
+    postgresqlConfigured: input.postgresqlConfigured ?? false,
     rateColumns: input.rateColumns ?? {},
     snapshotRows: input.snapshotRows ?? [],
     findingGroups: input.findingGroups ?? [],
@@ -641,13 +660,17 @@ export async function loadSnapshot(
   }))
   const records = responses.flat()
   const layouts = new Map<string, { readonly logicalName: string; readonly columns: readonly string[] }>()
+  const relationLayouts = new Map<string, RelationLayout>()
   const grouped: Record<string, DataRow[]> = {}
   const rateColumns: Record<string, readonly string[]> = {}
   const snapshotRows: SnapshotRows[] = []
   for (const section of requests) grouped[section.section] = []
   for (const record of records) {
     const layout = layoutRecord(record)
-    if (layout !== null) {
+    const relationLayout = parseRelationLayout(record)
+    if (relationLayout !== null) {
+      relationLayouts.set(relationLayoutKey(relationLayout), relationLayout)
+    } else if (layout !== null) {
       const logicalName = requiredText(layout.logicalName, "logical name")
       layouts.set(layout.typeId, {
         logicalName,
@@ -659,6 +682,21 @@ export async function loadSnapshot(
           ...record.rates.map((name) => requiredText(name, "rate column")),
         ])
       }
+    } else if (record.record === "relation") {
+      const relation = parseRelationRow(record, relationLayouts, segmentId)
+      if (relation === null) throw new Error("relation record is invalid")
+      const { logicalName, source } = relation
+      const rows = grouped[logicalName] ?? []
+      rows.push({
+        segmentId,
+        logicalName,
+        typeId: source?.typeId ?? "",
+        ordinal: source?.ordinal ?? "",
+        timestamp: source?.timestamp ?? relation.sampleTo ?? at,
+        values: relation.values,
+        relation,
+      })
+      grouped[logicalName] = rows
     } else if (record.record === "row") {
       const typeId = requiredText(record.type_id, "row type_id")
       const layout = layouts.get(typeId)
@@ -679,7 +717,7 @@ export async function loadSnapshot(
       grouped[logicalName] = rows
     } else if (record.record === "snapshot_page") {
       const logicalName = requiredText(record.logical_name, "snapshot page logical name")
-      if (record.order_direction !== "desc"
+      if ((record.order_direction !== "asc" && record.order_direction !== "desc")
         || typeof record.has_more !== "boolean"
         || typeof record["truncated"] !== "boolean"
         || !Array.isArray(record.order_by)
@@ -698,6 +736,7 @@ export async function loadSnapshot(
         orderDirection: record.order_direction,
         from: record.from === null ? null : integer(record.from, "snapshot interval start"),
         to: record.to === null ? null : integer(record.to, "snapshot interval end"),
+        ...(record.group === undefined ? {} : { group: relationGroup(record.group) }),
       })
     }
   }
@@ -835,6 +874,7 @@ function batchableSnapshotSection(section: SectionRequest): boolean {
     && section.defaultOrder === undefined
     && section.order === undefined
     && section.fallbackOrder === undefined
+    && section.group === undefined
 }
 
 function snapshotQuery(
@@ -849,11 +889,14 @@ function snapshotQuery(
   const ordered = section === undefined || options.rowOrdinal !== undefined
     ? []
     : snapshotOrder(section, order)
+  const requestedOrder = section === undefined || order === undefined ? undefined : requestedSnapshotOrder(section, order)
   return [
     `at=${at}`,
     ...sections.map((request) => `section=${encodeURIComponent(request.section)}`),
     ...fields.map((field) => `field=${encodeURIComponent(field)}`),
     ...ordered.map((field) => `by=${encodeURIComponent(field)}`),
+    ...(section?.group === undefined ? [] : [`group=${section.group}`]),
+    ...(requestedOrder === undefined || order?.descending !== false ? [] : ["direction=asc"]),
     ...(section?.pageSize === undefined || options.rowOrdinal !== undefined ? [] : [`page_size=${section.pageSize}`]),
     ...(options.fullText === true ? [] : [`text=${CELL_TEXT}`]),
     ...(options.cursor === undefined ? [] : [`cursor=${encodeURIComponent(options.cursor)}`]),
@@ -866,16 +909,18 @@ function snapshotQuery(
 }
 
 function snapshotOrder(section: SectionRequest, chosen: SnapshotOrder | undefined): readonly string[] {
-  const requested = chosen !== undefined
-    ? section.order === undefined
-      ? section.fields?.includes(chosen.column) === true ? [chosen.column] : undefined
-      : section.order[chosen.column]
-    : section.defaultOrder
+  const requested = chosen === undefined ? section.defaultOrder : requestedSnapshotOrder(section, chosen)
   if (requested !== undefined && requested.length > 0) return unique(requested)
   if (chosen !== undefined && section.defaultOrder !== undefined && section.defaultOrder.length > 0) {
     return unique(section.defaultOrder)
   }
   return unique(section.fallbackOrder ?? [])
+}
+
+function requestedSnapshotOrder(section: SectionRequest, chosen: SnapshotOrder): readonly string[] | undefined {
+  return section.order === undefined
+    ? section.fields?.includes(chosen.column) === true ? [chosen.column] : undefined
+    : section.order[chosen.column]
 }
 
 function snapshotOptions(
@@ -956,6 +1001,11 @@ function layoutRecord(record: Record<string, unknown>): {
   }
 }
 
+function relationGroup(value: unknown): RelationGroup {
+  if (value === "database" || value === "schema" || value === "object") return value
+  throw new Error("relation group is invalid")
+}
+
 async function request(path: string, signal: AbortSignal): Promise<readonly Record<string, unknown>[]> {
   const response = await apiFetch(path, { headers: { Accept: "application/x-ndjson" }, signal })
   if (!response.ok) {
@@ -968,6 +1018,14 @@ function catalogSegments(records: readonly Record<string, unknown>[]): readonly 
   return records.filter(
     (record) => record.record === "finished_segment" || record.record === "active_segment",
   ) as unknown as readonly Segment[]
+}
+
+function sourceConfigured(header: Record<string, unknown> | undefined, name: string): boolean {
+  const families = header?.source_families
+  return Array.isArray(families) && families.some((family) => family !== null
+    && typeof family === "object"
+    && (family as { readonly name?: unknown }).name === name
+    && (family as { readonly configured?: unknown }).configured === true)
 }
 
 function segmentSectionNames(segment: Segment): string[] {

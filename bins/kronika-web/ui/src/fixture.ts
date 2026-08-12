@@ -120,6 +120,7 @@ export function bundledFixtureHour(start: number): HourData | null {
     rateColumns: {},
     snapshotRows: [],
     availableSections: ["os_process", "pg_stat_activity", "health"],
+    postgresqlConfigured: true,
     processes,
     activities,
     load,

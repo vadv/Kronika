@@ -53,6 +53,7 @@ import {
 } from "./model"
 import { PostgresView, type PostgresSection } from "./postgres-view"
 import { PLAN_INFO_REQUEST, planRequest, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
+import { isRelationLens, relationRequest, type RelationGroup, type RelationLens, type RelationNavigation, type RelationSection } from "./postgres-relations"
 import { ProcessSummary, ProcessTable } from "./process-table"
 import { latestTimelineTimestamp, refreshedCursor, scheduleRefresh } from "./refresh"
 import type { ChartPoint } from "./series-chart"
@@ -65,7 +66,7 @@ type Theme = "dark" | "light"
 type HostSection = "system" | "processes"
 
 const EMPTY_DATA: HourData = {
-  sections: {}, rateColumns: {}, snapshotRows: [], availableSections: [], processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
+  sections: {}, rateColumns: {}, snapshotRows: [], availableSections: [], postgresqlConfigured: false, processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
   pgOverview: [], points: [], lanePoints: [], findings: [], findingGroups: [],
 }
 
@@ -151,6 +152,11 @@ function App({ locale, onLocale, t }: {
   const [pgSection, setPgSection] = useState<PostgresSection>(pgSectionOf(opened.current.view))
   const [statementLens, setStatementLens] = useState<StatementLens>(statementLensOf(opened.current.pgLens))
   const [planLens, setPlanLens] = useState<PlanLens>(planLensOf(opened.current.pgLens))
+  const [relationLens, setRelationLens] = useState<RelationLens>(relationLensOf(pgSectionOf(opened.current.view), opened.current.pgLens))
+  const [relationLevel, setRelationLevel] = useState<RelationGroup>(opened.current.pgLevel)
+  const [relationFilters, setRelationFilters] = useState<Readonly<Record<string, string>>>(() => relationFiltersOf(opened.current))
+  const [relationSelectedKey, setRelationSelectedKey] = useState<string | null>(() => relationSelectedKeyOf(opened.current))
+  const activeRelationLens = relationLensOf(pgSection, relationLens)
   const [lens, setLens] = useState<Lens>(opened.current.lens)
   const [find, setFind] = useState(opened.current.find)
   const [order, setOrder] = useState<TableOrder | null>(opened.current.sort)
@@ -186,8 +192,11 @@ function App({ locale, onLocale, t }: {
       planRequest(planLens),
       PLAN_INFO_REQUEST,
     ]
+    if (source === "postgresql" && (pgSection === "tables" || pgSection === "indexes")) {
+      return [...TIMELINE_REQUESTS, relationRequest(relationSectionOf(pgSection), activeRelationLens, relationLevel)]
+    }
     return VIEW_REQUESTS[baseViewKey] ?? []
-  }, [baseViewKey, pgSection, planLens, source, statementLens])
+  }, [activeRelationLens, baseViewKey, pgSection, planLens, relationLevel, source, statementLens])
   const [segments, setSegments] = useState<readonly SegmentBound[]>([])
   const drawn = useRef<number | null>(null)
   const selectedHour = useRef(hour)
@@ -371,10 +380,14 @@ function App({ locale, onLocale, t }: {
           inFlight = true
           action.failed = undefined
           setDensePageState("loading")
+          const relation = request.group === undefined ? undefined : relationFilters
+          const fixed = request.group === undefined ? undefined : request.filters
           const options = {
             ...(pageCursor === undefined ? {} : { cursor: pageCursor }),
             ...(densePattern === "" ? {} : { search: [densePattern] }),
-            ...(pageContext === null ? {} : { filters: Object.fromEntries(pageContext.identity), typeId: pageContext.typeId }),
+            ...(relation === undefined
+              ? pageContext === null ? {} : { filters: Object.fromEntries(pageContext.identity), typeId: pageContext.typeId }
+              : Object.keys(relation).length === 0 && fixed === undefined ? {} : { filters: { ...relation, ...fixed } }),
           }
           void Promise.all([
             pageCursor === undefined ? base : Promise.resolve(null),
@@ -401,7 +414,7 @@ function App({ locale, onLocale, t }: {
       action.load()
     }, 250)
     return () => { clearTimeout(timer); controller.abort() }
-  }, [context, cursor, cursorSegment, densePattern, finishRefresh, hour, order, snapshotRefreshVersion, viewRequests])
+  }, [context, cursor, cursorSegment, densePattern, finishRefresh, hour, order, relationFilters, snapshotRefreshVersion, viewRequests])
   const denseMetadata = currentData.snapshotRows[0]
   const loadMoreDense = useCallback(() => {
     const next = denseMetadata?.hasMore === true ? denseMetadata.nextCursor : null
@@ -516,11 +529,19 @@ function App({ locale, onLocale, t }: {
     at: cursor === 0 ? null : cursor,
     view: viewOf(source, hostSection, pgSection),
     lens,
-    pgLens: source === "postgresql" && pgSection === "plans" ? planLens : statementLens,
+    pgLens: source === "postgresql" && (pgSection === "tables" || pgSection === "indexes")
+      ? activeRelationLens : source === "postgresql" && pgSection === "plans" ? planLens : statementLens,
+    pgLevel: relationLevel,
+    datid: relationFilters.datid ?? null,
+    schema: relationFilters.schemaname ?? null,
+    relid: relationFilters.relid ?? null,
+    indexrelid: relationFilters.indexrelid ?? null,
     sort: order,
-    row: selectedKey,
+    row: source === "postgresql" && (pgSection === "tables" || pgSection === "indexes")
+      ? relationSelectedKey
+      : selectedKey,
     find,
-  }), [cursor, find, hostSection, lens, order, pgSection, planLens, selectedKey, source, statementLens])
+  }), [activeRelationLens, cursor, find, hostSection, lens, order, pgSection, planLens, relationFilters, relationLevel, relationSelectedKey, selectedKey, source, statementLens])
   const steps = useRef<string | null>(null)
   useEffect(() => {
     if (window.location.pathname + window.location.search === address) return
@@ -537,6 +558,11 @@ function App({ locale, onLocale, t }: {
       setLens(opening.lens)
       setStatementLens(statementLensOf(opening.pgLens))
       setPlanLens(planLensOf(opening.pgLens))
+      const openingSection = pgSectionOf(opening.view)
+      setRelationLens(relationLensOf(openingSection, opening.pgLens))
+      setRelationLevel(opening.pgLevel)
+      setRelationFilters(relationFiltersOf(opening))
+      setRelationSelectedKey(relationSelectedKeyOf(opening))
       setOrder(opening.sort)
       setSelectedKey(opening.row)
       setFind(opening.find)
@@ -551,6 +577,34 @@ function App({ locale, onLocale, t }: {
     window.addEventListener("popstate", back)
     return () => window.removeEventListener("popstate", back)
   }, [clearEntityContext])
+  const navigateRelation = useCallback((navigation: RelationNavigation) => {
+    const nextSection = navigation.section === "pg_stat_user_tables" ? "tables" : "indexes"
+    const crossing = nextSection !== pgSection
+    const nextLens = relationLensOf(nextSection, activeRelationLens)
+    setPgSection(nextSection)
+    setRelationLens(nextLens)
+    setRelationLevel(navigation.group)
+    setRelationFilters(navigation.filters)
+    setRelationSelectedKey(navigation.selectedKey)
+    if (crossing) setFind("")
+    setOrder((current) => current !== null && !crossing && Object.hasOwn(relationRequest(navigation.section, nextLens, navigation.group).order ?? {}, current.column) ? current : null)
+  }, [activeRelationLens, pgSection])
+  const chooseRelationSelectedKey = useCallback((key: string | null) => {
+    setRelationSelectedKey(key)
+  }, [])
+  const choosePgSection = useCallback((next: PostgresSection) => {
+    const crossing = next !== pgSection
+    setRelationSelectedKey(null)
+    setPgSection(next)
+    if (next !== "tables" && next !== "indexes") return
+    setRelationLens((current) => relationLensOf(next, current))
+    setRelationFilters((current) => relationFiltersForSection(current, next))
+    if (crossing && (pgSection === "tables" || pgSection === "indexes")) setFind("")
+  }, [pgSection])
+  const chooseRelationLens = useCallback((next: RelationLens) => {
+    if (next !== relationLens) setOrder(null)
+    setRelationLens(next)
+  }, [relationLens])
   const changeHour = useCallback((next: number) => {
     followsLatest.current = true
     setHour(floorHour(next))
@@ -605,7 +659,7 @@ function App({ locale, onLocale, t }: {
     }
     setSource("events")
   }, [data])
-  const pgPresent = data.activities.length !== 0 || data.availableSections.some((name) => name.startsWith("pg_") && !name.startsWith("pg_log_"))
+  const pgPresent = data.postgresqlConfigured === true || data.activities.length !== 0 || data.availableSections.some((name) => name.startsWith("pg_") && !name.startsWith("pg_log_"))
   const eventsPresent = data.findings.length !== 0
   const helpItems = source === "postgresql"
     ? HELP_POSTGRESQL
@@ -680,7 +734,7 @@ function App({ locale, onLocale, t }: {
           {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onClose={() => setSelectedKey(null)} process={selectedProcess} processHistory={processHistory} t={t} ticksPerSecond={ticksPerSecond} />}
         </div>
       </>}
-      {!loading && error === null && hour !== null && source === "postgresql" && <PostgresView context={context} densePageState={densePageState} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onOrder={setOrder} onPattern={setFind} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} hour={hour} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onSection={setPgSection} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} section={pgSection} statementLens={statementLens} t={t} />}
+      {!loading && error === null && hour !== null && source === "postgresql" && <PostgresView context={context} densePageState={densePageState} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onOrder={setOrder} onPattern={setFind} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} hour={hour} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={chooseRelationSelectedKey} onSection={choosePgSection} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} statementLens={statementLens} t={t} />}
       {!loading && error === null && hour !== null && source === "events" && <EventsView cursor={cursor} data={data} history={findingPoints} hour={hour} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} onShowAll={() => { setEventScope(null); setSelectedFinding(null) }} resolution={findingResolution} resolved={findingRow} scope={eventScope} selected={selectedFinding} t={t} />}
     </section>
 
@@ -698,6 +752,43 @@ function statementLensOf(lens: PgLens): StatementLens {
 
 function planLensOf(lens: PgLens): PlanLens {
   return lens === "timing" || lens === "io" || lens === "identity" ? lens : "load"
+}
+
+function relationSectionOf(section: PostgresSection): RelationSection {
+  return section === "indexes" ? "pg_stat_user_indexes" : "pg_stat_user_tables"
+}
+
+function relationLensOf(section: PostgresSection, lens: PgLens): RelationLens {
+  const relation = relationSectionOf(section)
+  return isRelationLens(relation, lens) ? lens : relation === "pg_stat_user_tables" ? "access" : "usage"
+}
+
+function relationFiltersOf(address: ReturnType<typeof readAddress>): Readonly<Record<string, string>> {
+  return Object.fromEntries([
+    ["datid", address.datid],
+    ["schemaname", address.schema],
+    ["relid", address.relid],
+    ["indexrelid", address.indexrelid],
+  ].flatMap(([name, stored]) => stored === null ? [] : [[name, stored]]))
+}
+
+function relationSelectedKeyOf(address: ReturnType<typeof readAddress>): string | null {
+  if (address.pgLevel !== "object" || address.datid === null || address.row === null) return null
+  const section = pgSectionOf(address.view)
+  try {
+    const stored = JSON.parse(address.row) as unknown
+    const logical = section === "tables" ? "pg_stat_user_tables" : "pg_stat_user_indexes"
+    return Array.isArray(stored) && stored.length === 4 && stored[0] === logical && stored[1] === "object"
+      && stored[2] === address.datid && typeof stored[3] === "string" && /^[1-9]\d*$/.test(stored[3])
+      ? address.row
+      : null
+  } catch {
+    return null
+  }
+}
+
+function relationFiltersForSection(filters: Readonly<Record<string, string>>, section: "tables" | "indexes"): Readonly<Record<string, string>> {
+  return Object.fromEntries(Object.entries(filters).filter(([name]) => name !== "indexrelid" || section === "indexes"))
 }
 
 function initialTheme(): Theme {

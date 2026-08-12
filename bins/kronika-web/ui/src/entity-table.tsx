@@ -91,7 +91,7 @@ export function EntityTable({
   const [sizing, setSizing] = useState<ColumnSizingState>({})
   const ordering = useMemo<SortingState>(() => order === undefined
     ? []
-    : [{ id: order.column, desc: serverSorted === true ? true : order.descending }], [order, serverSorted])
+    : [{ id: order.column, desc: order.descending }], [order])
   const parent = useRef<HTMLDivElement>(null)
   const columns = useMemo<ColumnDef<DataRow>[]>(() => fields.map((field, index) => ({
     accessorFn: (row) => field.sortValue === undefined ? sortable(value(row, field.field), field.kind) : field.sortValue(row),
@@ -130,11 +130,6 @@ export function EntityTable({
     onColumnSizingChange: setSizing,
     state: { columnSizing: sizing, sorting: ordering },
   })
-  useEffect(() => {
-    if (serverSorted === true && order !== undefined && !order.descending) {
-      onOrder?.({ column: order.column, descending: true })
-    }
-  }, [onOrder, order, serverSorted])
   const head = useRef<HTMLDivElement>(null)
   const automatic = useRef<ColumnSizingState>({})
   useEffect(() => {
@@ -238,7 +233,9 @@ export function EntityTable({
 }
 
 export function nextServerOrder(current: TableOrder | undefined, column: string): TableOrder | null {
-  return current?.column === column && current.descending ? null : { column, descending: true }
+  if (current?.column !== column) return { column, descending: true }
+  if (current.descending) return { column, descending: false }
+  return null
 }
 
 export function filterTableRows(

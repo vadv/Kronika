@@ -11,10 +11,12 @@ import { fieldNameForLocator, loadSeries, loadSnapshot } from "./api"
 import { LabelHelp } from "./help"
 import { asNumber, formatUtc, humanBytes, humanDuration, identifier, measure, rawText, snapshot, value, type Locale, shownMoment } from "./model"
 import { decoratePostgresIntervalRow, findingSemanticField, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, physicalField, physicalFields, planDefaultOrder, postgresHistory, postgresIdentity, statementDefaultOrder, type PlanLens, type PostgresSemanticField, type StatementLens } from "./postgres-metrics"
+import { PostgresRelationsView } from "./postgres-relations-view"
+import type { RelationGroup, RelationLens, RelationNavigation } from "./postgres-relations"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 
-export type PostgresSection = "overview" | "activity" | "statements" | "plans" | "locks" | "databases"
+export type PostgresSection = "overview" | "activity" | "statements" | "plans" | "locks" | "databases" | "tables" | "indexes"
 
 export const ACTIVITY_DEFAULT_ORDER: TableOrder = { column: "query_duration_ms", descending: true }
 
@@ -141,6 +143,8 @@ const TABS: readonly { readonly id: PostgresSection; readonly icon: ReactNode; r
   { id: "plans", icon: <ScrollText size={13} />, sections: ["pg_store_plans", "pg_store_plans_info"] },
   { id: "locks", icon: <LockKeyhole size={13} />, sections: ["pg_locks"] },
   { id: "databases", icon: <Database size={13} />, sections: ["pg_stat_database"] },
+  { id: "tables", icon: <Database size={13} />, sections: ["pg_stat_user_tables"] },
+  { id: "indexes", icon: <KeyRound size={13} />, sections: ["pg_stat_user_indexes"] },
 ]
 
 export function PostgresView({
@@ -162,9 +166,16 @@ export function PostgresView({
   onContextClear,
   onFinding,
   onPlanLens,
+  onRelationLens,
+  onRelationNavigate,
+  onRelationSelectedKey,
   onSection,
   onStatementLens,
   planLens,
+  relationFilters,
+  relationLens,
+  relationLevel,
+  relationSelectedKey,
   section,
   statementLens,
   t,
@@ -187,17 +198,24 @@ export function PostgresView({
   readonly onContextClear: () => void
   readonly onFinding: (finding: Finding) => void
   readonly onSection: (section: PostgresSection) => void
+  readonly onRelationLens: (lens: RelationLens) => void
+  readonly onRelationNavigate: (navigation: RelationNavigation) => void
+  readonly onRelationSelectedKey: (key: string | null) => void
   readonly section: PostgresSection
   readonly statementLens: StatementLens
   readonly planLens: PlanLens
   readonly onStatementLens: (lens: StatementLens) => void
   readonly onPlanLens: (lens: PlanLens) => void
+  readonly relationFilters: Readonly<Record<string, string>>
+  readonly relationLens: RelationLens
+  readonly relationLevel: RelationGroup
+  readonly relationSelectedKey: string | null
   readonly t: Translate
 }) {
   const available = (name: string) => data.availableSections.includes(name)
   useEffect(() => {
     const tab = TABS.find((candidate) => candidate.id === section)
-    if (tab === undefined || tab.id === "plans" || tab.sections === undefined || tab.sections.some(available)) return
+    if (tab === undefined || tab.id === "plans" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)) return
     onSection("overview")
   }, [data.availableSections, onSection, section])
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
@@ -205,7 +223,7 @@ export function PostgresView({
     <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane={section === "statements" || section === "plans" ? "pg_running" : section === "activity" || section === "locks" ? "pg_waiting" : "health"} shownAt={shownAt} t={t} />
     <nav aria-label={t("pg.sections")} className="pg-tabs">
       {TABS.map((tab) => {
-        const enabled = tab.id === "plans" || tab.sections === undefined || tab.sections.some(available)
+        const enabled = tab.id === "plans" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)
         return <button aria-current={section === tab.id ? "page" : undefined} disabled={!enabled} key={tab.id} onClick={() => { if (section !== tab.id) onOrder(null); onSection(tab.id) }} title={enabled ? undefined : t("pg.no_section_data")} type="button">{tab.icon}<span>{t(`pg.section.${tab.id}`)}</span></button>
       })}
     </nav>
@@ -219,6 +237,8 @@ export function PostgresView({
     {section === "plans" && !available("pg_store_plans") && <p className="pg-empty" data-testid="pg-plans-empty">{t("pg.plans.empty")}</p>}
     {section === "locks" && <PgEntityView columns={LOCK_COLUMNS} context={context} onContextClear={onContextClear} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_locks" ? focusFinding : null} focus={focus} historyField={null} locale={locale} section="pg_locks" t={t} />}
     {section === "databases" && <PgEntityView columns={DATABASE_COLUMNS} context={context} onContextClear={onContextClear} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_database" ? focusFinding : null} focus={focus} historyField="xact_commit" locale={locale} section="pg_stat_database" t={t} />}
+    {section === "tables" && <PostgresRelationsView cursor={cursor} data={data} densePageState={densePageState} filters={relationFilters} hour={hour} lens={relationLens} level={relationLevel} locale={locale} onLens={onRelationLens} onLoadMore={onLoadMore} onNavigate={onRelationNavigate} onOrder={onOrder} onPattern={onPattern} onRetry={onRetry} onSelectedKey={onRelationSelectedKey} order={order} pattern={pattern} section="pg_stat_user_tables" selectedKey={relationSelectedKey} t={t} />}
+    {section === "indexes" && <PostgresRelationsView cursor={cursor} data={data} densePageState={densePageState} filters={relationFilters} hour={hour} lens={relationLens} level={relationLevel} locale={locale} onLens={onRelationLens} onLoadMore={onLoadMore} onNavigate={onRelationNavigate} onOrder={onOrder} onPattern={onPattern} onRetry={onRetry} onSelectedKey={onRelationSelectedKey} order={order} pattern={pattern} section="pg_stat_user_indexes" selectedKey={relationSelectedKey} t={t} />}
   </>
 }
 
@@ -422,7 +442,7 @@ function PgEntityView({
   const allRows = data.sections[section] ?? NO_ROWS
   const dense = section === "pg_stat_statements" || section === "pg_store_plans"
   const activeOrder = useMemo(() => order !== undefined && columns.some((column) => column.field === order.column && column.sortable === true)
-    ? { column: order.column, descending: true }
+    ? order
     : defaultOrder, [columns, defaultOrder, order])
   const ranked = useMemo(() => dense
     ? allRows.map(decoratePostgresIntervalRow)
@@ -495,7 +515,7 @@ export function tableState(
       <span>{pattern?.trim() ? t("pg.table.filter", { pattern: pattern.trim() }) : t("pg.table.no_filter")}</span>
       <span>{semanticOrder === null || serverOrder === null
         ? t("pg.table.order_default")
-        : t("pg.table.order", { semantic: t(`pg.field.${semanticOrder}.label`), physical: serverOrder, direction: t("pg.table.desc") })}</span>
+        : t("pg.table.order", { semantic: t(`pg.field.${semanticOrder}.label`), physical: serverOrder, direction: t(`pg.table.${metadata?.orderDirection ?? (order?.descending === false ? "asc" : "desc")}`) })}</span>
     </>}
     <strong>{focusPreview === null ? shown : t("pg.table.focus_exact")}</strong>
   </>
