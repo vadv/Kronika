@@ -123,6 +123,11 @@ impl FindingBuilder {
         Ok(builder)
     }
 
+    /// Start of the 15-minute comparison window.
+    pub(crate) const fn window_start(&self) -> i64 {
+        self.cutoff
+    }
+
     /// Whether a prior segment can contribute a required predecessor.
     pub(crate) fn needs(&self, segment: &SegmentRef) -> bool {
         segment.sections().iter().any(|section| {

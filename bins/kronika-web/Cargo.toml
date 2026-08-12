@@ -11,6 +11,7 @@ repository.workspace = true
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
+flate2 = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
@@ -25,6 +26,11 @@ kronika-format = { path = "../../crates/kronika-format" }
 kronika-layout = { path = "../../crates/kronika-layout" }
 kronika-writer = { path = "../../crates/kronika-writer" }
 tempfile = "3"
+
+[build-dependencies]
+base64 = "0.22"
+flate2 = "1"
+sha2 = "0.10"
 
 [lints]
 workspace = true

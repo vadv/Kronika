@@ -4,20 +4,55 @@ const DEFAULT_PAGE_SIZE: usize = 100;
 const MAX_PAGE_SIZE: usize = 1_000;
 const MAX_QUERY_BYTES: usize = 64 * 1024;
 const MAX_SECTION_BYTES: usize = 128;
+const MAX_SNAPSHOT_SECTIONS: usize = 16;
+/// Maximum rows retained by one snapshot top-K ranking.
+const MAX_SNAPSHOT_TOP: usize = 5_000;
 const MAX_FIELDS: usize = 256;
 const MAX_FILTERS: usize = 64;
+const MAX_ORDER_FIELDS: usize = 16;
 
 /// The requests the server answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Route {
     /// Actual finished/current segment catalog.
     Catalog(Window),
+    Hour(HourRequest),
     /// One logical indexed series in one explicit segment.
     Index(SegmentRequest),
     /// Projected full-resolution history in one explicit segment.
     History(DataRequest),
     /// One stable page of physical rows in one explicit segment.
     Rows(RowsRequest),
+    Snapshot(SnapshotRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SnapshotRequest {
+    pub(crate) segment_id: i64,
+    pub(crate) at: i64,
+    pub(crate) sections: Vec<String>,
+    pub(crate) fields: Vec<String>,
+    pub(crate) by: Vec<String>,
+    pub(crate) top: Option<usize>,
+    pub(crate) text: Option<usize>,
+    pub(crate) filters: Vec<Filter>,
+    pub(crate) type_id: Option<u32>,
+    /// Requires `type_id` and addresses a finished source row.
+    pub(crate) row_ordinal: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HourRequest {
+    pub(crate) window: Window,
+    pub(crate) series: Option<SeriesRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SeriesRequest {
+    pub(crate) section: String,
+    pub(crate) fields: Vec<String>,
+    pub(crate) filters: Vec<Filter>,
+    pub(crate) type_id: Option<u32>,
 }
 
 /// Optional timestamp bounds for catalog listing only.
@@ -54,6 +89,7 @@ pub(crate) struct DataRequest {
     pub(crate) segment: SegmentRequest,
     pub(crate) fields: Vec<String>,
     pub(crate) filters: Vec<Filter>,
+    pub(crate) type_id: Option<u32>,
     pub(crate) after: Option<ActiveCursor>,
 }
 
@@ -105,10 +141,16 @@ pub(crate) fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError
     if path == "/api/catalog" {
         return parse_catalog(query).map(Route::Catalog);
     }
+    if path == "/api/hour" {
+        return parse_hour(query).map(Route::Hour);
+    }
     let tail = path
         .strip_prefix("/api/segments/")
         .ok_or(RouteError::NoSuchPath)?;
     let pieces: Vec<&str> = tail.split('/').collect();
+    if pieces.len() == 2 && pieces[1] == "snapshot" && !pieces[0].is_empty() {
+        return parse_snapshot(number("segment_id", pieces[0])?, query).map(Route::Snapshot);
+    }
     if pieces.len() != 4 || pieces[1] != "sections" || pieces.iter().any(|piece| piece.is_empty()) {
         return Err(RouteError::NoSuchPath);
     }
@@ -128,6 +170,126 @@ pub(crate) fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError
         "rows" => parse_rows(segment, query).map(Route::Rows),
         _ => Err(RouteError::NoSuchPath),
     }
+}
+
+fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, RouteError> {
+    let mut at = None;
+    let mut sections = Vec::new();
+    let mut fields = Vec::new();
+    let mut by = Vec::new();
+    let mut top = None;
+    let mut text = None;
+    let mut filters: Vec<Filter> = Vec::new();
+    let mut type_id = None;
+    let mut row_ordinal = None;
+    for (raw_name, raw_value) in pairs(query)? {
+        match raw_name {
+            "at" if at.is_none() => at = Some(number("at", raw_value)?),
+            "section" => {
+                let section = decoded("section", raw_value, false)?;
+                if section.is_empty() || section.len() > MAX_SECTION_BYTES {
+                    return Err(RouteError::BadParameter("section".to_owned()));
+                }
+                if sections.contains(&section) || sections.len() >= MAX_SNAPSHOT_SECTIONS {
+                    return Err(RouteError::BadParameter("section".to_owned()));
+                }
+                sections.push(section);
+            }
+            "field" => {
+                let field = decoded("field", raw_value, true)?;
+                if field.is_empty() || fields.contains(&field) || fields.len() >= MAX_FIELDS {
+                    return Err(RouteError::BadParameter("field".to_owned()));
+                }
+                fields.push(field);
+            }
+            "by" => {
+                let field = decoded("by", raw_value, true)?;
+                if field.is_empty() || by.contains(&field) || by.len() >= MAX_ORDER_FIELDS {
+                    return Err(RouteError::BadParameter("by".to_owned()));
+                }
+                by.push(field);
+            }
+            "type_id" if type_id.is_none() => {
+                type_id = Some(unsigned_32("type_id", raw_value)?);
+            }
+            "row_ordinal" if row_ordinal.is_none() => {
+                row_ordinal = Some(unsigned_64("row_ordinal", raw_value)?);
+            }
+            "text" if text.is_none() => {
+                let kept = number("text", raw_value)?;
+                if kept <= 0 {
+                    return Err(RouteError::BadParameter("text".to_owned()));
+                }
+                text = Some(usize::try_from(kept).unwrap_or(usize::MAX));
+            }
+            "top" if top.is_none() => {
+                let count = number("top", raw_value)?;
+                top = Some(
+                    usize::try_from(count)
+                        .ok()
+                        .filter(|count| (1..=MAX_SNAPSHOT_TOP).contains(count))
+                        .ok_or_else(|| RouteError::BadParameter("top".to_owned()))?,
+                );
+            }
+            other => {
+                let name = decoded("parameter", other, true)?;
+                let Some(column) = name.strip_prefix("where.") else {
+                    return Err(RouteError::BadParameter(name));
+                };
+                if column.is_empty()
+                    || filters.len() >= MAX_FILTERS
+                    || filters.iter().any(|filter| filter.column == column)
+                {
+                    return Err(RouteError::BadParameter("where".to_owned()));
+                }
+                filters.push(Filter {
+                    column: column.to_owned(),
+                    value: decoded(&name, raw_value, true)?,
+                });
+            }
+        }
+    }
+    validate_snapshot_shape(&sections, &by, top, &filters, type_id, row_ordinal)?;
+    Ok(SnapshotRequest {
+        segment_id,
+        at: at.ok_or_else(|| RouteError::BadParameter("at".to_owned()))?,
+        sections,
+        fields,
+        by,
+        top,
+        text,
+        filters,
+        type_id,
+        row_ordinal,
+    })
+}
+
+fn validate_snapshot_shape(
+    sections: &[String],
+    by: &[String],
+    top: Option<usize>,
+    filters: &[Filter],
+    type_id: Option<u32>,
+    row_ordinal: Option<u64>,
+) -> Result<(), RouteError> {
+    if sections.is_empty() {
+        return Err(RouteError::BadParameter("section".to_owned()));
+    }
+    if sections.len() != 1
+        && (!by.is_empty()
+            || top.is_some()
+            || !filters.is_empty()
+            || type_id.is_some()
+            || row_ordinal.is_some())
+    {
+        return Err(RouteError::BadParameter("section".to_owned()));
+    }
+    if row_ordinal.is_some()
+        && (type_id.is_none() || !by.is_empty() || top.is_some() || !filters.is_empty())
+    {
+        return Err(RouteError::BadParameter("row_ordinal".to_owned()));
+    }
+    Ok(())
 }
 
 fn parse_catalog(query: &str) -> Result<Window, RouteError> {
@@ -151,12 +313,60 @@ fn parse_catalog(query: &str) -> Result<Window, RouteError> {
     Ok(window)
 }
 
+fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
+    let (fields, filters, extras) = data_parameters(query)?;
+    let mut window = Window::default();
+    let mut section = None;
+    let mut type_id = None;
+    for (name, value) in extras {
+        match name.as_str() {
+            "from" if window.from.is_none() => window.from = Some(number("from", &value)?),
+            "to" if window.to.is_none() => window.to = Some(number("to", &value)?),
+            "section" if section.is_none() => {
+                if value.is_empty() || value.len() > MAX_SECTION_BYTES {
+                    return Err(RouteError::BadParameter("section".to_owned()));
+                }
+                section = Some(value);
+            }
+            "type_id" if type_id.is_none() => type_id = Some(unsigned_32("type_id", &value)?),
+            _ => return Err(RouteError::BadParameter(name)),
+        }
+    }
+    if window
+        .from
+        .zip(window.to)
+        .is_some_and(|(from, to)| from > to)
+    {
+        return Err(RouteError::BadParameter("from".to_owned()));
+    }
+    let Some(section) = section else {
+        if fields.is_empty() && filters.is_empty() && type_id.is_none() {
+            return Ok(HourRequest {
+                window,
+                series: None,
+            });
+        }
+        return Err(RouteError::BadParameter("section".to_owned()));
+    };
+    Ok(HourRequest {
+        window,
+        series: Some(SeriesRequest {
+            section,
+            fields,
+            filters,
+            type_id,
+        }),
+    })
+}
+
 fn parse_data(segment: SegmentRequest, query: &str) -> Result<DataRequest, RouteError> {
     let (fields, filters, extras) = data_parameters(query)?;
     let mut after = None;
+    let mut type_id = None;
     for (name, value) in extras {
         match name.as_str() {
             "after" if after.is_none() => after = Some(active_cursor(&value)?),
+            "type_id" if type_id.is_none() => type_id = Some(unsigned_32("type_id", &value)?),
             _ => return Err(RouteError::BadParameter(name)),
         }
     }
@@ -165,6 +375,7 @@ fn parse_data(segment: SegmentRequest, query: &str) -> Result<DataRequest, Route
         segment,
         fields,
         filters,
+        type_id,
         after,
     })
 }
@@ -175,6 +386,7 @@ fn parse_rows(segment: SegmentRequest, query: &str) -> Result<RowsRequest, Route
     let mut page_size = DEFAULT_PAGE_SIZE;
     let mut cursor = None;
     let mut after = None;
+    let mut type_id = None;
     let mut saw_order = false;
     let mut saw_page_size = false;
     for (name, value) in extras {
@@ -197,6 +409,7 @@ fn parse_rows(segment: SegmentRequest, query: &str) -> Result<RowsRequest, Route
             }
             "cursor" if cursor.is_none() && !value.is_empty() => cursor = Some(value),
             "after" if after.is_none() => after = Some(active_cursor(&value)?),
+            "type_id" if type_id.is_none() => type_id = Some(unsigned_32("type_id", &value)?),
             _ => return Err(RouteError::BadParameter(name)),
         }
     }
@@ -206,6 +419,7 @@ fn parse_rows(segment: SegmentRequest, query: &str) -> Result<RowsRequest, Route
             segment,
             fields,
             filters,
+            type_id,
             after,
         },
         order,
@@ -317,6 +531,18 @@ fn decoded(name: &str, value: &str, plus_as_space: bool) -> Result<String, Route
 }
 
 fn number(name: &str, value: &str) -> Result<i64, RouteError> {
+    value
+        .parse()
+        .map_err(|_error| RouteError::BadParameter(name.to_owned()))
+}
+
+fn unsigned_32(name: &str, value: &str) -> Result<u32, RouteError> {
+    value
+        .parse()
+        .map_err(|_error| RouteError::BadParameter(name.to_owned()))
+}
+
+fn unsigned_64(name: &str, value: &str) -> Result<u64, RouteError> {
     value
         .parse()
         .map_err(|_error| RouteError::BadParameter(name.to_owned()))

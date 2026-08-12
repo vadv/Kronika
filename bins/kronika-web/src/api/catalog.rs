@@ -29,21 +29,27 @@ pub(super) fn prepare(
         window.from.map_or(Unbounded, Included),
         window.to.map_or(Unbounded, Included),
     ))?;
-    log_warnings(&listing.warnings);
-    eprintln!(
-        "kronika-web: catalog_open segments={} warnings={} elapsed_us={}",
-        listing.segments.len(),
-        listing.warnings.len(),
-        started.elapsed().as_micros(),
-    );
-    Ok(PreparedCatalog {
+    log_open(listing.segments.len(), &listing.warnings, started);
+    Ok(PreparedCatalog::from_listing(
         listing,
         window,
         configured_sources,
-    })
+    ))
 }
 
 impl PreparedCatalog {
+    pub(super) const fn from_listing(
+        listing: Listing,
+        window: Window,
+        configured_sources: u32,
+    ) -> Self {
+        Self {
+            listing,
+            window,
+            configured_sources,
+        }
+    }
+
     pub(super) const fn meta() -> ResponseMeta {
         ResponseMeta::ok(CachePolicy::Revalidate)
     }
@@ -89,6 +95,19 @@ impl PreparedCatalog {
         }
         Ok(())
     }
+}
+
+pub(super) fn log_open(
+    segment_count: usize,
+    warnings: &[StoreWarning],
+    started: std::time::Instant,
+) {
+    log_warnings(warnings);
+    eprintln!(
+        "kronika-web: catalog_open segments={segment_count} warnings={} elapsed_us={}",
+        warnings.len(),
+        started.elapsed().as_micros(),
+    );
 }
 
 fn finished(segment: &SegmentRef) -> Value {

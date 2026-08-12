@@ -1,8 +1,8 @@
 use kronika_reader::{Cell, Dictionary};
 use kronika_registry::contract;
-use serde_json::json;
+use serde_json::{Value, json};
 
-use super::{cell, projected_layout};
+use super::{cell, projected_layout, shorten};
 
 #[test]
 fn sixty_four_bit_values_are_decimal_strings() {
@@ -60,5 +60,32 @@ fn projected_layout_marks_layout_absent_fields_without_dropping_them() {
     assert_eq!(
         value["columns"][1].as_object().map(serde_json::Map::len),
         Some(2)
+    );
+}
+
+#[test]
+fn shortening_counts_characters_and_leaves_short_text_and_numbers_alone() {
+    assert_eq!(shorten(json!("привет мир"), 6), json!("привет…"));
+    assert_eq!(shorten(json!("привет"), 6), json!("привет"));
+    assert_eq!(shorten(json!(42), 2), json!(42));
+    assert_eq!(shorten(Value::Null, 2), Value::Null);
+    assert_eq!(
+        shorten(
+            json!({
+                "representation": "text",
+                "stored_text": "QUERY THAT DOES NOT FIT",
+                "full_len": "23",
+                "truncated": false,
+                "sha256": null,
+            }),
+            5,
+        ),
+        json!({
+            "representation": "text",
+            "stored_text": "QUERY…",
+            "full_len": "23",
+            "truncated": false,
+            "sha256": null,
+        })
     );
 }

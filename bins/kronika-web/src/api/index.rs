@@ -9,11 +9,12 @@ use kronika_index::{
     series_keys,
 };
 use kronika_reader::{SegmentKind, SegmentRef};
-use kronika_registry::{contract, section_implementation};
+use kronika_registry::{contract, logical_section_name, section_implementation};
 use serde_json::{Value, json};
 
 use super::render::record;
 use super::{ApiError, CachePolicy, Prepared, ResponseMeta, explicit_segment};
+use crate::encoding::etag_matches;
 use crate::route::SegmentRequest;
 
 pub(crate) struct PreparedIndex {
@@ -84,20 +85,36 @@ impl PreparedIndex {
         {
             return Ok(());
         }
-        for block in self.resource.index.blocks {
+        stream_series(&self.logical_name, self.resource, emit, cancelled).map(|_connected| ())
+    }
+}
+
+pub(super) fn stream_series(
+    logical_name: &str,
+    resource: ResourceIndex,
+    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    cancelled: &impl Fn() -> bool,
+) -> Result<bool, ApiError> {
+    {
+        for block in resource.index.blocks {
             if let SeriesBlock::Findings(block) = block {
-                if !stream_findings(block, emit, cancelled)? {
-                    return Ok(());
+                let finding_logical_name = if block.type_id == 0 {
+                    "health"
+                } else {
+                    logical_section_name(block.type_id).ok_or(ApiError::NoSuchSection)?
+                };
+                if !stream_findings(finding_logical_name, block, emit, cancelled)? {
+                    return Ok(false);
                 }
                 continue;
             }
             if cancelled()
                 || !emit(record(json!({
                     "record": "layout",
-                    "layout": block_layout(&self.logical_name, &block)?,
+                    "layout": block_layout(logical_name, &block)?,
                 }))?)
             {
-                return Ok(());
+                return Ok(false);
             }
             let health_series = match &block {
                 SeriesBlock::OsHealth(_) => Some("os_health"),
@@ -121,7 +138,7 @@ impl PreparedIndex {
                                 "value": point.value,
                             }))?)
                         {
-                            return Ok(());
+                            return Ok(false);
                         }
                     }
                 }
@@ -137,7 +154,7 @@ impl PreparedIndex {
                                 "value": point.value,
                             }))?)
                         {
-                            return Ok(());
+                            return Ok(false);
                         }
                     }
                 }
@@ -153,18 +170,19 @@ impl PreparedIndex {
                                 "value": point.count,
                             }))?)
                         {
-                            return Ok(());
+                            return Ok(false);
                         }
                     }
                 }
                 SeriesBlock::Findings(_) => return Err(ApiError::NoSuchSection),
             }
         }
-        Ok(())
+        Ok(true)
     }
 }
 
 fn stream_findings(
+    logical_name: &str,
     block: FindingBlock,
     emit: &mut impl FnMut(Vec<u8>) -> bool,
     cancelled: &impl Fn() -> bool,
@@ -172,6 +190,7 @@ fn stream_findings(
     if cancelled()
         || !emit(record(json!({
             "record": "findings",
+            "logical_name": logical_name,
             "type_id": block.type_id.to_string(),
             "total_hits": block.total_hits,
             "truncated": block.truncated,
@@ -185,6 +204,7 @@ fn stream_findings(
         }
         let mut value = json!({
             "record": "finding",
+            "logical_name": logical_name,
             "kind": finding_kind(finding.kind),
             "type_id": block.type_id.to_string(),
             "field_ordinal": finding.field_ordinal,
@@ -242,8 +262,8 @@ fn resource_meta(kind: SegmentKind, checksum: Option<u32>) -> Result<ResponseMet
             })?;
             Ok(ResponseMeta {
                 status: StatusCode::OK,
-                cache: CachePolicy::Revalidate,
-                etag: Some(format!("\"{checksum:08x}\"")),
+                cache: CachePolicy::Immutable,
+                etag: Some(format!("W/\"{checksum:08x}\"")),
             })
         }
         SegmentKind::Active => Ok(ResponseMeta::ok(CachePolicy::NoStore)),
@@ -331,16 +351,6 @@ fn health_layout(series: &str) -> Value {
                 "1001003",
             ],
         },
-    })
-}
-
-fn etag_matches(offered: &str, current: &str) -> bool {
-    offered.split(',').any(|candidate| {
-        let candidate = candidate.trim();
-        if candidate == "*" {
-            return true;
-        }
-        candidate.strip_prefix("W/").unwrap_or(candidate).trim() == current
     })
 }
 

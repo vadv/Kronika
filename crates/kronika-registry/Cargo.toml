@@ -18,5 +18,8 @@ bytes = "1"
 parquet = { version = "55", default-features = false, features = ["arrow", "zstd"] }
 thrift = { version = "0.17", default-features = false }
 
+[dev-dependencies]
+serde_json = "1"
+
 [lints]
 workspace = true

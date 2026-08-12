@@ -88,67 +88,14 @@ impl PreparedHistory {
         if let Some(health) = self.health {
             return self.stream_health(health, emit, cancelled);
         }
-        for plan in &self.plans {
-            if cancelled() {
-                return Ok(());
-            }
-            let fields = plan
-                .fields
-                .iter()
-                .map(|field| {
-                    (
-                        field.name.as_str(),
-                        field.column.and_then(|name| plan.contract.column(name)),
-                    )
-                })
-                .collect::<Vec<_>>();
-            if !emit(record(json!({
-                "record": "layout",
-                "layout": projected_layout(&self.logical_name, plan.contract, &fields),
-            }))?) {
-                return Ok(());
-            }
-            if !plan.applies() {
-                continue;
-            }
-            let mut failure = None;
-            let mut connected = true;
-            let mut chunk = Vec::with_capacity(ROW_CHUNK_ROWS);
-            self.segment.visit_rows(
-                plan.type_id,
-                &plan.projection,
-                plan.start_row,
-                usize::MAX,
-                |ordinal, row| {
-                    if cancelled() {
-                        connected = false;
-                        return false;
-                    }
-                    chunk.push((ordinal, row));
-                    if chunk.len() < ROW_CHUNK_ROWS {
-                        return true;
-                    }
-                    match emit_chunk(&self.segment, plan, &mut chunk, emit, cancelled) {
-                        Ok(still_connected) => connected = still_connected,
-                        Err(error) => failure = Some(error),
-                    }
-                    connected && failure.is_none()
-                },
-            )?;
-            if failure.is_none() && connected && !chunk.is_empty() {
-                match emit_chunk(&self.segment, plan, &mut chunk, emit, cancelled) {
-                    Ok(still_connected) => connected = still_connected,
-                    Err(error) => failure = Some(error),
-                }
-            }
-            if let Some(error) = failure {
-                return Err(error);
-            }
-            if !connected {
-                return Ok(());
-            }
-        }
-        Ok(())
+        stream_plans(
+            &self.segment,
+            &self.logical_name,
+            &self.plans,
+            emit,
+            cancelled,
+        )
+        .map(|_connected| ())
     }
 
     fn stream_health(
@@ -313,6 +260,76 @@ fn emit_chunk(
             "identity": identity,
             "values": values,
         }))?) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+pub(super) fn stream_plans(
+    segment: &Segment,
+    logical_name: &str,
+    plans: &[Plan],
+    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    cancelled: &impl Fn() -> bool,
+) -> Result<bool, ApiError> {
+    for plan in plans {
+        if cancelled() {
+            return Ok(false);
+        }
+        let fields = plan
+            .fields
+            .iter()
+            .map(|field| {
+                (
+                    field.name.as_str(),
+                    field.column.and_then(|name| plan.contract.column(name)),
+                )
+            })
+            .collect::<Vec<_>>();
+        if !emit(record(json!({
+            "record": "layout",
+            "layout": projected_layout(logical_name, plan.contract, &fields),
+        }))?) {
+            return Ok(false);
+        }
+        if !plan.applies() {
+            continue;
+        }
+        let mut failure = None;
+        let mut connected = true;
+        let mut chunk = Vec::with_capacity(ROW_CHUNK_ROWS);
+        segment.visit_rows(
+            plan.type_id,
+            &plan.projection,
+            plan.start_row,
+            usize::MAX,
+            |ordinal, row| {
+                if cancelled() {
+                    connected = false;
+                    return false;
+                }
+                chunk.push((ordinal, row));
+                if chunk.len() < ROW_CHUNK_ROWS {
+                    return true;
+                }
+                match emit_chunk(segment, plan, &mut chunk, emit, cancelled) {
+                    Ok(still_connected) => connected = still_connected,
+                    Err(error) => failure = Some(error),
+                }
+                connected && failure.is_none()
+            },
+        )?;
+        if failure.is_none() && connected && !chunk.is_empty() {
+            match emit_chunk(segment, plan, &mut chunk, emit, cancelled) {
+                Ok(still_connected) => connected = still_connected,
+                Err(error) => failure = Some(error),
+            }
+        }
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        if !connected {
             return Ok(false);
         }
     }

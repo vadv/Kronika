@@ -2,22 +2,15 @@ use hyper::StatusCode;
 use kronika_index::{Finding, FindingBlock, FindingKind};
 use kronika_reader::SegmentKind;
 
-use super::{etag_matches, health_layout, resource_meta, section_layout, stream_findings};
+use super::{health_layout, resource_meta, section_layout, stream_findings};
 use crate::api::CachePolicy;
 
 #[test]
-fn entity_tag_matching_accepts_lists_wildcards_and_weak_validators() {
-    assert!(etag_matches("\"other\", W/\"1234abcd\"", "\"1234abcd\""));
-    assert!(etag_matches("*", "\"1234abcd\""));
-    assert!(!etag_matches("\"1234abce\"", "\"1234abcd\""));
-}
-
-#[test]
-fn every_finished_index_revalidates_even_when_a_cold_build_was_not_published() {
+fn a_finished_index_is_kept_by_the_browser_as_long_as_its_segment_lasts() {
     let meta = resource_meta(SegmentKind::Finished, Some(0x1234_abcd)).unwrap();
     assert_eq!(meta.status, StatusCode::OK);
-    assert_eq!(meta.cache, CachePolicy::Revalidate);
-    assert_eq!(meta.etag.as_deref(), Some("\"1234abcd\""));
+    assert_eq!(meta.cache, CachePolicy::Immutable);
+    assert_eq!(meta.etag.as_deref(), Some("W/\"1234abcd\""));
     assert!(resource_meta(SegmentKind::Finished, None).is_err());
 }
 
@@ -78,6 +71,7 @@ fn event_stream_contains_only_sparse_locator_facts() {
     };
     let mut rows = Vec::new();
     let streamed = stream_findings(
+        "pg_log_lifecycle",
         block,
         &mut |line| {
             rows.push(serde_json::from_slice::<serde_json::Value>(&line).expect("finding JSON"));
@@ -92,6 +86,7 @@ fn event_stream_contains_only_sparse_locator_facts() {
         rows[0],
         serde_json::json!({
             "record": "findings",
+            "logical_name": "pg_log_lifecycle",
             "type_id": "2006001",
             "total_hits": 1,
             "truncated": false,
@@ -101,6 +96,7 @@ fn event_stream_contains_only_sparse_locator_facts() {
         rows[1],
         serde_json::json!({
             "record": "finding",
+            "logical_name": "pg_log_lifecycle",
             "kind": "event",
             "type_id": "2006001",
             "field_ordinal": 0,
@@ -137,6 +133,7 @@ fn error_event_stream_exposes_only_the_stored_category_and_locator() {
     };
     let mut rows = Vec::new();
     stream_findings(
+        "pg_log_errors",
         block,
         &mut |line| {
             rows.push(serde_json::from_slice::<serde_json::Value>(&line).expect("finding JSON"));
@@ -149,6 +146,7 @@ fn error_event_stream_exposes_only_the_stored_category_and_locator() {
         rows[1],
         serde_json::json!({
             "record": "finding",
+            "logical_name": "pg_log_errors",
             "kind": "event",
             "type_id": "2001001",
             "field_ordinal": 0,

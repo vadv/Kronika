@@ -10,17 +10,18 @@ use crate::route::{ActiveCursor, Route};
 
 mod catalog;
 mod history;
+mod hour;
 mod index;
 mod query;
 mod render;
 mod rows;
+mod snapshot;
 
 /// Cache policy applied centrally after preparation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CachePolicy {
     /// Mutable catalog, active data, and errors.
     NoStore,
-    /// Mutable catalog or finished IDX, revalidated before reuse.
     Revalidate,
     /// Immutable finished history or rows.
     Immutable,
@@ -59,7 +60,9 @@ pub(crate) enum Prepared {
     Catalog(catalog::PreparedCatalog),
     Index(index::PreparedIndex),
     History(history::PreparedHistory),
+    Hour(hour::PreparedHour),
     Rows(rows::PreparedRows),
+    Snapshot(snapshot::PreparedSnapshot),
     Empty(ResponseMeta),
 }
 
@@ -70,7 +73,9 @@ impl Prepared {
             Self::Catalog(_prepared) => catalog::PreparedCatalog::meta(),
             Self::Index(prepared) => prepared.meta(),
             Self::History(prepared) => prepared.meta(),
+            Self::Hour(prepared) => prepared.meta(),
             Self::Rows(prepared) => prepared.meta(),
+            Self::Snapshot(prepared) => prepared.meta(),
             Self::Empty(meta) => meta.clone(),
         }
     }
@@ -85,7 +90,9 @@ impl Prepared {
             Self::Catalog(prepared) => prepared.stream(emit, cancelled),
             Self::Index(prepared) => prepared.stream(emit, cancelled),
             Self::History(prepared) => prepared.stream(emit, cancelled),
+            Self::Hour(prepared) => prepared.stream(emit, cancelled),
             Self::Rows(prepared) => prepared.stream(emit, cancelled),
+            Self::Snapshot(prepared) => prepared.stream(emit, cancelled),
             Self::Empty(_meta) => Ok(()),
         }
     }
@@ -181,20 +188,31 @@ pub(crate) fn prepare(
         Route::Catalog(window) => catalog::prepare(root, window, sources).map(Prepared::Catalog),
         Route::Index(request) => index::prepare(root, request, if_none_match),
         Route::History(request) => history::prepare(root, request).map(Prepared::History),
+        Route::Hour(request) => hour::prepare(root, request, sources).map(Prepared::Hour),
         Route::Rows(request) => rows::prepare(root, request).map(Prepared::Rows),
+        Route::Snapshot(request) => snapshot::prepare(root, request).map(Prepared::Snapshot),
     }
 }
 
 fn explicit_segment(root: &Path, id: i64) -> Result<(Reader, SegmentRef), ApiError> {
+    let (reader, segment, _segments) = explicit_segment_with_listing(root, id)?;
+    Ok((reader, segment))
+}
+
+fn explicit_segment_with_listing(
+    root: &Path,
+    id: i64,
+) -> Result<(Reader, SegmentRef, Vec<SegmentRef>), ApiError> {
     let started = std::time::Instant::now();
     let reader = Reader::open(root)?;
     let listing = reader.catalog_segments(..)?;
     log_warnings(&listing.warnings);
-    let segment = listing
-        .segments
-        .into_iter()
-        .find(|segment| segment.id() == id)
+    let mut segments = listing.segments;
+    let index = segments
+        .iter()
+        .position(|segment| segment.id() == id)
         .ok_or(ApiError::NoSuchSegment)?;
+    let segment = segments.remove(index);
     eprintln!(
         "kronika-web: segment_open id={} kind={} sections={} elapsed_us={}",
         segment.id(),
@@ -205,7 +223,7 @@ fn explicit_segment(root: &Path, id: i64) -> Result<(Reader, SegmentRef), ApiErr
         segment.sections().len(),
         started.elapsed().as_micros(),
     );
-    Ok((reader, segment))
+    Ok((reader, segment, segments))
 }
 
 fn active_tail(

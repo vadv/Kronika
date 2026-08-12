@@ -1,5 +1,6 @@
 use super::{
-    ActiveCursor, DataRequest, Filter, Order, Route, RouteError, SegmentRequest, Window, parse,
+    ActiveCursor, DataRequest, Filter, MAX_SNAPSHOT_TOP, Order, Route, RouteError, SegmentRequest,
+    Window, parse,
 };
 
 #[test]
@@ -60,9 +61,122 @@ fn repeated_fields_and_exact_where_parameters_keep_request_order() {
                     value: "9".to_owned(),
                 },
             ],
+            type_id: None,
             after: None,
         })
     );
+}
+
+#[test]
+fn physical_layout_selection_is_available_to_every_generic_row_resource() {
+    let Route::History(history) = parse(
+        "/api/segments/7/sections/pg_stat_statements/history",
+        Some("field=calls&type_id=1002001"),
+    )
+    .expect("typed history") else {
+        panic!("history route");
+    };
+    assert_eq!(history.type_id, Some(1_002_001));
+
+    let Route::Rows(rows) = parse(
+        "/api/segments/7/sections/pg_store_plans/rows",
+        Some("field=plan&type_id=1004001"),
+    )
+    .expect("typed rows") else {
+        panic!("rows route");
+    };
+    assert_eq!(rows.data.type_id, Some(1_004_001));
+
+    let Route::Hour(hour) = parse(
+        "/api/hour",
+        Some("from=1&to=2&section=pg_stat_statements&field=calls&type_id=1002002"),
+    )
+    .expect("typed hour") else {
+        panic!("hour route");
+    };
+    assert_eq!(
+        hour.series.and_then(|series| series.type_id),
+        Some(1_002_002)
+    );
+}
+
+#[test]
+fn snapshot_accepts_order_candidates_and_one_exact_locator() {
+    let Route::Snapshot(ordered) = parse(
+        "/api/segments/7/snapshot",
+        Some("at=9&section=pg_stat_statements&field=total_time&field=total_exec_time&field=calls&by=total_time&by=total_exec_time&by=calls&top=200"),
+    )
+    .expect("candidate order") else {
+        panic!("snapshot route");
+    };
+    assert_eq!(ordered.by, ["total_time", "total_exec_time", "calls"]);
+
+    let Route::Snapshot(locator) = parse(
+        "/api/segments/7/snapshot",
+        Some("at=9&section=pg_stat_statements&field=query&type_id=1002001&row_ordinal=18446744073709551615"),
+    )
+    .expect("exact locator") else {
+        panic!("snapshot route");
+    };
+    assert_eq!(locator.type_id, Some(1_002_001));
+    assert_eq!(locator.row_ordinal, Some(u64::MAX));
+
+    for query in [
+        "at=9&section=pg_stat_statements&row_ordinal=1",
+        "at=9&section=pg_stat_statements&type_id=1002001&row_ordinal=1&top=1",
+        "at=9&section=pg_stat_statements&type_id=1002001&row_ordinal=1&where.queryid=2",
+    ] {
+        assert_eq!(
+            parse("/api/segments/7/snapshot", Some(query)),
+            Err(RouteError::BadParameter("row_ordinal".to_owned())),
+            "{query}",
+        );
+    }
+}
+
+#[test]
+fn snapshot_top_is_positive_and_bounded() {
+    let path = "/api/segments/7/snapshot";
+    let accepted = format!("at=9&section=pg_stat_statements&top={MAX_SNAPSHOT_TOP}");
+    let Route::Snapshot(snapshot) = parse(path, Some(&accepted)).expect("maximum top") else {
+        panic!("snapshot route");
+    };
+    assert_eq!(snapshot.top, Some(MAX_SNAPSHOT_TOP));
+
+    for top in [0, MAX_SNAPSHOT_TOP + 1] {
+        let query = format!("at=9&section=pg_stat_statements&top={top}");
+        assert_eq!(
+            parse(path, Some(&query)),
+            Err(RouteError::BadParameter("top".to_owned())),
+            "{query}",
+        );
+    }
+}
+
+#[test]
+fn snapshot_shares_only_a_projection_between_sections() {
+    let Route::Snapshot(projected) = parse(
+        "/api/segments/7/snapshot",
+        Some("at=9&section=os_cpu&section=os_meminfo&field=user&field=mem_total"),
+    )
+    .expect("shared projection") else {
+        panic!("snapshot route");
+    };
+    assert_eq!(projected.sections, ["os_cpu", "os_meminfo"]);
+    assert_eq!(projected.fields, ["user", "mem_total"]);
+
+    for query in [
+        "at=9&section=os_cpu&section=os_meminfo&by=user",
+        "at=9&section=os_cpu&section=os_meminfo&top=1",
+        "at=9&section=os_cpu&section=os_meminfo&where.cpu_id=-1",
+        "at=9&section=os_cpu&section=os_meminfo&type_id=1102001",
+    ] {
+        assert_eq!(
+            parse("/api/segments/7/snapshot", Some(query)),
+            Err(RouteError::BadParameter("section".to_owned())),
+            "{query}",
+        );
+    }
 }
 
 #[test]

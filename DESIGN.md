@@ -440,6 +440,34 @@ is a line in the collector's log, not a change in the interface.
 Requests carry HTTP basic authentication. Other schemes come later, and the
 check sits in one place so that adding one does not touch the handlers.
 
+### Shipped interface
+
+The React and TypeScript interface is built ahead of Rust into one
+self-contained HTML document, compressed reproducibly and committed as one
+gzip artifact. `kronika-web` embeds those exact bytes, so an ordinary Cargo
+build needs no Node installation. Fonts, icons, styles and scripts are local;
+the production document makes no external asset requests.
+
+English and Russian source dictionaries are flat YAML files. The interface
+build rejects duplicate keys, empty values, unequal key sets and unequal
+placeholders, then generates the compact typed dictionaries shipped in the
+document. A saved locale wins over `navigator.languages`, with English as the
+fallback; source values, identifiers, queries and command lines are never
+translated.
+
+The interface covers one selected calendar hour. Host contains dense System
+metric groups and virtualized Processes lenses; PostgreSQL contains Overview,
+Activity, Statements, Locks and Databases whenever their sections are present.
+Events expands the same findings drawn on the shared healthline. The timeline
+always spans the complete hour, leaves gaps blank and drives every view with one
+cursor. Marker shape identifies log events, threshold crossings, and spikes.
+
+System tables contain only entities such as devices, mounts, interfaces and CPU
+topology. Selecting a metric opens its one-hour history. A selected Linux
+process links to the nearest `pg_stat_activity` data by exact PID and shows the
+PostgreSQL PID, database, role, application, client, state, wait, query and
+times. The locale switch is immediate and persists locally.
+
 ### Segment resources
 
 HTTP exposes cacheable resources for explicit segments. It has no generic
@@ -534,9 +562,10 @@ representations use
 `Cache-Control: private, max-age=31536000, immutable`; all selection,
 projection and ordering parameters are part of their URL.
 
-Each finished per-section derived index has a stable URL and uses
-`Cache-Control: private, no-cache`. The browser revalidates it with the `ETag`
-from the `.idx` checksum. An unchanged index returns `304 Not Modified` with no
+Each finished per-section derived index has a stable URL and, because a
+finished segment cannot change, uses
+`Cache-Control: private, max-age=31536000, immutable` with the `ETag` from the
+`.idx` checksum. A browser that does revalidate gets `304 Not Modified` with no
 body. Active resources use `Cache-Control: private, no-store`. Basic
 authentication keeps all of these representations out of public and shared
 caches.

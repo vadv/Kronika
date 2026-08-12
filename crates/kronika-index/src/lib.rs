@@ -22,4 +22,7 @@ pub use health::{SourcePenalty, Stall, health, overall_health, postgres_penalty}
 pub use series::{
     ActiveBackendPoint, HealthPoint, SeriesBlock, SeriesKey, SeriesKind, TransactionPoint,
 };
-pub use store::{EXTENSION, LoadError, ResourceIndex, path_of, read, resource, series_keys};
+pub use store::{
+    EXTENSION, LoadError, ResourceIndex, finding_keys, path_of, read, resource, resource_selected,
+    series_keys,
+};

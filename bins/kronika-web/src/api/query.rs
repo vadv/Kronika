@@ -46,8 +46,10 @@ pub(super) fn plans(
     request: &DataRequest,
     history_coordinates: bool,
 ) -> Result<Vec<Plan>, ApiError> {
-    let layouts: Vec<(u32, kronika_reader::Section)> =
-        segment.layouts(&request.segment.section).collect();
+    let layouts: Vec<(u32, kronika_reader::Section)> = segment
+        .layouts(&request.segment.section)
+        .filter(|(type_id, _section)| request.type_id.is_none_or(|wanted| wanted == *type_id))
+        .collect();
     if layouts.is_empty() {
         return Err(ApiError::NoSuchSection);
     }
@@ -201,7 +203,10 @@ pub(super) fn chunk_dictionary(
     resolved_dictionary(segment, &ids)
 }
 
-fn resolved_dictionary(segment: &Segment, ids: &HashSet<u64>) -> Result<Dictionary, ApiError> {
+pub(super) fn resolved_dictionary(
+    segment: &Segment,
+    ids: &HashSet<u64>,
+) -> Result<Dictionary, ApiError> {
     let dictionary = segment.dictionary_for(ids)?;
     if let Some(unresolved) = ids
         .iter()
@@ -227,6 +232,34 @@ impl Plan {
                 .filters
                 .iter()
                 .all(|filter| filter.matches(row, dictionary))
+    }
+
+    pub(super) fn selection_dictionary(
+        &self,
+        segment: &Segment,
+        rows: &[(u64, Row)],
+    ) -> Result<Dictionary, ApiError> {
+        let mut ids = HashSet::new();
+        for (_ordinal, row) in rows {
+            self.add_selection_ids(row, &mut ids);
+        }
+        resolved_dictionary(segment, &ids)
+    }
+
+    pub(super) fn selection_needs_dictionary(&self) -> bool {
+        self.filters
+            .iter()
+            .any(|filter| matches!(filter, TypedFilter::Bytes { .. }))
+    }
+
+    pub(super) fn add_selection_ids(&self, row: &Row, ids: &mut HashSet<u64>) {
+        for filter in &self.filters {
+            if let TypedFilter::Bytes { column, .. } = filter
+                && let Some(Cell::StrId(id)) = row.get(column)
+            {
+                ids.insert(*id);
+            }
+        }
     }
 }
 

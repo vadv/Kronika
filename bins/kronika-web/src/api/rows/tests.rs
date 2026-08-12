@@ -13,6 +13,7 @@ fn request(order: Order) -> RowsRequest {
                 column: "pid".to_owned(),
                 value: "42".to_owned(),
             }],
+            type_id: None,
             after: None,
         },
         order,
@@ -52,5 +53,9 @@ fn binding_changes_with_order_projection_and_filters() {
 
     changed = asc.clone();
     changed.data.filters[0].value = "43".to_owned();
+    assert_ne!(binding(&asc), binding(&changed));
+
+    changed = asc.clone();
+    changed.data.type_id = Some(1_100_001);
     assert_ne!(binding(&asc), binding(&changed));
 }

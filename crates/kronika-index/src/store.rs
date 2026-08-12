@@ -14,6 +14,7 @@ use kronika_registry::logical_section_name;
 /// Extension of an index file.
 pub const EXTENSION: &str = "idx";
 const SEGMENT_EXTENSION: &str = "zms";
+const OWNER_RETRY: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// A validated resource and whether it came from an immutable sidecar.
 #[derive(Debug, Clone, PartialEq)]
@@ -122,67 +123,103 @@ pub fn resource(
     logical_name: &str,
 ) -> Result<ResourceIndex, LoadError> {
     let keys = series_keys(segment_ref, logical_name);
+    resource_selected(root, reader, segment_ref, &keys)
+}
+
+/// Load selected blocks through the same validated resource path.
+///
+/// # Errors
+///
+/// Returns reader, index, layout, build, or publication failures.
+pub fn resource_selected(
+    root: &Path,
+    reader: &Reader,
+    segment_ref: &SegmentRef,
+    keys: &[SeriesKey],
+) -> Result<ResourceIndex, LoadError> {
     match segment_ref.kind() {
         SegmentKind::Active => {
             let segment = reader.open_segment(segment_ref)?;
-            let index = build_selected_from_reader(reader, segment_ref, &segment, &keys)?;
+            let index = build_selected_from_reader(reader, segment_ref, &segment, keys)?;
             Ok(ResourceIndex {
-                index: targeted(index, &keys, None),
+                index: targeted(index, keys, None),
                 persisted: false,
             })
         }
         SegmentKind::Finished => {
             let data_root = DataRoot::open(root)?;
             let address = address_of(segment_ref.id())?;
-            if let Some(mut file) = data_root.open_idx(address)?
-                && let Ok(selected) = read_target(&mut file, &keys)
-                && contains_targets(&selected, &keys)
-            {
-                return Ok(ResourceIndex {
-                    index: selected,
-                    persisted: true,
-                });
+            // Give a concurrent publisher one short recheck.
+            for wait in [true, false] {
+                if let Some(mut file) = data_root.open_idx(address)?
+                    && let Ok(selected) = read_target(&mut file, keys)
+                    && contains_targets(&selected, keys)
+                {
+                    return Ok(ResourceIndex {
+                        index: selected,
+                        persisted: true,
+                    });
+                }
+
+                match data_root.acquire_index(LayoutLimits::default()) {
+                    Ok(owner) => {
+                        // Publication revalidates this source identity.
+                        let mut temporary = owner.create_idx_temp(address)?;
+                        let segment = reader.open_segment(segment_ref)?;
+                        let index = build_from_reader(reader, segment_ref, &segment)?;
+                        let bytes = index.encode().map_err(LoadError::Bad)?;
+                        let checksum = encoded_checksum(&bytes)?;
+                        temporary.file_mut().write_all(&bytes)?;
+                        drop(temporary.try_clone_file()?);
+                        temporary.publish()?;
+                        return Ok(ResourceIndex {
+                            index: targeted(index, keys, Some(checksum)),
+                            persisted: true,
+                        });
+                    }
+                    // The root-wide writer lock avoids duplicate builds.
+                    Err(LayoutError::OwnerContended {
+                        owner: OwnerKind::Index,
+                    }) if wait => std::thread::sleep(OWNER_RETRY),
+                    Err(LayoutError::OwnerContended {
+                        owner: OwnerKind::Index,
+                    }) => break,
+                    Err(error) => return Err(LoadError::Layout(error)),
+                }
             }
 
-            match data_root.acquire_index(LayoutLimits::default()) {
-                Ok(owner) => {
-                    // Capture the immutable source identity before opening it
-                    // through the reader. Publication revalidates this exact
-                    // identity after the complete build.
-                    let mut temporary = owner.create_idx_temp(address)?;
-                    let segment = reader.open_segment(segment_ref)?;
-                    let index = build_from_reader(reader, segment_ref, &segment)?;
-                    let bytes = index.encode().map_err(LoadError::Bad)?;
-                    let checksum = encoded_checksum(&bytes)?;
-                    temporary.file_mut().write_all(&bytes)?;
-                    drop(temporary.try_clone_file()?);
-                    temporary.publish()?;
-                    Ok(ResourceIndex {
-                        index: targeted(index, &keys, Some(checksum)),
-                        persisted: true,
-                    })
-                }
-                Err(LayoutError::OwnerContended {
-                    owner: OwnerKind::Index,
-                }) => {
-                    // Another cold request may be publishing the same
-                    // canonical bytes. Serving a locally validated build keeps
-                    // lock contention out of the HTTP failure surface; its
-                    // full-file checksum is the same stable representation
-                    // tag the winning publisher computes.
-                    let segment = reader.open_segment(segment_ref)?;
-                    let index = build_from_reader(reader, segment_ref, &segment)?;
-                    let bytes = index.encode().map_err(LoadError::Bad)?;
-                    let checksum = encoded_checksum(&bytes)?;
-                    Ok(ResourceIndex {
-                        index: targeted(index, &keys, Some(checksum)),
-                        persisted: false,
-                    })
-                }
-                Err(error) => Err(LoadError::Layout(error)),
-            }
+            // Build locally when the publisher still holds the lock.
+            let segment = reader.open_segment(segment_ref)?;
+            let index = build_from_reader(reader, segment_ref, &segment)?;
+            let bytes = index.encode().map_err(LoadError::Bad)?;
+            let checksum = encoded_checksum(&bytes)?;
+            Ok(ResourceIndex {
+                index: targeted(index, keys, Some(checksum)),
+                persisted: false,
+            })
         }
     }
+}
+
+/// Return every sparse-finding block present in one segment.
+#[must_use]
+pub fn finding_keys(segment: &SegmentRef) -> Vec<SeriesKey> {
+    let mut keys = segment
+        .sections()
+        .iter()
+        .filter(|section| finding_layout(section.type_id))
+        .map(|section| SeriesKey {
+            kind: SeriesKind::Findings,
+            type_id: section.type_id,
+        })
+        .collect::<Vec<_>>();
+    keys.push(SeriesKey {
+        kind: SeriesKind::Findings,
+        type_id: 0,
+    });
+    keys.sort_unstable();
+    keys.dedup();
+    keys
 }
 
 /// Return the allowlisted series exposed by one logical section.

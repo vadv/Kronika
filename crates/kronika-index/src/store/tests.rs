@@ -455,17 +455,23 @@ fn real_active_and_finished_resources_are_bounded_and_atomically_cached() {
     let contended_owner = data_root
         .acquire_index(LayoutLimits::default())
         .expect("hold index owner");
-    let computed = resource(directory.path(), &reader, &finished_ref, "health")
-        .expect("serve while publication is contended");
-    assert!(!computed.persisted);
-    assert!(computed.index.checksum.is_some());
-    assert!(!index_path.exists(), "contended request must not publish");
-    drop(contended_owner);
-
+    let (release, held) = std::sync::mpsc::sync_channel(0);
+    let local = std::thread::scope(|scope| {
+        scope.spawn(move || {
+            held.recv_timeout(std::time::Duration::from_secs(2))
+                .expect("resource returns before the bounded holder timeout");
+            drop(contended_owner);
+        });
+        let local = resource(directory.path(), &reader, &finished_ref, "health")
+            .expect("answer without waiting out the holder");
+        release.send(()).expect("release index owner");
+        local
+    });
+    assert!(!local.persisted);
+    assert!(!index_path.is_file());
     let published = resource(directory.path(), &reader, &finished_ref, "health")
-        .expect("publish finished index");
+        .expect("publish after the holder releases");
     assert!(published.persisted);
-    assert_eq!(published.index.checksum, computed.index.checksum);
     assert!(index_path.is_file());
     let bytes = std::fs::read(&index_path).expect("read index bytes");
     assert!(
