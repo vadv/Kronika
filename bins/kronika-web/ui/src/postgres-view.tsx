@@ -1,5 +1,5 @@
 import { Activity, BarChart3, Copy, Database, KeyRound, LockKeyhole, ScrollText, X } from "lucide-react"
-import { useEffect, useMemo, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 
 import type { DataRow, Finding, HourData } from "./api"
 import { EntityTable, unit, type EntityColumn, type TableOrder } from "./entity-table"
@@ -13,8 +13,10 @@ import { Timeline } from "./timeline"
 
 export type PostgresSection = "overview" | "activity" | "statements" | "plans" | "locks" | "databases"
 
+export const ACTIVITY_DEFAULT_ORDER: TableOrder = { column: "query_duration_ms", descending: true }
+
 export const ACTIVITY_COLUMNS: readonly EntityColumn[] = [
-  pgId("pid", "pg.field.pid", 78, true), pgId("leader_pid", "pg.leader_pid", 105), pgText("backend_type", "pg.backend_type", 150, true), pgText("datname", "pg.datname", 145), pgText("usename", "pg.usename", 130),
+  pgId("pid", "pg.field.pid", 78, true), milliseconds("query_duration_ms", 145), pgId("leader_pid", "pg.leader_pid", 105), pgText("backend_type", "pg.backend_type", 150, true), pgText("datname", "pg.datname", 145), pgText("usename", "pg.usename", 130),
   pgText("application_name", "pg.application_name", 180), pgText("client_addr", "pg.client_addr", 150), pgText("state", "pg.state", 110), pgText("wait_event_type", "pg.wait_event_type", 135),
   pgText("wait_event", "pg.wait_event", 155), pgId("query_id", "pg.query_id", 150), pgNumber("backend_xid_age", "pg.backend_xid_age", 145), pgNumber("backend_xmin_age", "pg.backend_xmin_age", 145),
   pgTimestamp("backend_start", "pg.backend_start", 210), pgTimestamp("xact_start", "pg.xact_start", 210), pgTimestamp("query_start", "pg.query_start", 210), pgTimestamp("state_change", "pg.state_change", 210),
@@ -182,11 +184,11 @@ export function PostgresView({
     <nav aria-label={t("pg.sections")} className="pg-tabs">
       {TABS.map((tab) => {
         const enabled = tab.id === "plans" || tab.sections === undefined || tab.sections.some(available)
-        return <button aria-current={section === tab.id ? "page" : undefined} disabled={!enabled} key={tab.id} onClick={() => onSection(tab.id)} title={enabled ? undefined : t("pg.no_section_data")} type="button">{tab.icon}<span>{t(`pg.section.${tab.id}`)}</span></button>
+        return <button aria-current={section === tab.id ? "page" : undefined} disabled={!enabled} key={tab.id} onClick={() => { if (section !== tab.id) onOrder(null); onSection(tab.id) }} title={enabled ? undefined : t("pg.no_section_data")} type="button">{tab.icon}<span>{t(`pg.section.${tab.id}`)}</span></button>
       })}
     </nav>
     {section === "overview" && <Overview cursor={cursor} data={data} hour={hour} locale={locale} t={t} />}
-    {section === "activity" && available("pg_stat_activity") && <PgEntityView columns={ACTIVITY_COLUMNS} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_activity" ? focusFinding : null} focus={focus} historyField="backend_xid_age" locale={locale} section="pg_stat_activity" t={t} />}
+    {section === "activity" && available("pg_stat_activity") && <ActivityView onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_activity" ? focusFinding : null} focus={focus} locale={locale} t={t} />}
     {section === "activity" && available("pg_stat_progress_vacuum") && <PgPreview cursor={cursor} data={data} focus={focusFinding?.logicalName === "pg_stat_progress_vacuum" ? focus : null} locale={locale} section="pg_stat_progress_vacuum" t={t} />}
     {section === "statements" && <><PostgresLensBar active={statementLens} choices={["load", "per_call", "io", "resources", "stability"]} onChange={onStatementLens} prefix="statement" t={t} /><PgEntityView columns={statementColumns(statementLens)} onOrder={onOrder} onPattern={onPattern} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField={statementLens === "stability" ? "cv" : "mean_exec_ms_per_call"} locale={locale} section="pg_stat_statements" t={t} /></>}
     {section === "plans" && available("pg_store_plans_info") && <PlanInfo cursor={cursor} data={data} locale={locale} t={t} />}
@@ -195,6 +197,76 @@ export function PostgresView({
     {section === "plans" && !available("pg_store_plans") && <p className="pg-empty" data-testid="pg-plans-empty">{t("pg.plans.empty")}</p>}
     {section === "locks" && <PgEntityView columns={LOCK_COLUMNS} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_locks" ? focusFinding : null} focus={focus} historyField={null} locale={locale} section="pg_locks" t={t} />}
     {section === "databases" && <PgEntityView columns={DATABASE_COLUMNS} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_database" ? focusFinding : null} focus={focus} historyField="xact_commit" locale={locale} section="pg_stat_database" t={t} />}
+  </>
+}
+
+export interface ActivityVisibility {
+  readonly showIdle: boolean
+  readonly showSystem: boolean
+}
+
+export function isSystemActivity(row: DataRow): boolean {
+  const backendType = rawText(value(row, "backend_type"))
+  return backendType !== null && backendType !== "" && backendType !== "client backend"
+}
+
+export function isIdleActivity(row: DataRow): boolean {
+  return rawText(value(row, "state"))?.startsWith("idle") === true
+}
+
+export function activityDurationMs(row: DataRow): number | null {
+  if (rawText(value(row, "state")) !== "active") return null
+  const started = asNumber(value(row, "query_start"))
+  return started === null || started <= 0 || started > row.timestamp ? null : (row.timestamp - started) / 1_000
+}
+
+export function visibleActivityRows(
+  rows: readonly DataRow[],
+  visibility: ActivityVisibility,
+  focus: DataRow | null = null,
+): readonly DataRow[] {
+  const focusKey = focus === null ? null : rowKey(focus)
+  return rows
+    .filter((row) => rowKey(row) === focusKey
+      || (visibility.showSystem || !isSystemActivity(row))
+        && (visibility.showIdle || !isIdleActivity(row)))
+    .map((row) => ({ ...row, values: { ...row.values, query_duration_ms: activityDurationMs(row) } }))
+    .sort((left, right) => {
+      const leftDuration = asNumber(value(left, "query_duration_ms"))
+      const rightDuration = asNumber(value(right, "query_duration_ms"))
+      if (leftDuration === null) return rightDuration === null ? 0 : 1
+      if (rightDuration === null) return -1
+      return rightDuration - leftDuration
+    })
+}
+
+function ActivityView({ cursor, data, finding, focus, locale, onOrder, onPattern, order, pattern, t }: {
+  readonly cursor: number
+  readonly data: HourData
+  readonly finding: Finding | null
+  readonly focus: DataRow | null
+  readonly locale: Locale
+  readonly onOrder: (order: TableOrder | null) => void
+  readonly onPattern: (pattern: string) => void
+  readonly order: TableOrder | undefined
+  readonly pattern: string
+  readonly t: Translate
+}) {
+  const [showSystem, setShowSystem] = useState(false)
+  const [showIdle, setShowIdle] = useState(false)
+  const activityOrder = order !== undefined && ACTIVITY_COLUMNS.some(({ field }) => field === order.column) ? order : undefined
+  const transformRows = useCallback(
+    (rows: readonly DataRow[]) => visibleActivityRows(rows, { showIdle, showSystem }, focus),
+    [focus, showIdle, showSystem],
+  )
+  return <>
+    <div className="lensbar pg-lensbar" role="group" aria-label={t("pg.section.activity")}>
+      <div className="lens-tabs">
+        <button aria-pressed={showSystem} data-testid="activity-filter-system" onClick={() => setShowSystem((shown) => !shown)} type="button">{t("pg.activity.system")}</button>
+        <button aria-pressed={showIdle} data-testid="activity-filter-idle" onClick={() => setShowIdle((shown) => !shown)} type="button">{t("pg.activity.idle")}</button>
+      </div>
+    </div>
+    <PgEntityView columns={ACTIVITY_COLUMNS} cursor={cursor} data={data} defaultOrder={ACTIVITY_DEFAULT_ORDER} finding={finding} focus={focus} historyField={null} locale={locale} onOrder={onOrder} onPattern={onPattern} order={activityOrder} pattern={pattern} section="pg_stat_activity" t={t} transformRows={transformRows} />
   </>
 }
 
@@ -281,6 +353,8 @@ function PgEntityView({
   pattern,
   section,
   t,
+  defaultOrder,
+  transformRows,
 }: {
   readonly columns: readonly EntityColumn[]
   readonly cursor: number
@@ -295,6 +369,8 @@ function PgEntityView({
   readonly pattern?: string | undefined
   readonly order?: TableOrder | undefined
   readonly t: Translate
+  readonly defaultOrder?: TableOrder | undefined
+  readonly transformRows?: ((rows: readonly DataRow[]) => readonly DataRow[]) | undefined
 }) {
   const allRows = data.sections[section] ?? NO_ROWS
   const dense = section === "pg_stat_statements" || section === "pg_store_plans"
@@ -303,8 +379,9 @@ function PgEntityView({
     const focused = focus !== null && focus.logicalName === section && !current.some((row) => rowKey(row) === rowKey(focus))
       ? [...current, focus]
       : current
-    return dense ? decoratePostgresRows(focused, section) : focused
-  }, [allRows, cursor, dense, focus, section])
+    const transformed = transformRows === undefined ? focused : transformRows(focused)
+    return dense ? decoratePostgresRows(transformed, section) : transformed
+  }, [allRows, cursor, dense, focus, section, transformRows])
   const rates = data.rateColumns[section] ?? NO_RATES
   const visibleColumns = useMemo(
     () => columns.filter((column) => rows.some((row) => Object.hasOwn(row.values, column.field)))
@@ -318,7 +395,7 @@ function PgEntityView({
   const selectedKey = selected === null ? null : rowKey(selected)
   const selectedHistoryField = findingHistoryField(visibleColumns, finding, historyField)
   return <div className={selected === null ? "pg-entity-layout pg-table-only" : "pg-entity-layout"} data-pg-section={sectionName(section)} data-testid="pg-entity-layout">
-    <EntityTable columns={visibleColumns} empty={t("table.no_rows")} finding={finding} findingField={finding === null || finding === undefined ? null : fieldNameForLocator(finding)} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onOrder={onOrder} onPattern={onPattern} onSelect={setSelected} order={order} pattern={pattern} serverSorted={dense} rows={rows} selectedKey={selectedKey} t={t} testId={`pg-${sectionName(section)}-table`} />
+    <EntityTable columns={visibleColumns} empty={t("table.no_rows")} finding={finding} findingField={finding === null || finding === undefined ? null : fieldNameForLocator(finding)} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onOrder={onOrder} onPattern={onPattern} onSelect={setSelected} order={order ?? defaultOrder} pattern={pattern} serverSorted={dense} rows={rows} selectedKey={selectedKey} t={t} testId={`pg-${sectionName(section)}-table`} />
     {selected !== null && <PgDetail allRows={allRows} columns={visibleColumns} historyField={selectedHistoryField} hour={Math.floor(cursor / 3_600_000_000) * 3_600_000_000} locale={locale} onClose={() => setSelected(null)} row={selected} section={section} t={t} />}
   </div>
 }

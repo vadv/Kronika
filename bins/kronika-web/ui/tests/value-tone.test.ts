@@ -16,6 +16,8 @@ test("statement duration marks only the inclusive five-second boundary", () => {
   assert.equal(semanticValueTone("mean_exec_ms_per_call", 5_000), "critical")
   assert.equal(semanticValueTone("mean_exec_time_ms", 4_999.99), null)
   assert.equal(semanticValueTone("mean_exec_time_ms", 5_000), "critical")
+  assert.equal(semanticValueTone("query_duration_ms", 4_999.99), null)
+  assert.equal(semanticValueTone("query_duration_ms", 5_000), "critical")
 })
 
 test("cache hit tones distinguish no accesses from a real zero-percent hit rate", () => {

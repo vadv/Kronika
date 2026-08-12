@@ -12,6 +12,7 @@ export function semanticValueTone(field: string, cell: Cell, rate = false): Valu
   switch (field) {
     case "mean_exec_ms_per_call":
     case "mean_exec_time_ms":
+    case "query_duration_ms":
       return number >= 5_000 ? "critical" : null
     case "hit_pct":
       if (number < 90) return "critical"
