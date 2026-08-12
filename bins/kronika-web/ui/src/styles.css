@@ -386,6 +386,14 @@ h2 { font-size: var(--t-md); }
 .entity-row[aria-selected="true"].locator-spike { box-shadow: inset 2px 0 var(--accent), inset 0 0 0 1px var(--warn); }
 .entity-cell { align-items: center; color: var(--fg2); display: flex; font-size: var(--t-xs); height: var(--row); font-variant-numeric: tabular-nums; }
 .entity-value { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
+.entity-cell.value-tone-good .entity-value { color: var(--ok); }
+.entity-cell.value-tone-warning .entity-value { color: var(--warn); }
+.entity-cell.value-tone-critical .entity-value { color: var(--bad); }
+.entity-cell.value-tone-inactive .entity-value { color: var(--fg4); }
+.entity-cell.value-tone-good { box-shadow: inset 0 -1px color-mix(in srgb, var(--ok) 42%, transparent); }
+.entity-cell.value-tone-warning { box-shadow: inset 0 -1px color-mix(in srgb, var(--warn) 54%, transparent); }
+.entity-cell.value-tone-critical { box-shadow: inset 0 -1px color-mix(in srgb, var(--bad) 62%, transparent); }
+.entity-cell.locator-known_bad .entity-value { color: var(--fg-hi); }
 .text-value { color: var(--fg); }
 .id-value { color: var(--fg2); }
 .null-cell { color: var(--fg-null); }

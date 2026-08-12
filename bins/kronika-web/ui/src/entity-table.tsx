@@ -17,6 +17,7 @@ import { LabelHelp, type Translate } from "./help"
 import { rowMatchesLocator } from "./locator"
 import { TableFilter } from "./table-filter"
 import { asNumber, formatUtc, identifier, measure, rawText, value, type Locale } from "./model"
+import { semanticValueTone } from "./value-tone"
 
 export interface EntityColumn {
   readonly field: string
@@ -212,7 +213,8 @@ export function EntityTable({
               {row.getVisibleCells().map((cell) => {
                 const field = fields.find((candidate) => candidate.field === cell.column.id)
                 const exact = activeFinding !== null && field !== undefined && locatorMatchesColumn(field, row.original.typeId, findingField ?? null)
-                return <div className={`${sticky(cell.column.columnDef.meta, false)}${exact ? ` locator-cell locator-${activeFinding.kind}` : ""}`} data-locator-cell={exact || undefined} key={cell.id} role="cell" style={{ left: stickyLeft(cell.column.columnDef.meta), width: cell.column.getSize() }}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</div>
+                const tone = field === undefined ? null : semanticValueTone(field.field, value(row.original, field.field), field.rate)
+                return <div className={`${sticky(cell.column.columnDef.meta, false)}${tone === null ? "" : ` value-tone-${tone}`}${exact ? ` locator-cell locator-${activeFinding.kind}` : ""}`} data-locator-cell={exact || undefined} data-value-tone={tone ?? undefined} key={cell.id} role="cell" style={{ left: stickyLeft(cell.column.columnDef.meta), width: cell.column.getSize() }}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</div>
               })}
             </div>
           })}
