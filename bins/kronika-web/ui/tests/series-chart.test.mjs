@@ -37,6 +37,7 @@ test("mini charts split paths around a recorded null", () => {
     { segmentId: "a", timestamp: 1, value: 2 },
     { segmentId: "a", timestamp: 2, value: null },
     { segmentId: "a", timestamp: 3, value: 0 },
+    { segmentId: "b", timestamp: 4, value: 3 },
   ]).values()]
-  assert.deepEqual(runs.map((run) => run.map((point) => point.value)), [[2], [0]])
+  assert.deepEqual(runs.map((run) => run.map((point) => point.value)), [[2], [0, 3]])
 })

@@ -178,7 +178,7 @@ export function PostgresView({
   }, [data.availableSections, onSection, section])
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={onCursor} onFinding={onFinding} primaryLane={section === "activity" ? "backends" : "health"} shownAt={shownAt} t={t} />
+    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} onCursor={onCursor} onFinding={onFinding} primaryLane={section === "statements" || section === "plans" ? "pg_running" : section === "activity" || section === "locks" ? "pg_waiting" : "health"} shownAt={shownAt} t={t} />
     <nav aria-label={t("pg.sections")} className="pg-tabs">
       {TABS.map((tab) => {
         const enabled = tab.id === "plans" || tab.sections === undefined || tab.sections.some(available)

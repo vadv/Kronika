@@ -108,30 +108,22 @@ function niceCeiling(value: number): number {
 }
 
 export function chartRuns(points: readonly ChartPoint[]): ReadonlyMap<string, readonly NumericChartPoint[]> {
-  const bySegment = new Map<string, ChartPoint[]>()
-  for (const point of points) {
-    const stored = bySegment.get(point.segmentId) ?? []
-    stored.push(point)
-    bySegment.set(point.segmentId, stored)
-  }
   const runs = new Map<string, readonly NumericChartPoint[]>()
-  for (const [segmentId, stored] of bySegment) {
-    let run: NumericChartPoint[] = []
-    let index = 0
-    const flush = () => {
-      if (run.length !== 0) runs.set(`${segmentId}:${index}`, run)
-      run = []
-      index += 1
-    }
-    for (const point of stored.slice().sort((left, right) => left.timestamp - right.timestamp)) {
-      if (point.value === null || !Number.isFinite(point.value)) {
-        flush()
-      } else {
-        run.push(point as NumericChartPoint)
-      }
-    }
-    flush()
+  let run: NumericChartPoint[] = []
+  let index = 0
+  const flush = () => {
+    if (run.length !== 0) runs.set(String(index), run)
+    run = []
+    index += 1
   }
+  for (const point of points.slice().sort((left, right) => left.timestamp - right.timestamp || left.segmentId.localeCompare(right.segmentId))) {
+    if (point.value === null || !Number.isFinite(point.value)) {
+      flush()
+    } else {
+      run.push(point as NumericChartPoint)
+    }
+  }
+  flush()
   return runs
 }
 

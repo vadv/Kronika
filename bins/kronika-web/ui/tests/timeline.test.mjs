@@ -20,7 +20,7 @@ const compiled = await build({
     },
   }],
   stdin: {
-    contents: 'export { findingShape, findingTrack, groupFindings, healthThreshold, laneRange, overviewLaneCount, seriesYAt, timelineRuns, valueAt } from "../src/timeline.tsx"',
+    contents: 'export { findingShape, findingTrack, groupFindings, healthThreshold, laneRange, overviewLaneCount, sampleWindow, seriesYAt, timelineRuns, valueAt } from "../src/timeline.tsx"',
     loader: "tsx",
     resolveDir: directory,
   },
@@ -98,14 +98,26 @@ test("finding kinds have non-color shape identities", () => {
   assert.equal(helpers.findingShape("spike"), "triangle")
 })
 
-test("timeline series break at null samples without dropping zero", () => {
+test("timeline series cross segment boundaries and break only at stored nulls", () => {
   const runs = [...helpers.timelineRuns([
     { segmentId: "host-a", timestamp: 100, value: 10 },
     { segmentId: "host-a", timestamp: 200, value: null },
     { segmentId: "host-a", timestamp: 300, value: 0 },
     { segmentId: "host-b", timestamp: 400, value: 12 },
   ]).values()]
-  assert.deepEqual(runs.map((run) => run.map((point) => point.value)), [[10], [0], [12]])
+  assert.deepEqual(runs.map((run) => run.map((point) => point.value)), [[10], [0, 12]])
+  assert.deepEqual(runs[1].map((point) => point.segmentId), ["host-a", "host-b"])
+})
+
+test("the displayed sample window ends at the last stored number", () => {
+  const points = [
+    { segmentId: "a", timestamp: 100, value: null },
+    { segmentId: "a", timestamp: 200, value: 8 },
+    { segmentId: "b", timestamp: 300, value: 9 },
+    { segmentId: "b", timestamp: 400, value: null },
+  ]
+  assert.deepEqual(helpers.sampleWindow([{ series: [{ points }] }]), { start: 200, end: 300 })
+  assert.equal(helpers.sampleWindow([{ series: [{ points: points.map((point) => ({ ...point, value: null })) }] }]), null)
 })
 
 test("a finding attaches only to an exact sample in the same segment", () => {
