@@ -15,7 +15,6 @@ use kronika_registry::logical_section_name;
 pub const EXTENSION: &str = "idx";
 const SEGMENT_EXTENSION: &str = "zms";
 const OWNER_RETRY: std::time::Duration = std::time::Duration::from_millis(200);
-const OWNER_ATTEMPTS: u32 = 150;
 
 /// A validated resource and whether it came from an immutable sidecar.
 #[derive(Debug, Clone, PartialEq)]
@@ -136,7 +135,11 @@ pub fn resource(
         SegmentKind::Finished => {
             let data_root = DataRoot::open(root)?;
             let address = address_of(segment_ref.id())?;
-            for _ in 0..OWNER_ATTEMPTS {
+            // A concurrent cold request may be publishing the same immutable
+            // bytes. Give it one short chance to finish, then answer from a
+            // local build instead of making an HTTP request wait on a
+            // root-wide lock.
+            for wait in [true, false] {
                 if let Some(mut file) = data_root.open_idx(address)?
                     && let Ok(selected) = read_target(&mut file, &keys)
                     && contains_targets(&selected, &keys)
@@ -171,13 +174,16 @@ pub fn resource(
                     // are thrown away, leaving the next caller to repeat it.
                     Err(LayoutError::OwnerContended {
                         owner: OwnerKind::Index,
-                    }) => std::thread::sleep(OWNER_RETRY),
+                    }) if wait => std::thread::sleep(OWNER_RETRY),
+                    Err(LayoutError::OwnerContended {
+                        owner: OwnerKind::Index,
+                    }) => break,
                     Err(error) => return Err(LoadError::Layout(error)),
                 }
             }
 
-            // The holder never released. Answer from a local build; the
-            // checksum is the same stable tag a publisher would compute.
+            // The holder is still working. The checksum is the same stable
+            // tag a later publisher computes.
             let segment = reader.open_segment(segment_ref)?;
             let index = build_from_reader(reader, segment_ref, &segment)?;
             let bytes = index.encode().map_err(LoadError::Bad)?;

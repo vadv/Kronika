@@ -455,14 +455,20 @@ fn real_active_and_finished_resources_are_bounded_and_atomically_cached() {
     let contended_owner = data_root
         .acquire_index(LayoutLimits::default())
         .expect("hold index owner");
-    let published = std::thread::scope(|scope| {
+    let started = std::time::Instant::now();
+    let local = std::thread::scope(|scope| {
         scope.spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(300));
             drop(contended_owner);
         });
         resource(directory.path(), &reader, &finished_ref, "health")
-            .expect("wait out the holder, then publish")
+            .expect("answer without waiting out the holder")
     });
+    assert!(started.elapsed() < std::time::Duration::from_millis(500));
+    assert!(!local.persisted);
+    assert!(!index_path.is_file());
+    let published = resource(directory.path(), &reader, &finished_ref, "health")
+        .expect("publish after the holder releases");
     assert!(published.persisted);
     assert!(index_path.is_file());
     let bytes = std::fs::read(&index_path).expect("read index bytes");
