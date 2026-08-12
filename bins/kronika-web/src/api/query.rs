@@ -203,7 +203,10 @@ pub(super) fn chunk_dictionary(
     resolved_dictionary(segment, &ids)
 }
 
-fn resolved_dictionary(segment: &Segment, ids: &HashSet<u64>) -> Result<Dictionary, ApiError> {
+pub(super) fn resolved_dictionary(
+    segment: &Segment,
+    ids: &HashSet<u64>,
+) -> Result<Dictionary, ApiError> {
     let dictionary = segment.dictionary_for(ids)?;
     if let Some(unresolved) = ids
         .iter()
@@ -229,6 +232,24 @@ impl Plan {
                 .filters
                 .iter()
                 .all(|filter| filter.matches(row, dictionary))
+    }
+
+    pub(super) fn selection_dictionary(
+        &self,
+        segment: &Segment,
+        rows: &[(u64, Row)],
+    ) -> Result<Dictionary, ApiError> {
+        let mut ids = HashSet::new();
+        for (_ordinal, row) in rows {
+            for filter in &self.filters {
+                if let TypedFilter::Bytes { column, .. } = filter
+                    && let Some(Cell::StrId(id)) = row.get(column)
+                {
+                    ids.insert(*id);
+                }
+            }
+        }
+        resolved_dictionary(segment, &ids)
     }
 }
 

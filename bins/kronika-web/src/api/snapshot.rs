@@ -1,13 +1,14 @@
 //! Reads one snapshot and derives counter rates.
 
-use std::collections::BTreeMap;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-use kronika_reader::{Cell, Reader, Row, Segment, SegmentKind, SegmentRef};
+use kronika_reader::{Cell, Dictionary, Reader, Row, Segment, SegmentKind, SegmentRef};
 use kronika_registry::ColumnClass;
 use serde_json::{Value, json};
 
-use super::query::{Plan, plans};
+use super::query::{Plan, plans, resolved_dictionary};
 use super::render::{cell, projected_layout, record, shorten};
 use super::{ApiError, CachePolicy, ResponseMeta, explicit_segment};
 use crate::route::{DataRequest, SegmentRequest, SnapshotRequest};
@@ -23,8 +24,35 @@ pub(crate) struct PreparedSnapshot {
     row_ordinal: Option<u64>,
 }
 
-type Readings = BTreeMap<Vec<String>, CounterReadings>;
+type Readings = BTreeMap<Vec<IdentityCell>, CounterReadings>;
 type CounterReadings = BTreeMap<&'static str, Cell>;
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum IdentityCell {
+    Null,
+    I16(i16),
+    I32(i32),
+    I64(i64),
+    Ts(i64),
+    U32(u32),
+    U64(u64),
+    F64(u64),
+    Bool(bool),
+    StrId(u64),
+    ListI32(Vec<i32>),
+}
+
+struct StagedRow {
+    ordinal: u64,
+    row: Row,
+    identity: Vec<IdentityCell>,
+}
+
+#[derive(Clone, Copy)]
+struct RateContext<'a> {
+    previous: Option<&'a Readings>,
+    elapsed: Option<i64>,
+}
 
 struct SectionPlans {
     logical_name: String,
@@ -143,7 +171,7 @@ impl PreparedSnapshot {
             return Ok(true);
         }
         let Some(timestamp) = plan.timestamp else {
-            return self.emit_untimed(section, plan, emit, cancelled);
+            return self.emit_untimed(plan, emit, cancelled);
         };
         // A section's latest sample may be in the preceding segment.
         let here = Self::moments(&self.segment, plan, timestamp, self.at, cancelled)?;
@@ -171,16 +199,14 @@ impl PreparedSnapshot {
             None if own => self.earlier_moment(plan, timestamp, cancelled)?,
             None => (Readings::new(), None),
         };
-        let dictionary = source.dictionary()?;
         let elapsed = moments
             .current
             .checked_sub(before_at.unwrap_or(moments.current))
             .filter(|delta| *delta > 0);
-        let mut failure = None;
-        let mut rows = Vec::new();
         let (start_row, row_count) = self
             .row_ordinal
             .map_or((0, usize::MAX), |ordinal| (ordinal, 1));
+        let mut rows = Vec::new();
         source.visit_rows(
             plan.type_id,
             &plan.projection,
@@ -190,43 +216,38 @@ impl PreparedSnapshot {
                 if cancelled() {
                     return false;
                 }
-                if row_timestamp(&row, timestamp) != Some(moments.current)
-                    || !plan.matches(&row, &dictionary)
-                {
+                if row_timestamp(&row, timestamp) != Some(moments.current) {
                     return true;
                 }
-                let before = identity_of(plan, &row).and_then(|key| previous.get(&key));
-                match Self::row_record(plan, &row, before, elapsed, ordinal, &dictionary, self.text)
-                {
-                    Ok(value) => rows.push(value),
-                    Err(error) => failure = Some(error),
-                }
-                failure.is_none()
+                rows.push((ordinal, row));
+                true
             },
         )?;
-        if let Some(error) = failure {
-            return Err(error);
+        if cancelled() {
+            return Ok(false);
         }
-        if let Some(by) = self
-            .by
-            .iter()
-            .find_map(|name| available_field_index(&plan.fields, name))
-        {
-            rows.sort_by(|left, right| {
-                sort_value(right, by)
-                    .partial_cmp(&sort_value(left, by))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+        self.emit_rows(
+            source,
+            plan,
+            rows,
+            RateContext {
+                previous: Some(&previous),
+                elapsed,
+            },
+            emit,
+            cancelled,
+        )
+    }
+
+    fn order_and_truncate(&self, plan: &Plan, rates: RateContext<'_>, rows: &mut Vec<StagedRow>) {
+        if let Some(column) = self.by.iter().find_map(|name| {
+            available_field_index(&plan.fields, name).and_then(|index| plan.fields[index].column)
+        }) {
+            rows.sort_by(|left, right| compare_staged(plan, column, right, left, rates));
         }
         if let Some(top) = self.top {
             rows.truncate(top);
         }
-        for value in rows {
-            if cancelled() || !emit(record(&value)?) {
-                return Ok(false);
-            }
-        }
-        Ok(true)
     }
 
     fn emit_layout(
@@ -253,18 +274,14 @@ impl PreparedSnapshot {
 
     fn emit_untimed(
         &self,
-        section: &SectionPlans,
         plan: &Plan,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<bool, ApiError> {
-        let _ = section;
-        let dictionary = self.segment.dictionary()?;
-        let mut failure = None;
-        let mut connected = true;
         let (start_row, row_count) = self
             .row_ordinal
             .map_or((0, usize::MAX), |ordinal| (ordinal, 1));
+        let mut rows = Vec::new();
         self.segment.visit_rows(
             plan.type_id,
             &plan.projection,
@@ -272,26 +289,72 @@ impl PreparedSnapshot {
             row_count,
             |ordinal, row| {
                 if cancelled() {
-                    connected = false;
                     return false;
                 }
-                if !plan.matches(&row, &dictionary) {
-                    return true;
-                }
-                match Self::row_record(plan, &row, None, None, ordinal, &dictionary, self.text) {
-                    Ok(value) => match record(&value) {
-                        Ok(bytes) => connected = emit(bytes),
-                        Err(error) => failure = Some(error),
-                    },
-                    Err(error) => failure = Some(error),
-                }
-                connected && failure.is_none()
+                rows.push((ordinal, row));
+                true
             },
         )?;
-        if let Some(error) = failure {
-            return Err(error);
+        if cancelled() {
+            return Ok(false);
         }
-        Ok(connected)
+        self.emit_rows(
+            &self.segment,
+            plan,
+            rows,
+            RateContext {
+                previous: None,
+                elapsed: None,
+            },
+            emit,
+            cancelled,
+        )
+    }
+
+    fn emit_rows(
+        &self,
+        source: &Segment,
+        plan: &Plan,
+        rows: Vec<(u64, Row)>,
+        rates: RateContext<'_>,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<bool, ApiError> {
+        let selection_dictionary = plan.selection_dictionary(source, &rows)?;
+        let mut staged = Vec::with_capacity(rows.len());
+        for (ordinal, row) in rows {
+            if !plan.matches(&row, &selection_dictionary) {
+                continue;
+            }
+            let Some(identity) = identity_of(plan, &row) else {
+                continue;
+            };
+            staged.push(StagedRow {
+                ordinal,
+                row,
+                identity,
+            });
+        }
+        self.order_and_truncate(plan, rates, &mut staged);
+        let dictionary = retained_dictionary(source, &staged)?;
+        for staged in staged {
+            let before = rates
+                .previous
+                .and_then(|previous| previous.get(&staged.identity));
+            let value = Self::row_record(
+                plan,
+                &staged.row,
+                before,
+                rates.elapsed,
+                staged.ordinal,
+                &dictionary,
+                self.text,
+            )?;
+            if cancelled() || !emit(record(&value)?) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn moments(
@@ -350,31 +413,37 @@ impl PreparedSnapshot {
         if counters.is_empty() {
             return Ok(collected);
         }
-        segment.visit_rows(
-            plan.type_id,
-            &plan.projection,
-            0,
-            usize::MAX,
-            |_ordinal, row| {
-                if cancelled() {
-                    return false;
+        let mut projection = counters.clone();
+        projection.extend(plan.contract.identity.iter().copied());
+        projection.push(timestamp);
+        projection.sort_unstable();
+        projection.dedup();
+        let mut rows = Vec::new();
+        segment.visit_rows(plan.type_id, &projection, 0, usize::MAX, |ordinal, row| {
+            if cancelled() {
+                return false;
+            }
+            if row_timestamp(&row, timestamp) != Some(at) {
+                return true;
+            }
+            rows.push((ordinal, row));
+            true
+        })?;
+        if cancelled() {
+            return Ok(collected);
+        }
+        for (_ordinal, row) in rows {
+            let Some(key) = identity_of(plan, &row) else {
+                continue;
+            };
+            let mut stored = BTreeMap::new();
+            for name in &counters {
+                if let Some(value) = row.get(name) {
+                    stored.insert(*name, value.clone());
                 }
-                if row_timestamp(&row, timestamp) != Some(at) {
-                    return true;
-                }
-                let Some(key) = identity_of(plan, &row) else {
-                    return true;
-                };
-                let mut stored = BTreeMap::new();
-                for name in &counters {
-                    if let Some(value) = row.get(name) {
-                        stored.insert(*name, value.clone());
-                    }
-                }
-                collected.insert(key, stored);
-                true
-            },
-        )?;
+            }
+            collected.insert(key, stored);
+        }
         Ok(collected)
     }
 
@@ -420,7 +489,7 @@ impl PreparedSnapshot {
         before: Option<&CounterReadings>,
         elapsed: Option<i64>,
         ordinal: u64,
-        dictionary: &kronika_reader::Dictionary,
+        dictionary: &Dictionary,
         text_limit: Option<usize>,
     ) -> Result<Value, ApiError> {
         let stamped = plan.timestamp.and_then(|column| row_timestamp(row, column));
@@ -458,11 +527,67 @@ impl PreparedSnapshot {
     }
 }
 
-fn sort_value(row: &Value, field: usize) -> f64 {
-    row.get("values")
-        .and_then(|values| values.get(field))
-        .and_then(Value::as_f64)
-        .unwrap_or(f64::NEG_INFINITY)
+fn compare_staged(
+    plan: &Plan,
+    column: &'static str,
+    left: &StagedRow,
+    right: &StagedRow,
+    rates: RateContext<'_>,
+) -> Ordering {
+    let value = |staged: &StagedRow| {
+        let stored = staged.row.get(column)?;
+        let cumulative = plan
+            .contract
+            .column(column)
+            .is_some_and(|declared| declared.class == ColumnClass::Cumulative);
+        if cumulative {
+            rates.elapsed?;
+            let earlier = rates.previous?.get(&staged.identity)?.get(column)?;
+            counter_delta(stored, earlier)
+        } else {
+            ordered_cell(stored)
+        }
+    };
+    compare_ordered(value(left), value(right))
+}
+
+fn compare_ordered(left: Option<OrderedNumber>, right: Option<OrderedNumber>) -> Ordering {
+    match (left, right) {
+        (Some(OrderedNumber::Integer(left)), Some(OrderedNumber::Integer(right))) => {
+            left.cmp(&right)
+        }
+        (Some(OrderedNumber::Float(left)), Some(OrderedNumber::Float(right))) => {
+            left.partial_cmp(&right).unwrap_or(Ordering::Equal)
+        }
+        (Some(_), Some(_)) | (None, None) => Ordering::Equal,
+        (Some(_), None) => Ordering::Greater,
+        (None, Some(_)) => Ordering::Less,
+    }
+}
+
+fn ordered_cell(cell: &Cell) -> Option<OrderedNumber> {
+    match cell {
+        Cell::I16(value) => Some(OrderedNumber::Integer(i128::from(*value))),
+        Cell::I32(value) => Some(OrderedNumber::Integer(i128::from(*value))),
+        Cell::I64(value) | Cell::Ts(value) => Some(OrderedNumber::Integer(i128::from(*value))),
+        Cell::U32(value) => Some(OrderedNumber::Integer(i128::from(*value))),
+        Cell::U64(value) => Some(OrderedNumber::Integer(i128::from(*value))),
+        Cell::F64(value) if value.is_finite() => Some(OrderedNumber::Float(*value)),
+        Cell::Bool(value) => Some(OrderedNumber::Integer(i128::from(*value))),
+        Cell::F64(_) | Cell::StrId(_) | Cell::ListI32(_) | Cell::Null => None,
+    }
+}
+
+fn retained_dictionary(segment: &Segment, rows: &[StagedRow]) -> Result<Dictionary, ApiError> {
+    let ids: HashSet<u64> = rows
+        .iter()
+        .flat_map(|staged| staged.row.iter())
+        .filter_map(|(_name, cell)| match cell {
+            Cell::StrId(id) => Some(*id),
+            _ => None,
+        })
+        .collect();
+    resolved_dictionary(segment, &ids)
 }
 
 fn available_field_index(fields: &[super::query::OutputField], name: &str) -> Option<usize> {
@@ -511,7 +636,7 @@ fn rate(
         reason = "an interval of 2^52 microseconds is 142 years"
     )]
     let seconds = elapsed as f64 / 1_000_000.0;
-    let value = delta / seconds;
+    let value = delta.as_f64() / seconds;
     if value.is_finite() {
         json!(value)
     } else {
@@ -519,11 +644,26 @@ fn rate(
     }
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "integer counter deltas are converted only after exact subtraction"
-)]
-fn counter_delta(now: &Cell, earlier: &Cell) -> Option<f64> {
+#[derive(Clone, Copy)]
+enum OrderedNumber {
+    Integer(i128),
+    Float(f64),
+}
+
+impl OrderedNumber {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "integer counter deltas are converted only after exact subtraction"
+    )]
+    const fn as_f64(self) -> f64 {
+        match self {
+            Self::Integer(value) => value as f64,
+            Self::Float(value) => value,
+        }
+    }
+}
+
+fn counter_delta(now: &Cell, earlier: &Cell) -> Option<OrderedNumber> {
     let exact = match (now, earlier) {
         (Cell::I16(now), Cell::I16(earlier)) => i128::from(*now) - i128::from(*earlier),
         (Cell::I32(now), Cell::I32(earlier)) => i128::from(*now) - i128::from(*earlier),
@@ -534,11 +674,11 @@ fn counter_delta(now: &Cell, earlier: &Cell) -> Option<f64> {
         (Cell::U64(now), Cell::U64(earlier)) => i128::from(*now) - i128::from(*earlier),
         (Cell::F64(now), Cell::F64(earlier)) => {
             let delta = now - earlier;
-            return (delta >= 0.0 && delta.is_finite()).then_some(delta);
+            return (delta >= 0.0 && delta.is_finite()).then_some(OrderedNumber::Float(delta));
         }
         _ => return None,
     };
-    (exact >= 0).then_some(exact as f64)
+    (exact >= 0).then_some(OrderedNumber::Integer(exact))
 }
 
 fn rate_columns(plan: &Plan) -> Vec<&'static str> {
@@ -553,29 +693,31 @@ fn rate_columns(plan: &Plan) -> Vec<&'static str> {
         .collect()
 }
 
-fn identity_of(plan: &Plan, row: &Row) -> Option<Vec<String>> {
+fn identity_of(plan: &Plan, row: &Row) -> Option<Vec<IdentityCell>> {
     if plan.contract.identity.is_empty() {
         return Some(Vec::new());
     }
-    plan.contract
-        .identity
-        .iter()
-        .map(|name| row.get(name).map(identity_text))
-        .collect()
+    let mut identity = Vec::with_capacity(plan.contract.identity.len());
+    for name in plan.contract.identity {
+        let stored = row.get(name)?;
+        identity.push(identity_cell(stored));
+    }
+    Some(identity)
 }
 
-fn identity_text(stored: &Cell) -> String {
+fn identity_cell(stored: &Cell) -> IdentityCell {
     match stored {
-        Cell::Null => String::new(),
-        Cell::I16(value) => value.to_string(),
-        Cell::I32(value) => value.to_string(),
-        Cell::I64(value) | Cell::Ts(value) => value.to_string(),
-        Cell::U32(value) => value.to_string(),
-        Cell::U64(value) => value.to_string(),
-        Cell::F64(value) => value.to_string(),
-        Cell::Bool(value) => value.to_string(),
-        Cell::StrId(value) => format!("s{value}"),
-        Cell::ListI32(value) => format!("{value:?}"),
+        Cell::Null => IdentityCell::Null,
+        Cell::I16(value) => IdentityCell::I16(*value),
+        Cell::I32(value) => IdentityCell::I32(*value),
+        Cell::I64(value) => IdentityCell::I64(*value),
+        Cell::Ts(value) => IdentityCell::Ts(*value),
+        Cell::U32(value) => IdentityCell::U32(*value),
+        Cell::U64(value) => IdentityCell::U64(*value),
+        Cell::F64(value) => IdentityCell::F64(value.to_bits()),
+        Cell::Bool(value) => IdentityCell::Bool(*value),
+        Cell::ListI32(value) => IdentityCell::ListI32(value.clone()),
+        Cell::StrId(id) => IdentityCell::StrId(*id),
     }
 }
 

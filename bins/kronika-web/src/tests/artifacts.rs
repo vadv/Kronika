@@ -10,6 +10,7 @@ use kronika_format::DictLimits;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
 use kronika_registry::instance_metadata::InstanceMetadata;
 use kronika_registry::os_diskstats::OsDiskstats;
+use kronika_registry::os_netdev::OsNetdev;
 use kronika_registry::os_psi::OsPsi;
 use kronika_registry::pg_stat_activity::PgStatActivityV3;
 use kronika_registry::{StrId, Ts};
@@ -108,6 +109,26 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append unreadable fixture");
+    }
+
+    fn append_ranked_diskstats_with_unreadable_loser(&mut self) {
+        let mut interner = Interner::new(DictLimits::default());
+        let device = StrId(interner.intern(b"nvme0n1").expect("intern device").get());
+        let dictionary = dict::encode(interner.window()).expect("encode device dictionary");
+        let mut buffers = SectionBuffers::new();
+        buffers
+            .push(diskstats_with_device(100, -1, 1, StrId(999_999)))
+            .expect("unreadable row fits");
+        buffers
+            .push(diskstats_with_device(100, 2, 2, device))
+            .expect("ranked row fits");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode ranked fixture")
+            .expect("nonempty ranked fixture");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append ranked fixture");
     }
 
     fn append_health(&mut self) {
@@ -250,6 +271,32 @@ fn diskstats_with_device(ts: i64, minor: i32, reads: i64, device: StrId) -> OsDi
         discard_time_ms: None,
         flushes: None,
         flush_time_ms: None,
+        scope: 0,
+    }
+}
+
+fn netdev(ts: i64, iface: StrId, rx_bytes: i64) -> OsNetdev {
+    OsNetdev {
+        ts: Ts(ts),
+        iface,
+        rx_bytes,
+        rx_packets: 0,
+        rx_errs: 0,
+        rx_drop: 0,
+        rx_fifo: 0,
+        rx_frame: 0,
+        rx_compressed: 0,
+        rx_multicast: 0,
+        tx_bytes: 0,
+        tx_packets: 0,
+        tx_errs: 0,
+        tx_drop: 0,
+        tx_fifo: 0,
+        tx_colls: 0,
+        tx_carrier: 0,
+        tx_compressed: 0,
+        speed_mbit: None,
+        duplex: 0,
         scope: 0,
     }
 }
@@ -981,6 +1028,21 @@ fn a_snapshot_orders_by_a_column_and_returns_only_the_top_of_it() {
 }
 
 #[test]
+fn snapshot_resolves_text_only_after_top_rows_are_selected() {
+    let mut fixture = Fixture::new();
+    fixture.append_ranked_diskstats_with_unreadable_loser();
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=os_diskstats&field=minor&field=device&by=minor&top=1"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("top row snapshot");
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"], serde_json::json!([2, "nvme0n1"]));
+}
+
+#[test]
 fn a_snapshot_projects_one_exact_physical_source_row() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[
@@ -1113,6 +1175,80 @@ fn the_first_moment_of_a_segment_rates_against_the_segment_before_it() {
         .collect::<Vec<_>>();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["values"][0], serde_json::json!(200_000.0));
+}
+
+#[test]
+fn string_identity_matches_across_segment_dictionaries() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let root = DataRoot::open(directory.path()).expect("data root");
+    let writer = root
+        .acquire_writer(LayoutLimits::default())
+        .expect("acquire writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("open journal");
+
+    let first = SegmentAddress::new(SegmentId::new(SEGMENT_ID).expect("first id")).expect("first");
+    let mut first_interner = Interner::new(DictLimits::default());
+    let first_iface = StrId(
+        first_interner
+            .intern(b"eth0")
+            .expect("first interface")
+            .get(),
+    );
+    let first_dictionary = dict::encode(first_interner.window()).expect("first dictionary");
+    let mut first_buffers = SectionBuffers::new();
+    first_buffers
+        .push(netdev(100, first_iface, 10))
+        .expect("first netdev row");
+    let first_part = first_buffers
+        .flush(&first_dictionary)
+        .expect("encode first")
+        .expect("first part");
+    journal.append(first.id, &first_part).expect("append first");
+    write_segment(&journal, &writer, first).expect("finish first");
+    journal.reset().expect("close first");
+
+    let second = SegmentAddress::new(SegmentId::new(SEGMENT_ID + 1_000).expect("second id"))
+        .expect("second");
+    let mut second_interner = Interner::new(DictLimits::default());
+    let _unused = second_interner
+        .intern(b"lo")
+        .expect("another dictionary value");
+    let second_iface = StrId(
+        second_interner
+            .intern(b"eth0")
+            .expect("second interface")
+            .get(),
+    );
+    assert_eq!(
+        first_iface, second_iface,
+        "str_id is the stable content hash, not a segment-local ordinal"
+    );
+    let second_dictionary = dict::encode(second_interner.window()).expect("second dictionary");
+    let mut second_buffers = SectionBuffers::new();
+    second_buffers
+        .push(netdev(200, second_iface, 30))
+        .expect("second netdev row");
+    let second_part = second_buffers
+        .flush(&second_dictionary)
+        .expect("encode second")
+        .expect("second part");
+    journal
+        .append(second.id, &second_part)
+        .expect("append second");
+    write_segment(&journal, &writer, second).expect("finish second");
+
+    let target = format!(
+        "/api/segments/{}/snapshot?at=200&section=os_netdev&field=iface&field=rx_bytes",
+        SEGMENT_ID + 1_000
+    );
+    let (path, query) = target.split_once('?').expect("snapshot query");
+    let route = crate::route::parse(path, Some(query)).expect("snapshot route");
+    let prepared = crate::api::prepare(directory.path(), SOURCES, route, None)
+        .expect("prepare netdev snapshot");
+    let records = stream(prepared).expect("netdev snapshot");
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"], serde_json::json!(["eth0", 200_000.0]));
 }
 
 #[test]

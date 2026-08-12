@@ -1,9 +1,10 @@
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use kronika_reader::Cell;
 use serde_json::{Value, json};
 
-use super::{available_field_index, rate};
+use super::{available_field_index, compare_ordered, ordered_cell, rate};
 use crate::api::query::OutputField;
 
 const COLUMN: &str = "counter";
@@ -100,5 +101,17 @@ fn ordering_uses_the_first_candidate_present_in_the_physical_layout() {
             .iter()
             .find_map(|name| available_field_index(&fields, name)),
         Some(1)
+    );
+}
+
+#[test]
+fn ordering_keeps_integer_precision_above_two_to_the_fifty_third() {
+    let base = 1_u64 << 53;
+    assert_eq!(
+        compare_ordered(
+            ordered_cell(&Cell::U64(base + 1)),
+            ordered_cell(&Cell::U64(base)),
+        ),
+        Ordering::Greater
     );
 }
