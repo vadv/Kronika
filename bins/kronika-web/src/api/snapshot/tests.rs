@@ -136,7 +136,7 @@ fn ranked_for(
     let contract = contract(type_id).expect("fixture contract");
     PageRankedRow {
         staged: PageStagedRow {
-            layout_index,
+            context_index: layout_index,
             ordinal,
             row: Row::new(contract, Vec::new()),
             identity: Vec::new(),
@@ -207,7 +207,7 @@ fn page_heap_is_bounded_and_ties_use_layout_then_ordinal() {
     let rows = page
         .finish()
         .into_iter()
-        .map(|row| (row.staged.layout_index, row.staged.ordinal))
+        .map(|row| (row.staged.context_index, row.staged.ordinal))
         .collect::<Vec<_>>();
     assert_eq!(rows, [(1, 0), (0, 1), (0, 2)]);
 }
@@ -286,7 +286,7 @@ fn cursor_round_trips_and_rejects_malformed_values() {
     let cursor = SnapshotCursor {
         segment_id: -4,
         active_position: 8,
-        layout_index: 2,
+        context_index: 2,
         ordinal: 99,
         binding: u64::MAX,
     };

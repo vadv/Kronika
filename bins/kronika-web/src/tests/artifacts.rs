@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::io::Read as _;
 use std::path::Path;
 
@@ -16,8 +17,10 @@ use kronika_registry::os_psi::OsPsi;
 use kronika_registry::pg_log::PgLogErrors;
 use kronika_registry::pg_stat_activity::PgStatActivityV3;
 use kronika_registry::pg_stat_statements::PgStatStatementsV2;
+use kronika_registry::pg_stat_user_indexes::{PgStatUserIndexesV1, PgStatUserIndexesV2};
+use kronika_registry::pg_stat_user_tables::PgStatUserTablesV1;
 use kronika_registry::pg_store_plans::PgStorePlansOsscV1;
-use kronika_registry::{StrId, Ts};
+use kronika_registry::{Section, StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use serde_json::Value;
 
@@ -438,6 +441,31 @@ impl Fixture {
             .expect("append ranked plans");
     }
 
+    fn append_relation_snapshots(
+        &mut self,
+        tables: &[(i64, u32, u32, i64)],
+        indexes_v1: &[(i64, u32, u32, i64)],
+        indexes_v2: &[(i64, u32, u32, i64)],
+    ) {
+        let mut buffers = SectionBuffers::new();
+        for &(ts, datid, relid, seq_scan) in tables {
+            buffers
+                .push(user_table(ts, datid, relid, seq_scan))
+                .expect("table snapshot row fits");
+        }
+        for &(ts, datid, indexrelid, idx_scan) in indexes_v1 {
+            buffers
+                .push(user_index_v1(ts, datid, indexrelid, idx_scan))
+                .expect("V1 index snapshot row fits");
+        }
+        for &(ts, datid, indexrelid, idx_scan) in indexes_v2 {
+            buffers
+                .push(user_index_v2(ts, datid, indexrelid, idx_scan))
+                .expect("V2 index snapshot row fits");
+        }
+        self.append(buffers);
+    }
+
     fn append_log_error(&mut self, at: i64) {
         let mut interner = Interner::new(DictLimits::default());
         let label = StrId(interner.intern(b"fixture").expect("intern label").get());
@@ -504,6 +532,109 @@ impl Fixture {
 
 fn diskstats(ts: i64, minor: i32, reads: i64) -> OsDiskstats {
     diskstats_with_device(ts, minor, reads, StrId(999))
+}
+
+fn user_table(ts: i64, datid: u32, relid: u32, seq_scan: i64) -> PgStatUserTablesV1 {
+    PgStatUserTablesV1 {
+        ts: Ts(ts),
+        datid,
+        datname: StrId(901),
+        relid,
+        schemaname: StrId(902),
+        relname: StrId(903),
+        tablespace: StrId(904),
+        seq_scan,
+        seq_tup_read: 0,
+        idx_scan: None,
+        idx_tup_fetch: None,
+        n_tup_ins: 0,
+        n_tup_upd: 0,
+        n_tup_del: 0,
+        n_tup_hot_upd: 0,
+        n_live_tup: 0,
+        n_dead_tup: 0,
+        n_mod_since_analyze: 0,
+        vacuum_count: 0,
+        autovacuum_count: 0,
+        analyze_count: 0,
+        autoanalyze_count: 0,
+        last_vacuum: None,
+        last_autovacuum: None,
+        last_analyze: None,
+        last_autoanalyze: None,
+        main_fork_bytes: 0,
+        toast_bytes: None,
+        toast_n_live_tup: None,
+        toast_n_dead_tup: None,
+        toast_last_autovacuum: None,
+        xid_age: None,
+        mxid_age: None,
+        reltuples: 0,
+        heap_blks_read: 0,
+        heap_blks_hit: 0,
+        idx_blks_read: None,
+        idx_blks_hit: None,
+        toast_blks_read: None,
+        toast_blks_hit: None,
+        tidx_blks_read: None,
+        tidx_blks_hit: None,
+    }
+}
+
+fn user_index_v1(ts: i64, datid: u32, indexrelid: u32, idx_scan: i64) -> PgStatUserIndexesV1 {
+    PgStatUserIndexesV1 {
+        ts: Ts(ts),
+        datid,
+        datname: StrId(901),
+        indexrelid,
+        relid: indexrelid - 1,
+        schemaname: StrId(902),
+        relname: StrId(903),
+        indexrelname: StrId(905),
+        tablespace: StrId(904),
+        idx_scan,
+        idx_tup_read: 0,
+        idx_tup_fetch: 0,
+        main_fork_bytes: 0,
+        indisunique: false,
+        indisprimary: false,
+        indisvalid: true,
+        indisexclusion: false,
+        indisready: true,
+        amname: StrId(906),
+        indexdef: None,
+        idx_blks_read: 0,
+        idx_blks_hit: 0,
+    }
+}
+
+fn user_index_v2(ts: i64, datid: u32, indexrelid: u32, idx_scan: i64) -> PgStatUserIndexesV2 {
+    let base = user_index_v1(ts, datid, indexrelid, idx_scan);
+    PgStatUserIndexesV2 {
+        ts: base.ts,
+        datid: base.datid,
+        datname: base.datname,
+        indexrelid: base.indexrelid,
+        relid: base.relid,
+        schemaname: base.schemaname,
+        relname: base.relname,
+        indexrelname: base.indexrelname,
+        tablespace: base.tablespace,
+        idx_scan: base.idx_scan,
+        idx_tup_read: base.idx_tup_read,
+        idx_tup_fetch: base.idx_tup_fetch,
+        main_fork_bytes: base.main_fork_bytes,
+        last_idx_scan: None,
+        indisunique: base.indisunique,
+        indisprimary: base.indisprimary,
+        indisvalid: base.indisvalid,
+        indisexclusion: base.indisexclusion,
+        indisready: base.indisready,
+        amname: base.amname,
+        indexdef: base.indexdef,
+        idx_blks_read: base.idx_blks_read,
+        idx_blks_hit: base.idx_blks_hit,
+    }
 }
 
 fn diskstats_with_device(ts: i64, minor: i32, reads: i64, device: StrId) -> OsDiskstats {
@@ -2068,6 +2199,100 @@ fn a_snapshot_keeps_only_the_rows_a_filter_names() {
         .map(|record| record["values"][0].clone())
         .collect::<Vec<_>>();
     assert_eq!(minors, [serde_json::json!(1)]);
+}
+
+#[test]
+fn table_snapshot_pages_use_each_database_moments_and_elapsed_time() {
+    let mut fixture = Fixture::new();
+    fixture.append_relation_snapshots(
+        &[
+            (10_000_000, 1, 77, 10),
+            (30_000_000, 1, 77, 30),
+            (20_000_000, 2, 77, 5),
+            (25_000_000, 2, 77, 15),
+        ],
+        &[],
+        &[],
+    );
+    fixture.finish();
+
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=30000000&section=pg_stat_user_tables&field=datid&field=relid&field=seq_scan&by=seq_scan&page_size=1"
+    );
+    let first = stream(fixture.prepare(&base, None)).expect("first table page");
+    assert_eq!(
+        row_records(&first)[0]["values"],
+        serde_json::json!([2, 77, 2.0])
+    );
+    let first_page = first
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("first table page trailer");
+    assert_eq!(first_page["eligible"], "2");
+    assert_eq!(first_page["from"], "10000000");
+    assert_eq!(first_page["to"], "30000000");
+    let cursor = first_page["next_cursor"].as_str().expect("table cursor");
+
+    let second = stream(fixture.prepare(&format!("{base}&cursor={cursor}"), None))
+        .expect("second table page");
+    assert_eq!(
+        row_records(&second)[0]["values"],
+        serde_json::json!([1, 77, 1.0])
+    );
+    let second_page = second
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("second table page trailer");
+    assert_eq!(second_page["eligible"], "2");
+    assert_eq!(second_page["has_more"], false);
+}
+
+#[test]
+fn index_snapshot_never_borrows_a_database_or_layout_predecessor() {
+    let mut fixture = Fixture::new();
+    fixture.append_relation_snapshots(
+        &[],
+        &[
+            (10_000_000, 1, 88, 100),
+            (30_000_000, 1, 88, 50),
+            (20_000_000, 2, 88, 10),
+            (25_000_000, 2, 88, 20),
+            (27_000_000, 3, 88, 100),
+            (10_000_000, 4, 88, 1),
+        ],
+        &[(30_000_000, 4, 88, 11)],
+    );
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=30000000&section=pg_stat_user_indexes&field=datid&field=indexrelid&field=idx_scan"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("index snapshot");
+    let rows = row_records(&records)
+        .into_iter()
+        .map(|row| {
+            (
+                row["values"][0].as_u64().expect("database oid"),
+                (row["type_id"].clone(), row["values"][2].clone()),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[&1].1, Value::Null, "a reset has no rate");
+    assert_eq!(rows[&2].1, serde_json::json!(2.0));
+    assert_eq!(rows[&3].1, Value::Null, "a missing predecessor stays null");
+    assert_eq!(
+        rows[&4],
+        (
+            PgStatUserIndexesV2::CONTRACT
+                .type_id
+                .get()
+                .to_string()
+                .into(),
+            Value::Null,
+        ),
+        "an older physical layout is not used as the predecessor"
+    );
 }
 
 #[test]
