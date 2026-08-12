@@ -112,6 +112,25 @@ fn snapshot_paging_inputs_enable_one_bounded_page() {
     };
     assert_eq!(ordered.by, ["total_time", "total_exec_time", "calls"]);
     assert_eq!(ordered.page_size, Some(DEFAULT_SNAPSHOT_PAGE_SIZE));
+    assert_eq!(ordered.direction, Order::Desc);
+
+    let Route::Snapshot(ascending) = parse(
+        "/api/segments/7/snapshot",
+        Some("at=9&section=pg_stat_user_indexes&by=idx_scan&direction=asc"),
+    )
+    .expect("ascending snapshot") else {
+        panic!("snapshot route");
+    };
+    assert_eq!(ascending.direction, Order::Asc);
+    for query in [
+        "at=9&section=pg_stat_user_indexes&direction=sideways",
+        "at=9&section=pg_stat_user_indexes&direction=asc&direction=desc",
+    ] {
+        assert_eq!(
+            parse("/api/segments/7/snapshot", Some(query)),
+            Err(RouteError::BadParameter("direction".to_owned())),
+        );
+    }
 
     let Route::Snapshot(searched) = parse(
         "/api/segments/7/snapshot",

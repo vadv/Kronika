@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use super::query::{Plan, plans, resolved_dictionary};
 use super::render::{cell, projected_layout, record, shorten};
 use super::{ApiError, CachePolicy, ResponseMeta, explicit_segment_with_listing};
-use crate::route::{DataRequest, SegmentRequest, SnapshotRequest};
+use crate::route::{DataRequest, Order, SegmentRequest, SnapshotRequest};
 
 pub(crate) struct PreparedSnapshot {
     segment: Segment,
@@ -20,6 +20,7 @@ pub(crate) struct PreparedSnapshot {
     at: i64,
     sections: Vec<SectionPlans>,
     by: Vec<String>,
+    direction: Order,
     page_size: Option<usize>,
     cursor: Option<SnapshotCursor>,
     binding: u64,
@@ -69,6 +70,7 @@ struct PageRows {
 struct PageRankedRow {
     staged: PageStagedRow,
     value: Option<PageOrderValue>,
+    direction: Order,
 }
 
 struct PageStagedRow {
@@ -100,11 +102,11 @@ enum PageOrderKind {
     CounterRatio {
         numerator: Vec<&'static str>,
         denominator: Vec<&'static str>,
-        partial_numerator: bool,
+        neutral_nulls: bool,
     },
     ValueRatio {
-        numerator: &'static str,
-        denominator: &'static str,
+        numerator: Vec<&'static str>,
+        denominator: Vec<&'static str>,
     },
 }
 
@@ -265,6 +267,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
         at: request.at,
         sections,
         by: request.by,
+        direction: request.direction,
         page_size: request.page_size,
         cursor: parsed,
         binding,
@@ -314,6 +317,9 @@ fn section_plans(
                     plan.add_projection_columns(
                         &order.as_ref().map_or_else(Vec::new, PageOrder::columns),
                     );
+                    if !request.search.is_empty() {
+                        plan.add_projection_columns(&search_columns(logical_name, plan));
+                    }
                 }
                 sections.push(SectionPlans {
                     logical_name: logical_name.clone(),
@@ -339,7 +345,8 @@ impl PageOrder {
             PageOrderKind::ValueRatio {
                 numerator,
                 denominator,
-            } => vec![*numerator, *denominator],
+                ..
+            } => numerator.iter().chain(denominator).copied().collect(),
         }
     }
 
@@ -367,6 +374,8 @@ fn derived_page_order(logical_name: &str, plan: &Plan, token: &str) -> Option<Pa
     let supported = match logical_name {
         "pg_stat_statements" => matches!(plan.type_id, 1_002_001..=1_002_006),
         "pg_store_plans" => matches!(plan.type_id, 1_003_001 | 1_004_001 | 1_018_001),
+        "pg_stat_user_tables" => matches!(plan.type_id, 1_013_001..=1_013_004),
+        "pg_stat_user_indexes" => matches!(plan.type_id, 1_014_001..=1_014_002),
         _ => false,
     };
     if !supported {
@@ -377,16 +386,23 @@ fn derived_page_order(logical_name: &str, plan: &Plan, token: &str) -> Option<Pa
             .iter()
             .find_map(|name| plan.contract.column(name).map(|column| column.name))
     };
-    let counters = |name, numerator: Vec<&'static str>, denominator: Vec<&'static str>, partial| {
-        (!numerator.is_empty() && !denominator.is_empty()).then_some(PageOrder {
-            name,
-            kind: PageOrderKind::CounterRatio {
-                numerator,
-                denominator,
-                partial_numerator: partial,
-            },
-        })
+    let columns = |names: &[&str]| {
+        names
+            .iter()
+            .filter_map(|name| column(&[*name]))
+            .collect::<Vec<_>>()
     };
+    let counters =
+        |name, numerator: Vec<&'static str>, denominator: Vec<&'static str>, neutral_nulls| {
+            (!numerator.is_empty() && !denominator.is_empty()).then_some(PageOrder {
+                name,
+                kind: PageOrderKind::CounterRatio {
+                    numerator,
+                    denominator,
+                    neutral_nulls,
+                },
+            })
+        };
     let one_over = |name, numerator: &[&str], denominator: &[&str]| {
         counters(
             name,
@@ -394,6 +410,17 @@ fn derived_page_order(logical_name: &str, plan: &Plan, token: &str) -> Option<Pa
             vec![column(denominator)?],
             false,
         )
+    };
+    let gauges = |name, numerator: &[&str], denominator: &[&str]| {
+        let numerator = columns(numerator);
+        let denominator = columns(denominator);
+        (!numerator.is_empty() && !denominator.is_empty()).then_some(PageOrder {
+            name,
+            kind: PageOrderKind::ValueRatio {
+                numerator,
+                denominator,
+            },
+        })
     };
     match token {
         "derived.mean_exec_ms_per_call" => one_over(
@@ -414,7 +441,7 @@ fn derived_page_order(logical_name: &str, plan: &Plan, token: &str) -> Option<Pa
             .filter_map(|name| column(&[*name]))
             .collect(),
             vec![column(&["calls"])?],
-            true,
+            false,
         ),
         "derived.hit_pct" => {
             let hit = column(&["shared_blks_hit"])?;
@@ -435,10 +462,67 @@ fn derived_page_order(logical_name: &str, plan: &Plan, token: &str) -> Option<Pa
         "derived.cv" => Some(PageOrder {
             name: "cv",
             kind: PageOrderKind::ValueRatio {
-                numerator: column(&["stddev_exec_time", "stddev_time"])?,
-                denominator: column(&["mean_exec_time", "mean_time"])?,
+                numerator: vec![column(&["stddev_exec_time", "stddev_time"])?],
+                denominator: vec![column(&["mean_exec_time", "mean_time"])?],
             },
         }),
+        "derived.dead_pct" => gauges("dead_pct", &["n_dead_tup"], &["n_live_tup", "n_dead_tup"]),
+        "derived.hot_pct" => one_over("hot_pct", &["n_tup_hot_upd"], &["n_tup_upd"]),
+        "derived.new_page_pct" => one_over("new_page_pct", &["n_tup_newpage_upd"], &["n_tup_upd"]),
+        "derived.sequential_share_pct" => counters(
+            "sequential_share_pct",
+            columns(&["seq_scan"]),
+            columns(&["seq_scan", "idx_scan"]),
+            true,
+        ),
+        "derived.seq_tuples_per_scan" => {
+            one_over("seq_tuples_per_scan", &["seq_tup_read"], &["seq_scan"])
+        }
+        "derived.idx_tuples_per_scan" => {
+            one_over("idx_tuples_per_scan", &["idx_tup_fetch"], &["idx_scan"])
+        }
+        "derived.buffer_hit_pct" => counters(
+            "buffer_hit_pct",
+            columns(&[
+                "heap_blks_hit",
+                "idx_blks_hit",
+                "toast_blks_hit",
+                "tidx_blks_hit",
+            ]),
+            columns(&[
+                "heap_blks_hit",
+                "heap_blks_read",
+                "idx_blks_hit",
+                "idx_blks_read",
+                "toast_blks_hit",
+                "toast_blks_read",
+                "tidx_blks_hit",
+                "tidx_blks_read",
+            ]),
+            true,
+        ),
+        "derived.vacuum_mean_ms" => {
+            one_over("vacuum_mean_ms", &["total_vacuum_time"], &["vacuum_count"])
+        }
+        "derived.autovacuum_mean_ms" => one_over(
+            "autovacuum_mean_ms",
+            &["total_autovacuum_time"],
+            &["autovacuum_count"],
+        ),
+        "derived.analyze_mean_ms" => one_over(
+            "analyze_mean_ms",
+            &["total_analyze_time"],
+            &["analyze_count"],
+        ),
+        "derived.autoanalyze_mean_ms" => one_over(
+            "autoanalyze_mean_ms",
+            &["total_autoanalyze_time"],
+            &["autoanalyze_count"],
+        ),
+        "derived.tuples_per_scan" => one_over("tuples_per_scan", &["idx_tup_read"], &["idx_scan"]),
+        "derived.fetches_per_scan" => {
+            one_over("fetches_per_scan", &["idx_tup_fetch"], &["idx_scan"])
+        }
         _ => None,
     }
 }
@@ -452,11 +536,10 @@ fn validate_search_projection(
             return Err(ApiError::BadCursor);
         };
         if !request.search.is_empty()
-            && (request.fields.is_empty()
-                || !section
-                    .plans
-                    .iter()
-                    .any(|plan| !search_columns(&section.logical_name, plan).is_empty()))
+            && !section
+                .plans
+                .iter()
+                .any(|plan| !search_columns(&section.logical_name, plan).is_empty())
         {
             return Err(ApiError::BadFilter("search".to_owned()));
         }
@@ -877,6 +960,7 @@ impl PreparedSnapshot {
                 next_cursor,
                 page_size,
             },
+            self.direction,
             emit,
         )?;
         Ok(())
@@ -943,6 +1027,7 @@ impl PreparedSnapshot {
         section: &SectionPlans,
         contexts: &[PageContext<'_>],
         metadata: &PageMetadata,
+        direction: Order,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
     ) -> Result<(), ApiError> {
         let mut order_by = Vec::new();
@@ -971,7 +1056,10 @@ impl PreparedSnapshot {
             "next_cursor": metadata.next_cursor,
             "page_size": metadata.page_size,
             "order_by": order_by,
-            "order_direction": "desc",
+            "order_direction": match direction {
+                Order::Asc => "asc",
+                Order::Desc => "desc",
+            },
             "from": from.map(|value| value.to_string()),
             "to": to.map(|value| value.to_string()),
         }))?);
@@ -1445,6 +1533,7 @@ impl PreparedSnapshot {
                 identity,
             },
             value,
+            direction: self.direction,
         })
     }
 
@@ -1684,7 +1773,8 @@ impl PartialOrd for PageRankedRow {
 
 impl Ord for PageRankedRow {
     fn cmp(&self, other: &Self) -> Ordering {
-        compare_page_order_values(self.value.as_ref(), other.value.as_ref())
+        debug_assert_eq!(self.direction, other.direction);
+        compare_page_order_values(self.value.as_ref(), other.value.as_ref(), self.direction)
             .then_with(|| other.staged.context_index.cmp(&self.staged.context_index))
             .then_with(|| other.staged.ordinal.cmp(&self.staged.ordinal))
     }
@@ -1693,8 +1783,9 @@ impl Ord for PageRankedRow {
 fn compare_page_order_values(
     left: Option<&PageOrderValue>,
     right: Option<&PageOrderValue>,
+    direction: Order,
 ) -> Ordering {
-    match (left, right) {
+    let ordered = match (left, right) {
         (Some(PageOrderValue::Integer(left)), Some(PageOrderValue::Integer(right))) => {
             left.cmp(right)
         }
@@ -1730,8 +1821,12 @@ fn compare_page_order_values(
         ),
         (Some(PageOrderValue::Text(left)), Some(PageOrderValue::Text(right))) => left.cmp(right),
         (Some(_), Some(_)) | (None, None) => Ordering::Equal,
-        (Some(_), None) => Ordering::Greater,
-        (None, Some(_)) => Ordering::Less,
+        (Some(_), None) => return Ordering::Greater,
+        (None, Some(_)) => return Ordering::Less,
+    };
+    match direction {
+        Order::Asc => ordered.reverse(),
+        Order::Desc => ordered,
     }
 }
 
@@ -1834,21 +1929,18 @@ fn page_order_value(
         PageOrderKind::CounterRatio {
             numerator,
             denominator,
-            partial_numerator,
+            neutral_nulls,
         } => {
             let _elapsed = context.elapsed_for(row)?;
             let before = context.previous.as_ref()?.get(identity)?;
-            let numerator = counter_sum(row, before, numerator, *partial_numerator)?;
-            let denominator = counter_sum(row, before, denominator, false)?;
+            let numerator = counter_sum(row, before, numerator, *neutral_nulls)?;
+            let denominator = counter_sum(row, before, denominator, *neutral_nulls)?;
             ratio_order_value(numerator, denominator)
         }
         PageOrderKind::ValueRatio {
             numerator,
             denominator,
-        } => ratio_order_value(
-            ordered_cell(row.get(numerator)?)?,
-            ordered_cell(row.get(denominator)?)?,
-        ),
+        } => ratio_order_value(value_sum(row, numerator)?, value_sum(row, denominator)?),
     }
 }
 
@@ -1898,20 +1990,26 @@ fn counter_sum(
     row: &Row,
     before: &CounterReadings,
     columns: &[&'static str],
-    partial: bool,
+    neutral_nulls: bool,
 ) -> Option<OrderedNumber> {
     let mut sum = None;
     for column in columns {
-        let value = row
-            .get(column)
-            .zip(before.get(column))
-            .and_then(|(now, earlier)| counter_delta(now, earlier));
-        let Some(value) = value else {
-            if partial {
-                continue;
-            }
+        let (Some(now), Some(earlier)) = (row.get(column), before.get(column)) else {
             return None;
         };
+        if neutral_nulls && matches!((now, earlier), (Cell::Null, Cell::Null)) {
+            continue;
+        };
+        let value = counter_delta(now, earlier)?;
+        sum = Some(add_ordered(sum, value)?);
+    }
+    sum
+}
+
+fn value_sum(row: &Row, columns: &[&'static str]) -> Option<OrderedNumber> {
+    let mut sum = None;
+    for column in columns {
+        let value = row.get(column).and_then(ordered_cell)?;
         sum = Some(add_ordered(sum, value)?);
     }
     sum
@@ -1952,7 +2050,14 @@ fn ratio_order_value(
 }
 
 fn search_columns(logical_name: &str, plan: &Plan) -> Vec<&'static str> {
-    let allowed: &[&str] = match logical_name {
+    allowed_search_columns(logical_name)
+        .iter()
+        .filter_map(|name| plan.contract.column(name).map(|column| column.name))
+        .collect()
+}
+
+fn allowed_search_columns(logical_name: &str) -> &'static [&'static str] {
+    match logical_name {
         "pg_stat_statements" => &[
             "query", "queryid", "dbid", "userid", "datname", "usename", "toplevel",
         ],
@@ -1966,12 +2071,28 @@ fn search_columns(logical_name: &str, plan: &Plan) -> Vec<&'static str> {
             "datname",
             "usename",
         ],
+        "pg_stat_user_tables" => &[
+            "datname",
+            "datid",
+            "schemaname",
+            "relname",
+            "relid",
+            "tablespace",
+        ],
+        "pg_stat_user_indexes" => &[
+            "datname",
+            "datid",
+            "schemaname",
+            "relname",
+            "relid",
+            "indexrelname",
+            "indexrelid",
+            "tablespace",
+            "amname",
+            "indexdef",
+        ],
         _ => &[],
-    };
-    plan.fields
-        .iter()
-        .filter_map(|field| field.column.filter(|column| allowed.contains(column)))
-        .collect()
+    }
 }
 
 fn search_matches(
@@ -2171,7 +2292,14 @@ fn snapshot_binding(request: &SnapshotRequest) -> u64 {
     for by in &request.by {
         hash_part(&mut hash, b"by", by.as_bytes());
     }
-    hash_part(&mut hash, b"direction", b"desc");
+    hash_part(
+        &mut hash,
+        b"direction",
+        match request.direction {
+            Order::Asc => b"asc",
+            Order::Desc => b"desc",
+        },
+    );
     hash
 }
 

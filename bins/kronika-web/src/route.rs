@@ -35,6 +35,7 @@ pub(crate) struct SnapshotRequest {
     pub(crate) sections: Vec<String>,
     pub(crate) fields: Vec<String>,
     pub(crate) by: Vec<String>,
+    pub(crate) direction: Order,
     /// Present only for the paged single-section form.
     pub(crate) page_size: Option<usize>,
     pub(crate) cursor: Option<String>,
@@ -184,6 +185,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
     let mut sections = Vec::new();
     let mut fields = Vec::new();
     let mut by = Vec::new();
+    let mut direction = None;
     let mut page_size = None;
     let mut cursor = None;
     let mut search = Vec::new();
@@ -217,6 +219,13 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
                     return Err(RouteError::BadParameter("by".to_owned()));
                 }
                 by.push(field);
+            }
+            "direction" if direction.is_none() => {
+                direction = Some(match raw_value {
+                    "asc" => Order::Asc,
+                    "desc" => Order::Desc,
+                    _ => return Err(RouteError::BadParameter("direction".to_owned())),
+                });
             }
             "type_id" if type_id.is_none() => {
                 type_id = Some(unsigned_32("type_id", raw_value)?);
@@ -262,7 +271,11 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
             }
         }
     }
-    let paged = page_size.is_some() || cursor.is_some() || !search.is_empty() || !by.is_empty();
+    let paged = page_size.is_some()
+        || cursor.is_some()
+        || !search.is_empty()
+        || !by.is_empty()
+        || direction.is_some();
     validate_snapshot_shape(&sections, paged, &filters, type_id, row_ordinal)?;
     Ok(SnapshotRequest {
         segment_id,
@@ -270,6 +283,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
         sections,
         fields,
         by,
+        direction: direction.unwrap_or(Order::Desc),
         page_size: paged.then_some(page_size.unwrap_or(DEFAULT_SNAPSHOT_PAGE_SIZE)),
         cursor,
         search,

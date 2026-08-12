@@ -10,7 +10,7 @@ use super::{
     available_field_index, compare_ordered, ordered_cell, rate, snapshot_binding,
 };
 use crate::api::query::OutputField;
-use crate::route::{Filter, SnapshotRequest};
+use crate::route::{Filter, Order, SnapshotRequest};
 
 const COLUMN: &str = "counter";
 
@@ -142,6 +142,7 @@ fn ranked_for(
             identity: Vec::new(),
         },
         value,
+        direction: Order::Desc,
     }
 }
 
@@ -244,7 +245,7 @@ fn integer_ratio_ordering_is_exact_without_cross_product_overflow() {
         denominator: u128::MAX - 1,
     };
     assert_eq!(
-        super::compare_page_order_values(Some(&larger), Some(&smaller)),
+        super::compare_page_order_values(Some(&larger), Some(&smaller), Order::Desc),
         Ordering::Greater
     );
 
@@ -257,7 +258,7 @@ fn integer_ratio_ordering_is_exact_without_cross_product_overflow() {
         denominator: 10,
     };
     assert_eq!(
-        super::compare_page_order_values(Some(&ratio_winner), Some(&raw_winner)),
+        super::compare_page_order_values(Some(&ratio_winner), Some(&raw_winner), Order::Desc),
         Ordering::Greater
     );
 
@@ -279,6 +280,54 @@ fn integer_ratio_ordering_is_exact_without_cross_product_overflow() {
             }
         }
     }
+}
+
+#[test]
+fn ascending_order_reverses_values_but_keeps_null_last() {
+    let one = PageOrderValue::Integer(1);
+    let two = PageOrderValue::Integer(2);
+    assert_eq!(
+        super::compare_page_order_values(Some(&one), Some(&two), Order::Asc),
+        Ordering::Greater
+    );
+    assert_eq!(
+        super::compare_page_order_values(Some(&one), None, Order::Asc),
+        Ordering::Greater
+    );
+    assert_eq!(
+        super::compare_page_order_values(None, Some(&one), Order::Asc),
+        Ordering::Less
+    );
+}
+
+#[test]
+fn relation_search_fields_do_not_depend_on_the_output_projection() {
+    assert_eq!(
+        super::allowed_search_columns("pg_stat_user_tables"),
+        [
+            "datname",
+            "datid",
+            "schemaname",
+            "relname",
+            "relid",
+            "tablespace"
+        ]
+    );
+    assert_eq!(
+        super::allowed_search_columns("pg_stat_user_indexes"),
+        [
+            "datname",
+            "datid",
+            "schemaname",
+            "relname",
+            "relid",
+            "indexrelname",
+            "indexrelid",
+            "tablespace",
+            "amname",
+            "indexdef",
+        ]
+    );
 }
 
 #[test]
@@ -306,6 +355,7 @@ fn request() -> SnapshotRequest {
         sections: vec!["pg_stat_statements".to_owned()],
         fields: vec!["queryid".to_owned(), "query".to_owned()],
         by: vec!["calls".to_owned()],
+        direction: Order::Desc,
         page_size: Some(200),
         cursor: None,
         search: vec!["needle*".to_owned()],
@@ -343,6 +393,9 @@ fn cursor_binding_covers_query_shape_but_excludes_page_size_and_cursor() {
     variants.push(changed);
     let mut changed = baseline.clone();
     changed.by.push("rows".to_owned());
+    variants.push(changed);
+    let mut changed = baseline.clone();
+    changed.direction = Order::Asc;
     variants.push(changed);
     let mut changed = baseline.clone();
     changed.search.push("second".to_owned());
