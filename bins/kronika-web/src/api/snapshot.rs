@@ -288,7 +288,13 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
     if parsed.is_some_and(|cursor| cursor.active_position != active_position) {
         return Err(ApiError::BadCursor);
     }
-    let earlier = preceding(&reader, &segment_ref, segments)?;
+    let earlier = preceding(
+        &reader,
+        &segment_ref,
+        segments,
+        &request.sections,
+        request.at,
+    )?;
     let relation_fields = request
         .group
         .map(|group| relation::output_fields(&request.sections, group, &request.fields))
@@ -667,9 +673,7 @@ impl PreparedSnapshot {
             return self.emit_page(emit, cancelled);
         }
         for section in &self.sections {
-            if self.row_ordinal.is_none()
-                && SnapshotViewSpec::for_logical_name(&section.logical_name).is_some()
-            {
+            if SnapshotViewSpec::for_logical_name(&section.logical_name).is_some() {
                 if !self.emit_partitioned_section(section, emit, cancelled)? {
                     return Ok(());
                 }
@@ -700,6 +704,9 @@ impl PreparedSnapshot {
         }
         let contexts = self.partitioned_contexts(section, cancelled)?;
         for context in &contexts {
+            if self.row_ordinal.is_some() && context.source.id() != self.segment.id() {
+                continue;
+            }
             if cancelled() || !self.emit_context_rows(context, emit, cancelled)? {
                 return Ok(false);
             }
@@ -2512,11 +2519,28 @@ fn preceding(
     reader: &Reader,
     segment_ref: &SegmentRef,
     segments: Vec<SegmentRef>,
+    sections: &[String],
+    at: i64,
 ) -> Result<Option<Segment>, ApiError> {
+    let compatible = segment_ref
+        .sections()
+        .iter()
+        .filter(|section| {
+            contract(section.type_id)
+                .is_some_and(|layout| sections.iter().any(|name| name == layout.name))
+        })
+        .map(|section| section.type_id)
+        .collect::<HashSet<_>>();
     let chosen = segments
         .into_iter()
-        .filter(|candidate| candidate.max_ts() <= segment_ref.min_ts())
-        .max_by_key(SegmentRef::max_ts);
+        .filter(|candidate| candidate.id() < segment_ref.id() && candidate.min_ts() <= at)
+        .filter(|candidate| {
+            candidate
+                .sections()
+                .iter()
+                .any(|section| compatible.contains(&section.type_id))
+        })
+        .max_by_key(SegmentRef::id);
     chosen
         .map(|candidate| reader.open_segment(&candidate))
         .transpose()

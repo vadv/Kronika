@@ -520,6 +520,32 @@ impl Fixture {
             .expect("append named table snapshots");
     }
 
+    fn append_buffered_table_snapshots(&mut self, rows: &[(i64, u32, u32, [i64; 8])]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let mut buffers = SectionBuffers::new();
+        let labels = ["fixture_db", "public", "buffered_table", "pg_default"].map(|label| {
+            StrId(
+                interner
+                    .intern(label.as_bytes())
+                    .expect("intern buffered table label")
+                    .get(),
+            )
+        });
+        for &(ts, datid, relid, counters) in rows {
+            let mut row = buffered_user_table(ts, datid, relid, counters);
+            [row.datname, row.schemaname, row.relname, row.tablespace] = labels;
+            buffers.push(row).expect("buffered table row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("encode buffered table dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode buffered table snapshots")
+            .expect("nonempty buffered table snapshots");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append buffered table snapshots");
+    }
+
     fn append_named_index_snapshots(&mut self, rows: &[NamedIndexSnapshot<'_>]) {
         let mut interner = Interner::new(DictLimits::default());
         let tablespace = StrId(
@@ -689,6 +715,29 @@ fn user_table(ts: i64, datid: u32, relid: u32, seq_scan: i64) -> PgStatUserTable
         tidx_blks_read: None,
         tidx_blks_hit: None,
     }
+}
+
+fn buffered_user_table(ts: i64, datid: u32, relid: u32, buffers: [i64; 8]) -> PgStatUserTablesV1 {
+    let mut row = user_table(ts, datid, relid, 0);
+    let [
+        heap_read,
+        heap_hit,
+        index_read,
+        index_hit,
+        toast_read,
+        toast_hit,
+        toast_index_read,
+        toast_index_hit,
+    ] = buffers;
+    row.heap_blks_read = heap_read;
+    row.heap_blks_hit = heap_hit;
+    row.idx_blks_read = Some(index_read);
+    row.idx_blks_hit = Some(index_hit);
+    row.toast_blks_read = Some(toast_read);
+    row.toast_blks_hit = Some(toast_hit);
+    row.tidx_blks_read = Some(toast_index_read);
+    row.tidx_blks_hit = Some(toast_index_hit);
+    row
 }
 
 fn user_index_v1(ts: i64, datid: u32, indexrelid: u32, idx_scan: i64) -> PgStatUserIndexesV1 {
@@ -2382,6 +2431,156 @@ fn table_snapshot_pages_use_each_database_moments_and_elapsed_time() {
         .expect("second table page trailer");
     assert_eq!(second_page["eligible"], "2");
     assert_eq!(second_page["has_more"], false);
+}
+
+#[test]
+fn relation_table_buffer_rates_distinguish_values_zero_and_missing_predecessors() {
+    let mut fixture = Fixture::new();
+    fixture.append_buffered_table_snapshots(&[
+        (10_000_000, 1, 77, [100, 900, 50, 450, 10, 90, 5, 45]),
+        (20_000_000, 1, 77, [110, 990, 55, 495, 11, 99, 6, 54]),
+        (10_000_000, 2, 78, [8, 16, 4, 12, 2, 6, 1, 3]),
+        (20_000_000, 2, 78, [8, 16, 4, 12, 2, 6, 1, 3]),
+        (20_000_000, 3, 79, [10, 90, 5, 45, 1, 9, 1, 9]),
+    ]);
+    fixture.finish();
+
+    let fields = [
+        "heap_blks_read",
+        "heap_blks_hit",
+        "idx_blks_read",
+        "idx_blks_hit",
+        "toast_blks_read",
+        "toast_blks_hit",
+        "tidx_blks_read",
+        "tidx_blks_hit",
+        "buffer_hit_pct",
+    ]
+    .map(|field| format!("field={field}"))
+    .join("&");
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=20000000&section=pg_stat_user_tables&group=object&{fields}"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("buffer relation snapshot");
+    let rows = relation_records(&records)
+        .into_iter()
+        .map(|row| (row["key"]["datid"].as_str().unwrap().to_owned(), row))
+        .collect::<BTreeMap<_, _>>();
+
+    let assert_rate = |field: &str, expected: f64| {
+        let actual = rows["1"]["values"][field]
+            .as_f64()
+            .expect("numeric buffer rate");
+        assert!((actual - expected).abs() < 1e-12, "{field}: {actual}");
+    };
+    for (field, expected) in [
+        ("heap_blks_read", 1.0),
+        ("heap_blks_hit", 9.0),
+        ("idx_blks_read", 0.5),
+        ("idx_blks_hit", 4.5),
+        ("toast_blks_read", 0.1),
+        ("toast_blks_hit", 0.9),
+        ("tidx_blks_read", 0.1),
+        ("tidx_blks_hit", 0.9),
+        ("buffer_hit_pct", 90.0),
+    ] {
+        assert_rate(field, expected);
+    }
+
+    for field in fields
+        .split('&')
+        .map(|field| field.trim_start_matches("field="))
+    {
+        if field != "buffer_hit_pct" {
+            assert_eq!(rows["2"]["values"][field], 0.0, "true zero {field}");
+            assert_eq!(
+                rows["3"]["values"][field],
+                Value::Null,
+                "missing predecessor {field}"
+            );
+        }
+    }
+    assert_eq!(rows["2"]["values"]["buffer_hit_pct"], Value::Null);
+    assert_eq!(rows["3"]["values"]["buffer_hit_pct"], Value::Null);
+
+    let exact = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=20000000&section=pg_stat_user_tables&field=datid&field=heap_blks_read&field=heap_blks_hit&type_id=1013001&row_ordinal=1"
+    );
+    let exact = stream(fixture.prepare(&exact, None)).expect("exact partitioned buffer row");
+    assert_eq!(
+        row_records(&exact)[0]["values"],
+        serde_json::json!([1, 1.0, 9.0]),
+        "the exact row uses its own database predecessor"
+    );
+
+    let exact_zero = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=20000000&section=pg_stat_user_tables&field=datid&field=heap_blks_read&type_id=1013001&row_ordinal=3"
+    );
+    let exact_zero = stream(fixture.prepare(&exact_zero, None)).expect("exact zero buffer row");
+    assert_eq!(
+        row_records(&exact_zero)[0]["values"],
+        serde_json::json!([2, 0.0])
+    );
+
+    let exact_missing = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=20000000&section=pg_stat_user_tables&field=datid&field=heap_blks_read&type_id=1013001&row_ordinal=4"
+    );
+    let exact_missing =
+        stream(fixture.prepare(&exact_missing, None)).expect("exact missing predecessor row");
+    assert_eq!(
+        row_records(&exact_missing)[0]["values"],
+        serde_json::json!([3, null])
+    );
+
+    let version_absent = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=20000000&section=pg_stat_user_tables&group=object&field=n_tup_newpage_upd&where.datid=1"
+    );
+    let version_absent =
+        stream(fixture.prepare(&version_absent, None)).expect("version-absent relation field");
+    assert_eq!(
+        relation_records(&version_absent)[0]["values"]["n_tup_newpage_upd"],
+        Value::Null,
+        "a field absent from the physical layout is not a numeric zero"
+    );
+}
+
+#[test]
+fn relation_predecessor_skips_sectionless_segments_and_overlapping_bounds() {
+    let mut fixture = Fixture::new();
+    fixture.append_named_table_snapshots(&[(
+        100_000_000,
+        1,
+        77,
+        10,
+        "fixture_db",
+        "public",
+        "orders",
+    )]);
+    fixture.append_diskstats(&[(400_000_000, 0, 1)]);
+    fixture.finish_and_continue(SEGMENT_ID + 1_000);
+    fixture.append_diskstats(&[(200_000_000, 0, 2)]);
+    let current_segment = SEGMENT_ID + 2_000;
+    fixture.finish_and_continue(current_segment);
+    fixture.append_named_table_snapshots(&[(
+        300_000_000,
+        1,
+        77,
+        30,
+        "fixture_db",
+        "public",
+        "orders",
+    )]);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{current_segment}/snapshot?at=300000000&section=pg_stat_user_tables&group=object&field=seq_scan"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("cross-segment relation snapshot");
+    let rows = relation_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"]["seq_scan"], 0.1);
+    assert_eq!(rows[0]["sample_from"], "100000000");
+    assert_eq!(rows[0]["sample_to"], "300000000");
 }
 
 #[test]

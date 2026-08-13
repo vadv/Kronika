@@ -6,7 +6,7 @@ import { importModule, registryPlugin } from "./import-module.mjs"
 
 const relation = await importModule('export * from "../src/postgres-relations.ts"', { plugins: [registryPlugin([])] })
 const view = await importModule(
-  'export { relationColumns, relationDataRows } from "../src/postgres-relations-view.tsx"',
+  'export { relationColumns, relationDataRows, relationDetailColumns } from "../src/postgres-relations-view.tsx"',
   { plugins: [registryPlugin([])] },
 )
 
@@ -173,7 +173,7 @@ test("object source locators are exact and index definitions stay lazy and objec
   const target = relation.relationDetailTarget(row)
   assert.equal(target.at, 2_000_000)
   assert.equal(target.request.typeId, "1014002")
-  assert.equal(target.request.fields, undefined)
+  assert.deepEqual(target.request.fields, ["indexdef"])
   assert.deepEqual(target.options, { typeId: "1014002", rowOrdinal: "17", fullText: true })
 
   assert.throws(() => relation.parseRelationLayout(layoutRecord(
@@ -219,7 +219,7 @@ test("table and index navigation uses exact database-scoped table identity", () 
   assert.notEqual(back?.selectedKey, relation.relationRowKey(otherDatabase))
 })
 
-test("detail requests the exact physical row without assuming a layout", () => {
+test("detail requests only the exact index definition", () => {
   const storedLayout = layout(layoutRecord("pg_stat_user_indexes", "object", []))
   const row = parseRow(relationRecord(
     "pg_stat_user_indexes", "object",
@@ -227,7 +227,50 @@ test("detail requests the exact physical row without assuming a layout", () => {
     {}, { type_id: "1014002", ordinal: "17", timestamp: "2000000" },
   ), storedLayout)
   assert.equal(row.segmentId, "1709164800000000")
-  assert.equal(relation.relationDetailTarget(row).request.fields, undefined)
+  assert.deepEqual(relation.relationDetailTarget(row).request.fields, ["indexdef"])
+
+  const tableLayout = layout(layoutRecord("pg_stat_user_tables", "object", []))
+  const table = parseRow(relationRecord(
+    "pg_stat_user_tables", "object",
+    { datid: "42", datname: "app", schemaname: "public", relid: "9001", relname: "orders" },
+    {}, { type_id: "1013002", ordinal: "18", timestamp: "2000000" },
+  ), tableLayout)
+  assert.throws(() => relation.relationDetailTarget(table), /index definition source/)
+})
+
+test("table detail lenses render five distinct semantic field matrices", () => {
+  const expectedMetrics = {
+    access: ["seq_scan", "idx_scan", "sequential_share_pct", "seq_tup_read", "idx_tup_fetch", "seq_tuples_per_scan", "idx_tuples_per_scan", "last_seq_scan", "last_idx_scan"],
+    changes: ["n_tup_ins", "n_tup_upd", "n_tup_del", "n_tup_hot_upd", "n_tup_newpage_upd", "dead_pct", "hot_pct", "new_page_pct", "n_live_tup", "n_dead_tup", "n_mod_since_analyze", "n_ins_since_vacuum"],
+    maintenance: ["vacuum_count", "autovacuum_count", "analyze_count", "autoanalyze_count", "last_vacuum", "last_autovacuum", "last_analyze", "last_autoanalyze", "toast_last_autovacuum", "vacuum_mean_ms", "autovacuum_mean_ms", "analyze_mean_ms", "autoanalyze_mean_ms"],
+    size_buffers: ["main_fork_bytes", "toast_bytes", "reltuples", "toast_n_live_tup", "toast_n_dead_tup", "heap_blks_read", "heap_blks_hit", "idx_blks_read", "idx_blks_hit", "toast_blks_read", "toast_blks_hit", "tidx_blks_read", "tidx_blks_hit", "buffer_hit_pct"],
+    freeze: ["xid_age", "mxid_age", "n_ins_since_vacuum", "last_vacuum", "last_autovacuum"],
+  }
+  const matrices = relation.TABLE_LENSES.map((lens) => {
+    const fields = view.relationDetailColumns("pg_stat_user_tables", lens, "object", ["seq_scan", "heap_blks_read"]).map(({ field }) => field)
+    assert.deepEqual(fields.slice(-expectedMetrics[lens].length), expectedMetrics[lens], lens)
+    assert.equal(fields.includes("datid"), true, lens)
+    assert.equal(fields.includes("relid"), true, lens)
+    return fields.join(",")
+  })
+  assert.equal(new Set(matrices).size, relation.TABLE_LENSES.length)
+
+  const size = view.relationDetailColumns("pg_stat_user_tables", "size_buffers", "object", ["heap_blks_read"])
+  assert.equal(size.find(({ field }) => field === "heap_blks_read")?.rate, true)
+  assert.equal(size.find(({ field }) => field === "heap_blks_hit")?.rate, false)
+
+  const storedLayout = layout(layoutRecord("pg_stat_user_tables", "object", [
+    column("heap_blks_read", "number", "per_second"),
+    column("heap_blks_hit", "number", "per_second"),
+  ]))
+  const row = parseRow(relationRecord(
+    "pg_stat_user_tables", "object",
+    { datid: "42", datname: "app", schemaname: "public", relid: "9001", relname: "orders" },
+    { heap_blks_read: null, heap_blks_hit: 0 },
+    { type_id: "1013002", ordinal: "18", timestamp: "2000000" },
+  ), storedLayout)
+  assert.equal(row.values.heap_blks_read, null)
+  assert.equal(row.values.heap_blks_hit, 0)
 })
 
 test("object history is reset-safe, layout-safe, and keeps missing values unavailable", () => {
@@ -293,9 +336,12 @@ test("detail, empty, navigation, and paging behavior stays on generic exact APIs
   assert.match(source, /emptyHourStatusKey\(hour\)/)
   assert.match(source, /relationDrill\(row\)/)
   assert.match(source, /linkedRelation\(row\)/)
-  assert.match(source, /relationDetailTarget\(row\)/)
-  assert.match(source, /loadSnapshot\(row\.segmentId, target\.at, \[target\.request\]/)
-  assert.match(source, /loadSeries\(hour, row\.logicalName, historyFilters\(row\), \[historyField\], controller\.signal, undefined, target\.at\)/)
+  assert.match(source, /row\.logicalName === "pg_stat_user_indexes" \? relationDetailTarget\(row\) : null/)
+  assert.match(source, /loadSnapshot\(row\.segmentId, definitionTarget\.at, \[definitionTarget\.request\]/)
+  assert.match(source, /loadSeries\(hour, row\.logicalName, historyFilters\(row\), \[historyField\], controller\.signal, undefined, row\.timestamp\)/)
+  assert.match(source, /relationDetailColumns\(row\.logicalName as RelationSection, lens, row\.relation!\.group, rateFields\)/)
+  assert.match(source, /display\(value\(row, column\.field\), column, locale, t\)/)
+  assert.doesNotMatch(source, /Object\.keys\(exact\.values\)|rate: false/)
   assert.match(source, /data-testid="pg-exact-indexdef"/)
   assert.match(source, /pg\.relation\.scope\.database/)
   assert.match(source, /tableState\(metadata/)

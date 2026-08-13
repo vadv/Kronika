@@ -116,6 +116,10 @@ export function relationColumns(section: RelationSection, lens: RelationLens, le
   }))
 }
 
+export function relationDetailColumns(section: RelationSection, lens: RelationLens, level: RelationGroup, rateFields: readonly string[] = []): readonly EntityColumn[] {
+  return relationFields(section, lens, level).map((field) => relationColumn(field, rateFields))
+}
+
 function RelationLevels({ filters, level, onNavigate, section, t }: { readonly filters: Readonly<Record<string, string>>; readonly level: RelationGroup; readonly onNavigate: (navigation: RelationNavigation) => void; readonly section: RelationSection; readonly t: Translate }) {
   const target = (group: RelationGroup): RelationNavigation => ({ section, group, filters: {}, selectedKey: null })
   return <nav className="lensbar">
@@ -131,27 +135,27 @@ function RelationLenses({ active, onLens, section, t }: { readonly active: Relat
 
 function RelationDetail({ hour, lens, locale, onClose, onNavigate, rateFields, row, t }: { readonly hour: number; readonly lens: RelationLens; readonly locale: Locale; readonly onClose: () => void; readonly onNavigate: (navigation: RelationNavigation) => void; readonly rateFields: readonly string[]; readonly row: DataRow; readonly t: Translate }) {
   const object = row.relation?.group === "object"
-  const target = useMemo(() => object ? relationDetailTarget(row) : null, [object, row])
+  const definitionTarget = useMemo(() => object && row.logicalName === "pg_stat_user_indexes" ? relationDetailTarget(row) : null, [object, row])
   const [exact, setExact] = useState<DataRow | null>()
   const historyField = relationHistoryField(row.logicalName as RelationSection, lens)
   const [history, setHistory] = useState<ReturnType<typeof relationHistory>>([])
   useEffect(() => {
-    setExact(undefined)
+    setExact(definitionTarget === null ? null : undefined)
     setHistory([])
-    if (target === null) {
-      setExact(row)
-      return
-    }
     const controller = new AbortController()
-    void loadSnapshot(row.segmentId, target.at, [target.request], controller.signal, undefined, target.options)
-      .then((data) => { if (!controller.signal.aborted) setExact(data.sections[row.logicalName]?.[0] ?? null) })
-      .catch(() => { if (!controller.signal.aborted) setExact(null) })
-    void loadSeries(hour, row.logicalName, historyFilters(row), [historyField], controller.signal, undefined, target.at)
-      .then((rows) => { if (!controller.signal.aborted) setHistory(relationHistory(rows, historyField)) })
-      .catch(() => {})
+    if (definitionTarget !== null) {
+      void loadSnapshot(row.segmentId, definitionTarget.at, [definitionTarget.request], controller.signal, undefined, definitionTarget.options)
+        .then((data) => { if (!controller.signal.aborted) setExact(data.sections[row.logicalName]?.[0] ?? null) })
+        .catch(() => { if (!controller.signal.aborted) setExact(null) })
+    }
+    if (object) {
+      void loadSeries(hour, row.logicalName, historyFilters(row), [historyField], controller.signal, undefined, row.timestamp)
+        .then((rows) => { if (!controller.signal.aborted) setHistory(relationHistory(rows, historyField)) })
+        .catch(() => {})
+    }
     return () => controller.abort()
-  }, [historyField, hour, row, target])
-  const fields = exact === undefined || exact === null ? [] : Object.keys(exact.values)
+  }, [definitionTarget, historyField, hour, object, row])
+  const columns = relationDetailColumns(row.logicalName as RelationSection, lens, row.relation!.group, rateFields)
   const definition = object && row.logicalName === "pg_stat_user_indexes" && exact !== undefined && exact !== null ? rawText(value(exact, "indexdef")) : null
   const titleField = row.relation?.group === "database"
     ? "datname"
@@ -164,11 +168,8 @@ function RelationDetail({ hour, lens, locale, onClose, onNavigate, rateFields, r
     {linked !== null && <div className="lens-tabs"><button data-testid="pg-relation-link" onClick={() => onNavigate(linked)} type="button">{t(row.logicalName === "pg_stat_user_tables" ? "pg.relation.indexes" : "pg.relation.table")}</button></div>}
     {drill !== null && <div className="lens-tabs"><button data-testid="pg-relation-drill" onClick={() => onNavigate(drill)} type="button">{t(row.relation?.group === "database" ? "pg.relation.level.schema" : row.logicalName === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}</button></div>}
     {object && row.logicalName === "pg_stat_user_indexes" && <section className="query-block"><span>{t("pg.relation.definition")}{definition !== null && <button aria-label={t("common.raw")} className="copy-raw" onClick={() => void navigator.clipboard?.writeText(definition)} type="button"><Copy aria-hidden="true" size={12} /></button>}</span><pre data-testid="pg-exact-indexdef">{exact === undefined ? t("status.loading") : definition ?? t("common.unavailable")}</pre></section>}
-    <dl>{fields.filter((field) => field !== "indexdef").map((field) => {
-      const column = relationColumn(field, rateFields)
-      return <div key={field}><dt>{t(column.label)}</dt><dd>{display(value(exact!, field), object ? { ...column, rate: false } : column, locale, t)}</dd></div>
-    })}</dl>
-    {target !== null && <SeriesChart cursor={target.at} format={chartFormat(historyColumn.kind)} hour={hour} label={t(historyColumn.label)} locale={locale} points={history} />}
+    <dl>{columns.map((column) => <div key={column.field}><dt>{t(column.label)}</dt><dd>{display(value(row, column.field), column, locale, t)}</dd></div>)}</dl>
+    {object && <SeriesChart cursor={row.timestamp} format={chartFormat(historyColumn.kind)} hour={hour} label={t(historyColumn.label)} locale={locale} points={history} />}
   </aside>
 }
 

@@ -241,14 +241,16 @@ export function relationRowKey(row: DataRow): string {
 }
 
 export function relationDetailTarget(row: DataRow): RelationDetailTarget {
-  if (row.relation?.group !== "object" || row.typeId === "" || row.ordinal === "") invalid("relation source")
+  if (row.logicalName !== "pg_stat_user_indexes" || row.relation?.group !== "object" || row.typeId === "" || row.ordinal === "") {
+    invalid("index definition source")
+  }
   return {
     at: row.timestamp,
-    request: { section: row.logicalName, typeId: row.typeId },
+    request: { section: row.logicalName, typeId: row.typeId, fields: ["indexdef"] },
     options: {
       typeId: row.typeId,
       rowOrdinal: row.ordinal,
-      ...(row.logicalName === "pg_stat_user_indexes" ? { fullText: true } : {}),
+      fullText: true,
     },
   }
 }
