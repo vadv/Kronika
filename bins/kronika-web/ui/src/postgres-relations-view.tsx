@@ -8,6 +8,7 @@ import { rawText, value, type Locale } from "./model"
 import {
   INDEX_LENSES,
   TABLE_LENSES,
+  isRelationId,
   isRelationLens,
   linkedRelation,
   relationDefaultOrder,
@@ -74,7 +75,7 @@ export function PostgresRelationsView(props: PostgresRelationsViewProps) {
     onNavigate(next)
   }
   const hasMore = metadata?.hasMore === true && metadata.nextCursor !== null
-  const status = <>{tableState(metadata, rows.length, cursor, pattern, activeOrder, locale, t)}<span>{relationScope(filters, t)}</span>{lens === "low_activity" && <span>{t("pg.relation.activity_note")}</span>}</>
+  const status = <>{tableState(metadata, rows.length, cursor, pattern, activeOrder, locale, t)}<span>{relationScope(filters, rows, t)}</span>{lens === "low_activity" && <span>{t("pg.relation.activity_note")}</span>}</>
   return <>
     <RelationLevels filters={filters} level={level} onNavigate={navigate} section={section} t={t} />
     <RelationLenses active={lens} onLens={onLens} section={section} t={t} />
@@ -111,13 +112,13 @@ export function relationDataRows(rows: readonly DataRow[], section: RelationSect
 
 export function relationColumns(section: RelationSection, lens: RelationLens, level: RelationGroup, rateFields: readonly string[] = []): readonly EntityColumn[] {
   const request = relationRequest(section, lens, level)
-  return relationFields(section, lens, level).map((field, index) => ({
+  return visibleRelationFields(section, lens, level).map((field, index) => ({
     ...relationColumn(field, rateFields), sticky: index === 0, sortable: Object.hasOwn(request.order ?? {}, field),
   }))
 }
 
 export function relationDetailColumns(section: RelationSection, lens: RelationLens, level: RelationGroup, rateFields: readonly string[] = []): readonly EntityColumn[] {
-  return relationFields(section, lens, level).map((field) => relationColumn(field, rateFields))
+  return visibleRelationFields(section, lens, level).map((field) => relationColumn(field, rateFields))
 }
 
 function RelationLevels({ filters, level, onNavigate, section, t }: { readonly filters: Readonly<Record<string, string>>; readonly level: RelationGroup; readonly onNavigate: (navigation: RelationNavigation) => void; readonly section: RelationSection; readonly t: Translate }) {
@@ -173,14 +174,19 @@ function RelationDetail({ hour, lens, locale, onClose, onNavigate, rateFields, r
   </aside>
 }
 
-function relationScope(filters: Readonly<Record<string, string>>, t: Translate): string {
+function relationScope(filters: Readonly<Record<string, string>>, rows: readonly DataRow[], t: Translate): string {
+  const values = rows[0]?.values
   const scope = [
-    filters.datid === undefined ? null : t("pg.relation.scope.database", { oid: filters.datid }),
-    filters.schemaname === undefined ? null : t("pg.relation.scope.schema", { schema: filters.schemaname }),
-    filters.relid === undefined ? null : t("pg.relation.scope.table", { oid: filters.relid }),
-    filters.indexrelid === undefined ? null : t("pg.relation.scope.index", { oid: filters.indexrelid }),
-  ].filter((label): label is string => label !== null).join(" · ")
-  return scope === "" ? t("pg.relation.scope.all") : scope
+    filters.datid === undefined ? null : rawText(values?.datname ?? null),
+    filters.schemaname ?? null,
+    filters.relid === undefined ? null : rawText(values?.relname ?? null),
+    filters.indexrelid === undefined ? null : rawText(values?.indexrelname ?? null),
+  ].filter((name): name is string => name !== null && name !== "").join(" · ")
+  return scope !== "" || Object.keys(filters).length !== 0 ? scope : t("pg.relation.scope.all")
+}
+
+function visibleRelationFields(section: RelationSection, lens: RelationLens, level: RelationGroup): readonly string[] {
+  return relationFields(section, lens, level).filter((field) => !isRelationId(field))
 }
 
 function relationColumn(field: string, rateFields: readonly string[] = []): EntityColumn {

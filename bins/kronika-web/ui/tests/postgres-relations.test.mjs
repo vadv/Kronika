@@ -71,6 +71,30 @@ test("relation requests keep hierarchy separate from fixed metric lenses", () =>
   assert.equal(state.fields.includes("indexdef"), false)
 })
 
+test("rendered relation columns hide numeric identity while requests retain it", () => {
+  const hidden = ["datid", "relid", "indexrelid"]
+  for (const section of relation.RELATION_SECTIONS) {
+    const lenses = section === "pg_stat_user_tables" ? relation.TABLE_LENSES : relation.INDEX_LENSES
+    for (const lens of lenses) {
+      for (const group of relation.RELATION_GROUPS) {
+        const request = relation.relationRequest(section, lens, group)
+        assert.equal(request.fields.includes("datid"), true, `${section}:${lens}:${group}:datid projection`)
+        assert.equal(request.fields.includes("relid"), group === "object", `${section}:${lens}:${group}:relid projection`)
+        assert.equal(request.fields.includes("indexrelid"), section === "pg_stat_user_indexes" && group === "object", `${section}:${lens}:${group}:indexrelid projection`)
+        assert.deepEqual(Object.keys(request.order).filter((field) => hidden.includes(field)), [], `${section}:${lens}:${group}:visible sorts`)
+        for (const columns of [view.relationColumns(section, lens, group), view.relationDetailColumns(section, lens, group)]) {
+          const fields = columns.map(({ field }) => field)
+          assert.deepEqual(fields.filter((field) => hidden.includes(field)), [], `${section}:${lens}:${group}`)
+          assert.equal(fields.includes("datname"), true, `${section}:${lens}:${group}:database name`)
+          assert.equal(fields.includes("schemaname"), group !== "database", `${section}:${lens}:${group}:schema name`)
+          assert.equal(fields.includes("relname"), group === "object", `${section}:${lens}:${group}:table name`)
+          assert.equal(fields.includes("indexrelname"), section === "pg_stat_user_indexes" && group === "object", `${section}:${lens}:${group}:index name`)
+        }
+      }
+    }
+  }
+})
+
 test("wire rows preserve explicit aggregate identity and never invent a physical locator", () => {
   const databaseLayout = layout(layoutRecord("pg_stat_user_tables", "database", [
     column("table_count", "number", "count", false),
@@ -249,8 +273,8 @@ test("table detail lenses render five distinct semantic field matrices", () => {
   const matrices = relation.TABLE_LENSES.map((lens) => {
     const fields = view.relationDetailColumns("pg_stat_user_tables", lens, "object", ["seq_scan", "heap_blks_read"]).map(({ field }) => field)
     assert.deepEqual(fields.slice(-expectedMetrics[lens].length), expectedMetrics[lens], lens)
-    assert.equal(fields.includes("datid"), true, lens)
-    assert.equal(fields.includes("relid"), true, lens)
+    assert.equal(fields.includes("datid"), false, lens)
+    assert.equal(fields.includes("relid"), false, lens)
     return fields.join(",")
   })
   assert.equal(new Set(matrices).size, relation.TABLE_LENSES.length)
@@ -343,7 +367,9 @@ test("detail, empty, navigation, and paging behavior stays on generic exact APIs
   assert.match(source, /display\(value\(row, column\.field\), column, locale, t\)/)
   assert.doesNotMatch(source, /Object\.keys\(exact\.values\)|rate: false/)
   assert.match(source, /data-testid="pg-exact-indexdef"/)
-  assert.match(source, /pg\.relation\.scope\.database/)
+  assert.match(source, /rawText\(values\?\.datname/)
+  assert.match(source, /filters\.schemaname \?\? null/)
+  assert.doesNotMatch(source, /pg\.relation\.scope\.(?:database|schema|table|index)/)
   assert.match(source, /tableState\(metadata/)
   assert.doesNotMatch(source, /\$\{name\}=\$\{stored\}|metadata\?\.orderBy/)
   assert.doesNotMatch(source, /DROP|drop recommendation|unused index/i)

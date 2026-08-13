@@ -141,7 +141,7 @@ export function relationRequest(section: RelationSection, lensName: RelationLens
   const fields = relationFields(section, lensName, group)
   const order = Object.fromEntries(fields.filter((field) => {
     const kind = relationFieldKind(field)
-    return kind !== "text" && kind !== "boolean"
+    return kind !== "text" && kind !== "boolean" && !isRelationId(field)
   }).map((field) => [field, [relationSortToken(field)]]))
   const chosen = relationDefaultOrder(section, lensName)
   return {
@@ -238,6 +238,10 @@ export function parseRelationRow(
 export function relationRowKey(row: DataRow): string {
   const group = row.relation!.group
   return relationKeyString(row.logicalName as RelationSection, group, row.values)
+}
+
+export function isRelationId(field: string): boolean {
+  return field === "datid" || field === "relid" || field === "indexrelid"
 }
 
 export function relationDetailTarget(row: DataRow): RelationDetailTarget {

@@ -147,7 +147,10 @@ test("obsolete status and internal collection copy stay out of the UI", async ()
   ])
   const english = parseDictionary(englishSource, "en.yaml")
   const russian = parseDictionary(russianSource, "ru.yaml")
-  const removed = ["app.kicker", "app.offline", "help.intro", "col.scope.label", "col.scope.help", "col.starttime.label", "col.starttime.help"]
+  const removed = [
+    "app.kicker", "app.offline", "help.intro", "col.scope.label", "col.scope.help", "col.starttime.label", "col.starttime.help",
+    "pg.field.relid.label", "pg.field.indexrelid.label", "pg.relation.scope.database", "pg.relation.scope.schema", "pg.relation.scope.table", "pg.relation.scope.index",
+  ]
   for (const key of removed) {
     assert.equal(Object.hasOwn(english, key), false)
     assert.equal(Object.hasOwn(russian, key), false)

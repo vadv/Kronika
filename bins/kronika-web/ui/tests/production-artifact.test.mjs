@@ -282,12 +282,30 @@ test("the production artifact preserves wire keys and exact finding page state",
     const relationRow = await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-row').textContent`)
     assert.match(relationRow, /artifact_db/)
     assert.match(relationRow, /artifact_table/)
+    const tablePresentation = await cdp.evaluate(`(() => ({
+      cells: [...document.querySelectorAll('[data-testid="pg-tables-table"] .entity-row [role="cell"]')].map((cell) => cell.textContent),
+      headers: [...document.querySelectorAll('[data-testid="pg-tables-table"] [role="columnheader"]')].map((header) => header.textContent),
+    }))()`)
+    assert.equal(tablePresentation.cells.includes("42"), false)
+    assert.equal(tablePresentation.cells.includes("73"), false)
+    assert.doesNotMatch(tablePresentation.headers.join(" "), /Database ID|Table OID|Index OID/)
     const relationRequest = requests.find(({ query }) => query.includes("section=pg_stat_user_tables") && query.includes("group=object"))
     assert.notEqual(relationRequest, undefined, JSON.stringify(requests.map(({ query }) => query), null, 2))
     const relationQuery = new URLSearchParams(relationRequest.query)
     assert.equal(relationQuery.get("group"), "object")
     assert.equal(relationQuery.get("page_size"), "200")
+    assert.equal(relationQuery.getAll("field").includes("datid"), true)
     assert.equal(relationQuery.getAll("field").includes("relid"), true)
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-row').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-relation-detail"]') !== null`, "the table detail")
+    const tableDetail = await cdp.evaluate(`(() => ({
+      labels: [...document.querySelectorAll('[data-testid="pg-relation-detail"] dt')].map((label) => label.textContent),
+      values: [...document.querySelectorAll('[data-testid="pg-relation-detail"] dd')].map((value) => value.textContent),
+    }))()`)
+    assert.doesNotMatch(tableDetail.labels.join(" "), /Database ID|Table OID|Index OID/)
+    assert.equal(tableDetail.values.includes("42"), false)
+    assert.equal(tableDetail.values.includes("73"), false)
+    await cdp.evaluate(`document.querySelector(".pg-detail header button").click()`)
 
     await cdp.evaluate(`([...document.querySelectorAll('[data-testid="pg-relation-lenses"] button')].find((button) => button.textContent === "Size and buffers")).click()`)
     await cdp.waitFor(`(() => { const node = document.querySelector('[data-testid="pg-tables-table"] .entity-scroll'); return node !== null && node.scrollWidth > node.clientWidth })()`, "the wide size and buffers table")
@@ -340,18 +358,56 @@ test("the production artifact preserves wire keys and exact finding page state",
     }
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
 
-    await cdp.evaluate(`([...document.querySelectorAll(".pg-tabs button")].find((button) => button.textContent === "Indexes")).click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row')?.textContent.includes("artifact_index") === true`, "the physical index row")
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-row').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-relation-link"]') !== null`, "the table-to-index link")
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-link"]').click()`)
+    await cdp.waitFor(`location.search.includes("view=pg.indexes") && location.search.includes("datid=42") && location.search.includes("relid=73")`, "numeric table identity in index navigation")
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row')?.textContent.includes("artifact_index") === true`, "the linked index row")
+    const linkedScope = await cdp.evaluate(`document.querySelector('[data-testid="pg-indexes-table"] [data-testid="table-status"]').textContent`)
+    assert.match(linkedScope, /artifact_db · artifact_table/)
+    assert.doesNotMatch(linkedScope, /\b(?:42|73)\b|\bOID\b/)
+
     const indexRow = await cdp.evaluate(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row').textContent`)
     assert.match(indexRow, /artifact_db/)
     assert.match(indexRow, /public/)
     assert.match(indexRow, /artifact_table/)
     assert.match(indexRow, /artifact_index/)
-    assert.match(indexRow, /74/)
+    const indexPresentation = await cdp.evaluate(`(() => ({
+      cells: [...document.querySelectorAll('[data-testid="pg-indexes-table"] .entity-row [role="cell"]')].map((cell) => cell.textContent),
+      headers: [...document.querySelectorAll('[data-testid="pg-indexes-table"] [role="columnheader"]')].map((header) => header.textContent),
+    }))()`)
+    for (const oid of ["42", "73", "74"]) assert.equal(indexPresentation.cells.includes(oid), false)
+    assert.doesNotMatch(indexPresentation.headers.join(" "), /Database ID|Table OID|Index OID/)
     await cdp.evaluate(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-exact-indexdef"]')?.textContent.includes("CREATE UNIQUE INDEX artifact_index") === true`, "the exact index definition")
     assert.ok(requests.some(({ query }) => query.includes("row_ordinal=8") && !query.includes("text=")))
+    const indexDetail = await cdp.evaluate(`(() => ({
+      labels: [...document.querySelectorAll('[data-testid="pg-relation-detail"] dt')].map((label) => label.textContent),
+      values: [...document.querySelectorAll('[data-testid="pg-relation-detail"] dd')].map((value) => value.textContent),
+    }))()`)
+    assert.doesNotMatch(indexDetail.labels.join(" "), /Database ID|Table OID|Index OID/)
+    for (const oid of ["42", "73", "74"]) assert.equal(indexDetail.values.includes(oid), false)
     await cdp.evaluate(`document.querySelector(".pg-detail header button").click()`)
+
+    const beforeOidSearch = requests.length
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('[data-testid="table-filter"]')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "74")
+      input.dispatchEvent(new Event("input", { bubbles: true }))
+    })()`)
+    await delay(700)
+    const oidSearchRequest = requests.slice(beforeOidSearch).find(({ query }) => query.includes("section=pg_stat_user_indexes") && query.includes("search=74"))
+    assert.notEqual(oidSearchRequest, undefined, JSON.stringify(requests.slice(beforeOidSearch), null, 2))
+    const oidSearchQuery = new URLSearchParams(oidSearchRequest.query)
+    assert.equal(oidSearchQuery.get("where.datid"), "42")
+    assert.equal(oidSearchQuery.get("where.relid"), "73")
+    for (const field of ["datid", "relid", "indexrelid"]) assert.equal(oidSearchQuery.getAll("field").includes(field), true, field)
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('[data-testid="table-filter"]')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "")
+      input.dispatchEvent(new Event("input", { bubbles: true }))
+    })()`)
+    await delay(400)
 
     const clickRelation = async (label) => {
       await cdp.evaluate(`([...document.querySelectorAll(".workspace .lensbar button")].find((button) => button.textContent === ${JSON.stringify(label)})).click()`)
@@ -360,6 +416,12 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.waitFor(`location.search.includes("level=schema") && document.querySelector('[data-testid="pg-indexes-table"] .entity-row') !== null`, "schema level")
     await clickRelation("Databases")
     await cdp.waitFor(`location.search.includes("level=database") && document.querySelector('[data-testid="pg-indexes-table"] .entity-row') !== null`, "database level")
+    const databasePresentation = await cdp.evaluate(`(() => ({
+      cells: [...document.querySelectorAll('[data-testid="pg-indexes-table"] .entity-row [role="cell"]')].map((cell) => cell.textContent),
+      headers: [...document.querySelectorAll('[data-testid="pg-indexes-table"] [role="columnheader"]')].map((header) => header.textContent),
+    }))()`)
+    assert.equal(databasePresentation.cells.includes("42"), false)
+    assert.doesNotMatch(databasePresentation.headers.join(" "), /Database ID|Table OID|Index OID/)
     await cdp.evaluate("history.back()")
     await cdp.waitFor(`location.search.includes("level=schema")`, "schema level restored by browser back")
     await clickRelation("Databases")
