@@ -7,8 +7,11 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::path::Path;
 
+#[cfg(test)]
+use std::cell::Cell as Counter;
+
 use kronika_reader::{Cell, Dictionary, Reader, Resolved, Row, Segment, SegmentKind, SegmentRef};
-use kronika_registry::{ColumnClass, contract};
+use kronika_registry::{ColumnClass, ColumnType, contract};
 use serde_json::{Value, json};
 
 use super::query::{Plan, plans, resolved_dictionary};
@@ -244,6 +247,29 @@ enum GlobToken {
 
 const SNAPSHOT_CHUNK_ROWS: usize = 16;
 
+#[cfg(test)]
+thread_local! {
+    static PAGE_CHUNK_ROWS: Counter<usize> = const { Counter::new(0) };
+    static PAGE_SOURCE_VISITS: Counter<usize> = const { Counter::new(0) };
+    static PAGE_CANDIDATE_DICTIONARIES: Counter<usize> = const { Counter::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_page_operations() {
+    PAGE_CHUNK_ROWS.set(0);
+    PAGE_SOURCE_VISITS.set(0);
+    PAGE_CANDIDATE_DICTIONARIES.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn page_operations() -> (usize, usize, usize) {
+    (
+        PAGE_SOURCE_VISITS.get(),
+        PAGE_CANDIDATE_DICTIONARIES.get(),
+        PAGE_CHUNK_ROWS.get(),
+    )
+}
+
 pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedSnapshot, ApiError> {
     let binding = snapshot_binding(&request);
     let parsed = request
@@ -372,10 +398,19 @@ impl PageOrder {
         }
     }
 
-    const fn dictionary_column(&self) -> Option<&'static str> {
+    fn dictionary_column(&self, plan: &Plan) -> Option<&'static str> {
         match &self.kind {
-            PageOrderKind::Column(column) => Some(*column),
-            PageOrderKind::CounterRatio { .. } | PageOrderKind::ValueRatio { .. } => None,
+            PageOrderKind::Column(column)
+                if plan
+                    .contract
+                    .column(column)
+                    .is_some_and(|column| column.ty == ColumnType::StrId) =>
+            {
+                Some(*column)
+            }
+            PageOrderKind::Column(_)
+            | PageOrderKind::CounterRatio { .. }
+            | PageOrderKind::ValueRatio { .. } => None,
         }
     }
 }
@@ -1110,7 +1145,11 @@ impl PreparedSnapshot {
             }
             let order = page_order(&section.logical_name, plan, &self.by);
             let order_columns = order.as_ref().map_or_else(Vec::new, PageOrder::columns);
-            let columns = search_columns(&section.logical_name, plan);
+            let columns = if self.search.is_empty() {
+                Vec::new()
+            } else {
+                search_columns(&section.logical_name, plan)
+            };
             let Some(timestamp) = plan.timestamp else {
                 contexts.push(PageContext {
                     context_index: layout_index,
@@ -1351,7 +1390,11 @@ impl PreparedSnapshot {
             sample_from,
             sample_to,
             order,
-            search_columns: search_columns(&section.logical_name, plan),
+            search_columns: if self.search.is_empty() {
+                Vec::new()
+            } else {
+                search_columns(&section.logical_name, plan)
+            },
         }))
     }
 
@@ -1503,39 +1546,97 @@ impl PreparedSnapshot {
         eligible: &mut u64,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
-        let mut offset = 0;
-        while offset < context.rows && !cancelled() {
-            let remaining = context.rows.saturating_sub(offset);
-            let limit = usize::try_from(remaining.min(SNAPSHOT_CHUNK_ROWS as u64))
-                .map_err(|_overflow| ApiError::BadCursor)?;
-            let mut chunk = Vec::with_capacity(limit);
+        if !context.plan.needs_selection_dictionary()
+            && context.search_columns.is_empty()
+            && context
+                .order
+                .as_ref()
+                .and_then(|order| order.dictionary_column(context.plan))
+                .is_none()
+        {
+            #[cfg(test)]
+            PAGE_SOURCE_VISITS.set(PAGE_SOURCE_VISITS.get() + 1);
+            let dictionary = Dictionary::default();
             context.source.visit_rows(
                 context.plan.type_id,
                 &context.plan.projection,
-                offset,
-                limit,
+                0,
+                usize::MAX,
                 |ordinal, row| {
-                    chunk.push((ordinal, row));
+                    self.rank_page_row(context, anchor, page, eligible, &dictionary, ordinal, row);
                     !cancelled()
                 },
             )?;
-            if cancelled() {
-                return Ok(());
-            }
-            let dictionary = page_dictionary(context, &chunk)?;
-            for (ordinal, row) in chunk {
-                let Some(candidate) = self.page_candidate(context, ordinal, row, &dictionary)
-                else {
-                    continue;
-                };
-                *eligible = eligible.saturating_add(1);
-                if anchor.is_none_or(|anchor| candidate.cmp(anchor) != Ordering::Greater) {
-                    page.push(candidate);
+            return Ok(());
+        }
+        let mut chunk = Vec::with_capacity(SNAPSHOT_CHUNK_ROWS);
+        #[cfg(test)]
+        PAGE_CHUNK_ROWS.set(SNAPSHOT_CHUNK_ROWS);
+        let mut failure = None;
+        #[cfg(test)]
+        PAGE_SOURCE_VISITS.set(PAGE_SOURCE_VISITS.get() + 1);
+        context.source.visit_rows(
+            context.plan.type_id,
+            &context.plan.projection,
+            0,
+            usize::MAX,
+            |ordinal, row| {
+                chunk.push((ordinal, row));
+                if chunk.len() == SNAPSHOT_CHUNK_ROWS
+                    && let Err(error) =
+                        self.rank_page_chunk(context, anchor, page, eligible, &mut chunk)
+                {
+                    failure = Some(error);
+                    return false;
                 }
-            }
-            offset = offset.saturating_add(limit as u64);
+                !cancelled()
+            },
+        )?;
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        if !cancelled() && !chunk.is_empty() {
+            self.rank_page_chunk(context, anchor, page, eligible, &mut chunk)?;
         }
         Ok(())
+    }
+
+    fn rank_page_chunk(
+        &self,
+        context: &PageContext<'_>,
+        anchor: Option<&PageRankedRow>,
+        page: &mut PageRows,
+        eligible: &mut u64,
+        chunk: &mut Vec<(u64, Row)>,
+    ) -> Result<(), ApiError> {
+        let dictionary = page_dictionary(context, chunk)?;
+        for (ordinal, row) in chunk.drain(..) {
+            self.rank_page_row(context, anchor, page, eligible, &dictionary, ordinal, row);
+        }
+        Ok(())
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "ranking keeps request, page, and physical-row coordinates explicit"
+    )]
+    fn rank_page_row(
+        &self,
+        context: &PageContext<'_>,
+        anchor: Option<&PageRankedRow>,
+        page: &mut PageRows,
+        eligible: &mut u64,
+        dictionary: &Dictionary,
+        ordinal: u64,
+        row: Row,
+    ) {
+        let Some(candidate) = self.page_candidate(context, ordinal, row, dictionary) else {
+            return;
+        };
+        *eligible = eligible.saturating_add(1);
+        if anchor.is_none_or(|anchor| candidate.cmp(anchor) != Ordering::Greater) {
+            page.push(candidate);
+        }
     }
 
     fn page_candidate(
@@ -1963,12 +2064,16 @@ fn page_dictionary(context: &PageContext<'_>, rows: &[(u64, Row)]) -> Result<Dic
             context
                 .order
                 .as_ref()
-                .and_then(PageOrder::dictionary_column),
+                .and_then(|order| order.dictionary_column(context.plan)),
         ) {
             if let Some(Cell::StrId(id)) = row.get(column) {
                 ids.insert(*id);
             }
         }
+    }
+    #[cfg(test)]
+    if !ids.is_empty() {
+        PAGE_CANDIDATE_DICTIONARIES.set(PAGE_CANDIDATE_DICTIONARIES.get() + 1);
     }
     resolved_dictionary(context.source, &ids)
 }

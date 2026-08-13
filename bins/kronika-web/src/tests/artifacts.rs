@@ -2094,6 +2094,21 @@ fn statement_search_finds_a_match_outside_the_old_first_two_hundred() {
 }
 
 #[test]
+fn numeric_statement_page_scans_the_source_once_without_candidate_dictionary_reads() {
+    let mut fixture = Fixture::new();
+    fixture.append_statement_universe(205);
+    fixture.finish();
+
+    crate::api::reset_page_operations();
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=pg_stat_statements&field=queryid&field=query&field=calls&field=total_exec_time&by=total_exec_time&page_size=200&text=160"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("numeric statement page");
+    assert_eq!(row_records(&records).len(), 200);
+    assert_eq!(crate::api::page_operations(), (1, 0, 0));
+}
+
+#[test]
 fn plan_search_finds_a_match_outside_the_old_first_two_hundred() {
     let mut fixture = Fixture::new();
     fixture.append_plan_universe(205);

@@ -256,6 +256,12 @@ impl Plan {
         }
     }
 
+    pub(super) fn needs_selection_dictionary(&self) -> bool {
+        self.filters
+            .iter()
+            .any(|filter| matches!(filter, TypedFilter::Bytes { .. }))
+    }
+
     /// Add physical inputs needed for computation without exposing them as
     /// output fields.
     pub(super) fn add_projection_columns(&mut self, names: &[&'static str]) {

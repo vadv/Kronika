@@ -17,6 +17,9 @@ mod render;
 mod rows;
 mod snapshot;
 
+#[cfg(test)]
+pub(crate) use snapshot::{page_operations, reset_page_operations};
+
 /// Cache policy applied centrally after preparation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CachePolicy {
