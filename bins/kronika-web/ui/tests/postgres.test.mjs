@@ -27,8 +27,25 @@ const TEST_REGISTRY = [
   layout("1020001", "pg_wal_storage", [], ["ts", "wal_files_bytes"]),
 ]
 const helpers = await importModule(
-  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationMs, columnsFor, isIdleActivity, isSystemActivity, isTimestampField, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, registryCardFields, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows, walStoragePoints } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationMs, chartColumnAvailable, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, postgresMetricHistory, registryCardFields, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows, walStoragePoints } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
   { plugins: [registryPlugin(TEST_REGISTRY)] },
+)
+
+const overviewHelpers = await importModule(
+  'export { overviewChartColumns } from "../src/postgres-view.tsx"',
+  { plugins: [registryPlugin([{
+    typeId: "overview-1", logicalName: "pg_stat_checkpointer", identity: ["kind_id"],
+    columns: ["ts", "kind_id", "mode", "writes", "latency_ms", "enabled"],
+    columnMetadata: [
+      { name: "ts", type: "timestamp_us", class: "timestamp", unit: null },
+      { name: "kind_id", type: "u32", class: "label", unit: null },
+      { name: "mode", type: "u32", class: "label", unit: null },
+      { name: "writes", type: "u64", class: "cumulative", unit: "count" },
+      { name: "latency_ms", type: "f64", class: "gauge", unit: "milliseconds" },
+      { name: "enabled", type: "bool", class: "label", unit: null },
+    ],
+  }])],
+  },
 )
 
 function layout(typeId, logicalName, identity, fields) {
@@ -62,6 +79,60 @@ test("PostgreSQL durations are not formatted as Unix timestamps", () => {
   assert.equal(helpers.columnsFor([row("1", { max_age_us: 123.4 })])[0].kind, "microseconds")
 })
 
+test("PostgreSQL chart actions accept only numeric values and declare semantic units", () => {
+  for (const kind of ["number", "estimated_rows", "bytes", "kib", "milliseconds", "duration", "microseconds", "percent"]) {
+    assert.equal(helpers.chartableColumn({ field: kind, kind }), true, kind)
+  }
+  for (const kind of ["id", "text", "timestamp", "boolean", undefined]) {
+    assert.equal(helpers.chartableColumn({ field: String(kind), kind }), false, String(kind))
+  }
+  assert.equal(helpers.chartUnit({ field: "calls", kind: "number", rate: true }), "/s")
+  assert.equal(helpers.chartUnit({ field: "rows", kind: "number" }), "count")
+  assert.equal(helpers.chartUnit({ field: "wal", kind: "bytes", rate: true }), "B/s")
+  assert.equal(helpers.chartUnit({ field: "latency", kind: "milliseconds" }), "ms")
+  assert.equal(helpers.chartUnit({ field: "cpu", kind: "percent" }), "%")
+  assert.equal(helpers.chartPointValue(2, { field: "buffers", kind: "kib" }), 2048)
+  assert.equal(helpers.chartPointValue(2500, { field: "latency", kind: "microseconds" }), 2.5)
+  assert.equal(helpers.chartPointValue(0, { field: "calls", kind: "number" }), 0)
+  assert.equal(helpers.chartPointValue(null, { field: "calls", kind: "number" }), null)
+  assert.equal(helpers.chartScale({ field: "cpu", kind: "percent" }), "percent")
+  assert.equal(helpers.chartScale({ field: "calls", kind: "number" }), "nonnegative")
+})
+
+test("PostgreSQL generic histories preserve absent, null, zero, storage, and counter semantics", () => {
+  const stored = (segmentId, timestamp, values, ordinal = String(timestamp)) => ({ logicalName: "pg_stat_checkpointer", ordinal, segmentId, timestamp, typeId: "overview-1", values })
+  const rows = [
+    stored("a", 1_000_000, { writes: 10, latency_ms: 3 }),
+    stored("a", 2_000_000, { other: 1 }),
+    stored("b", 3_000_000, { writes: 16, latency_ms: null }),
+    stored("b", 4_000_000, { writes: null, latency_ms: 0 }),
+    stored("b", 5_000_000, { writes: 1 }),
+    stored("b", 6_000_000, { writes: 3 }),
+  ]
+  assert.deepEqual(helpers.postgresMetricHistory(rows, { field: "writes", kind: "number", rate: true }, true).map(({ value }) => value), [null, 3, null, null, 2])
+  assert.deepEqual(helpers.postgresMetricHistory(rows, { field: "latency_ms", kind: "milliseconds" }, false).map(({ value }) => value), [3, null, 0])
+})
+
+test("dense statement histories cover per-call and percentage lens metrics", () => {
+  const stored = (timestamp, values) => ({ ...row("1002001", values), ordinal: String(timestamp), timestamp })
+  const rows = [
+    stored(1_000_000, { calls: 10, rows: 20, shared_blks_hit: 10, shared_blks_read: 0, local_blks_hit: 0, local_blks_read: 0 }),
+    stored(2_000_000, { calls: 12, rows: 28, shared_blks_hit: 13, shared_blks_read: 1, local_blks_hit: 0, local_blks_read: 0 }),
+  ]
+  assert.deepEqual(helpers.denseHistoryFields("1002001", "rows_per_call"), ["rows", "calls"])
+  assert.deepEqual(helpers.denseMetricHistory(rows, "1002001", { field: "rows_per_call", kind: "number" }).map(({ value }) => value), [null, 4])
+  assert.deepEqual(helpers.denseMetricHistory(rows, "1002001", { field: "hit_pct", kind: "percent" }).map(({ value }) => value), [null, 75])
+})
+
+test("overview cards expose only numeric measurements and mark cumulative units as rates", async () => {
+  const stored = { logicalName: "pg_stat_checkpointer", ordinal: "0", segmentId: "a", timestamp: 1, typeId: "overview-1", values: { kind_id: 4, mode: 2, writes: 0, latency_ms: 1.5, enabled: true } }
+  assert.deepEqual(overviewHelpers.overviewChartColumns(stored).map(({ field, rate }) => [field, rate === true]), [["writes", true], ["latency_ms", false]])
+  const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
+  assert.match(source, /const \[metricField, setMetricField\] = useState<string \| null>\(null\)/)
+  assert.match(source, /loadSeries\(hour, row\.logicalName, \{\}, \[field\], controller\.signal, row\.typeId\)/)
+  assert.match(source, /<PlanInfo cursor=\{cursor\} data=\{data\} hour=\{hour\}/)
+})
+
 test("WAL storage keeps exact singleton values and selected-snapshot history wiring", async () => {
   const zero = row("1020001", { wal_files_bytes: 0 }, "pg_wal_storage")
   const stored = { ...row("1020001", { wal_files_bytes: "33554432" }, "pg_wal_storage"), timestamp: 2 }
@@ -75,7 +146,8 @@ test("WAL storage keeps exact singleton values and selected-snapshot history wir
   assert.match(source, /snapshot\(data\.sections\.pg_wal_storage \?\? \[\], cursor\)\[0\]/)
   assert.match(source, /walStorage !== undefined && <WalStorage/)
   assert.match(source, /loadSeries\(hour, "pg_wal_storage", \{\}, \["wal_files_bytes"\], controller\.signal, row\.typeId, row\.timestamp\)/)
-  assert.match(source, /<SeriesChart cursor=\{row\.timestamp\} format=\{humanBytes\}/)
+  assert.match(source, /<SeriesChart cursor=\{cursor\} format=\{humanBytes\}/)
+  assert.match(source, /scale="nonnegative" unit="B"/)
   assert.match(source, /logicalName !== "pg_wal_storage"/)
 })
 
@@ -175,6 +247,14 @@ test("activity hides only ordinary idle and derives query and transaction time f
     ["1", "5", "3", "6", "4"],
   )
   assert.deepEqual(helpers.overviewBackendCounts(rows), { active: 2, idle: 3, total: 5 })
+})
+
+test("Activity exact start times enable duration histories without synthetic stored fields", () => {
+  const rows = [activityRow("1", { query_start: "4000000", xact_start: "1000000" })]
+  assert.equal(helpers.chartColumnAvailable("pg_stat_activity", rows, { field: "query_duration_ms", kind: "duration" }), true)
+  assert.equal(helpers.chartColumnAvailable("pg_stat_activity", rows, { field: "transaction_duration_ms", kind: "duration" }), true)
+  assert.equal(helpers.chartColumnAvailable("pg_stat_activity", rows, { field: "missing", kind: "duration" }), false)
+  assert.equal(helpers.chartColumnAvailable("pg_locks", rows, { field: "query_duration_ms", kind: "duration" }), false)
 })
 
 test("elapsed Activity values use compact wall-time formatting", () => {

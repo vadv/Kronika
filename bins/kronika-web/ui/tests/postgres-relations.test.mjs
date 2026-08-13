@@ -7,9 +7,18 @@ import { importModule, registryPlugin } from "./import-module.mjs"
 
 const relation = await importModule('export * from "../src/postgres-relations.ts"', { plugins: [registryPlugin([])] })
 const view = await importModule(
-  'export { relationColumns, relationDataRows, relationDetailColumns } from "../src/postgres-relations-view.tsx"; export { display } from "../src/postgres-view.tsx"',
+  'export { relationChartableColumn, relationColumns, relationDataRows, relationDetailColumns } from "../src/postgres-relations-view.tsx"; export { display } from "../src/postgres-view.tsx"',
   { plugins: [registryPlugin([])] },
 )
+
+test("relation chart actions require a numeric physical history field", () => {
+  const physical = ["seq_scan", "main_fork_bytes", "last_seq_scan", "indisvalid"]
+  assert.equal(view.relationChartableColumn({ field: "seq_scan", kind: "number", rate: true }, physical), true)
+  assert.equal(view.relationChartableColumn({ field: "main_fork_bytes", kind: "bytes" }, physical), true)
+  assert.equal(view.relationChartableColumn({ field: "tuple_throughput", kind: "number", rate: true }, physical), false)
+  assert.equal(view.relationChartableColumn({ field: "last_seq_scan", kind: "timestamp" }, physical), false)
+  assert.equal(view.relationChartableColumn({ field: "indisvalid", kind: "boolean" }, physical), false)
+})
 
 const column = (name, kind = "number", unit = "count", nullable = true) => ({ name, kind, unit, nullable })
 const layoutRecord = (logical_name, group, columns) => ({ record: "relation_layout", logical_name, group, columns })
@@ -451,7 +460,9 @@ test("detail, empty, navigation, and paging behavior stays on generic exact APIs
   assert.match(source, /linkedRelation\(row\)/)
   assert.match(source, /row\.logicalName === "pg_stat_user_indexes" \? relationDetailTarget\(row\) : null/)
   assert.match(source, /loadSnapshot\(row\.segmentId, definitionTarget\.at, \[definitionTarget\.request\]/)
-  assert.match(source, /loadSeries\(hour, row\.logicalName, historyFilters\(row\), \[historyField\], controller\.signal, undefined, row\.timestamp\)/)
+  assert.match(source, /loadSeries\(hour, row\.logicalName, historyFilters\(row\), \[historyField\], controller\.signal\)/)
+  assert.match(source, /relationChartableColumn\(column, physicalFields\)/)
+  assert.match(source, /onCursor=\{onCursor\}/)
   assert.match(source, /value\(row, column\.field\) !== null \|\| value\(row, `\$\{column\.field\}_never`\) === true/)
   assert.match(source, /display\(value\(row, column\.field\), column, locale, t\)/)
   assert.doesNotMatch(source, /Object\.keys\(exact\.values\)|rate: false/)

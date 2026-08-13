@@ -16,7 +16,7 @@ import {
 } from "./finding-presentation"
 import type { Translate } from "./help"
 import { asNumber, formatUtc, humanBytes, type Locale, rawText, shownMoment } from "./model"
-import type { ChartPoint } from "./series-chart"
+import { SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 
 type Filter = "all" | Finding["kind"]
@@ -121,17 +121,20 @@ export function EventsView({
             })}
           </div>
         </div>
-        {active !== null && <FindingDetail data={data} finding={active} history={history} locale={locale} resolution={resolution} row={resolved} t={t} />}
+        {active !== null && <FindingDetail cursor={cursor} data={data} finding={active} history={history} hour={hour} locale={locale} onCursor={onCursor} resolution={resolution} row={resolved} t={t} />}
       </div>
     </section>
   </>
 }
 
-function FindingDetail({ data, finding, history, locale, resolution, row, t }: {
+function FindingDetail({ cursor, data, finding, history, hour, locale, onCursor, resolution, row, t }: {
+  readonly cursor: number
   readonly data: HourData
   readonly finding: Finding
   readonly history: readonly ChartPoint[]
+  readonly hour: number
   readonly locale: Locale
+  readonly onCursor: (timestamp: number) => void
   readonly resolution: FindingResolution
   readonly row: DataRow | null
   readonly t: Translate
@@ -156,6 +159,17 @@ function FindingDetail({ data, finding, history, locale, resolution, row, t }: {
       </section>}
       <dl>{findingDetailFields(row, finding).map(([field, cell]) => <div key={field}><dt>{eventFieldLabel(field, t)}</dt><dd>{eventValue(finding, field, cell, locale, t)}</dd></div>)}</dl>
     </>}
+    {metric.field !== null && points.some(({ value }) => typeof value === "number" && Number.isFinite(value)) && <SeriesChart
+      cursor={cursor}
+      format={(number, place) => formatMetric(number, metric.unit, place, t)}
+      hour={hour}
+      label={metric.label}
+      locale={locale}
+      onCursor={onCursor}
+      points={points}
+      scale={metric.unit === "percent" || finding.logicalName === "health" ? "percent" : "nonnegative"}
+      unit={finding.logicalName === "health" ? "%" : metricUnit(metric.unit, locale)}
+    />}
   </aside>
 }
 
@@ -210,6 +224,15 @@ function formatMetric(value: number | null, unit: ReturnType<typeof findingMetri
   if (unit === "milliseconds_per_call") return `${exactNumber(value, locale)}${t("unit.ms")}${t("unit.per_call")}`
   if (unit === "bytes_per_second") return `${humanBytes(value, locale)}${t("unit.per_second")}`
   return exactNumber(value, locale)
+}
+
+function metricUnit(unit: ReturnType<typeof findingMetric>["unit"], locale: Locale): string {
+  if (unit === "percent") return "%"
+  if (unit === "milliseconds") return "ms"
+  if (unit === "milliseconds_per_call") return "ms/call"
+  if (unit === "bytes_per_second") return "bytes/s"
+  if (unit === "count") return locale === "ru" ? "количество" : "count"
+  return locale === "ru" ? "значение" : "value"
 }
 
 function exactNumber(value: number, locale: Locale): string {

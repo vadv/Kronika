@@ -6,8 +6,18 @@ import { gunzipSync } from "node:zlib"
 import { importModule, registryPlugin } from "./import-module.mjs"
 
 const helpers = await importModule(
-  'export { currentValue, fallbackMetric, hasMetric, metricPoints, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
+  'export { chartableEntityColumns, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
   { plugins: [registryPlugin([{ typeId: "1108001", logicalName: "os_diskstats", identity: ["major", "minor"], columns: ["ts", "major", "minor", "device", "io_in_progress"] }])] },
+)
+
+const rateHelpers = await importModule(
+  'export { metricChartUnit, metricHistoryPoints } from "../src/system-view.tsx"',
+  { plugins: [registryPlugin([{ typeId: "1108001", logicalName: "os_diskstats", identity: ["major", "minor"], columns: ["ts", "major", "minor", "reads"], columnMetadata: [
+    { name: "ts", type: "timestamp_us", class: "timestamp", unit: null },
+    { name: "major", type: "i32", class: "label", unit: null },
+    { name: "minor", type: "i32", class: "label", unit: null },
+    { name: "reads", type: "u64", class: "cumulative", unit: "count" },
+  ] }])] },
 )
 
 const data = {
@@ -91,10 +101,10 @@ test("system cards derive production values when fixture-only series are absent"
   assert.deepEqual(derived("device_active_io"), [3])
   assert.deepEqual(derived("filesystem_count"), [2])
   assert.deepEqual(derived("interface_count"), [2])
-  assert.deepEqual(derived("network_rx"), [30])
+  assert.deepEqual(derived("network_rx"), [null])
   assert.deepEqual(derived("network_tx"), [null])
-  assert.deepEqual(derived("network_errors"), [1])
-  assert.deepEqual(derived("network_drops"), [5])
+  assert.deepEqual(derived("network_errors"), [null])
+  assert.deepEqual(derived("network_drops"), [null])
 })
 
 test("System never depends on process rows loaded by another view", async () => {
@@ -109,6 +119,63 @@ test("System never depends on process rows loaded by another view", async () => 
   assert.ok(disk.fields.includes("minor"))
   const source = await readFile(new URL("../src/system-view.tsx", import.meta.url), "utf8")
   assert.match(source, /rows\.length === 0 && activeContext === null/)
+})
+
+test("System history requests are selected-metric keys with exact physical inputs", () => {
+  const direct = helpers.metricHistoryRequest({ ...spec, field: "oom_kill", section: "os_vmstat", series: undefined })
+  assert.deepEqual(direct, { fields: ["oom_kill"], section: "os_vmstat", where: {} })
+  const pressure = helpers.SYSTEM_METRICS.find(({ id }) => id === "cpu_pressure")
+  const pressureRequest = helpers.metricHistoryRequest(pressure)
+  assert.deepEqual(pressureRequest.where, { resource: "0" })
+  assert.ok(pressureRequest.fields.includes("some_avg10"))
+  assert.ok(pressureRequest.fields.includes("resource"))
+  const cpu = helpers.SYSTEM_METRICS.find(({ id }) => id === "cpu_busy")
+  const cpuRequest = helpers.metricHistoryRequest(cpu)
+  for (const field of ["cpu_id", "scope", "user", "idle", "iowait"]) assert.ok(cpuRequest.fields.includes(field))
+  assert.equal(helpers.metricRequestKey(100, cpu, cpuRequest), helpers.metricRequestKey(100, cpu, cpuRequest))
+  assert.notEqual(helpers.metricRequestKey(100, cpu, cpuRequest), helpers.metricRequestKey(200, cpu, cpuRequest))
+  assert.equal(helpers.metricChartUnit({ ...spec, unit: " KiB" }, "en"), "KiB")
+  assert.equal(helpers.metricChartUnit({ ...spec, unit: " B" }, "en"), "bytes/s")
+  assert.equal(helpers.metricChartUnit({ ...spec, unit: " B" }, "ru"), "байты/с")
+  assert.equal(helpers.metricChartUnit({ ...spec, id: "network_errors" }, "en"), "1/s")
+  assert.equal(helpers.metricChartUnit({ ...spec, id: "network_drops" }, "ru"), "1/с")
+})
+
+test("System entity charts include numeric measurements and exclude identities and categories", () => {
+  const columns = [
+    { field: "major", kind: "id" },
+    { field: "device", kind: "text" },
+    { field: "is_k8s_infra", kind: "boolean" },
+    { field: "captured_at", kind: "timestamp" },
+    { field: "reads", kind: "number" },
+    { field: "read_time_ms", kind: "milliseconds" },
+    { field: "total_bytes", kind: "bytes" },
+  ]
+  assert.deepEqual(helpers.chartableEntityColumns(columns).map(({ field }) => field), ["reads", "read_time_ms", "total_bytes"])
+  const row = {
+    logicalName: "os_diskstats", ordinal: "4", segmentId: "s", timestamp: 12, typeId: "1108001",
+    values: { major: 8, minor: 0, reads: 0 },
+  }
+  const request = helpers.entityHistoryRequest(row, columns[4])
+  assert.deepEqual(request.where, { major: "8", minor: "0" })
+  assert.deepEqual(request.fields, ["reads", "major", "minor"])
+  assert.equal(request.section, "os_diskstats")
+  assert.equal(request.typeId, "1108001")
+  assert.equal(helpers.entityHistoryRequest(row, columns[0]), null)
+  assert.deepEqual(helpers.metricHistoryPoints({ ...spec, field: "reads", section: "os_diskstats", series: undefined }, [
+    { ...row, timestamp: 1, values: { ...row.values, reads: 0 } },
+    { ...row, timestamp: 2, values: { major: 8, minor: 0 } },
+    { ...row, timestamp: 3, values: { ...row.values, reads: null } },
+  ]).map(({ timestamp, value }) => [timestamp, value]), [[1, 0], [3, null]])
+})
+
+test("registry cumulative fields become reset-safe rates across storage segments", () => {
+  const spec = { field: "reads", group: "storage", help: "x", id: "reads", label: "x", section: "os_diskstats", unit: "" }
+  const row = (segmentId, timestamp, reads) => ({ logicalName: "os_diskstats", ordinal: String(timestamp), segmentId, timestamp, typeId: "1108001", values: { major: 8, minor: 0, reads } })
+  assert.deepEqual(rateHelpers.metricHistoryPoints(spec, [
+    row("a", 1_000_000, 10), row("a", 2_000_000, 14), row("b", 3_000_000, 20), row("b", 4_000_000, null), row("b", 5_000_000, 1), row("b", 6_000_000, 3),
+  ]).map(({ value }) => value), [null, 4, 6, null, null, 2])
+  assert.equal(rateHelpers.metricChartUnit(spec, "en"), "1/s")
 })
 
 test("the committed hour supplies only honest System metrics with complete histories", async () => {

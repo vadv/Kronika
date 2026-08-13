@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { importModule, registryPlugin } from "./import-module.mjs"
 
 const helpers = await importModule(
-  'export { FindingMarker, MARKER_CLUSTER_PX, findingShape, findingTrack, groupFindings, healthThreshold, healthTimelineSeries, laneRange, overviewLaneCount, sampleWindow, selectedTimelineTimes, seriesYAt, timelineRecordedTimes, timelineRuns, valueAt } from "../src/timeline.tsx"',
+  'export { FindingMarker, MARKER_CLUSTER_PX, exactValue, findingShape, findingTrack, groupFindings, healthThreshold, healthTimelineSeries, sampleWindow, selectedTimelineTimes, timelineDecorations, timelineRecordedTimes } from "../src/timeline.tsx"',
   { plugins: [registryPlugin([{ typeId: "1104001", logicalName: "os_meminfo", columns: ["ts", "mem_total", "mem_free", "mem_available"] }])] },
 )
 
@@ -38,7 +38,7 @@ test("default arrows and pointer selection are owned by the selected recorded la
   assert.doesNotMatch(app, /moveCursor/)
   assert.doesNotMatch(keyboard, /60_000_000|MINUTE/)
   assert.match(timeline, /selectedTimelineTimes\(lanes, selectedLane\)/)
-  assert.match(timeline, /nearestRecordedTime\(primaryTimes, target\)/)
+  assert.match(timeline, /<UPlotChart/)
   assert.match(timeline, /window\.addEventListener\("keydown", move\)/)
 })
 
@@ -156,17 +156,6 @@ test("finding kinds have non-color shape identities", () => {
   assert.match(render("spike"), /stroke="var\(--warn\)"/)
 })
 
-test("timeline series cross segment boundaries and break only at stored nulls", () => {
-  const runs = [...helpers.timelineRuns([
-    { segmentId: "host-a", timestamp: 100, value: 10 },
-    { segmentId: "host-a", timestamp: 200, value: null },
-    { segmentId: "host-a", timestamp: 300, value: 0 },
-    { segmentId: "host-b", timestamp: 400, value: 12 },
-  ]).values()]
-  assert.deepEqual(runs.map((run) => run.map((point) => point.value)), [[0, 12]])
-  assert.deepEqual(runs[0].map((point) => point.segmentId), ["host-a", "host-b"])
-})
-
 test("health metrics remain three exact series", () => {
   const rows = [
     { logicalName: "health", ordinal: "0", segmentId: "a", timestamp: 100, typeId: "0", values: { os_health: 81, overall_health: 62 } },
@@ -180,17 +169,6 @@ test("health metrics remain three exact series", () => {
     ["postgres_health", [77]],
   ])
   assert.equal(health.threshold, 50)
-})
-
-test("the displayed sample window ends at the last stored number", () => {
-  const points = [
-    { segmentId: "a", timestamp: 100, value: null },
-    { segmentId: "a", timestamp: 200, value: 8 },
-    { segmentId: "b", timestamp: 300, value: 9 },
-    { segmentId: "b", timestamp: 400, value: null },
-  ]
-  assert.deepEqual(helpers.sampleWindow([{ series: [{ points }] }]), { start: 200, end: 300 })
-  assert.equal(helpers.sampleWindow([{ series: [{ points: points.map((point) => ({ ...point, value: null })) }] }]), null)
 })
 
 test("the selected lane owns exact heterogeneous timestamps including null observations", () => {
@@ -212,20 +190,32 @@ test("the selected lane owns exact heterogeneous timestamps including null obser
   assert.deepEqual(helpers.selectedTimelineTimes(lanes, "missing"), [100, 105, 111, 118])
 })
 
-test("a finding attaches only to an exact sample in the same segment", () => {
-  const points = [
-    { segmentId: "host-a", timestamp: 100, value: 20 },
-    { segmentId: "host-a", timestamp: 200, value: 40 },
+test("timeline distinguishes unavailable edges from the uncollected current-hour tail", () => {
+  const hour = Date.UTC(2026, 7, 13, 10) * 1_000
+  const end = hour + 3_600_000_000
+  const point = (offset, value) => ({ segmentId: "a", timestamp: hour + offset, value })
+  const selected = [{ points: [point(600_000_000, 10), point(1_800_000_000, null), point(2_100_000_000, 12)] }]
+  const lanes = [
+    { series: selected },
+    { series: [{ points: [point(300_000_000, 7), point(2_400_000_000, 9)] }] },
   ]
-  assert.equal(typeof helpers.seriesYAt(points, "host-a", 100, 0), "number")
-  assert.equal(helpers.seriesYAt(points, "host-a", 150, 0), null)
-  assert.equal(helpers.seriesYAt(points, "postgresql-a", 100, 0), null)
+  assert.deepEqual(helpers.sampleWindow(lanes), { start: hour + 300_000_000, end: hour + 2_400_000_000 })
+  assert.deepEqual(helpers.timelineDecorations(lanes, selected, hour, end, hour + 3_000_000_000), [
+    { from: hour, to: hour + 300_000_000, tone: "unavailable" },
+    { from: hour + 2_400_000_000, to: end, tone: "unavailable" },
+    { from: hour + 2_100_000_000, to: end, tone: "future" },
+  ])
+  assert.deepEqual(helpers.timelineDecorations(lanes, selected, hour, end, end + 1), [
+    { from: hour, to: hour + 300_000_000, tone: "unavailable" },
+    { from: hour + 2_400_000_000, to: end, tone: "unavailable" },
+  ])
 })
 
-test("a stored null wins over an older number at the cursor", () => {
+test("timeline readings use only an exact observation", () => {
   const points = [10, null, 12].map((value, index) => ({ segmentId: "a", timestamp: index + 1, value }))
-  assert.equal(helpers.valueAt(points, 2), null)
-  assert.equal(helpers.valueAt(points, 3), 12)
+  assert.equal(helpers.exactValue(points, 2), null)
+  assert.equal(helpers.exactValue(points, 3), 12)
+  assert.equal(helpers.exactValue(points, 4), null)
 })
 
 test("only overall health owns the below-50 band and exact findings map to tracks", () => {
@@ -239,10 +229,9 @@ test("only overall health owns the below-50 band and exact findings map to track
   assert.equal(helpers.groupFindings([finding("spike", 100, "1")], 0, 1_000, 100)[0].findings[0]?.kind, "spike")
 })
 
-test("timeline domains and overview density are explicit", () => {
-  assert.deepEqual(helpers.laneRange({ domain: [0, 100], series: [{ points: [{ segmentId: "a", timestamp: 1, value: 3 }] }] }), { low: 0, span: 100 })
-  assert.deepEqual(helpers.laneRange({ series: [{ points: [{ segmentId: "a", timestamp: 1, value: 12 }] }] }), { low: 0, span: 20 })
-  assert.deepEqual(helpers.laneRange({ minimumSpan: 5, series: [{ points: [{ segmentId: "a", timestamp: 1, value: 1 }] }] }), { low: 0, span: 5 })
-  assert.deepEqual(helpers.laneRange({ minimumSpan: 5, series: [{ points: [{ segmentId: "a", timestamp: 1, value: 12 }] }] }), { low: 0, span: 20 })
-  assert.deepEqual([helpers.overviewLaneCount(1_200), helpers.overviewLaneCount(900), helpers.overviewLaneCount(600)], [4, 3, 2])
+test("the renderer is exclusively the shared uPlot adapter", async () => {
+  const source = await readFile(new URL("../src/timeline.tsx", import.meta.url), "utf8")
+  assert.match(source, /<UPlotChart/)
+  assert.doesNotMatch(source, /SeriesLine|svgPath|timelineRuns|preserveAspectRatio/)
+  assert.ok(source.indexOf("if (selected === undefined)") > source.indexOf("const threshold = useMemo"))
 })

@@ -22,7 +22,7 @@ const artifact = fixtureOutput === null ? join(uiDirectory, "kronika-ui.html.gz"
 const checkOnly = process.argv.includes("--check")
 if (checkOnly && fixtureOutput !== null) throw new Error("--check and --fixture-output cannot be combined")
 const maximumRawBytes = fixtureOutput === null ? 930_000 : 40_000_000
-const maximumGzipBytes = fixtureOutput === null ? 239_000 : 8_000_000
+const maximumGzipBytes = fixtureOutput === null ? 270_000 : 8_000_000
 const rustToolchain = process.env.RUST_TOOLCHAIN ?? "1.96.0"
 const rustHost = execFileSync("rustc", [`+${rustToolchain}`, "-vV"], { encoding: "utf8" })
   .match(/^host: (.+)$/m)?.[1]

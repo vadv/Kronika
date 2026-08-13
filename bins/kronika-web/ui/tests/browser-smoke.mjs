@@ -91,14 +91,30 @@ await waitFor(`document.querySelector('[data-testid="hour-picker-trigger"]') !==
 await evaluate(`document.querySelector('[data-testid="process-tab"]').click()`)
 await waitFor(`document.querySelectorAll(".process-table .entity-row").length > 0`, "process rows")
 await evaluate(`document.querySelector(".process-table .entity-row").click()`)
-await waitFor(`document.querySelector('[data-testid="process-history"] .series-chart svg') !== null`, "process history")
+await waitFor(`document.querySelector('[data-testid="process-history"] .uplot-host canvas') !== null`, "process history")
 const result = await evaluate(`(() => ({
-  chartHeight: document.querySelector('[data-testid="process-history"] .series-chart svg').getBoundingClientRect().height,
-  paths: document.querySelectorAll('[data-testid="process-history"] .mini-series').length,
+  backingRatio: (() => {
+    const canvas = document.querySelector('[data-testid="process-history"] .uplot-host canvas')
+    return canvas.width / canvas.getBoundingClientRect().width
+  })(),
+  canvasAriaHidden: document.querySelector('[data-testid="process-history"] .uplot-host canvas').getAttribute("aria-hidden"),
+  canvases: document.querySelectorAll('[data-testid="process-history"] .uplot-host canvas').length,
+  chartHeight: document.querySelector('[data-testid="process-history"] .uplot-figure').getBoundingClientRect().height,
+  hostLabel: document.querySelector('[data-testid="process-history"] .uplot-host').getAttribute("aria-label"),
+  hostRole: document.querySelector('[data-testid="process-history"] .uplot-host').getAttribute("role"),
+  navigators: document.querySelectorAll('[data-testid="process-history"] input.chart-navigator[type="range"]').length,
   rows: document.querySelectorAll(".process-table .entity-row").length,
+  summaries: document.querySelectorAll('[data-testid="process-history"] .chart-summary').length,
 }))()`)
 assert.equal(result.chartHeight, 200)
+assert.equal(result.canvasAriaHidden, "true")
+assert.equal(result.canvases, 1)
+assert.equal(result.hostRole, "img")
+assert.ok(result.hostLabel.length > 0)
+assert.equal(result.navigators, 1)
 assert.ok(result.rows > 0)
+assert.equal(result.summaries, 1)
+assert.ok(result.backingRatio >= 1)
 assert.deepEqual(errors, [])
 assert.deepEqual(external, [])
 socket.close()

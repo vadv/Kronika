@@ -14,6 +14,8 @@ const AUGUST_HOUR = Date.UTC(2026, 7, 10, 3) * 1_000
 const DECEMBER_HOUR = Date.UTC(2026, 11, 31, 23) * 1_000
 const JANUARY_HOUR = Date.UTC(2027, 0, 15, 9) * 1_000
 const FEBRUARY_HOUR = Date.UTC(2027, 1, 1, 2) * 1_000
+const DST_EDT_HOUR = Date.UTC(2026, 10, 1, 5) * 1_000
+const DST_EST_HOUR = Date.UTC(2026, 10, 1, 6) * 1_000
 const AVAILABLE_HOURS = [AUGUST_HOUR, HOUR + HOUR_US, DECEMBER_HOUR, JANUARY_HOUR, FEBRUARY_HOUR]
 const SEGMENT = "7300"
 const ARTIFACT = process.env.KRONIKA_UI_ARTIFACT ?? new URL("../kronika-ui.html.gz", import.meta.url)
@@ -24,12 +26,13 @@ const QUARTER_PREVIOUS = QUARTER - 5_000_000
 const QUARTER_NEXT = QUARTER + 5_000_000
 const SESSION_COOKIE = `kronika_session=v1.2000000000.${"A".repeat(43)}`
 
-test("the production artifact preserves wire keys and exact finding page state", { timeout: 45_000 }, async () => {
+test("the production artifact preserves wire keys and exact finding page state", { timeout: 120_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const requests = []
   const authState = { valid: false }
   let heldContextPage = null
   let heldSystemPage = null
+  let systemPageWasHeld = false
   let relationMode = "single"
   let contextPageRequested
   let systemPageRequested
@@ -76,8 +79,13 @@ test("the production artifact preserves wire keys and exact finding page state",
       } else if (sections.includes("pg_stat_user_tables") || sections.includes("pg_stat_user_indexes")) {
         ndjson(response, relationRecords(url, relationMode))
       } else if (sections.includes("os_cpu")) {
-        heldSystemPage = response
-        systemPageRequested()
+        if (systemPageWasHeld) {
+          ndjson(response, systemSnapshotRecords())
+        } else {
+          systemPageWasHeld = true
+          heldSystemPage = response
+          systemPageRequested()
+        }
       } else if (sections.includes("pg_stat_activity")) {
         ndjson(response, snapshotRecords())
       } else {
@@ -671,6 +679,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(system.buttons.some(([id, pressed]) => id === "system-metric-health" && pressed === "true"), true, JSON.stringify(system))
     assert.match(system.lane ?? "", /Health/)
     await cdp.waitFor(`document.querySelector('[data-testid="use-table"]') !== null`, "the System resource table")
+    await cdp.waitFor(`document.querySelector(".metric-history .uplot-host canvas") !== null`, "the System uPlot chart")
     for (const [width, height] of [[1920, 1080], [1366, 768], [1024, 768], [1024, 1366]]) {
       await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
       const layout = await cdp.evaluate(`document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -681,7 +690,9 @@ test("the production artifact preserves wire keys and exact finding page state",
         }
         const consolePanel = document.querySelector(".system-console")
         const history = document.querySelector(".metric-history")
-        const chart = history.querySelector(".series-chart svg")
+        const chart = history.querySelector(".uplot-figure")
+        const canvas = chart.querySelector("canvas")
+        const host = chart.querySelector(".uplot-host")
         const resource = document.querySelector('[data-testid="use-table"]')
         const columns = [...document.querySelectorAll(".metric-column")]
         const columnBottoms = columns.map((column) => Math.max(...[...column.querySelectorAll(".metric-group")].map((group) => group.getBoundingClientRect().bottom)))
@@ -703,6 +714,14 @@ test("the production artifact preserves wire keys and exact finding page state",
         const chartBounds = bounds(chart)
         resolve({
           chart: chartBounds,
+          chartAccess: {
+            canvasAriaHidden: canvas.getAttribute("aria-hidden"),
+            canvasCount: chart.querySelectorAll(".uplot-host canvas").length,
+            hostLabel: host.getAttribute("aria-label"),
+            hostRole: host.getAttribute("role"),
+            navigator: chart.querySelector('input.chart-navigator[type="range"]') !== null,
+            summary: chart.querySelector(".chart-summary")?.textContent ?? "",
+          },
           columnSpread: Math.max(...columnBottoms) - Math.min(...columnBottoms),
           console: bounds(consolePanel),
           contentBottom,
@@ -716,6 +735,12 @@ test("the production artifact preserves wire keys and exact finding page state",
         })
       }))))`)
       assert.ok(layout.chart.height >= 180 && layout.chart.height <= 220, `${width}x${height} System chart height: ${JSON.stringify(layout)}`)
+      assert.deepEqual(layout.chartAccess.canvasAriaHidden, "true")
+      assert.equal(layout.chartAccess.canvasCount, 1)
+      assert.equal(layout.chartAccess.hostRole, "img")
+      assert.match(layout.chartAccess.hostLabel, /%/)
+      assert.equal(layout.chartAccess.navigator, true)
+      assert.ok(layout.chartAccess.summary.length > 0)
       assert.ok(layout.history.height <= 300 && layout.historyTail <= 24, `${width}x${height} compact System history: ${JSON.stringify(layout)}`)
       assert.ok(layout.columnSpread <= 220, `${width}x${height} balanced System summary: ${JSON.stringify(layout)}`)
       assert.ok(Math.abs(layout.console.bottom - layout.contentBottom) <= 1.5, `${width}x${height} content-sized System console: ${JSON.stringify(layout)}`)
@@ -726,29 +751,217 @@ test("the production artifact preserves wire keys and exact finding page state",
       assert.ok(layout.documentScrollWidth <= layout.documentClientWidth, `${width}x${height} System document overflow: ${JSON.stringify(layout)}`)
       assert.deepEqual(layout.overlaps, [], `${width}x${height} System panel overlaps`)
     }
+    await cdp.evaluate(`(() => {
+      if (window.__kronikaAxisText !== undefined) return
+      window.__kronikaAxisText = []
+      const original = CanvasRenderingContext2D.prototype.fillText
+      CanvasRenderingContext2D.prototype.fillText = function (value, ...args) {
+        window.__kronikaAxisText.push(String(value))
+        return original.call(this, value, ...args)
+      }
+    })()`)
+    const chartThemes = []
+    for (let themeIndex = 0; themeIndex < 2; themeIndex += 1) {
+      const theme = await cdp.evaluate(`document.documentElement.dataset.theme`)
+      chartThemes.push(theme)
+      for (const [width, height] of [[1920, 1080], [1366, 768], [1024, 768], [390, 844]]) {
+        await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
+        const state = await cdp.evaluate(`document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
+          const figure = document.querySelector(".metric-history .uplot-figure")
+          const host = figure.querySelector(".uplot-host")
+          const canvas = host.querySelector("canvas")
+          const plot = host.querySelector(".u-over")
+          const bounds = (node) => { const rect = node.getBoundingClientRect(); return { bottom: rect.bottom, height: rect.height, left: rect.left, right: rect.right, top: rect.top, width: rect.width } }
+          resolve({
+            backingRatio: canvas.width / canvas.getBoundingClientRect().width,
+            canvas: bounds(canvas),
+            canvasAriaHidden: canvas.getAttribute("aria-hidden"),
+            clientWidth: document.documentElement.clientWidth,
+            figure: bounds(figure),
+            host: bounds(host),
+            hostLabel: host.getAttribute("aria-label"),
+            hostRole: host.getAttribute("role"),
+            navigatorCount: figure.querySelectorAll('input.chart-navigator[type="range"]').length,
+            plot: bounds(plot),
+            scrollWidth: document.documentElement.scrollWidth,
+            summary: figure.querySelector(".chart-summary")?.textContent ?? "",
+          })
+        }))))`)
+        assert.equal(state.canvasAriaHidden, "true", `${theme} ${width}px canvas accessibility: ${JSON.stringify(state)}`)
+        assert.equal(state.hostRole, "img", `${theme} ${width}px chart role: ${JSON.stringify(state)}`)
+        assert.match(state.hostLabel, /%/, `${theme} ${width}px chart unit: ${JSON.stringify(state)}`)
+        assert.equal(state.navigatorCount, 1, `${theme} ${width}px sample navigator: ${JSON.stringify(state)}`)
+        assert.ok(state.summary.length > 0, `${theme} ${width}px chart summary: ${JSON.stringify(state)}`)
+        assert.ok(state.plot.width >= 120, `${theme} ${width}px plot width: ${JSON.stringify(state)}`)
+        assert.ok(state.canvas.left >= state.host.left - 1 && state.canvas.right <= state.host.right + 1,
+          `${theme} ${width}px canvas bounds: ${JSON.stringify(state)}`)
+        assert.ok(state.figure.left >= -1 && state.figure.right <= state.clientWidth + 1,
+          `${theme} ${width}px chart viewport: ${JSON.stringify(state)}`)
+        assert.ok(state.scrollWidth <= state.clientWidth, `${theme} ${width}px page overflow: ${JSON.stringify(state)}`)
+        assert.ok(state.backingRatio >= 0.95 && state.backingRatio <= 1.05,
+          `${theme} ${width}px DPR 1 backing store: ${JSON.stringify(state)}`)
+      }
+      if (themeIndex === 0) {
+        await cdp.evaluate(`document.querySelector('[aria-label="Theme"]').click()`)
+        await cdp.waitFor(`document.documentElement.dataset.theme !== ${JSON.stringify(theme)}`, "the second chart theme")
+      }
+    }
+    assert.deepEqual(new Set(chartThemes), new Set(["dark", "light"]))
+    const axisText = await cdp.evaluate(`window.__kronikaAxisText`)
+    assert.equal(axisText.some((text) => text.includes("Time, browser local")), true, JSON.stringify(axisText))
+    assert.equal(axisText.some((text) => text.includes("%")), true, JSON.stringify(axisText))
+    assert.equal(axisText.some((text) => /^0%?$/.test(text)), true, JSON.stringify(axisText))
+    assert.equal(axisText.some((text) => /^100%?$/.test(text)), true, JSON.stringify(axisText))
+
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 2, height: 768, mobile: false, width: 1366 })
+    await cdp.evaluate(`document.querySelector('[aria-label="Theme"]').click()`)
+    await cdp.waitFor(`(() => {
+      const canvas = document.querySelector(".metric-history .uplot-host canvas")
+      return canvas !== null && canvas.width / canvas.getBoundingClientRect().width >= 1.9
+    })()`, "the DPR 2 chart backing store")
+    const dprTwo = await cdp.evaluate(`(() => {
+      const canvas = document.querySelector(".metric-history .uplot-host canvas")
+      return { ratio: canvas.width / canvas.getBoundingClientRect().width, screen: devicePixelRatio }
+    })()`)
+    assert.ok(dprTwo.ratio >= 1.9 && dprTwo.ratio <= 2.1, JSON.stringify(dprTwo))
+    assert.equal(dprTwo.screen, 2)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1024 })
+    await cdp.evaluate(`document.querySelector('[aria-label="Theme"]').click()`)
+    await cdp.waitFor(`(() => {
+      const canvas = document.querySelector(".metric-history .uplot-host canvas")
+      const ratio = canvas?.width / canvas?.getBoundingClientRect().width
+      return ratio >= 0.95 && ratio <= 1.05
+    })()`, "the restored DPR 1 chart backing store")
+
+    const chartRequestsBeforeExpand = requests.filter(({ path }) => path.startsWith("/api/")).length
+    await cdp.evaluate(`document.querySelector(".metric-history .chart-expand").click()`)
+    await cdp.waitFor(`document.querySelector('.metric-history [role="dialog"][aria-modal="true"].uplot-expanded') !== null`, "the expanded chart dialog")
+    const expanded = await cdp.evaluate(`(() => {
+      const dialog = document.querySelector('.metric-history [role="dialog"]')
+      const rect = dialog.getBoundingClientRect()
+      return {
+        active: document.activeElement?.className ?? "",
+        clientHeight: document.documentElement.clientHeight,
+        clientWidth: document.documentElement.clientWidth,
+        fullscreen: document.fullscreenElement !== null,
+        height: rect.height,
+        hostHeight: dialog.querySelector('.uplot-host').getBoundingClientRect().height,
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+      }
+    })()`)
+    assert.match(expanded.active, /chart-close/)
+    assert.equal(expanded.fullscreen, false)
+    assert.ok(Math.abs(expanded.left) <= 1 && Math.abs(expanded.top) <= 1, JSON.stringify(expanded))
+    assert.ok(expanded.width >= expanded.clientWidth - 1 && expanded.height >= expanded.clientHeight - 1, JSON.stringify(expanded))
+    assert.ok(expanded.hostHeight > 500, JSON.stringify(expanded))
+    await cdp.evaluate(`(() => {
+      const dialog = document.querySelector('.metric-history [role="dialog"]')
+      const last = dialog.querySelector('input.chart-navigator')
+      last.focus()
+      last.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Tab" }))
+    })()`)
+    assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector('.metric-history [role="dialog"] .chart-expand')`), true)
+    await cdp.evaluate(`(() => {
+      const first = document.querySelector('.metric-history [role="dialog"] .chart-expand')
+      first.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Tab", shiftKey: true }))
+    })()`)
+    assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector('.metric-history [role="dialog"] input.chart-navigator')`), true)
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }))`)
+    await cdp.waitFor(`document.querySelector('.metric-history [role="dialog"]') === null`, "chart dialog Escape close")
+    assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector(".metric-history .chart-expand")`), true)
+    await delay(120)
+    assert.equal(requests.filter(({ path }) => path.startsWith("/api/")).length, chartRequestsBeforeExpand)
+
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
+    await cdp.evaluate(`(() => {
+      const plot = document.querySelector('[data-testid="hour-timeline"] .u-over')
+      const bounds = plot.getBoundingClientRect()
+      const clientX = bounds.left + (${AT + 3_000_000} - ${HOUR}) / ${HOUR_US} * bounds.width
+      const clientY = bounds.top + bounds.height / 2
+      plot.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, clientX, clientY }))
+      plot.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX, clientY }))
+    })()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] .chart-tooltip') !== null`, "the exact chart tooltip")
+    const tooltip = await cdp.evaluate(`(() => {
+      const tooltip = document.querySelector('[data-testid="hour-timeline"] .chart-tooltip')
+      return {
+        primary: tooltip.querySelector("time strong")?.textContent ?? "",
+        secondary: tooltip.querySelector("time small")?.textContent ?? "",
+        values: [...tooltip.querySelectorAll(":scope > span")].map((node) => node.textContent),
+      }
+    })()`)
+    assert.match(tooltip.primary, /01:30:00\.000 EDT/)
+    assert.equal(tooltip.secondary, "05:30:00.000 UTC")
+    assert.equal(tooltip.values.length, 2)
+    assert.equal(tooltip.values.some((text) => text.includes("82") && text.includes("%")), true, JSON.stringify(tooltip))
+    assert.equal(tooltip.values.some((text) => text.includes("64") && text.includes("%")), true, JSON.stringify(tooltip))
+
+    await cdp.evaluate(`(() => {
+      const navigator = document.querySelector('[data-testid="hour-timeline"] input.chart-navigator')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(navigator, "3")
+      navigator.dispatchEvent(new Event("input", { bubbles: true }))
+    })()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${AT}"`, "keyboard sample address")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').dataset.recordedTimestamp`), String(AT))
+    const sampleText = await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")`)
+    assert.match(sampleText, /01:30:00\.000 EDT/)
+    assert.match(sampleText, /05:30:00\.000 UTC/)
+    assert.match(sampleText, /82/)
+
     const arrow = async (key, expected) => {
       await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: ${JSON.stringify(key)} }))`)
-      await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"]')?.getAttribute("aria-valuenow") === "${expected}"`, `${key} to ${expected}`)
+      await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${expected}"`, `${key} to ${expected}`)
+      await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').dataset.recordedTimestamp === "${expected}"`, `${key} exact sample ${expected}`)
     }
     await arrow("ArrowLeft", BEFORE_AT)
     await arrow("ArrowRight", AT)
     await arrow("ArrowRight", AFTER_AT)
-    const drag = async (target, expected) => {
-      const mapped = await cdp.evaluate(`(() => {
-        const plot = document.querySelector(".timeline-plot")
-        const slider = document.querySelector('[data-testid="hour-timeline"]')
+    const point = async (target, expected) => {
+      await cdp.evaluate(`(() => {
+        const plot = document.querySelector('[data-testid="hour-timeline"] .u-over')
         const bounds = plot.getBoundingClientRect()
-        const clientX = bounds.left + (${target} - ${HOUR}) / 3600000000 * bounds.width
-        const mapped = Math.min(${HOUR + 3_600_000_000 - 1_000}, Math.round(${HOUR} + (clientX - bounds.left) / bounds.width * 3600000000))
-        slider.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, buttons: 1, clientX, isPrimary: true, pointerId: 7, pointerType: "mouse" }))
-        return mapped
+        const clientX = bounds.left + (${target} - ${HOUR}) / ${HOUR_US} * bounds.width
+        plot.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX, isPrimary: true, pointerId: 7, pointerType: "mouse" }))
       })()`)
-      assert.equal(mapped, target)
-      await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"]')?.getAttribute("aria-valuenow") === "${expected}"`, `pointer snap to ${expected}`)
+      await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${expected}"`, `pointer snap to ${expected}`)
+      await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').dataset.recordedTimestamp === "${expected}"`, `pointer exact sample ${expected}`)
     }
-    await drag(QUARTER + 3_000_000, QUARTER_NEXT)
-    await drag(QUARTER, QUARTER_PREVIOUS)
+    await point(QUARTER + 3_000_000, QUARTER_NEXT)
+    await point(QUARTER, QUARTER_PREVIOUS)
+    assert.equal(await cdp.evaluate(`document.querySelectorAll('[data-testid="hour-timeline"] .uplot').length`), 1)
+
+    await cdp.send("Emulation.setTimezoneOverride", { timezoneId: "UTC" })
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === "ru"`, "the chart UTC render")
+    const utcSample = await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")`)
+    assert.equal((utcSample.match(/UTC/g) ?? []).length, 1, utcSample)
+    await cdp.send("Emulation.setTimezoneOverride", { timezoneId: "America/New_York" })
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === "en"`, "the chart local-time restore")
+
+    const navigateTo = async (timestamp) => {
+      const target = await cdp.evaluate(`(() => {
+        const url = new URL(location.href)
+        url.searchParams.set("at", "${timestamp}")
+        return url.href
+      })()`)
+      await cdp.send("Page.navigate", { url: target })
+      await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator') !== null`, `timeline at ${timestamp}`, 15_000)
+    }
+    await navigateTo(DST_EDT_HOUR + 1_800_000_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")?.includes("EDT") === true`, "the repeated EDT sample")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').dataset.recordedTimestamp`), String(DST_EDT_HOUR + 1_800_000_000))
+    const dstEdt = await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")`)
+    assert.match(dstEdt, /01:30:00\.000 EDT/)
+    assert.match(dstEdt, /05:30:00\.000 UTC/)
+    await navigateTo(DST_EST_HOUR + 1_800_000_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")?.includes("EST") === true`, "the repeated EST sample")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').dataset.recordedTimestamp`), String(DST_EST_HOUR + 1_800_000_000))
+    const dstEst = await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")`)
+    assert.match(dstEst, /01:30:00\.000 EST/)
+    assert.match(dstEst, /06:30:00\.000 UTC/)
     assert.deepEqual(errors, [])
     assert.deepEqual(external, [])
   } finally {
@@ -961,6 +1174,7 @@ function timelineRecords(hour = HOUR) {
     { record: "point", type_id: "0", series: "os_health", ts: shifted(BEFORE_AT), identity: {}, value: null },
     { record: "point", type_id: "0", series: "os_health", ts: shifted(AT), identity: {}, value: 82 },
     { record: "point", type_id: "0", series: "os_health", ts: shifted(AFTER_AT), identity: {}, value: 84 },
+    { record: "point", type_id: "0", series: "postgres_health", ts: shifted(AT), identity: {}, value: 64 },
     ...systemIndexRecords(shifted(AT)),
     { record: "lane", segment_id: SEGMENT, lane: "disk_busy", ts: shifted(BEFORE_AT), value: 34 },
     { record: "lane", segment_id: SEGMENT, lane: "disk_busy", ts: shifted(AT), value: 42 },

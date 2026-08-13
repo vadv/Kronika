@@ -17,7 +17,7 @@ test("a counter is drawn as the rate between two readings", () => {
   ], "cpu")
 
   assert.deepEqual(series.map((item) => item.field), [
-    "utime", "stime", "rundelay_ns", "blkdelay_ticks", "nvcsw", "nivcsw", "minflt", "majflt",
+    "utime", "stime", "rundelay_ns", "blkdelay_ticks", "nvcsw", "nivcsw", "minflt", "majflt", "nice", "prio", "rtprio",
   ])
   assert.deepEqual(series[1].points.map((point) => point.value), [null, 4, 16])
 })
@@ -53,4 +53,44 @@ test("null values split rendered history runs while later zero stays numeric", (
   assert.equal(series.points[0].segmentId, series.points[1].segmentId)
   assert.equal(series.points[1].segmentId, series.points[2].segmentId)
   assert.equal(series.points[2].value, 0)
+})
+
+test("chart presentation normalizes process counters to the unit shown on its axis", () => {
+  const source = { field: "utime", key: "col.utime", kind: "cores", counter: true, points: [
+    { segmentId: "segment-a", timestamp: 10, value: null },
+    { segmentId: "segment-a", timestamp: 20, value: 250 },
+    { segmentId: "segment-a", timestamp: 30, value: 0 },
+  ] }
+
+  assert.deepEqual(detail.processChartPoints(source, 100), [
+    { segmentId: "segment-a", timestamp: 10, value: null },
+    { segmentId: "segment-a", timestamp: 20, value: 2.5 },
+    { segmentId: "segment-a", timestamp: 30, value: 0 },
+  ])
+  assert.equal(detail.processChartUnit("cores", () => " cores", 100), "cores")
+  assert.equal(detail.processChartUnit("bytes", () => "/s", 100), "B/s")
+  assert.equal(detail.processChartUnit("rate", () => "/s", 100), "#/s")
+})
+
+test("process detail mounts one selected chart and exposes metric actions", async () => {
+  const source = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../src/detail.tsx", import.meta.url), "utf8"))
+
+  assert.match(source, /className="process-history-selector" role="group"/)
+  assert.match(source, /aria-pressed=\{series\.field === selectedHistory\?\.field\}/)
+  assert.match(source, /data-testid=\{`process-history-metric-\$\{series\.field\}`\}/)
+  assert.doesNotMatch(source, /<TimeTicks/)
+  assert.equal(source.match(/<SeriesChart/g)?.length, 1)
+})
+
+test("all meaningful CPU numeric fields have history and nice uses a signed scale", () => {
+  for (const field of ["nice", "prio", "rtprio"]) assert.ok(detail.PROCESS_HISTORY_FIELDS.includes(field), field)
+  const rows = [
+    row(1, { nice: -5, prio: 15, rtprio: 0 }),
+    row(2, { nice: 0, prio: 20, rtprio: 1 }),
+  ]
+  const byField = new Map(detail.processLensHistory(rows, "cpu").map((series) => [series.field, series]))
+  assert.deepEqual(byField.get("nice").points.map(({ value }) => value), [-5, 0])
+  assert.equal(byField.get("nice").scale, "signed")
+  assert.equal(byField.get("prio").unit, "priority")
+  assert.equal(byField.get("rtprio").unit, "priority")
 })

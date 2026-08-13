@@ -1,8 +1,7 @@
-import { useId } from "react"
+import { useMemo, useRef } from "react"
 
-import { niceCeiling, numericRuns, svgPath, type NumericPoint } from "./chart"
 import { compact, floorHour, type Locale } from "./model"
-import { TimeTicks } from "./time-ticks"
+import { UPlotChart, type ChartScale as SemanticScale, type RecordedSeries } from "./uplot-chart"
 
 export interface ChartPoint {
   readonly segmentId: string
@@ -10,8 +9,11 @@ export interface ChartPoint {
   readonly value: number | null
 }
 
-type NumericChartPoint = NumericPoint<ChartPoint>
-export type ChartScale = "auto" | "percent" | "count" | "duration"
+export interface NumericChartPoint extends ChartPoint {
+  readonly value: number
+}
+
+export type ChartScale = "auto" | "percent" | "count" | "duration" | "nonnegative" | "signed"
 
 export function SeriesChart({
   cursor,
@@ -21,8 +23,11 @@ export function SeriesChart({
   locale,
   format,
   points,
-  scale = "auto",
+  scale = "nonnegative",
   second,
+  secondLabel,
+  unit = "",
+  onCursor,
 }: {
   readonly cursor?: number | undefined
   readonly empty?: string | undefined
@@ -33,52 +38,28 @@ export function SeriesChart({
   readonly points: readonly ChartPoint[]
   readonly scale?: ChartScale | undefined
   readonly second?: readonly ChartPoint[] | undefined
+  readonly secondLabel?: string | undefined
+  readonly unit?: string | undefined
+  readonly onCursor?: ((timestamp: number) => void) | undefined
 }) {
-  const title = useId()
-  const end = hour + 3_600_000_000
   const numeric = numericChartPoints(points, second)
-  const values = numeric.map((point) => point.value)
-  const { low, high } = chartDomain(values, scale)
-  const span = high - low || 1
-  const paths = chartRuns(points)
-  const companion: ReadonlyMap<string, readonly NumericChartPoint[]> = second === undefined ? new Map() : chartRuns(second)
   const reading = readingAt(points, cursor)
-  const selected = cursor === undefined ? null : sampleAtOrBefore(points, cursor)
-  const future = uncollectedStart(second === undefined ? points : [...points, ...second], hour)
   const hasData = numeric.length !== 0
-  return <figure className="series-chart">
-    <figcaption id={title}>
-      <span>{label}</span>
-      <span>{reading === null ? "—" : (format ?? compact)(reading, locale)}</span>
-    </figcaption>
+  const formatValue = format ?? compact
+  const formatter = useRef(formatValue)
+  formatter.current = formatValue
+  const stableFormat = useMemo(() => (number: number, place: Locale) => formatter.current(number, place), [])
+  const exactFormat = useMemo(() => (number: number, place: Locale) => new Intl.NumberFormat(place, { maximumFractionDigits: 20 }).format(number), [])
+  const semantic: SemanticScale = scale === "percent" ? "percent" : scale === "auto" || scale === "signed" ? "signed" : "nonnegative"
+  const series = useMemo<readonly RecordedSeries[]>(() => [
+    { color: "cyan", id: "primary", label, points, scale: semantic, tick: stableFormat, unit, value: exactFormat },
+    ...(second === undefined ? [] : [{ color: "amber" as const, id: "secondary", label: secondLabel ?? `${label} 2`, points: second, scale: semantic, tick: stableFormat, unit, value: exactFormat }]),
+  ], [exactFormat, label, points, second, secondLabel, semantic, stableFormat, unit])
+  return <div className="series-chart">
     {!hasData
-      ? <p className="series-empty">{empty}</p>
-      : <><svg aria-labelledby={title} preserveAspectRatio="none" role="img" viewBox="0 0 920 126">
-      {future !== null && future < end && <rect className="mini-uncollected" height="100" width={(end - future) / (end - hour) * 920} x={(future - hour) / (end - hour) * 920} y="5" />}
-      {[0, 1, 2, 3, 4, 5, 6].map((tick) => <line className="mini-grid" key={tick} x1={tick / 6 * 920} x2={tick / 6 * 920} y1="5" y2="105" />)}
-      <line className="mini-zero" x1="0" x2="920" y1="105" y2="105" />
-      {cursor !== undefined && cursor >= hour && cursor < end
-        && <line className="cursor-line" x1={(cursor - hour) / (end - hour) * 920} x2={(cursor - hour) / (end - hour) * 920} y1="5" y2="105" />}
-      {[...companion.entries()].map(([segmentId, stored]) => {
-        const path = svgPath(stored.slice().sort((left, right) => left.timestamp - right.timestamp), (point) => [
-          Math.max(0, Math.min(920, (point.timestamp - hour) / (end - hour) * 920)),
-          101 - (point.value - low) / span * 92,
-        ])
-        return <path className="mini-series mini-second" d={path} key={`second:${segmentId}`} />
-      })}
-      {[...paths.entries()].map(([segmentId, stored]) => {
-        const path = svgPath(stored.slice().sort((left, right) => left.timestamp - right.timestamp), (point) => [
-          Math.max(0, Math.min(920, (point.timestamp - hour) / (end - hour) * 920)),
-          101 - (point.value - low) / span * 92,
-        ])
-        return <path className="mini-series" d={path} key={segmentId} />
-      })}
-      {selected !== null && selected.value !== null && Number.isFinite(selected.value) && <circle className="mini-selected-point" cx={Math.max(0, Math.min(920, (selected.timestamp - hour) / (end - hour) * 920))} cy={101 - (selected.value - low) / span * 92} r="3.5" />}
-      </svg>
-      <span aria-hidden="true" className="series-ceiling">{(format ?? compact)(high, locale)}</span>
-      {low !== 0 && <span aria-hidden="true" className="series-floor">{(format ?? compact)(low, locale)}</span>}
-      <TimeTicks className="mini-time-ticks" hour={hour} /></>}
-  </figure>
+      ? <><div className="series-reading"><span>{label}</span><span>—</span></div><p className="series-empty">{empty}</p></>
+      : <UPlotChart cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} reading={reading === null ? "—" : formatValue(reading, locale)} series={series} />}
+  </div>
 }
 
 export function numericChartPoints(
@@ -110,18 +91,4 @@ export function uncollectedStart(points: readonly ChartPoint[], hour: number, no
     if (point.timestamp >= hour && point.timestamp < end) latest = Math.max(latest, point.timestamp)
   }
   return latest
-}
-
-export function chartDomain(values: readonly number[], scale: ChartScale): { readonly low: number; readonly high: number } {
-  if (scale === "percent") return { low: 0, high: 100 }
-  if (scale === "count" || scale === "duration") {
-    return { low: 0, high: niceCeiling(Math.max(0, ...values)) }
-  }
-  const low = Math.min(0, ...values)
-  const high = values.length === 0 ? 1 : Math.max(...values)
-  return { low, high: high === low ? low + 1 : high }
-}
-
-export function chartRuns(points: readonly ChartPoint[]): ReadonlyMap<string, readonly NumericChartPoint[]> {
-  return numericRuns(points, (left, right) => left.localeCompare(right))
 }
