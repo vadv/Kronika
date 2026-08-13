@@ -73,6 +73,7 @@ test("the combined picker has no native separate date or hour controls", async (
   assert.match(pickerSource, /data-testid="hour-picker-trigger"/)
   assert.match(pickerSource, /data-testid="hour-popover"/)
   assert.match(pickerSource, /data-testid="picker-month"/)
+  assert.doesNotMatch(pickerSource, /<button[^>]*data-testid="hour-current"/)
   assert.match(pickerSource, /pickerMonthDays\(month\)/)
   assert.match(pickerSource, /ALL_HOURS\.map/)
   assert.match(pickerSource, /aria-pressed=/)
@@ -82,4 +83,5 @@ test("the combined picker has no native separate date or hour controls", async (
   assert.match(styles, /\.day-grid[^}]*grid-template-columns:\s*repeat\(7,/s)
   assert.match(styles, /\.hour-grid[^}]*grid-template-columns:\s*repeat\(6,/s)
   assert.match(styles, /\.hour-popover[^}]*calc\(100vw - 20px\)/s)
+  assert.match(styles, /@media \(max-width: 760px\)/)
 })

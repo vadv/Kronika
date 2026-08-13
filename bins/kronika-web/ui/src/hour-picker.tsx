@@ -95,9 +95,7 @@ export function HourPicker({
     <button aria-label={t("hour.next")} data-testid="hour-next" disabled={hour === null} onClick={() => { setOpen(false); if (hour !== null) changeHour(hour + HOUR_US) }} type="button">›</button>
     {open && hour !== null && <div aria-label={t("hour.picker")} className="hour-popover" data-testid="hour-popover" id="hour-picker-popover" role="dialog">
       <header>
-        <button aria-label={t("hour.open", { date: pickerDateLabel(hour, locale), range: pickerRangeLabel(hour) })} className="hour-current" data-testid="hour-current" onClick={() => { setDay(committedDay); setMonth(pickerMonthStart(hour)) }} type="button">
-          <strong>{pickerDateLabel(hour, locale)}</strong>
-        </button>
+        <strong data-testid="hour-current">{pickerDateLabel(hour, locale)}</strong>
         <span>{t("hour.context")}</span>
       </header>
       <div className="day-picker">
