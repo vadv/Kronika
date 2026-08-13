@@ -2584,6 +2584,79 @@ fn relation_predecessor_skips_sectionless_segments_and_overlapping_bounds() {
 }
 
 #[test]
+fn relation_predecessor_follows_a_fallback_sample_into_the_second_segment() {
+    let mut fixture = Fixture::new();
+    fixture.append_buffered_table_snapshots(&[(
+        10_000_000,
+        1,
+        77,
+        [100, 900, 50, 450, 10, 90, 5, 45],
+    )]);
+    fixture.finish_and_continue(SEGMENT_ID + 1_000);
+    fixture.append_buffered_table_snapshots(&[(
+        20_000_000,
+        1,
+        77,
+        [110, 990, 55, 495, 11, 99, 6, 54],
+    )]);
+    fixture.finish_and_continue(SEGMENT_ID + 2_000);
+    fixture.append_diskstats(&[(25_000_000, 0, 1)]);
+    fixture.append_buffered_table_snapshots(&[(
+        35_000_000,
+        1,
+        77,
+        [120, 1_080, 60, 540, 12, 108, 7, 63],
+    )]);
+    let current_segment = SEGMENT_ID + 3_000;
+    fixture.finish_and_continue(current_segment);
+    fixture.append_buffered_table_snapshots(&[(
+        40_000_000,
+        1,
+        77,
+        [120, 1_080, 60, 540, 12, 108, 7, 63],
+    )]);
+    fixture.finish();
+
+    let fields = [
+        "heap_blks_read",
+        "heap_blks_hit",
+        "idx_blks_read",
+        "idx_blks_hit",
+        "toast_blks_read",
+        "toast_blks_hit",
+        "tidx_blks_read",
+        "tidx_blks_hit",
+        "buffer_hit_pct",
+    ]
+    .map(|field| format!("field={field}"))
+    .join("&");
+    let target = format!(
+        "/api/segments/{current_segment}/snapshot?at=30000000&section=pg_stat_user_tables&group=object&{fields}"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("fallback relation snapshot");
+    let rows = relation_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["sample_from"], "10000000");
+    assert_eq!(rows[0]["sample_to"], "20000000");
+    for (field, expected) in [
+        ("heap_blks_read", 1.0),
+        ("heap_blks_hit", 9.0),
+        ("idx_blks_read", 0.5),
+        ("idx_blks_hit", 4.5),
+        ("toast_blks_read", 0.1),
+        ("toast_blks_hit", 0.9),
+        ("tidx_blks_read", 0.1),
+        ("tidx_blks_hit", 0.9),
+        ("buffer_hit_pct", 90.0),
+    ] {
+        let actual = rows[0]["values"][field]
+            .as_f64()
+            .expect("numeric buffer rate");
+        assert!((actual - expected).abs() < 1e-12, "{field}: {actual}");
+    }
+}
+
+#[test]
 fn index_snapshot_never_borrows_a_database_or_layout_predecessor() {
     let mut fixture = Fixture::new();
     fixture.append_relation_snapshots(

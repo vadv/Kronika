@@ -22,6 +22,7 @@ use crate::route::{DataRequest, Order, RelationGroup, SegmentRequest, SnapshotRe
 pub(crate) struct PreparedSnapshot {
     segment: Segment,
     earlier: Option<Segment>,
+    older: Option<Box<Segment>>,
     at: i64,
     sections: Vec<SectionPlans>,
     relation_filters: Vec<crate::route::Filter>,
@@ -159,6 +160,7 @@ struct PageContext<'a> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum SampleSource {
+    Older,
     Earlier,
     Current,
 }
@@ -288,12 +290,13 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
     if parsed.is_some_and(|cursor| cursor.active_position != active_position) {
         return Err(ApiError::BadCursor);
     }
-    let earlier = preceding(
+    let (earlier, older) = preceding(
         &reader,
         &segment_ref,
         segments,
         &request.sections,
         request.at,
+        request.group.is_some(),
     )?;
     let relation_fields = request
         .group
@@ -309,6 +312,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
     Ok(PreparedSnapshot {
         segment,
         earlier,
+        older: older.map(Box::new),
         at: request.at,
         sections,
         relation_filters,
@@ -1238,7 +1242,11 @@ impl PreparedSnapshot {
         }
         let mut contexts = Vec::new();
         for (layout_index, plan) in section.plans.iter().enumerate() {
-            for source in [SampleSource::Current, SampleSource::Earlier] {
+            for source in [
+                SampleSource::Current,
+                SampleSource::Earlier,
+                SampleSource::Older,
+            ] {
                 if let Some(context) = self.partitioned_context(
                     section,
                     layout_index,
@@ -1288,6 +1296,18 @@ impl PreparedSnapshot {
                     spec.temporal_partition,
                     self.at,
                     SampleSource::Earlier,
+                    &mut moments,
+                    cancelled,
+                )?;
+            }
+            if let Some(older) = self.older.as_deref() {
+                Self::partition_moments(
+                    older,
+                    plan,
+                    timestamp,
+                    spec.temporal_partition,
+                    self.at,
+                    SampleSource::Older,
                     &mut moments,
                     cancelled,
                 )?;
@@ -1405,10 +1425,11 @@ impl PreparedSnapshot {
         }))
     }
 
-    const fn source_for(&self, source: SampleSource) -> Option<&Segment> {
+    fn source_for(&self, source: SampleSource) -> Option<&Segment> {
         match source {
             SampleSource::Current => Some(&self.segment),
             SampleSource::Earlier => self.earlier.as_ref(),
+            SampleSource::Older => self.older.as_deref(),
         }
     }
 
@@ -2380,10 +2401,11 @@ impl SnapshotCursor {
 }
 
 const fn partition_context_index(layout_index: usize, source: SampleSource) -> usize {
-    layout_index * 2
+    layout_index * 3
         + match source {
             SampleSource::Current => 0,
             SampleSource::Earlier => 1,
+            SampleSource::Older => 2,
         }
 }
 
@@ -2521,7 +2543,8 @@ fn preceding(
     segments: Vec<SegmentRef>,
     sections: &[String],
     at: i64,
-) -> Result<Option<Segment>, ApiError> {
+    keep_older: bool,
+) -> Result<(Option<Segment>, Option<Segment>), ApiError> {
     let compatible = segment_ref
         .sections()
         .iter()
@@ -2531,7 +2554,7 @@ fn preceding(
         })
         .map(|section| section.type_id)
         .collect::<HashSet<_>>();
-    let chosen = segments
+    let mut candidates = segments
         .into_iter()
         .filter(|candidate| candidate.id() < segment_ref.id() && candidate.min_ts() <= at)
         .filter(|candidate| {
@@ -2540,11 +2563,50 @@ fn preceding(
                 .iter()
                 .any(|section| compatible.contains(&section.type_id))
         })
-        .max_by_key(SegmentRef::id);
-    chosen
-        .map(|candidate| reader.open_segment(&candidate))
-        .transpose()
-        .map_err(ApiError::from)
+        .collect::<Vec<_>>();
+    candidates.sort_unstable_by_key(SegmentRef::id);
+    let mut chosen = Vec::with_capacity(usize::from(keep_older) + 1);
+    while let Some(candidate) = candidates.pop() {
+        let segment = reader.open_segment(&candidate)?;
+        if segment_has_sample_at(&segment, &compatible, at)? {
+            chosen.push(segment);
+            if chosen.len() > usize::from(keep_older) {
+                break;
+            }
+        }
+    }
+    let mut chosen = chosen.into_iter();
+    Ok((chosen.next(), chosen.next()))
+}
+
+fn segment_has_sample_at(
+    segment: &Segment,
+    compatible: &HashSet<u32>,
+    at: i64,
+) -> Result<bool, ApiError> {
+    for type_id in compatible {
+        if segment.rows_of(*type_id).is_none() {
+            continue;
+        }
+        let Some(timestamp) = contract(*type_id).and_then(|layout| {
+            layout
+                .columns
+                .iter()
+                .find(|column| column.class == ColumnClass::Timestamp)
+                .map(|column| column.name)
+        }) else {
+            continue;
+        };
+        let mut found = false;
+        segment.visit_rows(*type_id, &[timestamp], 0, usize::MAX, |_ordinal, row| {
+            found = row_timestamp(&row, timestamp).is_some_and(|stored| stored <= at);
+            !found
+        })?;
+        if found {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn validate_shared_projection(
