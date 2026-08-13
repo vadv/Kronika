@@ -5,8 +5,7 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { build } from "esbuild"
-import { gzipSync } from "fflate"
-import { gunzipSync } from "node:zlib"
+import { gunzipSync, gzipSync } from "node:zlib"
 
 import { dictionaryModule } from "./i18n.mjs"
 
@@ -50,7 +49,7 @@ try {
     .replaceAll("{{KRONIKA_SCRIPT}}", () => javascript)
 
   validateHtml(html)
-  const compressed = Buffer.from(gzipSync(Buffer.from(html), { level: 9, mtime: 0 }))
+  const compressed = gzipSync(Buffer.from(html), { level: 9, mtime: 0 })
   validateGzipHeader(compressed)
   if (Buffer.byteLength(html) > maximumRawBytes || compressed.length > maximumGzipBytes) {
     throw new Error(

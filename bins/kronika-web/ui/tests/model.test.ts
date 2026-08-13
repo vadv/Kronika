@@ -3,7 +3,7 @@ import test from "node:test"
 
 import type { Cell, DataRow } from "../src/api.ts"
 import { fittedWidth } from "../src/column-size.ts"
-import { activityFor, compact, formatUtc, humanBytes, identifier, measure, nearestTime, processCommand, processDefaultSort, processKey, processLens, rawText, shownMoment, selectedHour, stateText } from "../src/model.ts"
+import { activityFor, compact, estimatedRows, formatUtc, humanBytes, identifier, localHourPair, localTimePair, measure, nearestTime, processCommand, processDefaultSort, processKey, processLens, rawText, shownMoment, selectedHour, stateText, type Locale } from "../src/model.ts"
 
 function row(timestamp: number): DataRow {
   return { segmentId: "7", logicalName: "os_process", typeId: "1100001", ordinal: "0", timestamp, values: {} }
@@ -127,4 +127,51 @@ test("metric numbers use three significant digits and locale-aware compact scale
   assert.equal(compact(1_360_000_000, "ru"), "1,36 млрд")
   assert.equal(measure(1407.48, "en", " ms/s"), "1.41K ms/s")
   assert.equal(identifier("9007199254740993"), "9007199254740993")
+})
+
+function rowTranslator(locale: Locale) {
+  const copy = locale === "ru"
+    ? { one: "≈{value} строка", few: "≈{value} строки", many: "≈{value} строк" }
+    : { one: "≈{value} row", few: "≈{value} rows", many: "≈{value} rows" }
+  return (key: string, slots: Readonly<Record<string, string | number>> = {}) => copy[key.slice(key.lastIndexOf(".") + 1) as keyof typeof copy].replace("{value}", String(slots.value))
+}
+
+test("estimated row gauges keep compact and exact bigint labels", () => {
+  assert.deepEqual(estimatedRows(713_456, "en", rowTranslator("en")), { primary: "≈713K rows", secondary: "≈713,456 rows" })
+  assert.deepEqual(estimatedRows(12_876, "ru", rowTranslator("ru")), { primary: "≈12,9 тыс. строк", secondary: "≈12 876 строк" })
+  assert.equal(estimatedRows(999, "en", rowTranslator("en"))?.primary, "≈999 rows")
+  assert.equal(estimatedRows(1_000, "en", rowTranslator("en"))?.primary, "≈1K rows")
+  assert.equal(estimatedRows(999_499, "en", rowTranslator("en"))?.primary, "≈999K rows")
+  assert.equal(estimatedRows(999_500, "en", rowTranslator("en"))?.primary, "≈1M rows")
+  assert.equal(estimatedRows("9994999999999999", "en", rowTranslator("en"))?.primary, "≈9.99E15 rows")
+  assert.equal(estimatedRows("9007199254740993", "en", rowTranslator("en"))?.secondary, "≈9,007,199,254,740,993 rows")
+  assert.equal(estimatedRows(null, "ru", rowTranslator("ru")), null)
+})
+
+test("estimated row exact labels use bigint-safe EN and RU plurals", () => {
+  for (const [value, suffix] of [[0, "rows"], [1, "row"], [2, "rows"]] as const) {
+    assert.equal(estimatedRows(value, "en", rowTranslator("en"))?.secondary, `≈${value} ${suffix}`)
+  }
+  for (const [value, suffix] of [[11, "строк"], [12, "строк"], [14, "строк"], [21, "строка"], [22, "строки"], [25, "строк"]] as const) {
+    assert.equal(estimatedRows(value, "ru", rowTranslator("ru"))?.secondary, `≈${value} ${suffix}`)
+  }
+})
+
+test("browser-local labels retain UTC context without a UTC duplicate", () => {
+  const instant = Date.UTC(2026, 7, 14, 5, 30, 0, 123) * 1_000
+  assert.deepEqual(localTimePair(instant, "en", "UTC"), { primary: "05:30:00.123 UTC", secondary: null })
+  assert.deepEqual(localTimePair(instant, "en", "America/New_York"), { primary: "01:30:00.123 EDT", secondary: "05:30:00.123 UTC" })
+})
+
+test("local hour endpoints survive DST folds, skips, and date boundaries", () => {
+  assert.deepEqual(localHourPair(Date.UTC(2026, 2, 8, 6) * 1_000, "en", "America/New_York"), {
+    date: "Mar 08, 2026", primary: "01:00 EST–03:00 EDT", secondary: "06:00–07:00 UTC",
+  })
+  assert.deepEqual(localHourPair(Date.UTC(2026, 10, 1, 5) * 1_000, "en", "America/New_York"), {
+    date: "Nov 01, 2026", primary: "01:00 EDT–01:00 EST", secondary: "05:00–06:00 UTC",
+  })
+  assert.deepEqual(localHourPair(Date.UTC(2026, 7, 14, 3) * 1_000, "en", "America/New_York"), {
+    date: "Aug 13, 2026–Aug 14, 2026", primary: "23:00–00:00 EDT", secondary: "Aug 14, 2026 · 03:00–04:00 UTC",
+  })
+  assert.match(localHourPair(Date.UTC(2026, 10, 1, 5) * 1_000, "ru", "America/New_York").primary, /^01:00 GMT-4–01:00 GMT-5$/)
 })

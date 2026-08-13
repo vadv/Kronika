@@ -16,7 +16,7 @@ import { globMatcher } from "./glob"
 import { LabelHelp, type Translate } from "./help"
 import { rowMatchesLocator } from "./locator"
 import { TableFilter } from "./table-filter"
-import { asNumber, formatUtc, humanBytes, humanDuration, identifier, measure, rawText, value, type Locale } from "./model"
+import { asNumber, estimatedRows, formatUtc, humanBytes, humanDuration, identifier, measure, rawText, value, type Locale } from "./model"
 import { semanticValueTone } from "./value-tone"
 
 export interface EntityColumn {
@@ -29,7 +29,7 @@ export interface EntityColumn {
   readonly filterValue?: (row: DataRow) => string | null
   readonly sortValue?: (row: DataRow) => string | number | boolean | null
   readonly rate?: boolean
-  readonly kind?: "id" | "number" | "text" | "timestamp" | "bytes" | "kib" | "milliseconds" | "duration" | "microseconds" | "percent" | "boolean"
+  readonly kind?: "id" | "number" | "estimated_rows" | "text" | "timestamp" | "bytes" | "kib" | "milliseconds" | "duration" | "microseconds" | "percent" | "boolean"
   readonly width?: number
   readonly sticky?: boolean | string
   readonly sortable?: boolean
@@ -266,7 +266,7 @@ export function locatorMatchesColumn(column: EntityColumn, typeId: string, findi
   return findingField !== null && physical === findingField
 }
 
-const NUMERIC_KINDS = new Set(["number", "bytes", "kib", "milliseconds", "duration", "microseconds", "percent"])
+const NUMERIC_KINDS = new Set(["number", "estimated_rows", "bytes", "kib", "milliseconds", "duration", "microseconds", "percent"])
 
 export function unit(base: string, rate: boolean | undefined, perSecond = "/s"): string {
   return rate === true ? `${base}${perSecond}` : base
@@ -289,8 +289,14 @@ function Cell({ at, cell, kind = "text", locale, rate, t }: { readonly at: numbe
   if (kind === "microseconds") return <span className="entity-value">{measure(cell, locale, unit(t === undefined ? " μs" : t("unit.us"), rate, per))}</span>
   if (kind === "percent") return <span className="entity-value">{measure(cell, locale, unit("%", rate, per))}</span>
   if (kind === "boolean") return <span className="entity-value">{cell === true ? locale === "ru" ? "да" : "true" : cell === false ? locale === "ru" ? "нет" : "false" : rawText(cell) ?? "—"}</span>
+  if (kind === "estimated_rows") return t === undefined ? "—" : <EstimatedRows cell={cell} locale={locale} t={t} />
   if (kind === "number") return <span className="entity-value">{measure(cell, locale, unit("", rate, per))}</span>
   return <span className="entity-value text-value" title={rawText(cell) ?? "—"}>{rawText(cell) ?? "—"}</span>
+}
+
+export function EstimatedRows({ cell, locale, t }: { readonly cell: Cell; readonly locale: Locale; readonly t: Translate }) {
+  const rows = estimatedRows(cell, locale, t)
+  return rows === null ? "—" : <span aria-label={rows.secondary ?? undefined} className="entity-value" title={rows.secondary ?? undefined}>{rows.primary}</span>
 }
 
 function sortable(cell: Cell, kind: EntityColumn["kind"]): string | number | boolean | null {

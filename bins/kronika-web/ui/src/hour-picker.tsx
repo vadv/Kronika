@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
 import type { Translate } from "./help"
-import { inputDay, inputHour, selectedHour, type Locale } from "./model"
+import { inputDay, inputHour, localHourPair, selectedHour, type Locale } from "./model"
 
 const HOUR_US = 3_600_000_000
 const ALL_HOURS = Array.from({ length: 24 }, (_, hour) => hour)
@@ -34,6 +34,7 @@ export function HourPicker({
   dayHours.sort((left, right) => left - right)
   const months = [...new Set([...selectable].map(pickerMonthStart))].sort((left, right) => left - right)
   const monthIndex = months.indexOf(month)
+  const label = hour === null ? null : localHourPair(hour, locale)
 
   useEffect(() => {
     if (!open) return
@@ -81,7 +82,7 @@ export function HourPicker({
       aria-expanded={open}
       aria-haspopup="dialog"
       aria-controls="hour-picker-popover"
-      aria-label={hour === null ? t("hour.picker") : t("hour.open", { date: pickerDateLabel(hour, locale), range: pickerRangeLabel(hour) })}
+      aria-label={label === null ? t("hour.picker") : `${t("hour.picker")}: ${label.date} · ${label.primary}${label.secondary === null ? "" : ` · ${label.secondary}`}`}
       className="hour-trigger"
       data-testid="hour-picker-trigger"
       disabled={hour === null}
@@ -89,8 +90,8 @@ export function HourPicker({
       ref={trigger}
       type="button"
     >
-      <strong>{hour === null ? "—" : pickerRangeLabel(hour)}</strong>
-      {hour !== null && <small>{pickerDateLabel(hour, locale)} · UTC</small>}
+      <strong>{label?.primary ?? "—"}</strong>
+      {label !== null && <small>{label.date}{label.secondary === null ? "" : ` · ${label.secondary}`}</small>}
     </button>
     <button aria-label={t("hour.next")} data-testid="hour-next" disabled={hour === null} onClick={() => { setOpen(false); if (hour !== null) changeHour(hour + HOUR_US) }} type="button">›</button>
     {open && hour !== null && <div aria-label={t("hour.picker")} className="hour-popover" data-testid="hour-popover" id="hour-picker-popover" role="dialog">

@@ -154,6 +154,7 @@ test("paged tables keep virtualization and trigger the guarded near-end callback
   assert.match(source, /className="entity-scroll"[^>]*tabIndex=\{0\}/)
   assert.match(styles, /\.entity-scroll[^}]*overflow:\s*auto/s)
   assert.match(styles, /\.entity-scroll:focus-visible[^}]*outline:/s)
-  assert.match(styles, /\.pg-entity-layout \.entity-scroll[^}]*100dvh[^}]*min-height:\s*100px/s)
+  assert.match(styles, /\.pg-table-shell \.pg-entity-layout \.entity-scroll[^}]*height:\s*auto/s)
+  assert.match(styles, /\.pg-entity-layout \.entity-scroll[^}]*min-height:\s*100px/s)
   assert.match(postgres, /data-testid="table-paging"/)
 })
