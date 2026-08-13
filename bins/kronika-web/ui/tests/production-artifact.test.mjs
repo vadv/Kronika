@@ -62,7 +62,7 @@ test("the production artifact preserves wire keys and exact finding page state",
           heldContextPage = response
           contextPageRequested()
         } else {
-          ndjson(response, statementRecords(true, filtered ? 1 : 0))
+          ndjson(response, filtered ? statementRecords(true) : statementRecords(true, 4_807, true, 50))
         }
       } else if (sections.includes("pg_stat_user_tables") || sections.includes("pg_stat_user_indexes")) {
         ndjson(response, relationRecords(url))
@@ -381,7 +381,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.doesNotMatch(preview.status, /Loaded 0 of 0/)
     assert.equal(preview.detail, false)
 
-    ndjson(heldContextPage, statementRecords(true, 1))
+    ndjson(heldContextPage, statementRecords(true))
     heldContextPage = null
     await cdp.waitFor(
       `document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent.includes("Loaded 1 of 1") === true`,
@@ -403,6 +403,31 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(requests.filter(({ query }) => query.includes("where.queryid=") && query.includes("page_size=200")).length, 1)
     await cdp.evaluate(`document.querySelector('[data-testid="pg-statements-table"] .entity-row').click()`)
     await cdp.waitFor(`document.querySelector(".pg-detail") !== null`, "detail after explicit row selection")
+    await cdp.evaluate(`document.querySelector(".pg-detail header button").click(); document.querySelector('[data-testid="entity-context-filter"] button').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent.includes("Loaded 50 of 4,807") === true`, "the paged full statement set")
+    await cdp.waitFor(`document.querySelector('[data-testid="table-paging"]') !== null`, "active statement paging")
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-statements-table"] .entity-row').click()`)
+    await cdp.waitFor(`document.querySelector(".pg-detail") !== null`, "detail beside active paging")
+    for (const [width, height] of [[1920, 1080], [1366, 768], [1024, 768]]) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
+      await cdp.evaluate("document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))")
+      const placement = await cdp.evaluate(`(() => {
+        const layout = document.querySelector('[data-testid="pg-entity-layout"]')
+        const main = layout.querySelector('.pg-entity-main').getBoundingClientRect()
+        const table = layout.querySelector('[data-testid="pg-statements-table"]').getBoundingClientRect()
+        const paging = layout.querySelector('[data-testid="table-paging"]').getBoundingClientRect()
+        const detail = layout.querySelector('[data-testid="pg-detail"]').getBoundingClientRect()
+        return {
+          detail: { left: detail.left, top: detail.top },
+          main: { right: main.right, top: main.top },
+          paging: { top: paging.top },
+          table: { bottom: table.bottom },
+        }
+      })()`)
+      assert.ok(Math.abs(placement.detail.top - placement.main.top) <= 1, `${width}px detail row: ${JSON.stringify(placement)}`)
+      assert.ok(placement.detail.left >= placement.main.right - 1, `${width}px detail column: ${JSON.stringify(placement)}`)
+      assert.ok(placement.paging.top >= placement.table.bottom - 1, `${width}px paging below table: ${JSON.stringify(placement)}`)
+    }
 
     const hostClick = await cdp.evaluate(`(() => {
       const button = document.querySelector(".source-tabs button:first-child")
@@ -571,20 +596,20 @@ function snapshotRecords() {
   ]
 }
 
-function statementRecords(page, eligible = 1) {
+function statementRecords(page, eligible = 1, hasMore = false, rowCount = eligible) {
   const columns = ["ts", "queryid", "userid", "dbid", "toplevel", "datname", "usename", "query", "calls", "rows", "total_exec_time"]
   return [
     {
       record: "layout", rates: ["calls", "rows", "total_exec_time"],
       layout: { type_id: "1002003", logical_name: "pg_stat_statements", columns: columns.map((name) => ({ name })) },
     },
-    ...(eligible === 0 ? [] : [{
-      record: "row", type_id: "1002003", ordinal: "91", timestamp: String(AT),
-      values: [String(AT), "9007199254740991", 10, 20, true, "operators", "reporter", "select artifact_exact_context", 2, 1, 7.5],
-    }]),
+    ...Array.from({ length: rowCount }, (_, index) => ({
+      record: "row", type_id: "1002003", ordinal: String(91 + index), timestamp: String(AT),
+      values: [String(AT), String(9_007_199_254_740_991n - BigInt(index)), 10, 20, true, "operators", "reporter", index === 0 ? "select artifact_exact_context" : `select artifact_page_${index}`, 2 + index, 1, 7.5 + index],
+    })),
     ...(page ? [{
-      record: "snapshot_page", logical_name: "pg_stat_statements", eligible: String(eligible), returned: String(eligible),
-      has_more: false, truncated: false, next_cursor: null, page_size: 200,
+      record: "snapshot_page", logical_name: "pg_stat_statements", eligible: String(eligible), returned: String(rowCount),
+      has_more: hasMore, truncated: hasMore, next_cursor: hasMore ? "next-statement-page" : null, page_size: 200,
       order_by: ["total_exec_time", "calls"], order_direction: "desc", from: String(AT - 5_000_000), to: String(AT),
     }] : []),
   ]
