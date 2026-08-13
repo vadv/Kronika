@@ -165,7 +165,6 @@ function decimals(value: number, locale: Locale, digits: number): string {
   return new Intl.NumberFormat(locale, { maximumFractionDigits: digits }).format(value)
 }
 
-
 const BYTE_UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"] as const
 
 export function humanBytes(cell: Cell, locale: Locale, suffix = ""): string {

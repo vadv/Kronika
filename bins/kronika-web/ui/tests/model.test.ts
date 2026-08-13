@@ -3,7 +3,7 @@ import test from "node:test"
 
 import type { Cell, DataRow } from "../src/api.ts"
 import { fittedWidth } from "../src/column-size.ts"
-import { activityFor, compact, formatUtc, identifier, measure, nearestTime, processCommand, processDefaultSort, processKey, processLens, rawText, shownMoment, selectedHour, stateText } from "../src/model.ts"
+import { activityFor, compact, formatUtc, humanBytes, identifier, measure, nearestTime, processCommand, processDefaultSort, processKey, processLens, rawText, shownMoment, selectedHour, stateText } from "../src/model.ts"
 
 function row(timestamp: number): DataRow {
   return { segmentId: "7", logicalName: "os_process", typeId: "1100001", ordinal: "0", timestamp, values: {} }
@@ -80,6 +80,14 @@ test("counters that arrive as rates are read in units a person thinks in", async
   assert.equal(model.cores(161.01, "en", null), "—")
   assert.equal(model.cores(161.01, "en", 0), "—")
   assert.equal(model.millisecondsPerSecond(111_622_111.53, "en"), "111.6")
+})
+
+test("byte values use locale-aware binary units without compact decimal words", () => {
+  const bytes = 19_757_000_000
+  assert.equal(humanBytes(bytes, "en"), "18.4 GiB")
+  assert.equal(humanBytes(bytes, "ru"), "18,4 GiB")
+  assert.doesNotMatch(humanBytes(bytes, "ru"), /млрд Б/)
+  assert.equal(identifier(String(bytes)), "19757000000")
 })
 
 test("the shown moment is the last sample at or before the cursor", () => {

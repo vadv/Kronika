@@ -733,7 +733,7 @@ export function overviewValue(cell: ReturnType<typeof value>, field: string, loc
   if (field === "pid" || field.endsWith("id") || field.endsWith("_id")) return rawText(cell) ?? "—"
   if (field.endsWith("_time")) return measure(cell, locale, " ms")
   if (field.endsWith("_us")) return measure(cell, locale, " μs")
-  if (field.endsWith("_bytes")) return measure(cell, locale, " B")
+  if (field.endsWith("_bytes")) return humanBytes(cell, locale)
   if (typeof cell === "boolean") return locale === "ru" ? cell ? "да" : "нет" : String(cell)
   if (typeof cell === "number") return measure(cell, locale)
   return rawText(cell) ?? "—"

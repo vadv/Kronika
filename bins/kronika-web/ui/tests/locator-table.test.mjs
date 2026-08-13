@@ -69,6 +69,8 @@ test("locator classes, scrolling, and selection state are independent", async ()
   assert.doesNotMatch(process, /useReactTable|useVirtualizer|locator-row/)
   assert.match(entity, /at=\{row\.original\.relation \? row\.original\.timestamp : null\}/)
   assert.match(entity, /title=\{exact\}/)
+  assert.match(entity, /kind === "bytes"[^\n]+humanBytes\(cell, locale\)/)
+  assert.doesNotMatch(entity, /kind === "bytes"[^\n]+measure\(cell/)
 })
 
 test("server-ranked tables cycle descending, ascending, and no order", () => {

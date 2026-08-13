@@ -16,7 +16,7 @@ import { globMatcher } from "./glob"
 import { LabelHelp, type Translate } from "./help"
 import { rowMatchesLocator } from "./locator"
 import { TableFilter } from "./table-filter"
-import { asNumber, formatUtc, humanDuration, identifier, measure, rawText, value, type Locale } from "./model"
+import { asNumber, formatUtc, humanBytes, humanDuration, identifier, measure, rawText, value, type Locale } from "./model"
 import { semanticValueTone } from "./value-tone"
 
 export interface EntityColumn {
@@ -277,8 +277,8 @@ function Cell({ at, cell, kind = "text", locale, rate, t }: { readonly at: numbe
     const exact = formatUtc(timestamp)
     return <time className="entity-value" title={exact}>{at === null ? exact : humanDuration((at - timestamp) / 1_000, locale)}</time>
   }
-  if (kind === "bytes") return <span className="entity-value">{measure(cell, locale, unit(t === undefined ? " B" : t("unit.byte"), rate, per))}</span>
-  if (kind === "kib") return <span className="entity-value">{measure(cell, locale, unit(" KiB", rate, per))}</span>
+  if (kind === "bytes") return <span className="entity-value">{unit(humanBytes(cell, locale), rate, per)}</span>
+  if (kind === "kib") return <span className="entity-value">{unit(humanBytes(asNumber(cell) === null ? null : (asNumber(cell) ?? 0) * 1024, locale), rate, per)}</span>
   if (kind === "milliseconds") return <span className="entity-value">{measure(cell, locale, unit(t === undefined ? " ms" : t("unit.ms"), rate, per))}</span>
   if (kind === "duration") return <span className="entity-value">{humanDuration(cell, locale)}</span>
   if (kind === "microseconds") return <span className="entity-value">{measure(cell, locale, unit(t === undefined ? " μs" : t("unit.us"), rate, per))}</span>
