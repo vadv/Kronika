@@ -41,10 +41,10 @@ import {
   floorHour,
   formatUtc,
   interpolate,
+  localTimePair,
   processKey,
   processLens,
   rawText,
-  shortUtc,
   shownMoment,
   snapshot,
   value,
@@ -673,7 +673,10 @@ function App({ locale, onLocale, t }: {
     if (source === "events" && !eventsPresent) setSource("host")
   }, [eventsPresent, loading, pgPresent, source])
 
-  return <main className="app-shell">
+  const stretchPostgres = source === "postgresql" && (relationSection || pgSection === "statements" || pgSection === "plans")
+  const cursorTime = cursor === 0 ? null : localTimePair(cursor, locale)
+  const updatedTime = lastUpdated === null ? null : localTimePair(lastUpdated, locale)
+  return <main className={`app-shell${stretchPostgres ? " pg-table-shell" : ""}`}>
     <header className="topbar">
       <span className="brand-mark"><Activity aria-hidden="true" size={15} strokeWidth={2} /></span>
       <h1>{t("app.title")}</h1>
@@ -691,9 +694,8 @@ function App({ locale, onLocale, t }: {
 
       <HourPicker availableHours={availableHours} changeHour={changeHour} hour={hour} locale={locale} t={t} />
       <div aria-live="polite" className="cursor-time">
-        <span><b>{t("hour.cursor_label")}</b>{cursor === 0 ? "—" : shortUtc(cursor)}</span>
-        <span><b>{t("hour.sample_label")}</b>{shownAt === null ? "—" : shortUtc(shownAt)}</span>
-        {lastUpdated !== null && <span><b>{t("refresh.updated")}</b>{shortUtc(lastUpdated)}</span>}
+        <TimePair label={t("hour.cursor_label")} pair={cursorTime} testId="cursor-time" />
+        {updatedTime !== null && <TimePair label={t("refresh.updated")} pair={updatedTime} testId="updated-time" />}
         {refreshFailed && <span>{t("refresh.error")}</span>}
         {cursorState !== "ready" && <span className={cursorState === "loading" ? "cursor-behind" : "cursor-missing"} data-testid="cursor-behind">{t(cursorState === "loading" ? "status.updating" : "status.no_sample")}</span>}
       </div>
@@ -711,7 +713,7 @@ function App({ locale, onLocale, t }: {
       </div>
     </header>
 
-    <section className={cursorState === "loading" ? "workspace workspace-behind" : "workspace"}>
+    <section className={`${cursorState === "loading" ? "workspace workspace-behind" : "workspace"}${stretchPostgres ? " pg-table-workspace" : ""}`}>
       <p aria-live="polite" className="live-note">
         {t(`nav.${source}`)}
         {source === "host" ? ` · ${t(`section.${hostSection}`)}` : ""}
@@ -740,6 +742,10 @@ function App({ locale, onLocale, t }: {
 
     {helpOpen && <HelpPanel items={helpItems} onClose={() => setHelpOpen(false)} t={t} />}
   </main>
+}
+
+function TimePair({ label, pair, testId }: { readonly label: string; readonly pair: ReturnType<typeof localTimePair> | null; readonly testId: string }) {
+  return <span data-testid={testId}><b>{label}</b>{pair?.primary ?? "—"}{pair?.secondary !== null && pair !== null && <small>{pair.secondary}</small>}</span>
 }
 
 function StateCard({ message }: { readonly message: string }) {

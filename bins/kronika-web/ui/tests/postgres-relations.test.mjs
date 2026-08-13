@@ -7,7 +7,7 @@ import { importModule, registryPlugin } from "./import-module.mjs"
 
 const relation = await importModule('export * from "../src/postgres-relations.ts"', { plugins: [registryPlugin([])] })
 const view = await importModule(
-  'export { relationColumns, relationDataRows, relationDetailColumns } from "../src/postgres-relations-view.tsx"',
+  'export { relationColumns, relationDataRows, relationDetailColumns } from "../src/postgres-relations-view.tsx"; export { display } from "../src/postgres-view.tsx"',
   { plugins: [registryPlugin([])] },
 )
 
@@ -151,6 +151,22 @@ test("the wire unit matrix is the only source of relation rates", () => {
   const usage = view.relationColumns("pg_stat_user_indexes", "usage", "database", relation.relationRateFields(storedLayout))
   assert.equal(usage.find((column) => column.field === "idx_scan")?.rate, true)
   assert.equal(usage.find((column) => column.field === "tuples_per_scan")?.rate, false)
+})
+
+test("only relation row gauges receive the estimated-row presentation", () => {
+  const fields = ["reltuples", "n_live_tup", "n_dead_tup", "toast_n_live_tup", "toast_n_dead_tup", "n_mod_since_analyze", "n_ins_since_vacuum"]
+  for (const field of fields) assert.equal(relation.relationFieldKind(field), "estimated_rows", field)
+  for (const field of ["table_count", "seq_scan", "seq_tuples_per_scan", "xid_age", "datid"]) {
+    assert.notEqual(relation.relationFieldKind(field), "estimated_rows", field)
+  }
+  const t = (key, slots = {}) => key.endsWith(".one") ? `≈${slots.value} row` : `≈${slots.value} rows`
+  const rendered = view.display("9007199254740993", { field: "reltuples", kind: "estimated_rows", label: "reltuples" }, "en", t)
+  const output = rendered.type(rendered.props)
+  assert.equal(output.props.children, "≈9.01E15 rows")
+  assert.equal(output.props.title, "≈9,007,199,254,740,993 rows")
+  assert.equal(output.props["aria-label"], "≈9,007,199,254,740,993 rows")
+  assert.equal(view.display("9007199254740993", { field: "datid", kind: "id", label: "datid" }, "en", t), "9007199254740993")
+  assert.equal(view.display(713456, { field: "seq_scan", kind: "number", label: "seq_scan", rate: true }, "en", () => "/s"), "713K/s")
 })
 
 test("same schema names in different databases remain distinct", () => {

@@ -5,7 +5,7 @@ import { registry } from "kronika:registry"
 import type { DataRow, Finding, HourData, SnapshotRows } from "./api"
 import { buildMetricSamples } from "./chart"
 import { contextMatches, contextualRows, type EntityContext } from "./entity-context"
-import { EntityTable, unit, type EntityColumn, type TableOrder } from "./entity-table"
+import { EntityTable, EstimatedRows, unit, type EntityColumn, type TableOrder } from "./entity-table"
 import type { Translate } from "./help"
 import { fieldNameForLocator, loadSeries, loadSnapshot } from "./api"
 import { LabelHelp } from "./help"
@@ -658,7 +658,8 @@ function detailTitle(row: DataRow, section: string, t: Translate): string {
 
 export function display(cell: ReturnType<typeof value>, column: EntityColumn, locale: Locale, t: Translate): ReactNode {
   if (cell === null) return "—"
-  if (/^(reltuples|xid_age|mxid_age)$/.test(column.field)) return <span title={String(cell)}>{column.field === "reltuples" && "≈"}{compact(asNumber(cell)!, locale)}</span>
+  if (column.kind === "estimated_rows") return <EstimatedRows cell={cell} locale={locale} t={t} />
+  if (column.field === "xid_age" || column.field === "mxid_age") return <span title={String(cell)}>{compact(asNumber(cell)!, locale)}</span>
   if (column.kind === "timestamp") {
     const timestamp = asNumber(cell)
     return timestamp === null ? "—" : <TimestampValue t={t} timestamp={timestamp} />
@@ -774,9 +775,9 @@ function bytes(field: string, width = 140): EntityColumn { return { ...pgColumn(
 function milliseconds(field: string, width = 145): EntityColumn { return { ...pgColumn(field, "milliseconds", width), sortable: true } }
 function duration(field: string, width = 145): EntityColumn { return pgColumn(field, "duration", width) }
 function percent(field: string, width = 125): EntityColumn { return { ...pgColumn(field, "percent", width), sortable: true } }
-function rateNumber(field: string, width = 125): EntityColumn { return { ...number(field, width), rate: true, sortable: true } }
-function rateBytes(field: string, width = 140): EntityColumn { return { ...bytes(field, width), rate: true, sortable: true } }
-function rateMilliseconds(field: string, width = 145): EntityColumn { return { ...milliseconds(field, width), rate: true, sortable: true } }
+function rateNumber(field: string, width = 125): EntityColumn { return { ...number(field, width), rate: true } }
+function rateBytes(field: string, width = 140): EntityColumn { return { ...bytes(field, width), rate: true } }
+function rateMilliseconds(field: string, width = 145): EntityColumn { return { ...milliseconds(field, width), rate: true } }
 function timestamp(field: string, width = 210): EntityColumn { return { ...pgColumn(field, "timestamp", width), sortable: true } }
 function boolean(field: string, width = 125): EntityColumn { return pgColumn(field, "boolean", width) }
 function pgText(field: string, key: string, width = 130, sticky = false): EntityColumn { return { field, label: `${key}.label`, help: `${key}.help`, kind: "text", width, sticky } }
