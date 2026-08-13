@@ -1237,30 +1237,50 @@ impl PreparedSnapshot {
         timestamp: &'static str,
         cancelled: &impl Fn() -> bool,
     ) -> Result<Option<Moments>, ApiError> {
-        let mut stored = Vec::with_capacity(6);
-        for source_kind in [
-            SampleSource::Current,
-            SampleSource::Earlier,
-            SampleSource::Older,
-        ] {
-            let Some(source) = self.source_for(source_kind) else {
-                continue;
-            };
-            if source.rows_of(plan.type_id).is_none() {
-                continue;
+        let here = Self::moments(&self.segment, plan, timestamp, self.at, cancelled)?;
+        let current = if let Some(here) = here {
+            Some(here.current)
+        } else {
+            let mut fallback = None;
+            for source_kind in [SampleSource::Earlier, SampleSource::Older] {
+                let Some(source) = self.source_for(source_kind) else {
+                    continue;
+                };
+                if source.rows_of(plan.type_id).is_none() {
+                    continue;
+                }
+                if let Some(moments) = Self::moments(source, plan, timestamp, self.at, cancelled)? {
+                    fallback = Some(
+                        fallback.map_or(moments.current, |chosen: i64| chosen.max(moments.current)),
+                    );
+                }
             }
-            if let Some(moments) = Self::moments(source, plan, timestamp, self.at, cancelled)? {
-                stored.push(moments.current);
-                stored.extend(moments.previous);
+            fallback
+        };
+        let Some(current) = current else {
+            return Ok(None);
+        };
+        let mut previous = None;
+        if let Some(before) = current.checked_sub(1) {
+            for source_kind in [
+                SampleSource::Current,
+                SampleSource::Earlier,
+                SampleSource::Older,
+            ] {
+                let Some(source) = self.source_for(source_kind) else {
+                    continue;
+                };
+                if source.rows_of(plan.type_id).is_none() {
+                    continue;
+                }
+                if let Some(moments) = Self::moments(source, plan, timestamp, before, cancelled)? {
+                    previous = Some(
+                        previous.map_or(moments.current, |chosen: i64| chosen.max(moments.current)),
+                    );
+                }
             }
         }
-        stored.sort_unstable();
-        stored.dedup();
-        let current = stored.pop();
-        Ok(current.map(|current| Moments {
-            current,
-            previous: stored.pop(),
-        }))
+        Ok(Some(Moments { current, previous }))
     }
 
     fn partitioned_contexts<'a>(
