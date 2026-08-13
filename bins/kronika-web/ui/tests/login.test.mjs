@@ -49,6 +49,11 @@ test("the login shell is an in-app bilingual form without embedded credentials",
   assert.doesNotMatch(html, /name="password"[^>]+value="[^"].*"/)
 })
 
+test("submitting removes the password from React state before the request settles", async () => {
+  const source = await readFile(new URL("../src/login.tsx", import.meta.url), "utf8")
+  assert.ok(source.indexOf('setPassword("")') < source.indexOf("await signInBasic"))
+})
+
 test("the persisted login theme is applied before styles without writing storage", () => {
   assert.ok(template.indexOf("<script>") < template.indexOf("<style>"))
   for (const theme of ["light", "dark"]) {

@@ -441,8 +441,10 @@ selects a physical PostgreSQL layout; the catalog reports the layouts actually
 present. A configured source with no data is drawn empty. A misconfigured DSN
 is a line in the collector's log, not a change in the interface.
 
-Requests carry HTTP basic authentication. Other schemes come later, and the
-check sits in one place so that adding one does not touch the handlers.
+Direct API requests accept HTTP Basic authentication. The browser sends Basic
+only to create a signed first-party HttpOnly session cookie, then uses that
+cookie for protected API requests. The check stays in one place outside the
+handlers.
 
 ### Shipped interface
 

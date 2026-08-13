@@ -54,8 +54,8 @@ pub(crate) struct Account {
 }
 
 impl fmt::Debug for Account {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("Account { credentials: [redacted] }")
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Account { credentials: [redacted] }")
     }
 }
 

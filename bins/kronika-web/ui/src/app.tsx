@@ -71,43 +71,48 @@ const EMPTY_DATA: HourData = {
 }
 
 const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
-  system: withTimeline(SYSTEM_REQUESTS),
-  processes: withTimeline([{ section: "os_process" }, { section: "pg_stat_activity" }, { section: "instance_metadata" }]),
-  "postgresql:overview": withTimeline(POSTGRESQL_OVERVIEW_REQUESTS),
-  "postgresql:activity": withTimeline(PRODUCT_SECTION_GROUPS.postgresqlActivity.map(section)),
-  "postgresql:locks": withTimeline(PRODUCT_SECTION_GROUPS.postgresqlLocks.map(section)),
-  "postgresql:databases": withTimeline(PRODUCT_SECTION_GROUPS.postgresqlDatabases.map(section)),
+  system: [...TIMELINE_REQUESTS, ...SYSTEM_REQUESTS],
+  processes: [...TIMELINE_REQUESTS, { section: "os_process" }, { section: "pg_stat_activity" }, { section: "instance_metadata" }],
+  "postgresql:overview": [...TIMELINE_REQUESTS, ...POSTGRESQL_OVERVIEW_REQUESTS],
+  "postgresql:activity": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlActivity.map(section)],
+  "postgresql:locks": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlLocks.map(section)],
+  "postgresql:databases": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlDatabases.map(section)],
   events: TIMELINE_REQUESTS,
 }
 
 function section(name: string): SectionRequest { return { section: name } }
-function withTimeline(requests: readonly SectionRequest[]) { return [...TIMELINE_REQUESTS, ...requests] }
 
-const HELP_SYSTEM = helpItems([
-  "system.metric.health",
-  "system.metric.cpu_busy",
-  "system.metric.load1",
-  "system.metric.mem_available_percent",
-  "system.metric.cpu_pressure",
-  "system.metric.memory_pressure",
-  "system.metric.io_pressure",
-  "system.metric.filesystem_free_min",
-])
+const HELP_SYSTEM = [
+  { label: "system.metric.health.label", help: "system.metric.health.help" },
+  { label: "system.metric.cpu_busy.label", help: "system.metric.cpu_busy.help" },
+  { label: "system.metric.load1.label", help: "system.metric.load1.help" },
+  { label: "system.metric.mem_available_percent.label", help: "system.metric.mem_available_percent.help" },
+  { label: "system.metric.cpu_pressure.label", help: "system.metric.cpu_pressure.help" },
+  { label: "system.metric.memory_pressure.label", help: "system.metric.memory_pressure.help" },
+  { label: "system.metric.io_pressure.label", help: "system.metric.io_pressure.help" },
+  { label: "system.metric.filesystem_free_min.label", help: "system.metric.filesystem_free_min.help" },
+] as const
 
 const HELP_PROCESS = [
-  ...helpItems(["col.pid", "col.command"]),
+  { label: "col.pid.label", help: "col.pid.help" },
+  { label: "col.command.label", help: "col.command.help" },
   { label: "detail.pg.title", help: "detail.pg.help" },
-  ...helpItems(["pg.query"]),
-]
+  { label: "pg.query.label", help: "pg.query.help" },
+] as const
 
-const HELP_POSTGRESQL = helpItems(["pg.pid", "pg.backend_type", "pg.state", "pg.wait_event", "pg.query"])
+const HELP_POSTGRESQL = [
+  { label: "pg.pid.label", help: "pg.pid.help" },
+  { label: "pg.backend_type.label", help: "pg.backend_type.help" },
+  { label: "pg.state.label", help: "pg.state.help" },
+  { label: "pg.wait_event.label", help: "pg.wait_event.help" },
+  { label: "pg.query.label", help: "pg.query.help" },
+] as const
 
-const HELP_EVENTS = ["locator.event", "locator.known_bad", "locator.spike"]
-  .map((key) => ({ label: key, help: `${key}.help` }))
-
-function helpItems(keys: readonly string[]) {
-  return keys.map((key) => ({ label: `${key}.label`, help: `${key}.help` }))
-}
+const HELP_EVENTS = [
+  { label: "locator.event", help: "locator.event.help" },
+  { label: "locator.known_bad", help: "locator.known_bad.help" },
+  { label: "locator.spike", help: "locator.spike.help" },
+] as const
 
 function Kronika() {
   const session = useSyncExternalStore(subscribeSession, getSessionSnapshot, getSessionSnapshot)

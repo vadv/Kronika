@@ -25,16 +25,15 @@ export function Login({ expired, locale, onLocale, t }: {
     request.current = controller
     setBusy(true)
     setError(null)
+    setPassword("")
     try {
       const result = await signInBasic(user, password, controller.signal)
       if (controller.signal.aborted) return
       if (result === "invalid") {
-        setPassword("")
         setError("invalid")
       }
     } catch {
       if (!controller.signal.aborted) {
-        setPassword("")
         setError("unavailable")
       }
     } finally {

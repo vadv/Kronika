@@ -752,7 +752,7 @@ test("the minified artifact restores and clears its opaque browser session", { t
     rejectNextApi = true
     started = requests.length
     await cdp.evaluate(`document.querySelector('[data-testid="hour-previous"]').click()`)
-    await cdp.waitFor(`document.querySelector(".login-card .login-message")?.textContent.includes("Session ended") === true`, "one expired-session transition")
+    await cdp.waitFor(`document.querySelector(".login-card .login-message")?.textContent.includes("session ended") === true`, "one expired-session transition")
     await delay(300)
     const expiryRequests = requests.slice(started)
     assert.equal(expiryRequests.filter(({ path }) => path.startsWith("/api/")).length, 1)

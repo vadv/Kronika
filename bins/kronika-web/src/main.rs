@@ -80,10 +80,7 @@ async fn answer(
     Ok(match target {
         RequestTarget::Ui { head } => ui::response(head, if_none_match.as_deref()),
         RequestTarget::Session(session) => {
-            match session_response(&config.account, config.cookie_secure, session) {
-                Some(response) => response,
-                None => failed(),
-            }
+            session_response(&config.account, config.cookie_secure, session).unwrap_or_else(failed)
         }
         RequestTarget::Api { route, accepted } => {
             streamed(config, route, if_none_match, accepted).await
@@ -208,11 +205,11 @@ enum SingleHeader<'a> {
 }
 
 impl fmt::Debug for SingleHeader<'_> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Absent => formatter.write_str("Absent"),
-            Self::Value(_) => formatter.write_str("Value([redacted])"),
-            Self::Invalid => formatter.write_str("Invalid"),
+            Self::Absent => f.write_str("Absent"),
+            Self::Value(_) => f.write_str("Value([redacted])"),
+            Self::Invalid => f.write_str("Invalid"),
         }
     }
 }

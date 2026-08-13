@@ -26,14 +26,18 @@ export async function bootstrapSession(): Promise<void> {
   transition(response?.status === 204 ? "signed-in" : "signed-out")
 }
 
-export async function signInBasic(
+export function signInBasic(
   user: string,
   password: string,
   signal: AbortSignal,
 ): Promise<"signed-in" | "invalid"> {
-  await cleanupPromise
+  const submit = () => finishSignIn(sessionFetch("POST", basicAuthorization(user, password), signal))
+  return cleanupPromise === null ? submit() : cleanupPromise.then(submit)
+}
+
+async function finishSignIn(request: Promise<Response>): Promise<"signed-in" | "invalid"> {
   ++generation
-  const response = await sessionFetch("POST", basicAuthorization(user, password), signal)
+  const response = await request
 
   if (response.status === 401) return "invalid"
   if (response.status !== 204) throw new Error()
