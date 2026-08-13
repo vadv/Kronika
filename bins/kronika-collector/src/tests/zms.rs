@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use kronika_format::FRAME_HEADER_LEN;
+use kronika_format::{ENTRY_LEN, FRAME_HEADER_LEN};
 use kronika_layout::{DataRoot, LayoutLimits, WriterOwner};
 use kronika_reader::{Cell, Reader, Resolved, SegmentKind};
-use kronika_registry::section_name;
+use kronika_registry::{PgWalStorage, Ts, section_name};
 use kronika_source_pg::query::{BATCH_LOGICAL_BYTES, BATCH_ROWS};
 use kronika_source_pg::settings::SettingsRow;
 use kronika_source_pg::statements::{StatementsRow, StatementsVersion};
@@ -30,6 +30,8 @@ const PLAN_BYTES: usize = 4_096;
 const PLAN_ROW_OVERHEAD_BYTES: usize = 274;
 const PG_STAT_STATEMENTS_V6_TYPE_ID: u32 = 1_002_006;
 const PG_STORE_PLANS_VADV_TYPE_ID: u32 = 1_004_001;
+const PG_WAL_STORAGE_TYPE_ID: u32 = 1_020_001;
+const WAL_STORAGE_SNAPSHOTS_PER_HOUR: usize = 120;
 const BASE_TS: i64 = 1_700_000_000_000_000;
 const PRE_CHANGE_ZMS_BYTES: u64 = 3_141_820;
 const PRE_CHANGE_DICT_STRINGS_BYTES: u64 = 1_978_136;
@@ -636,4 +638,91 @@ fn bounded_postgres_batches_report_finished_segment_costs() {
     );
     assert_replay_costs(&write_report, &artifact, max_journal_len);
     print_replay_costs(write_report, artifact);
+}
+
+#[test]
+fn wal_storage_hour_reports_raw_and_finished_costs() {
+    let directory = tempfile::tempdir().expect("create WAL storage cost directory");
+    let writer = owner(directory.path());
+    let journal_config = JournalConfig::default();
+    let mut journal = Journal::open(&writer, journal_config).expect("open WAL storage journal");
+    let config = config(directory.path(), u64::MAX);
+    let mut segment = SegmentState::default();
+    let mut write_report = ReplayWriteReport::default();
+
+    {
+        let mut replay = ReplayAppend {
+            journal: &mut journal,
+            writer: &writer,
+            config: &config,
+            segment: &mut segment,
+            settings: &[],
+            report: &mut write_report,
+        };
+        for sample in 0..WAL_STORAGE_SNAPSHOTS_PER_HOUR {
+            let sample = i64::try_from(sample).expect("sample count fits i64");
+            let ts = BASE_TS.saturating_add(sample.saturating_mul(30_000_000));
+            replay.append(
+                &PgBatch::WalStorage(PgWalStorage {
+                    ts: Ts(ts),
+                    wal_files_bytes: 16_777_216_i64.saturating_mul(sample.saturating_add(1)),
+                }),
+                ts,
+            );
+        }
+    }
+
+    let raw_wal_bytes = journal.bytes();
+    let path = close_open_segment(&mut journal, &writer, &mut segment, "test-end")
+        .expect("write WAL storage cost segment");
+    let reader = Reader::open(directory.path()).expect("open WAL storage cost reader");
+    let listing = reader.segments(..).expect("list WAL storage cost segment");
+    let reference = listing.segments.first().expect("one WAL storage segment");
+    let stored = reader
+        .open_segment(reference)
+        .expect("open finished WAL storage segment");
+    let rows = stored
+        .rows(PG_WAL_STORAGE_TYPE_ID)
+        .expect("read WAL storage rows");
+    let section = stored
+        .sections()
+        .find(|(type_id, _section)| *type_id == PG_WAL_STORAGE_TYPE_ID)
+        .map(|(_type_id, section)| section)
+        .expect("WAL storage section is catalogued");
+    let zms_bytes = std::fs::metadata(path)
+        .expect("stat WAL storage segment")
+        .len();
+    let marginal_zms_bytes = section
+        .bytes
+        .saturating_add(u64::try_from(ENTRY_LEN).expect("catalog entry length fits u64"));
+
+    assert_eq!(listing.segments.len(), 1);
+    assert_eq!(
+        write_report.appended_windows,
+        WAL_STORAGE_SNAPSHOTS_PER_HOUR
+    );
+    assert_eq!(
+        stored.window_count(),
+        u32::try_from(WAL_STORAGE_SNAPSHOTS_PER_HOUR).expect("sample count fits u32")
+    );
+    assert_eq!(rows.len(), WAL_STORAGE_SNAPSHOTS_PER_HOUR);
+    assert_eq!(
+        rows.first().and_then(|row| row.get("wal_files_bytes")),
+        Some(&Cell::I64(16_777_216))
+    );
+    assert_eq!(
+        rows.last().and_then(|row| row.get("wal_files_bytes")),
+        Some(&Cell::I64(2_013_265_920))
+    );
+    assert!(raw_wal_bytes < 256 * 1024);
+    assert!(section.bytes < 4 * 1024);
+    assert!(zms_bytes < 8 * 1024);
+    println!(
+        "pg_wal_storage_cost rows={} raw_wal_bytes={} section_bytes={} marginal_zms_bytes={} zms_bytes={}",
+        rows.len(),
+        raw_wal_bytes,
+        section.bytes,
+        marginal_zms_bytes,
+        zms_bytes
+    );
 }

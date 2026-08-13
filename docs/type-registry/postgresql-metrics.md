@@ -2,7 +2,7 @@
 
 [Русская версия](postgresql-metrics.ru.md)
 
-PostgreSQL metric sections occupy `1_001_001`–`1_019_001`. Their exact
+PostgreSQL metric sections occupy `1_001_001`–`1_020_001`. Their exact
 columns, units, keys, and semantics are declared in
 [`crates/kronika-registry/src/codec`](../../crates/kronika-registry/src/codec).
 This reference records which server or extension version selects each layout.
@@ -85,6 +85,7 @@ connection is closed.
 | `1_017_001` | `pg_stat_checkpointer` | 17 | instance | `snapshot_full` |
 | `1_017_002` | `pg_stat_checkpointer` | 18 | instance | `snapshot_full` |
 | `1_019_001` | `pg_settings` | 10–18 | metric session | `on_change` |
+| `1_020_001` | `pg_wal_storage` | 10–18 | instance | `snapshot_full` |
 
 `pg_stat_wal`, `pg_stat_io`, and `pg_stat_checkpointer` have no section before
 the first PostgreSQL release listed above. PostgreSQL 17 and 18 changed
@@ -99,6 +100,9 @@ another source opens a segment between PostgreSQL cycles.
 The `primary_conninfo` and `ssl_passphrase_command` rows are excluded because
 their values may contain secrets. Other command settings and custom settings
 remain in the snapshot.
+`pg_wal_storage` stores one exact sum of the regular-file sizes returned by
+`pg_ls_waldir()`. It does not inspect subdirectories or infer file purpose from
+names; without permission to execute that function the section is absent.
 
 ## Extension views
 
