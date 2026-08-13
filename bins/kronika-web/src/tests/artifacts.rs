@@ -326,6 +326,31 @@ impl Fixture {
             .expect("append statements");
     }
 
+    fn append_statement_snapshots(&mut self, rows: &[(i64, i64, i64, f64)]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let mut buffers = SectionBuffers::new();
+        for &(ts, queryid, calls, total_exec_time) in rows {
+            let text = format!("boundary statement {queryid}");
+            let query = StrId(
+                interner
+                    .intern(text.as_bytes())
+                    .expect("intern boundary statement")
+                    .get(),
+            );
+            let mut row = statement(ts, calls, total_exec_time, query);
+            row.queryid = Some(queryid);
+            buffers.push(row).expect("boundary statement row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("boundary statement dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode boundary statements")
+            .expect("nonempty boundary statements");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append boundary statements");
+    }
+
     fn append_plan_universe(&mut self, rows: i64) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
@@ -353,6 +378,32 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append plans");
+    }
+
+    fn append_plan_snapshots(&mut self, rows: &[(i64, i64, i64, f64)]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let mut buffers = SectionBuffers::new();
+        for &(ts, queryid, calls, total_time) in rows {
+            let text = format!("boundary plan {queryid}");
+            let plan_text = StrId(
+                interner
+                    .intern(text.as_bytes())
+                    .expect("intern boundary plan")
+                    .get(),
+            );
+            let mut row = store_plan(ts, queryid, plan_text);
+            row.calls = calls;
+            row.total_time = total_time;
+            buffers.push(row).expect("boundary plan row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("boundary plan dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode boundary plans")
+            .expect("nonempty boundary plans");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append boundary plans");
     }
 
     fn append_ranked_statements(&mut self) {
@@ -2290,6 +2341,76 @@ fn numeric_statement_page_scans_the_source_once_without_candidate_dictionary_rea
     let records = stream(fixture.prepare(&target, None)).expect("numeric statement page");
     assert_eq!(row_records(&records).len(), 200);
     assert_eq!(crate::api::page_operations(), (1, 0, 0));
+}
+
+#[test]
+fn statement_page_composes_a_snapshot_split_across_segments() {
+    let mut fixture = Fixture::new();
+    fixture.append_statement_snapshots(&[(100, 1, 10, 100.0), (100, 2, 10, 100.0)]);
+    fixture.finish_and_continue(SEGMENT_ID + 1_000);
+    fixture.append_statement_snapshots(&[(200, 1, 20, 300.0)]);
+    let current_segment = SEGMENT_ID + 2_000;
+    fixture.finish_and_continue(current_segment);
+    fixture.append_statement_snapshots(&[(200, 2, 20, 200.0)]);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{current_segment}/snapshot?at=200&section=pg_stat_statements&field=queryid&field=calls&field=total_exec_time&by=derived.mean_exec_ms_per_call&page_size=1"
+    );
+    let first = stream(fixture.prepare(&target, None)).expect("split statement page");
+    let rows = row_records(&first);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"][0], "1");
+    assert_eq!(rows[0]["values"][1], 100_000.0);
+    assert_eq!(rows[0]["values"][2], 2_000_000.0);
+    let page = first
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("split statement page trailer");
+    assert_eq!(page["eligible"], "2");
+    assert_eq!(page["from"], "100");
+    assert_eq!(page["to"], "200");
+    assert_eq!(page["has_more"], true);
+
+    let cursor = page["next_cursor"].as_str().expect("split page cursor");
+    let second = stream(fixture.prepare(&format!("{target}&cursor={cursor}"), None))
+        .expect("second split statement page");
+    let rows = row_records(&second);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"][0], "2");
+    assert_eq!(rows[0]["values"][1], 100_000.0);
+    assert_eq!(rows[0]["values"][2], 1_000_000.0);
+}
+
+#[test]
+fn plan_page_keeps_zero_and_rejects_a_cross_segment_counter_decrease() {
+    let mut fixture = Fixture::new();
+    fixture.append_plan_snapshots(&[(100, 1, 4, 40.0), (100, 2, 10, 100.0)]);
+    let current_segment = SEGMENT_ID + 1_000;
+    fixture.finish_and_continue(current_segment);
+    fixture.append_plan_snapshots(&[(200, 1, 4, 40.0), (200, 2, 5, 50.0)]);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{current_segment}/snapshot?at=200&section=pg_store_plans&field=queryid&field=calls&field=total_time&by=queryid&page_size=200"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("cross-segment plan page");
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), 2);
+    let rows = rows
+        .into_iter()
+        .map(|row| (row["values"][0].as_str().expect("queryid"), row))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(rows["1"]["values"][1], 0.0);
+    assert_eq!(rows["1"]["values"][2], 0.0);
+    assert_eq!(rows["2"]["values"][1], Value::Null);
+    assert_eq!(rows["2"]["values"][2], Value::Null);
+    let page = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("cross-segment plan page trailer");
+    assert_eq!(page["from"], "100");
+    assert_eq!(page["to"], "200");
 }
 
 #[test]

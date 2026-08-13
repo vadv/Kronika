@@ -6,12 +6,13 @@ use std::cmp::Ordering;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 
 #[cfg(test)]
 use std::cell::Cell as Counter;
 
 use kronika_reader::{Cell, Dictionary, Reader, Resolved, Row, Segment, SegmentKind, SegmentRef};
-use kronika_registry::{ColumnClass, ColumnType, contract};
+use kronika_registry::{ColumnClass, ColumnType, contract, logical_section_name};
 use serde_json::{Value, json};
 
 use super::query::{Plan, plans, resolved_dictionary};
@@ -149,7 +150,7 @@ struct PageContext<'a> {
     source: &'a Segment,
     rows: u64,
     window: RowWindow,
-    previous: Option<Readings>,
+    previous: Option<Arc<Readings>>,
     elapsed: Option<i64>,
     elapsed_by_partition: BTreeMap<IdentityCell, i64>,
     sample_from: Option<i64>,
@@ -227,6 +228,22 @@ impl PageContext<'_> {
             RowWindow::Untimed | RowWindow::Shared { .. } => self.elapsed,
         }
     }
+
+    fn predecessor<'a>(
+        &'a self,
+        row: &Row,
+        identity: &[IdentityCell],
+    ) -> Option<&'a CounterReadings> {
+        let before = self.previous.as_ref()?.get(identity)?;
+        if let Some(column) = self.plan.contract.column("stats_since") {
+            let current = row.get(column.name)?;
+            let previous = before.get(column.name)?;
+            if current != previous {
+                return None;
+            }
+        }
+        Some(before)
+    }
 }
 
 struct PageMetadata {
@@ -296,7 +313,6 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
         segments,
         &request.sections,
         request.at,
-        request.group.is_some(),
     )?;
     let relation_fields = request
         .group
@@ -375,6 +391,9 @@ fn section_plans(
                     plan.add_projection_columns(
                         &order.as_ref().map_or_else(Vec::new, PageOrder::columns),
                     );
+                    if plan.contract.column("stats_since").is_some() {
+                        plan.add_projection_columns(&["stats_since"]);
+                    }
                     if !request.search.is_empty() {
                         plan.add_projection_columns(&search_columns(logical_name, plan));
                     }
@@ -682,11 +701,11 @@ impl PreparedSnapshot {
                     return Ok(());
                 }
             } else {
-                for plan in &section.plans {
+                for (layout_index, plan) in section.plans.iter().enumerate() {
                     if cancelled() {
                         return Ok(());
                     }
-                    if !self.emit_section(section, plan, emit, cancelled)? {
+                    if !self.emit_section(section, layout_index, plan, emit, cancelled)? {
                         return Ok(());
                     }
                 }
@@ -763,10 +782,7 @@ impl PreparedSnapshot {
         }
         let dictionary = retained_dictionary(context.source, &staged)?;
         for staged in staged {
-            let before = context
-                .previous
-                .as_ref()
-                .and_then(|previous| previous.get(&staged.identity));
+            let before = context.predecessor(&staged.row, &staged.identity);
             let value = Self::row_record(
                 context.plan,
                 &staged.row,
@@ -786,6 +802,7 @@ impl PreparedSnapshot {
     fn emit_section(
         &self,
         section: &SectionPlans,
+        layout_index: usize,
         plan: &Plan,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
         cancelled: &impl Fn() -> bool,
@@ -799,64 +816,15 @@ impl PreparedSnapshot {
         let Some(timestamp) = plan.timestamp else {
             return self.emit_untimed(plan, emit, cancelled);
         };
-        // A section's latest sample may be in the preceding segment.
-        let here = Self::moments(&self.segment, plan, timestamp, self.at, cancelled)?;
-        let own = here.is_some();
-        let source = if own {
-            &self.segment
-        } else {
-            let Some(earlier) = self.earlier.as_ref() else {
-                return Ok(true);
-            };
-            earlier
-        };
-        let Some(moments) = (if own {
-            here
-        } else {
-            Self::moments(source, plan, timestamp, self.at, cancelled)?
-        }) else {
-            return Ok(true);
-        };
-        let (previous, before_at) = match moments.previous {
-            Some(previous) => (
-                Self::collect(source, plan, timestamp, previous, &[], cancelled)?,
-                Some(previous),
-            ),
-            None if own => self.earlier_moment(plan, timestamp, &[], cancelled)?,
-            None => (Readings::new(), None),
-        };
-        let elapsed = moments
-            .current
-            .checked_sub(before_at.unwrap_or(moments.current))
-            .filter(|delta| *delta > 0);
-        let (start_row, row_count) = self
-            .row_ordinal
-            .map_or((0, usize::MAX), |ordinal| (ordinal, 1));
-        let rates = RateContext {
-            previous: Some(&previous),
-            elapsed,
-        };
-        let mut rows = Vec::new();
-        source.visit_rows(
-            plan.type_id,
-            &plan.projection,
-            start_row,
-            row_count,
-            |ordinal, row| {
-                if cancelled() {
-                    return false;
-                }
-                if row_timestamp(&row, timestamp) != Some(moments.current) {
-                    return true;
-                }
-                rows.push((ordinal, row));
-                true
-            },
-        )?;
-        if cancelled() {
-            return Ok(false);
+        for context in self.timed_contexts(section, layout_index, plan, timestamp, cancelled)? {
+            if self.row_ordinal.is_some() && context.source.id() != self.segment.id() {
+                continue;
+            }
+            if cancelled() || !self.emit_context_rows(&context, emit, cancelled)? {
+                return Ok(false);
+            }
         }
-        self.emit_rows(source, plan, rows, rates, emit, cancelled)
+        Ok(true)
     }
 
     fn emit_layout(
@@ -1078,10 +1046,7 @@ impl PreparedSnapshot {
             let dictionary = dictionaries
                 .get(&context.context_index)
                 .ok_or(ApiError::BadCursor)?;
-            let before = context
-                .previous
-                .as_ref()
-                .and_then(|previous| previous.get(&ranked.staged.identity));
+            let before = context.predecessor(&ranked.staged.row, &ranked.staged.identity);
             let value = Self::row_record(
                 context.plan,
                 &ranked.staged.row,
@@ -1154,13 +1119,6 @@ impl PreparedSnapshot {
             if !plan.applies() || cancelled() {
                 continue;
             }
-            let order = page_order(&section.logical_name, plan, &self.by);
-            let order_columns = order.as_ref().map_or_else(Vec::new, PageOrder::columns);
-            let columns = if self.search.is_empty() {
-                Vec::new()
-            } else {
-                search_columns(&section.logical_name, plan)
-            };
             let Some(timestamp) = plan.timestamp else {
                 contexts.push(PageContext {
                     context_index: layout_index,
@@ -1173,42 +1131,83 @@ impl PreparedSnapshot {
                     elapsed_by_partition: BTreeMap::new(),
                     sample_from: None,
                     sample_to: None,
-                    order,
-                    search_columns: columns,
+                    order: page_order(&section.logical_name, plan, &self.by),
+                    search_columns: if self.search.is_empty() {
+                        Vec::new()
+                    } else {
+                        search_columns(&section.logical_name, plan)
+                    },
                 });
                 continue;
             };
-            let here = Self::moments(&self.segment, plan, timestamp, self.at, cancelled)?;
-            let own = here.is_some();
-            let source = if own {
-                &self.segment
-            } else if let Some(earlier) = self.earlier.as_ref() {
-                earlier
-            } else {
+            contexts.extend(self.timed_contexts(
+                section,
+                layout_index,
+                plan,
+                timestamp,
+                cancelled,
+            )?);
+        }
+        Ok(contexts)
+    }
+
+    fn timed_contexts<'a>(
+        &'a self,
+        section: &'a SectionPlans,
+        layout_index: usize,
+        plan: &'a Plan,
+        timestamp: &'static str,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Vec<PageContext<'a>>, ApiError> {
+        let Some(moments) = self.shared_moments(plan, timestamp, cancelled)? else {
+            return Ok(Vec::new());
+        };
+        let order = page_order(&section.logical_name, plan, &self.by);
+        let order_columns = order.as_ref().map_or_else(Vec::new, PageOrder::columns);
+        let mut previous = Readings::new();
+        if let Some(before) = moments.previous {
+            for source_kind in [
+                SampleSource::Older,
+                SampleSource::Earlier,
+                SampleSource::Current,
+            ] {
+                let Some(source) = self.source_for(source_kind) else {
+                    continue;
+                };
+                if source.rows_of(plan.type_id).is_some() {
+                    previous.extend(Self::collect(
+                        source,
+                        plan,
+                        timestamp,
+                        before,
+                        &order_columns,
+                        cancelled,
+                    )?);
+                }
+            }
+        }
+        let previous = Arc::new(previous);
+        let elapsed = moments
+            .previous
+            .and_then(|before| moments.current.checked_sub(before))
+            .filter(|elapsed| *elapsed > 0);
+        let mut contexts = Vec::new();
+        for source_kind in [
+            SampleSource::Current,
+            SampleSource::Earlier,
+            SampleSource::Older,
+        ] {
+            let Some(source) = self.source_for(source_kind) else {
                 continue;
             };
-            let Some(moments) = (if own {
-                here
-            } else {
-                Self::moments(source, plan, timestamp, self.at, cancelled)?
-            }) else {
+            if source.rows_of(plan.type_id).is_none()
+                || Self::moments(source, plan, timestamp, moments.current, cancelled)?
+                    .is_none_or(|source_moments| source_moments.current != moments.current)
+            {
                 continue;
-            };
-            let (previous, before_at) = match moments.previous {
-                Some(previous) => (
-                    Self::collect(source, plan, timestamp, previous, &order_columns, cancelled)?,
-                    Some(previous),
-                ),
-                None if own => self.earlier_moment(plan, timestamp, &order_columns, cancelled)?,
-                None => (Readings::new(), None),
-            };
-            let elapsed = moments
-                .current
-                .checked_sub(before_at.unwrap_or(moments.current))
-                .filter(|delta| *delta > 0);
-            let sample_from = elapsed.and_then(|elapsed| moments.current.checked_sub(elapsed));
+            }
             contexts.push(PageContext {
-                context_index: layout_index,
+                context_index: timed_context_index(layout_index, source_kind),
                 plan,
                 source,
                 rows: source.rows_of(plan.type_id).unwrap_or(0),
@@ -1216,16 +1215,52 @@ impl PreparedSnapshot {
                     timestamp,
                     current: moments.current,
                 },
-                previous: Some(previous),
+                previous: Some(Arc::clone(&previous)),
                 elapsed,
                 elapsed_by_partition: BTreeMap::new(),
-                sample_from,
+                sample_from: moments.previous,
                 sample_to: Some(moments.current),
-                order,
-                search_columns: columns,
+                order: order.clone(),
+                search_columns: if self.search.is_empty() {
+                    Vec::new()
+                } else {
+                    search_columns(&section.logical_name, plan)
+                },
             });
         }
         Ok(contexts)
+    }
+
+    fn shared_moments(
+        &self,
+        plan: &Plan,
+        timestamp: &'static str,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Option<Moments>, ApiError> {
+        let mut stored = Vec::with_capacity(6);
+        for source_kind in [
+            SampleSource::Current,
+            SampleSource::Earlier,
+            SampleSource::Older,
+        ] {
+            let Some(source) = self.source_for(source_kind) else {
+                continue;
+            };
+            if source.rows_of(plan.type_id).is_none() {
+                continue;
+            }
+            if let Some(moments) = Self::moments(source, plan, timestamp, self.at, cancelled)? {
+                stored.push(moments.current);
+                stored.extend(moments.previous);
+            }
+        }
+        stored.sort_unstable();
+        stored.dedup();
+        let current = stored.pop();
+        Ok(current.map(|current| Moments {
+            current,
+            previous: stored.pop(),
+        }))
     }
 
     fn partitioned_contexts<'a>(
@@ -1411,7 +1446,7 @@ impl PreparedSnapshot {
                 column: spec.temporal_partition,
                 current,
             },
-            previous: Some(previous),
+            previous: Some(previous.into()),
             elapsed: None,
             elapsed_by_partition,
             sample_from,
@@ -1493,6 +1528,9 @@ impl PreparedSnapshot {
     ) -> Result<Readings, ApiError> {
         let mut collected = BTreeMap::new();
         let mut counters = rate_columns(plan);
+        if plan.contract.column("stats_since").is_some() {
+            counters.push("stats_since");
+        }
         for column in extra_columns {
             if plan
                 .contract
@@ -1750,6 +1788,9 @@ impl PreparedSnapshot {
         let mut collected = BTreeMap::new();
         let counters = rate_columns(plan);
         let mut counters = counters;
+        if plan.contract.column("stats_since").is_some() {
+            counters.push("stats_since");
+        }
         for column in extra_columns {
             if plan
                 .contract
@@ -1795,43 +1836,6 @@ impl PreparedSnapshot {
             collected.insert(key, stored);
         }
         Ok(collected)
-    }
-
-    fn earlier_moment(
-        &self,
-        plan: &Plan,
-        timestamp: &'static str,
-        extra_columns: &[&'static str],
-        cancelled: &impl Fn() -> bool,
-    ) -> Result<(Readings, Option<i64>), ApiError> {
-        let Some(earlier) = self.earlier.as_ref() else {
-            return Ok((BTreeMap::new(), None));
-        };
-        let mut last: Option<i64> = None;
-        earlier.visit_rows(
-            plan.type_id,
-            &[timestamp],
-            0,
-            usize::MAX,
-            |_ordinal, row| {
-                if cancelled() {
-                    return false;
-                }
-                if let Some(stored) = row_timestamp(&row, timestamp)
-                    && last.is_none_or(|chosen| stored > chosen)
-                {
-                    last = Some(stored);
-                }
-                true
-            },
-        )?;
-        let Some(at) = last else {
-            return Ok((BTreeMap::new(), None));
-        };
-        Ok((
-            Self::collect(earlier, plan, timestamp, at, extra_columns, cancelled)?,
-            Some(at),
-        ))
     }
 
     fn row_record(
@@ -2123,7 +2127,7 @@ fn page_order_value(
             neutral_nulls,
         } => {
             let _elapsed = context.elapsed_for(row)?;
-            let before = context.previous.as_ref()?.get(identity)?;
+            let before = context.predecessor(row, identity)?;
             let numerator = counter_sum(row, before, numerator, *neutral_nulls)?;
             let denominator = counter_sum(row, before, denominator, *neutral_nulls)?;
             ratio_order_value(numerator, denominator)
@@ -2154,7 +2158,7 @@ fn column_order_value(
         .is_some_and(|declared| declared.class == ColumnClass::Cumulative);
     if cumulative {
         let elapsed = context.elapsed_for(row)?;
-        let earlier = context.previous.as_ref()?.get(identity)?.get(column)?;
+        let earlier = context.predecessor(row, identity)?.get(column)?;
         return match counter_delta(stored, earlier)? {
             OrderedNumber::Integer(delta) => Some(PageOrderValue::IntegerRate { delta, elapsed }),
             OrderedNumber::Float(delta) => {
@@ -2409,6 +2413,10 @@ const fn partition_context_index(layout_index: usize, source: SampleSource) -> u
         }
 }
 
+const fn timed_context_index(layout_index: usize, source: SampleSource) -> usize {
+    partition_context_index(layout_index, source)
+}
+
 fn record_partition_moment(
     moments: &mut BTreeMap<IdentityCell, PartitionMoments>,
     partition: IdentityCell,
@@ -2543,14 +2551,13 @@ fn preceding(
     segments: Vec<SegmentRef>,
     sections: &[String],
     at: i64,
-    keep_older: bool,
 ) -> Result<(Option<Segment>, Option<Segment>), ApiError> {
     let compatible = segment_ref
         .sections()
         .iter()
         .filter(|section| {
-            contract(section.type_id)
-                .is_some_and(|layout| sections.iter().any(|name| name == layout.name))
+            logical_section_name(section.type_id)
+                .is_some_and(|logical| sections.iter().any(|name| name == logical))
         })
         .map(|section| section.type_id)
         .collect::<HashSet<_>>();
@@ -2565,12 +2572,12 @@ fn preceding(
         })
         .collect::<Vec<_>>();
     candidates.sort_unstable_by_key(SegmentRef::id);
-    let mut chosen = Vec::with_capacity(usize::from(keep_older) + 1);
+    let mut chosen = Vec::with_capacity(2);
     while let Some(candidate) = candidates.pop() {
         let segment = reader.open_segment(&candidate)?;
         if segment_has_sample_at(&segment, &compatible, at)? {
             chosen.push(segment);
-            if chosen.len() > usize::from(keep_older) {
+            if chosen.len() == 2 {
                 break;
             }
         }
