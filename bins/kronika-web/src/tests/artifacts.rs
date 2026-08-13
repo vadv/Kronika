@@ -520,6 +520,52 @@ impl Fixture {
             .expect("append named table snapshots");
     }
 
+    fn append_dml_table_snapshots(&mut self, rows: &[(i64, u32, u32, [i64; 4], &str, &str, &str)]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let tablespace = StrId(
+            interner
+                .intern(b"pg_default")
+                .expect("intern tablespace")
+                .get(),
+        );
+        let mut buffers = SectionBuffers::new();
+        for &(ts, datid, relid, [inserted, updated, deleted, hot], datname, schema, table) in rows {
+            let mut row = user_table(ts, datid, relid, 0);
+            row.n_tup_ins = inserted;
+            row.n_tup_upd = updated;
+            row.n_tup_del = deleted;
+            row.n_tup_hot_upd = hot;
+            row.datname = StrId(
+                interner
+                    .intern(datname.as_bytes())
+                    .expect("intern database")
+                    .get(),
+            );
+            row.schemaname = StrId(
+                interner
+                    .intern(schema.as_bytes())
+                    .expect("intern schema")
+                    .get(),
+            );
+            row.relname = StrId(
+                interner
+                    .intern(table.as_bytes())
+                    .expect("intern table")
+                    .get(),
+            );
+            row.tablespace = tablespace;
+            buffers.push(row).expect("DML table row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("encode DML relation dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode DML table snapshots")
+            .expect("nonempty DML table snapshots");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append DML table snapshots");
+    }
+
     fn append_buffered_table_snapshots(&mut self, rows: &[(i64, u32, u32, [i64; 8])]) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
@@ -2454,6 +2500,10 @@ fn relation_table_buffer_rates_distinguish_values_zero_and_missing_predecessors(
         "toast_blks_hit",
         "tidx_blks_read",
         "tidx_blks_hit",
+        "heap_buffer_hit_pct",
+        "index_buffer_hit_pct",
+        "toast_buffer_hit_pct",
+        "tidx_buffer_hit_pct",
         "buffer_hit_pct",
     ]
     .map(|field| format!("field={field}"))
@@ -2482,6 +2532,10 @@ fn relation_table_buffer_rates_distinguish_values_zero_and_missing_predecessors(
         ("toast_blks_hit", 0.9),
         ("tidx_blks_read", 0.1),
         ("tidx_blks_hit", 0.9),
+        ("heap_buffer_hit_pct", 90.0),
+        ("index_buffer_hit_pct", 90.0),
+        ("toast_buffer_hit_pct", 90.0),
+        ("tidx_buffer_hit_pct", 90.0),
         ("buffer_hit_pct", 90.0),
     ] {
         assert_rate(field, expected);
@@ -2491,7 +2545,7 @@ fn relation_table_buffer_rates_distinguish_values_zero_and_missing_predecessors(
         .split('&')
         .map(|field| field.trim_start_matches("field="))
     {
-        if field != "buffer_hit_pct" {
+        if !field.ends_with("_pct") {
             assert_eq!(rows["2"]["values"][field], 0.0, "true zero {field}");
             assert_eq!(
                 rows["3"]["values"][field],
@@ -2500,8 +2554,16 @@ fn relation_table_buffer_rates_distinguish_values_zero_and_missing_predecessors(
             );
         }
     }
-    assert_eq!(rows["2"]["values"]["buffer_hit_pct"], Value::Null);
-    assert_eq!(rows["3"]["values"]["buffer_hit_pct"], Value::Null);
+    for field in [
+        "heap_buffer_hit_pct",
+        "index_buffer_hit_pct",
+        "toast_buffer_hit_pct",
+        "tidx_buffer_hit_pct",
+        "buffer_hit_pct",
+    ] {
+        assert_eq!(rows["2"]["values"][field], Value::Null);
+        assert_eq!(rows["3"]["values"][field], Value::Null);
+    }
 
     let exact = format!(
         "/api/segments/{SEGMENT_ID}/snapshot?at=20000000&section=pg_stat_user_tables&field=datid&field=heap_blks_read&field=heap_blks_hit&type_id=1013001&row_ordinal=1"
@@ -2744,6 +2806,46 @@ fn relation_groups_keep_database_scope_and_sum_staggered_rates() {
     assert_eq!(rows[0]["key"]["relid"], "21");
     assert_eq!(rows[0]["key"]["relname"], "orders");
     assert!(rows[0]["source"]["ordinal"].is_string());
+}
+
+#[test]
+fn relation_derivatives_sort_the_full_set_and_recompute_group_ratios() {
+    let mut fixture = Fixture::new();
+    fixture.append_dml_table_snapshots(&[
+        (100, 1, 11, [0, 0, 0, 0], "db", "public", "small"),
+        (100, 1, 12, [0, 0, 0, 0], "db", "public", "mostly_insert"),
+        (100, 1, 13, [0, 0, 0, 0], "db", "public", "mostly_update"),
+        (200, 1, 11, [1, 0, 0, 0], "db", "public", "small"),
+        (200, 1, 12, [9, 1, 0, 1], "db", "public", "mostly_insert"),
+        (200, 1, 13, [0, 90, 0, 90], "db", "public", "mostly_update"),
+    ]);
+    fixture.finish();
+
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_tables&field=dml_total&field=insert_share_pct&by=derived.dml_total&direction=desc"
+    );
+    let objects = stream(fixture.prepare(&format!("{base}&group=object&page_size=1"), None))
+        .expect("derived relation page");
+    let rows = relation_records(&objects);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["key"]["relid"], "13");
+    assert_eq!(rows[0]["values"]["dml_total"], 900_000.0);
+    let page = objects
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("derived page trailer");
+    assert_eq!(page["eligible"], "3");
+    assert_eq!(page["has_more"], true);
+
+    let databases = stream(fixture.prepare(&format!("{base}&group=database"), None))
+        .expect("derived database group");
+    let rows = relation_records(&databases);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"]["dml_total"], 1_010_000.0);
+    let share = rows[0]["values"]["insert_share_pct"]
+        .as_f64()
+        .expect("aggregate insert share");
+    assert!((share - 10.0 / 101.0 * 100.0).abs() < 1e-12);
 }
 
 #[test]

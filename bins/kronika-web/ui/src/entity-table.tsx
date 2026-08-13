@@ -25,6 +25,7 @@ export interface EntityColumn {
   readonly label: string
   readonly help?: string
   readonly render?: (row: DataRow) => ReactNode
+  readonly renderNull?: (row: DataRow) => ReactNode
   readonly filterValue?: (row: DataRow) => string | null
   readonly sortValue?: (row: DataRow) => string | number | boolean | null
   readonly rate?: boolean
@@ -95,7 +96,11 @@ export function EntityTable({
   const parent = useRef<HTMLDivElement>(null)
   const columns = useMemo<ColumnDef<DataRow>[]>(() => fields.map((field, index) => ({
     accessorFn: (row) => field.sortValue === undefined ? sortable(value(row, field.field), field.kind) : field.sortValue(row),
-    cell: ({ row }) => field.render === undefined ? <Cell at={row.original.relation ? row.original.timestamp : null} cell={value(row.original, field.field)} kind={field.kind} locale={locale} rate={field.rate} t={t} /> : field.render(row.original),
+    cell: ({ row }) => {
+      const stored = value(row.original, field.field)
+      if (stored === null && field.renderNull !== undefined) return field.renderNull(row.original)
+      return field.render === undefined ? <Cell at={row.original.relation ? row.original.timestamp : null} cell={stored} kind={field.kind} locale={locale} rate={field.rate} t={t} /> : field.render(row.original)
+    },
     header: () => t === undefined ? field.label : t(field.label),
     id: field.field,
     enableSorting: serverSorted === true ? field.sortable === true : field.sortable !== false,
@@ -277,7 +282,7 @@ function Cell({ at, cell, kind = "text", locale, rate, t }: { readonly at: numbe
     const exact = formatUtc(timestamp)
     return <time className="entity-value" title={exact}>{at === null ? exact : humanDuration((at - timestamp) / 1_000, locale)}</time>
   }
-  if (kind === "bytes") return <span className="entity-value">{unit(humanBytes(cell, locale), rate, per)}</span>
+  if (kind === "bytes") return <span className="entity-value" title={unit(`${rawText(cell)} B`, rate, per)}>{unit(humanBytes(cell, locale), rate, per)}</span>
   if (kind === "kib") return <span className="entity-value">{unit(humanBytes(asNumber(cell) === null ? null : (asNumber(cell) ?? 0) * 1024, locale), rate, per)}</span>
   if (kind === "milliseconds") return <span className="entity-value">{measure(cell, locale, unit(t === undefined ? " ms" : t("unit.ms"), rate, per))}</span>
   if (kind === "duration") return <span className="entity-value">{humanDuration(cell, locale)}</span>

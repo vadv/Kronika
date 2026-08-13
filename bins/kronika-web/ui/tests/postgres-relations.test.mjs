@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import test from "node:test"
 
+import { parseDictionary, validateDictionaries } from "../scripts/i18n.mjs"
 import { importModule, registryPlugin } from "./import-module.mjs"
 
 const relation = await importModule('export * from "../src/postgres-relations.ts"', { plugins: [registryPlugin([])] })
@@ -46,7 +47,8 @@ test("relation requests keep hierarchy separate from fixed metric lenses", () =>
   const access = relation.relationRequest("pg_stat_user_tables", "access", "schema")
   assert.equal(access.group, "schema")
   assert.equal(access.pageSize, 200)
-  assert.deepEqual(access.defaultOrder, ["seq_scan"])
+  assert.deepEqual(access.defaultOrder, ["derived.tuple_throughput"])
+  assert.deepEqual(access.order.tuple_throughput, ["derived.tuple_throughput"])
   assert.deepEqual(access.order.sequential_share_pct, ["derived.sequential_share_pct"])
   assert.equal(access.fields.includes("table_count"), true)
   assert.equal(access.fields.includes("last_seq_scan_oldest"), true)
@@ -54,9 +56,15 @@ test("relation requests keep hierarchy separate from fixed metric lenses", () =>
   assert.equal(access.fields.includes("last_seq_scan_never_count"), true)
 
   const changes = relation.relationRequest("pg_stat_user_tables", "changes", "object")
-  assert.deepEqual(changes.defaultOrder, ["n_tup_upd"])
-  for (const field of ["dead_pct", "hot_pct", "new_page_pct"]) {
+  assert.deepEqual(changes.defaultOrder, ["derived.dml_total"])
+  for (const field of ["insert_share_pct", "update_share_pct", "delete_share_pct", "dead_pct", "hot_pct", "new_page_pct"]) {
     assert.deepEqual(changes.order[field], [`derived.${field}`])
+  }
+
+  const size = relation.relationRequest("pg_stat_user_tables", "size_buffers", "object")
+  assert.deepEqual(size.defaultOrder, ["derived.displayed_storage_bytes"])
+  for (const field of ["toast_share_pct", "toast_dead_pct", "heap_buffer_hit_pct", "index_buffer_hit_pct", "toast_buffer_hit_pct", "tidx_buffer_hit_pct", "buffer_hit_pct"]) {
+    assert.deepEqual(size.order[field], [`derived.${field}`])
   }
 
   const low = relation.relationRequest("pg_stat_user_indexes", "low_activity", "object")
@@ -69,6 +77,13 @@ test("relation requests keep hierarchy separate from fixed metric lenses", () =>
   assert.equal(state.fields.includes("invalid_count"), true)
   assert.equal(state.fields.includes("unready_count"), true)
   assert.equal(state.fields.includes("indexdef"), false)
+})
+
+test("relation histories stay on physical fields", () => {
+  assert.equal(relation.relationHistoryField("pg_stat_user_tables", "access"), "seq_scan")
+  assert.equal(relation.relationHistoryField("pg_stat_user_tables", "changes"), "n_tup_upd")
+  assert.equal(relation.relationHistoryField("pg_stat_user_tables", "size_buffers"), "main_fork_bytes")
+  assert.equal(relation.relationHistoryField("pg_stat_user_indexes", "state"), "idx_scan")
 })
 
 test("rendered relation columns hide numeric identity while requests retain it", () => {
@@ -266,10 +281,10 @@ test("detail requests only the exact index definition", () => {
 
 test("table detail lenses render five distinct semantic field matrices", () => {
   const expectedMetrics = {
-    access: ["seq_scan", "idx_scan", "sequential_share_pct", "seq_tup_read", "idx_tup_fetch", "seq_tuples_per_scan", "idx_tuples_per_scan", "last_seq_scan", "last_idx_scan"],
-    changes: ["n_tup_ins", "n_tup_upd", "n_tup_del", "n_tup_hot_upd", "n_tup_newpage_upd", "dead_pct", "hot_pct", "new_page_pct", "n_live_tup", "n_dead_tup", "n_mod_since_analyze", "n_ins_since_vacuum"],
+    access: ["tuple_throughput", "sequential_share_pct", "seq_scan", "idx_scan", "seq_tuples_per_scan", "idx_tuples_per_scan", "last_seq_scan", "last_idx_scan"],
+    changes: ["dml_total", "insert_share_pct", "update_share_pct", "delete_share_pct", "hot_pct", "new_page_pct", "dead_pct", "n_mod_since_analyze", "n_ins_since_vacuum"],
     maintenance: ["vacuum_count", "autovacuum_count", "analyze_count", "autoanalyze_count", "last_vacuum", "last_autovacuum", "last_analyze", "last_autoanalyze", "toast_last_autovacuum", "vacuum_mean_ms", "autovacuum_mean_ms", "analyze_mean_ms", "autoanalyze_mean_ms"],
-    size_buffers: ["main_fork_bytes", "toast_bytes", "reltuples", "toast_n_live_tup", "toast_n_dead_tup", "heap_blks_read", "heap_blks_hit", "idx_blks_read", "idx_blks_hit", "toast_blks_read", "toast_blks_hit", "tidx_blks_read", "tidx_blks_hit", "buffer_hit_pct"],
+    size_buffers: ["displayed_storage_bytes", "main_fork_bytes", "toast_bytes", "toast_share_pct", "reltuples", "toast_n_live_tup", "toast_n_dead_tup", "toast_dead_pct", "buffer_hit_pct", "heap_buffer_hit_pct", "index_buffer_hit_pct", "toast_buffer_hit_pct", "tidx_buffer_hit_pct", "heap_blks_read", "heap_blks_hit", "idx_blks_read", "idx_blks_hit", "toast_blks_read", "toast_blks_hit", "tidx_blks_read", "tidx_blks_hit"],
     freeze: ["xid_age", "mxid_age", "n_ins_since_vacuum", "last_vacuum", "last_autovacuum"],
   }
   const matrices = relation.TABLE_LENSES.map((lens) => {
@@ -343,17 +358,62 @@ test("wire validation rejects mismatched keys, values, intervals, and fake aggre
 
 test("the relation table exposes complete server-sortable quantitative lenses", () => {
   const changes = view.relationColumns("pg_stat_user_tables", "changes", "object")
-  for (const field of ["n_tup_ins", "n_tup_upd", "n_tup_del", "dead_pct", "hot_pct", "new_page_pct", "n_live_tup"]) {
+  for (const field of ["dml_total", "insert_share_pct", "update_share_pct", "delete_share_pct", "dead_pct", "hot_pct", "new_page_pct"]) {
     assert.equal(changes.find((column) => column.field === field)?.sortable, true, field)
   }
+  assert.equal(changes.some(({ field }) => field.startsWith("n_tup_")), false)
   assert.equal(changes.find((column) => column.field === "relname")?.sticky, true)
   assert.notEqual(changes.find((column) => column.field === "relname")?.sortable, true)
 
   const state = view.relationColumns("pg_stat_user_indexes", "state", "schema")
-  for (const field of ["state_severity", "invalid_count", "unready_count", "unique_count", "primary_count", "exclusion_count"]) {
+  for (const field of ["invalid_count", "unready_count", "unique_count", "primary_count", "exclusion_count"]) {
     assert.equal(state.find((column) => column.field === field)?.sortable, true, field)
   }
+  assert.equal(state.some((column) => column.field === "state_severity"), false)
   assert.equal(state.some((column) => column.field === "indexdef"), false)
+})
+
+test("meaning-first relation columns keep raw buffer operands in detail", () => {
+  const table = view.relationColumns("pg_stat_user_tables", "size_buffers", "object")
+  assert.deepEqual(table.slice(4).map(({ field }) => field), [
+    "displayed_storage_bytes", "main_fork_bytes", "toast_share_pct", "reltuples", "toast_dead_pct", "buffer_hit_pct",
+    "heap_buffer_hit_pct", "index_buffer_hit_pct", "toast_buffer_hit_pct", "tidx_buffer_hit_pct",
+  ])
+  assert.equal(table.some(({ field }) => field.endsWith("_blks_read") || field.endsWith("_blks_hit")), false)
+
+  const detail = view.relationDetailColumns("pg_stat_user_tables", "size_buffers", "object")
+  for (const field of ["toast_bytes", "toast_n_live_tup", "toast_n_dead_tup", "toast_dead_pct", "heap_blks_read", "tidx_blks_hit"]) {
+    assert.equal(detail.some((column) => column.field === field), true, field)
+  }
+  assert.equal(table.find(({ field }) => field === "main_fork_bytes")?.label, "pg.field.table_data_bytes.label")
+  assert.equal(view.relationColumns("pg_stat_user_indexes", "size_buffers", "object").find(({ field }) => field === "main_fork_bytes")?.label, "pg.field.main_fork_bytes.label")
+})
+
+test("relation copy covers every projected label and help key", async () => {
+  const [englishSource, russianSource] = await Promise.all([
+    readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8"),
+  ])
+  const english = parseDictionary(englishSource, "en.yaml")
+  const russian = parseDictionary(russianSource, "ru.yaml")
+  validateDictionaries(english, russian)
+  for (const section of relation.RELATION_SECTIONS) {
+    const lenses = section === "pg_stat_user_tables" ? relation.TABLE_LENSES : relation.INDEX_LENSES
+    for (const lens of lenses) for (const group of relation.RELATION_GROUPS) {
+      const columns = [...view.relationColumns(section, lens, group), ...view.relationDetailColumns(section, lens, group)]
+      for (const column of columns) {
+        assert.equal(Object.hasOwn(english, column.label), true, column.label)
+        if (column.help !== undefined) assert.equal(Object.hasOwn(english, column.help), true, column.help)
+      }
+    }
+  }
+})
+
+test("object scan timestamps distinguish never from unavailable", () => {
+  const t = (key) => ({ "common.never": "Never", "common.unavailable": "—" })[key] ?? key
+  const scan = view.relationColumns("pg_stat_user_tables", "access", "object", [], t).find(({ field }) => field === "last_seq_scan")
+  assert.equal(scan.renderNull({ values: { last_seq_scan_never: true } }), "Never")
+  assert.equal(scan.renderNull({ values: { last_seq_scan_never: null } }), "—")
 })
 
 test("the relation view consumes only rows with the authoritative discriminator", () => {
@@ -376,7 +436,7 @@ test("detail, empty, navigation, and paging behavior stays on generic exact APIs
   assert.match(source, /row\.logicalName === "pg_stat_user_indexes" \? relationDetailTarget\(row\) : null/)
   assert.match(source, /loadSnapshot\(row\.segmentId, definitionTarget\.at, \[definitionTarget\.request\]/)
   assert.match(source, /loadSeries\(hour, row\.logicalName, historyFilters\(row\), \[historyField\], controller\.signal, undefined, row\.timestamp\)/)
-  assert.match(source, /relationDetailColumns\(row\.logicalName as RelationSection, lens, row\.relation!\.group, rateFields\)\.filter\(\(column\) => value\(row, column\.field\) !== null\)/)
+  assert.match(source, /value\(row, column\.field\) !== null \|\| value\(row, `\$\{column\.field\}_never`\) === true/)
   assert.match(source, /display\(value\(row, column\.field\), column, locale, t\)/)
   assert.doesNotMatch(source, /Object\.keys\(exact\.values\)|rate: false/)
   assert.match(source, /data-testid="pg-exact-indexdef"/)

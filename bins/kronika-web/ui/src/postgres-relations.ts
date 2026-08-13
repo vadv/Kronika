@@ -60,14 +60,14 @@ const indexScanTime = timestamps("last_idx_scan")
 
 const tableLenses: Readonly<Record<TableLens, LensSpec>> = {
   access: lens(
-    ["seq_scan", "idx_scan", "sequential_share_pct", "seq_tup_read", "idx_tup_fetch", "seq_tuples_per_scan", "idx_tuples_per_scan", "last_seq_scan", "last_idx_scan"],
-    ["seq_scan", "idx_scan", "sequential_share_pct", "seq_tup_read", "idx_tup_fetch", "seq_tuples_per_scan", "idx_tuples_per_scan", ...scanTimes],
-    "seq_scan",
+    ["tuple_throughput", "sequential_share_pct", "seq_scan", "idx_scan", "seq_tuples_per_scan", "idx_tuples_per_scan", "last_seq_scan", "last_seq_scan_never", "last_idx_scan", "last_idx_scan_never"],
+    ["tuple_throughput", "sequential_share_pct", "seq_scan", "idx_scan", "seq_tuples_per_scan", "idx_tuples_per_scan", ...scanTimes],
+    "tuple_throughput",
   ),
   changes: lens(
-    ["n_tup_ins", "n_tup_upd", "n_tup_del", "n_tup_hot_upd", "n_tup_newpage_upd", "dead_pct", "hot_pct", "new_page_pct", "n_live_tup", "n_dead_tup", "n_mod_since_analyze", "n_ins_since_vacuum"],
+    ["dml_total", "insert_share_pct", "update_share_pct", "delete_share_pct", "hot_pct", "new_page_pct", "dead_pct", "n_mod_since_analyze", "n_ins_since_vacuum"],
     undefined,
-    "n_tup_upd",
+    "dml_total",
   ),
   maintenance: lens(
     ["vacuum_count", "autovacuum_count", "analyze_count", "autoanalyze_count", "last_vacuum", "last_autovacuum", "last_analyze", "last_autoanalyze", "toast_last_autovacuum", "vacuum_mean_ms", "autovacuum_mean_ms", "analyze_mean_ms", "autoanalyze_mean_ms"],
@@ -75,9 +75,9 @@ const tableLenses: Readonly<Record<TableLens, LensSpec>> = {
     "autovacuum_count",
   ),
   size_buffers: lens(
-    ["main_fork_bytes", "toast_bytes", "reltuples", "toast_n_live_tup", "toast_n_dead_tup", "heap_blks_read", "heap_blks_hit", "idx_blks_read", "idx_blks_hit", "toast_blks_read", "toast_blks_hit", "tidx_blks_read", "tidx_blks_hit", "buffer_hit_pct"],
+    ["displayed_storage_bytes", "main_fork_bytes", "toast_bytes", "toast_share_pct", "reltuples", "toast_n_live_tup", "toast_n_dead_tup", "toast_dead_pct", "buffer_hit_pct", "heap_buffer_hit_pct", "index_buffer_hit_pct", "toast_buffer_hit_pct", "tidx_buffer_hit_pct", "heap_blks_read", "heap_blks_hit", "idx_blks_read", "idx_blks_hit", "toast_blks_read", "toast_blks_hit", "tidx_blks_read", "tidx_blks_hit"],
     undefined,
-    "main_fork_bytes",
+    "displayed_storage_bytes",
   ),
   freeze: lens(
     ["xid_age", "mxid_age", "n_ins_since_vacuum", "last_vacuum", "last_autovacuum"],
@@ -88,12 +88,12 @@ const tableLenses: Readonly<Record<TableLens, LensSpec>> = {
 
 const indexLenses: Readonly<Record<IndexLens, LensSpec>> = {
   usage: lens(
-    ["idx_scan", "idx_tup_read", "idx_tup_fetch", "tuples_per_scan", "fetches_per_scan", "last_idx_scan"],
+    ["idx_scan", "idx_tup_read", "idx_tup_fetch", "tuples_per_scan", "fetches_per_scan", "last_idx_scan", "last_idx_scan_never"],
     ["idx_scan", "idx_tup_read", "idx_tup_fetch", "tuples_per_scan", "fetches_per_scan", ...indexScanTime],
     "idx_scan",
   ),
   low_activity: lens(
-    ["no_scans", "idx_scan", "last_idx_scan", "main_fork_bytes"],
+    ["no_scans", "idx_scan", "last_idx_scan", "last_idx_scan_never", "main_fork_bytes"],
     ["no_scan_count", "known_scan_count", "idx_scan", ...indexScanTime, "main_fork_bytes"],
     "main_fork_bytes",
   ),
@@ -119,15 +119,20 @@ export function relationDefaultOrder(section: RelationSection, lensName: Relatio
 }
 
 export function relationHistoryField(section: RelationSection, lensName: RelationLens): string {
+  if (section === "pg_stat_user_tables") {
+    if (lensName === "access") return "seq_scan"
+    if (lensName === "changes") return "n_tup_upd"
+    if (lensName === "size_buffers") return "main_fork_bytes"
+  }
   return lensName === "low_activity" || lensName === "state" ? "idx_scan" : relationDefaultOrder(section, lensName)
 }
 
 export function relationSortToken(field: string): string {
-  return field.endsWith("_pct") || field.endsWith("_per_scan") || field.endsWith("_mean_ms") || field === "state_severity" ? `derived.${field}` : field
+  return field.endsWith("_pct") || field.endsWith("_per_scan") || field.endsWith("_mean_ms") || ["state_severity", "tuple_throughput", "dml_total", "displayed_storage_bytes"].includes(field) ? `derived.${field}` : field
 }
 
 export function relationFieldKind(field: string): "id" | "text" | "boolean" | "timestamp" | "bytes" | "milliseconds" | "percent" | "number" {
-  if (field === "no_scans" || field.startsWith("indis")) return "boolean"
+  if (field === "no_scans" || field.startsWith("indis") || field.endsWith("_never")) return "boolean"
   if (field.endsWith("_never_count")) return "number"
   if (field.endsWith("id")) return "id"
   if (field.endsWith("name") || field === "tablespace" || field === "indexdef") return "text"

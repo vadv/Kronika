@@ -1,6 +1,5 @@
-import { Activity, Cpu, Database, Gauge, HardDrive, MemoryStick, Network } from "lucide-react"
 import { registry } from "kronika:registry"
-import { useEffect, useMemo, useState, type ReactNode } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import { fieldNameForLocator, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
 import { buildMetricSamples } from "./chart"
@@ -68,13 +67,13 @@ export const SYSTEM_METRICS: readonly MetricSpec[] = [
   derivedMetric("network_drops", "network", "system.metric.network_drops", "os_network_drops", "network_drops", ""),
 ]
 
-const GROUPS: readonly { readonly id: MetricSpec["group"]; readonly icon: ReactNode; readonly label: string }[] = [
-  { id: "cpu", icon: <Cpu size={14} />, label: "system.group.cpu" },
-  { id: "load", icon: <Gauge size={14} />, label: "system.group.load" },
-  { id: "memory", icon: <MemoryStick size={14} />, label: "system.group.memory" },
-  { id: "pressure", icon: <Activity size={14} />, label: "system.group.pressure" },
-  { id: "storage", icon: <HardDrive size={14} />, label: "system.group.storage" },
-  { id: "network", icon: <Network size={14} />, label: "system.group.network" },
+const GROUPS: readonly { readonly id: MetricSpec["group"]; readonly label: string }[] = [
+  { id: "cpu", label: "system.group.cpu" },
+  { id: "load", label: "system.group.load" },
+  { id: "memory", label: "system.group.memory" },
+  { id: "pressure", label: "system.group.pressure" },
+  { id: "storage", label: "system.group.storage" },
+  { id: "network", label: "system.group.network" },
 ]
 
 const DERIVE_INPUTS: Readonly<Record<NonNullable<MetricSpec["derive"]>, readonly [string, readonly string[]]>> = {
@@ -100,23 +99,22 @@ const GROUP_COLUMNS: readonly (readonly MetricSpec["group"][])[] = [
 const ENTITIES: readonly {
   readonly section: string
   readonly label: string
-  readonly icon: ReactNode
   readonly columns: readonly EntityColumn[]
 }[] = [
   {
-    section: "os_diskstats", label: "system.entities.devices", icon: <HardDrive size={14} />,
+    section: "os_diskstats", label: "system.entities.devices",
     columns: [text("device", 150, true), number("io_in_progress"), number("reads"), number("writes"), number("read_sectors"), number("write_sectors"), milliseconds("read_time_ms"), milliseconds("write_time_ms"), number("discards"), number("flushes")],
   },
   {
-    section: "os_mountinfo", label: "system.entities.mounts", icon: <Database size={14} />,
+    section: "os_mountinfo", label: "system.entities.mounts",
     columns: [text("mount_point", 240, true), text("fstype", 120), text("source", 180), id("major"), id("minor"), bytes("total_bytes"), bytes("free_bytes"), boolean("is_k8s_infra")],
   },
   {
-    section: "os_netdev", label: "system.entities.network", icon: <Network size={14} />,
+    section: "os_netdev", label: "system.entities.network",
     columns: [text("iface", 150, true), bytes("rx_bytes"), number("rx_packets"), number("rx_errs"), number("rx_drop"), bytes("tx_bytes"), number("tx_packets"), number("tx_errs"), number("tx_drop"), number("speed_mbit"), id("duplex")],
   },
   {
-    section: "os_topology", label: "system.entities.topology", icon: <Cpu size={14} />,
+    section: "os_topology", label: "system.entities.topology",
     columns: [id("cpu_id", 90, true), text("model_name", 300), number("mhz_max"), id("core_id"), id("socket_id"), id("numa_node")],
   },
 ]
@@ -201,7 +199,7 @@ export function SystemView({
             const metrics = available.filter(({ spec }) => spec.group === id)
             if (group === undefined || metrics.length === 0) return null
             return <section className="metric-group" data-testid={`system-group-${group.id}`} key={group.id}>
-              <h2>{group.icon}<span>{t(group.label)}</span></h2>
+              <h2><span>{t(group.label)}</span></h2>
               <div className="metric-grid">
                 {metrics.map(({ points, spec }) => {
                   const output = currentPointValue(points, cursor, locale, spec.unit, t("unit.per_second"))
@@ -231,7 +229,7 @@ export function SystemView({
         if (rows.length === 0 && activeContext === null) return null
         const finding = focus?.logicalName === entity.section ? focus : null
         return <section className="entity-panel" key={entity.section}>
-          <h2>{entity.icon}<span>{t(entity.label)}</span></h2>
+          <h2><span>{t(entity.label)}</span></h2>
           <EntityTable columns={entity.columns} contextLabel={activeContext?.label} empty={t("table.no_rows")} finding={finding} findingField={finding === null ? null : fieldNameForLocator(finding)} label={t(entity.label)} locale={locale} onContextClear={activeContext === null ? undefined : onContextClear} rows={rows} t={t} testId={`system-${entity.section}`} />
         </section>
       })}

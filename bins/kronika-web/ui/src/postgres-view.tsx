@@ -1,4 +1,4 @@
-import { Activity, BarChart3, Copy, Database, KeyRound, LockKeyhole, ScrollText, X } from "lucide-react"
+import { Copy, X } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 import { registry } from "kronika:registry"
 
@@ -136,15 +136,15 @@ const DATABASE_COLUMNS: readonly EntityColumn[] = [
   milliseconds("blk_read_time", 150), milliseconds("blk_write_time", 155), number("sessions", 125), number("frozen_xid_age", 155),
 ]
 
-const TABS: readonly { readonly id: PostgresSection; readonly icon: ReactNode; readonly sections?: readonly string[] }[] = [
-  { id: "overview", icon: <BarChart3 size={13} /> },
-  { id: "activity", icon: <Activity size={13} />, sections: ["pg_stat_activity", "pg_stat_progress_vacuum"] },
-  { id: "statements", icon: <KeyRound size={13} />, sections: ["pg_stat_statements"] },
-  { id: "plans", icon: <ScrollText size={13} />, sections: ["pg_store_plans", "pg_store_plans_info"] },
-  { id: "locks", icon: <LockKeyhole size={13} />, sections: ["pg_locks"] },
-  { id: "databases", icon: <Database size={13} />, sections: ["pg_stat_database"] },
-  { id: "tables", icon: <Database size={13} />, sections: ["pg_stat_user_tables"] },
-  { id: "indexes", icon: <KeyRound size={13} />, sections: ["pg_stat_user_indexes"] },
+const TABS: readonly { readonly id: PostgresSection; readonly sections?: readonly string[] }[] = [
+  { id: "overview" },
+  { id: "activity", sections: ["pg_stat_activity", "pg_stat_progress_vacuum"] },
+  { id: "statements", sections: ["pg_stat_statements"] },
+  { id: "plans", sections: ["pg_store_plans", "pg_store_plans_info"] },
+  { id: "locks", sections: ["pg_locks"] },
+  { id: "databases", sections: ["pg_stat_database"] },
+  { id: "tables", sections: ["pg_stat_user_tables"] },
+  { id: "indexes", sections: ["pg_stat_user_indexes"] },
 ]
 
 export function PostgresView({
@@ -224,7 +224,7 @@ export function PostgresView({
     <nav aria-label={t("pg.sections")} className="pg-tabs">
       {TABS.map((tab) => {
         const enabled = tab.id === "plans" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)
-        return <button aria-current={section === tab.id ? "page" : undefined} disabled={!enabled} key={tab.id} onClick={() => { if (section !== tab.id) onOrder(null); onSection(tab.id) }} title={enabled ? undefined : t("pg.no_section_data")} type="button">{tab.icon}<span>{t(`pg.section.${tab.id}`)}</span></button>
+        return <button aria-current={section === tab.id ? "page" : undefined} disabled={!enabled} key={tab.id} onClick={() => { if (section !== tab.id) onOrder(null); onSection(tab.id) }} title={enabled ? undefined : t("pg.no_section_data")} type="button"><span>{t(`pg.section.${tab.id}`)}</span></button>
       })}
     </nav>
     {section === "overview" && <Overview cursor={cursor} data={data} locale={locale} t={t} />}
@@ -665,7 +665,7 @@ export function display(cell: ReturnType<typeof value>, column: EntityColumn, lo
   }
   if (column.kind === "id") return rawText(cell) ?? "—"
   const per = t("unit.per_second")
-  if (column.kind === "bytes") return unit(humanBytes(cell, locale), column.rate, per)
+  if (column.kind === "bytes") return <span title={unit(`${rawText(cell)} B`, column.rate, per)}>{unit(humanBytes(cell, locale), column.rate, per)}</span>
   if (column.kind === "kib") return unit(humanBytes(asNumber(cell) === null ? null : (asNumber(cell) ?? 0) * 1024, locale), column.rate, per)
   if (column.kind === "milliseconds") return measure(cell, locale, unit(t("unit.ms"), column.rate, per))
   if (column.kind === "duration") return humanDuration(cell, locale)

@@ -105,11 +105,18 @@ const TABLE_OBJECT_FIELDS: &[FieldSpec] = &[
     rate_field("idx_scan"),
     rate_field("idx_tup_fetch"),
     percent_field("sequential_share_pct"),
+    rate_field("tuple_throughput"),
     number_field("seq_tuples_per_scan"),
     number_field("idx_tuples_per_scan"),
+    field("last_seq_scan_never", Kind::Boolean, None),
+    field("last_idx_scan_never", Kind::Boolean, None),
     rate_field("n_tup_ins"),
     rate_field("n_tup_upd"),
     rate_field("n_tup_del"),
+    rate_field("dml_total"),
+    percent_field("insert_share_pct"),
+    percent_field("update_share_pct"),
+    percent_field("delete_share_pct"),
     rate_field("n_tup_hot_upd"),
     rate_field("n_tup_newpage_upd"),
     count_field("n_live_tup"),
@@ -137,8 +144,11 @@ const TABLE_OBJECT_FIELDS: &[FieldSpec] = &[
     timestamp_field("toast_last_autovacuum"),
     integer_field("main_fork_bytes", Some("bytes")),
     integer_field("toast_bytes", Some("bytes")),
+    integer_field("displayed_storage_bytes", Some("bytes")),
+    percent_field("toast_share_pct"),
     count_field("toast_n_live_tup"),
     count_field("toast_n_dead_tup"),
+    percent_field("toast_dead_pct"),
     rate_field("heap_blks_read"),
     rate_field("heap_blks_hit"),
     rate_field("idx_blks_read"),
@@ -147,6 +157,10 @@ const TABLE_OBJECT_FIELDS: &[FieldSpec] = &[
     rate_field("toast_blks_hit"),
     rate_field("tidx_blks_read"),
     rate_field("tidx_blks_hit"),
+    percent_field("heap_buffer_hit_pct"),
+    percent_field("index_buffer_hit_pct"),
+    percent_field("toast_buffer_hit_pct"),
+    percent_field("tidx_buffer_hit_pct"),
     percent_field("buffer_hit_pct"),
     integer_field("xid_age", None),
     integer_field("mxid_age", None),
@@ -159,11 +173,16 @@ const TABLE_AGGREGATE_FIELDS: &[FieldSpec] = &[
     rate_field("idx_scan"),
     rate_field("idx_tup_fetch"),
     percent_field("sequential_share_pct"),
+    rate_field("tuple_throughput"),
     number_field("seq_tuples_per_scan"),
     number_field("idx_tuples_per_scan"),
     rate_field("n_tup_ins"),
     rate_field("n_tup_upd"),
     rate_field("n_tup_del"),
+    rate_field("dml_total"),
+    percent_field("insert_share_pct"),
+    percent_field("update_share_pct"),
+    percent_field("delete_share_pct"),
     rate_field("n_tup_hot_upd"),
     rate_field("n_tup_newpage_upd"),
     count_field("n_live_tup"),
@@ -205,8 +224,11 @@ const TABLE_AGGREGATE_FIELDS: &[FieldSpec] = &[
     count_field("toast_last_autovacuum_never_count"),
     integer_field("main_fork_bytes", Some("bytes")),
     integer_field("toast_bytes", Some("bytes")),
+    integer_field("displayed_storage_bytes", Some("bytes")),
+    percent_field("toast_share_pct"),
     count_field("toast_n_live_tup"),
     count_field("toast_n_dead_tup"),
+    percent_field("toast_dead_pct"),
     rate_field("heap_blks_read"),
     rate_field("heap_blks_hit"),
     rate_field("idx_blks_read"),
@@ -215,6 +237,10 @@ const TABLE_AGGREGATE_FIELDS: &[FieldSpec] = &[
     rate_field("toast_blks_hit"),
     rate_field("tidx_blks_read"),
     rate_field("tidx_blks_hit"),
+    percent_field("heap_buffer_hit_pct"),
+    percent_field("index_buffer_hit_pct"),
+    percent_field("toast_buffer_hit_pct"),
+    percent_field("tidx_buffer_hit_pct"),
     percent_field("buffer_hit_pct"),
     integer_field("xid_age", None),
     integer_field("mxid_age", None),
@@ -237,6 +263,7 @@ const INDEX_OBJECT_FIELDS: &[FieldSpec] = &[
     rate_field("idx_blks_hit"),
     percent_field("buffer_hit_pct"),
     timestamp_field("last_idx_scan"),
+    field("last_idx_scan_never", Kind::Boolean, None),
     field("no_scans", Kind::Boolean, None),
     field("indisunique", Kind::Boolean, None),
     field("indisprimary", Kind::Boolean, None),
@@ -952,7 +979,8 @@ impl Aggregate {
         }
         for &name in TABLE_GAUGES {
             let structural = TABLE_STRUCTURAL_GAUGES.contains(&name);
-            let mut input = gauge_input(plan, row, name, structural);
+            let structural_na = structural && matches!(row.get("toast_bytes"), Some(Cell::Null));
+            let mut input = gauge_input(plan, row, name, structural_na);
             if name == "reltuples" && matches!(input, Input::Value(OrderedNumber::Integer(-1))) {
                 input = Input::Unavailable;
             }
@@ -1082,8 +1110,11 @@ impl Aggregate {
         }
         match (kind, name) {
             (RelationKind::Tables, "sequential_share_pct") => {
-                self.ratio(&["seq_scan"], &["seq_scan", "idx_scan"], 100.0)
+                self.ratio_neutral(&["seq_scan"], &["seq_scan", "idx_scan"], 100.0)
             }
+            (RelationKind::Tables, "tuple_throughput") => self
+                .rate_sum_neutral(&["seq_tup_read", "idx_tup_fetch"])
+                .map(Metric::Rate),
             (RelationKind::Tables, "seq_tuples_per_scan") => {
                 self.ratio(&["seq_tup_read"], &["seq_scan"], 1.0)
             }
@@ -1091,6 +1122,30 @@ impl Aggregate {
             | (RelationKind::Indexes, "fetches_per_scan") => {
                 self.ratio(&["idx_tup_fetch"], &["idx_scan"], 1.0)
             }
+            (RelationKind::Tables, "last_seq_scan_never") if group == RelationGroup::Object => {
+                self.never("last_seq_scan")
+            }
+            (RelationKind::Tables, "last_idx_scan_never") if group == RelationGroup::Object => {
+                self.never("last_idx_scan")
+            }
+            (RelationKind::Tables, "dml_total") => self
+                .rate_sum(&["n_tup_ins", "n_tup_upd", "n_tup_del"])
+                .map(Metric::Rate),
+            (RelationKind::Tables, "insert_share_pct") => self.ratio(
+                &["n_tup_ins"],
+                &["n_tup_ins", "n_tup_upd", "n_tup_del"],
+                100.0,
+            ),
+            (RelationKind::Tables, "update_share_pct") => self.ratio(
+                &["n_tup_upd"],
+                &["n_tup_ins", "n_tup_upd", "n_tup_del"],
+                100.0,
+            ),
+            (RelationKind::Tables, "delete_share_pct") => self.ratio(
+                &["n_tup_del"],
+                &["n_tup_ins", "n_tup_upd", "n_tup_del"],
+                100.0,
+            ),
             (RelationKind::Tables, "dead_pct") => {
                 self.gauge_ratio(&["n_dead_tup"], &["n_live_tup", "n_dead_tup"], 100.0)
             }
@@ -1100,7 +1155,38 @@ impl Aggregate {
             (RelationKind::Tables, "new_page_pct") => {
                 self.ratio(&["n_tup_newpage_upd"], &["n_tup_upd"], 100.0)
             }
-            (RelationKind::Tables, "buffer_hit_pct") => self.ratio(
+            (RelationKind::Tables, "displayed_storage_bytes") => self
+                .gauge_sum_neutral(&["main_fork_bytes", "toast_bytes"])
+                .map(Metric::Number),
+            (RelationKind::Tables, "toast_share_pct") => self.gauge_ratio_neutral(
+                &["toast_bytes"],
+                &["main_fork_bytes", "toast_bytes"],
+                100.0,
+            ),
+            (RelationKind::Tables, "toast_dead_pct") => self.gauge_ratio(
+                &["toast_n_dead_tup"],
+                &["toast_n_live_tup", "toast_n_dead_tup"],
+                100.0,
+            ),
+            (RelationKind::Tables, "heap_buffer_hit_pct") => self.ratio(
+                &["heap_blks_hit"],
+                &["heap_blks_read", "heap_blks_hit"],
+                100.0,
+            ),
+            (RelationKind::Tables, "index_buffer_hit_pct") => {
+                self.ratio(&["idx_blks_hit"], &["idx_blks_read", "idx_blks_hit"], 100.0)
+            }
+            (RelationKind::Tables, "toast_buffer_hit_pct") => self.ratio(
+                &["toast_blks_hit"],
+                &["toast_blks_read", "toast_blks_hit"],
+                100.0,
+            ),
+            (RelationKind::Tables, "tidx_buffer_hit_pct") => self.ratio(
+                &["tidx_blks_hit"],
+                &["tidx_blks_read", "tidx_blks_hit"],
+                100.0,
+            ),
+            (RelationKind::Tables, "buffer_hit_pct") => self.ratio_neutral(
                 &[
                     "heap_blks_hit",
                     "idx_blks_hit",
@@ -1137,6 +1223,9 @@ impl Aggregate {
             (RelationKind::Indexes, "buffer_hit_pct") => {
                 self.ratio(&["idx_blks_hit"], &["idx_blks_read", "idx_blks_hit"], 100.0)
             }
+            (RelationKind::Indexes, "last_idx_scan_never") if group == RelationGroup::Object => {
+                self.never("last_idx_scan")
+            }
             (RelationKind::Indexes, "no_scans") if group == RelationGroup::Object => self
                 .no_scans
                 .exact()
@@ -1167,8 +1256,21 @@ impl Aggregate {
 
     fn ratio(&self, numerator: &[&str], denominator: &[&str], scale: f64) -> Option<Metric> {
         Some(Metric::RateRatio {
-            numerator: sum_rates(&self.rates, numerator)?,
-            denominator: sum_rates(&self.rates, denominator)?,
+            numerator: self.rate_sum(numerator)?,
+            denominator: self.rate_sum(denominator)?,
+            scale,
+        })
+    }
+
+    fn ratio_neutral(
+        &self,
+        numerator: &[&str],
+        denominator: &[&str],
+        scale: f64,
+    ) -> Option<Metric> {
+        Some(Metric::RateRatio {
+            numerator: self.rate_sum_neutral(numerator)?,
+            denominator: self.rate_sum_neutral(denominator)?,
             scale,
         })
     }
@@ -1179,6 +1281,38 @@ impl Aggregate {
             denominator: sum_values(&self.gauges, denominator)?,
             scale,
         })
+    }
+
+    fn gauge_ratio_neutral(
+        &self,
+        numerator: &[&str],
+        denominator: &[&str],
+        scale: f64,
+    ) -> Option<Metric> {
+        Some(Metric::Ratio {
+            numerator: self.gauge_sum_neutral(numerator)?,
+            denominator: self.gauge_sum_neutral(denominator)?,
+            scale,
+        })
+    }
+
+    fn rate_sum(&self, names: &[&str]) -> Option<RateValue> {
+        sum_rates(&self.rates, names)
+    }
+
+    fn rate_sum_neutral(&self, names: &[&str]) -> Option<RateValue> {
+        sum_rates_neutral(&self.rates, names)
+    }
+
+    fn gauge_sum_neutral(&self, names: &[&str]) -> Option<OrderedNumber> {
+        sum_values_neutral(&self.gauges, names)
+    }
+
+    fn never(&self, name: &str) -> Option<Metric> {
+        let timestamp = self.timestamps.get(name).copied()?;
+        timestamp
+            .exact()
+            .then_some(Metric::Boolean(timestamp.never == 1))
     }
 
     fn flag_count(&self, name: &str, truthy: bool) -> Option<Metric> {
@@ -1239,12 +1373,47 @@ fn sum_rates(rates: &BTreeMap<&'static str, RateAggregate>, names: &[&str]) -> O
     sum
 }
 
+fn sum_rates_neutral(
+    rates: &BTreeMap<&'static str, RateAggregate>,
+    names: &[&str],
+) -> Option<RateValue> {
+    let mut sum: Option<RateValue> = None;
+    for name in names {
+        let rate = rates.get(name)?;
+        if rate.unavailable {
+            return None;
+        }
+        let Some(value) = rate.value else {
+            continue;
+        };
+        sum = Some(match sum {
+            Some(known) => known.add(value)?,
+            None => value,
+        });
+    }
+    sum
+}
+
 fn sum_values(
     values: &BTreeMap<&'static str, Availability>,
     names: &[&str],
 ) -> Option<OrderedNumber> {
     names.iter().try_fold(None, |sum, name| {
         add_ordered(sum, values.get(name)?.value()?).map(Some)
+    })?
+}
+
+fn sum_values_neutral(
+    values: &BTreeMap<&'static str, Availability>,
+    names: &[&str],
+) -> Option<OrderedNumber> {
+    names.iter().try_fold(None, |sum, name| {
+        let value = match values.get(name)? {
+            Availability::Value(value) => *value,
+            Availability::Empty => OrderedNumber::Integer(0),
+            Availability::Unavailable => return None,
+        };
+        add_ordered(sum, value).map(Some)
     })?
 }
 
@@ -2168,6 +2337,277 @@ mod tests {
             order,
             super::super::PageOrderValue::IntegerRatio { .. }
         ));
+    }
+
+    #[test]
+    fn table_cuts_recompute_from_exact_operands() {
+        let mut aggregate = aggregate();
+        for (name, delta) in [
+            ("seq_scan", 2),
+            ("idx_scan", 6),
+            ("seq_tup_read", 20),
+            ("idx_tup_fetch", 60),
+            ("n_tup_ins", 1),
+            ("n_tup_upd", 3),
+            ("n_tup_del", 6),
+            ("n_tup_hot_upd", 2),
+            ("n_tup_newpage_upd", 1),
+            ("heap_blks_read", 1),
+            ("heap_blks_hit", 9),
+            ("idx_blks_read", 2),
+            ("idx_blks_hit", 8),
+        ] {
+            let mut rate = RateAggregate::default();
+            add_rate(&mut rate, delta);
+            aggregate.rates.insert(name, rate);
+        }
+        for name in [
+            "toast_blks_read",
+            "toast_blks_hit",
+            "tidx_blks_read",
+            "tidx_blks_hit",
+        ] {
+            aggregate.rates.insert(name, RateAggregate::default());
+        }
+        for (name, value) in [
+            ("main_fork_bytes", 800),
+            ("toast_bytes", 200),
+            ("toast_n_live_tup", 90),
+            ("toast_n_dead_tup", 10),
+        ] {
+            aggregate
+                .gauges
+                .insert(name, Availability::Value(OrderedNumber::Integer(value)));
+        }
+
+        let table = |name: &'static str| {
+            aggregate
+                .metric(RelationKind::Tables, RelationGroup::Database, name)
+                .expect("available table cut")
+                .json()
+        };
+        assert_eq!(table("tuple_throughput"), json!(80.0));
+        assert_eq!(table("dml_total"), json!(10.0));
+        assert_eq!(table("insert_share_pct"), json!(10.0));
+        assert_eq!(table("update_share_pct"), json!(30.0));
+        assert_eq!(table("delete_share_pct"), json!(60.0));
+        assert_eq!(table("displayed_storage_bytes"), json!("1000"));
+        assert_eq!(table("toast_share_pct"), json!(20.0));
+        assert_eq!(table("toast_dead_pct"), json!(10.0));
+        let assert_close = |name: &'static str, expected: f64| {
+            let actual = table(name).as_f64().expect("numeric table cut");
+            assert!((actual - expected).abs() < 1e-12, "{name}: {actual}");
+        };
+        assert_close("heap_buffer_hit_pct", 90.0);
+        assert_close("index_buffer_hit_pct", 80.0);
+        assert_close("buffer_hit_pct", 85.0);
+        assert!(
+            aggregate
+                .metric(
+                    RelationKind::Tables,
+                    RelationGroup::Database,
+                    "toast_buffer_hit_pct"
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn structural_absence_is_zero_only_inside_valid_sums() {
+        let mut stored = aggregate();
+        stored.gauges.insert(
+            "main_fork_bytes",
+            Availability::Value(OrderedNumber::Integer(800)),
+        );
+        stored.gauges.insert("toast_bytes", Availability::Empty);
+        assert_eq!(
+            metric_number(stored.metric(
+                RelationKind::Tables,
+                RelationGroup::Object,
+                "displayed_storage_bytes"
+            )),
+            json!("800")
+        );
+        assert_eq!(
+            metric_number(stored.metric(
+                RelationKind::Tables,
+                RelationGroup::Object,
+                "toast_share_pct"
+            )),
+            json!(0.0)
+        );
+
+        for name in ["heap_blks_read", "heap_blks_hit"] {
+            let mut rate = RateAggregate::default();
+            add_rate(&mut rate, 0);
+            stored.rates.insert(name, rate);
+        }
+        for name in [
+            "idx_blks_read",
+            "idx_blks_hit",
+            "toast_blks_read",
+            "toast_blks_hit",
+            "tidx_blks_read",
+            "tidx_blks_hit",
+        ] {
+            stored.rates.insert(name, RateAggregate::default());
+        }
+        let ratio = stored
+            .metric(
+                RelationKind::Tables,
+                RelationGroup::Object,
+                "buffer_hit_pct",
+            )
+            .expect("exact zero-access ratio");
+        assert_eq!(ratio.json(), Value::Null);
+        assert!(ratio.order_value().is_none());
+
+        let mut scans = aggregate();
+        let mut sequential = RateAggregate::default();
+        add_rate(&mut sequential, 4);
+        scans.rates.insert("seq_scan", sequential);
+        scans.rates.insert("idx_scan", RateAggregate::default());
+        assert_eq!(
+            metric_number(scans.metric(
+                RelationKind::Tables,
+                RelationGroup::Object,
+                "sequential_share_pct"
+            )),
+            json!(100.0)
+        );
+
+        stored
+            .gauges
+            .insert("toast_bytes", Availability::Unavailable);
+        assert!(
+            stored
+                .metric(
+                    RelationKind::Tables,
+                    RelationGroup::Object,
+                    "displayed_storage_bytes"
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn zero_denominators_are_unavailable_for_table_cuts() {
+        let mut aggregate = aggregate();
+        for name in [
+            "seq_scan",
+            "seq_tup_read",
+            "idx_scan",
+            "idx_tup_fetch",
+            "n_tup_ins",
+            "n_tup_upd",
+            "n_tup_del",
+            "n_tup_hot_upd",
+            "n_tup_newpage_upd",
+            "heap_blks_read",
+            "heap_blks_hit",
+        ] {
+            let mut rate = RateAggregate::default();
+            add_rate(&mut rate, 0);
+            aggregate.rates.insert(name, rate);
+        }
+        for name in [
+            "n_live_tup",
+            "n_dead_tup",
+            "main_fork_bytes",
+            "toast_bytes",
+            "toast_n_live_tup",
+            "toast_n_dead_tup",
+        ] {
+            aggregate
+                .gauges
+                .insert(name, Availability::Value(OrderedNumber::Integer(0)));
+        }
+
+        assert_eq!(
+            metric_number(aggregate.metric(
+                RelationKind::Tables,
+                RelationGroup::Object,
+                "tuple_throughput"
+            )),
+            json!(0.0)
+        );
+        assert_eq!(
+            metric_number(aggregate.metric(
+                RelationKind::Tables,
+                RelationGroup::Object,
+                "dml_total"
+            )),
+            json!(0.0)
+        );
+        for name in [
+            "sequential_share_pct",
+            "seq_tuples_per_scan",
+            "idx_tuples_per_scan",
+            "insert_share_pct",
+            "update_share_pct",
+            "delete_share_pct",
+            "hot_pct",
+            "new_page_pct",
+            "dead_pct",
+            "toast_share_pct",
+            "toast_dead_pct",
+            "heap_buffer_hit_pct",
+        ] {
+            let metric = aggregate
+                .metric(RelationKind::Tables, RelationGroup::Object, name)
+                .unwrap_or_else(|| panic!("exact zero-denominator metric {name}"));
+            assert_eq!(metric.json(), Value::Null, "{name}");
+            assert!(metric.order_value().is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn last_scan_never_is_distinct_from_layout_absence() {
+        let mut aggregate = aggregate();
+        let mut never = TimestampAggregate::default();
+        never.add(true, Some(&Cell::Null), false);
+        aggregate.timestamps.insert("last_seq_scan", never);
+        assert!(matches!(
+            aggregate.metric(
+                RelationKind::Tables,
+                RelationGroup::Object,
+                "last_seq_scan_never"
+            ),
+            Some(Metric::Boolean(true))
+        ));
+
+        let mut seen = TimestampAggregate::default();
+        seen.add(true, Some(&Cell::Ts(30)), false);
+        aggregate.timestamps.insert("last_idx_scan", seen);
+        assert!(matches!(
+            aggregate.metric(
+                RelationKind::Tables,
+                RelationGroup::Object,
+                "last_idx_scan_never"
+            ),
+            Some(Metric::Boolean(false))
+        ));
+        assert!(matches!(
+            aggregate.metric(
+                RelationKind::Indexes,
+                RelationGroup::Object,
+                "last_idx_scan_never"
+            ),
+            Some(Metric::Boolean(false))
+        ));
+
+        let mut absent = TimestampAggregate::default();
+        absent.add(false, None, false);
+        aggregate.timestamps.insert("last_seq_scan", absent);
+        assert!(
+            aggregate
+                .metric(
+                    RelationKind::Tables,
+                    RelationGroup::Object,
+                    "last_seq_scan_never"
+                )
+                .is_none()
+        );
     }
 
     #[test]
