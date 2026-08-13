@@ -1,4 +1,4 @@
-import { Activity, Languages, LockKeyhole } from "lucide-react"
+import { Activity, LockKeyhole } from "lucide-react"
 import { useEffect, useRef, useState, type FormEvent } from "react"
 
 import type { Translate } from "./help"
@@ -49,7 +49,6 @@ export function Login({ expired, locale, onLocale, t }: {
         <span className="login-mark"><Activity aria-hidden="true" size={18} /></span>
         <strong>{t("app.title")}</strong>
         <div aria-label={t("locale.switch")} className="locale-switch" role="group">
-          <Languages aria-hidden="true" size={13} />
           {(["ru", "en"] as const).map((choice) => <button aria-pressed={locale === choice} key={choice} onClick={() => onLocale(choice)} type="button">{t(`locale.${choice}`)}</button>)}
         </div>
       </header>

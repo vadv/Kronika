@@ -7,8 +7,12 @@ import { join } from "node:path"
 import test from "node:test"
 import { gunzipSync } from "node:zlib"
 
+const HOUR_US = 3_600_000_000
 const HOUR = 1_800_000_000_000_000
 const AT = HOUR + 1_800_000_000
+const DECEMBER_HOUR = Date.UTC(2026, 11, 31, 23) * 1_000
+const FEBRUARY_HOUR = Date.UTC(2027, 1, 1, 2) * 1_000
+const AVAILABLE_HOURS = [DECEMBER_HOUR, HOUR + HOUR_US, FEBRUARY_HOUR]
 const SEGMENT = "7300"
 const ARTIFACT = process.env.KRONIKA_UI_ARTIFACT ?? new URL("../kronika-ui.html.gz", import.meta.url)
 const BEFORE_AT = AT - 5_000_000
@@ -40,7 +44,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     }
     if (url.pathname === "/api/hour") {
       requests.push({ authorization: request.headers.authorization, path: url.pathname, query: url.search })
-      ndjson(response, timelineRecords())
+      ndjson(response, timelineRecords(Number(url.searchParams.get("from") ?? HOUR)))
       return
     }
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
@@ -119,6 +123,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       cdp.send("Network.enable"),
       cdp.send("Log.enable"),
     ])
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.activity` })
     await cdp.waitFor(`document.querySelector(".login-card") !== null`, "login form")
     await cdp.evaluate(`(() => {
@@ -145,6 +150,106 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(rendered.missing, null)
     assert.ok(requests.some(({ path }) => path === `/api/segments/${SEGMENT}/snapshot`))
     assert.ok(requests.every(({ authorization }) => authorization === "Basic YXJ0aWZhY3Q6d2lyZQ=="))
+
+    const initialTheme = await cdp.evaluate(`document.documentElement.dataset.theme`)
+    const alternateTheme = initialTheme === "dark" ? "light" : "dark"
+    await cdp.evaluate(`document.querySelector('[aria-label="Theme"]').click()`)
+    await cdp.waitFor(`document.documentElement.dataset.theme === ${JSON.stringify(alternateTheme)}`, "the alternate theme")
+
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="picker-month"]')?.textContent.includes("January") === true`, "the January calendar")
+    const initialPicker = await cdp.evaluate(`(() => ({
+      currentAction: document.querySelector('[data-testid="hour-current"]')?.tagName,
+      currentDay: document.querySelector('.day-cell[data-day="2027-01-15"]')?.getAttribute('aria-pressed'),
+      currentHour: document.querySelector('.hour-cell[data-hour="08"]')?.getAttribute('aria-pressed'),
+      currentHourCaptured: document.querySelector('.hour-cell[data-hour="08"]')?.dataset.available,
+      currentHourDisabled: document.querySelector('.hour-cell[data-hour="08"]')?.disabled,
+      popovers: document.querySelectorAll('[data-testid="hour-popover"]').length,
+      separateControls: document.querySelector('[data-testid="hour-popover"]').querySelectorAll('input, select').length,
+      unavailableDay: document.querySelector('.day-cell[data-day="2027-01-14"]')?.disabled,
+      unavailableHour: document.querySelector('.hour-cell[data-hour="07"]')?.disabled,
+    }))()`)
+    assert.deepEqual(initialPicker, {
+      currentAction: "BUTTON",
+      currentDay: "true",
+      currentHour: "true",
+      currentHourCaptured: "false",
+      currentHourDisabled: false,
+      popovers: 1,
+      separateControls: 0,
+      unavailableDay: true,
+      unavailableHour: true,
+    })
+    for (const [width, height] of [[1920, 1080], [1366, 768], [1024, 768]]) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
+      await cdp.evaluate("document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))")
+      const size = await cdp.evaluate(`(() => {
+        const popover = document.querySelector('[data-testid="hour-popover"]').getBoundingClientRect()
+        return {
+          clientHeight: document.documentElement.clientHeight,
+          clientWidth: document.documentElement.clientWidth,
+          popover: { bottom: popover.bottom, left: popover.left, right: popover.right, top: popover.top },
+          scrollWidth: document.documentElement.scrollWidth,
+        }
+      })()`)
+      assert.ok(size.scrollWidth <= size.clientWidth, `${width}px picker overflow: ${JSON.stringify(size)}`)
+      assert.ok(size.popover.left >= 0 && size.popover.right <= size.clientWidth, `${width}px horizontal picker bounds: ${JSON.stringify(size)}`)
+      assert.ok(size.popover.top >= 0 && size.popover.bottom <= size.clientHeight, `${width}px vertical picker bounds: ${JSON.stringify(size)}`)
+    }
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
+    await cdp.evaluate(`document.querySelector('.hour-cell[data-hour="08"]').dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'ArrowRight' }))`)
+    assert.equal(await cdp.evaluate(`document.activeElement?.dataset.hour`), "09")
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Escape' }))`)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-popover"]') === null`, "picker Escape close")
+    assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector('[data-testid="hour-picker-trigger"]')`), true)
+    await cdp.evaluate(`document.querySelector('[aria-label="Theme"]').click()`)
+    await cdp.waitFor(`document.documentElement.dataset.theme === ${JSON.stringify(initialTheme)}`, "the initial theme")
+
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="picker-month"]') !== null`, "the reopened calendar")
+    await cdp.evaluate(`document.querySelector('[aria-label="Previous month"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="picker-month"]')?.textContent.includes("December 2026") === true`, "the previous year month")
+    assert.equal(await cdp.evaluate(`document.querySelector('.day-cell[data-day="2026-12-31"]')?.disabled`), false)
+    assert.equal(await cdp.evaluate(`document.querySelector('.day-cell[data-day="2026-12-30"]')?.disabled`), true)
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-current"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="picker-month"]')?.textContent.includes("January 2027") === true`, "the actionable selected-date header")
+    await cdp.evaluate(`document.querySelector('[aria-label="Previous month"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="picker-month"]')?.textContent.includes("December 2026") === true`, "December again")
+    await cdp.evaluate(`document.querySelector('.day-cell[data-day="2026-12-31"]').click()`)
+    await cdp.waitFor(`document.querySelector('.day-cell[data-day="2026-12-31"]')?.getAttribute('aria-pressed') === "true"`, "the December day hours")
+    assert.equal(await cdp.evaluate(`document.querySelector('.hour-cell[data-hour="22"]')?.disabled`), true)
+    assert.equal(await cdp.evaluate(`document.querySelector('.hour-cell[data-hour="23"]')?.disabled`), false)
+    await cdp.evaluate(`document.querySelector('.hour-cell[data-hour="23"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent === "23:00–00:00"`, "the exact December hour")
+    await cdp.waitFor(`Math.floor(Number(new URLSearchParams(location.search).get("at")) / ${HOUR_US}) * ${HOUR_US} === ${DECEMBER_HOUR}`, "the December address hour")
+    assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector('[data-testid="hour-picker-trigger"]')`), true)
+    const decemberRequest = requests.find(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("from") === String(DECEMBER_HOUR))
+    assert.notEqual(decemberRequest, undefined)
+    assert.equal(new URLSearchParams(decemberRequest.query).get("to"), String(DECEMBER_HOUR + HOUR_US - 1))
+
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="picker-month"]') !== null`, "the reopened December calendar")
+    await cdp.evaluate(`document.querySelector('[aria-label="Next month"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="picker-month"]')?.textContent.includes("January 2027") === true`, "January restore")
+    await cdp.evaluate(`document.querySelector('.day-cell[data-day="2027-01-15"]').click()`)
+    await cdp.waitFor(`document.querySelector('.hour-cell[data-hour="09"]')?.disabled === false`, "the recorded January hour")
+    await cdp.evaluate(`document.querySelector('.hour-cell[data-hour="09"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent === "09:00–10:00"`, "the recorded January selection")
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-previous"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent === "08:00–09:00"`, "the restored January hour")
+    await cdp.waitFor(`Math.floor(Number(new URLSearchParams(location.search).get("at")) / ${HOUR_US}) * ${HOUR_US} === ${HOUR}`, "the restored address hour")
+
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click(); document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="picker-month"]')?.textContent.toLocaleLowerCase("ru").includes("январ") === true`, "the Russian calendar month")
+    const russianPicker = await cdp.evaluate(`(() => ({
+      context: document.querySelector('.hour-popover > header > span')?.textContent,
+      day: document.querySelector('.day-cell[data-day="2027-01-15"]')?.getAttribute('aria-label'),
+    }))()`)
+    assert.match(russianPicker.context, /ровно один час/)
+    assert.match(russianPicker.day, /15.*янв.*2027/i)
+    await cdp.evaluate(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'mouse' }))`)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-popover"]') === null`, "picker outside close")
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
 
     await cdp.evaluate(`([...document.querySelectorAll(".pg-tabs button")].find((button) => button.textContent === "Tables")).click()`)
     await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-tables-table"] .entity-row').length === 1`, "the relation wire row")
@@ -321,15 +426,17 @@ test("the production artifact preserves wire keys and exact finding page state",
   }
 })
 
-function timelineRecords() {
+function timelineRecords(hour = HOUR) {
+  const shift = hour - HOUR
+  const shifted = (timestamp) => String(timestamp + shift)
   return [
-    { record: "hour", from: String(HOUR), to: String(HOUR + 3_600_000_000 - 1), available_hours: [String(HOUR)] },
+    { record: "hour", from: String(hour), to: String(hour + HOUR_US - 1), available_hours: AVAILABLE_HOURS.map(String) },
     {
-      record: "catalog", from: String(HOUR), to: String(HOUR + 3_600_000_000 - 1),
+      record: "catalog", from: String(hour), to: String(hour + HOUR_US - 1),
       source_families: [{ name: "postgresql", configured: true, present: true }],
     },
     {
-      record: "finished_segment", id: SEGMENT, min_ts: String(HOUR), max_ts: String(AFTER_AT),
+      record: "finished_segment", id: SEGMENT, min_ts: String(hour), max_ts: shifted(AFTER_AT),
       sections: [{
         logical_name: "pg_stat_activity", physical_name: "pg_stat_activity", type_id: "1001003",
         implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256",
@@ -348,14 +455,14 @@ function timelineRecords() {
       }],
     },
     { record: "index", segment: { id: SEGMENT }, logical_name: "health", checksum: null },
-    { record: "point", type_id: "0", series: "os_health", ts: String(QUARTER_PREVIOUS), identity: {}, value: 71 },
-    { record: "point", type_id: "0", series: "os_health", ts: String(QUARTER_NEXT), identity: {}, value: 73 },
-    { record: "point", type_id: "0", series: "os_health", ts: String(BEFORE_AT), identity: {}, value: null },
-    { record: "point", type_id: "0", series: "os_health", ts: String(AT), identity: {}, value: 82 },
-    { record: "point", type_id: "0", series: "os_health", ts: String(AFTER_AT), identity: {}, value: 84 },
+    { record: "point", type_id: "0", series: "os_health", ts: shifted(QUARTER_PREVIOUS), identity: {}, value: 71 },
+    { record: "point", type_id: "0", series: "os_health", ts: shifted(QUARTER_NEXT), identity: {}, value: 73 },
+    { record: "point", type_id: "0", series: "os_health", ts: shifted(BEFORE_AT), identity: {}, value: null },
+    { record: "point", type_id: "0", series: "os_health", ts: shifted(AT), identity: {}, value: 82 },
+    { record: "point", type_id: "0", series: "os_health", ts: shifted(AFTER_AT), identity: {}, value: 84 },
     {
       record: "finding", logical_name: "pg_stat_statements", kind: "spike", type_id: "1002003",
-      field_ordinal: 11, row_ordinal: "91", ts: String(AT),
+      field_ordinal: 11, row_ordinal: "91", ts: shifted(AT),
     },
   ]
 }
