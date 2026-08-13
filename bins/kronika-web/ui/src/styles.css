@@ -235,7 +235,7 @@ h2 { font-size: var(--t-md); }
 .lane-label .label-help { min-width: 0; }
 .lane-label .label-help > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lane-label:last-child { border-bottom: 0; }
-.timeline-chart { height: 250px; padding: 7px 7px 3px; }
+.uplot-figure.timeline-chart { height: 250px; padding: 7px 7px 3px; }
 .timeline-chart .uplot-host { height: 220px; }
 .timeline-chart .chart-current { max-width: 55%; overflow: hidden; text-overflow: ellipsis; }
 .lensbar { align-items: center; background: var(--s2); border: 1px solid var(--line2); border-bottom: 0; display: flex; gap: 9px; margin-top: 8px; min-height: 26px; padding: 0 6px; }
@@ -347,8 +347,9 @@ h2 { font-size: var(--t-md); }
 .series-reading span:first-child, .uplot-figure figcaption span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .series-reading span:last-child { color: var(--fg2); flex: 0 0 auto; font-variant-numeric: tabular-nums; text-transform: none; white-space: nowrap; }
 .chart-current { color: var(--fg2); flex: 0 0 auto; font-variant-numeric: tabular-nums; font-weight: 500; margin-left: auto; text-transform: none; white-space: nowrap; }
-.uplot-figure { height: 200px; margin: 0; max-width: 100%; min-width: 0; overflow: hidden; position: relative; }
-.uplot-host { height: 180px; max-width: 100%; min-width: 0; overflow: hidden; width: 100%; }
+.uplot-figure { display: flex; flex-direction: column; height: 200px; margin: 0; max-width: 100%; min-width: 0; overflow: hidden; position: relative; }
+.uplot-figure figcaption { flex: 0 0 auto; }
+.uplot-host { flex: 1 1 auto; height: 180px; max-width: 100%; min-height: 0; min-width: 0; overflow: hidden; width: 100%; }
 .uplot-host > .uplot { height: 100%; width: 100% !important; }
 .uplot-host .u-wrap { max-width: 100%; }
 .chart-expand, .chart-close { background: var(--s2); border: 1px solid var(--line3); cursor: pointer; height: 22px; min-width: 22px; padding: 0; }
@@ -556,7 +557,7 @@ h2 { font-size: var(--t-md); }
   .timeline-shell { display: block; }
   .timeline-labels { border-bottom: 1px solid var(--line2); border-right: 0; display: flex; overflow-x: auto; }
   .lane-label { flex: 0 0 124px; min-height: 34px; }
-  .timeline-chart { height: 230px; padding-left: 2px; padding-right: 2px; }
+  .uplot-figure.timeline-chart { height: 230px; padding-left: 2px; padding-right: 2px; }
   .timeline-chart .uplot-host { height: 200px; }
   .uplot-figure figcaption { padding-left: 4px; padding-right: 4px; }
   .uplot-expanded { padding: 8px 4px; }

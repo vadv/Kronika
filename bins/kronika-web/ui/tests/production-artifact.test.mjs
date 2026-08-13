@@ -680,7 +680,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.match(system.lane ?? "", /Health/)
     await cdp.waitFor(`document.querySelector('[data-testid="use-table"]') !== null`, "the System resource table")
     await cdp.waitFor(`document.querySelector(".metric-history .uplot-host canvas") !== null`, "the System uPlot chart")
-    for (const [width, height] of [[1920, 1080], [1366, 768], [1024, 768], [1024, 1366]]) {
+    for (const [width, height] of [[1920, 1080], [1366, 768], [1280, 431], [1024, 768], [1024, 1366]]) {
       await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
       const layout = await cdp.evaluate(`document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
         window.scrollTo(0, 0)
@@ -693,7 +693,9 @@ test("the production artifact preserves wire keys and exact finding page state",
         const chart = history.querySelector(".uplot-figure")
         const canvas = chart.querySelector("canvas")
         const host = chart.querySelector(".uplot-host")
+        const plot = chart.querySelector(".u-over")
         const resource = document.querySelector('[data-testid="use-table"]')
+        const timeline = document.querySelector('[data-testid="hour-timeline"]')
         const columns = [...document.querySelectorAll(".metric-column")]
         const columnBottoms = columns.map((column) => Math.max(...[...column.querySelectorAll(".metric-group")].map((group) => group.getBoundingClientRect().bottom)))
         const summaryBottom = Math.max(...columnBottoms)
@@ -729,12 +731,23 @@ test("the production artifact preserves wire keys and exact finding page state",
           documentScrollWidth: document.documentElement.scrollWidth,
           history: historyBounds,
           historyTail: historyBounds.bottom - chartBounds.bottom,
+          host: bounds(host),
           overlaps,
+          plot: bounds(plot),
           resource: bounds(resource),
           resourceSeparation: resource.getBoundingClientRect().top - contentBottom,
+          timeline: {
+            figure: bounds(timeline),
+            host: bounds(timeline.querySelector(".uplot-host")),
+            plot: bounds(timeline.querySelector(".u-over")),
+          },
         })
       }))))`)
       assert.ok(layout.chart.height >= 180 && layout.chart.height <= 220, `${width}x${height} System chart height: ${JSON.stringify(layout)}`)
+      assert.ok(layout.host.height >= 150, `${width}x${height} System chart host height: ${JSON.stringify(layout)}`)
+      assert.ok(layout.plot.height >= 80, `${width}x${height} System plot height: ${JSON.stringify(layout)}`)
+      assert.ok(layout.timeline.figure.height >= 230 && layout.timeline.host.height >= 190 && layout.timeline.plot.height >= 100,
+        `${width}x${height} timeline plot height: ${JSON.stringify(layout)}`)
       assert.deepEqual(layout.chartAccess.canvasAriaHidden, "true")
       assert.equal(layout.chartAccess.canvasCount, 1)
       assert.equal(layout.chartAccess.hostRole, "img")
@@ -764,7 +777,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     for (let themeIndex = 0; themeIndex < 2; themeIndex += 1) {
       const theme = await cdp.evaluate(`document.documentElement.dataset.theme`)
       chartThemes.push(theme)
-      for (const [width, height] of [[1920, 1080], [1366, 768], [1024, 768], [390, 844]]) {
+      for (const [width, height] of [[1920, 1080], [1366, 768], [1280, 431], [1024, 768], [390, 844]]) {
         await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
         const state = await cdp.evaluate(`document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
           const figure = document.querySelector(".metric-history .uplot-figure")
@@ -793,6 +806,8 @@ test("the production artifact preserves wire keys and exact finding page state",
         assert.equal(state.navigatorCount, 1, `${theme} ${width}px sample navigator: ${JSON.stringify(state)}`)
         assert.ok(state.summary.length > 0, `${theme} ${width}px chart summary: ${JSON.stringify(state)}`)
         assert.ok(state.plot.width >= 120, `${theme} ${width}px plot width: ${JSON.stringify(state)}`)
+        assert.ok(state.host.height >= 150, `${theme} ${width}px chart host height: ${JSON.stringify(state)}`)
+        assert.ok(state.plot.height >= 80, `${theme} ${width}px plot height: ${JSON.stringify(state)}`)
         assert.ok(state.canvas.left >= state.host.left - 1 && state.canvas.right <= state.host.right + 1,
           `${theme} ${width}px canvas bounds: ${JSON.stringify(state)}`)
         assert.ok(state.figure.left >= -1 && state.figure.right <= state.clientWidth + 1,

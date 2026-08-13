@@ -109,7 +109,8 @@ export function UPlotChart({
   useEffect(() => {
     const element = host.current
     if (element === null || frame.timestamps.length === 0) return
-    const options = chartOptions(visibleSeries, frame, hour, end, locale, decorations, threshold, selectedRef, referenceTimestamp, (chart) => {
+    const initialBounds = element.getBoundingClientRect()
+    const options = chartOptions(visibleSeries, frame, hour, end, locale, decorations, threshold, selectedRef, referenceTimestamp, Math.max(1, Math.round(initialBounds.width)), Math.max(1, Math.round(initialBounds.height)), (chart) => {
       const index = chart.cursor.idx
       const timestamp = index === null || index === undefined ? null : frame.timestamps[index] ?? null
       setHovered(timestamp)
@@ -377,6 +378,8 @@ function chartOptions(
   threshold: ChartThreshold | undefined,
   selected: { readonly current: number | null },
   referenceTimestamp: number | undefined,
+  width: number,
+  height: number,
   onHover: (chart: uPlot) => void,
   onGeometry: (chart: uPlot) => void,
 ): uPlot.Options {
@@ -449,8 +452,8 @@ function chartOptions(
     context.restore()
   }
   return {
-    width: 640,
-    height: 200,
+    width,
+    height,
     ms: 1,
     pxAlign: true,
     legend: { show: false },
