@@ -1,4 +1,5 @@
 import type { Cell, DataRow } from "./api"
+import type { Translate } from "./help"
 
 export type Locale = "en" | "ru"
 export type Lens = "generic" | "cpu" | "memory" | "disk"
@@ -65,8 +66,30 @@ export function formatUtc(timestamp: number | null): string {
   return new Date(Math.trunc(timestamp / 1_000)).toISOString().replace("T", " ").replace("Z", " UTC")
 }
 
-export function shortUtc(timestamp: number): string {
-  return new Date(Math.trunc(timestamp / 1_000)).toISOString().slice(11, 23)
+export interface TimePair {
+  readonly primary: string
+  readonly secondary: string | null
+}
+
+export interface HourPair extends TimePair {
+  readonly date: string
+}
+
+export function localTimePair(timestamp: number, locale: Locale, timeZone?: string): TimePair {
+  const date = new Date(Math.trunc(timestamp / 1_000))
+  const primary = clock(date, locale, timeZone, true)
+  const utc = clock(date, locale, "UTC", true)
+  return { primary, secondary: primary === utc ? null : utc }
+}
+
+export function localHourPair(hour: number, locale: Locale, timeZone?: string): HourPair {
+  const start = new Date(Math.trunc(hour / 1_000))
+  const end = new Date(Math.trunc((hour + 3_600_000_000) / 1_000))
+  const localDate = dateRange(start, end, locale, timeZone)
+  const utcDate = dateRange(start, end, locale, "UTC")
+  const primary = clockRange(start, end, locale, timeZone)
+  const utc = clockRange(start, end, locale, "UTC")
+  return { date: localDate, primary, secondary: localDate === utcDate && primary === utc ? null : localDate === utcDate ? utc : `${utcDate} · ${utc}` }
 }
 
 export function nearestTime(rows: readonly DataRow[], target: number): number | null {
@@ -161,8 +184,62 @@ export function compact(value: number, locale: Locale): string {
   return isFinite(value) ? new Intl.NumberFormat(locale, { maximumSignificantDigits: 3, notation }).format(value) : "—"
 }
 
+export function estimatedRows(cell: Cell, locale: Locale, t: Translate): TimePair | null {
+  if (!(typeof cell === "number" && Number.isSafeInteger(cell) || typeof cell === "string" && /^\d+$/.test(cell))) return null
+  const value = BigInt(cell)
+  if (value < 0n) return null
+  const compactKind = value >= 1_000n ? "many" : rowPlural(value, locale)
+  const exactKind = rowPlural(value, locale)
+  const notation = value >= 1_000_000_000_000_000n ? "scientific" : value >= 1_000n ? "compact" : undefined
+  const compactValue = new Intl.NumberFormat(locale, { maximumSignificantDigits: 3, notation }).format(value)
+  const exactValue = new Intl.NumberFormat(locale).format(value)
+  return {
+    primary: t(`unit.estimated_rows.${compactKind}`, { value: compactValue }),
+    secondary: t(`unit.estimated_rows.${exactKind}`, { value: exactValue }),
+  }
+}
+
 function decimals(value: number, locale: Locale, digits: number): string {
   return new Intl.NumberFormat(locale, { maximumFractionDigits: digits }).format(value)
+}
+
+function rowPlural(value: bigint, locale: Locale): "one" | "few" | "many" {
+  if (locale === "en") return value === 1n ? "one" : "many"
+  const last = value % 10n, lastTwo = value % 100n
+  if (last === 1n && lastTwo !== 11n) return "one"
+  return last >= 2n && last <= 4n && (lastTwo < 12n || lastTwo > 14n) ? "few" : "many"
+}
+
+function clock(date: Date, locale: Locale, timeZone: string | undefined, precise: boolean): string {
+  return Intl.DateTimeFormat(locale, {
+    fractionalSecondDigits: precise ? 3 : undefined,
+    hour: "2-digit",
+    hourCycle: "h23",
+    minute: "2-digit",
+    second: precise ? "2-digit" : undefined,
+    timeZone,
+    timeZoneName: "short",
+  }).format(date)
+}
+
+function clockRange(start: Date, end: Date, locale: Locale, timeZone: string | undefined): string {
+  const [left, leftZone] = clockParts(start, locale, timeZone)
+  const [right, rightZone] = clockParts(end, locale, timeZone)
+  return leftZone === rightZone
+    ? `${left}–${right} ${leftZone}`
+    : `${left} ${leftZone}–${right} ${rightZone}`
+}
+
+function clockParts(date: Date, locale: Locale, timeZone: string | undefined): readonly [string, string] {
+  const label = clock(date, locale, timeZone, false)
+  const split = label.lastIndexOf(" ")
+  return [label.slice(0, split), label.slice(split + 1)]
+}
+
+function dateRange(start: Date, end: Date, locale: Locale, timeZone: string | undefined): string {
+  const format = Intl.DateTimeFormat(locale, { day: "2-digit", month: "short", timeZone, year: "numeric" })
+  const left = format.format(start), right = format.format(end)
+  return left === right ? left : `${left}–${right}`
 }
 
 const BYTE_UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"] as const

@@ -31,25 +31,21 @@ export function signInBasic(
   password: string,
   signal: AbortSignal,
 ): Promise<"signed-in" | "invalid"> {
-  const submit = () => finishSignIn(sessionFetch("POST", basicAuthorization(user, password), signal))
+  const submit = async (): Promise<"signed-in" | "invalid"> => {
+    ++generation
+    const response = await sessionFetch("POST", basicAuthorization(user, password), signal)
+    if (response.status === 401) return "invalid"
+    if (response.status !== 204) throw new Error()
+    transition("signed-in")
+    return "signed-in"
+  }
   return cleanupPromise === null ? submit() : cleanupPromise.then(submit)
-}
-
-async function finishSignIn(request: Promise<Response>): Promise<"signed-in" | "invalid"> {
-  ++generation
-  const response = await request
-
-  if (response.status === 401) return "invalid"
-  if (response.status !== 204) throw new Error()
-
-  transition("signed-in")
-  return "signed-in"
 }
 
 export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
   if (currentSnapshot !== "signed-in") throw new Error()
   const captured = generation
-  const headers = input instanceof Request ? new Headers(input.headers) : new Headers()
+  const headers = new Headers(input instanceof Request ? input.headers : undefined)
   new Headers(init.headers).forEach((value, name) => headers.set(name, value))
   headers.delete("Authorization")
   headers.set("X-Kronika-UI", "1")

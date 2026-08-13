@@ -6,6 +6,7 @@ import test from "node:test"
 
 const directory = dirname(fileURLToPath(import.meta.url))
 const stylesheet = await readFile(join(directory, "../src/styles.css"), "utf8")
+const app = await readFile(join(directory, "../src/app.tsx"), "utf8")
 
 function mediaBlock(condition) {
   const start = stylesheet.indexOf(`@media (${condition})`)
@@ -36,4 +37,13 @@ test("PostgreSQL keeps its dock beside the table at 1024 pixels", () => {
 test("the operator bar wraps before its controls can widen a 1024 pixel page", () => {
   const compactShell = mediaBlock("max-width: 1179px")
   assert.match(compactShell, /\.topbar \{[^}]*flex-wrap: wrap;/)
+})
+
+test("only long PostgreSQL entity views own the viewport flex chain", () => {
+  assert.match(app, /relationSection \|\| pgSection === "statements" \|\| pgSection === "plans"/)
+  assert.match(app, /pg-table-shell/)
+  assert.match(app, /pg-table-workspace/)
+  assert.match(stylesheet, /\.pg-table-shell \{[^}]*height: 100dvh;[^}]*min-height: 0;/)
+  assert.match(stylesheet, /\.pg-table-shell \.pg-entity-layout \.entity-scroll \{[^}]*height: auto;/)
+  assert.match(stylesheet, /\.pg-table-shell \.pg-detail \{[^}]*max-height: none;[^}]*min-height: 0;/)
 })

@@ -30,6 +30,7 @@ test("the production artifact preserves wire keys and exact finding page state",
   const authState = { valid: false }
   let heldContextPage = null
   let heldSystemPage = null
+  let relationMode = "single"
   let contextPageRequested
   let systemPageRequested
   const contextPage = new Promise((resolve) => { contextPageRequested = resolve })
@@ -73,7 +74,7 @@ test("the production artifact preserves wire keys and exact finding page state",
           ndjson(response, filtered ? statementRecords(true) : statementRecords(true, 4_807, true, 50))
         }
       } else if (sections.includes("pg_stat_user_tables") || sections.includes("pg_stat_user_indexes")) {
-        ndjson(response, relationRecords(url))
+        ndjson(response, relationRecords(url, relationMode))
       } else if (sections.includes("os_cpu")) {
         heldSystemPage = response
         systemPageRequested()
@@ -138,6 +139,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       cdp.send("Log.enable"),
     ])
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
+    await cdp.send("Emulation.setTimezoneOverride", { timezoneId: "America/New_York" })
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.activity` })
     await cdp.waitFor(`document.querySelector(".login-card") !== null`, "login form")
     await cdp.evaluate(`(() => {
@@ -174,6 +176,20 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.ok(requests.filter(({ path }) => path.startsWith("/api/")).every(({ authorization, cookie, marker }) => (
       authorization === null && cookie === SESSION_COOKIE && marker === "1"
     )))
+    const localClocks = await cdp.evaluate(`(() => ({
+      cursor: document.querySelector('[data-testid="cursor-time"]')?.textContent,
+      cursorUtc: document.querySelector('[data-testid="cursor-time"] small')?.textContent,
+      hour: document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent,
+      hourUtc: document.querySelector('[data-testid="hour-picker-trigger"] small')?.textContent,
+      sample: document.querySelector('.cursor-time')?.textContent.includes('Sample'),
+      updatedUtc: document.querySelector('[data-testid="updated-time"] small')?.textContent,
+    }))()`)
+    assert.match(localClocks.cursor, /01:30:00\.000 EDT/)
+    assert.equal(localClocks.cursorUtc, "05:30:00.000 UTC")
+    assert.equal(localClocks.hour, "01:00–02:00 EDT")
+    assert.match(localClocks.hourUtc, /Aug 13, 2026.*05:00–06:00 UTC/)
+    assert.match(localClocks.updatedUtc, / UTC$/)
+    assert.equal(localClocks.sample, false)
 
     const initialTheme = await cdp.evaluate(`document.documentElement.dataset.theme`)
     const alternateTheme = initialTheme === "dark" ? "light" : "dark"
@@ -259,7 +275,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(await cdp.evaluate(`document.querySelector('.hour-cell[data-hour="02"]')?.disabled`), true)
     assert.equal(await cdp.evaluate(`document.querySelector('.hour-cell[data-hour="03"]')?.disabled`), false)
     await cdp.evaluate(`document.querySelector('.hour-cell[data-hour="03"]').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent === "03:00–04:00"`, "the exact August 10 hour")
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent === "23:00–00:00 EDT"`, "the exact local August 10 hour")
     await cdp.waitFor(`Math.floor(Number(new URLSearchParams(location.search).get("at")) / ${HOUR_US}) * ${HOUR_US} === ${AUGUST_HOUR}`, "the August 10 address hour")
     assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector('[data-testid="hour-picker-trigger"]')`), true)
     const augustRequest = requests.find(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("from") === String(AUGUST_HOUR))
@@ -270,9 +286,9 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.evaluate(`document.querySelector('.day-cell[data-day="2026-08-13"]').click()`)
     await cdp.waitFor(`document.querySelector('.hour-cell[data-hour="06"]')?.disabled === false`, "the recorded August 13 hour")
     await cdp.evaluate(`document.querySelector('.hour-cell[data-hour="06"]').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent === "06:00–07:00"`, "the recorded August 13 selection")
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent === "02:00–03:00 EDT"`, "the recorded local August 13 selection")
     await cdp.evaluate(`document.querySelector('[data-testid="hour-previous"]').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent === "05:00–06:00"`, "the restored August 13 hour")
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent === "01:00–02:00 EDT"`, "the restored local August 13 hour")
     await cdp.waitFor(`Math.floor(Number(new URLSearchParams(location.search).get("at")) / ${HOUR_US}) * ${HOUR_US} === ${HOUR}`, "the restored address hour")
 
     await cdp.evaluate(`document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
@@ -295,9 +311,29 @@ test("the production artifact preserves wire keys and exact finding page state",
     }))()`)
     assert.match(russianPicker.context, /ровно один час/)
     assert.match(russianPicker.day, /13.*авг.*2026/i)
+    assert.equal(await cdp.evaluate(`document.querySelector('.cursor-time')?.textContent.includes('Отсчёт')`), false)
     await cdp.evaluate(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'mouse' }))`)
     await cdp.waitFor(`document.querySelector('[data-testid="hour-popover"]') === null`, "picker outside close")
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+
+    await cdp.send("Emulation.setTimezoneOverride", { timezoneId: "UTC" })
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === "ru"`, "the UTC re-render")
+    const utcClocks = await cdp.evaluate(`(() => ({
+      cursor: document.querySelector('[data-testid="cursor-time"]')?.textContent,
+      cursorSecondary: document.querySelector('[data-testid="cursor-time"] small') !== null,
+      hour: document.querySelector('[data-testid="hour-picker-trigger"]')?.textContent,
+      hourSecondary: document.querySelector('[data-testid="hour-picker-trigger"] small')?.textContent.includes('UTC') ?? false,
+      updatedSecondary: document.querySelector('[data-testid="updated-time"] small') !== null,
+    }))()`)
+    assert.equal((utcClocks.cursor.match(/UTC/g) ?? []).length, 1, JSON.stringify(utcClocks))
+    assert.equal((utcClocks.hour.match(/UTC/g) ?? []).length, 1, JSON.stringify(utcClocks))
+    assert.equal(utcClocks.cursorSecondary, false)
+    assert.equal(utcClocks.hourSecondary, false)
+    assert.equal(utcClocks.updatedSecondary, false)
+    await cdp.send("Emulation.setTimezoneOverride", { timezoneId: "America/New_York" })
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === "en"`, "the local-time restore")
 
     await cdp.evaluate(`([...document.querySelectorAll(".pg-tabs button")].find((button) => button.textContent === "Tables")).click()`)
     await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-tables-table"] .entity-row').length === 1`, "the relation wire row")
@@ -329,21 +365,33 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(tableDetail.values.includes("73"), false)
     await cdp.evaluate(`document.querySelector(".pg-detail header button").click()`)
 
+    relationMode = "long"
     await cdp.evaluate(`([...document.querySelectorAll('[data-testid="pg-relation-lenses"] button')].find((button) => button.textContent === "Size and buffers")).click()`)
     await cdp.waitFor(`(() => { const node = document.querySelector('[data-testid="pg-tables-table"] .entity-scroll'); return node !== null && node.scrollWidth > node.clientWidth })()`, "the wide size and buffers table")
-    for (const [width, height] of [[1920, 1080], [1366, 768], [1024, 768]]) {
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"] .virtual-body')?.style.height === "4600px"`, "the long virtual relation table")
+    const estimate = await cdp.evaluate(`(() => {
+      const node = [...document.querySelectorAll('[data-testid="pg-tables-table"] [title]')].find((cell) => cell.title.includes('9,007,199,254,740,993'))
+      return node === undefined ? null : { label: node.getAttribute('aria-label'), text: node.textContent, title: node.title }
+    })()`)
+    assert.deepEqual(estimate, { label: "≈9,007,199,254,740,993 rows", text: "≈9.01E15 rows", title: "≈9,007,199,254,740,993 rows" })
+    for (const [width, height, minimumVisible] of [[1920, 1080, 24], [1366, 768, 11], [1024, 768, 10], [1024, 1366, 35]]) {
       await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
       await cdp.evaluate("document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))")
       const initial = await cdp.evaluate(`(() => {
         const table = document.querySelector('[data-testid="pg-tables-table"]')
         const body = table.querySelector('.entity-scroll')
+        const layout = document.querySelector('.pg-entity-layout')
+        const paging = document.querySelector('[data-testid="table-paging"]')
         const sticky = table.querySelector('.entity-header-cell.entity-sticky')
         const bodyRect = body.getBoundingClientRect()
+        const contentBottom = Math.max(layout.getBoundingClientRect().bottom, paging?.getBoundingClientRect().bottom ?? 0)
         return {
           bodyClientWidth: body.clientWidth,
+          bodyHeight: body.clientHeight,
           bodyScrollWidth: body.scrollWidth,
           clientWidth: document.documentElement.clientWidth,
           clientHeight: document.documentElement.clientHeight,
+          contentBottom,
           documentScrollWidth: document.documentElement.scrollWidth,
           railBottom: bodyRect.bottom,
           railHeight: body.offsetHeight - body.clientHeight,
@@ -351,9 +399,17 @@ test("the production artifact preserves wire keys and exact finding page state",
           railVisible: bodyRect.bottom <= document.documentElement.clientHeight + .5,
           stickyLeft: sticky.getBoundingClientRect().left,
           tableLeft: bodyRect.left,
+          virtualHeight: table.querySelector('.virtual-body').getBoundingClientRect().height,
+          visibleRows: [...table.querySelectorAll('.entity-row')].filter((row) => {
+            const rect = row.getBoundingClientRect()
+            return rect.bottom > bodyRect.top && rect.top < bodyRect.bottom
+          }).length,
         }
       })()`)
       assert.ok(initial.bodyScrollWidth > initial.bodyClientWidth, `${width}px wide table: ${JSON.stringify(initial)}`)
+      assert.ok(initial.visibleRows >= minimumVisible, `${width}x${height} visible rows: ${JSON.stringify(initial)}`)
+      assert.equal(initial.virtualHeight, 4600, `${width}x${height} virtual height`)
+      assert.ok(initial.contentBottom <= initial.clientHeight && initial.clientHeight - initial.contentBottom <= 24, `${width}x${height} remaining viewport: ${JSON.stringify(initial)}`)
       assert.equal(initial.railTabIndex, 0, `${width}px focusable horizontal rail`)
       assert.ok(initial.railHeight > 0 && initial.railVisible, `${width}px visible horizontal rail: ${JSON.stringify(initial)}`)
       assert.ok(Math.abs(initial.stickyLeft - initial.tableLeft) <= 1, `${width}px initial sticky identity: ${JSON.stringify(initial)}`)
@@ -371,7 +427,7 @@ test("the production artifact preserves wire keys and exact finding page state",
         const first = cells[0].getBoundingClientRect()
         const last = cells[cells.length - 1].getBoundingClientRect()
         const viewport = body.getBoundingClientRect()
-        return { activeRail: document.activeElement === body, firstLeft: first.left, lastRight: last.right, viewportLeft: viewport.left, viewportRight: viewport.right }
+        return { activeRail: document.activeElement === body, firstLeft: first.left, lastRight: last.right, viewportLeft: viewport.left, viewportRight: viewport.left + body.clientWidth }
       })()`)
       assert.equal(end.activeRail, true, `${width}px focused horizontal rail`)
       assert.ok(Math.abs(end.firstLeft - end.viewportLeft) <= 1, `${width}px sticky identity after horizontal scroll: ${JSON.stringify(end)}`)
@@ -379,8 +435,32 @@ test("the production artifact preserves wire keys and exact finding page state",
       await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-scroll').scrollLeft = 0`)
     }
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
+    await cdp.evaluate(`(() => { const body = document.querySelector('[data-testid="pg-tables-table"] .entity-scroll'); body.scrollTop = body.scrollHeight })()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"] .virtual-body')?.style.height === "4715px"`, "the one guarded relation cursor page")
+    const cursorPages = requests.filter(({ query }) => new URLSearchParams(query).get("cursor") === "viewport-page-two")
+    assert.equal(cursorPages.length, 1, JSON.stringify(cursorPages))
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-scroll').scrollTop = 0`)
+    await cdp.waitFor(`[...document.querySelectorAll('[data-testid="pg-tables-table"] .entity-row')].some((row) => row.getAttribute('aria-label') === 'artifact_db.public.artifact_table')`, "the first virtual relation row")
 
-    await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-row').click()`)
+    await cdp.evaluate(`([...document.querySelectorAll('[data-testid="pg-tables-table"] .entity-row')].find((row) => row.getAttribute('aria-label') === 'artifact_db.public.artifact_table')).click()`)
+    const alignedDetail = await cdp.evaluate(`(() => {
+      const layout = document.querySelector('.pg-entity-layout').getBoundingClientRect()
+      const detail = document.querySelector('[data-testid="pg-relation-detail"]').getBoundingClientRect()
+      return { detailBottom: detail.bottom, detailTop: detail.top, layoutBottom: layout.bottom, layoutTop: layout.top }
+    })()`)
+    assert.ok(Math.abs(alignedDetail.detailTop - alignedDetail.layoutTop) <= 1 && Math.abs(alignedDetail.detailBottom - alignedDetail.layoutBottom) <= 1, JSON.stringify(alignedDetail))
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === "ru"`, "the Russian estimate labels")
+    const russianEstimate = await cdp.evaluate(`(() => {
+      const nodes = [...document.querySelectorAll('[data-testid="pg-relation-detail"] [title]')]
+      const exact = nodes.find((node) => node.title.includes('9 007 199 254 740 993'))
+      const toast = nodes.find((node) => node.title.includes('713 456'))
+      return { exact: exact?.title ?? null, toast: toast?.textContent ?? null, toastExact: toast?.title ?? null }
+    })()`)
+    assert.deepEqual(russianEstimate, { exact: "≈9 007 199 254 740 993 строки", toast: "≈713 тыс. строк", toastExact: "≈713 456 строк" })
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === "en"`, "the English estimate restore")
+    relationMode = "single"
     await cdp.waitFor(`document.querySelector('[data-testid="pg-relation-link"]') !== null`, "the table-to-index link")
     await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-link"]').click()`)
     await cdp.waitFor(`location.search.includes("view=pg.indexes") && location.search.includes("datid=42") && location.search.includes("relid=73")`, "numeric table identity in index navigation")
@@ -410,6 +490,16 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.doesNotMatch(indexDetail.labels.join(" "), /Database ID|Table OID|Index OID/)
     for (const oid of ["42", "73", "74"]) assert.equal(indexDetail.values.includes(oid), false)
     await cdp.evaluate(`document.querySelector(".pg-detail header button").click()`)
+    relationMode = "short"
+    await cdp.evaluate(`([...document.querySelectorAll('[data-testid="pg-relation-lenses"] button')].find((button) => button.textContent === "State")).click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-indexes-table"] .virtual-body')?.style.height === "69px"`, "the short relation set")
+    const shortTable = await cdp.evaluate(`(() => {
+      const body = document.querySelector('[data-testid="pg-indexes-table"] .entity-scroll')
+      return { height: body.getBoundingClientRect().height, rows: document.querySelectorAll('[data-testid="pg-indexes-table"] .entity-row').length, virtual: document.querySelector('[data-testid="pg-indexes-table"] .virtual-body').getBoundingClientRect().height }
+    })()`)
+    assert.equal(shortTable.rows, 3)
+    assert.equal(shortTable.virtual, 69)
+    assert.ok(shortTable.height >= 100 && shortTable.height <= 112, JSON.stringify(shortTable))
 
     const beforeOidSearch = requests.length
     await cdp.evaluate(`(() => {
@@ -492,7 +582,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       })()`)
       assert.ok(size.scrollWidth <= size.clientWidth, `${width}px document overflow: ${JSON.stringify(size)}`)
     }
-    ndjson(heldSystemPage, [])
+    ndjson(heldSystemPage, systemSnapshotRecords())
     heldSystemPage = null
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
 
@@ -580,6 +670,63 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(system.source, "Host")
     assert.equal(system.buttons.some(([id, pressed]) => id === "system-metric-health" && pressed === "true"), true, JSON.stringify(system))
     assert.match(system.lane ?? "", /Health/)
+    await cdp.waitFor(`document.querySelector('[data-testid="use-table"]') !== null`, "the System resource table")
+    for (const [width, height] of [[1920, 1080], [1366, 768], [1024, 768], [1024, 1366]]) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
+      const layout = await cdp.evaluate(`document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
+        window.scrollTo(0, 0)
+        const bounds = (node) => {
+          const rect = node.getBoundingClientRect()
+          return { bottom: rect.bottom, height: rect.height, left: rect.left, right: rect.right, top: rect.top, width: rect.width }
+        }
+        const consolePanel = document.querySelector(".system-console")
+        const history = document.querySelector(".metric-history")
+        const chart = history.querySelector(".series-chart svg")
+        const resource = document.querySelector('[data-testid="use-table"]')
+        const columns = [...document.querySelectorAll(".metric-column")]
+        const columnBottoms = columns.map((column) => Math.max(...[...column.querySelectorAll(".metric-group")].map((group) => group.getBoundingClientRect().bottom)))
+        const summaryBottom = Math.max(...columnBottoms)
+        const contentBottom = Math.max(summaryBottom, history.getBoundingClientRect().bottom)
+        const panels = [document.querySelector(".timeline-shell"), ...document.querySelectorAll(".metric-group"), history, resource]
+        const overlaps = []
+        for (let left = 0; left < panels.length; left += 1) {
+          for (let right = left + 1; right < panels.length; right += 1) {
+            const a = panels[left].getBoundingClientRect()
+            const b = panels[right].getBoundingClientRect()
+            if (Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1
+              && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1) {
+              overlaps.push([panels[left].className, panels[right].className])
+            }
+          }
+        }
+        const historyBounds = bounds(history)
+        const chartBounds = bounds(chart)
+        resolve({
+          chart: chartBounds,
+          columnSpread: Math.max(...columnBottoms) - Math.min(...columnBottoms),
+          console: bounds(consolePanel),
+          contentBottom,
+          documentClientWidth: document.documentElement.clientWidth,
+          documentScrollWidth: document.documentElement.scrollWidth,
+          history: historyBounds,
+          historyTail: historyBounds.bottom - chartBounds.bottom,
+          overlaps,
+          resource: bounds(resource),
+          resourceSeparation: resource.getBoundingClientRect().top - contentBottom,
+        })
+      }))))`)
+      assert.ok(layout.chart.height >= 180 && layout.chart.height <= 220, `${width}x${height} System chart height: ${JSON.stringify(layout)}`)
+      assert.ok(layout.history.height <= 300 && layout.historyTail <= 24, `${width}x${height} compact System history: ${JSON.stringify(layout)}`)
+      assert.ok(layout.columnSpread <= 220, `${width}x${height} balanced System summary: ${JSON.stringify(layout)}`)
+      assert.ok(Math.abs(layout.console.bottom - layout.contentBottom) <= 1.5, `${width}x${height} content-sized System console: ${JSON.stringify(layout)}`)
+      assert.ok(layout.resourceSeparation >= 7 && layout.resourceSeparation <= 10, `${width}x${height} System resource separation: ${JSON.stringify(layout)}`)
+      assert.ok(layout.chart.left >= layout.history.left - 1 && layout.chart.right <= layout.history.right + 1
+        && layout.chart.top >= layout.history.top - 1 && layout.chart.bottom <= layout.history.bottom + 1,
+      `${width}x${height} System chart containment: ${JSON.stringify(layout)}`)
+      assert.ok(layout.documentScrollWidth <= layout.documentClientWidth, `${width}x${height} System document overflow: ${JSON.stringify(layout)}`)
+      assert.deepEqual(layout.overlaps, [], `${width}x${height} System panel overlaps`)
+    }
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
     const arrow = async (key, expected) => {
       await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: ${JSON.stringify(key)} }))`)
       await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"]')?.getAttribute("aria-valuenow") === "${expected}"`, `${key} to ${expected}`)
@@ -814,6 +961,9 @@ function timelineRecords(hour = HOUR) {
     { record: "point", type_id: "0", series: "os_health", ts: shifted(BEFORE_AT), identity: {}, value: null },
     { record: "point", type_id: "0", series: "os_health", ts: shifted(AT), identity: {}, value: 82 },
     { record: "point", type_id: "0", series: "os_health", ts: shifted(AFTER_AT), identity: {}, value: 84 },
+    ...systemIndexRecords(shifted(AT)),
+    { record: "lane", segment_id: SEGMENT, lane: "disk_busy", ts: shifted(BEFORE_AT), value: 34 },
+    { record: "lane", segment_id: SEGMENT, lane: "disk_busy", ts: shifted(AT), value: 42 },
     {
       record: "finding", logical_name: "pg_stat_statements", kind: "spike", type_id: "1002003",
       field_ordinal: 11, row_ordinal: "91", ts: shifted(AT),
@@ -821,12 +971,56 @@ function timelineRecords(hour = HOUR) {
   ]
 }
 
-function relationRecords(url) {
+function systemIndexRecords(timestamp) {
+  return [
+    ["os_cpu_busy_percent", 42],
+    ["os_mem_available_percent", 58],
+    ["os_oom_kills", 0],
+    ["os_min_filesystem_free_percent", 61],
+    ["os_device_count", 3],
+    ["os_device_active_io", 1],
+    ["os_filesystem_count", 8],
+    ["os_interface_count", 4],
+    ["os_network_rx", 2_400_000],
+    ["os_network_tx", 1_700_000],
+    ["os_network_errors", 0],
+    ["os_network_drops", 0],
+  ].map(([series, value]) => ({ record: "point", type_id: "0", series, ts: timestamp, identity: {}, value }))
+}
+
+function systemSnapshotRecords() {
+  return [
+    layout("1103001", "os_stat", ["ts", "ctxt", "procs_running", "procs_blocked"]),
+    row("1103001", "1", [String(AT), 1_234_567, 3, 1]),
+    layout("1105001", "os_loadavg", ["ts", "load1", "load5", "load15", "running", "total"]),
+    row("1105001", "2", [String(AT), 1.25, 1.1, 0.9, 3, 214]),
+    layout("1104001", "os_meminfo", ["ts", "mem_available", "mem_total", "cached", "swap_free", "swap_total"]),
+    row("1104001", "3", [String(AT), 8_388_608, 16_777_216, 4_194_304, 1_048_576, 2_097_152]),
+    layout("1107001", "os_psi", ["ts", "resource", "some_avg10"]),
+    row("1107001", "4", [String(AT), 0, 2.5]),
+    row("1107001", "5", [String(AT), 1, 1.2]),
+    row("1107001", "6", [String(AT), 2, 0.4]),
+  ]
+}
+
+function layout(typeId, logicalName, columns) {
+  return { record: "layout", rates: [], layout: { type_id: typeId, logical_name: logicalName, columns: columns.map((name) => ({ name })) } }
+}
+
+function row(typeId, ordinal, values) {
+  return { record: "row", type_id: typeId, ordinal, timestamp: String(AT), values }
+}
+
+function relationRecords(url, mode) {
   const indexes = url.searchParams.getAll("section").includes("pg_stat_user_indexes")
   const logicalName = indexes ? "pg_stat_user_indexes" : "pg_stat_user_tables"
   const group = url.searchParams.get("group") ?? "object"
   const state = url.searchParams.getAll("field").includes("invalid_count")
-  const key = group === "database"
+  const sized = url.searchParams.getAll("field").includes("reltuples")
+  const page = url.searchParams.get("cursor")
+  const count = mode === "long" ? page === null ? 200 : 5 : mode === "short" ? 3 : 1
+  const offset = page === null ? 0 : 200
+  const baseKey = group === "database"
     ? { datid: "42", datname: "artifact_db" }
     : group === "schema"
       ? { datid: "42", datname: "artifact_db", schemaname: "public" }
@@ -839,26 +1033,38 @@ function relationRecords(url) {
         ? [wire("tablespace", "text", "none"), wire("amname", "text", "none"), wire("indisvalid", "bool", "none"), wire("indisready", "bool", "none"), wire("indisunique", "bool", "none"), wire("indisprimary", "bool", "none")]
         : [wire("index_count"), wire("invalid_count"), wire("unready_count"), wire("unique_count"), wire("primary_count"), wire("exclusion_count")]
       : [wire("tablespace", "text", "none"), wire("amname", "text", "none"), wire("idx_scan", "number", "per_second")]
-    : [wire("tablespace", "text", "none"), wire("seq_scan", "number", "per_second")]
-  const values = indexes
+    : sized
+      ? [wire("tablespace", "text", "none"), wire("main_fork_bytes", "number", "bytes"), wire("toast_bytes", "number", "bytes"), wire("reltuples"), wire("toast_n_live_tup"), wire("toast_n_dead_tup")]
+      : [wire("tablespace", "text", "none"), wire("seq_scan", "number", "per_second")]
+  const baseValues = indexes
     ? state
       ? group === "object"
         ? { tablespace: "pg_default", amname: "btree", indisvalid: true, indisready: true, indisunique: true, indisprimary: true }
         : { index_count: 363, invalid_count: 0, unready_count: 0, unique_count: 223, primary_count: 111, exclusion_count: 0 }
       : { tablespace: "pg_default", amname: "btree", idx_scan: 3 }
-    : { tablespace: "pg_default", seq_scan: 3 }
+    : sized
+      ? { tablespace: "pg_default", main_fork_bytes: 1_048_576, toast_bytes: 131_072, reltuples: "9007199254740993", toast_n_live_tup: "713456", toast_n_dead_tup: "12876" }
+      : { tablespace: "pg_default", seq_scan: 3 }
+  const rows = Array.from({ length: count }, (_, local) => {
+    const index = offset + local
+    const key = group !== "object" ? baseKey : indexes
+      ? { ...baseKey, indexrelid: String(74 + index), indexrelname: index === 0 ? "artifact_index" : `artifact_index_${index}` }
+      : { ...baseKey, relid: String(73 + index), relname: index === 0 ? "artifact_table" : `artifact_table_${index}` }
+    return {
+      record: "relation", logical_name: logicalName, group, key, values: baseValues,
+      sample_from: String(AT - 5_000_000), sample_to: String(AT),
+      source: group === "object" ? { segment_id: SEGMENT, type_id: indexes ? "1014002" : "1013001", ordinal: String((indexes ? 8 : 7) + index), timestamp: String(AT) } : null,
+    }
+  })
+  const hasMore = mode === "long" && page === null
   return [
     {
       record: "relation_layout", logical_name: logicalName, group, columns,
     },
-    {
-      record: "relation", logical_name: logicalName, group, key, values,
-      sample_from: String(AT - 5_000_000), sample_to: String(AT),
-      source: group === "object" ? { segment_id: SEGMENT, type_id: indexes ? "1014002" : "1013001", ordinal: indexes ? "8" : "7", timestamp: String(AT) } : null,
-    },
+    ...rows,
     {
       record: "snapshot_page", logical_name: logicalName, group,
-      eligible: "1", returned: "1", has_more: false, truncated: false, next_cursor: null,
+      eligible: String(mode === "long" ? 205 : count), returned: String(count), has_more: hasMore, truncated: false, next_cursor: hasMore ? "viewport-page-two" : null,
       page_size: 200, order_by: url.searchParams.getAll("by"), order_direction: url.searchParams.get("order") ?? "desc",
       from: String(AT - 5_000_000), to: String(AT),
     },

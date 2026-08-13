@@ -92,8 +92,8 @@ const DERIVE_INPUTS: Readonly<Record<NonNullable<MetricSpec["derive"]>, readonly
 
 
 const GROUP_COLUMNS: readonly (readonly MetricSpec["group"][])[] = [
-  ["cpu", "memory"],
-  ["load", "pressure", "storage", "network"],
+  ["cpu", "memory", "pressure"],
+  ["load", "storage", "network"],
 ]
 
 const ENTITIES: readonly {

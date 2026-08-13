@@ -131,7 +131,10 @@ export function relationSortToken(field: string): string {
   return field.endsWith("_pct") || field.endsWith("_per_scan") || field.endsWith("_mean_ms") || ["state_severity", "tuple_throughput", "dml_total", "displayed_storage_bytes"].includes(field) ? `derived.${field}` : field
 }
 
-export function relationFieldKind(field: string): "id" | "text" | "boolean" | "timestamp" | "bytes" | "milliseconds" | "percent" | "number" {
+const ESTIMATED_ROWS = new Set(["reltuples", "n_live_tup", "n_dead_tup", "toast_n_live_tup", "toast_n_dead_tup", "n_mod_since_analyze", "n_ins_since_vacuum"])
+
+export function relationFieldKind(field: string): "id" | "text" | "boolean" | "timestamp" | "bytes" | "milliseconds" | "percent" | "estimated_rows" | "number" {
+  if (ESTIMATED_ROWS.has(field)) return "estimated_rows"
   if (field === "no_scans" || field.startsWith("indis") || field.endsWith("_never")) return "boolean"
   if (field.endsWith("_never_count")) return "number"
   if (field.endsWith("id")) return "id"

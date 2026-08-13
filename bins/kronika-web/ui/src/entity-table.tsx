@@ -16,7 +16,7 @@ import { globMatcher } from "./glob"
 import { LabelHelp, type Translate } from "./help"
 import { rowMatchesLocator } from "./locator"
 import { TableFilter } from "./table-filter"
-import { asNumber, formatUtc, humanBytes, humanDuration, identifier, measure, rawText, value, type Locale } from "./model"
+import { asNumber, estimatedRows, formatUtc, humanBytes, humanDuration, identifier, measure, rawText, value, type Locale } from "./model"
 import { semanticValueTone } from "./value-tone"
 
 export interface EntityColumn {
@@ -29,7 +29,7 @@ export interface EntityColumn {
   readonly filterValue?: (row: DataRow) => string | null
   readonly sortValue?: (row: DataRow) => string | number | boolean | null
   readonly rate?: boolean
-  readonly kind?: "id" | "number" | "text" | "timestamp" | "bytes" | "kib" | "milliseconds" | "duration" | "microseconds" | "percent" | "boolean"
+  readonly kind?: "id" | "number" | "estimated_rows" | "text" | "timestamp" | "bytes" | "kib" | "milliseconds" | "duration" | "microseconds" | "percent" | "boolean"
   readonly width?: number
   readonly sticky?: boolean | string
   readonly sortable?: boolean
@@ -87,7 +87,7 @@ export function EntityTable({
   readonly selectedKey?: string | null
   readonly status?: ReactNode | undefined
   readonly testId?: string
-  readonly t?: Translate
+  readonly t: Translate
 }) {
   const [sizing, setSizing] = useState<ColumnSizingState>({})
   const ordering = useMemo<SortingState>(() => order === undefined
@@ -101,7 +101,7 @@ export function EntityTable({
       if (stored === null && field.renderNull !== undefined) return field.renderNull(row.original)
       return field.render === undefined ? <Cell at={row.original.relation ? row.original.timestamp : null} cell={stored} kind={field.kind} locale={locale} rate={field.rate} t={t} /> : field.render(row.original)
     },
-    header: () => t === undefined ? field.label : t(field.label),
+    header: () => t(field.label),
     id: field.field,
     enableSorting: serverSorted === true ? field.sortable === true : field.sortable !== false,
     meta: {
@@ -177,7 +177,7 @@ export function EntityTable({
   const width = table.getTotalSize()
   return <section className={`entity-table${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
     {status !== undefined && <div className="table-status" data-testid="table-status">{status}</div>}
-    {t !== undefined && (onPattern !== undefined || contextLabel !== undefined) && <TableFilter context={contextLabel} kept={serverSorted === true ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} t={t} total={rows.length} />}
+    {(onPattern !== undefined || contextLabel !== undefined) && <TableFilter context={contextLabel} kept={serverSorted === true ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} t={t} total={rows.length} />}
     <div aria-label={label} className="entity-scroll" ref={parent} role="table" tabIndex={0}>
       <div className="entity-head" ref={head} role="row" style={{ width }}>
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {
@@ -189,13 +189,13 @@ export function EntityTable({
               <span>{flexRender(header.column.columnDef.header, header.getContext())}</span>
               {sorted !== false && <i>{sorted === "asc" ? "↑" : "↓"}</i>}
             </button>
-            {t !== undefined && columnHelp(header.column.columnDef.meta) !== null && <LabelHelp helpKey={columnHelp(header.column.columnDef.meta)!.help} iconOnly labelKey={columnHelp(header.column.columnDef.meta)!.label} t={t} />}
+            {columnHelp(header.column.columnDef.meta) !== null && <LabelHelp helpKey={columnHelp(header.column.columnDef.meta)!.help} iconOnly labelKey={columnHelp(header.column.columnDef.meta)!.label} t={t} />}
             <span className="column-grip" onDoubleClick={() => fit(header.column.id, index)} onMouseDown={header.getResizeHandler()} onTouchStart={header.getResizeHandler()} />
           </div>
         })}
       </div>
       {rendered.length === 0
-        ? <p className="table-empty">{pattern !== "" && t !== undefined ? t("filter.none") : empty}</p>
+        ? <p className="table-empty">{pattern === "" ? empty : t("filter.none")}</p>
         : <div className="virtual-body" style={{ height: virtual.getTotalSize(), width }}>
           {virtual.getVirtualItems().map((item) => {
             const row = rendered[item.index]
@@ -224,7 +224,7 @@ export function EntityTable({
                 const exact = activeFinding !== null && field !== undefined && locatorMatchesColumn(field, row.original.typeId, findingField ?? null)
                 const stored = field === undefined ? null : value(row.original, field.field)
                 const tone = field === undefined ? null : semanticValueTone(field.field, stored, field.rate, row.original)
-                const toneText = tone === null || tone === "inactive" || t === undefined ? null : t(`pg.value.${tone}`)
+                const toneText = tone === null || tone === "inactive" ? null : t(`pg.value.${tone}`)
                 return <div aria-label={toneText === null ? undefined : `${toneText}: ${rawText(stored) ?? "—"}`} className={`${sticky(cell.column.columnDef.meta, false)}${tone === null ? "" : ` value-tone-${tone}`}${exact ? ` locator-cell locator-${activeFinding.kind}` : ""}`} data-locator-cell={exact || undefined} data-value-tone={tone ?? undefined} key={cell.id} role="cell" style={{ left: stickyLeft(cell.column.columnDef.meta), width: cell.column.getSize() }}>
                   {toneText !== null && <span aria-hidden="true" className="value-tone-mark" />}
                   {flexRender(cell.column.columnDef.cell, cell.getContext())}
@@ -266,14 +266,14 @@ export function locatorMatchesColumn(column: EntityColumn, typeId: string, findi
   return findingField !== null && physical === findingField
 }
 
-const NUMERIC_KINDS = new Set(["number", "bytes", "kib", "milliseconds", "duration", "microseconds", "percent"])
+const NUMERIC_KINDS = new Set(["number", "estimated_rows", "bytes", "kib", "milliseconds", "duration", "microseconds", "percent"])
 
 export function unit(base: string, rate: boolean | undefined, perSecond = "/s"): string {
   return rate === true ? `${base}${perSecond}` : base
 }
 
-function Cell({ at, cell, kind = "text", locale, rate, t }: { readonly at: number | null; readonly cell: Cell; readonly kind?: EntityColumn["kind"]; readonly locale: Locale; readonly rate?: boolean | undefined; readonly t?: Translate | undefined }) {
-  const per = t === undefined ? "/s" : t("unit.per_second")
+function Cell({ at, cell, kind = "text", locale, rate, t }: { readonly at: number | null; readonly cell: Cell; readonly kind?: EntityColumn["kind"]; readonly locale: Locale; readonly rate?: boolean | undefined; readonly t: Translate }) {
+  const per = t("unit.per_second")
   if (cell === null) return <span className="null-cell">—</span>
   if (kind === "id") return <span className="entity-value id-value">{identifier(cell)}</span>
   if (kind === "timestamp") {
@@ -284,13 +284,19 @@ function Cell({ at, cell, kind = "text", locale, rate, t }: { readonly at: numbe
   }
   if (kind === "bytes") return <span className="entity-value" title={unit(`${rawText(cell)} B`, rate, per)}>{unit(humanBytes(cell, locale), rate, per)}</span>
   if (kind === "kib") return <span className="entity-value">{unit(humanBytes(asNumber(cell) === null ? null : (asNumber(cell) ?? 0) * 1024, locale), rate, per)}</span>
-  if (kind === "milliseconds") return <span className="entity-value">{measure(cell, locale, unit(t === undefined ? " ms" : t("unit.ms"), rate, per))}</span>
+  if (kind === "milliseconds") return <span className="entity-value">{measure(cell, locale, unit(t("unit.ms"), rate, per))}</span>
   if (kind === "duration") return <span className="entity-value">{humanDuration(cell, locale)}</span>
-  if (kind === "microseconds") return <span className="entity-value">{measure(cell, locale, unit(t === undefined ? " μs" : t("unit.us"), rate, per))}</span>
+  if (kind === "microseconds") return <span className="entity-value">{measure(cell, locale, unit(t("unit.us"), rate, per))}</span>
   if (kind === "percent") return <span className="entity-value">{measure(cell, locale, unit("%", rate, per))}</span>
   if (kind === "boolean") return <span className="entity-value">{cell === true ? locale === "ru" ? "да" : "true" : cell === false ? locale === "ru" ? "нет" : "false" : rawText(cell) ?? "—"}</span>
+  if (kind === "estimated_rows") return <EstimatedRows cell={cell} locale={locale} t={t} />
   if (kind === "number") return <span className="entity-value">{measure(cell, locale, unit("", rate, per))}</span>
   return <span className="entity-value text-value" title={rawText(cell) ?? "—"}>{rawText(cell) ?? "—"}</span>
+}
+
+export function EstimatedRows({ cell, locale, t }: { readonly cell: Cell; readonly locale: Locale; readonly t: Translate }) {
+  const rows = estimatedRows(cell, locale, t)
+  return rows === null ? "—" : <span aria-label={rows.secondary ?? undefined} className="entity-value" title={rows.secondary ?? undefined}>{rows.primary}</span>
 }
 
 function sortable(cell: Cell, kind: EntityColumn["kind"]): string | number | boolean | null {

@@ -131,3 +131,14 @@ test("the committed hour supplies only honest System metrics with complete histo
   assert.equal(health.at(-1)?.timestamp, Number(expected.at(-1)?.[0]))
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
 })
+
+test("System uses the audited balanced groups without a forced console floor", async () => {
+  const [source, styles] = await Promise.all([
+    readFile(new URL("../src/system-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+  ])
+  assert.match(source, /\["cpu", "memory", "pressure"\]/)
+  assert.match(source, /\["load", "storage", "network"\]/)
+  assert.match(styles, /\.system-console \{[^}]*align-items: start;/)
+  assert.doesNotMatch(styles, /\.system-console \{[^}]*min-height:/)
+})
