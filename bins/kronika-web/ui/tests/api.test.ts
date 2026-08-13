@@ -81,6 +81,12 @@ const TEST_REGISTRY = [
     identity: ["userid", "dbid", "queryid", "planid"],
     columns: ["ts", "userid", "dbid", "queryid", "planid", "plan", "calls", "total_time"],
   },
+  {
+    typeId: "1020001",
+    logicalName: "pg_wal_storage",
+    identity: [],
+    columns: ["ts", "wal_files_bytes"],
+  },
 ]
 
 test("snapshot rows use each physical layout's positional columns", async () => {
@@ -730,10 +736,19 @@ test("the current view replaces every prior snapshot while the hour line remains
   assert.deepEqual(activityView.availableSections, ["os_process", "pg_stat_activity"])
 })
 
-test("PostgreSQL Overview requests current operational rows and no statement top list", async () => {
+test("PostgreSQL Overview requests only the dedicated WAL file size projection", async () => {
   const api = await bundledApi()
   const requests = api.POSTGRESQL_OVERVIEW_REQUESTS
+  const overviewSections: readonly string[] = api.PRODUCT_SECTION_GROUPS.postgresqlOverview
   assert.equal(requests.some(({ section }) => section === "pg_stat_statements"), false)
+  assert.equal(requests.some(({ section }) => section === "pg_stat_wal"), false)
+  assert.equal(requests.some(({ section }) => section === "pg_stat_archiver"), false)
+  assert.equal(overviewSections.includes("pg_stat_wal"), false)
+  assert.equal(overviewSections.includes("pg_stat_archiver"), false)
+  assert.deepEqual(requests.find(({ section }) => section === "pg_wal_storage"), {
+    section: "pg_wal_storage",
+    fields: ["wal_files_bytes"],
+  })
   assert.deepEqual(requests.find(({ section }) => section === "pg_stat_activity")?.fields, ["state", "wait_event"])
   assert.deepEqual(requests.find(({ section }) => section === "pg_locks")?.fields, ["pid"])
   assert.ok(requests.some(({ section }) => section === "pg_stat_database"))

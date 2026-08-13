@@ -110,6 +110,12 @@ test("plan copy identifies unavailable values and vadv attribution", async () =>
   assert.equal(russian["pg.activity.idle"], "Простой")
   assert.equal(russian["pg.field.query_duration_ms.label"], "Время запроса")
   assert.equal(russian["pg.field.transaction_duration_ms.label"], "Время транзакции")
+  assert.equal(english["pg.wal_storage.label"], "Size of files in pg_wal")
+  assert.equal(english["pg.wal_storage.history"], "Size of files in pg_wal over the hour")
+  assert.equal(english["pg.wal_storage.help"], "Total size of regular files visible in pg_wal at the selected snapshot.")
+  assert.equal(russian["pg.wal_storage.label"], "Размер файлов в pg_wal")
+  assert.equal(russian["pg.wal_storage.history"], "Размер файлов в pg_wal за час")
+  assert.equal(russian["pg.wal_storage.help"], "Суммарный размер обычных файлов, видимых в pg_wal на выбранном снимке.")
   assert.match(english["pg.field.queryid_stat_statements.help"], /vadv-only.*last attributed.*not an exact join key/)
   assert.match(russian["pg.field.queryid_stat_statements.help"], /только в vadv.*последнего связанного.*не точный ключ соединения/)
 })
@@ -125,7 +131,7 @@ test("help copy is concise and directs the reader to adjacent data", async () =>
   ]
 
   for (const [locale, dictionary, action] of dictionaries) {
-    const helpEntries = Object.entries(dictionary).filter(([key]) => key.endsWith(".help"))
+    const helpEntries = Object.entries(dictionary).filter(([key]) => key.endsWith(".help") && key !== "pg.wal_storage.help")
     assert.ok(helpEntries.length > 100)
     for (const [key, value] of helpEntries) {
       const actionAt = value.search(action)
@@ -155,6 +161,8 @@ test("obsolete status and internal collection copy stay out of the UI", async ()
     assert.equal(Object.hasOwn(english, key), false)
     assert.equal(Object.hasOwn(russian, key), false)
   }
+  assert.equal(Object.keys(english).some((key) => key.startsWith("system.metric.process_")), false)
+  assert.equal(Object.keys(russian).some((key) => key.startsWith("system.metric.process_")), false)
 
   assert.equal(english["common.raw"], "Copy exact value")
   assert.equal(russian["common.raw"], "Скопировать точное значение")

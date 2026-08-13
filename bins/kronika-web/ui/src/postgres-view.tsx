@@ -227,7 +227,7 @@ export function PostgresView({
         return <button aria-current={section === tab.id ? "page" : undefined} disabled={!enabled} key={tab.id} onClick={() => { if (section !== tab.id) onOrder(null); onSection(tab.id) }} title={enabled ? undefined : t("pg.no_section_data")} type="button"><span>{t(`pg.section.${tab.id}`)}</span></button>
       })}
     </nav>
-    {section === "overview" && <Overview cursor={cursor} data={data} locale={locale} t={t} />}
+    {section === "overview" && <Overview cursor={cursor} data={data} hour={hour} locale={locale} t={t} />}
     {section === "activity" && available("pg_stat_activity") && <ActivityView context={context} onContextClear={onContextClear} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_activity" ? focusFinding : null} focus={focus} locale={locale} t={t} />}
     {section === "activity" && available("pg_stat_progress_vacuum") && <PgPreview cursor={cursor} data={data} focus={focusFinding?.logicalName === "pg_stat_progress_vacuum" ? focus : null} locale={locale} section="pg_stat_progress_vacuum" t={t} />}
     {section === "statements" && <><PostgresLensBar active={statementLens} choices={["load", "per_call", "io", "resources", "stability"]} onChange={onStatementLens} prefix="statement" t={t} /><PgEntityView columns={statementColumns(statementLens)} context={context} defaultOrder={{ column: statementDefaultOrder(statementLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onLoadMore={onLoadMore} onRetry={onRetry} onOrder={onOrder} onPattern={onPattern} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField={statementLens === "stability" ? "cv" : "mean_exec_ms_per_call"} locale={locale} section="pg_stat_statements" t={t} /></>}
@@ -358,7 +358,7 @@ function PlanInfo({ cursor, data, locale, t }: { readonly cursor: number; readon
   </section>
 }
 
-function Overview({ cursor, data, locale, t }: { readonly cursor: number; readonly data: HourData; readonly locale: Locale; readonly t: Translate }) {
+function Overview({ cursor, data, hour, locale, t }: { readonly cursor: number; readonly data: HourData; readonly hour: number; readonly locale: Locale; readonly t: Translate }) {
   const activity = snapshot(data.sections.pg_stat_activity ?? [], cursor)
   const databases = snapshot(data.sections.pg_stat_database ?? [], cursor)
   const locks = snapshot(data.sections.pg_locks ?? [], cursor)
@@ -368,9 +368,11 @@ function Overview({ cursor, data, locale, t }: { readonly cursor: number; readon
   if (activity.length !== 0) totals.push(["pg.overview.backends", backends.total], ["pg.overview.active", backends.active], ["pg.overview.idle", backends.idle])
   if (databases.length !== 0) totals.push(["pg.overview.databases", databaseCount])
   if (locks.length !== 0) totals.push(["pg.overview.lock_rows", locks.length])
-  const overviewSections = groupSections(data.pgOverview)
+  const walStorage = snapshot(data.sections.pg_wal_storage ?? [], cursor)[0]
+  const overviewSections = groupSections(data.pgOverview.filter(({ logicalName }) => logicalName !== "pg_wal_storage"))
   return <section className="pg-overview">
     <div className="overview-metrics">{totals.map(([label, output]) => <article key={label}><span>{t(label)}</span><strong>{measure(output, locale)}</strong></article>)}</div>
+    {walStorage !== undefined && <WalStorage hour={hour} key={rowKey(walStorage)} locale={locale} row={walStorage} t={t} />}
     {overviewSections.map(([logicalName, allRows]) => {
       const rows = snapshot(allRows, cursor)
       if (rows.length === 0) return null
@@ -381,6 +383,30 @@ function Overview({ cursor, data, locale, t }: { readonly cursor: number; readon
       </section>
     })}
     {databases.length !== 0 && <section className="pg-preview"><h2>{t("pg.section.databases")}</h2><EntityTable columns={DATABASE_COLUMNS.slice(0, 9)} empty={t("table.no_rows")} label={t("pg.section.databases")} locale={locale} rows={databases} t={t} /></section>}
+  </section>
+}
+
+export function walStoragePoints(rows: readonly DataRow[]): readonly ChartPoint[] {
+  return buildMetricSamples(rows, (row) => Object.hasOwn(row.values, "wal_files_bytes")
+    ? asNumber(value(row, "wal_files_bytes"))
+    : undefined)
+}
+
+function WalStorage({ hour, locale, row, t }: { readonly hour: number; readonly locale: Locale; readonly row: DataRow; readonly t: Translate }) {
+  const [history, setHistory] = useState<readonly ChartPoint[]>(() => walStoragePoints([row]))
+  useEffect(() => {
+    const controller = new AbortController()
+    void loadSeries(hour, "pg_wal_storage", {}, ["wal_files_bytes"], controller.signal, row.typeId, row.timestamp)
+      .then((rows) => {
+        const points = walStoragePoints(rows)
+        setHistory(points.length === 0 ? walStoragePoints([row]) : points)
+      })
+      .catch(() => {})
+    return () => controller.abort()
+  }, [hour, row])
+  return <section className="pg-overview-section" data-testid="pg-wal-storage">
+    <h2><LabelHelp helpKey="pg.wal_storage.help" labelKey="pg.wal_storage.label" t={t} /></h2>
+    <SeriesChart cursor={row.timestamp} format={humanBytes} hour={hour} label={t("pg.wal_storage.history")} locale={locale} points={history} />
   </section>
 }
 
@@ -743,7 +769,6 @@ export function overviewValue(cell: ReturnType<typeof value>, field: string, loc
 function rowKey(row: DataRow): string { return `${row.segmentId}:${row.typeId}:${row.ordinal}` }
 export function isTimestampField(field: string): boolean {
   return field.endsWith("_start") || field === "state_change" || field === "waitstart" || field === "stats_reset" || field === "stats_since"
-    || field === "last_archived_time" || field === "last_failed_time"
 }
 function findingHistoryField(columns: readonly EntityColumn[], finding: Finding | null | undefined, fallback: string | null): string | null {
   const field = finding === null || finding === undefined ? null : fieldNameForLocator(finding)

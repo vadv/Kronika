@@ -47,6 +47,7 @@ pub mod store_plans_info;
 pub mod user_indexes;
 pub mod user_tables;
 pub mod wal;
+pub mod wal_storage;
 
 pub use pool::{CONNECT_TIMEOUT, ConnectError, MAX_AGE, Pool};
 pub use query::Session;

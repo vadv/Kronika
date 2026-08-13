@@ -94,6 +94,7 @@ pub use codec::pg_store_plans::{
     PgStorePlansDatasentinelV1, PgStorePlansOsscV1, PgStorePlansVadvV1,
 };
 pub use codec::pg_store_plans_info::PgStorePlansInfo;
+pub use codec::pg_wal_storage::PgWalStorage;
 pub use codec::pgbouncer_events::PgBouncerEvents;
 pub(crate) use codec::{check_row_cap, decode_batches, decode_section, encode_section};
 pub use codec::{
@@ -104,7 +105,7 @@ pub use codec::{
     pg_prepared_xacts, pg_settings, pg_stat_activity, pg_stat_archiver, pg_stat_bgwriter,
     pg_stat_checkpointer, pg_stat_database, pg_stat_io, pg_stat_progress_vacuum,
     pg_stat_statements, pg_stat_statements_info, pg_stat_user_indexes, pg_stat_user_tables,
-    pg_stat_wal, pg_store_plans, pg_store_plans_info, pgbouncer_events,
+    pg_stat_wal, pg_store_plans, pg_store_plans_info, pg_wal_storage, pgbouncer_events,
 };
 pub use contract::{
     Column, ColumnClass, ColumnType, LintError, Semantics, StrId, Ts, TypeContract, Unit, lint,
@@ -254,6 +255,7 @@ pub const fn registry() -> &'static [TypeContract] {
         PgStatStatementsV1::CONTRACT,
         PgStatWalV1::CONTRACT,
         PgStatWalV2::CONTRACT,
+        PgWalStorage::CONTRACT,
         PgLocksV1::CONTRACT,
         PgLocksV2::CONTRACT,
         PgLogErrors::CONTRACT,
