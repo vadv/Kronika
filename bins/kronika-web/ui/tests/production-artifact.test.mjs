@@ -289,6 +289,57 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(relationQuery.get("page_size"), "200")
     assert.equal(relationQuery.getAll("field").includes("relid"), true)
 
+    await cdp.evaluate(`([...document.querySelectorAll('[data-testid="pg-relation-lenses"] button')].find((button) => button.textContent === "Size and buffers")).click()`)
+    await cdp.waitFor(`(() => { const node = document.querySelector('[data-testid="pg-tables-table"] .entity-scroll'); return node !== null && node.scrollWidth > node.clientWidth })()`, "the wide size and buffers table")
+    for (const [width, height] of [[1920, 1080], [1366, 768], [1024, 768]]) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
+      await cdp.evaluate("document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))")
+      const initial = await cdp.evaluate(`(() => {
+        const table = document.querySelector('[data-testid="pg-tables-table"]')
+        const body = table.querySelector('.entity-scroll')
+        const sticky = table.querySelector('.entity-header-cell.entity-sticky')
+        const bodyRect = body.getBoundingClientRect()
+        return {
+          bodyClientWidth: body.clientWidth,
+          bodyScrollWidth: body.scrollWidth,
+          clientWidth: document.documentElement.clientWidth,
+          clientHeight: document.documentElement.clientHeight,
+          documentScrollWidth: document.documentElement.scrollWidth,
+          railBottom: bodyRect.bottom,
+          railHeight: body.offsetHeight - body.clientHeight,
+          railTabIndex: body.tabIndex,
+          railVisible: bodyRect.bottom <= document.documentElement.clientHeight + .5,
+          stickyLeft: sticky.getBoundingClientRect().left,
+          tableLeft: bodyRect.left,
+        }
+      })()`)
+      assert.ok(initial.bodyScrollWidth > initial.bodyClientWidth, `${width}px wide table: ${JSON.stringify(initial)}`)
+      assert.equal(initial.railTabIndex, 0, `${width}px focusable horizontal rail`)
+      assert.ok(initial.railHeight > 0 && initial.railVisible, `${width}px visible horizontal rail: ${JSON.stringify(initial)}`)
+      assert.ok(Math.abs(initial.stickyLeft - initial.tableLeft) <= 1, `${width}px initial sticky identity: ${JSON.stringify(initial)}`)
+      assert.ok(initial.documentScrollWidth <= initial.clientWidth, `${width}px relation document overflow: ${JSON.stringify(initial)}`)
+
+      await cdp.evaluate(`(() => { const body = document.querySelector('[data-testid="pg-tables-table"] .entity-scroll'); body.focus(); body.scrollLeft = body.scrollWidth })()`)
+      await cdp.waitFor(`(() => {
+        const body = document.querySelector('[data-testid="pg-tables-table"] .entity-scroll')
+        return body.scrollLeft >= body.scrollWidth - body.clientWidth - 1
+      })()`, `${width}px rightmost table column`)
+      const end = await cdp.evaluate(`(() => {
+        const table = document.querySelector('[data-testid="pg-tables-table"]')
+        const body = table.querySelector('.entity-scroll')
+        const cells = table.querySelectorAll('.entity-header-cell')
+        const first = cells[0].getBoundingClientRect()
+        const last = cells[cells.length - 1].getBoundingClientRect()
+        const viewport = body.getBoundingClientRect()
+        return { activeRail: document.activeElement === body, firstLeft: first.left, lastRight: last.right, viewportLeft: viewport.left, viewportRight: viewport.right }
+      })()`)
+      assert.equal(end.activeRail, true, `${width}px focused horizontal rail`)
+      assert.ok(Math.abs(end.firstLeft - end.viewportLeft) <= 1, `${width}px sticky identity after horizontal scroll: ${JSON.stringify(end)}`)
+      assert.ok(end.lastRight <= end.viewportRight + 1 && end.lastRight >= end.viewportRight - 2, `${width}px rightmost column access: ${JSON.stringify(end)}`)
+      await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-scroll').scrollLeft = 0`)
+    }
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
+
     await cdp.evaluate(`([...document.querySelectorAll(".pg-tabs button")].find((button) => button.textContent === "Indexes")).click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row')?.textContent.includes("artifact_index") === true`, "the physical index row")
     const indexRow = await cdp.evaluate(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row').textContent`)

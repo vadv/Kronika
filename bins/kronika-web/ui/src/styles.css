@@ -204,7 +204,7 @@ h2 { font-size: var(--t-md); }
 .label-help { align-items: center; display: inline-flex; position: relative; }
 .label-help > * + * { margin-left: 5px; }
 .help-dot { align-items: center; background: var(--s2); border: 1px solid var(--line4); border-radius: 50%; color: var(--accent3); cursor: help; display: inline-flex; font-size: var(--t-xs); height: 14px; justify-content: center; line-height: 1; padding: 0; width: 14px; }
-.help-dot:focus-visible, button:focus-visible, .timeline-plot:focus-visible, .entity-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.help-dot:focus-visible, button:focus-visible, .timeline-plot:focus-visible, .entity-row:focus-visible, .entity-scroll:focus-visible { outline: 2px solid var(--accent); }
 .tooltip { background: var(--s2); border: 1px solid var(--line4); box-shadow: 0 8px 24px var(--shadow-a); color: var(--fg); font-size: var(--t-sm); line-height: 1.5; max-height: calc(100vh - 16px); max-width: min(310px, 70vw, calc(100vw - 16px)); overflow: auto; padding: 8px 9px; position: fixed; text-align: left; text-transform: none; width: max-content; z-index: 1000; }
 .timeline-shell { background: var(--s1); border-bottom: 1px solid var(--line2); border-top: 1px solid var(--line2); display: grid; grid-template-columns: 172px minmax(0, 1fr); margin-top: 8px; overflow: hidden; }
 .timeline-empty { align-items: center; background: var(--s1); border-bottom: 1px solid var(--line2); border-top: 1px solid var(--line2); color: var(--fg4); display: flex; font-size: var(--t-sm); justify-content: center; margin-top: 8px; min-height: 72px; }
@@ -438,7 +438,7 @@ h2 { font-size: var(--t-md); }
 .pg-entity-layout { display: grid; grid-template-columns: minmax(0, 1fr) 390px; margin-top: 8px; min-width: 0; }
 .pg-entity-main { min-width: 0; }
 .pg-table-only { grid-template-columns: minmax(0, 1fr); }
-.pg-entity-layout .entity-scroll { height: min(560px, calc(100vh - 355px)); min-height: 330px; }
+.pg-entity-layout .entity-scroll { height: min(560px, calc(100dvh - 475px)); min-height: 100px; }
 .pg-detail { background: var(--s2); border: 1px solid var(--line3); border-left: 0; max-height: min(560px, calc(100vh - 355px)); overflow: auto; padding: 11px; }
 .pg-detail > header { align-items: flex-start; background: var(--s2); border-bottom: 1px solid var(--line3); display: flex; justify-content: space-between; padding-bottom: 9px; position: sticky; top: -11px; z-index: 2; }
 .pg-detail > header span { color: var(--fg3); font-size: var(--t-xs); text-transform: uppercase; }

@@ -139,10 +139,17 @@ test("the human context chip and ordinary search are visibly intersected", async
 })
 
 test("paged tables keep virtualization and trigger the guarded near-end callback", async () => {
-  const source = await readFile(new URL("../src/entity-table.tsx", import.meta.url), "utf8")
+  const [source, styles] = await Promise.all([
+    readFile(new URL("../src/entity-table.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+  ])
   const postgres = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
   assert.match(source, /useVirtualizer/)
   assert.match(source, /lastVirtualIndex >= rendered\.length - 10/)
   assert.match(source, /onNearEnd\(\)/)
+  assert.match(source, /className="entity-scroll"[^>]*tabIndex=\{0\}/)
+  assert.match(styles, /\.entity-scroll[^}]*overflow:\s*auto/s)
+  assert.match(styles, /\.entity-scroll:focus-visible[^}]*outline:/s)
+  assert.match(styles, /\.pg-entity-layout \.entity-scroll[^}]*100dvh[^}]*min-height:\s*100px/s)
   assert.match(postgres, /data-testid="table-paging"/)
 })

@@ -173,7 +173,7 @@ export function EntityTable({
   return <section className={`entity-table${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
     {status !== undefined && <div className="table-status" data-testid="table-status">{status}</div>}
     {t !== undefined && (onPattern !== undefined || contextLabel !== undefined) && <TableFilter context={contextLabel} kept={serverSorted === true ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} t={t} total={rows.length} />}
-    <div aria-label={label} className="entity-scroll" ref={parent} role="table">
+    <div aria-label={label} className="entity-scroll" ref={parent} role="table" tabIndex={0}>
       <div className="entity-head" ref={head} role="row" style={{ width }}>
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {
           const sorted = header.column.getIsSorted()
