@@ -156,29 +156,13 @@ export function humanDuration(cell: Cell, locale: Locale): string {
   return `${sign}${hours}${units.hour} ${String(minutes % 60).padStart(2, "0")}${units.minute}`
 }
 
-const SCALES: readonly (readonly [string, number])[] = [["T", 1e12], ["G", 1e9], ["M", 1e6], ["k", 1e3]]
-
 export function compact(value: number, locale: Locale): string {
-  if (!Number.isFinite(value)) return "—"
-  const size = Math.abs(value)
-  if (size >= 1e15) return significant(value, locale, "scientific")
-  for (const [mark, scale] of SCALES) {
-    if (size < scale) continue
-    return `${significant(value / scale, locale)}${mark}`
-  }
-  return significant(value, locale)
+  const abs = Math.abs(value), notation = abs >= 1e15 ? "scientific" : abs >= 1e3 ? "compact" : undefined
+  return isFinite(value) ? new Intl.NumberFormat(locale, { maximumSignificantDigits: 3, notation }).format(value) : "—"
 }
 
 function decimals(value: number, locale: Locale, digits: number): string {
   return new Intl.NumberFormat(locale, { maximumFractionDigits: digits }).format(value)
-}
-
-function significant(value: number, locale: Locale, notation: "scientific" | "standard" = "standard"): string {
-  return new Intl.NumberFormat(locale, {
-    maximumSignificantDigits: 3,
-    notation,
-    useGrouping: false,
-  }).format(value)
 }
 
 

@@ -9,7 +9,7 @@ import { EntityTable, unit, type EntityColumn, type TableOrder } from "./entity-
 import type { Translate } from "./help"
 import { fieldNameForLocator, loadSeries, loadSnapshot } from "./api"
 import { LabelHelp } from "./help"
-import { asNumber, formatUtc, humanBytes, humanDuration, identifier, measure, rawText, snapshot, value, type Locale, shownMoment } from "./model"
+import { asNumber, compact, formatUtc, humanBytes, humanDuration, identifier, measure, rawText, snapshot, value, type Locale, shownMoment } from "./model"
 import { decoratePostgresIntervalRow, findingSemanticField, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, physicalField, physicalFields, planDefaultOrder, postgresHistory, postgresIdentity, statementDefaultOrder, unique, type PlanLens, type PostgresSemanticField, type StatementLens } from "./postgres-metrics"
 import { PostgresRelationsView } from "./postgres-relations-view"
 import type { RelationGroup, RelationLens, RelationNavigation } from "./postgres-relations"
@@ -658,6 +658,7 @@ function detailTitle(row: DataRow, section: string, t: Translate): string {
 
 export function display(cell: ReturnType<typeof value>, column: EntityColumn, locale: Locale, t: Translate): ReactNode {
   if (cell === null) return "—"
+  if (/^(reltuples|xid_age|mxid_age)$/.test(column.field)) return <span title={String(cell)}>{column.field === "reltuples" && "≈"}{compact(asNumber(cell)!, locale)}</span>
   if (column.kind === "timestamp") {
     const timestamp = asNumber(cell)
     return timestamp === null ? "—" : <TimestampValue t={t} timestamp={timestamp} />

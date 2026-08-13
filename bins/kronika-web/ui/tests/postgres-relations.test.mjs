@@ -82,14 +82,16 @@ test("rendered relation columns hide numeric identity while requests retain it",
         assert.equal(request.fields.includes("relid"), group === "object", `${section}:${lens}:${group}:relid projection`)
         assert.equal(request.fields.includes("indexrelid"), section === "pg_stat_user_indexes" && group === "object", `${section}:${lens}:${group}:indexrelid projection`)
         assert.deepEqual(Object.keys(request.order).filter((field) => hidden.includes(field)), [], `${section}:${lens}:${group}:visible sorts`)
-        for (const columns of [view.relationColumns(section, lens, group), view.relationDetailColumns(section, lens, group)]) {
-          const fields = columns.map(({ field }) => field)
-          assert.deepEqual(fields.filter((field) => hidden.includes(field)), [], `${section}:${lens}:${group}`)
-          assert.equal(fields.includes("datname"), true, `${section}:${lens}:${group}:database name`)
-          assert.equal(fields.includes("schemaname"), group !== "database", `${section}:${lens}:${group}:schema name`)
-          assert.equal(fields.includes("relname"), group === "object", `${section}:${lens}:${group}:table name`)
-          assert.equal(fields.includes("indexrelname"), section === "pg_stat_user_indexes" && group === "object", `${section}:${lens}:${group}:index name`)
-        }
+        const fields = view.relationColumns(section, lens, group).map(({ field }) => field)
+        assert.deepEqual(fields.filter((field) => hidden.includes(field)), [], `${section}:${lens}:${group}`)
+        assert.equal(fields.includes("datname"), true, `${section}:${lens}:${group}:database name`)
+        assert.equal(fields.includes("schemaname"), group !== "database", `${section}:${lens}:${group}:schema name`)
+        assert.equal(fields.includes("relname"), group === "object", `${section}:${lens}:${group}:table name`)
+        assert.equal(fields.includes("indexrelname"), section === "pg_stat_user_indexes" && group === "object", `${section}:${lens}:${group}:index name`)
+
+        const detail = view.relationDetailColumns(section, lens, group).map(({ field }) => field)
+        assert.deepEqual(detail.filter((field) => hidden.includes(field)), [], `${section}:${lens}:${group}:detail ids`)
+        assert.deepEqual(detail.filter((field) => ["datname", "schemaname", "relname", "indexrelname"].includes(field)), [], `${section}:${lens}:${group}:detail identity`)
       }
     }
   }
@@ -297,6 +299,17 @@ test("table detail lenses render five distinct semantic field matrices", () => {
   assert.equal(row.values.heap_blks_hit, 0)
 })
 
+test("index detail lenses render four distinct semantic field matrices", () => {
+  const matrices = relation.INDEX_LENSES.map((lens) => view.relationDetailColumns("pg_stat_user_indexes", lens, "object").map(({ field }) => field))
+  assert.equal(new Set(matrices.map((fields) => fields.join(","))).size, relation.INDEX_LENSES.length)
+  for (const fields of matrices.slice(0, 3)) {
+    assert.equal(fields.includes("tablespace"), false)
+    assert.equal(fields.includes("amname"), false)
+  }
+  assert.deepEqual(matrices[3], ["tablespace", "amname", "indisvalid", "indisready", "indisunique", "indisprimary", "indisexclusion"])
+  assert.equal(matrices.flat().includes("indexdef"), false)
+})
+
 test("object history is reset-safe, layout-safe, and keeps missing values unavailable", () => {
   const row = (timestamp, typeId, value) => ({
     segmentId: "segment-a",
@@ -363,7 +376,7 @@ test("detail, empty, navigation, and paging behavior stays on generic exact APIs
   assert.match(source, /row\.logicalName === "pg_stat_user_indexes" \? relationDetailTarget\(row\) : null/)
   assert.match(source, /loadSnapshot\(row\.segmentId, definitionTarget\.at, \[definitionTarget\.request\]/)
   assert.match(source, /loadSeries\(hour, row\.logicalName, historyFilters\(row\), \[historyField\], controller\.signal, undefined, row\.timestamp\)/)
-  assert.match(source, /relationDetailColumns\(row\.logicalName as RelationSection, lens, row\.relation!\.group, rateFields\)/)
+  assert.match(source, /relationDetailColumns\(row\.logicalName as RelationSection, lens, row\.relation!\.group, rateFields\)\.filter\(\(column\) => value\(row, column\.field\) !== null\)/)
   assert.match(source, /display\(value\(row, column\.field\), column, locale, t\)/)
   assert.doesNotMatch(source, /Object\.keys\(exact\.values\)|rate: false/)
   assert.match(source, /data-testid="pg-exact-indexdef"/)

@@ -118,7 +118,8 @@ export function relationColumns(section: RelationSection, lens: RelationLens, le
 }
 
 export function relationDetailColumns(section: RelationSection, lens: RelationLens, level: RelationGroup, rateFields: readonly string[] = []): readonly EntityColumn[] {
-  return visibleRelationFields(section, lens, level).map((field) => relationColumn(field, rateFields))
+  const identity = level === "database" ? 2 : level === "schema" ? 3 : section === "pg_stat_user_tables" ? 6 : lens === "state" ? 7 : 9
+  return relationFields(section, lens, level).slice(identity).filter((field) => field !== "state_severity").map((field) => relationColumn(field, rateFields))
 }
 
 function RelationLevels({ filters, level, onNavigate, section, t }: { readonly filters: Readonly<Record<string, string>>; readonly level: RelationGroup; readonly onNavigate: (navigation: RelationNavigation) => void; readonly section: RelationSection; readonly t: Translate }) {
@@ -156,20 +157,17 @@ function RelationDetail({ hour, lens, locale, onClose, onNavigate, rateFields, r
     }
     return () => controller.abort()
   }, [definitionTarget, historyField, hour, object, row])
-  const columns = relationDetailColumns(row.logicalName as RelationSection, lens, row.relation!.group, rateFields)
-  const definition = object && row.logicalName === "pg_stat_user_indexes" && exact !== undefined && exact !== null ? rawText(value(exact, "indexdef")) : null
-  const titleField = row.relation?.group === "database"
-    ? "datname"
-    : row.relation?.group === "schema" ? "schemaname" : row.logicalName === "pg_stat_user_tables" ? "relname" : "indexrelname"
+  const columns = relationDetailColumns(row.logicalName as RelationSection, lens, row.relation!.group, rateFields).filter((column) => value(row, column.field) !== null)
+  const definition = exact ? rawText(value(exact, "indexdef")) : null
   const linked = linkedRelation(row)
   const historyColumn = relationColumn(historyField, rateFields)
   const drill = relationDrill(row)
   return <aside className="pg-detail" data-testid="pg-relation-detail">
-    <header><div><span>{t(row.logicalName === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}</span><h2>{rawText(row.values[titleField] ?? null) ?? "—"}</h2></div><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
+    <header><h2>{relationRowLabel(row)}</h2><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
     {linked !== null && <div className="lens-tabs"><button data-testid="pg-relation-link" onClick={() => onNavigate(linked)} type="button">{t(row.logicalName === "pg_stat_user_tables" ? "pg.relation.indexes" : "pg.relation.table")}</button></div>}
     {drill !== null && <div className="lens-tabs"><button data-testid="pg-relation-drill" onClick={() => onNavigate(drill)} type="button">{t(row.relation?.group === "database" ? "pg.relation.level.schema" : row.logicalName === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}</button></div>}
-    {object && row.logicalName === "pg_stat_user_indexes" && <section className="query-block"><span>{t("pg.relation.definition")}{definition !== null && <button aria-label={t("common.raw")} className="copy-raw" onClick={() => void navigator.clipboard?.writeText(definition)} type="button"><Copy aria-hidden="true" size={12} /></button>}</span><pre data-testid="pg-exact-indexdef">{exact === undefined ? t("status.loading") : definition ?? t("common.unavailable")}</pre></section>}
     <dl>{columns.map((column) => <div key={column.field}><dt>{t(column.label)}</dt><dd>{display(value(row, column.field), column, locale, t)}</dd></div>)}</dl>
+    {definitionTarget !== null && <section className="query-block"><span>{t("pg.relation.definition")}{definition !== null && <button aria-label={t("common.raw")} className="copy-raw" onClick={() => void navigator.clipboard?.writeText(definition)} type="button"><Copy aria-hidden="true" size={12} /></button>}</span><pre data-testid="pg-exact-indexdef">{exact === undefined ? t("status.loading") : definition ?? t("common.unavailable")}</pre></section>}
     {object && <SeriesChart cursor={row.timestamp} format={chartFormat(historyColumn.kind)} hour={hour} label={t(historyColumn.label)} locale={locale} points={history} />}
   </aside>
 }
@@ -202,5 +200,5 @@ function historyFilters(row: DataRow): Readonly<Record<string, string>> {
 
 function relationRowLabel(row: DataRow): string {
   const name = row.logicalName === "pg_stat_user_tables" ? "relname" : "indexrelname"
-  return rawText(row.values[name] ?? row.values.schemaname ?? row.values.datname ?? null) ?? relationRowKey(row)
+  return ["datname", "schemaname", name].flatMap((field) => rawText(row.values[field] ?? null) ?? []).join(".") || relationRowKey(row)
 }
