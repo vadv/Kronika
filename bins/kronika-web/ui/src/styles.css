@@ -223,23 +223,18 @@ h2 { font-size: var(--t-md); }
 .data-unavailable { fill: var(--s2); opacity: .72; }
 .timeline-grid { opacity: .62; stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .primary-scale { color: var(--fg4); display: flex; flex-direction: column; font-size: 9px; font-variant-numeric: tabular-nums; justify-content: space-between; line-height: 1; pointer-events: none; position: absolute; right: 6px; text-align: right; text-shadow: 0 0 5px var(--bg); }
-.primary-grid { opacity: .52; stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
-.threshold-band { fill: color-mix(in srgb, var(--bad) 11%, transparent); pointer-events: none; }
-.lane-line { opacity: .72; stroke: var(--line2); stroke-width: 1; vector-effect: non-scaling-stroke; }
-.series-area { pointer-events: none; }
+.primary-grid { stroke: var(--line); }
+.threshold-band { fill: color-mix(in srgb, var(--bad) 11%, transparent); }
+.lane-line { stroke: var(--line2); }
 .area-cyan { fill: color-mix(in srgb, var(--accent) 9%, transparent); }
 .area-amber { fill: color-mix(in srgb, var(--warn) 7%, transparent); }
 .area-violet { fill: color-mix(in srgb, var(--event) 7%, transparent); }
-.series-line { fill: none; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
-.series-dot { vector-effect: non-scaling-stroke; }
-.series-primary { stroke-width: 1.8; }
-.series-overview { stroke-width: 1.15; }
+.series-line { fill: none; stroke-linejoin: round; }
+.series-primary{stroke-width:2}
+.series-overview{stroke-width:1.15}
 .series-cyan { stroke: var(--accent); }
 .series-amber { stroke: var(--warn); }
 .series-violet { stroke: var(--event); }
-.series-dot.series-cyan { fill: var(--accent); }
-.series-dot.series-amber { fill: var(--warn); }
-.series-dot.series-violet { fill: var(--event); }
 .cursor-line { stroke: var(--cursor); stroke-dasharray: 3 3; stroke-width: 1; vector-effect: non-scaling-stroke; }
 .hover-line { opacity: .7; stroke: var(--fg4); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .timeline-hover { background: var(--s2); border: 1px solid var(--line4); box-shadow: 0 8px 20px var(--shadow-a); color: var(--fg3); display: grid; font-size: var(--t-xs); gap: 3px; max-width: min(290px, 72vw); padding: 6px 7px; pointer-events: none; position: absolute; top: 4px; transform: translateX(-50%); z-index: 5; }

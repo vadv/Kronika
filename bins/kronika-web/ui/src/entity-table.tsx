@@ -95,7 +95,7 @@ export function EntityTable({
   const parent = useRef<HTMLDivElement>(null)
   const columns = useMemo<ColumnDef<DataRow>[]>(() => fields.map((field, index) => ({
     accessorFn: (row) => field.sortValue === undefined ? sortable(value(row, field.field), field.kind) : field.sortValue(row),
-    cell: ({ row }) => field.render === undefined ? <Cell cell={value(row.original, field.field)} kind={field.kind} locale={locale} rate={field.rate} t={t} /> : field.render(row.original),
+    cell: ({ row }) => field.render === undefined ? <Cell at={row.original.relation ? row.original.timestamp : null} cell={value(row.original, field.field)} kind={field.kind} locale={locale} rate={field.rate} t={t} /> : field.render(row.original),
     header: () => t === undefined ? field.label : t(field.label),
     id: field.field,
     enableSorting: serverSorted === true ? field.sortable === true : field.sortable !== false,
@@ -267,13 +267,15 @@ export function unit(base: string, rate: boolean | undefined, perSecond = "/s"):
   return rate === true ? `${base}${perSecond}` : base
 }
 
-function Cell({ cell, kind = "text", locale, rate, t }: { readonly cell: Cell; readonly kind?: EntityColumn["kind"]; readonly locale: Locale; readonly rate?: boolean | undefined; readonly t?: Translate | undefined }) {
+function Cell({ at, cell, kind = "text", locale, rate, t }: { readonly at: number | null; readonly cell: Cell; readonly kind?: EntityColumn["kind"]; readonly locale: Locale; readonly rate?: boolean | undefined; readonly t?: Translate | undefined }) {
   const per = t === undefined ? "/s" : t("unit.per_second")
   if (cell === null) return <span className="null-cell">—</span>
   if (kind === "id") return <span className="entity-value id-value">{identifier(cell)}</span>
   if (kind === "timestamp") {
     const timestamp = asNumber(cell)
-    return <span className="entity-value">{timestamp === null ? "—" : formatUtc(timestamp)}</span>
+    if (timestamp === null) return "—"
+    const exact = formatUtc(timestamp)
+    return <time className="entity-value" title={exact}>{at === null ? exact : humanDuration((at - timestamp) / 1_000, locale)}</time>
   }
   if (kind === "bytes") return <span className="entity-value">{measure(cell, locale, unit(t === undefined ? " B" : t("unit.byte"), rate, per))}</span>
   if (kind === "kib") return <span className="entity-value">{measure(cell, locale, unit(" KiB", rate, per))}</span>

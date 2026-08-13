@@ -167,6 +167,8 @@ test("elapsed Activity values use compact wall-time formatting", () => {
   assert.equal(helpers.humanDuration(60_000, "en"), "1m 00s")
   assert.equal(helpers.humanDuration(194_000, "en"), "3m 14s")
   assert.equal(helpers.humanDuration(7_560_000, "en"), "2h 06m")
+  assert.equal(helpers.humanDuration(163_800_000, "en"), "1d 21h")
+  assert.equal(helpers.humanDuration(-3_600_000, "ru"), "−1ч 00м")
   assert.equal(helpers.humanDuration(5_200, "ru"), "5,2 с")
   assert.equal(helpers.humanDuration(null, "ru"), "—")
 })

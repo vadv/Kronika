@@ -152,6 +152,7 @@ export function humanDuration(cell: Cell, locale: Locale): string {
   const minutes = Math.floor(seconds / 60)
   if (minutes < 60) return `${sign}${minutes}${units.minute} ${String(seconds % 60).padStart(2, "0")}${units.second}`
   const hours = Math.floor(minutes / 60)
+  if (hours >= 24) return `${sign}${Math.floor(hours / 24)}${locale === "ru" ? "д" : "d"} ${String(hours % 24).padStart(2, "0")}${units.hour}`
   return `${sign}${hours}${units.hour} ${String(minutes % 60).padStart(2, "0")}${units.minute}`
 }
 
