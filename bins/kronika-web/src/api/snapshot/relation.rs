@@ -1125,7 +1125,9 @@ impl Aggregate {
             (RelationKind::Tables, "last_seq_scan_never") if group == RelationGroup::Object => {
                 self.never("last_seq_scan")
             }
-            (RelationKind::Tables, "last_idx_scan_never") if group == RelationGroup::Object => {
+            (RelationKind::Tables | RelationKind::Indexes, "last_idx_scan_never")
+                if group == RelationGroup::Object =>
+            {
                 self.never("last_idx_scan")
             }
             (RelationKind::Tables, "dml_total") => self
@@ -1173,7 +1175,8 @@ impl Aggregate {
                 &["heap_blks_read", "heap_blks_hit"],
                 100.0,
             ),
-            (RelationKind::Tables, "index_buffer_hit_pct") => {
+            (RelationKind::Tables, "index_buffer_hit_pct")
+            | (RelationKind::Indexes, "buffer_hit_pct") => {
                 self.ratio(&["idx_blks_hit"], &["idx_blks_read", "idx_blks_hit"], 100.0)
             }
             (RelationKind::Tables, "toast_buffer_hit_pct") => self.ratio(
@@ -1219,12 +1222,6 @@ impl Aggregate {
             }
             (RelationKind::Indexes, "tuples_per_scan") => {
                 self.ratio(&["idx_tup_read"], &["idx_scan"], 1.0)
-            }
-            (RelationKind::Indexes, "buffer_hit_pct") => {
-                self.ratio(&["idx_blks_hit"], &["idx_blks_read", "idx_blks_hit"], 100.0)
-            }
-            (RelationKind::Indexes, "last_idx_scan_never") if group == RelationGroup::Object => {
-                self.never("last_idx_scan")
             }
             (RelationKind::Indexes, "no_scans") if group == RelationGroup::Object => self
                 .no_scans

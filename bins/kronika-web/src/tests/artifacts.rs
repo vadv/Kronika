@@ -42,6 +42,8 @@ type NamedIndexSnapshot<'a> = (
     &'a str,
 );
 
+type DmlTableSnapshot<'a> = (i64, u32, u32, [i64; 4], &'a str, &'a str, &'a str);
+
 struct Fixture {
     directory: tempfile::TempDir,
     writer: WriterOwner,
@@ -520,7 +522,7 @@ impl Fixture {
             .expect("append named table snapshots");
     }
 
-    fn append_dml_table_snapshots(&mut self, rows: &[(i64, u32, u32, [i64; 4], &str, &str, &str)]) {
+    fn append_dml_table_snapshots(&mut self, rows: &[DmlTableSnapshot<'_>]) {
         let mut interner = Interner::new(DictLimits::default());
         let tablespace = StrId(
             interner
@@ -2646,6 +2648,10 @@ fn relation_table_buffer_rates_distinguish_values_zero_and_missing_predecessors(
         assert_eq!(rows["3"]["values"][field], Value::Null);
     }
 
+    assert_exact_buffer_rows(&fixture);
+}
+
+fn assert_exact_buffer_rows(fixture: &Fixture) {
     let exact = format!(
         "/api/segments/{SEGMENT_ID}/snapshot?at=20000000&section=pg_stat_user_tables&field=datid&field=heap_blks_read&field=heap_blks_hit&type_id=1013001&row_ordinal=1"
     );
@@ -2926,7 +2932,7 @@ fn relation_derivatives_sort_the_full_set_and_recompute_group_ratios() {
     let share = rows[0]["values"]["insert_share_pct"]
         .as_f64()
         .expect("aggregate insert share");
-    assert!((share - 10.0 / 101.0 * 100.0).abs() < 1e-12);
+    assert!((share - 1_000.0 / 101.0).abs() < 1e-12);
 }
 
 #[test]
