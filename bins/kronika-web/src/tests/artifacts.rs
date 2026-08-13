@@ -1216,7 +1216,9 @@ async fn large_ndjson_gzip_round_trips_to_the_identity_representation() {
     );
     assert_eq!(
         response.headers().get(VARY),
-        Some(&HeaderValue::from_static("Authorization, Accept-Encoding"))
+        Some(&HeaderValue::from_static(
+            "Authorization, Cookie, Accept-Encoding"
+        ))
     );
     let mut compressed = Vec::new();
     let mut body = response.into_body();
@@ -1550,7 +1552,9 @@ async fn weak_index_etag_revalidates_both_representations_without_a_304_body() {
     assert!(etag.starts_with("W/\""));
     assert_eq!(
         response.headers().get(VARY),
-        Some(&HeaderValue::from_static("Authorization, Accept-Encoding"))
+        Some(&HeaderValue::from_static(
+            "Authorization, Cookie, Accept-Encoding"
+        ))
     );
     assert!(
         !response
@@ -1577,7 +1581,9 @@ async fn weak_index_etag_revalidates_both_representations_without_a_304_body() {
         );
         assert_eq!(
             response.headers().get(VARY),
-            Some(&HeaderValue::from_static("Authorization, Accept-Encoding"))
+            Some(&HeaderValue::from_static(
+                "Authorization, Cookie, Accept-Encoding"
+            ))
         );
         assert!(!response.headers().contains_key(CONTENT_ENCODING));
         assert!(

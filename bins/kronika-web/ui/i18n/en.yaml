@@ -1,7 +1,7 @@
 # Flat source dictionary. Values are quoted so validation stays deterministic.
 app.title: "KRONIKA"
 auth.title: "Sign in to Kronika"
-auth.subtitle: "Enter the account configured for this server. Credentials stay only in this page's memory and are not saved."
+auth.subtitle: "Enter the account configured for this server. Kronika keeps you signed in on this browser without saving your password."
 auth.user: "Username"
 auth.password: "Password"
 auth.submit: "Sign in"

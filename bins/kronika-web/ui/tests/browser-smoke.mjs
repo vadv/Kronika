@@ -35,7 +35,12 @@ socket.addEventListener("message", (event) => {
   }
   if (message.method === "Log.entryAdded" && message.params.entry.level === "error") errors.push(message.params.entry.text)
   if (message.method === "Network.loadingFailed" && message.params.canceled !== true && message.params.errorText !== "net::ERR_ABORTED") errors.push(message.params.errorText)
-  if (message.method === "Network.responseReceived" && message.params.response.status >= 400) errors.push(`${message.params.response.status}:${message.params.response.url}`)
+  if (message.method === "Network.responseReceived" && message.params.response.status >= 400) {
+    const response = message.params.response
+    const url = new URL(response.url)
+    const unsignedBootstrap = response.status === 401 && url.origin === origin && url.pathname === "/auth/session"
+    if (!unsignedBootstrap) errors.push(`${response.status}:${response.url}`)
+  }
   if (message.method === "Network.requestWillBeSent") {
     const url = message.params.request.url
     if (!url.startsWith("data:") && !url.startsWith("blob:") && new URL(url).origin !== origin) external.push(url)

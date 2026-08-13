@@ -22,10 +22,12 @@ const AFTER_AT = AT + 7_000_000
 const QUARTER = HOUR + 900_000_000
 const QUARTER_PREVIOUS = QUARTER - 5_000_000
 const QUARTER_NEXT = QUARTER + 5_000_000
+const SESSION_COOKIE = `kronika_session=v1.2000000000.${"A".repeat(43)}`
 
-test("the production artifact preserves wire keys and exact finding page state", { timeout: 30_000 }, async () => {
+test("the production artifact preserves wire keys and exact finding page state", { timeout: 45_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const requests = []
+  const authState = { valid: false }
   let heldContextPage = null
   let heldSystemPage = null
   let contextPageRequested
@@ -34,23 +36,29 @@ test("the production artifact preserves wire keys and exact finding page state",
   const systemPage = new Promise((resolve) => { systemPageRequested = resolve })
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    requests.push(requestRecord(request, url))
     if (url.pathname === "/") {
       response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
       response.end(html)
       return
     }
+    if (url.pathname === "/auth/session") {
+      answerSession(request, response, authState)
+      return
+    }
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) {
+      unauthorized(response)
+      return
+    }
     if (url.pathname === "/api/catalog") {
-      requests.push({ authorization: request.headers.authorization, path: url.pathname, query: url.search })
       ndjson(response, [])
       return
     }
     if (url.pathname === "/api/hour") {
-      requests.push({ authorization: request.headers.authorization, path: url.pathname, query: url.search })
       ndjson(response, timelineRecords(Number(url.searchParams.get("from") ?? HOUR)))
       return
     }
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
-      requests.push({ authorization: request.headers.authorization, path: url.pathname, query: url.search })
       const sections = url.searchParams.getAll("section")
       if (url.searchParams.has("row_ordinal") && sections.includes("pg_stat_user_indexes")) {
         ndjson(response, exactIndexRecords())
@@ -104,7 +112,7 @@ test("the production artifact preserves wire keys and exact finding page state",
         errors.push(message.params.args.map((argument) => argument.value ?? argument.description ?? "").join(" "))
       }
       if (message.method === "Log.entryAdded" && message.params.entry.level === "error") {
-        errors.push(message.params.entry.text)
+        if (!expectedUnauthorizedLog(message.params.entry.text)) errors.push(message.params.entry.text)
       }
       if (message.method === "Network.loadingFailed"
         && message.params.canceled !== true
@@ -112,7 +120,11 @@ test("the production artifact preserves wire keys and exact finding page state",
         errors.push(message.params.errorText)
       }
       if (message.method === "Network.responseReceived" && message.params.response.status >= 400) {
-        errors.push(`${message.params.response.status}:${message.params.response.url}`)
+        const response = message.params.response
+        const url = new URL(response.url)
+        if (!(response.status === 401 && url.origin === origin && url.pathname === "/auth/session")) {
+          errors.push(`${response.status}:${response.url}`)
+        }
       }
       if (message.method === "Network.requestWillBeSent") {
         const requested = message.params.request.url
@@ -151,7 +163,17 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.match(rendered.row, /select artifact_wire_contract/)
     assert.equal(rendered.missing, null)
     assert.ok(requests.some(({ path }) => path === `/api/segments/${SEGMENT}/snapshot`))
-    assert.ok(requests.every(({ authorization }) => authorization === "Basic YXJ0aWZhY3Q6d2lyZQ=="))
+    const firstApi = requests.findIndex(({ path }) => path.startsWith("/api/"))
+    const login = requests.findIndex(({ method, path }) => method === "POST" && path === "/auth/session")
+    assert.ok(login > requests.findIndex(({ method, path }) => method === "GET" && path === "/auth/session"))
+    assert.ok(firstApi > login, JSON.stringify(requests.slice(0, firstApi + 1), null, 2))
+    assert.deepEqual(
+      requests.filter(({ authorization }) => authorization !== null).map(({ authorization, method, path }) => ({ authorization, method, path })),
+      [{ authorization: "Basic YXJ0aWZhY3Q6d2lyZQ==", method: "POST", path: "/auth/session" }],
+    )
+    assert.ok(requests.filter(({ path }) => path.startsWith("/api/")).every(({ authorization, cookie, marker }) => (
+      authorization === null && cookie === SESSION_COOKIE && marker === "1"
+    )))
 
     const initialTheme = await cdp.evaluate(`document.documentElement.dataset.theme`)
     const alternateTheme = initialTheme === "dark" ? "light" : "dark"
@@ -590,6 +612,174 @@ test("the production artifact preserves wire keys and exact finding page state",
   }
 })
 
+test("the minified artifact restores and clears its opaque browser session", { timeout: 60_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const requests = []
+  const responses = []
+  const errors = []
+  const external = []
+  const authState = { valid: false }
+  let rejectNextApi = false
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    requests.push(requestRecord(request, url))
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") {
+      answerSession(request, response, authState)
+      return
+    }
+    if (url.pathname.startsWith("/api/")) {
+      if (rejectNextApi) {
+        rejectNextApi = false
+        unauthorized(response)
+        return
+      }
+      if (!browserIsAuthenticated(request, authState)) {
+        unauthorized(response)
+        return
+      }
+    }
+    if (url.pathname === "/api/hour") {
+      ndjson(response, timelineRecords(Number(url.searchParams.get("from") ?? HOUR)))
+      return
+    }
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
+      ndjson(response, url.searchParams.getAll("section").includes("pg_stat_activity") ? snapshotRecords() : [])
+      return
+    }
+    if (url.pathname === "/api/catalog") {
+      ndjson(response, [])
+      return
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("session test server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const pageUrl = `${origin}/?at=${AT}&view=pg.activity`
+  const profile = await mkdtemp(join(tmpdir(), "kronika-session-browser-"))
+  let browser = launchBrowser(profile)
+  let socket
+  try {
+    let debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    let cdp = cdpSession(socket)
+    trackPage(socket, origin, { errors, external, responses })
+    await enablePage(cdp)
+
+    let started = requests.length
+    await cdp.send("Page.navigate", { url: pageUrl })
+    await cdp.waitFor(`document.querySelector(".login-card") !== null`, "initial login")
+    assertBootstrapBeforeApi(requests.slice(started), false)
+    await submitLogin(cdp)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"]') !== null`, "signed-in application")
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-activity-table"] .entity-row').length === 1`, "initial API data")
+
+    const storage = await cdp.evaluate(`(async () => ({
+      cookie: document.cookie,
+      indexedDatabases: (await indexedDB.databases()).map(({ name, version }) => ({ name, version })),
+      local: Object.entries(localStorage),
+      session: Object.entries(sessionStorage),
+    }))()`)
+    assert.equal(storage.cookie, "")
+    assert.deepEqual(storage.indexedDatabases, [])
+    assert.deepEqual(storage.session, [])
+    const stored = JSON.stringify(storage)
+    for (const secret of ["artifact", "wire", "Basic", SESSION_COOKIE, "YXJ0aWZhY3Q6d2lyZQ=="]) {
+      assert.equal(stored.includes(secret), false, `browser storage contains ${secret}`)
+    }
+
+    started = requests.length
+    await cdp.send("Page.reload")
+    await waitForRequests(() => requests.slice(started).some(({ method, path }) => method === "GET" && path === "/auth/session"))
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-activity-table"] .entity-row').length === 1`, "reload restoration")
+    assertBootstrapBeforeApi(requests.slice(started), true)
+
+    started = requests.length
+    const created = await cdp.send("Target.createTarget", { url: "about:blank" })
+    const tabSocket = await pageSocket(debugPort, created.targetId)
+    const tab = cdpSession(tabSocket)
+    trackPage(tabSocket, origin, { errors, external, responses })
+    await enablePage(tab)
+    await tab.send("Page.navigate", { url: pageUrl })
+    await tab.waitFor(`document.querySelectorAll('[data-testid="pg-activity-table"] .entity-row').length === 1`, "new-tab restoration")
+    assertBootstrapBeforeApi(requests.slice(started), true)
+    await cdp.send("Target.closeTarget", { targetId: created.targetId })
+    tabSocket.close()
+
+    socket.close()
+    socket = undefined
+    await stopBrowser(browser)
+    await rm(join(profile, "DevToolsActivePort"), { force: true })
+    browser = launchBrowser(profile)
+    debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    cdp = cdpSession(socket)
+    trackPage(socket, origin, { errors, external, responses })
+    await enablePage(cdp)
+    started = requests.length
+    await cdp.send("Page.navigate", { url: pageUrl })
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-activity-table"] .entity-row').length === 1`, "browser-restart restoration")
+    assertBootstrapBeforeApi(requests.slice(started), true)
+
+    const postsBeforeLogout = requests.filter(({ method, path }) => method === "POST" && path === "/auth/session").length
+    started = requests.length
+    await cdp.evaluate(`document.querySelector('.top-actions button[title="Sign out"]').click()`)
+    await cdp.waitFor(`document.querySelector(".login-card") !== null`, "logout")
+    assert.equal(requests.slice(started).filter(({ method, path }) => method === "DELETE" && path === "/auth/session").length, 1)
+    started = requests.length
+    await cdp.send("Page.reload")
+    await cdp.waitFor(`document.querySelector(".login-card") !== null`, "signed-out reload")
+    await waitForRequests(() => requests.slice(started).some(({ method, path }) => method === "GET" && path === "/auth/session"))
+    const signedOutReload = requests.slice(started)
+    assert.equal(signedOutReload.some(({ path }) => path.startsWith("/api/")), false)
+    assert.equal(requests.filter(({ method, path }) => method === "POST" && path === "/auth/session").length, postsBeforeLogout)
+
+    await submitLogin(cdp)
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-activity-table"] .entity-row').length === 1`, "relogin")
+    const postsBeforeExpiry = requests.filter(({ method, path }) => method === "POST" && path === "/auth/session").length
+    const deletesBeforeExpiry = requests.filter(({ method, path }) => method === "DELETE" && path === "/auth/session").length
+    const responsesBeforeExpiry = responses.length
+    rejectNextApi = true
+    started = requests.length
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-previous"]').click()`)
+    await cdp.waitFor(`document.querySelector(".login-card .login-message")?.textContent.includes("Session ended") === true`, "one expired-session transition")
+    await delay(300)
+    const expiryRequests = requests.slice(started)
+    assert.equal(expiryRequests.filter(({ path }) => path.startsWith("/api/")).length, 1)
+    assert.equal(expiryRequests.filter(({ method, path }) => method === "DELETE" && path === "/auth/session").length, 1)
+    assert.equal(requests.filter(({ method, path }) => method === "DELETE" && path === "/auth/session").length, deletesBeforeExpiry + 1)
+    assert.equal(requests.filter(({ method, path }) => method === "POST" && path === "/auth/session").length, postsBeforeExpiry)
+    const forcedResponses = responses.slice(responsesBeforeExpiry).filter(({ status }) => status === 401)
+    assert.equal(forcedResponses.length, 1)
+    assert.equal(forcedResponses[0]?.path.startsWith("/api/"), true)
+    assert.equal(forcedResponses[0]?.challenge, null)
+
+    const authorizedRequests = requests.filter(({ path }) => path.startsWith("/api/"))
+    assert.ok(authorizedRequests.every(({ authorization, cookie, marker }) => (
+      authorization === null && cookie === SESSION_COOKIE && marker === "1"
+    )))
+    const basicRequests = requests.filter(({ authorization }) => authorization !== null)
+    assert.ok(basicRequests.every(({ method, path }) => method === "POST" && path === "/auth/session"))
+    assert.deepEqual(errors, [])
+    assert.deepEqual(external, [])
+  } finally {
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await rm(profile, { recursive: true, force: true })
+  }
+})
+
 function timelineRecords(hour = HOUR) {
   const shift = hour - HOUR
   const shifted = (timestamp) => String(timestamp + shift)
@@ -736,6 +926,148 @@ function ndjson(response, records) {
   response.end(records.map((record) => JSON.stringify(record)).join("\n") + (records.length === 0 ? "" : "\n"))
 }
 
+function requestRecord(request, url) {
+  return {
+    authorization: request.headers.authorization ?? null,
+    cookie: request.headers.cookie ?? null,
+    marker: request.headers["x-kronika-ui"] ?? null,
+    method: request.method ?? "GET",
+    path: url.pathname,
+    query: url.search,
+  }
+}
+
+function answerSession(request, response, state) {
+  const headers = { "Cache-Control": "no-store" }
+  if (request.method === "GET") {
+    response.writeHead(browserIsAuthenticated(request, state) ? 204 : 401, headers)
+    response.end()
+    return
+  }
+  if (request.method === "POST") {
+    if (request.headers.authorization !== "Basic YXJ0aWZhY3Q6d2lyZQ==") {
+      response.writeHead(401, headers)
+      response.end()
+      return
+    }
+    state.valid = true
+    response.writeHead(204, {
+      ...headers,
+      "Set-Cookie": `${SESSION_COOKIE}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000`,
+    })
+    response.end()
+    return
+  }
+  if (request.method === "DELETE") {
+    state.valid = false
+    response.writeHead(204, {
+      ...headers,
+      "Set-Cookie": "kronika_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
+    })
+    response.end()
+    return
+  }
+  response.writeHead(405, { ...headers, Allow: "GET, POST, DELETE" })
+  response.end()
+}
+
+function browserIsAuthenticated(request, state) {
+  return state.valid
+    && request.headers.cookie?.split(";").map((value) => value.trim()).includes(SESSION_COOKIE) === true
+    && request.headers["x-kronika-ui"] === "1"
+}
+
+function unauthorized(response) {
+  response.writeHead(401, { "Cache-Control": "no-store", "Content-Type": "application/json" })
+  response.end('{"error":"unauthorized"}')
+}
+
+function trackPage(socket, origin, result) {
+  socket.addEventListener("message", (event) => {
+    const message = JSON.parse(event.data)
+    if (message.method === "Runtime.exceptionThrown") {
+      result.errors.push(message.params.exceptionDetails.exception?.description ?? message.params.exceptionDetails.text)
+    }
+    if (message.method === "Runtime.consoleAPICalled" && ["assert", "error"].includes(message.params.type)) {
+      result.errors.push(message.params.args.map((argument) => argument.value ?? argument.description ?? "").join(" "))
+    }
+    if (message.method === "Log.entryAdded" && message.params.entry.level === "error") {
+      if (!expectedUnauthorizedLog(message.params.entry.text)) result.errors.push(message.params.entry.text)
+    }
+    if (message.method === "Network.loadingFailed"
+      && message.params.canceled !== true
+      && message.params.errorText !== "net::ERR_ABORTED") {
+      result.errors.push(message.params.errorText)
+    }
+    if (message.method === "Network.responseReceived") {
+      const response = message.params.response
+      const url = new URL(response.url)
+      result.responses.push({
+        challenge: response.headers["www-authenticate"] ?? response.headers["WWW-Authenticate"] ?? null,
+        path: url.pathname,
+        status: response.status,
+      })
+      if (response.status >= 400) {
+        const expected = response.status === 401 && url.origin === origin
+          && (url.pathname === "/auth/session" || url.pathname.startsWith("/api/"))
+        if (!expected) result.errors.push(`${response.status}:${response.url}`)
+      }
+    }
+    if (message.method === "Network.requestWillBeSent") {
+      const requested = message.params.request.url
+      if (/^https?:/.test(requested) && new URL(requested).origin !== origin) result.external.push(requested)
+    }
+  })
+}
+
+function enablePage(cdp) {
+  return Promise.all([
+    cdp.send("Page.enable"),
+    cdp.send("Runtime.enable"),
+    cdp.send("Network.enable"),
+    cdp.send("Log.enable"),
+  ])
+}
+
+async function submitLogin(cdp) {
+  await cdp.evaluate(`(() => {
+    const set = (name, value) => {
+      const input = document.querySelector('[name="' + name + '"]')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, value)
+      input.dispatchEvent(new Event("input", { bubbles: true }))
+    }
+    set("username", "artifact")
+    set("password", "wire")
+    document.querySelector("form").requestSubmit()
+  })()`)
+}
+
+function assertBootstrapBeforeApi(requests, restored) {
+  const bootstrap = requests.findIndex(({ method, path }) => method === "GET" && path === "/auth/session")
+  const firstApi = requests.findIndex(({ path }) => path.startsWith("/api/"))
+  assert.ok(bootstrap >= 0, JSON.stringify(requests, null, 2))
+  if (!restored) {
+    assert.equal(firstApi, -1, JSON.stringify(requests, null, 2))
+    return
+  }
+  assert.ok(firstApi > bootstrap, JSON.stringify(requests, null, 2))
+  assert.equal(requests.slice(0, bootstrap).some(({ path }) => path.startsWith("/api/")), false)
+  assert.equal(requests.some(({ method, path }) => method === "POST" && path === "/auth/session"), false)
+}
+
+function expectedUnauthorizedLog(message) {
+  return /^Failed to load resource: the server responded with a status of 401 \(Unauthorized\)$/.test(message)
+}
+
+async function waitForRequests(predicate) {
+  const started = Date.now()
+  while (Date.now() - started < 5_000) {
+    if (predicate()) return
+    await delay(20)
+  }
+  throw new Error("timed out waiting for request")
+}
+
 function launchBrowser(profile) {
   const executable = browserExecutable()
   const browser = spawn(executable, [
@@ -791,12 +1123,14 @@ async function browserDebugPort(profile, browser) {
   throw new Error(`timed out starting Chromium:\n${browser.diagnostics}`)
 }
 
-async function pageSocket(port) {
+async function pageSocket(port, targetId) {
   const started = Date.now()
   while (Date.now() - started < 5_000) {
     try {
       const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then((response) => response.json())
-      const target = targets.find((candidate) => candidate.type === "page")
+      const target = targets.find((candidate) => (
+        candidate.type === "page" && (targetId === undefined || candidate.id === targetId)
+      ))
       if (target !== undefined) {
         const socket = new WebSocket(target.webSocketDebuggerUrl)
         await new Promise((resolve, reject) => {

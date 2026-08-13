@@ -19,6 +19,7 @@ kronika-index = { path = "../../crates/kronika-index" }
 kronika-reader = { path = "../../crates/kronika-reader" }
 kronika-registry = { path = "../../crates/kronika-registry" }
 serde_json = "1"
+sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
 
 [dev-dependencies]

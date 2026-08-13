@@ -1,4 +1,4 @@
-use super::{account, source_set};
+use super::{account, cookie_secure, source_set};
 
 #[test]
 fn both_nonempty_credentials_are_required() {
@@ -8,6 +8,24 @@ fn both_nonempty_credentials_are_required() {
     assert!(account(None, None).is_err());
     assert!(account(Some(String::new()), Some("secret".to_owned())).is_err());
     assert!(account(Some("dba".to_owned()), Some(String::new())).is_err());
+}
+
+#[test]
+fn account_debug_output_redacts_credentials() {
+    let made = account(Some("dba".to_owned()), Some("secret".to_owned())).expect("account");
+    let debug = format!("{made:?}");
+    assert_eq!(debug, "Account { credentials: [redacted] }");
+    assert!(!debug.contains("dba"));
+    assert!(!debug.contains("secret"));
+}
+
+#[test]
+fn secure_session_cookies_are_an_explicit_tls_option() {
+    assert!(!cookie_secure(None).expect("default"));
+    assert!(!cookie_secure(Some("false")).expect("HTTP"));
+    assert!(cookie_secure(Some("true")).expect("TLS"));
+    assert!(cookie_secure(Some("yes")).is_err());
+    assert!(cookie_secure(Some("")).is_err());
 }
 
 #[test]
