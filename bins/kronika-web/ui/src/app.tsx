@@ -212,7 +212,6 @@ function App({ locale, onLocale, t }: {
   const segmentsRef = useRef(segments)
   segmentsRef.current = segments
   const pendingRefresh = useRef<{ readonly timeline: TimelineData; readonly previousSegments: readonly SegmentBound[] } | null>(null)
-  const [snapshotRefreshVersion, setSnapshotRefreshVersion] = useState(0)
   const finishRefresh = useCallback((succeeded: boolean) => {
     if (!refreshRequested.current) return
     const pending = pendingRefresh.current
@@ -231,11 +230,13 @@ function App({ locale, onLocale, t }: {
     setRefreshFailed(!succeeded)
     if (succeeded) setLastUpdated(Date.now() * 1_000)
   }, [])
-  const requestRefresh = useCallback(() => {
+  const beginRefresh = useCallback(() => {
     if (refreshRequested.current || drawn.current === null || drawn.current !== selectedHour.current) return
     refreshRequested.current = true
+    setRefreshing(true)
     setRefreshVersion((current) => current + 1)
   }, [])
+  const requestRefresh = beginRefresh
   const chooseCursor = useCallback((next: number) => {
     followsLatest.current = false
     setCursor(next)
@@ -252,16 +253,11 @@ function App({ locale, onLocale, t }: {
   }, [clearEntityContext, hour])
   useEffect(() => {
     const refresh = refreshRequested.current && hour !== null && drawn.current === hour
-    if (!refresh) {
-      refreshRequested.current = false
-      refreshAwaitingSnapshot.current = false
-      pendingRefresh.current = null
-    }
+    if (!refresh) finishRefresh(false)
     if (hour !== null && drawn.current === hour && !refresh) return
     const controller = new AbortController()
     setRefreshFailed(false)
-    if (refresh) setRefreshing(true)
-    else {
+    if (!refresh) {
       setLoading(true)
       setRefreshing(false)
       setError(null)
@@ -272,10 +268,14 @@ function App({ locale, onLocale, t }: {
       const latest = latestTimelineTimestamp(timeline)
       if (refresh) {
         pendingRefresh.current = { timeline, previousSegments: segmentsRef.current }
-        setSegments(timeline.segments)
-        setCursor((current) => refreshedCursor(current, followsLatest.current, timeline))
-        refreshAwaitingSnapshot.current = true
-        setSnapshotRefreshVersion((current) => current + 1)
+        const next = refreshedCursor(cursor, followsLatest.current, timeline)
+        if (next !== cursor) {
+          setSegments(timeline.segments)
+          setCursor(next)
+          refreshAwaitingSnapshot.current = true
+        } else {
+          finishRefresh(true)
+        }
       } else {
         drawn.current = timeline.hour
         setAvailableHours(timeline.availableHours)
@@ -308,9 +308,8 @@ function App({ locale, onLocale, t }: {
     })
     return () => controller.abort()
   }, [finishRefresh, hour, refreshVersion])
-  useEffect(() => hour === null ? undefined : scheduleRefresh(hour, requestRefresh), [hour, requestRefresh])
-
   const cursorSegment = useMemo(() => segmentBoundAt(segments, cursor), [cursor, segments])
+  const cursorSegmentId = cursorSegment?.id ?? null
   const [cursorState, setCursorState] = useState<"ready" | "loading" | "missing">("ready")
   const [densePageState, setDensePageState] = useState<"idle" | "loading" | "error">("idle")
   const snapshotGeneration = useRef(0)
@@ -416,7 +415,10 @@ function App({ locale, onLocale, t }: {
       action.load()
     }, 250)
     return () => { clearTimeout(timer); controller.abort() }
-  }, [context, cursor, cursorSegment, densePattern, finishRefresh, hour, order, relationFilters, snapshotRefreshVersion, viewRequests])
+  }, [context, cursor, cursorSegmentId, densePattern, finishRefresh, hour, order, relationFilters, viewRequests])
+  const refreshReady = !loading && cursorState === "ready" && densePageState !== "loading"
+  useEffect(() => hour === null || !refreshReady || refreshing
+    ? undefined : scheduleRefresh(hour, requestRefresh), [hour, refreshReady, refreshing, requestRefresh])
   const denseMetadata = currentData.snapshotRows[0]
   const loadMoreDense = useCallback(() => {
     const next = denseMetadata?.hasMore === true ? denseMetadata.nextCursor : null
@@ -697,7 +699,7 @@ function App({ locale, onLocale, t }: {
       </div>
 
       <div className="top-actions">
-        <button aria-label={t("refresh.action")} className="icon-button" disabled={loading || refreshing} onClick={requestRefresh} title={t("refresh.action")} type="button">↻</button>
+        <button aria-label={t("refresh.action")} className="icon-button" disabled={refreshing || !refreshReady} onClick={requestRefresh} title={t("refresh.action")} type="button">↻</button>
         <button aria-label={t("common.theme.switch")} className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title={t(theme === "dark" ? "common.theme.light" : "common.theme.dark")} type="button">
           {theme === "dark" ? <Sun aria-hidden="true" size={15} /> : <Moon aria-hidden="true" size={15} />}
         </button>
