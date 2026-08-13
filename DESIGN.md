@@ -262,8 +262,7 @@ locator before applying the existing per-section cap:
 - `2_003_001` `pg_log_autovacuum`;
 - `2_004_001` `pg_log_slow_queries`;
 - `2_005_001` `pg_log_lock_waits`;
-- `2_006_001` `pg_log_lifecycle`; and
-- `2_007_001` `pg_log_temp_files`.
+- `2_006_001` `pg_log_lifecycle`.
 
 This list is exhaustive; registry metadata does not expand it. Separately,
 Kronika adds only two independent best-effort visual marks. `known_bad` means
@@ -350,9 +349,14 @@ Only a `pg_log_errors` event locator also carries the row's stored one-byte
 category: `0` lock, `1` constraint/data-integrity, `2` serialization, `3`
 timeout, `4` resource, `5` data corruption, `6` system, `7` connection, `8`
 auth, `9` syntax, or `10` other. IDX reads this byte directly and does not
-classify SQLSTATE. The other six log layouts omit category because their
+classify SQLSTATE. The other five log layouts omit category because their
 physical `type_id` already identifies the event class. HTTP and dump expose
 the numeric category only on an error event locator.
+
+`pg_log_temp_files` remains a raw `event_stream` storage section, but it is not
+an operator event: it has no finding locator and does not appear in Events or
+on the shared timeline. Raw temporary-file rows remain available through
+ordinary history and row reads.
 
 Derived overall health uses its compact health-point ordinal. Blocks do not
 copy severity, SQLSTATE, messages, statements, identities, values, labels,

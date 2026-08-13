@@ -24,14 +24,13 @@ const OS_LOADAVG: u32 = 1_105_001;
 const OS_VMSTAT: u32 = 1_106_001;
 const OS_MOUNTINFO: u32 = 1_112_001;
 const PG_LOG_SLOW_QUERIES: u32 = 2_004_001;
-const PG_LOG_EVENT_LAYOUTS: [u32; 7] = [
+const PG_LOG_EVENT_LAYOUTS: [u32; 6] = [
     PG_LOG_ERRORS_TYPE_ID,
     2_002_001,
     2_003_001,
     PG_LOG_SLOW_QUERIES,
     2_005_001,
     2_006_001,
-    2_007_001,
 ];
 const FIFTEEN_MINUTES_US: i64 = 15 * 60 * 1_000_000;
 

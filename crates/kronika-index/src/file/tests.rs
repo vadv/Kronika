@@ -110,6 +110,32 @@ fn targeted_decode_never_allocates_unrequested_blocks() {
 }
 
 #[test]
+fn targeted_decode_does_not_surface_a_retired_temporary_file_finding_block() {
+    let mut index = sample();
+    index.blocks.push(SeriesBlock::Findings(FindingBlock {
+        type_id: 2_007_001,
+        total_hits: 1,
+        truncated: false,
+        findings: vec![Finding {
+            kind: FindingKind::Event,
+            category: None,
+            field_ordinal: 0,
+            row_ordinal: 8,
+            timestamp: 43,
+        }],
+    }));
+    let bytes = index.encode().expect("encode pre-change index");
+
+    let selected = Index::decode_target(&bytes, &[SeriesKey::OS_HEALTH])
+        .expect("targeted read skips retired block");
+    assert!(matches!(
+        selected.blocks.as_slice(),
+        [SeriesBlock::OsHealth(_)]
+    ));
+    assert_eq!(Index::decode(&bytes), Err(IndexError::BadLayout));
+}
+
+#[test]
 fn an_unrelated_malformed_block_is_not_decoded() {
     let mut bytes = sample().encode().expect("encode");
     let second_entry = HEADER_LEN + super::ENTRY_LEN;

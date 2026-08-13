@@ -18,7 +18,7 @@ use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, wri
 
 use crate::{BuildError, FindingKind, LoadError, SeriesBlock};
 
-use super::{path_of, read, resource};
+use super::{finding_keys, path_of, read, resource, series_keys};
 
 const SEGMENT_ID: i64 = 1_709_164_800_000_000;
 
@@ -612,7 +612,6 @@ fn direct_boundaries_and_log_events_use_exact_production_fields() {
         ("pg_log_slow_queries", 2_004_001),
         ("pg_log_lock_waits", 2_005_001),
         ("pg_log_lifecycle", 2_006_001),
-        ("pg_log_temp_files", 2_007_001),
     ] {
         let selected = resource(directory.path(), &reader, &segment, logical_name)
             .expect("log event resource");
@@ -641,6 +640,18 @@ fn direct_boundaries_and_log_events_use_exact_production_fields() {
         }
     }
 
+    let raw = reader.open_segment(&segment).expect("finished segment");
+    assert_eq!(raw.rows_of(2_007_001), Some(1));
+    assert!(
+        finding_keys(&segment)
+            .iter()
+            .all(|key| key.type_id != 2_007_001)
+    );
+    assert!(series_keys(&segment, "pg_log_temp_files").is_empty());
+    let selected = resource(directory.path(), &reader, &segment, "pg_log_temp_files")
+        .expect("raw temporary-file section has no index resource");
+    assert!(selected.index.blocks.is_empty());
+
     let path = path_of(
         reader
             .open_segment(&segment)
@@ -648,6 +659,11 @@ fn direct_boundaries_and_log_events_use_exact_production_fields() {
             .path(),
     )
     .expect("index path");
+    assert!(
+        read(&path).expect("current index").blocks.iter().all(
+            |block| !matches!(block, SeriesBlock::Findings(block) if block.type_id == 2_007_001)
+        )
+    );
     let bytes = std::fs::read(path).expect("published index");
     let copied = b"EVENT-SOURCE-MESSAGE-QUERY-STATEMENT-MUST-STAY-IN-ZMS";
     assert!(

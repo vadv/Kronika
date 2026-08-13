@@ -14,7 +14,7 @@ use kronika_registry::os_diskstats::OsDiskstats;
 use kronika_registry::os_netdev::OsNetdev;
 use kronika_registry::os_process::OsProcess;
 use kronika_registry::os_psi::OsPsi;
-use kronika_registry::pg_log::PgLogErrors;
+use kronika_registry::pg_log::{PgLogErrors, PgLogTempFiles};
 use kronika_registry::pg_stat_activity::PgStatActivityV3;
 use kronika_registry::pg_stat_statements::PgStatStatementsV2;
 use kronika_registry::pg_stat_user_indexes::{PgStatUserIndexesV1, PgStatUserIndexesV2};
@@ -633,6 +633,47 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append log row");
+    }
+
+    fn append_log_temp_file(&mut self, at: i64) {
+        let mut interner = Interner::new(DictLimits::default());
+        let source_file = StrId(
+            interner
+                .intern(b"postgresql.log")
+                .expect("intern source file")
+                .get(),
+        );
+        let path = StrId(
+            interner
+                .intern(b"base/pgsql_tmp/pgsql_tmp42.0")
+                .expect("intern temporary-file path")
+                .get(),
+        );
+        let statement = StrId(
+            interner
+                .intern(b"select fixture spill")
+                .expect("intern statement")
+                .get(),
+        );
+        let dictionary = dict::encode(interner.window()).expect("temporary-file dictionary");
+        let mut buffers = SectionBuffers::new();
+        buffers
+            .push(PgLogTempFiles {
+                ts: Ts(at),
+                system_identifier: Some(42),
+                source_file,
+                path: Some(path),
+                size_bytes: 1_048_576,
+                statement: Some(statement),
+            })
+            .expect("temporary-file row fits");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode temporary-file row")
+            .expect("nonempty temporary-file row");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append temporary-file row");
     }
 
     fn finish_and_continue(&mut self, segment_id: i64) {
@@ -1729,6 +1770,7 @@ fn an_hour_reads_one_index_resource_per_segment_and_carries_every_finding() {
     fixture.append_finding_rows(&[(spike_at, Some(301_500))], &[(spike_at, 6, 10_500.0)]);
     fixture.append_postgres_health_at(spike_at, 5);
     fixture.append_log_error(spike_at + 60);
+    fixture.append_log_temp_file(spike_at + 61);
     fixture.finish();
 
     let records = stream(fixture.prepare(
@@ -1770,6 +1812,45 @@ fn an_hour_reads_one_index_resource_per_segment_and_carries_every_finding() {
         .find(|finding| finding["logical_name"] == "pg_log_errors")
         .expect("error event");
     assert_eq!(error["category"], 8);
+    assert!(records.iter().all(|record| {
+        !matches!(record["record"].as_str(), Some("findings" | "finding"))
+            || record["type_id"] != "2007001"
+    }));
+}
+
+#[test]
+fn temporary_file_rows_remain_available_through_generic_reads() {
+    let mut fixture = Fixture::new();
+    fixture.append_log_temp_file(100);
+    fixture.finish();
+
+    for resource in ["rows?page_size=10&order=asc&", "history?"] {
+        let records = stream(fixture.prepare(
+            &format!(
+                "/api/segments/{SEGMENT_ID}/sections/pg_log_temp_files/{resource}field=ts&field=system_identifier&field=source_file&field=path&field=size_bytes&field=statement"
+            ),
+            None,
+        ))
+        .expect("generic temporary-file read");
+        let layout = records
+            .iter()
+            .find(|record| record["record"] == "layout")
+            .expect("temporary-file layout");
+        assert_eq!(layout["layout"]["type_id"], "2007001");
+        let rows = row_records(&records);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0]["values"],
+            serde_json::json!([
+                "100",
+                "42",
+                "postgresql.log",
+                "base/pgsql_tmp/pgsql_tmp42.0",
+                "1048576",
+                "select fixture spill"
+            ])
+        );
+    }
 }
 
 #[test]
