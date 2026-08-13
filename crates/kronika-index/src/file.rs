@@ -16,7 +16,7 @@ pub const ENTRY_LEN: usize = 16;
 
 const CHECKSUM_AT: usize = 12;
 const MAX_INDEX_BYTES: u64 = 8 * 1024 * 1024;
-// Ten presentation blocks and 26 locator blocks are currently allowlisted.
+// Ten presentation blocks and 25 locator blocks are currently allowlisted.
 const MAX_BLOCKS: usize = 36;
 const CHECKSUM_CHUNK: usize = 16 * 1024;
 

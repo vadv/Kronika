@@ -115,6 +115,16 @@ fn the_only_statement_spike_layouts_have_total_exec_time() {
 }
 
 #[test]
+fn temporary_file_rows_are_not_log_event_findings() {
+    for type_id in [
+        2_001_001, 2_002_001, 2_003_001, 2_004_001, 2_005_001, 2_006_001,
+    ] {
+        assert!(finding_layout(type_id));
+    }
+    assert!(!finding_layout(2_007_001));
+}
+
+#[test]
 fn the_fixed_cap_keeps_timestamp_locator_order_and_reports_omissions() {
     let findings: Vec<_> = (0..=MAX_FINDINGS_PER_BLOCK)
         .rev()
