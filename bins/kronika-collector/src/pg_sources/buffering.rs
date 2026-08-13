@@ -46,6 +46,7 @@ pub(crate) fn push_pg_batch(
         PgBatch::Checkpointer(CheckpointerSnapshot::V2(row)) => buffer_row(buffers, *row),
         PgBatch::Wal(WalSnapshot::V1(row)) => buffer_row(buffers, *row),
         PgBatch::Wal(WalSnapshot::V2(row)) => buffer_row(buffers, *row),
+        PgBatch::WalStorage(row) => buffer_row(buffers, *row),
         PgBatch::PreparedXacts(rows) => {
             for row in rows {
                 buffer_row(

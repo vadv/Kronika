@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
+use kronika_registry::PgWalStorage;
 use kronika_registry::pg_stat_statements_info::PgStatStatementsInfo;
 use kronika_registry::pg_store_plans_info::PgStorePlansInfo;
 use kronika_source_pg::activity::{self, ActivityRow, ActivityVersion};
@@ -35,6 +36,7 @@ use kronika_source_pg::store_plans_info;
 use kronika_source_pg::user_indexes::{self, UserIndexesRow, UserIndexesVersion};
 use kronika_source_pg::user_tables::{self, UserTablesRow, UserTablesVersion};
 use kronika_source_pg::wal::{self, WalSnapshot};
+use kronika_source_pg::wal_storage;
 use kronika_source_pg::{Pool, Session};
 
 use crate::config::Config;
@@ -194,6 +196,7 @@ pub(crate) enum PgBatch {
     Bgwriter(BgwriterSnapshot),
     Checkpointer(CheckpointerSnapshot),
     Wal(WalSnapshot),
+    WalStorage(PgWalStorage),
     PreparedXacts(Vec<PreparedXactsRow>),
     Database(DatabaseVersion, Vec<DatabaseRow>),
     Io(IoVersion, Vec<IoRow>),
@@ -485,6 +488,20 @@ impl PgSources {
             return Ok(false);
         }
         if !collect_checkpointer(
+            server,
+            generation,
+            major,
+            observe,
+            &database,
+            cached_settings,
+            admit,
+        )
+        .await?
+        {
+            self.clear_primary_connection();
+            return Ok(false);
+        }
+        if !collect_wal_storage(
             server,
             generation,
             major,
@@ -1650,6 +1667,44 @@ async fn collect_checkpointer<E>(
                 PgBatch::Checkpointer(row),
                 settings.cloned(),
             )?;
+            measured.success();
+            Ok(true)
+        }
+        Ok(Ok(None)) => {
+            measured.success();
+            Ok(true)
+        }
+        other => Ok(fixed_source_can_continue(finish_failed(measured, other))),
+    }
+}
+
+async fn collect_wal_storage<E>(
+    pool: &mut Pool,
+    generation: u64,
+    major: u32,
+    observe: &mut (dyn FnMut(PgObservation) + Send),
+    database: &str,
+    settings: Option<&Arc<[SettingsRow]>>,
+    admit: &mut impl FnMut(PgBatch, Option<Arc<[SettingsRow]>>) -> Result<BatchWrite, E>,
+) -> Result<bool, E> {
+    if wal_storage::wal_storage_query(major).is_none() {
+        return Ok(true);
+    }
+    let connection = pool.connection_label(0);
+    let session = match session_for_generation(pool, generation, observe) {
+        Ok(session) => session,
+        Err(_failure) => return Ok(false),
+    };
+    let mut measured = measure(observe, "pg_wal_storage", &connection, database);
+    let result = query::timeout(
+        session,
+        QUERY_TIMEOUT,
+        wal_storage::collect(session, major, measured.stats_mut()),
+    )
+    .await;
+    match result {
+        Ok(Ok(Some(row))) => {
+            measured = deliver(measured, admit, PgBatch::WalStorage(row), settings.cloned())?;
             measured.success();
             Ok(true)
         }

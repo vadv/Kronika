@@ -17,8 +17,6 @@ const REGISTRY_LOGICAL_NAMES = unique(registry.flatMap((layout) =>
 const POSTGRESQL_OVERVIEW = [
   "pg_stat_bgwriter",
   "pg_stat_checkpointer",
-  "pg_stat_wal",
-  "pg_stat_archiver",
   "pg_stat_io",
   "pg_prepared_xacts",
   "pg_stat_statements_info",
@@ -26,7 +24,7 @@ const POSTGRESQL_OVERVIEW = [
 
 export const PRODUCT_SECTION_GROUPS = {
   host: REGISTRY_LOGICAL_NAMES.filter((name) => name === "instance_metadata" || name.startsWith("os_")),
-  postgresqlOverview: POSTGRESQL_OVERVIEW,
+  postgresqlOverview: [...POSTGRESQL_OVERVIEW, "pg_wal_storage"] as const,
   postgresqlActivity: ["pg_stat_activity", "pg_stat_progress_vacuum"] as const,
   postgresqlStatements: ["pg_stat_statements"] as const,
   postgresqlPlans: ["pg_store_plans", "pg_store_plans_info"] as const,
@@ -56,6 +54,7 @@ export interface SectionRequest {
 
 export const POSTGRESQL_OVERVIEW_REQUESTS: readonly SectionRequest[] = [
   ...POSTGRESQL_OVERVIEW.map((section) => ({ section })),
+  { section: "pg_wal_storage", fields: ["wal_files_bytes"] },
   { section: "pg_stat_activity", fields: ["state", "wait_event"] },
   { section: "pg_stat_database" },
   { section: "pg_locks", fields: ["pid"] },

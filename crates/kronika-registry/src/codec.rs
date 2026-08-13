@@ -69,6 +69,7 @@ pub mod pg_stat_user_tables;
 pub mod pg_stat_wal;
 pub mod pg_store_plans;
 pub mod pg_store_plans_info;
+pub mod pg_wal_storage;
 pub mod pgbouncer_events;
 
 mod bounds;

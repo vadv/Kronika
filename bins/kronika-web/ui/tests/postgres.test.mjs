@@ -24,9 +24,10 @@ const TEST_REGISTRY = [
   layout("1004001", "pg_store_plans", ["userid", "dbid", "queryid", "planid"], [...PLAN_BASE, "queryid_stat_statements", "slow_log_calls", "blk_read_time", "blk_write_time", "total_plan_time"]),
   layout("1018001", "pg_store_plans", ["userid", "dbid", "queryid", "planid"], [...PLAN_BASE, "relids", "cmd_type", "shared_blk_read_time", "shared_blk_write_time", "local_blk_read_time", "local_blk_write_time", "temp_blk_read_time", "temp_blk_write_time"]),
   layout("1016001", "pg_store_plans_info", [], ["ts", "dealloc", "stats_reset"]),
+  layout("1020001", "pg_wal_storage", [], ["ts", "wal_files_bytes"]),
 ]
 const helpers = await importModule(
-  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationMs, columnsFor, isIdleActivity, isSystemActivity, isTimestampField, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, registryCardFields, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationMs, columnsFor, isIdleActivity, isSystemActivity, isTimestampField, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, registryCardFields, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows, walStoragePoints } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
   { plugins: [registryPlugin(TEST_REGISTRY)] },
 )
 
@@ -53,13 +54,29 @@ function activityRow(ordinal, values, timestamp = 10_000_000) {
 test("PostgreSQL durations are not formatted as Unix timestamps", () => {
   assert.equal(helpers.isTimestampField("write_time"), false)
   assert.equal(helpers.isTimestampField("stats_reset"), true)
-  assert.equal(helpers.isTimestampField("last_archived_time"), true)
   assert.equal(helpers.overviewValue(123.4, "write_time", "en"), "123 ms")
   assert.equal(helpers.overviewValue(123.4, "max_age_us", "en"), "123 μs")
   assert.equal(helpers.overviewValue(123.4, "wal_bytes", "en"), "123 B")
   assert.equal(helpers.overviewValue(true, "datallowconn", "ru"), "да")
   assert.equal(helpers.columnsFor([row("1", { write_time: 123.4 })])[0].kind, "milliseconds")
   assert.equal(helpers.columnsFor([row("1", { max_age_us: 123.4 })])[0].kind, "microseconds")
+})
+
+test("WAL storage keeps exact singleton values and selected-snapshot history wiring", async () => {
+  const zero = row("1020001", { wal_files_bytes: 0 }, "pg_wal_storage")
+  const stored = { ...row("1020001", { wal_files_bytes: "33554432" }, "pg_wal_storage"), timestamp: 2 }
+  const unavailable = row("1020001", {}, "pg_wal_storage")
+  assert.deepEqual(helpers.walStoragePoints([zero, stored, unavailable]), [
+    { segmentId: "a", timestamp: 1, value: 0 },
+    { segmentId: "a", timestamp: 2, value: 33_554_432 },
+  ])
+
+  const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
+  assert.match(source, /snapshot\(data\.sections\.pg_wal_storage \?\? \[\], cursor\)\[0\]/)
+  assert.match(source, /walStorage !== undefined && <WalStorage/)
+  assert.match(source, /loadSeries\(hour, "pg_wal_storage", \{\}, \["wal_files_bytes"\], controller\.signal, row\.typeId, row\.timestamp\)/)
+  assert.match(source, /<SeriesChart cursor=\{row\.timestamp\} format=\{humanBytes\}/)
+  assert.match(source, /logicalName !== "pg_wal_storage"/)
 })
 
 test("generic registry cards never present raw collection or identity fields as metrics", () => {
