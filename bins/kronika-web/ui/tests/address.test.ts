@@ -25,6 +25,15 @@ test("a plain screen keeps a plain link", () => {
   assert.deepEqual(readAddress(""), DEFAULT_ADDRESS)
 })
 
+test("relation tabs default to the unfiltered object level", () => {
+  for (const view of ["pg.tables", "pg.indexes"] as const) {
+    const address = readAddress(`view=${view}`)
+    assert.equal(address.pgLevel, "object")
+    assert.equal(address.datid, null)
+    assert.equal(writeAddress({ ...DEFAULT_ADDRESS, view }), `/?view=${view}`)
+  }
+})
+
 test("the lens is written only where it means something", () => {
   const written = writeAddress({ ...DEFAULT_ADDRESS, lens: "disk", view: "pg.activity" })
   assert.equal(written, "/?view=pg.activity")
@@ -85,9 +94,17 @@ test("relation drilldown keeps database-scoped identity", () => {
     row: selected,
   }
   const written = writeAddress(address)
-  assert.equal(written, `/?view=pg.indexes&pg_lens=low_activity&level=object&datid=16384&schema=public+spaces&relid=24576&indexrelid=24577&${new URLSearchParams({ row: selected })}`)
+  assert.equal(written, `/?view=pg.indexes&pg_lens=low_activity&datid=16384&schema=public+spaces&relid=24576&indexrelid=24577&${new URLSearchParams({ row: selected })}`)
   assert.deepEqual(readAddress(written.slice(1)), address)
-  assert.equal(readAddress("view=pg.tables&level=schema&datid=oops").pgLevel, "database")
+  assert.equal(readAddress("view=pg.tables&level=schema&datid=oops").pgLevel, "schema")
+})
+
+test("relation levels round-trip with or without a drill-down context", () => {
+  for (const pgLevel of ["object", "schema", "database"] as const) {
+    const address = { ...DEFAULT_ADDRESS, view: "pg.indexes" as const, pgLevel, find: "orders*", pgLens: "state" as const }
+    const written = writeAddress(address)
+    assert.deepEqual(readAddress(written.slice(1)), address)
+  }
 })
 
 test("relation selection is separate from hierarchy filters", () => {

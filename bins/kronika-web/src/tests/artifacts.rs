@@ -2509,6 +2509,7 @@ fn relation_search_runs_before_group_sort_and_page() {
 #[test]
 fn index_definition_is_full_search_input_but_never_an_aggregate_value() {
     let mut fixture = Fixture::new();
+    let current_segment = SEGMENT_ID + 1_000;
     let definition = "CREATE UNIQUE INDEX exact_fixture_idx ON public.orders USING btree (tenant_id, created_at) WHERE archived_at IS NULL";
     fixture.append_named_index_snapshots(&[
         (
@@ -2534,10 +2535,22 @@ fn index_definition_is_full_search_input_but_never_an_aggregate_value() {
             definition,
         ),
     ]);
+    fixture.finish_and_continue(current_segment);
+    fixture.append_named_index_snapshots(&[(
+        900,
+        1,
+        51,
+        9,
+        "db",
+        "public",
+        "orders",
+        "exact_fixture_idx",
+        definition,
+    )]);
     fixture.finish();
 
     let aggregate_target = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_indexes&group=database&field=index_count&search=archived_at"
+        "/api/segments/{current_segment}/snapshot?at=400&section=pg_stat_user_indexes&group=database&field=index_count&search=archived_at"
     );
     let aggregate = stream(fixture.prepare(&aggregate_target, None)).expect("definition search");
     let rows = relation_records(&aggregate);
@@ -2547,7 +2560,7 @@ fn index_definition_is_full_search_input_but_never_an_aggregate_value() {
     assert!(rows[0]["source"].is_null());
 
     let object_target = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_indexes&group=object&field=indexrelname&field=relid&field=relname&field=idx_scan&search=archived_at"
+        "/api/segments/{current_segment}/snapshot?at=400&section=pg_stat_user_indexes&group=object&field=indexrelname&field=relid&field=relname&field=idx_scan&search=archived_at"
     );
     let object = stream(fixture.prepare(&object_target, None)).expect("index object");
     let rows = relation_records(&object);
@@ -2557,8 +2570,10 @@ fn index_definition_is_full_search_input_but_never_an_aggregate_value() {
     assert!(rows[0]["values"].get("indexdef").is_none());
 
     let source = rows[0]["source"].as_object().expect("physical source");
+    assert_eq!(source["segment_id"], SEGMENT_ID.to_string());
     let detail_target = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at={}&section=pg_stat_user_indexes&field=indexdef&type_id={}&row_ordinal={}&text=65536",
+        "/api/segments/{}/snapshot?at={}&section=pg_stat_user_indexes&field=indexdef&type_id={}&row_ordinal={}&text=65536",
+        source["segment_id"].as_str().unwrap(),
         source["timestamp"].as_str().unwrap(),
         source["type_id"].as_str().unwrap(),
         source["ordinal"].as_str().unwrap(),

@@ -774,7 +774,8 @@ function relationFiltersOf(address: ReturnType<typeof readAddress>): Readonly<Re
 }
 
 function relationSelectedKeyOf(address: ReturnType<typeof readAddress>): string | null {
-  return address.pgLevel === "object" ? address.row : null
+  const section = pgSectionOf(address.view)
+  return section === "tables" || section === "indexes" ? address.row : null
 }
 
 function relationFiltersForSection(filters: Readonly<Record<string, string>>, section: "tables" | "indexes"): Readonly<Record<string, string>> {

@@ -9,7 +9,7 @@ import { gunzipSync } from "node:zlib"
 
 const HOUR = 1_800_000_000_000_000
 const AT = HOUR + 1_800_000_000
-const SEGMENT = "artifact-wire-segment"
+const SEGMENT = "7300"
 const ARTIFACT = process.env.KRONIKA_UI_ARTIFACT ?? new URL("../kronika-ui.html.gz", import.meta.url)
 const BEFORE_AT = AT - 5_000_000
 const AFTER_AT = AT + 7_000_000
@@ -46,7 +46,9 @@ test("the production artifact preserves wire keys and exact finding page state",
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
       requests.push({ authorization: request.headers.authorization, path: url.pathname, query: url.search })
       const sections = url.searchParams.getAll("section")
-      if (url.searchParams.has("row_ordinal")) {
+      if (url.searchParams.has("row_ordinal") && sections.includes("pg_stat_user_indexes")) {
+        ndjson(response, exactIndexRecords())
+      } else if (url.searchParams.has("row_ordinal")) {
         ndjson(response, statementRecords(false))
       } else if (sections.includes("pg_stat_statements")) {
         const filtered = ["queryid", "userid", "dbid", "toplevel"].every((field) => url.searchParams.has(`where.${field}`))
@@ -56,8 +58,8 @@ test("the production artifact preserves wire keys and exact finding page state",
         } else {
           ndjson(response, statementRecords(true, filtered ? 1 : 0))
         }
-      } else if (sections.includes("pg_stat_user_tables")) {
-        ndjson(response, relationRecords())
+      } else if (sections.includes("pg_stat_user_tables") || sections.includes("pg_stat_user_indexes")) {
+        ndjson(response, relationRecords(url))
       } else if (sections.includes("os_cpu")) {
         heldSystemPage = response
         systemPageRequested()
@@ -148,13 +150,64 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-tables-table"] .entity-row').length === 1`, "the relation wire row")
     const relationRow = await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-row').textContent`)
     assert.match(relationRow, /artifact_db/)
-    assert.match(relationRow, /3/)
-    const relationRequest = requests.find(({ query }) => query.includes("section=pg_stat_user_tables") && query.includes("group=database"))
+    assert.match(relationRow, /artifact_table/)
+    const relationRequest = requests.find(({ query }) => query.includes("section=pg_stat_user_tables") && query.includes("group=object"))
     assert.notEqual(relationRequest, undefined, JSON.stringify(requests.map(({ query }) => query), null, 2))
     const relationQuery = new URLSearchParams(relationRequest.query)
-    assert.equal(relationQuery.get("group"), "database")
+    assert.equal(relationQuery.get("group"), "object")
     assert.equal(relationQuery.get("page_size"), "200")
-    assert.equal(relationQuery.getAll("field").includes("table_count"), true)
+    assert.equal(relationQuery.getAll("field").includes("relid"), true)
+
+    await cdp.evaluate(`([...document.querySelectorAll(".pg-tabs button")].find((button) => button.textContent === "Indexes")).click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row')?.textContent.includes("artifact_index") === true`, "the physical index row")
+    const indexRow = await cdp.evaluate(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row').textContent`)
+    assert.match(indexRow, /artifact_db/)
+    assert.match(indexRow, /public/)
+    assert.match(indexRow, /artifact_table/)
+    assert.match(indexRow, /artifact_index/)
+    assert.match(indexRow, /74/)
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-exact-indexdef"]')?.textContent.includes("CREATE UNIQUE INDEX artifact_index") === true`, "the exact index definition")
+    assert.ok(requests.some(({ query }) => query.includes("row_ordinal=8") && !query.includes("text=")))
+    await cdp.evaluate(`document.querySelector(".pg-detail header button").click()`)
+
+    const clickRelation = async (label) => {
+      await cdp.evaluate(`([...document.querySelectorAll(".workspace .lensbar button")].find((button) => button.textContent === ${JSON.stringify(label)})).click()`)
+    }
+    await clickRelation("Schemas")
+    await cdp.waitFor(`location.search.includes("level=schema") && document.querySelector('[data-testid="pg-indexes-table"] .entity-row') !== null`, "schema level")
+    await clickRelation("Databases")
+    await cdp.waitFor(`location.search.includes("level=database") && document.querySelector('[data-testid="pg-indexes-table"] .entity-row') !== null`, "database level")
+    await cdp.evaluate("history.back()")
+    await cdp.waitFor(`location.search.includes("level=schema")`, "schema level restored by browser back")
+    await clickRelation("Databases")
+    await cdp.waitFor(`location.search.includes("level=database")`, "database rollup restored")
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-relation-drill"]') !== null`, "explicit rollup drill action")
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-drill"]').click()`)
+    await cdp.waitFor(`location.search.includes("level=schema") && location.search.includes("datid=42")`, "database-scoped schema drill")
+    await cdp.evaluate(`([...document.querySelectorAll(".workspace .lensbar button")].find((button) => button.textContent === "All")).click()`)
+    await cdp.waitFor(`!location.search.includes("level=") && !location.search.includes("datid=")`, "reset to all index objects")
+
+    await cdp.evaluate(`([...document.querySelectorAll('[data-testid="pg-relation-lenses"] button')].find((button) => button.textContent === "State")).click()`)
+    await clickRelation("Databases")
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row')?.textContent.includes("363") === true`, "categorical index counts")
+    const englishCounts = await cdp.evaluate(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row').textContent`)
+    assert.doesNotMatch(englishCounts, /(?:363|223|111|0)\/s/)
+    await cdp.evaluate(`([...document.querySelectorAll('[data-testid="pg-relation-lenses"] button')].find((button) => button.textContent === "Usage")).click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row')?.textContent.includes("3/s") === true`, "exact English rate unit")
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row')?.textContent.includes("3/с") === true`, "exact Russian rate unit")
+    await cdp.evaluate(`([...document.querySelectorAll('[data-testid="pg-relation-lenses"] button')].find((button) => button.textContent === "Состояние")).click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row')?.textContent.includes("363") === true`, "Russian categorical counts")
+    const russianCounts = await cdp.evaluate(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row').textContent`)
+    assert.doesNotMatch(russianCounts, /(?:363|223|111|0)\/с/)
+    for (const [width, height] of [[1920, 1080], [1366, 768], [1024, 768]]) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
+      await cdp.evaluate("document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))")
+      const size = await cdp.evaluate(`({ clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth })`)
+      assert.ok(size.scrollWidth <= size.clientWidth, `${width}px relation overflow: ${JSON.stringify(size)}`)
+    }
     await cdp.evaluate(`document.querySelector(".source-tabs button:first-child").click(); document.querySelector('[data-testid="locale-ru"]').click()`)
     await cdp.waitFor(`document.querySelector(".section-tabs") !== null`, "the host tabs")
     await cdp.evaluate(`document.querySelector('.section-tabs [role="tab"]:first-child').click()`)
@@ -289,6 +342,9 @@ function timelineRecords() {
       }, {
         logical_name: "pg_stat_user_tables", physical_name: "pg_stat_user_tables", type_id: "1013001",
         implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256",
+      }, {
+        logical_name: "pg_stat_user_indexes", physical_name: "pg_stat_user_indexes", type_id: "1014002",
+        implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256",
       }],
     },
     { record: "index", segment: { id: SEGMENT }, logical_name: "health", checksum: null },
@@ -304,24 +360,60 @@ function timelineRecords() {
   ]
 }
 
-function relationRecords() {
+function relationRecords(url) {
+  const indexes = url.searchParams.getAll("section").includes("pg_stat_user_indexes")
+  const logicalName = indexes ? "pg_stat_user_indexes" : "pg_stat_user_tables"
+  const group = url.searchParams.get("group") ?? "object"
+  const state = url.searchParams.getAll("field").includes("invalid_count")
+  const key = group === "database"
+    ? { datid: "42", datname: "artifact_db" }
+    : group === "schema"
+      ? { datid: "42", datname: "artifact_db", schemaname: "public" }
+      : indexes
+        ? { datid: "42", datname: "artifact_db", schemaname: "public", relid: "73", relname: "artifact_table", indexrelid: "74", indexrelname: "artifact_index" }
+        : { datid: "42", datname: "artifact_db", schemaname: "public", relid: "73", relname: "artifact_table" }
+  const columns = indexes
+    ? state
+      ? group === "object"
+        ? [wire("tablespace", "text", "none"), wire("amname", "text", "none"), wire("indisvalid", "bool", "none"), wire("indisready", "bool", "none"), wire("indisunique", "bool", "none"), wire("indisprimary", "bool", "none")]
+        : [wire("index_count"), wire("invalid_count"), wire("unready_count"), wire("unique_count"), wire("primary_count"), wire("exclusion_count")]
+      : [wire("tablespace", "text", "none"), wire("amname", "text", "none"), wire("idx_scan", "number", "per_second")]
+    : [wire("tablespace", "text", "none"), wire("seq_scan", "number", "per_second")]
+  const values = indexes
+    ? state
+      ? group === "object"
+        ? { tablespace: "pg_default", amname: "btree", indisvalid: true, indisready: true, indisunique: true, indisprimary: true }
+        : { index_count: 363, invalid_count: 0, unready_count: 0, unique_count: 223, primary_count: 111, exclusion_count: 0 }
+      : { tablespace: "pg_default", amname: "btree", idx_scan: 3 }
+    : { tablespace: "pg_default", seq_scan: 3 }
   return [
     {
-      record: "relation_layout", logical_name: "pg_stat_user_tables", group: "database",
-      columns: [{ name: "table_count", kind: "number", unit: "count", nullable: false }],
+      record: "relation_layout", logical_name: logicalName, group, columns,
     },
     {
-      record: "relation", logical_name: "pg_stat_user_tables", group: "database",
-      key: { datid: "42", datname: "artifact_db" }, values: { table_count: 3 },
-      sample_from: String(AT - 5_000_000), sample_to: String(AT), source: null,
+      record: "relation", logical_name: logicalName, group, key, values,
+      sample_from: String(AT - 5_000_000), sample_to: String(AT),
+      source: group === "object" ? { segment_id: SEGMENT, type_id: indexes ? "1014002" : "1013001", ordinal: indexes ? "8" : "7", timestamp: String(AT) } : null,
     },
     {
-      record: "snapshot_page", logical_name: "pg_stat_user_tables", group: "database",
+      record: "snapshot_page", logical_name: logicalName, group,
       eligible: "1", returned: "1", has_more: false, truncated: false, next_cursor: null,
-      page_size: 200, order_by: ["seq_scan"], order_direction: "desc",
+      page_size: 200, order_by: url.searchParams.getAll("by"), order_direction: url.searchParams.get("order") ?? "desc",
       from: String(AT - 5_000_000), to: String(AT),
     },
   ]
+}
+
+function wire(name, kind = "number", unit = "count") {
+  return { name, kind, unit, nullable: true }
+}
+
+function exactIndexRecords() {
+  const columns = ["ts", "datid", "datname", "schemaname", "relid", "relname", "indexrelid", "indexrelname", "indexdef", "idx_scan"]
+  return [{ record: "layout", rates: ["idx_scan"], layout: { type_id: "1014002", logical_name: "pg_stat_user_indexes", columns: columns.map((name) => ({ name })) } }, {
+    record: "row", type_id: "1014002", ordinal: "8", timestamp: String(AT),
+    values: [String(AT), "42", "artifact_db", "public", "73", "artifact_table", "74", "artifact_index", "CREATE UNIQUE INDEX artifact_index ON public.artifact_table USING btree (id)", 15],
+  }]
 }
 
 function snapshotRecords() {

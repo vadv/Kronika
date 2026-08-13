@@ -28,7 +28,7 @@ function relationRecord(logical_name, group, key, values, source = null) {
     values,
     sample_from: "1000000",
     sample_to: "2000000",
-    source,
+    source: source === null ? null : { segment_id: "1709164800000000", ...source },
   }
 }
 
@@ -67,7 +67,7 @@ test("relation requests keep hierarchy separate from fixed metric lenses", () =>
   const state = relation.relationRequest("pg_stat_user_indexes", "state", "database")
   assert.deepEqual(state.defaultOrder, ["derived.state_severity"])
   assert.equal(state.fields.includes("invalid_count"), true)
-  assert.equal(state.fields.includes("not_ready_count"), true)
+  assert.equal(state.fields.includes("unready_count"), true)
   assert.equal(state.fields.includes("indexdef"), false)
 })
 
@@ -87,6 +87,29 @@ test("wire rows preserve explicit aggregate identity and never invent a physical
   assert.equal(row.typeId, "")
   assert.equal(row.ordinal, "")
   assert.equal(row.timestamp, 2_000_000)
+})
+
+test("the wire unit matrix is the only source of relation rates", () => {
+  const storedLayout = layout(layoutRecord("pg_stat_user_indexes", "database", [
+    column("index_count", "number", "count", false),
+    column("invalid_count", "number", "count", false),
+    column("unready_count", "number", "count", false),
+    column("unique_count", "number", "count", false),
+    column("primary_count", "number", "count", false),
+    column("idx_scan", "number", "per_second", true),
+    column("tuples_per_scan", "number", "none", true),
+    column("main_fork_bytes", "number", "bytes", true),
+    column("buffer_hit_pct", "number", "percent", true),
+  ]))
+  assert.deepEqual(relation.relationRateFields(storedLayout), ["idx_scan"])
+  const columns = view.relationColumns("pg_stat_user_indexes", "state", "database", relation.relationRateFields(storedLayout))
+  for (const field of ["index_count", "invalid_count", "unready_count", "unique_count", "primary_count"]) {
+    assert.equal(columns.find((column) => column.field === field)?.rate, false, field)
+  }
+
+  const usage = view.relationColumns("pg_stat_user_indexes", "usage", "database", relation.relationRateFields(storedLayout))
+  assert.equal(usage.find((column) => column.field === "idx_scan")?.rate, true)
+  assert.equal(usage.find((column) => column.field === "tuples_per_scan")?.rate, false)
 })
 
 test("same schema names in different databases remain distinct", () => {
@@ -203,6 +226,7 @@ test("detail requests the exact physical row without assuming a layout", () => {
     { datid: "42", datname: "app", schemaname: "public", relid: "9001", relname: "orders", indexrelid: "9002", indexrelname: "orders_pkey" },
     {}, { type_id: "1014002", ordinal: "17", timestamp: "2000000" },
   ), storedLayout)
+  assert.equal(row.segmentId, "1709164800000000")
   assert.equal(relation.relationDetailTarget(row).request.fields, undefined)
 })
 
@@ -246,7 +270,7 @@ test("the relation table exposes complete server-sortable quantitative lenses", 
   assert.notEqual(changes.find((column) => column.field === "relname")?.sortable, true)
 
   const state = view.relationColumns("pg_stat_user_indexes", "state", "schema")
-  for (const field of ["state_severity", "invalid_count", "not_ready_count", "unique_count", "primary_count", "exclusion_count"]) {
+  for (const field of ["state_severity", "invalid_count", "unready_count", "unique_count", "primary_count", "exclusion_count"]) {
     assert.equal(state.find((column) => column.field === field)?.sortable, true, field)
   }
   assert.equal(state.some((column) => column.field === "indexdef"), false)

@@ -47,7 +47,7 @@ export const DEFAULT_ADDRESS: Address = {
   view: "host.processes",
   lens: "cpu",
   pgLens: "load",
-  pgLevel: "database",
+  pgLevel: "object",
   datid: null,
   schema: null,
   relid: null,
@@ -63,7 +63,7 @@ export function readAddress(search: string): Address {
   const view = parameters.get("view")
   const lens = parameters.get("lens")
   const pgLens = parameters.get("pg_lens")
-  const pgLevel = PG_LEVELS.find((known) => known === parameters.get("level")) ?? "database"
+  const pgLevel = PG_LEVELS.find((known) => known === parameters.get("level")) ?? DEFAULT_ADDRESS.pgLevel
   const resolvedView = VIEWS.find((known) => known === view) ?? DEFAULT_ADDRESS.view
   const oid = (name: string) => /^[1-9]\d*$/.test(parameters.get(name) ?? "") ? parameters.get(name) : null
   const relation = resolvedView === "pg.tables" || resolvedView === "pg.indexes"
@@ -75,7 +75,7 @@ export function readAddress(search: string): Address {
     view: resolvedView,
     lens: LENSES.find((known) => known === lens) ?? DEFAULT_ADDRESS.lens,
     pgLens: PG_LENSES.find((known) => known === pgLens) ?? DEFAULT_ADDRESS.pgLens,
-    pgLevel: !relation || pgLevel === "database" || datid === null ? "database" : pgLevel,
+    pgLevel: relation ? pgLevel : DEFAULT_ADDRESS.pgLevel,
     datid,
     schema: relation && pgLevel === "object" && datid !== null ? parameters.get("schema") : null,
     relid: relation && pgLevel === "object" && datid !== null ? oid("relid") : null,
@@ -93,7 +93,7 @@ export function writeAddress(address: Address): string {
   if (address.view !== DEFAULT_ADDRESS.view) parameters.set("view", address.view)
   if (address.lens !== DEFAULT_ADDRESS.lens && address.view === "host.processes") parameters.set("lens", address.lens)
   if (address.pgLens !== DEFAULT_ADDRESS.pgLens && (relation || address.view === "pg.statements" || address.view === "pg.plans")) parameters.set("pg_lens", address.pgLens)
-  if (relation && address.pgLevel !== "database") parameters.set("level", address.pgLevel)
+  if (relation && address.pgLevel !== DEFAULT_ADDRESS.pgLevel) parameters.set("level", address.pgLevel)
   if (relation && address.pgLevel !== "database" && address.datid !== null) parameters.set("datid", address.datid)
   if (relation && address.pgLevel === "object" && address.schema !== null) parameters.set("schema", address.schema)
   if (relation && address.pgLevel === "object" && address.relid !== null) parameters.set("relid", address.relid)

@@ -3,7 +3,7 @@ import { registry } from "kronika:registry"
 import { bundledFixtureHour, bundledFixtureRange } from "./fixture"
 import { rowMatchesLocator } from "./locator"
 import { decoratePostgresIntervalRow, intervalMetric, postgresIdentity, supportsPostgresDerivedOrder, unique } from "./postgres-metrics"
-import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey, relationRowKey, type RelationGroup, type RelationLayout, type RelationRow } from "./postgres-relations"
+import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey, relationRateFields, relationRowKey, type RelationGroup, type RelationLayout, type RelationRow } from "./postgres-relations"
 import { apiFetch } from "./session"
 import { readNdjson } from "./wire"
 
@@ -670,6 +670,10 @@ export async function loadSnapshot(
     const relationLayout = parseRelationLayout(record)
     if (relationLayout !== null) {
       relationLayouts.set(relationLayoutKey(relationLayout), relationLayout)
+      rateColumns[relationLayout.logicalName] = unique([
+        ...(rateColumns[relationLayout.logicalName] ?? []),
+        ...relationRateFields(relationLayout),
+      ])
     } else if (layout !== null) {
       const logicalName = requiredText(layout.logicalName, "logical name")
       layouts.set(layout.typeId, {

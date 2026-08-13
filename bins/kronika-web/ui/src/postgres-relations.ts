@@ -14,6 +14,8 @@ export type RelationLens = TableLens | IndexLens
 
 export interface RelationWireColumn {
   readonly name: string
+  readonly kind: "text" | "id" | "number" | "timestamp" | "bool"
+  readonly unit: "none" | "count" | "bytes" | "per_second" | "percent" | "milliseconds"
   readonly nullable: boolean
 }
 
@@ -102,7 +104,7 @@ const indexLenses: Readonly<Record<IndexLens, LensSpec>> = {
   ),
   state: lens(
     ["state_severity", "indisvalid", "indisready", "indisunique", "indisprimary", "indisexclusion"],
-    ["state_severity", "invalid_count", "not_ready_count", "unique_count", "primary_count", "exclusion_count"],
+    ["state_severity", "invalid_count", "unready_count", "unique_count", "primary_count", "exclusion_count"],
     "state_severity",
   ),
 }
@@ -125,9 +127,10 @@ export function relationSortToken(field: string): string {
 }
 
 export function relationFieldKind(field: string): "id" | "text" | "boolean" | "timestamp" | "bytes" | "milliseconds" | "percent" | "number" {
+  if (field === "no_scans" || field.startsWith("indis")) return "boolean"
+  if (field.endsWith("_never_count")) return "number"
   if (field.endsWith("id")) return "id"
   if (field.endsWith("name") || field === "tablespace" || field === "indexdef") return "text"
-  if (field === "no_scans" || field.startsWith("indis")) return "boolean"
   if (field.includes("last_") || field.endsWith("_oldest") || field.endsWith("_latest")) return "timestamp"
   if (field.endsWith("_bytes")) return "bytes"
   if (field.endsWith("_mean_ms") || field.startsWith("total_") && field.endsWith("_time")) return "milliseconds"
@@ -173,14 +176,20 @@ export function parseRelationLayout(record: Readonly<Record<string, unknown>>): 
   const columns = record.columns.map((stored) => {
     const column = object(stored)
     const name = text(column.name)
-    if (typeof column.kind !== "string" || !/^(text|id|number|timestamp|bool)$/.test(column.kind)
-      || typeof column.unit !== "string" || !/^(none|count|bytes|per_second|percent|milliseconds)$/.test(column.unit)) invalid()
+    const kind = column.kind
+    const unit = column.unit
+    if (typeof kind !== "string" || !/^(text|id|number|timestamp|bool)$/.test(kind)
+      || typeof unit !== "string" || !/^(none|count|bytes|per_second|percent|milliseconds)$/.test(unit)) invalid()
     if (typeof column.nullable !== "boolean" || seen.has(name)) invalid()
     seen.add(name)
     if (group !== "object" && name === "indexdef") invalid("aggregate index definition")
-    return { name, nullable: column.nullable }
+    return { name, kind, unit, nullable: column.nullable } as RelationWireColumn
   })
   return { logicalName, group, columns }
+}
+
+export function relationRateFields(layout: RelationLayout): readonly string[] {
+  return layout.columns.flatMap((column) => column.unit === "per_second" ? [column.name] : [])
 }
 
 export function relationLayoutKey(layout: Pick<RelationLayout, "logicalName" | "group">): string {
@@ -216,7 +225,7 @@ export function parseRelationRow(
   const sampleTo = moment(record.sample_to)
   if (sampleFrom !== null && sampleTo !== null && sampleFrom > sampleTo) invalid("relation sample interval")
   return {
-    segmentId,
+    segmentId: source === null ? segmentId : text(source.segment_id),
     logicalName,
     typeId: source === null ? "" : decimal(source.type_id),
     ordinal: source === null ? "" : decimal(source.ordinal),

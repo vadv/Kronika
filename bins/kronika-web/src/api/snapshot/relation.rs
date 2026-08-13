@@ -99,7 +99,7 @@ const INDEX_FLAGS: &[&str] = &[
 const TABLE_OBJECT_FIELDS: &[FieldSpec] = &[
     field("relname", Kind::Text, None),
     field("tablespace", Kind::Text, None),
-    field("table_count", Kind::Integer, None),
+    count_field("table_count"),
     rate_field("seq_scan"),
     rate_field("seq_tup_read"),
     rate_field("idx_scan"),
@@ -112,11 +112,11 @@ const TABLE_OBJECT_FIELDS: &[FieldSpec] = &[
     rate_field("n_tup_del"),
     rate_field("n_tup_hot_upd"),
     rate_field("n_tup_newpage_upd"),
-    integer_field("n_live_tup", None),
-    integer_field("n_dead_tup", None),
-    integer_field("n_mod_since_analyze", None),
-    integer_field("n_ins_since_vacuum", None),
-    integer_field("reltuples", None),
+    count_field("n_live_tup"),
+    count_field("n_dead_tup"),
+    count_field("n_mod_since_analyze"),
+    count_field("n_ins_since_vacuum"),
+    count_field("reltuples"),
     percent_field("dead_pct"),
     percent_field("hot_pct"),
     percent_field("new_page_pct"),
@@ -137,8 +137,8 @@ const TABLE_OBJECT_FIELDS: &[FieldSpec] = &[
     timestamp_field("toast_last_autovacuum"),
     integer_field("main_fork_bytes", Some("bytes")),
     integer_field("toast_bytes", Some("bytes")),
-    integer_field("toast_n_live_tup", None),
-    integer_field("toast_n_dead_tup", None),
+    count_field("toast_n_live_tup"),
+    count_field("toast_n_dead_tup"),
     rate_field("heap_blks_read"),
     rate_field("heap_blks_hit"),
     rate_field("idx_blks_read"),
@@ -153,7 +153,7 @@ const TABLE_OBJECT_FIELDS: &[FieldSpec] = &[
 ];
 
 const TABLE_AGGREGATE_FIELDS: &[FieldSpec] = &[
-    field("table_count", Kind::Integer, None),
+    count_field("table_count"),
     rate_field("seq_scan"),
     rate_field("seq_tup_read"),
     rate_field("idx_scan"),
@@ -166,11 +166,11 @@ const TABLE_AGGREGATE_FIELDS: &[FieldSpec] = &[
     rate_field("n_tup_del"),
     rate_field("n_tup_hot_upd"),
     rate_field("n_tup_newpage_upd"),
-    integer_field("n_live_tup", None),
-    integer_field("n_dead_tup", None),
-    integer_field("n_mod_since_analyze", None),
-    integer_field("n_ins_since_vacuum", None),
-    integer_field("reltuples", None),
+    count_field("n_live_tup"),
+    count_field("n_dead_tup"),
+    count_field("n_mod_since_analyze"),
+    count_field("n_ins_since_vacuum"),
+    count_field("reltuples"),
     percent_field("dead_pct"),
     percent_field("hot_pct"),
     percent_field("new_page_pct"),
@@ -184,29 +184,29 @@ const TABLE_AGGREGATE_FIELDS: &[FieldSpec] = &[
     number_field_with_unit("autoanalyze_mean_ms", "milliseconds"),
     timestamp_field("last_vacuum_oldest"),
     timestamp_field("last_vacuum_latest"),
-    integer_field("last_vacuum_never_count", None),
+    count_field("last_vacuum_never_count"),
     timestamp_field("last_autovacuum_oldest"),
     timestamp_field("last_autovacuum_latest"),
-    integer_field("last_autovacuum_never_count", None),
+    count_field("last_autovacuum_never_count"),
     timestamp_field("last_analyze_oldest"),
     timestamp_field("last_analyze_latest"),
-    integer_field("last_analyze_never_count", None),
+    count_field("last_analyze_never_count"),
     timestamp_field("last_autoanalyze_oldest"),
     timestamp_field("last_autoanalyze_latest"),
-    integer_field("last_autoanalyze_never_count", None),
+    count_field("last_autoanalyze_never_count"),
     timestamp_field("last_seq_scan_oldest"),
     timestamp_field("last_seq_scan_latest"),
-    integer_field("last_seq_scan_never_count", None),
+    count_field("last_seq_scan_never_count"),
     timestamp_field("last_idx_scan_oldest"),
     timestamp_field("last_idx_scan_latest"),
-    integer_field("last_idx_scan_never_count", None),
+    count_field("last_idx_scan_never_count"),
     timestamp_field("toast_last_autovacuum_oldest"),
     timestamp_field("toast_last_autovacuum_latest"),
-    integer_field("toast_last_autovacuum_never_count", None),
+    count_field("toast_last_autovacuum_never_count"),
     integer_field("main_fork_bytes", Some("bytes")),
     integer_field("toast_bytes", Some("bytes")),
-    integer_field("toast_n_live_tup", None),
-    integer_field("toast_n_dead_tup", None),
+    count_field("toast_n_live_tup"),
+    count_field("toast_n_dead_tup"),
     rate_field("heap_blks_read"),
     rate_field("heap_blks_hit"),
     rate_field("idx_blks_read"),
@@ -226,7 +226,7 @@ const INDEX_OBJECT_FIELDS: &[FieldSpec] = &[
     field("relid", Kind::Id, None),
     field("tablespace", Kind::Text, None),
     field("amname", Kind::Text, None),
-    field("index_count", Kind::Integer, None),
+    count_field("index_count"),
     rate_field("idx_scan"),
     rate_field("idx_tup_read"),
     rate_field("idx_tup_fetch"),
@@ -247,7 +247,7 @@ const INDEX_OBJECT_FIELDS: &[FieldSpec] = &[
 ];
 
 const INDEX_AGGREGATE_FIELDS: &[FieldSpec] = &[
-    field("index_count", Kind::Integer, None),
+    count_field("index_count"),
     rate_field("idx_scan"),
     rate_field("idx_tup_read"),
     rate_field("idx_tup_fetch"),
@@ -259,14 +259,14 @@ const INDEX_AGGREGATE_FIELDS: &[FieldSpec] = &[
     percent_field("buffer_hit_pct"),
     timestamp_field("last_idx_scan_oldest"),
     timestamp_field("last_idx_scan_latest"),
-    integer_field("last_idx_scan_never_count", None),
-    integer_field("no_scan_count", None),
-    integer_field("known_scan_count", None),
-    integer_field("invalid_count", None),
-    integer_field("not_ready_count", None),
-    integer_field("unique_count", None),
-    integer_field("primary_count", None),
-    integer_field("exclusion_count", None),
+    count_field("last_idx_scan_never_count"),
+    count_field("no_scan_count"),
+    count_field("known_scan_count"),
+    count_field("invalid_count"),
+    count_field("unready_count"),
+    count_field("unique_count"),
+    count_field("primary_count"),
+    count_field("exclusion_count"),
     integer_field("state_severity", None),
 ];
 
@@ -345,6 +345,10 @@ const fn number_field_with_unit(name: &'static str, unit: &'static str) -> Field
 
 const fn integer_field(name: &'static str, unit: Option<&'static str>) -> FieldSpec {
     field(name, Kind::Integer, unit)
+}
+
+const fn count_field(name: &'static str) -> FieldSpec {
+    integer_field(name, Some("count"))
 }
 
 const fn timestamp_field(name: &'static str) -> FieldSpec {
@@ -543,6 +547,7 @@ impl GroupKey {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Source {
+    segment_id: i64,
     context_index: usize,
     ordinal: u64,
     type_id: u32,
@@ -1143,10 +1148,10 @@ impl Aggregate {
             (RelationKind::Indexes, "known_scan_count") => self
                 .no_scans
                 .exact()
-                .then(|| Metric::Integer(i128::from(self.no_scans.known))),
+                .then(|| Metric::Integer(i128::from(self.no_scans.known - self.no_scans.truthy))),
             (RelationKind::Indexes, "state_severity") => self.state_severity.map(Metric::Integer),
             (RelationKind::Indexes, "invalid_count") => self.flag_count("indisvalid", false),
-            (RelationKind::Indexes, "not_ready_count") => self.flag_count("indisready", false),
+            (RelationKind::Indexes, "unready_count") => self.flag_count("indisready", false),
             (RelationKind::Indexes, "unique_count") => self.flag_count("indisunique", true),
             (RelationKind::Indexes, "primary_count") => self.flag_count("indisprimary", true),
             (RelationKind::Indexes, "exclusion_count") => self.flag_count("indisexclusion", true),
@@ -1546,6 +1551,7 @@ fn scan_context(
                 continue;
             };
             let source = Source {
+                segment_id: context.source.id(),
                 context_index: context.context_index,
                 ordinal,
                 type_id: context.plan.type_id,
@@ -1625,6 +1631,7 @@ fn relation_record(
     let values = relation_values(&row.metrics);
     let source = physical_source.then(|| {
         json!({
+            "segment_id": row.source.segment_id.to_string(),
             "type_id": row.source.type_id.to_string(),
             "ordinal": row.source.ordinal.to_string(),
             "timestamp": row.source.timestamp.to_string(),
@@ -1808,6 +1815,7 @@ mod tests {
 
     const fn source(context_index: usize, ordinal: u64) -> Source {
         Source {
+            segment_id: 7,
             context_index,
             ordinal,
             type_id: 1_014_002,
@@ -2002,7 +2010,13 @@ mod tests {
     #[test]
     fn aggregate_contract_has_explicit_counts_and_timestamp_semantics() {
         let table = RelationKind::Tables.fields(RelationGroup::Schema);
-        assert!(table.iter().any(|field| field.name == "table_count"));
+        assert_eq!(
+            table
+                .iter()
+                .find(|field| field.name == "table_count")
+                .map(|field| field.unit),
+            Some(Some("count"))
+        );
         assert!(table.iter().any(|field| field.name == "last_vacuum_oldest"));
         assert!(
             table
@@ -2017,8 +2031,42 @@ mod tests {
         assert!(!table.iter().any(|field| field.name == "tablespace"));
 
         let index = RelationKind::Indexes.fields(RelationGroup::Database);
-        assert!(index.iter().any(|field| field.name == "index_count"));
-        assert!(index.iter().any(|field| field.name == "invalid_count"));
+        for name in [
+            "index_count",
+            "last_idx_scan_never_count",
+            "no_scan_count",
+            "known_scan_count",
+            "invalid_count",
+            "unready_count",
+            "unique_count",
+            "primary_count",
+            "exclusion_count",
+        ] {
+            assert_eq!(
+                index
+                    .iter()
+                    .find(|field| field.name == name)
+                    .map(|field| field.unit),
+                Some(Some("count")),
+                "{name}"
+            );
+        }
+        for name in [
+            "idx_scan",
+            "idx_tup_read",
+            "idx_tup_fetch",
+            "idx_blks_read",
+            "idx_blks_hit",
+        ] {
+            assert_eq!(
+                index
+                    .iter()
+                    .find(|field| field.name == name)
+                    .map(|field| field.unit),
+                Some(Some("per_second")),
+                "{name}"
+            );
+        }
         assert!(!index.iter().any(|field| field.name == "indisvalid"));
     }
 
@@ -2068,6 +2116,7 @@ mod tests {
         assert_eq!(object["key"]["indexrelid"], "27");
         assert_eq!(object["key"]["indexrelname"], "index7");
         assert_eq!(object["values"]["idx_scan"], "3");
+        assert_eq!(object["source"]["segment_id"], "7");
         assert_eq!(object["source"]["ordinal"], "91");
 
         let aggregate: Value = serde_json::from_slice(
