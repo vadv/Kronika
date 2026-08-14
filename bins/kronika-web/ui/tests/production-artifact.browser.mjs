@@ -687,11 +687,12 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.waitFor(`document.querySelector('[data-testid="pg-indexes-table"] .virtual-body')?.style.height === "69px"`, "the short relation set")
     const shortTable = await cdp.evaluate(`(() => {
       const body = document.querySelector('[data-testid="pg-indexes-table"] .entity-scroll')
-      return { height: body.getBoundingClientRect().height, rows: document.querySelectorAll('[data-testid="pg-indexes-table"] .entity-row').length, virtual: document.querySelector('[data-testid="pg-indexes-table"] .virtual-body').getBoundingClientRect().height }
+      const bounds = body.getBoundingClientRect()
+      return { bottom: bounds.bottom, clientHeight: document.documentElement.clientHeight, height: bounds.height, rows: document.querySelectorAll('[data-testid="pg-indexes-table"] .entity-row').length, virtual: document.querySelector('[data-testid="pg-indexes-table"] .virtual-body').getBoundingClientRect().height }
     })()`)
     assert.equal(shortTable.rows, 3)
     assert.equal(shortTable.virtual, 69)
-    assert.ok(shortTable.height >= 100 && shortTable.height <= 112, JSON.stringify(shortTable))
+    assert.ok(shortTable.height >= 100 && shortTable.bottom <= shortTable.clientHeight + 1, JSON.stringify(shortTable))
 
     const beforeOidSearch = requests.length
     await cdp.evaluate(`(() => {
@@ -1883,6 +1884,127 @@ test("PostgreSQL is unavailable without current telemetry and returns for a stor
   }
 })
 
+test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const authState = { valid: true }
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/catalog") return ndjson(response, [])
+    if (url.pathname === "/api/hour") {
+      return ndjson(response, url.searchParams.get("section") === "pg_stat_activity"
+        ? viewportActivityHistory(url)
+        : viewportActivityTimeline())
+    }
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, viewportActivityRows(url))
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("viewport browser server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "kronika-pg-detail-viewport-"))
+  const browser = launchBrowser(profile)
+  const page = { errors: [], external: [], responses: [] }
+  const measurements = []
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Network.setCookie", {
+      name: "kronika_session",
+      url: origin,
+      value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1),
+    })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.activity` })
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-activity-table"] .entity-row').length > 8`, "the viewport activity table", 15_000)
+
+    for (const [width, height] of [[1280, 882], [1366, 768], [960, 882], [390, 480]]) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
+      await settleLayout(cdp)
+      await cdp.evaluate(`document.querySelector('[data-testid="pg-detail"] header button')?.click()`)
+      await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"]') === null`, `${width}x${height} closed detail`)
+      await cdp.evaluate(`(() => {
+        const scroll = document.querySelector('[data-testid="pg-activity-table"] .entity-scroll')
+        scroll.scrollLeft = Math.min(211, scroll.scrollWidth - scroll.clientWidth)
+        scroll.scrollTop = Math.min(184, scroll.scrollHeight - scroll.clientHeight)
+      })()`)
+      await settleLayout(cdp)
+      const before = await cdp.evaluate(viewportTableGeometry())
+      await cdp.evaluate(`(() => {
+        const scroll = document.querySelector('[data-testid="pg-activity-table"] .entity-scroll')
+        const row = [...document.querySelectorAll('[data-testid="pg-activity-table"] .entity-row')].find((candidate) => {
+          const bounds = candidate.getBoundingClientRect()
+          const viewport = scroll.getBoundingClientRect()
+          return bounds.top >= viewport.top && bounds.bottom <= viewport.bottom
+        })
+        row.click()
+      })()`)
+      await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"] .uplot-figure') !== null`, `${width}x${height} detail chart`, 15_000)
+      await cdp.waitFor(`(() => { const dock = document.querySelector('[data-testid="pg-detail"]'); return dock.scrollHeight > dock.clientHeight })()`, `${width}x${height} dock overflow`, 15_000)
+      await settleLayout(cdp)
+      const opened = await cdp.evaluate(viewportDockGeometry())
+
+      assert.equal(opened.selectedPid, before.visiblePid, `${width}x${height} selected activity row`)
+      assert.ok(Math.abs(opened.table.scrollLeft - before.table.scrollLeft) <= 1, `${width}x${height} horizontal scroll on open: ${JSON.stringify({ before, opened })}`)
+      assert.ok(Math.abs(opened.table.scrollTop - before.table.scrollTop) <= 1, `${width}x${height} vertical scroll on open: ${JSON.stringify({ before, opened })}`)
+      assert.ok(Math.abs(opened.layout.height - before.layout.height) <= 1, `${width}x${height} outer row height: ${JSON.stringify({ before, opened })}`)
+      assert.ok(Math.abs(opened.table.height - before.table.height) <= 1, `${width}x${height} table height: ${JSON.stringify({ before, opened })}`)
+      if (width <= 1000) {
+        assert.ok(Math.abs(opened.table.width - before.table.width) <= 1, `${width}x${height} overlay table width: ${JSON.stringify({ before, opened })}`)
+      }
+      assert.ok(opened.document.scrollHeight <= opened.document.clientHeight + 1, `${width}x${height} document height: ${JSON.stringify(opened)}`)
+      assert.ok(opened.table.bottom <= opened.document.clientHeight + 1, `${width}x${height} reachable table rail: ${JSON.stringify(opened)}`)
+      assert.ok(opened.table.scrollWidth > opened.table.clientWidth, `${width}x${height} horizontal table: ${JSON.stringify(opened)}`)
+      assert.ok(opened.table.railHeight > 0, `${width}x${height} horizontal rail height: ${JSON.stringify(opened)}`)
+      assert.ok(opened.dock.top >= -1 && opened.dock.bottom <= height + 1 && opened.dock.left >= -1 && opened.dock.right <= width + 1, `${width}x${height} dock bounds: ${JSON.stringify(opened)}`)
+      assert.ok(opened.dock.scrollHeight > opened.dock.clientHeight, `${width}x${height} dock scrollport: ${JSON.stringify(opened)}`)
+      assert.ok(opened.chart.height >= 180 && opened.chart.height <= 220, `${width}x${height} chart cap: ${JSON.stringify(opened)}`)
+
+      await cdp.evaluate(`(() => { const dock = document.querySelector('[data-testid="pg-detail"]'); dock.scrollTop = dock.scrollHeight })()`)
+      await settleLayout(cdp)
+      const scrolled = await cdp.evaluate(viewportDockGeometry())
+      assert.ok(scrolled.dock.scrollTop > 0, `${width}x${height} detail scroll: ${JSON.stringify(scrolled)}`)
+      assert.ok(Math.abs(scrolled.table.scrollTop - before.table.scrollTop) <= 1, `${width}x${height} independent table scroll: ${JSON.stringify({ before, scrolled })}`)
+      assert.ok(scrolled.header.top >= scrolled.dock.top - 1 && scrolled.header.bottom <= scrolled.dock.bottom + 1, `${width}x${height} sticky header: ${JSON.stringify(scrolled)}`)
+      assert.ok(scrolled.close.top >= scrolled.dock.top - 1 && scrolled.close.bottom <= scrolled.dock.bottom + 1, `${width}x${height} visible close: ${JSON.stringify(scrolled)}`)
+      assert.ok(scrolled.lastDetail.top >= scrolled.header.bottom - 1 && scrolled.lastDetail.bottom <= scrolled.dock.bottom + 1, `${width}x${height} reachable detail fields: ${JSON.stringify(scrolled)}`)
+
+      await cdp.evaluate(`document.querySelector('[data-testid="pg-detail"] header button').click()`)
+      await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"]') === null`, `${width}x${height} detail close`)
+      const closed = await cdp.evaluate(viewportTableGeometry())
+      assert.ok(Math.abs(closed.table.scrollLeft - before.table.scrollLeft) <= 1, `${width}x${height} horizontal scroll on close: ${JSON.stringify({ before, closed })}`)
+      assert.ok(Math.abs(closed.table.scrollTop - before.table.scrollTop) <= 1, `${width}x${height} vertical scroll on close: ${JSON.stringify({ before, closed })}`)
+      await cdp.evaluate(`(() => { const scroll = document.querySelector('[data-testid="pg-activity-table"] .entity-scroll'); scroll.focus(); scroll.scrollLeft = scroll.scrollWidth })()`)
+      const rail = await cdp.evaluate(`(() => { const scroll = document.querySelector('[data-testid="pg-activity-table"] .entity-scroll'); return { active: document.activeElement === scroll, clientWidth: scroll.clientWidth, left: scroll.scrollLeft, scrollWidth: scroll.scrollWidth } })()`)
+      assert.equal(rail.active, true, `${width}x${height} focusable rail`)
+      assert.ok(rail.left >= rail.scrollWidth - rail.clientWidth - 1, `${width}x${height} rightmost columns: ${JSON.stringify(rail)}`)
+      measurements.push({ height, width, before, opened, scrolled: { dockScrollTop: scrolled.dock.scrollTop, headerTop: scrolled.header.top } })
+    }
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+    process.stdout.write(`${JSON.stringify({ measurements }, null, 2)}\n`)
+  } finally {
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await rm(profile, { recursive: true, force: true })
+  }
+})
+
 function processSummaryRecords(hour, count, processes) {
   const fields = [
     "processes", "threads", "runnable", "postgresql", "user_cores", "system_cores", "run_delay_ms_per_second", "context_switches_per_second",
@@ -1896,6 +2018,92 @@ function processSummaryRecords(hour, count, processes) {
       record: "row", type_id: "0", ordinal: String(index), timestamp: String(hour + Math.min(3_590_000_000, (index + 1) * Math.max(5_000_000, Math.floor(3_590_000_000 / (count + 1))))), values,
     })),
   ]
+}
+
+function viewportActivityTimeline() {
+  return [
+    { record: "hour", from: String(HOUR), to: String(HOUR + HOUR_US - 1), available_hours: [String(HOUR)] },
+    { record: "catalog", from: String(HOUR), to: String(HOUR + HOUR_US - 1), source_families: [{ name: "postgresql", configured: true, present: true }] },
+    {
+      record: "finished_segment", id: SEGMENT, min_ts: String(HOUR), max_ts: String(AFTER_AT),
+      sections: [{ logical_name: "pg_stat_activity", physical_name: "pg_stat_activity", type_id: "1001003", implementation: "postgresql", source_family: "postgresql", rows: "120", bytes: "4096" }],
+    },
+    { record: "index", segment: { id: SEGMENT }, logical_name: "health", checksum: null },
+    { record: "point", type_id: "0", series: "os_health", ts: String(AT), identity: {}, value: 81 },
+    { record: "point", type_id: "0", series: "overall_health", ts: String(AT), identity: {}, value: 76 },
+    { record: "lane", segment_id: SEGMENT, lane: "pg_waiting", ts: String(AT), value: 4 },
+  ]
+}
+
+function viewportActivityRows(url) {
+  const selected = url.searchParams.get("where.pid")
+  const [activityLayout, template] = snapshotRecords()
+  const rows = Array.from({ length: 120 }, (_, index) => viewportActivityRow(template, 3_000 + index, AT, index))
+    .filter((record) => selected === null || String(record.values[1]) === selected)
+  return [activityLayout, ...rows]
+}
+
+function viewportActivityHistory(url) {
+  const pid = Number(url.searchParams.get("where.pid") ?? "3000")
+  const [activityLayout, template] = snapshotRecords()
+  return [
+    { record: "series_segment", segment: { id: SEGMENT } },
+    activityLayout,
+    ...Array.from({ length: 24 }, (_, index) => {
+      const timestamp = HOUR + (index + 1) * 120_000_000
+      return viewportActivityRow(template, pid, timestamp, index)
+    }),
+  ]
+}
+
+function viewportActivityRow(template, pid, timestamp, index) {
+  const query = `select pg_sleep(0.01), payload from operator_activity where pid = ${pid} and payload = '${"activity-detail-".repeat(24)}'`
+  const values = [
+    String(timestamp), pid, 1, "operator_database", "operator_role", "viewport-regression", "192.0.2.42", "client backend",
+    "active", "Lock", "transactionid", query, String(9_000_000 + pid), 42 + index, 21 + index,
+    String(timestamp - 3_000_000_000), String(timestamp - 900_000_000), String(timestamp - 180_000_000), String(timestamp - 60_000_000),
+  ]
+  return { ...template, ordinal: String(pid), timestamp: String(timestamp), values }
+}
+
+function viewportTableGeometry() {
+  return `(() => {
+    const layout = document.querySelector('[data-testid="pg-entity-layout"]')
+    const scroll = document.querySelector('[data-testid="pg-activity-table"] .entity-scroll')
+    const visible = [...document.querySelectorAll('[data-testid="pg-activity-table"] .entity-row')].find((row) => {
+      const bounds = row.getBoundingClientRect()
+      const viewport = scroll.getBoundingClientRect()
+      return bounds.top >= viewport.top && bounds.bottom <= viewport.bottom
+    })
+    const rect = (node) => { const bounds = node.getBoundingClientRect(); return { bottom: bounds.bottom, height: bounds.height, left: bounds.left, right: bounds.right, top: bounds.top, width: bounds.width } }
+    return {
+      document: { clientHeight: document.documentElement.clientHeight, scrollHeight: document.documentElement.scrollHeight },
+      layout: rect(layout),
+      table: { ...rect(scroll), clientWidth: scroll.clientWidth, railHeight: scroll.offsetHeight - scroll.clientHeight, scrollHeight: scroll.scrollHeight, scrollLeft: scroll.scrollLeft, scrollTop: scroll.scrollTop, scrollWidth: scroll.scrollWidth },
+      visiblePid: visible?.querySelector('[role="cell"]')?.textContent.trim() ?? null,
+    }
+  })()`
+}
+
+function viewportDockGeometry() {
+  return `(() => {
+    const base = ${viewportTableGeometry()}
+    const dock = document.querySelector('[data-testid="pg-detail"]')
+    const header = dock.querySelector('header')
+    const close = header.querySelector('button')
+    const chart = dock.querySelector('.uplot-figure')
+    const lastDetail = dock.querySelector('dl > div:last-child')
+    const rect = (node) => { const bounds = node.getBoundingClientRect(); return { bottom: bounds.bottom, height: bounds.height, left: bounds.left, right: bounds.right, top: bounds.top, width: bounds.width } }
+    return {
+      ...base,
+      chart: rect(chart),
+      close: rect(close),
+      dock: { ...rect(dock), clientHeight: dock.clientHeight, scrollHeight: dock.scrollHeight, scrollTop: dock.scrollTop },
+      header: rect(header),
+      lastDetail: rect(lastDetail),
+      selectedPid: document.querySelector('[data-testid="pg-activity-table"] .entity-row[aria-selected="true"] [role="cell"]')?.textContent.trim() ?? null,
+    }
+  })()`
 }
 
 function sourceTimelineRecords(historical) {

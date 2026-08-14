@@ -460,13 +460,16 @@ h2 { font-size: var(--t-md); }
 .pg-table-only { grid-template-columns: minmax(0, 1fr); }
 .pg-entity-layout .entity-scroll { height: min(560px, calc(100dvh - 475px)); min-height: 100px; }
 .pg-detail { background: var(--s2); border: 1px solid var(--line3); border-left: 0; max-height: min(560px, calc(100vh - 355px)); overflow: auto; padding: 11px; }
-.pg-table-shell { display: flex; flex-direction: column; height: 100dvh; min-height: 0; }
-.pg-table-workspace { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; }
+.pg-table-shell { display: flex; flex-direction: column; height: 100dvh; min-height: 0; overflow: hidden; }
+.pg-table-shell > .topbar { flex: 0 0 auto; }
+.pg-table-workspace { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; overflow: hidden; }
 .pg-table-workspace > .timeline-shell { flex: 0 0 auto; }
-.pg-table-shell .pg-entity-layout { grid-template-rows: minmax(0, 1fr); min-height: 0; }
-.pg-table-shell .pg-entity-main, .pg-table-shell .pg-entity-layout .entity-table { display: flex; flex-direction: column; min-height: 0; }
-.pg-table-shell .pg-entity-layout .entity-scroll { flex: 0 1 auto; height: auto; }
-.pg-table-shell .pg-detail { max-height: none; min-height: 0; }
+.pg-table-workspace > .pg-tabs, .pg-table-workspace > .lensbar, .pg-table-workspace > [data-testid="table-paging"] { flex: 0 0 auto; }
+.pg-table-shell .pg-entity-layout { flex: 1 1 0; grid-template-rows: minmax(0, 1fr); min-height: 0; overflow: hidden; }
+.pg-table-shell .pg-entity-main, .pg-table-shell .pg-entity-layout .entity-table { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; overflow: hidden; }
+.pg-table-shell .pg-entity-layout .entity-scroll { flex: 1 1 0; height: auto; min-height: 0; }
+.pg-table-shell .pg-detail { max-height: none; min-height: 0; overscroll-behavior: contain; }
+.pg-table-shell .pg-detail .uplot-figure:not(.uplot-expanded) { flex: 0 0 200px; height: 200px; max-height: 200px; }
 .pg-detail > header { align-items: flex-start; background: var(--s2); border-bottom: 1px solid var(--line3); display: flex; justify-content: space-between; padding-bottom: 9px; position: sticky; top: -11px; z-index: 2; }
 .pg-detail > header span { color: var(--fg3); font-size: var(--t-xs); text-transform: uppercase; }
 .pg-detail > header h2 { font-size: var(--t-md); margin-top: 4px; overflow-wrap: anywhere; }

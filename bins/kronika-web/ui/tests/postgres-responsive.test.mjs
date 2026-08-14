@@ -43,10 +43,15 @@ test("every PostgreSQL table view owns the viewport flex chain", () => {
   assert.match(app, /visibleSource === "postgresql" && pgSection !== "overview"/)
   assert.match(app, /pg-table-shell/)
   assert.match(app, /pg-table-workspace/)
-  assert.match(stylesheet, /\.pg-table-shell \{[^}]*height: 100dvh;[^}]*min-height: 0;/)
-  assert.match(stylesheet, /\.pg-table-shell \.pg-entity-layout \.entity-scroll \{[^}]*height: auto;/)
+  assert.match(stylesheet, /\.pg-table-shell \{[^}]*height: 100dvh;[^}]*min-height: 0;[^}]*overflow: hidden;/)
+  assert.match(stylesheet, /\.pg-table-shell > \.topbar \{ flex: 0 0 auto; \}/)
+  assert.match(stylesheet, /\.pg-table-workspace \{[^}]*flex: 1 1 0;[^}]*min-height: 0;[^}]*overflow: hidden;/)
+  assert.match(stylesheet, /\.pg-table-shell \.pg-entity-layout \{[^}]*flex: 1 1 0;[^}]*grid-template-rows: minmax\(0, 1fr\);[^}]*min-height: 0;[^}]*overflow: hidden;/)
+  assert.match(stylesheet, /\.pg-table-shell \.pg-entity-main, \.pg-table-shell \.pg-entity-layout \.entity-table \{[^}]*flex: 1 1 0;[^}]*min-height: 0;[^}]*overflow: hidden;/)
+  assert.match(stylesheet, /\.pg-table-shell \.pg-entity-layout \.entity-scroll \{[^}]*flex: 1 1 0;[^}]*height: auto;[^}]*min-height: 0;/)
   assert.match(stylesheet, /\.charts-hidden\.pg-table-shell \.pg-entity-layout, \.charts-hidden\.pg-table-shell \.pg-entity-layout \.entity-table, \.charts-hidden\.pg-table-shell \.pg-entity-layout \.entity-scroll \{[^}]*flex: 1 1 auto;/)
   assert.match(stylesheet, /\.pg-table-shell \.pg-detail \{[^}]*max-height: none;[^}]*min-height: 0;/)
+  assert.match(stylesheet, /\.pg-table-shell \.pg-detail \.uplot-figure:not\(\.uplot-expanded\) \{[^}]*flex: 0 0 200px;[^}]*height: 200px;[^}]*max-height: 200px;/)
 })
 
 test("short PostgreSQL workspaces keep a visible chart path without crushing the table", () => {
