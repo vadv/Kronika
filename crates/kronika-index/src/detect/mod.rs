@@ -54,20 +54,20 @@ pub(crate) struct FindingBuilder {
 
 impl FindingBuilder {
     /// Discover only concrete series that occur in the target segment.
-    pub(crate) fn new(segment: &Segment, requested: &[SeriesKey]) -> Result<Self, BuildError> {
+    pub(crate) fn new(segment: &Segment, requested: &[SeriesKey]) -> Self {
         let requested: BTreeSet<u32> = requested
             .iter()
             .filter(|key| key.kind == SeriesKind::Findings)
             .map(|key| key.type_id)
             .filter(|type_id| finding_layout(*type_id))
             .collect();
-        Ok(Self {
+        Self {
             requested,
             cutoff: segment.min_ts().saturating_sub(FIFTEEN_MINUTES_US),
             cpu_before: None,
             oom_before: None,
             deadlocks_before: BTreeMap::new(),
-        })
+        }
     }
 
     /// Earliest preferred timestamp for adjacent counter inputs.

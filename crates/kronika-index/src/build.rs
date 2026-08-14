@@ -198,7 +198,7 @@ pub fn build(segment: &Segment) -> Result<Index, BuildError> {
 ///
 /// Returns a production-reader or dictionary-resolution failure.
 pub fn build_selected(segment: &Segment, requested: &[SeriesKey]) -> Result<Index, BuildError> {
-    let finder = FindingBuilder::new(segment, requested)?;
+    let finder = FindingBuilder::new(segment, requested);
     let mut index = build_selected_series(segment, requested, HealthSeed::default())?;
     index.blocks.extend(finder.finish(segment, &index)?);
     index.blocks.sort_by_key(SeriesBlock::key);
@@ -226,7 +226,7 @@ pub(crate) fn build_selected_from_reader(
     segment: &Segment,
     requested: &[SeriesKey],
 ) -> Result<Index, BuildError> {
-    let mut finder = FindingBuilder::new(segment, requested)?;
+    let mut finder = FindingBuilder::new(segment, requested);
     let listing = reader.catalog_segments(..segment_ref.min_ts())?;
     let predecessor = listing
         .segments
