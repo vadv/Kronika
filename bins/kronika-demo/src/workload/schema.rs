@@ -19,11 +19,15 @@ struct Table {
 
 /// The `CREATE TABLE` column list for one of the rotating shapes, keyed by
 /// `table.index_in_schema % SHAPES.len()`.
+///
+/// Every column but `id` has a default: the workload's `Insert` action names
+/// only `id`, the one column every shape shares, so it stays shape-agnostic
+/// instead of needing to know which columns each shape requires.
 const SHAPES: [&str; 4] = [
-    "(id bigint primary key, customer text not null, total_cents bigint not null, \
+    "(id bigint primary key, customer text default 'demo', total_cents bigint default 0, \
      placed_at timestamptz not null default now())",
     "(id bigint primary key, occurred_at timestamptz not null default now(), \
-     kind text not null, payload text)",
+     kind text default 'demo', payload text)",
     "(id bigint primary key, profile jsonb not null default '{}'::jsonb, \
      updated_at timestamptz not null default now())",
     "(id bigint primary key, a numeric, b numeric, c numeric, d numeric, \
@@ -59,7 +63,7 @@ pub(crate) async fn create_all(config: &WorkloadConfig) -> Result<()> {
     for schema in 0..config.schemas {
         let name = naming::schema_name(schema);
         setup
-            .execute(&format!("create schema if not exists {name}"), &[])
+            .batch_execute(&format!("create schema if not exists {name}"))
             .await
             .with_context(|| format!("create schema {name}"))?;
     }
@@ -92,7 +96,8 @@ pub(crate) async fn create_all(config: &WorkloadConfig) -> Result<()> {
         }
     }
     println!(
-        "kronika-demo: workload schema setup created {total} tables across {} schemas",
+        "kronika-demo: workload schema setup created {}/{total} tables across {} schemas",
+        progress.load(Ordering::Relaxed),
         config.schemas
     );
     Ok(())
@@ -107,8 +112,13 @@ async fn create_chunk(
     let client = connect(dsn).await.context("open a DDL connection")?;
     for table in chunk {
         let (name, ddl) = table_ddl(*table);
-        if let Err(error) = client.execute(&ddl, &[]).await {
-            eprintln!("kronika-demo: create table {name} failed: {error}");
+        // `batch_execute`, not `execute`: the workload connects through
+        // PgBouncer in transaction-pooling mode, and `execute`'s implicit
+        // prepared statement does not survive a pooled connection switching
+        // backend between calls. The simple query protocol has no such
+        // statement to lose.
+        if let Err(error) = client.batch_execute(&ddl).await {
+            eprintln!("kronika-demo: create table {name} failed: {error:?}");
             continue;
         }
         let done = progress.fetch_add(1, Ordering::Relaxed) + 1;

@@ -74,6 +74,13 @@ pub(crate) async fn run_session(session: u32, config: &WorkloadConfig, stop: &Ar
     }
 }
 
+// Every statement here runs through `batch_execute` with values inlined as
+// literals, never `execute`/`query` with bound parameters. The workload
+// connects through PgBouncer in transaction-pooling mode, and a bound
+// parameter would need `execute`'s implicit prepared statement, which does
+// not survive a pooled connection switching backend between calls. Inlining
+// is safe: every value here is a number this module generated, never
+// external input.
 async fn perform(
     client: &Client,
     config: &WorkloadConfig,
@@ -84,36 +91,32 @@ async fn perform(
         Action::Insert => {
             let id: i64 = rand::thread_rng().gen_range(0..i64::MAX);
             client
-                .execute(
-                    &format!("insert into {table} (id) values ($1) on conflict do nothing"),
-                    &[&id],
-                )
+                .batch_execute(&format!(
+                    "insert into {table} (id) values ({id}) on conflict do nothing"
+                ))
                 .await?;
         }
         Action::Update => {
             client
-                .execute(
-                    &format!("update {table} set id = id where id is not null"),
-                    &[],
-                )
+                .batch_execute(&format!("update {table} set id = id where id is not null"))
                 .await?;
         }
         Action::Select => {
             client
-                .query(&format!("select * from {table} limit 50"), &[])
+                .batch_execute(&format!("select * from {table} limit 50"))
                 .await?;
         }
         Action::Delete => {
             client
-                .execute(&format!("delete from {table} where false"), &[])
+                .batch_execute(&format!("delete from {table} where false"))
                 .await?;
         }
         Action::SlowQuery => {
-            client.execute("select pg_sleep(6)", &[]).await?;
+            client.batch_execute("select pg_sleep(6)").await?;
         }
         Action::BadStatement => {
             // The server's rejection is the point, not a workload failure.
-            drop(client.execute("slect 1", &[]).await);
+            drop(client.batch_execute("slect 1").await);
         }
         Action::BadDatabase => {
             drop(connect(&format!("{} dbname=nope", config.dsn)).await);

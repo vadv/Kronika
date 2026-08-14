@@ -57,6 +57,10 @@ RUN install -m 0755 target/x86_64-unknown-linux-gnu/release/kronika-collector /u
     && install -m 0755 target/x86_64-unknown-linux-gnu/release/kronika-demo /usr/local/bin/ \
     && install -m 0755 scripts/demo-entrypoint.sh /usr/local/bin/demo-entrypoint.sh \
     && rm -rf /work/target
+# kronika-demo keeps its own segment tree at KRONIKA_DEMO_DIR/segments (see
+# demo-entrypoint.sh), so a host directory with prior YYYY/MM/DD/*.zms files
+# mounted here is picked up immediately from its "segments" subdirectory,
+# with no import step.
 VOLUME ["/var/lib/kronika/data"]
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/demo-entrypoint.sh"]

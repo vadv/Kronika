@@ -56,6 +56,7 @@ start_pgbouncer() {
 	rm -rf "$PGB_DIR"
 	mkdir -p "$PGB_DIR"
 	chown "$PG_USER" "$PGB_DIR"
+	printf '"%s" ""\n' "$PG_USER" >"$PGB_DIR/users.txt"
 	cat >"$PGB_DIR/pgbouncer.ini" <<-EOF
 		[databases]
 		postgres = host=127.0.0.1 port=$PG_PORT dbname=postgres
@@ -63,6 +64,7 @@ start_pgbouncer() {
 		listen_addr = 0.0.0.0
 		listen_port = $PGB_PORT
 		auth_type = trust
+		auth_file = $PGB_DIR/users.txt
 		stats_users = $PG_USER
 		logfile = $PGB_DIR/pgbouncer.log
 		pidfile = $PGB_DIR/pgbouncer.pid
@@ -88,7 +90,13 @@ mkdir -p "$OUT_DIR"
 start_postgres
 start_pgbouncer
 
-export KRONIKA_OUT_DIR="$OUT_DIR"
+# kronika-demo keeps its own bookkeeping (collector.log, report.json) at
+# KRONIKA_DEMO_DIR and always runs the collector against
+# KRONIKA_DEMO_DIR/segments, overriding whatever KRONIKA_OUT_DIR it inherits.
+# kronika-web has no such indirection: it reads KRONIKA_OUT_DIR directly, so
+# it is pointed at that same segments directory here.
+export KRONIKA_DEMO_DIR="$OUT_DIR"
+export KRONIKA_OUT_DIR="$OUT_DIR/segments"
 export KRONIKA_PG_DSNS="host=127.0.0.1 port=$PG_PORT user=$PG_USER dbname=postgres"
 export KRONIKA_PGBOUNCER_DSNS="host=127.0.0.1 port=$PGB_PORT user=$PG_USER dbname=pgbouncer"
 export KRONIKA_POSTGRES_EFFECTIVE_CPUS="${KRONIKA_POSTGRES_EFFECTIVE_CPUS:-$(nproc)}"

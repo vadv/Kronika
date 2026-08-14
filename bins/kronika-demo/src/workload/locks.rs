@@ -29,14 +29,16 @@ pub(crate) async fn run_rounds(config: &WorkloadConfig, stop: &Arc<AtomicBool>) 
 }
 
 /// Insert one row per chain, so every chain's `UPDATE` has a row to lock.
+///
+/// Uses `batch_execute` with the key inlined, not a bound parameter: see the
+/// note on `hold_one_link` about `PgBouncer` transaction pooling.
 async fn ensure_keys(dsn: &str, table: &str, chains: u32) -> anyhow::Result<()> {
     let client = connect(dsn).await?;
     for key in 0..chains {
         client
-            .execute(
-                &format!("insert into {table} (id) values ($1) on conflict do nothing"),
-                &[&i64::from(key)],
-            )
+            .batch_execute(&format!(
+                "insert into {table} (id) values ({key}) on conflict do nothing"
+            ))
             .await?;
     }
     Ok(())
@@ -61,6 +63,11 @@ async fn run_one_round(config: &WorkloadConfig, table: &str) {
 
 /// Lock row `key` in `table` for `hold`, inside its own transaction on its
 /// own connection.
+///
+/// `batch_execute` with `key` inlined, not `execute` with a bound parameter:
+/// the connection runs through `PgBouncer` in transaction-pooling mode, and
+/// the simple query protocol has no prepared statement that could outlive
+/// the pooled backend this transaction happens to land on.
 async fn hold_one_link(dsn: &str, table: &str, key: i64, hold: Duration) {
     let client = match connect(dsn).await {
         Ok(client) => client,
@@ -70,22 +77,19 @@ async fn hold_one_link(dsn: &str, table: &str, key: i64, hold: Duration) {
         }
     };
     if let Err(error) = client.batch_execute("begin").await {
-        eprintln!("kronika-demo: lock-chain link could not begin: {error}");
+        eprintln!("kronika-demo: lock-chain link could not begin: {error:?}");
         return;
     }
     let locked = client
-        .execute(
-            &format!("update {table} set id = id where id = $1"),
-            &[&key],
-        )
+        .batch_execute(&format!("update {table} set id = id where id = {key}"))
         .await;
     if let Err(error) = locked {
-        eprintln!("kronika-demo: lock-chain link could not lock row {key}: {error}");
+        eprintln!("kronika-demo: lock-chain link could not lock row {key}: {error:?}");
         drop(client.batch_execute("rollback").await);
         return;
     }
     tokio::time::sleep(hold).await;
     if let Err(error) = client.batch_execute("commit").await {
-        eprintln!("kronika-demo: lock-chain link could not commit: {error}");
+        eprintln!("kronika-demo: lock-chain link could not commit: {error:?}");
     }
 }
