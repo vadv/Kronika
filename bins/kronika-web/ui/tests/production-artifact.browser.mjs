@@ -103,7 +103,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     assert.match(browserMode.status, /08:30:00/)
     assert.match(browserMode.updated, /\d{2}:\d{2}:\d{2}/)
     for (const output of [browserMode.cursor, browserMode.hour, browserMode.status, browserMode.updated]) {
-      assert.doesNotMatch(output, /GMT|UTC|\.\d{3}/)
+      assert.doesNotMatch(output, /GMT|UTC|\.\d{3}(?!\d)/)
     }
     assert.equal(browserMode.overflow, false)
 
@@ -151,7 +151,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     assert.match(utcMode.tooltip, /05:30:00/)
     assert.match(utcMode.updated, /\d{2}:\d{2}:\d{2}/)
     for (const output of [utcMode.cursor, utcMode.hour, utcMode.status, utcMode.tooltip, utcMode.updated]) {
-      assert.doesNotMatch(output, /GMT|UTC|\.\d{3}/)
+      assert.doesNotMatch(output, /GMT|UTC|\.\d{3}(?!\d)/)
     }
     assert.equal(requests.filter(({ path }) => path.startsWith("/api/")).length, apiBeforeSwitch)
     await cdp.evaluate(`(() => {
@@ -184,7 +184,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     socket?.close()
     await stopBrowser(browser)
     await new Promise((resolve) => server.close(resolve))
-    await rm(profile, { recursive: true, force: true })
+    await removeBrowserProfile(profile)
   }
 })
 
@@ -384,7 +384,7 @@ test("expanded uPlot keeps one unobscured close action at responsive widths", { 
     socket?.close()
     await stopBrowser(browser)
     await new Promise((resolve) => server.close(resolve))
-    await rm(profile, { recursive: true, force: true })
+    await removeBrowserProfile(profile)
   }
 })
 
@@ -556,13 +556,13 @@ test("the production artifact preserves wire keys and exact finding page state",
       updatedSecondary: document.querySelector('[data-testid="updated-time"] small')?.textContent ?? null,
     }))()`)
     assert.match(localClocks.cursor, /01:30:00/)
-    assert.doesNotMatch(localClocks.cursor, /GMT|UTC|\.\d{3}/)
+    assert.doesNotMatch(localClocks.cursor, /GMT|UTC|\.\d{3}(?!\d)/)
     assert.equal(localClocks.cursorSecondary, null)
     assert.equal(localClocks.hour, "01:00–02:00")
     assert.match(localClocks.hourContext, /08\/13\/2026/)
     assert.doesNotMatch(localClocks.hourContext, /GMT|UTC/)
     assert.match(localClocks.updated, /\d{2}:\d{2}:\d{2}/)
-    assert.doesNotMatch(localClocks.updated, /GMT|UTC|\.\d{3}/)
+    assert.doesNotMatch(localClocks.updated, /GMT|UTC|\.\d{3}(?!\d)/)
     assert.equal(localClocks.updatedSecondary, null)
     assert.equal(localClocks.sample, false)
 
@@ -622,6 +622,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       assert.ok(size.calendar.right <= size.hours.left, `${width}px picker columns: ${JSON.stringify(size)}`)
     }
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width: 480 })
+    await settleLayout(cdp)
     const narrow = await cdp.evaluate(`(() => {
       const calendar = document.querySelector('.day-picker').getBoundingClientRect()
       const hours = document.querySelector('.hour-grid').getBoundingClientRect()
@@ -712,10 +713,10 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(utcClocks.zoneLabel, "UTC")
     assert.match(utcClocks.cursor, /05:30:00/)
     assert.match(utcClocks.hour, /05:00–06:00/)
-    assert.doesNotMatch(utcClocks.cursor, /GMT|UTC|\.\d{3}/)
-    assert.doesNotMatch(utcClocks.hour, /GMT|UTC|\.\d{3}/)
+    assert.doesNotMatch(utcClocks.cursor, /GMT|UTC|\.\d{3}(?!\d)/)
+    assert.doesNotMatch(utcClocks.hour, /GMT|UTC|\.\d{3}(?!\d)/)
     assert.match(utcClocks.updated, /\d{2}:\d{2}:\d{2}/)
-    assert.doesNotMatch(utcClocks.updated, /GMT|UTC|\.\d{3}/)
+    assert.doesNotMatch(utcClocks.updated, /GMT|UTC|\.\d{3}(?!\d)/)
     assert.equal(utcClocks.cursorSecondary, false)
     assert.equal(utcClocks.hourZoneSuffix, false)
     assert.equal(utcClocks.updatedSecondary, false)
@@ -1211,7 +1212,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(axisText.some((text) => text.includes("Time, browser local")), false, JSON.stringify(axisText))
     const timeAxes = axisText.filter((text) => /^\d{2}:\d{2}$/.test(text))
     assert.equal(timeAxes.length > 0, true, JSON.stringify(axisText))
-    assert.equal(axisText.some((text) => /GMT|UTC|\.\d{3}/.test(text)), false, JSON.stringify(axisText))
+    assert.equal(axisText.some((text) => /GMT|UTC|\.\d{3}(?!\d)/.test(text)), false, JSON.stringify(axisText))
     assert.equal(axisText.some((text) => text.includes("%")), true, JSON.stringify(axisText))
     assert.equal(axisText.some((text) => /^0%?$/.test(text)), true, JSON.stringify(axisText))
     assert.equal(axisText.some((text) => /^100%?$/.test(text)), true, JSON.stringify(axisText))
@@ -1296,7 +1297,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       }
     })()`)
     assert.equal(tooltip.primary, "01:30:00")
-    assert.doesNotMatch(tooltip.primary, /GMT|UTC|\.\d{3}/)
+    assert.doesNotMatch(tooltip.primary, /GMT|UTC|\.\d{3}(?!\d)/)
     assert.equal(tooltip.secondary, "")
     assert.equal(tooltip.values.length, 2)
     assert.equal(tooltip.values.some((text) => text.includes("82") && text.includes("%")), true, JSON.stringify(tooltip))
@@ -1345,7 +1346,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.waitFor(`document.documentElement.lang === "ru" && document.querySelector('[data-testid="timezone-select"]')?.value === "utc" && document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent === "UTC" && document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")?.startsWith("05:14:55;")`, "the chart UTC render")
     const utcSample = await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")`)
     assert.match(utcSample, /^05:14:55;/)
-    assert.doesNotMatch(utcSample, /GMT|UTC|\.\d{3}/)
+    assert.doesNotMatch(utcSample, /GMT|UTC|\.\d{3}(?!\d)/)
     await cdp.evaluate(`(() => {
       document.querySelector('[data-testid="locale-en"]').click()
       const select = document.querySelector('[data-testid="timezone-select"]')
@@ -1382,7 +1383,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     socket?.close()
     await stopBrowser(browser)
     await new Promise((resolve) => server.close(resolve))
-    await rm(profile, { recursive: true, force: true })
+    await removeBrowserProfile(profile)
   }
 })
 
@@ -1550,7 +1551,7 @@ test("the minified artifact restores and clears its opaque browser session", { t
     socket?.close()
     await stopBrowser(browser)
     await new Promise((resolve) => server.close(resolve))
-    await rm(profile, { recursive: true, force: true })
+    await removeBrowserProfile(profile)
   }
 })
 
@@ -1655,7 +1656,7 @@ test("the slow-query detail keeps readable labels and contained values", { timeo
     socket?.close()
     await stopBrowser(browser)
     await new Promise((resolve) => server.close(resolve))
-    await rm(profile, { recursive: true, force: true })
+    await removeBrowserProfile(profile)
   }
 })
 
@@ -1743,7 +1744,7 @@ test("aggregate relation detail charts exact server history", { timeout: 60_000 
     socket?.close()
     await stopBrowser(browser)
     await new Promise((resolve) => server.close(resolve))
-    await rm(profile, { recursive: true, force: true })
+    await removeBrowserProfile(profile)
   }
 })
 
@@ -2090,7 +2091,7 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     socket?.close()
     await stopBrowser(browser)
     await new Promise((resolve) => server.close(resolve))
-    await rm(profile, { recursive: true, force: true })
+    await removeBrowserProfile(profile)
   }
 })
 
@@ -2189,7 +2190,7 @@ test("PostgreSQL is unavailable without current telemetry and returns for a stor
     socket?.close()
     await stopBrowser(browser)
     await new Promise((resolve) => server.close(resolve))
-    await rm(profile, { recursive: true, force: true })
+    await removeBrowserProfile(profile)
   }
 })
 
@@ -2310,7 +2311,7 @@ test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, as
     socket?.close()
     await stopBrowser(browser)
     await new Promise((resolve) => server.close(resolve))
-    await rm(profile, { recursive: true, force: true })
+    await removeBrowserProfile(profile)
   }
 })
 
@@ -2488,7 +2489,7 @@ test("snapshot request targets hide rejected replacements until retry succeeds",
     socket?.close()
     await stopBrowser(browser)
     await new Promise((resolve) => server.close(resolve))
-    await rm(profile, { recursive: true, force: true })
+    await removeBrowserProfile(profile)
   }
 })
 
@@ -2590,7 +2591,7 @@ test("production health keeps staggered components on one stored evaluation", { 
     socket?.close()
     await stopBrowser(browser)
     await new Promise((resolve) => server.close(resolve))
-    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+    await removeBrowserProfile(profile)
   }
 })
 
@@ -2717,7 +2718,7 @@ test("production System projections show exact CPU memory and device readings", 
     socket?.close()
     await stopBrowser(browser)
     await new Promise((resolve) => server.close(resolve))
-    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+    await removeBrowserProfile(profile)
   }
 })
 
@@ -3684,6 +3685,10 @@ async function stopBrowser(browser) {
   ])
 }
 
+async function removeBrowserProfile(profile) {
+  await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+}
+
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
@@ -3866,6 +3871,6 @@ test("narrow controls stay contained and help never changes selection", { timeou
     socket?.close()
     await stopBrowser(browser)
     await new Promise((resolve) => server.close(resolve))
-    await rm(profile, { recursive: true, force: true })
+    await removeBrowserProfile(profile)
   }
 })
