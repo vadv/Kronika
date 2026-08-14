@@ -729,12 +729,13 @@ export function postgresMetricHistorySamples(rows: readonly DataRow[], row: Data
 function usePostgresMetricHistory(row: DataRow, section: string, column: EntityColumn | undefined, hour: number, historyRevision: number): HistoryState<readonly ChartPoint[]> {
   const chartsVisible = useChartsVisible()
   const request = column === undefined ? null : postgresMetricHistoryRequest(row, section, column)
-  const ready = chartsVisible && request !== null && request.fields.length !== 0 && request.filters !== null
-  const target = ready ? JSON.stringify([hour, section, row.typeId, request.filters, column?.field]) : null
-  return useHistoryRequest(target, historyRevision, !ready || column === undefined || request === null || request.filters === null ? null : async (signal) => {
+  const filters = request?.filters ?? null
+  const ready = chartsVisible && request !== null && request.fields.length !== 0 && filters !== null
+  const target = ready ? JSON.stringify([hour, section, row.typeId, filters, column?.field]) : null
+  return useHistoryRequest(target, historyRevision, !ready || column === undefined || request === null || filters === null ? null : async (signal) => {
     const rows = section === "pg_stat_activity"
-      ? await loadSeries(hour, section, request.filters, request.fields, signal)
-      : await loadSeries(hour, section, request.filters, request.fields, signal, row.typeId)
+      ? await loadSeries(hour, section, filters, request.fields, signal)
+      : await loadSeries(hour, section, filters, request.fields, signal, row.typeId)
     return postgresMetricHistorySamples(rows, row, section, column, request)
   })
 }

@@ -274,7 +274,7 @@ test("expanded uPlot keeps one unobscured close action at responsive widths", { 
       const geometry = await cdp.evaluate(`(() => {
         const dialog = document.querySelector('[data-testid="hour-timeline"][role="dialog"]')
         const header = dialog.querySelector("figcaption")
-        const title = header.querySelector(".chart-title")
+        const title = header.querySelector(".chart-series-labels")
         const current = header.querySelector(".chart-current")
         const control = header.querySelector(".chart-expand")
         const markers = [...dialog.querySelectorAll(".chart-marker-track .marker-button")]
@@ -355,10 +355,10 @@ test("expanded uPlot keeps one unobscured close action at responsive widths", { 
         navigator.focus()
         navigator.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Tab" }))
       })()`)
-      assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector('[data-testid="hour-timeline"][role="dialog"] .chart-expand')`), true, viewport.label)
+      assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector('[data-testid="hour-timeline"][role="dialog"] .chart-series-labels .help-dot')`), true, viewport.label)
       await cdp.evaluate(`(() => {
-        const control = document.querySelector('[data-testid="hour-timeline"][role="dialog"] .chart-expand')
-        control.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Tab", shiftKey: true }))
+        const first = document.querySelector('[data-testid="hour-timeline"][role="dialog"] .chart-series-labels .help-dot')
+        first.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Tab", shiftKey: true }))
       })()`)
       assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector('[data-testid="hour-timeline"][role="dialog"] input.chart-navigator')`), true, viewport.label)
       await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"][role="dialog"] .chart-expand').click()`)
@@ -376,7 +376,6 @@ test("expanded uPlot keeps one unobscured close action at responsive widths", { 
       await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }))`)
       await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"][role="dialog"]') === null`, `${viewport.label} Escape close`)
       await cdp.waitFor(`document.activeElement === document.querySelector('[data-testid="hour-timeline"] .chart-expand')`, `${viewport.label} Escape focus return`)
-      await cdp.waitFor(`scrollY === ${before.scrollY}`, `${viewport.label} Escape scroll restore`)
       assert.deepEqual(await cdp.evaluate(`({ body: document.body.style.overflow, root: document.documentElement.style.overflow, scrollY })`), before, viewport.label)
     }
     assert.deepEqual(page.errors, [])

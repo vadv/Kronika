@@ -311,7 +311,7 @@ test("Activity history is PID-only and loads the complete selected hour", async 
 
   const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
   assert.match(source, /section === "pg_stat_activity"[^\n]*return \["pid"\]/)
-  assert.match(source, /section === "pg_stat_activity"\s*\n\s*\? await loadSeries\(hour, section, request\.filters, request\.fields, signal\)/)
+  assert.match(source, /section === "pg_stat_activity"\s*\n\s*\? await loadSeries\(hour, section, filters, request\.fields, signal\)/)
   assert.doesNotMatch(source, /activity \? \["backend_start"|\["pid", "backend_start"\]/)
 })
 
@@ -427,7 +427,7 @@ test("dense PostgreSQL columns and the Plans tab stay available by section", asy
   assert.match(source, /serverSorted=\{dense\}/)
   assert.match(source, /onNearEnd=\{densePageState === "idle" && canLoadMore \? onLoadMore : undefined\}/)
   assert.match(source, /densePageState === "error" \? onRetry : onLoadMore/)
-  assert.match(source, /await loadSeries\(hour, section, request\.filters, request\.fields, signal, row\.typeId\)/)
+  assert.match(source, /await loadSeries\(hour, section, filters, request\.fields, signal, row\.typeId\)/)
   assert.match(source, /\{ section, fields: \[field\], typeId: row\.typeId \}[\s\S]*fullText: true/)
 })
 
