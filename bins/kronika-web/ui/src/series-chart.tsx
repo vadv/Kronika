@@ -1,6 +1,6 @@
 import { useMemo, useRef } from "react"
 
-import { compact, floorHour, type Locale } from "./model"
+import { compact, floorHour, humanPercent, type Locale } from "./model"
 import { UPlotChart, type ChartScale as SemanticScale, type RecordedSeries } from "./uplot-chart"
 
 export interface ChartPoint {
@@ -45,7 +45,7 @@ export function SeriesChart({
   const numeric = numericChartPoints(points, second)
   const reading = readingAt(points, cursor)
   const hasData = numeric.length !== 0
-  const formatValue = format ?? compact
+  const formatValue = format ?? (scale === "percent" ? humanPercent : compact)
   const formatter = useRef(formatValue)
   formatter.current = formatValue
   const stableFormat = useMemo(() => (number: number, place: Locale) => formatter.current(number, place), [])

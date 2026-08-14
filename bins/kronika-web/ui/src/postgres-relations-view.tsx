@@ -177,7 +177,7 @@ function RelationDetail({ cursor, hour, lens, locale, onClose, onCursor, onNavig
     setHistoryRows([])
     if (historyFields.length === 0) return
     const controller = new AbortController()
-    acceptResponse(loadSeries(hour, row.logicalName, historyFilters, historyFields, controller.signal, object ? row.typeId : undefined, row.timestamp, object ? undefined : group), controller.signal, setHistoryRows)
+    acceptResponse(loadSeries(hour, row.logicalName, historyFilters, historyFields, controller.signal, object ? row.typeId : undefined, object ? undefined : group), controller.signal, setHistoryRows)
     return () => controller.abort()
   }, [group, historyFields, historyFilters, hour, object, row.logicalName, row.timestamp, row.typeId])
   const definition = exact ? rawText(value(exact, "indexdef")) : null

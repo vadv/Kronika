@@ -344,7 +344,8 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
       })
     }
   }
-  lanes[HEALTH] = healthRows(points) as DataRow[]
+  const healthMetadata = await loadHealthMetadata(points, signal)
+  lanes[HEALTH] = healthRows(points, healthMetadata) as DataRow[]
   const resolvedFindingGroups = findingGroups.map((group) => ({
     ...group,
     shown: findings.filter((finding) => finding.segmentId === group.segmentId && finding.typeId === group.typeId).length,
@@ -366,23 +367,22 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
 }
 
 export async function loadSeries(
-  from: number,
+  selectedHour: number,
   section: string,
   where: Readonly<Record<string, string>>,
   fields: readonly string[],
   signal: AbortSignal,
   typeId?: string | undefined,
-  to = from + 3_600_000_000 - 1,
   group?: RelationGroup | undefined,
 ): Promise<readonly DataRow[]> {
   signal.throwIfAborted()
+  const from = floorHour(selectedHour)
+  const to = from + 3_600_000_000 - 1
   if (bundledFixtureRange() !== null) {
     const fieldsToKeep = unique([...fields, ...Object.keys(where)])
     const rows: DataRow[] = []
-    for (let hour = floorHour(from); hour <= floorHour(to); hour += 3_600_000_000) {
-      const fixture = bundledFixtureHour(hour)
-      if (fixture !== null) rows.push(...(fixture.sections[section] ?? []))
-    }
+    const fixture = bundledFixtureHour(from)
+    if (fixture !== null) rows.push(...(fixture.sections[section] ?? []))
     return [...new Map(rows.map((row) => [`${row.segmentId}:${row.typeId}:${row.ordinal}`, row])).values()]
       .filter((row) => row.timestamp >= from && row.timestamp <= to)
       .filter((row) => row.typeId === (typeId ?? row.typeId) && fixtureMatches(row, where))
@@ -448,25 +448,87 @@ function laneRow(
   }
 }
 
-function healthRows(points: readonly Point[]): readonly DataRow[] {
-  const byMoment = new Map<string, DataRow & { values: Record<string, Cell> }>()
+export function healthRows(points: readonly Point[], metadata: readonly DataRow[] = []): readonly DataRow[] {
+  const healthPoints = new Map<string, Point>()
   for (const point of points) {
-    const key = `${point.segmentId}:${point.timestamp}`
-    const stored = byMoment.get(key) ?? {
-      segmentId: point.segmentId,
-      logicalName: HEALTH,
-      typeId: point.typeId,
-      ordinal: key,
-      timestamp: point.timestamp,
-      values: {},
-    }
-    if (!Object.hasOwn(stored.values, point.series) || point.value === null) {
-      stored.values[point.series] = point.value
-    }
-    byMoment.set(key, stored)
+    if (!HEALTH_SERIES.has(point.series)) continue
+    const key = `${point.segmentId}:${point.timestamp}:${point.series}`
+    if (!healthPoints.has(key) || point.value === null) healthPoints.set(key, point)
   }
-  return [...byMoment.values()].sort((left, right) => left.timestamp - right.timestamp)
+  const stored = [...healthPoints.values()]
+  const segmentOrder = new Map<string, number>()
+  for (const point of stored) {
+    if (!segmentOrder.has(point.segmentId)) segmentOrder.set(point.segmentId, segmentOrder.size)
+  }
+  const postgresIntervals = new Map(metadata.flatMap((row) => {
+    const seconds = row.values.postgresql_interval_seconds
+    const interval = typeof seconds === "number" ? seconds * 1_000_000 : Number.NaN
+    return Number.isSafeInteger(interval) && interval >= 0 ? [[row.segmentId, interval] as const] : []
+  }))
+  const postgresSegments = new Set(stored.filter((point) => point.series === "postgres_health").map((point) => point.segmentId))
+  const osSegments = new Set(stored.filter((point) => point.series === "os_health").map((point) => point.segmentId))
+  const postgres = stored.filter((point) => point.series === "postgres_health")
+    .sort((left, right) => left.timestamp - right.timestamp
+      || (segmentOrder.get(left.segmentId) ?? 0) - (segmentOrder.get(right.segmentId) ?? 0))
+  const evaluation = new Map<string, Point>()
+  for (const point of stored) {
+    if (point.series !== "overall_health") continue
+    evaluation.set(`${point.segmentId}:${point.timestamp}`, point)
+  }
+  return [...evaluation.values()]
+    .sort((left, right) => left.timestamp - right.timestamp
+      || (segmentOrder.get(left.segmentId) ?? 0) - (segmentOrder.get(right.segmentId) ?? 0))
+    .map((overall) => {
+      const { segmentId, timestamp } = overall
+      const at = (series: string) => healthPoints.get(`${segmentId}:${timestamp}:${series}`)
+      const os = at("os_health")
+      const values: Record<string, Cell> = {}
+      values.overall_health = overall.value
+      if (osSegments.has(segmentId)) values.os_health = os?.value ?? null
+      if (postgresSegments.has(segmentId)) {
+        const exact = at("postgres_health")
+        const currentOrder = segmentOrder.get(segmentId) ?? Number.MAX_SAFE_INTEGER
+        const latest = postgres.filter((point) => point.timestamp <= timestamp
+          && (segmentOrder.get(point.segmentId) ?? Number.MAX_SAFE_INTEGER) <= currentOrder).at(-1)
+        const interval = postgresIntervals.get(segmentId)
+        const fresh = latest !== undefined && interval !== undefined && timestamp - latest.timestamp <= interval
+        values.postgres_health = exact === undefined
+          ? overall.value !== null || (os?.value === null && fresh) ? latest?.value ?? null : null
+          : exact.value
+      }
+      return {
+        segmentId,
+        logicalName: HEALTH,
+        typeId: overall.typeId,
+        ordinal: `${segmentId}:${timestamp}`,
+        timestamp,
+        values,
+      }
+    })
 }
+
+async function loadHealthMetadata(points: readonly Point[], signal: AbortSignal): Promise<readonly DataRow[]> {
+  const postgresSegments = new Set(points.filter((point) => point.series === "postgres_health").map((point) => point.segmentId))
+  const evaluations = new Map<string, number>()
+  for (const point of points) {
+    if (point.series !== "overall_health" || !postgresSegments.has(point.segmentId)) continue
+    evaluations.set(point.segmentId, Math.max(evaluations.get(point.segmentId) ?? Number.MIN_SAFE_INTEGER, point.timestamp))
+  }
+  return (await Promise.all([...evaluations].map(async ([segmentId, at]) => {
+    try {
+      const snapshot = await loadSnapshot(segmentId, at, [{
+        section: "instance_metadata",
+        fields: ["postgresql_interval_seconds"],
+      }], signal)
+      return snapshot.sections.instance_metadata ?? []
+    } catch (error) {
+      if (signal.aborted) throw error
+      return []
+    }
+  }))).flat()
+}
+
+const HEALTH_SERIES = new Set(["overall_health", "os_health", "postgres_health"])
 
 export function segmentAt(segments: readonly SegmentBound[], at: number): string | null {
   return segmentBoundAt(segments, at)?.id ?? null

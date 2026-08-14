@@ -571,7 +571,7 @@ function App({ locale, onLocale, t }: {
       return
     }
     const controller = new AbortController()
-    acceptResponse(loadSeries(hour, selectedFinding.logicalName, request.where, request.fields, controller.signal, selectedFinding.typeId, selectedFinding.timestamp), controller.signal,
+    acceptResponse(loadSeries(hour, selectedFinding.logicalName, request.where, request.fields, controller.signal, selectedFinding.typeId), controller.signal,
       (rows) => setFindingPoints(findingHistory(selectedFinding, rows, data)), () => setFindingPoints([]))
     return () => controller.abort()
   }, [data, findingRow, hour, selectedFinding])
@@ -579,16 +579,15 @@ function App({ locale, onLocale, t }: {
   const joinedActivity = activityFor(selectedProcess, data.activities, selectedProcess?.timestamp ?? cursor)
   const [processHistory, setProcessHistory] = useState<readonly DataRow[]>([])
   const selectedPid = selectedProcess === null ? null : rawText(value(selectedProcess, "pid"))
-  const selectedStart = selectedProcess === null ? null : rawText(value(selectedProcess, "starttime"))
   useEffect(() => {
-    if (hour === null || selectedPid === null || selectedStart === null) {
+    if (hour === null || selectedPid === null) {
       setProcessHistory([])
       return
     }
     const controller = new AbortController()
-    acceptResponse(loadSeries(hour, "os_process", { pid: selectedPid, starttime: selectedStart }, PROCESS_HISTORY_FIELDS, controller.signal), controller.signal, setProcessHistory)
+    acceptResponse(loadSeries(hour, "os_process", { pid: selectedPid }, PROCESS_HISTORY_FIELDS, controller.signal), controller.signal, setProcessHistory)
     return () => controller.abort()
-  }, [hour, selectedPid, selectedStart])
+  }, [hour, selectedPid])
   const address = useMemo(() => writeAddress({
     at: cursor === 0 ? null : cursor,
     view: viewOf(source, hostSection, pgSection),
@@ -735,7 +734,6 @@ function App({ locale, onLocale, t }: {
   const stretchPostgres = visibleSource === "postgresql" && pgSection !== "overview"
   const cursorTime = cursor === 0 ? null : time.clock(cursor)
   const updatedTime = lastUpdated === null ? null : time.clock(lastUpdated)
-  const zoneReference = cursor || hour || Date.now() * 1_000
   return <ChartVisibilityProvider value={chartsVisible}><main className={`app-shell${stretchPostgres ? " pg-table-shell" : ""}${chartsVisible ? "" : " charts-hidden"}`}>
     <header className="topbar">
       <span className="brand-mark"><Activity aria-hidden="true" size={15} strokeWidth={2} /></span>
@@ -764,7 +762,7 @@ function App({ locale, onLocale, t }: {
         <button className="icon-button charts-toggle" data-testid="charts-toggle" onClick={() => setChartsVisible((shown) => !shown)} type="button">{t(chartsVisible ? "common.charts.hide" : "common.charts.show")}</button>
         <button aria-label={t("refresh.action")} className="icon-button" disabled={refreshing || !refreshReady} onClick={requestRefresh} title={t("refresh.action")} type="button">↻</button>
         <select aria-label={t("timezone.switch")} className="timezone-select" data-testid="timezone-select" onChange={(event) => time.setMode(event.currentTarget.value as DisplayTimeZone)} value={time.mode}>
-          <option value="browser">{t("timezone.browser", { zone: time.browserOffset(zoneReference) })}</option>
+          <option value="browser">{t("timezone.browser")}</option>
           <option value="utc">{t("timezone.utc")}</option>
         </select>
         <button aria-label={t("common.theme.switch")} className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title={t(theme === "dark" ? "common.theme.light" : "common.theme.dark")} type="button">

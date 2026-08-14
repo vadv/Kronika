@@ -17,7 +17,7 @@ import { globMatcher } from "./glob"
 import { LabelHelp, type Translate } from "./help"
 import { rowMatchesLocator } from "./locator"
 import { TableFilter } from "./table-filter"
-import { asNumber, estimatedRows, humanBytes, humanDuration, humanPercent, identifier, measure, rawText, value, type Locale } from "./model"
+import { asNumber, estimatedRows, humanBytes, humanCores, humanDuration, humanPercent, identifier, measure, rawText, value, type Locale } from "./model"
 import { semanticValueTone } from "./value-tone"
 
 export interface EntityColumn {
@@ -30,7 +30,7 @@ export interface EntityColumn {
   readonly filterValue?: (row: DataRow) => string | null
   readonly sortValue?: (row: DataRow) => string | number | boolean | null
   readonly rate?: boolean
-  readonly kind?: "id" | "number" | "estimated_rows" | "text" | "timestamp" | "bytes" | "kib" | "milliseconds" | "duration" | "microseconds" | "percent" | "boolean"
+  readonly kind?: "id" | "number" | "estimated_rows" | "text" | "timestamp" | "bytes" | "kib" | "milliseconds" | "duration" | "microseconds" | "percent" | "cores" | "boolean"
   readonly width?: number
   readonly sticky?: boolean | string
   readonly sortable?: boolean
@@ -267,7 +267,7 @@ export function locatorMatchesColumn(column: EntityColumn, typeId: string, findi
   return findingField !== null && physical === findingField
 }
 
-const NUMERIC_KINDS = new Set(["number", "estimated_rows", "bytes", "kib", "milliseconds", "duration", "microseconds", "percent"])
+const NUMERIC_KINDS = new Set(["number", "estimated_rows", "bytes", "kib", "milliseconds", "duration", "microseconds", "percent", "cores"])
 
 export function unit(base: string, rate: boolean | undefined, perSecond = "/s"): string {
   return rate === true ? `${base}${perSecond}` : base
@@ -297,7 +297,8 @@ export function cellAriaValue(cell: Cell, field: Pick<EntityColumn, "field" | "k
   if (field.kind === "milliseconds") return measure(cell, locale, unit(t("unit.ms"), field.rate, per))
   if (field.kind === "duration") return humanDuration(cell, locale)
   if (field.kind === "microseconds") return measure(cell, locale, unit(t("unit.us"), field.rate, per))
-  if (field.kind === "percent") return field.rate === true ? measure(cell, locale, `%${per}`) : humanPercent(cell, locale)
+  if (field.kind === "percent") return humanPercent(cell, locale, field.rate === true ? per : "")
+  if (field.kind === "cores") return humanCores(cell, locale, unit(t("unit.cores"), field.rate, per))
   if (field.kind === "boolean") return cell === true ? locale === "ru" ? "да" : "true" : cell === false ? locale === "ru" ? "нет" : "false" : rawText(cell) ?? "—"
   if (field.kind === "estimated_rows") return estimatedRows(cell, locale, t)?.primary ?? "—"
   if (field.kind === "number") return measure(cell, locale, unit("", field.rate, per))

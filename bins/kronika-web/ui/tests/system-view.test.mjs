@@ -7,7 +7,7 @@ import { importModule, registryPlugin } from "./import-module.mjs"
 import { parseDictionary, validateDictionaries } from "../scripts/i18n.mjs"
 
 const helpers = await importModule(
-  'export { effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, clearCgroupSnapshotRows, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, resourceBreakdownSeries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
+  'export { effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, clearCgroupSnapshotRows, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, resourceBreakdownSeries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
   { plugins: [registryPlugin([
     { typeId: "1108001", logicalName: "os_diskstats", identity: ["major", "minor"], columns: ["ts", "major", "minor", "device", "io_in_progress"] },
     { typeId: "1112001", logicalName: "os_mountinfo", identity: ["major", "minor"], columns: ["ts", "major", "minor", "mount_point", "source", "fstype", "free_bytes", "total_bytes", "is_k8s_infra"] },
@@ -41,6 +41,14 @@ test("system current values use the stored observation at or before the cursor",
   assert.equal(helpers.hasMetric(data, spec), true)
   assert.equal(helpers.fallbackMetric("os_mountinfo"), null)
   assert.equal(helpers.fallbackMetric("os_diskstats"), null)
+  const semantic = { points: [{ segmentId: "a", series: "test", timestamp: 100, value: 0.099 }] }
+  assert.equal(helpers.currentValue(semantic, { ...spec, unit: "%" }, 100, "en"), "<0.1%")
+  assert.equal(helpers.metricPoints(semantic, spec)[0].value, 0.099)
+  const core = { points: [{ segmentId: "a", series: "test", timestamp: 100, value: 0.00399 }] }
+  assert.equal(helpers.currentValue(core, { ...spec, unit: " cores" }, 100, "en"), "0.004 cores")
+  assert.equal(helpers.currentValue(core, { ...spec, unit: " cores" }, 100, "ru"), "0,004 ядра")
+  assert.equal(helpers.metricChartValue(0.00399, "ru", " cores"), "0,004 ядра")
+  assert.equal(helpers.metricPoints(core, spec)[0].value, 0.00399)
 })
 
 test("system histories omit rows whose layout does not own the selected field", () => {
@@ -220,6 +228,10 @@ test("collector cgroup rows keep leaf settings factual and use effective hierarc
   assert.equal(cpu[0].values.cgroup_other_cores, 0.1)
   assert.equal(cpu[0].values.cgroup_quota, 2)
   assert.equal(cpu[0].values.cgroup_capacity, 0.5)
+  const columns = helpers.SYSTEM_ENTITIES.find(({ section }) => section === "os_cgroup_cpu").columns
+  for (const field of ["cgroup_used_cores", "cgroup_user_cores", "cgroup_system_cores", "cgroup_other_cores", "cgroup_capacity", "cgroup_quota"]) {
+    assert.equal(columns.find((column) => column.field === field).kind, "cores", field)
+  }
   const memory = helpers.systemEntityRows(source, "os_cgroup_memory", 10)[0]
   assert.equal(memory.values.effective_memory_max, 1500)
   assert.equal(memory.values.max, 2000)

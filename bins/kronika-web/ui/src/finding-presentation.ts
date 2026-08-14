@@ -106,13 +106,14 @@ export function findingHistoryRequest(finding: Finding, row: DataRow): {
     || finding.kind === "event" || finding.logicalName.startsWith("pg_log_")) return null
   const layout = LAYOUTS.get(finding.typeId)
   if (layout === undefined) return null
-  let fields = [...layout.identity, fieldNameForLocator(finding)].filter((field): field is string => field !== null)
+  const identityFields = finding.logicalName === "os_process" ? ["pid"] : layout.identity
+  let fields = [...identityFields, fieldNameForLocator(finding)].filter((field): field is string => field !== null)
   if (finding.logicalName === "pg_stat_statements") fields = [...postgresProjection(finding.typeId)]
-  if (finding.logicalName === "os_process") fields = [...layout.identity, "read_bytes"]
+  if (finding.logicalName === "os_process") fields = ["pid", "read_bytes"]
   if (finding.logicalName === "os_cpu") fields = [...layout.identity, "user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal"]
   if (finding.logicalName === "os_mountinfo") fields = [...layout.identity, "total_bytes", "free_bytes"]
   if (finding.logicalName === "os_meminfo") fields = [...layout.identity, "mem_total", "mem_available"]
-  const identity = layout.identity.map((field) => [field, rawText(value(row, field))] as const)
+  const identity = identityFields.map((field) => [field, rawText(value(row, field))] as const)
   if (identity.some(([, stored]) => stored === null)) return null
   const where = Object.fromEntries(identity as readonly (readonly [string, string])[])
   return { fields: [...new Set(fields)], where }
@@ -137,7 +138,7 @@ export function findingMetric(finding: Finding, t: Translate): FindingMetric {
   if (finding.logicalName === "pg_stat_database" && physical === "deadlocks") return metric(physical, t("events.metric.deadlocks"), "count", t("events.boundary.increased"))
   if (finding.logicalName === "pg_stat_activity") return metric("active_backends", t("events.metric.active_backends"), "count", t("events.boundary.active_backends"))
   if (finding.logicalName === "pg_log_slow_queries") return metric("max_duration_ms", t("events.metric.slow_query"), "milliseconds", t("events.boundary.slow_query"))
-  if (finding.logicalName === "health") return metric(physical, t("events.metric.overall_health"), "number", t("events.boundary.health"))
+  if (finding.logicalName === "health") return metric(physical, t("events.metric.overall_health"), "percent", t("events.boundary.health"))
   if (finding.logicalName === "os_process") return metric("read_bytes", t("events.metric.process_read"), "bytes_per_second", null)
   if (semantic !== null) {
     return metric(semantic, t(`pg.field.${semantic}.label`), semantic === "mean_exec_ms_per_call" ? "milliseconds_per_call" : "number", null)

@@ -30,8 +30,8 @@ CPU, память, диски, точки монтирования и топол
 
 | `type_id` | Источник | Семантика | Ключ сортировки |
 |-----------|----------|-----------|-----------------|
-| `1_100_001` | `/proc/PID/{stat,status,io,cmdline}`, часто собираемый набор | `snapshot_full` | `(pid, starttime, ts)` |
-| `1_101_001` | `/proc/PID/status`, расширенный набор | `snapshot_full` | `(pid, starttime, ts)` |
+| `1_100_001` | `/proc/PID/{stat,status,io,cmdline}`, часто собираемый набор | `snapshot_full` | `(pid, ts)` |
+| `1_101_001` | `/proc/PID/status`, расширенный набор | `snapshot_full` | `(pid, ts)` |
 | `1_102_001` | строки CPU из `/proc/stat` | `snapshot_full` | `(cpu_id, ts)` |
 | `1_103_001` | одиночные показатели из `/proc/stat` и `/proc/uptime` | `snapshot_full` | `(ts)` |
 | `1_104_001` | `/proc/meminfo` | `snapshot_full` | `(ts)` |
@@ -51,7 +51,7 @@ CPU, память, диски, точки монтирования и топол
 | `1_118_001` | `/proc/net/snmp6` | `snapshot_full` | `(ts)` |
 | `1_119_001` | `/proc/net/rpc/nfs` | `snapshot_full` | `(ts)` |
 | `1_120_001` | `/proc/net/rpc/nfsd` | `snapshot_full` | `(ts)` |
-| `1_200_001` | cgroup: сопоставление процессов | `snapshot_full` | `(pid, starttime, ts)` |
+| `1_200_001` | cgroup: сопоставление процессов | `snapshot_full` | `(pid, ts)` |
 | `1_201_001` | cgroup: cpu | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_201_002` | cgroup: cpu с эффективным cpuset, сохранённый формат чтения | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_202_001` | cgroup: memory | `snapshot_full` | `(cgroup_path, ts)` |

@@ -9,6 +9,7 @@ import {
   asNumber,
   cores,
   humanBytes,
+  humanCores,
   identifier,
   measure,
   millisecondsPerSecond,
@@ -178,7 +179,7 @@ export function processSummaryOutput(reading: number | null, metric: ProcessSumm
   if (reading === null) return "—"
   if (metric.kind === "B") return humanBytes(reading, locale)
   if (metric.kind === "B/s") return humanBytes(reading, locale, t("unit.per_second"))
-  if (metric.kind === "cores") return measure(reading, locale, t("unit.cores"))
+  if (metric.kind === "cores") return humanCores(reading, locale, t("unit.cores"))
   if (metric.kind === "ms/s") return measure(reading, locale, t("unit.ms_per_second"))
   return measure(reading, locale, metric.kind === "1/s" ? t("unit.per_second") : "")
 }
@@ -280,7 +281,7 @@ export function formatCell(kind: Field["kind"], cell: Cell, locale: Locale, t: T
     case "state": return stateText(cell)
     case "number": return measure(cell, locale)
     case "rate": return measure(cell, locale, t("unit.per_second"))
-    case "cores": return cores(cell, locale, ticksPerSecond) + t("unit.cores")
+    case "cores": return cores(cell, locale, ticksPerSecond, t("unit.cores"))
     case "kib": return humanBytes(kib(asNumber(cell)), locale)
     case "bytes": return humanBytes(cell, locale, t("unit.per_second"))
     case "ns": return millisecondsPerSecond(cell, locale) + t("unit.ms_per_second")

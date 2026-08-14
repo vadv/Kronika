@@ -4,7 +4,6 @@ import { browserTimeZone, createDisplayTimeFormatter, type DisplayTimeFormatter,
 import type { Locale } from "./model"
 
 interface DisplayTimeValue extends DisplayTimeFormatter {
-  readonly browserOffset: (timestamp: number) => string
   readonly setMode: (mode: DisplayTimeZone) => void
 }
 
@@ -12,7 +11,6 @@ const localZone = browserTimeZone()
 const fallback = createDisplayTimeFormatter("en", "browser", localZone)
 const DisplayTimeContext = createContext<DisplayTimeValue>({
   ...fallback,
-  browserOffset: fallback.zone,
   setMode: () => {},
 })
 
@@ -24,7 +22,7 @@ export function DisplayTimeProvider({ children, locale, mode, setMode }: {
 }) {
   const value = useMemo<DisplayTimeValue>(() => {
     const formatter = createDisplayTimeFormatter(locale, mode, localZone)
-    return { ...formatter, browserOffset: mode === "browser" ? formatter.zone : createDisplayTimeFormatter(locale, "browser", localZone).zone, setMode }
+    return { ...formatter, setMode }
   }, [locale, mode, setMode])
   return <DisplayTimeContext.Provider value={value}>{children}</DisplayTimeContext.Provider>
 }

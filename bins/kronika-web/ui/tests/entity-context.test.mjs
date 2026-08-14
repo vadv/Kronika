@@ -40,7 +40,7 @@ test("finding routes choose the shared entity lens", () => {
   assert.equal(helpers.findingRoute(finding(row("os_diskstats", "1108001", "1", {}))), "system")
 })
 
-test("context keeps the complete physical identity and type", () => {
+test("context keeps exact identities while process and Activity use PID only", () => {
   const process = row("os_process", "1100001", "1", { pid: 41, starttime: "9007199254740997", read_bytes: 3 })
   const oldStatement = row("pg_stat_statements", "1002001", "2", { queryid: "9", userid: "10", dbid: "11", query: "select 1" })
   const newStatement = row("pg_stat_statements", "1002003", "3", { queryid: "9", userid: "10", dbid: "11", toplevel: false, datname: "app", usename: "reporter", query: "select 1" })
@@ -51,7 +51,8 @@ test("context keeps the complete physical identity and type", () => {
 
   const processContext = helpers.entityContext(finding(process), process)
   assert.equal(processContext.label, "PID 41")
-  assert.deepEqual(processContext.identity, [["pid", "41"], ["starttime", "9007199254740997"]])
+  assert.deepEqual(processContext.identity, [["pid", "41"]])
+  assert.equal(helpers.contextMatches({ ...process, typeId: "1100999", values: { ...process.values, starttime: "9007199254741000" } }, processContext), true)
   assert.deepEqual(helpers.entityContext(finding(oldStatement), oldStatement).identity, [["queryid", "9"], ["userid", "10"], ["dbid", "11"]])
   const statementContext = helpers.entityContext(finding(newStatement), newStatement, translator("en"))
   assert.equal(statementContext.typeId, "1002003")
@@ -65,8 +66,9 @@ test("context keeps the complete physical identity and type", () => {
   assert.deepEqual(helpers.entityContext(finding(database), database).identity, [["datid", "16384"]])
   assert.deepEqual(helpers.entityContext(finding(device), device).identity, [["major", "8"], ["minor", "1"]])
   const activityContext = helpers.entityContext(finding(activity), activity)
-  assert.deepEqual(activityContext.identity, [["pid", "42"], ["backend_start", "9007199254740999"]])
-  assert.equal(helpers.contextMatches({ ...activity, values: { ...activity.values, backend_start: "9007199254741000" } }, activityContext), false)
+  assert.deepEqual(activityContext.identity, [["pid", "42"]])
+  assert.equal(helpers.contextMatches({ ...activity, typeId: "1001002", values: { ...activity.values, backend_start: "9007199254741000" } }, activityContext), true)
+  assert.equal(helpers.contextMatches({ ...activity, values: { ...activity.values, pid: 43 } }, activityContext), false)
   assert.equal(helpers.contextMatches({ ...activity, timestamp: 200 }, activityContext), true)
 })
 

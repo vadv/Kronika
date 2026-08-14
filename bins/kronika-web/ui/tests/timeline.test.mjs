@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { importModule, registryPlugin } from "./import-module.mjs"
 
 const helpers = await importModule(
-  'export { FindingMarker, MARKER_CLUSTER_PX, exactValue, findingShape, findingTrack, groupFindings, healthThreshold, healthTimelineSeries, sampleWindow, selectedTimelineTimes, timelineDecorations, timelineRecordedTimes } from "../src/timeline.tsx"',
+  'export { FindingMarker, MARKER_CLUSTER_PX, exactValue, findingShape, findingTrack, groupFindings, healthEvaluationAtOrBefore, healthThreshold, healthTimelineSeries, sampleWindow, selectedTimelineTimes, timelineDecorations, timelineRecordedTimes } from "../src/timeline.tsx"',
   { plugins: [registryPlugin([{ typeId: "1104001", logicalName: "os_meminfo", columns: ["ts", "mem_total", "mem_free", "mem_available"] }])] },
 )
 
@@ -156,19 +156,22 @@ test("finding kinds have non-color shape identities", () => {
   assert.match(render("spike"), /stroke="var\(--warn\)"/)
 })
 
-test("health metrics remain three exact series", () => {
+test("health metrics share stored evaluation timestamps and a strict nonfuture cursor", () => {
   const rows = [
-    { logicalName: "health", ordinal: "0", segmentId: "a", timestamp: 100, typeId: "0", values: { os_health: 81, overall_health: 62 } },
-    { logicalName: "health", ordinal: "1", segmentId: "a", timestamp: 150, typeId: "0", values: { postgres_health: 77 } },
-    { logicalName: "health", ordinal: "2", segmentId: "b", timestamp: 200, typeId: "0", values: { os_health: 83, overall_health: null } },
+    { logicalName: "health", ordinal: "0", segmentId: "a", timestamp: 103, typeId: "0", values: { os_health: 90, overall_health: 62, postgres_health: 72 } },
+    { logicalName: "health", ordinal: "1", segmentId: "a", timestamp: 109, typeId: "0", values: { os_health: 90, overall_health: 45, postgres_health: 55 } },
   ]
   const health = helpers.healthTimelineSeries(rows)
-  assert.deepEqual(health.series.map(({ field, points }) => [field, points.map(({ value }) => value)]), [
-    ["overall_health", [62, null]],
-    ["os_health", [81, 83]],
-    ["postgres_health", [77]],
+  assert.deepEqual(health.series.map(({ field, points }) => [field, points.map(({ timestamp, value }) => [timestamp, value])]), [
+    ["overall_health", [[103, 62], [109, 45]]],
+    ["os_health", [[103, 90], [109, 90]]],
+    ["postgres_health", [[103, 72], [109, 55]]],
   ])
   assert.equal(health.threshold, 50)
+  assert.equal(helpers.healthEvaluationAtOrBefore(health.series, 102), null)
+  assert.equal(helpers.healthEvaluationAtOrBefore(health.series, 105), 103)
+  assert.equal(helpers.healthEvaluationAtOrBefore(health.series, 106), 103)
+  assert.equal(helpers.healthEvaluationAtOrBefore(health.series, 109), 109)
 
   const osOnly = helpers.healthTimelineSeries([
     { logicalName: "health", ordinal: "3", segmentId: "c", timestamp: 300, typeId: "0", values: { os_health: 73, overall_health: 73 } },

@@ -4,8 +4,8 @@ use crate::{Section, StrId, Ts};
 
 /// Hot process identity, CPU, memory, and I/O counters.
 ///
-/// Process identity is `(pid, starttime)`, so PID reuse does not merge two
-/// different processes in readers. `/proc/PID/io` fields are nullable because
+/// Within one selected hour, `pid` alone identifies a process. `starttime`
+/// remains an observed timestamp. `/proc/PID/io` fields are nullable because
 /// Linux may deny them for foreign UIDs, `hidepid`, LSM policy, or PID namespace
 /// boundaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Section)]
@@ -13,8 +13,8 @@ use crate::{Section, StrId, Ts};
     id = 1_100_001,
     name = "os_process",
     semantics = snapshot_full,
-    sort_key("pid", "starttime", "ts"),
-    identity("pid", "starttime")
+    sort_key("pid", "ts"),
+    identity("pid")
 )]
 pub struct OsProcess {
     /// Collection timestamp, unix microseconds.
@@ -190,8 +190,8 @@ mod tests {
     fn contract_shape() {
         let c = OsProcess::CONTRACT;
         assert_eq!(c.type_id.get(), 1_100_001);
-        assert_eq!(c.sort_key, ["pid", "starttime", "ts"]);
-        assert_eq!(c.identity, ["pid", "starttime"]);
+        assert_eq!(c.sort_key, ["pid", "ts"]);
+        assert_eq!(c.identity, ["pid"]);
     }
 
     #[test]

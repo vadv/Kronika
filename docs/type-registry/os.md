@@ -29,8 +29,8 @@ The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 
 | `type_id` | Source | Semantics | Sort key |
 |-----------|--------|-----------|----------|
-| `1_100_001` | `/proc/PID/{stat,status,io,cmdline}`, hot set | `snapshot_full` | `(pid, starttime, ts)` |
-| `1_101_001` | `/proc/PID/status`, extended set | `snapshot_full` | `(pid, starttime, ts)` |
+| `1_100_001` | `/proc/PID/{stat,status,io,cmdline}`, hot set | `snapshot_full` | `(pid, ts)` |
+| `1_101_001` | `/proc/PID/status`, extended set | `snapshot_full` | `(pid, ts)` |
 | `1_102_001` | `/proc/stat`: CPU lines | `snapshot_full` | `(cpu_id, ts)` |
 | `1_103_001` | `/proc/stat` singletons and `/proc/uptime` | `snapshot_full` | `(ts)` |
 | `1_104_001` | `/proc/meminfo` | `snapshot_full` | `(ts)` |
@@ -50,7 +50,7 @@ The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 | `1_118_001` | `/proc/net/snmp6` | `snapshot_full` | `(ts)` |
 | `1_119_001` | `/proc/net/rpc/nfs` | `snapshot_full` | `(ts)` |
 | `1_120_001` | `/proc/net/rpc/nfsd` | `snapshot_full` | `(ts)` |
-| `1_200_001` | cgroup: process mapping | `snapshot_full` | `(pid, starttime, ts)` |
+| `1_200_001` | cgroup: process mapping | `snapshot_full` | `(pid, ts)` |
 | `1_201_001` | cgroup: cpu | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_201_002` | cgroup: cpu with effective cpuset, retained reader layout | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_202_001` | cgroup: memory | `snapshot_full` | `(cgroup_path, ts)` |

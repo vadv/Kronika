@@ -158,8 +158,15 @@ test("history subtracts exact counters before conversion and rejects unusable in
   assert.equal(metrics.postgresInterval(after, missing).mean_exec_ms_per_call, null)
   const unavailable = row("1002002", 4_000_000, { calls: null, total_exec_time: null })
   assert.equal(metrics.postgresInterval(after, unavailable).mean_exec_ms_per_call, null)
-  const zero = row("1002002", 4_000_000, { calls: after.values.calls, total_exec_time: 140 })
-  assert.equal(metrics.postgresInterval(after, zero).mean_exec_ms_per_call, null)
+  const zero = row("1002002", 4_000_000, { calls: after.values.calls, rows: after.values.rows, total_exec_time: after.values.total_exec_time })
+  const zeroInterval = metrics.postgresInterval(after, zero)
+  assert.equal(zeroInterval.calls_per_second, 0)
+  assert.equal(zeroInterval.execution_ms_per_second, 0)
+  assert.equal(zeroInterval.rows_per_second, 0)
+  assert.equal(zeroInterval.mean_exec_ms_per_call, null)
+  assert.deepEqual(metrics.postgresHistory([before, after, zero]).map(({ calls_per_second, mean_exec_ms_per_call }) => [calls_per_second, mean_exec_ms_per_call]), [
+    [null, null], [1.5, 10], [0, null],
+  ])
   const backwards = row("1002002", 2_000_000, { calls: "9007199254740996", total_exec_time: 140 })
   assert.equal(metrics.postgresInterval(after, backwards).mean_exec_ms_per_call, null)
   const executionReset = row("1002002", 4_000_000, { calls: "9007199254740996", total_exec_time: 1 })

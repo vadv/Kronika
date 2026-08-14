@@ -28,7 +28,7 @@ const TEST_REGISTRY = [
   layout("1020001", "pg_wal_storage", [], ["ts", "wal_files_bytes"]),
 ]
 const helpers = await importModule(
-  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationMs, chartColumnAvailable, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, postgresMetricHistory, PROGRESS_VACUUM_FIELDS, progressVacuumColumns, registryCardFields, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows, walStoragePoints } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, postgresMetricHistory, PROGRESS_VACUUM_FIELDS, progressVacuumColumns, registryCardFields, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows, walStoragePoints } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
   { plugins: [registryPlugin(TEST_REGISTRY)] },
 )
 
@@ -98,6 +98,8 @@ test("PostgreSQL chart actions accept only numeric values and declare semantic u
   assert.equal(helpers.chartPointValue(null, { field: "calls", kind: "number" }), null)
   assert.equal(helpers.chartScale({ field: "cpu", kind: "percent" }), "percent")
   assert.equal(helpers.chartScale({ field: "calls", kind: "number" }), "nonnegative")
+  assert.equal(helpers.chartFormat("percent")(0.099, "en"), "<0.1%")
+  assert.equal(helpers.chartFormat("percent")(12, "ru"), "12 %")
 })
 
 test("PostgreSQL generic histories preserve absent, null, zero, storage, and counter semantics", () => {
@@ -125,10 +127,21 @@ test("dense statement histories cover per-call and percentage lens metrics", () 
   const rows = [
     stored(1_000_000, { calls: 10, rows: 20, shared_blks_hit: 10, shared_blks_read: 0, local_blks_hit: 0, local_blks_read: 0 }),
     stored(2_000_000, { calls: 12, rows: 28, shared_blks_hit: 13, shared_blks_read: 1, local_blks_hit: 0, local_blks_read: 0 }),
+    stored(3_000_000, { calls: 12, rows: 28, shared_blks_hit: 13, shared_blks_read: 1, local_blks_hit: 0, local_blks_read: 0 }),
   ]
   assert.deepEqual(helpers.denseHistoryFields("1002001", "rows_per_call"), ["rows", "calls"])
-  assert.deepEqual(helpers.denseMetricHistory(rows, "1002001", { field: "rows_per_call", kind: "number" }).map(({ value }) => value), [null, 4])
-  assert.deepEqual(helpers.denseMetricHistory(rows, "1002001", { field: "hit_pct", kind: "percent" }).map(({ value }) => value), [null, 75])
+  assert.deepEqual(helpers.denseMetricHistory(rows, "1002001", { field: "calls_per_second", kind: "number", rate: true }).map(({ value }) => value), [null, 2, 0])
+  assert.deepEqual(helpers.denseMetricHistory(rows, "1002001", { field: "rows_per_call", kind: "number" }).map(({ value }) => value), [null, 4, null])
+  assert.deepEqual(helpers.denseMetricHistory(rows, "1002001", { field: "blocks_per_call", kind: "number" }).map(({ value }) => value), [null, 2, null])
+  assert.deepEqual(helpers.denseMetricHistory(rows, "1002001", { field: "hit_pct", kind: "percent" }).map(({ value }) => value), [null, 75, null])
+  const v2 = (timestamp, values) => ({ ...row("1002002", values), ordinal: String(timestamp), timestamp })
+  const laterZero = [
+    v2(1_000_000, { calls: 10, total_exec_time: 50, total_plan_time: 5, wal_bytes: 100 }),
+    v2(2_000_000, { calls: 12, total_exec_time: 60, total_plan_time: 7, wal_bytes: 110 }),
+    v2(3_000_000, { calls: 12, total_exec_time: 60, total_plan_time: 7, wal_bytes: 110 }),
+  ]
+  assert.deepEqual(helpers.denseMetricHistory(laterZero, "1002002", { field: "wal_per_call", kind: "bytes" }).map(({ value }) => value), [null, 5, null])
+  assert.deepEqual(helpers.denseMetricHistory(laterZero, "1002002", { field: "plan_time_pct", kind: "percent" }).map(({ value }) => value), [null, 100 * 2 / 12, null])
 })
 
 test("overview cards expose only numeric measurements and mark cumulative units as rates", async () => {
@@ -137,7 +150,7 @@ test("overview cards expose only numeric measurements and mark cumulative units 
   const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
   assert.match(source, /const \[metricField, setMetricField\] = useState<string \| null>\(preferredField\)/)
   assert.match(source, /const fields = resetField === undefined \? \[field\] : \[field, resetField\]/)
-  assert.match(source, /loadSeries\(hour, row\.logicalName, \{\}, fields, controller\.signal, row\.typeId, row\.timestamp\)/)
+  assert.match(source, /loadSeries\(hour, row\.logicalName, \{\}, fields, controller\.signal, row\.typeId\)/)
   assert.match(source, /OVERVIEW_SINGLETONS\.has\(logicalName\)/)
   assert.match(source, /<PgPreview[^>]*overview section=\{logicalName\}/)
   assert.match(source, /className="process-history-selector"/)
@@ -165,7 +178,7 @@ test("WAL storage keeps exact singleton values and selected-snapshot history wir
   const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
   assert.match(source, /snapshot\(data\.sections\.pg_wal_storage \?\? \[\], cursor\)\[0\]/)
   assert.match(source, /walStorage !== undefined && <WalStorage/)
-  assert.match(source, /loadSeries\(hour, "pg_wal_storage", \{\}, \["wal_files_bytes"\], controller\.signal, row\.typeId, row\.timestamp\)/)
+  assert.match(source, /loadSeries\(hour, "pg_wal_storage", \{\}, \["wal_files_bytes"\], controller\.signal, row\.typeId\)/)
   assert.match(source, /<SeriesChart cursor=\{cursor\} format=\{humanBytes\}/)
   assert.match(source, /scale="nonnegative" unit="B"/)
   assert.match(source, /logicalName !== "pg_wal_storage"/)
@@ -263,16 +276,18 @@ test("Activity exact start times enable duration histories without synthetic sto
   assert.equal(helpers.chartColumnAvailable("pg_locks", rows, { field: "query_duration_ms", kind: "duration" }), false)
 })
 
-test("Activity history keeps one backend incarnation when PostgreSQL reuses a PID", async () => {
+test("Activity history and selection use PID only within the selected hour", async () => {
   const selected = activityRow("1", { pid: 42, backend_start: "9000000", state: "active", query_start: "9500000" })
   const sameBackend = activityRow("2", { pid: 42, backend_start: "9000000", state: "active", query_start: "9500000" }, 11_000_000)
-  const reusedPid = activityRow("3", { pid: 42, backend_start: "10500000", state: "active", query_start: "10600000" }, 12_000_000)
+  const changedStart = activityRow("3", { pid: 42, backend_start: "10500000", state: "active", query_start: "10600000" }, 12_000_000)
   assert.equal(helpers.sameEntity(selected, sameBackend, "pg_stat_activity"), true)
-  assert.equal(helpers.sameEntity(selected, reusedPid, "pg_stat_activity"), false)
-  assert.equal(helpers.sameEntity(selected, activityRow("4", { pid: 42 }), "pg_stat_activity"), false)
+  assert.equal(helpers.sameEntity(selected, changedStart, "pg_stat_activity"), true)
+  assert.equal(helpers.sameEntity(selected, activityRow("4", { pid: 42 }), "pg_stat_activity"), true)
+  assert.equal(helpers.sameEntity(selected, activityRow("5", { pid: 43 }), "pg_stat_activity"), false)
 
   const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
-  assert.match(source, /activity \? \["backend_start", \.\.\.metricFields\] : metricFields/)
+  assert.match(source, /activity \? \["pid", \.\.\.metricFields\] : metricFields/)
+  assert.doesNotMatch(source, /activity \? \["backend_start",/)
   assert.match(source, /rows\.filter\(\(candidate\) => !activity \|\| sameEntity\(candidate, row, section\)\)/)
   assert.match(source, /identityFields\(section, row\.typeId\)\.map/)
   assert.match(source, /section === "pg_stat_activity"[^\n]*return \["pid"\]/)
@@ -371,7 +386,7 @@ test("dense PostgreSQL columns and the Plans tab stay available by section", asy
   assert.match(source, /serverSorted=\{dense\}/)
   assert.match(source, /onNearEnd=\{densePageState === "idle" && canLoadMore \? onLoadMore : undefined\}/)
   assert.match(source, /densePageState === "error" \? onRetry : onLoadMore/)
-  assert.match(source, /loadSeries\(hour, section, filters, fields, controller\.signal, row\.typeId, row\.timestamp\)/)
+  assert.match(source, /loadSeries\(hour, section, filters, fields, controller\.signal, row\.typeId\)/)
   assert.match(source, /\{ section, fields: \[field\], typeId: row\.typeId \}[\s\S]*fullText: true/)
 })
 
@@ -488,8 +503,9 @@ test("dense table state names cursor, interval, filter, physical server order, a
     orderBy: ["total_exec_time"], orderDirection: "desc",
     from: 1_800_000_000_000_000, to: 1_800_000_010_000_000,
   }, 200, 1_800_000_010_000_000, "vacuum*", { column: "execution_ms_per_second", descending: true }, "en", t))
-  assert.match(markup, /Cursor .* UTC/)
-  assert.match(markup, /Interval .* UTC to .* UTC/)
+  assert.match(markup, /Cursor [^<]*\d{2}:\d{2}:\d{2}/)
+  assert.match(markup, /Interval .* to /)
+  assert.doesNotMatch(markup, /GMT|UTC/)
   assert.match(markup, /Filter vacuum\*/)
   assert.match(markup, /Execution ms\/s; total_exec_time; descending/)
   assert.match(markup, /Loaded 200 of 4,873/)

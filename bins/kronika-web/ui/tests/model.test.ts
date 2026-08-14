@@ -3,7 +3,7 @@ import test from "node:test"
 
 import type { Cell, DataRow } from "../src/api.ts"
 import { fittedWidth } from "../src/column-size.ts"
-import { activityFor, compact, cores, estimatedRows, humanBytes, humanDuration, humanPercent, identifier, measure, millisecondsPerSecond, nearestTime, processCommand, processDefaultSort, processKey, processLens, rawText, shownMoment, stateText, type Locale } from "../src/model.ts"
+import { activityFor, compact, cores, estimatedRows, humanBytes, humanCores, humanDuration, humanPercent, identifier, measure, millisecondsPerSecond, nearestTime, processCommand, processDefaultSort, processKey, processLens, rawText, shownMoment, stateText, type Locale } from "../src/model.ts"
 
 function row(timestamp: number): DataRow {
   return { segmentId: "7", logicalName: "os_process", typeId: "1100001", ordinal: "0", timestamp, values: {} }
@@ -47,13 +47,14 @@ test("finding fields select the matching process lens", () => {
   assert.equal(processLens("state"), "generic")
 })
 
-test("process identity includes the captured start time", () => {
+test("process identity is PID-only within the selected hour", () => {
   const process = (pid: number, starttime: string): DataRow => ({
     ...row(100),
     values: { pid, starttime },
   })
   assert.equal(processKey(process(41, "99")), processKey(process(41, "99")))
-  assert.notEqual(processKey(process(41, "99")), processKey(process(41, "100")))
+  assert.equal(processKey(process(41, "99")), processKey(process(41, "100")))
+  assert.notEqual(processKey(process(41, "99")), processKey(process(42, "99")))
 })
 
 test("process tables start with CPU and disk sorting chooses the first active signal", () => {
@@ -74,6 +75,10 @@ test("rates and ratios stay bounded without turning small nonzero values into ze
   assert.equal(humanBytes(null, "en"), "—")
   assert.equal(cores(161.01, "en", 100), "1.61")
   assert.equal(cores(0.4, "en", 100), "0.004")
+  assert.equal(humanCores(0.00399, "en", " cores"), "0.004 cores")
+  assert.equal(humanCores(1.23, "en", " cores"), "1.23 cores")
+  assert.equal(humanCores(1.23, "ru", " ядра"), "1,23 ядра")
+  assert.equal(humanCores(null, "en"), "—")
   assert.equal(cores(161.01, "en", null), "—")
   assert.equal(cores(161.01, "en", 0), "—")
   assert.equal(millisecondsPerSecond(111_622_111.53, "en"), "112")
@@ -128,8 +133,14 @@ test("metric numbers use three significant digits and locale-aware compact scale
   assert.equal(humanPercent(41.729068244136855, "en"), "41.7%")
   assert.equal(humanPercent(41.729068244136855, "ru"), "41,7 %")
   assert.equal(humanPercent(0, "en"), "0%")
+  assert.equal(humanPercent(0.099, "en"), "<0.1%")
+  assert.equal(humanPercent(0.099, "ru"), "<0,1 %")
+  assert.equal(humanPercent(0.1, "en"), "0.1%")
+  assert.equal(humanPercent(12, "en"), "12%")
+  assert.equal(humanPercent(12.04, "en"), "12%")
+  assert.equal(humanPercent(12.05, "en"), "12.1%")
   assert.equal(humanPercent(null, "en"), "—")
-  assert.equal(humanPercent(4e-7, "en"), "4E-7%")
+  assert.equal(humanPercent(4e-7, "en"), "<0.1%")
   assert.equal(humanDuration(999.999, "en"), "1,000 ms")
   assert.equal(humanDuration(1_234, "en"), "1.2 s")
   assert.equal(humanDuration(null, "en"), "—")

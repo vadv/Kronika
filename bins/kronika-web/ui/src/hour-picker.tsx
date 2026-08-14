@@ -99,7 +99,6 @@ export function HourPicker({
     {open && hour !== null && <div aria-label={t("hour.picker")} className="hour-popover" data-testid="hour-popover" id="hour-picker-popover" role="dialog">
       <header>
         <strong data-testid="hour-current">{calendarDateLabel(time.dayKey(hour), locale)}</strong>
-        <span>{time.zone(hour)}</span>
       </header>
       <div className="day-picker">
         <div className="month-navigation">

@@ -86,14 +86,14 @@ test("tooltip readings use only the exact timestamp without carrying a neighbor"
   assert.match(chart.sampleText(series, frame, 2, "en", time), /two \(B\/s\): 0/)
 })
 
-test("chart time has one active zone, seconds precision, and distinct DST offsets", () => {
+test("chart time has one active zone and plain seconds precision", () => {
   const timestamp = Date.UTC(2026, 10, 1, 6, 30) * 1_000
   const eastern = chart.createDisplayTimeFormatter("en", "browser", "America/New_York")
   const utc = chart.createDisplayTimeFormatter("en", "utc", "America/New_York")
-  assert.equal(eastern.clock(timestamp), "01:30:00 GMT-5")
-  assert.equal(utc.clock(timestamp), "06:30:00 UTC")
-  assert.equal(chart.axisTimeLabel(timestamp, eastern), "01:30 GMT-5")
-  assert.doesNotMatch(eastern.clock(timestamp), /\.000|UTC/)
+  assert.equal(eastern.clock(timestamp), "01:30:00")
+  assert.equal(utc.clock(timestamp), "06:30:00")
+  assert.equal(chart.axisTimeLabel(timestamp, eastern), "01:30")
+  assert.doesNotMatch(eastern.clock(timestamp), /\.000|UTC|GMT/)
 })
 
 test("tooltip, summary, and keyboard text share bounded semantic precision", () => {
@@ -106,7 +106,7 @@ test("tooltip, summary, and keyboard text share bounded semantic precision", () 
   const frame = chart.alignRecordedSeries(series)
   assert.equal(chart.exactReadings(frame, series, timestamp, "en", time).values[0].output, "41.7%")
   assert.match(chart.chartSummary(series, frame, timestamp, timestamp + 3_600_000_000, "en", time), /41\.7%…41\.7%/)
-  assert.match(chart.sampleText(series, frame, timestamp, "en", time), /08:30:45 GMT\+3; memory \(%\): 41\.7%/)
+  assert.match(chart.sampleText(series, frame, timestamp, "en", time), /08:30:45; memory \(%\): 41\.7%/)
   assert.doesNotMatch(chart.sampleText(series, frame, timestamp, "en", time), /41\.729068|\.000/)
   const ru = chart.createDisplayTimeFormatter("ru", "browser", "Europe/Moscow")
   assert.match(chart.sampleText(series, frame, timestamp, "ru", ru), /41,7 %/)

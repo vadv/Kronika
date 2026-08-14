@@ -7,7 +7,7 @@ import { ChartOnly } from "./chart-visibility"
 import { contextualRows, type EntityContext } from "./entity-context"
 import { EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
-import { asNumber, humanBytes, humanPercent, measure, rawText, shownMoment, snapshot, value, type Locale } from "./model"
+import { asNumber, humanBytes, humanCores, humanPercent, measure, rawText, shownMoment, snapshot, value, type Locale } from "./model"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 import { UPlotChart, type RecordedSeries } from "./uplot-chart"
@@ -196,11 +196,11 @@ export const SYSTEM_ENTITIES: readonly {
     section: "os_cgroup_cpu", label: "system.entities.cgroup_cpu",
     columns: [
       text("cgroup_path", 240, true),
-      derivedNumber("cgroup_used_cores", ["usage_usec"], (rows) => cgroupCpuPoints(rows, "usage_usec")),
-      derivedNumber("cgroup_user_cores", ["user_usec"], (rows) => cgroupCpuPoints(rows, "user_usec")),
-      derivedNumber("cgroup_system_cores", ["system_usec"], (rows) => cgroupCpuPoints(rows, "system_usec")),
-      derivedNumber("cgroup_other_cores", ["usage_usec", "user_usec", "system_usec"], cgroupOtherCpuPoints),
-      nonChartNumber("cgroup_capacity", []), nonChartNumber("cgroup_quota", ["quota_usec", "period_usec"]), nonChartNumber("cpuset_cpus", []),
+      derivedCores("cgroup_used_cores", ["usage_usec"], (rows) => cgroupCpuPoints(rows, "usage_usec")),
+      derivedCores("cgroup_user_cores", ["user_usec"], (rows) => cgroupCpuPoints(rows, "user_usec")),
+      derivedCores("cgroup_system_cores", ["system_usec"], (rows) => cgroupCpuPoints(rows, "system_usec")),
+      derivedCores("cgroup_other_cores", ["usage_usec", "user_usec", "system_usec"], cgroupOtherCpuPoints),
+      nonChartCores("cgroup_capacity", []), nonChartCores("cgroup_quota", ["quota_usec", "period_usec"]), nonChartNumber("cpuset_cpus", []),
     ],
   },
   {
@@ -556,7 +556,8 @@ export function chartableEntityColumns(columns: readonly SystemEntityColumn[]): 
     || column.kind === "milliseconds"
     || column.kind === "duration"
     || column.kind === "microseconds"
-    || column.kind === "percent"))
+    || column.kind === "percent"
+    || column.kind === "cores"))
 }
 
 export function entityHistoryRequest(row: DataRow, column: SystemEntityColumn): EntityHistoryRequest | null {
@@ -602,7 +603,7 @@ function physicalField(column: EntityColumn, typeId: string): string {
 
 function entityMetricUnit(column: SystemEntityColumn, locale: Locale, metadata: RegistryColumn | null): string {
   const perSecond = metadata?.class === "cumulative" || column.rate === true ? "/s" : ""
-  if (column.field.endsWith("_cores")) return locale === "ru" ? "ядра" : "cores"
+  if (column.kind === "cores") return locale === "ru" ? "ядра" : "cores"
   if (column.field === "speed_mbit") return "Mbit/s"
   if (column.field === "mhz_max") return "MHz"
   if (column.kind === "bytes" || column.kind === "kib") return `${locale === "ru" ? "байты" : "bytes"}${perSecond}`
@@ -615,7 +616,7 @@ function entityMetricUnit(column: SystemEntityColumn, locale: Locale, metadata: 
 
 function entityMetricValue(reading: number, locale: Locale, column: SystemEntityColumn, metadata: RegistryColumn | null): string {
   const suffix = metadata?.class === "cumulative" || column.rate === true ? "/s" : ""
-  if (column.field.endsWith("_cores")) return measure(reading, locale, locale === "ru" ? " ядра" : " cores")
+  if (column.kind === "cores") return humanCores(reading, locale, locale === "ru" ? " ядра" : " cores")
   if (column.field === "speed_mbit") return measure(reading, locale, " Mbit/s")
   if (column.field === "mhz_max") return measure(reading, locale, " MHz")
   if (column.kind === "bytes") return humanBytes(reading, locale, suffix)
@@ -939,13 +940,16 @@ function registryColumn(typeId: string, field: string): RegistryColumn | null {
 }
 
 export function metricValue(value: Cell, locale: Locale, unit: string): string {
+  if (unit === "%") return humanPercent(value, locale)
+  if (unit === " cores") return humanCores(value, locale, locale === "ru" ? " ядра" : unit)
   if (unit === " KiB") return humanBytes(asNumber(value) === null ? null : (asNumber(value) ?? 0) * 1024, locale)
   if (unit === " B") return humanBytes(value, locale, "/s")
   return measure(value, locale, unit)
 }
 
-function metricChartValue(value: number, locale: Locale, unit: string): string {
+export function metricChartValue(value: number, locale: Locale, unit: string): string {
   if (unit === "%") return humanPercent(value, locale)
+  if (unit === " cores") return humanCores(value, locale, locale === "ru" ? " ядра" : unit)
   if (unit === " KiB") return measure(value, locale, " KiB")
   if (unit === " B") return humanBytes(value, locale, "/s")
   return measure(value, locale)
@@ -1089,9 +1093,11 @@ function derived(field: string, kind: NonNullable<EntityColumn["kind"]>, fields:
   return { ...systemColumn(field, kind, 145), historyFields: fields, points }
 }
 function derivedNumber(field: string, fields: readonly string[], points: (rows: readonly DataRow[]) => readonly ChartPoint[]): SystemEntityColumn { return derived(field, "number", fields, points) }
+function derivedCores(field: string, fields: readonly string[], points: (rows: readonly DataRow[]) => readonly ChartPoint[]): SystemEntityColumn { return derived(field, "cores", fields, points) }
 function derivedBytes(field: string, fields: readonly string[], points: (rows: readonly DataRow[]) => readonly ChartPoint[]): SystemEntityColumn { return derived(field, "bytes", fields, points) }
 function derivedRateBytes(field: string, fields: readonly string[], points: (rows: readonly DataRow[]) => readonly ChartPoint[]): SystemEntityColumn { return rateColumn(derivedBytes(field, fields, points)) }
 function derivedPercent(field: string, fields: readonly string[], points: (rows: readonly DataRow[]) => readonly ChartPoint[]): SystemEntityColumn { return derived(field, "percent", fields, points) }
 function latency(field: string, operations: string, duration: string): SystemEntityColumn { return derived(field, "milliseconds", [operations, duration], (rows) => latencyPoints(rows, operations, duration)) }
 function nonChartNumber(field: string, fields: readonly string[]): SystemEntityColumn { return { ...number(field), chartable: false, historyFields: fields } }
 function nonChartBytes(field: string, fields: readonly string[]): SystemEntityColumn { return { ...bytes(field), chartable: false, historyFields: fields } }
+function nonChartCores(field: string, fields: readonly string[]): SystemEntityColumn { return { ...systemColumn(field, "cores", 145), chartable: false, historyFields: fields } }

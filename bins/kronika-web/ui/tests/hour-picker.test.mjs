@@ -32,16 +32,16 @@ test("active-zone civil days group exact instants across UTC and half-hour bound
   assert.equal(utc.dayKey(first), "2026-08-13")
   assert.deepEqual(picker.hoursForDay([first, second], "2026-08-14", india), [first, second])
   assert.deepEqual(picker.hoursForDay([first, second], "2026-08-14", utc), [])
-  assert.equal(india.hourLabel(first), "00:00 GMT+5:30")
+  assert.equal(india.hourLabel(first), "00:00")
 })
 
-test("DST-fold catalogue instants keep distinct offset labels and exact keys", () => {
+test("DST-fold catalogue instants keep exact keys when their plain labels repeat", () => {
   const first = Date.UTC(2026, 10, 1, 5) * 1_000
   const second = Date.UTC(2026, 10, 1, 6) * 1_000
   const eastern = picker.createDisplayTimeFormatter("en", "browser", "America/New_York")
   assert.deepEqual(picker.hoursForDay([first, second], "2026-11-01", eastern), [first, second])
-  assert.equal(eastern.hourLabel(first), "01:00 GMT-4")
-  assert.equal(eastern.hourLabel(second), "01:00 GMT-5")
+  assert.equal(eastern.hourLabel(first), "01:00")
+  assert.equal(eastern.hourLabel(second), "01:00")
 })
 
 test("the three-column exact-hour grid has bounded keyboard navigation", () => {

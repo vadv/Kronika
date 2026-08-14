@@ -95,7 +95,7 @@ export function processCommand(row: DataRow): string {
 }
 
 export function processKey(row: DataRow): string {
-  return `${identifier(value(row, "pid"))}:${identifier(value(row, "starttime"))}`
+  return identifier(value(row, "pid"))
 }
 
 export function identifier(cell: Cell): string {
@@ -113,10 +113,19 @@ export function measure(cell: Cell, locale: Locale, suffix = ""): string {
   return `${compact(number, locale)}${suffix}`
 }
 
-export function humanPercent(cell: Cell, locale: Locale): string {
+export function humanPercent(cell: Cell, locale: Locale, suffix = ""): string {
   const number = asNumber(cell)
   if (number === null) return "—"
-  return `${compact(number, locale)}${locale === "ru" ? "\u00a0" : ""}%`
+  const output = number > 0 && number < 0.1
+    ? `<${new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(0.1)}`
+    : new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(number === 0 ? 0 : number)
+  return `${output}${locale === "ru" ? "\u00a0" : ""}%${suffix}`
+}
+
+export function humanCores(cell: Cell, locale: Locale, suffix = ""): string {
+  const number = asNumber(cell)
+  if (number === null) return "—"
+  return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 3 }).format(number === 0 ? 0 : number)}${suffix}`
 }
 
 export function humanDuration(cell: Cell, locale: Locale): string {
@@ -185,10 +194,10 @@ export function humanBytes(cell: Cell, locale: Locale, suffix = ""): string {
   return `${sign}${output} ${BYTE_UNITS[step]}${suffix}`
 }
 
-export function cores(cell: Cell, locale: Locale, ticksPerSecond: number | null): string {
+export function cores(cell: Cell, locale: Locale, ticksPerSecond: number | null, suffix = ""): string {
   const number = asNumber(cell)
   if (number === null || ticksPerSecond === null || ticksPerSecond <= 0) return "—"
-  return compact(number / ticksPerSecond, locale)
+  return humanCores(number / ticksPerSecond, locale, suffix)
 }
 
 export function millisecondsPerSecond(cell: Cell, locale: Locale): string {

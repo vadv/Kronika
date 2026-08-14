@@ -52,10 +52,9 @@ fn activity_visit() {
 #[cfg(not(test))]
 const fn activity_visit() {}
 
-const PROCESS_COLUMNS: [&str; 17] = [
+const PROCESS_COLUMNS: [&str; 16] = [
     "ts",
     "pid",
-    "starttime",
     "state",
     "num_threads",
     "utime",
@@ -106,12 +105,6 @@ const fn field(name: &'static str, unit: &'static str, nullable: bool) -> FieldS
         unit,
         nullable,
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct Identity {
-    pid: i32,
-    starttime: i64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -444,7 +437,7 @@ fn summaries(
     cancelled: &impl Fn() -> bool,
 ) -> Result<BTreeMap<i64, Summary>, ApiError> {
     let mut out = BTreeMap::<i64, Summary>::new();
-    let mut previous = HashMap::<Identity, Previous>::new();
+    let mut previous = HashMap::<i32, Previous>::new();
     for segment in segments {
         let ticks_per_second = ticks_per_second(segment)?;
         let Some(last_segment_moment) = moments.last_by_segment.get(&segment.id()).copied() else {
@@ -470,15 +463,10 @@ fn summaries(
                     connected = false;
                     return false;
                 }
-                let (Some(ts), Some(pid), Some(starttime)) = (
-                    timestamp(&row),
-                    i32_value(row.get("pid")),
-                    i64_value(row.get("starttime")),
-                ) else {
+                let (Some(ts), Some(pid)) = (timestamp(&row), i32_value(row.get("pid"))) else {
                     return true;
                 };
-                let identity = Identity { pid, starttime };
-                let before = state.get(&identity).copied();
+                let before = state.get(&pid).copied();
                 if before.is_some_and(|stored| stored.ts >= ts) {
                     return true;
                 }
@@ -503,7 +491,7 @@ fn summaries(
                 if pg_pids.is_some_and(|pids| pids.contains(&pid)) {
                     summary.postgresql = summary.postgresql.saturating_add(1);
                 }
-                state.insert(identity, Previous { ts, counters });
+                state.insert(pid, Previous { ts, counters });
                 true
             })?;
             if !connected {

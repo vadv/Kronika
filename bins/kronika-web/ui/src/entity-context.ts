@@ -17,7 +17,8 @@ export function entityContext(finding: Finding, row: DataRow | null, t?: Transla
   const layout = registry.find((candidate) => candidate.typeId === finding.typeId)
   if (row === null || row.logicalName !== finding.logicalName || row.typeId !== finding.typeId
     || layout === undefined) return null
-  const fields = layout.identity.length === 0 && finding.logicalName === "pg_stat_activity" ? ["pid", "backend_start"] : layout.identity
+  const fields = finding.logicalName === "os_process" || finding.logicalName === "pg_stat_activity"
+    ? ["pid"] : layout.identity
   if (fields.length === 0) return null
   const identity = fields.map((field) => [field, rawText(value(row, field))] as const)
   if (identity.some(([, stored]) => stored === null)) return null
@@ -31,7 +32,8 @@ export function entityContext(finding: Finding, row: DataRow | null, t?: Transla
 }
 
 export function contextMatches(row: DataRow, context: EntityContext): boolean {
-  return row.logicalName === context.logicalName && row.typeId === context.typeId
+  const pidOnly = context.logicalName === "os_process" || context.logicalName === "pg_stat_activity"
+  return row.logicalName === context.logicalName && (pidOnly || row.typeId === context.typeId)
     && context.identity.every(([field, expected]) => rawText(value(row, field)) === expected)
 }
 

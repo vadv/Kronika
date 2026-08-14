@@ -337,7 +337,7 @@ impl Fixture {
         &mut self,
         ts: i64,
         counter: i64,
-        reused_pid: Option<i32>,
+        changed_starttime_pid: Option<i32>,
         activity_ts: i64,
         activity_pids: std::ops::Range<i32>,
         future_activity: Option<(i64, std::ops::Range<i32>)>,
@@ -368,7 +368,7 @@ impl Fixture {
             .expect("summary metadata fits");
         for pid in 0..205 {
             let mut row = process_for_summary(ts, pid, counter, label);
-            if reused_pid == Some(pid) {
+            if changed_starttime_pid == Some(pid) {
                 row.starttime = Ts(row.starttime.0 + 1);
             }
             buffers.push(row).expect("summary process row fits");
@@ -2161,18 +2161,18 @@ fn process_summary_series_uses_the_complete_set_and_previous_segment() {
     assert_eq!(values[1], 410.0);
     assert_eq!(values[2], 103.0);
     assert_eq!(values[3], 10.0, "a future activity snapshot is not joined");
-    assert_eq!(values[4], 40.8, "PID reuse has no counter predecessor");
-    assert_eq!(values[5], 81.6);
-    assert_eq!(values[6], 4_080.0);
-    assert_eq!(values[7], 12_240.0);
+    assert_eq!(values[4], 41.0, "starttime does not split PID counters");
+    assert_eq!(values[5], 82.0);
+    assert_eq!(values[6], 4_100.0);
+    assert_eq!(values[7], 12_300.0);
     assert_eq!(values[8], 22_960.0);
     assert_eq!(values[9], 25_010.0);
     assert_eq!(values[10], 204.0);
-    assert_eq!(values[11], 4_080.0);
-    assert_eq!(values[12], 4_080.0);
+    assert_eq!(values[11], 4_100.0);
+    assert_eq!(values[12], 4_100.0);
     assert_eq!(values[13], Value::Null, "all unavailable values stay null");
-    assert_eq!(values[14], 4_080.0);
-    assert_eq!(values[15], 8_160.0);
+    assert_eq!(values[14], 4_100.0);
+    assert_eq!(values[15], 8_200.0);
     assert_eq!(
         crate::api::process_summary_operations(),
         (4, 2),

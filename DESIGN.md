@@ -514,6 +514,11 @@ health equal to OS health. A selected Linux process links to the nearest
 role, application, client, state, wait, query and times. Locale changes are
 immediate and persist locally.
 
+Within the selected calendar hour, PID alone identifies OS process and
+`pg_stat_activity` rows, histories, filters, joins and counter deltas. Process
+`starttime` and PostgreSQL `backend_start` remain observed timestamps and do
+not participate in that identity.
+
 ### Segment resources
 
 HTTP exposes cacheable resources for explicit segments. It has no generic

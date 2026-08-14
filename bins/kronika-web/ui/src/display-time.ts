@@ -15,7 +15,6 @@ export interface DisplayTimeFormatter {
   hourRange(timestamp: number): { readonly date: string; readonly primary: string }
   monthKey(timestamp: number): string
   timestamp(timestamp: number | null): string
-  zone(timestamp: number): string
 }
 
 interface PreferenceStorage {
@@ -41,13 +40,12 @@ export function browserTimeZone(): string {
 
 export function createDisplayTimeFormatter(locale: Locale, mode: DisplayTimeZone, localZone = browserTimeZone()): DisplayTimeFormatter {
   const timeZone = mode === "utc" ? "UTC" : localZone
-  const clockFormat = Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", { day: "2-digit", hour: "2-digit", hourCycle: "h23", minute: "2-digit", month: "2-digit", second: "2-digit", timeZone, timeZoneName: "shortOffset", year: "numeric" })
+  const clockFormat = Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", { day: "2-digit", hour: "2-digit", hourCycle: "h23", minute: "2-digit", month: "2-digit", second: "2-digit", timeZone, year: "numeric" })
   const parts = (timestamp: number) => Object.fromEntries(clockFormat.formatToParts(moment(timestamp)).map(({ type, value }) => [type, value]))
   const date = (timestamp: number) => civilLabel(parts(timestamp), locale)
   const time = (timestamp: number, seconds = false) => {
     const value = parts(timestamp)
-    const zone = value.timeZoneName === "GMT" ? "UTC" : value.timeZoneName
-    return `${value.hour}:${value.minute}${seconds ? `:${value.second}` : ""} ${zone}`
+    return `${value.hour}:${value.minute}${seconds ? `:${value.second}` : ""}`
   }
   const dayKey = (timestamp: number) => civilLabel(parts(timestamp))
   return {
@@ -60,15 +58,13 @@ export function createDisplayTimeFormatter(locale: Locale, mode: DisplayTimeZone
     hourRange: (timestamp) => {
       const end = timestamp + HOUR_US
       const leftDate = date(timestamp), rightDate = date(end), left = time(timestamp), right = time(end)
-      const suffix = left.slice(left.lastIndexOf(" "))
       return {
         date: leftDate === rightDate ? leftDate : `${leftDate}–${rightDate}`,
-        primary: right.endsWith(suffix) ? `${left.slice(0, -suffix.length)}–${right}` : `${left}–${right}`,
+        primary: `${left}–${right}`,
       }
     },
     monthKey: (timestamp) => dayKey(timestamp).slice(0, 7),
     timestamp: (timestamp) => timestamp === null || !Number.isFinite(timestamp) ? "—" : `${date(timestamp)} · ${time(timestamp, true)}`,
-    zone: (timestamp) => time(timestamp).split(" ").at(-1)!,
   }
 }
 

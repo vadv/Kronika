@@ -80,7 +80,9 @@ export function Timeline({
       { key: "pg_running", series: one("cyan", "pg_running", of("pg_running")) },
       { key: "pg_waiting", series: one("amber", "pg_waiting", of("pg_waiting")) },
       { key: "oldest_xact", series: one("violet", "pg_oldest_xact", of("pg_oldest_xact")) },
-    ].filter((lane) => lane.series.some((line) => line.points.some((point) => point.value !== null)))
+    ].filter((lane) => lane.key === "health"
+      ? lane.series.some((line) => line.points.length !== 0)
+      : lane.series.some((line) => line.points.some((point) => point.value !== null)))
   }, [healthTrack, lanePoints])
   const [selectedLane, setSelectedLane] = useState(primaryLane)
   const previousPrimary = useRef(primaryLane)
@@ -110,9 +112,10 @@ export function Timeline({
     return () => window.removeEventListener("keydown", move)
   }, [cursor, onCursor, primaryTimes])
   const recorded = useMemo(() => selected === undefined ? [] : toRecordedSeries(selected, locale, t), [locale, selected, t])
+  const healthAt = selected?.key === "health" ? healthEvaluationAtOrBefore(selected.series, cursor) : null
   const current = (selected?.series ?? []).map((line) => {
-    const number = exactValue(line.points, cursor)
     const key = selected?.key ?? "health"
+    const number = key === "health" ? healthAt === null ? null : exactValue(line.points, healthAt) : exactValue(line.points, cursor)
     return `${key === "health" ? `${t(`lane.health.${line.field}`)} ` : ""}${number === null ? "—" : format(number, key, locale)}`
   }).join(" · ")
   const decorations = useMemo(
@@ -232,6 +235,17 @@ export function exactValue(points: readonly SeriesPoint[], cursor: number): numb
   return point?.value ?? null
 }
 
+export function healthEvaluationAtOrBefore(
+  series: readonly { readonly points: readonly { readonly timestamp: number }[] }[],
+  cursor: number,
+): number | null {
+  let chosen: number | null = null
+  for (const line of series) for (const point of line.points) {
+    if (point.timestamp <= cursor && (chosen === null || point.timestamp > chosen)) chosen = point.timestamp
+  }
+  return chosen
+}
+
 function format(number: number, key: string, locale: Locale): string {
   if (key === "oldest_xact") return `${compact(number, locale)} ${locale === "ru" ? "с" : "s"}`
   if (key === "pg_running" || key === "pg_waiting") return compact(number, locale)
@@ -239,8 +253,9 @@ function format(number: number, key: string, locale: Locale): string {
 }
 
 function laneReading(lane: TimelineLane, cursor: number, locale: Locale, t: Translate): string {
+  const healthAt = lane.key === "health" ? healthEvaluationAtOrBefore(lane.series, cursor) : null
   return lane.series.map((line) => {
-    const number = exactValue(line.points, cursor)
+    const number = lane.key === "health" ? healthAt === null ? null : exactValue(line.points, healthAt) : exactValue(line.points, cursor)
     const output = number === null ? "—" : format(number, lane.key, locale)
     return lane.key === "health" ? `${t(`lane.health.${line.field}`)} ${output}` : output
   }).join(" · ")
@@ -299,7 +314,7 @@ export function healthTimelineSeries(rows: readonly DataRow[]): { readonly serie
     { color: "amber", field: "os_health", points: series(rows, "os_health") },
     { color: "violet", field: "postgres_health", points: series(rows, "postgres_health") },
   ]
-  const shown = candidates.filter((candidate) => candidate.points.some((point) => point.value !== null))
+  const shown = candidates.filter((candidate) => candidate.points.length !== 0)
   return { series: shown, ...(shown.some((candidate) => candidate.field === "overall_health") ? { threshold: 50 } : {}) }
 }
 

@@ -9,6 +9,7 @@ import { LabelHelp, type Translate } from "./help"
 import {
   asNumber,
   humanBytes,
+  humanCores,
   identifier,
   measure,
   processCommand,
@@ -68,7 +69,7 @@ const PROCESS_HISTORY: Readonly<Record<Lens, readonly HistoryField[]>> = {
 }
 
 export const PROCESS_HISTORY_FIELDS: readonly string[] = [
-  "pid", "starttime",
+  "pid",
   ...new Set(Object.values(PROCESS_HISTORY).flatMap((lens) => lens.map((field) => field.field))),
 ]
 
@@ -228,7 +229,7 @@ function formatProcessChartValue(
   t: Translate,
   ticksPerSecond: number | null,
 ): string {
-  if (kind === "cores" && ticksPerSecond !== null && ticksPerSecond > 0) return measure(reading, locale, t("unit.cores"))
+  if (kind === "cores" && ticksPerSecond !== null && ticksPerSecond > 0) return humanCores(reading, locale, t("unit.cores"))
   if (kind === "ns") return measure(reading, locale, t("unit.ms_per_second"))
   if (kind === "kib") return humanBytes(reading, locale)
   if (kind === "bytes") return humanBytes(reading, locale, t("unit.per_second"))

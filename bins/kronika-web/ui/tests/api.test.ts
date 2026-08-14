@@ -613,12 +613,12 @@ test("the bundled review fixture answers detail reads without HTTP", async () =>
     const series = await api.loadSeries(
       START,
       "os_process",
-      { pid: "41", starttime: "99" },
+      { pid: "41" },
       ["read_bytes"],
       new AbortController().signal,
     )
     assert.equal(series.length, 2)
-    assert.deepEqual(series[1]?.values, { read_bytes: 160, pid: 41, starttime: "99" })
+    assert.deepEqual(series[1]?.values, { read_bytes: 160, pid: 41 })
     const snapshot = await api.loadSnapshot(
       "segment-a",
       START + 2,
@@ -843,6 +843,87 @@ test("timeline lanes retain their segment and a recorded null", async () => {
   }
 })
 
+test("health rows align raw PostgreSQL points to stored nonfuture evaluations", async () => {
+  const api = await bundledApi()
+  const point = (segmentId: string, series: string, timestamp: number, value: number | null) => ({
+    identity: {}, logicalName: "health", segmentId, series, timestamp, typeId: "0", value,
+  })
+  const metadata = [{
+    logicalName: "instance_metadata", ordinal: "0", segmentId: "a", timestamp: START, typeId: "1000001",
+    values: { postgresql_interval_seconds: 1 },
+  }]
+  const rows = api.healthRows([
+    point("a", "postgres_health", START + 100, 72),
+    point("a", "os_health", START + 101, 91),
+    point("a", "os_health", START + 103, 90),
+    point("a", "overall_health", START + 103, 62),
+    point("a", "postgres_health", START + 106, 55),
+    point("a", "os_health", START + 109, 90),
+    point("a", "overall_health", START + 109, 45),
+    point("a", "os_health", START + 112, 90),
+    point("a", "overall_health", START + 112, null),
+    point("a", "postgres_health", START + 113, 44),
+    point("a", "os_health", START + 114, null),
+    point("a", "overall_health", START + 114, null),
+    point("b", "os_health", START + 115, 88),
+    point("b", "overall_health", START + 115, 88),
+    point("a", "postgres_health", START + 116, null),
+    point("a", "os_health", START + 116, null),
+    point("a", "overall_health", START + 116, null),
+    point("a", "postgres_health", START + 120, 1),
+    point("a", "os_health", START + 2_000_121, null),
+    point("a", "overall_health", START + 2_000_121, null),
+  ], metadata)
+  assert.deepEqual(rows.map((row) => [row.segmentId, row.timestamp, row.values]), [
+    ["a", START + 103, { overall_health: 62, os_health: 90, postgres_health: 72 }],
+    ["a", START + 109, { overall_health: 45, os_health: 90, postgres_health: 55 }],
+    ["a", START + 112, { overall_health: null, os_health: 90, postgres_health: null }],
+    ["a", START + 114, { overall_health: null, os_health: null, postgres_health: 44 }],
+    ["b", START + 115, { overall_health: 88, os_health: 88 }],
+    ["a", START + 116, { overall_health: null, os_health: null, postgres_health: null }],
+    ["a", START + 2_000_121, { overall_health: null, os_health: null, postgres_health: null }],
+  ])
+  assert.equal(rows.some((row) => row.timestamp === START + 101), false)
+  assert.equal(Object.hasOwn(rows[4]!.values, "postgres_health"), false)
+})
+
+test("timeline reads the stored PostgreSQL freshness interval for combined health", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  const seen: string[] = []
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input), "http://kronika.invalid")
+    seen.push(`${url.pathname}?${url.searchParams}`)
+    if (url.pathname.includes("/snapshot")) return ndjson([
+      {
+        record: "layout",
+        layout: { type_id: "1000001", logical_name: "instance_metadata", columns: [{ name: "postgresql_interval_seconds" }] },
+      },
+      { record: "row", type_id: "1000001", ordinal: "0", timestamp: String(START), values: [1] },
+    ])
+    return ndjson([
+      { record: "hour", from: String(START), to: String(START + 3_600_000_000 - 1), available_hours: [String(START)] },
+      { record: "finished_segment", id: "a", min_ts: String(START), max_ts: String(START + 2_000_001), sections: [] },
+      { record: "index", segment: { id: "a" }, logical_name: "health", checksum: null },
+      { record: "point", type_id: "0", series: "postgres_health", ts: String(START), identity: {}, value: 72 },
+      { record: "point", type_id: "0", series: "os_health", ts: String(START + 2_000_001), identity: {}, value: null },
+      { record: "point", type_id: "0", series: "overall_health", ts: String(START + 2_000_001), identity: {}, value: null },
+    ])
+  }
+  try {
+    const timeline = await api.loadTimeline(START, new AbortController().signal)
+    assert.deepEqual(timeline.health[0]?.values, { overall_health: null, os_health: null, postgres_health: null })
+    assert.equal(seen.length, 2)
+    const metadata = new URL(seen[1]!, "http://kronika.invalid")
+    assert.equal(metadata.pathname, "/api/segments/a/snapshot")
+    assert.deepEqual(metadata.searchParams.getAll("section"), ["instance_metadata"])
+    assert.deepEqual(metadata.searchParams.getAll("field"), ["postgresql_interval_seconds"])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test("snapshot segment selection never jumps from blank early time to the final segment", async () => {
   const api = await bundledApi()
   const segments = [
@@ -862,6 +943,8 @@ test("projected history retains segment provenance and exact type", async () => 
   globalThis.fetch = async (input) => {
     const url = new URL(String(input), "http://kronika.invalid")
     assert.equal(url.pathname, "/api/hour")
+    assert.equal(url.searchParams.get("from"), String(START))
+    assert.equal(url.searchParams.get("to"), String(START + 3_600_000_000 - 1))
     assert.deepEqual(url.searchParams.getAll("field"), ["calls", "total_exec_time"])
     assert.equal(url.searchParams.get("type_id"), "1002002")
     assert.equal(url.searchParams.get("where.queryid"), "41")
@@ -881,7 +964,7 @@ test("projected history retains segment provenance and exact type", async () => 
   }
   try {
     const rows = await api.loadSeries(
-      START,
+      START + 5,
       "pg_stat_statements",
       { queryid: "41" },
       ["calls", "total_exec_time"],
@@ -934,6 +1017,8 @@ test("grouped relation history sends its full identity and parses semantic rows"
   globalThis.fetch = async (input) => {
     const url = new URL(String(input), "http://kronika.invalid")
     assert.equal(url.pathname, "/api/hour")
+    assert.equal(url.searchParams.get("from"), String(START))
+    assert.equal(url.searchParams.get("to"), String(START + 3_600_000_000 - 1))
     assert.equal(url.searchParams.get("group"), "schema")
     assert.equal(url.searchParams.get("type_id"), null)
     assert.deepEqual(url.searchParams.getAll("field"), ["dml_total", "dead_pct"])
@@ -969,7 +1054,6 @@ test("grouped relation history sends its full identity and parses semantic rows"
       ["dml_total", "dead_pct"],
       new AbortController().signal,
       undefined,
-      START + 5,
       "schema",
     )
     assert.deepEqual(rows.map((row) => ({

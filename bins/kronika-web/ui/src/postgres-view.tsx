@@ -427,7 +427,7 @@ function WalStorage({ cursor, hour, locale, onCursor, row, t }: { readonly curso
   const [history, setHistory] = useState<readonly ChartPoint[]>(() => walStoragePoints([row]))
   useEffect(() => {
     const controller = new AbortController()
-    acceptResponse(loadSeries(hour, "pg_wal_storage", {}, ["wal_files_bytes"], controller.signal, row.typeId, row.timestamp), controller.signal, (rows) => {
+    acceptResponse(loadSeries(hour, "pg_wal_storage", {}, ["wal_files_bytes"], controller.signal, row.typeId), controller.signal, (rows) => {
       const points = walStoragePoints(rows)
       setHistory(points.length === 0 ? walStoragePoints([row]) : points)
     })
@@ -496,7 +496,7 @@ function usePgMetricHistory(hour: number, row: DataRow | null, field: string | n
     const cumulative = metadata?.class === "cumulative" || (metadata === undefined && column.rate === true)
     const resetField = cumulative && registry.find((layout) => layout.typeId === row.typeId)?.columns.includes("stats_reset") === true ? "stats_reset" : undefined
     const fields = resetField === undefined ? [field] : [field, resetField]
-    acceptResponse(loadSeries(hour, row.logicalName, {}, fields, controller.signal, row.typeId, row.timestamp), controller.signal, (rows) => {
+    acceptResponse(loadSeries(hour, row.logicalName, {}, fields, controller.signal, row.typeId), controller.signal, (rows) => {
       setLoaded({ field, points: postgresMetricHistory(rows, column, cumulative, resetField) })
     })
     return () => controller.abort()
@@ -707,7 +707,7 @@ function usePostgresMetricHistory(row: DataRow, section: string, column: EntityC
       ? "stats_reset" : undefined
     const metricFields = dense ? denseHistoryFields(row.typeId, column.field)
       : durationField === null ? uniqueText([field!, resetField ?? null]) : durationField === "query_start" ? ["state", durationField] : [durationField]
-    const fields = activity ? ["backend_start", ...metricFields] : metricFields
+    const fields = activity ? ["pid", ...metricFields] : metricFields
     if (fields.length === 0) {
       setHistory([])
       return
@@ -720,7 +720,7 @@ function usePostgresMetricHistory(row: DataRow, section: string, column: EntityC
     setHistory([])
     const controller = new AbortController()
     const filters = Object.fromEntries(identities as readonly (readonly [string, string])[])
-    acceptResponse(loadSeries(hour, section, filters, fields, controller.signal, row.typeId, row.timestamp), controller.signal, (rows) => {
+    acceptResponse(loadSeries(hour, section, filters, fields, controller.signal, row.typeId), controller.signal, (rows) => {
         const entityHistory = rows.filter((candidate) => !activity || sameEntity(candidate, row, section))
         setHistory(dense
           ? denseMetricHistory(entityHistory, row.typeId, column)
@@ -876,8 +876,8 @@ function told(cell: ReturnType<typeof value>): boolean {
 
 export function sameEntity(left: DataRow, right: DataRow, section: string): boolean {
   const activity = section === "pg_stat_activity"
-  const fields = activity ? ["pid", "backend_start"] : identityFields(section, left.typeId)
-  return left.typeId === right.typeId
+  const fields = activity ? ["pid"] : identityFields(section, left.typeId)
+  return (activity || left.typeId === right.typeId)
     && fields.every((field) => rawText(value(left, field)) === rawText(value(right, field)))
 }
 
@@ -931,7 +931,7 @@ export function display(cell: ReturnType<typeof value>, column: EntityColumn, lo
   if (column.kind === "milliseconds") return measure(cell, locale, unit(t("unit.ms"), column.rate, per))
   if (column.kind === "duration") return humanDuration(cell, locale)
   if (column.kind === "microseconds") return measure(cell, locale, unit(t("unit.us"), column.rate, per))
-  if (column.kind === "percent") return column.rate === true ? measure(cell, locale, `%${per}`) : humanPercent(cell, locale)
+  if (column.kind === "percent") return humanPercent(cell, locale, column.rate === true ? per : "")
   if (column.kind === "boolean" && typeof cell === "boolean") return locale === "ru" ? cell ? "да" : "нет" : String(cell)
   if (typeof cell === "number") return measure(cell, locale, unit("", column.rate, per))
   return rawText(cell) ?? "—"
@@ -1054,6 +1054,7 @@ export function chartPointValue(cell: ReturnType<typeof value>, column: EntityCo
   return number
 }
 export function chartFormat(kind: EntityColumn["kind"]): ((value: number, locale: Locale) => string) | undefined {
+  if (kind === "percent") return humanPercent
   if (kind === "bytes") return (value, locale) => humanBytes(value, locale)
   if (kind === "kib") return (value, locale) => humanBytes(value, locale)
   if (kind === "microseconds") return (value, locale) => measure(value, locale, " ms")
