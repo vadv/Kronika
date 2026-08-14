@@ -305,7 +305,7 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
   const findingGroups: FindingGroup[] = []
   const lanePoints: LanePoint[] = []
   const lanes: Record<string, DataRow[]> = { [HEALTH]: [] }
-  const layouts = new Map<string, readonly string[]>()
+  const layouts = new Map<string, RowLayout>()
   let segmentId = ""
   for (const record of records) {
     const layout = layoutRecord(record)
@@ -331,7 +331,7 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
         truncated: record["truncated"],
       })
     } else if (layout !== null) {
-      layouts.set(layout.typeId, layout.columns)
+      layouts.set(layout.typeId, layout)
     } else if (record.record === "row") {
       const row = laneRow(record, segmentId, layouts)
       if (row !== null) (lanes[row.logicalName] ??= []).push(row)
@@ -396,7 +396,7 @@ export async function loadSeries(
     ...(typeId === undefined ? [] : [`type_id=${encodeURIComponent(typeId)}`]),
   ].join("&")
   const records = await request(`/api/hour?${query}`, signal)
-  const layouts = new Map<string, readonly string[]>()
+  const layouts = new Map<string, RowLayout>()
   const rows: DataRow[] = []
   let segmentId = ""
   for (const record of records) {
@@ -404,7 +404,7 @@ export async function loadSeries(
     if (record.record === "series_segment") {
       segmentId = requiredText((record.segment as { readonly id: unknown }).id, "series segment id")
     } else if (layout !== null) {
-      layouts.set(layout.typeId, layout.columns)
+      layouts.set(layout.typeId, layout)
     } else if (record.record === "row") {
       const row = laneRow(record, segmentId, layouts)
       if (row !== null) rows.push(row)
@@ -416,20 +416,20 @@ export async function loadSeries(
 function laneRow(
   record: Record<string, unknown>,
   segmentId: string,
-  layouts: ReadonlyMap<string, readonly string[]>,
+  layouts: ReadonlyMap<string, RowLayout>,
 ): DataRow | null {
   const typeId = requiredText(record.type_id, "row type_id")
-  const names = layouts.get(typeId)
-  const logicalName = logicalNameForTypeId(typeId)
+  const layout = layouts.get(typeId)
+  const logicalName = layout?.logicalName ?? logicalNameForTypeId(typeId)
   const values = record.values
-  if (names === undefined || logicalName === null || !Array.isArray(values)) return null
+  if (layout === undefined || logicalName === null || !Array.isArray(values)) return null
   return {
     segmentId,
     logicalName,
     typeId,
     ordinal: requiredText(record.ordinal, "row ordinal"),
     timestamp: integer(record.timestamp, "row timestamp"),
-    values: rowValues(names, values),
+    values: rowValues(layout.columns, values),
   }
 }
 
@@ -975,11 +975,13 @@ function indexFinding(record: Record<string, unknown>, segmentId: string, logica
   }
 }
 
-function layoutRecord(record: Record<string, unknown>): {
+interface RowLayout {
   readonly typeId: string
-  readonly logicalName: unknown
+  readonly logicalName: string | null
   readonly columns: readonly string[]
-} | null {
+}
+
+function layoutRecord(record: Record<string, unknown>): RowLayout | null {
   if (record.record !== "layout") return null
   const layout = record.layout as {
     readonly type_id: unknown
@@ -990,7 +992,7 @@ function layoutRecord(record: Record<string, unknown>): {
   if (!Array.isArray(layout["columns"])) throw new Error(`layout ${typeId} has no columns`)
   return {
     typeId,
-    logicalName: layout.logical_name,
+    logicalName: typeof layout.logical_name === "string" ? layout.logical_name : null,
     columns: layout["columns"].map((column) => requiredText(column.name, "column name")),
   }
 }

@@ -896,3 +896,33 @@ test("projected history retains segment provenance and exact type", async () => 
     globalThis.fetch = originalFetch
   }
 })
+
+test("projected history accepts a synthetic layout logical name", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => ndjson([
+    { record: "series_segment", segment: { id: "segment-a" } },
+    {
+      record: "layout",
+      layout: {
+        type_id: "0", logical_name: "os_process_summary",
+        columns: [{ name: "processes" }, { name: "user_cores" }],
+      },
+    },
+    { record: "row", type_id: "0", ordinal: "0", timestamp: String(START), values: [205, 3.5] },
+  ])
+  try {
+    const rows = await api.loadSeries(
+      START,
+      "os_process_summary",
+      {},
+      ["processes", "user_cores"],
+      new AbortController().signal,
+    )
+    assert.equal(rows[0]?.logicalName, "os_process_summary")
+    assert.deepEqual(rows[0]?.values, { processes: 205, user_cores: 3.5 })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
