@@ -651,9 +651,7 @@ function visibleEntityColumns(columns: readonly EntityColumn[], rows: readonly D
 }
 
 function PgDetail({ allRows, columns, cursor, historyField, hour, locale, onClose, onCursor, overview = false, row, section, t }: { readonly allRows: readonly DataRow[]; readonly columns: readonly EntityColumn[]; readonly cursor: number; readonly historyField: string | null; readonly hour: number; readonly locale: Locale; readonly onClose: () => void; readonly onCursor: (timestamp: number) => void; readonly overview?: boolean | undefined; readonly row: DataRow; readonly section: string; readonly t: Translate }) {
-  const identity = useMemo(() => identityFields(section, row.typeId), [row.typeId, section])
-  const entityRows = useMemo(() => allRows.filter((candidate) => candidate.typeId === row.typeId
-    && identity.every((field) => rawText(value(candidate, field)) === rawText(value(row, field)))), [allRows, identity, row])
+  const entityRows = useMemo(() => allRows.filter((candidate) => sameEntity(candidate, row, section)), [allRows, row, section])
   const dense = section === "pg_stat_statements" || section === "pg_store_plans"
   const chartColumns = useMemo(() => columns.filter((column) => chartableColumn(column)
     && (dense ? denseHistoryFields(row.typeId, column.field).length !== 0 : chartColumnAvailable(section, entityRows, column))), [columns, dense, entityRows, row.typeId, section])
@@ -702,7 +700,8 @@ function usePostgresMetricHistory(row: DataRow, section: string, column: EntityC
       setHistory(dense ? [] : null)
       return
     }
-    const durationField = !dense && section === "pg_stat_activity"
+    const activity = section === "pg_stat_activity"
+    const durationField = !dense && activity
       ? column.field === "query_duration_ms" ? "query_start" : column.field === "transaction_duration_ms" ? "xact_start" : null
       : null
     const field = dense ? null : typeof column.physicalField === "string"
@@ -710,8 +709,9 @@ function usePostgresMetricHistory(row: DataRow, section: string, column: EntityC
       : column.physicalField?.[row.typeId] ?? column.field
     const resetField = !dense && column.rate === true && registry.find((layout) => layout.typeId === row.typeId)?.columns.includes("stats_reset") === true
       ? "stats_reset" : undefined
-    const fields = dense ? denseHistoryFields(row.typeId, column.field)
+    const metricFields = dense ? denseHistoryFields(row.typeId, column.field)
       : durationField === null ? uniqueText([field!, resetField ?? null]) : durationField === "query_start" ? ["state", durationField] : [durationField]
+    const fields = activity ? ["backend_start", ...metricFields] : metricFields
     if (fields.length === 0) {
       setHistory([])
       return
@@ -727,11 +727,12 @@ function usePostgresMetricHistory(row: DataRow, section: string, column: EntityC
     void loadSeries(hour, section, filters, fields, controller.signal, row.typeId, row.timestamp)
       .then((rows) => {
         if (controller.signal.aborted) return
+        const entityHistory = rows.filter((candidate) => !activity || sameEntity(candidate, row, section))
         setHistory(dense
-          ? denseMetricHistory(rows, row.typeId, column)
+          ? denseMetricHistory(entityHistory, row.typeId, column)
           : durationField === null
-            ? postgresMetricHistory(rows, { ...column, field: field! }, column.rate === true, resetField)
-            : buildMetricSamples(rows, (point) => {
+            ? postgresMetricHistory(entityHistory, { ...column, field: field! }, column.rate === true, resetField)
+            : buildMetricSamples(entityHistory, (point) => {
               if (!Object.hasOwn(point.values, durationField)
                 || (durationField === "query_start" && !Object.hasOwn(point.values, "state"))) return undefined
               return durationField === "query_start" ? activityDurationMs(point) : transactionDurationMs(point)
@@ -883,7 +884,10 @@ function told(cell: ReturnType<typeof value>): boolean {
 }
 
 export function sameEntity(left: DataRow, right: DataRow, section: string): boolean {
-  return left.typeId === right.typeId && identityFields(section, left.typeId).every((field) => rawText(value(left, field)) === rawText(value(right, field)))
+  const activity = section === "pg_stat_activity"
+  const fields = activity ? ["pid", "backend_start"] : identityFields(section, left.typeId)
+  return left.typeId === right.typeId
+    && fields.every((field) => rawText(value(left, field)) === rawText(value(right, field)))
 }
 
 export function selectedEntity(rows: readonly DataRow[], current: DataRow | null, section: string): DataRow | null {
