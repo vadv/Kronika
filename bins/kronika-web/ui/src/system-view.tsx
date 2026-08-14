@@ -1,7 +1,7 @@
 import { registry } from "kronika:registry"
 import { useEffect, useMemo, useState } from "react"
 
-import { fieldNameForLocator, loadSeries, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
+import { acceptResponse, fieldNameForLocator, loadSeries, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
 import { buildMetricSamples } from "./chart"
 import { contextualRows, type EntityContext } from "./entity-context"
 import { EntityTable, type EntityColumn } from "./entity-table"
@@ -224,13 +224,8 @@ export function SystemView({
       return
     }
     const controller = new AbortController()
-    void loadSeries(hour, request.section, request.where, request.fields, controller.signal)
-      .then((rows) => {
-        if (!controller.signal.aborted) setLoadedHistory({ key: requestKey, rows })
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setLoadedHistory(null)
-      })
+    acceptResponse(loadSeries(hour, request.section, request.where, request.fields, controller.signal), controller.signal,
+      (rows) => setLoadedHistory({ key: requestKey, rows }), () => setLoadedHistory(null))
     return () => controller.abort()
   }, [fallbackPoints, hour, request, requestKey])
   const selectedPoints = useMemo(() => {
@@ -355,13 +350,8 @@ function SystemEntityPanel({
     const controller = new AbortController()
     const fields = JSON.parse(requestFields) as readonly string[]
     const where = JSON.parse(requestWhere) as Readonly<Record<string, string>>
-    void loadSeries(hour, requestSection, where, fields, controller.signal, requestTypeId)
-      .then((loaded) => {
-        if (!controller.signal.aborted) setHistory({ key: historyKey, rows: loaded })
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setHistory(null)
-      })
+    acceptResponse(loadSeries(hour, requestSection, where, fields, controller.signal, requestTypeId), controller.signal,
+      (loaded) => setHistory({ key: historyKey, rows: loaded }), () => setHistory(null))
     return () => controller.abort()
   }, [historyKey, hour, requestFields, requestSection, requestTypeId, requestWhere])
   const chartRows = history?.key === historyKey ? history.rows : selectedRow === null ? [] : [selectedRow]

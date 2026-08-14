@@ -234,7 +234,6 @@ lane.memory.help: "Доля памяти, занятая тем, что нель
 locator.known_bad: "Высокое значение"
 locator.known_bad.help: "Точное значение достигло рабочего порога."
 locator.spike: "Резкий рост"
-locator.spike.help: "Точное значение резко выросло относительно недавней истории."
 locator.event: "Журнал PostgreSQL"
 locator.event.help: "Конкретная запись журнала PostgreSQL в указанное время."
 table.processes: "Процессы на выбранный момент"

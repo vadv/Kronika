@@ -9,7 +9,7 @@ import { createDisplayTimeFormatter, type DisplayTimeFormatter } from "./display
 import { useDisplayTime } from "./display-time-context"
 import { EntityTable, EstimatedRows, unit, type EntityColumn, type TableOrder } from "./entity-table"
 import type { Translate } from "./help"
-import { fieldNameForLocator, loadSeries, loadSnapshot } from "./api"
+import { acceptResponse, fieldNameForLocator, loadSeries, loadSnapshot } from "./api"
 import { LabelHelp } from "./help"
 import { asNumber, compact, humanBytes, humanDuration, humanPercent, identifier, measure, rawText, snapshot, value, type Locale, shownMoment } from "./model"
 import { decoratePostgresIntervalRow, findingSemanticField, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, physicalField, physicalFields, planDefaultOrder, postgresHistory, postgresIdentity, statementDefaultOrder, unique, type PlanLens, type PostgresSemanticField, type StatementLens } from "./postgres-metrics"
@@ -426,12 +426,10 @@ function WalStorage({ cursor, hour, locale, onCursor, row, t }: { readonly curso
   const [history, setHistory] = useState<readonly ChartPoint[]>(() => walStoragePoints([row]))
   useEffect(() => {
     const controller = new AbortController()
-    void loadSeries(hour, "pg_wal_storage", {}, ["wal_files_bytes"], controller.signal, row.typeId, row.timestamp)
-      .then((rows) => {
-        const points = walStoragePoints(rows)
-        if (!controller.signal.aborted) setHistory(points.length === 0 ? walStoragePoints([row]) : points)
-      })
-      .catch(() => {})
+    acceptResponse(loadSeries(hour, "pg_wal_storage", {}, ["wal_files_bytes"], controller.signal, row.typeId, row.timestamp), controller.signal, (rows) => {
+      const points = walStoragePoints(rows)
+      setHistory(points.length === 0 ? walStoragePoints([row]) : points)
+    })
     return () => controller.abort()
   }, [hour, row])
   return <section className="pg-overview-section" data-testid="pg-wal-storage">
@@ -497,11 +495,9 @@ function usePgMetricHistory(hour: number, row: DataRow | null, field: string | n
     const cumulative = metadata?.class === "cumulative" || (metadata === undefined && column.rate === true)
     const resetField = cumulative && registry.find((layout) => layout.typeId === row.typeId)?.columns.includes("stats_reset") === true ? "stats_reset" : undefined
     const fields = resetField === undefined ? [field] : [field, resetField]
-    void loadSeries(hour, row.logicalName, {}, fields, controller.signal, row.typeId, row.timestamp)
-      .then((rows) => {
-        if (!controller.signal.aborted) setLoaded({ field, points: postgresMetricHistory(rows, column, cumulative, resetField) })
-      })
-      .catch(() => {})
+    acceptResponse(loadSeries(hour, row.logicalName, {}, fields, controller.signal, row.typeId, row.timestamp), controller.signal, (rows) => {
+      setLoaded({ field, points: postgresMetricHistory(rows, column, cumulative, resetField) })
+    })
     return () => controller.abort()
   }, [column, field, hour, row?.logicalName, row?.timestamp, row?.typeId])
   return loaded?.field === field ? loaded.points : null
@@ -723,9 +719,7 @@ function usePostgresMetricHistory(row: DataRow, section: string, column: EntityC
     setHistory([])
     const controller = new AbortController()
     const filters = Object.fromEntries(identities as readonly (readonly [string, string])[])
-    void loadSeries(hour, section, filters, fields, controller.signal, row.typeId, row.timestamp)
-      .then((rows) => {
-        if (controller.signal.aborted) return
+    acceptResponse(loadSeries(hour, section, filters, fields, controller.signal, row.typeId, row.timestamp), controller.signal, (rows) => {
         const entityHistory = rows.filter((candidate) => !activity || sameEntity(candidate, row, section))
         setHistory(dense
           ? denseMetricHistory(entityHistory, row.typeId, column)
@@ -737,7 +731,6 @@ function usePostgresMetricHistory(row: DataRow, section: string, column: EntityC
               return durationField === "query_start" ? activityDurationMs(point) : transactionDurationMs(point)
             }))
       })
-      .catch(() => {})
     return () => controller.abort()
   }, [column, dense, hour, row, section])
   return history
@@ -859,19 +852,17 @@ function useWholeText(row: DataRow, section: string, field: string): string | nu
     const controller = new AbortController()
     const filters = Object.fromEntries(identityFields(section, row.typeId)
       .map((name) => [name, rawText(value(row, name)) ?? ""]))
-    void loadSnapshot(
+    acceptResponse(loadSnapshot(
       row.segmentId,
       row.timestamp,
       [{ section, fields: [field], typeId: row.typeId }],
       controller.signal,
       undefined,
       { filters, typeId: row.typeId, fullText: true },
-    )
-      .then((data) => {
-        const text = rawText(value(data.sections[section]?.[0] ?? row, field))
-        if (text !== null) setWhole(text)
-      })
-      .catch(() => {})
+    ), controller.signal, (data) => {
+      const text = rawText(value(data.sections[section]?.[0] ?? row, field))
+      if (text !== null) setWhole(text)
+    })
     return () => controller.abort()
   }, [field, row, section, shown])
   return whole ?? shown

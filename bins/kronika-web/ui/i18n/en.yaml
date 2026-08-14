@@ -234,7 +234,6 @@ lane.memory.help: "Share of memory held by what cannot be given back without swa
 locator.known_bad: "High value"
 locator.known_bad.help: "The exact value reached a registered operating boundary."
 locator.spike: "Sharp rise"
-locator.spike.help: "The exact value rose sharply against its recent history."
 locator.event: "PostgreSQL log"
 locator.event.help: "A concrete PostgreSQL log record at the displayed time."
 table.processes: "Processes at cursor"

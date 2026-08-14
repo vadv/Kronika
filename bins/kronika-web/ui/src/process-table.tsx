@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useState } from "react"
 
-import { loadSeries, type Cell, type DataRow, type Finding } from "./api"
+import { acceptResponse, loadSeries, type Cell, type DataRow, type Finding } from "./api"
 import { buildMetricSamples } from "./chart"
 import { EntityTable, type EntityColumn, type TableOrder } from "./entity-table"
 import type { Translate } from "./help"
 import {
   asNumber,
-  compact,
   cores,
   humanBytes,
   identifier,
@@ -67,7 +66,7 @@ export const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
   ],
 }
 
-type SummaryKind = "bytes" | "bytes_per_second" | "cores" | "count" | "milliseconds_per_second" | "per_second"
+type SummaryKind = "B" | "B/s" | "cores" | "count" | "ms/s" | "1/s"
 
 export interface ProcessSummaryMetric {
   readonly field: string
@@ -85,20 +84,20 @@ export const PROCESS_SUMMARY_METRICS: Readonly<Record<Lens, readonly ProcessSumm
   cpu: [
     summaryMetric("user_cores", "process.summary.user_time", "cores"),
     summaryMetric("system_cores", "process.summary.system_time", "cores"),
-    summaryMetric("run_delay_ms_per_second", "process.summary.run_delay", "milliseconds_per_second"),
-    summaryMetric("context_switches_per_second", "process.summary.context_switches", "per_second"),
+    summaryMetric("run_delay_ms_per_second", "process.summary.run_delay", "ms/s"),
+    summaryMetric("context_switches_per_second", "process.summary.context_switches", "1/s"),
   ],
   memory: [
-    summaryMetric("resident_kib", "process.summary.resident", "bytes"),
-    summaryMetric("virtual_kib", "process.summary.virtual", "bytes"),
-    summaryMetric("swap_kib", "process.summary.swap", "bytes"),
-    summaryMetric("major_faults_per_second", "process.summary.major_faults", "per_second"),
+    summaryMetric("resident_kib", "process.summary.resident", "B"),
+    summaryMetric("virtual_kib", "process.summary.virtual", "B"),
+    summaryMetric("swap_kib", "process.summary.swap", "B"),
+    summaryMetric("major_faults_per_second", "process.summary.major_faults", "1/s"),
   ],
   disk: [
-    summaryMetric("read_bytes_per_second", "process.summary.read", "bytes_per_second"),
-    summaryMetric("write_bytes_per_second", "process.summary.written", "bytes_per_second"),
-    summaryMetric("read_calls_per_second", "process.summary.read_calls", "per_second"),
-    summaryMetric("write_calls_per_second", "process.summary.write_calls", "per_second"),
+    summaryMetric("read_bytes_per_second", "process.summary.read", "B/s"),
+    summaryMetric("write_bytes_per_second", "process.summary.written", "B/s"),
+    summaryMetric("read_calls_per_second", "process.summary.read_calls", "1/s"),
+    summaryMetric("write_calls_per_second", "process.summary.write_calls", "1/s"),
   ],
 }
 
@@ -113,30 +112,26 @@ export function ProcessSummary({ cursor, hour, lens, locale, onCursor, t }: {
   readonly t: Translate
 }) {
   const metrics = PROCESS_SUMMARY_METRICS[lens]
-  const [selected, setSelected] = useState(metrics[0]?.field ?? "")
+  const [selected, setSelected] = useState(metrics[0]!.field)
   const [history, setHistory] = useState<readonly DataRow[]>([])
-  const active = metrics.find(({ field }) => field === selected) ?? metrics[0]
+  const active = metrics.find(({ field }) => field === selected) ?? metrics[0]!
   useEffect(() => {
     const controller = new AbortController()
     setHistory([])
-    void loadSeries(hour, "os_process_summary", {}, PROCESS_SUMMARY_FIELDS, controller.signal)
-      .then((rows) => {
-        if (!controller.signal.aborted) setHistory(rows)
-      })
-      .catch(() => {})
+    acceptResponse(loadSeries(hour, "os_process_summary", {}, PROCESS_SUMMARY_FIELDS, controller.signal), controller.signal, setHistory)
     return () => controller.abort()
   }, [hour])
-  const activePoints = useMemo(() => active === undefined ? [] : processSummaryPoints(history, active), [active, history])
-  return <section aria-label={t("process.summary.title")} className="process-summary">
+  const activePoints = useMemo(() => processSummaryPoints(history, active), [active, history])
+  return <section aria-label={t("process.summary.title")} className="process-summary metric-grid">
     {metrics.map((metric) => {
       const output = processSummaryOutput(readingAt(processSummaryPoints(history, metric), cursor), metric, locale, t)
-      return <button aria-pressed={active?.field === metric.field} key={metric.field} onClick={() => setSelected(metric.field)} type="button">
+      return <button aria-pressed={active.field === metric.field} key={metric.field} onClick={() => setSelected(metric.field)} type="button">
         <span>{t(metric.key)}</span><strong>{output}</strong>
       </button>
     })}
-    {active !== undefined && <div className="process-summary-history">
-      <SeriesChart cursor={cursor} empty={t("status.no_data")} format={processSummaryFormat(active)} hour={hour} label={t(active.key)} locale={locale} onCursor={onCursor} points={activePoints} unit={processSummaryUnit(active, locale, t)} />
-    </div>}
+    <div className="process-summary-history">
+      <SeriesChart cursor={cursor} empty={t("status.no_data")} format={processSummaryFormat(active, t)} hour={hour} label={t(active.key)} locale={locale} onCursor={onCursor} points={activePoints} unit={processSummaryUnit(active, locale, t)} />
+    </div>
   </section>
 }
 
@@ -144,28 +139,28 @@ export function processSummaryPoints(rows: readonly DataRow[], metric: ProcessSu
   return buildMetricSamples(rows, (row) => {
     if (!Object.hasOwn(row.values, metric.field)) return undefined
     const stored = asNumber(value(row, metric.field))
-    return stored === null ? null : metric.kind === "bytes" ? stored * 1024 : stored
+    return stored === null ? null : metric.kind === "B" ? stored * 1024 : stored
   })
 }
 
 export function processSummaryOutput(reading: number | null, metric: ProcessSummaryMetric, locale: Locale, t: Translate): string {
   if (reading === null) return "—"
-  if (metric.kind === "bytes") return humanBytes(reading, locale)
-  if (metric.kind === "bytes_per_second") return humanBytes(reading, locale, t("unit.per_second"))
+  if (metric.kind === "B") return humanBytes(reading, locale)
+  if (metric.kind === "B/s") return humanBytes(reading, locale, t("unit.per_second"))
   if (metric.kind === "cores") return measure(reading, locale, t("unit.cores"))
-  if (metric.kind === "milliseconds_per_second") return measure(reading, locale, t("unit.ms_per_second"))
-  return measure(reading, locale, metric.kind === "per_second" ? t("unit.per_second") : "")
+  if (metric.kind === "ms/s") return measure(reading, locale, t("unit.ms_per_second"))
+  return measure(reading, locale, metric.kind === "1/s" ? t("unit.per_second") : "")
 }
 
-function processSummaryFormat(metric: ProcessSummaryMetric): (reading: number, locale: Locale) => string {
-  return metric.kind === "bytes" || metric.kind === "bytes_per_second" ? humanBytes : compact
+export function processSummaryFormat(metric: ProcessSummaryMetric, t: Translate): (reading: number, locale: Locale) => string {
+  return (reading, locale) => processSummaryOutput(reading, metric, locale, t)
 }
 
-function processSummaryUnit(metric: ProcessSummaryMetric, locale: Locale, t: Translate): string {
-  if (metric.kind === "bytes" || metric.kind === "bytes_per_second") return `B${metric.kind === "bytes_per_second" ? t("unit.per_second") : ""}`
+export function processSummaryUnit(metric: ProcessSummaryMetric, locale: Locale, t: Translate): string {
+  if (metric.kind === "B" || metric.kind === "B/s") return metric.kind
   if (metric.kind === "cores") return t("unit.cores").trim()
-  if (metric.kind === "milliseconds_per_second") return t("unit.ms_per_second").trim()
-  if (metric.kind === "per_second") return `1${t("unit.per_second")}`
+  if (metric.kind === "ms/s") return t("unit.ms_per_second").trim()
+  if (metric.kind === "1/s") return `1${t("unit.per_second")}`
   return locale === "ru" ? "количество" : "count"
 }
 

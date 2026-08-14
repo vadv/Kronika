@@ -4,7 +4,7 @@ import test from "node:test"
 
 import { importModule, registryPlugin } from "./import-module.mjs"
 
-const helpers = await importModule('export { LENS_FIELDS, PROCESS_SUMMARY_FIELDS, PROCESS_SUMMARY_METRICS, processSummaryOutput, processSummaryPoints } from "../src/process-table.tsx"', { plugins: [registryPlugin([])] })
+const helpers = await importModule('export { LENS_FIELDS, PROCESS_SUMMARY_FIELDS, PROCESS_SUMMARY_METRICS, processSummaryFormat, processSummaryOutput, processSummaryPoints, processSummaryUnit } from "../src/process-table.tsx"', { plugins: [registryPlugin([])] })
 const { LENS_FIELDS } = helpers
 
 test("process lenses keep identity first, lens metrics next, and state last", () => {
@@ -62,4 +62,14 @@ test("process summary charts preserve absent, null, zero, storage and human unit
   assert.equal(helpers.processSummaryOutput(0, metric("run_delay_ms_per_second"), "en", t), "0 ms/s")
   assert.equal(helpers.processSummaryOutput(1_048_576, metric("read_bytes_per_second"), "en", t), "1 MiB/s")
   assert.equal(helpers.processSummaryOutput(null, metric("threads"), "en", t), "—")
+  assert.equal(helpers.processSummaryFormat(metric("resident_kib"), t)(1_048_576, "en"), "1 MiB")
+  assert.equal(helpers.processSummaryFormat(metric("read_bytes_per_second"), t)(1_048_576, "en"), "1 MiB/s")
+  assert.equal(helpers.processSummaryFormat(metric("processes"), t)(205, "en"), "205")
+  assert.equal(helpers.processSummaryFormat(metric("user_cores"), t)(1.25, "en"), "1.25 cores")
+  assert.equal(helpers.processSummaryFormat(metric("run_delay_ms_per_second"), t)(0, "en"), "0 ms/s")
+  assert.equal(helpers.processSummaryUnit(metric("resident_kib"), "en", t), "B")
+  assert.equal(helpers.processSummaryUnit(metric("read_bytes_per_second"), "en", t), "B/s")
+  assert.equal(helpers.processSummaryUnit(metric("processes"), "en", t), "count")
+  assert.equal(helpers.processSummaryUnit(metric("user_cores"), "en", t), "cores")
+  assert.equal(helpers.processSummaryUnit(metric("run_delay_ms_per_second"), "en", t), "ms/s")
 })

@@ -926,3 +926,70 @@ test("projected history accepts a synthetic layout logical name", async () => {
     globalThis.fetch = originalFetch
   }
 })
+
+test("grouped relation history sends its full identity and parses semantic rows", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input), "http://kronika.invalid")
+    assert.equal(url.pathname, "/api/hour")
+    assert.equal(url.searchParams.get("group"), "schema")
+    assert.equal(url.searchParams.get("type_id"), null)
+    assert.deepEqual(url.searchParams.getAll("field"), ["dml_total", "dead_pct"])
+    assert.equal(url.searchParams.get("where.datid"), "42")
+    assert.equal(url.searchParams.get("where.schemaname"), "public")
+    return ndjson([
+      {
+        record: "relation_layout", logical_name: "pg_stat_user_tables", group: "schema",
+        columns: [
+          { name: "dml_total", kind: "number", unit: "per_second", nullable: true },
+          { name: "dead_pct", kind: "number", unit: "percent", nullable: true },
+        ],
+      },
+      { record: "series_segment", segment: { id: "segment-a" } },
+      {
+        record: "relation", logical_name: "pg_stat_user_tables", group: "schema",
+        key: { datid: "42", datname: "app", schemaname: "public" },
+        values: { dml_total: 3.5, dead_pct: null }, sample_from: String(START - 5), sample_to: String(START), source: null,
+      },
+      { record: "series_segment", segment: { id: "segment-b" } },
+      {
+        record: "relation", logical_name: "pg_stat_user_tables", group: "schema",
+        key: { datid: "42", datname: "app", schemaname: "public" },
+        values: { dml_total: 7, dead_pct: 12.5 }, sample_from: String(START), sample_to: String(START + 5), source: null,
+      },
+    ])
+  }
+  try {
+    const rows = await api.loadSeries(
+      START,
+      "pg_stat_user_tables",
+      { datid: "42", schemaname: "public" },
+      ["dml_total", "dead_pct"],
+      new AbortController().signal,
+      undefined,
+      START + 5,
+      "schema",
+    )
+    assert.deepEqual(rows.map((row) => ({
+      segmentId: row.segmentId,
+      timestamp: row.timestamp,
+      relation: row.relation,
+      typeId: row.typeId,
+      ordinal: row.ordinal,
+      values: row.values,
+    })), [
+      {
+        segmentId: "segment-a", timestamp: START, relation: { group: "schema" }, typeId: "", ordinal: "",
+        values: { datid: "42", datname: "app", schemaname: "public", dml_total: 3.5, dead_pct: null },
+      },
+      {
+        segmentId: "segment-b", timestamp: START + 5, relation: { group: "schema" }, typeId: "", ordinal: "",
+        values: { datid: "42", datname: "app", schemaname: "public", dml_total: 7, dead_pct: 12.5 },
+      },
+    ])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

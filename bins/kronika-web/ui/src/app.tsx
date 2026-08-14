@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client"
 
 import {
   TIMELINE_REQUESTS,
+  acceptResponse,
   loadTimeline,
   loadSeries,
   hourOf,
@@ -111,7 +112,6 @@ const HELP_POSTGRESQL = [
 const HELP_EVENTS = [
   { label: "locator.event", help: "locator.event.help" },
   { label: "locator.known_bad", help: "locator.known_bad.help" },
-  { label: "locator.spike", help: "locator.spike.help" },
 ] as const
 
 function Kronika() {
@@ -486,21 +486,18 @@ function App({ locale, onLocale, t }: {
     setFindingRow(null)
     setFindingResolution("loading")
     const controller = new AbortController()
-    void loadSnapshot(
+    acceptResponse(loadSnapshot(
       selectedFinding.segmentId,
       selectedFinding.timestamp,
       [{ section: selectedFinding.logicalName, fields, typeId: selectedFinding.typeId }],
       controller.signal,
       undefined,
       { typeId: selectedFinding.typeId, rowOrdinal: selectedFinding.rowOrdinal, fullText: true },
-    ).then((incoming) => {
-      if (controller.signal.aborted) return
+    ), controller.signal, (incoming) => {
       const row = incoming.sections[selectedFinding.logicalName]?.[0] ?? null
       setFindingRow(row)
       setFindingResolution(row === null ? "unavailable" : "ready")
-    }).catch(() => {
-      if (!controller.signal.aborted) setFindingResolution("unavailable")
-    })
+    }, () => setFindingResolution("unavailable"))
     return () => controller.abort()
   }, [data, findingRow, selectedFinding])
   useEffect(() => {
@@ -512,9 +509,8 @@ function App({ locale, onLocale, t }: {
       return
     }
     const controller = new AbortController()
-    void loadSeries(hour, selectedFinding.logicalName, request.where, request.fields, controller.signal, selectedFinding.typeId, selectedFinding.timestamp)
-      .then((rows) => setFindingPoints(findingHistory(selectedFinding, rows, data)))
-      .catch(() => { if (!controller.signal.aborted) setFindingPoints([]) })
+    acceptResponse(loadSeries(hour, selectedFinding.logicalName, request.where, request.fields, controller.signal, selectedFinding.typeId, selectedFinding.timestamp), controller.signal,
+      (rows) => setFindingPoints(findingHistory(selectedFinding, rows, data)), () => setFindingPoints([]))
     return () => controller.abort()
   }, [data, findingRow, hour, selectedFinding])
   const pgFocus = selectedFinding !== null && selectedFinding.logicalName.startsWith("pg_") ? contextRow : null
@@ -528,9 +524,7 @@ function App({ locale, onLocale, t }: {
       return
     }
     const controller = new AbortController()
-    void loadSeries(hour, "os_process", { pid: selectedPid, starttime: selectedStart }, PROCESS_HISTORY_FIELDS, controller.signal)
-      .then(setProcessHistory)
-      .catch(() => {})
+    acceptResponse(loadSeries(hour, "os_process", { pid: selectedPid, starttime: selectedStart }, PROCESS_HISTORY_FIELDS, controller.signal), controller.signal, setProcessHistory)
     return () => controller.abort()
   }, [hour, selectedPid, selectedStart])
   const address = useMemo(() => writeAddress({

@@ -20,7 +20,7 @@ import { asNumber, compact, humanBytes, humanPercent, identifier, type Locale, r
 import { SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 
-type Filter = "all" | Finding["kind"]
+type Filter = "all" | "event" | "known_bad"
 export type FindingResolution = "idle" | "loading" | "ready" | "unavailable"
 
 const ERROR_CATEGORIES = [
@@ -99,7 +99,7 @@ export function EventsView({
     <section className="events-console">
       <header className="events-tools">
         <div className="event-filters" role="group" aria-label={t("events.filters")}>
-          {(["all", "event", "known_bad", "spike"] as const).map((choice) => <button aria-pressed={filter === choice} key={choice} onClick={() => setFilter(choice)} type="button">{choice === "all" ? t("events.all") : t(`locator.${choice}`)}</button>)}
+          {(["all", "event", "known_bad"] as const).map((choice) => <button aria-pressed={filter === choice} key={choice} onClick={() => setFilter(choice)} type="button">{choice === "all" ? t("events.all") : t(`locator.${choice}`)}</button>)}
         </div>
         <span className="events-count">{t("events.count", { "shown": visible.length, total: original })}{omitted > 0 ? ` · ${t("events.omitted", { count: omitted })}` : ""}</span>
         {scope !== null && <button className="events-show-all" onClick={onShowAll} type="button">{t("events.show_all", { count: scope.length })}</button>}

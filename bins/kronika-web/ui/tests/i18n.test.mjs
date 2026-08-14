@@ -172,10 +172,11 @@ test("dense-table help is factual, concise, and complete in both locales", async
 })
 
 test("obsolete status and internal collection copy stay out of the UI", async () => {
-  const [englishSource, russianSource, appSource, helpSource, processSource, detailSource] = await Promise.all([
+  const [englishSource, russianSource, appSource, eventsSource, helpSource, processSource, detailSource] = await Promise.all([
     readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
     readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8"),
     readFile(new URL("../src/app.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/events-view.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/help.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/process-table.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/detail.tsx", import.meta.url), "utf8"),
@@ -184,7 +185,7 @@ test("obsolete status and internal collection copy stay out of the UI", async ()
   const russian = parseDictionary(russianSource, "ru.yaml")
   const removed = [
     "app.kicker", "app.offline", "help.intro", "col.scope.label", "col.scope.help", "col.starttime.label", "col.starttime.help",
-    "pg.field.relid.label", "pg.field.indexrelid.label", "pg.relation.scope.database", "pg.relation.scope.schema", "pg.relation.scope.table", "pg.relation.scope.index",
+    "pg.field.relid.label", "pg.field.indexrelid.label", "pg.relation.scope.database", "pg.relation.scope.schema", "pg.relation.scope.table", "pg.relation.scope.index", "locator.spike.help",
   ]
   for (const key of removed) {
     assert.equal(Object.hasOwn(english, key), false)
@@ -199,9 +200,13 @@ test("obsolete status and internal collection copy stay out of the UI", async ()
   assert.equal(russian["lens.generic"], "Основное")
   assert.equal(english["process.summary.running"], "Runnable")
   assert.equal(russian["process.summary.running"], "Готовы к выполнению")
+  assert.equal(english["locator.spike"], "Sharp rise")
+  assert.equal(russian["locator.spike"], "Резкий рост")
   assert.doesNotMatch(englishSource, /Local · offline|Hover over|No source row|collection scope/)
   assert.doesNotMatch(russianSource, /Наведите указатель|исходное значение|исходной строки|Область сбора/)
   assert.doesNotMatch(appSource, /\[\.\.\.HELP_SYSTEM, \.\.\.HELP_PROCESS\]/)
+  assert.match(eventsSource, /\["all", "event", "known_bad"\]/)
+  assert.doesNotMatch(eventsSource, /\["all", "event", "known_bad", "spike"\]/)
   assert.doesNotMatch(helpSource, /help\.intro|help-intro/)
   assert.doesNotMatch(processSource, /col\.scope|idField\("scope"/)
   assert.doesNotMatch(detailSource, /col\.scope|processField\("scope"/)
