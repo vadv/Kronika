@@ -25,6 +25,8 @@ const QUARTER = HOUR + 900_000_000
 const QUARTER_PREVIOUS = QUARTER - 5_000_000
 const QUARTER_NEXT = QUARTER + 5_000_000
 const SESSION_COOKIE = `kronika_session=v1.2000000000.${"A".repeat(43)}`
+const SLOW_PATTERN = 'SELECT "bulkoperations_bulktask"."id" FROM "bulkoperations_bulktask" WHERE "bulkoperations_bulktask"."status" = ? AND "bulkoperations_bulktask"."tenant_partition_with_a_deliberately_long_identifier" = ?'
+const SLOW_QUERY = `${SLOW_PATTERN.replaceAll("?", "'pending'")} ORDER BY "bulkoperations_bulktask"."created_at" DESC LIMIT 250`
 
 test("the production artifact preserves wire keys and exact finding page state", { timeout: 120_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
@@ -1157,6 +1159,191 @@ test("the minified artifact restores and clears its opaque browser session", { t
     await rm(profile, { recursive: true, force: true })
   }
 })
+
+test("the slow-query detail keeps readable labels and contained values", { timeout: 60_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const authState = { valid: false }
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") {
+      answerSession(request, response, authState)
+      return
+    }
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) {
+      unauthorized(response)
+      return
+    }
+    if (url.pathname === "/api/catalog") {
+      ndjson(response, [])
+      return
+    }
+    if (url.pathname === "/api/hour") {
+      ndjson(response, slowQueryTimelineRecords())
+      return
+    }
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot` && url.searchParams.get("row_ordinal") === "3") {
+      ndjson(response, slowQueryRecords())
+      return
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("artifact test server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "kronika-detail-browser-"))
+  const browser = launchBrowser(profile)
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    const page = { errors: [], external: [], responses: [] }
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 882, mobile: false, width: 1280 })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=events` })
+    await cdp.waitFor(`document.querySelector(".login-card") !== null`, "login form")
+    await submitLogin(cdp)
+    await cdp.waitFor(`document.querySelector(".event-item button") !== null`, "the slow-query event")
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click(); document.querySelector(".event-item button").click()`)
+    await cdp.waitFor(
+      `[...document.querySelectorAll(".event-detail dt")].some((label) => label.textContent.trim().toLocaleUpperCase("ru-RU") === "ЗАПИСЬ")`,
+      "the resolved slow-query detail",
+    )
+    await settleLayout(cdp)
+
+    const landscape = await cdp.evaluate(detailGeometryExpression())
+    assert.equal(landscape.innerWidth, 1280)
+    assert.ok(landscape.scrollWidth <= landscape.clientWidth, JSON.stringify(landscape))
+    assert.ok(landscape.sample.label.width >= 160, JSON.stringify(landscape.sample))
+    assert.equal(landscape.sample.label.lines, 1)
+    assert.ok(landscape.sample.label.right + 7 <= landscape.sample.value.left, JSON.stringify(landscape.sample))
+    assert.ok(Math.abs(landscape.sample.row.width - landscape.list.width) <= 1, JSON.stringify(landscape.sample))
+    assert.ok(Math.abs(landscape.sample.value.right - landscape.sample.row.right) <= 1, JSON.stringify(landscape.sample))
+    assert.ok(landscape.sample.value.clientWidth > landscape.sample.label.width, JSON.stringify(landscape.sample))
+    assert.ok(landscape.sample.value.scrollWidth <= landscape.sample.value.clientWidth + 1, JSON.stringify(landscape.sample))
+    assert.ok(landscape.sample.value.height > landscape.sample.value.lineHeight * 1.5, JSON.stringify(landscape.sample))
+    assert.equal(landscape.sample.value.minWidth, "0px")
+    assert.equal(landscape.pattern.label.lines, 1)
+    assert.ok(landscape.pattern.value.scrollWidth <= landscape.pattern.value.clientWidth + 1, JSON.stringify(landscape.pattern))
+    assert.equal(landscape.numeric.every(({ align }) => align === "right"), true)
+    assert.ok(landscape.numeric.every(({ height }) => height <= 24), JSON.stringify(landscape.numeric))
+    assert.ok(Math.max(...landscape.numeric.map(({ right }) => right)) - Math.min(...landscape.numeric.map(({ right }) => right)) <= 1)
+    assert.equal(landscape.numeric[0]?.text, "3")
+    assert.match(landscape.numeric[1]?.text ?? "", /3[\s\u00a0]?831\s*мс/)
+    assert.match(landscape.numeric[2]?.text ?? "", /7[\s\u00a0]?662\s*мс/)
+
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 882, mobile: false, width: 480 })
+    await settleLayout(cdp)
+    const narrow = await cdp.evaluate(detailGeometryExpression())
+    assert.equal(narrow.innerWidth, 480)
+    assert.ok(narrow.scrollWidth <= narrow.clientWidth, JSON.stringify(narrow))
+    assert.equal(narrow.sample.label.lines, 1)
+    assert.ok(narrow.sample.label.bottom <= narrow.sample.value.top + 0.5, JSON.stringify(narrow.sample))
+    assert.ok(Math.abs(narrow.sample.label.left - narrow.sample.value.left) <= 1, JSON.stringify(narrow.sample))
+    assert.ok(Math.abs(narrow.sample.label.width - narrow.sample.row.width) <= 1, JSON.stringify(narrow.sample))
+    assert.ok(narrow.sample.value.scrollWidth <= narrow.sample.value.clientWidth + 1, JSON.stringify(narrow.sample))
+    assert.ok(narrow.pattern.value.scrollWidth <= narrow.pattern.value.clientWidth + 1, JSON.stringify(narrow.pattern))
+    assert.equal(narrow.numeric.every(({ align }) => align === "left"), true)
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+  } finally {
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await rm(profile, { recursive: true, force: true })
+  }
+})
+
+function slowQueryTimelineRecords() {
+  return [
+    { record: "hour", from: String(HOUR), to: String(HOUR + HOUR_US - 1), available_hours: [String(HOUR)] },
+    {
+      record: "catalog", from: String(HOUR), to: String(HOUR + HOUR_US - 1),
+      source_families: [{ name: "postgresql", configured: true, present: true }],
+    },
+    {
+      record: "finished_segment", id: SEGMENT, min_ts: String(HOUR), max_ts: String(AFTER_AT),
+      sections: [{
+        logical_name: "pg_log_slow_queries", physical_name: "pg_log_slow_queries", type_id: "2004001",
+        implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "512",
+      }],
+    },
+    { record: "index", segment: { id: SEGMENT }, logical_name: "health", checksum: null },
+    {
+      record: "finding", logical_name: "pg_log_slow_queries", kind: "event", type_id: "2004001",
+      field_ordinal: 0, row_ordinal: "3", ts: String(AT),
+    },
+  ]
+}
+
+function slowQueryRecords() {
+  const columns = ["ts", "pattern", "sample", "count", "max_duration_ms", "total_duration_ms"]
+  return [
+    layout("2004001", "pg_log_slow_queries", columns),
+    row("2004001", "3", [String(AT), SLOW_PATTERN, SLOW_QUERY, 3, 3_831, 7_662]),
+  ]
+}
+
+function detailGeometryExpression() {
+  return `(() => {
+    const rows = [...document.querySelectorAll(".event-detail dl > div")]
+    const byLabel = (text) => rows.find((row) => row.querySelector("dt")?.textContent.trim().toLocaleUpperCase("ru-RU") === text)
+    const bounds = (node) => {
+      const rect = node.getBoundingClientRect()
+      return { bottom: rect.bottom, height: rect.height, left: rect.left, right: rect.right, top: rect.top, width: rect.width }
+    }
+    const measured = (text) => {
+      const row = byLabel(text)
+      const label = row.querySelector("dt")
+      const output = row.querySelector("dd")
+      const range = document.createRange()
+      range.selectNodeContents(label)
+      const lines = new Set([...range.getClientRects()].filter((rect) => rect.width > 0).map((rect) => Math.round(rect.top * 10) / 10)).size
+      const style = getComputedStyle(output)
+      return {
+        label: { ...bounds(label), lines },
+        row: bounds(row),
+        value: {
+          ...bounds(output),
+          clientWidth: output.clientWidth,
+          lineHeight: Number.parseFloat(style.lineHeight),
+          minWidth: style.minWidth,
+          scrollWidth: output.scrollWidth,
+        },
+      }
+    }
+    const numeric = ["ПОВТОРЕНИЯ", "МАКСИМАЛЬНАЯ ДЛИТЕЛЬНОСТЬ, МС", "СУММАРНАЯ ДЛИТЕЛЬНОСТЬ, МС"].map((text) => {
+      const row = byLabel(text)
+      const output = row.querySelector("dd")
+      const rect = output.getBoundingClientRect()
+      return { align: getComputedStyle(output).textAlign, height: row.getBoundingClientRect().height, right: rect.right, text: output.textContent.trim() }
+    })
+    return {
+      clientWidth: document.documentElement.clientWidth,
+      innerWidth: window.innerWidth,
+      list: bounds(document.querySelector(".event-detail dl")),
+      numeric,
+      pattern: measured("ШАБЛОН"),
+      sample: measured("ЗАПИСЬ"),
+      scrollWidth: document.documentElement.scrollWidth,
+    }
+  })()`
+}
+
+async function settleLayout(cdp) {
+  await cdp.evaluate("document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))")
+}
 
 function timelineRecords(hour = HOUR) {
   const shift = hour - HOUR
