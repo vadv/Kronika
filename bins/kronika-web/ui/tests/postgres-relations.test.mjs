@@ -11,13 +11,14 @@ const view = await importModule(
   { plugins: [registryPlugin([])] },
 )
 
-test("relation chart actions require a numeric physical history field", () => {
-  const physical = ["seq_scan", "main_fork_bytes", "last_seq_scan", "indisvalid"]
-  assert.equal(view.relationChartableColumn({ field: "seq_scan", kind: "number", rate: true }, physical), true)
-  assert.equal(view.relationChartableColumn({ field: "main_fork_bytes", kind: "bytes" }, physical), true)
-  assert.equal(view.relationChartableColumn({ field: "tuple_throughput", kind: "number", rate: true }, physical), false)
-  assert.equal(view.relationChartableColumn({ field: "last_seq_scan", kind: "timestamp" }, physical), false)
-  assert.equal(view.relationChartableColumn({ field: "indisvalid", kind: "boolean" }, physical), false)
+test("relation chart controls require exact physical operands and a numeric semantic", () => {
+  const physical = ["seq_scan", "seq_tup_read", "idx_tup_fetch", "main_fork_bytes", "last_seq_scan", "indisvalid"]
+  assert.equal(view.relationChartableColumn("pg_stat_user_tables", { field: "seq_scan", kind: "number", rate: true }, physical), true)
+  assert.equal(view.relationChartableColumn("pg_stat_user_tables", { field: "main_fork_bytes", kind: "bytes" }, physical), true)
+  assert.equal(view.relationChartableColumn("pg_stat_user_tables", { field: "tuple_throughput", kind: "number", rate: true }, physical), true)
+  assert.equal(view.relationChartableColumn("pg_stat_user_tables", { field: "sequential_share_pct", kind: "percent" }, physical), false)
+  assert.equal(view.relationChartableColumn("pg_stat_user_tables", { field: "last_seq_scan", kind: "timestamp" }, physical), false)
+  assert.equal(view.relationChartableColumn("pg_stat_user_indexes", { field: "indisvalid", kind: "boolean" }, physical), false)
 })
 
 const column = (name, kind = "number", unit = "count", nullable = true) => ({ name, kind, unit, nullable })
@@ -88,11 +89,13 @@ test("relation requests keep hierarchy separate from fixed metric lenses", () =>
   assert.equal(state.fields.includes("indexdef"), false)
 })
 
-test("relation histories stay on physical fields", () => {
-  assert.equal(relation.relationHistoryField("pg_stat_user_tables", "access"), "seq_scan")
-  assert.equal(relation.relationHistoryField("pg_stat_user_tables", "changes"), "n_tup_upd")
-  assert.equal(relation.relationHistoryField("pg_stat_user_tables", "size_buffers"), "main_fork_bytes")
-  assert.equal(relation.relationHistoryField("pg_stat_user_indexes", "state"), "idx_scan")
+test("relation histories default to each selected lens's meaningful quantitative metric", () => {
+  assert.equal(relation.relationHistoryField("pg_stat_user_tables", "access"), "tuple_throughput")
+  assert.equal(relation.relationHistoryField("pg_stat_user_tables", "changes"), "dml_total")
+  assert.equal(relation.relationHistoryField("pg_stat_user_tables", "size_buffers"), "displayed_storage_bytes")
+  assert.equal(relation.relationHistoryField("pg_stat_user_indexes", "state"), "state_severity")
+  assert.deepEqual(relation.relationHistoryFields("pg_stat_user_tables", "tuple_throughput", ["seq_tup_read", "idx_tup_fetch"]), ["seq_tup_read", "idx_tup_fetch"])
+  assert.deepEqual(relation.relationHistoryFields("pg_stat_user_tables", "tuple_throughput", ["seq_tup_read"]), [])
 })
 
 test("rendered relation columns hide numeric identity while requests retain it", () => {
@@ -369,6 +372,39 @@ test("object history is reset-safe, layout-safe, and keeps missing values unavai
   ]
   assert.deepEqual(relation.relationHistory(rows, "idx_scan").map(({ value }) => value), [null, 2, null, null, null, null])
   assert.deepEqual(relation.relationHistory(rows.slice(0, 3), "main_fork_bytes").map(({ value }) => value), [10, 14, 3])
+  assert.deepEqual(relation.relationHistory([{ ...rows[0], logicalName: "pg_stat_user_tables", values: { reltuples: -1 } }], "reltuples").map(({ value }) => value), [null])
+})
+
+test("object DBA histories recompute exact rates and ratios without crossing identity or resets", () => {
+  const table = (timestamp, values, identity = { datid: "42", relid: "9001" }) => ({
+    segmentId: "segment-a", logicalName: "pg_stat_user_tables", typeId: "1013004",
+    ordinal: String(timestamp), timestamp, values: { ...identity, ...values },
+  })
+  const rows = [
+    table(1_000_000, { seq_scan: 10, idx_scan: 30, seq_tup_read: 100, idx_tup_fetch: 200, n_tup_ins: 4, n_tup_upd: 6, n_tup_del: 0, n_live_tup: 90, n_dead_tup: 10, main_fork_bytes: 800, toast_bytes: null }),
+    table(3_000_000, { seq_scan: 14, idx_scan: 36, seq_tup_read: 140, idx_tup_fetch: 260, n_tup_ins: 8, n_tup_upd: 8, n_tup_del: 2, n_live_tup: 80, n_dead_tup: 20, main_fork_bytes: 900, toast_bytes: 100 }),
+    table(5_000_000, { seq_scan: 1, idx_scan: 2, seq_tup_read: 2, idx_tup_fetch: 3, n_tup_ins: 1, n_tup_upd: 1, n_tup_del: 0, n_live_tup: 0, n_dead_tup: 0, main_fork_bytes: 1_000, toast_bytes: null }),
+    table(7_000_000, { seq_scan: 3, idx_scan: 4, seq_tup_read: 8, idx_tup_fetch: 9, n_tup_ins: 3, n_tup_upd: 2, n_tup_del: 1, n_live_tup: 50, n_dead_tup: 50, main_fork_bytes: 2_000, toast_bytes: null }, { datid: "42", relid: "9002" }),
+  ]
+  const values = (field) => relation.relationHistory(rows, field).map((point) => point.value)
+  assert.deepEqual(values("tuple_throughput"), [null, 50, null, null])
+  assert.deepEqual(values("sequential_share_pct"), [null, 40, null, null])
+  assert.deepEqual(values("seq_tuples_per_scan"), [null, 10, null, null])
+  assert.deepEqual(values("dml_total"), [null, 4, null, null])
+  assert.deepEqual(values("insert_share_pct"), [null, 50, null, null])
+  assert.deepEqual(values("dead_pct"), [10, 20, null, 50])
+  assert.deepEqual(values("displayed_storage_bytes"), [800, 1_000, 1_000, 2_000])
+
+  const index = rows.slice(0, 2).map((row, index) => ({
+    ...row, logicalName: "pg_stat_user_indexes", typeId: "1014002", values: {
+      datid: "42", indexrelid: "9003", idx_scan: index === 0 ? 10 : 12,
+      idx_tup_read: index === 0 ? 20 : 28, idx_tup_fetch: index === 0 ? 6 : 10,
+      idx_blks_read: index === 0 ? 2 : 4, idx_blks_hit: index === 0 ? 8 : 14,
+    },
+  }))
+  assert.deepEqual(relation.relationHistory(index, "tuples_per_scan").map(({ value }) => value), [null, 4])
+  assert.deepEqual(relation.relationHistory(index, "fetches_per_scan").map(({ value }) => value), [null, 2])
+  assert.deepEqual(relation.relationHistory(index, "buffer_hit_pct").map(({ value }) => value), [null, 75])
 })
 
 test("wire validation rejects mismatched keys, values, intervals, and fake aggregate sources", () => {
@@ -460,8 +496,12 @@ test("detail, empty, navigation, and paging behavior stays on generic exact APIs
   assert.match(source, /linkedRelation\(row\)/)
   assert.match(source, /row\.logicalName === "pg_stat_user_indexes" \? relationDetailTarget\(row\) : null/)
   assert.match(source, /loadSnapshot\(row\.segmentId, definitionTarget\.at, \[definitionTarget\.request\]/)
-  assert.match(source, /loadSeries\(hour, row\.logicalName, historyFilters\(row\), \[historyField\], controller\.signal\)/)
-  assert.match(source, /relationChartableColumn\(column, physicalFields\)/)
+  assert.match(source, /relationHistoryFields\(row\.logicalName as RelationSection, historyField, physicalFields\)/)
+  assert.match(source, /loadSeries\(hour, row\.logicalName, historyFilters\(row\), fields, controller\.signal, row\.typeId, row\.timestamp\)/)
+  assert.match(source, /relationChartableColumn\(row\.logicalName as RelationSection, column, physicalFields\)/)
+  assert.match(source, /object \? allColumns\.filter/)
+  assert.match(source, /className="process-history-selector"/)
+  assert.doesNotMatch(source, /ChartLine/)
   assert.match(source, /onCursor=\{onCursor\}/)
   assert.match(source, /value\(row, column\.field\) !== null \|\| value\(row, `\$\{column\.field\}_never`\) === true/)
   assert.match(source, /display\(value\(row, column\.field\), column, locale, t\)/)

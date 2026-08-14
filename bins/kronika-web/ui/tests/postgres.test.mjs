@@ -111,6 +111,12 @@ test("PostgreSQL generic histories preserve absent, null, zero, storage, and cou
   ]
   assert.deepEqual(helpers.postgresMetricHistory(rows, { field: "writes", kind: "number", rate: true }, true).map(({ value }) => value), [null, 3, null, null, 2])
   assert.deepEqual(helpers.postgresMetricHistory(rows, { field: "latency_ms", kind: "milliseconds" }, false).map(({ value }) => value), [3, null, 0])
+  const resetRows = [
+    stored("a", 1_000_000, { writes: 100, stats_reset: "500000" }),
+    stored("a", 2_000_000, { writes: 110, stats_reset: "500000" }),
+    stored("a", 3_000_000, { writes: 120, stats_reset: "2500000" }),
+  ]
+  assert.deepEqual(helpers.postgresMetricHistory(resetRows, { field: "writes", kind: "number", rate: true }, true, "stats_reset").map(({ value }) => value), [null, 10, null])
 })
 
 test("dense statement histories cover per-call and percentage lens metrics", () => {
@@ -128,9 +134,22 @@ test("overview cards expose only numeric measurements and mark cumulative units 
   const stored = { logicalName: "pg_stat_checkpointer", ordinal: "0", segmentId: "a", timestamp: 1, typeId: "overview-1", values: { kind_id: 4, mode: 2, writes: 0, latency_ms: 1.5, enabled: true } }
   assert.deepEqual(overviewHelpers.overviewChartColumns(stored).map(({ field, rate }) => [field, rate === true]), [["writes", true], ["latency_ms", false]])
   const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
-  assert.match(source, /const \[metricField, setMetricField\] = useState<string \| null>\(null\)/)
-  assert.match(source, /loadSeries\(hour, row\.logicalName, \{\}, \[field\], controller\.signal, row\.typeId\)/)
+  assert.match(source, /const \[metricField, setMetricField\] = useState<string \| null>\(preferredField\)/)
+  assert.match(source, /const fields = resetField === undefined \? \[field\] : \[field, resetField\]/)
+  assert.match(source, /loadSeries\(hour, row\.logicalName, \{\}, fields, controller\.signal, row\.typeId, row\.timestamp\)/)
+  assert.match(source, /OVERVIEW_SINGLETONS\.has\(logicalName\)/)
+  assert.match(source, /<PgPreview[^>]*overview section=\{logicalName\}/)
+  assert.match(source, /className="process-history-selector"/)
+  assert.doesNotMatch(source, /ChartLine/)
   assert.match(source, /<PlanInfo cursor=\{cursor\} data=\{data\} hour=\{hour\}/)
+})
+
+test("Overview multirow histories keep complete fixed identities", () => {
+  const io = row("1009002", { backend_type: "client backend", object: "relation", context: "normal", reads: 4 }, "pg_stat_io")
+  assert.equal(helpers.sameEntity(io, { ...io, values: { ...io.values, reads: 9 } }, "pg_stat_io"), true)
+  assert.equal(helpers.sameEntity(io, { ...io, values: { ...io.values, context: "vacuum" } }, "pg_stat_io"), false)
+  const prepared = row("1010001", { datname: "app", prepared_count: 1 }, "pg_prepared_xacts")
+  assert.equal(helpers.sameEntity(prepared, { ...prepared, values: { datname: "other", prepared_count: 1 } }, "pg_prepared_xacts"), false)
 })
 
 test("WAL storage keeps exact singleton values and selected-snapshot history wiring", async () => {
@@ -247,6 +266,8 @@ test("activity hides only ordinary idle and derives query and transaction time f
     ["1", "5", "3", "6", "4"],
   )
   assert.deepEqual(helpers.overviewBackendCounts(rows), { active: 2, idle: 3, total: 5 })
+  const parallel = activityRow("8", { backend_type: "parallel worker", state: "active" })
+  assert.deepEqual(helpers.overviewBackendCounts([...rows, parallel]), { active: 2, idle: 3, total: 5 })
 })
 
 test("Activity exact start times enable duration histories without synthetic stored fields", () => {

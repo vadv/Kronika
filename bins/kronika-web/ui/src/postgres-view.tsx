@@ -1,4 +1,4 @@
-import { ChartLine, Copy, X } from "lucide-react"
+import { Copy, X } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 import { registry } from "kronika:registry"
 
@@ -337,20 +337,24 @@ function PostgresLensBar<L extends string>({ active, choices, onChange, prefix, 
   return <div className="lensbar pg-lensbar"><span>{t("pg.lens.label")}</span><div className="lens-tabs" role="group" aria-label={t("pg.lens.label")}>{choices.map((choice) => <button aria-pressed={active === choice} data-testid={`${prefix}-lens-${choice}`} key={choice} onClick={() => onChange(choice)} type="button">{t(`pg.lens.${choice}`)}</button>)}</div><div className="value-tone-legend" aria-label={t("pg.value.legend")}><i className="tone-good" />{t("pg.value.good")}<i className="tone-warning" />{t("pg.value.warning")}<i className="tone-critical" />{t("pg.value.critical")}</div></div>
 }
 
-function PgPreview({ cursor, data, focus, hour, locale, onCursor, section, t }: { readonly cursor: number; readonly data: HourData; readonly focus: DataRow | null; readonly hour: number; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly section: string; readonly t: Translate }) {
+function PgPreview({ columns: prescribedColumns, cursor, data, focus, hour, locale, onCursor, overview = false, section, t }: { readonly columns?: readonly EntityColumn[] | undefined; readonly cursor: number; readonly data: HourData; readonly focus: DataRow | null; readonly hour: number; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly overview?: boolean | undefined; readonly section: string; readonly t: Translate }) {
   const allRows = data.sections[section] ?? NO_ROWS
   const rows = snapshot(allRows, cursor)
   const rates = data.rateColumns[section] ?? NO_RATES
-  const columns = useMemo(() => columnsFor(rows).map((column) => rates.includes(column.field) ? { ...column, rate: true } : column), [rates, rows])
+  const columns = useMemo(() => (prescribedColumns ?? columnsFor(rows)).filter((column) => rows.some((row) => Object.hasOwn(row.values, column.field))).map((column) => ({
+    ...column,
+    ...(overview && prescribedColumns === undefined ? { label: overviewFieldKey(column.field) } : {}),
+    ...(rates.includes(column.field) ? { rate: true } : {}),
+  })), [overview, prescribedColumns, rates, rows])
   const [selected, setSelected] = useState<DataRow | null>(null)
   useEffect(() => setSelected((current) => selectedEntity(rows, current, section)), [rows, section])
   const selectedKey = selected === null ? null : rowKey(selected)
   const initialHistory = columns.find(chartableColumn)?.field ?? null
   return <section className="pg-preview">
-    <h2>{section}</h2>
+    <h2>{overview ? t(overviewSectionKey(section)) : section}</h2>
     <div className={selected === null ? "pg-entity-layout pg-table-only" : "pg-entity-layout"}>
-      <EntityTable columns={columns} empty={t("table.no_rows")} label={section} locale={locale} onSelect={setSelected} rows={rows} selectedKey={selectedKey ?? (focus === null ? null : rowKey(focus))} t={t} />
-      {selected !== null && <PgDetail allRows={allRows} columns={columns} cursor={cursor} historyField={initialHistory} hour={hour} locale={locale} onClose={() => setSelected(null)} onCursor={onCursor} row={selected} section={section} t={t} />}
+      <EntityTable columns={columns} empty={t("table.no_rows")} label={section} locale={locale} onSelect={setSelected} rows={rows} selectedKey={selectedKey ?? (focus === null ? null : rowKey(focus))} status={initialHistory === null ? undefined : <span>{t("system.history")}</span>} t={t} />
+      {selected !== null && <PgDetail allRows={allRows} columns={columns} cursor={cursor} historyField={initialHistory} hour={hour} locale={locale} onClose={() => setSelected(null)} onCursor={onCursor} overview={overview} row={selected} section={section} t={t} />}
     </div>
   </section>
 }
@@ -387,17 +391,27 @@ function Overview({ cursor, data, hour, locale, onCursor, t }: { readonly cursor
   const overviewSections = groupSections(data.pgOverview.filter(({ logicalName }) => logicalName !== "pg_wal_storage"))
   return <section className="pg-overview">
     <div className="overview-metrics">{totals.map(([label, output]) => <article key={label}><span>{t(label)}</span><strong>{measure(output, locale)}</strong></article>)}</div>
+    <OverviewActivityHistory cursor={cursor} data={data} hour={hour} locale={locale} onCursor={onCursor} t={t} />
     {walStorage !== undefined && <WalStorage cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} row={walStorage} t={t} />}
     {overviewSections.map(([logicalName, allRows]) => {
       const rows = snapshot(allRows, cursor)
       if (rows.length === 0) return null
-      if (rows.length === 1) return <OverviewMetrics cursor={cursor} hour={hour} key={logicalName} locale={locale} logicalName={logicalName} onCursor={onCursor} row={rows[0]!} t={t} />
-      return <section className="pg-preview" key={logicalName}>
-        <h2>{logicalName}</h2>
-        <EntityTable columns={columnsFor(rows)} empty={t("table.no_rows")} label={logicalName} locale={locale} rows={rows} t={t} />
-      </section>
+      if (OVERVIEW_SINGLETONS.has(logicalName)) return <OverviewMetrics cursor={cursor} hour={hour} key={logicalName} locale={locale} logicalName={logicalName} onCursor={onCursor} row={rows[0]!} t={t} />
+      return <PgPreview cursor={cursor} data={data} focus={null} hour={hour} key={logicalName} locale={locale} onCursor={onCursor} overview section={logicalName} t={t} />
     })}
-    {databases.length !== 0 && <section className="pg-preview"><h2>{t("pg.section.databases")}</h2><EntityTable columns={DATABASE_COLUMNS.slice(0, 9)} empty={t("table.no_rows")} label={t("pg.section.databases")} locale={locale} rows={databases} t={t} /></section>}
+    {databases.length !== 0 && <PgPreview columns={DATABASE_COLUMNS.slice(0, 9)} cursor={cursor} data={data} focus={null} hour={hour} locale={locale} onCursor={onCursor} overview section="pg_stat_database" t={t} />}
+  </section>
+}
+
+const OVERVIEW_SINGLETONS = new Set(["pg_stat_bgwriter", "pg_stat_checkpointer", "pg_stat_statements_info"])
+
+function OverviewActivityHistory({ cursor, data, hour, locale, onCursor, t }: { readonly cursor: number; readonly data: HourData; readonly hour: number; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly t: Translate }) {
+  const running = data.lanePoints.filter(({ lane }) => lane === "pg_running")
+  const waiting = data.lanePoints.filter(({ lane }) => lane === "pg_waiting")
+  if (running.length === 0 && waiting.length === 0) return null
+  return <section className="pg-overview-section" data-testid="pg-overview-activity-history">
+    <h2>{t("pg.overview.activity_history")}</h2>
+    <SeriesChart cursor={cursor} hour={hour} label={t("pg.overview.running")} locale={locale} onCursor={onCursor} points={running} scale="nonnegative" second={waiting} secondLabel={t("pg.overview.waiting")} unit="count" />
   </section>
 }
 
@@ -427,16 +441,21 @@ function WalStorage({ cursor, hour, locale, onCursor, row, t }: { readonly curso
 
 function OverviewMetrics({ cursor, hour, locale, logicalName, onCursor, row, t }: { readonly cursor: number; readonly hour: number; readonly locale: Locale; readonly logicalName: string; readonly onCursor: (timestamp: number) => void; readonly row: DataRow; readonly t: Translate }) {
   const chartColumns = useMemo(() => overviewChartColumns(row), [row])
-  const [metricField, setMetricField] = useState<string | null>(null)
+  const preferredField = chartColumns[0]?.field ?? null
+  const chartFields = chartColumns.map(({ field }) => field).join("\u0000")
+  const [metricField, setMetricField] = useState<string | null>(preferredField)
+  useEffect(() => {
+    setMetricField((current) => current !== null && chartFields.split("\u0000").includes(current) ? current : preferredField)
+  }, [chartFields, preferredField])
   const selectedColumn = chartColumns.find(({ field }) => field === metricField)
   const history = usePgMetricHistory(hour, row, metricField, selectedColumn)
   return <section className="pg-overview-section">
-    <h2>{logicalName}</h2>
-    <dl>{registryCardFields(row).map(([field, cell]) => {
-      const canChart = chartColumns.some((column) => column.field === field)
-      return <div key={field}><dt><span>{field}</span>{canChart && <button aria-label={`${t("system.history")}: ${field}`} aria-pressed={metricField === field} className="pg-chart-action" onClick={() => setMetricField(field)} title={t("system.history")} type="button"><ChartLine aria-hidden="true" size={13} /></button>}</dt><dd>{overviewValue(cell, field, locale)}</dd></div>
-    })}</dl>
-    {selectedColumn !== undefined && <SeriesChart cursor={cursor} format={chartFormat(selectedColumn.kind)} hour={hour} label={selectedColumn.field} locale={locale} onCursor={onCursor} points={history ?? []} scale={chartScale(selectedColumn)} unit={chartUnit(selectedColumn, t("unit.per_second"))} />}
+    <h2>{t(overviewSectionKey(logicalName))}</h2>
+    {selectedColumn !== undefined && <section className="process-history pg-metric-history">
+      <div aria-label={t("system.history")} className="process-history-selector" role="group">{chartColumns.map((column) => <button aria-pressed={metricField === column.field} data-testid={`pg-overview-chart-${column.field}`} key={column.field} onClick={() => setMetricField(column.field)} type="button">{t(overviewFieldKey(column.field))}</button>)}</div>
+      <SeriesChart cursor={cursor} format={chartFormat(selectedColumn.kind)} hour={hour} label={t(overviewFieldKey(selectedColumn.field))} locale={locale} onCursor={onCursor} points={history ?? []} scale={chartScale(selectedColumn)} unit={chartUnit(selectedColumn, t("unit.per_second"))} />
+    </section>}
+    <dl>{registryCardFields(row).map(([field, cell]) => <div key={field}><dt><span>{t(overviewFieldKey(field))}</span></dt><dd>{overviewValue(cell, field, locale)}</dd></div>)}</dl>
   </section>
 }
 
@@ -452,13 +471,15 @@ export function overviewChartColumns(row: DataRow): readonly EntityColumn[] {
   })
 }
 
-export function postgresMetricHistory(rows: readonly DataRow[], column: EntityColumn, cumulative: boolean): readonly ChartPoint[] {
+export function postgresMetricHistory(rows: readonly DataRow[], column: EntityColumn, cumulative: boolean, resetField?: string): readonly ChartPoint[] {
   const owned = rows.filter((row) => Object.hasOwn(row.values, column.field))
     .slice().sort((left, right) => left.timestamp - right.timestamp || left.ordinal.localeCompare(right.ordinal))
   if (!cumulative) return buildMetricSamples(owned, (row) => chartPointValue(value(row, column.field), column))
   return owned.map((row, index) => {
     const earlier = owned[index - 1]
-    const stored = earlier === undefined || earlier.typeId !== row.typeId ? null : intervalMetric(earlier, row, column.field)
+    const reset = resetField !== undefined && earlier !== undefined
+      && rawText(value(earlier, resetField)) !== rawText(value(row, resetField))
+    const stored = earlier === undefined || earlier.typeId !== row.typeId || reset ? null : intervalMetric(earlier, row, column.field)
     return { segmentId: row.segmentId, timestamp: row.timestamp, value: chartPointValue(stored, column) }
   })
 }
@@ -472,13 +493,15 @@ function usePgMetricHistory(hour: number, row: DataRow | null, field: string | n
     const metadata = registry.find((layout) => layout.typeId === row.typeId)?.columnMetadata
       ?.find(({ name }) => name === field)
     const cumulative = metadata?.class === "cumulative" || (metadata === undefined && column.rate === true)
-    void loadSeries(hour, row.logicalName, {}, [field], controller.signal, row.typeId)
+    const resetField = cumulative && registry.find((layout) => layout.typeId === row.typeId)?.columns.includes("stats_reset") === true ? "stats_reset" : undefined
+    const fields = resetField === undefined ? [field] : [field, resetField]
+    void loadSeries(hour, row.logicalName, {}, fields, controller.signal, row.typeId, row.timestamp)
       .then((rows) => {
-        if (!controller.signal.aborted) setLoaded({ field, points: postgresMetricHistory(rows, column, cumulative) })
+        if (!controller.signal.aborted) setLoaded({ field, points: postgresMetricHistory(rows, column, cumulative, resetField) })
       })
       .catch(() => {})
     return () => controller.abort()
-  }, [column, field, hour, row?.logicalName, row?.typeId])
+  }, [column, field, hour, row?.logicalName, row?.timestamp, row?.typeId])
   return loaded?.field === field ? loaded.points : null
 }
 
@@ -576,9 +599,10 @@ function PgEntityView({
       {densePageState === "loading" ? "…" : densePageState === "error" ? "↻" : "+"}
     </button>
     : undefined
+  const status = historyField === null ? snapshotStatus : <>{snapshotStatus}<span>{t("system.history")}</span></>
   return <div className={selected === null ? "pg-entity-layout pg-table-only" : "pg-entity-layout"} data-pg-section={sectionName(section)} data-testid="pg-entity-layout">
     <div className="pg-entity-main">
-      <EntityTable columns={visibleColumns} contextLabel={activeContext?.label} empty={t("table.no_rows")} finding={finding} findingField={finding === null || finding === undefined ? null : fieldNameForLocator(finding)} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onContextClear={activeContext === null ? undefined : onContextClear} onNearEnd={densePageState === "idle" && canLoadMore ? onLoadMore : undefined} onOrder={onOrder} onPattern={onPattern} onSelect={setSelected} order={activeOrder} pattern={pattern} serverSorted={dense} rows={rows} selectedKey={selectedKey} status={snapshotStatus} t={t} testId={`pg-${sectionName(section)}-table`} />
+      <EntityTable columns={visibleColumns} contextLabel={activeContext?.label} empty={t("table.no_rows")} finding={finding} findingField={finding === null || finding === undefined ? null : fieldNameForLocator(finding)} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onContextClear={activeContext === null ? undefined : onContextClear} onNearEnd={densePageState === "idle" && canLoadMore ? onLoadMore : undefined} onOrder={onOrder} onPattern={onPattern} onSelect={setSelected} order={activeOrder} pattern={pattern} serverSorted={dense} rows={rows} selectedKey={selectedKey} status={status} t={t} testId={`pg-${sectionName(section)}-table`} />
       {paging !== undefined && <div className="lens-tabs" data-testid="table-paging">{paging}</div>}
     </div>
     {selected !== null && <PgDetail allRows={allRows} columns={visibleDetailColumns} cursor={cursor} historyField={selectedHistoryField} hour={Math.floor(cursor / 3_600_000_000) * 3_600_000_000} locale={locale} onClose={() => setSelected(null)} onCursor={onCursor} row={selected} section={section} t={t} />}
@@ -621,7 +645,7 @@ function visibleEntityColumns(columns: readonly EntityColumn[], rows: readonly D
     .map((column) => column.rate === true || rates.includes(column.field) ? { ...column, rate: true } : column)
 }
 
-function PgDetail({ allRows, columns, cursor, historyField, hour, locale, onClose, onCursor, row, section, t }: { readonly allRows: readonly DataRow[]; readonly columns: readonly EntityColumn[]; readonly cursor: number; readonly historyField: string | null; readonly hour: number; readonly locale: Locale; readonly onClose: () => void; readonly onCursor: (timestamp: number) => void; readonly row: DataRow; readonly section: string; readonly t: Translate }) {
+function PgDetail({ allRows, columns, cursor, historyField, hour, locale, onClose, onCursor, overview = false, row, section, t }: { readonly allRows: readonly DataRow[]; readonly columns: readonly EntityColumn[]; readonly cursor: number; readonly historyField: string | null; readonly hour: number; readonly locale: Locale; readonly onClose: () => void; readonly onCursor: (timestamp: number) => void; readonly overview?: boolean | undefined; readonly row: DataRow; readonly section: string; readonly t: Translate }) {
   const identity = useMemo(() => identityFields(section, row.typeId), [row.typeId, section])
   const entityRows = useMemo(() => allRows.filter((candidate) => candidate.typeId === row.typeId
     && identity.every((field) => rawText(value(candidate, field)) === rawText(value(row, field)))), [allRows, identity, row])
@@ -646,14 +670,13 @@ function PgDetail({ allRows, columns, cursor, historyField, hour, locale, onClos
   const exactText = useWholeText(row, section, textField)?.trim() || null
   const fields = columns.filter((column) => column.field !== textField)
   return <aside className="pg-detail" data-testid="pg-detail">
-    <header><div><span>{section === "pg_stat_progress_vacuum" ? section : t(`pg.section.${sectionName(section)}`)}</span><h2>{detailTitle(row, section, t)}</h2></div><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
+    <header><div><span>{overview ? t(overviewSectionKey(section)) : section === "pg_stat_progress_vacuum" ? section : t(`pg.section.${sectionName(section)}`)}</span><h2>{detailTitle(row, section, t)}</h2></div><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
+    {activeMetricField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history">
+      <div aria-label={t("system.history")} className="process-history-selector" role="group">{chartColumns.map((column) => <button aria-pressed={activeMetricField === column.field} data-testid={`pg-chart-${column.field}`} key={column.field} onClick={() => setMetricField(column.field)} type="button">{t(column.label)}</button>)}</div>
+      <SeriesChart cursor={cursor} hour={hour} label={t(historyColumn.label)} locale={locale} format={chartFormat(historyColumn.kind)} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} unit={chartUnit(historyColumn, t("unit.per_second"))} />
+    </section>}
     {exactText !== null && <section className="query-block"><span>{t(section === "pg_store_plans" ? "pg.plan.label" : "pg.query.label")}<button aria-label={t("common.raw")} className="copy-raw" onClick={() => void navigator.clipboard?.writeText(exactText)} type="button"><Copy aria-hidden="true" size={12} /></button></span><pre data-testid={section === "pg_store_plans" ? "pg-exact-plan" : "pg-exact-query"}>{exactText}</pre></section>}
-    <dl>{fields.filter((column) => told(value(row, column.field))).map((column) => {
-      const canChart = chartColumns.some(({ field }) => field === column.field)
-      const label = t(column.label)
-      return <div key={column.field}><dt><span>{column.help === undefined ? label : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}</span>{canChart && <button aria-label={`${t("system.history")}: ${label}`} aria-pressed={activeMetricField === column.field} className="pg-chart-action" data-testid={`pg-chart-${column.field}`} onClick={() => setMetricField(column.field)} title={t("system.history")} type="button"><ChartLine aria-hidden="true" size={13} /></button>}</dt><dd>{display(value(row, column.field), column, locale, t)}</dd></div>
-    })}</dl>
-    {activeMetricField !== null && historyColumn !== undefined && <SeriesChart cursor={cursor} hour={hour} label={t(historyColumn.label)} locale={locale} format={chartFormat(historyColumn.kind)} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} unit={chartUnit(historyColumn, t("unit.per_second"))} />}
+    <dl>{fields.filter((column) => told(value(row, column.field))).map((column) => <div key={column.field}><dt><span>{column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}</span></dt><dd>{display(value(row, column.field), column, locale, t)}</dd></div>)}</dl>
   </aside>
 }
 
@@ -680,8 +703,10 @@ function usePostgresMetricHistory(row: DataRow, section: string, column: EntityC
     const field = dense ? null : typeof column.physicalField === "string"
       ? column.physicalField
       : column.physicalField?.[row.typeId] ?? column.field
+    const resetField = !dense && column.rate === true && registry.find((layout) => layout.typeId === row.typeId)?.columns.includes("stats_reset") === true
+      ? "stats_reset" : undefined
     const fields = dense ? denseHistoryFields(row.typeId, column.field)
-      : durationField === null ? [field!] : durationField === "query_start" ? ["state", durationField] : [durationField]
+      : durationField === null ? uniqueText([field!, resetField ?? null]) : durationField === "query_start" ? ["state", durationField] : [durationField]
     if (fields.length === 0) {
       setHistory([])
       return
@@ -700,7 +725,7 @@ function usePostgresMetricHistory(row: DataRow, section: string, column: EntityC
         setHistory(dense
           ? denseMetricHistory(rows, row.typeId, column)
           : durationField === null
-            ? postgresMetricHistory(rows, { ...column, field: field! }, column.rate === true)
+            ? postgresMetricHistory(rows, { ...column, field: field! }, column.rate === true, resetField)
             : buildMetricSamples(rows, (point) => {
               if (!Object.hasOwn(point.values, durationField)
                 || (durationField === "query_start" && !Object.hasOwn(point.values, "state"))) return undefined
@@ -870,14 +895,21 @@ export function postgresDatabaseCount(rows: readonly DataRow[]): number {
 
 function identityFields(section: string, typeId?: string): readonly string[] {
   if (section === "pg_stat_activity" || section === "pg_stat_progress_vacuum" || section === "pg_locks") return ["pid"]
+  if (section === "pg_stat_io") return ["backend_type", "object", "context"]
+  if (section === "pg_prepared_xacts") return ["datname"]
   if ((section === "pg_stat_statements" || section === "pg_store_plans") && typeId !== undefined) return postgresIdentity(typeId)
-  return ["datid"]
+  return registry.find((layout) => layout.typeId === typeId)?.identity ?? (section === "pg_stat_database" ? ["datid"] : [])
 }
+
+function overviewSectionKey(section: string): string { return section === "pg_stat_database" ? "pg.section.databases" : `pg.overview.section.${section}` }
+function overviewFieldKey(field: string): string { return `pg.overview.field.${field}` }
 
 function detailTitle(row: DataRow, section: string, t: Translate): string {
   if (section === "pg_stat_activity" || section === "pg_stat_progress_vacuum" || section === "pg_locks") return t("pg.detail.pid", { pid: identifier(value(row, "pid")) })
   if (section === "pg_stat_statements") return t("pg.detail.query", { id: identifier(value(row, "queryid")) })
   if (section === "pg_store_plans") return t("pg.detail.plan", { id: identifier(value(row, "planid")) })
+  if (section === "pg_stat_io") return ["backend_type", "object", "context"].flatMap((field) => rawText(value(row, field)) ?? []).join(" · ")
+  if (section === "pg_prepared_xacts") return rawText(value(row, "datname")) ?? t("common.unavailable")
   return rawText(value(row, "datname")) ?? identifier(value(row, "datid"))
 }
 

@@ -55,7 +55,7 @@ export interface SectionRequest {
 export const POSTGRESQL_OVERVIEW_REQUESTS: readonly SectionRequest[] = [
   ...POSTGRESQL_OVERVIEW.map((section) => ({ section })),
   { section: "pg_wal_storage", fields: ["wal_files_bytes"] },
-  { section: "pg_stat_activity", fields: ["state", "wait_event"] },
+  { section: "pg_stat_activity", fields: ["state", "wait_event", "backend_type"] },
   { section: "pg_stat_database" },
   { section: "pg_locks", fields: ["pid"] },
 ]

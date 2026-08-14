@@ -749,7 +749,7 @@ test("PostgreSQL Overview requests only the dedicated WAL file size projection",
     section: "pg_wal_storage",
     fields: ["wal_files_bytes"],
   })
-  assert.deepEqual(requests.find(({ section }) => section === "pg_stat_activity")?.fields, ["state", "wait_event"])
+  assert.deepEqual(requests.find(({ section }) => section === "pg_stat_activity")?.fields, ["state", "wait_event", "backend_type"])
   assert.deepEqual(requests.find(({ section }) => section === "pg_locks")?.fields, ["pid"])
   assert.ok(requests.some(({ section }) => section === "pg_stat_database"))
 })

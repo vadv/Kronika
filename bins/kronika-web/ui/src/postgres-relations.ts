@@ -109,6 +109,51 @@ const indexLenses: Readonly<Record<IndexLens, LensSpec>> = {
   ),
 }
 
+const TABLE_HISTORY_DEPENDENCIES: Readonly<Record<string, readonly string[]>> = {
+  sequential_share_pct: ["seq_scan", "idx_scan"],
+  tuple_throughput: ["seq_tup_read", "idx_tup_fetch"],
+  seq_tuples_per_scan: ["seq_tup_read", "seq_scan"],
+  idx_tuples_per_scan: ["idx_tup_fetch", "idx_scan"],
+  dml_total: ["n_tup_ins", "n_tup_upd", "n_tup_del"],
+  insert_share_pct: ["n_tup_ins", "n_tup_upd", "n_tup_del"],
+  update_share_pct: ["n_tup_ins", "n_tup_upd", "n_tup_del"],
+  delete_share_pct: ["n_tup_ins", "n_tup_upd", "n_tup_del"],
+  dead_pct: ["n_live_tup", "n_dead_tup"],
+  hot_pct: ["n_tup_hot_upd", "n_tup_upd"],
+  new_page_pct: ["n_tup_newpage_upd", "n_tup_upd"],
+  displayed_storage_bytes: ["main_fork_bytes", "toast_bytes"],
+  toast_share_pct: ["main_fork_bytes", "toast_bytes"],
+  toast_dead_pct: ["toast_n_live_tup", "toast_n_dead_tup"],
+  heap_buffer_hit_pct: ["heap_blks_read", "heap_blks_hit"],
+  index_buffer_hit_pct: ["idx_blks_read", "idx_blks_hit"],
+  toast_buffer_hit_pct: ["toast_blks_read", "toast_blks_hit"],
+  tidx_buffer_hit_pct: ["tidx_blks_read", "tidx_blks_hit"],
+  buffer_hit_pct: [
+    "heap_blks_read", "heap_blks_hit", "idx_blks_read", "idx_blks_hit",
+    "toast_blks_read", "toast_blks_hit", "tidx_blks_read", "tidx_blks_hit",
+  ],
+  vacuum_mean_ms: ["total_vacuum_time", "vacuum_count"],
+  autovacuum_mean_ms: ["total_autovacuum_time", "autovacuum_count"],
+  analyze_mean_ms: ["total_analyze_time", "analyze_count"],
+  autoanalyze_mean_ms: ["total_autoanalyze_time", "autoanalyze_count"],
+}
+
+const INDEX_HISTORY_DEPENDENCIES: Readonly<Record<string, readonly string[]>> = {
+  tuples_per_scan: ["idx_tup_read", "idx_scan"],
+  fetches_per_scan: ["idx_tup_fetch", "idx_scan"],
+  buffer_hit_pct: ["idx_blks_read", "idx_blks_hit"],
+}
+
+const TABLE_COUNTERS = new Set([
+  "seq_scan", "seq_tup_read", "idx_scan", "idx_tup_fetch", "n_tup_ins", "n_tup_upd", "n_tup_del",
+  "n_tup_hot_upd", "n_tup_newpage_upd", "vacuum_count", "autovacuum_count", "analyze_count",
+  "autoanalyze_count", "total_vacuum_time", "total_autovacuum_time", "total_analyze_time",
+  "total_autoanalyze_time", "heap_blks_read", "heap_blks_hit", "idx_blks_read", "idx_blks_hit",
+  "toast_blks_read", "toast_blks_hit", "tidx_blks_read", "tidx_blks_hit",
+])
+
+const INDEX_COUNTERS = new Set(["idx_scan", "idx_tup_read", "idx_tup_fetch", "idx_blks_read", "idx_blks_hit"])
+
 export function relationFields(section: RelationSection, lensName: RelationLens, group: RelationGroup): readonly string[] {
   const spec = lensSpec(section, lensName)
   return [...identityFields(section, group), ...(group === "object" ? spec.object : spec.aggregate)]
@@ -119,12 +164,12 @@ export function relationDefaultOrder(section: RelationSection, lensName: Relatio
 }
 
 export function relationHistoryField(section: RelationSection, lensName: RelationLens): string {
-  if (section === "pg_stat_user_tables") {
-    if (lensName === "access") return "seq_scan"
-    if (lensName === "changes") return "n_tup_upd"
-    if (lensName === "size_buffers") return "main_fork_bytes"
-  }
-  return lensName === "low_activity" || lensName === "state" ? "idx_scan" : relationDefaultOrder(section, lensName)
+  return relationDefaultOrder(section, lensName)
+}
+
+export function relationHistoryFields(section: RelationSection, field: string, physicalFields: readonly string[]): readonly string[] {
+  const dependencies = (section === "pg_stat_user_tables" ? TABLE_HISTORY_DEPENDENCIES : INDEX_HISTORY_DEPENDENCIES)[field] ?? [field]
+  return dependencies.every((name) => physicalFields.includes(name)) ? dependencies : []
 }
 
 export function relationSortToken(field: string): string {
@@ -289,15 +334,114 @@ export function linkedRelation(row: DataRow): RelationNavigation | null {
   }
 }
 
-/** Builds gauge samples or reset-safe per-second counter rates for one exact object. */
+/** Builds exact gauges, reset-safe rates, and their fixed object-level DBA derivations. */
 export function relationHistory(rows: readonly DataRow[], field: string): readonly { readonly segmentId: string; readonly timestamp: number; readonly value: number | null }[] {
-  const ordered = [...rows].sort((left, right) => left.timestamp - right.timestamp)
-  const gauge = field === "main_fork_bytes" || field === "xid_age"
-  return ordered.map((row, index) => {
-    const before = ordered[index - 1]
-    const value = gauge ? numeric(row.values[field]) : before === undefined || before.typeId !== row.typeId ? null : intervalMetric(before, row, field)
-    return { segmentId: row.segmentId, timestamp: row.timestamp, value }
+  const ordered = [...rows].sort((left, right) => left.timestamp - right.timestamp || left.ordinal.localeCompare(right.ordinal))
+  return ordered.flatMap((row, index) => {
+    const candidate = ordered[index - 1]
+    const before = candidate !== undefined && sameHistoryObject(candidate, row) ? candidate : null
+    const stored = historyValue(row, before, field)
+    return stored === undefined ? [] : [{ segmentId: row.segmentId, timestamp: row.timestamp, value: stored }]
   })
+}
+
+function historyValue(row: DataRow, before: DataRow | null, field: string): number | null | undefined {
+  if (row.logicalName === "pg_stat_user_tables") return tableHistoryValue(row, before, field)
+  if (row.logicalName === "pg_stat_user_indexes") return indexHistoryValue(row, before, field)
+  return undefined
+}
+
+function tableHistoryValue(row: DataRow, before: DataRow | null, field: string): number | null | undefined {
+  switch (field) {
+    case "sequential_share_pct": return rateRatio(row, before, ["seq_scan"], ["seq_scan", "idx_scan"], 100, true)
+    case "tuple_throughput": return rateSum(row, before, ["seq_tup_read", "idx_tup_fetch"], true)
+    case "seq_tuples_per_scan": return rateRatio(row, before, ["seq_tup_read"], ["seq_scan"])
+    case "idx_tuples_per_scan": return rateRatio(row, before, ["idx_tup_fetch"], ["idx_scan"])
+    case "dml_total": return rateSum(row, before, ["n_tup_ins", "n_tup_upd", "n_tup_del"])
+    case "insert_share_pct": return rateRatio(row, before, ["n_tup_ins"], ["n_tup_ins", "n_tup_upd", "n_tup_del"], 100)
+    case "update_share_pct": return rateRatio(row, before, ["n_tup_upd"], ["n_tup_ins", "n_tup_upd", "n_tup_del"], 100)
+    case "delete_share_pct": return rateRatio(row, before, ["n_tup_del"], ["n_tup_ins", "n_tup_upd", "n_tup_del"], 100)
+    case "dead_pct": return gaugeRatio(row, ["n_dead_tup"], ["n_live_tup", "n_dead_tup"], 100)
+    case "hot_pct": return rateRatio(row, before, ["n_tup_hot_upd"], ["n_tup_upd"], 100)
+    case "new_page_pct": return rateRatio(row, before, ["n_tup_newpage_upd"], ["n_tup_upd"], 100)
+    case "displayed_storage_bytes": return gaugeSum(row, ["main_fork_bytes", "toast_bytes"], true)
+    case "toast_share_pct": return gaugeRatio(row, ["toast_bytes"], ["main_fork_bytes", "toast_bytes"], 100, true)
+    case "toast_dead_pct": return gaugeRatio(row, ["toast_n_dead_tup"], ["toast_n_live_tup", "toast_n_dead_tup"], 100)
+    case "heap_buffer_hit_pct": return rateRatio(row, before, ["heap_blks_hit"], ["heap_blks_read", "heap_blks_hit"], 100)
+    case "index_buffer_hit_pct": return rateRatio(row, before, ["idx_blks_hit"], ["idx_blks_read", "idx_blks_hit"], 100)
+    case "toast_buffer_hit_pct": return rateRatio(row, before, ["toast_blks_hit"], ["toast_blks_read", "toast_blks_hit"], 100)
+    case "tidx_buffer_hit_pct": return rateRatio(row, before, ["tidx_blks_hit"], ["tidx_blks_read", "tidx_blks_hit"], 100)
+    case "buffer_hit_pct": return rateRatio(row, before,
+      ["heap_blks_hit", "idx_blks_hit", "toast_blks_hit", "tidx_blks_hit"],
+      ["heap_blks_read", "heap_blks_hit", "idx_blks_read", "idx_blks_hit", "toast_blks_read", "toast_blks_hit", "tidx_blks_read", "tidx_blks_hit"], 100, true)
+    case "vacuum_mean_ms": return rateRatio(row, before, ["total_vacuum_time"], ["vacuum_count"])
+    case "autovacuum_mean_ms": return rateRatio(row, before, ["total_autovacuum_time"], ["autovacuum_count"])
+    case "analyze_mean_ms": return rateRatio(row, before, ["total_analyze_time"], ["analyze_count"])
+    case "autoanalyze_mean_ms": return rateRatio(row, before, ["total_autoanalyze_time"], ["autoanalyze_count"])
+    default: return rawHistoryValue(row, before, field, TABLE_COUNTERS)
+  }
+}
+
+function indexHistoryValue(row: DataRow, before: DataRow | null, field: string): number | null | undefined {
+  if (field === "tuples_per_scan") return rateRatio(row, before, ["idx_tup_read"], ["idx_scan"])
+  if (field === "fetches_per_scan") return rateRatio(row, before, ["idx_tup_fetch"], ["idx_scan"])
+  if (field === "buffer_hit_pct") return rateRatio(row, before, ["idx_blks_hit"], ["idx_blks_read", "idx_blks_hit"], 100)
+  return rawHistoryValue(row, before, field, INDEX_COUNTERS)
+}
+
+function rawHistoryValue(row: DataRow, before: DataRow | null, field: string, counters: ReadonlySet<string>): number | null | undefined {
+  if (!Object.hasOwn(row.values, field)) return undefined
+  if (field === "reltuples" && numeric(row.values[field]) === -1) return null
+  if (!counters.has(field)) return numeric(row.values[field])
+  return before === null || !Object.hasOwn(before.values, field) ? null : intervalMetric(before, row, field)
+}
+
+function rateRatio(row: DataRow, before: DataRow | null, numerator: readonly string[], denominator: readonly string[], scale = 1, neutral = false): number | null | undefined {
+  return quotient(rateSum(row, before, numerator, neutral), rateSum(row, before, denominator, neutral), scale)
+}
+
+function gaugeRatio(row: DataRow, numerator: readonly string[], denominator: readonly string[], scale = 1, neutral = false): number | null | undefined {
+  return quotient(gaugeSum(row, numerator, neutral), gaugeSum(row, denominator, neutral), scale)
+}
+
+function quotient(numerator: number | null | undefined, denominator: number | null | undefined, scale: number): number | null | undefined {
+  if (numerator === undefined || denominator === undefined) return undefined
+  if (numerator === null || denominator === null || denominator <= 0) return null
+  const output = numerator / denominator * scale
+  return Number.isFinite(output) ? output : null
+}
+
+function rateSum(row: DataRow, before: DataRow | null, fields: readonly string[], neutral = false): number | null | undefined {
+  if (before === null) return fields.some((field) => !Object.hasOwn(row.values, field)) ? undefined : null
+  return sumHistoryValues(fields.map((field) => {
+    if (!Object.hasOwn(row.values, field)) return undefined
+    if (!Object.hasOwn(before.values, field)) return null
+    const current = row.values[field]
+    const previous = before.values[field]
+    if (neutral && current === null && previous === null) return 0
+    return current === null || previous === null ? null : intervalMetric(before, row, field)
+  }))
+}
+
+function gaugeSum(row: DataRow, fields: readonly string[], neutral = false): number | null | undefined {
+  return sumHistoryValues(fields.map((field) => {
+    if (!Object.hasOwn(row.values, field)) return undefined
+    const value = numeric(row.values[field])
+    return neutral && value === null ? 0 : value
+  }))
+}
+
+function sumHistoryValues(values: readonly (number | null | undefined)[]): number | null | undefined {
+  if (values.some((value) => value === undefined)) return undefined
+  if (values.some((value) => value === null)) return null
+  return (values as readonly number[]).reduce((total, value) => total + value, 0)
+}
+
+function sameHistoryObject(left: DataRow, right: DataRow): boolean {
+  const object = right.logicalName === "pg_stat_user_tables" ? "relid" : "indexrelid"
+  return left.typeId === right.typeId && left.logicalName === right.logicalName
+    && JSON.stringify(left.values.datid) === JSON.stringify(right.values.datid)
+    && JSON.stringify(left.values[object]) === JSON.stringify(right.values[object])
 }
 
 function timestamps(...names: readonly string[]): readonly string[] {
