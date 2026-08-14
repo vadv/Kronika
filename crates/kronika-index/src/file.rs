@@ -8,7 +8,7 @@ use kronika_format::Crc32c;
 use crate::series::{SeriesBlock, SeriesKey, SeriesKind};
 
 /// Magic of the current unreleased allowlist format.
-pub const MAGIC: [u8; 8] = *b"KRNIDX5\0";
+pub const MAGIC: [u8; 8] = *b"KRNIDX6\0";
 /// Bytes before the table: magic, entry count, checksum.
 pub const HEADER_LEN: usize = 16;
 /// Bytes per TOC entry: series kind, physical input layout, offset, length.
