@@ -743,6 +743,69 @@ fn overall_uses_fresh_predecessor_postgres_without_copying_its_point() {
 }
 
 #[test]
+fn unusable_nearest_inputs_block_older_health_values() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+    let boot_time = SEGMENT_ID - 1_000_000;
+    append_health_fixture(
+        &mut journal,
+        SEGMENT_ID,
+        HealthFixture {
+            boot_time,
+            environment: 0,
+            postgres: Some((SEGMENT_ID + 1_000_000, 5)),
+        },
+        &[
+            (SEGMENT_ID, [Some(0), Some(0), Some(0)]),
+            (SEGMENT_ID + 1_000_000, [Some(100_000), Some(0), Some(0)]),
+        ],
+    );
+    write_segment(&journal, &writer, address_at(SEGMENT_ID)).expect("finish oldest segment");
+    journal.reset().expect("reset after oldest segment");
+
+    let middle_id = SEGMENT_ID + 2_000_000;
+    append_health_fixture(
+        &mut journal,
+        middle_id,
+        HealthFixture {
+            boot_time,
+            environment: 0,
+            postgres: None,
+        },
+        &[(middle_id, [Some(200_000), Some(0), None])],
+    );
+    write_segment(&journal, &writer, address_at(middle_id)).expect("finish nearest segment");
+    journal.reset().expect("reset after nearest segment");
+
+    let current_id = SEGMENT_ID + 3_000_000;
+    append_health_fixture(
+        &mut journal,
+        current_id,
+        HealthFixture {
+            boot_time,
+            environment: 0,
+            postgres: Some((current_id + 1_500_000, 4)),
+        },
+        &[
+            (current_id, [Some(300_000), Some(0), Some(0)]),
+            (current_id + 1_000_000, [Some(400_000), Some(0), Some(0)]),
+            (current_id + 2_000_000, [Some(500_000), Some(0), Some(0)]),
+        ],
+    );
+    write_segment(&journal, &writer, address_at(current_id)).expect("finish current segment");
+    journal.reset().expect("leave no active segment");
+
+    let selected = health_at(directory.path(), current_id);
+    assert_eq!(health_values(&selected, "os"), [None, Some(90), Some(90)]);
+    assert_eq!(health_values(&selected, "overall"), [None, None, Some(90)]);
+    assert_eq!(health_values(&selected, "postgres"), [Some(100)]);
+}
+
+#[test]
 fn real_active_and_finished_resources_are_bounded_and_atomically_cached() {
     let directory = tempfile::tempdir().expect("tempdir");
     let data_root = DataRoot::open(directory.path()).expect("data root");
