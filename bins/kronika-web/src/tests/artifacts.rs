@@ -1852,7 +1852,7 @@ fn an_hour_carries_its_segments_and_its_line_in_one_response() {
 }
 
 #[test]
-fn an_hour_reads_one_index_resource_per_segment_and_carries_every_finding() {
+fn an_hour_reads_one_index_resource_per_segment_without_statistical_noise() {
     const STEP: i64 = 5 * 60 * 1_000_000;
 
     let mut fixture = Fixture::new();
@@ -1870,12 +1870,12 @@ fn an_hour_reads_one_index_resource_per_segment_and_carries_every_finding() {
         .collect::<Vec<_>>();
     fixture.append_finding_rows(&process_prior, &statement_prior);
 
-    let spike_at = SEGMENT_ID + 6 * STEP;
-    fixture.finish_and_continue(spike_at);
-    fixture.append_finding_rows(&[(spike_at, Some(301_500))], &[(spike_at, 6, 10_500.0)]);
-    fixture.append_postgres_health_at(spike_at, 5);
-    fixture.append_log_error(spike_at + 60);
-    fixture.append_log_temp_file(spike_at + 61);
+    let current_at = SEGMENT_ID + 6 * STEP;
+    fixture.finish_and_continue(current_at);
+    fixture.append_finding_rows(&[(current_at, Some(301_500))], &[(current_at, 6, 10_500.0)]);
+    fixture.append_postgres_health_at(current_at, 5);
+    fixture.append_log_error(current_at + 60);
+    fixture.append_log_temp_file(current_at + 61);
     fixture.finish();
 
     let records = stream(fixture.prepare(
@@ -1893,7 +1893,7 @@ fn an_hour_reads_one_index_resource_per_segment_and_carries_every_finding() {
         .collect::<Vec<_>>();
     assert_eq!(
         index_segments,
-        [SEGMENT_ID.to_string(), spike_at.to_string()].map(Value::from)
+        [SEGMENT_ID.to_string(), current_at.to_string()].map(Value::from)
     );
 
     let findings = records
@@ -1901,9 +1901,7 @@ fn an_hour_reads_one_index_resource_per_segment_and_carries_every_finding() {
         .filter(|record| record["record"] == "finding")
         .collect::<Vec<_>>();
     for (logical_name, kind) in [
-        ("os_process", "spike"),
         ("pg_stat_activity", "known_bad"),
-        ("pg_stat_statements", "spike"),
         ("pg_log_errors", "event"),
     ] {
         assert!(
@@ -1917,10 +1915,79 @@ fn an_hour_reads_one_index_resource_per_segment_and_carries_every_finding() {
         .find(|finding| finding["logical_name"] == "pg_log_errors")
         .expect("error event");
     assert_eq!(error["category"], 8);
+    assert!(findings.iter().all(|finding| {
+        finding["logical_name"] != "os_process"
+            && finding["logical_name"] != "pg_stat_statements"
+            && finding["kind"] != "spike"
+    }));
     assert!(records.iter().all(|record| {
         !matches!(record["record"].as_str(), Some("findings" | "finding"))
             || record["type_id"] != "2007001"
     }));
+}
+
+#[test]
+fn an_hour_filters_first_and_last_segment_findings_to_its_exact_bounds() {
+    let from = SEGMENT_ID + 100;
+    let to = SEGMENT_ID + 200;
+    let mut fixture = Fixture::new();
+    fixture.append_log_error(from - 1);
+    fixture.append_log_error(from);
+    fixture.finish_and_continue(to);
+    fixture.append_log_error(to);
+    fixture.append_log_error(to + 1);
+    fixture.finish();
+
+    let records = stream(fixture.prepare(&format!("/api/hour?from={from}&to={to}"), None))
+        .expect("bounded hour");
+    let summaries = records
+        .iter()
+        .filter(|record| record["record"] == "findings")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        summaries
+            .iter()
+            .map(|record| record["total_hits"].as_u64().expect("finding count"))
+            .sum::<u64>(),
+        2
+    );
+    assert!(summaries.iter().all(|record| record["truncated"] == false));
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["record"] == "finding")
+            .map(|record| record["ts"].clone())
+            .collect::<Vec<_>>(),
+        [from.to_string(), to.to_string()].map(Value::from)
+    );
+}
+
+#[test]
+fn process_and_statement_rows_remain_available_without_findings() {
+    let mut fixture = Fixture::new();
+    fixture.append_finding_rows(&[(100, Some(4_096))], &[(100, 1, 2.5)]);
+    fixture.finish();
+
+    for target in [
+        format!("/api/segments/{SEGMENT_ID}/sections/os_process/history?field=ts&field=read_bytes"),
+        format!(
+            "/api/segments/{SEGMENT_ID}/sections/os_process/rows?page_size=10&order=asc&field=ts&field=read_bytes"
+        ),
+        format!(
+            "/api/segments/{SEGMENT_ID}/sections/pg_stat_statements/history?field=ts&field=calls&field=total_exec_time"
+        ),
+        format!(
+            "/api/segments/{SEGMENT_ID}/sections/pg_stat_statements/rows?page_size=10&order=asc&field=ts&field=calls&field=total_exec_time"
+        ),
+    ] {
+        let records = stream(fixture.prepare(&target, None)).expect("raw metric read");
+        assert_eq!(row_records(&records).len(), 1, "{target}");
+        assert!(
+            records.iter().all(|record| {
+                !matches!(record["record"].as_str(), Some("findings" | "finding"))
+            })
+        );
+    }
 }
 
 #[test]

@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use super::render::record;
 use super::{ApiError, CachePolicy, Prepared, ResponseMeta, explicit_segment};
 use crate::encoding::etag_matches;
-use crate::route::SegmentRequest;
+use crate::route::{SegmentRequest, Window};
 
 pub(crate) struct PreparedIndex {
     meta: ResponseMeta,
@@ -85,13 +85,14 @@ impl PreparedIndex {
         {
             return Ok(());
         }
-        stream_series(&self.logical_name, self.resource, emit, cancelled).map(|_connected| ())
+        stream_series(&self.logical_name, self.resource, None, emit, cancelled).map(|_connected| ())
     }
 }
 
 pub(super) fn stream_series(
     logical_name: &str,
     resource: ResourceIndex,
+    finding_window: Option<Window>,
     emit: &mut impl FnMut(Vec<u8>) -> bool,
     cancelled: &impl Fn() -> bool,
 ) -> Result<bool, ApiError> {
@@ -103,7 +104,7 @@ pub(super) fn stream_series(
                 } else {
                     logical_section_name(block.type_id).ok_or(ApiError::NoSuchSection)?
                 };
-                if !stream_findings(finding_logical_name, block, emit, cancelled)? {
+                if !stream_findings(finding_logical_name, block, finding_window, emit, cancelled)? {
                     return Ok(false);
                 }
                 continue;
@@ -183,10 +184,24 @@ pub(super) fn stream_series(
 
 fn stream_findings(
     logical_name: &str,
-    block: FindingBlock,
+    mut block: FindingBlock,
+    window: Option<Window>,
     emit: &mut impl FnMut(Vec<u8>) -> bool,
     cancelled: &impl Fn() -> bool,
 ) -> Result<bool, ApiError> {
+    if let Some(window) = window {
+        let omitted_may_intersect = block.truncated
+            && block
+                .findings
+                .last()
+                .is_none_or(|last| window.to.is_none_or(|to| to >= last.timestamp));
+        block.findings.retain(|finding| {
+            window.from.is_none_or(|from| finding.timestamp >= from)
+                && window.to.is_none_or(|to| finding.timestamp <= to)
+        });
+        block.total_hits = u32::try_from(block.findings.len()).unwrap_or(u32::MAX);
+        block.truncated = omitted_may_intersect;
+    }
     if cancelled()
         || !emit(record(json!({
             "record": "findings",

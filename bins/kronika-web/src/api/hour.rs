@@ -153,6 +153,7 @@ impl PreparedHour {
             reader,
             catalog,
             segments,
+            window,
             series,
             ..
         } = self;
@@ -186,7 +187,7 @@ impl PreparedHour {
             }))?) {
                 return Ok(());
             }
-            if !stream_series(SERIES, resource, emit, cancelled)? {
+            if !stream_series(SERIES, resource, Some(window), emit, cancelled)? {
                 return Ok(());
             }
             if !emit_lanes(&reader, segment, &mut lane_state, emit, cancelled)? {

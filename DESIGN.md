@@ -267,11 +267,9 @@ locator before applying the existing per-section cap:
 - `2_006_001` `pg_log_lifecycle`.
 
 This list is exhaustive; registry metadata does not expand it. Separately,
-Kronika adds only two independent best-effort visual marks. `known_bad` means
-an exact stored value crossed one small explicit boundary. `spike` means the
-current value is a short upward spike relative to prior stored snapshots of
-the same concrete series. A point may have either mark, both, or neither. Value
-colour and marks remain separate.
+Kronika adds one independent best-effort visual mark. `known_bad` means an
+exact stored value crossed one small explicit boundary. Value colour and marks
+remain separate.
 
 The implementation uses explicit field matches and ordinary comparisons. It
 has no policy or expression framework, persistent baseline, cadence or
@@ -300,41 +298,9 @@ Optional or missing inputs produce no mark. Kronika does not substitute a
 cgroup quota for the host CPU denominator, approximate an absent capacity, or
 use a grouped duration sum as one event duration.
 
-### Upward spikes
-
-A spike compares the current transformed value with prior stored values of the
-same concrete series. Use every prior value in the preceding 15 minutes when
-that set contains at least five values. Otherwise continue backward only until
-the nearest five prior values have been selected. With fewer than five prior
-values, there is no spike. Values may cross segment boundaries; snapshot
-spacing creates no continuity or cadence rule.
-
-Sort the selected values. `Q1` and `Q3` are the 25th and 75th percentiles, using
-linear interpolation at sorted rank `(n-1)p`:
-
-```
-upper_fence = Q3 + 1.5 * (Q3 - Q1)
-spike       = current > upper_fence
-```
-
-Thus `[98, 99, 100, 101, 102]` has `Q1=99`, `Q3=101`, and upper fence `104`.
-Zero is data. `null`, a missing predecessor, a non-positive elapsed time, or a
-negative counter delta produces no transformed value.
-
-The initial spike series are exactly:
-
-- per-process disk-read bytes per second from adjacent stored `read_bytes`
-  values, keyed by `(pid,starttime)`; and
-- per-statement average execution duration from
-  `delta(total_exec_time)/delta(calls)` where one exact physical
-  `pg_stat_statements` layout stores both fields and its full identity.
-
-`pg_store_plans` has no spike rule. A predecessor is only an input to the
-current calculation; Kronika stores no chain state.
-
 ### IDX locators
 
-Web records event locators and computes findings while building an index
+Web records event locators and known-bad marks while building an index
 through the production reader. When prior values are needed, it reads
 preceding finished ZMS directly, never another IDX. Temporary state is
 discarded after the build. The collector does not compute findings, and there
@@ -367,6 +333,12 @@ query or plan text, command lines, rows, or histories.
 One fixed per-block cap keeps the format bounded. Stored locators remain in
 deterministic timestamp and locator order; `total_hits` and `truncated` make an
 omission visible. This is not ranking.
+
+An hour response filters each stored locator to the requested inclusive
+`[from,to]` before emitting it or counting it. If a source block was already
+truncated and its omitted tail may intersect the hour, the filtered count
+covers only returned in-window locators and `truncated` remains true. The hour
+never counts a locator known to be outside its bounds.
 
 The IDX format is unreleased. `KRNIDX6` is its one current reader and writer and
 changes in place. Web discards and rebuilds any other IDX; there is no
@@ -468,7 +440,7 @@ metric groups and virtualized Processes lenses; PostgreSQL contains Overview,
 Activity, Statements, Locks and Databases whenever their sections are present.
 Events expands the same findings drawn on the shared healthline. The timeline
 always spans the complete hour, leaves gaps blank and drives every view with one
-cursor. Marker shape identifies log events, threshold crossings, and spikes.
+cursor. Marker shape identifies log events and threshold crossings.
 
 System tables contain only entities such as devices, mounts, interfaces and CPU
 topology. Selecting a metric opens its one-hour history. A selected Linux
