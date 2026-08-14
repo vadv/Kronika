@@ -121,6 +121,7 @@ export function bundledFixtureHour(start: number): HourData | null {
     snapshotRows: [],
     availableSections: ["os_process", "pg_stat_activity", "health"],
     postgresqlConfigured: true,
+    postgresqlPresent: true,
     processes,
     activities,
     load,

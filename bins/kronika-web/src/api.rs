@@ -23,7 +23,8 @@ pub(crate) use hour::process_summary::{
 };
 #[cfg(test)]
 pub(crate) use snapshot::{
-    history_operations, page_operations, reset_history_operations, reset_page_operations,
+    context_operations, history_operations, page_operations, reset_context_operations,
+    reset_history_operations, reset_page_operations,
 };
 
 /// Cache policy applied centrally after preparation.

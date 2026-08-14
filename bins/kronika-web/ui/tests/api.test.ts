@@ -863,6 +863,31 @@ test("timeline lanes retain their segment and a recorded null", async () => {
   }
 })
 
+test("timeline source presence does not trust a straddling segment inventory", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => ndjson([
+    { record: "hour", from: String(START), to: String(START + 3_600_000_000 - 1), available_hours: [String(START)] },
+    {
+      record: "catalog", from: String(START), to: String(START + 3_600_000_000 - 1),
+      source_families: [{ name: "postgresql", configured: false, present: true, metrics_present: false }],
+    },
+    {
+      record: "finished_segment", id: "segment-a", min_ts: String(START - 1), max_ts: String(START + 1),
+      sections: [{ logical_name: "pg_stat_database", type_id: "1005001" }],
+    },
+  ])
+  try {
+    const timeline = await api.loadTimeline(START, new AbortController().signal)
+    assert.deepEqual(timeline.availableSections, ["pg_stat_database"])
+    assert.equal(timeline.postgresqlConfigured, false)
+    assert.equal(timeline.postgresqlPresent, false)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test("health rows align raw PostgreSQL points to stored nonfuture evaluations", async () => {
   const api = await bundledApi()
   const point = (segmentId: string, series: string, timestamp: number, value: number | null) => ({

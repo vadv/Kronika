@@ -77,7 +77,7 @@ type Theme = "dark" | "light"
 type HostSection = "system" | "processes"
 
 const EMPTY_DATA: HourData = {
-  sections: {}, rateColumns: {}, snapshotRows: [], availableSections: [], postgresqlConfigured: false, processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
+  sections: {}, rateColumns: {}, snapshotRows: [], availableSections: [], postgresqlConfigured: false, postgresqlPresent: false, processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
   pgOverview: [], points: [], lanePoints: [], findings: [], findingGroups: [],
 }
 

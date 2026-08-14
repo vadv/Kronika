@@ -120,6 +120,7 @@ export interface HourData {
   readonly snapshotRows: readonly SnapshotRows[]
   readonly availableSections: readonly string[]
   readonly postgresqlConfigured?: boolean
+  readonly postgresqlPresent?: boolean
   readonly processes: readonly DataRow[]
   readonly activities: readonly DataRow[]
   readonly load: readonly DataRow[]
@@ -180,6 +181,7 @@ export function mergeSnapshotData(current: HourData, incoming: HourData, appendS
     snapshotRows: incoming.snapshotRows.length === 0 ? current.snapshotRows : incoming.snapshotRows,
     availableSections: unique([...current.availableSections, ...incoming.availableSections]),
     postgresqlConfigured: current.postgresqlConfigured === true || incoming.postgresqlConfigured === true,
+    postgresqlPresent: current.postgresqlPresent === true || incoming.postgresqlPresent === true,
     points: [],
     lanePoints: [],
     findings: [],
@@ -205,6 +207,7 @@ export interface TimelineData {
   readonly findingGroups: readonly FindingGroup[]
   readonly availableSections: readonly string[]
   readonly postgresqlConfigured?: boolean
+  readonly postgresqlPresent?: boolean
 }
 
 export interface ResolvedLocator {
@@ -224,6 +227,7 @@ export function hourOf(timeline: TimelineData): HourData {
     sections: timeline.lanes,
     availableSections: timeline.availableSections,
     postgresqlConfigured: timeline.postgresqlConfigured ?? false,
+    postgresqlPresent: timeline.postgresqlPresent ?? false,
     points: timeline.points,
     lanePoints: timeline.lanePoints,
     findings: timeline.findings,
@@ -246,6 +250,7 @@ export function viewData(timeline: HourData, current: HourData): HourData {
     snapshotRows: current.snapshotRows,
     availableSections: timeline.availableSections,
     postgresqlConfigured: timeline.postgresqlConfigured ?? false,
+    postgresqlPresent: timeline.postgresqlPresent ?? false,
     points: timeline.points,
     lanePoints: timeline.lanePoints,
     findings: timeline.findings,
@@ -277,6 +282,7 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
       findingGroups: fixture.findingGroups,
       availableSections: fixture.availableSections,
       postgresqlConfigured: fixture.availableSections.some((name) => name.startsWith("pg_")),
+      postgresqlPresent: fixture.availableSections.some((name) => name.startsWith("pg_") && !name.startsWith("pg_log_")),
     }
   }
   const window = start === null ? "" : `?from=${start}&to=${start + 3_600_000_000 - 1}`
@@ -363,6 +369,7 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
     findingGroups: resolvedFindingGroups,
     availableSections: availableSectionNames(all),
     postgresqlConfigured: sourceConfigured(catalog, "postgresql"),
+    postgresqlPresent: sourceMetricsPresent(catalog, "postgresql"),
   }
 }
 
@@ -635,6 +642,7 @@ function hourData(input: {
   readonly snapshotRows?: readonly SnapshotRows[]
   readonly availableSections: readonly string[]
   readonly postgresqlConfigured?: boolean
+  readonly postgresqlPresent?: boolean
   readonly points: readonly Point[]
   readonly lanePoints: readonly LanePoint[]
   readonly findings: readonly Finding[]
@@ -645,6 +653,7 @@ function hourData(input: {
   return {
     ...input,
     postgresqlConfigured: input.postgresqlConfigured ?? false,
+    postgresqlPresent: input.postgresqlPresent ?? false,
     rateColumns: input.rateColumns ?? {},
     snapshotRows: input.snapshotRows ?? [],
     findingGroups: input.findingGroups ?? [],
@@ -1091,6 +1100,14 @@ function sourceConfigured(header: Record<string, unknown> | undefined, name: str
     && typeof family === "object"
     && (family as { readonly name?: unknown }).name === name
     && (family as { readonly configured?: unknown }).configured === true)
+}
+
+function sourceMetricsPresent(header: Record<string, unknown> | undefined, name: string): boolean {
+  const families = header?.source_families
+  return Array.isArray(families) && families.some((family) => family !== null
+    && typeof family === "object"
+    && (family as { readonly name?: unknown }).name === name
+    && (family as { readonly metrics_present?: unknown }).metrics_present === true)
 }
 
 function segmentSectionNames(segment: Segment): string[] {

@@ -279,6 +279,9 @@ thread_local! {
     static PAGE_CHUNK_ROWS: Counter<usize> = const { Counter::new(0) };
     static PAGE_SOURCE_VISITS: Counter<usize> = const { Counter::new(0) };
     static PAGE_CANDIDATE_DICTIONARIES: Counter<usize> = const { Counter::new(0) };
+    static CONTEXT_CHUNK_ROWS: Counter<usize> = const { Counter::new(0) };
+    static CONTEXT_STAGED_ROWS: Counter<usize> = const { Counter::new(0) };
+    static CONTEXT_SELECTION_DICTIONARIES: Counter<usize> = const { Counter::new(0) };
 }
 
 #[cfg(test)]
@@ -294,6 +297,22 @@ pub(crate) fn page_operations() -> (usize, usize, usize) {
         PAGE_SOURCE_VISITS.get(),
         PAGE_CANDIDATE_DICTIONARIES.get(),
         PAGE_CHUNK_ROWS.get(),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn reset_context_operations() {
+    CONTEXT_CHUNK_ROWS.set(0);
+    CONTEXT_STAGED_ROWS.set(0);
+    CONTEXT_SELECTION_DICTIONARIES.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn context_operations() -> (usize, usize, usize) {
+    (
+        CONTEXT_CHUNK_ROWS.get(),
+        CONTEXT_STAGED_ROWS.get(),
+        CONTEXT_SELECTION_DICTIONARIES.get(),
     )
 }
 
@@ -792,7 +811,14 @@ impl PreparedSnapshot {
         let (start_row, row_count) = self
             .row_ordinal
             .map_or((0, usize::MAX), |ordinal| (ordinal, 1));
-        let mut rows = Vec::new();
+        let selection_dictionary = context.plan.exact_filter_dictionary(context.source)?;
+        #[cfg(test)]
+        if context.plan.needs_selection_dictionary() {
+            CONTEXT_SELECTION_DICTIONARIES.set(CONTEXT_SELECTION_DICTIONARIES.get() + 1);
+        }
+        let mut chunk = Vec::with_capacity(SNAPSHOT_CHUNK_ROWS);
+        let mut failure = None;
+        let mut connected = true;
         context.source.visit_rows(
             context.plan.type_id,
             &context.plan.projection,
@@ -803,18 +829,51 @@ impl PreparedSnapshot {
                     return false;
                 }
                 if context.window.matches(&row) {
-                    rows.push((ordinal, row));
+                    chunk.push((ordinal, row));
                 }
-                true
+                if chunk.len() == SNAPSHOT_CHUNK_ROWS {
+                    match self.emit_context_chunk(
+                        context,
+                        &selection_dictionary,
+                        &mut chunk,
+                        emit,
+                        cancelled,
+                    ) {
+                        Ok(still_connected) => connected = still_connected,
+                        Err(error) => failure = Some(error),
+                    }
+                }
+                connected && failure.is_none() && !cancelled()
             },
         )?;
-        if cancelled() {
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        if cancelled() || !connected {
             return Ok(false);
         }
-        let selection_dictionary = context.plan.selection_dictionary(context.source, &rows)?;
-        let mut staged = Vec::with_capacity(rows.len());
-        for (ordinal, row) in rows {
-            if !context.plan.matches(&row, &selection_dictionary) {
+        if chunk.is_empty() {
+            return Ok(true);
+        }
+        self.emit_context_chunk(context, &selection_dictionary, &mut chunk, emit, cancelled)
+    }
+
+    fn emit_context_chunk(
+        &self,
+        context: &PageContext<'_>,
+        selection_dictionary: &Dictionary,
+        rows: &mut Vec<(u64, Row)>,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<bool, ApiError> {
+        #[cfg(test)]
+        CONTEXT_CHUNK_ROWS.set(CONTEXT_CHUNK_ROWS.get().max(rows.len()));
+        let mut staged = Vec::new();
+        for (ordinal, row) in rows.drain(..) {
+            context
+                .plan
+                .validate_exact_filter_ids(&row, selection_dictionary)?;
+            if !context.plan.matches(&row, selection_dictionary) {
                 continue;
             }
             let Some(identity) = identity_of(context.plan, &row) else {
@@ -825,6 +884,11 @@ impl PreparedSnapshot {
                 row,
                 identity,
             });
+        }
+        #[cfg(test)]
+        CONTEXT_STAGED_ROWS.set(CONTEXT_STAGED_ROWS.get().saturating_add(staged.len()));
+        if staged.is_empty() {
+            return Ok(true);
         }
         let dictionary = retained_dictionary(context.source, &staged)?;
         for staged in staged {

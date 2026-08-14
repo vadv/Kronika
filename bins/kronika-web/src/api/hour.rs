@@ -3,15 +3,17 @@
 use std::path::{Path, PathBuf};
 
 use kronika_index::{finding_keys, resource_selected, series_keys};
-use kronika_reader::{Listing, Reader, SegmentKind, SegmentRef};
+use kronika_reader::{Cell, Listing, Reader, SegmentKind, SegmentRef};
+use kronika_registry::{ColumnClass, contract};
 use serde_json::json;
 
-use super::catalog::PreparedCatalog;
+use super::catalog::{PreparedCatalog, metric_source_bit, source_bit};
 use super::history::stream_plans;
 use super::index::stream_series;
 use super::query::plans;
 use super::render::record;
 use super::{ApiError, CachePolicy, ResponseMeta};
+use crate::config::{SOURCE_OS, SOURCE_POSTGRESQL};
 use crate::route::{DataRequest, HourRequest, SegmentRequest, SeriesRequest, Window};
 
 mod lanes;
@@ -23,6 +25,13 @@ mod tests;
 const SERIES: &str = "health";
 
 const HOUR: i64 = 3_600_000_000;
+const ALL_SOURCES: u32 = SOURCE_OS | SOURCE_POSTGRESQL;
+
+#[derive(Default)]
+struct SourcePresence {
+    any: u32,
+    metrics: u32,
+}
 
 pub(crate) struct PreparedHour {
     root: PathBuf,
@@ -183,7 +192,10 @@ impl PreparedHour {
             return Ok(());
         }
         if let Some(catalog) = catalog {
-            catalog.stream(emit, cancelled)?;
+            let presence = source_presence(&reader, &segments, window, cancelled)?;
+            catalog
+                .with_present_sources(presence.any, presence.metrics)
+                .stream(emit, cancelled)?;
         }
         let mut lane_state = lanes::State::default();
         for segment in &segments {
@@ -217,6 +229,71 @@ impl PreparedHour {
         );
         Ok(())
     }
+}
+
+fn source_presence(
+    reader: &Reader,
+    segments: &[SegmentRef],
+    window: Window,
+    cancelled: &impl Fn() -> bool,
+) -> Result<SourcePresence, ApiError> {
+    let mut presence = SourcePresence::default();
+    for segment_ref in segments {
+        if cancelled() || (presence.any == ALL_SOURCES && presence.metrics == ALL_SOURCES) {
+            break;
+        }
+        let needed = segment_ref.sections().iter().any(|section| {
+            let Some(any) = source_bit(section.type_id) else {
+                return false;
+            };
+            presence.any & any == 0
+                || metric_source_bit(section.type_id).is_some_and(|bit| presence.metrics & bit == 0)
+        });
+        if !needed {
+            continue;
+        }
+        let segment = reader.open_segment(segment_ref)?;
+        for section in segment_ref.sections() {
+            if cancelled() {
+                break;
+            }
+            let type_id = section.type_id;
+            let Some(any) = source_bit(type_id) else {
+                continue;
+            };
+            let metrics = metric_source_bit(type_id);
+            if presence.any & any != 0 && metrics.is_none_or(|bit| presence.metrics & bit != 0) {
+                continue;
+            }
+            let Some(timestamp) = contract(type_id).and_then(|contract| {
+                contract
+                    .columns
+                    .iter()
+                    .find(|column| column.class == ColumnClass::Timestamp)
+            }) else {
+                continue;
+            };
+            let mut found = false;
+            segment.visit_rows(type_id, &[timestamp.name], 0, usize::MAX, |_ordinal, row| {
+                if cancelled() {
+                    return false;
+                }
+                if matches!(row.get(timestamp.name), Some(Cell::Ts(value)) if window.contains(*value))
+                {
+                    found = true;
+                    return false;
+                }
+                true
+            })?;
+            if found {
+                presence.any |= any;
+                if let Some(metrics) = metrics {
+                    presence.metrics |= metrics;
+                }
+            }
+        }
+    }
+    Ok(presence)
 }
 
 fn emit_series(

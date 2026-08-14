@@ -2740,7 +2740,7 @@ function healthContractTimeline(hour) {
     { record: "hour", from: String(hour), to: String(hour + HOUR_US - 1), available_hours: [HOUR, HOUR + HOUR_US, HOUR + 2 * HOUR_US].map(String) },
     {
       record: "catalog", from: String(hour), to: String(hour + HOUR_US - 1),
-      source_families: [{ name: "postgresql", configured: postgresql, present: postgresql }],
+      source_families: [{ name: "postgresql", configured: postgresql, present: postgresql, metrics_present: postgresql }],
     },
     {
       record: "finished_segment", id: SEGMENT, min_ts: String(hour), max_ts: String(evaluation),
@@ -2769,7 +2769,7 @@ function productionSystemTimeline() {
     { record: "hour", from: String(HOUR), to: String(HOUR + HOUR_US - 1), available_hours: [String(HOUR)] },
     {
       record: "catalog", from: String(HOUR), to: String(HOUR + HOUR_US - 1),
-      source_families: [{ name: "postgresql", configured: false, present: false }],
+      source_families: [{ name: "postgresql", configured: false, present: false, metrics_present: false }],
     },
     {
       record: "finished_segment", id: SEGMENT, min_ts: String(HOUR), max_ts: String(AT),
@@ -2877,7 +2877,7 @@ function processSummaryRecords(hour, count, processes) {
 function viewportActivityTimeline() {
   return [
     { record: "hour", from: String(HOUR), to: String(HOUR + HOUR_US - 1), available_hours: [String(HOUR)] },
-    { record: "catalog", from: String(HOUR), to: String(HOUR + HOUR_US - 1), source_families: [{ name: "postgresql", configured: true, present: true }] },
+    { record: "catalog", from: String(HOUR), to: String(HOUR + HOUR_US - 1), source_families: [{ name: "postgresql", configured: true, present: true, metrics_present: true }] },
     {
       record: "finished_segment", id: SEGMENT, min_ts: String(HOUR), max_ts: String(AFTER_AT),
       sections: [{ logical_name: "pg_stat_activity", physical_name: "pg_stat_activity", type_id: "1001003", implementation: "postgresql", source_family: "postgresql", rows: "120", bytes: "4096" }],
@@ -2965,7 +2965,7 @@ function sourceTimelineRecords(historical) {
   if (historical) sections.push({ logical_name: "pg_stat_activity", physical_name: "pg_stat_activity", type_id: "1001003", implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256" })
   return [
     { record: "hour", from: String(HOUR), to: String(HOUR + HOUR_US - 1), available_hours: [String(HOUR)] },
-    { record: "catalog", from: String(HOUR), to: String(HOUR + HOUR_US - 1), source_families: [{ name: "postgresql", configured: false, present: historical }] },
+    { record: "catalog", from: String(HOUR), to: String(HOUR + HOUR_US - 1), source_families: [{ name: "postgresql", configured: false, present: historical, metrics_present: historical }] },
     { record: "finished_segment", id: SEGMENT, min_ts: String(HOUR), max_ts: String(AFTER_AT), sections },
     { record: "index", segment: { id: SEGMENT }, logical_name: "health", checksum: null },
     { record: "point", type_id: "0", series: "overall_health", ts: String(AT), identity: {}, value: 73 },
@@ -2979,7 +2979,7 @@ function slowQueryTimelineRecords() {
     { record: "hour", from: String(HOUR), to: String(HOUR + HOUR_US - 1), available_hours: [String(HOUR)] },
     {
       record: "catalog", from: String(HOUR), to: String(HOUR + HOUR_US - 1),
-      source_families: [{ name: "postgresql", configured: true, present: true }],
+      source_families: [{ name: "postgresql", configured: true, present: true, metrics_present: true }],
     },
     {
       record: "finished_segment", id: SEGMENT, min_ts: String(HOUR), max_ts: String(AFTER_AT),
@@ -3061,7 +3061,7 @@ function timelineRecords(hour = HOUR, cgroups = false) {
     { record: "hour", from: String(hour), to: String(hour + HOUR_US - 1), available_hours: AVAILABLE_HOURS.map(String) },
     {
       record: "catalog", from: String(hour), to: String(hour + HOUR_US - 1),
-      source_families: [{ name: "postgresql", configured: true, present: true }],
+      source_families: [{ name: "postgresql", configured: true, present: true, metrics_present: true }],
     },
     {
       record: "finished_segment", id: SEGMENT, min_ts: String(hour), max_ts: shifted(AFTER_AT),

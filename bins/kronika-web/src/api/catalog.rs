@@ -16,6 +16,8 @@ pub(crate) struct PreparedCatalog {
     listing: Listing,
     window: Window,
     configured_sources: u32,
+    present_sources: Option<u32>,
+    metric_sources: Option<u32>,
 }
 
 pub(super) fn prepare(
@@ -47,7 +49,19 @@ impl PreparedCatalog {
             listing,
             window,
             configured_sources,
+            present_sources: None,
+            metric_sources: None,
         }
+    }
+
+    pub(super) const fn with_present_sources(
+        mut self,
+        present_sources: u32,
+        metric_sources: u32,
+    ) -> Self {
+        self.present_sources = Some(present_sources);
+        self.metric_sources = Some(metric_sources);
+        self
     }
 
     pub(super) const fn meta() -> ResponseMeta {
@@ -59,19 +73,32 @@ impl PreparedCatalog {
         emit: &mut impl FnMut(Vec<u8>) -> bool,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
-        let present_sources = self
-            .listing
-            .segments
-            .iter()
-            .flat_map(SegmentRef::sections)
-            .filter_map(|section| source_bit(section.type_id))
-            .fold(0_u32, |present, bit| present | bit);
+        let present_sources = self.present_sources.unwrap_or_else(|| {
+            self.listing
+                .segments
+                .iter()
+                .flat_map(SegmentRef::sections)
+                .filter_map(|section| source_bit(section.type_id))
+                .fold(0_u32, |present, bit| present | bit)
+        });
+        let metric_sources = self.metric_sources.unwrap_or_else(|| {
+            self.listing
+                .segments
+                .iter()
+                .flat_map(SegmentRef::sections)
+                .filter_map(|section| metric_source_bit(section.type_id))
+                .fold(0_u32, |present, bit| present | bit)
+        });
         if cancelled()
             || !emit(record(json!({
                 "record": "catalog",
                 "from": self.window.from.map(|value| value.to_string()),
                 "to": self.window.to.map(|value| value.to_string()),
-                "source_families": source_family_values(self.configured_sources, present_sources),
+                "source_families": source_family_values(
+                    self.configured_sources,
+                    present_sources,
+                    metric_sources,
+                ),
             }))?)
         {
             return Ok(());
@@ -165,7 +192,7 @@ fn section_values(sections: &[kronika_reader::SegmentSection]) -> Vec<Value> {
         .collect()
 }
 
-fn source_family_values(configured: u32, present: u32) -> Vec<Value> {
+fn source_family_values(configured: u32, present: u32, metrics: u32) -> Vec<Value> {
     SOURCE_FAMILIES
         .iter()
         .map(|family| {
@@ -173,17 +200,24 @@ fn source_family_values(configured: u32, present: u32) -> Vec<Value> {
                 "name": family.name,
                 "configured": configured & family.bit != 0,
                 "present": present & family.bit != 0,
+                "metrics_present": metrics & family.bit != 0,
             })
         })
         .collect()
 }
 
-const fn source_bit(type_id: u32) -> Option<u32> {
+pub(super) const fn source_bit(type_id: u32) -> Option<u32> {
     match type_id {
         1_001_001..=1_019_999 | 2_001_001..=2_199_999 => Some(SOURCE_POSTGRESQL),
         1_100_001..=1_299_999 => Some(SOURCE_OS),
         _ => None,
     }
+}
+
+pub(super) fn metric_source_bit(type_id: u32) -> Option<u32> {
+    let bit = source_bit(type_id)?;
+    let is_log = logical_section_name(type_id).is_some_and(|name| name.starts_with("pg_log_"));
+    (!is_log).then_some(bit)
 }
 
 fn source_name(bit: u32) -> Option<&'static str> {

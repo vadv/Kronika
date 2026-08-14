@@ -5,14 +5,12 @@ import test from "node:test"
 import { importModule } from "./import-module.mjs"
 
 const { hasPostgresTelemetry } = await importModule('export { hasPostgresTelemetry } from "../src/source-availability.ts"')
-const data = (postgresqlConfigured, availableSections = [], activities = []) => ({ activities, availableSections, postgresqlConfigured })
+const data = (postgresqlConfigured, postgresqlPresent = false) => ({ postgresqlConfigured, postgresqlPresent })
 
 test("PostgreSQL availability follows configuration or selected-hour telemetry", () => {
   assert.equal(hasPostgresTelemetry(data(false)), false)
-  assert.equal(hasPostgresTelemetry(data(false, ["pg_log_errors"])), false)
   assert.equal(hasPostgresTelemetry(data(true)), true)
-  assert.equal(hasPostgresTelemetry(data(false, ["pg_stat_database"])), true)
-  assert.equal(hasPostgresTelemetry(data(false, [], [{}])), true)
+  assert.equal(hasPostgresTelemetry(data(false, true)), true)
 })
 
 test("the unavailable PostgreSQL route renders Host synchronously", async () => {

@@ -25,7 +25,8 @@ use kronika_registry::{Section, StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use serde_json::Value;
 
-use crate::api::{ApiError, CachePolicy, Prepared};
+use crate::api::{ApiError, CachePolicy, Prepared, context_operations, reset_context_operations};
+use crate::config::SOURCE_OS;
 use crate::encoding::AcceptedEncodings;
 
 const SEGMENT_ID: i64 = 1_709_164_800_000_000;
@@ -112,39 +113,44 @@ impl Fixture {
             .expect("append named diskstats fixture");
     }
 
-    fn append_cgroup_cpu(&mut self, rows: &[(i64, &str, u8, i64)]) {
+    fn append_large_cgroup_cpu(&mut self, rows: usize, selected: usize) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
-        for &(ts, path, scope, usage_usec) in rows {
+        for index in 0..rows {
+            let path = if index == selected {
+                "/collector".to_owned()
+            } else {
+                format!("/tree/cgroup-{index}")
+            };
             let cgroup_path = StrId(
                 interner
                     .intern(path.as_bytes())
-                    .expect("intern cgroup path")
+                    .expect("intern large cgroup path")
                     .get(),
             );
             buffers
                 .push(OsCgroupCpu {
-                    ts: Ts(ts),
+                    ts: Ts(200),
                     cgroup_path,
-                    usage_usec,
-                    user_usec: usage_usec,
+                    usage_usec: i64::try_from(index).expect("fixture index fits i64"),
+                    user_usec: 0,
                     system_usec: 0,
                     throttled_usec: 0,
                     nr_throttled: 0,
                     quota_usec: -1,
                     period_usec: 100_000,
-                    scope,
+                    scope: 3,
                 })
-                .expect("cgroup CPU row fits");
+                .expect("large cgroup CPU row fits");
         }
-        let dictionary = dict::encode(interner.window()).expect("encode cgroup dictionary");
+        let dictionary = dict::encode(interner.window()).expect("encode large cgroup dictionary");
         let part = buffers
             .flush(&dictionary)
-            .expect("encode cgroup CPU fixture")
-            .expect("nonempty cgroup CPU fixture");
+            .expect("encode large cgroup CPU fixture")
+            .expect("nonempty large cgroup CPU fixture");
         self.journal
             .append(self.address.id, &part)
-            .expect("append cgroup CPU fixture");
+            .expect("append large cgroup CPU fixture");
     }
 
     fn append_blob_diskstats(&mut self, bytes: &[u8], reads: i64) {
@@ -894,11 +900,20 @@ impl Fixture {
     }
 
     fn prepare(&self, target: &str, if_none_match: Option<&str>) -> Prepared {
+        self.prepare_with_sources(target, if_none_match, SOURCES)
+    }
+
+    fn prepare_with_sources(
+        &self,
+        target: &str,
+        if_none_match: Option<&str>,
+        sources: u32,
+    ) -> Prepared {
         let (path, query) = target
             .split_once('?')
             .map_or((target, None), |(path, query)| (path, Some(query)));
         let route = crate::route::parse(path, query).expect("valid fixture route");
-        crate::api::prepare(self.root(), SOURCES, route, if_none_match)
+        crate::api::prepare(self.root(), sources, route, if_none_match)
             .expect("prepare fixture resource")
     }
 }
@@ -1686,12 +1701,14 @@ fn finished_index_and_catalog_have_revalidation_contracts_and_source_facts() {
         .expect("OS source family");
     assert_eq!(os["configured"], true);
     assert_eq!(os["present"], true);
+    assert_eq!(os["metrics_present"], true);
     let postgresql = families
         .iter()
         .find(|family| family["name"] == "postgresql")
         .expect("PostgreSQL source family");
     assert_eq!(postgresql["configured"], true);
     assert_eq!(postgresql["present"], false);
+    assert_eq!(postgresql["metrics_present"], false);
 
     let history = fixture.prepare(&target("history", "field=reads"), None);
     assert_eq!(history.meta().cache, CachePolicy::Immutable);
@@ -1699,6 +1716,58 @@ fn finished_index_and_catalog_have_revalidation_contracts_and_source_facts() {
         row_records(&stream(history).expect("finished history")).len(),
         2
     );
+}
+
+#[test]
+fn hour_source_presence_uses_only_rows_inside_the_requested_window() {
+    let mut fixture = Fixture::new();
+    fixture.append_postgres_health_at(100, 0);
+    fixture.finish();
+
+    for (target, expected) in [
+        ("/api/hour?from=100&to=199", true),
+        ("/api/hour?from=200&to=300", false),
+    ] {
+        let records = stream(fixture.prepare_with_sources(target, None, SOURCE_OS))
+            .expect("bounded hour response");
+        let family = records
+            .iter()
+            .find(|record| record["record"] == "catalog")
+            .and_then(|record| record["source_families"].as_array())
+            .and_then(|families| {
+                families
+                    .iter()
+                    .find(|family| family["name"] == "postgresql")
+            })
+            .expect("PostgreSQL source family");
+        assert_eq!(family["configured"], false);
+        assert_eq!(family["present"], expected);
+        assert_eq!(family["metrics_present"], expected);
+    }
+}
+
+#[test]
+fn postgres_log_rows_do_not_claim_selected_hour_metrics() {
+    let mut fixture = Fixture::new();
+    fixture.append_log_error(100);
+    fixture.finish();
+
+    let records =
+        stream(fixture.prepare_with_sources("/api/hour?from=100&to=199", None, SOURCE_OS))
+            .expect("log-only hour response");
+    let family = records
+        .iter()
+        .find(|record| record["record"] == "catalog")
+        .and_then(|record| record["source_families"].as_array())
+        .and_then(|families| {
+            families
+                .iter()
+                .find(|family| family["name"] == "postgresql")
+        })
+        .expect("PostgreSQL source family");
+    assert_eq!(family["configured"], false);
+    assert_eq!(family["present"], true);
+    assert_eq!(family["metrics_present"], false);
 }
 
 #[tokio::test]
@@ -3003,14 +3072,12 @@ fn a_snapshot_keeps_only_the_rows_a_filter_names() {
 
 #[test]
 fn a_cgroup_snapshot_applies_the_exact_path_and_scope_filters() {
+    const ROWS: usize = 50_000;
     let mut fixture = Fixture::new();
-    fixture.append_cgroup_cpu(&[
-        (200, "/collector", 3, 11),
-        (200, "/collector", 4, 22),
-        (200, "/other", 3, 33),
-    ]);
+    fixture.append_large_cgroup_cpu(ROWS, ROWS / 2);
     fixture.finish();
 
+    reset_context_operations();
     let target = format!(
         "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_cgroup_cpu&field=cgroup_path&field=scope&where.cgroup_path=%2Fcollector&where.scope=3"
     );
@@ -3019,6 +3086,38 @@ fn a_cgroup_snapshot_applies_the_exact_path_and_scope_filters() {
 
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["values"], serde_json::json!(["/collector", 3]));
+    let (maximum_chunk, staged, selection_dictionaries) = context_operations();
+    assert_eq!(maximum_chunk, 16);
+    assert_eq!(staged, 1);
+    assert_eq!(selection_dictionaries, 1);
+}
+
+#[test]
+fn a_snapshot_rejects_a_dangling_exact_filter_id() {
+    let mut fixture = Fixture::new();
+    let wanted = kronika_format::StrId::of(b"sda")
+        .expect("fixture filter id is nonzero")
+        .get();
+    let mut buffers = SectionBuffers::new();
+    buffers
+        .push(diskstats_with_device(100, 0, 1, StrId(wanted)))
+        .expect("dangling filter row fits");
+    fixture.append(buffers);
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=os_diskstats&field=minor&where.device=sda"
+    );
+    let error = fixture
+        .prepare(&target, None)
+        .stream(&mut |_record| true, &|| false)
+        .expect_err("dangling requested filter id must fail");
+
+    assert!(matches!(error, ApiError::Unreadable(_)));
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("unresolved dictionary id {wanted}"))
+    );
 }
 
 #[test]
