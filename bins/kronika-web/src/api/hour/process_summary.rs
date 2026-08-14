@@ -146,7 +146,7 @@ struct ExactSum {
 }
 
 impl ExactSum {
-    fn add(&mut self, value: Option<i128>) {
+    const fn add(&mut self, value: Option<i128>) {
         if let Some(value) = value {
             self.value += value;
             self.values += 1;
@@ -221,10 +221,10 @@ impl Summary {
         fields
             .iter()
             .map(|field| match field.name {
-                "processes" => finite(Some(self.processes as f64)),
+                "processes" => count_value(self.processes),
                 "threads" => finite(self.threads.value()),
-                "runnable" => finite(Some(self.runnable as f64)),
-                "postgresql" => finite(Some(self.postgresql as f64)),
+                "runnable" => count_value(self.runnable),
+                "postgresql" => count_value(self.postgresql),
                 "user_cores" => finite(divide(self.utime.value(), self.ticks_per_second)),
                 "system_cores" => finite(divide(self.stime.value(), self.ticks_per_second)),
                 "run_delay_ms_per_second" => {
@@ -264,6 +264,15 @@ fn finite(value: Option<f64>) -> Value {
         .filter(|value| value.is_finite())
         .and_then(serde_json::Number::from_f64)
         .map_or(Value::Null, Value::Number)
+}
+
+fn count_value(value: u64) -> Value {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a host cannot expose 2^53 simultaneous processes"
+    )]
+    let value = value as f64;
+    finite(Some(value))
 }
 
 pub(super) fn with_predecessors(
@@ -395,7 +404,7 @@ fn process_moments(
                     return false;
                 }
                 if let Some(ts) = timestamp(&row) {
-                    moments.entry(ts).or_insert(segment.id());
+                    moments.entry(ts).or_insert_with(|| segment.id());
                     last_by_segment
                         .entry(segment.id())
                         .and_modify(|last: &mut i64| *last = (*last).max(ts))
@@ -420,8 +429,8 @@ fn process_moments(
 fn previous_moments(moments: BTreeMap<i64, i64>) -> BTreeMap<i64, i64> {
     let mut previous = None;
     moments
-        .into_iter()
-        .map(|(ts, _segment_id)| {
+        .into_keys()
+        .map(|ts| {
             let before = previous.replace(ts).unwrap_or(i64::MIN);
             (ts, before)
         })
@@ -441,8 +450,7 @@ fn summaries(
         let Some(last_segment_moment) = moments.last_by_segment.get(&segment.id()).copied() else {
             continue;
         };
-        let mut prior = std::mem::take(&mut previous);
-        let mut next = HashMap::new();
+        let mut state = std::mem::take(&mut previous);
         for (type_id, _rows) in segment.sections() {
             if logical_section_name(type_id) != Some(PROCESS) {
                 continue;
@@ -456,7 +464,6 @@ fn summaries(
                     .collect::<Vec<_>>(),
             );
             let mut connected = true;
-            let mut active: Option<(Identity, Previous)> = None;
             process_visit();
             segment.visit_rows(type_id, &fields, 0, usize::MAX, |_ordinal, row| {
                 if cancelled() {
@@ -471,17 +478,7 @@ fn summaries(
                     return true;
                 };
                 let identity = Identity { pid, starttime };
-                if active
-                    .as_ref()
-                    .is_some_and(|(stored, _)| *stored != identity)
-                {
-                    retain_last(&mut next, active.take(), last_segment_moment);
-                }
-                let before = if let Some((_, stored)) = active {
-                    Some(stored)
-                } else {
-                    prior.remove(&identity)
-                };
+                let before = state.get(&identity).copied();
                 if before.is_some_and(|stored| stored.ts >= ts) {
                     return true;
                 }
@@ -499,36 +496,24 @@ fn summaries(
                 add_row(
                     summary,
                     &row,
-                    counters,
-                    predecessor.map(|stored| stored.counters),
+                    &counters,
+                    predecessor.as_ref().map(|stored| &stored.counters),
                     seconds,
                 );
                 if pg_pids.is_some_and(|pids| pids.contains(&pid)) {
                     summary.postgresql = summary.postgresql.saturating_add(1);
                 }
-                active = Some((identity, Previous { ts, counters }));
+                state.insert(identity, Previous { ts, counters });
                 true
             })?;
-            retain_last(&mut next, active.take(), last_segment_moment);
             if !connected {
                 return Ok(out);
             }
         }
-        previous = next;
+        state.retain(|_identity, stored| stored.ts == last_segment_moment);
+        previous = state;
     }
     Ok(out)
-}
-
-fn retain_last(
-    next: &mut HashMap<Identity, Previous>,
-    active: Option<(Identity, Previous)>,
-    last_segment_moment: i64,
-) {
-    if let Some((identity, stored)) = active
-        && stored.ts == last_segment_moment
-    {
-        next.insert(identity, stored);
-    }
 }
 
 fn ticks_per_second(segment: &Segment) -> Result<Option<f64>, ApiError> {
@@ -559,8 +544,8 @@ fn ticks_per_second(segment: &Segment) -> Result<Option<f64>, ApiError> {
 fn add_row(
     summary: &mut Summary,
     row: &Row,
-    current: Counters,
-    previous: Option<Counters>,
+    current: &Counters,
+    previous: Option<&Counters>,
     seconds: Option<f64>,
 ) {
     summary.processes = summary.processes.saturating_add(1);
@@ -571,23 +556,56 @@ fn add_row(
     summary.resident_kib.add(integer(row.get("rmem_kb")));
     summary.virtual_kib.add(integer(row.get("vmem_kb")));
     summary.swap_kib.add(integer(row.get("vswap_kb")));
-    let previous = previous.unwrap_or_default();
-    summary.utime.add(current.utime, previous.utime, seconds);
-    summary.stime.add(current.stime, previous.stime, seconds);
-    summary
-        .rundelay_ns
-        .add(current.rundelay_ns, previous.rundelay_ns, seconds);
-    summary.nvcsw.add(current.nvcsw, previous.nvcsw, seconds);
-    summary.nivcsw.add(current.nivcsw, previous.nivcsw, seconds);
-    summary.majflt.add(current.majflt, previous.majflt, seconds);
-    summary
-        .read_bytes
-        .add(current.read_bytes, previous.read_bytes, seconds);
-    summary
-        .write_bytes
-        .add(current.write_bytes, previous.write_bytes, seconds);
-    summary.syscr.add(current.syscr, previous.syscr, seconds);
-    summary.syscw.add(current.syscw, previous.syscw, seconds);
+    summary.utime.add(
+        current.utime,
+        previous.and_then(|value| value.utime),
+        seconds,
+    );
+    summary.stime.add(
+        current.stime,
+        previous.and_then(|value| value.stime),
+        seconds,
+    );
+    summary.rundelay_ns.add(
+        current.rundelay_ns,
+        previous.and_then(|value| value.rundelay_ns),
+        seconds,
+    );
+    summary.nvcsw.add(
+        current.nvcsw,
+        previous.and_then(|value| value.nvcsw),
+        seconds,
+    );
+    summary.nivcsw.add(
+        current.nivcsw,
+        previous.and_then(|value| value.nivcsw),
+        seconds,
+    );
+    summary.majflt.add(
+        current.majflt,
+        previous.and_then(|value| value.majflt),
+        seconds,
+    );
+    summary.read_bytes.add(
+        current.read_bytes,
+        previous.and_then(|value| value.read_bytes),
+        seconds,
+    );
+    summary.write_bytes.add(
+        current.write_bytes,
+        previous.and_then(|value| value.write_bytes),
+        seconds,
+    );
+    summary.syscr.add(
+        current.syscr,
+        previous.and_then(|value| value.syscr),
+        seconds,
+    );
+    summary.syscw.add(
+        current.syscw,
+        previous.and_then(|value| value.syscw),
+        seconds,
+    );
 }
 
 fn counters(row: &Row) -> Counters {
@@ -631,14 +649,14 @@ fn timestamp(row: &Row) -> Option<i64> {
     i64_value(row.get("ts"))
 }
 
-fn i32_value(cell: Option<&Cell>) -> Option<i32> {
+const fn i32_value(cell: Option<&Cell>) -> Option<i32> {
     match cell {
         Some(Cell::I32(value)) => Some(*value),
         _ => None,
     }
 }
 
-fn i64_value(cell: Option<&Cell>) -> Option<i64> {
+const fn i64_value(cell: Option<&Cell>) -> Option<i64> {
     match cell {
         Some(Cell::I64(value) | Cell::Ts(value)) => Some(*value),
         _ => None,
@@ -774,11 +792,13 @@ mod tests {
 
     #[test]
     fn all_sixteen_values_have_stable_positions() {
-        let mut summary = Summary::default();
-        summary.processes = 2;
-        summary.runnable = 1;
-        summary.postgresql = 1;
-        summary.ticks_per_second = Some(100.0);
+        let mut summary = Summary {
+            processes: 2,
+            runnable: 1,
+            postgresql: 1,
+            ticks_per_second: Some(100.0),
+            ..Summary::default()
+        };
         summary.threads.add(Some(4));
         summary.resident_kib.add(Some(8));
         summary.utime.add(Some(20), Some(10), Some(5.0));
