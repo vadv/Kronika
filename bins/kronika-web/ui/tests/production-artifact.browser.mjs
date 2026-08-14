@@ -313,6 +313,7 @@ test("expanded uPlot keeps one unobscured close action at responsive widths", { 
           markerCount: markers.reduce((count, marker) => count + Number(marker.dataset.markerCount), 0),
           markerControlOverlap: intersects(markerRect, controlRect),
           markersOverlap,
+          rootAnchor: getComputedStyle(document.documentElement).overflowAnchor,
           rootOverflow: getComputedStyle(document.documentElement).overflow,
           scrollY,
           title: titleRect,
@@ -323,6 +324,7 @@ test("expanded uPlot keeps one unobscured close action at responsive widths", { 
       })()`)
       assert.equal(geometry.actionCount, 1, `${viewport.label}: ${JSON.stringify(geometry)}`)
       assert.equal(geometry.activeIsControl, true, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.equal(geometry.rootAnchor, "none", `${viewport.label}: ${JSON.stringify(geometry)}`)
       assert.equal(geometry.rootOverflow, "hidden", `${viewport.label}: ${JSON.stringify(geometry)}`)
       assert.equal(geometry.bodyOverflow, "hidden", `${viewport.label}: ${JSON.stringify(geometry)}`)
       assert.equal(geometry.scrollY, before.scrollY, `${viewport.label}: ${JSON.stringify(geometry)}`)
@@ -365,7 +367,9 @@ test("expanded uPlot keeps one unobscured close action at responsive widths", { 
       await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"][role="dialog"]') === null`, `${viewport.label} close action`)
       await cdp.waitFor(`document.documentElement.style.overflow === "visible" && document.body.style.overflow === "auto"`, `${viewport.label} scroll restore`)
       await cdp.waitFor(`document.activeElement === document.querySelector('[data-testid="hour-timeline"] .chart-expand')`, `${viewport.label} close focus return`)
+      await settleLayout(cdp)
       assert.equal(await cdp.evaluate("scrollY"), before.scrollY, viewport.label)
+      assert.equal(await cdp.evaluate(`getComputedStyle(document.documentElement).overflowAnchor`), "none", viewport.label)
 
       await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] .chart-expand').click()`)
       await cdp.waitFor(`(() => {
@@ -376,7 +380,9 @@ test("expanded uPlot keeps one unobscured close action at responsive widths", { 
       await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }))`)
       await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"][role="dialog"]') === null`, `${viewport.label} Escape close`)
       await cdp.waitFor(`document.activeElement === document.querySelector('[data-testid="hour-timeline"] .chart-expand')`, `${viewport.label} Escape focus return`)
+      await settleLayout(cdp)
       assert.deepEqual(await cdp.evaluate(`({ body: document.body.style.overflow, root: document.documentElement.style.overflow, scrollY })`), before, viewport.label)
+      assert.equal(await cdp.evaluate(`getComputedStyle(document.documentElement).overflowAnchor`), "none", viewport.label)
     }
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])

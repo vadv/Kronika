@@ -167,6 +167,7 @@ test("expanded charts keep one bounded action and restore both page scroll locks
   assert.doesNotMatch(html, /viewport-fit=cover/)
 
   assert.match(stylesheet, /\.uplot-figure figcaption \{[^}]*display: grid;[^}]*grid-template-columns: minmax\(0, 1fr\) auto auto;/)
+  assert.match(stylesheet, /html \{[^}]*overflow-anchor: none;/)
   assert.match(stylesheet, /\.uplot-expanded figcaption \{[^}]*grid-template-columns: minmax\(0, 1fr\) auto 44px;[^}]*min-height: 44px;/)
   assert.match(stylesheet, /\.uplot-expanded \.chart-expand \{[^}]*height: 44px;[^}]*min-width: 44px;/)
   assert.match(stylesheet, /--chart-marker-end-reserve: 52px/)

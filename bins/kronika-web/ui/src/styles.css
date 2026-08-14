@@ -110,6 +110,7 @@
 }
 
 * { box-sizing: border-box; }
+html { overflow-anchor: none; }
 body {
   background: var(--bg);
   margin: 0;
