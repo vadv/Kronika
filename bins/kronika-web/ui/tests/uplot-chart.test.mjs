@@ -158,6 +158,7 @@ test("expanded charts keep one bounded action and restore both page scroll locks
   assert.match(source, /window\.addEventListener\("wheel", blockPageScroll, \{ passive: false \}\)/)
   assert.match(source, /pagePosition\.current = \{ left: window\.scrollX, top: window\.scrollY \}/)
   assert.match(source, /window\.scrollTo\(pageScrollLeft, pageScrollTop\)/)
+  assert.match(source, /useLayoutEffect\(\(\) => \{[\s\S]*if \(expanded \|\| !returnFocus\.current\) return[\s\S]*opener\.current\?\.focus\(\{ preventScroll: true \}\)[\s\S]*window\.scrollTo\(pagePosition\.current\.left, pagePosition\.current\.top\)/)
   assert.match(source, /active instanceof HTMLElement && shell\.current\?\.contains\(active\)/)
   assert.match(source, /--chart-plot-top/)
   assert.match(source, /getPropertyValue\("--chart-marker-end-reserve"\)/)

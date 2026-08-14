@@ -1,5 +1,5 @@
 import uPlot, { type AlignedData } from "uplot"
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react"
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { DisplayTimeFormatter } from "./display-time"
 import { useDisplayTime } from "./display-time-context"
@@ -231,10 +231,11 @@ export function UPlotChart({
     }
   }, [expanded])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (expanded || !returnFocus.current) return
     returnFocus.current = false
     opener.current?.focus({ preventScroll: true })
+    window.scrollTo(pagePosition.current.left, pagePosition.current.top)
   }, [expanded])
 
   function collapse() {
