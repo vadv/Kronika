@@ -1518,6 +1518,299 @@ test("aggregate relation detail charts exact server history", { timeout: 60_000 
   }
 })
 
+test("chart preference and process summary lifecycle work in the production artifact", { timeout: 60_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const authState = { valid: true }
+  let summaryMode = "initial"
+  const heldSummaries = []
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/catalog") return ndjson(response, [])
+    if (url.pathname === "/api/hour") {
+      const hour = Number(url.searchParams.get("from") ?? HOUR)
+      const section = url.searchParams.get("section")
+      if (section === "os_process_summary") {
+        if (summaryMode === "hold") {
+          heldSummaries.push(response)
+          return
+        }
+        if (summaryMode === "fail") {
+          response.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8" })
+          response.end("{")
+          return
+        }
+        if (summaryMode === "empty") return ndjson(response, [])
+        return ndjson(response, processSummaryRecords(hour, summaryMode === "initial" ? 719 : 2, summaryMode === "initial" ? 719 : 721))
+      }
+      return ndjson(response, section === null ? timelineRecords(hour) : [])
+    }
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
+      const sections = url.searchParams.getAll("section")
+      if (sections.includes("pg_stat_user_tables") || sections.includes("pg_stat_user_indexes")) return ndjson(response, relationRecords(url, "single"))
+      if (sections.includes("os_cpu")) return ndjson(response, systemSnapshotRecords())
+      if (sections.includes("pg_stat_activity")) return ndjson(response, snapshotRecords())
+      return ndjson(response, [])
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("chart browser server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "kronika-chart-browser-"))
+  const browser = launchBrowser(profile)
+  const page = { errors: [], external: [], responses: [] }
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1024 })
+    await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=host.processes&lens=generic` })
+    await cdp.waitFor(`document.querySelector('.process-summary > button strong')?.textContent === "719"`, "719 process-summary rows", 15_000)
+    await cdp.waitFor(`document.querySelector('.process-summary-history .uplot-host canvas') !== null`, "the process-summary chart")
+    await settleLayout(cdp)
+    const shownProcessHeight = await cdp.evaluate(`document.querySelector('.process-table .entity-scroll').getBoundingClientRect().height`)
+    await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
+    await cdp.waitFor(`document.querySelector('.charts-hidden') !== null && document.querySelector('.uplot-figure, .series-chart, .timeline-shell, .timeline-empty') === null`, "all Process charts hidden")
+    await settleLayout(cdp)
+    const hiddenProcessHeight = await cdp.evaluate(`document.querySelector('.process-table .entity-scroll').getBoundingClientRect().height`)
+    assert.ok(hiddenProcessHeight > shownProcessHeight, JSON.stringify({ hiddenProcessHeight, shownProcessHeight }))
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').textContent`), "Show charts")
+    await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
+    await cdp.waitFor(`document.querySelector('.process-summary-history .uplot-host canvas') !== null`, "the restored process-summary chart")
+
+    summaryMode = "hold"
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-next"]').click()`)
+    await waitForRequests(() => heldSummaries.length !== 0)
+    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Loading process totals…" && document.querySelector('.process-summary > button strong')?.textContent === "719"`, "retained totals during reload", 15_000)
+    summaryMode = "good"
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-previous"]').click()`)
+    await cdp.waitFor(`document.querySelector('.process-summary > button strong')?.textContent === "721" && document.querySelector('[data-testid="process-summary-status"]') === null`, "replacement totals after the aborted request", 15_000)
+    for (const held of heldSummaries) if (!held.destroyed) ndjson(held, processSummaryRecords(HOUR + HOUR_US, 2, 999))
+    await delay(100)
+    assert.equal(await cdp.evaluate(`document.querySelector('.process-summary > button strong')?.textContent`), "721")
+
+    summaryMode = "fail"
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-next"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Could not load process totals" && document.querySelector('.process-summary > button strong')?.textContent === "721"`, "summary request failure with retained totals", 15_000)
+    summaryMode = "empty"
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-previous"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "No data in the selected hour" && document.querySelector('.process-summary > button strong')?.textContent === "—"`, "successful empty process totals", 15_000)
+    assert.equal(await cdp.evaluate(`document.querySelector('.process-summary-history') === null`), true)
+
+    await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[1].click()`)
+    await cdp.waitFor(`document.querySelector('.pg-tabs') !== null`, "PostgreSQL navigation")
+    await cdp.evaluate(`([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent === "Activity")).click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"] .entity-row') !== null`, "the activity table", 15_000)
+    await settleLayout(cdp)
+    const shownActivity = await cdp.evaluate(`(() => {
+      const bounds = (selector) => document.querySelector(selector).getBoundingClientRect().height
+      return {
+        layout: bounds('[data-testid="pg-entity-layout"]'),
+        main: bounds('.pg-entity-main'),
+        scroll: bounds('[data-testid="pg-activity-table"] .entity-scroll'),
+        table: bounds('[data-testid="pg-activity-table"]'),
+        workspace: bounds('.workspace'),
+      }
+    })()`)
+    await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
+    await cdp.waitFor(`document.querySelector('.charts-hidden') !== null && document.querySelector('.timeline-shell') === null`, "activity charts hidden")
+    await settleLayout(cdp)
+    const hiddenActivity = await cdp.evaluate(`(() => {
+      const bounds = (selector) => document.querySelector(selector).getBoundingClientRect().height
+      return {
+        layout: bounds('[data-testid="pg-entity-layout"]'),
+        main: bounds('.pg-entity-main'),
+        scroll: bounds('[data-testid="pg-activity-table"] .entity-scroll'),
+        table: bounds('[data-testid="pg-activity-table"]'),
+        workspace: bounds('.workspace'),
+      }
+    })()`)
+    assert.ok(hiddenActivity.scroll > shownActivity.scroll + 100, JSON.stringify({ hiddenActivity, shownActivity }))
+    await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
+    await cdp.waitFor(`document.querySelector('.timeline-shell') !== null`, "activity charts restored")
+    await cdp.evaluate(`([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent === "Tables")).click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"] .entity-row') !== null`, "the relation table", 15_000)
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-row').click()`)
+    await cdp.waitFor(`document.querySelector('.pg-metric-history') !== null`, "the relation history panel")
+    await settleLayout(cdp)
+    const shownRelationHeight = await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-scroll').getBoundingClientRect().height`)
+    await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
+    await cdp.waitFor(`document.querySelector('.charts-hidden') !== null && document.querySelector('.uplot-figure, .series-chart, .timeline-shell, .timeline-empty, .pg-metric-history') === null`, "all relation charts hidden")
+    await settleLayout(cdp)
+    const hiddenRelationHeight = await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-scroll').getBoundingClientRect().height`)
+    assert.ok(hiddenRelationHeight > shownRelationHeight + 100, JSON.stringify({ hiddenRelationHeight, shownRelationHeight }))
+
+    await cdp.evaluate(`document.querySelector('.source-tabs button:first-child').click()`)
+    await cdp.waitFor(`document.querySelector('.section-tabs [role="tab"]:first-child') !== null`, "Host sections")
+    await cdp.evaluate(`document.querySelector('.section-tabs [role="tab"]:first-child').click()`)
+    await cdp.waitFor(`document.querySelector('.system-console') !== null`, "System with charts hidden")
+    assert.equal(await cdp.evaluate(`document.querySelector('.uplot-figure, .series-chart, .timeline-shell, .timeline-empty, .metric-history, .use-history, .system-entity-history') === null`), true)
+    await cdp.evaluate(`document.querySelector('[data-testid="process-tab"]').click()`)
+    await cdp.waitFor(`document.querySelector('.process-table') !== null`, "Processes with charts hidden")
+    assert.equal(await cdp.evaluate(`document.querySelector('.uplot-figure, .series-chart, .timeline-shell, .timeline-empty, .process-summary-history, .process-history') === null`), true)
+    await cdp.evaluate(`([...document.querySelectorAll('.source-tabs button')].find((button) => button.textContent === "Events")).click()`)
+    await cdp.waitFor(`document.querySelector('.events-console') !== null`, "Events with charts hidden")
+    assert.equal(await cdp.evaluate(`document.querySelector('.uplot-figure, .series-chart, .timeline-shell, .timeline-empty') === null`), true)
+
+    await cdp.send("Page.reload")
+    await cdp.waitFor(`document.querySelector('[data-testid="charts-toggle"]')?.textContent === "Show charts" && document.querySelector('.events-console') !== null`, "the persisted hidden preference", 15_000)
+    assert.equal(await cdp.evaluate(`localStorage.getItem("kronika.charts")`), "0")
+    await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
+    await cdp.waitFor(`document.querySelector('.timeline-shell') !== null`, "charts shown again")
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+  } finally {
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await rm(profile, { recursive: true, force: true })
+  }
+})
+
+test("PostgreSQL is unavailable without current telemetry and returns for a stored hour", { timeout: 60_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const authState = { valid: true }
+  const requests = []
+  let historical = false
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    requests.push(requestRecord(request, url))
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/catalog") return ndjson(response, [])
+    if (url.pathname === "/api/hour") return ndjson(response, sourceTimelineRecords(historical))
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
+      const sections = url.searchParams.getAll("section")
+      return ndjson(response, sections.includes("pg_stat_activity") ? snapshotRecords() : systemSnapshotRecords())
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("source browser server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "kronika-source-browser-"))
+  const browser = launchBrowser(profile)
+  const page = { errors: [], external: [], responses: [] }
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1024 })
+    await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.overview` })
+    await cdp.waitFor(`document.querySelector('.system-console') !== null && document.querySelector('.source-tabs button:first-child')?.getAttribute('aria-current') === "page"`, "the synchronous Host destination", 15_000)
+    await cdp.waitFor(`new URL(location.href).searchParams.get('view') === "host.system"`, "the canonical Host address", 15_000)
+    const unavailable = await cdp.evaluate(`(() => {
+      const sourceButtons = document.querySelectorAll('.source-tabs button')
+      return {
+        pgDisabled: sourceButtons[1].disabled,
+        pgPanels: document.querySelectorAll('.pg-tabs, .pg-overview, [data-testid^="pg-"]').length,
+        pgHealth: document.querySelector('.lane-primary')?.textContent.includes('PostgreSQL') ?? false,
+        view: new URL(location.href).searchParams.get('view'),
+      }
+    })()`)
+    assert.deepEqual(unavailable, { pgDisabled: true, pgHealth: false, pgPanels: 0, view: "host.system" })
+    await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "the host CPU cards", 15_000)
+    await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-cpu-composition"] .u-over') !== null`, "the CPU composition history")
+    await cdp.evaluate(`(() => {
+      const plot = document.querySelector('[data-testid="system-cpu-composition"] .u-over')
+      const bounds = plot.getBoundingClientRect()
+      const clientX = bounds.left + (${AT} - ${HOUR}) / ${HOUR_US} * bounds.width
+      const clientY = bounds.top + bounds.height / 2
+      plot.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, clientX, clientY }))
+      plot.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX, clientY }))
+    })()`)
+    await cdp.waitFor(`(() => {
+      const chart = document.querySelector('[data-testid="system-cpu-composition"]')
+      const tooltip = chart?.querySelector('.chart-tooltip')
+      const host = chart?.querySelector('.uplot-host')
+      if (chart === null || tooltip === null || host === null) return false
+      window.__kronikaCpuChart = { axes: chart.querySelectorAll('.u-axis').length, label: host.getAttribute('aria-label'), tooltip: tooltip.textContent }
+      return true
+    })()`, "the CPU composition tooltip")
+    const cpuChart = await cdp.evaluate(`window.__kronikaCpuChart`)
+    assert.equal(cpuChart.axes, 3)
+    for (const label of ["Host CPU used", "Host logical CPUs", "Host user CPU", "Host system CPU", "Host I/O wait", "Host stolen CPU", "Host idle CPU"]) {
+      assert.match(cpuChart.label, new RegExp(label))
+      assert.match(cpuChart.tooltip, new RegExp(label))
+    }
+    assert.equal(await cdp.evaluate(`document.documentElement.scrollWidth <= document.documentElement.clientWidth`), true)
+    const firstPageRequests = requests.slice()
+    assert.equal(firstPageRequests.some(({ path, query }) => path.includes("/snapshot") && new URLSearchParams(query).getAll("section").some((section) => section.startsWith("pg_"))), false)
+
+    historical = true
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.overview` })
+    await cdp.waitFor(`document.querySelector('.pg-tabs') !== null && document.querySelectorAll('.source-tabs button')[1]?.getAttribute('aria-current') === "page"`, "the stored PostgreSQL hour", 15_000)
+    assert.equal(await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[1].disabled`), false)
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+  } finally {
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await rm(profile, { recursive: true, force: true })
+  }
+})
+
+function processSummaryRecords(hour, count, processes) {
+  const fields = [
+    "processes", "threads", "runnable", "postgresql", "user_cores", "system_cores", "run_delay_ms_per_second", "context_switches_per_second",
+    "resident_kib", "virtual_kib", "swap_kib", "major_faults_per_second", "read_bytes_per_second", "write_bytes_per_second", "read_calls_per_second", "write_calls_per_second",
+  ]
+  const values = [processes, processes * 2, 2, 1, 1.5, 0.5, 12, 33, 1024, 2048, 0, 1, 4096, 8192, 3, 4]
+  return [
+    { record: "series_segment", segment: { id: SEGMENT } },
+    layout("0", "os_process_summary", fields),
+    ...Array.from({ length: count }, (_, index) => ({
+      record: "row", type_id: "0", ordinal: String(index), timestamp: String(hour + Math.min(3_595_000_000, (index + 1) * Math.max(5_000_000, Math.floor(3_595_000_000 / count)))), values,
+    })),
+  ]
+}
+
+function sourceTimelineRecords(historical) {
+  const sections = [{ logical_name: "os_cpu", physical_name: "os_cpu", type_id: "1102001", implementation: "linux", source_family: "system", rows: "1", bytes: "128" }]
+  if (historical) sections.push({ logical_name: "pg_stat_activity", physical_name: "pg_stat_activity", type_id: "1001003", implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256" })
+  return [
+    { record: "hour", from: String(HOUR), to: String(HOUR + HOUR_US - 1), available_hours: [String(HOUR)] },
+    { record: "catalog", from: String(HOUR), to: String(HOUR + HOUR_US - 1), source_families: [{ name: "postgresql", configured: false, present: historical }] },
+    { record: "finished_segment", id: SEGMENT, min_ts: String(HOUR), max_ts: String(AFTER_AT), sections },
+    { record: "index", segment: { id: SEGMENT }, logical_name: "health", checksum: null },
+    { record: "point", type_id: "0", series: "overall_health", ts: String(AT), identity: {}, value: 73 },
+    { record: "point", type_id: "0", series: "os_health", ts: String(AT), identity: {}, value: 73 },
+    ...systemIndexRecords(String(AT)),
+  ]
+}
+
 function slowQueryTimelineRecords() {
   return [
     { record: "hour", from: String(HOUR), to: String(HOUR + HOUR_US - 1), available_hours: [String(HOUR)] },
@@ -1661,13 +1954,18 @@ function systemIndexRecords(timestamp) {
 }
 
 function systemSnapshotRecords() {
+  const cpuColumns = ["ts", "cpu_id", "user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "scope"]
   return [
+    { record: "layout", rates: ["user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal"], layout: { type_id: "1102001", logical_name: "os_cpu", columns: cpuColumns.map((name) => ({ name })) } },
+    row("1102001", "cpu-all", [String(AT), -1, 20, 5, 10, 50, 5, 2, 3, 5, 0]),
+    row("1102001", "cpu-0", [String(AT), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+    row("1102001", "cpu-1", [String(AT), 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
     layout("1103001", "os_stat", ["ts", "ctxt", "procs_running", "procs_blocked"]),
     row("1103001", "1", [String(AT), 1_234_567, 3, 1]),
     layout("1105001", "os_loadavg", ["ts", "load1", "load5", "load15", "running", "total"]),
     row("1105001", "2", [String(AT), 1.25, 1.1, 0.9, 3, 214]),
-    layout("1104001", "os_meminfo", ["ts", "mem_available", "mem_total", "cached", "swap_free", "swap_total"]),
-    row("1104001", "3", [String(AT), 8_388_608, 16_777_216, 4_194_304, 1_048_576, 2_097_152]),
+    layout("1104001", "os_meminfo", ["ts", "mem_available", "mem_total", "mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim", "swap_free", "swap_total"]),
+    row("1104001", "3", [String(AT), 8_388_608, 16_777_216, 1_048_576, 4_194_304, 131_072, 5_242_880, 524_288, 262_144, 1_048_576, 2_097_152]),
     layout("1107001", "os_psi", ["ts", "resource", "some_avg10"]),
     row("1107001", "4", [String(AT), 0, 2.5]),
     row("1107001", "5", [String(AT), 1, 1.2]),

@@ -3,6 +3,7 @@ import { Copy, X } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 
 import { acceptResponse, loadSeries, loadSnapshot, type DataRow, type HourData } from "./api"
+import { ChartOnly } from "./chart-visibility"
 import { useDisplayTime } from "./display-time-context"
 import { EntityTable, type EntityColumn, type TableOrder } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
@@ -188,10 +189,10 @@ function RelationDetail({ cursor, hour, lens, locale, onClose, onCursor, onNavig
     <header><h2>{relationRowLabel(row)}</h2><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
     {linked !== null && <div className="lens-tabs"><button data-testid="pg-relation-link" onClick={() => onNavigate(linked)} type="button">{t(row.logicalName === "pg_stat_user_tables" ? "pg.relation.indexes" : "pg.relation.table")}</button></div>}
     {drill !== null && <div className="lens-tabs"><button data-testid="pg-relation-drill" onClick={() => onNavigate(drill)} type="button">{t(row.relation?.group === "database" ? "pg.relation.level.schema" : row.logicalName === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}</button></div>}
-    {historyField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history">
+    <ChartOnly>{historyField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history">
       <div aria-label={t("system.history")} className="process-history-selector" role="group">{chartColumns.map((column) => <button aria-pressed={historyField === column.field} data-testid={`pg-relation-chart-${column.field}`} key={column.field} onClick={() => setHistoryField(column.field)} type="button">{t(column.label)}</button>)}</div>
       <SeriesChart cursor={cursor} format={chartFormat(historyColumn.kind)} hour={hour} label={t(historyColumn.label)} locale={locale} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} unit={chartUnit(historyColumn, t("unit.per_second"))} />
-    </section>}
+    </section>}</ChartOnly>
     <dl>{columns.map((column) => {
       const label = t(column.label)
       return <div key={column.field}><dt><span>{column.help === undefined ? label : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}</span></dt><dd>{scanValue(row, column, locale, t)}</dd></div>

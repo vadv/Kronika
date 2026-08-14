@@ -169,6 +169,12 @@ test("health metrics remain three exact series", () => {
     ["postgres_health", [77]],
   ])
   assert.equal(health.threshold, 50)
+
+  const osOnly = helpers.healthTimelineSeries([
+    { logicalName: "health", ordinal: "3", segmentId: "c", timestamp: 300, typeId: "0", values: { os_health: 73, overall_health: 73 } },
+  ])
+  assert.deepEqual(osOnly.series.map(({ field }) => field), ["overall_health", "os_health"])
+  assert.equal(osOnly.series.some(({ field }) => field === "postgres_health"), false)
 })
 
 test("the selected lane owns exact heterogeneous timestamps including null observations", () => {

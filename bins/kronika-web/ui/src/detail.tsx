@@ -3,6 +3,7 @@ import { useMemo, useState, type ReactNode } from "react"
 
 import type { Cell, DataRow } from "./api"
 import { buildMetricSamples } from "./chart"
+import { ChartOnly } from "./chart-visibility"
 import { useDisplayTime } from "./display-time-context"
 import { LabelHelp, type Translate } from "./help"
 import {
@@ -149,7 +150,7 @@ export function DetailDock({
         <DetailField help="col.pid.help" label="col.pid.label" t={t} value={identifier(value(process, "pid"))} />
         {LENS_FIELDS[lens].filter((field) => field.id !== "command" && field.id !== "pid" && field.field !== undefined && value(process, field.field) !== null).map((field) => <DetailField help={field.help} key={field.id} label={field.label} t={t} value={<CellValue field={field} linked={false} locale={locale} row={process} t={t} ticksPerSecond={ticksPerSecond} />} />)}
       </dl>
-      <section aria-label={t(`lens.${lens}`)} className="process-history" data-testid="process-history">
+      <ChartOnly><section aria-label={t(`lens.${lens}`)} className="process-history" data-testid="process-history">
         <div aria-label={t(`lens.${lens}`)} className="process-history-selector" role="group">
           {availableHistory.map((series) => (
             <button
@@ -177,7 +178,7 @@ export function DetailDock({
             unit={selectedHistory.unit ?? processChartUnit(selectedHistory.kind, t, ticksPerSecond)}
           />
         )}
-      </section>
+      </section></ChartOnly>
 
       {activity !== null && <section className="pg-section">
         <div className="pg-title">

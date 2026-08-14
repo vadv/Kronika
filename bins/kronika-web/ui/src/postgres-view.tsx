@@ -4,6 +4,7 @@ import { registry } from "kronika:registry"
 
 import type { DataRow, Finding, HourData, SnapshotRows } from "./api"
 import { buildMetricSamples } from "./chart"
+import { ChartOnly } from "./chart-visibility"
 import { contextMatches, contextualRows, type EntityContext } from "./entity-context"
 import { createDisplayTimeFormatter, type DisplayTimeFormatter } from "./display-time"
 import { useDisplayTime } from "./display-time-context"
@@ -221,7 +222,7 @@ export function PostgresView({
   }, [data.availableSections, onSection, section])
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane={section === "statements" || section === "plans" ? "pg_running" : section === "activity" || section === "locks" ? "pg_waiting" : "health"} shownAt={shownAt} t={t} />
+    <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane={section === "statements" || section === "plans" ? "pg_running" : section === "activity" || section === "locks" ? "pg_waiting" : "health"} shownAt={shownAt} t={t} /></ChartOnly>
     <nav aria-label={t("pg.sections")} className="pg-tabs">
       {TABS.map((tab) => {
         const enabled = tab.id === "plans" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)
@@ -374,7 +375,7 @@ function PlanInfo({ cursor, data, hour, locale, onCursor, t }: { readonly cursor
       <div><dt>{t("pg.field.dealloc.label")}</dt><dd>{dealloc === null ? "—" : measure(dealloc, locale, t("unit.per_second"))}</dd></div>
       <div><dt>{t("pg.field.stats_reset.label")}</dt><dd>{display(reset, timestamp("stats_reset"), locale, t)}</dd></div>
     </dl>
-    <SeriesChart cursor={cursor} hour={hour} label={t("pg.field.dealloc.label")} locale={locale} onCursor={onCursor} points={history ?? []} scale="nonnegative" unit={t("unit.per_second")} />
+    <ChartOnly><SeriesChart cursor={cursor} hour={hour} label={t("pg.field.dealloc.label")} locale={locale} onCursor={onCursor} points={history ?? []} scale="nonnegative" unit={t("unit.per_second")} /></ChartOnly>
   </section>
 }
 
@@ -410,10 +411,10 @@ function OverviewActivityHistory({ cursor, data, hour, locale, onCursor, t }: { 
   const running = data.lanePoints.filter(({ lane }) => lane === "pg_running")
   const waiting = data.lanePoints.filter(({ lane }) => lane === "pg_waiting")
   if (running.length === 0 && waiting.length === 0) return null
-  return <section className="pg-overview-section" data-testid="pg-overview-activity-history">
+  return <ChartOnly><section className="pg-overview-section" data-testid="pg-overview-activity-history">
     <h2>{t("pg.overview.activity_history")}</h2>
     <SeriesChart cursor={cursor} hour={hour} label={t("pg.overview.running")} locale={locale} onCursor={onCursor} points={running} scale="nonnegative" second={waiting} secondLabel={t("pg.overview.waiting")} unit="count" />
-  </section>
+  </section></ChartOnly>
 }
 
 export function walStoragePoints(rows: readonly DataRow[]): readonly ChartPoint[] {
@@ -432,10 +433,10 @@ function WalStorage({ cursor, hour, locale, onCursor, row, t }: { readonly curso
     })
     return () => controller.abort()
   }, [hour, row])
-  return <section className="pg-overview-section" data-testid="pg-wal-storage">
+  return <ChartOnly><section className="pg-overview-section" data-testid="pg-wal-storage">
     <h2><LabelHelp helpKey="pg.wal_storage.help" labelKey="pg.wal_storage.label" t={t} /></h2>
     <SeriesChart cursor={cursor} format={humanBytes} hour={hour} label={t("pg.wal_storage.history")} locale={locale} onCursor={onCursor} points={history} scale="nonnegative" unit="B" />
-  </section>
+  </section></ChartOnly>
 }
 
 function OverviewMetrics({ cursor, hour, locale, logicalName, onCursor, row, t }: { readonly cursor: number; readonly hour: number; readonly locale: Locale; readonly logicalName: string; readonly onCursor: (timestamp: number) => void; readonly row: DataRow; readonly t: Translate }) {
@@ -451,10 +452,10 @@ function OverviewMetrics({ cursor, hour, locale, logicalName, onCursor, row, t }
   const history = usePgMetricHistory(hour, row, metricField, selectedColumn)
   return <section className="pg-overview-section">
     <h2>{t(overviewSectionKey(logicalName))}</h2>
-    {selectedColumn !== undefined && <section className="process-history pg-metric-history">
+    <ChartOnly>{selectedColumn !== undefined && <section className="process-history pg-metric-history">
       <div aria-label={t("system.history")} className="process-history-selector" role="group">{chartColumns.map((column) => <button aria-pressed={metricField === column.field} data-testid={`pg-overview-chart-${column.field}`} key={column.field} onClick={() => setMetricField(column.field)} type="button">{t(overviewFieldKey(column.field))}</button>)}</div>
       <SeriesChart cursor={cursor} format={chartFormat(selectedColumn.kind)} hour={hour} label={t(overviewFieldKey(selectedColumn.field))} locale={locale} onCursor={onCursor} points={history ?? []} scale={chartScale(selectedColumn)} unit={chartUnit(selectedColumn, t("unit.per_second"))} />
-    </section>}
+    </section>}</ChartOnly>
     <dl>{registryCardFields(row).map(([field, cell]) => <div key={field}><dt><span>{t(overviewFieldKey(field))}</span></dt><dd>{overviewValue(cell, field, locale, time)}</dd></div>)}</dl>
   </section>
 }
@@ -669,10 +670,10 @@ function PgDetail({ allRows, columns, cursor, historyField, hour, locale, onClos
   const fields = columns.filter((column) => column.field !== textField)
   return <aside className="pg-detail" data-testid="pg-detail">
     <header><div><span>{overview ? t(overviewSectionKey(section)) : section === "pg_stat_progress_vacuum" ? section : t(`pg.section.${sectionName(section)}`)}</span><h2>{detailTitle(row, section, t)}</h2></div><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
-    {activeMetricField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history">
+    <ChartOnly>{activeMetricField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history">
       <div aria-label={t("system.history")} className="process-history-selector" role="group">{chartColumns.map((column) => <button aria-pressed={activeMetricField === column.field} data-testid={`pg-chart-${column.field}`} key={column.field} onClick={() => setMetricField(column.field)} type="button">{t(column.label)}</button>)}</div>
       <SeriesChart cursor={cursor} hour={hour} label={t(historyColumn.label)} locale={locale} format={chartFormat(historyColumn.kind)} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} unit={chartUnit(historyColumn, t("unit.per_second"))} />
-    </section>}
+    </section>}</ChartOnly>
     {exactText !== null && <section className="query-block"><span>{t(section === "pg_store_plans" ? "pg.plan.label" : "pg.query.label")}<button aria-label={t("common.raw")} className="copy-raw" onClick={() => void navigator.clipboard?.writeText(exactText)} type="button"><Copy aria-hidden="true" size={12} /></button></span><pre data-testid={section === "pg_store_plans" ? "pg-exact-plan" : "pg-exact-query"}>{exactText}</pre></section>}
     <dl>{fields.filter((column) => told(value(row, column.field))).map((column) => <div key={column.field}><dt><span>{column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}</span></dt><dd>{display(value(row, column.field), column, locale, t)}</dd></div>)}</dl>
   </aside>

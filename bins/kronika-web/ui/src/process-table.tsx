@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, type Dispatch } from "react"
 
 import { acceptResponse, loadSeries, type Cell, type DataRow, type Finding } from "./api"
 import { buildMetricSamples } from "./chart"
+import { ChartOnly } from "./chart-visibility"
 import { EntityTable, type EntityColumn, type TableOrder } from "./entity-table"
 import type { Translate } from "./help"
 import {
@@ -103,25 +104,46 @@ export const PROCESS_SUMMARY_METRICS: Readonly<Record<Lens, readonly ProcessSumm
 
 export const PROCESS_SUMMARY_FIELDS: readonly string[] = Object.values(PROCESS_SUMMARY_METRICS).flatMap((metrics) => metrics.map(({ field }) => field))
 
-export function ProcessSummary({ cursor, hour, lens, locale, onCursor, t }: {
+export interface ProcessSummaryState {
+  readonly history: readonly DataRow[]
+  readonly status: "loading" | "ready" | "empty" | "error"
+}
+
+export type ProcessSummaryAction =
+  | { readonly type: "loading" | "error" }
+  | { readonly type: "loaded"; readonly rows: readonly DataRow[] }
+
+export const EMPTY_PROCESS_SUMMARY: ProcessSummaryState = { history: [], status: "loading" }
+
+export function processSummaryReducer(state: ProcessSummaryState, action: ProcessSummaryAction): ProcessSummaryState {
+  return action.type === "loaded"
+    ? { history: action.rows, status: action.rows.length === 0 ? "empty" : "ready" }
+    : { ...state, status: action.type }
+}
+
+export function ProcessSummary({ cursor, dispatch, hour, lens, locale, onCursor, state, t }: {
   readonly cursor: number
+  readonly dispatch: Dispatch<ProcessSummaryAction>
   readonly hour: number
   readonly lens: Lens
   readonly locale: Locale
   readonly onCursor: (timestamp: number) => void
+  readonly state: ProcessSummaryState
   readonly t: Translate
 }) {
   const metrics = PROCESS_SUMMARY_METRICS[lens]
   const [selected, setSelected] = useState(metrics[0]!.field)
-  const [history, setHistory] = useState<readonly DataRow[]>([])
+  const { history, status } = state
   const active = metrics.find(({ field }) => field === selected) ?? metrics[0]!
   useEffect(() => {
     const controller = new AbortController()
-    setHistory([])
-    acceptResponse(loadSeries(hour, "os_process_summary", {}, PROCESS_SUMMARY_FIELDS, controller.signal), controller.signal, setHistory)
+    dispatch({ type: "loading" })
+    acceptResponse(loadSeries(hour, "os_process_summary", {}, PROCESS_SUMMARY_FIELDS, controller.signal), controller.signal,
+      (rows) => dispatch({ type: "loaded", rows }), () => dispatch({ type: "error" }))
     return () => controller.abort()
   }, [hour])
   const activePoints = useMemo(() => processSummaryPoints(history, active), [active, history])
+  const statusKey = status === "loading" ? "process.summary.loading" : status === "error" ? "process.summary.error" : status === "empty" ? "status.no_data" : null
   return <section aria-label={t("process.summary.title")} className="process-summary metric-grid">
     {metrics.map((metric) => {
       const output = processSummaryOutput(readingAt(processSummaryPoints(history, metric), cursor), metric, locale, t)
@@ -129,9 +151,10 @@ export function ProcessSummary({ cursor, hour, lens, locale, onCursor, t }: {
         <span>{t(metric.key)}</span><strong>{output}</strong>
       </button>
     })}
-    <div className="process-summary-history">
+    {statusKey !== null && <p aria-live="polite" className="process-summary-status" data-testid="process-summary-status">{t(statusKey)}</p>}
+    <ChartOnly>{history.length !== 0 && <div className="process-summary-history">
       <SeriesChart cursor={cursor} empty={t("status.no_data")} format={processSummaryFormat(active, t)} hour={hour} label={t(active.key)} locale={locale} onCursor={onCursor} points={activePoints} unit={processSummaryUnit(active, locale, t)} />
-    </div>
+    </div>}</ChartOnly>
   </section>
 }
 

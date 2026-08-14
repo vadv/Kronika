@@ -153,6 +153,15 @@ The collector decides at collection time whether it is on a VM or inside a
 container, and records the answer in the `instance_metadata` section that every
 segment carries. It does not guess, and web does not re-derive it.
 
+On each cgroup collection tick, `os_cgroup_context` records cgroup version, the
+collector's exact CPU, memory, and I/O paths from `/proc/self/cgroup`, and the
+effective cpuset CPU count when the matching kernel file is usable. Missing
+controllers and unusable cpuset data remain `null`. A controller path also stays
+`null` when the stored layout cannot represent every operand shown by web; a
+missing counter or composition field is never turned into zero. This one-row
+context selects the collector's rows from the bounded cgroup tables; a host CPU
+count or host `/proc` value never substitutes for cgroup capacity or use.
+
 Where it runs decides which pressure rows describe it: host-scoped
 `/proc/pressure` for a machine, and pressure from its own cgroup for a
 container. Every `os_psi` row records that scope. The current procfs collector
@@ -439,14 +448,46 @@ The interface covers one selected calendar hour. Host contains dense System
 metric groups and virtualized Processes lenses; PostgreSQL contains Overview,
 Activity, Statements, Locks and Databases whenever their sections are present.
 Events expands the same findings drawn on the shared healthline. The timeline
-always spans the complete hour, leaves gaps blank and drives every view with one
-cursor. Marker shape identifies log events and threshold crossings.
+always spans the complete hour, does not connect missing periods and drives
+every view with one cursor. Marker shape identifies log events and threshold
+crossings.
 
-System tables contain only entities such as devices, mounts, interfaces and CPU
-topology. Selecting a metric opens its one-hour history. A selected Linux
-process links to the nearest `pg_stat_activity` data by exact PID and shows the
-PostgreSQL PID, database, role, application, client, state, wait, query and
-times. The locale switch is immediate and persists locally.
+System presents host CPU from `/proc/stat` as user plus nice, system,
+interrupts, I/O wait, stolen, and idle shares. Used core equivalents exclude
+idle and I/O wait; available host capacity is the recorded online logical CPU
+count. CPU history plots these shares together with used and available core
+equivalents on labelled scales. A collector cgroup is a separate table: used,
+user, and system core equivalents come from cgroup counter deltas, and capacity
+is the smaller of a finite quota and an effective cpuset when both exist. It is
+`null` when neither exists.
+
+Host memory uses non-overlapping anonymous, file-cache-plus-buffer,
+reclaimable-slab, unreclaimable-slab, free, and residual categories. The
+kernel's available-memory estimate is shown separately because it overlaps
+reclaimable memory. Memory history plots the non-overlapping categories, total,
+and the separate available estimate together with exact units. Collector-cgroup
+memory separately shows current and finite limit, anonymous, file, slab, other
+kernel, and residual charged memory. Slab is subtracted from kernel memory
+before both are displayed.
+
+System tables contain devices, the collector cgroup, mounts, interfaces and CPU
+topology. Block devices are identified by `major:minor`. Average read and write
+latency is `delta(operation_time_ms) / delta(completed_operations)` and is
+`null` without a usable predecessor or when the operation delta is zero. Host
+I/O PSI stays explicitly host-wide and is not presented as device latency;
+cgroup I/O throughput and operations remain separate from host diskstats.
+Selecting a metric opens its one-hour history.
+
+A persisted local preference can remove every large chart panel from the layout,
+so tables immediately use the released viewport height. Process-summary loads
+retain the last successful rows and distinguish loading, request failure, and a
+successful empty result. PostgreSQL navigation and visuals are absent when the
+selected current data has PostgreSQL disabled; a historical hour that contains
+PostgreSQL telemetry remains available, and disabled PostgreSQL leaves overall
+health equal to OS health. A selected Linux process links to the nearest
+`pg_stat_activity` data by exact PID and shows the PostgreSQL PID, database,
+role, application, client, state, wait, query and times. Locale changes are
+immediate and persist locally.
 
 ### Segment resources
 

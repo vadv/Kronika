@@ -4,7 +4,7 @@ import test from "node:test"
 
 import { importModule, registryPlugin } from "./import-module.mjs"
 
-const helpers = await importModule('export { LENS_FIELDS, PROCESS_SUMMARY_FIELDS, PROCESS_SUMMARY_METRICS, processSummaryFormat, processSummaryOutput, processSummaryPoints, processSummaryUnit } from "../src/process-table.tsx"', { plugins: [registryPlugin([])] })
+const helpers = await importModule('export { LENS_FIELDS, PROCESS_SUMMARY_FIELDS, PROCESS_SUMMARY_METRICS, processSummaryFormat, processSummaryOutput, processSummaryPoints, processSummaryReducer, processSummaryUnit } from "../src/process-table.tsx"', { plugins: [registryPlugin([])] })
 const { LENS_FIELDS } = helpers
 
 test("process lenses keep identity first, lens metrics next, and state last", () => {
@@ -72,4 +72,13 @@ test("process summary charts preserve absent, null, zero, storage and human unit
   assert.equal(helpers.processSummaryUnit(metric("processes"), "en", t), "count")
   assert.equal(helpers.processSummaryUnit(metric("user_cores"), "en", t), "cores")
   assert.equal(helpers.processSummaryUnit(metric("run_delay_ms_per_second"), "en", t), "ms/s")
+})
+
+test("process summary request states retain good rows until a successful replacement", () => {
+  const rows = [{ logicalName: "os_process_summary", ordinal: "1", segmentId: "a", timestamp: 1, typeId: "0", values: { processes: 719 } }]
+  const ready = helpers.processSummaryReducer({ history: [], status: "loading" }, { type: "loaded", rows })
+  assert.deepEqual(ready, { history: rows, status: "ready" })
+  assert.deepEqual(helpers.processSummaryReducer(ready, { type: "loading" }), { history: rows, status: "loading" })
+  assert.deepEqual(helpers.processSummaryReducer(ready, { type: "error" }), { history: rows, status: "error" })
+  assert.deepEqual(helpers.processSummaryReducer(ready, { type: "loaded", rows: [] }), { history: [], status: "empty" })
 })

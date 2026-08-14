@@ -14,7 +14,7 @@ export interface RecordedPoint {
 }
 
 export interface RecordedSeries {
-  readonly color: "cyan" | "amber" | "violet"
+  readonly color: "cyan" | "amber" | "violet" | "green" | "red" | "gray" | "blue" | "rose"
   readonly id: string
   readonly label: string
   readonly points: readonly RecordedPoint[]
@@ -446,7 +446,7 @@ function chartOptions(
           const number = frame.data[ordinal + 1]?.[dataIndex]
           if (typeof number !== "number") continue
           const y = chart.valToPos(number, scaleKey(series[ordinal]!), true)
-          context.fillStyle = color(series[ordinal]!.color === "cyan" ? "--accent" : series[ordinal]!.color === "amber" ? "--warn" : "--event")
+          context.fillStyle = color(chartColor(series[ordinal]!.color))
           context.beginPath()
           context.arc(x, y, 3.5 * uPlot.pxRatio, 0, Math.PI * 2)
           context.fill()
@@ -487,12 +487,23 @@ function chartOptions(
       ...series.map((line, index) => ({
         label: line.label,
         scale: scaleKey(line),
-        stroke: color(line.color === "cyan" ? "--accent" : line.color === "amber" ? "--warn" : "--event"),
+        stroke: color(chartColor(line.color)),
         width: 1.6,
         points: { filter: [...(frame.isolated.get(index + 1) ?? [])], show: true, size: 5 },
       })),
     ],
   }
+}
+
+function chartColor(tone: RecordedSeries["color"]): string {
+  if (tone === "cyan") return "--accent"
+  if (tone === "amber") return "--warn"
+  if (tone === "violet") return "--event"
+  if (tone === "green") return "--ok"
+  if (tone === "red") return "--bad"
+  if (tone === "blue") return "--accent2"
+  if (tone === "rose") return "--bad-edge"
+  return "--fg3"
 }
 
 export function axisTimeLabel(timestamp: number, time: Pick<DisplayTimeFormatter, "axis">): string {

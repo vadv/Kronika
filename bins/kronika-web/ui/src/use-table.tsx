@@ -1,5 +1,7 @@
-import type { LanePoint } from "./api"
 import { useEffect, useMemo, useState } from "react"
+
+import type { LanePoint } from "./api"
+import { ChartOnly } from "./chart-visibility"
 import type { Translate } from "./help"
 import { humanBytes, humanPercent, measure, type Locale } from "./model"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
@@ -112,7 +114,7 @@ export function UseTable({
         </span>
       })}
     </div>)}
-    {selected !== undefined && <section className="use-history" data-testid="use-history">
+    <ChartOnly>{selected !== undefined && <section className="use-history" data-testid="use-history">
       <SeriesChart
         cursor={cursor}
         empty={t("status.no_data")}
@@ -127,7 +129,7 @@ export function UseTable({
         secondLabel={selected.cell.second === undefined ? undefined : t(`use.lane.${selected.cell.second}`)}
         unit={cellUnit(selected.cell.kind, locale)}
       />
-    </section>}
+    </section>}</ChartOnly>
   </section>
 }
 

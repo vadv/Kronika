@@ -3,6 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { Cell, DataRow, Finding, HourData } from "./api"
+import { ChartOnly } from "./chart-visibility"
 import { useDisplayTime } from "./display-time-context"
 import {
   findingCategory,
@@ -95,7 +96,7 @@ export function EventsView({
     : scope.length
   const omitted = scope === null ? Math.max(0, original - data.findings.length) : 0
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane="health" shownAt={shownAt} t={t} />
+    <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane="health" shownAt={shownAt} t={t} /></ChartOnly>
     <section className="events-console">
       <header className="events-tools">
         <div className="event-filters" role="group" aria-label={t("events.filters")}>
@@ -162,7 +163,7 @@ function FindingDetail({ cursor, data, finding, history, hour, locale, onCursor,
       </section>}
       <dl>{findingDetailFields(row, finding).map(([field, cell]) => <div key={field}><dt>{eventFieldLabel(field, t)}</dt><dd>{eventValue(finding, field, cell, locale, t)}</dd></div>)}</dl>
     </>}
-    {metric.field !== null && points.some(({ value }) => typeof value === "number" && Number.isFinite(value)) && <SeriesChart
+    <ChartOnly>{metric.field !== null && points.some(({ value }) => typeof value === "number" && Number.isFinite(value)) && <SeriesChart
       cursor={cursor}
       format={(number, place) => formatMetric(number, metric.unit, place, t)}
       hour={hour}
@@ -172,7 +173,7 @@ function FindingDetail({ cursor, data, finding, history, hour, locale, onCursor,
       points={points}
       scale={metric.unit === "percent" || finding.logicalName === "health" ? "percent" : "nonnegative"}
       unit={finding.logicalName === "health" ? "%" : metricUnit(metric.unit, locale)}
-    />}
+    />}</ChartOnly>
   </aside>
 }
 

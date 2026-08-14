@@ -3,12 +3,14 @@ import { useEffect, useMemo, useState } from "react"
 
 import { acceptResponse, fieldNameForLocator, loadSeries, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
 import { buildMetricSamples } from "./chart"
+import { ChartOnly } from "./chart-visibility"
 import { contextualRows, type EntityContext } from "./entity-context"
 import { EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import { asNumber, humanBytes, humanPercent, measure, rawText, shownMoment, snapshot, value, type Locale } from "./model"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
+import { UPlotChart, type RecordedSeries } from "./uplot-chart"
 import { UseTable } from "./use-table"
 
 interface MetricSpec {
@@ -19,8 +21,16 @@ interface MetricSpec {
   readonly section?: string
   readonly field?: string
   readonly derive?:
-    | "cpu_busy"
-    | "mem_available_percent"
+    | "cpu_user"
+    | "cpu_system"
+    | "cpu_irq"
+    | "cpu_iowait"
+    | "cpu_steal"
+    | "cpu_idle"
+    | "cpu_used_cores"
+    | "cpu_capacity"
+    | "mem_file_cache"
+    | "mem_other"
     | "filesystem_free_min"
     | "device_count"
     | "device_active_io"
@@ -35,6 +45,12 @@ interface MetricSpec {
   readonly unit: string
 }
 
+interface SystemEntityColumn extends EntityColumn {
+  readonly chartable?: boolean
+  readonly historyFields?: readonly string[]
+  readonly points?: (rows: readonly DataRow[]) => readonly ChartPoint[]
+}
+
 interface RegistryColumn {
   readonly class: "cumulative" | "gauge" | "label" | "timestamp"
   readonly name: string
@@ -45,6 +61,7 @@ interface RegistryColumn {
 export function metricChartUnit(spec: MetricSpec, locale: Locale): string {
   if (spec.unit === "%") return "%"
   if (spec.unit === " KiB") return "KiB"
+  if (spec.unit === " cores") return locale === "ru" ? "ядра" : "cores"
   if (spec.unit === " B") return locale === "ru" ? "байты/с" : "bytes/s"
   if (spec.id === "network_errors" || spec.id === "network_drops") return locale === "ru" ? "1/с" : "1/s"
   if (metricClass(spec) === "cumulative") return locale === "ru" ? "1/с" : "1/s"
@@ -64,7 +81,14 @@ export interface EntityHistoryRequest extends MetricHistoryRequest {
 
 export const SYSTEM_METRICS: readonly MetricSpec[] = [
   metric("health", "cpu", "system.metric.health", "health", "os_health", "%"),
-  derivedMetric("cpu_busy", "cpu", "system.metric.cpu_busy", "os_cpu_busy_percent", "cpu_busy", "%"),
+  derivedMetric("cpu_used_cores", "cpu", "system.metric.cpu_used_cores", "cpu_used_cores", "cpu_used_cores", " cores"),
+  derivedMetric("cpu_capacity", "cpu", "system.metric.cpu_capacity", "cpu_capacity", "cpu_capacity", " cores"),
+  derivedMetric("cpu_user", "cpu", "system.metric.cpu_user", "cpu_user", "cpu_user", "%"),
+  derivedMetric("cpu_system", "cpu", "system.metric.cpu_system", "cpu_system", "cpu_system", "%"),
+  derivedMetric("cpu_irq", "cpu", "system.metric.cpu_irq", "cpu_irq", "cpu_irq", "%"),
+  derivedMetric("cpu_iowait", "cpu", "system.metric.cpu_iowait", "cpu_iowait", "cpu_iowait", "%"),
+  derivedMetric("cpu_steal", "cpu", "system.metric.cpu_steal", "cpu_steal", "cpu_steal", "%"),
+  derivedMetric("cpu_idle", "cpu", "system.metric.cpu_idle", "cpu_idle", "cpu_idle", "%"),
   metric("procs_running", "cpu", "system.metric.procs_running", "os_stat", "procs_running", ""),
   metric("procs_blocked", "cpu", "system.metric.procs_blocked", "os_stat", "procs_blocked", ""),
   metric("context_switches", "cpu", "system.metric.context_switches", "os_stat", "ctxt", ""),
@@ -73,10 +97,14 @@ export const SYSTEM_METRICS: readonly MetricSpec[] = [
   metric("load15", "load", "system.metric.load15", "os_loadavg", "load15", ""),
   metric("runnable", "load", "system.metric.runnable", "os_loadavg", "running", ""),
   metric("tasks", "load", "system.metric.tasks", "os_loadavg", "total", ""),
-  derivedMetric("mem_available_percent", "memory", "system.metric.mem_available_percent", "os_mem_available_percent", "mem_available_percent", "%"),
   metric("mem_available", "memory", "system.metric.mem_available", "os_meminfo", "mem_available", " KiB"),
   metric("mem_total", "memory", "system.metric.mem_total", "os_meminfo", "mem_total", " KiB"),
-  metric("cached", "memory", "system.metric.cached", "os_meminfo", "cached", " KiB"),
+  metric("mem_anon", "memory", "system.metric.mem_anon", "os_meminfo", "anon_pages", " KiB"),
+  derivedMetric("mem_file_cache", "memory", "system.metric.mem_file_cache", "mem_file_cache", "mem_file_cache", " KiB"),
+  metric("mem_s_reclaimable", "memory", "system.metric.mem_s_reclaimable", "os_meminfo", "s_reclaimable", " KiB"),
+  metric("mem_s_unreclaim", "memory", "system.metric.mem_s_unreclaim", "os_meminfo", "s_unreclaim", " KiB"),
+  metric("mem_free", "memory", "system.metric.mem_free", "os_meminfo", "mem_free", " KiB"),
+  derivedMetric("mem_other", "memory", "system.metric.mem_other", "mem_other", "mem_other", " KiB"),
   metric("swap_free", "memory", "system.metric.swap_free", "os_meminfo", "swap_free", " KiB"),
   metric("swap_total", "memory", "system.metric.swap_total", "os_meminfo", "swap_total", " KiB"),
   seriesSectionMetric("oom_kill", "memory", "system.metric.oom_kill", "os_oom_kills", "os_vmstat", "oom_kill", ""),
@@ -94,6 +122,12 @@ export const SYSTEM_METRICS: readonly MetricSpec[] = [
   derivedMetric("network_drops", "network", "system.metric.network_drops", "os_network_drops", "network_drops", ""),
 ]
 
+const CPU_FIELDS = ["cpu_id", "scope", "user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal"] as const
+const MEMORY_FIELDS = ["mem_total", "mem_available", "mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim"] as const
+const CPU_BREAKDOWN_IDS = ["cpu_used_cores", "cpu_capacity", "cpu_user", "cpu_system", "cpu_irq", "cpu_iowait", "cpu_steal", "cpu_idle"] as const
+const MEMORY_BREAKDOWN_IDS = ["mem_total", "mem_available", "mem_anon", "mem_file_cache", "mem_s_reclaimable", "mem_s_unreclaim", "mem_free", "mem_other"] as const
+const BREAKDOWN_COLORS: readonly RecordedSeries["color"][] = ["cyan", "green", "blue", "amber", "violet", "red", "gray", "rose"]
+
 const GROUPS: readonly { readonly id: MetricSpec["group"]; readonly label: string }[] = [
   { id: "cpu", label: "system.group.cpu" },
   { id: "load", label: "system.group.load" },
@@ -104,8 +138,16 @@ const GROUPS: readonly { readonly id: MetricSpec["group"]; readonly label: strin
 ]
 
 const DERIVE_INPUTS: Readonly<Record<NonNullable<MetricSpec["derive"]>, readonly [string, readonly string[]]>> = {
-  cpu_busy: ["os_cpu", ["cpu_id", "scope", "user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal"]],
-  mem_available_percent: ["os_meminfo", ["mem_total", "mem_available"]],
+  cpu_user: ["os_cpu", CPU_FIELDS],
+  cpu_system: ["os_cpu", CPU_FIELDS],
+  cpu_irq: ["os_cpu", CPU_FIELDS],
+  cpu_iowait: ["os_cpu", CPU_FIELDS],
+  cpu_steal: ["os_cpu", CPU_FIELDS],
+  cpu_idle: ["os_cpu", CPU_FIELDS],
+  cpu_used_cores: ["os_cpu", CPU_FIELDS],
+  cpu_capacity: ["os_cpu", CPU_FIELDS],
+  mem_file_cache: ["os_meminfo", ["cached", "buffers"]],
+  mem_other: ["os_meminfo", ["mem_total", "mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim"]],
   filesystem_free_min: ["os_mountinfo", ["total_bytes", "free_bytes"]],
   device_count: ["os_diskstats", []],
   device_active_io: ["os_diskstats", ["io_in_progress"]],
@@ -126,11 +168,42 @@ const GROUP_COLUMNS: readonly (readonly MetricSpec["group"][])[] = [
 export const SYSTEM_ENTITIES: readonly {
   readonly section: string
   readonly label: string
-  readonly columns: readonly EntityColumn[]
+  readonly columns: readonly SystemEntityColumn[]
 }[] = [
   {
     section: "os_diskstats", label: "system.entities.devices",
-    columns: [text("device", 150, true), rateNumber("reads"), rateNumber("writes"), rateNumber("read_sectors"), rateNumber("write_sectors"), rateMilliseconds("read_time_ms"), rateMilliseconds("write_time_ms"), rateNumber("discards"), rateNumber("flushes"), number("io_in_progress")],
+    columns: [
+      text("device", 150, true), virtualText("device_id", ["major", "minor"]), rateNumber("reads"), rateNumber("writes"),
+      derivedRateBytes("read_bytes", ["read_sectors"], (rows) => exactCounterRatePoints(rows, "read_sectors", 512)),
+      derivedRateBytes("write_bytes", ["write_sectors"], (rows) => exactCounterRatePoints(rows, "write_sectors", 512)),
+      latency("read_latency_ms", "reads", "read_time_ms"), latency("write_latency_ms", "writes", "write_time_ms"),
+      derivedPercent("device_busy", ["io_time_ms"], (rows) => exactCounterRatePoints(rows, "io_time_ms", 0.1)),
+      derivedNumber("average_queue", ["io_weighted_time_ms"], (rows) => exactCounterRatePoints(rows, "io_weighted_time_ms", 0.001)),
+      number("io_in_progress"),
+    ],
+  },
+  {
+    section: "os_cgroup_cpu", label: "system.entities.cgroup_cpu",
+    columns: [
+      text("cgroup_path", 240, true),
+      derivedNumber("cgroup_used_cores", ["usage_usec"], (rows) => cgroupCpuPoints(rows, "usage_usec")),
+      derivedNumber("cgroup_user_cores", ["user_usec"], (rows) => cgroupCpuPoints(rows, "user_usec")),
+      derivedNumber("cgroup_system_cores", ["system_usec"], (rows) => cgroupCpuPoints(rows, "system_usec")),
+      derivedNumber("cgroup_other_cores", ["usage_usec", "user_usec", "system_usec"], cgroupOtherCpuPoints),
+      nonChartNumber("cgroup_capacity", ["quota_usec", "period_usec"]), nonChartNumber("cgroup_quota", ["quota_usec", "period_usec"]), nonChartNumber("cpuset_cpus", []),
+    ],
+  },
+  {
+    section: "os_cgroup_memory", label: "system.entities.cgroup_memory",
+    columns: [
+      text("cgroup_path", 240, true), bytes("current"), bytes("max"), bytes("anon"), bytes("file"), bytes("slab"),
+      derivedBytes("kernel_other", ["kernel", "slab"], (rows) => differencePoints(rows, "kernel", ["slab"])),
+      derivedBytes("memory_unclassified", ["current", "anon", "file", "kernel"], (rows) => differencePoints(rows, "current", ["anon", "file", "kernel"])),
+    ],
+  },
+  {
+    section: "os_cgroup_io", label: "system.entities.cgroup_io",
+    columns: [text("cgroup_path", 240, true), virtualText("device_id", ["major", "minor"]), rateBytes("rbytes"), rateBytes("wbytes"), rateNumber("rios"), rateNumber("wios")],
   },
   {
     section: "os_mountinfo", label: "system.entities.mounts",
@@ -162,9 +235,10 @@ function systemRequests(): readonly SectionRequest[] {
     }
   }
   for (const panel of SYSTEM_ENTITIES) need(panel.section, [
-    ...panel.columns.map((column: EntityColumn) => column.field),
+    ...panel.columns.flatMap((column) => column.historyFields ?? [column.field]),
     ...registry.filter((layout) => layout.logicalName === panel.section).flatMap((layout) => layout.identity),
   ])
+  need("os_cgroup_context", ["cpu_path", "memory_path", "io_path", "cpuset_cpus", "cgroup_version", "scope"])
   return [...wanted].map(([section, fields]) => ({ section, fields: [...fields] }))
 }
 
@@ -233,9 +307,22 @@ export function SystemView({
     const loadedPoints = metricHistoryPoints(selectedMetric.spec, loadedHistory.rows)
     return loadedPoints.length === 0 ? fallbackPoints : loadedPoints
   }, [fallbackPoints, loadedHistory, requestKey, selectedMetric])
+  const historyRows = loadedHistory?.key === requestKey && loadedHistory.rows.length !== 0
+    ? loadedHistory.rows
+    : request === null ? [] : sectionRows(data, request.section)
+  const historyUsesRates = loadedHistory?.key !== requestKey
+    && request !== null
+    && (data.rateColumns?.[request.section] ?? []).length !== 0
+  const breakdown = useMemo(() => selectedMetric === undefined ? [] : resourceBreakdownSeries(
+    selectedMetric.spec.id,
+    historyRows,
+    historyUsesRates,
+    locale,
+    t,
+  ), [historyRows, historyUsesRates, locale, selectedMetric, t])
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane={timelineLane(selectedMetric?.spec.id)} shownAt={shownAt} t={t} />
+    <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane={timelineLane(selectedMetric?.spec.id)} shownAt={shownAt} t={t} /></ChartOnly>
     <section className="system-console">
       <div className="metric-groups">
         {GROUP_COLUMNS.map((column, index) => <div className="metric-column" key={index}>
@@ -258,17 +345,19 @@ export function SystemView({
           })}
         </div>)}
       </div>
-      <section className="metric-history">
+      <ChartOnly><section className="metric-history">
         <header><span>{t("system.history")}</span><strong>{selectedMetric === undefined ? "—" : t(selectedMetric.spec.label)}</strong></header>
         {selectedMetric === undefined
           ? <p className="table-empty">{t("system.no_metrics")}</p>
-          : <SeriesChart cursor={cursor} empty={t("status.no_data")} format={(reading, place) => metricChartValue(reading, place, selectedMetric.spec.unit)} hour={hour} label={t(selectedMetric.spec.label)} locale={locale} onCursor={onCursor} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "nonnegative"} unit={metricChartUnit(selectedMetric.spec, locale)} />}
-      </section>
+          : breakdown.length === 0
+            ? <SeriesChart cursor={cursor} empty={t("status.no_data")} format={(reading, place) => metricChartValue(reading, place, selectedMetric.spec.unit)} hour={hour} label={t(selectedMetric.spec.label)} locale={locale} onCursor={onCursor} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "nonnegative"} unit={metricChartUnit(selectedMetric.spec, locale)} />
+            : <div className="series-chart"><UPlotChart cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} reading={currentPointValue(selectedPoints, cursor, locale, selectedMetric.spec.unit)} series={breakdown} testId={`system-${selectedMetric.spec.group}-composition`} /></div>}
+      </section></ChartOnly>
     </section>
     <UseTable cursor={cursor} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} t={t} />
     <section className="entity-panels">
       {SYSTEM_ENTITIES.map((entity) => {
-        const allRows = snapshot(sectionRows(data, entity.section), cursor)
+        const allRows = systemEntityRows(data, entity.section, cursor)
         const activeContext = context?.logicalName === entity.section ? context : null
         const rows = contextualRows(allRows, activeContext, activeContext === null ? null : contextRow)
         if (rows.length === 0 && activeContext === null) return null
@@ -307,7 +396,7 @@ function SystemEntityPanel({
   section,
   t,
 }: {
-  readonly columns: readonly EntityColumn[]
+  readonly columns: readonly SystemEntityColumn[]
   readonly contextLabel?: string | undefined
   readonly cursor: number
   readonly finding: Finding | null
@@ -356,7 +445,8 @@ function SystemEntityPanel({
   }, [historyKey, hour, requestFields, requestSection, requestTypeId, requestWhere])
   const chartRows = history?.key === historyKey ? history.rows : selectedRow === null ? [] : [selectedRow]
   const chartPoints = useMemo(() => selectedColumn === undefined ? [] : entityMetricPoints(chartRows, selectedColumn), [chartRows, selectedColumn])
-  const chartMetadata = selectedRow === null || selectedColumn === undefined ? null : registryColumn(selectedRow.typeId, physicalField(selectedColumn, selectedRow.typeId))
+  const chartMetadata = selectedRow === null || selectedColumn === undefined || selectedColumn.historyFields !== undefined
+    ? null : registryColumn(selectedRow.typeId, physicalField(selectedColumn, selectedRow.typeId))
   return <section className="entity-panel" data-testid={`system-panel-${section}`}>
     <h2><span>{label}</span></h2>
     <EntityTable
@@ -382,7 +472,7 @@ function SystemEntityPanel({
       t={t}
       testId={`system-${section}`}
     />
-    {selectedRow !== null && selectedColumn !== undefined && <section className="system-entity-history" data-testid={`system-${section}-history`}>
+    <ChartOnly>{selectedRow !== null && selectedColumn !== undefined && <section className="system-entity-history" data-testid={`system-${section}-history`}>
       <header>
         <div className="system-history-selector" role="group">
           {availableColumns.map((column) => <button aria-pressed={column.field === selectedColumn.field} key={column.field} onClick={() => setSelectedField(column.field)} type="button">{t(column.label)}</button>)}
@@ -401,22 +491,22 @@ function SystemEntityPanel({
         scale={selectedColumn.kind === "percent" ? "percent" : "nonnegative"}
         unit={entityMetricUnit(selectedColumn, locale, chartMetadata)}
       />
-    </section>}
+    </section>}</ChartOnly>
   </section>
 }
 
-export function chartableEntityColumns(columns: readonly EntityColumn[]): readonly EntityColumn[] {
-  return columns.filter((column) => column.kind === "number"
+export function chartableEntityColumns(columns: readonly SystemEntityColumn[]): readonly SystemEntityColumn[] {
+  return columns.filter((column) => column.chartable !== false && (column.kind === "number"
     || column.kind === "estimated_rows"
     || column.kind === "bytes"
     || column.kind === "kib"
     || column.kind === "milliseconds"
     || column.kind === "duration"
     || column.kind === "microseconds"
-    || column.kind === "percent")
+    || column.kind === "percent"))
 }
 
-export function entityHistoryRequest(row: DataRow, column: EntityColumn): EntityHistoryRequest | null {
+export function entityHistoryRequest(row: DataRow, column: SystemEntityColumn): EntityHistoryRequest | null {
   if (!chartableEntityColumns([column]).includes(column)) return null
   const layout = registry.find((candidate) => candidate.typeId === row.typeId && candidate.logicalName === row.logicalName)
   if (layout === undefined || layout.identity.length === 0) return null
@@ -424,7 +514,7 @@ export function entityHistoryRequest(row: DataRow, column: EntityColumn): Entity
   if (identities.some(([, stored]) => stored === null)) return null
   const field = physicalField(column, row.typeId)
   const where = Object.fromEntries(identities) as Readonly<Record<string, string>>
-  const fields = uniqueStrings([field, ...layout.identity])
+  const fields = uniqueStrings([...(column.historyFields ?? [field]), ...layout.identity])
   return {
     fields,
     key: JSON.stringify([row.segmentId, row.typeId, identities, field]),
@@ -434,7 +524,8 @@ export function entityHistoryRequest(row: DataRow, column: EntityColumn): Entity
   }
 }
 
-function entityMetricPoints(rows: readonly DataRow[], column: EntityColumn): readonly ChartPoint[] {
+function entityMetricPoints(rows: readonly DataRow[], column: SystemEntityColumn): readonly ChartPoint[] {
+  if (column.points !== undefined) return column.points(rows)
   const points = buildMetricSamples(rows, (row) => {
     const field = physicalField(column, row.typeId)
     return Object.hasOwn(row.values, field) ? asNumber(value(row, field)) : undefined
@@ -456,8 +547,9 @@ function physicalField(column: EntityColumn, typeId: string): string {
   return column.physicalField?.[typeId] ?? column.field
 }
 
-function entityMetricUnit(column: EntityColumn, locale: Locale, metadata: RegistryColumn | null): string {
-  const perSecond = metadata?.class === "cumulative" ? "/s" : ""
+function entityMetricUnit(column: SystemEntityColumn, locale: Locale, metadata: RegistryColumn | null): string {
+  const perSecond = metadata?.class === "cumulative" || column.rate === true ? "/s" : ""
+  if (column.field.endsWith("_cores")) return locale === "ru" ? "ядра" : "cores"
   if (column.field === "speed_mbit") return "Mbit/s"
   if (column.field === "mhz_max") return "MHz"
   if (column.kind === "bytes" || column.kind === "kib") return `${locale === "ru" ? "байты" : "bytes"}${perSecond}`
@@ -468,8 +560,9 @@ function entityMetricUnit(column: EntityColumn, locale: Locale, metadata: Regist
   return metadata?.class === "cumulative" ? (locale === "ru" ? "1/с" : "1/s") : (locale === "ru" ? "количество" : "count")
 }
 
-function entityMetricValue(reading: number, locale: Locale, column: EntityColumn, metadata: RegistryColumn | null): string {
-  const suffix = metadata?.class === "cumulative" ? "/s" : ""
+function entityMetricValue(reading: number, locale: Locale, column: SystemEntityColumn, metadata: RegistryColumn | null): string {
+  const suffix = metadata?.class === "cumulative" || column.rate === true ? "/s" : ""
+  if (column.field.endsWith("_cores")) return measure(reading, locale, locale === "ru" ? " ядра" : " cores")
   if (column.field === "speed_mbit") return measure(reading, locale, " Mbit/s")
   if (column.field === "mhz_max") return measure(reading, locale, " MHz")
   if (column.kind === "bytes") return humanBytes(reading, locale, suffix)
@@ -481,7 +574,7 @@ function entityMetricValue(reading: number, locale: Locale, column: EntityColumn
 }
 
 function timelineLane(metric: string | undefined): string {
-  if (metric === "cpu_busy") return "cpu_busy"
+  if (metric?.startsWith("cpu_") === true) return "cpu_busy"
   if (metric === "cpu_pressure") return "cpu_stall"
   if (metric === "io_pressure") return "io_stall"
   if (metric?.startsWith("mem_") === true) return "memory"
@@ -490,10 +583,8 @@ function timelineLane(metric: string | undefined): string {
 
 function normalizedMetricPoints(data: HourData, spec: MetricSpec): readonly ChartPoint[] {
   const mapping: Readonly<Record<string, readonly [string, (value: number) => number]>> = {
-    cpu_busy: ["cpu_busy", (number) => number],
     cpu_pressure: ["cpu_stall", (number) => number],
     io_pressure: ["io_stall", (number) => number],
-    mem_available_percent: ["memory", (number) => 100 - number],
     network_rx: ["net_rx", (number) => number],
     network_tx: ["net_tx", (number) => number],
     network_errors: ["net_errors", (number) => number],
@@ -526,13 +617,46 @@ export function metricPoints(data: HourData, spec: MetricSpec): readonly ChartPo
   })
 }
 
+export function resourceBreakdownSeries(
+  selectedId: string,
+  rows: readonly DataRow[],
+  rates: boolean,
+  locale: Locale,
+  t: Translate,
+): readonly RecordedSeries[] {
+  const ids: readonly string[] = CPU_BREAKDOWN_IDS.includes(selectedId as typeof CPU_BREAKDOWN_IDS[number])
+    ? CPU_BREAKDOWN_IDS
+    : MEMORY_BREAKDOWN_IDS.includes(selectedId as typeof MEMORY_BREAKDOWN_IDS[number]) ? MEMORY_BREAKDOWN_IDS : []
+  return ids.flatMap((id, index) => {
+    const spec = SYSTEM_METRICS.find((candidate) => candidate.id === id)
+    const color = BREAKDOWN_COLORS[index]
+    if (spec === undefined || color === undefined) return []
+    const points = spec.derive === undefined
+      ? buildMetricSamples(rows, (row) => spec.field === undefined ? undefined : storedNumber(row, spec.field))
+      : derivedRowPoints(rows, spec.derive, rates)
+    const format = (reading: number, place: Locale) => metricChartValue(reading, place, spec.unit)
+    return [{
+      color,
+      id,
+      label: t(spec.label),
+      points,
+      scale: spec.unit === "%" ? "percent" as const : "nonnegative" as const,
+      tick: format,
+      unit: metricChartUnit(spec, locale),
+      value: format,
+    }]
+  })
+}
+
 export function metricHistoryRequest(spec: MetricSpec): MetricHistoryRequest | null {
   const section = spec.derive === undefined ? spec.section : DERIVE_INPUTS[spec.derive][0]
   if (section === undefined) return null
   const derivedFields = spec.derive === undefined ? [] : DERIVE_INPUTS[spec.derive][1]
+  const compositionFields = MEMORY_BREAKDOWN_IDS.includes(spec.id as typeof MEMORY_BREAKDOWN_IDS[number]) ? MEMORY_FIELDS : []
   const fields = uniqueStrings([
     ...(spec.field === undefined ? [] : [spec.field]),
     ...derivedFields,
+    ...compositionFields,
     ...(spec.resource === undefined ? [] : ["resource"]),
     ...registry.filter((layout) => layout.logicalName === section).flatMap((layout) => layout.identity),
   ])
@@ -549,7 +673,7 @@ export function metricRequestKey(hour: number, spec: MetricSpec, request: Metric
 }
 
 export function metricHistoryPoints(spec: MetricSpec, rows: readonly DataRow[]): readonly ChartPoint[] {
-  if (spec.derive !== undefined) return derivedRowPoints(rows, spec.derive)
+  if (spec.derive !== undefined) return derivedRowPoints(rows, spec.derive, false)
   if (spec.field === undefined) return []
   const field = spec.field
   const points = buildMetricSamples(rows, (row) => {
@@ -565,17 +689,13 @@ export function hasMetric(data: HourData, spec: MetricSpec): boolean {
 
 function derivedPoints(data: HourData, derive: NonNullable<MetricSpec["derive"]>): readonly ChartPoint[] {
   const [section] = DERIVE_INPUTS[derive]
-  return derivedRowPoints(sectionRows(data, section), derive)
+  return derivedRowPoints(sectionRows(data, section), derive, (data.rateColumns?.[section] ?? []).length !== 0)
 }
 
-function derivedRowPoints(rows: readonly DataRow[], derive: NonNullable<MetricSpec["derive"]>): readonly ChartPoint[] {
-  if (derive === "cpu_busy") return cpuBusyPoints(rows)
-  if (derive === "mem_available_percent") return buildMetricSamples(rows, (row) => {
-    const available = storedNumber(row, "mem_available")
-    const total = storedNumber(row, "mem_total")
-    if (available === undefined || total === undefined) return undefined
-    return available === null || total === null || total <= 0 ? null : available / total * 100
-  })
+function derivedRowPoints(rows: readonly DataRow[], derive: NonNullable<MetricSpec["derive"]>, rates: boolean): readonly ChartPoint[] {
+  if (derive.startsWith("cpu_")) return cpuPoints(rows, derive, rates)
+  if (derive === "mem_file_cache") return buildMetricSamples(rows, (row) => sumStored(row, ["cached", "buffers"]))
+  if (derive === "mem_other") return buildMetricSamples(rows, (row) => difference(row, "mem_total", ["mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim"]))
   if (derive === "filesystem_free_min") return aggregateRows(rows, (sampleRows) => {
     const percentages = sampleRows.map((row) => {
       const total = storedNumber(row, "total_bytes")
@@ -621,33 +741,112 @@ function sumFields(rows: readonly DataRow[], fields: readonly string[]): number 
   return total
 }
 
-function cpuBusyPoints(rows: readonly DataRow[]): readonly ChartPoint[] {
+function sumStored(row: DataRow, fields: readonly string[]): number | null | undefined {
+  let total = 0
+  for (const field of fields) {
+    const stored = storedNumber(row, field)
+    if (stored === undefined || stored === null) return stored
+    total += stored
+  }
+  return total
+}
+
+function difference(row: DataRow, totalField: string, parts: readonly string[]): number | null | undefined {
+  const total = storedNumber(row, totalField)
+  const used = sumStored(row, parts)
+  if (total === undefined || used === undefined) return undefined
+  if (total === null || used === null || total < used) return null
+  return total - used
+}
+
+function differencePoints(rows: readonly DataRow[], total: string, parts: readonly string[]): readonly ChartPoint[] {
+  return buildMetricSamples(rows, (row) => difference(row, total, parts))
+}
+
+function exactInteger(row: DataRow, field: string): bigint | null {
+  const stored = rawText(value(row, field))
+  return stored !== null && /^-?\d+$/.test(stored) ? BigInt(stored) : null
+}
+
+function exactCounterRatePoints(rows: readonly DataRow[], field: string, scale: number): readonly ChartPoint[] {
+  return exactDeltaPoints(rows, [field], ([delta], elapsed) => Number(delta!) * scale * 1_000_000 / elapsed)
+}
+
+function latencyPoints(rows: readonly DataRow[], operations: string, duration: string): readonly ChartPoint[] {
+  return exactDeltaPoints(rows, [operations, duration], ([count, time]) => count! === 0n ? null : Number(time!) / Number(count!))
+}
+
+function cgroupCpuPoints(rows: readonly DataRow[], field: string): readonly ChartPoint[] {
+  return exactDeltaPoints(rows, [field], ([delta], elapsed) => Number(delta!) / elapsed)
+}
+
+function cgroupOtherCpuPoints(rows: readonly DataRow[]): readonly ChartPoint[] {
+  return exactDeltaPoints(rows, ["usage_usec", "user_usec", "system_usec"], ([usage, user, system], elapsed) => {
+    const other = usage! - user! - system!
+    return other < 0n ? null : Number(other) / elapsed
+  })
+}
+
+function exactDeltaPoints(rows: readonly DataRow[], fields: readonly string[], output: (deltas: readonly bigint[], elapsedUsec: number) => number | null): readonly ChartPoint[] {
+  let previous: { readonly at: number; readonly values: readonly bigint[] } | null = null
+  return rows.slice().sort((left, right) => left.timestamp - right.timestamp || left.segmentId.localeCompare(right.segmentId)).map((row) => {
+    const values = fields.map((field) => exactInteger(row, field))
+    const elapsed = previous === null ? 0 : row.timestamp - previous.at
+    const deltas = previous === null || values.some((stored) => stored === null)
+      ? null : values.map((stored, index) => stored! - previous!.values[index]!)
+    previous = values.every((stored): stored is bigint => stored !== null) ? { at: row.timestamp, values } : null
+    const reading = deltas === null || elapsed <= 0 || deltas.some((delta) => delta < 0n) ? null : output(deltas, elapsed)
+    return { segmentId: row.segmentId, timestamp: row.timestamp, value: reading !== null && Number.isFinite(reading) ? reading : null }
+  })
+}
+
+function cpuPoints(rows: readonly DataRow[], derive: NonNullable<MetricSpec["derive"]>, rates: boolean): readonly ChartPoint[] {
   const fields = ["user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal"] as const
-  const bySegment = new Map<string, DataRow[]>()
+  const groups = new Map<string, { readonly rows: DataRow[]; readonly segmentId: string; readonly timestamp: number }>()
   for (const row of rows) {
-    if (asNumber(value(row, "cpu_id")) !== -1 || asNumber(value(row, "scope")) !== 0) continue
-    const stored = bySegment.get(row.segmentId) ?? []
-    stored.push(row)
-    bySegment.set(row.segmentId, stored)
+    if (asNumber(value(row, "scope")) !== 0) continue
+    const key = `${row.segmentId}:${row.timestamp}`
+    const stored = groups.get(key) ?? { rows: [], segmentId: row.segmentId, timestamp: row.timestamp }
+    stored.rows.push(row)
+    groups.set(key, stored)
   }
   const points: ChartPoint[] = []
-  for (const [segmentId, stored] of bySegment) {
-    let previous: readonly number[] | null = null
-    for (const row of stored.slice().sort((left, right) => left.timestamp - right.timestamp)) {
-      const counters = fields.map((field) => storedNumber(row, field))
-      if (counters.some((counter) => counter === undefined)) continue
-      let output: number | null = null
-      if (previous !== null && counters.every((counter): counter is number => counter !== null && counter !== undefined)) {
-        const deltas = counters.map((counter, index) => counter - (previous?.[index] ?? counter))
-        const total = deltas.reduce((sum, delta) => sum + delta, 0)
-        const idle = (deltas[3] ?? 0) + (deltas[4] ?? 0)
-        if (total > 0 && deltas.every((delta) => delta >= 0)) output = (total - idle) / total * 100
-      }
-      points.push({ segmentId, timestamp: row.timestamp, value: output })
-      previous = counters.every((counter): counter is number => counter !== null && counter !== undefined) ? counters : null
+  let previous: readonly number[] | null = null
+  for (const group of [...groups.values()].sort((left, right) => left.timestamp - right.timestamp || left.segmentId.localeCompare(right.segmentId))) {
+    const online = new Set(group.rows.flatMap((row) => {
+      const id = asNumber(value(row, "cpu_id"))
+      return id === null || id < 0 ? [] : [id]
+    })).size
+    if (derive === "cpu_capacity") {
+      points.push({ segmentId: group.segmentId, timestamp: group.timestamp, value: online > 0 ? online : null })
+      continue
     }
+    const aggregate = group.rows.find((row) => asNumber(value(row, "cpu_id")) === -1)
+    if (aggregate === undefined) continue
+    const counters = fields.map((field) => storedNumber(aggregate, field))
+    if (!counters.every((counter): counter is number => counter !== null && counter !== undefined)) {
+      previous = null
+      points.push({ segmentId: group.segmentId, timestamp: group.timestamp, value: null })
+      continue
+    }
+    const deltas = rates ? counters : previous === null ? null : counters.map((counter, index) => counter - previous![index]!)
+    previous = counters
+    points.push({ segmentId: group.segmentId, timestamp: group.timestamp, value: deltas === null ? null : cpuValue(deltas, derive, online) })
   }
   return points
+}
+
+function cpuValue(parts: readonly number[], derive: NonNullable<MetricSpec["derive"]>, online: number): number | null {
+  if (parts.some((part) => part < 0 || !Number.isFinite(part))) return null
+  const total = parts.reduce((sum, part) => sum + part, 0)
+  if (total <= 0) return null
+  const values: Readonly<Record<string, number>> = {
+    cpu_user: parts[0]! + parts[1]!, cpu_system: parts[2]!, cpu_idle: parts[3]!, cpu_iowait: parts[4]!,
+    cpu_irq: parts[5]! + parts[6]!, cpu_steal: parts[7]!,
+  }
+  if (derive === "cpu_used_cores") return online <= 0 ? null : online * (total - parts[3]! - parts[4]!) / total
+  const selected = values[derive]
+  return selected === undefined ? null : selected / total * 100
 }
 
 export function currentValue(data: HourData, spec: MetricSpec, cursor: number, locale: Locale): string {
@@ -700,11 +899,79 @@ function metricChartValue(value: number, locale: Locale, unit: string): string {
 }
 
 export function fallbackMetric(logicalName: string): string | null {
-  if (logicalName === "os_cpu" || logicalName === "os_stat") return "cpu_busy"
+  if (logicalName === "os_cpu" || logicalName === "os_stat") return "cpu_used_cores"
   if (logicalName === "os_loadavg") return "load1"
-  if (logicalName === "os_meminfo") return "mem_available_percent"
+  if (logicalName === "os_meminfo") return "mem_available"
   if (logicalName === "os_vmstat") return "oom_kill"
   return logicalName === "health" ? "health" : null
+}
+
+export function systemEntityRows(data: HourData, section: string, cursor: number): readonly DataRow[] {
+  let rows = snapshot(sectionRows(data, section), cursor)
+  const pathField = section === "os_cgroup_cpu" ? "cpu_path" : section === "os_cgroup_memory" ? "memory_path" : section === "os_cgroup_io" ? "io_path" : null
+  const context = snapshot(sectionRows(data, "os_cgroup_context"), cursor)[0] ?? null
+  if (pathField !== null) {
+    const path = rawText(value(context, pathField))
+    const scope = asNumber(value(context, "scope"))
+    if (path === null) return []
+    rows = rows.filter((row) => rawText(value(row, "cgroup_path")) === path && (scope === null || asNumber(value(row, "scope")) === scope))
+  }
+  return rows.map((row) => decorateSystemRow(row, context))
+}
+
+function decorateSystemRow(row: DataRow, context: DataRow | null): DataRow {
+  const values: Record<string, Cell> = { ...row.values }
+  const pair = deviceId(row)
+  if (pair !== null) values.device_id = pair
+  if (row.logicalName === "os_diskstats") {
+    values.read_bytes = scaled(row, "read_sectors", 512)
+    values.write_bytes = scaled(row, "write_sectors", 512)
+    values.read_latency_ms = ratio(row, "read_time_ms", "reads")
+    values.write_latency_ms = ratio(row, "write_time_ms", "writes")
+    values.device_busy = scaled(row, "io_time_ms", 0.1)
+    values.average_queue = scaled(row, "io_weighted_time_ms", 0.001)
+  } else if (row.logicalName === "os_cgroup_cpu") {
+    values.cgroup_used_cores = scaled(row, "usage_usec", 0.000_001)
+    values.cgroup_user_cores = scaled(row, "user_usec", 0.000_001)
+    values.cgroup_system_cores = scaled(row, "system_usec", 0.000_001)
+    const usage = asNumber(value(row, "usage_usec"))
+    const user = asNumber(value(row, "user_usec"))
+    const system = asNumber(value(row, "system_usec"))
+    values.cgroup_other_cores = usage === null || user === null || system === null || usage < user + system ? null : (usage - user - system) / 1_000_000
+    const quota = ratio(row, "quota_usec", "period_usec")
+    const cpuset = asNumber(value(context, "cpuset_cpus"))
+    const quotaCores = quota !== null && quota > 0 ? quota : null
+    const cpusetCpus = cpuset !== null && cpuset > 0 ? cpuset : null
+    values.cgroup_quota = quotaCores
+    values.cpuset_cpus = cpusetCpus
+    values.cgroup_capacity = capacity(quotaCores, cpusetCpus)
+  } else if (row.logicalName === "os_cgroup_memory") {
+    values.kernel_other = difference(row, "kernel", ["slab"]) ?? null
+    values.memory_unclassified = difference(row, "current", ["anon", "file", "kernel"]) ?? null
+  }
+  return { ...row, values }
+}
+
+function deviceId(row: DataRow): string | null {
+  const major = rawText(value(row, "major"))
+  const minor = rawText(value(row, "minor"))
+  return major === null || minor === null ? null : `${major}:${minor}`
+}
+
+function scaled(row: DataRow, field: string, scale: number): number | null {
+  const stored = storedNumber(row, field)
+  return stored === undefined || stored === null || !Number.isFinite(stored) ? null : stored * scale
+}
+
+function ratio(row: DataRow, numerator: string, denominator: string): number | null {
+  const top = storedNumber(row, numerator)
+  const bottom = storedNumber(row, denominator)
+  return top === undefined || top === null || bottom === undefined || bottom === null || bottom <= 0 ? null : top / bottom
+}
+
+export function capacity(quota: number | null, cpuset: number | null): number | null {
+  if (quota === null) return cpuset
+  return cpuset === null ? quota : Math.min(quota, cpuset)
 }
 
 function rowKey(row: DataRow): string { return `${row.segmentId}:${row.typeId}:${row.ordinal}` }
@@ -742,17 +1009,25 @@ function pressureMetric(id: string, label: string, resource: number): MetricSpec
 }
 
 function point(source: Point): ChartPoint { return source }
-function systemColumn(field: string, kind: NonNullable<EntityColumn["kind"]>, width: number, sticky = false): EntityColumn {
-  const obvious = new Set(["device", "mount_point", "fstype", "source", "iface", "cpu_id", "model_name"])
+function systemColumn(field: string, kind: NonNullable<EntityColumn["kind"]>, width: number, sticky = false): SystemEntityColumn {
+  const obvious = new Set(["device", "device_id", "cgroup_path", "mount_point", "fstype", "source", "iface", "cpu_id", "model_name"])
   return { field, label: `system.field.${field}.label`, ...(obvious.has(field) ? {} : { help: `system.field.${field}.help` }), kind, width, sticky }
 }
-function text(field: string, width = 130, sticky = false): EntityColumn { return systemColumn(field, "text", width, sticky) }
-function number(field: string, width = 126): EntityColumn { return systemColumn(field, "number", width) }
-function id(field: string, width = 110, sticky = false): EntityColumn { return systemColumn(field, "id", width, sticky) }
-function bytes(field: string, width = 145): EntityColumn { return systemColumn(field, "bytes", width) }
-function milliseconds(field: string, width = 145): EntityColumn { return systemColumn(field, "milliseconds", width) }
-function boolean(field: string, width = 130): EntityColumn { return systemColumn(field, "boolean", width) }
-function rateColumn(column: EntityColumn): EntityColumn { return { ...column, rate: true } }
-function rateNumber(field: string, width = 126): EntityColumn { return rateColumn(number(field, width)) }
-function rateBytes(field: string, width = 145): EntityColumn { return rateColumn(bytes(field, width)) }
-function rateMilliseconds(field: string, width = 145): EntityColumn { return rateColumn(milliseconds(field, width)) }
+function text(field: string, width = 130, sticky = false): SystemEntityColumn { return systemColumn(field, "text", width, sticky) }
+function virtualText(field: string, fields: readonly string[]): SystemEntityColumn { return { ...text(field, 90), chartable: false, historyFields: fields } }
+function number(field: string, width = 126): SystemEntityColumn { return systemColumn(field, "number", width) }
+function id(field: string, width = 110, sticky = false): SystemEntityColumn { return systemColumn(field, "id", width, sticky) }
+function bytes(field: string, width = 145): SystemEntityColumn { return systemColumn(field, "bytes", width) }
+function boolean(field: string, width = 130): SystemEntityColumn { return systemColumn(field, "boolean", width) }
+function rateColumn(column: SystemEntityColumn): SystemEntityColumn { return { ...column, rate: true } }
+function rateNumber(field: string, width = 126): SystemEntityColumn { return rateColumn(number(field, width)) }
+function rateBytes(field: string, width = 145): SystemEntityColumn { return rateColumn(bytes(field, width)) }
+function derived(field: string, kind: NonNullable<EntityColumn["kind"]>, fields: readonly string[], points: (rows: readonly DataRow[]) => readonly ChartPoint[]): SystemEntityColumn {
+  return { ...systemColumn(field, kind, 145), historyFields: fields, points }
+}
+function derivedNumber(field: string, fields: readonly string[], points: (rows: readonly DataRow[]) => readonly ChartPoint[]): SystemEntityColumn { return derived(field, "number", fields, points) }
+function derivedBytes(field: string, fields: readonly string[], points: (rows: readonly DataRow[]) => readonly ChartPoint[]): SystemEntityColumn { return derived(field, "bytes", fields, points) }
+function derivedRateBytes(field: string, fields: readonly string[], points: (rows: readonly DataRow[]) => readonly ChartPoint[]): SystemEntityColumn { return rateColumn(derivedBytes(field, fields, points)) }
+function derivedPercent(field: string, fields: readonly string[], points: (rows: readonly DataRow[]) => readonly ChartPoint[]): SystemEntityColumn { return derived(field, "percent", fields, points) }
+function latency(field: string, operations: string, duration: string): SystemEntityColumn { return derived(field, "milliseconds", [operations, duration], (rows) => latencyPoints(rows, operations, duration)) }
+function nonChartNumber(field: string, fields: readonly string[]): SystemEntityColumn { return { ...number(field), chartable: false, historyFields: fields } }
