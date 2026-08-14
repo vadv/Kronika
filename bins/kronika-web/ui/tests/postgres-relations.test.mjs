@@ -7,7 +7,7 @@ import { importModule, registryPlugin } from "./import-module.mjs"
 
 const relation = await importModule('export * from "../src/postgres-relations.ts"', { plugins: [registryPlugin([])] })
 const view = await importModule(
-  'export { relationChartableColumn, relationColumns, relationDataRows, relationDetailColumns } from "../src/postgres-relations-view.tsx"; export { display } from "../src/postgres-view.tsx"',
+  'export { relationChartableColumn, relationColumns, relationDataRows, relationDetailColumns, relationHistoryFilters, relationHistoryRequestFields, relationMetricHistory } from "../src/postgres-relations-view.tsx"; export { display } from "../src/postgres-view.tsx"',
   { plugins: [registryPlugin([])] },
 )
 
@@ -19,6 +19,35 @@ test("relation chart controls require exact physical operands and a numeric sema
   assert.equal(view.relationChartableColumn("pg_stat_user_tables", { field: "sequential_share_pct", kind: "percent" }, physical), false)
   assert.equal(view.relationChartableColumn("pg_stat_user_tables", { field: "last_seq_scan", kind: "timestamp" }, physical), false)
   assert.equal(view.relationChartableColumn("pg_stat_user_indexes", { field: "indisvalid", kind: "boolean" }, physical), false)
+})
+
+test("aggregate history charts request semantic fields once with complete hierarchy identity", () => {
+  const tableCount = { field: "table_count", kind: "number", label: "pg.field.table_count.label" }
+  const dml = { field: "dml_total", kind: "number", rate: true, label: "pg.field.dml_total.label" }
+  const dead = { field: "dead_pct", kind: "percent", label: "pg.field.dead_pct.label" }
+  const timestamp = { field: "last_vacuum_oldest", kind: "timestamp", label: "pg.field.last_vacuum_oldest.label" }
+  assert.equal(view.relationChartableColumn("pg_stat_user_tables", tableCount, [], "schema"), true)
+  assert.equal(view.relationChartableColumn("pg_stat_user_tables", timestamp, [], "schema"), false)
+  assert.deepEqual(view.relationHistoryRequestFields("pg_stat_user_tables", "schema", [tableCount, dml, dead], []), ["table_count", "dml_total", "dead_pct"])
+  assert.deepEqual(view.relationHistoryRequestFields(
+    "pg_stat_user_tables", "object", [dml, dead],
+    ["n_tup_ins", "n_tup_upd", "n_tup_del", "n_live_tup", "n_dead_tup"],
+  ), ["n_tup_ins", "n_tup_upd", "n_tup_del", "n_live_tup", "n_dead_tup"])
+
+  const database = parseRow(relationRecord(
+    "pg_stat_user_tables", "database", { datid: "42", datname: "app" }, { dml_total: 7 },
+  ), layout(layoutRecord("pg_stat_user_tables", "database", [column("dml_total", "number", "per_second")])))
+  const schema = parseRow(relationRecord(
+    "pg_stat_user_tables", "schema", { datid: "42", datname: "app", schemaname: "public" }, { dml_total: 7 },
+  ), layout(layoutRecord("pg_stat_user_tables", "schema", [column("dml_total", "number", "per_second")])))
+  assert.deepEqual(view.relationHistoryFilters(database), { datid: "42" })
+  assert.deepEqual(view.relationHistoryFilters(schema), { datid: "42", schemaname: "public" })
+
+  const later = { ...schema, segmentId: "segment-b", timestamp: 3_000_000, values: { ...schema.values, dml_total: 9 } }
+  assert.deepEqual(view.relationMetricHistory([later, schema], dml, "schema"), [
+    { segmentId: "segment-a", timestamp: 2_000_000, value: 7 },
+    { segmentId: "segment-b", timestamp: 3_000_000, value: 9 },
+  ])
 })
 
 const column = (name, kind = "number", unit = "count", nullable = true) => ({ name, kind, unit, nullable })
@@ -561,10 +590,10 @@ test("detail, empty, navigation, and paging behavior stays on generic exact APIs
   assert.match(source, /linkedRelation\(row\)/)
   assert.match(source, /row\.logicalName === "pg_stat_user_indexes" \? relationDetailTarget\(row\) : null/)
   assert.match(source, /loadSnapshot\(row\.segmentId, definitionTarget\.at, \[definitionTarget\.request\]/)
-  assert.match(source, /relationHistoryFields\(row\.logicalName as RelationSection, historyField, physicalFields\)/)
-  assert.match(source, /loadSeries\(hour, row\.logicalName, historyFilters\(row\), fields, controller\.signal, row\.typeId, row\.timestamp\)/)
-  assert.match(source, /relationChartableColumn\(row\.logicalName as RelationSection, column, physicalFields\)/)
-  assert.match(source, /object \? allColumns\.filter/)
+  assert.match(source, /relationHistoryRequestFields\(row\.logicalName as RelationSection, group, chartColumns, physicalFields\)/)
+  assert.match(source, /loadSeries\(hour, row\.logicalName, historyFilters, historyFields, controller\.signal, object \? row\.typeId : undefined, row\.timestamp, object \? undefined : group\)/)
+  assert.match(source, /relationChartableColumn\(row\.logicalName as RelationSection, column, physicalFields, group\)/)
+  assert.doesNotMatch(source, /object \? allColumns\.filter/)
   assert.match(source, /className="process-history-selector"/)
   assert.doesNotMatch(source, /ChartLine/)
   assert.match(source, /onCursor=\{onCursor\}/)

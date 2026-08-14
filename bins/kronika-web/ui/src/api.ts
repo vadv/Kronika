@@ -373,6 +373,7 @@ export async function loadSeries(
   signal: AbortSignal,
   typeId?: string | undefined,
   to = from + 3_600_000_000 - 1,
+  group?: RelationGroup | undefined,
 ): Promise<readonly DataRow[]> {
   signal.throwIfAborted()
   if (bundledFixtureRange() !== null) {
@@ -385,6 +386,7 @@ export async function loadSeries(
     return [...new Map(rows.map((row) => [`${row.segmentId}:${row.typeId}:${row.ordinal}`, row])).values()]
       .filter((row) => row.timestamp >= from && row.timestamp <= to)
       .filter((row) => row.typeId === (typeId ?? row.typeId) && fixtureMatches(row, where))
+      .filter((row) => group === undefined || row.relation?.group === group)
       .map((row) => projectFixtureRow(row, fieldsToKeep))
   }
   const query = [
@@ -394,17 +396,26 @@ export async function loadSeries(
     ...fields.map((name) => `field=${encodeURIComponent(name)}`),
     ...Object.entries(where).map(([column, value]) => `where.${encodeURIComponent(column)}=${encodeURIComponent(value)}`),
     ...(typeId === undefined ? [] : [`type_id=${encodeURIComponent(typeId)}`]),
+    ...(group === undefined ? [] : [`group=${group}`]),
   ].join("&")
   const records = await request(`/api/hour?${query}`, signal)
   const layouts = new Map<string, readonly string[]>()
+  const relationLayouts = new Map<string, RelationLayout>()
   const rows: DataRow[] = []
   let segmentId = ""
   for (const record of records) {
     const layout = layoutRecord(record)
+    const relationLayout = parseRelationLayout(record)
     if (record.record === "series_segment") {
       segmentId = requiredText((record.segment as { readonly id: unknown }).id, "series segment id")
+    } else if (relationLayout !== null) {
+      relationLayouts.set(relationLayoutKey(relationLayout), relationLayout)
     } else if (layout !== null) {
       layouts.set(layout.typeId, layout.columns)
+    } else if (record.record === "relation") {
+      const row = parseRelationRow(record, relationLayouts, segmentId, from)
+      if (row === null) throw new Error("relation series row is invalid")
+      rows.push(row)
     } else if (record.record === "row") {
       const row = laneRow(record, segmentId, layouts)
       if (row !== null) rows.push(row)

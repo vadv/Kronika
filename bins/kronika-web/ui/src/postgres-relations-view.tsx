@@ -82,7 +82,7 @@ export function PostgresRelationsView(props: PostgresRelationsViewProps) {
     onNavigate(next)
   }
   const hasMore = metadata?.hasMore === true && metadata.nextCursor !== null
-  const status = <>{tableState(metadata, rows.length, cursor, pattern, activeOrder, locale, t, time)}<span>{relationScope(filters, rows, t)}</span>{lens === "low_activity" && <span>{t("pg.relation.activity_note")}</span>}{level === "object" && lens !== "state" && <span>{t("system.history")}</span>}</>
+  const status = <>{tableState(metadata, rows.length, cursor, pattern, activeOrder, locale, t, time)}<span>{relationScope(filters, rows, t)}</span>{lens === "low_activity" && <span>{t("pg.relation.activity_note")}</span>}<span>{t("system.history")}</span></>
   return <>
     <RelationLevels filters={filters} level={level} onNavigate={navigate} section={section} t={t} />
     <RelationLenses active={lens} onLens={onLens} section={section} t={t} />
@@ -145,18 +145,21 @@ function RelationLenses({ active, onLens, section, t }: { readonly active: Relat
 }
 
 function RelationDetail({ cursor, hour, lens, locale, onClose, onCursor, onNavigate, rateFields, row, t }: { readonly cursor: number; readonly hour: number; readonly lens: RelationLens; readonly locale: Locale; readonly onClose: () => void; readonly onCursor: (timestamp: number) => void; readonly onNavigate: (navigation: RelationNavigation) => void; readonly rateFields: readonly string[]; readonly row: DataRow; readonly t: Translate }) {
-  const object = row.relation?.group === "object"
+  const group = row.relation?.group ?? "object"
+  const object = group === "object"
   const definitionTarget = useMemo(() => object && row.logicalName === "pg_stat_user_indexes" ? relationDetailTarget(row) : null, [object, row])
   const [exact, setExact] = useState<DataRow | null>()
   const initialHistoryField = relationHistoryField(row.logicalName as RelationSection, lens)
-  const allColumns = useMemo(() => relationDetailColumns(row.logicalName as RelationSection, lens, row.relation!.group, rateFields), [lens, rateFields, row])
+  const allColumns = useMemo(() => relationDetailColumns(row.logicalName as RelationSection, lens, group, rateFields), [group, lens, rateFields, row.logicalName])
   const columns = useMemo(() => allColumns.filter((column) => value(row, column.field) !== null || value(row, `${column.field}_never`) === true), [allColumns, row])
   const physicalFields = useMemo(() => registry.find(({ typeId }) => typeId === row.typeId)?.columns ?? [], [row.typeId])
-  const chartColumns = useMemo(() => object ? allColumns.filter((column) => relationChartableColumn(row.logicalName as RelationSection, column, physicalFields)) : [], [allColumns, object, physicalFields, row.logicalName])
+  const chartColumns = useMemo(() => allColumns.filter((column) => relationChartableColumn(row.logicalName as RelationSection, column, physicalFields, group)), [allColumns, group, physicalFields, row.logicalName])
   const preferredField = chartColumns.some(({ field }) => field === initialHistoryField) ? initialHistoryField : chartColumns[0]?.field ?? null
   const chartFields = chartColumns.map(({ field }) => field).join("\u0000")
+  const historyFields = useMemo(() => relationHistoryRequestFields(row.logicalName as RelationSection, group, chartColumns, physicalFields), [chartFields, group, physicalFields, row.logicalName])
+  const historyFilters = useMemo(() => relationHistoryFilters(row), [row])
   const [historyField, setHistoryField] = useState(preferredField)
-  const [history, setHistory] = useState<ReturnType<typeof relationHistory>>([])
+  const [historyRows, setHistoryRows] = useState<readonly DataRow[]>([])
   useEffect(() => {
     setHistoryField((current) => current !== null && chartFields.split("\u0000").includes(current) ? current : preferredField)
   }, [chartFields, preferredField])
@@ -171,28 +174,26 @@ function RelationDetail({ cursor, hour, lens, locale, onClose, onCursor, onNavig
     return () => controller.abort()
   }, [definitionTarget, row])
   useEffect(() => {
-    setHistory([])
-    if (!object || historyField === null) return
+    setHistoryRows([])
+    if (historyFields.length === 0) return
     const controller = new AbortController()
-    const column = chartColumns.find(({ field }) => field === historyField)
-    const fields = relationHistoryFields(row.logicalName as RelationSection, historyField, physicalFields)
-    if (fields.length === 0) return
-    void loadSeries(hour, row.logicalName, historyFilters(row), fields, controller.signal, row.typeId, row.timestamp)
+    void loadSeries(hour, row.logicalName, historyFilters, historyFields, controller.signal, object ? row.typeId : undefined, row.timestamp, object ? undefined : group)
       .then((rows) => {
-        if (!controller.signal.aborted && column !== undefined) setHistory(relationMetricHistory(rows, column))
+        if (!controller.signal.aborted) setHistoryRows(rows)
       })
       .catch(() => {})
     return () => controller.abort()
-  }, [chartColumns, historyField, hour, object, physicalFields, row])
+  }, [group, historyFields, historyFilters, hour, object, row.logicalName, row.timestamp, row.typeId])
   const definition = exact ? rawText(value(exact, "indexdef")) : null
   const linked = linkedRelation(row)
   const historyColumn = chartColumns.find(({ field }) => field === historyField)
+  const history = useMemo(() => historyColumn === undefined ? [] : relationMetricHistory(historyRows, historyColumn, group), [group, historyColumn, historyRows])
   const drill = relationDrill(row)
   return <aside className="pg-detail" data-testid="pg-relation-detail">
     <header><h2>{relationRowLabel(row)}</h2><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
     {linked !== null && <div className="lens-tabs"><button data-testid="pg-relation-link" onClick={() => onNavigate(linked)} type="button">{t(row.logicalName === "pg_stat_user_tables" ? "pg.relation.indexes" : "pg.relation.table")}</button></div>}
     {drill !== null && <div className="lens-tabs"><button data-testid="pg-relation-drill" onClick={() => onNavigate(drill)} type="button">{t(row.relation?.group === "database" ? "pg.relation.level.schema" : row.logicalName === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}</button></div>}
-    {object && historyField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history">
+    {historyField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history">
       <div aria-label={t("system.history")} className="process-history-selector" role="group">{chartColumns.map((column) => <button aria-pressed={historyField === column.field} data-testid={`pg-relation-chart-${column.field}`} key={column.field} onClick={() => setHistoryField(column.field)} type="button">{t(column.label)}</button>)}</div>
       <SeriesChart cursor={cursor} format={chartFormat(historyColumn.kind)} hour={hour} label={t(historyColumn.label)} locale={locale} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} unit={chartUnit(historyColumn, t("unit.per_second"))} />
     </section>}
@@ -204,12 +205,20 @@ function RelationDetail({ cursor, hour, lens, locale, onClose, onCursor, onNavig
   </aside>
 }
 
-export function relationChartableColumn(section: RelationSection, column: EntityColumn, physicalFields: readonly string[]): boolean {
-  return chartableColumn(column) && relationHistoryFields(section, column.field, physicalFields).length > 0
+export function relationChartableColumn(section: RelationSection, column: EntityColumn, physicalFields: readonly string[], group: RelationGroup = "object"): boolean {
+  return chartableColumn(column) && (group !== "object" || relationHistoryFields(section, column.field, physicalFields).length > 0)
 }
 
-function relationMetricHistory(rows: readonly DataRow[], column: EntityColumn): ReturnType<typeof relationHistory> {
-  const points = relationHistory(rows, column.field)
+export function relationHistoryRequestFields(section: RelationSection, group: RelationGroup, columns: readonly EntityColumn[], physicalFields: readonly string[]): readonly string[] {
+  return [...new Set(columns.flatMap((column) => group === "object"
+    ? relationHistoryFields(section, column.field, physicalFields)
+    : [column.field]))]
+}
+
+export function relationMetricHistory(rows: readonly DataRow[], column: EntityColumn, group: RelationGroup): ReturnType<typeof relationHistory> {
+  const points = group === "object"
+    ? relationHistory(rows, column.field)
+    : [...rows].sort((left, right) => left.timestamp - right.timestamp).map((row) => ({ segmentId: row.segmentId, timestamp: row.timestamp, value: value(row, column.field) }))
   return points.map((point) => ({ ...point, value: point.value === null ? null : chartPointValue(point.value, column) }))
 }
 
@@ -249,9 +258,12 @@ function scanValue(row: DataRow, column: EntityColumn, locale: Locale, t: Transl
   return display(value(row, column.field), column, locale, t)
 }
 
-function historyFilters(row: DataRow): Readonly<Record<string, string>> {
+export function relationHistoryFilters(row: DataRow): Readonly<Record<string, string>> {
+  const datid = rawText(row.values.datid ?? null) ?? ""
+  if (row.relation?.group === "database") return { datid }
+  if (row.relation?.group === "schema") return { datid, schemaname: rawText(row.values.schemaname ?? null) ?? "" }
   const object = row.logicalName === "pg_stat_user_tables" ? "relid" : "indexrelid"
-  return { datid: rawText(row.values.datid ?? null) ?? "", [object]: rawText(row.values[object] ?? null) ?? "" }
+  return { datid, [object]: rawText(row.values[object] ?? null) ?? "" }
 }
 
 function relationRowLabel(row: DataRow): string {

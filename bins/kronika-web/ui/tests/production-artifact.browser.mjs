@@ -1405,8 +1405,8 @@ test("the slow-query detail keeps readable labels and contained values", { timeo
     assert.ok(landscape.numeric.every(({ height }) => height <= 24), JSON.stringify(landscape.numeric))
     assert.ok(Math.max(...landscape.numeric.map(({ right }) => right)) - Math.min(...landscape.numeric.map(({ right }) => right)) <= 1)
     assert.equal(landscape.numeric[0]?.text, "3")
-    assert.match(landscape.numeric[1]?.text ?? "", /3[\s\u00a0]?831\s*мс/)
-    assert.match(landscape.numeric[2]?.text ?? "", /7[\s\u00a0]?662\s*мс/)
+    assert.match(landscape.numeric[1]?.text ?? "", /3,83[\s\u00a0]?тыс\.\s*мс/)
+    assert.match(landscape.numeric[2]?.text ?? "", /7,66[\s\u00a0]?тыс\.\s*мс/)
 
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 882, mobile: false, width: 480 })
     await settleLayout(cdp)
@@ -1420,6 +1420,88 @@ test("the slow-query detail keeps readable labels and contained values", { timeo
     assert.ok(narrow.sample.value.scrollWidth <= narrow.sample.value.clientWidth + 1, JSON.stringify(narrow.sample))
     assert.ok(narrow.pattern.value.scrollWidth <= narrow.pattern.value.clientWidth + 1, JSON.stringify(narrow.pattern))
     assert.equal(narrow.numeric.every(({ align }) => align === "left"), true)
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+  } finally {
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await rm(profile, { recursive: true, force: true })
+  }
+})
+
+test("aggregate relation detail charts exact server history", { timeout: 60_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const requests = []
+  const authState = { valid: true }
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    requests.push(requestRecord(request, url))
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/catalog") return ndjson(response, [])
+    if (url.pathname === "/api/hour") return ndjson(response, url.searchParams.has("group") ? aggregateRelationHistoryRecords(url) : timelineRecords(HOUR))
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, relationRecords(url, "single"))
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("relation chart server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "kronika-relation-chart-browser-"))
+  const browser = launchBrowser(profile)
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    const page = { errors: [], external: [], responses: [] }
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
+    await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.indexes&level=database&pg_lens=state` })
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-indexes-table"] .entity-row').length === 1`, "the database index aggregate")
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-relation-detail"] .uplot-host canvas') !== null`, "the aggregate history chart")
+    await settleLayout(cdp)
+
+    const historyRequests = requests.filter(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).has("group"))
+    assert.equal(historyRequests.length, 1, JSON.stringify(historyRequests))
+    const query = new URLSearchParams(historyRequests[0].query)
+    assert.equal(query.get("group"), "database")
+    assert.equal(query.get("where.datid"), "42")
+    assert.equal(query.get("where.schemaname"), null)
+    assert.equal(query.get("type_id"), null)
+    assert.deepEqual(query.getAll("field"), ["index_count", "invalid_count", "unready_count", "unique_count", "primary_count", "exclusion_count"])
+    const layout = await cdp.evaluate(`(() => {
+      const detail = document.querySelector('[data-testid="pg-relation-detail"]')
+      const chart = detail.querySelector('.uplot-host')
+      const selectors = [...detail.querySelectorAll('.process-history-selector button')]
+      return {
+        chartWidth: chart.getBoundingClientRect().width,
+        detailWidth: detail.getBoundingClientRect().width,
+        overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        selectors: selectors.map((button) => button.textContent),
+      }
+    })()`)
+    assert.ok(layout.chartWidth > 250 && layout.chartWidth <= layout.detailWidth, JSON.stringify(layout))
+    assert.equal(layout.overflow, false)
+    assert.equal(layout.selectors.length, 6)
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-detail"] .chart-expand').click()`)
+    await cdp.waitFor(`document.querySelector('[role="dialog"] .uplot-host canvas') !== null`, "the expanded aggregate history")
+    assert.ok(await cdp.evaluate(`document.querySelector('[role="dialog"] .uplot-host').getBoundingClientRect().width > 900`))
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }))`)
+    await cdp.waitFor(`document.querySelector('[role="dialog"]') === null`, "the aggregate history close")
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
   } finally {
@@ -1651,6 +1733,35 @@ function relationRecords(url, mode) {
       eligible: String(mode === "long" ? 205 : count), returned: String(count), has_more: hasMore, truncated: false, next_cursor: hasMore ? "viewport-page-two" : null,
       page_size: 200, order_by: url.searchParams.getAll("by"), order_direction: url.searchParams.get("order") ?? "desc",
       from: String(AT - 5_000_000), to: String(AT),
+    },
+  ]
+}
+
+function aggregateRelationHistoryRecords(url) {
+  const logicalName = url.searchParams.get("section")
+  const group = url.searchParams.get("group")
+  const fields = url.searchParams.getAll("field")
+  const values = (offset) => Object.fromEntries(fields.map((field) => [field, ({
+    index_count: 363,
+    invalid_count: offset,
+    unready_count: 0,
+    unique_count: 223 + offset,
+    primary_count: 111,
+    exclusion_count: 0,
+  })[field] ?? 0]))
+  return [
+    { record: "hour", from: String(HOUR), to: String(AT), available_hours: [String(HOUR)] },
+    { record: "relation_layout", logical_name: logicalName, group, columns: fields.map((field) => wire(field)) },
+    { record: "series_segment", segment: { id: SEGMENT } },
+    {
+      record: "relation", logical_name: logicalName, group,
+      key: { datid: "42", datname: "artifact_db" }, values: values(0),
+      sample_from: String(BEFORE_AT - 5_000_000), sample_to: String(BEFORE_AT), source: null,
+    },
+    {
+      record: "relation", logical_name: logicalName, group,
+      key: { datid: "42", datname: "artifact_db" }, values: values(1),
+      sample_from: String(BEFORE_AT), sample_to: String(AT), source: null,
     },
   ]
 }
