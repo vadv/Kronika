@@ -28,6 +28,12 @@ pub struct CgroupContextRow {
     pub io_path: Option<String>,
     /// CPU count from the effective cpuset file.
     pub cpuset_cpus: Option<i64>,
+    /// Tightest validated CPU quota in microseconds; `-1` means unlimited.
+    pub effective_cpu_quota_usec: Option<i64>,
+    /// Period paired with the effective CPU quota, in microseconds.
+    pub effective_cpu_period_usec: Option<i64>,
+    /// Tightest validated memory limit, bytes; absent when unlimited or unknown.
+    pub effective_memory_max: Option<i64>,
 }
 
 /// CPU metrics for one cgroup.

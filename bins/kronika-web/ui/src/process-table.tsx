@@ -105,20 +105,27 @@ export const PROCESS_SUMMARY_METRICS: Readonly<Record<Lens, readonly ProcessSumm
 export const PROCESS_SUMMARY_FIELDS: readonly string[] = Object.values(PROCESS_SUMMARY_METRICS).flatMap((metrics) => metrics.map(({ field }) => field))
 
 export interface ProcessSummaryState {
+  readonly hour: number | null
   readonly history: readonly DataRow[]
   readonly status: "loading" | "ready" | "empty" | "error"
 }
 
 export type ProcessSummaryAction =
-  | { readonly type: "loading" | "error" }
-  | { readonly type: "loaded"; readonly rows: readonly DataRow[] }
+  | { readonly hour: number; readonly type: "loading" }
+  | { readonly hour: number; readonly type: "error" }
+  | { readonly hour: number; readonly type: "loaded"; readonly rows: readonly DataRow[] }
 
-export const EMPTY_PROCESS_SUMMARY: ProcessSummaryState = { history: [], status: "loading" }
+export const EMPTY_PROCESS_SUMMARY: ProcessSummaryState = { hour: null, history: [], status: "loading" }
 
 export function processSummaryReducer(state: ProcessSummaryState, action: ProcessSummaryAction): ProcessSummaryState {
-  return action.type === "loaded"
-    ? { history: action.rows, status: action.rows.length === 0 ? "empty" : "ready" }
-    : { ...state, status: action.type }
+  if (action.type === "loading") {
+    return action.hour === state.hour
+      ? { ...state, status: "loading" }
+      : { hour: action.hour, history: [], status: "loading" }
+  }
+  if (action.hour !== state.hour) return state
+  if (action.type === "error") return { ...state, status: "error" }
+  return { hour: action.hour, history: action.rows, status: action.rows.length === 0 ? "empty" : "ready" }
 }
 
 export function ProcessSummary({ cursor, dispatch, hour, lens, locale, onCursor, state, t }: {
@@ -133,13 +140,14 @@ export function ProcessSummary({ cursor, dispatch, hour, lens, locale, onCursor,
 }) {
   const metrics = PROCESS_SUMMARY_METRICS[lens]
   const [selected, setSelected] = useState(metrics[0]!.field)
-  const { history, status } = state
+  const history = state.hour === hour ? state.history : []
+  const status = state.hour === hour ? state.status : "loading"
   const active = metrics.find(({ field }) => field === selected) ?? metrics[0]!
   useEffect(() => {
     const controller = new AbortController()
-    dispatch({ type: "loading" })
+    dispatch({ hour, type: "loading" })
     acceptResponse(loadSeries(hour, "os_process_summary", {}, PROCESS_SUMMARY_FIELDS, controller.signal), controller.signal,
-      (rows) => dispatch({ type: "loaded", rows }), () => dispatch({ type: "error" }))
+      (rows) => dispatch({ hour, type: "loaded", rows }), () => dispatch({ hour, type: "error" }))
     return () => controller.abort()
   }, [hour])
   const activePoints = useMemo(() => processSummaryPoints(history, active), [active, history])

@@ -79,6 +79,16 @@ export interface EntityHistoryRequest extends MetricHistoryRequest {
   readonly typeId: string
 }
 
+export interface CgroupSnapshotLoad {
+  readonly filters: Readonly<Record<string, string>>
+  readonly request: SectionRequest
+}
+
+export interface CgroupSnapshotPlan {
+  readonly key: string
+  readonly loads: readonly CgroupSnapshotLoad[]
+}
+
 export const SYSTEM_METRICS: readonly MetricSpec[] = [
   metric("health", "cpu", "system.metric.health", "health", "os_health", "%"),
   derivedMetric("cpu_used_cores", "cpu", "system.metric.cpu_used_cores", "cpu_used_cores", "cpu_used_cores", " cores"),
@@ -190,13 +200,13 @@ export const SYSTEM_ENTITIES: readonly {
       derivedNumber("cgroup_user_cores", ["user_usec"], (rows) => cgroupCpuPoints(rows, "user_usec")),
       derivedNumber("cgroup_system_cores", ["system_usec"], (rows) => cgroupCpuPoints(rows, "system_usec")),
       derivedNumber("cgroup_other_cores", ["usage_usec", "user_usec", "system_usec"], cgroupOtherCpuPoints),
-      nonChartNumber("cgroup_capacity", ["quota_usec", "period_usec"]), nonChartNumber("cgroup_quota", ["quota_usec", "period_usec"]), nonChartNumber("cpuset_cpus", []),
+      nonChartNumber("cgroup_capacity", []), nonChartNumber("cgroup_quota", ["quota_usec", "period_usec"]), nonChartNumber("cpuset_cpus", []),
     ],
   },
   {
     section: "os_cgroup_memory", label: "system.entities.cgroup_memory",
     columns: [
-      text("cgroup_path", 240, true), bytes("current"), bytes("max"), bytes("anon"), bytes("file"), bytes("slab"),
+      text("cgroup_path", 240, true), bytes("current"), nonChartBytes("effective_memory_max", []), bytes("max"), bytes("anon"), bytes("file"), bytes("slab"),
       derivedBytes("kernel_other", ["kernel", "slab"], (rows) => differencePoints(rows, "kernel", ["slab"])),
       derivedBytes("memory_unclassified", ["current", "anon", "file", "kernel"], (rows) => differencePoints(rows, "current", ["anon", "file", "kernel"])),
     ],
@@ -238,11 +248,54 @@ function systemRequests(): readonly SectionRequest[] {
     ...panel.columns.flatMap((column) => column.historyFields ?? [column.field]),
     ...registry.filter((layout) => layout.logicalName === panel.section).flatMap((layout) => layout.identity),
   ])
-  need("os_cgroup_context", ["cpu_path", "memory_path", "io_path", "cpuset_cpus", "cgroup_version", "scope"])
+  for (const section of ["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"]) need(section, ["cgroup_path", "scope"])
+  need("os_cgroup_context", [
+    "cpu_path", "memory_path", "io_path", "cpuset_cpus", "effective_cpu_quota_usec",
+    "effective_cpu_period_usec", "effective_memory_max", "cgroup_version", "scope",
+  ])
   return [...wanted].map(([section, fields]) => ({ section, fields: [...fields] }))
 }
 
-export const SYSTEM_REQUESTS = systemRequests()
+const CGROUP_PATH_FIELDS = {
+  os_cgroup_cpu: "cpu_path",
+  os_cgroup_memory: "memory_path",
+  os_cgroup_io: "io_path",
+} as const
+const ALL_SYSTEM_REQUESTS = systemRequests()
+const CGROUP_SECTIONS = new Set(Object.keys(CGROUP_PATH_FIELDS))
+
+export const CGROUP_SNAPSHOT_REQUESTS = ALL_SYSTEM_REQUESTS.filter(({ section }) => CGROUP_SECTIONS.has(section))
+export const SYSTEM_REQUESTS = ALL_SYSTEM_REQUESTS.filter(({ section }) => !CGROUP_SECTIONS.has(section))
+
+export function cgroupSnapshotPlan(
+  segmentId: string,
+  cursor: number,
+  data: Pick<HourData, "sections">,
+  requests: readonly SectionRequest[] = CGROUP_SNAPSHOT_REQUESTS,
+): CgroupSnapshotPlan {
+  const context = snapshot((data.sections.os_cgroup_context ?? []).filter((row) => row.segmentId === segmentId), cursor)[0] ?? null
+  const cpuPath = rawText(value(context, "cpu_path"))
+  const memoryPath = rawText(value(context, "memory_path"))
+  const ioPath = rawText(value(context, "io_path"))
+  const storedScope = rawText(value(context, "scope"))
+  const scope = storedScope !== null && /^(?:0|[1-9]\d*)$/.test(storedScope) ? storedScope : null
+  const paths = { cpu_path: cpuPath, memory_path: memoryPath, io_path: ioPath }
+  const key = JSON.stringify([segmentId, cursor, cpuPath, memoryPath, ioPath, scope])
+  const loads = requests.flatMap((request) => {
+    const pathField = CGROUP_PATH_FIELDS[request.section as keyof typeof CGROUP_PATH_FIELDS]
+    const path = pathField === undefined ? null : paths[pathField]
+    return path === null || scope === null
+      ? []
+      : [{ request, filters: { cgroup_path: path, scope } }]
+  })
+  return { key, loads }
+}
+
+export function clearCgroupSnapshotRows(data: HourData): HourData {
+  const sections: Record<string, readonly DataRow[]> = { ...data.sections }
+  for (const section of CGROUP_SECTIONS) delete sections[section]
+  return { ...data, sections }
+}
 
 export function SystemView({
   context,
@@ -912,9 +965,9 @@ export function systemEntityRows(data: HourData, section: string, cursor: number
   const context = snapshot(sectionRows(data, "os_cgroup_context"), cursor)[0] ?? null
   if (pathField !== null) {
     const path = rawText(value(context, pathField))
-    const scope = asNumber(value(context, "scope"))
-    if (path === null) return []
-    rows = rows.filter((row) => rawText(value(row, "cgroup_path")) === path && (scope === null || asNumber(value(row, "scope")) === scope))
+    const scope = rawText(value(context, "scope"))
+    if (path === null || scope === null || !/^(?:0|[1-9]\d*)$/.test(scope)) return []
+    rows = rows.filter((row) => rawText(value(row, "cgroup_path")) === path && rawText(value(row, "scope")) === scope)
   }
   return rows.map((row) => decorateSystemRow(row, context))
 }
@@ -939,13 +992,19 @@ function decorateSystemRow(row: DataRow, context: DataRow | null): DataRow {
     const system = asNumber(value(row, "system_usec"))
     values.cgroup_other_cores = usage === null || user === null || system === null || usage < user + system ? null : (usage - user - system) / 1_000_000
     const quota = ratio(row, "quota_usec", "period_usec")
-    const cpuset = asNumber(value(context, "cpuset_cpus"))
     const quotaCores = quota !== null && quota > 0 ? quota : null
+    const cpuset = asNumber(value(context, "cpuset_cpus"))
     const cpusetCpus = cpuset !== null && cpuset > 0 ? cpuset : null
     values.cgroup_quota = quotaCores
     values.cpuset_cpus = cpusetCpus
-    values.cgroup_capacity = capacity(quotaCores, cpusetCpus)
+    values.cgroup_capacity = effectiveCpuCapacity(
+      asNumber(value(context, "effective_cpu_quota_usec")),
+      asNumber(value(context, "effective_cpu_period_usec")),
+      cpusetCpus,
+    )
   } else if (row.logicalName === "os_cgroup_memory") {
+    const effective = asNumber(value(context, "effective_memory_max"))
+    values.effective_memory_max = effective !== null && effective >= 0 ? effective : null
     values.kernel_other = difference(row, "kernel", ["slab"]) ?? null
     values.memory_unclassified = difference(row, "current", ["anon", "file", "kernel"]) ?? null
   }
@@ -969,9 +1028,13 @@ function ratio(row: DataRow, numerator: string, denominator: string): number | n
   return top === undefined || top === null || bottom === undefined || bottom === null || bottom <= 0 ? null : top / bottom
 }
 
-export function capacity(quota: number | null, cpuset: number | null): number | null {
-  if (quota === null) return cpuset
-  return cpuset === null ? quota : Math.min(quota, cpuset)
+export function effectiveCpuCapacity(quotaUsec: number | null, periodUsec: number | null, cpuset: number | null): number | null {
+  const cpusetCpus = cpuset !== null && Number.isFinite(cpuset) && cpuset > 0 ? cpuset : null
+  if (quotaUsec === -1) return cpusetCpus
+  if (quotaUsec === null || periodUsec === null || !Number.isFinite(quotaUsec) || !Number.isFinite(periodUsec)
+    || quotaUsec <= 0 || periodUsec <= 0) return null
+  const quotaCores = quotaUsec / periodUsec
+  return cpusetCpus === null ? quotaCores : Math.min(quotaCores, cpusetCpus)
 }
 
 function rowKey(row: DataRow): string { return `${row.segmentId}:${row.typeId}:${row.ordinal}` }
@@ -1031,3 +1094,4 @@ function derivedRateBytes(field: string, fields: readonly string[], points: (row
 function derivedPercent(field: string, fields: readonly string[], points: (rows: readonly DataRow[]) => readonly ChartPoint[]): SystemEntityColumn { return derived(field, "percent", fields, points) }
 function latency(field: string, operations: string, duration: string): SystemEntityColumn { return derived(field, "milliseconds", [operations, duration], (rows) => latencyPoints(rows, operations, duration)) }
 function nonChartNumber(field: string, fields: readonly string[]): SystemEntityColumn { return { ...number(field), chartable: false, historyFields: fields } }
+function nonChartBytes(field: string, fields: readonly string[]): SystemEntityColumn { return { ...bytes(field), chartable: false, historyFields: fields } }

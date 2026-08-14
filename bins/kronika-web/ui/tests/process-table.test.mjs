@@ -74,11 +74,21 @@ test("process summary charts preserve absent, null, zero, storage and human unit
   assert.equal(helpers.processSummaryUnit(metric("run_delay_ms_per_second"), "en", t), "ms/s")
 })
 
-test("process summary request states retain good rows until a successful replacement", () => {
+test("process summary request states retain rows only within the requested hour", () => {
+  const firstHour = 100
+  const secondHour = 200
   const rows = [{ logicalName: "os_process_summary", ordinal: "1", segmentId: "a", timestamp: 1, typeId: "0", values: { processes: 719 } }]
-  const ready = helpers.processSummaryReducer({ history: [], status: "loading" }, { type: "loaded", rows })
-  assert.deepEqual(ready, { history: rows, status: "ready" })
-  assert.deepEqual(helpers.processSummaryReducer(ready, { type: "loading" }), { history: rows, status: "loading" })
-  assert.deepEqual(helpers.processSummaryReducer(ready, { type: "error" }), { history: rows, status: "error" })
-  assert.deepEqual(helpers.processSummaryReducer(ready, { type: "loaded", rows: [] }), { history: [], status: "empty" })
+  const loading = helpers.processSummaryReducer({ hour: null, history: [], status: "loading" }, { hour: firstHour, type: "loading" })
+  const ready = helpers.processSummaryReducer(loading, { hour: firstHour, type: "loaded", rows })
+  assert.deepEqual(ready, { hour: firstHour, history: rows, status: "ready" })
+  assert.deepEqual(helpers.processSummaryReducer(ready, { hour: firstHour, type: "loading" }), { hour: firstHour, history: rows, status: "loading" })
+  assert.deepEqual(helpers.processSummaryReducer(ready, { hour: firstHour, type: "error" }), { hour: firstHour, history: rows, status: "error" })
+
+  const changed = helpers.processSummaryReducer(ready, { hour: secondHour, type: "loading" })
+  assert.deepEqual(changed, { hour: secondHour, history: [], status: "loading" })
+  assert.deepEqual(helpers.processSummaryReducer(changed, { hour: firstHour, type: "loaded", rows }), changed)
+  assert.deepEqual(helpers.processSummaryReducer(changed, { hour: firstHour, type: "error" }), changed)
+  const failed = helpers.processSummaryReducer(changed, { hour: secondHour, type: "error" })
+  assert.deepEqual(failed, { hour: secondHour, history: [], status: "error" })
+  assert.deepEqual(helpers.processSummaryReducer(failed, { hour: secondHour, type: "loaded", rows: [] }), { hour: secondHour, history: [], status: "empty" })
 })

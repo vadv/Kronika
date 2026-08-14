@@ -10,6 +10,7 @@ use hyper::{HeaderMap, StatusCode};
 use kronika_format::DictLimits;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
 use kronika_registry::instance_metadata::InstanceMetadata;
+use kronika_registry::os_cgroup_cpu::OsCgroupCpu;
 use kronika_registry::os_diskstats::OsDiskstats;
 use kronika_registry::os_netdev::OsNetdev;
 use kronika_registry::os_process::OsProcess;
@@ -109,6 +110,41 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append named diskstats fixture");
+    }
+
+    fn append_cgroup_cpu(&mut self, rows: &[(i64, &str, u8, i64)]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let mut buffers = SectionBuffers::new();
+        for &(ts, path, scope, usage_usec) in rows {
+            let cgroup_path = StrId(
+                interner
+                    .intern(path.as_bytes())
+                    .expect("intern cgroup path")
+                    .get(),
+            );
+            buffers
+                .push(OsCgroupCpu {
+                    ts: Ts(ts),
+                    cgroup_path,
+                    usage_usec,
+                    user_usec: usage_usec,
+                    system_usec: 0,
+                    throttled_usec: 0,
+                    nr_throttled: 0,
+                    quota_usec: -1,
+                    period_usec: 100_000,
+                    scope,
+                })
+                .expect("cgroup CPU row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("encode cgroup dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode cgroup CPU fixture")
+            .expect("nonempty cgroup CPU fixture");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append cgroup CPU fixture");
     }
 
     fn append_blob_diskstats(&mut self, bytes: &[u8], reads: i64) {
@@ -2878,6 +2914,26 @@ fn a_snapshot_keeps_only_the_rows_a_filter_names() {
         .map(|record| record["values"][0].clone())
         .collect::<Vec<_>>();
     assert_eq!(minors, [serde_json::json!(1)]);
+}
+
+#[test]
+fn a_cgroup_snapshot_applies_the_exact_path_and_scope_filters() {
+    let mut fixture = Fixture::new();
+    fixture.append_cgroup_cpu(&[
+        (200, "/collector", 3, 11),
+        (200, "/collector", 4, 22),
+        (200, "/other", 3, 33),
+    ]);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_cgroup_cpu&field=cgroup_path&field=scope&where.cgroup_path=%2Fcollector&where.scope=3"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("filtered cgroup snapshot");
+    let rows = row_records(&records);
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"], serde_json::json!(["/collector", 3]));
 }
 
 #[test]

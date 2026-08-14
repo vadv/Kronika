@@ -25,6 +25,9 @@ pub const fn to_context_section(
         memory_path,
         io_path,
         cpuset_cpus: row.cpuset_cpus,
+        effective_cpu_quota_usec: row.effective_cpu_quota_usec,
+        effective_cpu_period_usec: row.effective_cpu_period_usec,
+        effective_memory_max: row.effective_memory_max,
         scope,
     }
 }

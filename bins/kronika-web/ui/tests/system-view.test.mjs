@@ -7,7 +7,7 @@ import { importModule, registryPlugin } from "./import-module.mjs"
 import { parseDictionary, validateDictionaries } from "../scripts/i18n.mjs"
 
 const helpers = await importModule(
-  'export { capacity, chartableEntityColumns, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, resourceBreakdownSeries, systemEntityRows, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
+  'export { effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, clearCgroupSnapshotRows, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, resourceBreakdownSeries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
   { plugins: [registryPlugin([
     { typeId: "1108001", logicalName: "os_diskstats", identity: ["major", "minor"], columns: ["ts", "major", "minor", "device", "io_in_progress"] },
     { typeId: "1112001", logicalName: "os_mountinfo", identity: ["major", "minor"], columns: ["ts", "major", "minor", "mount_point", "source", "fstype", "free_bytes", "total_bytes", "is_k8s_infra"] },
@@ -202,9 +202,12 @@ test("device latency uses exact reset-safe counter operands and a stable major:m
   assert.equal(current.values.average_queue, 0.5)
 })
 
-test("collector cgroup rows use only the exact recorded paths and finite capacity inputs", () => {
+test("collector cgroup rows keep leaf settings factual and use effective hierarchy capacities", () => {
   const row = (logicalName, path, values, ordinal = path) => ({ logicalName, ordinal, segmentId: "s", timestamp: 10, typeId: logicalName === "os_cgroup_cpu" ? "1201001" : logicalName === "os_cgroup_memory" ? "1202001" : "1203001", values: { cgroup_path: path, scope: 3, ...values } })
-  const context = row("os_cgroup_context", "/ignored", { cpu_path: "/mine", memory_path: "/mine", io_path: "/mine", cpuset_cpus: 1 }, "context")
+  const context = row("os_cgroup_context", "/ignored", {
+    cpu_path: "/mine", memory_path: "/mine", io_path: "/mine", cpuset_cpus: 1,
+    effective_cpu_quota_usec: 50_000, effective_cpu_period_usec: 100_000, effective_memory_max: 1500,
+  }, "context")
   const source = { ...data, sections: {
     os_cgroup_context: [context],
     os_cgroup_cpu: [row("os_cgroup_cpu", "/other", { usage_usec: 9 }), row("os_cgroup_cpu", "/mine", { usage_usec: 1_500_000, user_usec: 1_000_000, system_usec: 400_000, quota_usec: 200_000, period_usec: 100_000 })],
@@ -216,14 +219,70 @@ test("collector cgroup rows use only the exact recorded paths and finite capacit
   assert.equal(cpu[0].values.cgroup_used_cores, 1.5)
   assert.equal(cpu[0].values.cgroup_other_cores, 0.1)
   assert.equal(cpu[0].values.cgroup_quota, 2)
-  assert.equal(cpu[0].values.cgroup_capacity, 1)
+  assert.equal(cpu[0].values.cgroup_capacity, 0.5)
   const memory = helpers.systemEntityRows(source, "os_cgroup_memory", 10)[0]
+  assert.equal(memory.values.effective_memory_max, 1500)
+  assert.equal(memory.values.max, 2000)
   assert.equal(memory.values.kernel_other, 150)
   assert.equal(memory.values.memory_unclassified, 100)
   assert.equal(helpers.systemEntityRows(source, "os_cgroup_io", 10)[0].values.device_id, "8:0")
-  assert.equal(helpers.capacity(null, null), null)
-  assert.equal(helpers.capacity(0.5, null), 0.5)
-  assert.equal(helpers.capacity(null, 2), 2)
+  assert.equal(helpers.effectiveCpuCapacity(null, null, 2), null)
+  assert.equal(helpers.effectiveCpuCapacity(-1, null, 2), 2)
+  assert.equal(helpers.effectiveCpuCapacity(-1, 100_000, null), null)
+  assert.equal(helpers.effectiveCpuCapacity(50_000, 100_000, null), 0.5)
+  assert.equal(helpers.effectiveCpuCapacity(300_000, 100_000, 2), 2)
+  assert.equal(helpers.effectiveCpuCapacity(50_000, 0, 2), null)
+  const malformedContext = { ...context, values: { ...context.values, effective_memory_max: -1 } }
+  const malformedMemory = helpers.systemEntityRows({ ...source, sections: { ...source.sections, os_cgroup_context: [malformedContext] } }, "os_cgroup_memory", 10)[0]
+  assert.equal(malformedMemory.values.effective_memory_max, null)
+})
+
+test("System loads cgroup entities only through exact controller-specific plans", () => {
+  for (const section of ["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"]) {
+    assert.equal(helpers.SYSTEM_REQUESTS.some((request) => request.section === section), false)
+    const request = helpers.CGROUP_SNAPSHOT_REQUESTS.find((candidate) => candidate.section === section)
+    assert.ok(request.fields.includes("cgroup_path"), section)
+    assert.ok(request.fields.includes("scope"), section)
+  }
+  assert.equal(helpers.SYSTEM_REQUESTS.some(({ section }) => section === "os_cgroup_context"), true)
+
+  const context = {
+    logicalName: "os_cgroup_context", ordinal: "context", segmentId: "segment-a", timestamp: 10, typeId: "1205001",
+    values: { cpu_path: "/cpu/collector", memory_path: "/memory/collector", io_path: "/io/collector", scope: 3 },
+  }
+  const source = { sections: { os_cgroup_context: [context] } }
+  const plan = helpers.cgroupSnapshotPlan("segment-a", 12, source)
+  assert.equal(plan.key, '["segment-a",12,"/cpu/collector","/memory/collector","/io/collector","3"]')
+  assert.deepEqual(Object.fromEntries(plan.loads.map(({ filters, request }) => [request.section, filters])), {
+    os_cgroup_cpu: { cgroup_path: "/cpu/collector", scope: "3" },
+    os_cgroup_memory: { cgroup_path: "/memory/collector", scope: "3" },
+    os_cgroup_io: { cgroup_path: "/io/collector", scope: "3" },
+  })
+
+  const wrongSegment = helpers.cgroupSnapshotPlan("segment-b", 12, source)
+  assert.deepEqual(wrongSegment.loads, [])
+  const unusableScope = helpers.cgroupSnapshotPlan("segment-a", 12, {
+    sections: { os_cgroup_context: [{ ...context, values: { ...context.values, scope: null } }] },
+  })
+  assert.deepEqual(unusableScope.loads, [])
+})
+
+test("changing a cgroup snapshot key removes every prior exact entity row", () => {
+  const preserved = [{ logicalName: "os_cpu", ordinal: "cpu", segmentId: "s", timestamp: 1, typeId: "1102001", values: {} }]
+  const cleared = helpers.clearCgroupSnapshotRows({
+    sections: {
+      os_cpu: preserved,
+      os_cgroup_context: [{ logicalName: "os_cgroup_context", ordinal: "context", segmentId: "s", timestamp: 1, typeId: "1205001", values: {} }],
+      os_cgroup_cpu: [{ logicalName: "os_cgroup_cpu", ordinal: "cpu", segmentId: "s", timestamp: 1, typeId: "1201001", values: {} }],
+      os_cgroup_memory: [{ logicalName: "os_cgroup_memory", ordinal: "memory", segmentId: "s", timestamp: 1, typeId: "1202001", values: {} }],
+      os_cgroup_io: [{ logicalName: "os_cgroup_io", ordinal: "io", segmentId: "s", timestamp: 1, typeId: "1203001", values: {} }],
+    },
+  })
+  assert.equal(cleared.sections.os_cpu, preserved)
+  assert.equal(cleared.sections.os_cgroup_context.length, 1)
+  assert.equal(cleared.sections.os_cgroup_cpu, undefined)
+  assert.equal(cleared.sections.os_cgroup_memory, undefined)
+  assert.equal(cleared.sections.os_cgroup_io, undefined)
 })
 
 test("System never depends on process rows loaded by another view", async () => {
@@ -244,7 +303,7 @@ test("System entity tables keep exact meaning-first orders and rate presentation
   const fields = Object.fromEntries(helpers.SYSTEM_ENTITIES.map(({ section, columns }) => [section, columns.map(({ field }) => field)]))
   assert.deepEqual(fields.os_diskstats, ["device", "device_id", "reads", "writes", "read_bytes", "write_bytes", "read_latency_ms", "write_latency_ms", "device_busy", "average_queue", "io_in_progress"])
   assert.deepEqual(fields.os_cgroup_cpu, ["cgroup_path", "cgroup_used_cores", "cgroup_user_cores", "cgroup_system_cores", "cgroup_other_cores", "cgroup_capacity", "cgroup_quota", "cpuset_cpus"])
-  assert.deepEqual(fields.os_cgroup_memory, ["cgroup_path", "current", "max", "anon", "file", "slab", "kernel_other", "memory_unclassified"])
+  assert.deepEqual(fields.os_cgroup_memory, ["cgroup_path", "current", "effective_memory_max", "max", "anon", "file", "slab", "kernel_other", "memory_unclassified"])
   assert.deepEqual(fields.os_cgroup_io, ["cgroup_path", "device_id", "rbytes", "wbytes", "rios", "wios"])
   assert.deepEqual(fields.os_mountinfo, ["mount_point", "source", "fstype", "free_bytes", "total_bytes", "is_k8s_infra"])
   assert.deepEqual(fields.os_netdev, ["iface", "rx_bytes", "tx_bytes", "rx_packets", "tx_packets", "rx_errs", "tx_errs", "rx_drop", "tx_drop", "speed_mbit", "duplex"])

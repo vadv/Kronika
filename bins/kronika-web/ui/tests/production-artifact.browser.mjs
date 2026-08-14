@@ -1521,10 +1521,14 @@ test("aggregate relation detail charts exact server history", { timeout: 60_000 
 test("chart preference and process summary lifecycle work in the production artifact", { timeout: 60_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const authState = { valid: true }
+  const requests = []
   let summaryMode = "initial"
   const heldSummaries = []
+  const heldCgroups = []
+  let holdCgroups = false
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    requests.push(requestRecord(request, url))
     if (url.pathname === "/") {
       response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
       response.end(html)
@@ -1549,12 +1553,19 @@ test("chart preference and process summary lifecycle work in the production arti
         if (summaryMode === "empty") return ndjson(response, [])
         return ndjson(response, processSummaryRecords(hour, summaryMode === "initial" ? 719 : 2, summaryMode === "initial" ? 719 : 721))
       }
-      return ndjson(response, section === null ? timelineRecords(hour) : [])
+      return ndjson(response, section === null ? timelineRecords(hour, true) : [])
     }
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
       const sections = url.searchParams.getAll("section")
+      if (sections.length === 1 && ["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"].includes(sections[0])) {
+        if (holdCgroups) {
+          heldCgroups.push({ response, url })
+          return
+        }
+        return ndjson(response, cgroupSnapshotRecords(url))
+      }
       if (sections.includes("pg_stat_user_tables") || sections.includes("pg_stat_user_indexes")) return ndjson(response, relationRecords(url, "single"))
-      if (sections.includes("os_cpu")) return ndjson(response, systemSnapshotRecords())
+      if (sections.includes("os_cpu")) return ndjson(response, systemSnapshotRecords(true, Number(url.searchParams.get("at") ?? AT)))
       if (sections.includes("pg_stat_activity")) return ndjson(response, snapshotRecords())
       return ndjson(response, [])
     }
@@ -1594,10 +1605,72 @@ test("chart preference and process summary lifecycle work in the production arti
     await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
     await cdp.waitFor(`document.querySelector('.process-summary-history .uplot-host canvas') !== null`, "the restored process-summary chart")
 
+    summaryMode = "fail"
+    await cdp.evaluate(`document.querySelectorAll('.section-tabs [role="tab"]')[0].click()`)
+    await cdp.waitFor(`document.querySelector('.system-console') !== null`, "System before same-hour summary remount")
+    await cdp.waitFor(`["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"].every((section) => document.querySelector('[data-testid="system-' + section + '"] .entity-row') !== null)`, "the exact collector cgroup rows", 15_000)
+    const systemSnapshots = requests.filter(({ path }) => path === `/api/segments/${SEGMENT}/snapshot`).map(({ query }) => new URLSearchParams(query))
+    const primarySystem = systemSnapshots.find((query) => query.getAll("section").includes("os_cgroup_context"))
+    assert.notEqual(primarySystem, undefined)
+    assert.deepEqual(primarySystem.getAll("section").filter((section) => section.startsWith("os_cgroup_") && section !== "os_cgroup_context"), [])
+    const expectedCgroups = {
+      os_cgroup_cpu: "/collector/cpu",
+      os_cgroup_memory: "/collector/memory",
+      os_cgroup_io: "/collector/io",
+    }
+    for (const [section, path] of Object.entries(expectedCgroups)) {
+      const matches = systemSnapshots.filter((query) => query.getAll("section").includes(section))
+      assert.ok(matches.length >= 1, section)
+      for (const query of matches) {
+        assert.deepEqual(query.getAll("section"), [section])
+        assert.equal(query.get("where.cgroup_path"), path)
+        assert.equal(query.get("where.scope"), "3")
+      }
+    }
+    holdCgroups = true
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowLeft" }))`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${BEFORE_AT}"`, "the changed System cursor")
+    await cdp.waitFor(`["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"].every((section) => document.querySelector('[data-testid="system-' + section + '"]') === null)`, "prior cgroup rows cleared while the new key loads")
+    await waitForRequests(() => heldCgroups.length === 3)
+    const replacementPaths = {
+      os_cgroup_cpu: "/collector/cpu-before",
+      os_cgroup_memory: "/collector/memory-before",
+      os_cgroup_io: "/collector/io-before",
+    }
+    assert.deepEqual(Object.fromEntries(heldCgroups.map(({ url }) => [url.searchParams.get("section"), url.searchParams.get("where.cgroup_path")])), replacementPaths)
+    assert.equal(heldCgroups.every(({ url }) => url.searchParams.get("at") === String(BEFORE_AT) && url.searchParams.get("where.scope") === "3"), true)
+    holdCgroups = false
+    for (const held of heldCgroups.splice(0)) if (!held.response.destroyed) ndjson(held.response, cgroupSnapshotRecords(held.url))
+    await cdp.waitFor(`["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"].every((section) => document.querySelector('[data-testid="system-' + section + '"] .entity-row') !== null)`, "the replacement collector cgroup rows", 15_000)
+    holdCgroups = true
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowRight" }))`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${AT}"`, "the failed System cursor")
+    await cdp.waitFor(`["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"].every((section) => document.querySelector('[data-testid="system-' + section + '"]') === null)`, "prior cgroup rows cleared before a failed exact load")
+    await waitForRequests(() => heldCgroups.length === 3)
+    holdCgroups = false
+    for (const held of heldCgroups.splice(0)) {
+      if (held.response.destroyed) continue
+      held.response.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8" })
+      held.response.end("{")
+    }
+    await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]') === null && ["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"].every((section) => document.querySelector('[data-testid="system-' + section + '"]') === null)`, "no stale cgroup rows after exact-load failures", 15_000)
+    await cdp.evaluate(`document.querySelectorAll('.section-tabs [role="tab"]')[1].click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Could not load process totals" && document.querySelector('.process-summary > button strong')?.textContent === "719"`, "same-hour error with retained totals", 15_000)
+
+    summaryMode = "hold"
+    await cdp.evaluate(`document.querySelectorAll('.section-tabs [role="tab"]')[0].click()`)
+    await cdp.waitFor(`document.querySelector('.system-console') !== null`, "System before held same-hour summary remount")
+    await cdp.evaluate(`document.querySelectorAll('.section-tabs [role="tab"]')[1].click()`)
+    await waitForRequests(() => heldSummaries.length !== 0)
+    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Loading process totals…" && document.querySelector('.process-summary > button strong')?.textContent === "719"`, "same-hour loading with retained totals", 15_000)
+    const sameHourSummaries = heldSummaries.splice(0)
+    for (const held of sameHourSummaries) if (!held.destroyed) ndjson(held, processSummaryRecords(HOUR, 2, 720))
+    await cdp.waitFor(`document.querySelector('.process-summary > button strong')?.textContent === "720" && document.querySelector('[data-testid="process-summary-status"]') === null`, "same-hour replacement totals", 15_000)
+
     summaryMode = "hold"
     await cdp.evaluate(`document.querySelector('[data-testid="hour-next"]').click()`)
     await waitForRequests(() => heldSummaries.length !== 0)
-    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Loading process totals…" && document.querySelector('.process-summary > button strong')?.textContent === "719"`, "retained totals during reload", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Loading process totals…" && document.querySelector('.process-summary > button strong')?.textContent === "—" && document.querySelector('.process-summary-history') === null`, "cleared totals during a cross-hour load", 15_000)
     summaryMode = "good"
     await cdp.evaluate(`document.querySelector('[data-testid="hour-previous"]').click()`)
     await cdp.waitFor(`document.querySelector('.process-summary > button strong')?.textContent === "721" && document.querySelector('[data-testid="process-summary-status"]') === null`, "replacement totals after the aborted request", 15_000)
@@ -1607,7 +1680,7 @@ test("chart preference and process summary lifecycle work in the production arti
 
     summaryMode = "fail"
     await cdp.evaluate(`document.querySelector('[data-testid="hour-next"]').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Could not load process totals" && document.querySelector('.process-summary > button strong')?.textContent === "721"`, "summary request failure with retained totals", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Could not load process totals" && document.querySelector('.process-summary > button strong')?.textContent === "—" && document.querySelector('.process-summary-history') === null`, "cross-hour summary request failure without prior totals", 15_000)
     summaryMode = "empty"
     await cdp.evaluate(`document.querySelector('[data-testid="hour-previous"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "No data in the selected hour" && document.querySelector('.process-summary > button strong')?.textContent === "—"`, "successful empty process totals", 15_000)
@@ -1792,7 +1865,7 @@ function processSummaryRecords(hour, count, processes) {
     { record: "series_segment", segment: { id: SEGMENT } },
     layout("0", "os_process_summary", fields),
     ...Array.from({ length: count }, (_, index) => ({
-      record: "row", type_id: "0", ordinal: String(index), timestamp: String(hour + Math.min(3_595_000_000, (index + 1) * Math.max(5_000_000, Math.floor(3_595_000_000 / count)))), values,
+      record: "row", type_id: "0", ordinal: String(index), timestamp: String(hour + Math.min(3_590_000_000, (index + 1) * Math.max(5_000_000, Math.floor(3_590_000_000 / (count + 1))))), values,
     })),
   ]
 }
@@ -1891,7 +1964,7 @@ async function settleLayout(cdp) {
   await cdp.evaluate("document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))")
 }
 
-function timelineRecords(hour = HOUR) {
+function timelineRecords(hour = HOUR, cgroups = false) {
   const shift = hour - HOUR
   const shifted = (timestamp) => String(timestamp + shift)
   return [
@@ -1911,7 +1984,19 @@ function timelineRecords(hour = HOUR) {
       }, {
         logical_name: "os_cpu", physical_name: "os_cpu", type_id: "1102001",
         implementation: "linux", source_family: "system", rows: "1", bytes: "128",
+      }, ...(cgroups ? [{
+        logical_name: "os_cgroup_context", physical_name: "os_cgroup_context", type_id: "1205001",
+        implementation: "linux", source_family: "system", rows: "1", bytes: "128",
       }, {
+        logical_name: "os_cgroup_cpu", physical_name: "os_cgroup_cpu", type_id: "1201001",
+        implementation: "linux", source_family: "system", rows: "2", bytes: "256",
+      }, {
+        logical_name: "os_cgroup_memory", physical_name: "os_cgroup_memory", type_id: "1202001",
+        implementation: "linux", source_family: "system", rows: "2", bytes: "256",
+      }, {
+        logical_name: "os_cgroup_io", physical_name: "os_cgroup_io", type_id: "1203001",
+        implementation: "linux", source_family: "system", rows: "4", bytes: "512",
+      }] : []), {
         logical_name: "pg_stat_user_tables", physical_name: "pg_stat_user_tables", type_id: "1013001",
         implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256",
       }, {
@@ -1953,23 +2038,60 @@ function systemIndexRecords(timestamp) {
   ].map(([series, value]) => ({ record: "point", type_id: "0", series, ts: timestamp, identity: {}, value }))
 }
 
-function systemSnapshotRecords() {
+function systemSnapshotRecords(cgroupContext = false, at = AT) {
   const cpuColumns = ["ts", "cpu_id", "user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "scope"]
+  const cgroupPaths = at === BEFORE_AT
+    ? ["/collector/cpu-before", "/collector/memory-before", "/collector/io-before"]
+    : ["/collector/cpu", "/collector/memory", "/collector/io"]
   return [
     { record: "layout", rates: ["user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal"], layout: { type_id: "1102001", logical_name: "os_cpu", columns: cpuColumns.map((name) => ({ name })) } },
-    row("1102001", "cpu-all", [String(AT), -1, 20, 5, 10, 50, 5, 2, 3, 5, 0]),
-    row("1102001", "cpu-0", [String(AT), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-    row("1102001", "cpu-1", [String(AT), 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+    row("1102001", "cpu-all", [String(at), -1, 20, 5, 10, 50, 5, 2, 3, 5, 0], at),
+    row("1102001", "cpu-0", [String(at), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], at),
+    row("1102001", "cpu-1", [String(at), 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], at),
     layout("1103001", "os_stat", ["ts", "ctxt", "procs_running", "procs_blocked"]),
-    row("1103001", "1", [String(AT), 1_234_567, 3, 1]),
+    row("1103001", "1", [String(at), 1_234_567, 3, 1], at),
     layout("1105001", "os_loadavg", ["ts", "load1", "load5", "load15", "running", "total"]),
-    row("1105001", "2", [String(AT), 1.25, 1.1, 0.9, 3, 214]),
+    row("1105001", "2", [String(at), 1.25, 1.1, 0.9, 3, 214], at),
     layout("1104001", "os_meminfo", ["ts", "mem_available", "mem_total", "mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim", "swap_free", "swap_total"]),
-    row("1104001", "3", [String(AT), 8_388_608, 16_777_216, 1_048_576, 4_194_304, 131_072, 5_242_880, 524_288, 262_144, 1_048_576, 2_097_152]),
+    row("1104001", "3", [String(at), 8_388_608, 16_777_216, 1_048_576, 4_194_304, 131_072, 5_242_880, 524_288, 262_144, 1_048_576, 2_097_152], at),
     layout("1107001", "os_psi", ["ts", "resource", "some_avg10"]),
-    row("1107001", "4", [String(AT), 0, 2.5]),
-    row("1107001", "5", [String(AT), 1, 1.2]),
-    row("1107001", "6", [String(AT), 2, 0.4]),
+    row("1107001", "4", [String(at), 0, 2.5], at),
+    row("1107001", "5", [String(at), 1, 1.2], at),
+    row("1107001", "6", [String(at), 2, 0.4], at),
+    ...(cgroupContext ? [
+      layout("1205001", "os_cgroup_context", [
+        "ts", "cgroup_version", "cpu_path", "memory_path", "io_path", "cpuset_cpus",
+        "effective_cpu_quota_usec", "effective_cpu_period_usec", "effective_memory_max", "scope",
+      ]),
+      row("1205001", "context", [String(at), 1, ...cgroupPaths, 2, -1, 100_000, null, 3], at),
+    ] : []),
+  ]
+}
+
+function cgroupSnapshotRecords(url) {
+  const section = url.searchParams.get("section")
+  const fields = url.searchParams.getAll("field")
+  const at = Number(url.searchParams.get("at") ?? AT)
+  const path = url.searchParams.get("where.cgroup_path")
+  const definitions = {
+    os_cgroup_cpu: {
+      typeId: "1201001",
+      values: { ts: at, cgroup_path: path, usage_usec: 1_500_000, user_usec: 1_000_000, system_usec: 400_000, throttled_usec: 0, nr_throttled: 0, quota_usec: 400_000, period_usec: 100_000, scope: 3 },
+    },
+    os_cgroup_memory: {
+      typeId: "1202001",
+      values: { ts: at, cgroup_path: path, current: 1024, max: 4096, anon: 512, file: 256, kernel: 128, slab: 64, low_events: 0, high_events: 0, max_events: 0, oom_events: 0, oom_kill: 0, scope: 3 },
+    },
+    os_cgroup_io: {
+      typeId: "1203001",
+      values: { ts: at, cgroup_path: path, major: 8, minor: 0, rbytes: 1024, wbytes: 2048, rios: 2, wios: 3, scope: 3 },
+    },
+  }
+  const definition = definitions[section]
+  if (definition === undefined) return []
+  return [
+    layout(definition.typeId, section, fields),
+    row(definition.typeId, section, fields.map((field) => definition.values[field] ?? null), at),
   ]
 }
 
@@ -1977,8 +2099,8 @@ function layout(typeId, logicalName, columns) {
   return { record: "layout", rates: [], layout: { type_id: typeId, logical_name: logicalName, columns: columns.map((name) => ({ name })) } }
 }
 
-function row(typeId, ordinal, values) {
-  return { record: "row", type_id: typeId, ordinal, timestamp: String(AT), values }
+function row(typeId, ordinal, values, timestamp = AT) {
+  return { record: "row", type_id: typeId, ordinal, timestamp: String(timestamp), values }
 }
 
 function relationRecords(url, mode) {

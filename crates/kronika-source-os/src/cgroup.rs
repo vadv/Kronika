@@ -26,10 +26,23 @@ const CGROUP_ROOT: &str = "fs/cgroup";
 const DEFAULT_CPU_PERIOD_USEC: i64 = 100_000;
 
 const CPU_V1_DIRS: &[&str] = &["cpu,cpuacct", "cpuacct,cpu", "cpu", "cpuacct", ""];
+const CPU_QUOTA_V1_DIRS: &[&str] = &["cpu,cpuacct", "cpuacct,cpu", "cpu", ""];
 const MEMORY_V1_DIRS: &[&str] = &["memory", ""];
 const PIDS_V1_DIRS: &[&str] = &["pids", ""];
 const BLKIO_V1_DIRS: &[&str] = &["blkio", ""];
 const CPUSET_V1_DIRS: &[&str] = &["cpuset", ""];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CpuQuota {
+    Unlimited { period_usec: i64 },
+    Limited { quota_usec: i64, period_usec: i64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemoryLimit {
+    Unlimited,
+    Limited(i64),
+}
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct SelfCgroupPaths {
@@ -41,10 +54,10 @@ struct SelfCgroupPaths {
     cpuset: Option<String>,
 }
 
-/// Collect the collector process's exact cgroup paths and effective cpuset.
+/// Collect the process's exact cgroup paths, effective cpuset, and capacity.
 ///
-/// The effective cpuset is read only from the process's own cgroup. Missing or
-/// malformed membership and cpuset files remain absent.
+/// Cpuset comes only from the exact effective file. Hierarchical capacity stays
+/// absent unless the applicable controller path can be validated coherently.
 ///
 /// # Errors
 /// Returns the procfs read error when `self/cgroup` is unavailable.
@@ -65,13 +78,25 @@ pub fn collect_context(procfs: &ProcFs, sys: &SysFs, ts: i64) -> io::Result<Cgro
                 .ok()
                 .and_then(|content| parse_cpuset_count(&content))
         });
+        let cpu_path = path.clone().filter(|path| usable_cpu_v2(sys, path));
+        let memory_path = path.clone().filter(|path| usable_memory_v2(sys, path));
+        let (effective_cpu_quota_usec, effective_cpu_period_usec) = cpu_path
+            .as_deref()
+            .and_then(|path| effective_cpu_v2(sys, path))
+            .map_or((None, None), |(quota, period)| (Some(quota), Some(period)));
+        let effective_memory_max = memory_path
+            .as_deref()
+            .and_then(|path| effective_memory_v2(sys, path));
         return Ok(CgroupContextRow {
             ts,
             cgroup_version: 2,
-            cpu_path: path.clone().filter(|path| usable_cpu_v2(sys, path)),
-            memory_path: path.clone().filter(|path| usable_memory_v2(sys, path)),
+            cpu_path,
+            memory_path,
             io_path: path.filter(|path| usable_io_v2(sys, path)),
             cpuset_cpus,
+            effective_cpu_quota_usec,
+            effective_cpu_period_usec,
+            effective_memory_max,
         });
     }
 
@@ -79,16 +104,28 @@ pub fn collect_context(procfs: &ProcFs, sys: &SysFs, ts: i64) -> io::Result<Cgro
         let cpu_path =
             matching_cpu_path(parsed.cpu, parsed.cpuacct).filter(|path| usable_cpu_v1(sys, path));
         let cpuset_cpus = parsed.cpuset.as_deref().and_then(|path| {
-            read_first_v1(sys, CPUSET_V1_DIRS, path, "cpuset.effective_cpus")
+            let root = bind_v1_controller_root(sys, CPUSET_V1_DIRS, path, "cpuset.effective_cpus")?;
+            read_bound_v1(sys, &root, path, "cpuset.effective_cpus")
                 .and_then(|content| parse_cpuset_count(&content))
         });
+        let memory_path = parsed.memory.filter(|path| usable_memory_v1(sys, path));
+        let (effective_cpu_quota_usec, effective_cpu_period_usec) = cpu_path
+            .as_deref()
+            .and_then(|path| effective_cpu_v1(sys, path))
+            .map_or((None, None), |(quota, period)| (Some(quota), Some(period)));
+        let effective_memory_max = memory_path
+            .as_deref()
+            .and_then(|path| effective_memory_v1(sys, path));
         return Ok(CgroupContextRow {
             ts,
             cgroup_version: 1,
             cpu_path,
-            memory_path: parsed.memory.filter(|path| usable_memory_v1(sys, path)),
+            memory_path,
             io_path: parsed.io.filter(|path| usable_io_v1(sys, path)),
             cpuset_cpus,
+            effective_cpu_quota_usec,
+            effective_cpu_period_usec,
+            effective_memory_max,
         });
     }
 
@@ -314,6 +351,228 @@ fn parse_cpuset_count(content: &str) -> Option<i64> {
         previous_end = Some(end);
     }
     (count != 0).then(|| i64::try_from(count).ok()).flatten()
+}
+
+fn effective_cpu_v2(sys: &SysFs, path: &str) -> Option<(i64, i64)> {
+    let mut effective = None;
+    let mut leaf_period = None;
+    for (index, ancestor) in hierarchy_paths(path)?.into_iter().enumerate() {
+        let content = match sys.read(&rel(&ancestor, "cpu.max")) {
+            Ok(content) => content,
+            Err(err) if index == 0 && path != "/" && err.kind() == io::ErrorKind::NotFound => {
+                continue;
+            }
+            Err(_err) => return None,
+        };
+        let value = parse_cpu_max_strict(&content)?;
+        leaf_period = Some(match value {
+            CpuQuota::Unlimited { period_usec } | CpuQuota::Limited { period_usec, .. } => {
+                period_usec
+            }
+        });
+        update_effective_cpu(&mut effective, value);
+    }
+    effective.or_else(|| leaf_period.map(|period| (-1, period)))
+}
+
+fn effective_cpu_v1(sys: &SysFs, path: &str) -> Option<(i64, i64)> {
+    let root = bind_v1_controller_root(sys, CPU_QUOTA_V1_DIRS, path, "cpu.cfs_quota_us")?;
+    let mut effective = None;
+    let mut leaf_period = None;
+    for ancestor in hierarchy_paths(path)? {
+        let quota = read_bound_v1(sys, &root, &ancestor, "cpu.cfs_quota_us")?;
+        let period = read_bound_v1(sys, &root, &ancestor, "cpu.cfs_period_us")?;
+        let value = parse_cpu_v1_quota_strict(&quota, &period)?;
+        leaf_period = Some(match value {
+            CpuQuota::Unlimited { period_usec } | CpuQuota::Limited { period_usec, .. } => {
+                period_usec
+            }
+        });
+        update_effective_cpu(&mut effective, value);
+    }
+    effective.or_else(|| leaf_period.map(|period| (-1, period)))
+}
+
+fn update_effective_cpu(effective: &mut Option<(i64, i64)>, candidate: CpuQuota) {
+    let CpuQuota::Limited {
+        quota_usec,
+        period_usec,
+    } = candidate
+    else {
+        return;
+    };
+    let replace = match *effective {
+        Some((current_quota, current_period)) => {
+            i128::from(quota_usec) * i128::from(current_period)
+                < i128::from(current_quota) * i128::from(period_usec)
+        }
+        None => true,
+    };
+    if replace {
+        *effective = Some((quota_usec, period_usec));
+    }
+}
+
+fn parse_cpu_max_strict(content: &str) -> Option<CpuQuota> {
+    let mut fields = content.split_whitespace();
+    let quota = fields.next()?;
+    let period_usec = fields.next()?.parse::<i64>().ok()?;
+    if fields.next().is_some() || period_usec <= 0 {
+        return None;
+    }
+    if quota == "max" {
+        Some(CpuQuota::Unlimited { period_usec })
+    } else {
+        let quota_usec = quota.parse::<i64>().ok()?;
+        (quota_usec > 0).then_some(CpuQuota::Limited {
+            quota_usec,
+            period_usec,
+        })
+    }
+}
+
+fn parse_cpu_v1_quota_strict(quota: &str, period: &str) -> Option<CpuQuota> {
+    let quota_usec = quota.parse::<i64>().ok()?;
+    let period_usec = period.parse::<i64>().ok()?;
+    if period_usec <= 0 {
+        return None;
+    }
+    match quota_usec {
+        -1 => Some(CpuQuota::Unlimited { period_usec }),
+        1.. => Some(CpuQuota::Limited {
+            quota_usec,
+            period_usec,
+        }),
+        _ => None,
+    }
+}
+
+fn effective_memory_v2(sys: &SysFs, path: &str) -> Option<i64> {
+    let mut effective = None;
+    for (index, ancestor) in hierarchy_paths(path)?.into_iter().enumerate() {
+        let content = match sys.read(&rel(&ancestor, "memory.max")) {
+            Ok(content) => content,
+            Err(err) if index == 0 && path != "/" && err.kind() == io::ErrorKind::NotFound => {
+                continue;
+            }
+            Err(_err) => return None,
+        };
+        if let MemoryLimit::Limited(limit) = parse_memory_max_strict(&content)? {
+            effective = Some(effective.map_or(limit, |current: i64| current.min(limit)));
+        }
+    }
+    effective
+}
+
+fn effective_memory_v1(sys: &SysFs, path: &str) -> Option<i64> {
+    let root = bind_v1_controller_root(sys, MEMORY_V1_DIRS, path, "memory.stat")?;
+    let stat = read_bound_v1(sys, &root, path, "memory.stat")?;
+    let local = read_bound_v1(sys, &root, path, "memory.limit_in_bytes")?;
+    let local = parse_v1_capacity_limit(&local)?;
+    let hierarchical = parse_exact_stat_value(&stat, "hierarchical_memory_limit")?;
+    let hierarchical = normalize_v1_capacity_limit(hierarchical)?;
+    match (local, hierarchical) {
+        (MemoryLimit::Limited(local), MemoryLimit::Limited(hierarchical))
+            if hierarchical <= local =>
+        {
+            Some(hierarchical)
+        }
+        (MemoryLimit::Unlimited, MemoryLimit::Limited(hierarchical)) => Some(hierarchical),
+        _ => None,
+    }
+}
+
+fn parse_v1_capacity_limit(content: &str) -> Option<MemoryLimit> {
+    let mut fields = content.split_whitespace();
+    let limit = fields.next()?.parse::<i64>().ok()?;
+    if fields.next().is_some() {
+        return None;
+    }
+    normalize_v1_capacity_limit(limit)
+}
+
+fn normalize_v1_capacity_limit(limit: i64) -> Option<MemoryLimit> {
+    if limit == -1 || limit >= i64::MAX / 2 {
+        Some(MemoryLimit::Unlimited)
+    } else {
+        (limit >= 0).then_some(MemoryLimit::Limited(limit))
+    }
+}
+
+fn parse_memory_max_strict(content: &str) -> Option<MemoryLimit> {
+    let mut fields = content.split_whitespace();
+    let value = fields.next()?;
+    if fields.next().is_some() {
+        return None;
+    }
+    if value == "max" {
+        Some(MemoryLimit::Unlimited)
+    } else {
+        let limit = value.parse::<i64>().ok()?;
+        (limit >= 0).then_some(MemoryLimit::Limited(limit))
+    }
+}
+
+fn parse_exact_stat_value(content: &str, wanted: &str) -> Option<i64> {
+    let mut found = None;
+    for line in content.lines() {
+        let mut fields = line.split_whitespace();
+        if fields.next()? != wanted {
+            continue;
+        }
+        let value = fields.next()?.parse::<i64>().ok()?;
+        if fields.next().is_some() || found.replace(value).is_some() {
+            return None;
+        }
+    }
+    found
+}
+
+fn hierarchy_paths(path: &str) -> Option<Vec<String>> {
+    if normalize_self_cgroup_path(path).as_deref() != Some(path) {
+        return None;
+    }
+    let mut paths = vec!["/".to_owned()];
+    if path == "/" {
+        return Some(paths);
+    }
+    let mut current = String::new();
+    for component in path.trim_start_matches('/').split('/') {
+        current.push('/');
+        current.push_str(component);
+        paths.push(current.clone());
+    }
+    Some(paths)
+}
+
+fn bind_v1_controller_root(
+    sys: &SysFs,
+    roots: &[&str],
+    path: &str,
+    leaf_file: &str,
+) -> Option<String> {
+    let mut selected = None;
+    for root in roots {
+        if read_bound_v1(sys, root, path, leaf_file).is_none() {
+            continue;
+        }
+        if selected.is_some() {
+            return None;
+        }
+        selected = Some((*root).to_owned());
+    }
+    selected
+}
+
+fn read_bound_v1(sys: &SysFs, root: &str, path: &str, file: &str) -> Option<String> {
+    let relative = path.trim_matches('/');
+    let candidate = match (root.is_empty(), relative.is_empty()) {
+        (true, true) => format!("{CGROUP_ROOT}/{file}"),
+        (true, false) => format!("{CGROUP_ROOT}/{relative}/{file}"),
+        (false, true) => format!("{CGROUP_ROOT}/{root}/{file}"),
+        (false, false) => format!("{CGROUP_ROOT}/{root}/{relative}/{file}"),
+    };
+    sys.read(&candidate).ok()
 }
 
 /// Collect cgroup v2 or v1 rows from `KRONIKA_SYS_ROOT/fs/cgroup`.

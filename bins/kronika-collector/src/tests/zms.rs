@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use kronika_format::{ENTRY_LEN, FRAME_HEADER_LEN};
 use kronika_layout::{DataRoot, LayoutLimits, WriterOwner};
-use kronika_reader::{Cell, Reader, Resolved, SegmentKind};
+use kronika_reader::{Cell, Reader, Resolved, Row, SegmentKind};
 use kronika_registry::os_cgroup_context::OsCgroupContext;
 use kronika_registry::{PgWalStorage, StrId, Ts, section_name};
 use kronika_source_pg::query::{BATCH_LOGICAL_BYTES, BATCH_ROWS};
@@ -35,6 +35,7 @@ const PG_STORE_PLANS_VADV_TYPE_ID: u32 = 1_004_001;
 const PG_WAL_STORAGE_TYPE_ID: u32 = 1_020_001;
 const CGROUP_CONTEXT_TYPE_ID: u32 = 1_205_001;
 const WAL_STORAGE_SNAPSHOTS_PER_HOUR: usize = 120;
+const CGROUP_CONTEXT_SNAPSHOTS_PER_HOUR: usize = 360;
 const BASE_TS: i64 = 1_700_000_000_000_000;
 const PRE_CHANGE_ZMS_BYTES: u64 = 3_141_820;
 const PRE_CHANGE_DICT_STRINGS_BYTES: u64 = 1_978_136;
@@ -739,9 +740,9 @@ fn cgroup_context_hour_reports_raw_and_finished_costs() {
     let config = config(directory.path(), u64::MAX);
     let mut segment = SegmentState::default();
 
-    for sample in 0..WAL_STORAGE_SNAPSHOTS_PER_HOUR {
+    for sample in 0..CGROUP_CONTEXT_SNAPSHOTS_PER_HOUR {
         let sample = i64::try_from(sample).expect("sample count fits i64");
-        let ts = BASE_TS.saturating_add(sample.saturating_mul(30_000_000));
+        let ts = BASE_TS.saturating_add(sample.saturating_mul(10_000_000));
         let path = segment
             .interner_mut()
             .intern(b"/kubepods/pod-a/container-a")
@@ -755,6 +756,9 @@ fn cgroup_context_hour_reports_raw_and_finished_costs() {
             memory_path: Some(path),
             io_path: Some(path),
             cpuset_cpus: Some(2),
+            effective_cpu_quota_usec: Some(150_000),
+            effective_cpu_period_usec: Some(100_000),
+            effective_memory_max: Some(536_870_912),
             scope: 3,
         });
         push_os_sources(&mut buffers, &sources).expect("buffer cgroup context");
@@ -802,12 +806,9 @@ fn cgroup_context_hour_reports_raw_and_finished_costs() {
         .saturating_add(u64::try_from(ENTRY_LEN).expect("catalog entry length fits u64"));
 
     assert_eq!(listing.segments.len(), 1);
-    assert_eq!(stored.window_count(), 120);
-    assert_eq!(rows.len(), WAL_STORAGE_SNAPSHOTS_PER_HOUR);
-    assert_eq!(
-        rows.first().and_then(|row| row.get("cpuset_cpus")),
-        Some(&Cell::I64(2))
-    );
+    assert_eq!(stored.window_count(), 360);
+    assert_eq!(rows.len(), CGROUP_CONTEXT_SNAPSHOTS_PER_HOUR);
+    assert_cgroup_context_values(rows.first().expect("one cgroup context row"));
     let dictionary = stored.dictionary().expect("read cgroup context dictionary");
     for field in ["cpu_path", "memory_path", "io_path"] {
         let Some(Cell::StrId(path)) = rows.first().and_then(|row| row.get(field)) else {
@@ -821,7 +822,7 @@ fn cgroup_context_hour_reports_raw_and_finished_costs() {
             None => panic!("cgroup context {field} id resolves"),
         }
     }
-    assert!(raw_wal_bytes < 512 * 1024);
+    assert!(raw_wal_bytes < 1024 * 1024);
     assert!(section.bytes < 8 * 1024);
     assert!(zms_bytes < 16 * 1024);
     println!(
@@ -832,4 +833,15 @@ fn cgroup_context_hour_reports_raw_and_finished_costs() {
         marginal_zms_bytes,
         zms_bytes
     );
+}
+
+fn assert_cgroup_context_values(row: &Row) {
+    for (field, expected) in [
+        ("cpuset_cpus", 2),
+        ("effective_cpu_quota_usec", 150_000),
+        ("effective_cpu_period_usec", 100_000),
+        ("effective_memory_max", 536_870_912),
+    ] {
+        assert_eq!(row.get(field), Some(&Cell::I64(expected)));
+    }
 }

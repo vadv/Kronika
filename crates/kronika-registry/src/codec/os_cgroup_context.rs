@@ -1,8 +1,8 @@
-//! Type `1_205_001`: the collector's exact cgroup membership.
+//! Type `1_205_001`: the collector's exact cgroup membership and capacity.
 
 use crate::{Section, StrId, Ts};
 
-/// Controller paths and effective cpuset for the collector process.
+/// Controller paths and effective capacity for the collector process.
 ///
 /// `cgroup_version` is `1` for cgroup v1, `2` for cgroup v2, and `0` when the
 /// version could not be determined. Optional values stay null when their
@@ -33,6 +33,15 @@ pub struct OsCgroupContext {
     /// CPUs exposed by the effective cpuset file.
     #[column(g, unit = count)]
     pub cpuset_cpus: Option<i64>,
+    /// Tightest validated hierarchical CPU quota; `-1` means unlimited.
+    #[column(g, unit = microseconds)]
+    pub effective_cpu_quota_usec: Option<i64>,
+    /// Period paired with `effective_cpu_quota_usec`.
+    #[column(g, unit = microseconds)]
+    pub effective_cpu_period_usec: Option<i64>,
+    /// Tightest validated hierarchical memory limit.
+    #[column(g, unit = bytes)]
+    pub effective_memory_max: Option<i64>,
     /// Source scope. See `kronika_source_os::OsScope`.
     #[column(l)]
     pub scope: u8,
@@ -62,6 +71,9 @@ mod tests {
                 "memory_path",
                 "io_path",
                 "cpuset_cpus",
+                "effective_cpu_quota_usec",
+                "effective_cpu_period_usec",
+                "effective_memory_max",
                 "scope",
             ]
         );
@@ -75,6 +87,9 @@ mod tests {
                 memory_path: Some(StrId(10)),
                 io_path: Some(StrId(10)),
                 cpuset_cpus: Some(4),
+                effective_cpu_quota_usec: Some(150_000),
+                effective_cpu_period_usec: Some(100_000),
+                effective_memory_max: Some(536_870_912),
                 scope: 3,
             },
             OsCgroupContext {
@@ -84,6 +99,9 @@ mod tests {
                 memory_path: None,
                 io_path: None,
                 cpuset_cpus: None,
+                effective_cpu_quota_usec: None,
+                effective_cpu_period_usec: None,
+                effective_memory_max: None,
                 scope: 4,
             },
         ]);

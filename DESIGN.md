@@ -155,12 +155,33 @@ segment carries. It does not guess, and web does not re-derive it.
 
 On each cgroup collection tick, `os_cgroup_context` records cgroup version, the
 collector's exact CPU, memory, and I/O paths from `/proc/self/cgroup`, and the
-effective cpuset CPU count when the matching kernel file is usable. Missing
-controllers and unusable cpuset data remain `null`. A controller path also stays
-`null` when the stored layout cannot represent every operand shown by web; a
-missing counter or composition field is never turned into zero. This one-row
+effective cpuset CPU count when the exact matching kernel file is usable. It
+also records the tightest CPU quota/period ratio and memory limit that apply to
+that membership. The hierarchy starts at the configured cgroup root and ends at
+the exact membership path. Every cgroup v2 control file that exists on this path
+must be valid. For a non-root membership only, a missing control file at the
+mount root means that true root is unbounded; every descendant is required. A
+different root read error, or a missing root file for root membership, leaves
+capacity unknown. Cgroup v1 CPU reads are bound to one unambiguous controller
+root. V1 memory uses the exact leaf's validated `hierarchical_memory_limit` only
+when it agrees with `memory.limit_in_bytes` from that same bound root.
+
+A CPU quota of `-1` means the applicable hierarchy was read coherently and is
+unlimited; `null` means that hierarchy was not established coherently. A memory
+limit is `null` when it is unlimited or cannot be read coherently. Missing
+controllers and unusable cpuset data also remain `null`. A controller path
+stays `null` when the stored layout cannot represent every operand shown by
+web;
+a missing counter or composition field is never turned into zero. This one-row
 context selects the collector's rows from the bounded cgroup tables; a host CPU
-count or host `/proc` value never substitutes for cgroup capacity or use.
+count or host `/proc` value never substitutes for cgroup capacity or use. Local
+cgroup rows continue to record the leaf controller files and do not relabel
+them as effective hierarchical limits.
+
+Web loads this bounded context row first, then requests CPU, memory, and I/O
+snapshots with exact server-side `cgroup_path` and `scope` filters. The three
+controller paths remain independent for cgroup v1. Unfiltered cgroup trees are
+never materialized in `HourData`.
 
 Where it runs decides which pressure rows describe it: host-scoped
 `/proc/pressure` for a machine, and pressure from its own cgroup for a
@@ -458,17 +479,21 @@ idle and I/O wait; available host capacity is the recorded online logical CPU
 count. CPU history plots these shares together with used and available core
 equivalents on labelled scales. A collector cgroup is a separate table: used,
 user, and system core equivalents come from cgroup counter deltas, and capacity
-is the smaller of a finite quota and an effective cpuset when both exist. It is
-`null` when neither exists.
+is the smaller of the validated effective quota and the exact effective cpuset
+when both are finite. A coherently unlimited quota leaves the cpuset as
+capacity. Capacity is `null` when the quota hierarchy is unknown or neither
+value supplies a finite bound.
 
 Host memory uses non-overlapping anonymous, file-cache-plus-buffer,
 reclaimable-slab, unreclaimable-slab, free, and residual categories. The
 kernel's available-memory estimate is shown separately because it overlaps
 reclaimable memory. Memory history plots the non-overlapping categories, total,
 and the separate available estimate together with exact units. Collector-cgroup
-memory separately shows current and finite limit, anonymous, file, slab, other
-kernel, and residual charged memory. Slab is subtracted from kernel memory
-before both are displayed.
+memory separately shows current use, the finite effective hierarchical limit,
+anonymous, file, slab, other kernel, and residual charged memory. Slab is
+subtracted from kernel memory before both are displayed. The leaf's local
+memory setting remains available as source data but is not shown as the
+effective limit.
 
 System tables contain devices, the collector cgroup, mounts, interfaces and CPU
 topology. Block devices are identified by `major:minor`. Average read and write

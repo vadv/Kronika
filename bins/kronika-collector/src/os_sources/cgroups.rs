@@ -176,6 +176,9 @@ mod tests {
         assert_eq!(row.cpu_path, row.memory_path);
         assert_eq!(row.io_path, row.cpu_path);
         assert_eq!(row.cpuset_cpus, Some(2));
+        assert_eq!(row.effective_cpu_quota_usec, None);
+        assert_eq!(row.effective_cpu_period_usec, None);
+        assert_eq!(row.effective_memory_max, None);
         assert_eq!(row.scope, 3);
     }
 
@@ -200,6 +203,9 @@ mod tests {
         assert_eq!(row.memory_path, None);
         assert_eq!(row.io_path, None);
         assert_eq!(row.cpuset_cpus, None);
+        assert_eq!(row.effective_cpu_quota_usec, None);
+        assert_eq!(row.effective_cpu_period_usec, None);
+        assert_eq!(row.effective_memory_max, None);
         assert_eq!(row.scope, 4);
     }
 }
