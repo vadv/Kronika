@@ -3,6 +3,7 @@ import { Copy, X } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 
 import { loadSeries, loadSnapshot, type DataRow, type HourData } from "./api"
+import { useDisplayTime } from "./display-time-context"
 import { EntityTable, type EntityColumn, type TableOrder } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import { rawText, value, type Locale } from "./model"
@@ -58,6 +59,7 @@ export interface PostgresRelationsViewProps {
 }
 
 export function PostgresRelationsView(props: PostgresRelationsViewProps) {
+  const time = useDisplayTime()
   const { cursor, data, densePageState, filters, hour, level, locale, onCursor, onLens, onLoadMore, onNavigate, onOrder, onPattern, onRetry, order, pattern, section, t } = props
   const lens = isRelationLens(section, props.lens) ? props.lens : section === "pg_stat_user_tables" ? "access" : "usage"
   const rows = useMemo(() => relationDataRows(data.sections[section] ?? [], section, level), [data.sections, level, section])
@@ -80,7 +82,7 @@ export function PostgresRelationsView(props: PostgresRelationsViewProps) {
     onNavigate(next)
   }
   const hasMore = metadata?.hasMore === true && metadata.nextCursor !== null
-  const status = <>{tableState(metadata, rows.length, cursor, pattern, activeOrder, locale, t)}<span>{relationScope(filters, rows, t)}</span>{lens === "low_activity" && <span>{t("pg.relation.activity_note")}</span>}{level === "object" && lens !== "state" && <span>{t("system.history")}</span>}</>
+  const status = <>{tableState(metadata, rows.length, cursor, pattern, activeOrder, locale, t, time)}<span>{relationScope(filters, rows, t)}</span>{lens === "low_activity" && <span>{t("pg.relation.activity_note")}</span>}{level === "object" && lens !== "state" && <span>{t("system.history")}</span>}</>
   return <>
     <RelationLevels filters={filters} level={level} onNavigate={navigate} section={section} t={t} />
     <RelationLenses active={lens} onLens={onLens} section={section} t={t} />

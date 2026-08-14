@@ -5,11 +5,13 @@ import { registry } from "kronika:registry"
 import type { DataRow, Finding, HourData, SnapshotRows } from "./api"
 import { buildMetricSamples } from "./chart"
 import { contextMatches, contextualRows, type EntityContext } from "./entity-context"
+import { createDisplayTimeFormatter, type DisplayTimeFormatter } from "./display-time"
+import { useDisplayTime } from "./display-time-context"
 import { EntityTable, EstimatedRows, unit, type EntityColumn, type TableOrder } from "./entity-table"
 import type { Translate } from "./help"
 import { fieldNameForLocator, loadSeries, loadSnapshot } from "./api"
 import { LabelHelp } from "./help"
-import { asNumber, compact, formatUtc, humanBytes, humanDuration, identifier, measure, rawText, snapshot, value, type Locale, shownMoment } from "./model"
+import { asNumber, compact, humanBytes, humanDuration, humanPercent, identifier, measure, rawText, snapshot, value, type Locale, shownMoment } from "./model"
 import { decoratePostgresIntervalRow, findingSemanticField, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, physicalField, physicalFields, planDefaultOrder, postgresHistory, postgresIdentity, statementDefaultOrder, unique, type PlanLens, type PostgresSemanticField, type StatementLens } from "./postgres-metrics"
 import { PostgresRelationsView } from "./postgres-relations-view"
 import type { RelationGroup, RelationLens, RelationNavigation } from "./postgres-relations"
@@ -439,6 +441,7 @@ function WalStorage({ cursor, hour, locale, onCursor, row, t }: { readonly curso
 }
 
 function OverviewMetrics({ cursor, hour, locale, logicalName, onCursor, row, t }: { readonly cursor: number; readonly hour: number; readonly locale: Locale; readonly logicalName: string; readonly onCursor: (timestamp: number) => void; readonly row: DataRow; readonly t: Translate }) {
+  const time = useDisplayTime()
   const chartColumns = useMemo(() => overviewChartColumns(row), [row])
   const preferredField = chartColumns[0]?.field ?? null
   const chartFields = chartColumns.map(({ field }) => field).join("\u0000")
@@ -454,7 +457,7 @@ function OverviewMetrics({ cursor, hour, locale, logicalName, onCursor, row, t }
       <div aria-label={t("system.history")} className="process-history-selector" role="group">{chartColumns.map((column) => <button aria-pressed={metricField === column.field} data-testid={`pg-overview-chart-${column.field}`} key={column.field} onClick={() => setMetricField(column.field)} type="button">{t(overviewFieldKey(column.field))}</button>)}</div>
       <SeriesChart cursor={cursor} format={chartFormat(selectedColumn.kind)} hour={hour} label={t(overviewFieldKey(selectedColumn.field))} locale={locale} onCursor={onCursor} points={history ?? []} scale={chartScale(selectedColumn)} unit={chartUnit(selectedColumn, t("unit.per_second"))} />
     </section>}
-    <dl>{registryCardFields(row).map(([field, cell]) => <div key={field}><dt><span>{t(overviewFieldKey(field))}</span></dt><dd>{overviewValue(cell, field, locale)}</dd></div>)}</dl>
+    <dl>{registryCardFields(row).map(([field, cell]) => <div key={field}><dt><span>{t(overviewFieldKey(field))}</span></dt><dd>{overviewValue(cell, field, locale, time)}</dd></div>)}</dl>
   </section>
 }
 
@@ -554,6 +557,7 @@ function PgEntityView({
   readonly onRetry?: (() => void) | undefined
   readonly transformRows?: ((rows: readonly DataRow[]) => readonly DataRow[]) | undefined
 }) {
+  const time = useDisplayTime()
   const allRows = data.sections[section] ?? NO_ROWS
   const dense = section === "pg_stat_statements" || section === "pg_store_plans"
   const activeOrder = useMemo(() => order !== undefined && columns.some((column) => column.field === order.column && column.sortable === true)
@@ -590,7 +594,7 @@ function PgEntityView({
     ? densePageState === "loading" ? "loading" : "outside"
     : null
   const snapshotStatus = dense
-    ? tableState(metadata, ranked.length, cursor, pattern, activeOrder, locale, t, focusPreview)
+    ? tableState(metadata, ranked.length, cursor, pattern, activeOrder, locale, t, time, focusPreview)
     : undefined
   const canLoadMore = metadata?.hasMore === true && metadata.nextCursor !== null
   const paging = dense && (densePageState !== "idle" || canLoadMore)
@@ -616,6 +620,7 @@ export function tableState(
   order: TableOrder | undefined,
   locale: Locale,
   t: Translate,
+  time: Pick<DisplayTimeFormatter, "timestamp"> = createDisplayTimeFormatter(locale, "browser"),
   focusPreview: "loading" | "outside" | null = null,
 ): ReactNode {
   const count = (value: number) => new Intl.NumberFormat(locale).format(value)
@@ -624,9 +629,9 @@ export function tableState(
   const serverOrder = metadata?.orderBy.join(", ") ?? null
   const interval = metadata === undefined || metadata.from === null || metadata.to === null
     ? t("pg.table.interval_unavailable")
-    : t("pg.table.interval", { from: formatUtc(metadata.from), to: formatUtc(metadata.to) })
+    : t("pg.table.interval", { from: time.timestamp(metadata.from), to: time.timestamp(metadata.to) })
   return <>
-    <span>{t("pg.table.cursor", { time: formatUtc(cursor) })}</span>
+    <span>{t("pg.table.cursor", { time: time.timestamp(cursor) })}</span>
     {focusPreview !== null && <span>{t(`pg.table.focus_${focusPreview}`)}</span>}
     {focusPreview === null && <>
       <span>{interval}</span>
@@ -926,19 +931,23 @@ export function display(cell: ReturnType<typeof value>, column: EntityColumn, lo
   }
   if (column.kind === "id") return rawText(cell) ?? "—"
   const per = t("unit.per_second")
-  if (column.kind === "bytes") return <span title={unit(`${rawText(cell)} B`, column.rate, per)}>{unit(humanBytes(cell, locale), column.rate, per)}</span>
+  if (column.kind === "bytes") {
+    const output = unit(humanBytes(cell, locale), column.rate, per)
+    return <span title={output}>{output}</span>
+  }
   if (column.kind === "kib") return unit(humanBytes(asNumber(cell) === null ? null : (asNumber(cell) ?? 0) * 1024, locale), column.rate, per)
   if (column.kind === "milliseconds") return measure(cell, locale, unit(t("unit.ms"), column.rate, per))
   if (column.kind === "duration") return humanDuration(cell, locale)
   if (column.kind === "microseconds") return measure(cell, locale, unit(t("unit.us"), column.rate, per))
-  if (column.kind === "percent") return measure(cell, locale, unit("%", column.rate, per))
+  if (column.kind === "percent") return column.rate === true ? measure(cell, locale, `%${per}`) : humanPercent(cell, locale)
   if (column.kind === "boolean" && typeof cell === "boolean") return locale === "ru" ? cell ? "да" : "нет" : String(cell)
   if (typeof cell === "number") return measure(cell, locale, unit("", column.rate, per))
   return rawText(cell) ?? "—"
 }
 
 function TimestampValue({ t, timestamp }: { readonly t: Translate; readonly timestamp: number }) {
-  return <span className="timestamp-value"><span>{formatUtc(timestamp)}</span><button aria-label={t("common.raw")} onClick={() => void navigator.clipboard?.writeText(String(timestamp))} type="button"><Copy aria-hidden="true" size={12} /></button></span>
+  const time = useDisplayTime()
+  return <span className="timestamp-value"><span>{time.timestamp(timestamp)}</span><button aria-label={t("common.raw")} onClick={() => void navigator.clipboard?.writeText(String(timestamp))} type="button"><Copy aria-hidden="true" size={12} /></button></span>
 }
 
 function groupSections(rows: readonly DataRow[]): readonly [string, readonly DataRow[]][] {
@@ -1006,11 +1015,11 @@ function isInternalField(field: string): boolean {
   return INTERNAL_FIELDS.has(field)
 }
 
-export function overviewValue(cell: ReturnType<typeof value>, field: string, locale: Locale): string {
+export function overviewValue(cell: ReturnType<typeof value>, field: string, locale: Locale, time: Pick<DisplayTimeFormatter, "timestamp"> = createDisplayTimeFormatter(locale, "browser")): string {
   if (cell === null) return "—"
   if (isTimestampField(field)) {
     const timestamp = asNumber(cell)
-    return timestamp === null ? "—" : formatUtc(timestamp)
+    return timestamp === null ? "—" : time.timestamp(timestamp)
   }
   if (field === "pid" || field.endsWith("id") || field.endsWith("_id")) return rawText(cell) ?? "—"
   if (field.endsWith("_time")) return measure(cell, locale, " ms")

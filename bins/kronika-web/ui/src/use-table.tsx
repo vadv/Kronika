@@ -1,7 +1,7 @@
 import type { LanePoint } from "./api"
 import { useEffect, useMemo, useState } from "react"
 import type { Translate } from "./help"
-import { humanBytes, measure, type Locale } from "./model"
+import { humanBytes, humanPercent, measure, type Locale } from "./model"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 
 const RESOURCES: readonly Resource[] = [
@@ -173,7 +173,7 @@ function seriesOf(lanePoints: readonly LanePoint[], lane: string): readonly Char
 }
 
 export function reading(value: number, locale: Locale, kind: Cell["kind"], perSecond: string): string {
-  if (kind === "share") return measure(value, locale, "%")
+  if (kind === "share") return humanPercent(value, locale)
   if (kind === "bytes") return humanBytes(value, locale, perSecond)
   if (kind === "count") return measure(value, locale)
   return measure(value, locale, perSecond)

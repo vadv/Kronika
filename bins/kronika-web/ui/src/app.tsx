@@ -27,6 +27,8 @@ import {
 import type { TableOrder } from "./entity-table"
 import { hostSectionOf, pgSectionOf, readAddress, sourceOf, stepOf, viewOf, writeAddress, type PgLens } from "./address"
 import { DetailDock, PROCESS_HISTORY_FIELDS } from "./detail"
+import { loadDisplayTimeZone, saveDisplayTimeZone, type DisplayTimeZone } from "./display-time"
+import { DisplayTimeProvider, useDisplayTime } from "./display-time-context"
 import { contextualRows, entityContext, findingRoute } from "./entity-context"
 import { EventsView, type FindingResolution } from "./events-view"
 import { findingHistory, findingHistoryRequest, findingProjection } from "./finding-presentation"
@@ -39,9 +41,7 @@ import {
   activityFor,
   asNumber,
   floorHour,
-  formatUtc,
   interpolate,
-  localTimePair,
   processKey,
   processLens,
   rawText,
@@ -117,6 +117,7 @@ const HELP_EVENTS = [
 function Kronika() {
   const session = useSyncExternalStore(subscribeSession, getSessionSnapshot, getSessionSnapshot)
   const [locale, setLocale] = useState<Locale>(initialLocale)
+  const [displayZone, setDisplayZone] = useState<DisplayTimeZone>(() => loadDisplayTimeZone(localStorage))
   const t = useMemo<Translate>(() => (key, slots = {}) => {
     const template = translation(locale, key) ?? key
     return interpolate(template, slots)
@@ -125,9 +126,10 @@ function Kronika() {
     document.documentElement.lang = locale
     try { localStorage.setItem("kronika.locale", locale) } catch {}
   }, [locale])
+  useEffect(() => saveDisplayTimeZone(localStorage, displayZone), [displayZone])
   if (session === "pending") return null
   return session === "signed-in"
-    ? <App locale={locale} onLocale={setLocale} t={t} />
+    ? <DisplayTimeProvider locale={locale} mode={displayZone} setMode={setDisplayZone}><App locale={locale} onLocale={setLocale} t={t} /></DisplayTimeProvider>
     : <Login expired={session === "expired"} locale={locale} onLocale={setLocale} t={t} />
 }
 
@@ -136,6 +138,7 @@ function App({ locale, onLocale, t }: {
   readonly onLocale: (locale: Locale) => void
   readonly t: Translate
 }) {
+  const time = useDisplayTime()
   const opened = useRef(readAddress(window.location.search))
   const [theme, setTheme] = useState<Theme>(initialTheme)
   const [hour, setHour] = useState<number | null>(opened.current.at === null ? null : floorHour(opened.current.at))
@@ -675,8 +678,9 @@ function App({ locale, onLocale, t }: {
   }, [eventsPresent, loading, pgPresent, source])
 
   const stretchPostgres = source === "postgresql" && (relationSection || pgSection === "statements" || pgSection === "plans")
-  const cursorTime = cursor === 0 ? null : localTimePair(cursor, locale)
-  const updatedTime = lastUpdated === null ? null : localTimePair(lastUpdated, locale)
+  const cursorTime = cursor === 0 ? null : time.clock(cursor)
+  const updatedTime = lastUpdated === null ? null : time.clock(lastUpdated)
+  const zoneReference = cursor || hour || Date.now() * 1_000
   return <main className={`app-shell${stretchPostgres ? " pg-table-shell" : ""}`}>
     <header className="topbar">
       <span className="brand-mark"><Activity aria-hidden="true" size={15} strokeWidth={2} /></span>
@@ -695,14 +699,18 @@ function App({ locale, onLocale, t }: {
 
       <HourPicker availableHours={availableHours} changeHour={changeHour} hour={hour} locale={locale} t={t} />
       <div aria-live="polite" className="cursor-time">
-        <TimePair label={t("hour.cursor_label")} pair={cursorTime} testId="cursor-time" />
-        {updatedTime !== null && <TimePair label={t("refresh.updated")} pair={updatedTime} testId="updated-time" />}
+        <TimeValue label={t("hour.cursor_label")} output={cursorTime} testId="cursor-time" />
+        {updatedTime !== null && <TimeValue label={t("refresh.updated")} output={updatedTime} testId="updated-time" />}
         {refreshFailed && <span>{t("refresh.error")}</span>}
         {cursorState !== "ready" && <span className={cursorState === "loading" ? "cursor-behind" : "cursor-missing"} data-testid="cursor-behind">{t(cursorState === "loading" ? "status.updating" : "status.no_sample")}</span>}
       </div>
 
       <div className="top-actions">
         <button aria-label={t("refresh.action")} className="icon-button" disabled={refreshing || !refreshReady} onClick={requestRefresh} title={t("refresh.action")} type="button">↻</button>
+        <select aria-label={t("timezone.switch")} className="timezone-select" data-testid="timezone-select" onChange={(event) => time.setMode(event.currentTarget.value as DisplayTimeZone)} value={time.mode}>
+          <option value="browser">{t("timezone.browser", { zone: time.browserOffset(zoneReference) })}</option>
+          <option value="utc">{t("timezone.utc")}</option>
+        </select>
         <button aria-label={t("common.theme.switch")} className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title={t(theme === "dark" ? "common.theme.light" : "common.theme.dark")} type="button">
           {theme === "dark" ? "☀" : "☾"}
         </button>
@@ -729,7 +737,7 @@ function App({ locale, onLocale, t }: {
           <div aria-label={t("section.processes")} className="lens-tabs" role="group">
             {(["cpu", "memory", "disk", "generic"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => { if (choice !== lens) setOrder(null); setLens(choice) }} type="button">{t(`lens.${choice}`)}</button>)}
           </div>
-          <span>{processRows[0] === undefined ? t("status.no_data") : formatUtc(processRows[0].timestamp)}</span>
+          <span>{processRows[0] === undefined ? t("status.no_data") : time.timestamp(processRows[0].timestamp)}</span>
         </div>
         <ProcessSummary lens={lens} linkedPids={linkedPids} locale={locale} rows={processRows} t={t} ticksPerSecond={ticksPerSecond} />
         <div className={selectedProcess === null ? "process-layout process-layout-table" : "process-layout"}>
@@ -745,8 +753,8 @@ function App({ locale, onLocale, t }: {
   </main>
 }
 
-function TimePair({ label, pair, testId }: { readonly label: string; readonly pair: ReturnType<typeof localTimePair> | null; readonly testId: string }) {
-  return <span data-testid={testId}><b>{label}</b>{pair?.primary ?? "—"}</span>
+function TimeValue({ label, output, testId }: { readonly label: string; readonly output: string | null; readonly testId: string }) {
+  return <span data-testid={testId}><b>{label}</b>{output ?? "—"}</span>
 }
 
 function StateCard({ message }: { readonly message: string }) {

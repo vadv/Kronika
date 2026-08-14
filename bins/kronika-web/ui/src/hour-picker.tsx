@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
+import { calendarDateLabel, calendarMonthDays, calendarMonthLabel, type DisplayTimeFormatter } from "./display-time"
+import { useDisplayTime } from "./display-time-context"
 import type { Translate } from "./help"
-import { inputDay, inputHour, localHourPair, selectedHour, type Locale } from "./model"
-
-const HOUR_US = 3_600_000_000
-const ALL_HOURS = Array.from({ length: 24 }, (_, hour) => hour)
+import type { Locale } from "./model"
 
 export function HourPicker({
   availableHours,
@@ -19,26 +18,27 @@ export function HourPicker({
   readonly locale: Locale
   readonly t: Translate
 }) {
-  const committedDay = hour === null ? "" : inputDay(hour)
-  const hourNumber = hour === null ? 0 : inputHour(hour)
+  const time = useDisplayTime()
+  const selectable = useMemo(() => catalogueHours(availableHours, hour), [availableHours, hour])
+  const committedDay = hour === null ? "" : time.dayKey(hour)
+  const committedMonth = hour === null ? "" : time.monthKey(hour)
   const [open, setOpen] = useState(false)
   const [day, setDay] = useState(committedDay)
-  const [month, setMonth] = useState(hour === null ? 0 : pickerMonthStart(hour))
+  const [month, setMonth] = useState(committedMonth)
   const root = useRef<HTMLDivElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
   const hourCells = useRef<(HTMLButtonElement | null)[]>([])
-  const recorded = useMemo(() => new Set(availableHours), [availableHours])
-  const selectable = useMemo(() => new Set([...availableHours, hour].filter((candidate): candidate is number => candidate !== null)), [availableHours, hour])
-  const availableDays = new Set([...selectable].map(inputDay))
-  const dayHours = [...selectable].flatMap((candidate) => inputDay(candidate) === day ? [inputHour(candidate)] : [])
-  dayHours.sort((left, right) => left - right)
-  const months = [...new Set([...selectable].map(pickerMonthStart))].sort((left, right) => left - right)
+  const availableDays = useMemo(() => new Set(selectable.map((candidate) => time.dayKey(candidate))), [selectable, time])
+  const dayHours = useMemo(() => hoursForDay(selectable, day, time), [day, selectable, time])
+  const months = useMemo(() => [...new Set(selectable.map((candidate) => time.monthKey(candidate)))].sort(), [selectable, time])
   const monthIndex = months.indexOf(month)
-  const label = hour === null ? null : localHourPair(hour, locale)
+  const currentIndex = hour === null ? -1 : selectable.indexOf(hour)
+  const label = hour === null ? null : time.hourRange(hour)
 
   useEffect(() => {
     if (!open) return
-    const frame = requestAnimationFrame(() => hourCells.current[hourNumber]?.focus())
+    const selected = dayHours.indexOf(hour ?? Number.NaN)
+    const frame = requestAnimationFrame(() => hourCells.current[Math.max(0, selected)]?.focus())
     const dismiss = (event: PointerEvent) => {
       if (event.target instanceof Node && root.current?.contains(event.target)) return
       setOpen(false)
@@ -56,17 +56,19 @@ export function HourPicker({
       document.removeEventListener("pointerdown", dismiss, true)
       window.removeEventListener("keydown", escape)
     }
-  }, [hourNumber, open])
+  }, [dayHours, hour, open])
 
   const show = () => {
     if (hour === null) return
-    if (open) {
-      setOpen(false)
-      return
-    }
+    if (open) return setOpen(false)
     setDay(committedDay)
-    setMonth(pickerMonthStart(hour))
+    setMonth(committedMonth)
     setOpen(true)
+  }
+  const move = (index: number) => {
+    const candidate = selectable[index]
+    setOpen(false)
+    if (candidate !== undefined) changeHour(candidate)
   }
   return <div
     className="hour-picker"
@@ -77,11 +79,11 @@ export function HourPicker({
     }}
     ref={root}
   >
-    <button aria-label={t("hour.previous")} data-testid="hour-previous" disabled={hour === null} onClick={() => { setOpen(false); if (hour !== null) changeHour(hour - HOUR_US) }} type="button">‹</button>
+    <button aria-label={t("hour.previous")} data-testid="hour-previous" disabled={currentIndex <= 0} onClick={() => move(currentIndex - 1)} type="button">‹</button>
     <button
+      aria-controls="hour-picker-popover"
       aria-expanded={open}
       aria-haspopup="dialog"
-      aria-controls="hour-picker-popover"
       aria-label={label === null ? t("hour.picker") : `${t("hour.picker")}: ${label.date} · ${label.primary}`}
       className="hour-trigger"
       data-testid="hour-picker-trigger"
@@ -93,79 +95,51 @@ export function HourPicker({
       <strong>{label?.primary ?? "—"}</strong>
       {label !== null && <small>{label.date}</small>}
     </button>
-    <button aria-label={t("hour.next")} data-testid="hour-next" disabled={hour === null} onClick={() => { setOpen(false); if (hour !== null) changeHour(hour + HOUR_US) }} type="button">›</button>
+    <button aria-label={t("hour.next")} data-testid="hour-next" disabled={currentIndex < 0 || currentIndex >= selectable.length - 1} onClick={() => move(currentIndex + 1)} type="button">›</button>
     {open && hour !== null && <div aria-label={t("hour.picker")} className="hour-popover" data-testid="hour-popover" id="hour-picker-popover" role="dialog">
       <header>
-        <strong data-testid="hour-current">{pickerDateLabel(hour, locale)}</strong>
-        <span>{t("hour.context")}</span>
+        <strong data-testid="hour-current">{calendarDateLabel(time.dayKey(hour), locale)}</strong>
+        <span>{time.zone(hour)}</span>
       </header>
       <div className="day-picker">
         <div className="month-navigation">
           <button aria-label={t("hour.month.previous")} disabled={monthIndex <= 0} onClick={() => setMonth(months[monthIndex - 1] ?? month)} type="button">‹</button>
-          <strong aria-live="polite" data-testid="picker-month">{pickerMonthLabel(month, locale)}</strong>
-          <button aria-label={t("hour.month.next")} disabled={monthIndex >= months.length - 1} onClick={() => setMonth(months[monthIndex + 1] ?? month)} type="button">›</button>
+          <strong aria-live="polite" data-testid="picker-month">{calendarMonthLabel(month, locale)}</strong>
+          <button aria-label={t("hour.month.next")} disabled={monthIndex < 0 || monthIndex >= months.length - 1} onClick={() => setMonth(months[monthIndex + 1] ?? month)} type="button">›</button>
         </div>
         <div aria-label={t("hour.picker")} className="day-grid" role="group">
-          {pickerMonthDays(month).map((candidate) => {
+          {calendarMonthDays(month).map((candidate) => {
             const hasData = availableDays.has(candidate)
-            return <button aria-label={pickerDateLabel(selectedHour(candidate, 0) ?? 0, locale)} aria-pressed={candidate === day} className={hasData ? "day-cell day-cell-available" : "day-cell"} data-day={candidate} disabled={!hasData} key={candidate} onClick={() => setDay(candidate)} type="button">{candidate.slice(-2)}</button>
+            return <button aria-label={calendarDateLabel(candidate, locale)} aria-pressed={candidate === day} className={hasData ? "day-cell day-cell-available" : "day-cell"} data-day={candidate} disabled={!hasData} key={candidate} onClick={() => setDay(candidate)} type="button">{candidate.slice(-2)}</button>
           })}
         </div>
       </div>
       <div aria-label={t("hour.hours")} className="hour-grid" role="group">
-          {ALL_HOURS.map((number) => {
-            const cellHour = selectedHour(day, number)
-            const hasData = cellHour !== null && selectable.has(cellHour)
-            const captured = cellHour !== null && recorded.has(cellHour)
-            return <button aria-label={`${twoDigits(number)}:00${captured ? ` · ${t("hour.available")}` : ""}`} aria-pressed={cellHour === hour} className="hour-cell" data-available={captured ? "true" : "false"} data-hour={twoDigits(number)} disabled={!hasData} key={number} onClick={() => { if (cellHour !== null && hasData) { changeHour(cellHour); setOpen(false); trigger.current?.focus() } }} onKeyDown={(event) => { const next = pickerFocusHour(number, event.key, dayHours); if (next !== null) { event.preventDefault(); hourCells.current[next]?.focus() } }} ref={(node) => { hourCells.current[number] = node }} tabIndex={number === (day === committedDay ? hourNumber : dayHours[0]) ? 0 : -1} type="button">{twoDigits(number)}</button>
-          })}
+        {dayHours.map((candidate, index) => {
+          const clock = time.hourLabel(candidate)
+          return <button aria-label={clock} aria-pressed={candidate === hour} className="hour-cell" data-instant={candidate} key={candidate} onClick={() => { changeHour(candidate); setOpen(false); trigger.current?.focus() }} onKeyDown={(event) => { const next = pickerFocusIndex(index, event.key, dayHours.length); if (next !== null) { event.preventDefault(); hourCells.current[next]?.focus() } }} ref={(node) => { hourCells.current[index] = node }} tabIndex={candidate === hour || hour !== null && time.dayKey(hour) !== day && index === 0 ? 0 : -1} type="button">{clock}</button>
+        })}
       </div>
     </div>}
   </div>
 }
 
-export function pickerRangeLabel(hour: number): string {
-  return `${twoDigits(inputHour(hour))}:00–${twoDigits(inputHour(hour + HOUR_US))}:00`
+export function catalogueHours(available: readonly number[], current: number | null): readonly number[] {
+  return [...new Set([...available, current].filter((candidate): candidate is number => candidate !== null && Number.isSafeInteger(candidate)))].sort((left, right) => left - right)
 }
 
-export function pickerDateLabel(hour: number, locale: Locale): string {
-  return new Intl.DateTimeFormat(locale, {
-    day: "2-digit",
-    month: "short",
-    timeZone: "UTC",
-    year: "numeric",
-  }).format(new Date(hour / 1_000))
+export function hoursForDay(hours: readonly number[], day: string, time: Pick<DisplayTimeFormatter, "dayKey">): readonly number[] {
+  return hours.filter((candidate) => time.dayKey(candidate) === day)
 }
 
-export function pickerMonthLabel(month: number, locale: Locale): string {
-  return new Intl.DateTimeFormat(locale, { month: "long", timeZone: "UTC", year: "numeric" }).format(new Date(month / 1_000))
-}
-
-export function pickerMonthStart(hour: number): number {
-  const date = new Date(hour / 1_000)
-  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1) * 1_000
-}
-
-export function pickerMonthDays(month: number): readonly string[] {
-  const date = new Date(month / 1_000)
-  const year = date.getUTCFullYear()
-  const monthNumber = date.getUTCMonth()
-  const count = new Date(Date.UTC(year, monthNumber + 1, 0)).getUTCDate()
-  return Array.from({ length: count }, (_, day) => inputDay(Date.UTC(year, monthNumber, day + 1) * 1_000))
-}
-
-export function pickerFocusHour(current: number, key: string, enabled: readonly number[] = ALL_HOURS): number | null {
-  if (key === "Home") return enabled[0] ?? null
-  if (key === "End") return enabled.at(-1) ?? null
-  const step = key === "ArrowLeft" ? -1 : key === "ArrowRight" ? 1 : key === "ArrowUp" ? -6 : key === "ArrowDown" ? 6 : 0
-  if (step === 0) return null
-  return enabled.filter((hour) => Math.sign(hour - current) === Math.sign(step)).sort((a, b) => Math.abs(a - current - step) - Math.abs(b - current - step))[0] ?? current
+export function pickerFocusIndex(current: number, key: string, length: number): number | null {
+  if (length === 0) return null
+  if (key === "Home") return 0
+  if (key === "End") return length - 1
+  const step = key === "ArrowLeft" ? -1 : key === "ArrowRight" ? 1 : key === "ArrowUp" ? -3 : key === "ArrowDown" ? 3 : 0
+  return step === 0 ? null : Math.max(0, Math.min(length - 1, current + step))
 }
 
 export function hourHasData(hour: number, available: readonly number[]): boolean {
   return available.includes(hour)
-}
-
-function twoDigits(number: number): string {
-  return String(number).padStart(2, "0")
 }

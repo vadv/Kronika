@@ -38,55 +38,9 @@ export function floorHour(timestamp: number): number {
   return Math.floor(timestamp / 3_600_000_000) * 3_600_000_000
 }
 
-export function inputDay(timestamp: number): string {
-  return new Date(timestamp / 1_000).toISOString().slice(0, 10)
-}
-
-export function inputHour(timestamp: number): number {
-  return new Date(timestamp / 1_000).getUTCHours()
-}
-
-export function selectedHour(day: string, hour: number): number | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day)
-  if (match === null) return null
-  const year = Number(match[1])
-  const month = Number(match[2])
-  const date = Number(match[3])
-  const milliseconds = Date.UTC(year, month - 1, date, hour)
-  return Number.isFinite(milliseconds) ? milliseconds * 1_000 : null
-}
-
-export function formatUtcCell(timestamp: number | null): string {
-  if (timestamp === null || !Number.isFinite(timestamp)) return "—"
-  return new Date(Math.trunc(timestamp / 1_000)).toISOString().slice(0, 19).replace("T", " ")
-}
-
-export function formatUtc(timestamp: number | null): string {
-  if (timestamp === null || !Number.isFinite(timestamp)) return "—"
-  return new Date(Math.trunc(timestamp / 1_000)).toISOString().replace("T", " ").replace("Z", " UTC")
-}
-
 export interface TimePair {
   readonly primary: string
   readonly secondary: string | null
-}
-
-export interface HourPair {
-  readonly date: string
-  readonly primary: string
-}
-
-export function localTimePair(timestamp: number, locale: Locale, timeZone?: string): TimePair {
-  const date = new Date(Math.trunc(timestamp / 1_000))
-  const primary = clock(date, locale, timeZone, true)
-  const utc = clock(date, locale, "UTC", true)
-  return { primary, secondary: primary === utc ? null : utc }
-}
-
-export function localHourPair(hour: number, locale: Locale, timeZone?: string): HourPair {
-  const start = new Date(Math.trunc(hour / 1_000))
-  const end = new Date(Math.trunc((hour + 3_600_000_000) / 1_000))
-  return { date: dateRange(start, end, locale, timeZone), primary: clockRange(start, end, locale, timeZone) }
 }
 
 export function nearestTime(rows: readonly DataRow[], target: number): number | null {
@@ -159,6 +113,12 @@ export function measure(cell: Cell, locale: Locale, suffix = ""): string {
   return `${compact(number, locale)}${suffix}`
 }
 
+export function humanPercent(cell: Cell, locale: Locale): string {
+  const number = asNumber(cell)
+  if (number === null) return "—"
+  return `${compact(number, locale)}${locale === "ru" ? "\u00a0" : ""}%`
+}
+
 export function humanDuration(cell: Cell, locale: Locale): string {
   const milliseconds = asNumber(cell)
   if (milliseconds === null) return "—"
@@ -177,7 +137,7 @@ export function humanDuration(cell: Cell, locale: Locale): string {
 }
 
 export function compact(value: number, locale: Locale): string {
-  const abs = Math.abs(value), notation = abs >= 1e15 ? "scientific" : abs >= 1e3 ? "compact" : undefined
+  const abs = Math.abs(value), notation = abs >= 1e15 || abs > 0 && abs < 1e-6 ? "scientific" : abs >= 1e3 ? "compact" : undefined
   return isFinite(value) ? new Intl.NumberFormat(locale, { maximumSignificantDigits: 3, notation }).format(value) : "—"
 }
 
@@ -207,38 +167,6 @@ function rowPlural(value: bigint, locale: Locale): "one" | "few" | "many" {
   return last >= 2n && last <= 4n && (lastTwo < 12n || lastTwo > 14n) ? "few" : "many"
 }
 
-function clock(date: Date, locale: Locale, timeZone: string | undefined, precise: boolean): string {
-  return Intl.DateTimeFormat(locale, {
-    fractionalSecondDigits: precise ? 3 : undefined,
-    hour: "2-digit",
-    hourCycle: "h23",
-    minute: "2-digit",
-    second: precise ? "2-digit" : undefined,
-    timeZone,
-    timeZoneName: "short",
-  }).format(date)
-}
-
-function clockRange(start: Date, end: Date, locale: Locale, timeZone: string | undefined): string {
-  const [left, leftZone] = clockParts(start, locale, timeZone)
-  const [right, rightZone] = clockParts(end, locale, timeZone)
-  return leftZone === rightZone
-    ? `${left}–${right} ${leftZone}`
-    : `${left} ${leftZone}–${right} ${rightZone}`
-}
-
-function clockParts(date: Date, locale: Locale, timeZone: string | undefined): readonly [string, string] {
-  const label = clock(date, locale, timeZone, false)
-  const split = label.lastIndexOf(" ")
-  return [label.slice(0, split), label.slice(split + 1)]
-}
-
-function dateRange(start: Date, end: Date, locale: Locale, timeZone: string | undefined): string {
-  const format = Intl.DateTimeFormat(locale, { day: "2-digit", month: "short", timeZone, year: "numeric" })
-  const left = format.format(start), right = format.format(end)
-  return left === right ? left : `${left}–${right}`
-}
-
 const BYTE_UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"] as const
 
 export function humanBytes(cell: Cell, locale: Locale, suffix = ""): string {
@@ -251,20 +179,22 @@ export function humanBytes(cell: Cell, locale: Locale, suffix = ""): string {
     scaled /= 1024
     step += 1
   }
-  const digits = scaled >= 100 || step === 0 ? 0 : 1
-  return `${sign}${new Intl.NumberFormat(locale, { maximumFractionDigits: digits }).format(scaled)} ${BYTE_UNITS[step]}${suffix}`
+  const output = step === 0 && !Number.isInteger(scaled)
+    ? compact(scaled, locale)
+    : new Intl.NumberFormat(locale, { maximumFractionDigits: scaled >= 100 || step === 0 ? 0 : 1 }).format(scaled)
+  return `${sign}${output} ${BYTE_UNITS[step]}${suffix}`
 }
 
 export function cores(cell: Cell, locale: Locale, ticksPerSecond: number | null): string {
   const number = asNumber(cell)
   if (number === null || ticksPerSecond === null || ticksPerSecond <= 0) return "—"
-  return new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(number / ticksPerSecond)
+  return compact(number / ticksPerSecond, locale)
 }
 
 export function millisecondsPerSecond(cell: Cell, locale: Locale): string {
   const number = asNumber(cell)
   if (number === null) return "—"
-  return new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(number / 1_000_000)
+  return compact(number / 1_000_000, locale)
 }
 
 export function activityFor(

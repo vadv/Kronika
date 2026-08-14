@@ -3,18 +3,11 @@ import test from "node:test"
 
 import type { Cell, DataRow } from "../src/api.ts"
 import { fittedWidth } from "../src/column-size.ts"
-import { activityFor, compact, estimatedRows, formatUtc, humanBytes, identifier, localHourPair, localTimePair, measure, nearestTime, processCommand, processDefaultSort, processKey, processLens, rawText, shownMoment, selectedHour, stateText, type Locale } from "../src/model.ts"
+import { activityFor, compact, cores, estimatedRows, humanBytes, humanDuration, humanPercent, identifier, measure, millisecondsPerSecond, nearestTime, processCommand, processDefaultSort, processKey, processLens, rawText, shownMoment, stateText, type Locale } from "../src/model.ts"
 
 function row(timestamp: number): DataRow {
   return { segmentId: "7", logicalName: "os_process", typeId: "1100001", ordinal: "0", timestamp, values: {} }
 }
-
-test("UTC hour selection and timestamp presentation are exact", () => {
-  const hour = selectedHour("2026-02-03", 4)
-  assert.equal(hour, Date.UTC(2026, 1, 3, 4) * 1_000)
-  const timestamp = Date.UTC(2026, 1, 3, 14, 44, 5, 678) * 1_000 + 901
-  assert.equal(formatUtc(timestamp), "2026-02-03 14:44:05.678 UTC")
-})
 
 test("nearest stored time chooses the earlier value on a tie", () => {
   assert.equal(nearestTime([row(100), row(300)], 200), 100)
@@ -73,15 +66,18 @@ test("process tables start with CPU and disk sorting chooses the first active si
   assert.equal(processDefaultSort("disk", [process({ read_bytes: 0, write_bytes: 0, syscr: 0, syscw: 0 })]), "read_bytes")
 })
 
-test("counters that arrive as rates are read in units a person thinks in", async () => {
-  const model = await import("../src/model.ts")
-  assert.equal(model.humanBytes(1_572_864, "en"), "1.5 MiB")
-  assert.equal(model.humanBytes(512, "en"), "512 B")
-  assert.equal(model.humanBytes(null, "en"), "—")
-  assert.equal(model.cores(161.01, "en", 100), "1.61")
-  assert.equal(model.cores(161.01, "en", null), "—")
-  assert.equal(model.cores(161.01, "en", 0), "—")
-  assert.equal(model.millisecondsPerSecond(111_622_111.53, "en"), "111.6")
+test("rates and ratios stay bounded without turning small nonzero values into zero", () => {
+  assert.equal(humanBytes(1_572_864, "en"), "1.5 MiB")
+  assert.equal(humanBytes(512, "en"), "512 B")
+  assert.equal(humanBytes(0.49, "en", "/s"), "0.49 B/s")
+  assert.equal(humanBytes(41.729068244136855, "en", "/s"), "41.7 B/s")
+  assert.equal(humanBytes(null, "en"), "—")
+  assert.equal(cores(161.01, "en", 100), "1.61")
+  assert.equal(cores(0.4, "en", 100), "0.004")
+  assert.equal(cores(161.01, "en", null), "—")
+  assert.equal(cores(161.01, "en", 0), "—")
+  assert.equal(millisecondsPerSecond(111_622_111.53, "en"), "112")
+  assert.equal(millisecondsPerSecond(40_000, "en"), "0.04")
 })
 
 test("byte values use locale-aware binary units without compact decimal words", () => {
@@ -128,6 +124,15 @@ test("metric numbers use three significant digits and locale-aware compact scale
   assert.equal(compact(8_117_857, "ru"), "8,12 млн")
   assert.equal(compact(1_360_000_000, "ru"), "1,36 млрд")
   assert.equal(measure(1407.48, "en", " ms/s"), "1.41K ms/s")
+  assert.equal(compact(4e-7, "en"), "4E-7")
+  assert.equal(humanPercent(41.729068244136855, "en"), "41.7%")
+  assert.equal(humanPercent(41.729068244136855, "ru"), "41,7 %")
+  assert.equal(humanPercent(0, "en"), "0%")
+  assert.equal(humanPercent(null, "en"), "—")
+  assert.equal(humanPercent(4e-7, "en"), "4E-7%")
+  assert.equal(humanDuration(999.999, "en"), "1,000 ms")
+  assert.equal(humanDuration(1_234, "en"), "1.2 s")
+  assert.equal(humanDuration(null, "en"), "—")
   assert.equal(identifier("9007199254740993"), "9007199254740993")
 })
 
@@ -157,23 +162,4 @@ test("estimated row exact labels use bigint-safe EN and RU plurals", () => {
   for (const [value, suffix] of [[11, "строк"], [12, "строк"], [14, "строк"], [21, "строка"], [22, "строки"], [25, "строк"]] as const) {
     assert.equal(estimatedRows(value, "ru", rowTranslator("ru"))?.secondary, `≈${value} ${suffix}`)
   }
-})
-
-test("browser-local labels retain UTC context without a UTC duplicate", () => {
-  const instant = Date.UTC(2026, 7, 14, 5, 30, 0, 123) * 1_000
-  assert.deepEqual(localTimePair(instant, "en", "UTC"), { primary: "05:30:00.123 UTC", secondary: null })
-  assert.deepEqual(localTimePair(instant, "en", "America/New_York"), { primary: "01:30:00.123 EDT", secondary: "05:30:00.123 UTC" })
-})
-
-test("local hour endpoints survive DST folds, skips, and date boundaries", () => {
-  assert.deepEqual(localHourPair(Date.UTC(2026, 2, 8, 6) * 1_000, "en", "America/New_York"), {
-    date: "Mar 08, 2026", primary: "01:00 EST–03:00 EDT",
-  })
-  assert.deepEqual(localHourPair(Date.UTC(2026, 10, 1, 5) * 1_000, "en", "America/New_York"), {
-    date: "Nov 01, 2026", primary: "01:00 EDT–01:00 EST",
-  })
-  assert.deepEqual(localHourPair(Date.UTC(2026, 7, 14, 3) * 1_000, "en", "America/New_York"), {
-    date: "Aug 13, 2026–Aug 14, 2026", primary: "23:00–00:00 EDT",
-  })
-  assert.match(localHourPair(Date.UTC(2026, 10, 1, 5) * 1_000, "ru", "America/New_York").primary, /^01:00 GMT-4–01:00 GMT-5$/)
 })
