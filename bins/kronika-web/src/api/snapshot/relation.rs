@@ -2180,8 +2180,8 @@ impl PreparedSnapshot {
         let next_cursor = has_more.then(|| {
             let source = rows[end].source;
             SnapshotCursor {
-                segment_id: self.segment.id(),
-                active_position: self.segment.active_position().unwrap_or(0),
+                segment_id: self.anchor.id(),
+                active_position: self.anchor.active_position().unwrap_or(0),
                 context_index: source.context_index,
                 ordinal: source.ordinal,
                 binding: self.binding,
@@ -2235,10 +2235,11 @@ fn scan_context(
     aggregates: &mut BTreeMap<GroupKey, Aggregate>,
     cancelled: &impl Fn() -> bool,
 ) -> Result<(), ApiError> {
+    let source_segment = prepared.reader.open_segment(context.source)?;
     let mut offset = 0_u64;
     while offset < context.rows {
         let mut chunk = Vec::new();
-        context.source.visit_rows(
+        source_segment.visit_rows(
             context.plan.type_id,
             &context.plan.projection,
             offset,
@@ -2268,7 +2269,7 @@ fn scan_context(
                 }
             }
         }
-        let dictionary = resolved_dictionary(context.source, &ids)?;
+        let dictionary = resolved_dictionary(&source_segment, &ids)?;
         for (ordinal, row) in chunk {
             if !context.window.matches(&row)
                 || !context.plan.matches(&row, &dictionary)

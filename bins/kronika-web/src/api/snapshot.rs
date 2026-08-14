@@ -4,7 +4,7 @@ mod relation;
 
 use std::cmp::Ordering;
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -22,9 +22,10 @@ use crate::route::{DataRequest, Order, RelationGroup, SegmentRequest, SnapshotRe
 use crate::route::{SeriesRequest, Window};
 
 pub(crate) struct PreparedSnapshot {
-    segment: Segment,
-    prior_sources: Vec<Segment>,
-    relation_predecessors: Vec<Segment>,
+    reader: Reader,
+    anchor: SegmentRef,
+    prior_sources: Vec<SegmentRef>,
+    relation_predecessors: Vec<SegmentRef>,
     at: i64,
     sections: Vec<SectionPlans>,
     relation_filters: Vec<crate::route::Filter>,
@@ -154,12 +155,12 @@ struct SectionPlans {
 struct PageContext<'a> {
     context_index: usize,
     plan: &'a Plan,
-    source: &'a Segment,
+    source: &'a SegmentRef,
     rows: u64,
     window: RowWindow,
     previous: Option<Arc<Readings>>,
     elapsed: Option<i64>,
-    elapsed_by_partition: BTreeMap<IdentityCell, i64>,
+    elapsed_by_partition: Arc<BTreeMap<IdentityCell, i64>>,
     sample_from: Option<i64>,
     sample_to: Option<i64>,
     order: Option<PageOrder>,
@@ -172,13 +173,13 @@ enum PartitionSource {
     Current,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct LocatedMoment {
     at: i64,
-    source: PartitionSource,
+    sources: BTreeSet<PartitionSource>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct PartitionMoments {
     current: LocatedMoment,
     previous: Option<LocatedMoment>,
@@ -188,6 +189,13 @@ struct SelectedPartition {
     layout_index: usize,
     type_id: u32,
     moments: PartitionMoments,
+}
+
+struct PartitionRateState {
+    previous: Arc<Readings>,
+    elapsed_by_partition: Arc<BTreeMap<IdentityCell, i64>>,
+    sample_from: Option<i64>,
+    sample_to: Option<i64>,
 }
 
 #[derive(Clone, Copy)]
@@ -222,6 +230,14 @@ impl RowWindow {
             }),
         }
     }
+}
+
+fn rows_of(reference: &SegmentRef, type_id: u32) -> Option<u64> {
+    reference
+        .sections()
+        .iter()
+        .find(|section| section.type_id == type_id)
+        .map(|section| section.rows)
 }
 
 impl PageContext<'_> {
@@ -342,7 +358,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
     let (reader, current, segments) = explicit_segment_with_listing(root, request.segment_id)?;
     let segment_ref = pin(current, parsed)?;
     let segment = reader.open_segment(&segment_ref)?;
-    let active_position = segment.active_position().unwrap_or(0);
+    let active_position = segment_ref.active_position().unwrap_or(0);
     if parsed.is_some_and(|cursor| cursor.active_position != active_position) {
         return Err(ApiError::BadCursor);
     }
@@ -388,8 +404,10 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
     };
     validate_search_projection(&request, &sections)?;
     validate_exact_locator(&segment, &request, &sections)?;
+    drop(segment);
     Ok(PreparedSnapshot {
-        segment,
+        reader,
+        anchor: segment_ref,
         prior_sources,
         relation_predecessors,
         at: request.at,
@@ -732,7 +750,7 @@ fn validate_exact_locator(
 
 impl PreparedSnapshot {
     pub(super) const fn meta(&self) -> ResponseMeta {
-        ResponseMeta::ok(match self.segment.kind() {
+        ResponseMeta::ok(match self.anchor.kind() {
             SegmentKind::Finished => CachePolicy::Revalidate,
             SegmentKind::Active => CachePolicy::NoStore,
         })
@@ -746,7 +764,7 @@ impl PreparedSnapshot {
         if cancelled()
             || !emit(record(json!({
                 "record": "snapshot",
-                "segment": { "id": self.segment.id().to_string() },
+                "segment": { "id": self.anchor.id().to_string() },
                 "at": self.at.to_string(),
             }))?)
         {
@@ -790,7 +808,7 @@ impl PreparedSnapshot {
         }
         let contexts = self.partitioned_contexts(section, cancelled)?;
         for context in &contexts {
-            if self.row_ordinal.is_some() && context.source.id() != self.segment.id() {
+            if self.row_ordinal.is_some() && context.source.id() != self.anchor.id() {
                 continue;
             }
             if cancelled() || !self.emit_context_rows(context, emit, cancelled)? {
@@ -809,7 +827,8 @@ impl PreparedSnapshot {
         let (start_row, row_count) = self
             .row_ordinal
             .map_or((0, usize::MAX), |ordinal| (ordinal, 1));
-        let selection_dictionary = context.plan.exact_filter_dictionary(context.source)?;
+        let source = self.reader.open_segment(context.source)?;
+        let selection_dictionary = context.plan.exact_filter_dictionary(&source)?;
         #[cfg(test)]
         if context.plan.needs_selection_dictionary() {
             CONTEXT_SELECTION_DICTIONARIES.set(CONTEXT_SELECTION_DICTIONARIES.get() + 1);
@@ -817,7 +836,7 @@ impl PreparedSnapshot {
         let mut chunk = Vec::with_capacity(SNAPSHOT_CHUNK_ROWS);
         let mut failure = None;
         let mut connected = true;
-        context.source.visit_rows(
+        source.visit_rows(
             context.plan.type_id,
             &context.plan.projection,
             start_row,
@@ -832,6 +851,7 @@ impl PreparedSnapshot {
                 if chunk.len() == SNAPSHOT_CHUNK_ROWS {
                     match self.emit_context_chunk(
                         context,
+                        &source,
                         &selection_dictionary,
                         &mut chunk,
                         emit,
@@ -853,12 +873,20 @@ impl PreparedSnapshot {
         if chunk.is_empty() {
             return Ok(true);
         }
-        self.emit_context_chunk(context, &selection_dictionary, &mut chunk, emit, cancelled)
+        self.emit_context_chunk(
+            context,
+            &source,
+            &selection_dictionary,
+            &mut chunk,
+            emit,
+            cancelled,
+        )
     }
 
     fn emit_context_chunk(
         &self,
         context: &PageContext<'_>,
+        source: &Segment,
         selection_dictionary: &Dictionary,
         rows: &mut Vec<(u64, Row)>,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
@@ -888,7 +916,7 @@ impl PreparedSnapshot {
         if staged.is_empty() {
             return Ok(true);
         }
-        let dictionary = retained_dictionary(context.source, &staged)?;
+        let dictionary = retained_dictionary(source, &staged)?;
         for staged in staged {
             let before = context.predecessor(&staged.row, &staged.identity);
             let value = Self::row_record(
@@ -928,7 +956,7 @@ impl PreparedSnapshot {
             return self.emit_untimed(plan, emit, cancelled);
         };
         for context in self.timed_contexts(section, layout_index, plan, timestamp, cancelled)? {
-            if self.row_ordinal.is_some() && context.source.id() != self.segment.id() {
+            if self.row_ordinal.is_some() && context.source.id() != self.anchor.id() {
                 continue;
             }
             if cancelled() || !self.emit_context_rows(&context, emit, cancelled)? {
@@ -974,7 +1002,8 @@ impl PreparedSnapshot {
             elapsed: None,
         };
         let mut rows = Vec::new();
-        self.segment.visit_rows(
+        let source = self.reader.open_segment(&self.anchor)?;
+        source.visit_rows(
             plan.type_id,
             &plan.projection,
             start_row,
@@ -990,7 +1019,7 @@ impl PreparedSnapshot {
         if cancelled() {
             return Ok(false);
         }
-        self.emit_rows(&self.segment, plan, rows, rates, emit, cancelled)
+        self.emit_rows(&source, plan, rows, rates, emit, cancelled)
     }
 
     fn emit_rows(
@@ -1094,8 +1123,8 @@ impl PreparedSnapshot {
         let next_cursor = has_more.then(|| {
             let row = &ranked[page_size].staged;
             SnapshotCursor {
-                segment_id: self.segment.id(),
-                active_position: self.segment.active_position().unwrap_or(0),
+                segment_id: self.anchor.id(),
+                active_position: self.anchor.active_position().unwrap_or(0),
                 context_index: row.context_index,
                 ordinal: row.ordinal,
                 binding: self.binding,
@@ -1148,7 +1177,8 @@ impl PreparedSnapshot {
                     .get(&context.context_index)
                     .cloned()
                     .unwrap_or_default();
-                resolved_dictionary(context.source, &ids)
+                let source = self.reader.open_segment(context.source)?;
+                resolved_dictionary(&source, &ids)
                     .map(|dictionary| (context.context_index, dictionary))
             })
             .collect::<Result<HashMap<_, _>, _>>()?;
@@ -1240,12 +1270,12 @@ impl PreparedSnapshot {
                 contexts.push(PageContext {
                     context_index: layout_index,
                     plan,
-                    source: &self.segment,
-                    rows: self.segment.rows_of(plan.type_id).unwrap_or(0),
+                    source: &self.anchor,
+                    rows: rows_of(&self.anchor, plan.type_id).unwrap_or(0),
                     window: RowWindow::Untimed,
                     previous: None,
                     elapsed: None,
-                    elapsed_by_partition: BTreeMap::new(),
+                    elapsed_by_partition: Arc::new(BTreeMap::new()),
                     sample_from: None,
                     sample_to: None,
                     order: page_order(&section.logical_name, plan, &self.by),
@@ -1284,10 +1314,11 @@ impl PreparedSnapshot {
         let mut previous = Readings::new();
         if let Some(before) = moments.previous {
             for source_index in (0..self.source_count()).rev() {
-                let source = self.source_for(source_index).ok_or(ApiError::BadCursor)?;
-                if source.rows_of(plan.type_id).is_some() {
+                let source_ref = self.source_for(source_index).ok_or(ApiError::BadCursor)?;
+                if rows_of(source_ref, plan.type_id).is_some() {
+                    let source = self.reader.open_segment(source_ref)?;
                     previous.extend(Self::collect(
-                        source,
+                        &source,
                         plan,
                         timestamp,
                         before,
@@ -1304,25 +1335,28 @@ impl PreparedSnapshot {
             .filter(|elapsed| *elapsed > 0);
         let mut contexts = Vec::new();
         for source_index in 0..self.source_count() {
-            let source = self.source_for(source_index).ok_or(ApiError::BadCursor)?;
-            if source.rows_of(plan.type_id).is_none()
-                || Self::moments(source, plan, timestamp, moments.current, cancelled)?
-                    .is_none_or(|source_moments| source_moments.current != moments.current)
+            let source_ref = self.source_for(source_index).ok_or(ApiError::BadCursor)?;
+            if rows_of(source_ref, plan.type_id).is_none() {
+                continue;
+            }
+            let source = self.reader.open_segment(source_ref)?;
+            if Self::moments(&source, plan, timestamp, moments.current, cancelled)?
+                .is_none_or(|source_moments| source_moments.current != moments.current)
             {
                 continue;
             }
             contexts.push(PageContext {
                 context_index: timed_context_index(layout_index, source_index, self.source_count()),
                 plan,
-                source,
-                rows: source.rows_of(plan.type_id).unwrap_or(0),
+                source: source_ref,
+                rows: rows_of(source_ref, plan.type_id).unwrap_or(0),
                 window: RowWindow::Shared {
                     timestamp,
                     current: moments.current,
                 },
                 previous: Some(Arc::clone(&previous)),
                 elapsed,
-                elapsed_by_partition: BTreeMap::new(),
+                elapsed_by_partition: Arc::new(BTreeMap::new()),
                 sample_from: moments.previous,
                 sample_to: Some(moments.current),
                 order: order.clone(),
@@ -1342,16 +1376,20 @@ impl PreparedSnapshot {
         timestamp: &'static str,
         cancelled: &impl Fn() -> bool,
     ) -> Result<Option<Moments>, ApiError> {
-        let here = Self::moments(&self.segment, plan, timestamp, self.at, cancelled)?;
+        let anchor = self.reader.open_segment(&self.anchor)?;
+        let here = Self::moments(&anchor, plan, timestamp, self.at, cancelled)?;
+        drop(anchor);
         let current = if let Some(here) = here {
             Some(here.current)
         } else {
             let mut fallback = None;
-            for source in &self.prior_sources {
-                if source.rows_of(plan.type_id).is_none() {
+            for source_ref in &self.prior_sources {
+                if rows_of(source_ref, plan.type_id).is_none() {
                     continue;
                 }
-                if let Some(moments) = Self::moments(source, plan, timestamp, self.at, cancelled)? {
+                let source = self.reader.open_segment(source_ref)?;
+                if let Some(moments) = Self::moments(&source, plan, timestamp, self.at, cancelled)?
+                {
                     fallback = Some(
                         fallback.map_or(moments.current, |chosen: i64| chosen.max(moments.current)),
                     );
@@ -1365,11 +1403,12 @@ impl PreparedSnapshot {
         let mut previous = None;
         if let Some(before) = current.checked_sub(1) {
             for source_index in 0..self.source_count() {
-                let source = self.source_for(source_index).ok_or(ApiError::BadCursor)?;
-                if source.rows_of(plan.type_id).is_none() {
+                let source_ref = self.source_for(source_index).ok_or(ApiError::BadCursor)?;
+                if rows_of(source_ref, plan.type_id).is_none() {
                     continue;
                 }
-                if let Some(moments) = Self::moments(source, plan, timestamp, before, cancelled)? {
+                let source = self.reader.open_segment(source_ref)?;
+                if let Some(moments) = Self::moments(&source, plan, timestamp, before, cancelled)? {
                     previous = Some(
                         previous.map_or(moments.current, |chosen: i64| chosen.max(moments.current)),
                     );
@@ -1393,6 +1432,11 @@ impl PreparedSnapshot {
         }
         let mut contexts = Vec::new();
         for (layout_index, plan) in section.plans.iter().enumerate() {
+            if !plan.applies() || plan.timestamp.is_none() {
+                continue;
+            }
+            let rate_state =
+                self.partition_rate_state(section, layout_index, plan, &selected, spec, cancelled)?;
             for source in std::iter::once(PartitionSource::Current).chain(
                 (0..self.relation_predecessors.len())
                     .rev()
@@ -1404,9 +1448,9 @@ impl PreparedSnapshot {
                     plan,
                     source,
                     &selected,
+                    &rate_state,
                     spec,
-                    cancelled,
-                )? {
+                ) {
                     contexts.push(context);
                 }
             }
@@ -1429,8 +1473,9 @@ impl PreparedSnapshot {
                 continue;
             };
             let mut moments = BTreeMap::new();
+            let anchor = self.reader.open_segment(&self.anchor)?;
             Self::partition_moments(
-                &self.segment,
+                &anchor,
                 plan,
                 timestamp,
                 spec.temporal_partition,
@@ -1439,9 +1484,11 @@ impl PreparedSnapshot {
                 &mut moments,
                 cancelled,
             )?;
-            for (source_index, earlier) in self.relation_predecessors.iter().enumerate() {
+            drop(anchor);
+            for (source_index, earlier_ref) in self.relation_predecessors.iter().enumerate() {
+                let earlier = self.reader.open_segment(earlier_ref)?;
                 Self::partition_moments(
-                    earlier,
+                    &earlier,
                     plan,
                     timestamp,
                     spec.temporal_partition,
@@ -1458,8 +1505,8 @@ impl PreparedSnapshot {
                     moments,
                 };
                 let replace = selected.get(&partition).is_none_or(|chosen| {
-                    (candidate.moments.current, candidate.type_id)
-                        > (chosen.moments.current, chosen.type_id)
+                    (candidate.moments.current.at, candidate.type_id)
+                        > (chosen.moments.current.at, chosen.type_id)
                 });
                 if replace {
                     selected.insert(partition, candidate);
@@ -1467,6 +1514,76 @@ impl PreparedSnapshot {
             }
         }
         Ok(selected)
+    }
+
+    fn partition_rate_state(
+        &self,
+        section: &SectionPlans,
+        layout_index: usize,
+        plan: &Plan,
+        selected: &BTreeMap<IdentityCell, SelectedPartition>,
+        spec: SnapshotViewSpec,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<PartitionRateState, ApiError> {
+        let Some(timestamp) = plan.timestamp else {
+            return Err(ApiError::BadCursor);
+        };
+        let order = page_order(&section.logical_name, plan, &self.by);
+        let order_columns = order.as_ref().map_or_else(Vec::new, PageOrder::columns);
+        let mut previous = Readings::new();
+        let mut elapsed_by_partition = BTreeMap::new();
+        let mut sample_from: Option<i64> = None;
+        let mut sample_to: Option<i64> = None;
+        for (partition, selection) in selected {
+            if selection.layout_index != layout_index {
+                continue;
+            }
+            sample_to = Some(sample_to.map_or(selection.moments.current.at, |chosen| {
+                chosen.max(selection.moments.current.at)
+            }));
+            let Some(before) = selection.moments.previous.as_ref() else {
+                continue;
+            };
+            let Some(elapsed) = selection
+                .moments
+                .current
+                .at
+                .checked_sub(before.at)
+                .filter(|elapsed| *elapsed > 0)
+            else {
+                continue;
+            };
+            let mut before_sources = before
+                .sources
+                .iter()
+                .filter_map(|source| {
+                    self.partition_source(*source)
+                        .map(|reference| (reference.id(), reference))
+                })
+                .collect::<Vec<_>>();
+            before_sources.sort_unstable_by_key(|(segment_id, _reference)| *segment_id);
+            for (_segment_id, before_source_ref) in before_sources {
+                let before_source = self.reader.open_segment(before_source_ref)?;
+                previous.extend(Self::collect_partition(
+                    &before_source,
+                    plan,
+                    timestamp,
+                    before.at,
+                    spec.temporal_partition,
+                    partition,
+                    &order_columns,
+                    cancelled,
+                )?);
+            }
+            elapsed_by_partition.insert(partition.clone(), elapsed);
+            sample_from = Some(sample_from.map_or(before.at, |chosen| chosen.min(before.at)));
+        }
+        Ok(PartitionRateState {
+            previous: Arc::new(previous),
+            elapsed_by_partition: Arc::new(elapsed_by_partition),
+            sample_from,
+            sample_to,
+        })
     }
 
     #[expect(
@@ -1480,109 +1597,70 @@ impl PreparedSnapshot {
         plan: &'a Plan,
         source_kind: PartitionSource,
         selected: &BTreeMap<IdentityCell, SelectedPartition>,
+        rate_state: &PartitionRateState,
         spec: SnapshotViewSpec,
-        cancelled: &impl Fn() -> bool,
-    ) -> Result<Option<PageContext<'a>>, ApiError> {
-        let Some(timestamp) = plan.timestamp else {
-            return Ok(None);
-        };
+    ) -> Option<PageContext<'a>> {
+        let timestamp = plan.timestamp?;
         if !selected.values().any(|selection| {
             selection.layout_index == layout_index
-                && selection.moments.current.source == source_kind
+                && selection.moments.current.sources.contains(&source_kind)
         }) {
-            return Ok(None);
+            return None;
         }
-        let Some(source) = self.partition_source(source_kind) else {
-            return Ok(None);
-        };
+        let source_ref = self.partition_source(source_kind)?;
         let order = page_order(&section.logical_name, plan, &self.by);
-        let order_columns = order.as_ref().map_or_else(Vec::new, PageOrder::columns);
         let mut current = BTreeMap::new();
-        let mut previous = Readings::new();
-        let mut elapsed_by_partition = BTreeMap::new();
-        let mut sample_from: Option<i64> = None;
-        let mut sample_to: Option<i64> = None;
         for (partition, selection) in selected {
             if selection.layout_index != layout_index
-                || selection.moments.current.source != source_kind
+                || !selection.moments.current.sources.contains(&source_kind)
             {
                 continue;
             }
             current.insert(partition.clone(), selection.moments.current.at);
-            sample_to = Some(sample_to.map_or(selection.moments.current.at, |chosen| {
-                chosen.max(selection.moments.current.at)
-            }));
-            let Some(before) = selection.moments.previous else {
-                continue;
-            };
-            let Some(elapsed) = selection
-                .moments
-                .current
-                .at
-                .checked_sub(before.at)
-                .filter(|elapsed| *elapsed > 0)
-            else {
-                continue;
-            };
-            let Some(before_source) = self.partition_source(before.source) else {
-                continue;
-            };
-            previous.extend(Self::collect_partition(
-                before_source,
-                plan,
-                timestamp,
-                before.at,
-                spec.temporal_partition,
-                partition,
-                &order_columns,
-                cancelled,
-            )?);
-            elapsed_by_partition.insert(partition.clone(), elapsed);
-            sample_from = Some(sample_from.map_or(before.at, |chosen| chosen.min(before.at)));
         }
-        Ok(Some(PageContext {
+        Some(PageContext {
             context_index: partition_context_index(
                 layout_index,
                 source_kind,
                 self.relation_predecessors.len(),
             ),
             plan,
-            source,
-            rows: source.rows_of(plan.type_id).unwrap_or(0),
+            source: source_ref,
+            rows: rows_of(source_ref, plan.type_id).unwrap_or(0),
             window: RowWindow::Partitioned {
                 timestamp,
                 column: spec.temporal_partition,
                 current,
             },
-            previous: Some(previous.into()),
+            previous: Some(Arc::clone(&rate_state.previous)),
             elapsed: None,
-            elapsed_by_partition,
-            sample_from,
-            sample_to,
+            elapsed_by_partition: Arc::clone(&rate_state.elapsed_by_partition),
+            sample_from: rate_state.sample_from,
+            sample_to: rate_state.sample_to,
             order,
             search_columns: if self.search.is_empty() {
                 Vec::new()
             } else {
                 search_columns(&section.logical_name, plan)
             },
-        }))
+        })
     }
 
     const fn source_count(&self) -> usize {
         self.prior_sources.len() + 1
     }
 
-    fn source_for(&self, source_index: usize) -> Option<&Segment> {
+    fn source_for(&self, source_index: usize) -> Option<&SegmentRef> {
         if source_index == 0 {
-            Some(&self.segment)
+            Some(&self.anchor)
         } else {
             self.prior_sources.get(source_index - 1)
         }
     }
 
-    fn partition_source(&self, source: PartitionSource) -> Option<&Segment> {
+    fn partition_source(&self, source: PartitionSource) -> Option<&SegmentRef> {
         match source {
-            PartitionSource::Current => Some(&self.segment),
+            PartitionSource::Current => Some(&self.anchor),
             PartitionSource::Earlier(index) => self.relation_predecessors.get(index),
         }
     }
@@ -1622,7 +1700,10 @@ impl PreparedSnapshot {
                     record_partition_moment(
                         moments,
                         identity_cell(partition),
-                        LocatedMoment { at: stored, source },
+                        LocatedMoment {
+                            at: stored,
+                            sources: BTreeSet::from([source]),
+                        },
                     );
                 }
                 true
@@ -1706,8 +1787,9 @@ impl PreparedSnapshot {
         if cursor.ordinal >= context.rows {
             return Err(ApiError::BadCursor);
         }
+        let source = self.reader.open_segment(context.source)?;
         let mut stored = None;
-        context.source.visit_rows(
+        source.visit_rows(
             context.plan.type_id,
             &context.plan.projection,
             cursor.ordinal,
@@ -1718,7 +1800,11 @@ impl PreparedSnapshot {
             },
         )?;
         let (ordinal, row) = stored.ok_or(ApiError::BadCursor)?;
-        let dictionary = page_dictionary(context, std::slice::from_ref(&(ordinal, row.clone())))?;
+        let dictionary = page_dictionary(
+            &source,
+            context,
+            std::slice::from_ref(&(ordinal, row.clone())),
+        )?;
         self.page_candidate(context, ordinal, row, &dictionary)
             .ok_or(ApiError::BadCursor)
     }
@@ -1731,6 +1817,7 @@ impl PreparedSnapshot {
         eligible: &mut u64,
         cancelled: &impl Fn() -> bool,
     ) -> Result<(), ApiError> {
+        let source = self.reader.open_segment(context.source)?;
         if !context.plan.needs_selection_dictionary()
             && context.search_columns.is_empty()
             && context
@@ -1742,7 +1829,7 @@ impl PreparedSnapshot {
             #[cfg(test)]
             PAGE_SOURCE_VISITS.set(PAGE_SOURCE_VISITS.get() + 1);
             let dictionary = Dictionary::default();
-            context.source.visit_rows(
+            source.visit_rows(
                 context.plan.type_id,
                 &context.plan.projection,
                 0,
@@ -1760,7 +1847,7 @@ impl PreparedSnapshot {
         let mut failure = None;
         #[cfg(test)]
         PAGE_SOURCE_VISITS.set(PAGE_SOURCE_VISITS.get() + 1);
-        context.source.visit_rows(
+        source.visit_rows(
             context.plan.type_id,
             &context.plan.projection,
             0,
@@ -1769,7 +1856,7 @@ impl PreparedSnapshot {
                 chunk.push((ordinal, row));
                 if chunk.len() == SNAPSHOT_CHUNK_ROWS
                     && let Err(error) =
-                        self.rank_page_chunk(context, anchor, page, eligible, &mut chunk)
+                        self.rank_page_chunk(&source, context, anchor, page, eligible, &mut chunk)
                 {
                     failure = Some(error);
                     return false;
@@ -1781,20 +1868,21 @@ impl PreparedSnapshot {
             return Err(error);
         }
         if !cancelled() && !chunk.is_empty() {
-            self.rank_page_chunk(context, anchor, page, eligible, &mut chunk)?;
+            self.rank_page_chunk(&source, context, anchor, page, eligible, &mut chunk)?;
         }
         Ok(())
     }
 
     fn rank_page_chunk(
         &self,
+        source: &Segment,
         context: &PageContext<'_>,
         anchor: Option<&PageRankedRow>,
         page: &mut PageRows,
         eligible: &mut u64,
         chunk: &mut Vec<(u64, Row)>,
     ) -> Result<(), ApiError> {
-        let dictionary = page_dictionary(context, chunk)?;
+        let dictionary = page_dictionary(source, context, chunk)?;
         for (ordinal, row) in chunk.drain(..) {
             self.rank_page_row(context, anchor, page, eligible, &dictionary, ordinal, row);
         }
@@ -2205,7 +2293,11 @@ const fn stored_bytes(resolved: Resolved<'_>) -> &[u8] {
     }
 }
 
-fn page_dictionary(context: &PageContext<'_>, rows: &[(u64, Row)]) -> Result<Dictionary, ApiError> {
+fn page_dictionary(
+    segment: &Segment,
+    context: &PageContext<'_>,
+    rows: &[(u64, Row)],
+) -> Result<Dictionary, ApiError> {
     let mut ids = HashSet::new();
     for (_ordinal, row) in rows {
         if !context.window.matches(row) {
@@ -2227,7 +2319,7 @@ fn page_dictionary(context: &PageContext<'_>, rows: &[(u64, Row)]) -> Result<Dic
     if !ids.is_empty() {
         PAGE_CANDIDATE_DICTIONARIES.set(PAGE_CANDIDATE_DICTIONARIES.get() + 1);
     }
-    resolved_dictionary(context.source, &ids)
+    resolved_dictionary(segment, &ids)
 }
 
 fn page_order_value(
@@ -2560,23 +2652,18 @@ fn record_partition_moment(
         return;
     };
     match located.at.cmp(&chosen.current.at) {
-        Ordering::Equal => chosen.current = chosen.current.max(located),
+        Ordering::Equal => chosen.current.sources.extend(located.sources),
         Ordering::Greater => {
-            chosen.previous = Some(chosen.current);
-            chosen.current = located;
+            chosen.previous = Some(std::mem::replace(&mut chosen.current, located));
         }
-        Ordering::Less => {
-            chosen.previous =
-                Some(
-                    chosen
-                        .previous
-                        .map_or(located, |before| match located.at.cmp(&before.at) {
-                            Ordering::Equal => before.max(located),
-                            Ordering::Greater => located,
-                            Ordering::Less => before,
-                        }),
-                );
-        }
+        Ordering::Less => match chosen.previous.as_mut() {
+            Some(before) => match located.at.cmp(&before.at) {
+                Ordering::Equal => before.sources.extend(located.sources),
+                Ordering::Greater => *before = located,
+                Ordering::Less => {}
+            },
+            None => chosen.previous = Some(located),
+        },
     }
 }
 
@@ -2672,22 +2759,15 @@ fn available_field_index(fields: &[super::query::OutputField], name: &str) -> Op
         .position(|field| field.name == name && field.column.is_some())
 }
 
-#[derive(Clone, Copy)]
 struct RetainedMoment {
     at: i64,
-    segment_id: i64,
+    segment_ids: BTreeSet<i64>,
 }
 
 #[derive(Default)]
 struct RetainedMoments {
     current: Option<RetainedMoment>,
     previous: Option<RetainedMoment>,
-}
-
-impl RetainedMoments {
-    const fn complete(&self) -> bool {
-        self.current.is_some() && self.previous.is_some()
-    }
 }
 
 fn relation_preceding(
@@ -2698,7 +2778,7 @@ fn relation_preceding(
     sections: &[SectionPlans],
     filters: &[crate::route::Filter],
     at: i64,
-) -> Result<Vec<Segment>, ApiError> {
+) -> Result<Vec<SegmentRef>, ApiError> {
     let requested_datid = filters
         .iter()
         .find(|filter| filter.column == "datid")
@@ -2720,10 +2800,6 @@ fn relation_preceding(
         at,
         &mut moments,
     )?;
-    if !moments.is_empty() && moments.values().all(RetainedMoments::complete) {
-        return Ok(Vec::new());
-    }
-
     let compatible = partitioned_plans(sections)
         .map(|plan| plan.type_id)
         .collect::<HashSet<_>>();
@@ -2737,8 +2813,18 @@ fn relation_preceding(
                 .any(|section| compatible.contains(&section.type_id))
         })
         .collect::<Vec<_>>();
-    candidates.sort_unstable_by_key(SegmentRef::id);
-    for candidate in candidates.iter().rev() {
+    candidates.sort_unstable_by_key(|candidate| Reverse((candidate.max_ts(), candidate.id())));
+    for candidate in &candidates {
+        if !moments.is_empty()
+            && moments.values().all(|samples| {
+                samples
+                    .previous
+                    .as_ref()
+                    .is_some_and(|previous| candidate.max_ts() < previous.at)
+            })
+        {
+            break;
+        }
         let segment = reader.open_segment(candidate)?;
         scan_relation_moments(
             &segment,
@@ -2748,24 +2834,24 @@ fn relation_preceding(
             at,
             &mut moments,
         )?;
-        if !moments.is_empty() && moments.values().all(RetainedMoments::complete) {
-            break;
-        }
     }
 
     let mut retained = HashSet::new();
     for samples in moments.values() {
-        for sample in [samples.current, samples.previous].into_iter().flatten() {
-            if sample.segment_id != segment_ref.id() {
-                retained.insert(sample.segment_id);
+        for sample in [&samples.current, &samples.previous].into_iter().flatten() {
+            for segment_id in &sample.segment_ids {
+                if *segment_id != segment_ref.id() {
+                    retained.insert(*segment_id);
+                }
             }
         }
     }
-    candidates
+    let mut selected = candidates
         .into_iter()
         .filter(|candidate| retained.contains(&candidate.id()))
-        .map(|candidate| reader.open_segment(&candidate).map_err(ApiError::from))
-        .collect()
+        .collect::<Vec<_>>();
+    selected.sort_unstable_by_key(|candidate| Reverse(candidate.id()));
+    Ok(selected)
 }
 
 fn partitioned_plans(sections: &[SectionPlans]) -> impl Iterator<Item = &Plan> {
@@ -2819,7 +2905,7 @@ fn scan_relation_moments(
                         selected,
                         RetainedMoment {
                             at: stored,
-                            segment_id: segment.id(),
+                            segment_ids: BTreeSet::from([segment.id()]),
                         },
                     );
                 }
@@ -2831,27 +2917,27 @@ fn scan_relation_moments(
 }
 
 fn record_retained_moment(moments: &mut RetainedMoments, sample: RetainedMoment) {
-    let Some(current) = moments.current else {
+    let Some(current_at) = moments.current.as_ref().map(|current| current.at) else {
         moments.current = Some(sample);
         return;
     };
-    match sample.at.cmp(&current.at) {
+    match sample.at.cmp(&current_at) {
         Ordering::Equal => {
-            if sample.segment_id > current.segment_id {
-                moments.current = Some(sample);
+            if let Some(current) = moments.current.as_mut() {
+                current.segment_ids.extend(sample.segment_ids);
             }
         }
         Ordering::Greater => {
-            moments.previous = Some(current);
-            moments.current = Some(sample);
+            moments.previous = moments.current.replace(sample);
         }
-        Ordering::Less => {
-            if moments.previous.is_none_or(|previous| {
-                (sample.at, sample.segment_id) > (previous.at, previous.segment_id)
-            }) {
-                moments.previous = Some(sample);
-            }
-        }
+        Ordering::Less => match moments.previous.as_mut() {
+            Some(previous) => match sample.at.cmp(&previous.at) {
+                Ordering::Equal => previous.segment_ids.extend(sample.segment_ids),
+                Ordering::Greater => *previous = sample,
+                Ordering::Less => {}
+            },
+            None => moments.previous = Some(sample),
+        },
     }
 }
 
@@ -2874,7 +2960,7 @@ fn preceding(
     current: &Segment,
     sections: &[SectionPlans],
     at: i64,
-) -> Result<Vec<Segment>, ApiError> {
+) -> Result<Vec<SegmentRef>, ApiError> {
     let layouts = sections
         .iter()
         .filter(|section| SnapshotViewSpec::for_logical_name(&section.logical_name).is_none())
@@ -2923,10 +3009,7 @@ fn preceding(
         .collect::<HashSet<_>>();
     candidates.retain(|candidate| retained.contains(&candidate.id()));
     candidates.sort_unstable_by_key(|candidate| Reverse(candidate.id()));
-    candidates
-        .into_iter()
-        .map(|candidate| reader.open_segment(&candidate).map_err(ApiError::from))
-        .collect()
+    Ok(candidates)
 }
 
 fn scan_contributing_moments(

@@ -3486,6 +3486,58 @@ fn relation_predecessor_follows_a_fallback_sample_into_the_second_segment() {
     }
 }
 
+#[test]
+fn relation_pages_compose_split_current_and_predecessor_moments() {
+    let mut fixture = Fixture::new();
+    fixture.append_named_table_snapshots(&[(100_000_000, 1, 11, 10, "db", "public", "first")]);
+    fixture.finish_and_continue(SEGMENT_ID + 1_000);
+    fixture.append_named_table_snapshots(&[(100_000_000, 1, 12, 20, "db", "public", "second")]);
+    fixture.finish_and_continue(SEGMENT_ID + 2_000);
+    fixture.append_named_table_snapshots(&[(200_000_000, 1, 11, 30, "db", "public", "first")]);
+    let current_segment = SEGMENT_ID + 3_000;
+    fixture.finish_and_continue(current_segment);
+    fixture.append_named_table_snapshots(&[(200_000_000, 1, 12, 60, "db", "public", "second")]);
+    fixture.finish();
+
+    let base = format!(
+        "/api/segments/{current_segment}/snapshot?at=200000000&section=pg_stat_user_tables&group=object&field=seq_scan&by=seq_scan&direction=desc&page_size=1&where.datid=1"
+    );
+    let first = stream(fixture.prepare(&base, None)).expect("first split relation page");
+    let first_row = &relation_records(&first)[0];
+    assert_eq!(first_row["key"]["relid"], "12");
+    assert_eq!(first_row["values"]["seq_scan"], 0.4);
+    assert_eq!(
+        first_row["source"]["segment_id"],
+        current_segment.to_string()
+    );
+    let first_page = first
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("first split relation trailer");
+    assert_eq!(first_page["eligible"], "2");
+    assert_eq!(first_page["from"], "100000000");
+    assert_eq!(first_page["to"], "200000000");
+    let cursor = first_page["next_cursor"]
+        .as_str()
+        .expect("split relation cursor");
+
+    let second = stream(fixture.prepare(&format!("{base}&cursor={cursor}"), None))
+        .expect("second split relation page");
+    let second_row = &relation_records(&second)[0];
+    assert_eq!(second_row["key"]["relid"], "11");
+    assert_eq!(second_row["values"]["seq_scan"], 0.2);
+    assert_eq!(
+        second_row["source"]["segment_id"],
+        (SEGMENT_ID + 2_000).to_string()
+    );
+    let second_page = second
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("second split relation trailer");
+    assert_eq!(second_page["eligible"], "2");
+    assert_eq!(second_page["has_more"], false);
+}
+
 fn four_segment_relation_fixture() -> (Fixture, i64) {
     let mut fixture = Fixture::new();
     fixture.append_named_table_snapshots(&[(100_000_000, 1, 11, 10, "first", "public", "orders")]);
