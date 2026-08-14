@@ -1,87 +1,6 @@
 use super::direct::{CpuRaw, cpu_busy_at_least_80};
-use super::spikes::{process_rate, statement_average};
-use super::{ProcessRaw, StatementRaw, block, finding_layout};
+use super::{block, finding_layout};
 use crate::{Finding, FindingKind, MAX_FINDINGS_PER_BLOCK};
-
-#[test]
-fn process_rate_requires_an_adjacent_nonnegative_counter_delta() {
-    let before = ProcessRaw {
-        timestamp: 1_000_000,
-        read_bytes: Some(100),
-    };
-    assert_eq!(
-        process_rate(
-            before,
-            ProcessRaw {
-                timestamp: 2_000_000,
-                read_bytes: Some(300),
-            }
-        ),
-        Some(200.0)
-    );
-    assert_eq!(
-        process_rate(
-            before,
-            ProcessRaw {
-                timestamp: 2_000_000,
-                read_bytes: Some(50),
-            }
-        ),
-        None
-    );
-    assert_eq!(
-        process_rate(
-            before,
-            ProcessRaw {
-                timestamp: 2_000_000,
-                read_bytes: None,
-            }
-        ),
-        None
-    );
-}
-
-#[test]
-fn statement_average_requires_new_calls_and_nonnegative_time() {
-    let before = StatementRaw {
-        timestamp: 1,
-        calls: 10,
-        total_exec_time: 100.0,
-    };
-    assert_eq!(
-        statement_average(
-            before,
-            StatementRaw {
-                timestamp: 2,
-                calls: 12,
-                total_exec_time: 110.0,
-            }
-        ),
-        Some(5.0)
-    );
-    assert_eq!(
-        statement_average(
-            before,
-            StatementRaw {
-                timestamp: 2,
-                calls: 10,
-                total_exec_time: 110.0,
-            }
-        ),
-        None
-    );
-    assert_eq!(
-        statement_average(
-            before,
-            StatementRaw {
-                timestamp: 2,
-                calls: 12,
-                total_exec_time: 90.0,
-            }
-        ),
-        None
-    );
-}
 
 #[test]
 fn aggregate_cpu_busy_uses_the_exact_adjacent_counter_share() {
@@ -106,10 +25,10 @@ fn aggregate_cpu_busy_uses_the_exact_adjacent_counter_share() {
 }
 
 #[test]
-fn the_only_statement_spike_layouts_have_total_exec_time() {
-    assert!(!finding_layout(1_002_001));
-    for type_id in 1_002_002..=1_002_006 {
-        assert!(finding_layout(type_id));
+fn statistical_process_and_statement_series_are_not_findings() {
+    assert!(!finding_layout(1_100_001));
+    for type_id in 1_002_001..=1_002_006 {
+        assert!(!finding_layout(type_id));
     }
     assert!(!finding_layout(1_004_001));
 }

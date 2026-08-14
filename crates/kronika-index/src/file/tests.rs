@@ -27,13 +27,13 @@ fn sample() -> Index {
                 }],
             },
             SeriesBlock::Findings(FindingBlock {
-                type_id: 1_100_001,
+                type_id: 1_102_001,
                 total_hits: 1,
                 truncated: false,
                 findings: vec![Finding {
-                    kind: FindingKind::Spike,
+                    kind: FindingKind::KnownBad,
                     category: None,
-                    field_ordinal: 33,
+                    field_ordinal: 5,
                     row_ordinal: 7,
                     timestamp: 42,
                 }],
@@ -110,20 +110,29 @@ fn targeted_decode_never_allocates_unrequested_blocks() {
 }
 
 #[test]
-fn targeted_decode_does_not_surface_a_retired_temporary_file_finding_block() {
+fn targeted_decode_does_not_surface_retired_finding_sources() {
     let mut index = sample();
-    index.blocks.push(SeriesBlock::Findings(FindingBlock {
-        type_id: 2_007_001,
-        total_hits: 1,
-        truncated: false,
-        findings: vec![Finding {
-            kind: FindingKind::Event,
-            category: None,
-            field_ordinal: 0,
-            row_ordinal: 8,
-            timestamp: 43,
-        }],
-    }));
+    for (at, type_id, field_ordinal) in [(3, 1_002_006, 9), (4, 1_100_001, 33), (6, 2_007_001, 0)] {
+        index.blocks.insert(
+            at,
+            SeriesBlock::Findings(FindingBlock {
+                type_id,
+                total_hits: 1,
+                truncated: false,
+                findings: vec![Finding {
+                    kind: if type_id == 2_007_001 {
+                        FindingKind::Event
+                    } else {
+                        FindingKind::Spike
+                    },
+                    category: None,
+                    field_ordinal,
+                    row_ordinal: 8,
+                    timestamp: 43,
+                }],
+            }),
+        );
+    }
     let bytes = index.encode().expect("encode pre-change index");
 
     let selected = Index::decode_target(&bytes, &[SeriesKey::OS_HEALTH])

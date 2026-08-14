@@ -4,6 +4,7 @@ use kronika_reader::SegmentKind;
 
 use super::{health_layout, resource_meta, section_layout, stream_findings};
 use crate::api::CachePolicy;
+use crate::route::Window;
 
 #[test]
 fn a_finished_index_is_kept_by_the_browser_as_long_as_its_segment_lasts() {
@@ -73,6 +74,7 @@ fn event_stream_contains_only_sparse_locator_facts() {
     let streamed = stream_findings(
         "pg_log_lifecycle",
         block,
+        None,
         &mut |line| {
             rows.push(serde_json::from_slice::<serde_json::Value>(&line).expect("finding JSON"));
             true
@@ -135,6 +137,7 @@ fn error_event_stream_exposes_only_the_stored_category_and_locator() {
     stream_findings(
         "pg_log_errors",
         block,
+        None,
         &mut |line| {
             rows.push(serde_json::from_slice::<serde_json::Value>(&line).expect("finding JSON"));
             true
@@ -166,4 +169,137 @@ fn error_event_stream_exposes_only_the_stored_category_and_locator() {
     ] {
         assert!(rows[1].get(copied).is_none());
     }
+}
+
+#[test]
+fn an_hour_keeps_only_inclusive_window_findings_and_recounts_them() {
+    let block = FindingBlock {
+        type_id: 2_006_001,
+        total_hits: 5,
+        truncated: false,
+        findings: [99_i64, 100, 150, 200, 201]
+            .into_iter()
+            .enumerate()
+            .map(|(row_ordinal, timestamp)| Finding {
+                kind: FindingKind::Event,
+                category: None,
+                field_ordinal: 0,
+                row_ordinal: u32::try_from(row_ordinal).expect("small test ordinal"),
+                timestamp,
+            })
+            .collect(),
+    };
+    let mut rows = Vec::new();
+    stream_findings(
+        "pg_log_lifecycle",
+        block,
+        Some(Window {
+            from: Some(100),
+            to: Some(200),
+        }),
+        &mut |line| {
+            rows.push(serde_json::from_slice::<serde_json::Value>(&line).expect("finding JSON"));
+            true
+        },
+        &|| false,
+    )
+    .expect("stream filtered findings");
+
+    assert_eq!(rows[0]["total_hits"], 3);
+    assert_eq!(rows[0]["truncated"], false);
+    assert_eq!(
+        rows[1..]
+            .iter()
+            .map(|row| row["ts"].as_str().expect("timestamp"))
+            .collect::<Vec<_>>(),
+        ["100", "150", "200"]
+    );
+}
+
+#[test]
+fn a_filtered_truncated_block_never_counts_out_of_window_locators() {
+    let block = FindingBlock {
+        type_id: 2_006_001,
+        total_hits: 5,
+        truncated: true,
+        findings: [90_i64, 100, 150]
+            .into_iter()
+            .enumerate()
+            .map(|(row_ordinal, timestamp)| Finding {
+                kind: FindingKind::Event,
+                category: None,
+                field_ordinal: 0,
+                row_ordinal: u32::try_from(row_ordinal).expect("small test ordinal"),
+                timestamp,
+            })
+            .collect(),
+    };
+    let mut rows = Vec::new();
+    stream_findings(
+        "pg_log_lifecycle",
+        block.clone(),
+        Some(Window {
+            from: Some(100),
+            to: Some(200),
+        }),
+        &mut |line| {
+            rows.push(serde_json::from_slice::<serde_json::Value>(&line).expect("finding JSON"));
+            true
+        },
+        &|| false,
+    )
+    .expect("stream truncated findings");
+
+    assert_eq!(rows[0]["total_hits"], 2);
+    assert_eq!(rows[0]["truncated"], true);
+    assert_eq!(rows.len(), 3);
+
+    rows.clear();
+    stream_findings(
+        "pg_log_lifecycle",
+        block,
+        Some(Window {
+            from: Some(90),
+            to: Some(100),
+        }),
+        &mut |line| {
+            rows.push(serde_json::from_slice::<serde_json::Value>(&line).expect("finding JSON"));
+            true
+        },
+        &|| false,
+    )
+    .expect("stream window before omitted tail");
+
+    assert_eq!(rows[0]["total_hits"], 2);
+    assert_eq!(rows[0]["truncated"], false);
+    assert_eq!(rows.len(), 3);
+}
+
+#[test]
+fn a_filtered_empty_truncated_block_keeps_its_unknown_tail_visible() {
+    let block = FindingBlock {
+        type_id: 2_006_001,
+        total_hits: 1,
+        truncated: true,
+        findings: Vec::new(),
+    };
+    let mut rows = Vec::new();
+    stream_findings(
+        "pg_log_lifecycle",
+        block,
+        Some(Window {
+            from: Some(100),
+            to: Some(200),
+        }),
+        &mut |line| {
+            rows.push(serde_json::from_slice::<serde_json::Value>(&line).expect("finding JSON"));
+            true
+        },
+        &|| false,
+    )
+    .expect("stream empty truncated findings");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["total_hits"], 0);
+    assert_eq!(rows[0]["truncated"], true);
 }

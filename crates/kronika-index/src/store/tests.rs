@@ -697,7 +697,7 @@ fn production_builder_rejects_an_invalid_log_error_category() {
 }
 
 #[test]
-fn slow_process_and_statement_spikes_cross_finished_segment_boundaries() {
+fn process_and_statement_metrics_stay_out_of_finding_indexes() {
     const STEP: i64 = 5 * 60 * 1_000_000;
 
     let directory = tempfile::tempdir().expect("tempdir");
@@ -723,17 +723,17 @@ fn slow_process_and_statement_spikes_cross_finished_segment_boundaries() {
     write_segment(&journal, &writer, address_at(SEGMENT_ID)).expect("finish prior segment");
     journal.reset().expect("reset after prior segment");
 
-    let spike_ts = SEGMENT_ID + 6 * STEP;
+    let current_ts = SEGMENT_ID + 6 * STEP;
     let process_current = [
-        (spike_ts, Some(301_500)),
-        (spike_ts + STEP, None),
-        (spike_ts + 2 * STEP, Some(301_800)),
-        (spike_ts + 3 * STEP, Some(100)),
+        (current_ts, Some(301_500)),
+        (current_ts + STEP, None),
+        (current_ts + 2 * STEP, Some(301_800)),
+        (current_ts + 3 * STEP, Some(100)),
     ];
     let statement_current = [
-        (spike_ts, 6, 10_500.0),
-        (spike_ts + STEP, 0, 0.0),
-        (spike_ts + 2 * STEP, 1, 100.0),
+        (current_ts, 6, 10_500.0),
+        (current_ts + STEP, 0, 0.0),
+        (current_ts + 2 * STEP, 1, 100.0),
     ];
     append_finding_fixture(
         &mut journal,
@@ -751,35 +751,30 @@ fn slow_process_and_statement_spikes_cross_finished_segment_boundaries() {
         .into_iter()
         .find(|segment| segment.id() == SEGMENT_ID + 1)
         .expect("current finished segment");
-    let process =
-        resource(directory.path(), &reader, &current, "os_process").expect("process findings");
+    let process = resource(directory.path(), &reader, &current, "os_process")
+        .expect("process index selection");
     let statements = resource(directory.path(), &reader, &current, "pg_stat_statements")
-        .expect("statement findings");
+        .expect("statement index selection");
     assert!(process.persisted);
     assert!(statements.persisted);
     assert_eq!(process.index.checksum, statements.index.checksum);
+    assert!(process.index.blocks.is_empty());
+    assert!(statements.index.blocks.is_empty());
+    assert!(
+        finding_keys(&current)
+            .iter()
+            .all(|key| { !matches!(key.type_id, 1_100_001 | 1_002_001..=1_002_006) })
+    );
 
-    let [SeriesBlock::Findings(process)] = process.index.blocks.as_slice() else {
-        panic!("one process finding block");
-    };
-    assert_eq!(process.type_id, 1_100_001);
-    assert_eq!(process.total_hits, 1);
-    assert_eq!(process.findings.len(), 1);
-    assert_eq!(process.findings[0].kind, FindingKind::Spike);
-    assert_eq!(process.findings[0].field_ordinal, 33);
-    assert_eq!(process.findings[0].row_ordinal, 0);
-    assert_eq!(process.findings[0].timestamp, spike_ts);
-
-    let [SeriesBlock::Findings(statements)] = statements.index.blocks.as_slice() else {
-        panic!("one statement finding block");
-    };
-    assert_eq!(statements.type_id, 1_002_002);
-    assert_eq!(statements.total_hits, 1);
-    assert_eq!(statements.findings.len(), 1);
-    assert_eq!(statements.findings[0].kind, FindingKind::Spike);
-    assert_eq!(statements.findings[0].field_ordinal, 10);
-    assert_eq!(statements.findings[0].row_ordinal, 0);
-    assert_eq!(statements.findings[0].timestamp, spike_ts);
+    let raw = reader.open_segment(&current).expect("open current segment");
+    assert_eq!(
+        raw.rows_of(1_100_001),
+        Some(u64::try_from(process_current.len()).expect("small process fixture"))
+    );
+    assert_eq!(
+        raw.rows_of(1_002_002),
+        Some(u64::try_from(statement_current.len()).expect("small statement fixture"))
+    );
 
     let index_path = path_of(
         reader
@@ -788,11 +783,7 @@ fn slow_process_and_statement_spikes_cross_finished_segment_boundaries() {
             .path(),
     )
     .expect("finished index path");
-    let bytes = std::fs::read(index_path).expect("read published index");
-    assert!(
-        !bytes
-            .windows(b"FINDING-SOURCE-TEXT-MUST-STAY-IN-ZMS".len())
-            .any(|window| window == b"FINDING-SOURCE-TEXT-MUST-STAY-IN-ZMS"),
-        "finding blocks contain locators, not source text"
-    );
+    assert!(read(&index_path).expect("read published index").blocks.iter().all(
+        |block| !matches!(block, SeriesBlock::Findings(block) if matches!(block.type_id, 1_100_001 | 1_002_001..=1_002_006))
+    ));
 }
