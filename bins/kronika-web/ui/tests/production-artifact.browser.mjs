@@ -1733,7 +1733,7 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     const activityDuration = await cdp.evaluate(`(() => {
       const table = document.querySelector('[data-testid="pg-activity-table"]')
       const headers = [...table.querySelectorAll('[role="columnheader"]')].map((cell) => cell.textContent.trim())
-      const index = headers.findIndex((label) => label.includes("Query time"))
+      const index = headers.findIndex((label) => label.includes("Active query duration"))
       return index < 0 ? null : table.querySelector('.entity-row').querySelectorAll('[role="cell"]')[index]?.textContent.trim() ?? null
     })()`)
     assert.match(activityDuration, /\d/)
@@ -1761,7 +1761,7 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     assert.deepEqual(servedLayout.layout.columns.map(({ name }) => name), ["pid", "state", "query_start"])
     assert.equal(servedActivity.filter(({ record }) => record === "row").every(({ values }) => values.length === 3), true)
     const activitySample = await cdp.evaluate(`document.querySelector('[data-testid="pg-detail"] .chart-navigator').getAttribute("aria-valuetext")`)
-    assert.match(activitySample, /Query time.*\d/)
+    assert.match(activitySample, /Active query duration.*\d/)
     assert.doesNotMatch(activitySample, /—/)
 
     await cdp.evaluate(`document.querySelector('[data-testid="pg-detail"] .chart-expand').click()`)

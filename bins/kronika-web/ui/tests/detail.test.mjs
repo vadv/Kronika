@@ -111,11 +111,15 @@ test("linked Activity detail shows elapsed values instead of repeatable absolute
   assert.match(source, /value=\{humanDuration\(elapsed, locale\)\}/)
 })
 
-test("Escape closes the shared detail dock unless a child already handled it", async () => {
-  const source = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../src/detail.tsx", import.meta.url), "utf8"))
-  assert.match(source, /if \(event\.key !== "Escape" \|\| event\.defaultPrevented\) return/)
-  assert.match(source, /queueMicrotask\(\(\) => \{\s+if \(event\.defaultPrevented\) return/)
-  assert.match(source, /event\.preventDefault\(\)\s+onClose\(\)/)
-  assert.match(source, /window\.addEventListener\("keydown", escape\)/)
-  assert.match(source, /return \(\) => window\.removeEventListener\("keydown", escape\)/)
+test("Process detail uses the shared Escape and focus-return contract without a duplicate listener", async () => {
+  const fs = await import("node:fs/promises")
+  const [source, dismiss] = await Promise.all([
+    fs.readFile(new URL("../src/detail.tsx", import.meta.url), "utf8"),
+    fs.readFile(new URL("../src/detail-dismiss.ts", import.meta.url), "utf8"),
+  ])
+  assert.match(source, /const detail = useDetailDismiss\(onClose, pid\)/)
+  assert.match(source, /data-testid=\{activity === null \? "process-dock" : "pg-linked-dock"\}\s+ref=\{detail\}/)
+  assert.doesNotMatch(source, /addEventListener\("keydown"|queueMicrotask/)
+  assert.match(dismiss, /\[role="dialog"\].*\[role="tooltip"\].*\[data-testid="help-panel"\]/)
+  assert.match(dismiss, /close\.current\(\)[\s\S]*requestAnimationFrame\([\s\S]*target\?\.isConnected[\s\S]*target\.focus/)
 })
