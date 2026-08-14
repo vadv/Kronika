@@ -49,8 +49,12 @@ export function SeriesChart({
   readonly unit?: string | undefined
   readonly onCursor?: ((timestamp: number) => void) | undefined
 }) {
-  const numeric = numericChartPoints(points, second)
-  const reading = readingAt(points, cursor)
+  const visible = useMemo(() => ({
+    points: pointsInHour(points, hour),
+    second: second === undefined ? undefined : pointsInHour(second, hour),
+  }), [hour, points, second])
+  const numeric = numericChartPoints(visible.points, visible.second)
+  const reading = readingAt(visible.points, cursor)
   const hasData = numeric.length !== 0
   const formatValue = format ?? (scale === "percent" ? humanPercent : compact)
   const label = t(labelKey)
@@ -59,14 +63,19 @@ export function SeriesChart({
   const stableFormat = useMemo(() => (number: number, place: Locale) => formatter.current(number, place), [])
   const semantic: SemanticScale = scale === "percent" ? "percent" : scale === "auto" || scale === "signed" ? "signed" : "nonnegative"
   const series = useMemo<readonly RecordedSeries[]>(() => [
-    { color: "cyan", helpKey, id: "primary", label, labelKey, points, scale: semantic, tick: stableFormat, unit, value: stableFormat },
-    ...(second === undefined || secondHelpKey === undefined || secondLabelKey === undefined ? [] : [{ color: "amber" as const, helpKey: secondHelpKey, id: "secondary", label: t(secondLabelKey), labelKey: secondLabelKey, points: second, scale: semantic, tick: stableFormat, unit, value: stableFormat }]),
-  ], [helpKey, label, labelKey, points, second, secondHelpKey, secondLabelKey, semantic, stableFormat, t, unit])
+    { color: "cyan", helpKey, id: "primary", label, labelKey, points: visible.points, scale: semantic, tick: stableFormat, unit, value: stableFormat },
+    ...(visible.second === undefined || secondHelpKey === undefined || secondLabelKey === undefined ? [] : [{ color: "amber" as const, helpKey: secondHelpKey, id: "secondary", label: t(secondLabelKey), labelKey: secondLabelKey, points: visible.second, scale: semantic, tick: stableFormat, unit, value: stableFormat }]),
+  ], [helpKey, label, labelKey, secondHelpKey, secondLabelKey, semantic, stableFormat, t, unit, visible])
   return <div className="series-chart">
     {!hasData
       ? <><div className="series-reading"><LabelHelp helpKey={helpKey} labelKey={labelKey} t={t} /><span>—</span></div><p className="series-empty">{empty}</p></>
       : <UPlotChart cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} reading={reading === null ? "—" : formatValue(reading, locale)} series={series} t={t} />}
   </div>
+}
+
+export function pointsInHour(points: readonly ChartPoint[], hour: number): readonly ChartPoint[] {
+  const end = hour + 3_600_000_000
+  return points.filter(({ timestamp }) => timestamp >= hour && timestamp < end)
 }
 
 export function numericChartPoints(

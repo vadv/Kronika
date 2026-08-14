@@ -2005,6 +2005,184 @@ test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, as
   }
 })
 
+test("snapshot request targets hide rejected replacements until retry succeeds", { timeout: 60_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const authState = { valid: true }
+  let statementAttempts = 0
+  let relationAttempts = 0
+  let pendingSystemFailure = null
+  let pendingActivityFailure = null
+  let pendingStatementFailure = null
+  let pendingRelationFailure = null
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/catalog") return ndjson(response, [])
+    if (url.pathname === "/api/hour") {
+      return ndjson(response, url.searchParams.has("section") ? [] : snapshotTargetTimelineRecords())
+    }
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
+      const at = Number(url.searchParams.get("at") ?? AT)
+      const sections = url.searchParams.getAll("section")
+      if (sections.includes("os_cpu")) {
+        if (at === BEFORE_AT) { pendingSystemFailure = response; return }
+        return ndjson(response, systemSnapshotRecords(false, at))
+      }
+      if (sections.includes("pg_stat_activity")) {
+        if (at === BEFORE_AT) { pendingActivityFailure = response; return }
+        return ndjson(response, targetedActivityRecords("activity_target_A", at))
+      }
+      if (sections.includes("pg_stat_statements")) {
+        if (url.searchParams.get("search") === "target-b") {
+          statementAttempts += 1
+          if (statementAttempts === 1) { pendingStatementFailure = response; return }
+          return ndjson(response, targetedStatementRecords("statement_target_B", 222))
+        }
+        return ndjson(response, targetedStatementRecords("statement_target_A", 111))
+      }
+      if (sections.includes("pg_stat_user_tables")) {
+        if (url.searchParams.get("group") === "schema") {
+          relationAttempts += 1
+          if (relationAttempts === 1) { pendingRelationFailure = response; return }
+          return ndjson(response, targetedRelationRecords(url, "relation_target_B", 444))
+        }
+        return ndjson(response, targetedRelationRecords(url, "relation_target_A", 333))
+      }
+      return ndjson(response, [])
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("snapshot-target browser server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "kronika-snapshot-target-browser-"))
+  const browser = launchBrowser(profile)
+  const page = { errors: [], external: [], responses: [] }
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 1280 })
+    await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
+
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=host.system` })
+    await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null && document.querySelector('[data-testid="system-metric-mem_anon"]') !== null && document.querySelector('[data-testid="system-panel-os_diskstats"]')?.textContent.includes("device_target_A") === true`, "ordinary System target A", 15_000)
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowLeft" }))`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${BEFORE_AT}"`, "ordinary System target B")
+    await waitForRequests(() => pendingSystemFailure !== null)
+    await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]')?.classList.contains("cursor-behind") === true`, "ordinary System target B loading", 15_000)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') === null && document.querySelector('[data-testid="system-metric-mem_anon"]') === null && document.querySelector('[data-testid="system-panel-os_diskstats"]') === null`), true)
+    brokenNdjson(pendingSystemFailure)
+    pendingSystemFailure = null
+    await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]')?.classList.contains("cursor-missing") === true`, "ordinary System target B error", 15_000)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') === null && document.querySelector('[data-testid="system-metric-mem_anon"]') === null && document.querySelector('[data-testid="system-panel-os_diskstats"]') === null`), true)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"]') !== null`), true)
+
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.activity` })
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"]')?.textContent.includes("activity_target_A") === true`, "ordinary PostgreSQL target A", 15_000)
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowLeft" }))`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${BEFORE_AT}"`, "ordinary PostgreSQL target B")
+    await waitForRequests(() => pendingActivityFailure !== null)
+    await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]')?.classList.contains("cursor-behind") === true`, "ordinary PostgreSQL target B loading", 15_000)
+    assert.equal(await cdp.evaluate(`(() => {
+      const table = document.querySelector('[data-testid="pg-activity-table"]')
+      return table !== null && !table.textContent.includes("activity_target_A") && table.querySelector('.entity-row') === null
+    })()`), true)
+    brokenNdjson(pendingActivityFailure)
+    pendingActivityFailure = null
+    await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]')?.classList.contains("cursor-missing") === true`, "ordinary PostgreSQL target B error", 15_000)
+    assert.equal(await cdp.evaluate(`(() => {
+      const table = document.querySelector('[data-testid="pg-activity-table"]')
+      return table !== null && !table.textContent.includes("activity_target_A") && table.querySelector('.entity-row') === null
+    })()`), true)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"]') !== null`), true)
+
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.statements` })
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-statements-table"]')?.textContent.includes("statement_target_A") === true`, "dense statement target A", 15_000)
+    assert.match(await cdp.evaluate(`document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]').textContent`), /Loaded 1 of 111/)
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('[data-testid="table-filter"]')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "target-b")
+      input.dispatchEvent(new Event("input", { bubbles: true }))
+    })()`)
+    await waitForRequests(() => pendingStatementFailure !== null)
+    await cdp.waitFor(`document.querySelector('[data-testid="table-paging"] button')?.textContent === "…"`, "dense statement target B loading", 15_000)
+    const loadingStatement = await cdp.evaluate(`(() => {
+      const table = document.querySelector('[data-testid="pg-statements-table"]')
+      return { rows: table.querySelectorAll('.entity-row').length, status: table.querySelector('[data-testid="table-status"]').textContent, text: table.textContent }
+    })()`)
+    assert.equal(loadingStatement.rows, 0)
+    assert.doesNotMatch(loadingStatement.text, /statement_target_A/)
+    assert.doesNotMatch(loadingStatement.status, /111/)
+    brokenNdjson(pendingStatementFailure)
+    pendingStatementFailure = null
+    await cdp.waitFor(`document.querySelector('[data-testid="table-paging"] button')?.textContent === "↻"`, "dense statement target B error", 15_000)
+    const failedStatement = await cdp.evaluate(`(() => {
+      const table = document.querySelector('[data-testid="pg-statements-table"]')
+      return { rows: table.querySelectorAll('.entity-row').length, status: table.querySelector('[data-testid="table-status"]').textContent, text: table.textContent }
+    })()`)
+    assert.equal(failedStatement.rows, 0)
+    assert.doesNotMatch(failedStatement.text, /statement_target_A/)
+    assert.doesNotMatch(failedStatement.status, /111/)
+    assert.match(failedStatement.status, /Calculation interval: unavailable/)
+    await cdp.evaluate(`document.querySelector('[data-testid="table-paging"] button').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-statements-table"]')?.textContent.includes("statement_target_B") === true`, "dense statement target B retry", 15_000)
+    assert.match(await cdp.evaluate(`document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]').textContent`), /Loaded 1 of 222/)
+
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.tables` })
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"]')?.textContent.includes("relation_target_A") === true`, "relation target A", 15_000)
+    assert.match(await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] [data-testid="table-status"]').textContent`), /Loaded 1 of 333/)
+    await cdp.evaluate(`document.querySelector('nav.lensbar .lens-tabs button:nth-child(2)').click()`)
+    await waitForRequests(() => pendingRelationFailure !== null)
+    await cdp.waitFor(`document.querySelector('[data-testid="table-paging"] button')?.textContent === "…"`, "relation target B loading", 15_000)
+    const loadingRelation = await cdp.evaluate(`(() => {
+      const table = document.querySelector('[data-testid="pg-tables-table"]')
+      return { rows: table.querySelectorAll('.entity-row').length, status: table.querySelector('[data-testid="table-status"]').textContent, text: table.textContent }
+    })()`)
+    assert.equal(loadingRelation.rows, 0)
+    assert.doesNotMatch(loadingRelation.text, /relation_target_A/)
+    assert.doesNotMatch(loadingRelation.status, /333/)
+    brokenNdjson(pendingRelationFailure)
+    pendingRelationFailure = null
+    await cdp.waitFor(`document.querySelector('[data-testid="table-paging"] button')?.textContent === "↻"`, "relation target B error", 15_000)
+    const failedRelation = await cdp.evaluate(`(() => {
+      const table = document.querySelector('[data-testid="pg-tables-table"]')
+      return { rows: table.querySelectorAll('.entity-row').length, status: table.querySelector('[data-testid="table-status"]').textContent, text: table.textContent }
+    })()`)
+    assert.equal(failedRelation.rows, 0)
+    assert.doesNotMatch(failedRelation.text, /relation_target_A/)
+    assert.doesNotMatch(failedRelation.status, /333/)
+    assert.match(failedRelation.status, /Calculation interval: unavailable/)
+    await cdp.evaluate(`document.querySelector('[data-testid="table-paging"] button').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"]')?.textContent.includes("relation_target_B") === true`, "relation target B retry", 15_000)
+    assert.match(await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] [data-testid="table-status"]').textContent`), /Loaded 1 of 444/)
+
+    assert.equal(statementAttempts, 2)
+    assert.equal(relationAttempts, 2)
+    assert.deepEqual(page.errors.filter((message) => !message.includes("kronika: snapshot at the cursor failed") && !message.includes("kronika: snapshot page failed")), [])
+    assert.deepEqual(page.external, [])
+  } finally {
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await rm(profile, { recursive: true, force: true })
+  }
+})
+
 function processSummaryRecords(hour, count, processes) {
   const fields = [
     "processes", "threads", "runnable", "postgresql", "user_cores", "system_cores", "run_delay_ms_per_second", "context_switches_per_second",
@@ -2263,6 +2441,21 @@ function timelineRecords(hour = HOUR, cgroups = false) {
   ]
 }
 
+function snapshotTargetTimelineRecords() {
+  return timelineRecords().map((record) => record.record !== "finished_segment"
+    ? record
+    : {
+        ...record,
+        sections: [...record.sections, {
+          logical_name: "os_meminfo", physical_name: "os_meminfo", type_id: "1104001",
+          implementation: "linux", source_family: "system", rows: "1", bytes: "128",
+        }, {
+          logical_name: "os_diskstats", physical_name: "os_diskstats", type_id: "1108001",
+          implementation: "linux", source_family: "system", rows: "1", bytes: "256",
+        }],
+      })
+}
+
 function systemIndexRecords(timestamp) {
   return [
     ["os_cpu_busy_percent", 42],
@@ -2300,6 +2493,8 @@ function systemSnapshotRecords(cgroupContext = false, at = AT) {
     row("1107001", "4", [String(at), 0, 2.5], at),
     row("1107001", "5", [String(at), 1, 1.2], at),
     row("1107001", "6", [String(at), 2, 0.4], at),
+    layout("1108001", "os_diskstats", ["ts", "major", "minor", "device", "reads", "writes", "read_sectors", "write_sectors", "read_time_ms", "write_time_ms", "io_time_ms", "io_weighted_time_ms", "io_in_progress", "scope"]),
+    row("1108001", "7", [String(at), 8, 0, "device_target_A", 100, 50, 200, 150, 1_000, 500, 2_000, 2_500, 1, 0], at),
     ...(cgroupContext ? [
       layout("1205001", "os_cgroup_context", [
         "ts", "cgroup_version", "cpu_path", "memory_path", "io_path", "cpuset_cpus",
@@ -2487,12 +2682,49 @@ function statementRecords(page, eligible = 1, hasMore = false, rowCount = eligib
   ]
 }
 
+function targetedActivityRecords(query, timestamp) {
+  return snapshotRecords().map((record) => record.record !== "row"
+    ? record
+    : {
+        ...record,
+        timestamp: String(timestamp),
+        values: record.values.map((value, index) => index === 0 ? String(timestamp) : index === 11 ? query : value),
+      })
+}
+
+function targetedStatementRecords(query, eligible) {
+  return statementRecords(true, eligible, false, 1).map((record) => record.record === "row"
+    ? { ...record, values: record.values.map((value, index) => index === 7 ? query : value) }
+    : record)
+}
+
+function targetedRelationRecords(url, label, eligible) {
+  return relationRecords(url, "single").map((record) => {
+    if (record.record === "snapshot_page") return { ...record, eligible: String(eligible) }
+    if (record.record !== "relation") return record
+    const key = record.group === "database"
+      ? { ...record.key, datname: label }
+      : record.group === "schema"
+        ? { ...record.key, schemaname: label }
+        : { ...record.key, relname: label }
+    return { ...record, key }
+  })
+}
+
 function ndjson(response, records) {
   response.writeHead(200, {
     "Cache-Control": "no-store",
     "Content-Type": "application/x-ndjson; charset=utf-8",
   })
   response.end(records.map((record) => JSON.stringify(record)).join("\n") + (records.length === 0 ? "" : "\n"))
+}
+
+function brokenNdjson(response) {
+  response.writeHead(200, {
+    "Cache-Control": "no-store",
+    "Content-Type": "application/x-ndjson; charset=utf-8",
+  })
+  response.end("{")
 }
 
 function requestRecord(request, url) {

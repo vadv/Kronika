@@ -1,9 +1,13 @@
 import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
 import test from "node:test"
 
 import { importModule } from "./import-module.mjs"
 
-const helpers = await importModule('export { numericChartPoints, readingAt, sampleAtOrBefore, uncollectedStart } from "../src/series-chart.tsx"; export { buildMetricSamples } from "../src/chart.ts"')
+const helpers = await importModule(`
+  export { numericChartPoints, pointsInHour, readingAt, sampleAtOrBefore, uncollectedStart } from "../src/series-chart.tsx"
+  export { buildMetricSamples } from "../src/chart.ts"
+`)
 
 test("a recorded null is the reading at its timestamp", () => {
   const points = [10, null, 12].map((value, index) => ({ segmentId: "a", timestamp: index + 1, value }))
@@ -50,4 +54,38 @@ test("an all-null chart has no drawable samples while zero remains data", () => 
   assert.equal(helpers.numericChartPoints([
     { segmentId: "a", timestamp: 1, value: 0 },
   ]).length, 1)
+})
+
+test("a series uses only selected-hour points for emptiness, readout, and plotting", async () => {
+  const hour = 3_600_000_000
+  const prior = { segmentId: "a", timestamp: hour - 1, value: 91 }
+  const priorSecond = { segmentId: "a", timestamp: hour - 2, value: 55 }
+  const emptyPrimary = helpers.pointsInHour([prior], hour)
+  const emptySecond = helpers.pointsInHour([priorSecond], hour)
+  assert.deepEqual(emptyPrimary, [])
+  assert.deepEqual(emptySecond, [])
+  assert.equal(helpers.numericChartPoints(emptyPrimary, emptySecond).length, 0)
+  assert.equal(helpers.readingAt(emptyPrimary, hour + 10), null)
+
+  const plottedPrimary = helpers.pointsInHour([
+    prior,
+    { segmentId: "b", timestamp: hour + 1, value: 7 },
+  ], hour)
+  const plottedSecond = helpers.pointsInHour([priorSecond], hour)
+  assert.deepEqual(plottedPrimary.map(({ value }) => value), [7])
+  assert.deepEqual(plottedSecond, [])
+  assert.equal(helpers.numericChartPoints(plottedPrimary, plottedSecond).length, 1)
+  assert.equal(helpers.readingAt(plottedPrimary, hour + 10), 7)
+  assert.deepEqual(helpers.pointsInHour([
+    { ...prior, timestamp: hour - 1 },
+    { ...prior, timestamp: hour },
+    { ...prior, timestamp: hour + 3_600_000_000 - 1 },
+    { ...prior, timestamp: hour + 3_600_000_000 },
+  ], hour).map(({ timestamp }) => timestamp), [hour, hour + 3_600_000_000 - 1])
+
+  const source = await readFile(new URL("../src/series-chart.tsx", import.meta.url), "utf8")
+  assert.match(source, /points: pointsInHour\(points, hour\)[\s\S]*second: second === undefined \? undefined : pointsInHour\(second, hour\)/)
+  assert.match(source, /numericChartPoints\(visible\.points, visible\.second\)/)
+  assert.match(source, /readingAt\(visible\.points, cursor\)/)
+  assert.match(source, /points: visible\.points[\s\S]*points: visible\.second/)
 })

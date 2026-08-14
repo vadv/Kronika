@@ -23,6 +23,7 @@ import {
   type SegmentBound,
   type Finding,
   type HourData,
+  type SnapshotOptions,
   type TimelineData,
 } from "./api"
 import { ChartOnly, ChartVisibilityProvider, loadChartVisibility } from "./chart-visibility"
@@ -31,7 +32,7 @@ import { hostSectionOf, pgSectionOf, readAddress, sourceOf, stepOf, viewOf, writ
 import { DetailDock, PROCESS_HISTORY_FIELDS } from "./detail"
 import { loadDisplayTimeZone, saveDisplayTimeZone, type DisplayTimeZone } from "./display-time"
 import { DisplayTimeProvider, useDisplayTime } from "./display-time-context"
-import { contextualRows, entityContext, findingRoute } from "./entity-context"
+import { contextualRows, entityContext, findingRoute, type EntityContext } from "./entity-context"
 import { EventsView, type FindingResolution } from "./events-view"
 import { findingHistory, findingHistoryRequest, findingProjection } from "./finding-presentation"
 import { HelpPanel, type Translate } from "./help"
@@ -78,6 +79,13 @@ const EMPTY_DATA: HourData = {
   sections: {}, rateColumns: {}, snapshotRows: [], availableSections: [], postgresqlConfigured: false, processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
   pgOverview: [], points: [], lanePoints: [], findings: [], findingGroups: [],
 }
+
+interface CurrentSnapshot {
+  readonly data: HourData
+  readonly target: string | null
+}
+
+const EMPTY_CURRENT_SNAPSHOT: CurrentSnapshot = { data: EMPTY_DATA, target: null }
 
 const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
   system: [...TIMELINE_REQUESTS, ...SYSTEM_REQUESTS],
@@ -164,10 +172,8 @@ function App({ locale, onLocale, t }: {
   const [cursor, setCursor] = useState(0)
   const followsLatest = useRef(opened.current.at === null)
   const [timelineData, setTimelineData] = useState<HourData>(EMPTY_DATA)
-  const [currentData, setCurrentData] = useState<HourData>(EMPTY_DATA)
-  const currentDataTarget = useRef<{ readonly cursor: number; readonly segmentId: string } | null>(null)
-  const data = useMemo(() => viewData(timelineData, currentData), [currentData, timelineData])
-  const pgPresent = hasPostgresTelemetry(data)
+  const [currentSnapshot, setCurrentSnapshot] = useState<CurrentSnapshot>(EMPTY_CURRENT_SNAPSHOT)
+  const pgPresent = hasPostgresTelemetry(timelineData)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [source, setSource] = useState<Source>(sourceOf(opened.current.view))
@@ -230,6 +236,25 @@ function App({ locale, onLocale, t }: {
     return VIEW_REQUESTS[baseViewKey] ?? []
   }, [activeRelation, activeRelationLens, baseViewKey, pgSection, planLens, relationLevel, statementLens, visibleSource])
   const [segments, setSegments] = useState<readonly SegmentBound[]>([])
+  const cursorSegment = useMemo(() => segmentBoundAt(segments, cursor), [cursor, segments])
+  const densePattern = viewRequests.some((request) => request.pageSize !== undefined) ? find.trim() : ""
+  const requestedSnapshots = viewRequests.filter((request) => request.section !== "health").map((request) => request.pageSize !== undefined && request.section === context?.logicalName
+    ? { ...request, typeIds: [context.typeId] } : request)
+  const snapshotRequests = cursorSegment === null ? [] : requestsForSegment(requestedSnapshots, cursorSegment)
+  const denseRequest = snapshotRequests.find((request) => request.pageSize !== undefined)
+  const ordinaryRequests = snapshotRequests.filter((request) => request.pageSize === undefined)
+  const pageContext = denseRequest !== undefined && context?.logicalName === denseRequest.section ? context : null
+  const denseOptions = denseRequest === undefined
+    ? undefined
+    : initialPageOptions(denseRequest, pageContext, densePattern, relationFilters)
+  const cgroupTargetRequests = cursorSegment !== null && ordinaryRequests.some(({ section }) => section === "os_cgroup_context")
+    ? requestsForSegment(CGROUP_SNAPSHOT_REQUESTS, cursorSegment)
+    : []
+  const snapshotTarget = cursorSegment === null || snapshotRequests.length === 0
+    ? null
+    : snapshotTargetKey(cursorSegment, cursor, snapshotRequests, cgroupTargetRequests, order, denseOptions)
+  const currentData = currentSnapshot.target === snapshotTarget ? currentSnapshot.data : EMPTY_DATA
+  const data = useMemo(() => viewData(timelineData, currentData), [currentData, timelineData])
   const drawn = useRef<number | null>(null)
   const selectedHour = useRef(hour)
   selectedHour.current = hour
@@ -317,8 +342,7 @@ function App({ locale, onLocale, t }: {
         setHour(timeline.hour)
         setSegments(timeline.segments)
         setTimelineData(hourOf(timeline))
-        currentDataTarget.current = null
-        setCurrentData(EMPTY_DATA)
+        setCurrentSnapshot(EMPTY_CURRENT_SNAPSHOT)
         followsLatest.current = asked === null || floorHour(asked) !== timeline.hour
         setCursor(followsLatest.current ? latest : asked ?? latest)
         setLastUpdated(Date.now() * 1_000)
@@ -337,22 +361,13 @@ function App({ locale, onLocale, t }: {
       setHour(fallback)
       setSegments([])
       setTimelineData(EMPTY_DATA)
-      currentDataTarget.current = null
-      setCurrentData(EMPTY_DATA)
+      setCurrentSnapshot(EMPTY_CURRENT_SNAPSHOT)
       setCursor(fallback)
       setError(reason instanceof Error ? reason.message : String(reason))
       setLoading(false)
     })
     return () => controller.abort()
   }, [finishRefresh, hour, refreshVersion])
-  const cursorSegment = useMemo(() => segmentBoundAt(segments, cursor), [cursor, segments])
-  const cursorSegmentId = cursorSegment?.id ?? null
-  const systemData = useMemo(() => {
-    const target = currentDataTarget.current
-    return target?.segmentId === cursorSegmentId && target.cursor === cursor
-      ? data
-      : clearCgroupSnapshotRows(data)
-  }, [cursor, cursorSegmentId, data])
   const [cursorState, setCursorState] = useState<"ready" | "loading" | "missing">("ready")
   const [densePageState, setDensePageState] = useState<"idle" | "loading" | "error">("idle")
   const snapshotGeneration = useRef(0)
@@ -361,35 +376,30 @@ function App({ locale, onLocale, t }: {
     failed: string | undefined
     load: (cursor?: string) => void
   } | null>(null)
-  const densePattern = viewRequests.some((request) => request.pageSize !== undefined) ? find.trim() : ""
   useEffect(() => {
     const generation = ++snapshotGeneration.current
-    currentDataTarget.current = null
     cgroupSnapshotKey.current = null
-    setCurrentData(clearCgroupSnapshotRows)
+    setCurrentSnapshot((current) => current.target === snapshotTarget
+      ? { ...current, data: clearCgroupSnapshotRows(current.data) }
+      : current)
     const completesRefresh = refreshAwaitingSnapshot.current
     densePage.current = null
     if (hour === null || cursorSegment === null) {
-      if (!completesRefresh) setCurrentData(EMPTY_DATA)
+      if (!completesRefresh) setCurrentSnapshot(EMPTY_CURRENT_SNAPSHOT)
       setCursorState("missing")
       setDensePageState("idle")
       if (completesRefresh) finishRefresh(false)
       return
     }
-    const wanted = requestsForSegment(
-      viewRequests.filter((request) => request.section !== "health").map((request) => request.pageSize !== undefined && request.section === context?.logicalName
-        ? { ...request, typeIds: [context.typeId] } : request),
-      cursorSegment,
-    )
-    if (wanted.length === 0) {
-      if (!completesRefresh) setCurrentData(EMPTY_DATA)
+    if (snapshotTarget === null) {
+      if (!completesRefresh) setCurrentSnapshot(EMPTY_CURRENT_SNAPSHOT)
       setCursorState("ready")
       setDensePageState("idle")
       if (completesRefresh) finishRefresh(true)
       return
     }
     setCursorState("loading")
-    setDensePageState(wanted.some((request) => request.pageSize !== undefined) ? "loading" : "idle")
+    setDensePageState(denseRequest === undefined ? "idle" : "loading")
     const controller = new AbortController()
     const stale = () => controller.signal.aborted || generation !== snapshotGeneration.current
     const loadOrdinarySnapshot = async (ordinary: readonly SectionRequest[]): Promise<HourData> => {
@@ -415,14 +425,11 @@ function App({ locale, onLocale, t }: {
       return exact.reduce((current, incoming) => mergeSnapshotData(current, incoming), primary)
     }
     const timer = setTimeout(() => {
-      const request = wanted.find((request) => request.pageSize !== undefined)
-      const ordinary = wanted.filter((request) => request.pageSize === undefined)
-      if (request === undefined) {
-        void loadOrdinarySnapshot(ordinary)
+      if (denseRequest === undefined) {
+        void loadOrdinarySnapshot(ordinaryRequests)
         .then((incoming) => {
           if (stale()) return
-          currentDataTarget.current = { cursor, segmentId: cursorSegment.id }
-          setCurrentData(incoming)
+          setCurrentSnapshot({ data: incoming, target: snapshotTarget })
           setCursorState("ready")
           if (completesRefresh) finishRefresh(true)
         })
@@ -434,16 +441,15 @@ function App({ locale, onLocale, t }: {
         })
         return
       }
-      const base = ordinary.length === 0
+      const base = ordinaryRequests.length === 0
         ? Promise.resolve(EMPTY_DATA)
-        : loadOrdinarySnapshot(ordinary)
+        : loadOrdinarySnapshot(ordinaryRequests)
           .catch((reason: unknown) => {
             if (completesRefresh) throw reason
             if (!controller.signal.aborted) console.error("kronika: snapshot companion failed", reason)
             return EMPTY_DATA
           })
       let inFlight = false
-      const pageContext = context?.logicalName === request.section ? context : null
       const action = {
         failed: undefined as string | undefined,
         load: (pageCursor?: string) => {
@@ -451,24 +457,21 @@ function App({ locale, onLocale, t }: {
           inFlight = true
           action.failed = undefined
           setDensePageState("loading")
-          const relation = request.group === undefined ? undefined : relationFilters
-          const fixed = request.group === undefined ? undefined : request.filters
           const options = {
+            ...denseOptions,
             ...(pageCursor === undefined ? {} : { cursor: pageCursor }),
-            ...(densePattern === "" ? {} : { search: [densePattern] }),
-            ...(relation === undefined
-              ? pageContext === null ? {} : { filters: Object.fromEntries(pageContext.identity), typeId: pageContext.typeId }
-              : Object.keys(relation).length === 0 && fixed === undefined ? {} : { filters: { ...relation, ...fixed } }),
           }
           void Promise.all([
             pageCursor === undefined ? base : Promise.resolve(null),
-            loadSnapshot(cursorSegment.id, cursor, [request], controller.signal, order ?? undefined, options),
+            loadSnapshot(cursorSegment.id, cursor, [denseRequest], controller.signal, order ?? undefined, options),
           ]).then(([companion, incoming]) => {
             if (stale()) return
-            currentDataTarget.current = { cursor, segmentId: cursorSegment.id }
-            setCurrentData((current) => pageCursor === undefined
-              ? mergeSnapshotData(companion ?? EMPTY_DATA, incoming)
-              : mergeSnapshotData(current, incoming, request.section))
+            setCurrentSnapshot((current) => ({
+              data: pageCursor === undefined
+                ? mergeSnapshotData(companion ?? EMPTY_DATA, incoming)
+                : mergeSnapshotData(current.target === snapshotTarget ? current.data : EMPTY_DATA, incoming, denseRequest.section),
+              target: snapshotTarget,
+            }))
             setDensePageState("idle")
             setCursorState("ready")
             if (completesRefresh && pageCursor === undefined) finishRefresh(true)
@@ -486,7 +489,7 @@ function App({ locale, onLocale, t }: {
       action.load()
     }, 250)
     return () => { clearTimeout(timer); controller.abort() }
-  }, [context, cursor, cursorSegmentId, densePattern, finishRefresh, hour, order, relationFilters, viewRequests])
+  }, [finishRefresh, hour, snapshotTarget])
   const refreshReady = !loading && cursorState === "ready" && densePageState !== "loading"
   useEffect(() => hour === null || !refreshReady || refreshing
     ? undefined : scheduleRefresh(hour, requestRefresh), [hour, refreshReady, refreshing, requestRefresh])
@@ -790,7 +793,7 @@ function App({ locale, onLocale, t }: {
       </p>
       {loading && <StateCard message={t("status.loading")} />}
       {!loading && error !== null && <StateCard message={t("status.error")} />}
-      {!loading && error === null && hour !== null && visibleSource === "host" && visibleHostSection === "system" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={systemData} focus={systemFocus} hour={hour} locale={locale} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "host" && visibleHostSection === "system" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} hour={hour} locale={locale} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} t={t} />}
       {!loading && error === null && hour !== null && visibleSource === "host" && visibleHostSection === "processes" && <>
         <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} primaryLane={lens === "cpu" ? "cpu_busy" : lens === "memory" ? "memory" : lens === "disk" ? "io_stall" : "health"} shownAt={shownAt} t={t} /></ChartOnly>
         <div className="lensbar">
@@ -819,6 +822,52 @@ function TimeValue({ label, output, testId }: { readonly label: string; readonly
 
 function StateCard({ message }: { readonly message: string }) {
   return <div className="loading-card"><p className="eyebrow">KRONIKA</p><h2>{message}</h2></div>
+}
+
+function initialPageOptions(
+  request: SectionRequest,
+  context: EntityContext | null,
+  pattern: string,
+  relationFilters: Readonly<Record<string, string>>,
+): SnapshotOptions {
+  const filters = request.group === undefined
+    ? context === null ? undefined : sortedFilters(Object.fromEntries(context.identity))
+    : Object.keys(relationFilters).length === 0 && request.filters === undefined
+      ? undefined
+      : sortedFilters({ ...relationFilters, ...request.filters })
+  return {
+    ...(filters === undefined ? {} : { filters }),
+    ...(request.group === undefined && context !== null ? { typeId: context.typeId } : {}),
+    ...(pattern === "" ? {} : { search: [pattern] }),
+  }
+}
+
+function snapshotTargetKey(
+  segment: SegmentBound,
+  cursor: number,
+  requests: readonly SectionRequest[],
+  cgroupRequests: readonly SectionRequest[],
+  order: TableOrder | null,
+  options: SnapshotOptions | undefined,
+): string {
+  const sections = new Set([...requests, ...cgroupRequests].map(({ section }) => section))
+  const layouts = segment.sections
+    .filter(({ logicalName }) => sections.has(logicalName))
+    .map(({ logicalName, typeId }) => [logicalName, typeId] as const)
+    .sort(([leftName, leftType], [rightName, rightType]) => leftName.localeCompare(rightName) || leftType.localeCompare(rightType))
+  return JSON.stringify([
+    segment.id,
+    cursor,
+    layouts,
+    requests,
+    cgroupRequests,
+    order === null ? null : [order.column, order.descending],
+    options ?? null,
+  ])
+}
+
+function sortedFilters(filters: Readonly<Record<string, string>>): Readonly<Record<string, string>> {
+  return Object.fromEntries(Object.entries(filters).sort(([left], [right]) => left.localeCompare(right)))
 }
 
 function statementLensOf(lens: PgLens): StatementLens {

@@ -133,7 +133,7 @@ test("the context chip is visible and removable without changing row selection",
   assert.match(tableFilter, /data-testid="entity-context-filter"/)
   assert.match(tableFilter, /filter\.show_all/)
   assert.match(entity, /onClick=\{\(\) => onSelect\?\.\(row\.original\)\}/)
-  assert.match(app, /Object\.fromEntries\(pageContext\.identity\)/)
+  assert.match(app, /Object\.fromEntries\(context\.identity\)/)
   const clear = app.match(/const clearEntityContext = useCallback\(\(\) => \{([\s\S]*?)\n  \}, \[\]\)/)?.[1] ?? ""
   assert.doesNotMatch(clear, /setFind\(/)
   assert.ok(
