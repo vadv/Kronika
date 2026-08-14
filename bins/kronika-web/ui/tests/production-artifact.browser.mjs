@@ -28,6 +28,152 @@ const SESSION_COOKIE = `kronika_session=v1.2000000000.${"A".repeat(43)}`
 const SLOW_PATTERN = 'SELECT "bulkoperations_bulktask"."id" FROM "bulkoperations_bulktask" WHERE "bulkoperations_bulktask"."status" = ? AND "bulkoperations_bulktask"."tenant_partition_with_a_deliberately_long_identifier" = ?'
 const SLOW_QUERY = `${SLOW_PATTERN.replaceAll("?", "'pending'")} ORDER BY "bulkoperations_bulktask"."created_at" DESC LIMIT 250`
 
+test("display timezone and human chart precision stay global", { timeout: 60_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const requests = []
+  const authState = { valid: true }
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    requests.push(requestRecord(request, url))
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/catalog") return ndjson(response, [])
+    if (url.pathname === "/api/hour") {
+      const hour = Number(url.searchParams.get("from") ?? HOUR)
+      const records = timelineRecords(hour).map((record) => record.record === "point" && record.series === "os_health" && record.ts === String(AT)
+        ? { ...record, value: 41.729068244136855 }
+        : record)
+      return ndjson(response, records)
+    }
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
+      return ndjson(response, url.searchParams.getAll("section").includes("pg_stat_statements") ? statementRecords(true) : snapshotRecords())
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("focused browser server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "kronika-timezone-browser-"))
+  const browser = launchBrowser(profile)
+  const result = { errors: [], external: [], responses: [] }
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, result)
+    await enablePage(cdp)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 1280 })
+    await cdp.send("Emulation.setTimezoneOverride", { timezoneId: "Europe/Moscow" })
+    await cdp.send("Network.setCookie", {
+      name: "kronika_session",
+      url: origin,
+      value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1),
+    })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.statements` })
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length >= 1`, "the focused Statements path", 15_000)
+    await settleLayout(cdp)
+    const browserMode = await cdp.evaluate(`(() => ({
+      at: new URL(location.href).searchParams.get("at"),
+      cursor: document.querySelector('[data-testid="cursor-time"]')?.textContent ?? "",
+      hour: document.querySelector('[data-testid="hour-picker-trigger"]')?.textContent ?? "",
+      overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth || document.querySelector(".topbar").scrollWidth > document.querySelector(".topbar").clientWidth,
+      status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent ?? "",
+      zone: document.querySelector('[data-testid="timezone-select"]')?.value,
+      zoneLabel: document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent ?? "",
+    }))()`)
+    assert.equal(browserMode.at, String(AT))
+    assert.equal(browserMode.zone, "browser")
+    assert.match(browserMode.zoneLabel, /Browser GMT\+3/)
+    for (const output of [browserMode.cursor, browserMode.hour, browserMode.status]) {
+      assert.match(output, /GMT\+3/)
+      assert.doesNotMatch(output, /UTC|\.\d{3}/)
+    }
+    assert.equal(browserMode.overflow, false)
+
+    const hover = async () => {
+      await cdp.evaluate(`(() => {
+        const plot = document.querySelector('[data-testid="hour-timeline"] .u-over')
+        const bounds = plot.getBoundingClientRect()
+        const clientX = bounds.left + (${AT + 3_000_000} - ${HOUR}) / ${HOUR_US} * bounds.width
+        const clientY = bounds.top + bounds.height / 2
+        plot.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, clientX, clientY }))
+        plot.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX, clientY }))
+      })()`)
+      await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] .chart-tooltip') !== null`, "the focused chart tooltip")
+    }
+    await hover()
+    const tooltip = await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] .chart-tooltip').textContent`)
+    assert.match(tooltip, /08:30:00 GMT\+3/)
+    assert.match(tooltip, /41\.7%/)
+    assert.doesNotMatch(tooltip, /41\.729068|UTC|\.000/)
+    const apiBeforeSwitch = requests.filter(({ path }) => path.startsWith("/api/")).length
+    await cdp.evaluate(`(() => {
+      const select = document.querySelector('[data-testid="timezone-select"]')
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(select, "utc")
+      select.dispatchEvent(new Event("change", { bubbles: true }))
+    })()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("05:30:00 UTC") === true`, "the UTC display mode")
+    await hover()
+    const utcMode = await cdp.evaluate(`(() => ({
+      at: new URL(location.href).searchParams.get("at"),
+      cursor: document.querySelector('[data-testid="cursor-time"]')?.textContent ?? "",
+      hour: document.querySelector('[data-testid="hour-picker-trigger"]')?.textContent ?? "",
+      status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent ?? "",
+      tooltip: document.querySelector('[data-testid="hour-timeline"] .chart-tooltip')?.textContent ?? "",
+      zone: document.querySelector('[data-testid="timezone-select"]')?.value,
+    }))()`)
+    assert.equal(utcMode.at, String(AT))
+    assert.equal(utcMode.zone, "utc")
+    for (const output of [utcMode.cursor, utcMode.hour, utcMode.status, utcMode.tooltip]) {
+      assert.match(output, /UTC/)
+      assert.doesNotMatch(output, /GMT\+3|\.\d{3}/)
+    }
+    assert.equal(requests.filter(({ path }) => path.startsWith("/api/")).length, apiBeforeSwitch)
+    await cdp.evaluate(`(() => {
+      const select = document.querySelector('[data-testid="timezone-select"]')
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(select, "browser")
+      select.dispatchEvent(new Event("change", { bubbles: true }))
+    })()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("GMT+3") === true`, "the Browser display restore")
+    await cdp.send("Page.reload")
+    await cdp.waitFor(`document.querySelector('[data-testid="timezone-select"]')?.value === "browser" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("GMT+3") === true`, "the persisted Browser display", 15_000)
+
+    await cdp.evaluate(`document.querySelector(".source-tabs button:first-child").click()`)
+    await cdp.waitFor(`document.querySelector(".source-tabs button:first-child")?.getAttribute("aria-current") === "page"`, "the Host history destination")
+    assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("view")`), null)
+    await cdp.evaluate(`(() => {
+      const navigator = document.querySelector('[data-testid="hour-timeline"] input.chart-navigator')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(navigator, "2")
+      navigator.dispatchEvent(new Event("input", { bubbles: true }))
+    })()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${BEFORE_AT}"`, "the exact replacement cursor")
+    await cdp.evaluate(`history.back()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${AT}" && new URL(location.href).searchParams.get("view") === "pg.statements"`, "the exact back selection")
+    await cdp.evaluate(`history.forward()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${BEFORE_AT}" && new URL(location.href).searchParams.get("view") === null`, "the exact forward selection")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="timezone-select"]')?.value`), "browser")
+    assert.equal(await cdp.evaluate(`document.documentElement.scrollWidth <= document.documentElement.clientWidth`), true)
+    assert.deepEqual(result.errors, [])
+    assert.deepEqual(result.external, [])
+  } finally {
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await rm(profile, { recursive: true, force: true })
+  }
+})
+
 test("the production artifact preserves wire keys and exact finding page state", { timeout: 120_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const requests = []
@@ -194,11 +340,11 @@ test("the production artifact preserves wire keys and exact finding page state",
       sample: document.querySelector('.cursor-time')?.textContent.includes('Sample'),
       updatedSecondary: document.querySelector('[data-testid="updated-time"] small')?.textContent ?? null,
     }))()`)
-    assert.match(localClocks.cursor, /01:30:00\.000 EDT/)
+    assert.match(localClocks.cursor, /01:30:00 GMT-4/)
     assert.doesNotMatch(localClocks.cursor, /UTC/)
     assert.equal(localClocks.cursorSecondary, null)
-    assert.equal(localClocks.hour, "01:00–02:00 EDT")
-    assert.match(localClocks.hourContext, /Aug 13, 2026/)
+    assert.equal(localClocks.hour, "01:00–02:00 GMT-4")
+    assert.match(localClocks.hourContext, /08\/13\/2026/)
     assert.doesNotMatch(localClocks.hourContext, /UTC/)
     assert.equal(localClocks.updatedSecondary, null)
     assert.equal(localClocks.sample, false)
@@ -213,30 +359,26 @@ test("the production artifact preserves wire keys and exact finding page state",
     const initialPicker = await cdp.evaluate(`(() => ({
       currentAction: document.querySelector('[data-testid="hour-current"]')?.tagName,
       currentDay: document.querySelector('.day-cell[data-day="2026-08-13"]')?.getAttribute('aria-pressed'),
-      currentHour: document.querySelector('.hour-cell[data-hour="05"]')?.getAttribute('aria-pressed'),
-      currentHourCaptured: document.querySelector('.hour-cell[data-hour="05"]')?.dataset.available,
-      currentHourDisabled: document.querySelector('.hour-cell[data-hour="05"]')?.disabled,
-      dayTenDisabled: document.querySelector('.day-cell[data-day="2026-08-10"]')?.disabled,
-      dayTenVisible: document.querySelector('.day-cell[data-day="2026-08-10"]')?.getBoundingClientRect().height > 0,
+      currentHour: document.querySelector('.hour-cell[data-instant="${HOUR}"]')?.getAttribute('aria-pressed'),
+      boundaryDayDisabled: document.querySelector('.day-cell[data-day="2026-08-09"]')?.disabled,
+      boundaryDayVisible: document.querySelector('.day-cell[data-day="2026-08-09"]')?.getBoundingClientRect().height > 0,
       headerToggle: document.querySelector('[data-testid="hour-popover"] > header button') !== null,
+      hourCount: document.querySelectorAll('.hour-cell').length,
       popovers: document.querySelectorAll('[data-testid="hour-popover"]').length,
       separateControls: document.querySelector('[data-testid="hour-popover"]').querySelectorAll('input, select').length,
       unavailableDay: document.querySelector('.day-cell[data-day="2026-08-12"]')?.disabled,
-      unavailableHour: document.querySelector('.hour-cell[data-hour="04"]')?.disabled,
     }))()`)
     assert.deepEqual(initialPicker, {
       currentAction: "STRONG",
       currentDay: "true",
       currentHour: "true",
-      currentHourCaptured: "false",
-      currentHourDisabled: false,
-      dayTenDisabled: false,
-      dayTenVisible: true,
+      boundaryDayDisabled: false,
+      boundaryDayVisible: true,
       headerToggle: false,
+      hourCount: 2,
       popovers: 1,
       separateControls: 0,
       unavailableDay: true,
-      unavailableHour: true,
     })
     for (const [width, height] of [[1920, 1080], [1366, 768], [1024, 768]]) {
       await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
@@ -245,12 +387,12 @@ test("the production artifact preserves wire keys and exact finding page state",
         const popover = document.querySelector('[data-testid="hour-popover"]').getBoundingClientRect()
         const calendar = document.querySelector('.day-picker').getBoundingClientRect()
         const hours = document.querySelector('.hour-grid').getBoundingClientRect()
-        const dayTen = document.querySelector('.day-cell[data-day="2026-08-10"]').getBoundingClientRect()
+        const boundaryDay = document.querySelector('.day-cell[data-day="2026-08-09"]').getBoundingClientRect()
         return {
           calendar: { bottom: calendar.bottom, left: calendar.left, right: calendar.right, top: calendar.top },
           clientHeight: document.documentElement.clientHeight,
           clientWidth: document.documentElement.clientWidth,
-          dayTen: { bottom: dayTen.bottom, left: dayTen.left, right: dayTen.right, top: dayTen.top },
+          boundaryDay: { bottom: boundaryDay.bottom, left: boundaryDay.left, right: boundaryDay.right, top: boundaryDay.top },
           hours: { bottom: hours.bottom, left: hours.left, right: hours.right, top: hours.top },
           popover: { bottom: popover.bottom, left: popover.left, right: popover.right, top: popover.top },
           scrollWidth: document.documentElement.scrollWidth,
@@ -259,7 +401,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       assert.ok(size.scrollWidth <= size.clientWidth, `${width}px picker overflow: ${JSON.stringify(size)}`)
       assert.ok(size.popover.left >= 0 && size.popover.right <= size.clientWidth, `${width}px horizontal picker bounds: ${JSON.stringify(size)}`)
       assert.ok(size.popover.top >= 0 && size.popover.bottom <= size.clientHeight, `${width}px vertical picker bounds: ${JSON.stringify(size)}`)
-      assert.ok(size.dayTen.left >= size.calendar.left && size.dayTen.right <= size.calendar.right, `${width}px day 10 visibility: ${JSON.stringify(size)}`)
+      assert.ok(size.boundaryDay.left >= size.calendar.left && size.boundaryDay.right <= size.calendar.right, `${width}px boundary-day visibility: ${JSON.stringify(size)}`)
       assert.ok(size.calendar.right <= size.hours.left, `${width}px picker columns: ${JSON.stringify(size)}`)
     }
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width: 480 })
@@ -272,8 +414,8 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.ok(narrow.calendarBottom <= narrow.hoursTop, `narrow picker stack: ${JSON.stringify(narrow)}`)
     assert.ok(narrow.popoverLeft >= 0 && narrow.popoverRight <= narrow.clientWidth && narrow.scrollWidth <= narrow.clientWidth, `narrow picker bounds: ${JSON.stringify(narrow)}`)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
-    await cdp.evaluate(`document.querySelector('.hour-cell[data-hour="05"]').dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'ArrowRight' }))`)
-    assert.equal(await cdp.evaluate(`document.activeElement?.dataset.hour`), "06")
+    await cdp.evaluate(`document.querySelector('.hour-cell[data-instant="${HOUR}"]').dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'ArrowRight' }))`)
+    assert.equal(await cdp.evaluate(`document.activeElement?.dataset.instant`), String(HOUR + HOUR_US))
     await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Escape' }))`)
     await cdp.waitFor(`document.querySelector('[data-testid="hour-popover"]') === null`, "picker Escape close")
     assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector('[data-testid="hour-picker-trigger"]')`), true)
@@ -281,14 +423,13 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.waitFor(`document.documentElement.dataset.theme === ${JSON.stringify(initialTheme)}`, "the initial theme")
 
     await cdp.evaluate(`document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
-    await cdp.waitFor(`document.querySelector('.day-cell[data-day="2026-08-10"]')?.getBoundingClientRect().height > 0`, "day 10 immediately visible")
-    await cdp.evaluate(`document.querySelector('.day-cell[data-day="2026-08-10"]').click()`)
-    await cdp.waitFor(`document.querySelector('.day-cell[data-day="2026-08-10"]')?.getAttribute('aria-pressed') === "true"`, "the August 10 hours")
-    assert.equal(await cdp.evaluate(`document.querySelector('.hour-cell[data-hour="02"]')?.disabled`), true)
-    assert.equal(await cdp.evaluate(`document.querySelector('.hour-cell[data-hour="03"]')?.disabled`), false)
-    await cdp.evaluate(`document.querySelector('.hour-cell[data-hour="03"]').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent === "23:00–00:00 EDT"`, "the exact local August 10 hour")
-    await cdp.waitFor(`Math.floor(Number(new URLSearchParams(location.search).get("at")) / ${HOUR_US}) * ${HOUR_US} === ${AUGUST_HOUR}`, "the August 10 address hour")
+    await cdp.waitFor(`document.querySelector('.day-cell[data-day="2026-08-09"]')?.getBoundingClientRect().height > 0`, "boundary day immediately visible")
+    await cdp.evaluate(`document.querySelector('.day-cell[data-day="2026-08-09"]').click()`)
+    await cdp.waitFor(`document.querySelector('.day-cell[data-day="2026-08-09"]')?.getAttribute('aria-pressed') === "true"`, "the local August 9 hours")
+    assert.equal(await cdp.evaluate(`document.querySelectorAll('.hour-cell').length`), 1)
+    await cdp.evaluate(`document.querySelector('.hour-cell[data-instant="${AUGUST_HOUR}"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent === "23:00–00:00 GMT-4"`, "the exact local boundary hour")
+    await cdp.waitFor(`Math.floor(Number(new URLSearchParams(location.search).get("at")) / ${HOUR_US}) * ${HOUR_US} === ${AUGUST_HOUR}`, "the exact boundary address")
     assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector('[data-testid="hour-picker-trigger"]')`), true)
     const augustRequest = requests.find(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("from") === String(AUGUST_HOUR))
     assert.notEqual(augustRequest, undefined)
@@ -296,12 +437,15 @@ test("the production artifact preserves wire keys and exact finding page state",
 
     await cdp.evaluate(`document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
     await cdp.evaluate(`document.querySelector('.day-cell[data-day="2026-08-13"]').click()`)
-    await cdp.waitFor(`document.querySelector('.hour-cell[data-hour="06"]')?.disabled === false`, "the recorded August 13 hour")
-    await cdp.evaluate(`document.querySelector('.hour-cell[data-hour="06"]').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent === "02:00–03:00 EDT"`, "the recorded local August 13 selection")
+    await cdp.waitFor(`document.querySelector('.hour-cell[data-instant="${HOUR + HOUR_US}"]') !== null`, "the recorded August 13 hour")
+    await cdp.evaluate(`document.querySelector('.hour-cell[data-instant="${HOUR + HOUR_US}"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent === "02:00–03:00 GMT-4"`, "the recorded local August 13 selection")
     await cdp.evaluate(`document.querySelector('[data-testid="hour-previous"]').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent === "01:00–02:00 EDT"`, "the restored local August 13 hour")
-    await cdp.waitFor(`Math.floor(Number(new URLSearchParams(location.search).get("at")) / ${HOUR_US}) * ${HOUR_US} === ${HOUR}`, "the restored address hour")
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent === "23:00–00:00 GMT-4"`, "the previous catalogued instant")
+    await cdp.waitFor(`Math.floor(Number(new URLSearchParams(location.search).get("at")) / ${HOUR_US}) * ${HOUR_US} === ${AUGUST_HOUR}`, "the previous catalogued address")
+    const originalAddress = await cdp.evaluate(`(() => { const url = new URL(location.href); url.searchParams.set("at", "${AT}"); return url.href })()`)
+    await cdp.send("Page.navigate", { url: originalAddress })
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent === "01:00–02:00 GMT-4"`, "the original exact selection", 15_000)
 
     await cdp.evaluate(`document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
     await cdp.waitFor(`document.querySelector('[aria-label="Next month"]') !== null`, "the reopened month controls")
@@ -321,16 +465,20 @@ test("the production artifact preserves wire keys and exact finding page state",
       context: document.querySelector('.hour-popover > header > span')?.textContent,
       day: document.querySelector('.day-cell[data-day="2026-08-13"]')?.getAttribute('aria-label'),
     }))()`)
-    assert.match(russianPicker.context, /ровно один час/)
-    assert.match(russianPicker.day, /13.*авг.*2026/i)
+    assert.equal(russianPicker.context, "GMT-4")
+    assert.match(russianPicker.day, /13\.08\.2026/)
     assert.equal(await cdp.evaluate(`document.querySelector('.cursor-time')?.textContent.includes('Отсчёт')`), false)
     await cdp.evaluate(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'mouse' }))`)
     await cdp.waitFor(`document.querySelector('[data-testid="hour-popover"]') === null`, "picker outside close")
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
 
-    await cdp.send("Emulation.setTimezoneOverride", { timezoneId: "UTC" })
-    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
-    await cdp.waitFor(`document.documentElement.lang === "ru"`, "the UTC re-render")
+    await cdp.evaluate(`(() => {
+      document.querySelector('[data-testid="locale-ru"]').click()
+      const select = document.querySelector('[data-testid="timezone-select"]')
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(select, "utc")
+      select.dispatchEvent(new Event("change", { bubbles: true }))
+    })()`)
+    await cdp.waitFor(`document.documentElement.lang === "ru" && document.querySelector('[data-testid="timezone-select"]')?.value === "utc" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("UTC")`, "the UTC re-render")
     const utcClocks = await cdp.evaluate(`(() => ({
       cursor: document.querySelector('[data-testid="cursor-time"]')?.textContent,
       cursorSecondary: document.querySelector('[data-testid="cursor-time"] small') !== null,
@@ -343,9 +491,13 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(utcClocks.cursorSecondary, false)
     assert.equal(utcClocks.hourSecondary, false)
     assert.equal(utcClocks.updatedSecondary, false)
-    await cdp.send("Emulation.setTimezoneOverride", { timezoneId: "America/New_York" })
-    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
-    await cdp.waitFor(`document.documentElement.lang === "en"`, "the local-time restore")
+    await cdp.evaluate(`(() => {
+      document.querySelector('[data-testid="locale-en"]').click()
+      const select = document.querySelector('[data-testid="timezone-select"]')
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(select, "browser")
+      select.dispatchEvent(new Event("change", { bubbles: true }))
+    })()`)
+    await cdp.waitFor(`document.documentElement.lang === "en" && document.querySelector('[data-testid="timezone-select"]')?.value === "browser" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("GMT-4")`, "the local-time restore")
 
     await cdp.evaluate(`([...document.querySelectorAll(".pg-tabs button")].find((button) => button.textContent === "Tables")).click()`)
     await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-tables-table"] .entity-row').length === 1`, "the relation wire row")
@@ -828,7 +980,9 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.deepEqual(new Set(chartThemes), new Set(["dark", "light"]))
     const axisText = await cdp.evaluate(`window.__kronikaAxisText`)
     assert.equal(axisText.some((text) => text.includes("Time, browser local")), false, JSON.stringify(axisText))
-    assert.equal(axisText.some((text) => /^\d{2}:\d{2} (?:GMT|UTC)/.test(text)), true, JSON.stringify(axisText))
+    const timeAxes = axisText.filter((text) => /^\d{2}:\d{2} /.test(text))
+    assert.equal(timeAxes.length > 0 && timeAxes.every((text) => /^\d{2}:\d{2} GMT-4$/.test(text)), true, JSON.stringify(timeAxes))
+    assert.equal(timeAxes.some((text) => /UTC|\.\d{3}/.test(text)), false, JSON.stringify(timeAxes))
     assert.equal(axisText.some((text) => text.includes("%")), true, JSON.stringify(axisText))
     assert.equal(axisText.some((text) => /^0%?$/.test(text)), true, JSON.stringify(axisText))
     assert.equal(axisText.some((text) => /^100%?$/.test(text)), true, JSON.stringify(axisText))
@@ -912,8 +1066,9 @@ test("the production artifact preserves wire keys and exact finding page state",
         values: [...tooltip.querySelectorAll(":scope > span")].map((node) => node.textContent),
       }
     })()`)
-    assert.match(tooltip.primary, /01:30:00\.000 EDT/)
-    assert.equal(tooltip.secondary, "05:30:00.000 UTC")
+    assert.match(tooltip.primary, /01:30:00 GMT-4/)
+    assert.doesNotMatch(tooltip.primary, /UTC|\.\d{3}/)
+    assert.equal(tooltip.secondary, "")
     assert.equal(tooltip.values.length, 2)
     assert.equal(tooltip.values.some((text) => text.includes("82") && text.includes("%")), true, JSON.stringify(tooltip))
     assert.equal(tooltip.values.some((text) => text.includes("64") && text.includes("%")), true, JSON.stringify(tooltip))
@@ -926,8 +1081,8 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${AT}"`, "keyboard sample address")
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').dataset.recordedTimestamp`), String(AT))
     const sampleText = await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")`)
-    assert.match(sampleText, /01:30:00\.000 EDT/)
-    assert.match(sampleText, /05:30:00\.000 UTC/)
+    assert.match(sampleText, /01:30:00 GMT-4/)
+    assert.doesNotMatch(sampleText, /UTC|\.000/)
     assert.match(sampleText, /82/)
 
     const arrow = async (key, expected) => {
@@ -952,14 +1107,24 @@ test("the production artifact preserves wire keys and exact finding page state",
     await point(QUARTER, QUARTER_PREVIOUS)
     assert.equal(await cdp.evaluate(`document.querySelectorAll('[data-testid="hour-timeline"] .uplot').length`), 1)
 
-    await cdp.send("Emulation.setTimezoneOverride", { timezoneId: "UTC" })
-    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
-    await cdp.waitFor(`document.documentElement.lang === "ru"`, "the chart UTC render")
+    await cdp.evaluate(`(() => {
+      document.querySelector('[data-testid="locale-ru"]').click()
+      const select = document.querySelector('[data-testid="timezone-select"]')
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(select, "utc")
+      select.dispatchEvent(new Event("change", { bubbles: true }))
+    })()`)
+    await cdp.waitFor(`document.documentElement.lang === "ru" && document.querySelector('[data-testid="timezone-select"]')?.value === "utc" && document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")?.includes("UTC")`, "the chart UTC render")
     const utcSample = await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")`)
     assert.equal((utcSample.match(/UTC/g) ?? []).length, 1, utcSample)
-    await cdp.send("Emulation.setTimezoneOverride", { timezoneId: "America/New_York" })
-    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
-    await cdp.waitFor(`document.documentElement.lang === "en"`, "the chart local-time restore")
+    assert.match(utcSample, /^05:14:55 UTC;/)
+    assert.doesNotMatch(utcSample, /GMT|\.\d{3}/)
+    await cdp.evaluate(`(() => {
+      document.querySelector('[data-testid="locale-en"]').click()
+      const select = document.querySelector('[data-testid="timezone-select"]')
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(select, "browser")
+      select.dispatchEvent(new Event("change", { bubbles: true }))
+    })()`)
+    await cdp.waitFor(`document.documentElement.lang === "en" && document.querySelector('[data-testid="timezone-select"]')?.value === "browser" && document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")?.includes("GMT-4")`, "the chart local-time restore")
 
     const navigateTo = async (timestamp) => {
       const target = await cdp.evaluate(`(() => {
@@ -971,17 +1136,17 @@ test("the production artifact preserves wire keys and exact finding page state",
       await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator') !== null`, `timeline at ${timestamp}`, 15_000)
     }
     await navigateTo(DST_EDT_HOUR + 1_800_000_000)
-    await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")?.includes("EDT") === true`, "the repeated EDT sample")
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")?.includes("GMT-4") === true`, "the repeated first sample")
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').dataset.recordedTimestamp`), String(DST_EDT_HOUR + 1_800_000_000))
     const dstEdt = await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")`)
-    assert.match(dstEdt, /01:30:00\.000 EDT/)
-    assert.match(dstEdt, /05:30:00\.000 UTC/)
+    assert.match(dstEdt, /01:30:00 GMT-4/)
+    assert.doesNotMatch(dstEdt, /UTC|\.000/)
     await navigateTo(DST_EST_HOUR + 1_800_000_000)
-    await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")?.includes("EST") === true`, "the repeated EST sample")
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")?.includes("GMT-5") === true`, "the repeated second sample")
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').dataset.recordedTimestamp`), String(DST_EST_HOUR + 1_800_000_000))
     const dstEst = await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")`)
-    assert.match(dstEst, /01:30:00\.000 EST/)
-    assert.match(dstEst, /06:30:00\.000 UTC/)
+    assert.match(dstEst, /01:30:00 GMT-5/)
+    assert.doesNotMatch(dstEst, /UTC|\.000/)
     assert.deepEqual(errors, [])
     assert.deepEqual(external, [])
   } finally {

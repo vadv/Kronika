@@ -161,6 +161,7 @@ h2 { font-size: var(--t-md); }
 .locale-switch button, .icon-button { background: transparent; border: 0; cursor: pointer; }
 .locale-switch button { color: var(--fg4); font-size: var(--t-xs); height: 22px; padding: 0 6px; }
 .locale-switch button[aria-pressed="true"] { background: var(--s4); color: var(--accent3); }
+.timezone-select { background: var(--s2); border: 1px solid var(--line3); color: var(--fg2); font-size: var(--t-xs); height: 24px; max-width: 128px; padding: 0 4px; }
 .icon-button { align-items: center; border: 1px solid var(--line3); display: flex; height: 24px; justify-content: center; min-width: 24px; }
 .source-tabs { flex: 0 0 auto; gap: 2px; }
 .source-tabs button { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--fg3); cursor: pointer; font-size: var(--t-xs); letter-spacing: .06em; padding: 8px 9px 6px; text-transform: uppercase; }
@@ -173,8 +174,8 @@ h2 { font-size: var(--t-md); }
 .hour-picker > button { background: var(--zebra); border: 1px solid var(--line3); color: var(--fg2); cursor: pointer; height: 34px; }
 .hour-picker > button:not(.hour-trigger) { align-items: center; display: flex; justify-content: center; padding: 0; width: 22px; }
 .hour-picker > button:disabled { cursor: not-allowed; opacity: .45; }
-.hour-trigger { align-items: flex-start; display: flex; flex-direction: column; justify-content: center; min-width: 132px; padding: 0 8px; text-align: left; }
-.hour-trigger strong { color: var(--fg); font-size: var(--t-sm); font-weight: 600; line-height: 1.2; }
+.hour-trigger { align-items: flex-start; display: flex; flex-direction: column; justify-content: center; min-width: 180px; padding: 0 8px; text-align: left; }
+.hour-trigger strong { color: var(--fg); font-size: var(--t-xs); font-weight: 600; line-height: 1.2; white-space: nowrap; }
 .hour-trigger small { color: var(--fg4); font-size: var(--t-xs); line-height: 1; text-transform: uppercase; }
 .hour-popover { background: var(--s1); border: 1px solid var(--line4); box-shadow: 0 15px 38px var(--shadow-a); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); left: 0; padding: 9px; position: absolute; top: calc(100% + 6px); width: min(560px, calc(100vw - 20px)); z-index: 120; }
 .hour-popover > header { align-items: center; border-bottom: 1px solid var(--line3); display: flex; grid-column: 1 / -1; justify-content: space-between; min-height: 27px; padding: 0 2px 7px; }
@@ -189,10 +190,9 @@ h2 { font-size: var(--t-md); }
 .day-cell { background: transparent; border: 0; color: var(--fg-null); height: 27px; padding: 0; }
 .day-cell-available { background: var(--s2); border: 1px solid var(--line2); color: var(--fg2); cursor: pointer; }
 .day-cell[aria-pressed="true"] { background: var(--s4); border-color: var(--accent2); color: var(--accent3); }
-.hour-grid { align-content: start; display: grid; gap: 4px; grid-template-columns: repeat(6, minmax(0, 1fr)); margin: 7px 0 0 9px; }
-.hour-cell { background: var(--s2); border: 1px solid var(--line2); color: var(--fg3); cursor: pointer; font-size: var(--t-sm); height: 31px; padding: 0; }
-.hour-cell:hover:not(:disabled) { background: var(--s3); color: var(--fg); }
-.hour-cell:disabled { background: transparent; cursor: not-allowed; opacity: .42; }
+.hour-grid { align-content: start; display: grid; gap: 4px; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 7px 0 0 9px; }
+.hour-cell { background: var(--s2); border: 1px solid var(--line2); color: var(--fg3); cursor: pointer; font-size: var(--t-xs); height: 31px; padding: 0 2px; white-space: nowrap; }
+.hour-cell:hover { background: var(--s3); color: var(--fg); }
 .hour-cell[aria-pressed="true"] { background: var(--s4); border-color: var(--accent2); box-shadow: inset 0 0 0 1px var(--accent-line); color: var(--accent3); }
 .workspace { padding: 8px 10px 20px; }
 .cursor-time { align-items: center; color: var(--accent3); display: flex; flex: 0 1 auto; flex-wrap: wrap; font-size: var(--t-sm); font-variant-numeric: tabular-nums; gap: 9px; }
@@ -359,7 +359,6 @@ h2 { font-size: var(--t-md); }
 .chart-navigator:focus { clip-path: none; height: 28px; left: 8px; width: min(320px, calc(100% - 16px)); z-index: 9; }
 .chart-tooltip { background: var(--s2); border: 1px solid var(--line4); box-shadow: 0 8px 20px var(--shadow-a); display: grid; font-size: var(--t-xs); gap: 3px; max-width: min(340px, 82vw); padding: 7px; pointer-events: none; position: absolute; right: 8px; top: 28px; z-index: 8; }
 .chart-tooltip time, .chart-tooltip span { display: flex; gap: 8px; justify-content: space-between; }
-.chart-tooltip time { flex-direction: column; }
 .chart-tooltip small { color: var(--fg3); }
 .chart-tooltip strong { color: var(--fg); font-weight: 500; }
 .uplot-expanded { background: var(--bg); display: flex; flex-direction: column; inset: 0; height: 100dvh; margin: 0; max-width: none; overflow: hidden; padding: 12px; position: fixed; width: 100dvw; z-index: 1300; }

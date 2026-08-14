@@ -1,7 +1,9 @@
 import uPlot, { type AlignedData } from "uplot"
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react"
 
-import { localTimePair, type Locale } from "./model"
+import type { DisplayTimeFormatter } from "./display-time"
+import { useDisplayTime } from "./display-time-context"
+import type { Locale } from "./model"
 
 export type ChartScale = "percent" | "nonnegative" | "signed"
 
@@ -78,6 +80,7 @@ export function UPlotChart({
   readonly testId?: string | undefined
   readonly threshold?: ChartThreshold | undefined
 }) {
+  const time = useDisplayTime()
   const titleId = useId()
   const summaryId = useId()
   const shell = useRef<HTMLElement>(null)
@@ -99,7 +102,7 @@ export function UPlotChart({
   })), [end, hour, series])
   const frame = useMemo(() => alignRecordedSeries(visibleSeries), [visibleSeries])
   const [themeRevision, setThemeRevision] = useState(0)
-  const exact = hovered === null ? null : exactReadings(frame, series, hovered)
+  const exact = hovered === null ? null : exactReadings(frame, series, hovered, locale, time)
   const selected = cursor === undefined || cursor < hour || cursor >= end ? null : cursor
   const keyboardTimestamp = frame.timestamps[keyboardIndex] ?? null
   onCursorRef.current = onCursor
@@ -110,7 +113,7 @@ export function UPlotChart({
     const element = host.current
     if (element === null || frame.timestamps.length === 0) return
     const initialBounds = element.getBoundingClientRect()
-    const options = chartOptions(visibleSeries, frame, hour, end, locale, decorations, threshold, selectedRef, referenceTimestamp, Math.max(1, Math.round(initialBounds.width)), Math.max(1, Math.round(initialBounds.height)), (chart) => {
+    const options = chartOptions(visibleSeries, frame, hour, end, locale, time, decorations, threshold, selectedRef, referenceTimestamp, Math.max(1, Math.round(initialBounds.width)), Math.max(1, Math.round(initialBounds.height)), (chart) => {
       const index = chart.cursor.idx
       const timestamp = index === null || index === undefined ? null : frame.timestamps[index] ?? null
       setHovered(timestamp)
@@ -153,7 +156,7 @@ export function UPlotChart({
       chart.destroy()
       plot.current = null
     }
-  }, [decorations, end, expanded, frame, hour, locale, referenceTimestamp, themeRevision, threshold, visibleSeries])
+  }, [decorations, end, expanded, frame, hour, locale, referenceTimestamp, themeRevision, threshold, time, visibleSeries])
 
   useEffect(() => {
     const observer = new MutationObserver(() => setThemeRevision((revision) => revision + 1))
@@ -220,7 +223,7 @@ export function UPlotChart({
     setExpanded(false)
   }
 
-  const summary = chartSummary(visibleSeries, frame, hour, end, locale)
+  const summary = chartSummary(visibleSeries, frame, hour, end, locale, time)
   return <figure
     aria-labelledby={expanded ? titleId : undefined}
     aria-modal={expanded ? "true" : undefined}
@@ -245,12 +248,12 @@ export function UPlotChart({
     <div aria-describedby={summaryId} aria-label={series.map(({ label, unit }) => `${label}${unit === "" ? "" : `, ${unit}`}`).join("; ")} className="uplot-host" ref={host} role="img" />
     {markerLayer !== undefined && <div className="chart-marker-track">{markerLayer}</div>}
     {exact !== null && <div aria-hidden="true" className="chart-tooltip">
-      <time><strong>{exact.time.primary}</strong>{exact.time.secondary !== null && <small>{exact.time.secondary}</small>}</time>
+      <time><strong>{exact.time}</strong></time>
       {exact.values.map(({ label, output, unit }) => <span key={label}>{label}{unit === "" ? "" : ` (${unit})`}<strong>{output}</strong></span>)}
     </div>}
     <input
       aria-label={locale === "ru" ? "Точная запись графика" : "Exact chart sample"}
-      aria-valuetext={keyboardTimestamp === null ? undefined : sampleText(series, frame, keyboardTimestamp, locale)}
+      aria-valuetext={keyboardTimestamp === null ? undefined : sampleText(series, frame, keyboardTimestamp, locale, time)}
       className="chart-navigator"
       data-recorded-timestamp={keyboardTimestamp ?? undefined}
       disabled={frame.timestamps.length === 0}
@@ -307,11 +310,11 @@ export function isolatedSampleIndices(values: readonly (number | null | undefine
   return output
 }
 
-export function exactReadings(frame: ChartFrame, series: readonly RecordedSeries[], timestamp: number, locale = "en" as Locale) {
+export function exactReadings(frame: ChartFrame, series: readonly RecordedSeries[], timestamp: number, locale: Locale, time: Pick<DisplayTimeFormatter, "clock">) {
   const index = frame.timestamps.indexOf(timestamp)
   if (index < 0) return null
   return {
-    time: localTimePair(timestamp, locale),
+    time: time.clock(timestamp),
     values: series.map((line, ordinal) => {
       const stored = frame.data[ordinal + 1]?.[index]
       return { label: line.label, output: typeof stored === "number" ? line.value(stored, locale) : "—", unit: line.unit }
@@ -374,6 +377,7 @@ function chartOptions(
   hour: number,
   end: number,
   locale: Locale,
+  time: Pick<DisplayTimeFormatter, "axis">,
   decorations: readonly ChartDecoration[],
   threshold: ChartThreshold | undefined,
   selected: { readonly current: number | null },
@@ -459,7 +463,7 @@ function chartOptions(
     legend: { show: false },
     scales: { x: { auto: false, range: [hour, end], time: false }, ...scales },
     axes: [
-      { scale: "x", side: 2, size: 28, space: (_chart, _axis, _scale, _increment, space) => Math.max(84, space), stroke: color("--fg3"), grid: { stroke: color("--line") }, values: (_chart, splits) => splits.map((timestamp) => axisTimeLabel(timestamp, locale)) },
+      { scale: "x", side: 2, size: 28, space: (_chart, _axis, _scale, _increment, space) => Math.max(84, space), stroke: color("--fg3"), grid: { stroke: color("--line") }, values: (_chart, splits) => splits.map((timestamp) => axisTimeLabel(timestamp, time)) },
       ...partitions.map(({ key, label: labels, unit }, axisIndex) => {
         const grouped = series.filter((line) => scaleKey(line) === key)
         const line = grouped[0]!
@@ -491,21 +495,15 @@ function chartOptions(
   }
 }
 
-export function axisTimeLabel(timestamp: number, locale: Locale, timeZone?: string): string {
-  return Intl.DateTimeFormat(locale, {
-    hour: "2-digit",
-    hourCycle: "h23",
-    minute: "2-digit",
-    timeZone,
-    timeZoneName: "short",
-  }).format(new Date(Math.trunc(timestamp / 1_000)))
+export function axisTimeLabel(timestamp: number, time: Pick<DisplayTimeFormatter, "axis">): string {
+  return time.axis(timestamp)
 }
 
 function scaleKey(line: RecordedSeries): string {
   return `y:${line.unit || line.id}:${line.scale}`
 }
 
-export function chartSummary(series: readonly RecordedSeries[], frame: ChartFrame, hour: number, end: number, locale: Locale): string {
+export function chartSummary(series: readonly RecordedSeries[], frame: ChartFrame, hour: number, end: number, locale: Locale, time: Pick<DisplayTimeFormatter, "hourRange">): string {
   const labels = series.map((line, ordinal) => {
     const column = frame.data[ordinal + 1] ?? []
     const values = column.filter((value): value is number => typeof value === "number")
@@ -515,13 +513,13 @@ export function chartSummary(series: readonly RecordedSeries[], frame: ChartFram
       ? `${line.label} (${line.unit || "без единицы"}): ${values.length} записей, ${nulls} явных пустых значений, минимум…максимум ${range}`
       : `${line.label} (${line.unit || "unitless"}): ${values.length} samples, ${nulls} explicit nulls, minimum…maximum ${range}`
   }).join("; ")
-  return `${localTimePair(hour, locale).primary}–${localTimePair(end, locale).primary}. ${labels}.`
+  return `${time.hourRange(hour).primary}. ${labels}.`
 }
 
-export function sampleText(series: readonly RecordedSeries[], frame: ChartFrame, timestamp: number, locale: Locale): string {
-  const exact = exactReadings(frame, series, timestamp, locale)
+export function sampleText(series: readonly RecordedSeries[], frame: ChartFrame, timestamp: number, locale: Locale, time: Pick<DisplayTimeFormatter, "clock">): string {
+  const exact = exactReadings(frame, series, timestamp, locale, time)
   if (exact === null) return ""
-  return `${exact.time.primary}${exact.time.secondary === null ? "" : `; ${exact.time.secondary}`}; ${exact.values.map(({ label, output, unit }) => `${label}${unit === "" ? "" : ` (${unit})`}: ${output}`).join("; ")}`
+  return `${exact.time}; ${exact.values.map(({ label, output, unit }) => `${label}${unit === "" ? "" : ` (${unit})`}: ${output}`).join("; ")}`
 }
 
 function niceCeiling(value: number): number {

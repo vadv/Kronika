@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react"
 
 import { fieldNameForLocator, type DataRow, type Finding, type LanePoint } from "./api"
 import { buildMetricSamples } from "./chart"
+import { useDisplayTime } from "./display-time-context"
 import { findingOrder, findingSummary } from "./finding-presentation"
 import { LabelHelp, type Translate } from "./help"
 import { keyboardTargetOwnsArrows, moveCursor, orderedRecordedTimes } from "./keyboard"
-import { asNumber, compact, formatUtc, type Locale, value } from "./model"
+import { asNumber, compact, humanPercent, type Locale, value } from "./model"
 import { emptyHourStatusKey } from "./refresh"
 import { uncollectedStart } from "./series-chart"
 import { UPlotChart, type ChartDecoration, type RecordedSeries } from "./uplot-chart"
@@ -62,6 +63,7 @@ export function Timeline({
   readonly shownAt?: number | null
   readonly t: Translate
 }) {
+  const time = useDisplayTime()
   const end = hour + 3_600_000_000
   const healthTrack = useMemo(() => healthTimelineSeries(health), [health])
   const lanes = useMemo<readonly TimelineLane[]>(() => {
@@ -130,6 +132,7 @@ export function Timeline({
       }}
       share={shareOf(first.timestamp, hour, end)}
       t={t}
+      time={time.timestamp}
     />
   })}</>
   if (selected === undefined) {
@@ -137,7 +140,7 @@ export function Timeline({
       ? <section className="timeline-empty" data-testid="timeline-empty">{t(emptyHourStatusKey(hour))}</section>
       : <section className="timeline-empty" data-testid="timeline-empty">{t("status.no_data")}</section>
   }
-  return <section aria-label={t("hour.range", { start: formatUtc(hour).slice(11, 16), end: formatUtc(end).slice(11, 16) })} className="timeline-shell">
+  return <section aria-label={t("hour.range", { range: time.hourRange(hour).primary })} className="timeline-shell">
     <div className="timeline-labels">
       {lanes.map((lane) => <LaneLabel
         help={`lane.${lane.key}.help`}
@@ -213,7 +216,7 @@ function toRecordedSeries(lane: TimelineLane, locale: Locale, t: Translate): rea
     scale: percent ? "percent" as const : "nonnegative" as const,
     tick: (number: number, place: Locale) => format(number, lane.key, place),
     unit,
-    value: (number: number, place: Locale) => new Intl.NumberFormat(place, { maximumFractionDigits: 20 }).format(number),
+    value: (number: number, place: Locale) => format(number, lane.key, place),
   }))
 }
 
@@ -230,9 +233,9 @@ export function exactValue(points: readonly SeriesPoint[], cursor: number): numb
 }
 
 function format(number: number, key: string, locale: Locale): string {
-  if (key === "oldest_xact") return `${compact(number, locale)} s`
+  if (key === "oldest_xact") return `${compact(number, locale)} ${locale === "ru" ? "с" : "s"}`
   if (key === "pg_running" || key === "pg_waiting") return compact(number, locale)
-  return `${compact(number, locale)}%`
+  return humanPercent(number, locale)
 }
 
 function laneReading(lane: TimelineLane, cursor: number, locale: Locale, t: Translate): string {
@@ -243,7 +246,7 @@ function laneReading(lane: TimelineLane, cursor: number, locale: Locale, t: Tran
   }).join(" · ")
 }
 
-export function FindingMarker({ marker, onActivate, share, t }: { readonly marker: GroupedFinding; readonly onActivate: () => void; readonly t: Translate; readonly share: number }) {
+export function FindingMarker({ marker, onActivate, share, t, time = String }: { readonly marker: GroupedFinding; readonly onActivate: () => void; readonly t: Translate; readonly share: number; readonly time?: (timestamp: number) => string }) {
   const activate = (event: { preventDefault(): void; stopPropagation(): void }) => {
     event.preventDefault()
     event.stopPropagation()
@@ -254,7 +257,7 @@ export function FindingMarker({ marker, onActivate, share, t }: { readonly marke
   if (first === undefined || last === undefined) return null
   const count = marker.findings.length
   const kindSummary = findingSummary(marker.findings, t)
-  const timeSummary = first.timestamp === last.timestamp ? formatUtc(first.timestamp) : `${formatUtc(first.timestamp)}–${formatUtc(last.timestamp)}`
+  const timeSummary = first.timestamp === last.timestamp ? time(first.timestamp) : `${time(first.timestamp)}–${time(last.timestamp)}`
   return <button
     aria-label={`${kindSummary} · ${timeSummary} · ×${count}`}
     className={`marker-button${count === 1 ? ` marker-${first.kind}` : " marker-aggregate"}`}

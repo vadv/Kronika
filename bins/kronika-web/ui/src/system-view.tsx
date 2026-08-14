@@ -6,7 +6,7 @@ import { buildMetricSamples } from "./chart"
 import { contextualRows, type EntityContext } from "./entity-context"
 import { EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
-import { asNumber, humanBytes, measure, rawText, shownMoment, snapshot, value, type Locale } from "./model"
+import { asNumber, humanBytes, humanPercent, measure, rawText, shownMoment, snapshot, value, type Locale } from "./model"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 import { UseTable } from "./use-table"
@@ -486,7 +486,7 @@ function entityMetricValue(reading: number, locale: Locale, column: EntityColumn
   if (column.kind === "kib") return humanBytes(reading * 1024, locale, suffix)
   if (column.kind === "milliseconds" || column.kind === "duration") return measure(reading, locale, `${locale === "ru" ? " мс" : " ms"}${suffix}`)
   if (column.kind === "microseconds") return measure(reading, locale, `${locale === "ru" ? " мкс" : " µs"}${suffix}`)
-  if (column.kind === "percent") return measure(reading, locale, "%")
+  if (column.kind === "percent") return humanPercent(reading, locale)
   return measure(reading, locale, suffix)
 }
 
@@ -703,7 +703,7 @@ export function metricValue(value: Cell, locale: Locale, unit: string): string {
 }
 
 function metricChartValue(value: number, locale: Locale, unit: string): string {
-  if (unit === "%") return measure(value, locale, "%")
+  if (unit === "%") return humanPercent(value, locale)
   if (unit === " KiB") return measure(value, locale, " KiB")
   if (unit === " B") return humanBytes(value, locale, "/s")
   return measure(value, locale)

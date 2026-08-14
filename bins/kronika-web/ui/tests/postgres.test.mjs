@@ -524,7 +524,7 @@ test("an exact locator preview never inherits settled zero page counts", () => {
     "pg.table.shown": "Loaded {returned} of {eligible}",
   }
   const t = (key, slots = {}) => Object.entries(slots).reduce((text, [name, value]) => text.replace(`{${name}}`, value), dictionary[key] ?? key)
-  const loading = renderToStaticMarkup(helpers.tableState(undefined, 0, 1_800_000_000_000_000, "", undefined, "en", t, "loading"))
+  const loading = renderToStaticMarkup(helpers.tableState(undefined, 0, 1_800_000_000_000_000, "", undefined, "en", t, undefined, "loading"))
   assert.match(loading, /Exact result; page loading/)
   assert.match(loading, /Exact focused result/)
   assert.doesNotMatch(loading, /Loaded 0 of 0/)

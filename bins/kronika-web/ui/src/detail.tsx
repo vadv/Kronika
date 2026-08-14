@@ -3,10 +3,10 @@ import { useMemo, useState, type ReactNode } from "react"
 
 import type { Cell, DataRow } from "./api"
 import { buildMetricSamples } from "./chart"
+import { useDisplayTime } from "./display-time-context"
 import { LabelHelp, type Translate } from "./help"
 import {
   asNumber,
-  formatUtc,
   humanBytes,
   identifier,
   measure,
@@ -239,9 +239,10 @@ function DetailField({ help, label, t, value: output }: { readonly help: string;
 }
 
 function Timestamp({ cell, raw, t }: { readonly cell?: Cell; readonly raw?: number; readonly t: Translate }) {
+  const time = useDisplayTime()
   const timestamp = raw ?? asNumber(cell ?? null)
   if (timestamp === null || timestamp === undefined) return <>—</>
-  return <span className="timestamp-value"><span>{formatUtc(timestamp)}</span><button aria-label={t("common.raw")} onClick={() => void navigator.clipboard?.writeText(String(timestamp))} type="button"><Copy aria-hidden="true" size={12} /></button></span>
+  return <span className="timestamp-value"><span>{time.timestamp(timestamp)}</span><button aria-label={t("common.raw")} onClick={() => void navigator.clipboard?.writeText(String(timestamp))} type="button"><Copy aria-hidden="true" size={12} /></button></span>
 }
 
 function formatActivity(cell: Cell, kind: string, locale: Locale, t: Translate): ReactNode {
