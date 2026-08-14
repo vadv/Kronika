@@ -108,7 +108,7 @@ test("plan copy identifies unavailable values and vadv attribution", async () =>
   assert.equal(english["pg.section.plans"], "Plans")
   assert.equal(russian["pg.section.plans"], "Планы")
   assert.equal(russian["pg.activity.idle"], "Простой")
-  assert.equal(russian["pg.field.query_duration_ms.label"], "Время запроса")
+  assert.equal(russian["pg.field.query_duration_ms.label"], "Время активного запроса")
   assert.equal(russian["pg.field.transaction_duration_ms.label"], "Время транзакции")
   assert.equal(english["pg.wal_storage.label"], "Size of files in pg_wal")
   assert.equal(english["pg.wal_storage.history"], "Size of files in pg_wal over the hour")
@@ -129,7 +129,7 @@ test("dense-table help is factual, concise, and complete in both locales", async
   const russian = parseDictionary(russianSource, "ru.yaml")
   validateDictionaries(english, russian)
   const pgFields = new Set([
-    "pid", "query_duration_ms", "transaction_duration_ms", "queryid", "planid", "toplevel", "datname", "usename", "query", "plan",
+    "pid", "backend_age_ms", "query_duration_ms", "transaction_duration_ms", "state_duration_ms", "queryid", "planid", "toplevel", "datname", "usename", "query", "plan",
     "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_call", "blocks_per_call", "hit_pct", "wal_per_call",
     "plan_time_pct", "cv", "min_exec_time_ms", "max_exec_time_ms", "mean_exec_time_ms", "stddev_exec_time_ms", "first_call", "last_call",
     "rows_per_second", "planning_ms_per_second", "shared_blks_hit", "shared_blks_read", "shared_blks_written", "shared_blks_dirtied",

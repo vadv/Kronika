@@ -166,12 +166,14 @@ function FindingDetail({ cursor, data, finding, history, hour, locale, onCursor,
     <ChartOnly>{metric.field !== null && points.some(({ value }) => typeof value === "number" && Number.isFinite(value)) && <SeriesChart
       cursor={cursor}
       format={(number, place) => formatMetric(number, metric.unit, place, t)}
+      helpKey={metric.helpKey}
       hour={hour}
-      label={metric.label}
+      labelKey={metric.labelKey}
       locale={locale}
       onCursor={onCursor}
       points={points}
       scale={metric.unit === "percent" || finding.logicalName === "health" ? "percent" : "nonnegative"}
+      t={t}
       unit={finding.logicalName === "health" ? "%" : metricUnit(metric.unit, locale)}
     />}</ChartOnly>
   </aside>
@@ -242,5 +244,5 @@ function metricUnit(unit: ReturnType<typeof findingMetric>["unit"], locale: Loca
 
 function identityField(field: string): boolean {
   const name = field.toLowerCase()
-  return name === "pid" || name === "oid" || name === "starttime" || name.endsWith("id") || name.endsWith("_id")
+  return name === "pid" || name === "oid" || name.endsWith("id") || name.endsWith("_id")
 }

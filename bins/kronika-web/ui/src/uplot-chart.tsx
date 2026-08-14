@@ -3,6 +3,7 @@ import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "rea
 
 import type { DisplayTimeFormatter } from "./display-time"
 import { useDisplayTime } from "./display-time-context"
+import { LabelHelp, type Translate } from "./help"
 import type { Locale } from "./model"
 
 export type ChartScale = "percent" | "nonnegative" | "signed"
@@ -16,7 +17,9 @@ export interface RecordedPoint {
 export interface RecordedSeries {
   readonly color: "cyan" | "amber" | "violet" | "green" | "red" | "gray" | "blue" | "rose"
   readonly id: string
+  readonly helpKey: string
   readonly label: string
+  readonly labelKey: string
   readonly points: readonly RecordedPoint[]
   readonly scale: ChartScale
   readonly tick?: ((number: number, locale: Locale) => string) | undefined
@@ -65,6 +68,7 @@ export function UPlotChart({
   referenceTimestamp,
   testId,
   threshold,
+  t,
 }: {
   readonly className?: string | undefined
   readonly cursor?: number | undefined
@@ -79,6 +83,7 @@ export function UPlotChart({
   readonly series: readonly RecordedSeries[]
   readonly testId?: string | undefined
   readonly threshold?: ChartThreshold | undefined
+  readonly t: Translate
 }) {
   const time = useDisplayTime()
   const titleId = useId()
@@ -233,7 +238,7 @@ export function UPlotChart({
     role={expanded ? "dialog" : undefined}
   >
     <figcaption id={titleId}>
-      <span>{series.map(({ label }) => label).join(" · ")}</span>
+      <span className="chart-series-labels">{series.map((line) => <LabelHelp helpKey={line.helpKey} key={line.id} labelKey={line.labelKey} t={t} />)}</span>
       {reading !== undefined && <strong className="chart-current">{reading}</strong>}
       <button
         aria-label={expanded ? (locale === "ru" ? "Свернуть график" : "Collapse chart") : (locale === "ru" ? "Развернуть график" : "Expand chart")}
@@ -310,11 +315,11 @@ export function isolatedSampleIndices(values: readonly (number | null | undefine
   return output
 }
 
-export function exactReadings(frame: ChartFrame, series: readonly RecordedSeries[], timestamp: number, locale: Locale, time: Pick<DisplayTimeFormatter, "clock">) {
+export function exactReadings(frame: ChartFrame, series: readonly RecordedSeries[], timestamp: number, locale: Locale, time: Pick<DisplayTimeFormatter, "axis" | "clock">) {
   const index = frame.timestamps.indexOf(timestamp)
   if (index < 0) return null
   return {
-    time: time.clock(timestamp),
+    time: compactChartTime(timestamp, time, chartSecondsUseful(frame.timestamps, time)),
     values: series.map((line, ordinal) => {
       const stored = frame.data[ordinal + 1]?.[index]
       return { label: line.label, output: typeof stored === "number" ? line.value(stored, locale) : "—", unit: line.unit }
@@ -507,7 +512,21 @@ function chartColor(tone: RecordedSeries["color"]): string {
 }
 
 export function axisTimeLabel(timestamp: number, time: Pick<DisplayTimeFormatter, "axis">): string {
-  return time.axis(timestamp)
+  return compactTimePart(time.axis(timestamp))
+}
+
+export function compactChartTime(timestamp: number, time: Pick<DisplayTimeFormatter, "axis" | "clock">, seconds: boolean): string {
+  return compactTimePart(seconds ? time.clock(timestamp) : time.axis(timestamp))
+}
+
+export function chartSecondsUseful(timestamps: readonly number[], time: Pick<DisplayTimeFormatter, "axis">): boolean {
+  const minutes = new Set<string>()
+  for (const timestamp of timestamps) {
+    const minute = axisTimeLabel(timestamp, time)
+    if (minutes.has(minute)) return true
+    minutes.add(minute)
+  }
+  return false
 }
 
 function scaleKey(line: RecordedSeries): string {
@@ -527,10 +546,14 @@ export function chartSummary(series: readonly RecordedSeries[], frame: ChartFram
   return `${time.hourRange(hour).primary}. ${labels}.`
 }
 
-export function sampleText(series: readonly RecordedSeries[], frame: ChartFrame, timestamp: number, locale: Locale, time: Pick<DisplayTimeFormatter, "clock">): string {
+export function sampleText(series: readonly RecordedSeries[], frame: ChartFrame, timestamp: number, locale: Locale, time: Pick<DisplayTimeFormatter, "axis" | "clock">): string {
   const exact = exactReadings(frame, series, timestamp, locale, time)
   if (exact === null) return ""
   return `${exact.time}; ${exact.values.map(({ label, output, unit }) => `${label}${unit === "" ? "" : ` (${unit})`}: ${output}`).join("; ")}`
+}
+
+function compactTimePart(output: string): string {
+  return output.trim().split(/\s+/)[0] ?? output
 }
 
 function niceCeiling(value: number): number {

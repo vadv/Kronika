@@ -403,8 +403,8 @@ export function SystemView({
         {selectedMetric === undefined
           ? <p className="table-empty">{t("system.no_metrics")}</p>
           : breakdown.length === 0
-            ? <SeriesChart cursor={cursor} empty={t("status.no_data")} format={(reading, place) => metricChartValue(reading, place, selectedMetric.spec.unit)} hour={hour} label={t(selectedMetric.spec.label)} locale={locale} onCursor={onCursor} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "nonnegative"} unit={metricChartUnit(selectedMetric.spec, locale)} />
-            : <div className="series-chart"><UPlotChart cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} reading={currentPointValue(selectedPoints, cursor, locale, selectedMetric.spec.unit)} series={breakdown} testId={`system-${selectedMetric.spec.group}-composition`} /></div>}
+            ? <SeriesChart cursor={cursor} empty={t("status.no_data")} format={(reading, place) => metricChartValue(reading, place, selectedMetric.spec.unit)} helpKey={selectedMetric.spec.help} hour={hour} labelKey={selectedMetric.spec.label} locale={locale} onCursor={onCursor} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "nonnegative"} t={t} unit={metricChartUnit(selectedMetric.spec, locale)} />
+            : <div className="series-chart"><UPlotChart cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} reading={currentPointValue(selectedPoints, cursor, locale, selectedMetric.spec.unit)} series={breakdown} t={t} testId={`system-${selectedMetric.spec.group}-composition`} /></div>}
       </section></ChartOnly>
     </section>
     <UseTable cursor={cursor} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} t={t} />
@@ -536,12 +536,14 @@ function SystemEntityPanel({
         cursor={cursor}
         empty={t("status.no_data")}
         format={(reading, place) => entityMetricValue(reading, place, selectedColumn, chartMetadata)}
+        helpKey={selectedColumn.help ?? "chart.metric.help"}
         hour={hour}
-        label={t(selectedColumn.label)}
+        labelKey={selectedColumn.label}
         locale={locale}
         onCursor={onCursor}
         points={chartPoints}
         scale={selectedColumn.kind === "percent" ? "percent" : "nonnegative"}
+        t={t}
         unit={entityMetricUnit(selectedColumn, locale, chartMetadata)}
       />
     </section>}</ChartOnly>
@@ -691,8 +693,10 @@ export function resourceBreakdownSeries(
     const format = (reading: number, place: Locale) => metricChartValue(reading, place, spec.unit)
     return [{
       color,
+      helpKey: spec.help,
       id,
       label: t(spec.label),
+      labelKey: spec.label,
       points,
       scale: spec.unit === "%" ? "percent" as const : "nonnegative" as const,
       tick: format,

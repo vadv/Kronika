@@ -28,7 +28,7 @@ const TEST_REGISTRY = [
   layout("1020001", "pg_wal_storage", [], ["ts", "wal_files_bytes"]),
 ]
 const helpers = await importModule(
-  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, postgresMetricHistory, PROGRESS_VACUUM_FIELDS, progressVacuumColumns, registryCardFields, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows, walStoragePoints } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, postgresMetricHistory, PROGRESS_VACUUM_FIELDS, progressVacuumColumns, registryCardFields, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows, walStoragePoints } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
   { plugins: [registryPlugin(TEST_REGISTRY)] },
 )
 
@@ -180,7 +180,7 @@ test("WAL storage keeps exact singleton values and selected-snapshot history wir
   assert.match(source, /walStorage !== undefined && <WalStorage/)
   assert.match(source, /loadSeries\(hour, "pg_wal_storage", \{\}, \["wal_files_bytes"\], controller\.signal, row\.typeId\)/)
   assert.match(source, /<SeriesChart cursor=\{cursor\} format=\{humanBytes\}/)
-  assert.match(source, /scale="nonnegative" unit="B"/)
+  assert.match(source, /scale="nonnegative" t=\{t\} unit="B"/)
   assert.match(source, /logicalName !== "pg_wal_storage"/)
 })
 
@@ -198,7 +198,7 @@ test("generic registry cards never present raw collection or identity fields as 
   assert.equal(helpers.columnsFor([stored]).some(({ field }) => field === "ts"), false)
 })
 
-test("activity keeps a compact operator table and moves diagnostics to detail", () => {
+test("activity keeps a compact operator table and uses relative detail durations", () => {
   assert.deepEqual(
     helpers.ACTIVITY_COLUMNS[0],
     { field: "pid", kind: "id", label: "pg.field.pid.label", sticky: true, width: 78 },
@@ -207,8 +207,14 @@ test("activity keeps a compact operator table and moves diagnostics to detail", 
     helpers.ACTIVITY_COLUMNS.map(({ field }) => field),
     ["pid", "datname", "usename", "query", "query_duration_ms", "transaction_duration_ms", "application_name", "client_addr", "state", "wait_event_type", "wait_event"],
   )
-  for (const field of ["backend_type", "leader_pid", "query_id", "backend_xid_age", "backend_xmin_age", "backend_start", "xact_start", "query_start", "state_change"]) {
+  for (const field of ["backend_type", "leader_pid", "query_id", "backend_xid_age", "backend_xmin_age"]) {
     assert.equal(helpers.ACTIVITY_COLUMNS.some((column) => column.field === field), false)
+    assert.equal(helpers.ACTIVITY_DETAIL_COLUMNS.some((column) => column.field === field), true)
+  }
+  for (const field of ["backend_start", "xact_start", "query_start", "state_change"]) {
+    assert.equal(helpers.ACTIVITY_DETAIL_COLUMNS.some((column) => column.field === field), false)
+  }
+  for (const field of ["backend_age_ms", "query_duration_ms", "transaction_duration_ms", "state_duration_ms"]) {
     assert.equal(helpers.ACTIVITY_DETAIL_COLUMNS.some((column) => column.field === field), true)
   }
   assert.deepEqual(helpers.activityColumns(false), helpers.ACTIVITY_COLUMNS)
@@ -216,8 +222,8 @@ test("activity keeps a compact operator table and moves diagnostics to detail", 
   assert.deepEqual(helpers.ACTIVITY_DEFAULT_ORDER, { column: "query_duration_ms", descending: true })
 })
 
-test("activity hides only ordinary idle and derives query and transaction time from the row", () => {
-  const active = activityRow("1", { backend_type: "client backend", state: "active", query_start: "4000000", xact_start: "1000000" })
+test("activity hides only ordinary idle and derives elapsed time from the selected observation", () => {
+  const active = activityRow("1", { backend_start: "500000", backend_type: "client backend", state: "active", state_change: "7000000", query_start: "4000000", xact_start: "1000000" })
   const idle = activityRow("2", { backend_type: "client backend", state: "idle", query_start: "1000000", xact_start: null })
   const idleTransaction = activityRow("3", { backend_type: "client backend", state: "idle in transaction", query_start: "2000000", xact_start: "2000000" })
   const aborted = activityRow("6", { backend_type: "client backend", state: "idle in transaction (aborted)", query_start: "3000000", xact_start: "3000000" })
@@ -248,6 +254,8 @@ test("activity hides only ordinary idle and derives query and transaction time f
   assert.deepEqual(defaults.map(({ ordinal }) => ordinal), ["1", "5", "3", "6"])
   assert.equal(defaults[0].values.query_duration_ms, 6_000)
   assert.equal(defaults[0].values.transaction_duration_ms, 9_000)
+  assert.equal(defaults[0].values.backend_age_ms, 9_500)
+  assert.equal(defaults[0].values.state_duration_ms, 3_000)
   assert.equal(defaults[1].values.query_duration_ms, 1_000)
   assert.equal(defaults[2].values.query_duration_ms, null)
   assert.equal(defaults[2].values.transaction_duration_ms, 8_000)
@@ -268,7 +276,7 @@ test("activity hides only ordinary idle and derives query and transaction time f
   assert.deepEqual(helpers.overviewBackendCounts([...rows, parallel]), { active: 2, idle: 3, total: 5 })
 })
 
-test("Activity exact start times enable duration histories without synthetic stored fields", () => {
+test("Activity observation timestamps enable duration histories without synthetic stored fields", () => {
   const rows = [activityRow("1", { query_start: "4000000", xact_start: "1000000" })]
   assert.equal(helpers.chartColumnAvailable("pg_stat_activity", rows, { field: "query_duration_ms", kind: "duration" }), true)
   assert.equal(helpers.chartColumnAvailable("pg_stat_activity", rows, { field: "transaction_duration_ms", kind: "duration" }), true)
@@ -276,21 +284,36 @@ test("Activity exact start times enable duration histories without synthetic sto
   assert.equal(helpers.chartColumnAvailable("pg_locks", rows, { field: "query_duration_ms", kind: "duration" }), false)
 })
 
-test("Activity history and selection use PID only within the selected hour", async () => {
+test("Activity history is PID-only and loads the complete selected hour", async () => {
   const selected = activityRow("1", { pid: 42, backend_start: "9000000", state: "active", query_start: "9500000" })
-  const sameBackend = activityRow("2", { pid: 42, backend_start: "9000000", state: "active", query_start: "9500000" }, 11_000_000)
-  const changedStart = activityRow("3", { pid: 42, backend_start: "10500000", state: "active", query_start: "10600000" }, 12_000_000)
-  assert.equal(helpers.sameEntity(selected, sameBackend, "pg_stat_activity"), true)
-  assert.equal(helpers.sameEntity(selected, changedStart, "pg_stat_activity"), true)
-  assert.equal(helpers.sameEntity(selected, activityRow("4", { pid: 42 }), "pg_stat_activity"), true)
-  assert.equal(helpers.sameEntity(selected, activityRow("5", { pid: 43 }), "pg_stat_activity"), false)
+  const differentStart = activityRow("2", { pid: 42, backend_start: "10500000", state: "active", query_start: "9500000" }, 11_000_000)
+  const projected = activityRow("3", { pid: 42, state: "active", query_start: "9500000" }, 12_000_000)
+  assert.equal(helpers.sameEntity(selected, differentStart, "pg_stat_activity"), true)
+  assert.equal(helpers.sameEntity(selected, projected, "pg_stat_activity"), true)
+  assert.equal(helpers.sameEntity(selected, { ...projected, typeId: "1001004" }, "pg_stat_activity"), true)
+  assert.equal(helpers.sameEntity(selected, activityRow("4", { pid: 43 }), "pg_stat_activity"), false)
+  assert.equal(helpers.sameEntity(activityRow("5", {}), activityRow("6", {}), "pg_stat_activity"), false)
 
   const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
   assert.match(source, /activity \? \["pid", \.\.\.metricFields\] : metricFields/)
-  assert.doesNotMatch(source, /activity \? \["backend_start",/)
   assert.match(source, /rows\.filter\(\(candidate\) => !activity \|\| sameEntity\(candidate, row, section\)\)/)
   assert.match(source, /identityFields\(section, row\.typeId\)\.map/)
   assert.match(source, /section === "pg_stat_activity"[^\n]*return \["pid"\]/)
+  assert.match(source, /activity\s*\? loadSeries\(hour, section, filters, fields, controller\.signal\)/)
+  assert.doesNotMatch(source, /activity \? \["backend_start"|\["pid", "backend_start"\]/)
+})
+
+test("Activity query and transaction histories keep the selected value and later samples", () => {
+  const rows = [
+    activityRow("1", { pid: 274126, state: "active", query_start: "9500000", xact_start: "8000000" }, 10_000_000),
+    activityRow("2", { pid: 274126, state: "active", query_start: "9500000", xact_start: "8000000" }, 12_000_000),
+  ]
+  assert.deepEqual(helpers.activityDurationHistory(rows, "query_duration_ms").map(({ timestamp, value }) => [timestamp, value]), [
+    [10_000_000, 500], [12_000_000, 2_500],
+  ])
+  assert.deepEqual(helpers.activityDurationHistory(rows, "transaction_duration_ms").map(({ timestamp, value }) => [timestamp, value]), [
+    [10_000_000, 2_000], [12_000_000, 4_000],
+  ])
 })
 
 test("elapsed Activity values use compact wall-time formatting", () => {

@@ -121,29 +121,31 @@ export function findingHistoryRequest(finding: Finding, row: DataRow): {
 
 export interface FindingMetric {
   readonly field: string | null
+  readonly helpKey: string
   readonly label: string
+  readonly labelKey: string
   readonly unit: "bytes_per_second" | "count" | "milliseconds" | "milliseconds_per_call" | "number" | "percent"
   readonly boundary: string | null
 }
 
 export function findingMetric(finding: Finding, t: Translate): FindingMetric {
-  if (finding.kind === "event") return metric(null, findingSource(finding, t), "number", null)
+  if (finding.kind === "event") return metric(null, "events.metric.unavailable", "events.metric.unavailable.help", t, "number", null)
   const physical = fieldNameForLocator(finding)
   const semantic = physical === null ? null : findingSemanticField(finding.typeId, physical)
-  if (finding.logicalName === "os_cpu") return metric("cpu_busy", t("events.metric.cpu_busy"), "percent", t("events.boundary.cpu"))
-  if (finding.logicalName === "os_meminfo") return metric("mem_available", t("events.metric.memory_available"), "percent", t("events.boundary.memory"))
-  if (finding.logicalName === "os_loadavg") return metric("load1", t("events.metric.load1"), "number", t("events.boundary.load"))
-  if (finding.logicalName === "os_mountinfo") return metric("free_bytes", t("events.metric.filesystem_used"), "percent", t("events.boundary.filesystem"))
-  if (finding.logicalName === "os_vmstat" && physical === "oom_kill") return metric(physical, t("events.metric.oom_kill"), "count", t("events.boundary.increased"))
-  if (finding.logicalName === "pg_stat_database" && physical === "deadlocks") return metric(physical, t("events.metric.deadlocks"), "count", t("events.boundary.increased"))
-  if (finding.logicalName === "pg_stat_activity") return metric("active_backends", t("events.metric.active_backends"), "count", t("events.boundary.active_backends"))
-  if (finding.logicalName === "pg_log_slow_queries") return metric("max_duration_ms", t("events.metric.slow_query"), "milliseconds", t("events.boundary.slow_query"))
-  if (finding.logicalName === "health") return metric(physical, t("events.metric.overall_health"), "percent", t("events.boundary.health"))
-  if (finding.logicalName === "os_process") return metric("read_bytes", t("events.metric.process_read"), "bytes_per_second", null)
+  if (finding.logicalName === "os_cpu") return metric("cpu_busy", "events.metric.cpu_busy", "lane.cpu_busy.help", t, "percent", t("events.boundary.cpu"))
+  if (finding.logicalName === "os_meminfo") return metric("mem_available", "events.metric.memory_available", "system.metric.mem_available.help", t, "percent", t("events.boundary.memory"))
+  if (finding.logicalName === "os_loadavg") return metric("load1", "events.metric.load1", "system.metric.load1.help", t, "number", t("events.boundary.load"))
+  if (finding.logicalName === "os_mountinfo") return metric("free_bytes", "events.metric.filesystem_used", "events.metric.filesystem_used.help", t, "percent", t("events.boundary.filesystem"))
+  if (finding.logicalName === "os_vmstat" && physical === "oom_kill") return metric(physical, "events.metric.oom_kill", "system.metric.oom_kill.help", t, "count", t("events.boundary.increased"))
+  if (finding.logicalName === "pg_stat_database" && physical === "deadlocks") return metric(physical, "events.metric.deadlocks", "pg.field.deadlocks.help", t, "count", t("events.boundary.increased"))
+  if (finding.logicalName === "pg_stat_activity") return metric("active_backends", "events.metric.active_backends", "events.metric.active_backends.help", t, "count", t("events.boundary.active_backends"))
+  if (finding.logicalName === "pg_log_slow_queries") return metric("max_duration_ms", "events.metric.slow_query", "events.metric.slow_query.help", t, "milliseconds", t("events.boundary.slow_query"))
+  if (finding.logicalName === "health") return metric(physical, "events.metric.overall_health", "lane.health.help", t, "percent", t("events.boundary.health"))
+  if (finding.logicalName === "os_process") return metric("read_bytes", "events.metric.process_read", "col.read_bytes.help", t, "bytes_per_second", null)
   if (semantic !== null) {
-    return metric(semantic, t(`pg.field.${semantic}.label`), semantic === "mean_exec_ms_per_call" ? "milliseconds_per_call" : "number", null)
+    return metric(semantic, `pg.field.${semantic}.label`, `pg.field.${semantic}.help`, t, semantic === "mean_exec_ms_per_call" ? "milliseconds_per_call" : "number", null)
   }
-  return metric(physical, physical ?? t("events.metric.unavailable"), unitFor(physical), null)
+  return metric(physical, physical ?? "events.metric.unavailable", "events.metric.unavailable.help", t, unitFor(physical), null)
 }
 
 export function findingHistory(
@@ -262,8 +264,8 @@ function lanePoint(point: LanePoint): ChartPoint {
   return { segmentId: point.segmentId, timestamp: point.timestamp, value: point.value }
 }
 
-function metric(field: string | null, label: string, unit: FindingMetric["unit"], boundary: string | null): FindingMetric {
-  return { field, label, unit, boundary }
+function metric(field: string | null, labelKey: string, helpKey: string, t: Translate, unit: FindingMetric["unit"], boundary: string | null): FindingMetric {
+  return { field, helpKey, label: t(labelKey), labelKey, unit, boundary }
 }
 
 function unitFor(field: string | null): FindingMetric["unit"] {

@@ -293,6 +293,7 @@ h2 { font-size: var(--t-md); }
 .pg-badge { background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent2); display: inline-block; font-size: var(--t-xs); font-weight: 700; letter-spacing: .06em; margin-right: 6px; padding: 2px 4px; vertical-align: 1px; }
 .sticky-pid, .sticky-command { background: inherit; position: sticky; z-index: 10; }
 .sticky-command { box-shadow: 5px 0 8px var(--shadow-b); }
+.entity-sticky.sticky-pid { box-shadow: none; }
 .process-table .entity-header-cell.sticky-pid, .process-table .entity-header-cell.sticky-command { background: var(--s2); z-index: 40; }
 .virtual-body { position: relative; }
 .table-empty { color: var(--fg4); font-size: var(--t-sm); padding: 22px; }
@@ -349,7 +350,14 @@ h2 { font-size: var(--t-md); }
 .metric-history > .series-chart { display: flex; flex: 1 1 auto; flex-direction: column; }
 .series-chart { margin: 0; min-width: 0; padding: 8px 9px 5px; position: relative; }
 .series-reading, .uplot-figure figcaption { align-items: baseline; color: var(--fg3); display: flex; font-size: var(--t-xs); gap: 8px; margin-bottom: 5px; text-transform: uppercase; }
-.series-reading span:first-child, .uplot-figure figcaption span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.series-reading > .label-help { min-width: 0; }
+.series-reading > .label-help > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.series-reading .help-dot, .chart-series-labels .help-dot { flex: 0 0 auto; }
+.chart-series-labels { align-items: center; display: flex; flex: 1 1 auto; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; white-space: nowrap; }
+.chart-series-labels::-webkit-scrollbar { display: none; }
+.chart-series-labels > .label-help { flex: 0 0 auto; }
+.chart-series-labels > .label-help + .label-help::before { color: var(--fg4); content: "·"; margin-right: 6px; }
+.chart-series-labels .label-help > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .series-reading span:last-child { color: var(--fg2); flex: 0 0 auto; font-variant-numeric: tabular-nums; text-transform: none; white-space: nowrap; }
 .chart-current { color: var(--fg2); flex: 0 0 auto; font-variant-numeric: tabular-nums; font-weight: 500; margin-left: auto; text-transform: none; white-space: nowrap; }
 .uplot-figure { display: flex; flex-direction: column; height: 200px; margin: 0; max-width: 100%; min-width: 0; overflow: hidden; position: relative; }

@@ -571,7 +571,8 @@ function App({ locale, onLocale, t }: {
       return
     }
     const controller = new AbortController()
-    acceptResponse(loadSeries(hour, selectedFinding.logicalName, request.where, request.fields, controller.signal, selectedFinding.typeId), controller.signal,
+    const historyTypeId = selectedFinding.logicalName === "os_process" ? undefined : selectedFinding.typeId
+    acceptResponse(loadSeries(hour, selectedFinding.logicalName, request.where, request.fields, controller.signal, historyTypeId), controller.signal,
       (rows) => setFindingPoints(findingHistory(selectedFinding, rows, data)), () => setFindingPoints([]))
     return () => controller.abort()
   }, [data, findingRow, hour, selectedFinding])

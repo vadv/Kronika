@@ -95,7 +95,7 @@ export function EntityTable({
     ? []
     : [{ id: order.column, desc: order.descending }], [order])
   const parent = useRef<HTMLDivElement>(null)
-  const columns = useMemo<ColumnDef<DataRow>[]>(() => fields.map((field, index) => ({
+  const columns = useMemo<ColumnDef<DataRow>[]>(() => fields.map((field) => ({
     accessorFn: (row) => field.sortValue === undefined ? sortable(value(row, field.field), field.kind) : field.sortValue(row),
     cell: ({ row }) => {
       const stored = value(row.original, field.field)
@@ -108,7 +108,6 @@ export function EntityTable({
     meta: {
       numeric: NUMERIC_KINDS.has(field.kind ?? "text"),
       sticky: field.sticky,
-      stickyLeft: fields.slice(0, index).reduce((left, candidate) => left + (candidate.sticky === undefined || candidate.sticky === false ? 0 : candidate.width ?? 128), 0),
       help: field.help,
       label: field.label,
     },
@@ -136,6 +135,11 @@ export function EntityTable({
     onColumnSizingChange: setSizing,
     state: { columnSizing: sizing, sorting: ordering },
   })
+  const pinnedLeft = stickyOffsets(table.getVisibleLeafColumns().map((column) => ({
+    id: column.id,
+    size: column.getSize(),
+    sticky: isSticky(column.columnDef.meta),
+  })))
   const head = useRef<HTMLDivElement>(null)
   const automatic = useRef<ColumnSizingState>({})
   useEffect(() => {
@@ -183,7 +187,7 @@ export function EntityTable({
       <div className="entity-head" ref={head} role="row" style={{ width }}>
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {
           const sorted = header.column.getIsSorted()
-          return <div className={sticky(header.column.columnDef.meta, true)} key={header.id} role="columnheader" style={{ left: stickyLeft(header.column.columnDef.meta), width: header.getSize() }}>
+          return <div className={sticky(header.column.columnDef.meta, true)} key={header.id} role="columnheader" style={{ left: pinnedLeft.get(header.column.id), width: header.getSize() }}>
             <button className="entity-sort" disabled={!header.column.getCanSort()} onClick={serverSorted === true
               ? () => onOrder?.(nextServerOrder(order, header.column.id))
               : header.column.getToggleSortingHandler()} type="button">
@@ -226,7 +230,7 @@ export function EntityTable({
                 const stored = field === undefined ? null : value(row.original, field.field)
                 const tone = field === undefined ? null : semanticValueTone(field.field, stored, field.rate, row.original)
                 const toneText = tone === null || tone === "inactive" ? null : t(`pg.value.${tone}`)
-                return <div aria-label={toneText === null || field === undefined ? undefined : `${toneText}: ${cellAriaValue(stored, field, locale, t)}`} className={`${sticky(cell.column.columnDef.meta, false)}${tone === null ? "" : ` value-tone-${tone}`}${exact ? ` locator-cell locator-${activeFinding.kind}` : ""}`} data-locator-cell={exact || undefined} data-value-tone={tone ?? undefined} key={cell.id} role="cell" style={{ left: stickyLeft(cell.column.columnDef.meta), width: cell.column.getSize() }}>
+                return <div aria-label={toneText === null || field === undefined ? undefined : `${toneText}: ${cellAriaValue(stored, field, locale, t)}`} className={`${sticky(cell.column.columnDef.meta, false)}${tone === null ? "" : ` value-tone-${tone}`}${exact ? ` locator-cell locator-${activeFinding.kind}` : ""}`} data-locator-cell={exact || undefined} data-value-tone={tone ?? undefined} key={cell.id} role="cell" style={{ left: pinnedLeft.get(cell.column.id), width: cell.column.getSize() }}>
                   {toneText !== null && <span aria-hidden="true" className="value-tone-mark" />}
                   {flexRender(cell.column.columnDef.cell, cell.getContext())}
                 </div>
@@ -316,18 +320,29 @@ function sortable(cell: Cell, kind: EntityColumn["kind"]): string | number | boo
   return asNumber(cell) ?? rawText(cell)
 }
 
-function sticky(meta: unknown, head: boolean): string {
+export function sticky(meta: unknown, head: boolean): string {
   const cell = meta as { readonly sticky?: boolean | string; readonly numeric?: boolean } | undefined
   return [
     head ? "entity-header-cell" : "entity-cell",
     cell?.numeric === true ? "align-right" : "",
-    cell?.sticky === true ? "entity-sticky" : typeof cell?.sticky === "string" ? cell.sticky : "",
+    cell?.sticky === true ? "entity-sticky" : typeof cell?.sticky === "string" ? `entity-sticky ${cell.sticky}` : "",
   ].filter(Boolean).join(" ")
 }
 
-function stickyLeft(meta: unknown): number | undefined {
-  const value = meta as { readonly sticky?: boolean | string; readonly stickyLeft?: number } | undefined
-  return value?.sticky === undefined || value.sticky === false ? undefined : value.stickyLeft ?? 0
+export function stickyOffsets(columns: readonly { readonly id: string; readonly size: number; readonly sticky: boolean }[]): ReadonlyMap<string, number> {
+  const offsets = new Map<string, number>()
+  let left = 0
+  for (const column of columns) {
+    if (!column.sticky) continue
+    offsets.set(column.id, left)
+    left += column.size
+  }
+  return offsets
+}
+
+function isSticky(meta: unknown): boolean {
+  const value = meta as { readonly sticky?: boolean | string } | undefined
+  return value?.sticky !== undefined && value.sticky !== false
 }
 
 function columnHelp(meta: unknown): { readonly help: string; readonly label: string } | null {

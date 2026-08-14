@@ -4,9 +4,9 @@ import test from "node:test"
 import { importModule, registryPlugin } from "./import-module.mjs"
 
 const layouts = [
-  layout("1100001", "os_process", ["pid", "starttime"], ["ts", "pid", "starttime", "read_bytes"]),
+  layout("1100001", "os_process", ["pid"], ["ts", "pid", "starttime", "read_bytes"]),
   layout("1108001", "os_diskstats", ["major", "minor"], ["ts", "major", "minor", "device"]),
-  layout("1001003", "pg_stat_activity", [], ["ts", "pid", "backend_start", "query"]),
+  layout("1001003", "pg_stat_activity", ["pid"], ["ts", "pid", "backend_start", "query"]),
   layout("1002001", "pg_stat_statements", ["queryid", "userid", "dbid"], ["ts", "queryid", "userid", "dbid", "query", "total_time"]),
   layout("1002003", "pg_stat_statements", ["queryid", "userid", "dbid", "toplevel"], ["ts", "queryid", "userid", "dbid", "toplevel", "query", "total_exec_time"]),
   layout("1003001", "pg_store_plans", ["userid", "dbid", "queryid", "planid"], ["ts", "userid", "dbid", "queryid", "planid", "plan", "total_time"]),
@@ -53,6 +53,7 @@ test("context keeps exact identities while process and Activity use PID only", (
   assert.equal(processContext.label, "PID 41")
   assert.deepEqual(processContext.identity, [["pid", "41"]])
   assert.equal(helpers.contextMatches({ ...process, typeId: "1100999", values: { ...process.values, starttime: "9007199254741000" } }, processContext), true)
+  assert.equal(helpers.contextMatches({ ...process, values: { ...process.values, pid: 42 } }, processContext), false)
   assert.deepEqual(helpers.entityContext(finding(oldStatement), oldStatement).identity, [["queryid", "9"], ["userid", "10"], ["dbid", "11"]])
   const statementContext = helpers.entityContext(finding(newStatement), newStatement, translator("en"))
   assert.equal(statementContext.typeId, "1002003")

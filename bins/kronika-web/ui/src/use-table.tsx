@@ -119,14 +119,17 @@ export function UseTable({
         cursor={cursor}
         empty={t("status.no_data")}
         format={(stored, place) => reading(stored, place, selected.cell.kind, t("unit.per_second"))}
+        helpKey={useLaneHelp(selected.cell.lane)}
         hour={hour}
-        label={t(`use.lane.${selected.cell.lane}`)}
+        labelKey={`use.lane.${selected.cell.lane}`}
         locale={locale}
         onCursor={onCursor}
         points={selected.points}
         scale={selected.cell.kind === "share" ? "percent" : "nonnegative"}
         second={selected.second.length === 0 ? undefined : selected.second}
-        secondLabel={selected.cell.second === undefined ? undefined : t(`use.lane.${selected.cell.second}`)}
+        secondHelpKey={selected.cell.second === undefined ? undefined : useLaneHelp(selected.cell.second)}
+        secondLabelKey={selected.cell.second === undefined ? undefined : `use.lane.${selected.cell.second}`}
+        t={t}
         unit={cellUnit(selected.cell.kind, locale)}
       />
     </section>}</ChartOnly>
@@ -134,6 +137,24 @@ export function UseTable({
 }
 
 const COLUMNS = ["utilisation", "saturation", "errors"] as const
+
+const USE_LANE_HELP: Readonly<Record<string, string>> = {
+  cpu_busy: "lane.cpu_busy.help",
+  cpu_stall: "lane.cpu_stall.help",
+  disk_busy: "system.field.device_busy.help",
+  disk_queue: "system.field.average_queue.help",
+  mem_oom: "system.metric.oom_kill.help",
+  mem_swap: "use.lane.mem_swap.help",
+  memory: "lane.memory.help",
+  net_drop: "system.metric.network_drops.help",
+  net_errors: "system.metric.network_errors.help",
+  net_rx: "system.metric.network_rx.help",
+  net_tx: "system.metric.network_tx.help",
+}
+
+function useLaneHelp(lane: string): string {
+  return USE_LANE_HELP[lane] ?? "chart.metric.help"
+}
 
 export function availableUseChartKeys(lanePoints: readonly LanePoint[]): readonly string[] {
   return buildUseChartChoices(lanePoints, RESOURCES).map((choice) => choice.key)

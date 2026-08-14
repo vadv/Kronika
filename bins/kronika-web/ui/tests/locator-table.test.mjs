@@ -8,7 +8,7 @@ const statementIdentity = ["queryid", "userid", "dbid"]
 const statementFields = ["ts", ...statementIdentity, "query", "calls", "rows", "total_exec_time", "blk_read_time"]
 const planIdentity = ["userid", "dbid", "queryid", "planid"]
 const registry = [
-  layout("1100001", "os_process", ["pid", "starttime"], ["ts", "pid", "starttime", "read_bytes"]),
+  layout("1100001", "os_process", ["pid"], ["ts", "pid", "starttime", "read_bytes"]),
   layout("1002001", "pg_stat_statements", statementIdentity, ["ts", ...statementIdentity, "query", "calls", "rows", "total_time", "blk_read_time"]),
   layout("1002002", "pg_stat_statements", statementIdentity, statementFields),
   layout("1002003", "pg_stat_statements", [...statementIdentity, "toplevel"], [...statementFields, "toplevel"]),
@@ -21,7 +21,7 @@ const registry = [
   layout("1016001", "pg_store_plans_info", [], ["ts", "dealloc", "stats_reset"]),
 ]
 const helpers = await importModule(
-  'export { filterTableRows, locatorMatchesColumn, nextServerOrder } from "../src/entity-table.tsx"; export { contextualRows, entityContext } from "../src/entity-context.ts"; export { rowMatchesLocator } from "../src/locator.ts"; export { PLAN_COLUMNS, STATEMENT_COLUMNS } from "../src/postgres-view.tsx"',
+  'export { filterTableRows, locatorMatchesColumn, nextServerOrder } from "../src/entity-table.tsx"; export { contextualRows, entityContext } from "../src/entity-context.ts"; export { findingHistoryRequest } from "../src/finding-presentation.ts"; export { rowMatchesLocator } from "../src/locator.ts"; export { PLAN_COLUMNS, STATEMENT_COLUMNS } from "../src/postgres-view.tsx"',
   { plugins: [registryPlugin(registry)] },
 )
 
@@ -38,6 +38,15 @@ test("physical locators match the exact loaded row and mapped cell", () => {
   assert.equal(helpers.rowMatchesLocator({ ...row, ordinal: "8" }, finding), false)
   assert.equal(helpers.locatorMatchesColumn({ field: "read_rate", label: "Read", physicalField: { "1100001": "read_bytes" } }, row.typeId, "read_bytes"), true)
   assert.equal(helpers.locatorMatchesColumn({ field: "write_bytes", label: "Write" }, row.typeId, "read_bytes"), false)
+})
+
+test("process finding history is requested and filtered by PID only", async () => {
+  assert.deepEqual(helpers.findingHistoryRequest(finding, row), {
+    fields: ["pid", "read_bytes"],
+    where: { pid: "9" },
+  })
+  const source = await readFile(new URL("../src/app.tsx", import.meta.url), "utf8")
+  assert.match(source, /historyTypeId = selectedFinding\.logicalName === "os_process" \? undefined : selectedFinding\.typeId/)
 })
 
 test("statement execution findings select the interval mean cell", () => {

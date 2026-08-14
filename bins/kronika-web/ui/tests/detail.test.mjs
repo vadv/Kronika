@@ -94,3 +94,28 @@ test("all meaningful CPU numeric fields have history and nice uses a signed scal
   assert.equal(byField.get("prio").unit, "priority")
   assert.equal(byField.get("rtprio").unit, "priority")
 })
+
+test("process history requests project PID without process start time", async () => {
+  assert.equal(detail.PROCESS_HISTORY_FIELDS[0], "pid")
+  assert.equal(detail.PROCESS_HISTORY_FIELDS.includes("starttime"), false)
+  const source = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../src/app.tsx", import.meta.url), "utf8"))
+  assert.match(source, /loadSeries\(hour, "os_process", \{ pid: selectedPid \}, PROCESS_HISTORY_FIELDS/)
+  assert.doesNotMatch(source, /selectedStart|starttime: selectedStart/)
+})
+
+test("linked Activity detail shows elapsed values instead of repeatable absolute starts", async () => {
+  const source = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../src/detail.tsx", import.meta.url), "utf8"))
+  const fields = /const ACTIVITY_FIELDS = \[([\s\S]*?)\] as const/.exec(source)?.[1] ?? ""
+  for (const field of ["backend_start", "xact_start", "query_start", "state_change"]) assert.doesNotMatch(fields, new RegExp(field))
+  for (const field of ["backend_age_ms", "transaction_duration_ms", "query_duration_ms", "state_duration_ms"]) assert.match(source, new RegExp(`\\["${field}"`))
+  assert.match(source, /value=\{humanDuration\(elapsed, locale\)\}/)
+})
+
+test("Escape closes the shared detail dock unless a child already handled it", async () => {
+  const source = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../src/detail.tsx", import.meta.url), "utf8"))
+  assert.match(source, /if \(event\.key !== "Escape" \|\| event\.defaultPrevented\) return/)
+  assert.match(source, /queueMicrotask\(\(\) => \{\s+if \(event\.defaultPrevented\) return/)
+  assert.match(source, /event\.preventDefault\(\)\s+onClose\(\)/)
+  assert.match(source, /window\.addEventListener\("keydown", escape\)/)
+  assert.match(source, /return \(\) => window\.removeEventListener\("keydown", escape\)/)
+})

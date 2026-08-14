@@ -72,6 +72,7 @@ type SummaryKind = "B" | "B/s" | "cores" | "count" | "ms/s" | "1/s"
 
 export interface ProcessSummaryMetric {
   readonly field: string
+  readonly help: string
   readonly key: string
   readonly kind: SummaryKind
 }
@@ -162,7 +163,7 @@ export function ProcessSummary({ cursor, dispatch, hour, lens, locale, onCursor,
     })}
     {statusKey !== null && <p aria-live="polite" className="process-summary-status" data-testid="process-summary-status">{t(statusKey)}</p>}
     <ChartOnly>{history.length !== 0 && <div className="process-summary-history">
-      <SeriesChart cursor={cursor} empty={t("status.no_data")} format={processSummaryFormat(active, t)} hour={hour} label={t(active.key)} locale={locale} onCursor={onCursor} points={activePoints} unit={processSummaryUnit(active, locale, t)} />
+      <SeriesChart cursor={cursor} empty={t("status.no_data")} format={processSummaryFormat(active, t)} helpKey={active.help} hour={hour} labelKey={active.key} locale={locale} onCursor={onCursor} points={activePoints} t={t} unit={processSummaryUnit(active, locale, t)} />
     </div>}</ChartOnly>
   </section>
 }
@@ -197,7 +198,7 @@ export function processSummaryUnit(metric: ProcessSummaryMetric, locale: Locale,
 }
 
 function summaryMetric(field: string, key: string, kind: SummaryKind): ProcessSummaryMetric {
-  return { field, key, kind }
+  return { field, help: `${key}.help`, key, kind }
 }
 
 export function ProcessTable({

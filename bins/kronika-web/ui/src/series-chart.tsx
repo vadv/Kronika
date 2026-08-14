@@ -1,6 +1,7 @@
 import { useMemo, useRef } from "react"
 
 import { compact, floorHour, humanPercent, type Locale } from "./model"
+import { LabelHelp, type Translate } from "./help"
 import { UPlotChart, type ChartScale as SemanticScale, type RecordedSeries } from "./uplot-chart"
 
 export interface ChartPoint {
@@ -19,26 +20,32 @@ export function SeriesChart({
   cursor,
   empty = "—",
   hour,
-  label,
+  helpKey,
+  labelKey,
   locale,
   format,
   points,
   scale = "nonnegative",
   second,
-  secondLabel,
+  secondHelpKey,
+  secondLabelKey,
+  t,
   unit = "",
   onCursor,
 }: {
   readonly cursor?: number | undefined
   readonly empty?: string | undefined
   readonly hour: number
-  readonly label: string
+  readonly helpKey: string
+  readonly labelKey: string
   readonly locale: Locale
   readonly format?: ((value: number, locale: Locale) => string) | undefined
   readonly points: readonly ChartPoint[]
   readonly scale?: ChartScale | undefined
   readonly second?: readonly ChartPoint[] | undefined
-  readonly secondLabel?: string | undefined
+  readonly secondHelpKey?: string | undefined
+  readonly secondLabelKey?: string | undefined
+  readonly t: Translate
   readonly unit?: string | undefined
   readonly onCursor?: ((timestamp: number) => void) | undefined
 }) {
@@ -46,18 +53,19 @@ export function SeriesChart({
   const reading = readingAt(points, cursor)
   const hasData = numeric.length !== 0
   const formatValue = format ?? (scale === "percent" ? humanPercent : compact)
+  const label = t(labelKey)
   const formatter = useRef(formatValue)
   formatter.current = formatValue
   const stableFormat = useMemo(() => (number: number, place: Locale) => formatter.current(number, place), [])
   const semantic: SemanticScale = scale === "percent" ? "percent" : scale === "auto" || scale === "signed" ? "signed" : "nonnegative"
   const series = useMemo<readonly RecordedSeries[]>(() => [
-    { color: "cyan", id: "primary", label, points, scale: semantic, tick: stableFormat, unit, value: stableFormat },
-    ...(second === undefined ? [] : [{ color: "amber" as const, id: "secondary", label: secondLabel ?? `${label} 2`, points: second, scale: semantic, tick: stableFormat, unit, value: stableFormat }]),
-  ], [label, points, second, secondLabel, semantic, stableFormat, unit])
+    { color: "cyan", helpKey, id: "primary", label, labelKey, points, scale: semantic, tick: stableFormat, unit, value: stableFormat },
+    ...(second === undefined || secondHelpKey === undefined || secondLabelKey === undefined ? [] : [{ color: "amber" as const, helpKey: secondHelpKey, id: "secondary", label: t(secondLabelKey), labelKey: secondLabelKey, points: second, scale: semantic, tick: stableFormat, unit, value: stableFormat }]),
+  ], [helpKey, label, labelKey, points, second, secondHelpKey, secondLabelKey, semantic, stableFormat, t, unit])
   return <div className="series-chart">
     {!hasData
-      ? <><div className="series-reading"><span>{label}</span><span>—</span></div><p className="series-empty">{empty}</p></>
-      : <UPlotChart cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} reading={reading === null ? "—" : formatValue(reading, locale)} series={series} />}
+      ? <><div className="series-reading"><LabelHelp helpKey={helpKey} labelKey={labelKey} t={t} /><span>—</span></div><p className="series-empty">{empty}</p></>
+      : <UPlotChart cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} reading={reading === null ? "—" : formatValue(reading, locale)} series={series} t={t} />}
   </div>
 }
 

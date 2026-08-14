@@ -1,5 +1,5 @@
 import { Copy, X } from "lucide-react"
-import { useMemo, useState, type ReactNode } from "react"
+import { useEffect, useMemo, useState, type ReactNode } from "react"
 
 import type { Cell, DataRow } from "./api"
 import { buildMetricSamples } from "./chart"
@@ -10,6 +10,7 @@ import {
   asNumber,
   humanBytes,
   humanCores,
+  humanDuration,
   identifier,
   measure,
   processCommand,
@@ -18,6 +19,7 @@ import {
   type Lens,
   type Locale,
 } from "./model"
+import { activityDurationMs, backendAgeMs, stateDurationMs, transactionDurationMs } from "./postgres-activity"
 import { CellValue, formatCell, LENS_FIELDS, type Field } from "./process-table"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 
@@ -79,11 +81,15 @@ const ACTIVITY_FIELDS = [
   ["application_name", "pg.application_name", "text"], ["client_addr", "pg.client_addr", "text"],
   ["state", "pg.state", "text"],
   ["wait_event_type", "pg.wait_event_type", "text"], ["wait_event", "pg.wait_event", "text"],
-  ["backend_start", "pg.backend_start", "time"],
-  ["xact_start", "pg.xact_start", "time"], ["query_start", "pg.query_start", "time"],
-  ["state_change", "pg.state_change", "time"],
   ["query_id", "pg.query_id", "id"], ["backend_xid_age", "pg.backend_xid_age", "number"],
   ["backend_xmin_age", "pg.backend_xmin_age", "number"],
+] as const
+
+const ACTIVITY_DURATIONS = [
+  ["backend_age_ms", backendAgeMs],
+  ["transaction_duration_ms", transactionDurationMs],
+  ["query_duration_ms", activityDurationMs],
+  ["state_duration_ms", stateDurationMs],
 ] as const
 
 export function DetailDock({
@@ -130,6 +136,18 @@ export function DetailDock({
     () => selectedHistory === null ? [] : processChartPoints(selectedHistory, ticksPerSecond),
     [selectedHistory, ticksPerSecond],
   )
+  useEffect(() => {
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return
+      queueMicrotask(() => {
+        if (event.defaultPrevented) return
+        event.preventDefault()
+        onClose()
+      })
+    }
+    window.addEventListener("keydown", escape)
+    return () => window.removeEventListener("keydown", escape)
+  }, [onClose])
   return (
     <aside
       aria-label={t("detail.process.title")}
@@ -168,14 +186,16 @@ export function DetailDock({
         {selectedHistory !== null && (
           <SeriesChart
             cursor={cursor}
+            helpKey={`${selectedHistory.key}.help`}
             hour={hour}
             key={selectedHistory.field}
-            label={t(`${selectedHistory.key}.label`)}
+            labelKey={`${selectedHistory.key}.label`}
             locale={locale}
             format={(reading, place) => formatProcessChartValue(selectedHistory.kind, reading, place, t, ticksPerSecond)}
             onCursor={onCursor}
             points={selectedHistoryPoints}
             scale={selectedHistory.scale ?? "nonnegative"}
+            t={t}
             unit={selectedHistory.unit ?? processChartUnit(selectedHistory.kind, t, ticksPerSecond)}
           />
         )}
@@ -187,6 +207,10 @@ export function DetailDock({
         </div>
         <dl className="detail-list">
           <DetailField help="detail.pg_snapshot.help" label="detail.pg_snapshot.label" t={t} value={activityTime === null ? "—" : <Timestamp raw={activityTime} t={t} />} />
+          {ACTIVITY_DURATIONS.flatMap(([field, duration]) => {
+            const elapsed = duration(activity)
+            return elapsed === null ? [] : [<DetailField help={`pg.field.${field}.help`} key={field} label={`pg.field.${field}.label`} t={t} value={humanDuration(elapsed, locale)} />]
+          })}
           {ACTIVITY_FIELDS.map(([field, key, kind]) => <DetailField help={`${key}.help`} key={field} label={`${key}.label`} t={t} value={formatActivity(value(activity, field), kind, locale, t)} />)}
         </dl>
         <section className="query-block">

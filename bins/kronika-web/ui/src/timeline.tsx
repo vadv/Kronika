@@ -167,6 +167,7 @@ export function Timeline({
       reading={current}
       referenceTimestamp={shownAt ?? undefined}
       series={recorded}
+      t={t}
       testId="hour-timeline"
       threshold={threshold}
     />
@@ -213,8 +214,10 @@ function toRecordedSeries(lane: TimelineLane, locale: Locale, t: Translate): rea
   const unit = percent ? "%" : lane.key === "oldest_xact" ? (locale === "ru" ? "с" : "s") : (locale === "ru" ? "количество" : "count")
   return lane.series.map((line) => ({
     color: line.color,
+    helpKey: `lane.${lane.key}.help`,
     id: line.field,
     label: lane.key === "health" ? t(`lane.health.${line.field}`) : t(`lane.${lane.key}.label`),
+    labelKey: lane.key === "health" ? `lane.health.${line.field}` : `lane.${lane.key}.label`,
     points: line.points,
     scale: percent ? "percent" as const : "nonnegative" as const,
     tick: (number: number, place: Locale) => format(number, lane.key, place),

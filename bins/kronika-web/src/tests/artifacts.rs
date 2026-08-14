@@ -2181,6 +2181,25 @@ fn process_summary_series_uses_the_complete_set_and_previous_segment() {
 }
 
 #[test]
+fn process_snapshot_counter_history_is_pid_only() {
+    let mut fixture = Fixture::new();
+    fixture.append_process_summary_snapshot(1_000_000, 1_000, None, 900_000, 0..0, None);
+    let current_segment = SEGMENT_ID + 1_000;
+    fixture.finish_and_continue(current_segment);
+    fixture.append_process_summary_snapshot(6_000_000, 1_100, Some(0), 5_500_000, 0..0, None);
+    fixture.finish();
+
+    let records = stream(fixture.prepare(
+        &format!("/api/segments/{current_segment}/snapshot?at=6000000&section=os_process&field=pid&field=utime&where.pid=0"),
+        None,
+    ))
+    .expect("PID-scoped process snapshot");
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"], serde_json::json!([0, 20.0]));
+}
+
+#[test]
 fn process_summary_rates_across_active_wal_parts() {
     let mut fixture = Fixture::new();
     fixture.append_process_summary_snapshot(1_000_000, 1_000, None, 900_000, 0..3, None);

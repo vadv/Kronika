@@ -1,12 +1,13 @@
 import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
 import test from "node:test"
 
 import { importModule } from "./import-module.mjs"
 
-const chart = await importModule('export { alignRecordedSeries, axisTimeLabel, chartSummary, exactReadings, isolatedSampleIndices, nearestRecordedTimestamp, sampleText, scalePartitions, scaleRange } from "../src/uplot-chart.tsx"; export { createDisplayTimeFormatter } from "../src/display-time.ts"; export { compact, humanPercent } from "../src/model.ts"')
+const chart = await importModule('export { alignRecordedSeries, axisTimeLabel, chartSecondsUseful, chartSummary, compactChartTime, exactReadings, isolatedSampleIndices, nearestRecordedTimestamp, sampleText, scalePartitions, scaleRange } from "../src/uplot-chart.tsx"; export { createDisplayTimeFormatter } from "../src/display-time.ts"; export { compact, humanPercent } from "../src/model.ts"')
 
 const format = (value) => String(value)
-const line = (id, unit, scale, points) => ({ color: "cyan", id, label: id, points, scale, unit, value: format })
+const line = (id, unit, scale, points) => ({ color: "cyan", helpKey: `${id}.help`, id, label: id, labelKey: `${id}.label`, points, scale, unit, value: format })
 
 test("aligned data distinguishes missing rows, explicit nulls, zero and storage boundaries", () => {
   const frame = chart.alignRecordedSeries([
@@ -86,28 +87,52 @@ test("tooltip readings use only the exact timestamp without carrying a neighbor"
   assert.match(chart.sampleText(series, frame, 2, "en", time), /two \(B\/s\): 0/)
 })
 
-test("chart time has one active zone and plain seconds precision", () => {
+test("compact chart time follows Browser or UTC mode without repeating the zone", () => {
   const timestamp = Date.UTC(2026, 10, 1, 6, 30) * 1_000
   const eastern = chart.createDisplayTimeFormatter("en", "browser", "America/New_York")
   const utc = chart.createDisplayTimeFormatter("en", "utc", "America/New_York")
   assert.equal(eastern.clock(timestamp), "01:30:00")
   assert.equal(utc.clock(timestamp), "06:30:00")
   assert.equal(chart.axisTimeLabel(timestamp, eastern), "01:30")
+  assert.equal(chart.axisTimeLabel(timestamp, utc), "06:30")
   assert.doesNotMatch(eastern.clock(timestamp), /\.000|UTC|GMT/)
+  assert.doesNotMatch(chart.axisTimeLabel(timestamp, eastern), /GMT|UTC/)
+  const series = [line("memory", "%", "percent", [{ segmentId: "a", timestamp, value: 42 }])]
+  const frame = chart.alignRecordedSeries(series)
+  assert.equal(chart.exactReadings(frame, series, timestamp, "en", eastern).time, "01:30")
+  assert.match(chart.sampleText(series, frame, timestamp, "en", eastern), /^01:30;/)
 })
 
-test("tooltip, summary, and keyboard text share bounded semantic precision", () => {
+test("tooltip uses seconds only when two samples share a displayed minute", () => {
   const timestamp = Date.UTC(2026, 7, 14, 5, 30, 45) * 1_000
   const time = chart.createDisplayTimeFormatter("en", "browser", "Europe/Moscow")
   const series = [{
-    ...line("memory", "%", "percent", [{ segmentId: "a", timestamp, value: 41.729068244136855 }]),
+    ...line("memory", "%", "percent", [
+      { segmentId: "a", timestamp, value: 41.729068244136855 },
+      { segmentId: "a", timestamp: timestamp + 10_000_000, value: 41.729068244136855 },
+    ]),
     value: chart.humanPercent,
   }]
   const frame = chart.alignRecordedSeries(series)
+  assert.equal(chart.chartSecondsUseful([timestamp], time), false)
+  assert.equal(chart.compactChartTime(timestamp, time, false), "08:30")
+  assert.equal(chart.chartSecondsUseful(frame.timestamps, time), true)
+  assert.equal(chart.compactChartTime(timestamp, time, true), "08:30:45")
   assert.equal(chart.exactReadings(frame, series, timestamp, "en", time).values[0].output, "41.7%")
   assert.match(chart.chartSummary(series, frame, timestamp, timestamp + 3_600_000_000, "en", time), /41\.7%…41\.7%/)
   assert.match(chart.sampleText(series, frame, timestamp, "en", time), /08:30:45; memory \(%\): 41\.7%/)
+  assert.doesNotMatch(chart.sampleText(series, frame, timestamp, "en", time), /GMT|UTC/)
   assert.doesNotMatch(chart.sampleText(series, frame, timestamp, "en", time), /41\.729068|\.000/)
   const ru = chart.createDisplayTimeFormatter("ru", "browser", "Europe/Moscow")
   assert.match(chart.sampleText(series, frame, timestamp, "ru", ru), /41,7 %/)
+})
+
+test("the built-in legend stays hidden and chart titles use portal help metadata", async () => {
+  const source = await readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8")
+  const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8")
+  assert.match(source, /legend: \{ show: false \}/)
+  assert.match(source, /className="chart-series-labels"/)
+  assert.match(source, /<LabelHelp helpKey=\{line\.helpKey\}/)
+  assert.match(styles, /\.chart-series-labels \{[^}]*overflow-x: auto;/)
+  assert.match(styles, /\.chart-series-labels \.help-dot \{[^}]*flex: 0 0 auto;/)
 })

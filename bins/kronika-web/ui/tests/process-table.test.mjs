@@ -4,7 +4,7 @@ import test from "node:test"
 
 import { importModule, registryPlugin } from "./import-module.mjs"
 
-const helpers = await importModule('export { LENS_FIELDS, PROCESS_SUMMARY_FIELDS, PROCESS_SUMMARY_METRICS, processSummaryFormat, processSummaryOutput, processSummaryPoints, processSummaryReducer, processSummaryUnit } from "../src/process-table.tsx"', { plugins: [registryPlugin([])] })
+const helpers = await importModule('export { LENS_FIELDS, PROCESS_SUMMARY_FIELDS, PROCESS_SUMMARY_METRICS, processSummaryFormat, processSummaryOutput, processSummaryPoints, processSummaryReducer, processSummaryUnit } from "../src/process-table.tsx"; export { sticky, stickyOffsets } from "../src/entity-table.tsx"', { plugins: [registryPlugin([])] })
 const { LENS_FIELDS } = helpers
 
 test("process lenses keep identity first, lens metrics next, and state last", () => {
@@ -23,6 +23,23 @@ test("process lenses keep identity first, lens metrics next, and state last", ()
     "pid", "command", "read_bytes", "write_bytes", "syscr", "syscw", "rchar", "wchar",
     "cancelled_write_bytes", "blkdelay_ticks", "state",
   ])
+})
+
+test("process sticky headers share live offsets and stacking classes with their cells", async () => {
+  const offsets = helpers.stickyOffsets([
+    { id: "pid", size: 86, sticky: true },
+    { id: "command", size: 344, sticky: true },
+    { id: "rmem_kb", size: 142, sticky: false },
+  ])
+  assert.deepEqual([...offsets], [["pid", 0], ["command", 86]])
+  assert.equal(helpers.sticky({ sticky: "sticky-pid" }, true), "entity-header-cell entity-sticky sticky-pid")
+  assert.equal(helpers.sticky({ numeric: true, sticky: "sticky-command" }, false), "entity-cell align-right entity-sticky sticky-command")
+  const source = await readFile(new URL("../src/entity-table.tsx", import.meta.url), "utf8")
+  const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8")
+  assert.equal(source.match(/left: pinnedLeft\.get\(/g)?.length, 2)
+  assert.match(styles, /\.entity-sticky \{[^}]*position: sticky;[^}]*z-index: 12;/)
+  assert.match(styles, /\.entity-header-cell\.entity-sticky \{[^}]*z-index: 40;/)
+  assert.match(styles, /@media \(max-width: 760px\)[\s\S]*\.sticky-command \{[^}]*position: static;/)
 })
 
 test("all sixteen process cards use the exact complete-set history projection", async () => {

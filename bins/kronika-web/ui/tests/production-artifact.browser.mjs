@@ -1064,9 +1064,9 @@ test("the production artifact preserves wire keys and exact finding page state",
       last.focus()
       last.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Tab" }))
     })()`)
-    assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector('.metric-history [role="dialog"] .chart-expand')`), true)
+    assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector('.metric-history [role="dialog"] .chart-series-labels .help-dot')`), true)
     await cdp.evaluate(`(() => {
-      const first = document.querySelector('.metric-history [role="dialog"] .chart-expand')
+      const first = document.querySelector('.metric-history [role="dialog"] .chart-series-labels .help-dot')
       first.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Tab", shiftKey: true }))
     })()`)
     assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector('.metric-history [role="dialog"] input.chart-navigator')`), true)
