@@ -1,9 +1,9 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { importFile } from "./import-module.mjs"
+import { importFile, registryPlugin } from "./import-module.mjs"
 
-const detail = await importFile("../src/detail.tsx")
+const detail = await importFile("../src/detail.tsx", { plugins: [registryPlugin([])] })
 
 function row(timestamp, values, segmentId = "segment-a", ordinal = "0") {
   return { segmentId, typeId: "1100001", ordinal, timestamp, values }
