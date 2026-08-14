@@ -2292,6 +2292,373 @@ test("snapshot request targets hide rejected replacements until retry succeeds",
   }
 })
 
+test("production health keeps staggered components on one stored evaluation", { timeout: 60_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const authState = { valid: true }
+  const page = { errors: [], external: [], responses: [] }
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/catalog") return ndjson(response, [])
+    if (url.pathname === "/api/hour") {
+      if (url.searchParams.has("section")) return ndjson(response, [])
+      return ndjson(response, healthContractTimeline(Number(url.searchParams.get("from") ?? HOUR)))
+    }
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
+      const sections = url.searchParams.getAll("section")
+      return ndjson(response, sections.includes("instance_metadata")
+        ? healthMetadataRecords(Number(url.searchParams.get("at") ?? AT))
+        : productionSystemSnapshotRecords())
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("health contract server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "kronika-health-contract-browser-"))
+  const browser = launchBrowser(profile)
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1024 })
+    await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
+
+    const readAt = async (hour, fragments) => {
+      const evaluation = hour + 1_800_000_000
+      await cdp.send("Page.navigate", { url: `${origin}/?at=${evaluation}&view=host.system` })
+      await cdp.waitFor(`document.querySelector('.lane-primary .lane-reading') !== null`, "the health contract reading", 15_000)
+      await cdp.waitFor(`(() => {
+        const text = document.querySelector('.lane-primary .lane-reading')?.textContent ?? ''
+        return ${JSON.stringify(fragments)}.every((fragment) => text.includes(fragment))
+      })()`, "the expected health component values", 15_000)
+      const reading = await cdp.evaluate(`document.querySelector('.lane-primary .lane-reading').textContent`)
+      await cdp.evaluate(`(() => {
+        const plot = document.querySelector('[data-testid="hour-timeline"] .u-over')
+        const bounds = plot.getBoundingClientRect()
+        const clientX = bounds.left + (${evaluation} - ${hour}) / ${HOUR_US} * bounds.width
+        const clientY = bounds.top + bounds.height / 2
+        plot.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX, clientY }))
+        plot.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX, clientY }))
+      })()`)
+      await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] .chart-tooltip') !== null`, "the health contract tooltip")
+      const tooltip = await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] .chart-tooltip').textContent`)
+      return { reading, tooltip }
+    }
+
+    const fresh = await readAt(HOUR, ["Overall 70%", "OS 80%", "PostgreSQL 90%"])
+    for (const output of [fresh.reading, fresh.tooltip]) {
+      assert.match(output, /Overall[^\d]*70%/)
+      assert.match(output, /OS[^\d]*80%/)
+      assert.match(output, /PostgreSQL[^\d]*90%/)
+    }
+
+    const staleHour = HOUR + HOUR_US
+    const stale = await readAt(staleHour, ["Overall —", "OS 80%", "PostgreSQL —"])
+    for (const output of [stale.reading, stale.tooltip]) {
+      assert.match(output, /Overall[^\d]*—/)
+      assert.match(output, /OS[^\d]*80%/)
+      assert.match(output, /PostgreSQL[^\d]*—/)
+      assert.doesNotMatch(output, /PostgreSQL[^\d]*90%/)
+    }
+
+    const disabledHour = HOUR + 2 * HOUR_US
+    const disabled = await readAt(disabledHour, ["Overall 84%", "OS 84%"])
+    for (const output of [disabled.reading, disabled.tooltip]) {
+      assert.match(output, /Overall[^\d]*84%/)
+      assert.match(output, /OS[^\d]*84%/)
+      assert.doesNotMatch(output, /PostgreSQL/)
+    }
+    assert.equal(await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[1].disabled`), true)
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+  } finally {
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+  }
+})
+
+test("production System projections show exact CPU memory and device readings", { timeout: 60_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const authState = { valid: true }
+  const requests = []
+  const page = { errors: [], external: [], responses: [] }
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    requests.push(requestRecord(request, url))
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/catalog") return ndjson(response, [])
+    if (url.pathname === "/api/hour") {
+      const section = url.searchParams.get("section")
+      return ndjson(response, section === null ? productionSystemTimeline() : productionSystemHistoryRecords(url))
+    }
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, productionSystemSnapshotRecords())
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("System contract server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "kronika-system-contract-browser-"))
+  const browser = launchBrowser(profile)
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width: 1280 })
+    await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=host.system` })
+    await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"] strong')?.textContent === "0.9 cores"`, "the exact CPU projection", 15_000)
+
+    const card = async (id) => cdp.evaluate(`document.querySelector('[data-testid="system-metric-${id}"] strong')?.textContent ?? null`)
+    assert.deepEqual({
+      available: await card("cpu_capacity"),
+      iowait: await card("cpu_iowait"),
+      steal: await card("cpu_steal"),
+      system: await card("cpu_system"),
+      used: await card("cpu_used_cores"),
+      user: await card("cpu_user"),
+    }, { available: "2 cores", iowait: "5%", steal: "5%", system: "10%", used: "0.9 cores", user: "25%" })
+
+    await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-cpu-composition"] .u-over') !== null`, "the CPU contract chart")
+    await waitForRequests(() => requests.some(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("section") === "os_cpu"))
+    await delay(100)
+    await hoverContractChart(cdp, "system-cpu-composition")
+    const cpu = await cdp.evaluate(`document.querySelector('[data-testid="system-cpu-composition"] .chart-tooltip').textContent`)
+    for (const expected of [
+      /Host CPU used[^\d]*0\.9 cores/, /Host logical CPUs[^\d]*2 cores/, /Host user CPU[^\d]*25%/,
+      /Host system CPU[^\d]*10%/, /Host I\/O wait[^\d]*5%/, /Host stolen CPU[^\d]*5%/,
+    ]) assert.match(cpu, expected)
+
+    const memory = {
+      anon: await card("mem_anon"), cache: await card("mem_file_cache"), free: await card("mem_free"),
+      other: await card("mem_other"), reclaimable: await card("mem_s_reclaimable"), total: await card("mem_total"),
+      unreclaimable: await card("mem_s_unreclaim"),
+    }
+    assert.deepEqual(memory, {
+      anon: "256 KiB", cache: "192 KiB", free: "128 KiB", other: "352 KiB",
+      reclaimable: "64 KiB", total: "1 MiB", unreclaimable: "32 KiB",
+    })
+    assert.equal(256 + 192 + 64 + 32 + 128 + 352, 1024)
+    await cdp.evaluate(`document.querySelector('[data-testid="system-metric-mem_anon"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-memory-composition"] .u-over') !== null`, "the memory contract chart")
+    await waitForRequests(() => requests.some(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("section") === "os_meminfo"))
+    await delay(100)
+    await hoverContractChart(cdp, "system-memory-composition")
+    const memoryTooltip = await cdp.evaluate(`document.querySelector('[data-testid="system-memory-composition"] .chart-tooltip').textContent`)
+    for (const expected of [
+      /Host memory capacity[^\d]*1\.02K KiB/, /Anonymous memory[^\d]*256 KiB/, /File cache[^\d]*192 KiB/,
+      /Reclaimable slab[^\d]*64 KiB/, /Unreclaimable slab[^\d]*32 KiB/, /Free memory[^\d]*128 KiB/,
+      /Other host memory[^\d]*352 KiB/,
+    ]) assert.match(memoryTooltip, expected)
+
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="system-os_diskstats"] .entity-row').length === 2`, "the two projected devices", 15_000)
+    const devices = await cdp.evaluate(`(() => {
+      const table = document.querySelector('[data-testid="system-os_diskstats"]')
+      const headers = [...table.querySelectorAll('[role="columnheader"]')].map((cell) => cell.querySelector('.entity-sort span')?.textContent.trim() ?? '')
+      return [...table.querySelectorAll('.entity-row')].map((row) => Object.fromEntries(
+        [...row.querySelectorAll('[role="cell"]')].map((cell, index) => [headers[index], cell.textContent.trim()]),
+      ))
+    })()`)
+    const sda = devices.find((device) => device.Device === "sda")
+    const sdb = devices.find((device) => device.Device === "sdb")
+    assert.equal(sda["Major:minor"], "8:0")
+    assert.equal(sda["Average read latency"], "5 ms")
+    assert.equal(sda["Average write latency"], "7 ms")
+    assert.equal(sdb["Major:minor"], "8:1")
+    assert.equal(sdb["Average read latency"], "—")
+    assert.equal(sdb["Average write latency"], "—")
+
+    await cdp.evaluate(`([...document.querySelectorAll('[data-testid="system-os_diskstats"] .entity-row')].find((row) => row.textContent.includes('sda'))).click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-os_diskstats-history"]') !== null`, "the device detail chart")
+    await cdp.evaluate(`([...document.querySelectorAll('[data-testid="system-os_diskstats-history"] .system-history-selector button')].find((button) => button.textContent.includes('Average read latency'))).click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-os_diskstats-history"] .chart-current')?.textContent === "5 ms"`, "the selected read-latency value", 15_000)
+    await hoverContractChart(cdp, "system-os_diskstats-history")
+    const diskTooltip = await cdp.evaluate(`document.querySelector('[data-testid="system-os_diskstats-history"] .chart-tooltip').textContent`)
+    assert.match(diskTooltip, /Average read latency[^\d]*5 ms/)
+    const diskHistory = requests.map(({ path, query }) => ({ path, query: new URLSearchParams(query) }))
+      .find(({ path, query }) => path === "/api/hour" && query.get("section") === "os_diskstats" && query.getAll("field").includes("read_time_ms"))
+    assert.notEqual(diskHistory, undefined)
+    assert.equal(diskHistory.query.get("where.major"), "8")
+    assert.equal(diskHistory.query.get("where.minor"), "0")
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+  } finally {
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+  }
+})
+
+function healthContractTimeline(hour) {
+  const evaluation = hour + 1_800_000_000
+  const scenario = Math.round((hour - HOUR) / HOUR_US)
+  const postgresql = scenario !== 2
+  const postgresAt = evaluation - (scenario === 0 ? 5_000_000 : 15_000_000)
+  const health = scenario === 2
+    ? [
+        { record: "point", type_id: "0", series: "os_health", ts: String(evaluation), identity: {}, value: 84 },
+        { record: "point", type_id: "0", series: "overall_health", ts: String(evaluation), identity: {}, value: 84 },
+      ]
+    : [
+        { record: "point", type_id: "0", series: "postgres_health", ts: String(postgresAt), identity: {}, value: 90 },
+        { record: "point", type_id: "0", series: "os_health", ts: String(evaluation), identity: {}, value: 80 },
+        { record: "point", type_id: "0", series: "overall_health", ts: String(evaluation), identity: {}, value: scenario === 0 ? 70 : null },
+      ]
+  return [
+    { record: "hour", from: String(hour), to: String(hour + HOUR_US - 1), available_hours: [HOUR, HOUR + HOUR_US, HOUR + 2 * HOUR_US].map(String) },
+    {
+      record: "catalog", from: String(hour), to: String(hour + HOUR_US - 1),
+      source_families: [{ name: "postgresql", configured: postgresql, present: postgresql }],
+    },
+    {
+      record: "finished_segment", id: SEGMENT, min_ts: String(hour), max_ts: String(evaluation),
+      sections: [
+        { logical_name: "os_cpu", physical_name: "os_cpu", type_id: "1102001", implementation: "linux", source_family: "system", rows: "3", bytes: "384" },
+        ...(postgresql ? [{ logical_name: "pg_stat_activity", physical_name: "pg_stat_activity", type_id: "1001003", implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256" }] : []),
+      ],
+    },
+    { record: "index", segment: { id: SEGMENT }, logical_name: "health", checksum: null },
+    ...health,
+  ]
+}
+
+function healthMetadataRecords(at) {
+  return [
+    {
+      record: "layout", rates: [],
+      layout: { type_id: "1000001", logical_name: "instance_metadata", columns: [{ name: "postgresql_interval_seconds" }] },
+    },
+    { record: "row", type_id: "1000001", ordinal: "0", timestamp: String(at), values: [10] },
+  ]
+}
+
+function productionSystemTimeline() {
+  return [
+    { record: "hour", from: String(HOUR), to: String(HOUR + HOUR_US - 1), available_hours: [String(HOUR)] },
+    {
+      record: "catalog", from: String(HOUR), to: String(HOUR + HOUR_US - 1),
+      source_families: [{ name: "postgresql", configured: false, present: false }],
+    },
+    {
+      record: "finished_segment", id: SEGMENT, min_ts: String(HOUR), max_ts: String(AT),
+      sections: [
+        { logical_name: "os_cpu", physical_name: "os_cpu", type_id: "1102001", implementation: "linux", source_family: "system", rows: "6", bytes: "768" },
+        { logical_name: "os_meminfo", physical_name: "os_meminfo", type_id: "1104001", implementation: "linux", source_family: "system", rows: "2", bytes: "256" },
+        { logical_name: "os_diskstats", physical_name: "os_diskstats", type_id: "1108001", implementation: "linux", source_family: "system", rows: "4", bytes: "512" },
+      ],
+    },
+    { record: "index", segment: { id: SEGMENT }, logical_name: "health", checksum: null },
+    { record: "point", type_id: "0", series: "os_health", ts: String(AT), identity: {}, value: 88 },
+    { record: "point", type_id: "0", series: "overall_health", ts: String(AT), identity: {}, value: 88 },
+  ]
+}
+
+function productionSystemSnapshotRecords(at = AT) {
+  const cpuColumns = ["ts", "cpu_id", "user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "scope"]
+  const cpuRates = ["user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal"]
+  const memoryColumns = ["ts", "mem_available", "mem_total", "mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim", "swap_free", "swap_total"]
+  const diskColumns = ["ts", "major", "minor", "device", "reads", "writes", "read_sectors", "write_sectors", "read_time_ms", "write_time_ms", "io_in_progress", "io_time_ms", "io_weighted_time_ms", "scope"]
+  const diskRates = ["reads", "writes", "read_sectors", "write_sectors", "read_time_ms", "write_time_ms", "io_time_ms", "io_weighted_time_ms"]
+  return [
+    { record: "layout", rates: cpuRates, layout: { type_id: "1102001", logical_name: "os_cpu", columns: cpuColumns.map((name) => ({ name })) } },
+    row("1102001", "cpu-all", [String(at), -1, 20, 5, 10, 50, 5, 2, 3, 5, 0], at),
+    row("1102001", "cpu-0", [String(at), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], at),
+    row("1102001", "cpu-1", [String(at), 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], at),
+    { record: "layout", rates: [], layout: { type_id: "1104001", logical_name: "os_meminfo", columns: memoryColumns.map((name) => ({ name })) } },
+    row("1104001", "memory", [String(at), 512, 1024, 128, 128, 64, 256, 64, 32, 64, 128], at),
+    { record: "layout", rates: diskRates, layout: { type_id: "1108001", logical_name: "os_diskstats", columns: diskColumns.map((name) => ({ name })) } },
+    row("1108001", "disk-8-0", [String(at), 8, 0, "sda", 4, 2, 16, 24, 20, 14, 1, 300, 600, 0], at),
+    row("1108001", "disk-8-1", [String(at), 8, 1, "sdb", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], at),
+  ]
+}
+
+function productionSystemHistoryRecords(url) {
+  const section = url.searchParams.get("section")
+  const before = AT - 5_000_000
+  if (section === "os_cpu") {
+    const columns = ["ts", "cpu_id", "user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "scope"]
+    return [
+      { record: "series_segment", segment: { id: SEGMENT } },
+      { record: "layout", rates: [], layout: { type_id: "1102001", logical_name: section, columns: columns.map((name) => ({ name })) } },
+      row("1102001", "cpu-all-before", [String(before), -1, 100, 20, 50, 500, 10, 5, 5, 10, 0], before),
+      row("1102001", "cpu-0-before", [String(before), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], before),
+      row("1102001", "cpu-1-before", [String(before), 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], before),
+      row("1102001", "cpu-all-current", [String(AT), -1, 120, 25, 60, 550, 15, 7, 8, 15, 0], AT),
+      row("1102001", "cpu-0-current", [String(AT), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], AT),
+      row("1102001", "cpu-1-current", [String(AT), 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], AT),
+    ]
+  }
+  if (section === "os_meminfo") {
+    const columns = ["ts", "mem_available", "mem_total", "mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim", "swap_free", "swap_total"]
+    const values = [512, 1024, 128, 128, 64, 256, 64, 32, 64, 128]
+    return [
+      { record: "series_segment", segment: { id: SEGMENT } },
+      { record: "layout", rates: [], layout: { type_id: "1104001", logical_name: section, columns: columns.map((name) => ({ name })) } },
+      row("1104001", "memory-before", [String(before), ...values], before),
+      row("1104001", "memory-current", [String(AT), ...values], AT),
+    ]
+  }
+  if (section === "os_diskstats") {
+    const columns = ["ts", "major", "minor", "device", "reads", "writes", "read_sectors", "write_sectors", "read_time_ms", "write_time_ms", "io_in_progress", "io_time_ms", "io_weighted_time_ms", "scope"]
+    const major = Number(url.searchParams.get("where.major") ?? 8)
+    const minor = Number(url.searchParams.get("where.minor") ?? 0)
+    const current = minor === 0
+      ? [String(AT), major, minor, "sda", 104, 202, 1016, 2024, 1020, 514, 1, 1300, 2600, 0]
+      : [String(AT), major, minor, "sdb", 100, 200, 1000, 2000, 1000, 500, 0, 1000, 2000, 0]
+    return [
+      { record: "series_segment", segment: { id: SEGMENT } },
+      { record: "layout", rates: [], layout: { type_id: "1108001", logical_name: section, columns: columns.map((name) => ({ name })) } },
+      row("1108001", "disk-before", [String(before), major, minor, minor === 0 ? "sda" : "sdb", 100, 200, 1000, 2000, 1000, 500, 0, 1000, 2000, 0], before),
+      row("1108001", "disk-current", current, AT),
+    ]
+  }
+  return []
+}
+
+async function hoverContractChart(cdp, testId) {
+  await cdp.evaluate(`(() => {
+    const plot = document.querySelector('[data-testid="${testId}"] .u-over')
+    const bounds = plot.getBoundingClientRect()
+    const clientX = bounds.right - 1
+    const clientY = bounds.top + bounds.height / 2
+    plot.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX, clientY }))
+    plot.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX, clientY }))
+  })()`)
+  await cdp.waitFor(`document.querySelector('[data-testid="${testId}"] .chart-tooltip') !== null`, `${testId} tooltip`)
+}
+
 function processSummaryRecords(hour, count, processes) {
   const fields = [
     "processes", "threads", "runnable", "postgresql", "user_cores", "system_cores", "run_delay_ms_per_second", "context_switches_per_second",
