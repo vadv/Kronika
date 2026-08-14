@@ -3669,6 +3669,27 @@ fn relation_group_history_finds_the_requested_database_predecessor() {
 }
 
 #[test]
+fn relation_group_history_ignores_unrelated_segment_minimums_when_ordering_samples() {
+    let mut fixture = Fixture::new();
+    fixture.append_named_table_snapshots(&[(100, 1, 11, 10, "db", "public", "orders")]);
+    fixture.finish_and_continue(SEGMENT_ID + 1_000);
+    fixture.append_log_error(50);
+    fixture.append_named_table_snapshots(&[(200, 1, 11, 30, "db", "public", "orders")]);
+    fixture.finish();
+
+    let records = stream(fixture.prepare(
+        "/api/hour?from=200&to=200&section=pg_stat_user_tables&group=database&field=seq_scan&where.datid=1",
+        None,
+    ))
+    .expect("database history with an unrelated older row");
+    let rows = relation_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"]["seq_scan"], serde_json::json!(200_000.0));
+    assert_eq!(rows[0]["sample_from"], "100");
+    assert_eq!(rows[0]["sample_to"], "200");
+}
+
+#[test]
 fn relation_group_history_composes_split_logical_snapshots_across_segments() {
     let mut fixture = Fixture::new();
     fixture.append_dml_table_snapshots(&[(100, 1, 11, [0, 0, 0, 0], "db", "public", "first")]);

@@ -1878,7 +1878,7 @@ fn history_segments(
             .into_values()
             .flat_map(|(_timestamp, segments)| segments),
     );
-    selected.sort_unstable_by_key(|segment| (segment.min_ts(), segment.id()));
+    selected.sort_unstable_by_key(SegmentRef::id);
     selected.dedup_by_key(|segment| segment.id());
     Ok(selected)
 }
