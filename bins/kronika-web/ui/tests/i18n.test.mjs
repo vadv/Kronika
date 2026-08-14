@@ -112,10 +112,10 @@ test("plan copy identifies unavailable values and vadv attribution", async () =>
   assert.equal(russian["pg.field.transaction_duration_ms.label"], "Время транзакции")
   assert.equal(english["pg.wal_storage.label"], "Size of files in pg_wal")
   assert.equal(english["pg.wal_storage.history"], "Size of files in pg_wal over the hour")
-  assert.equal(english["pg.wal_storage.help"], "Total size of regular files visible in pg_wal at the selected snapshot.")
+  assert.equal(english["pg.wal_storage.help"], "Total size of regular files visible in pg_wal at the cursor.")
   assert.equal(russian["pg.wal_storage.label"], "Размер файлов в pg_wal")
   assert.equal(russian["pg.wal_storage.history"], "Размер файлов в pg_wal за час")
-  assert.equal(russian["pg.wal_storage.help"], "Суммарный размер обычных файлов, видимых в pg_wal на выбранном снимке.")
+  assert.equal(russian["pg.wal_storage.help"], "Суммарный размер обычных файлов, видимых в pg_wal у курсора.")
   assert.match(english["pg.field.queryid_stat_statements.help"], /vadv-only.*last attributed.*not an exact join key/)
   assert.match(russian["pg.field.queryid_stat_statements.help"], /только в vadv.*последнего запроса.*связанного.*не точный ключ соединения/)
 })
@@ -163,12 +163,12 @@ test("dense-table help is factual, concise, and complete in both locales", async
     }
   }
 
-  assert.match(english["pg.field.calls_per_second.help"], /reset-safe.*elapsed seconds.*selected interval.*calls\/s/i)
+  assert.match(english["pg.field.calls_per_second.help"], /reset-safe.*interval duration.*calls\/s/i)
   assert.match(english["pg.field.execution_ms_per_second.help"], /wall-clock second.*exceed 1000.*overlap/i)
   assert.match(english["pg.field.mean_exec_ms_per_call.help"], /execution-time increase.*calls increase.*unavailable.*no calls/i)
-  assert.match(english["pg.field.rows_per_second.help"], /pg_stat_statements.*elapsed seconds.*returned or affected/i)
+  assert.match(english["pg.field.rows_per_second.help"], /pg_stat_statements.*interval duration.*returned or affected/i)
   assert.equal(english["pg.field.statement_database.help"], "Database associated with this physical statement entry.")
-  assert.match(russian["pg.field.calls_per_second.help"], /прирост.*длительность выбранного интервала.*вызовах\/с/i)
+  assert.match(russian["pg.field.calls_per_second.help"], /прирост.*длительность интервала.*вызовах\/с/i)
 })
 
 test("obsolete status and internal collection copy stay out of the UI", async () => {
