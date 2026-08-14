@@ -3,7 +3,8 @@ import { Copy, X } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 
 import { acceptResponse, loadSeries, loadSnapshot, type DataRow, type HourData } from "./api"
-import { ChartOnly } from "./chart-visibility"
+import { ChartOnly, useChartsVisible } from "./chart-visibility"
+import { useDetailDismiss } from "./detail-dismiss"
 import { useDisplayTime } from "./display-time-context"
 import { EntityTable, type EntityColumn, type TableOrder } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
@@ -146,6 +147,8 @@ function RelationLenses({ active, onLens, section, t }: { readonly active: Relat
 }
 
 function RelationDetail({ cursor, hour, lens, locale, onClose, onCursor, onNavigate, rateFields, row, t }: { readonly cursor: number; readonly hour: number; readonly lens: RelationLens; readonly locale: Locale; readonly onClose: () => void; readonly onCursor: (timestamp: number) => void; readonly onNavigate: (navigation: RelationNavigation) => void; readonly rateFields: readonly string[]; readonly row: DataRow; readonly t: Translate }) {
+  const chartsVisible = useChartsVisible()
+  const detail = useDetailDismiss(onClose, relationRowKey(row))
   const group = row.relation?.group ?? "object"
   const object = group === "object"
   const definitionTarget = useMemo(() => object && row.logicalName === "pg_stat_user_indexes" ? relationDetailTarget(row) : null, [object, row])
@@ -175,17 +178,17 @@ function RelationDetail({ cursor, hour, lens, locale, onClose, onCursor, onNavig
   }, [definitionTarget, row])
   useEffect(() => {
     setHistoryRows([])
-    if (historyFields.length === 0) return
+    if (!chartsVisible || historyFields.length === 0) return
     const controller = new AbortController()
     acceptResponse(loadSeries(hour, row.logicalName, historyFilters, historyFields, controller.signal, object ? row.typeId : undefined, object ? undefined : group), controller.signal, setHistoryRows)
     return () => controller.abort()
-  }, [group, historyFields, historyFilters, hour, object, row.logicalName, row.timestamp, row.typeId])
+  }, [chartsVisible, group, historyFields, historyFilters, hour, object, row.logicalName, row.timestamp, row.typeId])
   const definition = exact ? rawText(value(exact, "indexdef")) : null
   const linked = linkedRelation(row)
   const historyColumn = chartColumns.find(({ field }) => field === historyField)
   const history = useMemo(() => historyColumn === undefined ? [] : relationMetricHistory(historyRows, historyColumn, group), [group, historyColumn, historyRows])
   const drill = relationDrill(row)
-  return <aside className="pg-detail" data-testid="pg-relation-detail">
+  return <aside className="pg-detail" data-testid="pg-relation-detail" ref={detail}>
     <header><h2>{relationRowLabel(row)}</h2><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
     {linked !== null && <div className="lens-tabs"><button data-testid="pg-relation-link" onClick={() => onNavigate(linked)} type="button">{t(row.logicalName === "pg_stat_user_tables" ? "pg.relation.indexes" : "pg.relation.table")}</button></div>}
     {drill !== null && <div className="lens-tabs"><button data-testid="pg-relation-drill" onClick={() => onNavigate(drill)} type="button">{t(row.relation?.group === "database" ? "pg.relation.level.schema" : row.logicalName === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}</button></div>}

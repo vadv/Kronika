@@ -28,7 +28,7 @@ const TEST_REGISTRY = [
   layout("1020001", "pg_wal_storage", [], ["ts", "wal_files_bytes"]),
 ]
 const helpers = await importModule(
-  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, postgresMetricHistory, PROGRESS_VACUUM_FIELDS, progressVacuumColumns, registryCardFields, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows, walStoragePoints } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, PROGRESS_VACUUM_FIELDS, progressVacuumColumns, registryCardFields, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows, walStoragePoints } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
   { plugins: [registryPlugin(TEST_REGISTRY)] },
 )
 
@@ -294,22 +294,40 @@ test("Activity history is PID-only and loads the complete selected hour", async 
   assert.equal(helpers.sameEntity(selected, activityRow("4", { pid: 43 }), "pg_stat_activity"), false)
   assert.equal(helpers.sameEntity(activityRow("5", {}), activityRow("6", {}), "pg_stat_activity"), false)
 
+  const column = helpers.ACTIVITY_COLUMNS.find(({ field }) => field === "query_duration_ms")
+  assert.ok(column)
+  const request = helpers.postgresMetricHistoryRequest(selected, "pg_stat_activity", column)
+  assert.deepEqual(request.fields, ["pid", "state", "query_start"])
+  assert.deepEqual(request.filters, { pid: "42" })
+  assert.equal(request.fields.includes("backend_start"), false)
+  assert.deepEqual(
+    helpers.postgresMetricHistorySamples([
+      differentStart,
+      { ...projected, typeId: "1001004" },
+      activityRow("4", { pid: 43, state: "active", query_start: "11000000" }, 13_000_000),
+    ], selected, "pg_stat_activity", column, request).map(({ value }) => value),
+    [1_500, 2_500],
+  )
+
   const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
-  assert.match(source, /activity \? \["pid", \.\.\.metricFields\] : metricFields/)
-  assert.match(source, /rows\.filter\(\(candidate\) => !activity \|\| sameEntity\(candidate, row, section\)\)/)
-  assert.match(source, /identityFields\(section, row\.typeId\)\.map/)
   assert.match(source, /section === "pg_stat_activity"[^\n]*return \["pid"\]/)
-  assert.match(source, /activity\s*\? loadSeries\(hour, section, filters, fields, controller\.signal\)/)
+  assert.match(source, /section === "pg_stat_activity"\s*\n\s*\? loadSeries\(hour, section, request\.filters, request\.fields, controller\.signal\)/)
   assert.doesNotMatch(source, /activity \? \["backend_start"|\["pid", "backend_start"\]/)
 })
 
-test("Activity query and transaction histories keep the selected value and later samples", () => {
+test("Activity relative-duration histories keep the selected value and later samples", () => {
   const rows = [
-    activityRow("1", { pid: 274126, state: "active", query_start: "9500000", xact_start: "8000000" }, 10_000_000),
-    activityRow("2", { pid: 274126, state: "active", query_start: "9500000", xact_start: "8000000" }, 12_000_000),
+    activityRow("1", { backend_start: "1000000", pid: 274126, state: "active", state_change: "9000000", query_start: "9500000", xact_start: "8000000" }, 10_000_000),
+    activityRow("2", { backend_start: "1000000", pid: 274126, state: "active", state_change: "9000000", query_start: "9500000", xact_start: "8000000" }, 12_000_000),
   ]
+  assert.deepEqual(helpers.activityDurationHistory(rows, "backend_age_ms").map(({ timestamp, value }) => [timestamp, value]), [
+    [10_000_000, 9_000], [12_000_000, 11_000],
+  ])
   assert.deepEqual(helpers.activityDurationHistory(rows, "query_duration_ms").map(({ timestamp, value }) => [timestamp, value]), [
     [10_000_000, 500], [12_000_000, 2_500],
+  ])
+  assert.deepEqual(helpers.activityDurationHistory(rows, "state_duration_ms").map(({ timestamp, value }) => [timestamp, value]), [
+    [10_000_000, 1_000], [12_000_000, 3_000],
   ])
   assert.deepEqual(helpers.activityDurationHistory(rows, "transaction_duration_ms").map(({ timestamp, value }) => [timestamp, value]), [
     [10_000_000, 2_000], [12_000_000, 4_000],
@@ -409,7 +427,7 @@ test("dense PostgreSQL columns and the Plans tab stay available by section", asy
   assert.match(source, /serverSorted=\{dense\}/)
   assert.match(source, /onNearEnd=\{densePageState === "idle" && canLoadMore \? onLoadMore : undefined\}/)
   assert.match(source, /densePageState === "error" \? onRetry : onLoadMore/)
-  assert.match(source, /loadSeries\(hour, section, filters, fields, controller\.signal, row\.typeId\)/)
+  assert.match(source, /loadSeries\(hour, section, request\.filters, request\.fields, controller\.signal, row\.typeId\)/)
   assert.match(source, /\{ section, fields: \[field\], typeId: row\.typeId \}[\s\S]*fullText: true/)
 })
 

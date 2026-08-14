@@ -4,8 +4,12 @@ const ChartVisibility = createContext(true)
 
 export const ChartVisibilityProvider = ChartVisibility.Provider
 
+export function useChartsVisible(): boolean {
+  return useContext(ChartVisibility)
+}
+
 export function ChartOnly({ children }: { readonly children: ReactNode }) {
-  return useContext(ChartVisibility) ? children : null
+  return useChartsVisible() ? children : null
 }
 
 export function loadChartVisibility(storage: Pick<Storage, "getItem">): boolean {

@@ -4,8 +4,9 @@ import { registry } from "kronika:registry"
 
 import type { DataRow, Finding, HourData, SnapshotRows } from "./api"
 import { buildMetricSamples } from "./chart"
-import { ChartOnly } from "./chart-visibility"
+import { ChartOnly, useChartsVisible } from "./chart-visibility"
 import { contextMatches, contextualRows, type EntityContext } from "./entity-context"
+import { useDetailDismiss } from "./detail-dismiss"
 import { createDisplayTimeFormatter, type DisplayTimeFormatter } from "./display-time"
 import { useDisplayTime } from "./display-time-context"
 import { EntityTable, EstimatedRows, unit, type EntityColumn, type TableOrder } from "./entity-table"
@@ -413,15 +414,20 @@ export function walStoragePoints(rows: readonly DataRow[]): readonly ChartPoint[
 }
 
 function WalStorage({ cursor, hour, locale, onCursor, row, t }: { readonly cursor: number; readonly hour: number; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly row: DataRow; readonly t: Translate }) {
+  const chartsVisible = useChartsVisible()
   const [history, setHistory] = useState<readonly ChartPoint[]>(() => walStoragePoints([row]))
   useEffect(() => {
+    if (!chartsVisible) {
+      setHistory(walStoragePoints([row]))
+      return
+    }
     const controller = new AbortController()
     acceptResponse(loadSeries(hour, "pg_wal_storage", {}, ["wal_files_bytes"], controller.signal, row.typeId), controller.signal, (rows) => {
       const points = walStoragePoints(rows)
       setHistory(points.length === 0 ? walStoragePoints([row]) : points)
     })
     return () => controller.abort()
-  }, [hour, row])
+  }, [chartsVisible, hour, row])
   return <ChartOnly><section className="pg-overview-section" data-testid="pg-wal-storage">
     <h2><LabelHelp helpKey="pg.wal_storage.help" labelKey="pg.wal_storage.label" t={t} /></h2>
     <SeriesChart cursor={cursor} format={humanBytes} helpKey="pg.wal_storage.help" hour={hour} labelKey="pg.wal_storage.history" locale={locale} onCursor={onCursor} points={history} scale="nonnegative" t={t} unit="B" />
@@ -475,10 +481,11 @@ export function postgresMetricHistory(rows: readonly DataRow[], column: EntityCo
 }
 
 function usePgMetricHistory(hour: number, row: DataRow | null, field: string | null, column: EntityColumn | undefined): readonly ChartPoint[] | null {
+  const chartsVisible = useChartsVisible()
   const [loaded, setLoaded] = useState<{ readonly field: string; readonly points: readonly ChartPoint[] } | null>(null)
   useEffect(() => {
     setLoaded(null)
-    if (row === null || field === null || column === undefined) return
+    if (!chartsVisible || row === null || field === null || column === undefined) return
     const controller = new AbortController()
     const metadata = registry.find((layout) => layout.typeId === row.typeId)?.columnMetadata
       ?.find(({ name }) => name === field)
@@ -489,7 +496,7 @@ function usePgMetricHistory(hour: number, row: DataRow | null, field: string | n
       setLoaded({ field, points: postgresMetricHistory(rows, column, cumulative, resetField) })
     })
     return () => controller.abort()
-  }, [column, field, hour, row?.logicalName, row?.timestamp, row?.typeId])
+  }, [chartsVisible, column, field, hour, row?.logicalName, row?.timestamp, row?.typeId])
   return loaded?.field === field ? loaded.points : null
 }
 
@@ -657,7 +664,11 @@ function PgDetail({ allRows, columns, cursor, historyField, hour, locale, onClos
   const textField = section === "pg_store_plans" ? "plan" : "query"
   const exactText = useWholeText(row, section, textField)?.trim() || null
   const fields = columns.filter((column) => column.field !== textField)
-  return <aside className="pg-detail" data-testid="pg-detail">
+  const detailIdentity = section === "pg_stat_activity"
+    ? `${section}:${rawText(value(row, "pid")) ?? ""}`
+    : `${section}:${rowKey(row)}`
+  const detail = useDetailDismiss(onClose, detailIdentity)
+  return <aside className="pg-detail" data-testid="pg-detail" ref={detail}>
     <header><div><span>{overview ? t(overviewSectionKey(section)) : section === "pg_stat_progress_vacuum" ? section : t(`pg.section.${sectionName(section)}`)}</span><h2>{detailTitle(row, section, t)}</h2></div><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
     <ChartOnly>{activeMetricField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history">
       <div aria-label={t("system.history")} className="process-history-selector" role="group">{chartColumns.map((column) => <button aria-pressed={activeMetricField === column.field} data-testid={`pg-chart-${column.field}`} key={column.field} onClick={() => setMetricField(column.field)} type="button">{t(column.label)}</button>)}</div>
@@ -675,49 +686,82 @@ export function chartColumnAvailable(section: string, rows: readonly DataRow[], 
   return source !== null && rows.some((row) => Object.hasOwn(row.values, source))
 }
 
+export interface PostgresMetricHistoryRequest {
+  readonly dense: boolean
+  readonly durationField: string | null
+  readonly field: string | null
+  readonly fields: readonly string[]
+  readonly filters: Readonly<Record<string, string>> | null
+  readonly resetField: string | null
+}
+
+export function postgresMetricHistoryRequest(row: DataRow, section: string, column: EntityColumn): PostgresMetricHistoryRequest {
+  const dense = section === "pg_stat_statements" || section === "pg_store_plans"
+  const activity = section === "pg_stat_activity"
+  const durationField = !dense && activity ? activityDurationSource(column.field) : null
+  const field = dense ? null : typeof column.physicalField === "string"
+    ? column.physicalField
+    : column.physicalField?.[row.typeId] ?? column.field
+  const resetField = !dense && column.rate === true && registry.find((layout) => layout.typeId === row.typeId)?.columns.includes("stats_reset") === true
+    ? "stats_reset" : null
+  const metricFields = dense ? denseHistoryFields(row.typeId, column.field)
+    : durationField === null ? uniqueText([field!, resetField]) : durationField === "query_start" ? ["state", durationField] : [durationField]
+  const fields = activity ? ["pid", ...metricFields] : metricFields
+  const identities = identityFields(section, row.typeId).map((name) => [name, rawText(value(row, name))] as const)
+  return {
+    dense,
+    durationField,
+    field,
+    fields,
+    filters: identities.some(([, stored]) => stored === null)
+      ? null
+      : Object.fromEntries(identities as readonly (readonly [string, string])[]),
+    resetField,
+  }
+}
+
+export function postgresMetricHistorySamples(rows: readonly DataRow[], row: DataRow, section: string, column: EntityColumn, request: PostgresMetricHistoryRequest): readonly ChartPoint[] {
+  const activity = section === "pg_stat_activity"
+  const entityHistory = rows.filter((candidate) => !activity || sameEntity(candidate, row, section))
+  if (request.dense) return denseMetricHistory(entityHistory, row.typeId, column)
+  if (request.durationField === null) {
+    if (request.field === null) return []
+    return postgresMetricHistory(entityHistory, { ...column, field: request.field }, column.rate === true, request.resetField ?? undefined)
+  }
+  return activityDurationHistory(entityHistory, column.field as Parameters<typeof activityDurationHistory>[1])
+}
+
 function usePostgresMetricHistory(row: DataRow, section: string, column: EntityColumn | undefined, hour: number): readonly ChartPoint[] | null {
   const dense = section === "pg_stat_statements" || section === "pg_store_plans"
+  const chartsVisible = useChartsVisible()
   const [history, setHistory] = useState<readonly ChartPoint[] | null>(dense ? [] : null)
   useEffect(() => {
     if (column === undefined) {
       setHistory(dense ? [] : null)
       return
     }
-    const activity = section === "pg_stat_activity"
-    const durationField = !dense && activity ? activityDurationSource(column.field) : null
-    const field = dense ? null : typeof column.physicalField === "string"
-      ? column.physicalField
-      : column.physicalField?.[row.typeId] ?? column.field
-    const resetField = !dense && column.rate === true && registry.find((layout) => layout.typeId === row.typeId)?.columns.includes("stats_reset") === true
-      ? "stats_reset" : undefined
-    const metricFields = dense ? denseHistoryFields(row.typeId, column.field)
-      : durationField === null ? uniqueText([field!, resetField ?? null]) : durationField === "query_start" ? ["state", durationField] : [durationField]
-    const fields = activity ? ["pid", ...metricFields] : metricFields
-    if (fields.length === 0) {
+    const request = postgresMetricHistoryRequest(row, section, column)
+    if (!chartsVisible) {
+      setHistory(dense ? [] : null)
+      return
+    }
+    if (request.fields.length === 0) {
       setHistory([])
       return
     }
-    const identities = identityFields(section, row.typeId).map((name) => [name, rawText(value(row, name))] as const)
-    if (identities.some(([, stored]) => stored === null)) {
+    if (request.filters === null) {
       setHistory(null)
       return
     }
     setHistory([])
     const controller = new AbortController()
-    const filters = Object.fromEntries(identities as readonly (readonly [string, string])[])
-    const request = activity
-      ? loadSeries(hour, section, filters, fields, controller.signal)
-      : loadSeries(hour, section, filters, fields, controller.signal, row.typeId)
-    acceptResponse(request, controller.signal, (rows) => {
-      const entityHistory = rows.filter((candidate) => !activity || sameEntity(candidate, row, section))
-      setHistory(dense
-        ? denseMetricHistory(entityHistory, row.typeId, column)
-        : durationField === null
-          ? postgresMetricHistory(entityHistory, { ...column, field: field! }, column.rate === true, resetField)
-          : activityDurationHistory(entityHistory, column.field as Parameters<typeof activityDurationHistory>[1]))
-    })
+    const response = section === "pg_stat_activity"
+      ? loadSeries(hour, section, request.filters, request.fields, controller.signal)
+      : loadSeries(hour, section, request.filters, request.fields, controller.signal, row.typeId)
+    acceptResponse(response, controller.signal,
+      (rows) => setHistory(postgresMetricHistorySamples(rows, row, section, column, request)))
     return () => controller.abort()
-  }, [column, dense, hour, row, section])
+  }, [chartsVisible, column, dense, hour, row, section])
   return history
 }
 

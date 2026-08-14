@@ -379,7 +379,6 @@ export async function loadSeries(
   const from = floorHour(selectedHour)
   const to = from + 3_600_000_000 - 1
   if (bundledFixtureRange() !== null) {
-    const fieldsToKeep = unique([...fields, ...Object.keys(where)])
     const rows: DataRow[] = []
     const fixture = bundledFixtureHour(from)
     if (fixture !== null) rows.push(...(fixture.sections[section] ?? []))
@@ -387,7 +386,7 @@ export async function loadSeries(
       .filter((row) => row.timestamp >= from && row.timestamp <= to)
       .filter((row) => row.typeId === (typeId ?? row.typeId) && fixtureMatches(row, where))
       .filter((row) => group === undefined || row.relation?.group === group)
-      .map((row) => projectFixtureRow(row, fieldsToKeep))
+      .map((row) => projectFixtureRow(row, fields))
   }
   const query = [
     `from=${from}`,
@@ -880,9 +879,7 @@ function fixtureSnapshot(
         to: rows[0]?.timestamp ?? null,
       })
     }
-    const fields = request.fields === undefined
-      ? undefined
-      : unique([...request.fields, ...Object.keys(options.filters ?? {})])
+    const fields = request.fields
     const selected = fields === undefined
       ? rows
       : rows.map((row) => projectFixtureRow(row, fields))

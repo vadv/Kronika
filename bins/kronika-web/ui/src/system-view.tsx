@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react"
 
 import { acceptResponse, fieldNameForLocator, loadSeries, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
 import { buildMetricSamples } from "./chart"
-import { ChartOnly } from "./chart-visibility"
+import { ChartOnly, useChartsVisible } from "./chart-visibility"
 import { contextualRows, type EntityContext } from "./entity-context"
 import { EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
@@ -322,6 +322,7 @@ export function SystemView({
   readonly onFinding: (finding: Finding) => void
   readonly t: Translate
 }) {
+  const chartsVisible = useChartsVisible()
   const available = useMemo(() => SYSTEM_METRICS.map((spec) => ({ points: metricPoints(data, spec), spec }))
     .filter(({ points }) => points.some((point) => point.value !== null && Number.isFinite(point.value))), [data])
   const [selected, setSelected] = useState(available[0]?.spec.id ?? "")
@@ -346,7 +347,7 @@ export function SystemView({
   const requestKey = request === null || selectedMetric === undefined ? null : metricRequestKey(hour, selectedMetric.spec, request)
   const [loadedHistory, setLoadedHistory] = useState<{ readonly key: string; readonly rows: readonly DataRow[] } | null>(null)
   useEffect(() => {
-    if (request === null || requestKey === null || distinctTimes(fallbackPoints) > 1) {
+    if (!chartsVisible || request === null || requestKey === null || distinctTimes(fallbackPoints) > 1) {
       setLoadedHistory(null)
       return
     }
@@ -354,7 +355,7 @@ export function SystemView({
     acceptResponse(loadSeries(hour, request.section, request.where, request.fields, controller.signal), controller.signal,
       (rows) => setLoadedHistory({ key: requestKey, rows }), () => setLoadedHistory(null))
     return () => controller.abort()
-  }, [fallbackPoints, hour, request, requestKey])
+  }, [chartsVisible, fallbackPoints, hour, request, requestKey])
   const selectedPoints = useMemo(() => {
     if (selectedMetric === undefined || loadedHistory?.key !== requestKey) return fallbackPoints
     const loadedPoints = metricHistoryPoints(selectedMetric.spec, loadedHistory.rows)
@@ -462,6 +463,7 @@ function SystemEntityPanel({
   readonly section: string
   readonly t: Translate
 }) {
+  const chartsVisible = useChartsVisible()
   const metricColumns = useMemo(() => chartableEntityColumns(columns), [columns])
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const selectedRow = selectedKey === null ? null : rows.find((row) => entityRowKey(row) === selectedKey) ?? null
@@ -485,7 +487,7 @@ function SystemEntityPanel({
   const requestSection = historyRequest?.section ?? ""
   const requestTypeId = historyRequest?.typeId
   useEffect(() => {
-    if (historyKey === null || requestSection === "" || requestTypeId === undefined) {
+    if (!chartsVisible || historyKey === null || requestSection === "" || requestTypeId === undefined) {
       setHistory(null)
       return
     }
@@ -495,7 +497,7 @@ function SystemEntityPanel({
     acceptResponse(loadSeries(hour, requestSection, where, fields, controller.signal, requestTypeId), controller.signal,
       (loaded) => setHistory({ key: historyKey, rows: loaded }), () => setHistory(null))
     return () => controller.abort()
-  }, [historyKey, hour, requestFields, requestSection, requestTypeId, requestWhere])
+  }, [chartsVisible, historyKey, hour, requestFields, requestSection, requestTypeId, requestWhere])
   const chartRows = history?.key === historyKey ? history.rows : selectedRow === null ? [] : [selectedRow]
   const chartPoints = useMemo(() => selectedColumn === undefined ? [] : entityMetricPoints(chartRows, selectedColumn), [chartRows, selectedColumn])
   const chartMetadata = selectedRow === null || selectedColumn === undefined || selectedColumn.historyFields !== undefined

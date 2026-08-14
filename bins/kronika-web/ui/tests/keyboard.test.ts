@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import { detailEscapeDismisses } from "../src/detail-dismiss.ts"
 import { moveCursor, nearestRecordedTime, orderedRecordedTimes, ownsArrowKeys } from "../src/keyboard.ts"
 
 test("arrows follow exact irregular recorded timestamps", () => {
@@ -41,4 +42,11 @@ test("editing controls retain their arrow keys", () => {
   for (const tag of ["button", "input", "select", "textarea"]) assert.equal(ownsArrowKeys(tag, false), true)
   assert.equal(ownsArrowKeys("div", true), true)
   assert.equal(ownsArrowKeys("div", false), false)
+})
+
+test("detail Escape yields to higher-priority overlays", () => {
+  assert.equal(detailEscapeDismisses("Escape", false, false), true)
+  assert.equal(detailEscapeDismisses("Escape", true, false), false)
+  assert.equal(detailEscapeDismisses("Escape", false, true), false)
+  assert.equal(detailEscapeDismisses("Enter", false, false), false)
 })

@@ -54,6 +54,11 @@ const TEST_REGISTRY = [
     columns: ["ts", "pid", "datname", "state", "query", "backend_start", "xact_start", "query_start", "state_change"],
   },
   {
+    typeId: "1001003",
+    logicalName: "pg_stat_activity",
+    columns: ["ts", "pid", "backend_type", "state", "query_start", "xact_start"],
+  },
+  {
     typeId: "1105001",
     logicalName: "os_loadavg",
     columns: ["ts", "load1", "load5"],
@@ -590,6 +595,21 @@ async function bundledApi() {
   return api
 }
 
+async function activityWireApi() {
+  const api = await importModule(
+    'export { loadSeries } from "../src/api.ts"; export { ACTIVITY_COLUMNS, postgresMetricHistoryRequest, postgresMetricHistorySamples } from "../src/postgres-view.tsx"; export { signInBasic } from "../src/session.ts"',
+    { plugins: [registryPlugin(TEST_REGISTRY)] },
+  )
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(null, { status: 204 })
+  try {
+    await api.signInBasic("test", "test", new AbortController().signal)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+  return api
+}
+
 function ndjson(records: readonly unknown[]): Response {
   return new Response(`${records.map((record) => JSON.stringify(record)).join("\n")}\n`, { status: 200 })
 }
@@ -618,7 +638,7 @@ test("the bundled review fixture answers detail reads without HTTP", async () =>
       new AbortController().signal,
     )
     assert.equal(series.length, 2)
-    assert.deepEqual(series[1]?.values, { read_bytes: 160, pid: 41 })
+    assert.deepEqual(series[1]?.values, { read_bytes: 160 })
     const snapshot = await api.loadSnapshot(
       "segment-a",
       START + 2,
@@ -627,7 +647,7 @@ test("the bundled review fixture answers detail reads without HTTP", async () =>
       undefined,
       { filters: { pid: "7" }, typeId: "1001003", fullText: true },
     )
-    assert.deepEqual(snapshot.activities[0]?.values, { query: "select exact", pid: 7 })
+    assert.deepEqual(snapshot.activities[0]?.values, { query: "select exact" })
     const beforeFirstSample = await api.loadSnapshot(
       "segment-a",
       START,
@@ -975,6 +995,76 @@ test("projected history retains segment provenance and exact type", async () => 
       ["segment-a", "1002002"],
       ["segment-b", "1002002"],
     ])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("Activity history uses its exact production projection and yields numeric durations", async () => {
+  const api = await activityWireApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const selected = {
+    logicalName: "pg_stat_activity", ordinal: "8", segmentId: "segment-a",
+    timestamp: START + 20_000_000, typeId: "1001003",
+    values: {
+      pid: 4242,
+      state: "active",
+      query_start: String(START + 12_000_000),
+      query_duration_ms: 8_000,
+    },
+  }
+  const column = api.ACTIVITY_COLUMNS.find(({ field }) => field === "query_duration_ms")
+  assert.ok(column)
+  const request = api.postgresMetricHistoryRequest(selected, "pg_stat_activity", column)
+  assert.deepEqual(request.fields, ["pid", "state", "query_start"])
+  assert.deepEqual(request.filters, { pid: "4242" })
+
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input), "http://kronika.invalid")
+    assert.equal(url.pathname, "/api/hour")
+    assert.equal(url.searchParams.get("from"), String(START))
+    assert.equal(url.searchParams.get("to"), String(START + 3_600_000_000 - 1))
+    assert.equal(url.searchParams.get("section"), "pg_stat_activity")
+    assert.deepEqual(url.searchParams.getAll("field"), ["pid", "state", "query_start"])
+    assert.deepEqual([...url.searchParams.keys()].filter((name) => name.startsWith("where.")), ["where.pid"])
+    assert.equal(url.searchParams.get("where.pid"), "4242")
+    assert.equal(url.searchParams.has("type_id"), false)
+    return ndjson([
+      { record: "series_segment", segment: { id: "segment-a" } },
+      {
+        record: "layout",
+        layout: {
+          type_id: "1001003", logical_name: "pg_stat_activity",
+          columns: request.fields.map((name) => ({ name })),
+        },
+      },
+      {
+        record: "row", type_id: "1001003", ordinal: "7", timestamp: String(START + 10_000_000),
+        values: [4242, "active", String(START + 5_000_000)],
+      },
+      {
+        record: "row", type_id: "1001003", ordinal: "8", timestamp: String(START + 20_000_000),
+        values: [4242, "active", String(START + 12_000_000)],
+      },
+    ])
+  }
+  try {
+    const rows = await api.loadSeries(
+      selected.timestamp,
+      "pg_stat_activity",
+      request.filters,
+      request.fields,
+      new AbortController().signal,
+    )
+    assert.deepEqual(rows.map(({ values }) => values), [
+      { pid: 4242, state: "active", query_start: String(START + 5_000_000) },
+      { pid: 4242, state: "active", query_start: String(START + 12_000_000) },
+    ])
+    assert.deepEqual(rows.map(({ values }) => Object.keys(values)), [request.fields, request.fields])
+    const samples = api.postgresMetricHistorySamples(rows, selected, "pg_stat_activity", column, request)
+    assert.deepEqual(samples.map(({ value }) => value), [5_000, 8_000])
+    assert.equal(samples.every(({ value }) => typeof value === "number" && Number.isFinite(value)), true)
   } finally {
     globalThis.fetch = originalFetch
   }

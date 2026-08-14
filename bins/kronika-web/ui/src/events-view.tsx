@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { Cell, DataRow, Finding, HourData } from "./api"
 import { ChartOnly } from "./chart-visibility"
+import { useDetailDismiss } from "./detail-dismiss"
 import { useDisplayTime } from "./display-time-context"
 import {
   findingCategory,
@@ -39,6 +40,7 @@ export function EventsView({
   hour,
   locale,
   onCursor,
+  onClose,
   onFinding,
   onShowAll,
   resolution,
@@ -53,6 +55,7 @@ export function EventsView({
   readonly hour: number
   readonly locale: Locale
   readonly onCursor: (timestamp: number) => void
+  readonly onClose: () => void
   readonly onFinding: (finding: Finding) => void
   readonly onShowAll: () => void
   readonly resolution: FindingResolution
@@ -124,19 +127,20 @@ export function EventsView({
             })}
           </div>
         </div>
-        {active !== null && <FindingDetail cursor={cursor} data={data} finding={active} history={history} hour={hour} locale={locale} onCursor={onCursor} resolution={resolution} row={resolved} t={t} />}
+        {active !== null && <FindingDetail cursor={cursor} data={data} finding={active} history={history} hour={hour} locale={locale} onClose={onClose} onCursor={onCursor} resolution={resolution} row={resolved} t={t} />}
       </div>
     </section>
   </>
 }
 
-function FindingDetail({ cursor, data, finding, history, hour, locale, onCursor, resolution, row, t }: {
+function FindingDetail({ cursor, data, finding, history, hour, locale, onClose, onCursor, resolution, row, t }: {
   readonly cursor: number
   readonly data: HourData
   readonly finding: Finding
   readonly history: readonly ChartPoint[]
   readonly hour: number
   readonly locale: Locale
+  readonly onClose: () => void
   readonly onCursor: (timestamp: number) => void
   readonly resolution: FindingResolution
   readonly row: DataRow | null
@@ -147,7 +151,8 @@ function FindingDetail({ cursor, data, finding, history, hour, locale, onCursor,
   const points = history.length === 0 ? findingHistory(finding, row === null ? [] : [row], data) : history
   const readings = findingReadings(finding, row, points, data)
   const entity = findingEntity(row)
-  return <aside className="event-detail" data-testid="event-detail">
+  const detail = useDetailDismiss(onClose, findingKey(finding))
+  return <aside className="event-detail" data-testid="event-detail" ref={detail}>
     <header><KindIcon kind={finding.kind} /><div><span>{findingCategory(finding, t)}</span><h2>{findingSource(finding, t)}</h2></div><time>{time.timestamp(finding.timestamp)}</time></header>
     {resolution === "loading" && <p className="event-resolution">{t("events.loading_row")}</p>}
     {resolution === "unavailable" && <p className="event-resolution">{t("events.row_unavailable")}</p>}

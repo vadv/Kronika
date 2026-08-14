@@ -1547,14 +1547,17 @@ test("aggregate relation detail charts exact server history", { timeout: 60_000 
   }
 })
 
-test("chart preference and process summary lifecycle work in the production artifact", { timeout: 60_000 }, async () => {
+test("chart preference, detail dismissal, and process summary lifecycle work in the production artifact", { timeout: 90_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const authState = { valid: true }
   const requests = []
   let summaryMode = "initial"
   const heldSummaries = []
   const heldCgroups = []
+  const servedActivityHistory = []
   let holdCgroups = false
+  const historyRequests = (section) => requests.filter(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("section") === section)
+  const snapshotRequests = (section) => requests.filter(({ path, query }) => path === `/api/segments/${SEGMENT}/snapshot` && new URLSearchParams(query).getAll("section").includes(section))
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
     requests.push(requestRecord(request, url))
@@ -1581,6 +1584,11 @@ test("chart preference and process summary lifecycle work in the production arti
         }
         if (summaryMode === "empty") return ndjson(response, [])
         return ndjson(response, processSummaryRecords(hour, summaryMode === "initial" ? 719 : 2, summaryMode === "initial" ? 719 : 721))
+      }
+      if (section === "pg_stat_activity") {
+        const records = activityHistoryRecords(url)
+        servedActivityHistory.push(records)
+        return ndjson(response, records)
       }
       return ndjson(response, section === null ? timelineRecords(hour, true) : [])
     }
@@ -1638,6 +1646,10 @@ test("chart preference and process summary lifecycle work in the production arti
     await cdp.evaluate(`document.querySelectorAll('.section-tabs [role="tab"]')[0].click()`)
     await cdp.waitFor(`document.querySelector('.system-console') !== null`, "System before same-hour summary remount")
     await cdp.waitFor(`["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"].every((section) => document.querySelector('[data-testid="system-' + section + '"] .entity-row') !== null)`, "the exact collector cgroup rows", 15_000)
+    const systemHistoryBefore = historyRequests("os_cpu").length
+    await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]').click()`)
+    await waitForRequests(() => historyRequests("os_cpu").length > systemHistoryBefore)
+    assert.ok(historyRequests("os_cpu").length > systemHistoryBefore)
     const systemSnapshots = requests.filter(({ path }) => path === `/api/segments/${SEGMENT}/snapshot`).map(({ query }) => new URLSearchParams(query))
     const primarySystem = systemSnapshots.find((query) => query.getAll("section").includes("os_cgroup_context"))
     assert.notEqual(primarySystem, undefined)
@@ -1715,11 +1727,63 @@ test("chart preference and process summary lifecycle work in the production arti
     await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "No data in the selected hour" && document.querySelector('.process-summary > button strong')?.textContent === "—"`, "successful empty process totals", 15_000)
     assert.equal(await cdp.evaluate(`document.querySelector('.process-summary-history') === null`), true)
 
-    await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[1].click()`)
-    await cdp.waitFor(`document.querySelector('.pg-tabs') !== null`, "PostgreSQL navigation")
-    await cdp.evaluate(`([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent === "Activity")).click()`)
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.activity` })
     await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"] .entity-row') !== null`, "the activity table", 15_000)
     await settleLayout(cdp)
+    const activityDuration = await cdp.evaluate(`(() => {
+      const table = document.querySelector('[data-testid="pg-activity-table"]')
+      const headers = [...table.querySelectorAll('[role="columnheader"]')].map((cell) => cell.textContent.trim())
+      const index = headers.findIndex((label) => label.includes("Query time"))
+      return index < 0 ? null : table.querySelector('.entity-row').querySelectorAll('[role="cell"]')[index]?.textContent.trim() ?? null
+    })()`)
+    assert.match(activityDuration, /\d/)
+    const activityHistoryBefore = historyRequests("pg_stat_activity").length
+    await cdp.evaluate(`(() => {
+      const row = document.querySelector('[data-testid="pg-activity-table"] .entity-row')
+      row.focus()
+      row.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" }))
+    })()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"]') !== null`, "Activity detail")
+    await waitForRequests(() => historyRequests("pg_stat_activity").length > activityHistoryBefore)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"] .pg-metric-history .uplot-host canvas') !== null`, "numeric Activity history", 15_000)
+    const activityHistory = historyRequests("pg_stat_activity")
+    const visibleActivityHistoryCount = activityHistory.length
+    const activityQuery = new URLSearchParams(activityHistory.at(-1).query)
+    assert.equal(activityQuery.get("from"), String(HOUR))
+    assert.equal(activityQuery.get("to"), String(HOUR + HOUR_US - 1))
+    assert.equal(activityQuery.get("section"), "pg_stat_activity")
+    assert.deepEqual(activityQuery.getAll("field"), ["pid", "state", "query_start"])
+    assert.deepEqual([...activityQuery.keys()].filter((name) => name.startsWith("where.")), ["where.pid"])
+    assert.equal(activityQuery.get("where.pid"), "4242")
+    assert.equal(activityQuery.has("type_id"), false)
+    const servedActivity = servedActivityHistory.at(-1)
+    const servedLayout = servedActivity.find(({ record }) => record === "layout")
+    assert.deepEqual(servedLayout.layout.columns.map(({ name }) => name), ["pid", "state", "query_start"])
+    assert.equal(servedActivity.filter(({ record }) => record === "row").every(({ values }) => values.length === 3), true)
+    const activitySample = await cdp.evaluate(`document.querySelector('[data-testid="pg-detail"] .chart-navigator').getAttribute("aria-valuetext")`)
+    assert.match(activitySample, /Query time.*\d/)
+    assert.doesNotMatch(activitySample, /—/)
+
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-detail"] .chart-expand').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"] [role="dialog"]') !== null`, "the expanded Activity chart")
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }))`)
+    await cdp.waitFor(`document.querySelector('[role="dialog"]') === null`, "the Activity chart collapse")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="pg-detail"]') !== null`), true)
+
+    await cdp.evaluate(`document.querySelector('[data-testid="help-trigger"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="help-panel"]') !== null`, "Help over Activity detail")
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }))`)
+    await cdp.waitFor(`document.querySelector('[data-testid="help-panel"]') === null`, "Help close over Activity detail")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="pg-detail"]') !== null`), true)
+
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-popover"]') !== null`, "hour picker over Activity detail")
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }))`)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-popover"]') === null`, "hour picker close over Activity detail")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="pg-detail"]') !== null`), true)
+
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }))`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"]') === null && document.activeElement === document.querySelector('[data-testid="pg-activity-table"] .entity-row')`, "Activity detail close and row focus restore")
     const shownActivity = await cdp.evaluate(`(() => {
       const bounds = (selector) => document.querySelector(selector).getBoundingClientRect().height
       return {
@@ -1730,6 +1794,7 @@ test("chart preference and process summary lifecycle work in the production arti
         workspace: bounds('.workspace'),
       }
     })()`)
+    const activitySnapshotsBeforeHiddenDetail = snapshotRequests("pg_stat_activity").length
     await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
     await cdp.waitFor(`document.querySelector('.charts-hidden') !== null && document.querySelector('.timeline-shell') === null`, "activity charts hidden")
     await settleLayout(cdp)
@@ -1744,34 +1809,78 @@ test("chart preference and process summary lifecycle work in the production arti
       }
     })()`)
     assert.ok(hiddenActivity.scroll > shownActivity.scroll + 100, JSON.stringify({ hiddenActivity, shownActivity }))
+    await cdp.evaluate(`(() => {
+      const row = document.querySelector('[data-testid="pg-activity-table"] .entity-row')
+      row.focus()
+      row.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" }))
+    })()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"]') !== null && document.querySelector('[data-testid="pg-detail"] .pg-metric-history') === null`, "Activity detail with charts hidden")
+    await waitForRequests(() => snapshotRequests("pg_stat_activity").length > activitySnapshotsBeforeHiddenDetail)
+    await delay(100)
+    assert.equal(historyRequests("pg_stat_activity").length, visibleActivityHistoryCount)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="pg-exact-query"]')?.textContent`), "select artifact_wire_contract")
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }))`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"]') === null`, "hidden Activity detail close")
     await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
     await cdp.waitFor(`document.querySelector('.timeline-shell') !== null`, "activity charts restored")
     await cdp.evaluate(`([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent === "Tables")).click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"] .entity-row') !== null`, "the relation table", 15_000)
-    await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-row').click()`)
+    const relationHistoryBefore = historyRequests("pg_stat_user_tables").length
+    await cdp.evaluate(`(() => {
+      const row = document.querySelector('[data-testid="pg-tables-table"] .entity-row')
+      row.focus()
+      row.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" }))
+    })()`)
     await cdp.waitFor(`document.querySelector('.pg-metric-history') !== null`, "the relation history panel")
+    await waitForRequests(() => historyRequests("pg_stat_user_tables").length > relationHistoryBefore)
     await settleLayout(cdp)
     const shownRelationHeight = await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-scroll').getBoundingClientRect().height`)
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }))`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-relation-detail"]') === null && document.activeElement === document.querySelector('[data-testid="pg-tables-table"] .entity-row')`, "relation detail close and row focus restore")
+    await cdp.evaluate(`document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" }))`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-relation-detail"] .pg-metric-history') !== null`, "the reopened relation history")
+    await waitForRequests(() => historyRequests("pg_stat_user_tables").length > relationHistoryBefore + 1)
+    const visibleRelationHistoryCount = historyRequests("pg_stat_user_tables").length
     await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
     await cdp.waitFor(`document.querySelector('.charts-hidden') !== null && document.querySelector('.uplot-figure, .series-chart, .timeline-shell, .timeline-empty, .pg-metric-history') === null`, "all relation charts hidden")
     await settleLayout(cdp)
     const hiddenRelationHeight = await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-scroll').getBoundingClientRect().height`)
     assert.ok(hiddenRelationHeight > shownRelationHeight + 100, JSON.stringify({ hiddenRelationHeight, shownRelationHeight }))
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }))`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-relation-detail"]') === null`, "hidden relation detail close")
+    await cdp.evaluate(`document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" }))`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-relation-detail"]') !== null && document.querySelector('[data-testid="pg-relation-detail"] .pg-metric-history') === null`, "relation detail reopened with charts hidden")
+    await delay(100)
+    assert.equal(historyRequests("pg_stat_user_tables").length, visibleRelationHistoryCount)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-row') !== null`), true)
 
+    const hiddenSystemSnapshotsBefore = snapshotRequests("os_cpu").length
+    const hiddenSystemHistoryBefore = historyRequests("os_cpu").length
     await cdp.evaluate(`document.querySelector('.source-tabs button:first-child').click()`)
     await cdp.waitFor(`document.querySelector('.section-tabs [role="tab"]:first-child') !== null`, "Host sections")
     await cdp.evaluate(`document.querySelector('.section-tabs [role="tab"]:first-child').click()`)
     await cdp.waitFor(`document.querySelector('.system-console') !== null`, "System with charts hidden")
+    await waitForRequests(() => snapshotRequests("os_cpu").length > hiddenSystemSnapshotsBefore)
+    await delay(100)
+    assert.equal(historyRequests("os_cpu").length, hiddenSystemHistoryBefore)
     assert.equal(await cdp.evaluate(`document.querySelector('.uplot-figure, .series-chart, .timeline-shell, .timeline-empty, .metric-history, .use-history, .system-entity-history') === null`), true)
+    const hiddenSummaryBefore = historyRequests("os_process_summary").length
     await cdp.evaluate(`document.querySelector('[data-testid="process-tab"]').click()`)
     await cdp.waitFor(`document.querySelector('.process-table') !== null`, "Processes with charts hidden")
+    await waitForRequests(() => historyRequests("os_process_summary").length > hiddenSummaryBefore)
+    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "No data in the selected hour"`, "visible process cards retained with charts hidden")
     assert.equal(await cdp.evaluate(`document.querySelector('.uplot-figure, .series-chart, .timeline-shell, .timeline-empty, .process-summary-history, .process-history') === null`), true)
     await cdp.evaluate(`([...document.querySelectorAll('.source-tabs button')].find((button) => button.textContent === "Events")).click()`)
     await cdp.waitFor(`document.querySelector('.events-console') !== null`, "Events with charts hidden")
     assert.equal(await cdp.evaluate(`document.querySelector('.uplot-figure, .series-chart, .timeline-shell, .timeline-empty') === null`), true)
 
-    await cdp.send("Page.reload")
-    await cdp.waitFor(`document.querySelector('[data-testid="charts-toggle"]')?.textContent === "Show charts" && document.querySelector('.events-console') !== null`, "the persisted hidden preference", 15_000)
+    const persistedSystemHistoryBefore = historyRequests("os_cpu").length
+    const persistedSystemSnapshotsBefore = snapshotRequests("os_cpu").length
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=host.system` })
+    await cdp.waitFor(`document.querySelector('[data-testid="charts-toggle"]')?.textContent === "Show charts" && document.querySelector('.system-console') !== null`, "the persisted hidden preference", 15_000)
+    await waitForRequests(() => snapshotRequests("os_cpu").length > persistedSystemSnapshotsBefore)
+    await delay(100)
+    assert.equal(historyRequests("os_cpu").length, persistedSystemHistoryBefore)
     assert.equal(await cdp.evaluate(`localStorage.getItem("kronika.charts")`), "0")
     await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
     await cdp.waitFor(`document.querySelector('.timeline-shell') !== null`, "charts shown again")
@@ -2660,6 +2769,19 @@ function snapshotRecords() {
         String(AT - 60_000_000), String(AT - 30_000_000), String(AT - 5_000_000), String(AT - 1_000_000),
       ],
     },
+  ]
+}
+
+function activityHistoryRecords(url) {
+  const fields = url.searchParams.getAll("field")
+  const samples = [
+    { pid: 4242, query_start: String(BEFORE_AT - 5_000_000), state: "active", timestamp: BEFORE_AT, xact_start: String(BEFORE_AT - 12_000_000) },
+    { pid: 4242, query_start: String(AT - 5_000_000), state: "active", timestamp: AT, xact_start: String(AT - 30_000_000) },
+  ]
+  return [
+    { record: "series_segment", segment: { id: SEGMENT } },
+    layout("1001003", "pg_stat_activity", fields),
+    ...samples.map((sample, index) => row("1001003", String(70 + index), fields.map((field) => sample[field] ?? null), sample.timestamp)),
   ]
 }
 

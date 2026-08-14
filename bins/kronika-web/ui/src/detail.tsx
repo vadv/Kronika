@@ -1,9 +1,10 @@
 import { Copy, X } from "lucide-react"
-import { useEffect, useMemo, useState, type ReactNode } from "react"
+import { useMemo, useState, type ReactNode } from "react"
 
 import type { Cell, DataRow } from "./api"
 import { buildMetricSamples } from "./chart"
 import { ChartOnly } from "./chart-visibility"
+import { useDetailDismiss } from "./detail-dismiss"
 import { useDisplayTime } from "./display-time-context"
 import { LabelHelp, type Translate } from "./help"
 import {
@@ -131,28 +132,18 @@ export function DetailDock({
     [history],
   )
   const [selectedHistoryField, setSelectedHistoryField] = useState<string | null>(null)
+  const detail = useDetailDismiss(onClose, pid)
   const selectedHistory = availableHistory.find((series) => series.field === selectedHistoryField) ?? availableHistory[0] ?? null
   const selectedHistoryPoints = useMemo(
     () => selectedHistory === null ? [] : processChartPoints(selectedHistory, ticksPerSecond),
     [selectedHistory, ticksPerSecond],
   )
-  useEffect(() => {
-    const escape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented) return
-      queueMicrotask(() => {
-        if (event.defaultPrevented) return
-        event.preventDefault()
-        onClose()
-      })
-    }
-    window.addEventListener("keydown", escape)
-    return () => window.removeEventListener("keydown", escape)
-  }, [onClose])
   return (
     <aside
       aria-label={t("detail.process.title")}
       className="detail-dock"
       data-testid={activity === null ? "process-dock" : "pg-linked-dock"}
+      ref={detail}
     >
       <div className="panel-head detail-head">
         <div>
