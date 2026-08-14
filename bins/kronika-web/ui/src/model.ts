@@ -71,8 +71,9 @@ export interface TimePair {
   readonly secondary: string | null
 }
 
-export interface HourPair extends TimePair {
+export interface HourPair {
   readonly date: string
+  readonly primary: string
 }
 
 export function localTimePair(timestamp: number, locale: Locale, timeZone?: string): TimePair {
@@ -85,11 +86,7 @@ export function localTimePair(timestamp: number, locale: Locale, timeZone?: stri
 export function localHourPair(hour: number, locale: Locale, timeZone?: string): HourPair {
   const start = new Date(Math.trunc(hour / 1_000))
   const end = new Date(Math.trunc((hour + 3_600_000_000) / 1_000))
-  const localDate = dateRange(start, end, locale, timeZone)
-  const utcDate = dateRange(start, end, locale, "UTC")
-  const primary = clockRange(start, end, locale, timeZone)
-  const utc = clockRange(start, end, locale, "UTC")
-  return { date: localDate, primary, secondary: localDate === utcDate && primary === utc ? null : localDate === utcDate ? utc : `${utcDate} · ${utc}` }
+  return { date: dateRange(start, end, locale, timeZone), primary: clockRange(start, end, locale, timeZone) }
 }
 
 export function nearestTime(rows: readonly DataRow[], target: number): number | null {

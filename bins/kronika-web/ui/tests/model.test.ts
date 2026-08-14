@@ -165,13 +165,13 @@ test("browser-local labels retain UTC context without a UTC duplicate", () => {
 
 test("local hour endpoints survive DST folds, skips, and date boundaries", () => {
   assert.deepEqual(localHourPair(Date.UTC(2026, 2, 8, 6) * 1_000, "en", "America/New_York"), {
-    date: "Mar 08, 2026", primary: "01:00 EST–03:00 EDT", secondary: "06:00–07:00 UTC",
+    date: "Mar 08, 2026", primary: "01:00 EST–03:00 EDT",
   })
   assert.deepEqual(localHourPair(Date.UTC(2026, 10, 1, 5) * 1_000, "en", "America/New_York"), {
-    date: "Nov 01, 2026", primary: "01:00 EDT–01:00 EST", secondary: "05:00–06:00 UTC",
+    date: "Nov 01, 2026", primary: "01:00 EDT–01:00 EST",
   })
   assert.deepEqual(localHourPair(Date.UTC(2026, 7, 14, 3) * 1_000, "en", "America/New_York"), {
-    date: "Aug 13, 2026–Aug 14, 2026", primary: "23:00–00:00 EDT", secondary: "Aug 14, 2026 · 03:00–04:00 UTC",
+    date: "Aug 13, 2026–Aug 14, 2026", primary: "23:00–00:00 EDT",
   })
   assert.match(localHourPair(Date.UTC(2026, 10, 1, 5) * 1_000, "ru", "America/New_York").primary, /^01:00 GMT-4–01:00 GMT-5$/)
 })
