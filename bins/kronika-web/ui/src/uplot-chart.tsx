@@ -98,7 +98,7 @@ export function UPlotChart({
   const [hovered, setHovered] = useState<number | null>(null)
   const [keyboardIndex, setKeyboardIndex] = useState(0)
   const opener = useRef<HTMLButtonElement>(null)
-  const close = useRef<HTMLButtonElement>(null)
+  const pagePosition = useRef({ left: 0, top: 0 })
   const returnFocus = useRef(false)
   const end = hour + 3_600_000_000
   const visibleSeries = useMemo(() => series.map((line) => ({
@@ -126,10 +126,13 @@ export function UPlotChart({
       const root = shell.current
       if (root === null) return
       const left = chart.over.offsetLeft
+      const top = chart.over.offsetTop
       const width = chart.over.offsetWidth
+      const endReserve = Number.parseFloat(getComputedStyle(root).getPropertyValue("--chart-marker-end-reserve")) || 0
       root.style.setProperty("--chart-plot-left", `${element.offsetLeft + left}px`)
+      root.style.setProperty("--chart-plot-top", `${element.offsetTop + top}px`)
       root.style.setProperty("--chart-plot-width", `${width}px`)
-      onPlotWidthRef.current?.(width)
+      onPlotWidthRef.current?.(Math.max(1, width - endReserve))
     })
     const chart = new uPlot(options, frame.data, element)
     plot.current = chart
@@ -186,9 +189,14 @@ export function UPlotChart({
 
   useEffect(() => {
     if (!expanded) return
-    const overflow = document.documentElement.style.overflow
+    const rootOverflow = document.documentElement.style.overflow
+    const bodyOverflow = document.body.style.overflow
+    const pageScrollLeft = pagePosition.current.left
+    const pageScrollTop = pagePosition.current.top
+    const blockPageScroll = (event: Event) => event.preventDefault()
     document.documentElement.style.overflow = "hidden"
-    close.current?.focus()
+    document.body.style.overflow = "hidden"
+    opener.current?.focus({ preventScroll: true })
     const keydown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault()
@@ -211,21 +219,34 @@ export function UPlotChart({
       }
     }
     window.addEventListener("keydown", keydown)
+    window.addEventListener("touchmove", blockPageScroll, { passive: false })
+    window.addEventListener("wheel", blockPageScroll, { passive: false })
     return () => {
-      document.documentElement.style.overflow = overflow
+      document.documentElement.style.overflow = rootOverflow
+      document.body.style.overflow = bodyOverflow
       window.removeEventListener("keydown", keydown)
+      window.removeEventListener("touchmove", blockPageScroll)
+      window.removeEventListener("wheel", blockPageScroll)
+      window.scrollTo(pageScrollLeft, pageScrollTop)
     }
   }, [expanded])
 
   useEffect(() => {
     if (expanded || !returnFocus.current) return
     returnFocus.current = false
-    opener.current?.focus()
+    opener.current?.focus({ preventScroll: true })
   }, [expanded])
 
   function collapse() {
+    const active = document.activeElement
+    if (active instanceof HTMLElement && shell.current?.contains(active)) active.blur()
     returnFocus.current = true
     setExpanded(false)
+  }
+
+  function expand() {
+    pagePosition.current = { left: window.scrollX, top: window.scrollY }
+    setExpanded(true)
   }
 
   const summary = chartSummary(visibleSeries, frame, hour, end, locale, time)
@@ -241,14 +262,13 @@ export function UPlotChart({
       <span className="chart-series-labels">{series.map((line) => <LabelHelp helpKey={line.helpKey} key={line.id} labelKey={line.labelKey} t={t} />)}</span>
       {reading !== undefined && <strong className="chart-current">{reading}</strong>}
       <button
-        aria-label={expanded ? (locale === "ru" ? "Свернуть график" : "Collapse chart") : (locale === "ru" ? "Развернуть график" : "Expand chart")}
+        aria-label={expanded ? (locale === "ru" ? "Закрыть развёрнутый график" : "Close expanded chart") : (locale === "ru" ? "Развернуть график" : "Expand chart")}
         className="chart-expand"
-        onClick={() => expanded ? collapse() : setExpanded(true)}
+        onClick={() => expanded ? collapse() : expand()}
         ref={opener}
         type="button"
-      >{expanded ? "↙" : "↗"}</button>
+      >{expanded ? "×" : "↗"}</button>
     </figcaption>
-    {expanded && <button aria-label={locale === "ru" ? "Закрыть" : "Close"} className="chart-close" onClick={collapse} ref={close} type="button">×</button>}
     <p className="chart-summary" id={summaryId}>{summary}</p>
     <div aria-describedby={summaryId} aria-label={series.map(({ label, unit }) => `${label}${unit === "" ? "" : `, ${unit}`}`).join("; ")} className="uplot-host" ref={host} role="img" />
     {markerLayer !== undefined && <div className="chart-marker-track">{markerLayer}</div>}

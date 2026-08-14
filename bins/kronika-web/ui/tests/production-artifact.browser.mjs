@@ -188,6 +188,207 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
   }
 })
 
+test("expanded uPlot keeps one unobscured close action at responsive widths", { timeout: 60_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const authState = { valid: true }
+  const startFinding = {
+    record: "finding", logical_name: "pg_stat_statements", kind: "spike", type_id: "1002003",
+    field_ordinal: 11, row_ordinal: "998", ts: String(HOUR + 1),
+  }
+  const nearEndFinding = {
+    record: "finding", logical_name: "pg_stat_statements", kind: "spike", type_id: "1002003",
+    field_ordinal: 11, row_ordinal: "997", ts: String(HOUR + Math.floor(HOUR_US * 0.895)),
+  }
+  const endFinding = {
+    record: "finding", logical_name: "pg_stat_statements", kind: "spike", type_id: "1002003",
+    field_ordinal: 11, row_ordinal: "999", ts: String(HOUR + HOUR_US - 1),
+  }
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/catalog") return ndjson(response, [])
+    if (url.pathname === "/api/hour") return ndjson(response, [
+      ...timelineRecords().filter(({ record }) => record !== "finding"),
+      startFinding,
+      nearEndFinding,
+      endFinding,
+    ])
+    if (url.pathname.startsWith("/api/")) return ndjson(response, [])
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("expanded-chart browser server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "kronika-expanded-chart-browser-"))
+  const browser = launchBrowser(profile)
+  const page = { errors: [], external: [], responses: [] }
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Network.setCookie", {
+      name: "kronika_session",
+      url: origin,
+      value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1),
+    })
+    const viewports = [
+      { height: 768, label: "desktop", mobile: false, width: 1366 },
+      { height: 768, label: "iPad landscape", mobile: true, width: 1194 },
+      { height: 844, label: "phone", mobile: true, width: 390 },
+    ]
+    for (const viewport of viewports) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", {
+        deviceScaleFactor: 1,
+        height: viewport.height,
+        mobile: viewport.mobile,
+        width: viewport.width,
+      })
+      await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}` })
+      await cdp.waitFor(`document.querySelectorAll('[data-testid="hour-timeline"] .marker-button').length >= 2`, `${viewport.label} timeline markers`, 15_000)
+      await settleLayout(cdp)
+      const before = await cdp.evaluate(`(() => {
+        document.documentElement.style.overflow = "visible"
+        document.body.style.overflow = "auto"
+        document.body.style.minHeight = "200vh"
+        window.scrollTo(0, 120)
+        return { body: document.body.style.overflow, root: document.documentElement.style.overflow, scrollY }
+      })()`)
+      assert.deepEqual(before, { body: "auto", root: "visible", scrollY: 120 }, viewport.label)
+      await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] .chart-expand').click()`)
+      await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"][role="dialog"].uplot-expanded') !== null`, `${viewport.label} expanded timeline`)
+      await settleLayout(cdp)
+      const geometry = await cdp.evaluate(`(() => {
+        const dialog = document.querySelector('[data-testid="hour-timeline"][role="dialog"]')
+        const header = dialog.querySelector("figcaption")
+        const title = header.querySelector(".chart-title")
+        const current = header.querySelector(".chart-current")
+        const control = header.querySelector(".chart-expand")
+        const markers = [...dialog.querySelectorAll(".chart-marker-track .marker-button")]
+        const lastMarker = markers.at(-1)
+        const bounds = (node) => {
+          const rect = node.getBoundingClientRect()
+          return { bottom: rect.bottom, height: rect.height, left: rect.left, right: rect.right, top: rect.top, width: rect.width }
+        }
+        const intersects = (left, right) => Math.max(left.left, right.left) < Math.min(left.right, right.right)
+          && Math.max(left.top, right.top) < Math.min(left.bottom, right.bottom)
+        const headerRect = bounds(header)
+        const titleRect = bounds(title)
+        const currentRect = bounds(current)
+        const controlRect = bounds(control)
+        const dialogRect = bounds(dialog)
+        const markerRect = bounds(lastMarker)
+        const markerRects = markers.map(bounds)
+        const markersOverlap = markerRects.some((left, index) => markerRects.slice(index + 1).some((right) => intersects(left, right)))
+        const hit = [[markerRect.left + 2, (markerRect.top + markerRect.bottom) / 2],
+          [(markerRect.left + markerRect.right) / 2, (markerRect.top + markerRect.bottom) / 2],
+          [markerRect.right - 2, (markerRect.top + markerRect.bottom) / 2]].every(([x, y]) =>
+          document.elementsFromPoint(x, y).some((node) => node === lastMarker || lastMarker.contains(node)))
+        return {
+          actionCount: dialog.querySelectorAll(".chart-expand, .chart-close").length,
+          activeIsControl: document.activeElement === control,
+          bodyOverflow: getComputedStyle(document.body).overflow,
+          control: controlRect,
+          current: currentRect,
+          currentControlOverlap: intersects(currentRect, controlRect),
+          dialog: dialogRect,
+          header: headerRect,
+          hit,
+          horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+          lastMarker: markerRect,
+          lastMarkerCount: Number(lastMarker.dataset.markerCount),
+          markerCount: markers.reduce((count, marker) => count + Number(marker.dataset.markerCount), 0),
+          markerControlOverlap: intersects(markerRect, controlRect),
+          markersOverlap,
+          rootOverflow: getComputedStyle(document.documentElement).overflow,
+          scrollY,
+          title: titleRect,
+          titleControlOverlap: intersects(titleRect, controlRect),
+          titleCurrentOverlap: intersects(titleRect, currentRect),
+          viewport: { height: innerHeight, width: innerWidth },
+        }
+      })()`)
+      assert.equal(geometry.actionCount, 1, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.equal(geometry.activeIsControl, true, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.equal(geometry.rootOverflow, "hidden", `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.equal(geometry.bodyOverflow, "hidden", `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.equal(geometry.scrollY, before.scrollY, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.equal(geometry.horizontalOverflow, false, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.equal(geometry.currentControlOverlap, false, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.equal(geometry.titleControlOverlap, false, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.equal(geometry.titleCurrentOverlap, false, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.equal(geometry.markerControlOverlap, false, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.equal(geometry.markersOverlap, false, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.equal(geometry.hit, true, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.equal(geometry.lastMarkerCount, 2, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.equal(geometry.markerCount, 3, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.ok(geometry.control.width >= 44 && geometry.control.height >= 44, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.ok(geometry.title.width > 0 && geometry.current.width > 0, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.ok(geometry.title.left >= geometry.header.left - 1 && geometry.title.right <= geometry.header.right + 1, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.ok(geometry.current.left >= geometry.header.left - 1 && geometry.current.right <= geometry.header.right + 1, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.ok(geometry.control.left >= geometry.header.left - 1 && geometry.control.right <= geometry.header.right + 1, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.ok(geometry.lastMarker.top >= geometry.header.bottom - 1, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.ok(geometry.lastMarker.right <= geometry.control.left - 8, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.ok(geometry.lastMarker.left >= geometry.dialog.left && geometry.lastMarker.right <= geometry.dialog.right, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.ok(Math.abs(geometry.dialog.left) <= 1 && Math.abs(geometry.dialog.top) <= 1, `${viewport.label}: ${JSON.stringify(geometry)}`)
+      assert.ok(geometry.dialog.width >= geometry.viewport.width - 1 && geometry.dialog.height >= geometry.viewport.height - 1, `${viewport.label}: ${JSON.stringify(geometry)}`)
+
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: Math.floor(viewport.width / 2), y: Math.floor(viewport.height / 2), deltaX: 0, deltaY: 500 })
+      await delay(120)
+      assert.equal(await cdp.evaluate("scrollY"), before.scrollY, viewport.label)
+      await cdp.evaluate(`(() => {
+        const dialog = document.querySelector('[data-testid="hour-timeline"][role="dialog"]')
+        const navigator = dialog.querySelector("input.chart-navigator")
+        navigator.focus()
+        navigator.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Tab" }))
+      })()`)
+      assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector('[data-testid="hour-timeline"][role="dialog"] .chart-expand')`), true, viewport.label)
+      await cdp.evaluate(`(() => {
+        const control = document.querySelector('[data-testid="hour-timeline"][role="dialog"] .chart-expand')
+        control.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Tab", shiftKey: true }))
+      })()`)
+      assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector('[data-testid="hour-timeline"][role="dialog"] input.chart-navigator')`), true, viewport.label)
+      await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"][role="dialog"] .chart-expand').click()`)
+      await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"][role="dialog"]') === null`, `${viewport.label} close action`)
+      await cdp.waitFor(`document.documentElement.style.overflow === "visible" && document.body.style.overflow === "auto"`, `${viewport.label} scroll restore`)
+      await cdp.waitFor(`document.activeElement === document.querySelector('[data-testid="hour-timeline"] .chart-expand')`, `${viewport.label} close focus return`)
+      assert.equal(await cdp.evaluate("scrollY"), before.scrollY, viewport.label)
+
+      await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] .chart-expand').click()`)
+      await cdp.waitFor(`(() => {
+        const control = document.querySelector('[data-testid="hour-timeline"][role="dialog"] .chart-expand')
+        return control !== null && document.activeElement === control
+          && document.documentElement.style.overflow === "hidden" && document.body.style.overflow === "hidden"
+      })()`, `${viewport.label} Escape setup`)
+      await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }))`)
+      await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"][role="dialog"]') === null`, `${viewport.label} Escape close`)
+      await cdp.waitFor(`document.activeElement === document.querySelector('[data-testid="hour-timeline"] .chart-expand')`, `${viewport.label} Escape focus return`)
+      await cdp.waitFor(`scrollY === ${before.scrollY}`, `${viewport.label} Escape scroll restore`)
+      assert.deepEqual(await cdp.evaluate(`({ body: document.body.style.overflow, root: document.documentElement.style.overflow, scrollY })`), before, viewport.label)
+    }
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+  } finally {
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await rm(profile, { recursive: true, force: true })
+  }
+})
+
 test("the production artifact preserves wire keys and exact finding page state", { timeout: 120_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const requests = []
@@ -1054,7 +1255,7 @@ test("the production artifact preserves wire keys and exact finding page state",
         width: rect.width,
       }
     })()`)
-    assert.match(expanded.active, /chart-close/)
+    assert.match(expanded.active, /chart-expand/)
     assert.equal(expanded.fullscreen, false)
     assert.ok(Math.abs(expanded.left) <= 1 && Math.abs(expanded.top) <= 1, JSON.stringify(expanded))
     assert.ok(expanded.width >= expanded.clientWidth - 1 && expanded.height >= expanded.clientHeight - 1, JSON.stringify(expanded))
