@@ -3,18 +3,41 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 
-use kronika_reader::{Cell, Dictionary, Row};
+#[cfg(test)]
+use std::cell::Cell as Counter;
+
+use kronika_reader::{Cell, Dictionary, Reader, Row, Segment, SegmentRef};
+use kronika_registry::{contract, logical_section_name};
 use serde_json::{Map, Value, json};
 
 use super::{
     ApiError, CounterReadings, Order, OrderedNumber, PageContext, Plan, PreparedSnapshot,
     RelationGroup, SectionPlans, SnapshotCursor, add_ordered, compare_page_order_values,
-    counter_delta, identity_of, record, resolved_dictionary, search_matches, stored_bytes,
+    counter_delta, identity_of, plans, rate_columns, record, resolved_dictionary, search_matches,
+    stored_bytes,
 };
-use crate::route::{Filter, SnapshotRequest};
+use crate::api::query;
+use crate::route::{DataRequest, Filter, SegmentRequest, SeriesRequest, SnapshotRequest, Window};
 
 const TABLES: &str = "pg_stat_user_tables";
 const INDEXES: &str = "pg_stat_user_indexes";
+
+#[cfg(test)]
+thread_local! {
+    static HISTORY_SELECTION_VISITS: Counter<usize> = const { Counter::new(0) };
+    static HISTORY_SOURCE_VISITS: Counter<usize> = const { Counter::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_history_operations() {
+    HISTORY_SELECTION_VISITS.set(0);
+    HISTORY_SOURCE_VISITS.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn history_operations() -> (usize, usize) {
+    (HISTORY_SELECTION_VISITS.get(), HISTORY_SOURCE_VISITS.get())
+}
 
 const TABLE_RATES: &[&str] = &[
     "seq_scan",
@@ -1502,6 +1525,504 @@ fn finite_json(value: f64) -> Value {
     } else {
         Value::Null
     }
+}
+
+struct HistorySegment {
+    segment: Segment,
+    plans: Vec<Plan>,
+}
+
+struct HistoryPrevious {
+    timestamp: i64,
+    readings: CounterReadings,
+}
+
+#[derive(Clone, Copy)]
+struct HistoryMoment {
+    type_id: u32,
+    previous: Option<i64>,
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one grouped stream keeps validation, the fixed two passes, and ordered emission together"
+)]
+pub(super) fn stream_history(
+    reader: &Reader,
+    listed: &[SegmentRef],
+    window: Window,
+    request: &SeriesRequest,
+    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(), ApiError> {
+    let group = request
+        .group
+        .filter(|group| *group != RelationGroup::Object)
+        .ok_or_else(|| ApiError::BadFilter("group".to_owned()))?;
+    let kind = RelationKind::from_name(&request.section)?;
+    let fields = output_fields(
+        std::slice::from_ref(&request.section),
+        group,
+        &request.fields,
+    )?;
+    if fields.is_empty() || request.type_id.is_some() {
+        return Err(ApiError::BadFilter("group".to_owned()));
+    }
+    let datid = history_datid(group, &request.filters)?;
+    let Some((from, to)) = window.from.zip(window.to) else {
+        return Ok(());
+    };
+    let refs = history_segments(listed, &request.section, from, to);
+    let physical_fields = history_physical_fields(kind, group, &fields);
+    let mut sources = Vec::with_capacity(refs.len());
+    for segment_ref in refs {
+        if cancelled() {
+            return Ok(());
+        }
+        let segment = reader.open_segment(&segment_ref)?;
+        let fields = physical_fields
+            .iter()
+            .filter(|name| {
+                segment
+                    .layouts(&request.section)
+                    .filter_map(|(type_id, _section)| contract(type_id))
+                    .any(|layout| layout.column(name).is_some())
+            })
+            .cloned()
+            .collect();
+        let data = DataRequest {
+            segment: SegmentRequest {
+                segment_id: segment_ref.id(),
+                section: request.section.clone(),
+            },
+            fields,
+            filters: request.filters.clone(),
+            type_id: None,
+            after: None,
+        };
+        match plans(&segment, &data, true) {
+            Ok(plans) => sources.push(HistorySegment { segment, plans }),
+            Err(ApiError::NoSuchSection) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    let section = SectionPlans {
+        logical_name: request.section.clone(),
+        plans: Vec::new(),
+    };
+    if cancelled() || !emit(relation_layout(&section, kind, group, &fields)?) {
+        return Ok(());
+    }
+    let selected = selected_history_layouts(&sources, datid, from, to, cancelled)?;
+    if cancelled() {
+        return Ok(());
+    }
+    let mut previous = BTreeMap::<(u32, Vec<super::IdentityCell>), HistoryPrevious>::new();
+    let mut aggregates = BTreeMap::<(i64, GroupKey), Aggregate>::new();
+    for source in &sources {
+        for plan in &source.plans {
+            scan_history_plan(
+                source,
+                plan,
+                kind,
+                group,
+                datid,
+                from,
+                to,
+                &selected,
+                &mut previous,
+                &mut aggregates,
+                cancelled,
+            )?;
+            if cancelled() {
+                return Ok(());
+            }
+        }
+    }
+    let mut segment_id = None;
+    for ((_timestamp, _key), aggregate) in aggregates {
+        if segment_id != Some(aggregate.source.segment_id) {
+            segment_id = Some(aggregate.source.segment_id);
+            if !emit(record(json!({
+                "record": "series_segment",
+                "segment": { "id": aggregate.source.segment_id.to_string() },
+            }))?) {
+                return Ok(());
+            }
+        }
+        let metrics = fields
+            .iter()
+            .map(|name| (name.clone(), aggregate.metric(kind, group, name)))
+            .collect();
+        let row = RelationRow {
+            key: aggregate.key,
+            metrics,
+            sort: None,
+            source: aggregate.source,
+            from: aggregate.from,
+            to: aggregate.to,
+        };
+        if cancelled() || !emit(relation_record(&section, kind, group, &row, false)?) {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+fn history_physical_fields(
+    kind: RelationKind,
+    group: RelationGroup,
+    fields: &[String],
+) -> Vec<String> {
+    let mut names = std::collections::BTreeSet::new();
+    let keys: &[&str] = match group {
+        RelationGroup::Database => &["datid", "datname"],
+        RelationGroup::Schema => &["datid", "datname", "schemaname"],
+        RelationGroup::Object => &[],
+    };
+    names.extend(keys.iter().copied());
+    for field in fields {
+        let dependencies: &[&str] = match (kind, field.as_str()) {
+            (RelationKind::Tables, "sequential_share_pct") => &["seq_scan", "idx_scan"],
+            (RelationKind::Tables, "tuple_throughput") => &["seq_tup_read", "idx_tup_fetch"],
+            (RelationKind::Tables, "seq_tuples_per_scan") => &["seq_tup_read", "seq_scan"],
+            (RelationKind::Tables, "idx_tuples_per_scan")
+            | (RelationKind::Indexes, "fetches_per_scan") => &["idx_tup_fetch", "idx_scan"],
+            (
+                RelationKind::Tables,
+                "dml_total" | "insert_share_pct" | "update_share_pct" | "delete_share_pct",
+            ) => &["n_tup_ins", "n_tup_upd", "n_tup_del"],
+            (RelationKind::Tables, "dead_pct") => &["n_live_tup", "n_dead_tup"],
+            (RelationKind::Tables, "hot_pct") => &["n_tup_hot_upd", "n_tup_upd"],
+            (RelationKind::Tables, "new_page_pct") => &["n_tup_newpage_upd", "n_tup_upd"],
+            (RelationKind::Tables, "displayed_storage_bytes" | "toast_share_pct") => {
+                &["main_fork_bytes", "toast_bytes"]
+            }
+            (RelationKind::Tables, "toast_dead_pct") => {
+                &["toast_bytes", "toast_n_live_tup", "toast_n_dead_tup"]
+            }
+            (RelationKind::Tables, "heap_buffer_hit_pct") => &["heap_blks_read", "heap_blks_hit"],
+            (RelationKind::Tables, "index_buffer_hit_pct")
+            | (RelationKind::Indexes, "buffer_hit_pct") => &["idx_blks_read", "idx_blks_hit"],
+            (RelationKind::Tables, "toast_buffer_hit_pct") => {
+                &["toast_blks_read", "toast_blks_hit"]
+            }
+            (RelationKind::Tables, "tidx_buffer_hit_pct") => &["tidx_blks_read", "tidx_blks_hit"],
+            (RelationKind::Tables, "buffer_hit_pct") => &[
+                "heap_blks_read",
+                "heap_blks_hit",
+                "idx_blks_read",
+                "idx_blks_hit",
+                "toast_blks_read",
+                "toast_blks_hit",
+                "tidx_blks_read",
+                "tidx_blks_hit",
+            ],
+            (RelationKind::Tables, "vacuum_mean_ms") => &["total_vacuum_time", "vacuum_count"],
+            (RelationKind::Tables, "autovacuum_mean_ms") => {
+                &["total_autovacuum_time", "autovacuum_count"]
+            }
+            (RelationKind::Tables, "analyze_mean_ms") => &["total_analyze_time", "analyze_count"],
+            (RelationKind::Tables, "autoanalyze_mean_ms") => {
+                &["total_autoanalyze_time", "autoanalyze_count"]
+            }
+            (RelationKind::Indexes, "tuples_per_scan") => &["idx_tup_read", "idx_scan"],
+            (RelationKind::Indexes, "no_scan_count" | "known_scan_count") => &["idx_scan"],
+            (RelationKind::Indexes, "state_severity") => &["indisvalid", "indisready"],
+            (RelationKind::Indexes, "invalid_count") => &["indisvalid"],
+            (RelationKind::Indexes, "unready_count") => &["indisready"],
+            (RelationKind::Indexes, "unique_count") => &["indisunique"],
+            (RelationKind::Indexes, "primary_count") => &["indisprimary"],
+            (RelationKind::Indexes, "exclusion_count") => &["indisexclusion"],
+            _ => {
+                let timestamp = ["_oldest", "_latest", "_never_count"]
+                    .iter()
+                    .find_map(|suffix| field.strip_suffix(suffix));
+                if let Some(timestamp) = timestamp {
+                    names.insert(timestamp);
+                    if timestamp == "toast_last_autovacuum" {
+                        names.insert("toast_bytes");
+                    }
+                } else if (kind == RelationKind::Tables
+                    && (TABLE_RATES.contains(&field.as_str())
+                        || TABLE_GAUGES.contains(&field.as_str())
+                        || TABLE_MAXIMA.contains(&field.as_str())))
+                    || (kind == RelationKind::Indexes
+                        && (INDEX_RATES.contains(&field.as_str())
+                            || INDEX_GAUGES.contains(&field.as_str())
+                            || INDEX_FLAGS.contains(&field.as_str())))
+                {
+                    names.insert(field);
+                }
+                &[]
+            }
+        };
+        names.extend(dependencies.iter().copied());
+    }
+    names.into_iter().map(ToOwned::to_owned).collect()
+}
+
+fn history_datid(group: RelationGroup, filters: &[Filter]) -> Result<u32, ApiError> {
+    let required: &[&str] = match group {
+        RelationGroup::Database => &["datid"],
+        RelationGroup::Schema => &["datid", "schemaname"],
+        RelationGroup::Object => return Err(ApiError::BadFilter("group".to_owned())),
+    };
+    if filters.len() != required.len()
+        || required
+            .iter()
+            .any(|name| !filters.iter().any(|filter| filter.column == *name))
+    {
+        return Err(ApiError::BadFilter("where".to_owned()));
+    }
+    filters
+        .iter()
+        .find(|filter| filter.column == "datid")
+        .and_then(|filter| filter.value.parse().ok())
+        .ok_or_else(|| ApiError::BadFilter("datid".to_owned()))
+}
+
+fn history_segments(
+    listed: &[SegmentRef],
+    logical_name: &str,
+    from: i64,
+    to: i64,
+) -> Vec<SegmentRef> {
+    let carries = |segment: &SegmentRef| {
+        segment
+            .sections()
+            .iter()
+            .any(|section| logical_section_name(section.type_id) == Some(logical_name))
+    };
+    let mut selected = listed
+        .iter()
+        .filter(|segment| carries(segment) && segment.max_ts() >= from && segment.min_ts() <= to)
+        .cloned()
+        .collect::<Vec<_>>();
+    let type_ids = selected
+        .iter()
+        .flat_map(SegmentRef::sections)
+        .filter(|section| logical_section_name(section.type_id) == Some(logical_name))
+        .map(|section| section.type_id)
+        .collect::<HashSet<_>>();
+    for type_id in type_ids {
+        if let Some(before) = listed
+            .iter()
+            .filter(|segment| {
+                segment.max_ts() < from
+                    && segment
+                        .sections()
+                        .iter()
+                        .any(|section| section.type_id == type_id)
+            })
+            .max_by_key(|segment| (segment.max_ts(), segment.id()))
+        {
+            selected.push(before.clone());
+        }
+    }
+    selected.sort_unstable_by_key(|segment| (segment.min_ts(), segment.id()));
+    selected.dedup_by_key(|segment| segment.id());
+    selected
+}
+
+fn selected_history_layouts(
+    sources: &[HistorySegment],
+    datid: u32,
+    from: i64,
+    to: i64,
+    cancelled: &impl Fn() -> bool,
+) -> Result<BTreeMap<i64, HistoryMoment>, ApiError> {
+    let mut by_layout = BTreeMap::<u32, std::collections::BTreeSet<i64>>::new();
+    for source in sources {
+        for plan in &source.plans {
+            let Some(timestamp) = plan.timestamp else {
+                continue;
+            };
+            #[cfg(test)]
+            HISTORY_SELECTION_VISITS.set(HISTORY_SELECTION_VISITS.get().saturating_add(1));
+            source.segment.visit_rows(
+                plan.type_id,
+                &[timestamp, "datid"],
+                0,
+                usize::MAX,
+                |_ordinal, row| {
+                    if cancelled() {
+                        return false;
+                    }
+                    let (Some(stored_datid), Some(stored)) = (
+                        unsigned_cell(row.get("datid")),
+                        timestamp_cell(row.get(timestamp)),
+                    ) else {
+                        return true;
+                    };
+                    if stored_datid == datid && stored <= to {
+                        by_layout.entry(plan.type_id).or_default().insert(stored);
+                    }
+                    true
+                },
+            )?;
+        }
+    }
+    let mut selected = BTreeMap::<i64, HistoryMoment>::new();
+    for (type_id, moments) in &by_layout {
+        let mut previous = None;
+        for timestamp in moments {
+            if (from..=to).contains(timestamp) {
+                let candidate = HistoryMoment {
+                    type_id: *type_id,
+                    previous,
+                };
+                selected
+                    .entry(*timestamp)
+                    .and_modify(|chosen| {
+                        if candidate.type_id > chosen.type_id {
+                            *chosen = candidate;
+                        }
+                    })
+                    .or_insert(candidate);
+            }
+            previous = Some(*timestamp);
+        }
+    }
+    Ok(selected)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one history scan keeps its exact target, window, and reducer state explicit"
+)]
+fn scan_history_plan(
+    source: &HistorySegment,
+    plan: &Plan,
+    kind: RelationKind,
+    group: RelationGroup,
+    datid: u32,
+    from: i64,
+    to: i64,
+    selected: &BTreeMap<i64, HistoryMoment>,
+    previous: &mut BTreeMap<(u32, Vec<super::IdentityCell>), HistoryPrevious>,
+    aggregates: &mut BTreeMap<(i64, GroupKey), Aggregate>,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(), ApiError> {
+    if plan.timestamp.is_none() {
+        return Ok(());
+    }
+    let counters = rate_columns(plan);
+    let mut chunk = Vec::with_capacity(super::SNAPSHOT_CHUNK_ROWS);
+    let mut failure = None;
+    #[cfg(test)]
+    HISTORY_SOURCE_VISITS.set(HISTORY_SOURCE_VISITS.get().saturating_add(1));
+    source.segment.visit_rows(
+        plan.type_id,
+        &plan.projection,
+        0,
+        usize::MAX,
+        |ordinal, row| {
+            chunk.push((ordinal, row));
+            if chunk.len() == super::SNAPSHOT_CHUNK_ROWS
+                && let Err(error) = process_history_chunk(
+                    source, plan, kind, group, datid, from, to, selected, &counters, previous,
+                    aggregates, &mut chunk,
+                )
+            {
+                failure = Some(error);
+                return false;
+            }
+            !cancelled()
+        },
+    )?;
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    if !cancelled() && !chunk.is_empty() {
+        process_history_chunk(
+            source, plan, kind, group, datid, from, to, selected, &counters, previous, aggregates,
+            &mut chunk,
+        )?;
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the bounded chunk shares request-scoped predecessor and aggregate state"
+)]
+fn process_history_chunk(
+    source: &HistorySegment,
+    plan: &Plan,
+    kind: RelationKind,
+    group: RelationGroup,
+    datid: u32,
+    from: i64,
+    to: i64,
+    selected: &BTreeMap<i64, HistoryMoment>,
+    counters: &[&'static str],
+    previous: &mut BTreeMap<(u32, Vec<super::IdentityCell>), HistoryPrevious>,
+    aggregates: &mut BTreeMap<(i64, GroupKey), Aggregate>,
+    chunk: &mut Vec<(u64, Row)>,
+) -> Result<(), ApiError> {
+    let dictionary = query::chunk_dictionary(&source.segment, chunk)?;
+    for (ordinal, row) in chunk.drain(..) {
+        if unsigned_cell(row.get("datid")) != Some(datid) || !plan.matches(&row, &dictionary) {
+            continue;
+        }
+        let (Some(timestamp), Some(identity)) = (
+            plan.timestamp
+                .and_then(|name| timestamp_cell(row.get(name))),
+            identity_of(plan, &row),
+        ) else {
+            continue;
+        };
+        let history_key = (plan.type_id, identity);
+        let before = previous.get(&history_key);
+        if before.is_some_and(|stored| stored.timestamp >= timestamp) {
+            continue;
+        }
+        let moment = selected.get(&timestamp).copied();
+        let required_previous = moment
+            .filter(|moment| moment.type_id == plan.type_id)
+            .and_then(|moment| moment.previous);
+        let elapsed = required_previous
+            .and_then(|stored| timestamp.checked_sub(stored))
+            .filter(|elapsed| *elapsed > 0);
+        let exact_before = before.filter(|stored| Some(stored.timestamp) == required_previous);
+        if (from..=to).contains(&timestamp)
+            && moment.is_some_and(|moment| moment.type_id == plan.type_id)
+            && let Some(key) = GroupKey::from_row(kind, group, &row, &dictionary)?
+        {
+            let source_row = Source {
+                segment_id: source.segment.id(),
+                context_index: 0,
+                ordinal,
+                type_id: plan.type_id,
+                timestamp,
+            };
+            aggregates
+                .entry((timestamp, key.clone()))
+                .or_insert_with(|| Aggregate::new(key, source_row))
+                .add(
+                    kind,
+                    plan,
+                    &row,
+                    exact_before.map(|stored| &stored.readings),
+                    elapsed,
+                    &dictionary,
+                    source_row,
+                )?;
+        }
+        let readings = counters
+            .iter()
+            .filter_map(|name| row.get(name).cloned().map(|value| (*name, value)))
+            .collect();
+        previous.insert(
+            history_key,
+            HistoryPrevious {
+                timestamp,
+                readings,
+            },
+        );
+    }
+    Ok(())
 }
 
 struct RelationRow {

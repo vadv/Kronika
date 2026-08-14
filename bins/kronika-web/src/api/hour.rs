@@ -163,6 +163,11 @@ impl PreparedHour {
             ..
         } = self;
         if let Some(series) = series {
+            if series.group.is_some() {
+                return super::snapshot::stream_relation_history(
+                    &reader, &listed, window, &series, emit, cancelled,
+                );
+            }
             if series.section == process_summary::SECTION {
                 let segments = process_summary::with_predecessors(&listed, segments);
                 return process_summary::stream(

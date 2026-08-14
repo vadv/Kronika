@@ -60,6 +60,7 @@ pub(crate) struct SeriesRequest {
     pub(crate) fields: Vec<String>,
     pub(crate) filters: Vec<Filter>,
     pub(crate) type_id: Option<u32>,
+    pub(crate) group: Option<RelationGroup>,
 }
 
 /// Optional timestamp bounds for catalog listing only.
@@ -395,6 +396,7 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
     let mut window = Window::default();
     let mut section = None;
     let mut type_id = None;
+    let mut group = None;
     for (name, value) in extras {
         match name.as_str() {
             "from" if window.from.is_none() => window.from = Some(number("from", &value)?),
@@ -406,6 +408,14 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
                 section = Some(value);
             }
             "type_id" if type_id.is_none() => type_id = Some(unsigned_32("type_id", &value)?),
+            "group" if group.is_none() => {
+                group = Some(match value.as_str() {
+                    "database" => RelationGroup::Database,
+                    "schema" => RelationGroup::Schema,
+                    "object" => RelationGroup::Object,
+                    _ => return Err(RouteError::BadParameter("group".to_owned())),
+                });
+            }
             _ => return Err(RouteError::BadParameter(name)),
         }
     }
@@ -417,7 +427,7 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
         return Err(RouteError::BadParameter("from".to_owned()));
     }
     let Some(section) = section else {
-        if fields.is_empty() && filters.is_empty() && type_id.is_none() {
+        if fields.is_empty() && filters.is_empty() && type_id.is_none() && group.is_none() {
             return Ok(HourRequest {
                 window,
                 series: None,
@@ -425,6 +435,7 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
         }
         return Err(RouteError::BadParameter("section".to_owned()));
     };
+    validate_relation_series(&section, &fields, &filters, type_id, group)?;
     Ok(HourRequest {
         window,
         series: Some(SeriesRequest {
@@ -432,8 +443,41 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
             fields,
             filters,
             type_id,
+            group,
         }),
     })
+}
+
+fn validate_relation_series(
+    section: &str,
+    fields: &[String],
+    filters: &[Filter],
+    type_id: Option<u32>,
+    group: Option<RelationGroup>,
+) -> Result<(), RouteError> {
+    let Some(group) = group else {
+        return Ok(());
+    };
+    if type_id.is_some()
+        || fields.is_empty()
+        || !matches!(section, "pg_stat_user_tables" | "pg_stat_user_indexes")
+        || group == RelationGroup::Object
+    {
+        return Err(RouteError::BadParameter("group".to_owned()));
+    }
+    let required: &[&str] = match group {
+        RelationGroup::Database => &["datid"],
+        RelationGroup::Schema => &["datid", "schemaname"],
+        RelationGroup::Object => unreachable!(),
+    };
+    if filters.len() != required.len()
+        || required
+            .iter()
+            .any(|name| !filters.iter().any(|filter| filter.column == *name))
+    {
+        return Err(RouteError::BadParameter("where".to_owned()));
+    }
+    Ok(())
 }
 
 fn parse_data(segment: SegmentRequest, query: &str) -> Result<DataRequest, RouteError> {

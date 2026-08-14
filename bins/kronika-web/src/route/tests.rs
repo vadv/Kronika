@@ -102,6 +102,49 @@ fn physical_layout_selection_is_available_to_every_generic_row_resource() {
 }
 
 #[test]
+fn relation_hour_series_accepts_only_one_exact_aggregate_scope() {
+    let Route::Hour(hour) = parse(
+        "/api/hour",
+        Some(
+            "from=1&to=2&section=pg_stat_user_tables&group=schema&field=seq_scan&field=buffer_hit_pct&where.datid=7&where.schemaname=public",
+        ),
+    )
+    .expect("schema relation series")
+    else {
+        panic!("hour route");
+    };
+    let series = hour.series.expect("relation series");
+    assert_eq!(series.group, Some(super::RelationGroup::Schema));
+    assert_eq!(series.fields, ["seq_scan", "buffer_hit_pct"]);
+    assert_eq!(
+        series.filters,
+        [
+            Filter {
+                column: "datid".to_owned(),
+                value: "7".to_owned(),
+            },
+            Filter {
+                column: "schemaname".to_owned(),
+                value: "public".to_owned(),
+            },
+        ]
+    );
+
+    for query in [
+        "from=1&to=2&section=pg_stat_user_tables&group=object&field=seq_scan&where.datid=7",
+        "from=1&to=2&section=pg_stat_activity&group=database&field=active&where.datid=7",
+        "from=1&to=2&section=pg_stat_user_tables&group=database&field=seq_scan",
+        "from=1&to=2&section=pg_stat_user_tables&group=schema&field=seq_scan&where.datid=7",
+        "from=1&to=2&section=pg_stat_user_tables&group=database&field=seq_scan&where.datid=7&type_id=1013001",
+    ] {
+        assert!(
+            parse("/api/hour", Some(query)).is_err(),
+            "invalid aggregate series shape must be rejected: {query}",
+        );
+    }
+}
+
+#[test]
 fn snapshot_paging_inputs_enable_one_bounded_page() {
     let Route::Snapshot(ordered) = parse(
         "/api/segments/7/snapshot",

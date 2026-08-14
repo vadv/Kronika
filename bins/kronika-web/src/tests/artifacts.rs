@@ -3244,6 +3244,130 @@ fn relation_groups_keep_database_scope_and_sum_staggered_rates() {
 }
 
 #[test]
+fn relation_group_history_reuses_exact_reducers_across_segments_and_the_full_set() {
+    let mut fixture = Fixture::new();
+    let mut previous = (1..=205)
+        .map(|relid| (100, 1, relid, [0, 0, 0, 0], "db", "public", "table"))
+        .collect::<Vec<_>>();
+    previous.push((100, 2, 1, [0, 0, 0, 0], "other", "public", "table"));
+    fixture.append_dml_table_snapshots(&previous);
+    let current_segment = SEGMENT_ID + 1_000;
+    fixture.finish_and_continue(current_segment);
+
+    let mut current = (1..=205)
+        .map(|relid| {
+            let counters = if relid == 1 {
+                [10, 0, 0, 0]
+            } else {
+                [0, 1, 0, 1]
+            };
+            (200, 1, relid, counters, "db", "public", "table")
+        })
+        .collect::<Vec<_>>();
+    current.push((200, 2, 1, [9_999, 0, 0, 0], "other", "public", "table"));
+    fixture.append_dml_table_snapshots(&current);
+    fixture.finish();
+
+    crate::api::reset_history_operations();
+    let target = "/api/hour?from=200&to=200&section=pg_stat_user_tables&group=schema&field=table_count&field=dml_total&field=insert_share_pct&where.datid=1&where.schemaname=public";
+    let records = stream(fixture.prepare(target, None)).expect("grouped relation history");
+    let rows = relation_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["key"]["datid"], "1");
+    assert_eq!(rows[0]["key"]["schemaname"], "public");
+    assert_eq!(rows[0]["values"]["table_count"], "205");
+    assert_eq!(rows[0]["values"]["dml_total"], 2_140_000.0);
+    let insert_share = rows[0]["values"]["insert_share_pct"]
+        .as_f64()
+        .expect("insert share");
+    assert!((insert_share - 500.0 / 107.0).abs() < 1e-12);
+    assert_eq!(rows[0]["sample_from"], "100");
+    assert_eq!(rows[0]["sample_to"], "200");
+    assert!(rows[0]["source"].is_null());
+    assert_eq!(
+        crate::api::history_operations(),
+        (2, 2),
+        "one selection and one source visit per physical layout and segment",
+    );
+
+    crate::api::reset_history_operations();
+    let one_metric = "/api/hour?from=200&to=200&section=pg_stat_user_tables&group=database&field=dml_total&where.datid=1";
+    let records = stream(fixture.prepare(one_metric, None)).expect("single-metric grouped history");
+    let rows = relation_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"]["dml_total"], 2_140_000.0);
+    assert_eq!(
+        crate::api::history_operations(),
+        (2, 2),
+        "requested metric count must not multiply physical source visits",
+    );
+}
+
+#[test]
+fn relation_group_history_keeps_zero_reset_and_missing_predecessor_distinct() {
+    let mut fixture = Fixture::new();
+    fixture.append_named_table_snapshots(&[
+        (100, 1, 11, 10, "db", "steady", "steady_table"),
+        (100, 1, 12, 20, "db", "reset", "reset_table"),
+    ]);
+    fixture.finish_and_continue(SEGMENT_ID + 1_000);
+    fixture.append_named_table_snapshots(&[
+        (200, 1, 11, 10, "db", "steady", "steady_table"),
+        (200, 1, 12, 5, "db", "reset", "reset_table"),
+        (200, 1, 13, 1, "db", "new", "new_table"),
+    ]);
+    fixture.finish();
+
+    let load_schema = |schema: &str| {
+        let target = format!(
+            "/api/hour?from=200&to=200&section=pg_stat_user_tables&group=schema&field=seq_scan&where.datid=1&where.schemaname={schema}"
+        );
+        let records = stream(fixture.prepare(&target, None)).expect("schema history");
+        relation_records(&records)[0]["values"]["seq_scan"].clone()
+    };
+    assert_eq!(load_schema("steady"), serde_json::json!(0.0));
+    assert_eq!(load_schema("reset"), Value::Null);
+    assert_eq!(load_schema("new"), Value::Null);
+
+    let database = stream(fixture.prepare(
+        "/api/hour?from=200&to=200&section=pg_stat_user_tables&group=database&field=seq_scan&where.datid=1",
+        None,
+    ))
+    .expect("database history");
+    assert_eq!(
+        relation_records(&database)[0]["values"]["seq_scan"],
+        Value::Null,
+        "one reset or missing object predecessor makes the exact database aggregate unavailable",
+    );
+}
+
+#[test]
+fn active_wal_relation_history_handles_snapshot_ordered_parts() {
+    let mut fixture = Fixture::new();
+    fixture.append_dml_table_snapshots(&[
+        (100, 1, 11, [0, 0, 0, 0], "db", "public", "first"),
+        (100, 1, 12, [0, 0, 0, 0], "db", "public", "second"),
+    ]);
+    fixture.append_dml_table_snapshots(&[
+        (200, 1, 11, [3, 0, 0, 0], "db", "public", "first"),
+        (200, 1, 12, [0, 7, 0, 7], "db", "public", "second"),
+    ]);
+
+    let records = stream(fixture.prepare(
+        "/api/hour?from=200&to=200&section=pg_stat_user_tables&group=database&field=table_count&field=dml_total&field=insert_share_pct&where.datid=1",
+        None,
+    ))
+    .expect("active WAL grouped history");
+    let rows = relation_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"]["table_count"], "2");
+    assert_eq!(rows[0]["values"]["dml_total"], 100_000.0);
+    assert_eq!(rows[0]["values"]["insert_share_pct"], 30.0);
+    assert_eq!(rows[0]["sample_from"], "100");
+    assert_eq!(rows[0]["sample_to"], "200");
+}
+
+#[test]
 fn relation_derivatives_sort_the_full_set_and_recompute_group_ratios() {
     let mut fixture = Fixture::new();
     fixture.append_dml_table_snapshots(&[

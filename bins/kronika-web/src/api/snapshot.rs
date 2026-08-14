@@ -19,6 +19,7 @@ use super::query::{Plan, plans, resolved_dictionary};
 use super::render::{cell, projected_layout, record, shorten};
 use super::{ApiError, CachePolicy, ResponseMeta, explicit_segment_with_listing};
 use crate::route::{DataRequest, Order, RelationGroup, SegmentRequest, SnapshotRequest};
+use crate::route::{SeriesRequest, Window};
 
 pub(crate) struct PreparedSnapshot {
     segment: Segment,
@@ -288,6 +289,20 @@ pub(crate) fn page_operations() -> (usize, usize, usize) {
         PAGE_CHUNK_ROWS.get(),
     )
 }
+
+pub(super) fn stream_relation_history(
+    reader: &Reader,
+    listed: &[SegmentRef],
+    window: Window,
+    request: &SeriesRequest,
+    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(), ApiError> {
+    relation::stream_history(reader, listed, window, request, emit, cancelled)
+}
+
+#[cfg(test)]
+pub(crate) use relation::{history_operations, reset_history_operations};
 
 pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedSnapshot, ApiError> {
     let binding = snapshot_binding(&request);
