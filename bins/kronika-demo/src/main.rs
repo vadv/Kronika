@@ -10,13 +10,25 @@
 //! at a live log shows those events in the same summary.
 //!
 //! Environment: `KRONIKA_DEMO_DIR` (default `demo-data`),
-//! `KRONIKA_DEMO_DURATION_S` (default `60`), `KRONIKA_COLLECTOR_BIN` (default
-//! `kronika-collector` next to this binary). Any `KRONIKA_*` variable the
-//! collector reads passes through unchanged.
+//! `KRONIKA_DEMO_DURATION_S` (default `60`; `0` runs until `SIGTERM` or
+//! `SIGINT` instead of an already-elapsed deadline), `KRONIKA_COLLECTOR_BIN`
+//! (default `kronika-collector` next to this binary). Any `KRONIKA_*`
+//! variable the collector reads passes through unchanged.
+//!
+//! Setting `KRONIKA_DEMO_WORKLOAD_DSN` also drives a `PostgreSQL` workload
+//! (schemas, tables, steady DML, lock-wait chains) alongside the collector;
+//! see `workload` for its configuration.
+#![allow(
+    clippy::multiple_crate_versions,
+    reason = "the registry's arrow/parquet stack and the workload's rand/tokio-postgres \
+              dependencies pull duplicate transitive versions outside our control"
+)]
 
 mod report;
 mod sample;
 mod sections;
+mod shutdown;
+mod workload;
 
 use anyhow::{Context, Result};
 use nix::sys::signal::{Signal, kill};
@@ -24,7 +36,9 @@ use nix::unistd::Pid;
 use report::Report;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+use workload::{Workload, WorkloadConfig};
 
 /// How often the demo reads the collector's footprint while it runs.
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
@@ -80,6 +94,13 @@ fn main() -> Result<()> {
         .context("KRONIKA_DEMO_DURATION_S is not a u64")?;
     std::fs::create_dir_all(&segments).context("create the demo data root")?;
 
+    let stop = shutdown::watch().context("watch for shutdown signals")?;
+    let workload = WorkloadConfig::from_env()
+        .context("read the workload configuration")?
+        .map(Workload::start)
+        .transpose()
+        .context("start the demo workload")?;
+
     let binary = collector_binary()?;
     let log_path = root.join("collector.log");
     let log = std::fs::File::create(&log_path).context("create collector.log")?;
@@ -100,10 +121,17 @@ fn main() -> Result<()> {
 
     let clock_ticks = rustix::param::clock_ticks_per_second();
     let started = Instant::now();
-    let deadline = Duration::from_secs(duration_s);
+    // `0` means "run until stopped" rather than an already-elapsed deadline.
+    let deadline = (duration_s != 0).then(|| Duration::from_secs(duration_s));
     let mut peak_rss_bytes = 0_u64;
     let mut cpu_ticks = 0_u64;
-    while started.elapsed() < deadline {
+    loop {
+        if deadline.is_some_and(|deadline| started.elapsed() >= deadline) {
+            break;
+        }
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
         std::thread::sleep(SAMPLE_INTERVAL);
         if let Some(status) = child.try_wait().context("poll the collector")? {
             anyhow::bail!(
@@ -121,6 +149,10 @@ fn main() -> Result<()> {
         {
             cpu_ticks = cpu_ticks.max(ticks);
         }
+    }
+
+    if let Some(workload) = workload {
+        workload.stop();
     }
 
     // SIGTERM, not kill(): the collector writes its open segment on the way out
