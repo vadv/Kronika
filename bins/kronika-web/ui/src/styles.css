@@ -450,6 +450,7 @@ h2 { font-size: var(--t-md); }
 .pg-detail { background: var(--s2); border: 1px solid var(--line3); border-left: 0; max-height: min(560px, calc(100vh - 355px)); overflow: auto; padding: 11px; }
 .pg-table-shell { display: flex; flex-direction: column; height: 100dvh; min-height: 0; }
 .pg-table-workspace { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; }
+.pg-table-workspace > .timeline-shell { flex: 0 0 auto; }
 .pg-table-shell .pg-entity-layout { grid-template-rows: minmax(0, 1fr); min-height: 0; }
 .pg-table-shell .pg-entity-main, .pg-table-shell .pg-entity-layout .entity-table { display: flex; flex-direction: column; min-height: 0; }
 .pg-table-shell .pg-entity-layout .entity-scroll { flex: 0 1 auto; height: auto; }
@@ -575,6 +576,20 @@ h2 { font-size: var(--t-md); }
   .process-layout { grid-template-columns: minmax(0, 1fr); }
   .detail-dock { border-left: 1px solid var(--line3); bottom: 10px; box-shadow: -15px 0 45px var(--shadow-a); max-height: calc(100vh - 160px); max-width: 430px; position: fixed; right: 10px; top: 150px; width: min(430px, calc(100vw - 20px)); z-index: 80; }
   .system-console { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-height: 620px) {
+  .pg-table-workspace > .timeline-shell .uplot-figure.timeline-chart:not(.uplot-expanded) { flex-basis: 132px; height: 132px; min-height: 132px; }
+  .pg-table-workspace > .timeline-shell .timeline-chart:not(.uplot-expanded) .uplot-host { min-height: 102px; }
+}
+
+@media (max-height: 480px) {
+  .pg-table-workspace > .timeline-shell .uplot-figure.timeline-chart:not(.uplot-expanded) { flex-basis: 32px; height: 32px; min-height: 32px; padding-bottom: 3px; padding-top: 3px; }
+  .pg-table-workspace > .timeline-shell .timeline-chart:not(.uplot-expanded) figcaption { margin-bottom: 0; }
+  .pg-table-workspace > .timeline-shell .timeline-chart:not(.uplot-expanded) .uplot-host,
+  .pg-table-workspace > .timeline-shell .timeline-chart:not(.uplot-expanded) .chart-marker-track { display: none; }
+  .pg-table-workspace > .timeline-shell .timeline-chart:not(.uplot-expanded) .chart-expand { align-items: center; display: inline-flex; gap: 5px; padding: 0 7px; width: auto; }
+  .pg-table-workspace > .timeline-shell .timeline-chart:not(.uplot-expanded) .chart-expand::before { content: attr(aria-label); }
 }
 
 @media (max-width: 1000px) {

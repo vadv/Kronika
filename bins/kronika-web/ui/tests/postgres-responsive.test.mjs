@@ -47,3 +47,16 @@ test("only long PostgreSQL entity views own the viewport flex chain", () => {
   assert.match(stylesheet, /\.pg-table-shell \.pg-entity-layout \.entity-scroll \{[^}]*height: auto;/)
   assert.match(stylesheet, /\.pg-table-shell \.pg-detail \{[^}]*max-height: none;[^}]*min-height: 0;/)
 })
+
+test("short PostgreSQL workspaces keep a visible chart path without crushing the table", () => {
+  assert.match(stylesheet, /\.pg-table-workspace > \.timeline-shell \{ flex: 0 0 auto; \}/)
+
+  const compact = mediaBlock("max-height: 620px")
+  assert.match(compact, /\.timeline-chart:not\(\.uplot-expanded\)[^{]*\{[^}]*flex-basis: 132px;[^}]*height: 132px;[^}]*min-height: 132px;/)
+  assert.match(compact, /\.timeline-chart:not\(\.uplot-expanded\) \.uplot-host \{ min-height: 102px; \}/)
+
+  const launch = mediaBlock("max-height: 480px")
+  assert.match(launch, /\.timeline-chart:not\(\.uplot-expanded\)[^{]*\{[^}]*flex-basis: 32px;[^}]*height: 32px;[^}]*min-height: 32px;/)
+  assert.match(launch, /\.timeline-chart:not\(\.uplot-expanded\) \.uplot-host,[^}]*\.chart-marker-track \{ display: none; \}/)
+  assert.match(launch, /\.timeline-chart:not\(\.uplot-expanded\) \.chart-expand::before \{ content: attr\(aria-label\); \}/)
+})
