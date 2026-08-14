@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use kronika_format::{ENTRY_LEN, FRAME_HEADER_LEN};
 use kronika_layout::{DataRoot, LayoutLimits, WriterOwner};
 use kronika_reader::{Cell, Reader, Resolved, SegmentKind};
-use kronika_registry::{PgWalStorage, Ts, section_name};
+use kronika_registry::os_cgroup_context::OsCgroupContext;
+use kronika_registry::{PgWalStorage, StrId, Ts, section_name};
 use kronika_source_pg::query::{BATCH_LOGICAL_BYTES, BATCH_ROWS};
 use kronika_source_pg::settings::SettingsRow;
 use kronika_source_pg::statements::{StatementsRow, StatementsVersion};
@@ -13,6 +14,7 @@ use kronika_writer::{Journal, JournalConfig, SectionBuffers};
 
 use crate::config::Config;
 use crate::logging::peak_rss_kib;
+use crate::os_sources::{OsSources, push_os_sources};
 use crate::pg_sources::{PgBatch, push_pg_batch};
 use crate::scheduler::Intervals;
 use crate::segments::{
@@ -31,6 +33,7 @@ const PLAN_ROW_OVERHEAD_BYTES: usize = 274;
 const PG_STAT_STATEMENTS_V6_TYPE_ID: u32 = 1_002_006;
 const PG_STORE_PLANS_VADV_TYPE_ID: u32 = 1_004_001;
 const PG_WAL_STORAGE_TYPE_ID: u32 = 1_020_001;
+const CGROUP_CONTEXT_TYPE_ID: u32 = 1_205_001;
 const WAL_STORAGE_SNAPSHOTS_PER_HOUR: usize = 120;
 const BASE_TS: i64 = 1_700_000_000_000_000;
 const PRE_CHANGE_ZMS_BYTES: u64 = 3_141_820;
@@ -719,6 +722,110 @@ fn wal_storage_hour_reports_raw_and_finished_costs() {
     assert!(zms_bytes < 8 * 1024);
     println!(
         "pg_wal_storage_cost rows={} raw_wal_bytes={} section_bytes={} marginal_zms_bytes={} zms_bytes={}",
+        rows.len(),
+        raw_wal_bytes,
+        section.bytes,
+        marginal_zms_bytes,
+        zms_bytes
+    );
+}
+
+#[test]
+fn cgroup_context_hour_reports_raw_and_finished_costs() {
+    let directory = tempfile::tempdir().expect("create cgroup context cost directory");
+    let writer = owner(directory.path());
+    let mut journal =
+        Journal::open(&writer, JournalConfig::default()).expect("open cgroup context journal");
+    let config = config(directory.path(), u64::MAX);
+    let mut segment = SegmentState::default();
+
+    for sample in 0..WAL_STORAGE_SNAPSHOTS_PER_HOUR {
+        let sample = i64::try_from(sample).expect("sample count fits i64");
+        let ts = BASE_TS.saturating_add(sample.saturating_mul(30_000_000));
+        let path = segment
+            .interner_mut()
+            .intern(b"/kubepods/pod-a/container-a")
+            .map(|id| StrId(id.get()))
+            .expect("intern cgroup path");
+        let mut buffers = SectionBuffers::new();
+        let sources = OsSources::cgroup_context_only(OsCgroupContext {
+            ts: Ts(ts),
+            cgroup_version: 2,
+            cpu_path: Some(path),
+            memory_path: Some(path),
+            io_path: Some(path),
+            cpuset_cpus: Some(2),
+            scope: 3,
+        });
+        push_os_sources(&mut buffers, &sources).expect("buffer cgroup context");
+        let flushed = encode_window(buffers, segment.interner()).expect("encode cgroup context");
+        let completed = append_window_and_maybe_close(
+            &mut journal,
+            &writer,
+            &config,
+            &mut segment,
+            ts,
+            false,
+            &flushed,
+        )
+        .expect("append cgroup context");
+        assert!(completed.is_empty());
+    }
+
+    let raw_wal_bytes = journal.bytes();
+    let path = close_open_segment(&mut journal, &writer, &mut segment, "test-end")
+        .expect("write cgroup context cost segment");
+    let reader = Reader::open(directory.path()).expect("open cgroup context cost reader");
+    let listing = reader
+        .segments(..)
+        .expect("list cgroup context cost segment");
+    let reference = listing
+        .segments
+        .first()
+        .expect("one cgroup context segment");
+    let stored = reader
+        .open_segment(reference)
+        .expect("open finished cgroup context segment");
+    let rows = stored
+        .rows(CGROUP_CONTEXT_TYPE_ID)
+        .expect("read cgroup context rows");
+    let section = stored
+        .sections()
+        .find(|(type_id, _section)| *type_id == CGROUP_CONTEXT_TYPE_ID)
+        .map(|(_type_id, section)| section)
+        .expect("cgroup context section is catalogued");
+    let zms_bytes = std::fs::metadata(path)
+        .expect("stat cgroup context segment")
+        .len();
+    let marginal_zms_bytes = section
+        .bytes
+        .saturating_add(u64::try_from(ENTRY_LEN).expect("catalog entry length fits u64"));
+
+    assert_eq!(listing.segments.len(), 1);
+    assert_eq!(stored.window_count(), 120);
+    assert_eq!(rows.len(), WAL_STORAGE_SNAPSHOTS_PER_HOUR);
+    assert_eq!(
+        rows.first().and_then(|row| row.get("cpuset_cpus")),
+        Some(&Cell::I64(2))
+    );
+    let dictionary = stored.dictionary().expect("read cgroup context dictionary");
+    for field in ["cpu_path", "memory_path", "io_path"] {
+        let Some(Cell::StrId(path)) = rows.first().and_then(|row| row.get(field)) else {
+            panic!("cgroup context {field} must be persisted");
+        };
+        match dictionary.resolve(*path) {
+            Some(Resolved::Str(actual)) => {
+                assert_eq!(actual, b"/kubepods/pod-a/container-a");
+            }
+            Some(Resolved::Blob(_)) => panic!("cgroup context path belongs in dict.strings"),
+            None => panic!("cgroup context {field} id resolves"),
+        }
+    }
+    assert!(raw_wal_bytes < 512 * 1024);
+    assert!(section.bytes < 8 * 1024);
+    assert!(zms_bytes < 16 * 1024);
+    println!(
+        "os_cgroup_context_cost rows={} raw_wal_bytes={} section_bytes={} marginal_zms_bytes={} zms_bytes={}",
         rows.len(),
         raw_wal_bytes,
         section.bytes,

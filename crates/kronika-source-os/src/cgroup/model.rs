@@ -13,6 +13,23 @@ pub struct CgroupCollection {
     pub pids: Vec<CgroupPidsRow>,
 }
 
+/// The collector process's own cgroup membership at one timestamp.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CgroupContextRow {
+    /// Collection timestamp, unix microseconds.
+    pub ts: i64,
+    /// Cgroup interface version (`0=unknown`, `1=v1`, `2=v2`).
+    pub cgroup_version: u8,
+    /// Exact CPU-controller path.
+    pub cpu_path: Option<String>,
+    /// Exact memory-controller path.
+    pub memory_path: Option<String>,
+    /// Exact I/O-controller path.
+    pub io_path: Option<String>,
+    /// CPU count from the effective cpuset file.
+    pub cpuset_cpus: Option<i64>,
+}
+
 /// CPU metrics for one cgroup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CgroupCpuRow {

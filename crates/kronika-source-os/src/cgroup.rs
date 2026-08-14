@@ -1,16 +1,21 @@
 //! Parse and collect cgroup v2 and selected cgroup v1 metrics.
 
 use std::collections::{BTreeSet, VecDeque};
+use std::io;
 
-use crate::SysFs;
+use crate::{ProcFs, SysFs};
 
 mod model;
 mod parse;
 mod sections;
 
-pub use model::{CgroupCollection, CgroupCpuRow, CgroupIoRow, CgroupMemoryRow, CgroupPidsRow};
+pub use model::{
+    CgroupCollection, CgroupContextRow, CgroupCpuRow, CgroupIoRow, CgroupMemoryRow, CgroupPidsRow,
+};
 pub use parse::{parse_blkio_service_stats, parse_cpu_max, parse_cpu_stat, parse_io_stat};
-pub use sections::{to_cpu_section, to_io_section, to_memory_section, to_pids_section};
+pub use sections::{
+    to_context_section, to_cpu_section, to_io_section, to_memory_section, to_pids_section,
+};
 
 use parse::{
     parse_cpuacct_stat, parse_i64, parse_memory_events, parse_memory_stat_v1, parse_memory_stat_v2,
@@ -24,6 +29,292 @@ const CPU_V1_DIRS: &[&str] = &["cpu,cpuacct", "cpuacct,cpu", "cpu", "cpuacct", "
 const MEMORY_V1_DIRS: &[&str] = &["memory", ""];
 const PIDS_V1_DIRS: &[&str] = &["pids", ""];
 const BLKIO_V1_DIRS: &[&str] = &["blkio", ""];
+const CPUSET_V1_DIRS: &[&str] = &["cpuset", ""];
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct SelfCgroupPaths {
+    unified: Option<String>,
+    cpu: Option<String>,
+    cpuacct: Option<String>,
+    memory: Option<String>,
+    io: Option<String>,
+    cpuset: Option<String>,
+}
+
+/// Collect the collector process's exact cgroup paths and effective cpuset.
+///
+/// The effective cpuset is read only from the process's own cgroup. Missing or
+/// malformed membership and cpuset files remain absent.
+///
+/// # Errors
+/// Returns the procfs read error when `self/cgroup` is unavailable.
+pub fn collect_context(procfs: &ProcFs, sys: &SysFs, ts: i64) -> io::Result<CgroupContextRow> {
+    let parsed = parse_self_cgroup(&procfs.read_raw("self/cgroup")?);
+    let unified_v2 = is_v2(sys);
+    let has_unified = parsed.unified.is_some();
+    let has_v1 = parsed.cpu.is_some()
+        || parsed.cpuacct.is_some()
+        || parsed.memory.is_some()
+        || parsed.io.is_some()
+        || parsed.cpuset.is_some();
+
+    if unified_v2 && has_unified {
+        let path = parsed.unified;
+        let cpuset_cpus = path.as_deref().and_then(|path| {
+            sys.read(&rel(path, "cpuset.cpus.effective"))
+                .ok()
+                .and_then(|content| parse_cpuset_count(&content))
+        });
+        return Ok(CgroupContextRow {
+            ts,
+            cgroup_version: 2,
+            cpu_path: path.clone().filter(|path| usable_cpu_v2(sys, path)),
+            memory_path: path.clone().filter(|path| usable_memory_v2(sys, path)),
+            io_path: path.filter(|path| usable_io_v2(sys, path)),
+            cpuset_cpus,
+        });
+    }
+
+    if !unified_v2 && has_v1 {
+        let cpu_path =
+            matching_cpu_path(parsed.cpu, parsed.cpuacct).filter(|path| usable_cpu_v1(sys, path));
+        let cpuset_cpus = parsed.cpuset.as_deref().and_then(|path| {
+            read_first_v1(sys, CPUSET_V1_DIRS, path, "cpuset.effective_cpus")
+                .and_then(|content| parse_cpuset_count(&content))
+        });
+        return Ok(CgroupContextRow {
+            ts,
+            cgroup_version: 1,
+            cpu_path,
+            memory_path: parsed.memory.filter(|path| usable_memory_v1(sys, path)),
+            io_path: parsed.io.filter(|path| usable_io_v1(sys, path)),
+            cpuset_cpus,
+        });
+    }
+
+    Ok(CgroupContextRow {
+        ts,
+        ..CgroupContextRow::default()
+    })
+}
+
+fn matching_cpu_path(cpu: Option<String>, cpuacct: Option<String>) -> Option<String> {
+    match (cpu, cpuacct) {
+        (Some(cpu), Some(cpuacct)) if cpu == cpuacct => Some(cpu),
+        _ => None,
+    }
+}
+
+fn usable_cpu_v2(sys: &SysFs, path: &str) -> bool {
+    sys.read(&rel(path, "cpu.stat")).is_ok_and(|content| {
+        has_numeric_keys(&content, &["usage_usec", "user_usec", "system_usec"])
+    })
+}
+
+fn usable_cpu_v1(sys: &SysFs, path: &str) -> bool {
+    read_first_v1(sys, CPU_V1_DIRS, path, "cpuacct.usage")
+        .is_some_and(|content| parse_i64(&content).is_some())
+        && read_first_v1(sys, CPU_V1_DIRS, path, "cpuacct.stat")
+            .is_some_and(|content| has_numeric_keys(&content, &["user", "system"]))
+}
+
+fn usable_memory_v2(sys: &SysFs, path: &str) -> bool {
+    sys.read(&rel(path, "memory.current"))
+        .is_ok_and(|content| parse_i64(&content).is_some())
+        && sys
+            .read(&rel(path, "memory.stat"))
+            .is_ok_and(|content| has_numeric_keys(&content, &["anon", "file", "kernel", "slab"]))
+}
+
+fn usable_memory_v1(sys: &SysFs, path: &str) -> bool {
+    read_first_v1(sys, MEMORY_V1_DIRS, path, "memory.usage_in_bytes")
+        .is_some_and(|content| parse_i64(&content).is_some())
+        && read_first_v1(sys, MEMORY_V1_DIRS, path, "memory.stat").is_some_and(|content| {
+            let keys = numeric_keys(&content);
+            has_any_key(&keys, &["rss", "total_rss"])
+                && has_any_key(&keys, &["cache", "total_cache"])
+                && has_any_key(&keys, &["slab", "total_slab"])
+                && has_any_key(&keys, &["kernel_stack", "total_kernel_stack"])
+        })
+}
+
+fn usable_io_v2(sys: &SysFs, path: &str) -> bool {
+    sys.read(&rel(path, "io.stat"))
+        .is_ok_and(|content| complete_io_stat(&content))
+}
+
+fn usable_io_v1(sys: &SysFs, path: &str) -> bool {
+    let bytes = read_first_v1(sys, BLKIO_V1_DIRS, path, "blkio.throttle.io_service_bytes")
+        .or_else(|| read_first_v1(sys, BLKIO_V1_DIRS, path, "blkio.io_service_bytes"));
+    let operations = read_first_v1(sys, BLKIO_V1_DIRS, path, "blkio.throttle.io_serviced")
+        .or_else(|| read_first_v1(sys, BLKIO_V1_DIRS, path, "blkio.io_serviced"));
+    bytes
+        .as_deref()
+        .and_then(complete_blkio_devices)
+        .zip(operations.as_deref().and_then(complete_blkio_devices))
+        .is_some_and(|(bytes, operations)| bytes == operations)
+}
+
+fn numeric_keys(content: &str) -> BTreeSet<&str> {
+    content
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let key = fields.next()?;
+            fields.next()?.parse::<i64>().ok().map(|_value| key)
+        })
+        .collect()
+}
+
+fn has_numeric_keys(content: &str, required: &[&str]) -> bool {
+    let keys = numeric_keys(content);
+    required.iter().all(|key| keys.contains(key))
+}
+
+fn has_any_key(keys: &BTreeSet<&str>, candidates: &[&str]) -> bool {
+    candidates.iter().any(|key| keys.contains(key))
+}
+
+fn complete_io_stat(content: &str) -> bool {
+    let mut rows = 0_usize;
+    for line in content.lines() {
+        let mut fields = line.split_whitespace();
+        let Some(device) = fields.next() else {
+            continue;
+        };
+        if parse_device_pair(device).is_none() {
+            continue;
+        }
+        let keys: BTreeSet<&str> = fields
+            .filter_map(|field| {
+                let (key, value) = field.split_once('=')?;
+                value.parse::<i64>().ok().map(|_value| key)
+            })
+            .collect();
+        if !["rbytes", "wbytes", "rios", "wios"]
+            .iter()
+            .all(|key| keys.contains(key))
+        {
+            return false;
+        }
+        rows = rows.saturating_add(1);
+    }
+    rows != 0
+}
+
+fn complete_blkio_devices(content: &str) -> Option<BTreeSet<(u32, u32)>> {
+    let mut reads = BTreeSet::new();
+    let mut writes = BTreeSet::new();
+    for line in content.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(device), Some(operation), Some(value)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let Some(device) = parse_device_pair(device) else {
+            continue;
+        };
+        if value.parse::<i64>().is_err() {
+            continue;
+        }
+        match operation {
+            "Read" => {
+                reads.insert(device);
+            }
+            "Write" => {
+                writes.insert(device);
+            }
+            _ => {}
+        }
+    }
+    (!reads.is_empty() && reads == writes).then_some(reads)
+}
+
+fn parse_device_pair(device: &str) -> Option<(u32, u32)> {
+    let (major, minor) = device.split_once(':')?;
+    Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
+fn parse_self_cgroup(content: &str) -> SelfCgroupPaths {
+    let mut paths = SelfCgroupPaths::default();
+    for line in content.lines() {
+        let mut fields = line.splitn(3, ':');
+        let (Some(_hierarchy), Some(controllers), Some(path)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let Some(path) = normalize_self_cgroup_path(path) else {
+            continue;
+        };
+        if controllers.is_empty() {
+            set_exact_path(&mut paths.unified, &path);
+            continue;
+        }
+        for controller in controllers.split(',') {
+            match controller {
+                "cpu" => set_exact_path(&mut paths.cpu, &path),
+                "cpuacct" => set_exact_path(&mut paths.cpuacct, &path),
+                "memory" => set_exact_path(&mut paths.memory, &path),
+                "blkio" => set_exact_path(&mut paths.io, &path),
+                "cpuset" => set_exact_path(&mut paths.cpuset, &path),
+                _ => {}
+            }
+        }
+    }
+    paths
+}
+
+fn set_exact_path(stored: &mut Option<String>, path: &str) {
+    if stored.as_deref().is_none_or(|current| current == path) {
+        *stored = Some(path.to_owned());
+    } else {
+        *stored = None;
+    }
+}
+
+fn normalize_self_cgroup_path(path: &str) -> Option<String> {
+    let path = path.trim();
+    if !path.starts_with('/')
+        || path
+            .split('/')
+            .any(|component| matches!(component, "." | ".."))
+    {
+        return None;
+    }
+    let normalized = path.trim_end_matches('/');
+    Some(if normalized.is_empty() {
+        "/".to_owned()
+    } else {
+        normalized.to_owned()
+    })
+}
+
+fn parse_cpuset_count(content: &str) -> Option<i64> {
+    let mut count = 0_u64;
+    let mut previous_end = None;
+    for part in content.trim().split(',') {
+        if part.is_empty() {
+            return None;
+        }
+        let (start, end) = if let Some((start, end)) = part.split_once('-') {
+            if end.contains('-') {
+                return None;
+            }
+            (start.parse::<u32>().ok()?, end.parse::<u32>().ok()?)
+        } else {
+            let cpu = part.parse::<u32>().ok()?;
+            (cpu, cpu)
+        };
+        if start > end || previous_end.is_some_and(|previous| start <= previous) {
+            return None;
+        }
+        count = count.checked_add(u64::from(end - start) + 1)?;
+        previous_end = Some(end);
+    }
+    (count != 0).then(|| i64::try_from(count).ok()).flatten()
+}
 
 /// Collect cgroup v2 or v1 rows from `KRONIKA_SYS_ROOT/fs/cgroup`.
 #[must_use]

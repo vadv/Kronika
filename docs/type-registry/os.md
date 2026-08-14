@@ -57,9 +57,23 @@ The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 | `1_202_002` | cgroup: memory with shared memory, retained reader layout | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_203_001` | cgroup: io | `snapshot_full` | `(cgroup_path, major, minor, ts)` |
 | `1_204_001` | cgroup: pids | `snapshot_full` | `(cgroup_path, ts)` |
+| `1_205_001` | collector cgroup context | `snapshot_full` | `(ts)` |
 
 The collector currently writes the `1_201_001` and `1_202_001` layouts. The
 `002` layouts remain registered because existing WAL and ZMS files carry them.
+
+`os_cgroup_context` records the collector process's exact controller paths from
+`/proc/self/cgroup`. On cgroup v2 the CPU, memory, and I/O paths are the unified
+path. On cgroup v1 they remain controller-specific. `cpuset_cpus` is the count
+from `cpuset.cpus.effective` on v2 or `cpuset.effective_cpus` on v1; it is null
+when the exact file is missing or cannot be parsed. The collector does not walk
+to an ancestor or substitute the host CPU count. `cgroup_version` is `0` when
+membership cannot be read or matched to the cgroup tree used for collection.
+On v1 `cpu_path` is null when the `cpu` and `cpuacct` controllers place the
+process at different paths, because no single stored cgroup CPU row then
+contains both usage and quota. A controller path is also null when the current
+stored layout lacks any counter or composition operand presented by web;
+partial legacy files are not represented as zero.
 
 The collection period is not part of a `type_id`. The collector's scheduler
 sets it per source; the intervals and their defaults are listed in the
