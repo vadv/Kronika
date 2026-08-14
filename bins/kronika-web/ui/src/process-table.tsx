@@ -1,10 +1,12 @@
-import { useMemo } from "react"
+import { useEffect, useMemo, useState } from "react"
 
-import type { Cell, DataRow, Finding } from "./api"
+import { loadSeries, type Cell, type DataRow, type Finding } from "./api"
+import { buildMetricSamples } from "./chart"
 import { EntityTable, type EntityColumn, type TableOrder } from "./entity-table"
 import type { Translate } from "./help"
 import {
   asNumber,
+  compact,
   cores,
   humanBytes,
   identifier,
@@ -19,6 +21,7 @@ import {
   type Lens,
   type Locale,
 } from "./model"
+import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 
 export interface Field {
   readonly id: string
@@ -64,11 +67,110 @@ export const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
   ],
 }
 
-export function ProcessSummary({ lens, linkedPids, locale, rows, t, ticksPerSecond }: { readonly lens: Lens; readonly linkedPids: ReadonlySet<number>; readonly locale: Locale; readonly rows: readonly DataRow[]; readonly t: Translate; readonly ticksPerSecond: number | null }) {
-  const metrics = summaryMetrics(rows, lens, linkedPids, ticksPerSecond, locale, t)
+type SummaryKind = "bytes" | "bytes_per_second" | "cores" | "count" | "milliseconds_per_second" | "per_second"
+
+export interface ProcessSummaryMetric {
+  readonly field: string
+  readonly key: string
+  readonly kind: SummaryKind
+}
+
+export const PROCESS_SUMMARY_METRICS: Readonly<Record<Lens, readonly ProcessSummaryMetric[]>> = {
+  generic: [
+    summaryMetric("processes", "process.summary.processes", "count"),
+    summaryMetric("threads", "process.summary.threads", "count"),
+    summaryMetric("runnable", "process.summary.running", "count"),
+    summaryMetric("postgresql", "process.summary.postgresql", "count"),
+  ],
+  cpu: [
+    summaryMetric("user_cores", "process.summary.user_time", "cores"),
+    summaryMetric("system_cores", "process.summary.system_time", "cores"),
+    summaryMetric("run_delay_ms_per_second", "process.summary.run_delay", "milliseconds_per_second"),
+    summaryMetric("context_switches_per_second", "process.summary.context_switches", "per_second"),
+  ],
+  memory: [
+    summaryMetric("resident_kib", "process.summary.resident", "bytes"),
+    summaryMetric("virtual_kib", "process.summary.virtual", "bytes"),
+    summaryMetric("swap_kib", "process.summary.swap", "bytes"),
+    summaryMetric("major_faults_per_second", "process.summary.major_faults", "per_second"),
+  ],
+  disk: [
+    summaryMetric("read_bytes_per_second", "process.summary.read", "bytes_per_second"),
+    summaryMetric("write_bytes_per_second", "process.summary.written", "bytes_per_second"),
+    summaryMetric("read_calls_per_second", "process.summary.read_calls", "per_second"),
+    summaryMetric("write_calls_per_second", "process.summary.write_calls", "per_second"),
+  ],
+}
+
+export const PROCESS_SUMMARY_FIELDS: readonly string[] = Object.values(PROCESS_SUMMARY_METRICS).flatMap((metrics) => metrics.map(({ field }) => field))
+
+export function ProcessSummary({ cursor, hour, lens, locale, onCursor, t }: {
+  readonly cursor: number
+  readonly hour: number
+  readonly lens: Lens
+  readonly locale: Locale
+  readonly onCursor: (timestamp: number) => void
+  readonly t: Translate
+}) {
+  const metrics = PROCESS_SUMMARY_METRICS[lens]
+  const [selected, setSelected] = useState(metrics[0]?.field ?? "")
+  const [history, setHistory] = useState<readonly DataRow[]>([])
+  const active = metrics.find(({ field }) => field === selected) ?? metrics[0]
+  useEffect(() => {
+    const controller = new AbortController()
+    setHistory([])
+    void loadSeries(hour, "os_process_summary", {}, PROCESS_SUMMARY_FIELDS, controller.signal)
+      .then((rows) => {
+        if (!controller.signal.aborted) setHistory(rows)
+      })
+      .catch(() => {})
+    return () => controller.abort()
+  }, [hour])
+  const activePoints = useMemo(() => active === undefined ? [] : processSummaryPoints(history, active), [active, history])
   return <section aria-label={t("process.summary.title")} className="process-summary">
-    {metrics.map(({ key, output }) => <article key={key}><span>{t(key)}</span><strong>{output}</strong></article>)}
+    {metrics.map((metric) => {
+      const output = processSummaryOutput(readingAt(processSummaryPoints(history, metric), cursor), metric, locale, t)
+      return <button aria-pressed={active?.field === metric.field} key={metric.field} onClick={() => setSelected(metric.field)} type="button">
+        <span>{t(metric.key)}</span><strong>{output}</strong>
+      </button>
+    })}
+    {active !== undefined && <div className="process-summary-history">
+      <SeriesChart cursor={cursor} empty={t("status.no_data")} format={processSummaryFormat(active)} hour={hour} label={t(active.key)} locale={locale} onCursor={onCursor} points={activePoints} unit={processSummaryUnit(active, locale, t)} />
+    </div>}
   </section>
+}
+
+export function processSummaryPoints(rows: readonly DataRow[], metric: ProcessSummaryMetric): readonly ChartPoint[] {
+  return buildMetricSamples(rows, (row) => {
+    if (!Object.hasOwn(row.values, metric.field)) return undefined
+    const stored = asNumber(value(row, metric.field))
+    return stored === null ? null : metric.kind === "bytes" ? stored * 1024 : stored
+  })
+}
+
+export function processSummaryOutput(reading: number | null, metric: ProcessSummaryMetric, locale: Locale, t: Translate): string {
+  if (reading === null) return "—"
+  if (metric.kind === "bytes") return humanBytes(reading, locale)
+  if (metric.kind === "bytes_per_second") return humanBytes(reading, locale, t("unit.per_second"))
+  if (metric.kind === "cores") return measure(reading, locale, t("unit.cores"))
+  if (metric.kind === "milliseconds_per_second") return measure(reading, locale, t("unit.ms_per_second"))
+  return measure(reading, locale, metric.kind === "per_second" ? t("unit.per_second") : "")
+}
+
+function processSummaryFormat(metric: ProcessSummaryMetric): (reading: number, locale: Locale) => string {
+  return metric.kind === "bytes" || metric.kind === "bytes_per_second" ? humanBytes : compact
+}
+
+function processSummaryUnit(metric: ProcessSummaryMetric, locale: Locale, t: Translate): string {
+  if (metric.kind === "bytes" || metric.kind === "bytes_per_second") return `B${metric.kind === "bytes_per_second" ? t("unit.per_second") : ""}`
+  if (metric.kind === "cores") return t("unit.cores").trim()
+  if (metric.kind === "milliseconds_per_second") return t("unit.ms_per_second").trim()
+  if (metric.kind === "per_second") return `1${t("unit.per_second")}`
+  return locale === "ru" ? "количество" : "count"
+}
+
+function summaryMetric(field: string, key: string, kind: SummaryKind): ProcessSummaryMetric {
+  return { field, key, kind }
 }
 
 export function ProcessTable({
@@ -185,58 +287,8 @@ function processHeaderHelp(field: Field): string | undefined {
   return field.id === "pid" || field.id === "command" || field.id === "num_threads" ? undefined : field.help
 }
 
-function summaryMetrics(
-  rows: readonly DataRow[],
-  lens: Lens,
-  linkedPids: ReadonlySet<number>,
-  ticksPerSecond: number | null,
-  locale: Locale,
-  t: Translate,
-): readonly { readonly key: string; readonly output: string }[] {
-  const count = (number: number | null) => number === null ? "—" : measure(number, locale)
-  const perSecond = (number: number | null) => number === null ? "—" : measure(number, locale) + t("unit.per_second")
-  if (lens === "generic") return [
-    { key: "process.summary.processes", output: count(rows.length) },
-    { key: "process.summary.threads", output: count(sum(rows, "num_threads")) },
-    { key: "process.summary.running", output: count(rows.filter((row) => stateText(value(row, "state")) === "R").length) },
-    { key: "process.summary.postgresql", output: count(rows.filter((row) => linkedPids.has(asNumber(value(row, "pid")) ?? -1)).length) },
-  ]
-  if (lens === "cpu") return [
-    { key: "process.summary.user_time", output: cores(sum(rows, "utime"), locale, ticksPerSecond) + t("unit.cores") },
-    { key: "process.summary.system_time", output: cores(sum(rows, "stime"), locale, ticksPerSecond) + t("unit.cores") },
-    { key: "process.summary.run_delay", output: millisecondsPerSecond(sum(rows, "rundelay_ns"), locale) + t("unit.ms_per_second") },
-    { key: "process.summary.context_switches", output: perSecond(combine(rows, "nvcsw", "nivcsw")) },
-  ]
-  if (lens === "memory") return [
-    { key: "process.summary.resident", output: humanBytes(kib(sum(rows, "rmem_kb")), locale) },
-    { key: "process.summary.virtual", output: humanBytes(kib(sum(rows, "vmem_kb")), locale) },
-    { key: "process.summary.swap", output: humanBytes(kib(sum(rows, "vswap_kb")), locale) },
-    { key: "process.summary.major_faults", output: perSecond(sum(rows, "majflt")) },
-  ]
-  return [
-    { key: "process.summary.read", output: humanBytes(sum(rows, "read_bytes"), locale, t("unit.per_second")) },
-    { key: "process.summary.written", output: humanBytes(sum(rows, "write_bytes"), locale, t("unit.per_second")) },
-    { key: "process.summary.read_calls", output: perSecond(sum(rows, "syscr")) },
-    { key: "process.summary.write_calls", output: perSecond(sum(rows, "syscw")) },
-  ]
-}
-
 function kib(number: number | null): number | null {
   return number === null ? null : number * 1024
-}
-
-function sum(rows: readonly DataRow[], field: string): number | null {
-  const values = rows.flatMap((row) => {
-    const number = asNumber(value(row, field))
-    return number === null ? [] : [number]
-  })
-  return values.length === 0 ? null : values.reduce((total, number) => total + number, 0)
-}
-
-function combine(rows: readonly DataRow[], left: string, right: string): number | null {
-  const leftValue = sum(rows, left)
-  const rightValue = sum(rows, right)
-  return leftValue === null && rightValue === null ? null : (leftValue ?? 0) + (rightValue ?? 0)
 }
 
 function rateField(field: string, key: string, size: number): Field { return { id: field, field, label: `${key}.label`, help: `${key}.help`, kind: "rate", size } }

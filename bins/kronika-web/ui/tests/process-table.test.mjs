@@ -1,9 +1,11 @@
 import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
 import test from "node:test"
 
-import { importModule } from "./import-module.mjs"
+import { importModule, registryPlugin } from "./import-module.mjs"
 
-const { LENS_FIELDS } = await importModule('export { LENS_FIELDS } from "../src/process-table.tsx"')
+const helpers = await importModule('export { LENS_FIELDS, PROCESS_SUMMARY_FIELDS, PROCESS_SUMMARY_METRICS, processSummaryOutput, processSummaryPoints } from "../src/process-table.tsx"', { plugins: [registryPlugin([])] })
+const { LENS_FIELDS } = helpers
 
 test("process lenses keep identity first, lens metrics next, and state last", () => {
   const fields = (lens) => LENS_FIELDS[lens].map(({ id }) => id)
@@ -21,4 +23,43 @@ test("process lenses keep identity first, lens metrics next, and state last", ()
     "pid", "command", "read_bytes", "write_bytes", "syscr", "syscw", "rchar", "wchar",
     "cancelled_write_bytes", "blkdelay_ticks", "state",
   ])
+})
+
+test("all sixteen process cards use the exact complete-set history projection", async () => {
+  assert.deepEqual(helpers.PROCESS_SUMMARY_FIELDS, [
+    "processes", "threads", "runnable", "postgresql",
+    "user_cores", "system_cores", "run_delay_ms_per_second", "context_switches_per_second",
+    "resident_kib", "virtual_kib", "swap_kib", "major_faults_per_second",
+    "read_bytes_per_second", "write_bytes_per_second", "read_calls_per_second", "write_calls_per_second",
+  ])
+  assert.deepEqual(Object.fromEntries(Object.entries(helpers.PROCESS_SUMMARY_METRICS).map(([lens, metrics]) => [lens, metrics.map(({ field }) => field)])), {
+    generic: ["processes", "threads", "runnable", "postgresql"],
+    cpu: ["user_cores", "system_cores", "run_delay_ms_per_second", "context_switches_per_second"],
+    memory: ["resident_kib", "virtual_kib", "swap_kib", "major_faults_per_second"],
+    disk: ["read_bytes_per_second", "write_bytes_per_second", "read_calls_per_second", "write_calls_per_second"],
+  })
+  const source = await readFile(new URL("../src/process-table.tsx", import.meta.url), "utf8")
+  assert.match(source, /loadSeries\(hour, "os_process_summary", \{\}, PROCESS_SUMMARY_FIELDS, controller\.signal\)/)
+  assert.doesNotMatch(source, /summaryMetrics|sum\(rows,|linkedPids.*ProcessSummary/)
+})
+
+test("process summary charts preserve absent, null, zero, storage and human units", () => {
+  const metric = (field) => Object.values(helpers.PROCESS_SUMMARY_METRICS).flat().find((candidate) => candidate.field === field)
+  const row = (segmentId, timestamp, values) => ({ logicalName: "os_process_summary", ordinal: String(timestamp), segmentId, timestamp, typeId: "0", values })
+  assert.deepEqual(helpers.processSummaryPoints([
+    row("a", 1, {}),
+    row("a", 2, { resident_kib: null }),
+    row("a", 3, { resident_kib: 0 }),
+    row("b", 4, { resident_kib: 2 }),
+  ], metric("resident_kib")), [
+    { segmentId: "a", timestamp: 2, value: null },
+    { segmentId: "a", timestamp: 3, value: 0 },
+    { segmentId: "b", timestamp: 4, value: 2048 },
+  ])
+  const t = (key) => ({ "unit.per_second": "/s", "unit.cores": " cores", "unit.ms_per_second": " ms/s" })[key] ?? key
+  assert.equal(helpers.processSummaryOutput(205, metric("processes"), "en", t), "205")
+  assert.equal(helpers.processSummaryOutput(1.25, metric("user_cores"), "en", t), "1.25 cores")
+  assert.equal(helpers.processSummaryOutput(0, metric("run_delay_ms_per_second"), "en", t), "0 ms/s")
+  assert.equal(helpers.processSummaryOutput(1_048_576, metric("read_bytes_per_second"), "en", t), "1 MiB/s")
+  assert.equal(helpers.processSummaryOutput(null, metric("threads"), "en", t), "—")
 })
