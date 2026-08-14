@@ -235,3 +235,16 @@ test("the renderer is exclusively the shared uPlot adapter", async () => {
   assert.doesNotMatch(source, /SeriesLine|svgPath|timelineRuns|preserveAspectRatio/)
   assert.ok(source.indexOf("if (selected === undefined)") > source.indexOf("const threshold = useMemo"))
 })
+
+test("timeline controls stay above a full-width plot without a redundant time title", async () => {
+  const [source, styles, chart] = await Promise.all([
+    readFile(new URL("../src/timeline.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+    readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8"),
+  ])
+  assert.match(styles, /\.timeline-shell \{[^}]*flex-direction: column;[^}]*overflow: hidden; \}/)
+  assert.match(styles, /\.timeline-labels \{[^}]*display: flex;[^}]*overflow-x: auto; \}/)
+  assert.match(styles, /\.uplot-figure\.timeline-chart \{[^}]*min-height: 216px;[^}]*padding:/)
+  assert.ok(source.indexOf('className="timeline-labels"') < source.indexOf('className="timeline-chart"'))
+  assert.doesNotMatch(chart, /Time, browser local|Время, местное в браузере/)
+})
