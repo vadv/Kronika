@@ -444,7 +444,7 @@ h2 { font-size: var(--t-md); }
 .pg-overview-section dl > div { border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); min-height: 46px; padding: 7px 8px; }
 .pg-overview-section dt { color: var(--fg3); font-size: var(--t-xs); overflow-wrap: anywhere; text-transform: uppercase; }
 .pg-overview-section dd { color: var(--fg); font-size: var(--t-sm); margin: 6px 0 0; overflow-wrap: anywhere; }
-.pg-entity-layout { display: grid; grid-template-columns: minmax(0, 1fr) 390px; margin-top: 8px; min-width: 0; }
+.pg-entity-layout { display: grid; grid-template-columns: minmax(0, 1fr) clamp(460px, 32vw, 600px); margin-top: 8px; min-width: 0; }
 .pg-entity-main { min-width: 0; }
 .pg-table-only { grid-template-columns: minmax(0, 1fr); }
 .pg-entity-layout .entity-scroll { height: min(560px, calc(100dvh - 475px)); min-height: 100px; }

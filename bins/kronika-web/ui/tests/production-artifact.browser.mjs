@@ -1486,15 +1486,21 @@ test("aggregate relation detail charts exact server history", { timeout: 60_000 
     const layout = await cdp.evaluate(`(() => {
       const detail = document.querySelector('[data-testid="pg-relation-detail"]')
       const chart = detail.querySelector('.uplot-host')
+      const plot = detail.querySelector('.u-over')
+      const table = document.querySelector('[data-testid="pg-indexes-table"]')
       const selectors = [...detail.querySelectorAll('.process-history-selector button')]
       return {
         chartWidth: chart.getBoundingClientRect().width,
         detailWidth: detail.getBoundingClientRect().width,
+        plotWidth: plot.getBoundingClientRect().width,
+        tableWidth: table.getBoundingClientRect().width,
         overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
         selectors: selectors.map((button) => button.textContent),
       }
     })()`)
     assert.ok(layout.chartWidth > 250 && layout.chartWidth <= layout.detailWidth, JSON.stringify(layout))
+    assert.ok(layout.plotWidth > 250, JSON.stringify(layout))
+    assert.ok(layout.tableWidth >= 500, JSON.stringify(layout))
     assert.equal(layout.overflow, false)
     assert.equal(layout.selectors.length, 6)
     await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-detail"] .chart-expand').click()`)

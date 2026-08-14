@@ -22,7 +22,7 @@ function mediaBlock(condition) {
 }
 
 test("PostgreSQL keeps its dock beside the table at 1024 pixels", () => {
-  assert.match(stylesheet, /\.pg-entity-layout \{[^}]*grid-template-columns: minmax\(0, 1fr\) 390px;/)
+  assert.match(stylesheet, /\.pg-entity-layout \{[^}]*grid-template-columns: minmax\(0, 1fr\) clamp\(460px, 32vw, 600px\);/)
   assert.match(stylesheet, /\.pg-entity-main \{ min-width: 0; \}/)
 
   const processOverlay = mediaBlock("max-width: 1179px")
