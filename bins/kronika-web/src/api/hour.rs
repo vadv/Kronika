@@ -15,6 +15,7 @@ use super::{ApiError, CachePolicy, ResponseMeta};
 use crate::route::{DataRequest, HourRequest, SegmentRequest, SeriesRequest, Window};
 
 mod lanes;
+pub(crate) mod process_summary;
 
 #[cfg(test)]
 mod tests;
@@ -27,6 +28,7 @@ pub(crate) struct PreparedHour {
     root: PathBuf,
     reader: Reader,
     catalog: Option<PreparedCatalog>,
+    listed: Vec<SegmentRef>,
     segments: Vec<SegmentRef>,
     window: Window,
     hours: Vec<i64>,
@@ -50,9 +52,10 @@ pub(super) fn prepare(
             to: Some(requested.to.unwrap_or_else(|| hour_end(from))),
         },
     );
-    let mut segments = stored
-        .segments
-        .into_iter()
+    let listed = stored.segments;
+    let mut segments = listed
+        .iter()
+        .cloned()
         .filter(|segment| overlaps_window(segment.min_ts(), segment.max_ts(), window))
         .collect::<Vec<_>>();
     segments.sort_by_key(SegmentRef::min_ts);
@@ -71,6 +74,7 @@ pub(super) fn prepare(
         root: root.to_path_buf(),
         reader,
         catalog,
+        listed,
         segments,
         window,
         hours,
@@ -152,12 +156,19 @@ impl PreparedHour {
             root,
             reader,
             catalog,
+            listed,
             segments,
             window,
             series,
             ..
         } = self;
         if let Some(series) = series {
+            if series.section == process_summary::SECTION {
+                let segments = process_summary::with_predecessors(&listed, segments);
+                return process_summary::stream(
+                    &reader, &segments, window, &series, emit, cancelled,
+                );
+            }
             for segment in &segments {
                 if cancelled() || !emit_series(&reader, segment, &series, emit, cancelled)? {
                     return Ok(());

@@ -18,6 +18,10 @@ mod rows;
 mod snapshot;
 
 #[cfg(test)]
+pub(crate) use hour::process_summary::{
+    operations as process_summary_operations, reset_operations as reset_process_summary_operations,
+};
+#[cfg(test)]
 pub(crate) use snapshot::{page_operations, reset_page_operations};
 
 /// Cache policy applied centrally after preparation.

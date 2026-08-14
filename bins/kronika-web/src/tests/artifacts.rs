@@ -297,6 +297,67 @@ impl Fixture {
             .expect("append finding rows");
     }
 
+    fn append_process_summary_snapshot(
+        &mut self,
+        ts: i64,
+        counter: i64,
+        reused_pid: Option<i32>,
+        activity_ts: i64,
+        activity_pids: std::ops::Range<i32>,
+        future_activity: Option<(i64, std::ops::Range<i32>)>,
+    ) {
+        let mut interner = Interner::new(DictLimits::default());
+        let label = StrId(
+            interner
+                .intern(b"fixture")
+                .expect("intern process label")
+                .get(),
+        );
+        let dictionary = dict::encode(interner.window()).expect("process summary dictionary");
+        let mut buffers = SectionBuffers::new();
+        buffers
+            .push(InstanceMetadata {
+                ts: Ts(ts),
+                hostname: label,
+                kernel_version: label,
+                environment: 0,
+                clock_ticks_per_sec: 100,
+                page_size_bytes: 4_096,
+                boot_id: label,
+                btime: Ts(1),
+                postgresql_enabled: true,
+                postgresql_interval_seconds: 30,
+                postgresql_effective_cpus: Some(2),
+            })
+            .expect("summary metadata fits");
+        for pid in 0..205 {
+            let mut row = process_for_summary(ts, pid, counter, label);
+            if reused_pid == Some(pid) {
+                row.starttime = Ts(row.starttime.0 + 1);
+            }
+            buffers.push(row).expect("summary process row fits");
+        }
+        for pid in activity_pids {
+            buffers
+                .push(activity(activity_ts, pid, label, label))
+                .expect("past activity row fits");
+        }
+        if let Some((future_ts, pids)) = future_activity {
+            for pid in pids {
+                buffers
+                    .push(activity(future_ts, pid, label, label))
+                    .expect("future activity row fits");
+            }
+        }
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode process summary snapshot")
+            .expect("nonempty process summary snapshot");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append process summary snapshot");
+    }
+
     fn append_statement_universe(&mut self, rows: i64) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
@@ -1030,6 +1091,27 @@ fn process(ts: i64, read_bytes: Option<i64>, label: StrId) -> OsProcess {
         exit_signal: 17,
         scope: 0,
     }
+}
+
+fn process_for_summary(ts: i64, pid: i32, counter: i64, label: StrId) -> OsProcess {
+    let mut row = process(ts, Some(counter + i64::from(pid)), label);
+    row.pid = pid;
+    row.starttime = Ts(SEGMENT_ID - 1_000_000 + i64::from(pid));
+    row.state = if pid % 2 == 0 { b'R' } else { b'S' };
+    row.num_threads = 2;
+    row.utime = counter + i64::from(pid);
+    row.stime = counter * 2 + i64::from(pid);
+    row.rundelay_ns = counter * 1_000_000 + i64::from(pid);
+    row.nvcsw = counter + i64::from(pid);
+    row.nivcsw = counter * 2 + i64::from(pid);
+    row.rmem_kb = 10 + i64::from(pid);
+    row.vmem_kb = 20 + i64::from(pid);
+    row.vswap_kb = i64::from(pid % 3);
+    row.majflt = counter + i64::from(pid);
+    row.syscr = Some(counter + i64::from(pid));
+    row.syscw = Some(counter * 2 + i64::from(pid));
+    row.write_bytes = None;
+    row
 }
 
 fn statement(ts: i64, calls: i64, total_exec_time: f64, label: StrId) -> PgStatStatementsV2 {
@@ -1988,6 +2070,78 @@ fn process_and_statement_rows_remain_available_without_findings() {
             })
         );
     }
+}
+
+#[test]
+fn process_summary_series_uses_the_complete_set_and_previous_segment() {
+    crate::api::reset_process_summary_operations();
+    let mut fixture = Fixture::new();
+    fixture.append_process_summary_snapshot(1_000_000, 1_000, None, 900_000, 0..3, None);
+    fixture.finish_and_continue(SEGMENT_ID + 1_000);
+    fixture.append_process_summary_snapshot(
+        6_000_000,
+        1_100,
+        Some(0),
+        5_500_000,
+        0..10,
+        Some((6_500_000, 0..205)),
+    );
+    fixture.finish();
+
+    let fields = [
+        "processes",
+        "threads",
+        "runnable",
+        "postgresql",
+        "user_cores",
+        "system_cores",
+        "run_delay_ms_per_second",
+        "context_switches_per_second",
+        "resident_kib",
+        "virtual_kib",
+        "swap_kib",
+        "major_faults_per_second",
+        "read_bytes_per_second",
+        "write_bytes_per_second",
+        "read_calls_per_second",
+        "write_calls_per_second",
+    ];
+    let query = fields
+        .iter()
+        .map(|field| format!("field={field}"))
+        .collect::<Vec<_>>()
+        .join("&");
+    let records = stream(fixture.prepare(
+        &format!("/api/hour?from=6000000&to=6000000&section=os_process_summary&{query}"),
+        None,
+    ))
+    .expect("process summary history");
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["timestamp"], "6000000");
+    let values = rows[0]["values"].as_array().expect("summary values");
+    assert_eq!(values.len(), fields.len());
+    assert_eq!(values[0], 205.0, "the server does not use a 200-row page");
+    assert_eq!(values[1], 410.0);
+    assert_eq!(values[2], 103.0);
+    assert_eq!(values[3], 10.0, "a future activity snapshot is not joined");
+    assert_eq!(values[4], 40.8, "PID reuse has no counter predecessor");
+    assert_eq!(values[5], 81.6);
+    assert_eq!(values[6], 4_080.0);
+    assert_eq!(values[7], 12_240.0);
+    assert_eq!(values[8], 22_960.0);
+    assert_eq!(values[9], 25_010.0);
+    assert_eq!(values[10], 204.0);
+    assert_eq!(values[11], 4_080.0);
+    assert_eq!(values[12], 4_080.0);
+    assert_eq!(values[13], Value::Null, "all unavailable values stay null");
+    assert_eq!(values[14], 4_080.0);
+    assert_eq!(values[15], 8_160.0);
+    assert_eq!(
+        crate::api::process_summary_operations(),
+        (4, 2),
+        "each segment gets two numeric process passes and one activity pass"
+    );
 }
 
 #[test]
