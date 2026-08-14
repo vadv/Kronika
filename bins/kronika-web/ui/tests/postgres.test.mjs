@@ -263,6 +263,21 @@ test("Activity exact start times enable duration histories without synthetic sto
   assert.equal(helpers.chartColumnAvailable("pg_locks", rows, { field: "query_duration_ms", kind: "duration" }), false)
 })
 
+test("Activity history keeps one backend incarnation when PostgreSQL reuses a PID", async () => {
+  const selected = activityRow("1", { pid: 42, backend_start: "9000000", state: "active", query_start: "9500000" })
+  const sameBackend = activityRow("2", { pid: 42, backend_start: "9000000", state: "active", query_start: "9500000" }, 11_000_000)
+  const reusedPid = activityRow("3", { pid: 42, backend_start: "10500000", state: "active", query_start: "10600000" }, 12_000_000)
+  assert.equal(helpers.sameEntity(selected, sameBackend, "pg_stat_activity"), true)
+  assert.equal(helpers.sameEntity(selected, reusedPid, "pg_stat_activity"), false)
+  assert.equal(helpers.sameEntity(selected, activityRow("4", { pid: 42 }), "pg_stat_activity"), false)
+
+  const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
+  assert.match(source, /activity \? \["backend_start", \.\.\.metricFields\] : metricFields/)
+  assert.match(source, /rows\.filter\(\(candidate\) => !activity \|\| sameEntity\(candidate, row, section\)\)/)
+  assert.match(source, /identityFields\(section, row\.typeId\)\.map/)
+  assert.match(source, /section === "pg_stat_activity"[^\n]*return \["pid"\]/)
+})
+
 test("elapsed Activity values use compact wall-time formatting", () => {
   assert.equal(helpers.humanDuration(850, "en"), "850 ms")
   assert.equal(helpers.humanDuration(5_200, "en"), "5.2 s")
@@ -521,8 +536,8 @@ test("dense paging resets, ignores stale work, and preserves retry state", async
 })
 
 test("an exact finding never opens PostgreSQL detail without an explicit row selection", () => {
-  const first = { ...row("1001001", { pid: 7 }), ordinal: "0" }
-  const focus = { ...row("1001001", { pid: 8 }), ordinal: "1" }
+  const first = { ...row("1001001", { pid: 7, backend_start: "100" }), ordinal: "0" }
+  const focus = { ...row("1001001", { pid: 8, backend_start: "200" }), ordinal: "1" }
   assert.equal(helpers.selectedEntity([first, focus], null, "pg_stat_activity"), null)
   assert.equal(helpers.selectedEntity([first, focus], first, "pg_stat_activity"), first)
 })

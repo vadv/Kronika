@@ -49,6 +49,11 @@ function chunkedResponse(bytes: Uint8Array, cuts: readonly number[]): Response {
 const START = 1_800_000_000_000_000
 const TEST_REGISTRY = [
   {
+    typeId: "1001001",
+    logicalName: "pg_stat_activity",
+    columns: ["ts", "pid", "datname", "state", "query", "backend_start", "xact_start", "query_start", "state_change"],
+  },
+  {
     typeId: "1105001",
     logicalName: "os_loadavg",
     columns: ["ts", "load1", "load5"],
@@ -181,6 +186,20 @@ test("a compatible projection stays untyped after catalog resolution", async () 
       sections: [{ logicalName: "os_loadavg", typeId: "1105001" }],
     },
   ), [{ section: "os_loadavg", fields: ["load1"] }])
+})
+
+test("an old Activity layout drops newer optional fields without losing its exact start time", async () => {
+  const api = await bundledApi()
+  assert.deepEqual(api.requestsForSegment(
+    [{ section: "pg_stat_activity", fields: api.ACTIVITY_FIELDS }],
+    {
+      id: "77", minTs: START, maxTs: START,
+      sections: [{ logicalName: "pg_stat_activity", typeId: "1001001" }],
+    },
+  ), [{
+    section: "pg_stat_activity",
+    fields: ["pid", "datname", "state", "query", "backend_start", "xact_start", "query_start", "state_change"],
+  }])
 })
 
 test("a curated snapshot follows the registry layout and physical order", async () => {
