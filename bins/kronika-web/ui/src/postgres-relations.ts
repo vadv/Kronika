@@ -54,6 +54,11 @@ interface LensSpec {
   readonly order: string
 }
 
+interface DisplayLensSpec {
+  readonly object: readonly string[]
+  readonly aggregate: readonly string[]
+}
+
 const scanTimes = timestamps("last_seq_scan", "last_idx_scan")
 const maintenanceTimes = timestamps("last_vacuum", "last_autovacuum", "last_analyze", "last_autoanalyze", "toast_last_autovacuum")
 const indexScanTime = timestamps("last_idx_scan")
@@ -154,9 +159,108 @@ const TABLE_COUNTERS = new Set([
 
 const INDEX_COUNTERS = new Set(["idx_scan", "idx_tup_read", "idx_tup_fetch", "idx_blks_read", "idx_blks_hit"])
 
+const tableDisplayLenses: Readonly<Record<TableLens, DisplayLensSpec>> = {
+  access: {
+    object: ["tuple_throughput", "sequential_share_pct", "seq_scan", "idx_scan", "seq_tuples_per_scan", "idx_tuples_per_scan", "tablespace", "last_seq_scan", "last_idx_scan"],
+    aggregate: ["tuple_throughput", "table_count", "sequential_share_pct", "seq_scan", "idx_scan", "seq_tuples_per_scan", "idx_tuples_per_scan", "last_seq_scan_never_count", "last_idx_scan_never_count", "last_seq_scan_oldest", "last_seq_scan_latest", "last_idx_scan_oldest", "last_idx_scan_latest"],
+  },
+  changes: {
+    object: ["dml_total", "insert_share_pct", "update_share_pct", "delete_share_pct", "hot_pct", "new_page_pct", "dead_pct", "n_mod_since_analyze", "n_ins_since_vacuum", "tablespace"],
+    aggregate: ["dml_total", "table_count", "insert_share_pct", "update_share_pct", "delete_share_pct", "hot_pct", "new_page_pct", "dead_pct", "n_mod_since_analyze", "n_ins_since_vacuum"],
+  },
+  maintenance: {
+    object: ["autovacuum_count", "vacuum_count", "autoanalyze_count", "analyze_count", "autovacuum_mean_ms", "vacuum_mean_ms", "autoanalyze_mean_ms", "analyze_mean_ms", "tablespace", "last_autovacuum", "last_vacuum", "last_autoanalyze", "last_analyze", "toast_last_autovacuum"],
+    aggregate: ["autovacuum_count", "table_count", "vacuum_count", "autoanalyze_count", "analyze_count", "autovacuum_mean_ms", "vacuum_mean_ms", "autoanalyze_mean_ms", "analyze_mean_ms", "last_autovacuum_never_count", "last_vacuum_never_count", "last_autoanalyze_never_count", "last_analyze_never_count", "toast_last_autovacuum_never_count", "last_autovacuum_oldest", "last_autovacuum_latest", "last_vacuum_oldest", "last_vacuum_latest", "last_autoanalyze_oldest", "last_autoanalyze_latest", "last_analyze_oldest", "last_analyze_latest", "toast_last_autovacuum_oldest", "toast_last_autovacuum_latest"],
+  },
+  size_buffers: {
+    object: ["displayed_storage_bytes", "buffer_hit_pct", "main_fork_bytes", "toast_share_pct", "reltuples", "toast_dead_pct", "heap_buffer_hit_pct", "index_buffer_hit_pct", "toast_buffer_hit_pct", "tidx_buffer_hit_pct", "tablespace"],
+    aggregate: ["displayed_storage_bytes", "table_count", "buffer_hit_pct", "main_fork_bytes", "toast_share_pct", "reltuples", "toast_dead_pct", "heap_buffer_hit_pct", "index_buffer_hit_pct", "toast_buffer_hit_pct", "tidx_buffer_hit_pct"],
+  },
+  freeze: {
+    object: ["xid_age", "mxid_age", "n_ins_since_vacuum", "tablespace", "last_autovacuum", "last_vacuum"],
+    aggregate: ["xid_age", "table_count", "mxid_age", "n_ins_since_vacuum", "last_autovacuum_never_count", "last_vacuum_never_count", "last_autovacuum_oldest", "last_autovacuum_latest", "last_vacuum_oldest", "last_vacuum_latest"],
+  },
+}
+
+const indexDisplayLenses: Readonly<Record<IndexLens, DisplayLensSpec>> = {
+  usage: {
+    object: ["idx_scan", "idx_tup_read", "idx_tup_fetch", "tuples_per_scan", "fetches_per_scan", "amname", "tablespace", "last_idx_scan"],
+    aggregate: ["idx_scan", "index_count", "idx_tup_read", "idx_tup_fetch", "tuples_per_scan", "fetches_per_scan", "last_idx_scan_never_count", "last_idx_scan_oldest", "last_idx_scan_latest"],
+  },
+  low_activity: {
+    object: ["main_fork_bytes", "idx_scan", "amname", "tablespace", "no_scans", "last_idx_scan"],
+    aggregate: ["main_fork_bytes", "index_count", "no_scan_count", "known_scan_count", "idx_scan", "last_idx_scan_never_count", "last_idx_scan_oldest", "last_idx_scan_latest"],
+  },
+  size_buffers: {
+    object: ["main_fork_bytes", "buffer_hit_pct", "amname", "tablespace"],
+    aggregate: ["main_fork_bytes", "index_count", "buffer_hit_pct"],
+  },
+  state: {
+    object: ["amname", "tablespace", "indisvalid", "indisready", "indisprimary", "indisunique", "indisexclusion"],
+    aggregate: ["invalid_count", "index_count", "unready_count", "primary_count", "unique_count", "exclusion_count"],
+  },
+}
+
 export function relationFields(section: RelationSection, lensName: RelationLens, group: RelationGroup): readonly string[] {
   const spec = lensSpec(section, lensName)
   return [...identityFields(section, group), ...(group === "object" ? spec.object : spec.aggregate)]
+}
+
+export function relationDisplayFields(section: RelationSection, lensName: RelationLens, group: RelationGroup): readonly string[] {
+  if (!isRelationLens(section, lensName)) invalid()
+  const identity = group === "database"
+    ? ["datname"]
+    : group === "schema"
+      ? ["schemaname", "datname"]
+      : section === "pg_stat_user_tables"
+        ? ["relname", "datname", "schemaname"]
+        : ["indexrelname", "datname", "schemaname", "relname"]
+  const spec = section === "pg_stat_user_tables"
+    ? tableDisplayLenses[lensName as TableLens]
+    : indexDisplayLenses[lensName as IndexLens]
+  return [...identity, ...(group === "object" ? spec.object : spec.aggregate)]
+}
+
+export function relationHelpKey(section: RelationSection, field: string): string | undefined {
+  if (["seq_scan", "idx_scan"].includes(field)) return "pg.help.relation.scan_rate"
+  if (field === "idx_tup_read") return "pg.help.relation.index_entries_rate"
+  if (field === "idx_tup_fetch") return "pg.help.relation.rows_fetched_rate"
+  if (["vacuum_count", "autovacuum_count", "analyze_count", "autoanalyze_count"].includes(field)) return "pg.help.relation.maintenance_rate"
+  if (["seq_tuples_per_scan", "idx_tuples_per_scan", "tuples_per_scan", "fetches_per_scan"].includes(field)) return "pg.help.relation.per_scan"
+  if (["insert_share_pct", "update_share_pct", "delete_share_pct"].includes(field)) return "pg.help.relation.dml_share"
+  if (["n_mod_since_analyze", "n_ins_since_vacuum"].includes(field)) return "pg.help.relation.row_estimate"
+  if (["vacuum_mean_ms", "autovacuum_mean_ms", "analyze_mean_ms", "autoanalyze_mean_ms"].includes(field)) return "pg.help.relation.maintenance_mean"
+  if (["buffer_hit_pct", "heap_buffer_hit_pct", "index_buffer_hit_pct", "toast_buffer_hit_pct", "tidx_buffer_hit_pct"].includes(field)) return "pg.help.relation.buffer_hit"
+  if (["last_seq_scan", "last_idx_scan"].includes(field)) return "pg.help.relation.last_scan"
+  if (["last_vacuum", "last_autovacuum", "last_analyze", "last_autoanalyze", "toast_last_autovacuum"].includes(field)) return "pg.help.relation.last_maintenance"
+  if (field.endsWith("_oldest")) return "pg.help.relation.oldest_timestamp"
+  if (field.endsWith("_latest")) return "pg.help.relation.latest_timestamp"
+  if (field.endsWith("_never_count")) return field.startsWith("toast_") ? "pg.help.relation.toast_never_count" : "pg.help.relation.never_count"
+  if (["invalid_count", "unready_count", "unique_count", "primary_count", "exclusion_count"].includes(field)) return "pg.help.relation.index_state_count"
+  const fixed: Readonly<Record<string, string>> = {
+    tuple_throughput: "pg.help.relation.tuple_throughput",
+    sequential_share_pct: "pg.help.relation.sequential_share",
+    dml_total: "pg.help.relation.dml_total",
+    hot_pct: "pg.help.relation.hot_share",
+    new_page_pct: "pg.help.relation.new_page_share",
+    dead_pct: "pg.help.relation.dead_share",
+    displayed_storage_bytes: "pg.help.relation.displayed_storage",
+    main_fork_bytes: section === "pg_stat_user_tables" ? "pg.help.relation.table_data" : "pg.help.relation.index_data",
+    toast_share_pct: "pg.help.relation.toast_share",
+    reltuples: "pg.help.relation.reltuples",
+    toast_dead_pct: "pg.help.relation.toast_dead_share",
+    xid_age: "pg.help.relation.xid_age",
+    mxid_age: "pg.help.relation.mxid_age",
+    no_scans: "pg.help.relation.no_scans",
+    no_scan_count: "pg.help.relation.no_scan_count",
+    known_scan_count: "pg.help.relation.known_scan_count",
+    indisvalid: "pg.help.relation.indisvalid",
+    indisready: "pg.help.relation.indisready",
+    indisprimary: "pg.help.relation.indisprimary",
+    indisunique: "pg.help.relation.indisunique",
+    indisexclusion: "pg.help.relation.indisexclusion",
+  }
+  return fixed[field]
 }
 
 export function relationDefaultOrder(section: RelationSection, lensName: RelationLens): string {

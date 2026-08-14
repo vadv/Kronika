@@ -434,11 +434,65 @@ test("the relation table exposes complete server-sortable quantitative lenses", 
   assert.equal(state.some((column) => column.field === "indexdef"), false)
 })
 
+test("all table and index levels and lenses keep exact meaning-first display orders", () => {
+  const table = {
+    access: {
+      object: ["tuple_throughput", "sequential_share_pct", "seq_scan", "idx_scan", "seq_tuples_per_scan", "idx_tuples_per_scan", "tablespace", "last_seq_scan", "last_idx_scan"],
+      aggregate: ["tuple_throughput", "table_count", "sequential_share_pct", "seq_scan", "idx_scan", "seq_tuples_per_scan", "idx_tuples_per_scan", "last_seq_scan_never_count", "last_idx_scan_never_count", "last_seq_scan_oldest", "last_seq_scan_latest", "last_idx_scan_oldest", "last_idx_scan_latest"],
+    },
+    changes: {
+      object: ["dml_total", "insert_share_pct", "update_share_pct", "delete_share_pct", "hot_pct", "new_page_pct", "dead_pct", "n_mod_since_analyze", "n_ins_since_vacuum", "tablespace"],
+      aggregate: ["dml_total", "table_count", "insert_share_pct", "update_share_pct", "delete_share_pct", "hot_pct", "new_page_pct", "dead_pct", "n_mod_since_analyze", "n_ins_since_vacuum"],
+    },
+    maintenance: {
+      object: ["autovacuum_count", "vacuum_count", "autoanalyze_count", "analyze_count", "autovacuum_mean_ms", "vacuum_mean_ms", "autoanalyze_mean_ms", "analyze_mean_ms", "tablespace", "last_autovacuum", "last_vacuum", "last_autoanalyze", "last_analyze", "toast_last_autovacuum"],
+      aggregate: ["autovacuum_count", "table_count", "vacuum_count", "autoanalyze_count", "analyze_count", "autovacuum_mean_ms", "vacuum_mean_ms", "autoanalyze_mean_ms", "analyze_mean_ms", "last_autovacuum_never_count", "last_vacuum_never_count", "last_autoanalyze_never_count", "last_analyze_never_count", "toast_last_autovacuum_never_count", "last_autovacuum_oldest", "last_autovacuum_latest", "last_vacuum_oldest", "last_vacuum_latest", "last_autoanalyze_oldest", "last_autoanalyze_latest", "last_analyze_oldest", "last_analyze_latest", "toast_last_autovacuum_oldest", "toast_last_autovacuum_latest"],
+    },
+    size_buffers: {
+      object: ["displayed_storage_bytes", "buffer_hit_pct", "main_fork_bytes", "toast_share_pct", "reltuples", "toast_dead_pct", "heap_buffer_hit_pct", "index_buffer_hit_pct", "toast_buffer_hit_pct", "tidx_buffer_hit_pct", "tablespace"],
+      aggregate: ["displayed_storage_bytes", "table_count", "buffer_hit_pct", "main_fork_bytes", "toast_share_pct", "reltuples", "toast_dead_pct", "heap_buffer_hit_pct", "index_buffer_hit_pct", "toast_buffer_hit_pct", "tidx_buffer_hit_pct"],
+    },
+    freeze: {
+      object: ["xid_age", "mxid_age", "n_ins_since_vacuum", "tablespace", "last_autovacuum", "last_vacuum"],
+      aggregate: ["xid_age", "table_count", "mxid_age", "n_ins_since_vacuum", "last_autovacuum_never_count", "last_vacuum_never_count", "last_autovacuum_oldest", "last_autovacuum_latest", "last_vacuum_oldest", "last_vacuum_latest"],
+    },
+  }
+  const index = {
+    usage: {
+      object: ["idx_scan", "idx_tup_read", "idx_tup_fetch", "tuples_per_scan", "fetches_per_scan", "amname", "tablespace", "last_idx_scan"],
+      aggregate: ["idx_scan", "index_count", "idx_tup_read", "idx_tup_fetch", "tuples_per_scan", "fetches_per_scan", "last_idx_scan_never_count", "last_idx_scan_oldest", "last_idx_scan_latest"],
+    },
+    low_activity: {
+      object: ["main_fork_bytes", "idx_scan", "amname", "tablespace", "no_scans", "last_idx_scan"],
+      aggregate: ["main_fork_bytes", "index_count", "no_scan_count", "known_scan_count", "idx_scan", "last_idx_scan_never_count", "last_idx_scan_oldest", "last_idx_scan_latest"],
+    },
+    size_buffers: {
+      object: ["main_fork_bytes", "buffer_hit_pct", "amname", "tablespace"],
+      aggregate: ["main_fork_bytes", "index_count", "buffer_hit_pct"],
+    },
+    state: {
+      object: ["amname", "tablespace", "indisvalid", "indisready", "indisprimary", "indisunique", "indisexclusion"],
+      aggregate: ["invalid_count", "index_count", "unready_count", "primary_count", "unique_count", "exclusion_count"],
+    },
+  }
+  const assertOrders = (section, lenses, objectPrefix, count) => {
+    for (const [lens, suffixes] of Object.entries(lenses)) {
+      assert.deepEqual(view.relationColumns(section, lens, "object").map(({ field }) => field), [...objectPrefix, ...suffixes.object], `${section}/${lens}/object`)
+      assert.deepEqual(view.relationColumns(section, lens, "schema").map(({ field }) => field), ["schemaname", "datname", ...suffixes.aggregate], `${section}/${lens}/schema`)
+      assert.deepEqual(view.relationColumns(section, lens, "database").map(({ field }) => field), ["datname", ...suffixes.aggregate], `${section}/${lens}/database`)
+      assert.equal(view.relationColumns(section, lens, "object").some(({ field }) => ["datid", "relid", "indexrelid"].includes(field)), false)
+      assert.ok(view.relationColumns(section, lens, "database").some(({ field }) => field === count))
+    }
+  }
+  assertOrders("pg_stat_user_tables", table, ["relname", "datname", "schemaname"], "table_count")
+  assertOrders("pg_stat_user_indexes", index, ["indexrelname", "datname", "schemaname", "relname"], "index_count")
+})
+
 test("meaning-first relation columns keep raw buffer operands in detail", () => {
   const table = view.relationColumns("pg_stat_user_tables", "size_buffers", "object")
-  assert.deepEqual(table.slice(4).map(({ field }) => field), [
-    "displayed_storage_bytes", "main_fork_bytes", "toast_share_pct", "reltuples", "toast_dead_pct", "buffer_hit_pct",
-    "heap_buffer_hit_pct", "index_buffer_hit_pct", "toast_buffer_hit_pct", "tidx_buffer_hit_pct",
+  assert.deepEqual(table.map(({ field }) => field), [
+    "relname", "datname", "schemaname", "displayed_storage_bytes", "buffer_hit_pct", "main_fork_bytes", "toast_share_pct",
+    "reltuples", "toast_dead_pct", "heap_buffer_hit_pct", "index_buffer_hit_pct", "toast_buffer_hit_pct", "tidx_buffer_hit_pct", "tablespace",
   ])
   assert.equal(table.some(({ field }) => field.endsWith("_blks_read") || field.endsWith("_blks_hit")), false)
 
@@ -458,16 +512,27 @@ test("relation copy covers every projected label and help key", async () => {
   const english = parseDictionary(englishSource, "en.yaml")
   const russian = parseDictionary(russianSource, "ru.yaml")
   validateDictionaries(english, russian)
+  const usedHelp = new Set()
+  const obvious = new Set(["datname", "schemaname", "relname", "indexrelname", "tablespace", "amname", "table_count", "index_count"])
   for (const section of relation.RELATION_SECTIONS) {
     const lenses = section === "pg_stat_user_tables" ? relation.TABLE_LENSES : relation.INDEX_LENSES
     for (const lens of lenses) for (const group of relation.RELATION_GROUPS) {
       const columns = [...view.relationColumns(section, lens, group), ...view.relationDetailColumns(section, lens, group)]
       for (const column of columns) {
         assert.equal(Object.hasOwn(english, column.label), true, column.label)
-        if (column.help !== undefined) assert.equal(Object.hasOwn(english, column.help), true, column.help)
+        if (column.help !== undefined) {
+          usedHelp.add(column.help)
+          assert.equal(Object.hasOwn(english, column.help), true, column.help)
+          assert.equal(Object.hasOwn(russian, column.help), true, column.help)
+        }
+      }
+      for (const column of view.relationColumns(section, lens, group)) {
+        assert.equal(column.help === undefined, obvious.has(column.field), `${section}/${lens}/${group}/${column.field}`)
       }
     }
   }
+  const relationHelp = Object.keys(english).filter((key) => key.startsWith("pg.help.relation.")).sort()
+  assert.deepEqual([...usedHelp].sort(), relationHelp)
 })
 
 test("object scan timestamps distinguish never from unavailable", () => {

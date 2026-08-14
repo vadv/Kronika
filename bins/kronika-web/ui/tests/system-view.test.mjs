@@ -4,10 +4,14 @@ import test from "node:test"
 import { gunzipSync } from "node:zlib"
 
 import { importModule, registryPlugin } from "./import-module.mjs"
+import { parseDictionary, validateDictionaries } from "../scripts/i18n.mjs"
 
 const helpers = await importModule(
-  'export { chartableEntityColumns, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
-  { plugins: [registryPlugin([{ typeId: "1108001", logicalName: "os_diskstats", identity: ["major", "minor"], columns: ["ts", "major", "minor", "device", "io_in_progress"] }])] },
+  'export { chartableEntityColumns, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
+  { plugins: [registryPlugin([
+    { typeId: "1108001", logicalName: "os_diskstats", identity: ["major", "minor"], columns: ["ts", "major", "minor", "device", "io_in_progress"] },
+    { typeId: "1112001", logicalName: "os_mountinfo", identity: ["major", "minor"], columns: ["ts", "major", "minor", "mount_point", "source", "fstype", "free_bytes", "total_bytes", "is_k8s_infra"] },
+  ])] },
 )
 
 const rateHelpers = await importModule(
@@ -119,6 +123,59 @@ test("System never depends on process rows loaded by another view", async () => 
   assert.ok(disk.fields.includes("minor"))
   const source = await readFile(new URL("../src/system-view.tsx", import.meta.url), "utf8")
   assert.match(source, /rows\.length === 0 && activeContext === null/)
+})
+
+test("System entity tables keep exact meaning-first orders and rate presentation", () => {
+  const fields = Object.fromEntries(helpers.SYSTEM_ENTITIES.map(({ section, columns }) => [section, columns.map(({ field }) => field)]))
+  assert.deepEqual(fields.os_diskstats, ["device", "reads", "writes", "read_sectors", "write_sectors", "read_time_ms", "write_time_ms", "discards", "flushes", "io_in_progress"])
+  assert.deepEqual(fields.os_mountinfo, ["mount_point", "source", "fstype", "free_bytes", "total_bytes", "is_k8s_infra"])
+  assert.deepEqual(fields.os_netdev, ["iface", "rx_bytes", "tx_bytes", "rx_packets", "tx_packets", "rx_errs", "tx_errs", "rx_drop", "tx_drop", "speed_mbit", "duplex"])
+  assert.deepEqual(fields.os_topology, ["cpu_id", "socket_id", "core_id", "numa_node", "model_name", "mhz_max"])
+
+  for (const section of ["os_diskstats", "os_netdev"]) {
+    const panel = helpers.SYSTEM_ENTITIES.find((candidate) => candidate.section === section)
+    const cumulative = panel.columns.filter(({ field }) => !["device", "iface", "io_in_progress", "speed_mbit", "duplex"].includes(field))
+    assert.ok(cumulative.length > 0)
+    assert.ok(cumulative.every(({ rate }) => rate === true))
+  }
+})
+
+test("hidden mount device IDs remain exact request and history identity", () => {
+  const mount = helpers.SYSTEM_ENTITIES.find(({ section }) => section === "os_mountinfo")
+  const request = helpers.SYSTEM_REQUESTS.find(({ section }) => section === "os_mountinfo")
+  assert.ok(request.fields.includes("major"))
+  assert.ok(request.fields.includes("minor"))
+  assert.equal(mount.columns.some(({ field }) => field === "major" || field === "minor"), false)
+
+  const row = { logicalName: "os_mountinfo", ordinal: "0", segmentId: "s", timestamp: 12, typeId: "1112001", values: { major: 8, minor: 1, free_bytes: 4 } }
+  assert.deepEqual(helpers.entityHistoryRequest(row, mount.columns.find(({ field }) => field === "free_bytes")), {
+    fields: ["free_bytes", "major", "minor"],
+    key: '["s","1112001",[["major","8"],["minor","1"]],"free_bytes"]',
+    section: "os_mountinfo",
+    typeId: "1112001",
+    where: { major: "8", minor: "1" },
+  })
+})
+
+test("System entity headers have exact EN/RU help without obvious or orphan entries", async () => {
+  const [englishSource, russianSource] = await Promise.all([
+    readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8"),
+  ])
+  const english = parseDictionary(englishSource, "en.yaml")
+  const russian = parseDictionary(russianSource, "ru.yaml")
+  validateDictionaries(english, russian)
+  const obvious = new Set(["device", "mount_point", "fstype", "source", "iface", "cpu_id", "model_name"])
+  const usedHelp = new Set()
+  for (const { columns, section } of helpers.SYSTEM_ENTITIES) for (const column of columns) {
+    assert.equal(column.help === undefined, obvious.has(column.field), `${section}/${column.field}`)
+    if (column.help === undefined) continue
+    usedHelp.add(column.help)
+    assert.equal(Object.hasOwn(english, column.help), true, column.help)
+    assert.equal(Object.hasOwn(russian, column.help), true, column.help)
+  }
+  const dictionaryHelp = Object.keys(english).filter((key) => /^system\.field\.[^.]+\.help$/.test(key)).sort()
+  assert.deepEqual([...usedHelp].sort(), dictionaryHelp)
 })
 
 test("System history requests are selected-metric keys with exact physical inputs", () => {

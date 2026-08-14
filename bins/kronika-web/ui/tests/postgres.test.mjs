@@ -4,6 +4,7 @@ import test from "node:test"
 import { renderToStaticMarkup } from "react-dom/server"
 
 import { importModule, registryPlugin } from "./import-module.mjs"
+import { parseDictionary, validateDictionaries } from "../scripts/i18n.mjs"
 
 const BLOCK_COUNTERS = [
   "shared_blks_hit", "shared_blks_read", "shared_blks_dirtied", "shared_blks_written",
@@ -27,7 +28,7 @@ const TEST_REGISTRY = [
   layout("1020001", "pg_wal_storage", [], ["ts", "wal_files_bytes"]),
 ]
 const helpers = await importModule(
-  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationMs, chartColumnAvailable, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, postgresMetricHistory, registryCardFields, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows, walStoragePoints } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationMs, chartColumnAvailable, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, postgresMetricHistory, PROGRESS_VACUUM_FIELDS, progressVacuumColumns, registryCardFields, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows, walStoragePoints } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
   { plugins: [registryPlugin(TEST_REGISTRY)] },
 )
 
@@ -187,34 +188,18 @@ test("generic registry cards never present raw collection or identity fields as 
 test("activity keeps a compact operator table and moves diagnostics to detail", () => {
   assert.deepEqual(
     helpers.ACTIVITY_COLUMNS[0],
-    { field: "pid", help: "pg.field.pid.help", kind: "id", label: "pg.field.pid.label", sticky: true, width: 78 },
+    { field: "pid", kind: "id", label: "pg.field.pid.label", sticky: true, width: 78 },
   )
-  assert.deepEqual(helpers.ACTIVITY_COLUMNS[1], {
-    field: "query_duration_ms",
-    help: "pg.field.query_duration_ms.help",
-    kind: "duration",
-    label: "pg.field.query_duration_ms.label",
-    sticky: false,
-    width: 145,
-  })
-  assert.deepEqual(helpers.ACTIVITY_COLUMNS[2], {
-    field: "transaction_duration_ms",
-    help: "pg.field.transaction_duration_ms.help",
-    kind: "duration",
-    label: "pg.field.transaction_duration_ms.label",
-    sticky: false,
-    width: 155,
-  })
   assert.deepEqual(
     helpers.ACTIVITY_COLUMNS.map(({ field }) => field),
-    ["pid", "query_duration_ms", "transaction_duration_ms", "state", "wait_event_type", "wait_event", "datname", "usename", "application_name", "client_addr", "query"],
+    ["pid", "datname", "usename", "query", "query_duration_ms", "transaction_duration_ms", "application_name", "client_addr", "state", "wait_event_type", "wait_event"],
   )
   for (const field of ["backend_type", "leader_pid", "query_id", "backend_xid_age", "backend_xmin_age", "backend_start", "xact_start", "query_start", "state_change"]) {
     assert.equal(helpers.ACTIVITY_COLUMNS.some((column) => column.field === field), false)
     assert.equal(helpers.ACTIVITY_DETAIL_COLUMNS.some((column) => column.field === field), true)
   }
   assert.deepEqual(helpers.activityColumns(false), helpers.ACTIVITY_COLUMNS)
-  assert.deepEqual(helpers.activityColumns(true).slice(0, 3).map(({ field }) => field), ["pid", "backend_type", "query_duration_ms"])
+  assert.deepEqual(helpers.activityColumns(true).slice(0, 4).map(({ field }) => field), ["pid", "backend_type", "datname", "usename"])
   assert.deepEqual(helpers.ACTIVITY_DEFAULT_ORDER, { column: "query_duration_ms", descending: true })
 })
 
@@ -375,23 +360,78 @@ test("dense PostgreSQL columns and the Plans tab stay available by section", asy
   assert.match(source, /\{ section, fields: \[field\], typeId: row\.typeId \}[\s\S]*fullText: true/)
 })
 
-test("statement and plan lenses have compact ordered columns", () => {
-  assert.deepEqual(helpers.statementColumns("load").slice(0, 5).map(({ field }) => field), ["query", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"])
+test("every PostgreSQL dense table and lens has an exact meaning-first order", () => {
+  const fields = (columns) => columns.map(({ field }) => field)
+  assert.deepEqual(fields(helpers.statementColumns("load")), ["query", "datname", "usename", "queryid", "toplevel", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"])
+  assert.deepEqual(fields(helpers.statementColumns("per_call")), ["query", "datname", "usename", "queryid", "toplevel", "mean_exec_ms_per_call", "rows_per_call", "blocks_per_call", "calls_per_second"])
+  assert.deepEqual(fields(helpers.statementColumns("io")), ["query", "datname", "usename", "queryid", "toplevel", "shared_blks_read", "shared_blks_hit", "hit_pct", "blocks_per_call", "shared_blks_dirtied", "shared_blks_written", "local_blks_read", "temp_blks_read", "temp_blks_written"])
+  assert.deepEqual(fields(helpers.statementColumns("resources")), ["query", "datname", "usename", "queryid", "toplevel", "wal_bytes", "wal_per_call", "temp_blks_written", "planning_ms_per_second", "plan_time_pct", "calls_per_second", "execution_ms_per_second"])
+  assert.deepEqual(fields(helpers.statementColumns("stability")), ["query", "datname", "usename", "queryid", "toplevel", "cv", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "stddev_exec_time_ms", "calls_per_second"])
+  assert.deepEqual(fields(helpers.planColumns("load")), ["plan", "datname", "usename", "queryid", "planid", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"])
+  assert.deepEqual(fields(helpers.planColumns("timing")), ["plan", "datname", "usename", "queryid", "planid", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "stddev_exec_time_ms", "calls_per_second", "first_call", "last_call"])
+  assert.deepEqual(fields(helpers.planColumns("io")), ["plan", "datname", "usename", "queryid", "planid", "shared_blks_read", "shared_blks_hit", "hit_pct", "blocks_per_call", "shared_blks_dirtied", "local_blks_read", "temp_blks_read"])
+  assert.deepEqual(fields(helpers.planColumns("identity")), ["plan", "datname", "usename", "queryid", "planid", "cmd_type", "queryid_stat_statements", "calls_per_second"])
+  assert.deepEqual(fields(helpers.LOCK_COLUMNS), ["pid", "datname", "usename", "query", "application_name", "lock_target", "lock_relname", "lock_locktype", "lock_mode", "blocked_by", "state", "wait_event_type", "wait_event", "waitstart"])
+  assert.deepEqual(fields(helpers.DATABASE_COLUMNS), ["datname", "numbackends", "xact_commit", "xact_rollback", "sessions", "tup_returned", "tup_fetched", "tup_inserted", "tup_updated", "tup_deleted", "blks_read", "blks_hit", "blk_read_time", "blk_write_time", "temp_files", "temp_bytes", "conflicts", "deadlocks", "frozen_xid_age"])
+  for (const lens of ["load", "per_call", "io", "resources", "stability"]) assert.deepEqual(fields(helpers.statementColumns(lens)).slice(0, 2), ["query", "datname"])
+  assert.equal(fields(helpers.DATABASE_COLUMNS).includes("datid"), false)
+  for (const columns of [helpers.STATEMENT_COLUMNS, helpers.PLAN_COLUMNS]) {
+    for (const internal of ["dbid", "userid", "relids"]) assert.equal(fields(columns).includes(internal), false, internal)
+  }
   assert.equal(helpers.statementColumns("load").some(({ field }) => field === "exec_load"), false)
   assert.equal(helpers.planColumns("load").some(({ field }) => field === "exec_load"), false)
-  assert.deepEqual(helpers.statementColumns("per_call").slice(0, 4).map(({ field }) => field), ["query", "mean_exec_ms_per_call", "rows_per_call", "blocks_per_call"])
-  assert.ok(helpers.statementColumns("io").some(({ field }) => field === "hit_pct"))
-  assert.ok(helpers.statementColumns("resources").some(({ field }) => field === "plan_time_pct"))
-  assert.ok(helpers.statementColumns("stability").some(({ field }) => field === "cv"))
-  assert.ok(helpers.planColumns("timing").some(({ field }) => field === "stddev_exec_time_ms"))
-  assert.ok(helpers.planColumns("identity").some(({ field }) => field === "queryid_stat_statements"))
-  assert.ok(helpers.planColumns("identity").some(({ field }) => field === "calls_per_second"))
   assert.equal(helpers.statementDefaultOrder("load"), "execution_ms_per_second")
   assert.equal(helpers.statementDefaultOrder("per_call"), "calls_per_second")
   assert.equal(helpers.statementDefaultOrder("io"), "shared_blks_read")
   assert.equal(helpers.statementDefaultOrder("resources"), "wal_bytes")
   assert.equal(helpers.statementDefaultOrder("stability"), "calls_per_second")
   assert.equal(helpers.planDefaultOrder("timing"), "calls_per_second")
+})
+
+test("VACUUM progress hides database and relation OIDs and keeps phase last across layouts", () => {
+  const values = Object.fromEntries(helpers.PROGRESS_VACUUM_FIELDS.map((field, index) => [field, field === "phase" || field === "datname" ? field : index]))
+  values.datid = 42
+  values.relid = 73
+  const row = { logicalName: "pg_stat_progress_vacuum", ordinal: "0", segmentId: "a", timestamp: 1, typeId: "1012003", values }
+  const columns = helpers.progressVacuumColumns([row], [])
+  assert.deepEqual(columns.map(({ field }) => field), helpers.PROGRESS_VACUUM_FIELDS)
+  assert.equal(columns.some(({ field }) => field === "datid" || field === "relid"), false)
+  assert.equal(columns.find(({ field }) => field === "pid")?.help, undefined)
+  assert.equal(columns.filter(({ field }) => field !== "pid").every(({ help }) => typeof help === "string"), true)
+  assert.equal(columns.at(-1)?.field, "phase")
+})
+
+test("every non-obvious PostgreSQL dense header has exact EN/RU help", async () => {
+  const [englishSource, russianSource] = await Promise.all([
+    readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8"),
+  ])
+  const english = parseDictionary(englishSource, "en.yaml")
+  const russian = parseDictionary(russianSource, "ru.yaml")
+  validateDictionaries(english, russian)
+  const progressValues = Object.fromEntries(helpers.PROGRESS_VACUUM_FIELDS.map((field, index) => [field, field === "phase" || field === "datname" ? field : index]))
+  const progress = helpers.progressVacuumColumns([{ logicalName: "pg_stat_progress_vacuum", ordinal: "0", segmentId: "a", timestamp: 1, typeId: "1012003", values: progressValues }], [])
+  const groups = [
+    helpers.ACTIVITY_COLUMNS,
+    ...["load", "per_call", "io", "resources", "stability"].map((lens) => helpers.statementColumns(lens)),
+    ...["load", "timing", "io", "identity"].map((lens) => helpers.planColumns(lens)),
+    helpers.LOCK_COLUMNS,
+    helpers.DATABASE_COLUMNS,
+    progress,
+  ]
+  const usedVacuumHelp = new Set()
+  for (const columns of groups) for (const column of columns) {
+    const intentionallyObvious = column.field === "pid" && [helpers.LOCK_COLUMNS, helpers.ACTIVITY_COLUMNS, progress].includes(columns)
+      || column.field === "datname" && [helpers.DATABASE_COLUMNS, helpers.LOCK_COLUMNS, helpers.ACTIVITY_COLUMNS].includes(columns)
+      || ["usename", "application_name"].includes(column.field) && [helpers.LOCK_COLUMNS, helpers.ACTIVITY_COLUMNS].includes(columns)
+    assert.equal(column.help === undefined, intentionallyObvious, column.field)
+    if (column.help === undefined) continue
+    assert.equal(Object.hasOwn(english, column.help), true, column.help)
+    assert.equal(Object.hasOwn(russian, column.help), true, column.help)
+    if (column.help.startsWith("pg.vacuum.")) usedVacuumHelp.add(column.help)
+  }
+  const dictionaryVacuumHelp = Object.keys(english).filter((key) => /^pg\.vacuum\.[^.]+\.help$/.test(key)).sort()
+  assert.deepEqual([...usedVacuumHelp].sort(), dictionaryVacuumHelp)
 })
 
 test("dense numeric columns advertise server sorting and text identities do not", () => {

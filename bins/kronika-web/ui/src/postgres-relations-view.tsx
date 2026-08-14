@@ -15,8 +15,10 @@ import {
   relationDefaultOrder,
   relationDetailTarget,
   relationDrill,
+  relationDisplayFields,
   relationFieldKind,
   relationFields,
+  relationHelpKey,
   relationHistory,
   relationHistoryField,
   relationHistoryFields,
@@ -137,8 +139,7 @@ function RelationLevels({ filters, level, onNavigate, section, t }: { readonly f
 
 function RelationLenses({ active, onLens, section, t }: { readonly active: RelationLens; readonly onLens: (lens: RelationLens) => void; readonly section: RelationSection; readonly t: Translate }) {
   const lenses: readonly RelationLens[] = section === "pg_stat_user_tables" ? TABLE_LENSES : INDEX_LENSES
-  const help = section === "pg_stat_user_tables" && (active === "access" || active === "changes" || active === "size_buffers") ? `pg.relation.${active}.help` : null
-  return <div className="lensbar pg-lensbar" data-testid="pg-relation-lenses"><span>{t("pg.lens.label")}</span><div aria-label={t("pg.lens.label")} className="lens-tabs" role="group">{lenses.map((lens) => <button aria-pressed={lens === active} key={lens} onClick={() => onLens(lens)} type="button">{t(`pg.lens.${lens}`)}</button>)}</div>{help !== null && <LabelHelp helpKey={help} iconOnly labelKey={`pg.lens.${active}`} t={t} />}</div>
+  return <div className="lensbar pg-lensbar" data-testid="pg-relation-lenses"><span>{t("pg.lens.label")}</span><div aria-label={t("pg.lens.label")} className="lens-tabs" role="group">{lenses.map((lens) => <button aria-pressed={lens === active} key={lens} onClick={() => onLens(lens)} type="button">{t(`pg.lens.${lens}`)}</button>)}</div></div>
 }
 
 function RelationDetail({ cursor, hour, lens, locale, onClose, onCursor, onNavigate, rateFields, row, t }: { readonly cursor: number; readonly hour: number; readonly lens: RelationLens; readonly locale: Locale; readonly onClose: () => void; readonly onCursor: (timestamp: number) => void; readonly onNavigate: (navigation: RelationNavigation) => void; readonly rateFields: readonly string[]; readonly row: DataRow; readonly t: Translate }) {
@@ -193,7 +194,10 @@ function RelationDetail({ cursor, hour, lens, locale, onClose, onCursor, onNavig
       <div aria-label={t("system.history")} className="process-history-selector" role="group">{chartColumns.map((column) => <button aria-pressed={historyField === column.field} data-testid={`pg-relation-chart-${column.field}`} key={column.field} onClick={() => setHistoryField(column.field)} type="button">{t(column.label)}</button>)}</div>
       <SeriesChart cursor={cursor} format={chartFormat(historyColumn.kind)} hour={hour} label={t(historyColumn.label)} locale={locale} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} unit={chartUnit(historyColumn, t("unit.per_second"))} />
     </section>}
-    <dl>{columns.map((column) => <div key={column.field}><dt><span>{t(column.label)}</span></dt><dd>{scanValue(row, column, locale, t)}</dd></div>)}</dl>
+    <dl>{columns.map((column) => {
+      const label = t(column.label)
+      return <div key={column.field}><dt><span>{column.help === undefined ? label : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}</span></dt><dd>{scanValue(row, column, locale, t)}</dd></div>
+    })}</dl>
     {definitionTarget !== null && <section className="query-block"><span>{t("pg.relation.definition")}{definition !== null && <button aria-label={t("common.raw")} className="copy-raw" onClick={() => void navigator.clipboard?.writeText(definition)} type="button"><Copy aria-hidden="true" size={12} /></button>}</span><pre data-testid="pg-exact-indexdef">{exact === undefined ? t("status.loading") : definition ?? t("common.unavailable")}</pre></section>}
   </aside>
 }
@@ -219,7 +223,7 @@ function relationScope(filters: Readonly<Record<string, string>>, rows: readonly
 }
 
 function visibleRelationFields(section: RelationSection, lens: RelationLens, level: RelationGroup): readonly string[] {
-  return relationFields(section, lens, level).filter((field) => !isRelationId(field)
+  return relationDisplayFields(section, lens, level).filter((field) => !isRelationId(field)
     && !field.endsWith("_never")
     && field !== "state_severity"
     && !rawRelationField(section, lens, field))
@@ -229,7 +233,8 @@ function relationColumn(section: RelationSection, field: string, rateFields: rea
   const kind = relationFieldKind(field)
   const width = kind === "timestamp" ? 210 : kind === "text" ? field.includes("relname") ? 190 : 145 : kind === "boolean" || kind === "id" ? 115 : kind === "milliseconds" ? 155 : 140
   const copyField = section === "pg_stat_user_tables" && field === "main_fork_bytes" ? "table_data_bytes" : field
-  return { field, label: `pg.field.${copyField}.label`, kind, width, rate: rateFields.includes(field) }
+  const help = relationHelpKey(section, field)
+  return { field, label: `pg.field.${copyField}.label`, ...(help === undefined ? {} : { help }), kind, width, rate: rateFields.includes(field) }
 }
 
 function rawRelationField(section: RelationSection, lens: RelationLens, field: string): boolean {

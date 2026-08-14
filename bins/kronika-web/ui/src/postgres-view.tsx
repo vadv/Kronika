@@ -20,13 +20,14 @@ export type PostgresSection = "overview" | "activity" | "statements" | "plans" |
 
 export const ACTIVITY_DEFAULT_ORDER: TableOrder = { column: "query_duration_ms", descending: true }
 
-const ACTIVITY_PID = pgId("pid", "pg.field.pid", 78, true)
+const ACTIVITY_PID = pgId("pid", "pg.field.pid", 78, true, false)
 const ACTIVITY_BACKEND_TYPE = pgText("backend_type", "pg.backend_type", 150, true)
 
 export const ACTIVITY_COLUMNS: readonly EntityColumn[] = [
-  ACTIVITY_PID, duration("query_duration_ms", 145), duration("transaction_duration_ms", 155), pgText("state", "pg.state", 140),
-  pgText("wait_event_type", "pg.wait_event_type", 135), pgText("wait_event", "pg.wait_event", 155), pgText("datname", "pg.datname", 145), pgText("usename", "pg.usename", 130),
-  pgText("application_name", "pg.application_name", 180), pgText("client_addr", "pg.client_addr", 150), pgText("query", "pg.query", 420),
+  ACTIVITY_PID, pgText("datname", "pg.datname", 145, false, false), pgText("usename", "pg.usename", 130, false, false), pgText("query", "pg.query", 420),
+  duration("query_duration_ms", 145), duration("transaction_duration_ms", 155),
+  pgText("application_name", "pg.application_name", 180, false, false), pgText("client_addr", "pg.client_addr", 150),
+  pgText("state", "pg.state", 140), pgText("wait_event_type", "pg.wait_event_type", 135), pgText("wait_event", "pg.wait_event", 155),
 ]
 
 export const ACTIVITY_DETAIL_COLUMNS: readonly EntityColumn[] = [
@@ -52,7 +53,7 @@ export const STATEMENT_COLUMNS: readonly EntityColumn[] = [
   rateMilliseconds("local_blk_read_ms_per_second", 160), rateMilliseconds("local_blk_write_ms_per_second", 165),
   rateMilliseconds("temp_blk_read_ms_per_second", 160), rateMilliseconds("temp_blk_write_ms_per_second", 165),
   rateNumber("plans"), rateMilliseconds("planning_ms_per_second", 165),
-  text("datname", 145), text("usename", 130), id("queryid", 155), id("dbid", 120), id("userid", 120),
+  { ...text("datname", 145), help: "pg.field.statement_database.help" }, text("usename", 130), id("queryid", 155),
   boolean("toplevel", 105), timestamp("stats_since", 210),
 ]
 
@@ -63,12 +64,12 @@ const STATEMENT_DERIVED_COLUMNS: readonly EntityColumn[] = [
   milliseconds("mean_exec_time_ms", 135), milliseconds("stddev_exec_time_ms", 145),
 ]
 
-const STATEMENT_LENSES: Readonly<Record<StatementLens, readonly string[]>> = {
-  load: ["query", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second", "datname", "usename", "queryid", "toplevel"],
-  per_call: ["query", "mean_exec_ms_per_call", "rows_per_call", "blocks_per_call", "calls_per_second", "datname", "usename", "queryid", "toplevel"],
-  io: ["query", "shared_blks_read", "shared_blks_hit", "hit_pct", "blocks_per_call", "shared_blks_dirtied", "shared_blks_written", "local_blks_read", "temp_blks_read", "temp_blks_written", "datname", "queryid"],
-  resources: ["query", "temp_blks_written", "wal_bytes", "wal_per_call", "planning_ms_per_second", "plan_time_pct", "calls_per_second", "execution_ms_per_second", "datname", "queryid"],
-  stability: ["query", "cv", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "stddev_exec_time_ms", "calls_per_second", "datname", "queryid"],
+export const STATEMENT_LENSES: Readonly<Record<StatementLens, readonly string[]>> = {
+  load: ["query", "datname", "usename", "queryid", "toplevel", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"],
+  per_call: ["query", "datname", "usename", "queryid", "toplevel", "mean_exec_ms_per_call", "rows_per_call", "blocks_per_call", "calls_per_second"],
+  io: ["query", "datname", "usename", "queryid", "toplevel", "shared_blks_read", "shared_blks_hit", "hit_pct", "blocks_per_call", "shared_blks_dirtied", "shared_blks_written", "local_blks_read", "temp_blks_read", "temp_blks_written"],
+  resources: ["query", "datname", "usename", "queryid", "toplevel", "wal_bytes", "wal_per_call", "temp_blks_written", "planning_ms_per_second", "plan_time_pct", "calls_per_second", "execution_ms_per_second"],
+  stability: ["query", "datname", "usename", "queryid", "toplevel", "cv", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "stddev_exec_time_ms", "calls_per_second"],
 }
 
 export const PLAN_COLUMNS: readonly EntityColumn[] = [
@@ -84,8 +85,8 @@ export const PLAN_COLUMNS: readonly EntityColumn[] = [
   rateMilliseconds("local_blk_read_ms_per_second", 160), rateMilliseconds("local_blk_write_ms_per_second", 165),
   rateMilliseconds("temp_blk_read_ms_per_second", 160), rateMilliseconds("temp_blk_write_ms_per_second", 165),
   rateMilliseconds("planning_ms_per_second", 165), rateNumber("slow_log_calls", 145),
-  text("datname", 145), text("usename", 130), id("dbid", 120), id("userid", 120),
-  text("cmd_type", 125), text("relids", 190), id("queryid_stat_statements", 220),
+  { ...text("datname", 145), help: "pg.field.plan_database.help" }, text("usename", 130),
+  text("cmd_type", 125), id("queryid_stat_statements", 220),
 ]
 
 const PLAN_DERIVED_COLUMNS: readonly EntityColumn[] = [
@@ -95,11 +96,11 @@ const PLAN_DERIVED_COLUMNS: readonly EntityColumn[] = [
   timestamp("first_call", 190), timestamp("last_call", 190),
 ]
 
-const PLAN_LENSES: Readonly<Record<PlanLens, readonly string[]>> = {
-  load: ["plan", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second", "datname", "usename", "queryid", "planid"],
-  timing: ["plan", "queryid", "planid", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "stddev_exec_time_ms", "calls_per_second", "first_call", "last_call", "datname"],
-  io: ["plan", "queryid", "planid", "shared_blks_read", "shared_blks_hit", "hit_pct", "blocks_per_call", "shared_blks_dirtied", "local_blks_read", "temp_blks_read", "datname"],
-  identity: ["plan", "queryid", "planid", "calls_per_second", "dbid", "userid", "datname", "usename", "cmd_type", "relids", "queryid_stat_statements"],
+export const PLAN_LENSES: Readonly<Record<PlanLens, readonly string[]>> = {
+  load: ["plan", "datname", "usename", "queryid", "planid", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"],
+  timing: ["plan", "datname", "usename", "queryid", "planid", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "stddev_exec_time_ms", "calls_per_second", "first_call", "last_call"],
+  io: ["plan", "datname", "usename", "queryid", "planid", "shared_blks_read", "shared_blks_hit", "hit_pct", "blocks_per_call", "shared_blks_dirtied", "local_blks_read", "temp_blks_read"],
+  identity: ["plan", "datname", "usename", "queryid", "planid", "cmd_type", "queryid_stat_statements", "calls_per_second"],
 }
 
 const STATEMENT_ALL_COLUMNS = [...STATEMENT_COLUMNS, ...STATEMENT_DERIVED_COLUMNS]
@@ -121,19 +122,17 @@ function columnsInOrder(columns: readonly EntityColumn[], fields: readonly strin
   })
 }
 
-const LOCK_COLUMNS: readonly EntityColumn[] = [
-  id("pid", 78, true), text("datname", 145, true), text("usename", 130), text("application_name", 180),
-  text("state", 110), text("wait_event_type", 135), text("wait_event", 155), text("blocked_by", 150),
-  text("lock_locktype", 145), text("lock_mode", 180), text("lock_target", 260), text("lock_relname", 180),
-  id("lock_relation", 135), id("lock_transactionid", 160), timestamp("waitstart", 210), text("query", 420),
+export const LOCK_COLUMNS: readonly EntityColumn[] = [
+  id("pid", 78, true, false), pgText("datname", "pg.datname", 145, true, false), pgText("usename", "pg.usename", 130, false, false), pgText("query", "pg.query", 420), pgText("application_name", "pg.application_name", 180, false, false),
+  text("lock_target", 260), text("lock_relname", 180), text("lock_locktype", 145), text("lock_mode", 180), text("blocked_by", 150),
+  pgText("state", "pg.state", 110), pgText("wait_event_type", "pg.wait_event_type", 135), pgText("wait_event", "pg.wait_event", 155), timestamp("waitstart", 210),
 ]
 
-const DATABASE_COLUMNS: readonly EntityColumn[] = [
-  id("datid", 105, true), text("datname", 170, true), number("numbackends", 135), number("xact_commit", 145),
-  number("xact_rollback", 145), number("blks_hit", 140), number("blks_read", 140), number("tup_returned", 145),
-  number("tup_fetched", 145), number("tup_inserted", 145), number("tup_updated", 145), number("tup_deleted", 145),
-  number("deadlocks", 125), number("conflicts", 125), number("temp_files", 125), bytes("temp_bytes", 145),
-  milliseconds("blk_read_time", 150), milliseconds("blk_write_time", 155), number("sessions", 125), number("frozen_xid_age", 155),
+export const DATABASE_COLUMNS: readonly EntityColumn[] = [
+  text("datname", 170, true, false), number("numbackends", 135), number("xact_commit", 145), number("xact_rollback", 145), number("sessions", 125),
+  number("tup_returned", 145), number("tup_fetched", 145), number("tup_inserted", 145), number("tup_updated", 145), number("tup_deleted", 145),
+  number("blks_read", 140), number("blks_hit", 140), milliseconds("blk_read_time", 150), milliseconds("blk_write_time", 155),
+  number("temp_files", 125), bytes("temp_bytes", 145), number("conflicts", 125), number("deadlocks", 125), number("frozen_xid_age", 155),
 ]
 
 const TABS: readonly { readonly id: PostgresSection; readonly sections?: readonly string[] }[] = [
@@ -341,11 +340,11 @@ function PgPreview({ columns: prescribedColumns, cursor, data, focus, hour, loca
   const allRows = data.sections[section] ?? NO_ROWS
   const rows = snapshot(allRows, cursor)
   const rates = data.rateColumns[section] ?? NO_RATES
-  const columns = useMemo(() => (prescribedColumns ?? columnsFor(rows)).filter((column) => rows.some((row) => Object.hasOwn(row.values, column.field))).map((column) => ({
+  const columns = useMemo(() => (prescribedColumns ?? (section === "pg_stat_progress_vacuum" ? progressVacuumColumns(rows, rates) : columnsFor(rows))).filter((column) => rows.some((row) => Object.hasOwn(row.values, column.field))).map((column) => ({
     ...column,
     ...(overview && prescribedColumns === undefined ? { label: overviewFieldKey(column.field) } : {}),
     ...(rates.includes(column.field) ? { rate: true } : {}),
-  })), [overview, prescribedColumns, rates, rows])
+  })), [overview, prescribedColumns, rates, rows, section])
   const [selected, setSelected] = useState<DataRow | null>(null)
   useEffect(() => setSelected((current) => selectedEntity(rows, current, section)), [rows, section])
   const selectedKey = selected === null ? null : rowKey(selected)
@@ -968,6 +967,27 @@ export function columnsFor(rows: readonly DataRow[]): readonly EntityColumn[] {
   })
 }
 
+export const PROGRESS_VACUUM_FIELDS = [
+  "pid", "datname", "is_autovacuum", "heap_blks_scanned", "heap_blks_total", "heap_blks_vacuumed",
+  "index_vacuum_count", "indexes_processed", "indexes_total", "num_dead_tuples", "max_dead_tuples",
+  "num_dead_item_ids", "dead_tuple_bytes", "max_dead_tuple_bytes", "delay_time", "phase",
+] as const
+
+export function progressVacuumColumns(rows: readonly DataRow[], rates: readonly string[]): readonly EntityColumn[] {
+  const available = new Map(columnsFor(rows).map((column) => [column.field, column]))
+  return PROGRESS_VACUUM_FIELDS.flatMap((field) => {
+    const column = available.get(field)
+    if (column === undefined) return []
+    return [{
+      ...column,
+      ...(field === "pid" ? {} : { help: `pg.vacuum.${field}.help` }),
+      label: `pg.vacuum.${field}.label`,
+      rate: rates.includes(field),
+      sticky: field === "pid",
+    }]
+  })
+}
+
 const REGISTRY_IDENTITIES = new Map(registry.map((layout) => [layout.typeId, new Set(layout.identity)]))
 const INTERNAL_FIELDS = new Set(["ts", "ordinal", "segment_id", "type_id", "row_ordinal", "field_ordinal"])
 
@@ -1042,12 +1062,12 @@ function sectionName(section: string): PostgresSection {
   if (section === "pg_locks") return "locks"
   return "databases"
 }
-function pgColumn(field: string, kind: NonNullable<EntityColumn["kind"]>, width: number, sticky = false): EntityColumn {
-  return { field, label: `pg.field.${field}.label`, help: `pg.field.${field}.help`, kind, width, sticky }
+function pgColumn(field: string, kind: NonNullable<EntityColumn["kind"]>, width: number, sticky = false, withHelp = true): EntityColumn {
+  return { field, label: `pg.field.${field}.label`, ...(withHelp ? { help: `pg.field.${field}.help` } : {}), kind, width, sticky }
 }
-function text(field: string, width = 130, sticky = false): EntityColumn { return pgColumn(field, "text", width, sticky) }
+function text(field: string, width = 130, sticky = false, withHelp = true): EntityColumn { return pgColumn(field, "text", width, sticky, withHelp) }
 function number(field: string, width = 125): EntityColumn { return { ...pgColumn(field, "number", width), sortable: true } }
-function id(field: string, width = 110, sticky = false): EntityColumn { return pgColumn(field, "id", width, sticky) }
+function id(field: string, width = 110, sticky = false, withHelp = true): EntityColumn { return pgColumn(field, "id", width, sticky, withHelp) }
 function bytes(field: string, width = 140): EntityColumn { return { ...pgColumn(field, "bytes", width), sortable: true } }
 function milliseconds(field: string, width = 145): EntityColumn { return { ...pgColumn(field, "milliseconds", width), sortable: true } }
 function duration(field: string, width = 145): EntityColumn { return pgColumn(field, "duration", width) }
@@ -1057,7 +1077,7 @@ function rateBytes(field: string, width = 140): EntityColumn { return { ...bytes
 function rateMilliseconds(field: string, width = 145): EntityColumn { return { ...milliseconds(field, width), rate: true } }
 function timestamp(field: string, width = 210): EntityColumn { return { ...pgColumn(field, "timestamp", width), sortable: true } }
 function boolean(field: string, width = 125): EntityColumn { return pgColumn(field, "boolean", width) }
-function pgText(field: string, key: string, width = 130, sticky = false): EntityColumn { return { field, label: `${key}.label`, help: `${key}.help`, kind: "text", width, sticky } }
+function pgText(field: string, key: string, width = 130, sticky = false, withHelp = true): EntityColumn { return { field, label: `${key}.label`, ...(withHelp ? { help: `${key}.help` } : {}), kind: "text", width, sticky } }
 function pgNumber(field: string, key: string, width = 125): EntityColumn { return { field, label: `${key}.label`, help: `${key}.help`, kind: "number", width } }
-function pgId(field: string, key: string, width = 110, sticky = false): EntityColumn { return { field, label: `${key}.label`, help: `${key}.help`, kind: "id", width, sticky } }
+function pgId(field: string, key: string, width = 110, sticky = false, withHelp = true): EntityColumn { return { field, label: `${key}.label`, ...(withHelp ? { help: `${key}.help` } : {}), kind: "id", width, sticky } }
 function pgTimestamp(field: string, key: string, width = 210): EntityColumn { return { field, label: `${key}.label`, help: `${key}.help`, kind: "timestamp", width } }

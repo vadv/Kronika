@@ -123,26 +123,26 @@ const GROUP_COLUMNS: readonly (readonly MetricSpec["group"][])[] = [
   ["load", "storage", "network"],
 ]
 
-const ENTITIES: readonly {
+export const SYSTEM_ENTITIES: readonly {
   readonly section: string
   readonly label: string
   readonly columns: readonly EntityColumn[]
 }[] = [
   {
     section: "os_diskstats", label: "system.entities.devices",
-    columns: [text("device", 150, true), number("io_in_progress"), number("reads"), number("writes"), number("read_sectors"), number("write_sectors"), milliseconds("read_time_ms"), milliseconds("write_time_ms"), number("discards"), number("flushes")],
+    columns: [text("device", 150, true), rateNumber("reads"), rateNumber("writes"), rateNumber("read_sectors"), rateNumber("write_sectors"), rateMilliseconds("read_time_ms"), rateMilliseconds("write_time_ms"), rateNumber("discards"), rateNumber("flushes"), number("io_in_progress")],
   },
   {
     section: "os_mountinfo", label: "system.entities.mounts",
-    columns: [text("mount_point", 240, true), text("fstype", 120), text("source", 180), id("major"), id("minor"), bytes("total_bytes"), bytes("free_bytes"), boolean("is_k8s_infra")],
+    columns: [text("mount_point", 240, true), text("source", 180), text("fstype", 120), bytes("free_bytes"), bytes("total_bytes"), boolean("is_k8s_infra")],
   },
   {
     section: "os_netdev", label: "system.entities.network",
-    columns: [text("iface", 150, true), bytes("rx_bytes"), number("rx_packets"), number("rx_errs"), number("rx_drop"), bytes("tx_bytes"), number("tx_packets"), number("tx_errs"), number("tx_drop"), number("speed_mbit"), id("duplex")],
+    columns: [text("iface", 150, true), rateBytes("rx_bytes"), rateBytes("tx_bytes"), rateNumber("rx_packets"), rateNumber("tx_packets"), rateNumber("rx_errs"), rateNumber("tx_errs"), rateNumber("rx_drop"), rateNumber("tx_drop"), number("speed_mbit"), id("duplex")],
   },
   {
     section: "os_topology", label: "system.entities.topology",
-    columns: [id("cpu_id", 90, true), text("model_name", 300), number("mhz_max"), id("core_id"), id("socket_id"), id("numa_node")],
+    columns: [id("cpu_id", 90, true), id("socket_id"), id("core_id"), id("numa_node"), text("model_name", 300), number("mhz_max")],
   },
 ]
 
@@ -161,7 +161,7 @@ function systemRequests(): readonly SectionRequest[] {
       need(spec.section, spec.resource === undefined ? [spec.field] : [spec.field, "resource"])
     }
   }
-  for (const panel of ENTITIES) need(panel.section, [
+  for (const panel of SYSTEM_ENTITIES) need(panel.section, [
     ...panel.columns.map((column: EntityColumn) => column.field),
     ...registry.filter((layout) => layout.logicalName === panel.section).flatMap((layout) => layout.identity),
   ])
@@ -272,7 +272,7 @@ export function SystemView({
     </section>
     <UseTable cursor={cursor} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} t={t} />
     <section className="entity-panels">
-      {ENTITIES.map((entity) => {
+      {SYSTEM_ENTITIES.map((entity) => {
         const allRows = snapshot(sectionRows(data, entity.section), cursor)
         const activeContext = context?.logicalName === entity.section ? context : null
         const rows = contextualRows(allRows, activeContext, activeContext === null ? null : contextRow)
@@ -753,7 +753,8 @@ function pressureMetric(id: string, label: string, resource: number): MetricSpec
 
 function point(source: Point): ChartPoint { return source }
 function systemColumn(field: string, kind: NonNullable<EntityColumn["kind"]>, width: number, sticky = false): EntityColumn {
-  return { field, label: `system.field.${field}.label`, help: `system.field.${field}.help`, kind, width, sticky }
+  const obvious = new Set(["device", "mount_point", "fstype", "source", "iface", "cpu_id", "model_name"])
+  return { field, label: `system.field.${field}.label`, ...(obvious.has(field) ? {} : { help: `system.field.${field}.help` }), kind, width, sticky }
 }
 function text(field: string, width = 130, sticky = false): EntityColumn { return systemColumn(field, "text", width, sticky) }
 function number(field: string, width = 126): EntityColumn { return systemColumn(field, "number", width) }
@@ -761,3 +762,7 @@ function id(field: string, width = 110, sticky = false): EntityColumn { return s
 function bytes(field: string, width = 145): EntityColumn { return systemColumn(field, "bytes", width) }
 function milliseconds(field: string, width = 145): EntityColumn { return systemColumn(field, "milliseconds", width) }
 function boolean(field: string, width = 130): EntityColumn { return systemColumn(field, "boolean", width) }
+function rateColumn(column: EntityColumn): EntityColumn { return { ...column, rate: true } }
+function rateNumber(field: string, width = 126): EntityColumn { return rateColumn(number(field, width)) }
+function rateBytes(field: string, width = 145): EntityColumn { return rateColumn(bytes(field, width)) }
+function rateMilliseconds(field: string, width = 145): EntityColumn { return rateColumn(milliseconds(field, width)) }

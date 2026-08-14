@@ -65,7 +65,9 @@ test("process identity includes the captured start time", () => {
 
 test("process tables start with CPU and disk sorting chooses the first active signal", () => {
   const process = (values: DataRow["values"]): DataRow => ({ ...row(100), values })
+  assert.equal(processDefaultSort("generic", []), "pid")
   assert.equal(processDefaultSort("cpu", []), "utime")
+  assert.equal(processDefaultSort("memory", []), "rmem_kb")
   assert.equal(processDefaultSort("disk", [process({ read_bytes: 0, write_bytes: 4, syscr: 9 })]), "write_bytes")
   assert.equal(processDefaultSort("disk", [process({ read_bytes: 0, write_bytes: 0, syscr: 9 })]), "syscr")
   assert.equal(processDefaultSort("disk", [process({ read_bytes: 0, write_bytes: 0, syscr: 0, syscw: 0 })]), "read_bytes")

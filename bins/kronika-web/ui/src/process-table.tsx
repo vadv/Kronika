@@ -36,32 +36,31 @@ const STATE: Field = { id: "state", field: "state", label: "col.state.label", he
 
 export const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
   generic: [
-    PID, COMMAND, STATE,
+    PID, COMMAND,
     idField("ppid", "col.ppid", 70), idField("uid", "col.uid", 70), idField("euid", "col.euid", 70),
     idField("gid", "col.gid", 70), idField("egid", "col.egid", 70),
     numberField("num_threads", "col.threads", 84), idField("tty", "col.tty", 70),
-    idField("exit_signal", "col.exit_signal", 70),
+    idField("exit_signal", "col.exit_signal", 70), STATE,
   ],
   cpu: [
-    PID, COMMAND, STATE,
-    idField("curcpu", "col.curcpu", 70), coresField("utime", "col.utime", 84),
+    PID, COMMAND, coresField("utime", "col.utime", 84),
     coresField("stime", "col.stime", 84), nsField("rundelay_ns", "col.rundelay", 96),
     rateField("blkdelay_ticks", "col.blkdelay", 84), rateField("nvcsw", "col.nvcsw", 84),
-    rateField("nivcsw", "col.nivcsw", 84), numberField("nice", "col.nice", 84),
+    rateField("nivcsw", "col.nivcsw", 84), idField("curcpu", "col.curcpu", 70), numberField("nice", "col.nice", 84),
     numberField("prio", "col.prio", 84), numberField("rtprio", "col.rtprio", 84), idField("policy", "col.policy", 70),
+    STATE,
   ],
   memory: [
-    PID, COMMAND, STATE,
-    kibField("rmem_kb", "col.rmem", 96), kibField("vmem_kb", "col.vmem", 96),
+    PID, COMMAND, kibField("rmem_kb", "col.rmem", 96), kibField("vmem_kb", "col.vmem", 96),
     kibField("vswap_kb", "col.vswap", 96), rateField("minflt", "col.minflt", 84),
-    rateField("majflt", "col.majflt", 84),
+    rateField("majflt", "col.majflt", 84), STATE,
   ],
   disk: [
-    PID, COMMAND, STATE,
-    bytesField("read_bytes", "col.read_bytes", 96), bytesField("write_bytes", "col.write_bytes", 96),
-    bytesField("cancelled_write_bytes", "col.cancelled_write", 96), rateField("syscr", "col.syscr", 84),
+    PID, COMMAND, bytesField("read_bytes", "col.read_bytes", 96), bytesField("write_bytes", "col.write_bytes", 96),
+    rateField("syscr", "col.syscr", 84),
     rateField("syscw", "col.syscw", 84), bytesField("rchar", "col.rchar", 96),
-    bytesField("wchar", "col.wchar", 96), rateField("blkdelay_ticks", "col.blkdelay", 84),
+    bytesField("wchar", "col.wchar", 96), bytesField("cancelled_write_bytes", "col.cancelled_write", 96),
+    rateField("blkdelay_ticks", "col.blkdelay", 84), STATE,
   ],
 }
 
@@ -107,17 +106,20 @@ export function ProcessTable({
   readonly t: Translate
   readonly ticksPerSecond: number | null
 }) {
-  const columns = useMemo<readonly EntityColumn[]>(() => LENS_FIELDS[lens].map((field) => ({
-    field: field.id,
-    ...(field.kind === "command" ? { filterValue: processCommand } : {}),
-    help: field.help,
-    kind: entityKind(field.kind),
-    label: field.label,
-    render: (row) => <CellValue field={field} locale={locale} linked={linkedPids.has(asNumber(value(row, "pid")) ?? -1)} row={row} t={t} ticksPerSecond={ticksPerSecond} />,
-    sortValue: (row) => sortable(row, field),
-    ...(field.sticky === undefined ? {} : { sticky: `sticky-${field.sticky}` }),
-    width: field.size,
-  })), [lens, linkedPids, locale, t, ticksPerSecond])
+  const columns = useMemo<readonly EntityColumn[]>(() => LENS_FIELDS[lens].map((field) => {
+    const help = processHeaderHelp(field)
+    return {
+      field: field.id,
+      ...(field.kind === "command" ? { filterValue: processCommand } : {}),
+      ...(help === undefined ? {} : { help }),
+      kind: entityKind(field.kind),
+      label: field.label,
+      render: (row) => <CellValue field={field} locale={locale} linked={linkedPids.has(asNumber(value(row, "pid")) ?? -1)} row={row} t={t} ticksPerSecond={ticksPerSecond} />,
+      sortValue: (row) => sortable(row, field),
+      ...(field.sticky === undefined ? {} : { sticky: `sticky-${field.sticky}` }),
+      width: field.size,
+    }
+  }), [lens, linkedPids, locale, t, ticksPerSecond])
   const defaultOrder = lens === "generic"
     ? { column: "pid", descending: false }
     : { column: processDefaultSort(lens, rows), descending: true }
@@ -177,6 +179,10 @@ function entityKind(kind: Field["kind"]): NonNullable<EntityColumn["kind"]> {
   if (kind === "id") return "id"
   if (kind === "command" || kind === "state") return "text"
   return "number"
+}
+
+function processHeaderHelp(field: Field): string | undefined {
+  return field.id === "pid" || field.id === "command" || field.id === "num_threads" ? undefined : field.help
 }
 
 function summaryMetrics(

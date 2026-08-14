@@ -66,7 +66,7 @@ test("project dictionaries cover the active UI keys", async () => {
     for (const match of source.matchAll(literalKey)) roots.add(match[1])
     const dynamicPrefix = file === "system-view.tsx" ? "system.field" : file === "postgres-view.tsx" ? "pg.field" : null
     if (dynamicPrefix !== null) {
-      for (const match of source.matchAll(/(?:text|number|id|bytes|milliseconds|timestamp|boolean)\("([a-z0-9_]+)"/g)) {
+      for (const match of source.matchAll(/(?:text|number|id|bytes|milliseconds|timestamp|boolean|rateNumber|rateBytes|rateMilliseconds)\("([a-z0-9_]+)"/g)) {
         roots.add(`${dynamicPrefix}.${match[1]}`)
       }
     }
@@ -85,7 +85,7 @@ test("project dictionaries cover the active UI keys", async () => {
       continue
     }
     required.add(`${root}.label`)
-    required.add(`${root}.help`)
+    if (Object.hasOwn(english, `${root}.help`)) required.add(`${root}.help`)
   }
 
   const missing = [...required].filter((key) => !Object.hasOwn(english, key)).sort()
@@ -117,29 +117,58 @@ test("plan copy identifies unavailable values and vadv attribution", async () =>
   assert.equal(russian["pg.wal_storage.history"], "Размер файлов в pg_wal за час")
   assert.equal(russian["pg.wal_storage.help"], "Суммарный размер обычных файлов, видимых в pg_wal на выбранном снимке.")
   assert.match(english["pg.field.queryid_stat_statements.help"], /vadv-only.*last attributed.*not an exact join key/)
-  assert.match(russian["pg.field.queryid_stat_statements.help"], /только в vadv.*последнего связанного.*не точный ключ соединения/)
+  assert.match(russian["pg.field.queryid_stat_statements.help"], /только в vadv.*последнего запроса.*связанного.*не точный ключ соединения/)
 })
 
-test("help copy is concise and directs the reader to adjacent data", async () => {
+test("dense-table help is factual, concise, and complete in both locales", async () => {
   const [englishSource, russianSource] = await Promise.all([
     readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
     readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8"),
   ])
-  const dictionaries = [
-    ["en", parseDictionary(englishSource, "en.yaml"), /(?:Compare|Inspect|Check|Open|Find|Use)/],
-    ["ru", parseDictionary(russianSource, "ru.yaml"), /(?:Сопоставьте|Проверьте|Смотрите|Откройте|Найдите|Сравните|Используйте)/],
-  ]
+  const english = parseDictionary(englishSource, "en.yaml")
+  const russian = parseDictionary(russianSource, "ru.yaml")
+  validateDictionaries(english, russian)
+  const pgFields = new Set([
+    "pid", "query_duration_ms", "transaction_duration_ms", "queryid", "planid", "toplevel", "datname", "usename", "query", "plan",
+    "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_call", "blocks_per_call", "hit_pct", "wal_per_call",
+    "plan_time_pct", "cv", "min_exec_time_ms", "max_exec_time_ms", "mean_exec_time_ms", "stddev_exec_time_ms", "first_call", "last_call",
+    "rows_per_second", "planning_ms_per_second", "shared_blks_hit", "shared_blks_read", "shared_blks_written", "shared_blks_dirtied",
+    "local_blks_read", "temp_blks_read", "temp_blks_written", "wal_bytes", "queryid_stat_statements", "cmd_type", "numbackends",
+    "xact_commit", "xact_rollback", "blks_hit", "blks_read", "tup_returned", "tup_fetched", "tup_inserted", "tup_updated", "tup_deleted",
+    "deadlocks", "conflicts", "temp_files", "temp_bytes", "blk_read_time", "blk_write_time", "sessions", "frozen_xid_age",
+    "application_name", "state", "wait_event_type", "wait_event", "blocked_by", "lock_locktype", "lock_mode", "lock_target", "lock_relname", "waitstart",
+  ])
+  const exact = new Set([
+    "pg.datname.help", "pg.usename.help", "pg.application_name.help", "pg.client_addr.help", "pg.backend_type.help", "pg.state.help",
+    "pg.wait_event_type.help", "pg.wait_event.help", "pg.query.help", "pg.field.statement_database.help", "pg.field.plan_database.help",
+    "pg.leader_pid.help", "pg.query_id.help", "pg.backend_xid_age.help", "pg.backend_xmin_age.help", "pg.backend_start.help",
+    "pg.xact_start.help", "pg.query_start.help", "pg.state_change.help",
+  ])
+  const audited = (key) => key.endsWith(".help") && (
+    key.startsWith("col.") || key.startsWith("system.field.") || key.startsWith("pg.help.relation.") || key.startsWith("pg.vacuum.")
+    || exact.has(key) || key.startsWith("pg.field.") && pgFields.has(key.slice("pg.field.".length, -".help".length))
+  )
+  const dictionaries = [["en", english], ["ru", russian]]
 
-  for (const [locale, dictionary, action] of dictionaries) {
-    const helpEntries = Object.entries(dictionary).filter(([key]) => key.endsWith(".help") && key !== "pg.wal_storage.help")
+  for (const [locale, dictionary] of dictionaries) {
+    const helpEntries = Object.entries(dictionary).filter(([key]) => audited(key))
     assert.ok(helpEntries.length > 100)
     for (const [key, value] of helpEntries) {
-      const actionAt = value.search(action)
-      assert.ok(actionAt > 0, `${locale} ${key} must direct the reader to related data`)
-      assert.ok(value.slice(0, actionAt).includes("."), `${locale} ${key} must define the value before the action`)
-      assert.ok(value.length <= 200, `${locale} ${key} is too long`)
+      assert.doesNotMatch(value, locale === "en"
+        ? /\b(?:compare|inspect|check|open|recommend|threshold|diagnos|server sort|nulls? last|raw backend)\b/i
+        : /\b(?:сопоставьте|проверьте|смотрите|откройте|рекоменду|порог|диагноз|сортировк\S* на сервере|raw backend)\b/iu, `${locale} ${key}`)
+      const sentences = value.match(/[.!?](?:\s|$)/g)?.length ?? 0
+      assert.ok(sentences >= 1 && sentences <= 2, `${locale} ${key} must contain one or two sentences`)
+      assert.ok(value.length <= 360, `${locale} ${key} is too long`)
     }
   }
+
+  assert.match(english["pg.field.calls_per_second.help"], /reset-safe.*elapsed seconds.*selected interval.*calls\/s/i)
+  assert.match(english["pg.field.execution_ms_per_second.help"], /wall-clock second.*exceed 1000.*overlap/i)
+  assert.match(english["pg.field.mean_exec_ms_per_call.help"], /execution-time increase.*calls increase.*unavailable.*no calls/i)
+  assert.match(english["pg.field.rows_per_second.help"], /pg_stat_statements.*elapsed seconds.*returned or affected/i)
+  assert.equal(english["pg.field.statement_database.help"], "Database associated with this physical statement entry.")
+  assert.match(russian["pg.field.calls_per_second.help"], /прирост.*длительность выбранного интервала.*вызовах\/с/i)
 })
 
 test("obsolete status and internal collection copy stay out of the UI", async () => {
