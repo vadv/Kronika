@@ -12,11 +12,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 
 import type { Cell, DataRow, Finding } from "./api"
 import { fittedWidth, headerWidths, widestCell } from "./column-size"
+import { useDisplayTime } from "./display-time-context"
 import { globMatcher } from "./glob"
 import { LabelHelp, type Translate } from "./help"
 import { rowMatchesLocator } from "./locator"
 import { TableFilter } from "./table-filter"
-import { asNumber, estimatedRows, formatUtc, humanBytes, humanDuration, identifier, measure, rawText, value, type Locale } from "./model"
+import { asNumber, estimatedRows, humanBytes, humanDuration, humanPercent, identifier, measure, rawText, value, type Locale } from "./model"
 import { semanticValueTone } from "./value-tone"
 
 export interface EntityColumn {
@@ -225,7 +226,7 @@ export function EntityTable({
                 const stored = field === undefined ? null : value(row.original, field.field)
                 const tone = field === undefined ? null : semanticValueTone(field.field, stored, field.rate, row.original)
                 const toneText = tone === null || tone === "inactive" ? null : t(`pg.value.${tone}`)
-                return <div aria-label={toneText === null ? undefined : `${toneText}: ${rawText(stored) ?? "—"}`} className={`${sticky(cell.column.columnDef.meta, false)}${tone === null ? "" : ` value-tone-${tone}`}${exact ? ` locator-cell locator-${activeFinding.kind}` : ""}`} data-locator-cell={exact || undefined} data-value-tone={tone ?? undefined} key={cell.id} role="cell" style={{ left: stickyLeft(cell.column.columnDef.meta), width: cell.column.getSize() }}>
+                return <div aria-label={toneText === null || field === undefined ? undefined : `${toneText}: ${cellAriaValue(stored, field, locale, t)}`} className={`${sticky(cell.column.columnDef.meta, false)}${tone === null ? "" : ` value-tone-${tone}`}${exact ? ` locator-cell locator-${activeFinding.kind}` : ""}`} data-locator-cell={exact || undefined} data-value-tone={tone ?? undefined} key={cell.id} role="cell" style={{ left: stickyLeft(cell.column.columnDef.meta), width: cell.column.getSize() }}>
                   {toneText !== null && <span aria-hidden="true" className="value-tone-mark" />}
                   {flexRender(cell.column.columnDef.cell, cell.getContext())}
                 </div>
@@ -273,25 +274,34 @@ export function unit(base: string, rate: boolean | undefined, perSecond = "/s"):
 }
 
 function Cell({ at, cell, kind = "text", locale, rate, t }: { readonly at: number | null; readonly cell: Cell; readonly kind?: EntityColumn["kind"]; readonly locale: Locale; readonly rate?: boolean | undefined; readonly t: Translate }) {
-  const per = t("unit.per_second")
+  const time = useDisplayTime()
   if (cell === null) return <span className="null-cell">—</span>
-  if (kind === "id") return <span className="entity-value id-value">{identifier(cell)}</span>
   if (kind === "timestamp") {
     const timestamp = asNumber(cell)
     if (timestamp === null) return "—"
-    const exact = formatUtc(timestamp)
+    const exact = time.timestamp(timestamp)
     return <time className="entity-value" title={exact}>{at === null ? exact : humanDuration((at - timestamp) / 1_000, locale)}</time>
   }
-  if (kind === "bytes") return <span className="entity-value" title={unit(`${rawText(cell)} B`, rate, per)}>{unit(humanBytes(cell, locale), rate, per)}</span>
-  if (kind === "kib") return <span className="entity-value">{unit(humanBytes(asNumber(cell) === null ? null : (asNumber(cell) ?? 0) * 1024, locale), rate, per)}</span>
-  if (kind === "milliseconds") return <span className="entity-value">{measure(cell, locale, unit(t("unit.ms"), rate, per))}</span>
-  if (kind === "duration") return <span className="entity-value">{humanDuration(cell, locale)}</span>
-  if (kind === "microseconds") return <span className="entity-value">{measure(cell, locale, unit(t("unit.us"), rate, per))}</span>
-  if (kind === "percent") return <span className="entity-value">{measure(cell, locale, unit("%", rate, per))}</span>
-  if (kind === "boolean") return <span className="entity-value">{cell === true ? locale === "ru" ? "да" : "true" : cell === false ? locale === "ru" ? "нет" : "false" : rawText(cell) ?? "—"}</span>
   if (kind === "estimated_rows") return <EstimatedRows cell={cell} locale={locale} t={t} />
-  if (kind === "number") return <span className="entity-value">{measure(cell, locale, unit("", rate, per))}</span>
-  return <span className="entity-value text-value" title={rawText(cell) ?? "—"}>{rawText(cell) ?? "—"}</span>
+  const output = cellAriaValue(cell, { field: "", kind, ...(rate === undefined ? {} : { rate }) }, locale, t)
+  const className = `entity-value${kind === "id" ? " id-value" : kind === "text" ? " text-value" : ""}`
+  return <span className={className} title={kind === "bytes" || kind === "text" ? output : undefined}>{output}</span>
+}
+
+export function cellAriaValue(cell: Cell, field: Pick<EntityColumn, "field" | "kind" | "rate">, locale: Locale, t: Translate): string {
+  const per = t("unit.per_second")
+  if (cell === null) return "—"
+  if (field.kind === "id") return identifier(cell)
+  if (field.kind === "bytes") return unit(humanBytes(cell, locale), field.rate, per)
+  if (field.kind === "kib") return unit(humanBytes(asNumber(cell) === null ? null : asNumber(cell)! * 1024, locale), field.rate, per)
+  if (field.kind === "milliseconds") return measure(cell, locale, unit(t("unit.ms"), field.rate, per))
+  if (field.kind === "duration") return humanDuration(cell, locale)
+  if (field.kind === "microseconds") return measure(cell, locale, unit(t("unit.us"), field.rate, per))
+  if (field.kind === "percent") return field.rate === true ? measure(cell, locale, `%${per}`) : humanPercent(cell, locale)
+  if (field.kind === "boolean") return cell === true ? locale === "ru" ? "да" : "true" : cell === false ? locale === "ru" ? "нет" : "false" : rawText(cell) ?? "—"
+  if (field.kind === "estimated_rows") return estimatedRows(cell, locale, t)?.primary ?? "—"
+  if (field.kind === "number") return measure(cell, locale, unit("", field.rate, per))
+  return rawText(cell) ?? "—"
 }
 
 export function EstimatedRows({ cell, locale, t }: { readonly cell: Cell; readonly locale: Locale; readonly t: Translate }) {

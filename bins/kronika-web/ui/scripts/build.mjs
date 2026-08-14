@@ -78,6 +78,7 @@ async function bundleJavascript(registry, translations, includeFixture) {
     bundle: true,
     charset: "utf8",
     define: { "process.env.NODE_ENV": '"production"' },
+    drop: ["console"],
     format: "iife",
     legalComments: "none",
     minify: true,

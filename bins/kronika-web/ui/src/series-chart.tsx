@@ -49,12 +49,11 @@ export function SeriesChart({
   const formatter = useRef(formatValue)
   formatter.current = formatValue
   const stableFormat = useMemo(() => (number: number, place: Locale) => formatter.current(number, place), [])
-  const exactFormat = useMemo(() => (number: number, place: Locale) => new Intl.NumberFormat(place, { maximumFractionDigits: 20 }).format(number), [])
   const semantic: SemanticScale = scale === "percent" ? "percent" : scale === "auto" || scale === "signed" ? "signed" : "nonnegative"
   const series = useMemo<readonly RecordedSeries[]>(() => [
-    { color: "cyan", id: "primary", label, points, scale: semantic, tick: stableFormat, unit, value: exactFormat },
-    ...(second === undefined ? [] : [{ color: "amber" as const, id: "secondary", label: secondLabel ?? `${label} 2`, points: second, scale: semantic, tick: stableFormat, unit, value: exactFormat }]),
-  ], [exactFormat, label, points, second, secondLabel, semantic, stableFormat, unit])
+    { color: "cyan", id: "primary", label, points, scale: semantic, tick: stableFormat, unit, value: stableFormat },
+    ...(second === undefined ? [] : [{ color: "amber" as const, id: "secondary", label: secondLabel ?? `${label} 2`, points: second, scale: semantic, tick: stableFormat, unit, value: stableFormat }]),
+  ], [label, points, second, secondLabel, semantic, stableFormat, unit])
   return <div className="series-chart">
     {!hasData
       ? <><div className="series-reading"><span>{label}</span><span>—</span></div><p className="series-empty">{empty}</p></>

@@ -3,6 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { Cell, DataRow, Finding, HourData } from "./api"
+import { useDisplayTime } from "./display-time-context"
 import {
   findingCategory,
   findingDetailFields,
@@ -15,7 +16,7 @@ import {
   findingSource,
 } from "./finding-presentation"
 import type { Translate } from "./help"
-import { asNumber, formatUtc, humanBytes, type Locale, rawText, shownMoment } from "./model"
+import { asNumber, compact, humanBytes, humanPercent, identifier, type Locale, rawText, shownMoment } from "./model"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 
@@ -59,6 +60,7 @@ export function EventsView({
   readonly selected: Finding | null
   readonly t: Translate
 }) {
+  const time = useDisplayTime()
   const [filter, setFilter] = useState<Filter>("all")
   const [search, setSearch] = useState("")
   useEffect(() => {
@@ -112,10 +114,10 @@ export function EventsView({
               if (finding === undefined) return null
               const pressed = active !== null && findingKey(active) === findingKey(finding)
               return <div className="event-item" key={findingKey(finding)} role="listitem" style={{ height: item.size, transform: `translateY(${item.start}px)` }}>
-                <button aria-label={`${findingCategory(finding, t)} · ${findingSource(finding, t)} · ${formatUtc(finding.timestamp)}`} aria-pressed={pressed} onClick={() => onFinding(finding)} type="button">
+                <button aria-label={`${findingCategory(finding, t)} · ${findingSource(finding, t)} · ${time.timestamp(finding.timestamp)}`} aria-pressed={pressed} onClick={() => onFinding(finding)} type="button">
                   <KindIcon kind={finding.kind} />
                   <span><strong>{findingCategory(finding, t)}</strong><small>{findingSource(finding, t)}</small></span>
-                  <time>{formatUtc(finding.timestamp)}</time>
+                  <time>{time.timestamp(finding.timestamp)}</time>
                 </button>
               </div>
             })}
@@ -139,12 +141,13 @@ function FindingDetail({ cursor, data, finding, history, hour, locale, onCursor,
   readonly row: DataRow | null
   readonly t: Translate
 }) {
+  const time = useDisplayTime()
   const metric = findingMetric(finding, t)
   const points = history.length === 0 ? findingHistory(finding, row === null ? [] : [row], data) : history
   const readings = findingReadings(finding, row, points, data)
   const entity = findingEntity(row)
   return <aside className="event-detail" data-testid="event-detail">
-    <header><KindIcon kind={finding.kind} /><div><span>{findingCategory(finding, t)}</span><h2>{findingSource(finding, t)}</h2></div><time>{formatUtc(finding.timestamp)}</time></header>
+    <header><KindIcon kind={finding.kind} /><div><span>{findingCategory(finding, t)}</span><h2>{findingSource(finding, t)}</h2></div><time>{time.timestamp(finding.timestamp)}</time></header>
     {resolution === "loading" && <p className="event-resolution">{t("events.loading_row")}</p>}
     {resolution === "unavailable" && <p className="event-resolution">{t("events.row_unavailable")}</p>}
     {resolution === "ready" && row !== null && <>
@@ -189,19 +192,20 @@ export function eventFieldLabel(field: string, t: Translate): string {
   return translated === `events.field.${field}` ? field : translated
 }
 
-function eventValue(finding: Finding, field: string, cell: Cell, locale: Locale, t: Translate): string {
+export function eventValue(finding: Finding, field: string, cell: Cell, locale: Locale, t: Translate): string {
   if (field === "category") {
     const category = asNumber(cell)
     return category === null ? "—" : categoryLabel(category, t)
   }
   const enumKey = enumValueKey(finding.logicalName, field, asNumber(cell))
   if (enumKey !== null) return t(enumKey)
+  if (identityField(field)) return identifier(cell)
   const number = asNumber(cell)
   if (number !== null && field.endsWith("_bytes")) return humanBytes(number, locale)
-  if (number !== null && field.endsWith("_kb")) return `${exactNumber(number, locale)} KiB`
-  if (number !== null && field.endsWith("_ms")) return `${exactNumber(number, locale)}${t("unit.ms")}`
-  if (number !== null && field.endsWith("_mbs")) return `${exactNumber(number, locale)} MB/s`
-  if (number !== null) return exactNumber(number, locale)
+  if (number !== null && field.endsWith("_kb")) return `${compact(number, locale)} KiB`
+  if (number !== null && field.endsWith("_ms")) return `${compact(number, locale)}${t("unit.ms")}`
+  if (number !== null && field.endsWith("_mbs")) return `${compact(number, locale)} MB/s`
+  if (number !== null) return compact(number, locale)
   return rawText(cell) ?? "—"
 }
 
@@ -217,13 +221,13 @@ function enumValueKey(logicalName: string, field: string, number: number | null)
   return null
 }
 
-function formatMetric(value: number | null, unit: ReturnType<typeof findingMetric>["unit"], locale: Locale, t: Translate): string {
+export function formatMetric(value: number | null, unit: ReturnType<typeof findingMetric>["unit"], locale: Locale, t: Translate): string {
   if (value === null) return "—"
-  if (unit === "percent") return `${exactNumber(value, locale)}%`
-  if (unit === "milliseconds") return `${exactNumber(value, locale)}${t("unit.ms")}`
-  if (unit === "milliseconds_per_call") return `${exactNumber(value, locale)}${t("unit.ms")}${t("unit.per_call")}`
+  if (unit === "percent") return humanPercent(value, locale)
+  if (unit === "milliseconds") return `${compact(value, locale)}${t("unit.ms")}`
+  if (unit === "milliseconds_per_call") return `${compact(value, locale)}${t("unit.ms")}${t("unit.per_call")}`
   if (unit === "bytes_per_second") return `${humanBytes(value, locale)}${t("unit.per_second")}`
-  return exactNumber(value, locale)
+  return compact(value, locale)
 }
 
 function metricUnit(unit: ReturnType<typeof findingMetric>["unit"], locale: Locale): string {
@@ -235,6 +239,7 @@ function metricUnit(unit: ReturnType<typeof findingMetric>["unit"], locale: Loca
   return locale === "ru" ? "значение" : "value"
 }
 
-function exactNumber(value: number, locale: Locale): string {
-  return new Intl.NumberFormat(locale, { maximumFractionDigits: 6 }).format(value)
+function identityField(field: string): boolean {
+  const name = field.toLowerCase()
+  return name === "pid" || name === "oid" || name === "starttime" || name.endsWith("id") || name.endsWith("_id")
 }
