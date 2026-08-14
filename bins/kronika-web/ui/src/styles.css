@@ -226,7 +226,7 @@ h2 { font-size: var(--t-md); }
 .timeline-shell { background: var(--s1); border-bottom: 1px solid var(--line2); border-top: 1px solid var(--line2); display: flex; flex-direction: column; margin-top: 8px; overflow: hidden; }
 .timeline-empty { align-items: center; background: var(--s1); border-bottom: 1px solid var(--line2); border-top: 1px solid var(--line2); color: var(--fg4); display: flex; font-size: var(--t-sm); justify-content: center; margin-top: 8px; min-height: 72px; }
 .lane-reading { color: var(--fg); flex: 0 0 auto; font-size: var(--t-sm); font-variant-numeric: tabular-nums; margin-left: auto; text-align: right; text-transform: none; white-space: nowrap; }
-.timeline-labels { border-bottom: 1px solid var(--line2); display: flex; overflow-x: auto; }
+.timeline-labels { border-bottom: 1px solid var(--line2); display: flex; flex: 0 0 auto; overflow-x: auto; }
 .lane-label { align-items: center; border-right: 1px solid var(--line); color: var(--fg3); display: flex; flex: 1 0 140px; font-size: var(--t-sm); gap: 8px; min-height: 34px; padding: 0 9px; text-transform: uppercase; }
 .lane-primary { background: var(--s2); box-shadow: inset 0 -2px var(--accent); color: var(--fg2); }
 .lane-primary .lane-reading { color: var(--accent3); font-size: var(--t-md); font-weight: 620; }
@@ -235,8 +235,8 @@ h2 { font-size: var(--t-md); }
 .lane-label .label-help { min-width: 0; }
 .lane-label .label-help > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lane-label:last-child { border-right: 0; }
-.uplot-figure.timeline-chart { height: 216px; padding: 7px 7px 3px; }
-.timeline-chart .uplot-host { height: 186px; }
+.uplot-figure.timeline-chart { flex: 0 0 216px; height: 216px; min-height: 216px; padding: 7px 7px 3px; }
+.timeline-chart .uplot-host { height: auto; min-height: 186px; }
 .timeline-chart .chart-current { max-width: 55%; overflow: hidden; text-overflow: ellipsis; }
 .lensbar { align-items: center; background: var(--s2); border: 1px solid var(--line2); border-bottom: 0; display: flex; gap: 9px; margin-top: 8px; min-height: 26px; padding: 0 6px; }
 .lensbar > span { color: var(--fg3); font-size: var(--t-sm); margin-right: 8px; }
@@ -364,6 +364,8 @@ h2 { font-size: var(--t-md); }
 .uplot-expanded .chart-close { position: absolute; right: 12px; top: 10px; z-index: 3; }
 .uplot-expanded figcaption { padding-right: 28px; }
 .uplot-expanded .uplot-host { flex: 1 1 auto; height: auto; }
+.uplot-figure.timeline-chart.uplot-expanded { flex: none; height: 100dvh; min-height: 0; }
+.uplot-figure.timeline-chart.uplot-expanded .uplot-host { min-height: 0; }
 .chart-marker-track { height: 34px; left: var(--chart-plot-left, 62px); pointer-events: none; position: absolute; top: 25px; width: var(--chart-plot-width, calc(100% - 70px)); z-index: 7; }
 .chart-marker-track .marker-button { pointer-events: auto; }
 .series-empty { align-items: center; color: var(--fg4); display: flex; font-size: var(--t-sm); height: 200px; justify-content: center; margin: 0; }
