@@ -3669,6 +3669,33 @@ fn relation_group_history_finds_the_requested_database_predecessor() {
 }
 
 #[test]
+fn relation_group_history_composes_split_logical_snapshots_across_segments() {
+    let mut fixture = Fixture::new();
+    fixture.append_dml_table_snapshots(&[(100, 1, 11, [0, 0, 0, 0], "db", "public", "first")]);
+    fixture.finish_and_continue(SEGMENT_ID + 1_000);
+    fixture.append_dml_table_snapshots(&[(100, 1, 12, [0, 0, 0, 0], "db", "public", "second")]);
+    fixture.finish_and_continue(SEGMENT_ID + 2_000);
+    fixture.append_dml_table_snapshots(&[(200, 1, 11, [3, 0, 0, 0], "db", "public", "first")]);
+    fixture.finish_and_continue(SEGMENT_ID + 3_000);
+    fixture.append_dml_table_snapshots(&[(200, 1, 12, [0, 7, 0, 7], "db", "public", "second")]);
+    fixture.finish();
+
+    let records = stream(fixture.prepare(
+        "/api/hour?from=200&to=200&section=pg_stat_user_tables&group=database&field=table_count&field=dml_total&field=insert_share_pct&field=hot_pct&where.datid=1",
+        None,
+    ))
+    .expect("split relation history");
+    let rows = relation_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"]["table_count"], "2");
+    assert_eq!(rows[0]["values"]["dml_total"], 100_000.0);
+    assert_eq!(rows[0]["values"]["insert_share_pct"], 30.0);
+    assert_eq!(rows[0]["values"]["hot_pct"], 100.0);
+    assert_eq!(rows[0]["sample_from"], "100");
+    assert_eq!(rows[0]["sample_to"], "200");
+}
+
+#[test]
 fn index_snapshot_never_borrows_a_database_or_layout_predecessor() {
     let mut fixture = Fixture::new();
     fixture.append_relation_snapshots(

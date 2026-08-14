@@ -1528,7 +1528,7 @@ fn finite_json(value: f64) -> Value {
 }
 
 struct HistorySegment {
-    segment: Segment,
+    segment: SegmentRef,
     plans: Vec<Plan>,
 }
 
@@ -1601,7 +1601,10 @@ pub(super) fn stream_history(
             after: None,
         };
         match plans(&segment, &data, true) {
-            Ok(plans) => sources.push(HistorySegment { segment, plans }),
+            Ok(plans) => sources.push(HistorySegment {
+                segment: segment_ref,
+                plans,
+            }),
             Err(ApiError::NoSuchSection) => {}
             Err(error) => return Err(error),
         }
@@ -1613,16 +1616,20 @@ pub(super) fn stream_history(
     if cancelled() || !emit(relation_layout(&section, kind, group, &fields)?) {
         return Ok(());
     }
-    let selected = selected_history_layouts(&sources, datid, from, to, cancelled)?;
+    let selected = selected_history_layouts(reader, &sources, datid, from, to, cancelled)?;
     if cancelled() {
         return Ok(());
     }
     let mut previous = BTreeMap::<(u32, Vec<super::IdentityCell>), HistoryPrevious>::new();
     let mut aggregates = BTreeMap::<(i64, GroupKey), Aggregate>::new();
     for source in &sources {
+        if cancelled() {
+            return Ok(());
+        }
+        let segment = reader.open_segment(&source.segment)?;
         for plan in &source.plans {
             scan_history_plan(
-                source,
+                &segment,
                 plan,
                 kind,
                 group,
@@ -1811,7 +1818,6 @@ fn history_segments(
         .map(|section| section.type_id)
         .collect::<HashSet<_>>();
     let selected_ids = selected.iter().map(SegmentRef::id).collect::<HashSet<_>>();
-    let mut pending = type_ids;
     let mut candidates = listed
         .iter()
         .filter(|segment| segment.min_ts() < from && !selected_ids.contains(&segment.id()))
@@ -1819,47 +1825,73 @@ fn history_segments(
             segment
                 .sections()
                 .iter()
-                .any(|section| pending.contains(&section.type_id))
+                .any(|section| type_ids.contains(&section.type_id))
         })
-        .cloned()
         .collect::<Vec<_>>();
     candidates.sort_unstable_by_key(|segment| (segment.max_ts(), segment.id()));
+    let mut predecessors = BTreeMap::<u32, (i64, Vec<SegmentRef>)>::new();
     for candidate in candidates.into_iter().rev() {
-        if pending.is_empty() || cancelled() {
+        if cancelled() {
             break;
         }
-        let segment = reader.open_segment(&candidate)?;
+        if type_ids.iter().all(|type_id| {
+            predecessors
+                .get(type_id)
+                .is_some_and(|(timestamp, _segments)| candidate.max_ts() < *timestamp)
+        }) {
+            break;
+        }
+        let segment = reader.open_segment(candidate)?;
         let carried = candidate
             .sections()
             .iter()
             .map(|section| section.type_id)
-            .filter(|type_id| pending.contains(type_id))
+            .filter(|type_id| type_ids.contains(type_id))
             .collect::<Vec<_>>();
-        let mut used = false;
         for type_id in carried {
-            if segment_has_datid_before(&segment, type_id, datid, from, cancelled)? {
-                pending.remove(&type_id);
-                used = true;
+            let Some(timestamp) =
+                segment_datid_predecessor(&segment, type_id, datid, from, cancelled)?
+            else {
+                continue;
+            };
+            match predecessors.entry(type_id) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert((timestamp, vec![(*candidate).clone()]));
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    let (chosen, segments) = entry.get_mut();
+                    match timestamp.cmp(chosen) {
+                        Ordering::Greater => {
+                            *chosen = timestamp;
+                            segments.clear();
+                            segments.push((*candidate).clone());
+                        }
+                        Ordering::Equal => segments.push((*candidate).clone()),
+                        Ordering::Less => {}
+                    }
+                }
             }
         }
-        if used {
-            selected.push(candidate);
-        }
     }
+    selected.extend(
+        predecessors
+            .into_values()
+            .flat_map(|(_timestamp, segments)| segments),
+    );
     selected.sort_unstable_by_key(|segment| (segment.min_ts(), segment.id()));
     selected.dedup_by_key(|segment| segment.id());
     Ok(selected)
 }
 
-fn segment_has_datid_before(
+fn segment_datid_predecessor(
     segment: &Segment,
     type_id: u32,
     datid: u32,
     before: i64,
     cancelled: &impl Fn() -> bool,
-) -> Result<bool, ApiError> {
+) -> Result<Option<i64>, ApiError> {
     if segment.rows_of(type_id).is_none() {
-        return Ok(false);
+        return Ok(None);
     }
     let Some(timestamp) = contract(type_id).and_then(|layout| {
         layout
@@ -1868,24 +1900,30 @@ fn segment_has_datid_before(
             .find(|column| column.class == kronika_registry::ColumnClass::Timestamp)
             .map(|column| column.name)
     }) else {
-        return Ok(false);
+        return Ok(None);
     };
-    let mut found = false;
+    let mut found = None;
     segment.visit_rows(
         type_id,
         &[timestamp, "datid"],
         0,
         usize::MAX,
         |_ordinal, row| {
-            found = unsigned_cell(row.get("datid")) == Some(datid)
-                && timestamp_cell(row.get(timestamp)).is_some_and(|stored| stored < before);
-            !found && !cancelled()
+            if unsigned_cell(row.get("datid")) == Some(datid)
+                && let Some(stored) = timestamp_cell(row.get(timestamp))
+                && stored < before
+                && found.is_none_or(|chosen| stored > chosen)
+            {
+                found = Some(stored);
+            }
+            !cancelled()
         },
     )?;
     Ok(found)
 }
 
 fn selected_history_layouts(
+    reader: &Reader,
     sources: &[HistorySegment],
     datid: u32,
     from: i64,
@@ -1894,13 +1932,17 @@ fn selected_history_layouts(
 ) -> Result<BTreeMap<i64, HistoryMoment>, ApiError> {
     let mut by_layout = BTreeMap::<u32, std::collections::BTreeSet<i64>>::new();
     for source in sources {
+        if cancelled() {
+            break;
+        }
+        let segment = reader.open_segment(&source.segment)?;
         for plan in &source.plans {
             let Some(timestamp) = plan.timestamp else {
                 continue;
             };
             #[cfg(test)]
             HISTORY_SELECTION_VISITS.set(HISTORY_SELECTION_VISITS.get().saturating_add(1));
-            source.segment.visit_rows(
+            segment.visit_rows(
                 plan.type_id,
                 &[timestamp, "datid"],
                 0,
@@ -1952,7 +1994,7 @@ fn selected_history_layouts(
     reason = "one history scan keeps its exact target, window, and reducer state explicit"
 )]
 fn scan_history_plan(
-    source: &HistorySegment,
+    segment: &Segment,
     plan: &Plan,
     kind: RelationKind,
     group: RelationGroup,
@@ -1972,7 +2014,7 @@ fn scan_history_plan(
     let mut failure = None;
     #[cfg(test)]
     HISTORY_SOURCE_VISITS.set(HISTORY_SOURCE_VISITS.get().saturating_add(1));
-    source.segment.visit_rows(
+    segment.visit_rows(
         plan.type_id,
         &plan.projection,
         0,
@@ -1981,7 +2023,7 @@ fn scan_history_plan(
             chunk.push((ordinal, row));
             if chunk.len() == super::SNAPSHOT_CHUNK_ROWS
                 && let Err(error) = process_history_chunk(
-                    source, plan, kind, group, datid, from, to, selected, &counters, previous,
+                    segment, plan, kind, group, datid, from, to, selected, &counters, previous,
                     aggregates, &mut chunk,
                 )
             {
@@ -1996,7 +2038,7 @@ fn scan_history_plan(
     }
     if !cancelled() && !chunk.is_empty() {
         process_history_chunk(
-            source, plan, kind, group, datid, from, to, selected, &counters, previous, aggregates,
+            segment, plan, kind, group, datid, from, to, selected, &counters, previous, aggregates,
             &mut chunk,
         )?;
     }
@@ -2008,7 +2050,7 @@ fn scan_history_plan(
     reason = "the bounded chunk shares request-scoped predecessor and aggregate state"
 )]
 fn process_history_chunk(
-    source: &HistorySegment,
+    segment: &Segment,
     plan: &Plan,
     kind: RelationKind,
     group: RelationGroup,
@@ -2021,7 +2063,7 @@ fn process_history_chunk(
     aggregates: &mut BTreeMap<(i64, GroupKey), Aggregate>,
     chunk: &mut Vec<(u64, Row)>,
 ) -> Result<(), ApiError> {
-    let dictionary = query::chunk_dictionary(&source.segment, chunk)?;
+    let dictionary = query::chunk_dictionary(segment, chunk)?;
     for (ordinal, row) in chunk.drain(..) {
         if unsigned_cell(row.get("datid")) != Some(datid) || !plan.matches(&row, &dictionary) {
             continue;
@@ -2051,7 +2093,7 @@ fn process_history_chunk(
             && let Some(key) = GroupKey::from_row(kind, group, &row, &dictionary)?
         {
             let source_row = Source {
-                segment_id: source.segment.id(),
+                segment_id: segment.id(),
                 context_index: 0,
                 ordinal,
                 type_id: plan.type_id,
