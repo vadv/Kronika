@@ -577,7 +577,7 @@ test("dense paging resets, ignores stale work, and preserves retry state", async
   const source = await readFile(new URL("../src/app.tsx", import.meta.url), "utf8")
   assert.match(source, /const generation = \+\+snapshotGeneration\.current/)
   assert.match(source, /const stale = \(\) => controller\.signal\.aborted \|\| generation !== snapshotGeneration\.current/)
-  assert.match(source, /const snapshotTarget = [\s\S]*snapshotTargetKey\(cursorSegment, cursor, snapshotRequests, cgroupTargetRequests, order, denseOptions\)/)
+  assert.match(source, /const snapshotTarget = [\s\S]*snapshotTargetKey\(snapshotGroups, cursor, cgroupTargetGroups, order, denseOptions\)/)
   assert.match(source, /const currentData = currentSnapshot\.target === snapshotTarget \? currentSnapshot\.data : EMPTY_DATA/)
   assert.match(source, /let inFlight = false/)
   assert.match(source, /if \(inFlight \|\| stale\(\)\)/)

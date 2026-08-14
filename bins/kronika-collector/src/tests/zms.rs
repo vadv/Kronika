@@ -12,11 +12,12 @@ use kronika_source_pg::statements::{StatementsRow, StatementsVersion};
 use kronika_source_pg::store_plans::VadvRow;
 use kronika_writer::{Journal, JournalConfig, SectionBuffers};
 
+use crate::append_pending_pg_batch;
 use crate::config::Config;
 use crate::logging::peak_rss_kib;
 use crate::os_sources::{OsSources, push_os_sources};
 use crate::pg_sources::{PgBatch, push_pg_batch};
-use crate::scheduler::Intervals;
+use crate::scheduler::{Intervals, Scheduler};
 use crate::segments::{
     SegmentState, append_window_and_maybe_close, close_open_segment, encode_window,
 };
@@ -450,6 +451,106 @@ fn assert_plan_rows(segment: &kronika_reader::Segment, seen: &mut usize) -> usiz
         *seen += 1;
     }
     rows.len()
+}
+
+#[test]
+fn statement_sql_timestamp_survives_source_batches_rotation_and_active_reads() {
+    let directory = tempfile::tempdir().expect("create statement timestamp directory");
+    let writer = owner(directory.path());
+    let mut journal =
+        Journal::open(&writer, JournalConfig::default()).expect("open statement timestamp journal");
+    let config = config(directory.path(), u64::MAX);
+    let mut segment = SegmentState::default();
+    let mut scheduler = Scheduler::new(Intervals::default());
+    let mut rows = (0..=BATCH_ROWS)
+        .map(|query_index| {
+            let mut row = statement_row(0, query_index);
+            row.query = Some(format!("select {query_index}"));
+            row
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), BATCH_ROWS + 1);
+    assert!(rows.len() > 256);
+    let last = rows.pop().expect("row beyond the source batch bound");
+    let first_batch = PgBatch::Statements(StatementsVersion::V6, rows);
+    append_pending_pg_batch(
+        &mut journal,
+        &writer,
+        &config,
+        &first_batch,
+        &[],
+        BASE_TS + 10,
+        &mut segment,
+        &mut scheduler,
+    )
+    .expect("append the first natural SQL timestamp batch");
+
+    let reader = Reader::open(directory.path()).expect("open active statement prefix reader");
+    let listing = reader.segments(..).expect("list active statement prefix");
+    assert!(listing.warnings.is_empty());
+    assert_eq!(listing.segments.len(), 1);
+    assert_eq!(listing.segments[0].kind(), SegmentKind::Active);
+    let active = reader
+        .open_segment(&listing.segments[0])
+        .expect("open active statement prefix");
+    let active_rows = active
+        .rows(PG_STAT_STATEMENTS_V6_TYPE_ID)
+        .expect("read the first statement source batch");
+    assert_eq!(active_rows.len(), BATCH_ROWS);
+    assert!(
+        active_rows
+            .iter()
+            .all(|row| row.get("ts") == Some(&Cell::Ts(BASE_TS)))
+    );
+
+    segment.force_format_limit();
+    let second_batch = PgBatch::Statements(StatementsVersion::V6, vec![last]);
+    let outcome = append_pending_pg_batch(
+        &mut journal,
+        &writer,
+        &config,
+        &second_batch,
+        &[],
+        BASE_TS + 20,
+        &mut segment,
+        &mut scheduler,
+    )
+    .expect("rotate and append the remaining natural SQL timestamp row");
+    assert_eq!(outcome.written.len(), 1);
+
+    let reader = Reader::open(directory.path()).expect("open rotated statement reader");
+    let listing = reader
+        .segments(..)
+        .expect("list rotated statement segments");
+    assert!(listing.warnings.is_empty());
+    assert_eq!(listing.segments.len(), 2);
+    assert_eq!(listing.segments[0].kind(), SegmentKind::Finished);
+    assert_eq!(listing.segments[1].kind(), SegmentKind::Active);
+    let mut query_ids = Vec::new();
+    let mut segment_rows = Vec::new();
+    for reference in &listing.segments {
+        let stored = reader
+            .open_segment(reference)
+            .expect("open statement timestamp segment");
+        let rows = stored
+            .rows(PG_STAT_STATEMENTS_V6_TYPE_ID)
+            .expect("read statement timestamp rows");
+        segment_rows.push(rows.len());
+        for row in rows {
+            assert_eq!(row.get("ts"), Some(&Cell::Ts(BASE_TS)));
+            let Some(Cell::I64(query_id)) = row.get("queryid") else {
+                panic!("statement queryid is present");
+            };
+            query_ids.push(*query_id);
+        }
+    }
+    assert_eq!(segment_rows, [BATCH_ROWS, 1]);
+    query_ids.sort_unstable();
+    assert_eq!(
+        query_ids,
+        (1..=i64::try_from(BATCH_ROWS + 1).expect("statement row count fits i64"))
+            .collect::<Vec<_>>()
+    );
 }
 
 fn read_replay_artifacts(root: &Path, expected_paths: usize) -> ReplayArtifactReport {

@@ -1,13 +1,14 @@
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use kronika_reader::{Cell, Row};
 use kronika_registry::contract;
 use serde_json::{Value, json};
 
 use super::{
-    GlobPattern, PageOrderValue, PageRankedRow, PageRows, PageStagedRow, SnapshotCursor,
-    available_field_index, compare_ordered, ordered_cell, rate, snapshot_binding,
+    ContributingMoments, GlobPattern, PageOrderValue, PageRankedRow, PageRows, PageStagedRow,
+    SnapshotCursor, available_field_index, compare_ordered, ordered_cell, rate,
+    record_contributing_moment, snapshot_binding, timed_context_index,
 };
 use crate::api::query::OutputField;
 use crate::route::{Filter, Order, RelationGroup, SnapshotRequest};
@@ -335,7 +336,7 @@ fn cursor_round_trips_and_rejects_malformed_values() {
     let cursor = SnapshotCursor {
         segment_id: -4,
         active_position: 8,
-        context_index: 2,
+        context_index: 11,
         ordinal: 99,
         binding: u64::MAX,
     };
@@ -346,6 +347,38 @@ fn cursor_round_trips_and_rejects_malformed_values() {
     for invalid in ["", "1,2,3,4", "1,2,3,4,5,6", "x,2,3,4,5"] {
         assert!(SnapshotCursor::parse(invalid).is_err());
     }
+}
+
+#[test]
+fn contributing_moments_keep_all_sources_at_the_anchor_pair() {
+    let mut moments = ContributingMoments::default();
+    record_contributing_moment(&mut moments, 200, 9);
+    record_contributing_moment(&mut moments, 100, 9);
+    moments.pinned = true;
+    record_contributing_moment(&mut moments, 250, 8);
+    record_contributing_moment(&mut moments, 200, 8);
+    record_contributing_moment(&mut moments, 150, 7);
+    record_contributing_moment(&mut moments, 150, 6);
+
+    let current = moments.current.expect("anchor current moment");
+    assert_eq!(current.at, 200);
+    assert_eq!(current.segment_ids, HashSet::from([8, 9]));
+    let previous = moments.previous.expect("immediately preceding moment");
+    assert_eq!(previous.at, 150);
+    assert_eq!(previous.segment_ids, HashSet::from([6, 7]));
+}
+
+#[test]
+fn dynamic_timed_context_indices_are_unique_beyond_three_sources() {
+    let source_count = 6;
+    let indices = (0..2)
+        .flat_map(|layout_index| {
+            (0..source_count).map(move |source_index| {
+                timed_context_index(layout_index, source_index, source_count)
+            })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(indices, (0..12).collect::<Vec<_>>());
 }
 
 fn request() -> SnapshotRequest {

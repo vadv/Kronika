@@ -2810,6 +2810,83 @@ fn statement_page_composes_a_snapshot_split_across_segments() {
 }
 
 #[test]
+fn statement_page_composes_every_segment_at_both_selected_moments() {
+    let mut fixture = Fixture::new();
+    fixture.append_statement_snapshots(&[(100, 1, 10, 10.0), (100, 2, 20, 20.0)]);
+    fixture.finish_and_continue(SEGMENT_ID + 1_000);
+    fixture.append_statement_snapshots(&[(100, 3, 30, 30.0), (100, 4, 40, 40.0)]);
+    fixture.finish_and_continue(SEGMENT_ID + 2_000);
+    fixture.append_statement_snapshots(&[(200, 1, 20, 50.0)]);
+    fixture.finish_and_continue(SEGMENT_ID + 3_000);
+    fixture.append_statement_snapshots(&[(200, 2, 30, 80.0)]);
+    fixture.finish_and_continue(SEGMENT_ID + 4_000);
+    fixture.append_statement_snapshots(&[(200, 3, 40, 120.0)]);
+    let current_segment = SEGMENT_ID + 5_000;
+    fixture.finish_and_continue(current_segment);
+    fixture.append_statement_snapshots(&[(200, 4, 50, 170.0)]);
+    fixture.finish();
+
+    let base = format!(
+        "/api/segments/{current_segment}/snapshot?at=200&section=pg_stat_statements&field=queryid&field=query&field=calls&field=total_exec_time&by=total_exec_time&page_size=2&search=BOUNDARY*"
+    );
+    let mut cursor = None;
+    let mut rows = Vec::new();
+    let mut pages = 0;
+    loop {
+        let target = cursor
+            .as_ref()
+            .map_or_else(|| base.clone(), |cursor| format!("{base}&cursor={cursor}"));
+        let records = stream(fixture.prepare(&target, None)).expect("composed statement page");
+        let page = records
+            .iter()
+            .find(|record| record["record"] == "snapshot_page")
+            .expect("composed statement page trailer");
+        assert_eq!(page["eligible"], "4");
+        assert_eq!(page["returned"], "2");
+        assert_eq!(page["from"], "100");
+        assert_eq!(page["to"], "200");
+        rows.extend(row_records(&records).into_iter().cloned());
+        pages += 1;
+        cursor = page["next_cursor"].as_str().map(ToOwned::to_owned);
+        assert_eq!(page["has_more"], cursor.is_some());
+        if cursor.is_none() {
+            break;
+        }
+    }
+
+    assert_eq!(pages, 2);
+    assert_eq!(
+        rows.iter()
+            .map(|row| (
+                row["segment_id"]
+                    .as_str()
+                    .expect("physical segment")
+                    .to_owned(),
+                row["values"].clone(),
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (
+                (SEGMENT_ID + 5_000).to_string(),
+                serde_json::json!(["4", "boundary statement 4", 100_000.0, 1_300_000.0]),
+            ),
+            (
+                (SEGMENT_ID + 4_000).to_string(),
+                serde_json::json!(["3", "boundary statement 3", 100_000.0, 900_000.0]),
+            ),
+            (
+                (SEGMENT_ID + 3_000).to_string(),
+                serde_json::json!(["2", "boundary statement 2", 100_000.0, 600_000.0]),
+            ),
+            (
+                (SEGMENT_ID + 2_000).to_string(),
+                serde_json::json!(["1", "boundary statement 1", 100_000.0, 400_000.0]),
+            ),
+        ]
+    );
+}
+
+#[test]
 fn plan_page_keeps_zero_and_rejects_a_cross_segment_counter_decrease() {
     let mut fixture = Fixture::new();
     fixture.append_plan_snapshots(&[(100, 1, 4, 40.0), (100, 2, 10, 100.0)]);

@@ -10,9 +10,9 @@ import {
   loadSeries,
   hourOf,
   loadSnapshot,
+  loadSnapshotGroups,
   mergeSnapshotData,
-  segmentBoundAt,
-  requestsForSegment,
+  snapshotRequestGroups,
   fieldNameForLocator,
   viewData,
   resolveLocator,
@@ -24,6 +24,7 @@ import {
   type Finding,
   type HourData,
   type SnapshotOptions,
+  type SnapshotRequestGroup,
   type TimelineData,
 } from "./api"
 import { ChartOnly, ChartVisibilityProvider, loadChartVisibility } from "./chart-visibility"
@@ -237,23 +238,30 @@ function App({ locale, onLocale, t }: {
     return VIEW_REQUESTS[baseViewKey] ?? []
   }, [activeRelation, activeRelationLens, baseViewKey, pgSection, planLens, relationLevel, statementLens, visibleSource])
   const [segments, setSegments] = useState<readonly SegmentBound[]>([])
-  const cursorSegment = useMemo(() => segmentBoundAt(segments, cursor), [cursor, segments])
   const densePattern = viewRequests.some((request) => request.pageSize !== undefined) ? find.trim() : ""
   const requestedSnapshots = viewRequests.filter((request) => request.section !== "health").map((request) => request.pageSize !== undefined && request.section === context?.logicalName
     ? { ...request, typeIds: [context.typeId] } : request)
-  const snapshotRequests = cursorSegment === null ? [] : requestsForSegment(requestedSnapshots, cursorSegment)
-  const denseRequest = snapshotRequests.find((request) => request.pageSize !== undefined)
-  const ordinaryRequests = snapshotRequests.filter((request) => request.pageSize === undefined)
+  const snapshotGroups = snapshotRequestGroups(segments, cursor, requestedSnapshots)
+  const denseLoad = snapshotGroups.flatMap((group) => group.requests
+    .filter((request) => request.pageSize !== undefined)
+    .map((request) => ({ anchor: group.anchor, request })))[0]
+  const denseRequest = denseLoad?.request
+  const ordinaryGroups = snapshotGroups
+    .map((group) => ({
+      anchor: group.anchor,
+      requests: group.requests.filter((request) => request.pageSize === undefined),
+    }))
+    .filter((group) => group.requests.length !== 0)
   const pageContext = denseRequest !== undefined && context?.logicalName === denseRequest.section ? context : null
   const denseOptions = denseRequest === undefined
     ? undefined
     : initialPageOptions(denseRequest, pageContext, densePattern, relationFilters)
-  const cgroupTargetRequests = cursorSegment !== null && ordinaryRequests.some(({ section }) => section === "os_cgroup_context")
-    ? requestsForSegment(CGROUP_SNAPSHOT_REQUESTS, cursorSegment)
+  const cgroupTargetGroups = ordinaryGroups.some((group) => group.requests.some(({ section }) => section === "os_cgroup_context"))
+    ? snapshotRequestGroups(segments, cursor, CGROUP_SNAPSHOT_REQUESTS)
     : []
-  const snapshotTarget = cursorSegment === null || snapshotRequests.length === 0
+  const snapshotTarget = snapshotGroups.length === 0
     ? null
-    : snapshotTargetKey(cursorSegment, cursor, snapshotRequests, cgroupTargetRequests, order, denseOptions)
+    : snapshotTargetKey(snapshotGroups, cursor, cgroupTargetGroups, order, denseOptions)
   const currentData = currentSnapshot.target === snapshotTarget ? currentSnapshot.data : EMPTY_DATA
   const data = useMemo(() => viewData(timelineData, currentData), [currentData, timelineData])
   const drawn = useRef<number | null>(null)
@@ -385,7 +393,7 @@ function App({ locale, onLocale, t }: {
       : current)
     const completesRefresh = refreshAwaitingSnapshot.current
     densePage.current = null
-    if (hour === null || cursorSegment === null) {
+    if (hour === null) {
       if (!completesRefresh) setCurrentSnapshot(EMPTY_CURRENT_SNAPSHOT)
       setCursorState("missing")
       setDensePageState("idle")
@@ -403,31 +411,36 @@ function App({ locale, onLocale, t }: {
     setDensePageState(denseRequest === undefined ? "idle" : "loading")
     const controller = new AbortController()
     const stale = () => controller.signal.aborted || generation !== snapshotGeneration.current
-    const loadOrdinarySnapshot = async (ordinary: readonly SectionRequest[]): Promise<HourData> => {
-      const primary = await loadSnapshot(cursorSegment.id, cursor, ordinary, controller.signal, order ?? undefined)
-      if (stale() || !ordinary.some(({ section }) => section === "os_cgroup_context")) return primary
-      const requests = requestsForSegment(CGROUP_SNAPSHOT_REQUESTS, cursorSegment)
-      const plan = cgroupSnapshotPlan(cursorSegment.id, cursor, primary, requests)
-      cgroupSnapshotKey.current = plan.key
-      const exact = await Promise.all(plan.loads.map(({ filters, request }) => loadSnapshot(
-        cursorSegment.id,
+    const loadOrdinarySnapshot = async (ordinary: readonly SnapshotRequestGroup[]): Promise<HourData> => {
+      const primary = await loadSnapshotGroups(ordinary, cursor, controller.signal, order ?? undefined)
+      if (stale() || !ordinary.some((group) => group.requests.some(({ section }) => section === "os_cgroup_context"))) return primary
+      const contextSegmentId = primary.sections.os_cgroup_context?.[0]?.segmentId
+      if (contextSegmentId === undefined) return primary
+      const plans = cgroupTargetGroups.map((group) => ({
+        anchor: group.anchor,
+        plan: cgroupSnapshotPlan(contextSegmentId, cursor, primary, group.requests),
+      }))
+      const planKey = JSON.stringify(plans.map(({ anchor, plan }) => [anchor.id, plan.key]))
+      cgroupSnapshotKey.current = planKey
+      const exact = await Promise.all(plans.flatMap(({ anchor, plan }) => plan.loads.map(({ filters, request }) => loadSnapshot(
+        anchor.id,
         cursor,
         [request],
         controller.signal,
         undefined,
         { filters },
       ).catch((reason: unknown) => {
-        if (!stale() && cgroupSnapshotKey.current === plan.key) {
+        if (!stale() && cgroupSnapshotKey.current === planKey) {
           console.error(`kronika: filtered ${request.section} snapshot failed`, reason)
         }
         return EMPTY_DATA
-      })))
-      if (stale() || cgroupSnapshotKey.current !== plan.key) return primary
+      }))))
+      if (stale() || cgroupSnapshotKey.current !== planKey) return primary
       return exact.reduce((current, incoming) => mergeSnapshotData(current, incoming), primary)
     }
     const timer = setTimeout(() => {
-      if (denseRequest === undefined) {
-        void loadOrdinarySnapshot(ordinaryRequests)
+      if (denseLoad === undefined) {
+        void loadOrdinarySnapshot(ordinaryGroups)
         .then((incoming) => {
           if (stale()) return
           setCurrentSnapshot({ data: incoming, target: snapshotTarget })
@@ -442,9 +455,10 @@ function App({ locale, onLocale, t }: {
         })
         return
       }
-      const base = ordinaryRequests.length === 0
+      const pagedRequest = denseLoad.request
+      const base = ordinaryGroups.length === 0
         ? Promise.resolve(EMPTY_DATA)
-        : loadOrdinarySnapshot(ordinaryRequests)
+        : loadOrdinarySnapshot(ordinaryGroups)
           .catch((reason: unknown) => {
             if (completesRefresh) throw reason
             if (!controller.signal.aborted) console.error("kronika: snapshot companion failed", reason)
@@ -464,13 +478,13 @@ function App({ locale, onLocale, t }: {
           }
           void Promise.all([
             pageCursor === undefined ? base : Promise.resolve(null),
-            loadSnapshot(cursorSegment.id, cursor, [denseRequest], controller.signal, order ?? undefined, options),
+            loadSnapshot(denseLoad.anchor.id, cursor, [pagedRequest], controller.signal, order ?? undefined, options),
           ]).then(([companion, incoming]) => {
             if (stale()) return
             setCurrentSnapshot((current) => ({
               data: pageCursor === undefined
                 ? mergeSnapshotData(companion ?? EMPTY_DATA, incoming)
-                : mergeSnapshotData(current.target === snapshotTarget ? current.data : EMPTY_DATA, incoming, denseRequest.section),
+                : mergeSnapshotData(current.target === snapshotTarget ? current.data : EMPTY_DATA, incoming, pagedRequest.section),
               target: snapshotTarget,
             }))
             setDensePageState("idle")
@@ -839,24 +853,24 @@ function initialPageOptions(
 }
 
 function snapshotTargetKey(
-  segment: SegmentBound,
+  groups: readonly SnapshotRequestGroup[],
   cursor: number,
-  requests: readonly SectionRequest[],
-  cgroupRequests: readonly SectionRequest[],
+  cgroupGroups: readonly SnapshotRequestGroup[],
   order: TableOrder | null,
   options: SnapshotOptions | undefined,
 ): string {
-  const sections = new Set([...requests, ...cgroupRequests].map(({ section }) => section))
-  const layouts = segment.sections
-    .filter(({ logicalName }) => sections.has(logicalName))
-    .map(({ logicalName, typeId }) => [logicalName, typeId] as const)
-    .sort(([leftName, leftType], [rightName, rightType]) => leftName.localeCompare(rightName) || leftType.localeCompare(rightType))
+  const keyed = (group: SnapshotRequestGroup) => {
+    const sections = new Set(group.requests.map(({ section }) => section))
+    const layouts = group.anchor.sections
+      .filter(({ logicalName }) => sections.has(logicalName))
+      .map(({ logicalName, typeId }) => [logicalName, typeId] as const)
+      .sort(([leftName, leftType], [rightName, rightType]) => leftName.localeCompare(rightName) || leftType.localeCompare(rightType))
+    return [group.anchor.id, layouts, group.requests] as const
+  }
   return JSON.stringify([
-    segment.id,
     cursor,
-    layouts,
-    requests,
-    cgroupRequests,
+    groups.map(keyed),
+    cgroupGroups.map(keyed),
     order === null ? null : [order.column, order.descending],
     options ?? null,
   ])

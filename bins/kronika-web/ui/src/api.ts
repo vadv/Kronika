@@ -168,16 +168,20 @@ export function appendSnapshotRows(
 }
 
 export function mergeSnapshotData(current: HourData, incoming: HourData, appendSection?: string): HourData {
-  const sections = { ...current.sections, ...incoming.sections }
-  if (appendSection !== undefined) {
-    sections[appendSection] = appendSnapshotRows(
-      current.sections[appendSection] ?? [],
-      incoming.sections[appendSection] ?? [],
-    )
+  const sections: Record<string, readonly DataRow[]> = { ...current.sections }
+  for (const [logicalName, rows] of Object.entries(incoming.sections)) {
+    sections[logicalName] = appendSnapshotRows(current.sections[logicalName] ?? [], rows)
+  }
+  if (appendSection !== undefined && incoming.sections[appendSection] === undefined) {
+    sections[appendSection] = current.sections[appendSection] ?? []
+  }
+  const rateColumns: Record<string, readonly string[]> = { ...current.rateColumns }
+  for (const [logicalName, columns] of Object.entries(incoming.rateColumns)) {
+    rateColumns[logicalName] = unique([...(rateColumns[logicalName] ?? []), ...columns])
   }
   return hourData({
     sections,
-    rateColumns: { ...current.rateColumns, ...incoming.rateColumns },
+    rateColumns,
     snapshotRows: incoming.snapshotRows.length === 0 ? current.snapshotRows : incoming.snapshotRows,
     availableSections: unique([...current.availableSections, ...incoming.availableSections]),
     postgresqlConfigured: current.postgresqlConfigured === true || incoming.postgresqlConfigured === true,
@@ -268,6 +272,11 @@ export interface SegmentBound {
 export interface SegmentSection {
   readonly logicalName: string
   readonly typeId: string
+}
+
+export interface SnapshotRequestGroup {
+  readonly anchor: SegmentBound
+  readonly requests: readonly SectionRequest[]
 }
 
 export async function loadTimeline(start: number | null, signal: AbortSignal): Promise<TimelineData> {
@@ -526,7 +535,7 @@ async function loadHealthMetadata(points: readonly Point[], signal: AbortSignal)
         section: "instance_metadata",
         fields: ["postgresql_interval_seconds"],
       }], signal)
-      return snapshot.sections.instance_metadata ?? []
+      return (snapshot.sections.instance_metadata ?? []).map((row) => ({ ...row, segmentId }))
     } catch (error) {
       if (signal.aborted) throw error
       return []
@@ -541,9 +550,81 @@ export function segmentAt(segments: readonly SegmentBound[], at: number): string
 }
 
 export function segmentBoundAt(segments: readonly SegmentBound[], at: number): SegmentBound | null {
-  return segments.find((segment) => segment.minTs <= at && segment.maxTs >= at)
-    ?? segments.filter((segment) => segment.maxTs <= at).at(-1)
-    ?? null
+  return newestSegment(segments.filter((segment) => segment.minTs <= at && segment.maxTs >= at))
+    ?? newestSegment(segments.filter((segment) => segment.maxTs <= at))
+}
+
+export function snapshotRequestGroups(
+  segments: readonly SegmentBound[],
+  at: number,
+  requests: readonly SectionRequest[],
+): readonly SnapshotRequestGroup[] {
+  const eligible = segments.filter((segment) => segment.minTs <= at)
+  const grouped = new Map<string, { anchor: SegmentBound; requests: SectionRequest[] }>()
+  const add = (anchor: SegmentBound, resolved: readonly SectionRequest[]) => {
+    if (resolved.length === 0) return
+    const group = grouped.get(anchor.id)
+    if (group === undefined) grouped.set(anchor.id, { anchor, requests: [...resolved] })
+    else group.requests.push(...resolved)
+  }
+  for (const request of requests) {
+    const matching = eligible.flatMap((segment) => segment.sections
+      .filter((section) => section.logicalName === request.section && requestAcceptsLayout(request, section.typeId))
+      .map((section) => ({ segment, typeId: section.typeId })))
+    if (matching.length === 0) continue
+    if (request.pageSize !== undefined || request.group !== undefined) {
+      const anchor = newestSegment(matching.map(({ segment }) => segment))
+      if (anchor !== null) add(anchor, requestsForSegment([request], anchor))
+      continue
+    }
+    const anchors = new Map<string, { anchor: SegmentBound; typeIds: string[] }>()
+    for (const typeId of unique(matching.map((candidate) => candidate.typeId))) {
+      const anchor = newestSegment(matching
+        .filter((candidate) => candidate.typeId === typeId)
+        .map((candidate) => candidate.segment))
+      if (anchor === null) continue
+      const assigned = anchors.get(anchor.id)
+      if (assigned === undefined) anchors.set(anchor.id, { anchor, typeIds: [typeId] })
+      else assigned.typeIds.push(typeId)
+    }
+    if (anchors.size === 1) {
+      const assigned = anchors.values().next().value
+      if (assigned !== undefined) add(assigned.anchor, requestsForSegment([request], assigned.anchor))
+      continue
+    }
+    for (const { anchor, typeIds } of anchors.values()) {
+      for (const typeId of typeIds) {
+        add(anchor, requestsForSegment([{ ...request, typeId }], anchor))
+      }
+    }
+  }
+  return [...grouped.values()]
+}
+
+function requestAcceptsLayout(request: SectionRequest, typeId: string): boolean {
+  if (request.typeId !== undefined && request.typeId !== typeId) return false
+  if (request.typeIds !== undefined && !request.typeIds.includes(typeId)) return false
+  const fields = request.fieldsByType?.[typeId] ?? request.fields
+  if (fields === undefined) return request.fieldsByType === undefined
+  const physical = new Set(REGISTRY_BY_TYPE_ID.get(typeId)?.columns ?? [])
+  return fields.some((field) => physical.has(field))
+}
+
+function newestSegment(segments: readonly SegmentBound[]): SegmentBound | null {
+  let newest: SegmentBound | null = null
+  for (const segment of segments) {
+    if (newest === null || compareSegmentIds(segment.id, newest.id) > 0) newest = segment
+  }
+  return newest
+}
+
+function compareSegmentIds(left: string, right: string): number {
+  if (/^-?\d+$/.test(left) && /^-?\d+$/.test(right)) {
+    const leftId = BigInt(left)
+    const rightId = BigInt(right)
+    return leftId < rightId ? -1 : leftId > rightId ? 1 : 0
+  }
+  return left.localeCompare(right, undefined, { numeric: true })
 }
 
 export function requestsForSegment(
@@ -554,6 +635,7 @@ export function requestsForSegment(
     const typeIds = segment.sections
       .filter((section) => section.logicalName === request.section)
       .map((section) => section.typeId)
+      .filter((typeId) => request.typeId === undefined || request.typeId === typeId)
       .filter((typeId) => request.typeIds === undefined || request.typeIds.includes(typeId))
     if (typeIds.length === 0) return []
     if (request.group !== undefined) return [request]
@@ -678,7 +760,7 @@ export interface SnapshotOptions {
   readonly search?: readonly string[]
 }
 
-interface SnapshotOrder {
+export interface SnapshotOrder {
   readonly column: string
   readonly descending: boolean
 }
@@ -786,7 +868,7 @@ export async function loadSnapshot(
       const { columns, logicalName } = layout
       const rows = grouped[logicalName] ?? []
       rows.push({
-        segmentId,
+        segmentId: requiredText(record.segment_id, "row segment id"),
         logicalName,
         typeId,
         ordinal: requiredText(record.ordinal, "row ordinal"),
@@ -829,6 +911,22 @@ export async function loadSnapshot(
     findings: [],
     findingGroups: [],
   })
+}
+
+export async function loadSnapshotGroups(
+  groups: readonly SnapshotRequestGroup[],
+  at: number,
+  signal: AbortSignal,
+  order?: SnapshotOrder | undefined,
+): Promise<HourData> {
+  const snapshots = await Promise.all(groups.map((group) => loadSnapshot(
+    group.anchor.id,
+    at,
+    group.requests,
+    signal,
+    order,
+  )))
+  return snapshots.reduce((current, incoming) => mergeSnapshotData(current, incoming), emptyHour())
 }
 
 function rowValues(columns: readonly string[], cells: readonly unknown[]): Readonly<Record<string, Cell>> {

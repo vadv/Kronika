@@ -2760,7 +2760,7 @@ function healthMetadataRecords(at) {
       record: "layout", rates: [],
       layout: { type_id: "1000001", logical_name: "instance_metadata", columns: [{ name: "postgresql_interval_seconds" }] },
     },
-    { record: "row", type_id: "1000001", ordinal: "0", timestamp: String(at), values: [10] },
+    { record: "row", segment_id: SEGMENT, type_id: "1000001", ordinal: "0", timestamp: String(at), values: [10] },
   ]
 }
 
@@ -3213,7 +3213,7 @@ function layout(typeId, logicalName, columns) {
 }
 
 function row(typeId, ordinal, values, timestamp = AT) {
-  return { record: "row", type_id: typeId, ordinal, timestamp: String(timestamp), values }
+  return { record: "row", segment_id: SEGMENT, type_id: typeId, ordinal, timestamp: String(timestamp), values }
 }
 
 function relationRecords(url, mode) {
@@ -3312,7 +3312,7 @@ function wire(name, kind = "number", unit = "count") {
 function exactIndexRecords() {
   const columns = ["ts", "datid", "datname", "schemaname", "relid", "relname", "indexrelid", "indexrelname", "indexdef", "idx_scan"]
   return [{ record: "layout", rates: ["idx_scan"], layout: { type_id: "1014002", logical_name: "pg_stat_user_indexes", columns: columns.map((name) => ({ name })) } }, {
-    record: "row", type_id: "1014002", ordinal: "8", timestamp: String(AT),
+    record: "row", segment_id: SEGMENT, type_id: "1014002", ordinal: "8", timestamp: String(AT),
     values: [String(AT), "42", "artifact_db", "public", "73", "artifact_table", "74", "artifact_index", "CREATE UNIQUE INDEX artifact_index ON public.artifact_table USING btree (id)", 15],
   }]
 }
@@ -3329,7 +3329,7 @@ function snapshotRecords() {
       layout: { type_id: "1001003", logical_name: "pg_stat_activity", columns: columns.map((name) => ({ name })) },
     },
     {
-      record: "row", type_id: "1001003", ordinal: "73", timestamp: String(AT),
+      record: "row", segment_id: SEGMENT, type_id: "1001003", ordinal: "73", timestamp: String(AT),
       values: [
         String(AT), 4242, null, "operators", "kronika", "artifact-test", "127.0.0.1", "client backend",
         "active", null, null, "select artifact_wire_contract", "991", null, "7",
@@ -3360,7 +3360,7 @@ function statementRecords(page, eligible = 1, hasMore = false, rowCount = eligib
       layout: { type_id: "1002003", logical_name: "pg_stat_statements", columns: columns.map((name) => ({ name })) },
     },
     ...Array.from({ length: rowCount }, (_, index) => ({
-      record: "row", type_id: "1002003", ordinal: String(91 + index), timestamp: String(AT),
+      record: "row", segment_id: SEGMENT, type_id: "1002003", ordinal: String(91 + index), timestamp: String(AT),
       values: [String(AT), String(9_007_199_254_740_991n - BigInt(index)), 10, 20, true, "operators", "reporter", index === 0 ? "select artifact_exact_context" : `select artifact_page_${index}`, 2 + index, 1, 7.5 + index],
     })),
     ...(page ? [{

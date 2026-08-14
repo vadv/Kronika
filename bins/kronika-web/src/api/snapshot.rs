@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::cell::Cell as Counter;
 
 use kronika_reader::{Cell, Dictionary, Reader, Resolved, Row, Segment, SegmentKind, SegmentRef};
-use kronika_registry::{ColumnClass, ColumnType, contract, logical_section_name};
+use kronika_registry::{ColumnClass, ColumnType, contract};
 use serde_json::{Value, json};
 
 use super::query::{Plan, plans, resolved_dictionary};
@@ -23,8 +23,7 @@ use crate::route::{SeriesRequest, Window};
 
 pub(crate) struct PreparedSnapshot {
     segment: Segment,
-    earlier: Option<Segment>,
-    older: Option<Box<Segment>>,
+    prior_sources: Vec<Segment>,
     relation_predecessors: Vec<Segment>,
     at: i64,
     sections: Vec<SectionPlans>,
@@ -63,6 +62,12 @@ struct StagedRow {
     ordinal: u64,
     row: Row,
     identity: Vec<IdentityCell>,
+}
+
+#[derive(Clone, Copy)]
+struct RowCoordinate {
+    segment_id: i64,
+    ordinal: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,13 +164,6 @@ struct PageContext<'a> {
     sample_to: Option<i64>,
     order: Option<PageOrder>,
     search_columns: Vec<&'static str>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum SampleSource {
-    Older,
-    Earlier,
-    Current,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -363,16 +361,17 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
     let has_other = sections
         .iter()
         .any(|section| SnapshotViewSpec::for_logical_name(&section.logical_name).is_none());
-    let (earlier, older) = if has_other {
+    let prior_sources = if has_other {
         preceding(
             &reader,
             &segment_ref,
             segments.clone(),
-            &request.sections,
+            &segment,
+            &sections,
             request.at,
         )?
     } else {
-        (None, None)
+        Vec::new()
     };
     let relation_predecessors = if has_relation {
         relation_preceding(
@@ -391,8 +390,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
     validate_exact_locator(&segment, &request, &sections)?;
     Ok(PreparedSnapshot {
         segment,
-        earlier,
-        older: older.map(Box::new),
+        prior_sources,
         relation_predecessors,
         at: request.at,
         sections,
@@ -898,7 +896,10 @@ impl PreparedSnapshot {
                 &staged.row,
                 before,
                 context.elapsed_for(&staged.row),
-                staged.ordinal,
+                RowCoordinate {
+                    segment_id: context.source.id(),
+                    ordinal: staged.ordinal,
+                },
                 &dictionary,
                 self.text,
             )?;
@@ -1038,7 +1039,10 @@ impl PreparedSnapshot {
                 &staged.row,
                 before,
                 rates.elapsed,
-                staged.ordinal,
+                RowCoordinate {
+                    segment_id: source.id(),
+                    ordinal: staged.ordinal,
+                },
                 &dictionary,
                 self.text,
             )?;
@@ -1162,7 +1166,10 @@ impl PreparedSnapshot {
                 &ranked.staged.row,
                 before,
                 context.elapsed_for(&ranked.staged.row),
-                ranked.staged.ordinal,
+                RowCoordinate {
+                    segment_id: context.source.id(),
+                    ordinal: ranked.staged.ordinal,
+                },
                 dictionary,
                 self.text,
             )?;
@@ -1276,14 +1283,8 @@ impl PreparedSnapshot {
         let order_columns = order.as_ref().map_or_else(Vec::new, PageOrder::columns);
         let mut previous = Readings::new();
         if let Some(before) = moments.previous {
-            for source_kind in [
-                SampleSource::Older,
-                SampleSource::Earlier,
-                SampleSource::Current,
-            ] {
-                let Some(source) = self.source_for(source_kind) else {
-                    continue;
-                };
+            for source_index in (0..self.source_count()).rev() {
+                let source = self.source_for(source_index).ok_or(ApiError::BadCursor)?;
                 if source.rows_of(plan.type_id).is_some() {
                     previous.extend(Self::collect(
                         source,
@@ -1302,14 +1303,8 @@ impl PreparedSnapshot {
             .and_then(|before| moments.current.checked_sub(before))
             .filter(|elapsed| *elapsed > 0);
         let mut contexts = Vec::new();
-        for source_kind in [
-            SampleSource::Current,
-            SampleSource::Earlier,
-            SampleSource::Older,
-        ] {
-            let Some(source) = self.source_for(source_kind) else {
-                continue;
-            };
+        for source_index in 0..self.source_count() {
+            let source = self.source_for(source_index).ok_or(ApiError::BadCursor)?;
             if source.rows_of(plan.type_id).is_none()
                 || Self::moments(source, plan, timestamp, moments.current, cancelled)?
                     .is_none_or(|source_moments| source_moments.current != moments.current)
@@ -1317,7 +1312,7 @@ impl PreparedSnapshot {
                 continue;
             }
             contexts.push(PageContext {
-                context_index: timed_context_index(layout_index, source_kind),
+                context_index: timed_context_index(layout_index, source_index, self.source_count()),
                 plan,
                 source,
                 rows: source.rows_of(plan.type_id).unwrap_or(0),
@@ -1352,10 +1347,7 @@ impl PreparedSnapshot {
             Some(here.current)
         } else {
             let mut fallback = None;
-            for source_kind in [SampleSource::Earlier, SampleSource::Older] {
-                let Some(source) = self.source_for(source_kind) else {
-                    continue;
-                };
+            for source in &self.prior_sources {
                 if source.rows_of(plan.type_id).is_none() {
                     continue;
                 }
@@ -1372,14 +1364,8 @@ impl PreparedSnapshot {
         };
         let mut previous = None;
         if let Some(before) = current.checked_sub(1) {
-            for source_kind in [
-                SampleSource::Current,
-                SampleSource::Earlier,
-                SampleSource::Older,
-            ] {
-                let Some(source) = self.source_for(source_kind) else {
-                    continue;
-                };
+            for source_index in 0..self.source_count() {
+                let source = self.source_for(source_index).ok_or(ApiError::BadCursor)?;
                 if source.rows_of(plan.type_id).is_none() {
                     continue;
                 }
@@ -1582,11 +1568,15 @@ impl PreparedSnapshot {
         }))
     }
 
-    fn source_for(&self, source: SampleSource) -> Option<&Segment> {
-        match source {
-            SampleSource::Current => Some(&self.segment),
-            SampleSource::Earlier => self.earlier.as_ref(),
-            SampleSource::Older => self.older.as_deref(),
+    const fn source_count(&self) -> usize {
+        self.prior_sources.len() + 1
+    }
+
+    fn source_for(&self, source_index: usize) -> Option<&Segment> {
+        if source_index == 0 {
+            Some(&self.segment)
+        } else {
+            self.prior_sources.get(source_index - 1)
         }
     }
 
@@ -1972,7 +1962,7 @@ impl PreparedSnapshot {
         row: &Row,
         before: Option<&CounterReadings>,
         elapsed: Option<i64>,
-        ordinal: u64,
+        coordinate: RowCoordinate,
         dictionary: &Dictionary,
         text_limit: Option<usize>,
     ) -> Result<Value, ApiError> {
@@ -2004,7 +1994,8 @@ impl PreparedSnapshot {
         Ok(json!({
             "record": "row",
             "type_id": plan.type_id.to_string(),
-            "ordinal": ordinal.to_string(),
+            "ordinal": coordinate.ordinal.to_string(),
+            "segment_id": coordinate.segment_id.to_string(),
             "timestamp": stamped.map(|stored| stored.to_string()),
             "values": values,
         }))
@@ -2545,13 +2536,12 @@ const fn partition_context_index(
         }
 }
 
-const fn timed_context_index(layout_index: usize, source: SampleSource) -> usize {
-    layout_index * 3
-        + match source {
-            SampleSource::Current => 0,
-            SampleSource::Earlier => 1,
-            SampleSource::Older => 2,
-        }
+const fn timed_context_index(
+    layout_index: usize,
+    source_index: usize,
+    source_count: usize,
+) -> usize {
+    layout_index * source_count + source_index
 }
 
 fn record_partition_moment(
@@ -2865,22 +2855,37 @@ fn record_retained_moment(moments: &mut RetainedMoments, sample: RetainedMoment)
     }
 }
 
+struct ContributingMoment {
+    at: i64,
+    segment_ids: HashSet<i64>,
+}
+
+#[derive(Default)]
+struct ContributingMoments {
+    current: Option<ContributingMoment>,
+    previous: Option<ContributingMoment>,
+    pinned: bool,
+}
+
 fn preceding(
     reader: &Reader,
     segment_ref: &SegmentRef,
     segments: Vec<SegmentRef>,
-    sections: &[String],
+    current: &Segment,
+    sections: &[SectionPlans],
     at: i64,
-) -> Result<(Option<Segment>, Option<Segment>), ApiError> {
-    let compatible = segment_ref
-        .sections()
+) -> Result<Vec<Segment>, ApiError> {
+    let layouts = sections
         .iter()
-        .filter(|section| {
-            logical_section_name(section.type_id)
-                .is_some_and(|logical| sections.iter().any(|name| name == logical))
-        })
-        .map(|section| section.type_id)
-        .collect::<HashSet<_>>();
+        .filter(|section| SnapshotViewSpec::for_logical_name(&section.logical_name).is_none())
+        .flat_map(|section| section.plans.iter())
+        .filter(|plan| plan.applies())
+        .filter_map(|plan| plan.timestamp.map(|timestamp| (plan.type_id, timestamp)))
+        .collect::<BTreeMap<_, _>>();
+    if layouts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let compatible = layouts.keys().copied().collect::<HashSet<_>>();
     let mut candidates = segments
         .into_iter()
         .filter(|candidate| candidate.id() < segment_ref.id() && candidate.min_ts() <= at)
@@ -2891,49 +2896,104 @@ fn preceding(
                 .any(|section| compatible.contains(&section.type_id))
         })
         .collect::<Vec<_>>();
-    candidates.sort_unstable_by_key(SegmentRef::id);
-    let mut chosen = Vec::with_capacity(2);
-    while let Some(candidate) = candidates.pop() {
-        let segment = reader.open_segment(&candidate)?;
-        if segment_has_sample_at(&segment, &compatible, at)? {
-            chosen.push(segment);
-            if chosen.len() == 2 {
-                break;
-            }
+    let mut moments = layouts
+        .keys()
+        .map(|type_id| (*type_id, ContributingMoments::default()))
+        .collect::<BTreeMap<_, _>>();
+    scan_contributing_moments(current, &layouts, at, true, &mut moments)?;
+    candidates.sort_unstable_by_key(|candidate| Reverse((candidate.max_ts(), candidate.id())));
+    for candidate in &candidates {
+        if moments.values().all(|samples| {
+            samples
+                .previous
+                .as_ref()
+                .is_some_and(|previous| candidate.max_ts() < previous.at)
+        }) {
+            break;
         }
+        let segment = reader.open_segment(candidate)?;
+        scan_contributing_moments(&segment, &layouts, at, false, &mut moments)?;
     }
-    let mut chosen = chosen.into_iter();
-    Ok((chosen.next(), chosen.next()))
+    let retained = moments
+        .values()
+        .flat_map(|moments| [&moments.current, &moments.previous])
+        .filter_map(Option::as_ref)
+        .flat_map(|moment| moment.segment_ids.iter().copied())
+        .filter(|segment_id| *segment_id != segment_ref.id())
+        .collect::<HashSet<_>>();
+    candidates.retain(|candidate| retained.contains(&candidate.id()));
+    candidates.sort_unstable_by_key(|candidate| Reverse(candidate.id()));
+    candidates
+        .into_iter()
+        .map(|candidate| reader.open_segment(&candidate).map_err(ApiError::from))
+        .collect()
 }
 
-fn segment_has_sample_at(
+fn scan_contributing_moments(
     segment: &Segment,
-    compatible: &HashSet<u32>,
+    layouts: &BTreeMap<u32, &'static str>,
     at: i64,
-) -> Result<bool, ApiError> {
-    for type_id in compatible {
-        if segment.rows_of(*type_id).is_none() {
+    pin_current: bool,
+    moments: &mut BTreeMap<u32, ContributingMoments>,
+) -> Result<(), ApiError> {
+    for (&type_id, &timestamp) in layouts {
+        if segment.rows_of(type_id).is_none() {
             continue;
         }
-        let Some(timestamp) = contract(*type_id).and_then(|layout| {
-            layout
-                .columns
-                .iter()
-                .find(|column| column.class == ColumnClass::Timestamp)
-                .map(|column| column.name)
-        }) else {
-            continue;
-        };
-        let mut found = false;
-        segment.visit_rows(*type_id, &[timestamp], 0, usize::MAX, |_ordinal, row| {
-            found = row_timestamp(&row, timestamp).is_some_and(|stored| stored <= at);
-            !found
+        segment.visit_rows(type_id, &[timestamp], 0, usize::MAX, |_ordinal, row| {
+            if let Some(stored) = row_timestamp(&row, timestamp)
+                && stored <= at
+            {
+                record_contributing_moment(
+                    moments.entry(type_id).or_default(),
+                    stored,
+                    segment.id(),
+                );
+            }
+            true
         })?;
-        if found {
-            return Ok(true);
+    }
+    if pin_current {
+        for samples in moments.values_mut() {
+            samples.pinned = samples.current.is_some();
         }
     }
-    Ok(false)
+    Ok(())
+}
+
+fn record_contributing_moment(moments: &mut ContributingMoments, at: i64, segment_id: i64) {
+    let new_moment = || ContributingMoment {
+        at,
+        segment_ids: HashSet::from([segment_id]),
+    };
+    let Some(current_at) = moments.current.as_ref().map(|current| current.at) else {
+        moments.current = Some(new_moment());
+        return;
+    };
+    if moments.pinned && at > current_at {
+        return;
+    }
+    match at.cmp(&current_at) {
+        Ordering::Equal => {
+            if let Some(current) = moments.current.as_mut() {
+                current.segment_ids.insert(segment_id);
+            }
+        }
+        Ordering::Greater => {
+            moments.previous = moments.current.take();
+            moments.current = Some(new_moment());
+        }
+        Ordering::Less => match moments.previous.as_mut() {
+            Some(previous) => match at.cmp(&previous.at) {
+                Ordering::Equal => {
+                    previous.segment_ids.insert(segment_id);
+                }
+                Ordering::Greater => moments.previous = Some(new_moment()),
+                Ordering::Less => {}
+            },
+            None => moments.previous = Some(new_moment()),
+        },
+    }
 }
 
 fn validate_shared_projection(

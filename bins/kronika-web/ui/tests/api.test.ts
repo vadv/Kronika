@@ -125,11 +125,11 @@ test("snapshot rows use each physical layout's positional columns", async () => 
         },
       },
       {
-        record: "row", type_id: "1105001", ordinal: "4",
+        record: "row", segment_id: "71", type_id: "1105001", ordinal: "4",
         timestamp: String(START + 1), values: [String(START + 1), 1, 5],
       },
       {
-        record: "row", type_id: "1105002", ordinal: "8",
+        record: "row", segment_id: "72", type_id: "1105002", ordinal: "8",
         timestamp: String(START + 2), values: [50, 10],
       },
     ])
@@ -138,6 +138,7 @@ test("snapshot rows use each physical layout's positional columns", async () => 
   try {
     const hour = await api.loadSnapshot("77", START, ["os_loadavg"], new AbortController().signal)
     assert.equal(hour.load.length, 2)
+    assert.deepEqual(hour.load.map((row) => row.segmentId), ["71", "72"])
     assert.equal(hour.load[0]?.timestamp, START + 1)
     assert.deepEqual(hour.load[0]?.values, { load1: 1, load5: 5 })
     assert.deepEqual(hour.load[1]?.values, { load5: 50, load1: 10 })
@@ -168,7 +169,7 @@ test("ten compatible snapshot projections share one request and keep physical co
           columns: [{ name: "metric_0" }],
         },
       },
-      { record: "row", type_id: "1", ordinal: "0", timestamp: String(START), values: [10] },
+      { record: "row", segment_id: "77", type_id: "1", ordinal: "0", timestamp: String(START), values: [10] },
     ])
   }
 
@@ -270,11 +271,11 @@ test("a curated snapshot follows the registry layout and physical order", async 
         },
       },
       {
-        record: "row", type_id: "1002001", ordinal: "3", timestamp: String(START),
+        record: "row", segment_id: "73", type_id: "1002001", ordinal: "3", timestamp: String(START),
         values: ["41", "10", "20", { stored_text: "select 1", original_length: 8 }, 2, 3],
       },
       {
-        record: "row", type_id: "1002002", ordinal: "4", timestamp: String(START),
+        record: "row", segment_id: "74", type_id: "1002002", ordinal: "4", timestamp: String(START),
         values: ["42", "10", "20", "vacuum t", 5, "9007199254740995", 7],
       },
       {
@@ -446,6 +447,11 @@ test("snapshot pages append once in server order and deduplicate physical coordi
     ["1002002", "3", START],
   ])
   assert.deepEqual(api.appendSnapshotRows(appended, next), appended)
+  const sameCoordinateFromAnotherSegment = { ...first[0]!, segmentId: "78" }
+  assert.deepEqual(
+    api.appendSnapshotRows([first[0]!], [sameCoordinateFromAnotherSegment]).map((row) => row.segmentId),
+    ["77", "78"],
+  )
 })
 
 test("relation pages preserve same-named objects from different databases", async () => {
@@ -507,7 +513,7 @@ test("exact V1 and V2 query text requests carry only query and exact identity", 
         record: "layout",
         layout: { type_id: typeId, logical_name: "pg_stat_statements", columns: [{ name: "query" }] },
       },
-      { record: "row", type_id: typeId, ordinal: "1", timestamp: String(START), values: ["select exact"] },
+      { record: "row", segment_id: "77", type_id: typeId, ordinal: "1", timestamp: String(START), values: ["select exact"] },
     ])
   }
   try {
@@ -560,7 +566,7 @@ test("an exact locator uses the generic projected snapshot contract", async () =
         },
       },
       {
-        record: "row", type_id: "1002002", ordinal: "9223372036854775807",
+        record: "row", segment_id: "77", type_id: "1002002", ordinal: "9223372036854775807",
         timestamp: String(START), values: ["9", "select located"],
       },
     ])
@@ -945,20 +951,25 @@ test("timeline reads the stored PostgreSQL freshness interval for combined healt
         record: "layout",
         layout: { type_id: "1000001", logical_name: "instance_metadata", columns: [{ name: "postgresql_interval_seconds" }] },
       },
-      { record: "row", type_id: "1000001", ordinal: "0", timestamp: String(START), values: [1] },
+      { record: "row", segment_id: "metadata-source", type_id: "1000001", ordinal: "0", timestamp: String(START), values: [1] },
     ])
     return ndjson([
       { record: "hour", from: String(START), to: String(START + 3_600_000_000 - 1), available_hours: [String(START)] },
       { record: "finished_segment", id: "a", min_ts: String(START), max_ts: String(START + 2_000_001), sections: [] },
       { record: "index", segment: { id: "a" }, logical_name: "health", checksum: null },
       { record: "point", type_id: "0", series: "postgres_health", ts: String(START), identity: {}, value: 72 },
+      { record: "point", type_id: "0", series: "os_health", ts: String(START + 500_000), identity: {}, value: null },
+      { record: "point", type_id: "0", series: "overall_health", ts: String(START + 500_000), identity: {}, value: null },
       { record: "point", type_id: "0", series: "os_health", ts: String(START + 2_000_001), identity: {}, value: null },
       { record: "point", type_id: "0", series: "overall_health", ts: String(START + 2_000_001), identity: {}, value: null },
     ])
   }
   try {
     const timeline = await api.loadTimeline(START, new AbortController().signal)
-    assert.deepEqual(timeline.health[0]?.values, { overall_health: null, os_health: null, postgres_health: null })
+    assert.deepEqual(timeline.health.map((row) => row.values), [
+      { overall_health: null, os_health: null, postgres_health: 72 },
+      { overall_health: null, os_health: null, postgres_health: null },
+    ])
     assert.equal(seen.length, 2)
     const metadata = new URL(seen[1]!, "http://kronika.invalid")
     assert.equal(metadata.pathname, "/api/segments/a/snapshot")
@@ -969,16 +980,130 @@ test("timeline reads the stored PostgreSQL freshness interval for combined healt
   }
 })
 
-test("snapshot segment selection never jumps from blank early time to the final segment", async () => {
+test("snapshot segment selection uses the newest overlap without jumping from blank early time", async () => {
   const api = await bundledApi()
   const segments = [
-    { id: "first", minTs: 100, maxTs: 200, sections: [] },
-    { id: "second", minTs: 300, maxTs: 400, sections: [] },
+    { id: "100", minTs: 100, maxTs: 300, sections: [] },
+    { id: "200", minTs: 150, maxTs: 300, sections: [] },
+    { id: "300", minTs: 301, maxTs: 400, sections: [] },
   ]
   assert.equal(api.segmentBoundAt(segments, 50), null)
-  assert.equal(api.segmentBoundAt(segments, 150)?.id, "first")
-  assert.equal(api.segmentBoundAt(segments, 250)?.id, "first")
-  assert.equal(api.segmentBoundAt(segments, 350)?.id, "second")
+  assert.equal(api.segmentBoundAt(segments, 150)?.id, "200")
+  assert.equal(api.segmentBoundAt(segments, 250)?.id, "200")
+  assert.equal(api.segmentBoundAt(segments, 350)?.id, "300")
+})
+
+test("snapshot requests choose and group the newest compatible layout anchors", async () => {
+  const api = await bundledApi()
+  const segments = [
+    {
+      id: "100", minTs: START - 10, maxTs: START,
+      sections: [
+        { logicalName: "pg_stat_activity", typeId: "1001001" },
+        { logicalName: "os_loadavg", typeId: "1105001" },
+      ],
+    },
+    {
+      id: "200", minTs: START - 10, maxTs: START,
+      sections: [{ logicalName: "pg_stat_activity", typeId: "1001003" }],
+    },
+    {
+      id: "300", minTs: START - 5, maxTs: START,
+      sections: [
+        { logicalName: "os_loadavg", typeId: "1105001" },
+        { logicalName: "pg_stat_statements", typeId: "1002002" },
+      ],
+    },
+    {
+      id: "400", minTs: START + 1, maxTs: START + 10,
+      sections: [{ logicalName: "pg_stat_activity", typeId: "1001001" }],
+    },
+  ]
+  const groups = api.snapshotRequestGroups(segments, START, [
+    { section: "os_loadavg", fields: ["load1"] },
+    {
+      section: "pg_stat_activity",
+      typeIds: ["1001001", "1001003"],
+      fieldsByType: { "1001001": ["pid"], "1001003": ["pid", "backend_type"] },
+    },
+    {
+      section: "pg_stat_statements",
+      typeIds: ["1002001", "1002002"],
+      fieldsByType: { "1002001": ["queryid", "calls"], "1002002": ["queryid", "calls"] },
+      pageSize: 20,
+      defaultOrder: ["calls"],
+    },
+  ])
+  assert.deepEqual(groups.map((group) => group.anchor.id), ["300", "100", "200"])
+  assert.deepEqual(groups.map((group) => group.requests.map((request) => [
+    request.section,
+    request.typeId ?? null,
+    request.pageSize ?? null,
+  ])), [
+    [["os_loadavg", null, null], ["pg_stat_statements", null, 20]],
+    [["pg_stat_activity", "1001001", null]],
+    [["pg_stat_activity", "1001003", null]],
+  ])
+
+  const exactOldLayout = api.snapshotRequestGroups(segments, START, [{
+    section: "pg_stat_activity", typeId: "1001001", fields: ["pid"],
+  }])
+  assert.deepEqual(exactOldLayout.map((group) => group.anchor.id), ["100"])
+})
+
+test("grouped snapshot loads merge equal-time layouts and retain physical row sources", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const segments = [
+    {
+      id: "100", minTs: START, maxTs: START,
+      sections: [{ logicalName: "pg_stat_activity", typeId: "1001001" }],
+    },
+    {
+      id: "200", minTs: START, maxTs: START,
+      sections: [{ logicalName: "pg_stat_activity", typeId: "1001003" }],
+    },
+  ]
+  const groups = api.snapshotRequestGroups(segments, START, [{
+    section: "pg_stat_activity",
+    typeIds: ["1001001", "1001003"],
+    fieldsByType: { "1001001": ["pid", "state"], "1001003": ["pid", "backend_type"] },
+  }])
+  const seen: string[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input), "http://kronika.invalid")
+    seen.push(`${url.pathname}:${url.searchParams.get("type_id")}`)
+    const typeId = url.searchParams.get("type_id")!
+    const old = typeId === "1001001"
+    return ndjson([
+      {
+        record: "layout", rates: old ? ["state"] : ["backend_type"],
+        layout: {
+          type_id: typeId, logical_name: "pg_stat_activity",
+          columns: (old ? ["pid", "state"] : ["pid", "backend_type"]).map((name) => ({ name })),
+        },
+      },
+      {
+        record: "row", segment_id: old ? "91" : "191", type_id: typeId, ordinal: "0",
+        timestamp: String(START), values: old ? [1, "active"] : [2, "client backend"],
+      },
+    ])
+  }
+  try {
+    const snapshot = await api.loadSnapshotGroups(groups, START, new AbortController().signal)
+    assert.deepEqual(seen, [
+      "/api/segments/100/snapshot:1001001",
+      "/api/segments/200/snapshot:1001003",
+    ])
+    assert.deepEqual(snapshot.sections.pg_stat_activity?.map((row) => [row.segmentId, row.typeId]), [
+      ["91", "1001001"],
+      ["191", "1001003"],
+    ])
+    assert.deepEqual(snapshot.rateColumns.pg_stat_activity, ["state", "backend_type"])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
 
 test("projected history retains segment provenance and exact type", async () => {
