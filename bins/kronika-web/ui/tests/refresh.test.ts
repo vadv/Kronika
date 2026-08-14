@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
 import test from "node:test"
 
 import { importFile } from "./import-module.mjs"
@@ -113,6 +114,49 @@ test("refresh keeps a committed cursor stable and reloads latest exactly once wh
   assert.equal(advanced, HOUR + 50)
   assert.equal(refreshedCursor(advanced, true, timeline()), advanced)
   assert.equal(refreshedCursor(HOUR + 60, true, timeline()), HOUR + 60)
+})
+
+test("a failed following-latest refresh restores one committed view before the retry advances", async () => {
+  const source = await readFile(new URL("../src/app.tsx", import.meta.url), "utf8")
+  assert.match(source, /readonly previousCursor: number/)
+  assert.match(source, /pendingRefresh\.current = \{ timeline, previousCursor: cursor, previousSegments: segmentsRef\.current \}/)
+  assert.match(source, /else if \(pending !== null\) \{\s*setSegments\(pending\.previousSegments\)\s*setCursor\(pending\.previousCursor\)\s*\}/)
+  const failedBranch = source.match(/else if \(pending !== null\) \{([\s\S]*?)\n    \}/)?.[1] ?? ""
+  assert.doesNotMatch(failedBranch, /setTimelineData|setCurrentData/)
+
+  const a = {
+    cursor: HOUR + 12,
+    data: "A",
+    segments: [{ id: "A" }],
+    timeline: "A",
+  }
+  const bTimeline = {
+    ...timeline(),
+    segments: [{ id: "B", minTs: HOUR + 10, maxTs: HOUR + 80, sections: [] }],
+  } as never
+  const pending = {
+    previousCursor: a.cursor,
+    previousSegments: a.segments,
+  }
+  const next = refreshedCursor(a.cursor, true, bTimeline)
+  assert.equal(next, HOUR + 80)
+
+  const awaitingSnapshot = { ...a, cursor: next, segments: [{ id: "B" }] }
+  const failed = {
+    ...awaitingSnapshot,
+    cursor: pending.previousCursor,
+    segments: pending.previousSegments,
+  }
+  assert.deepEqual(failed, a)
+
+  const retry = {
+    cursor: refreshedCursor(failed.cursor, true, bTimeline),
+    data: "B",
+    segments: [{ id: "B" }],
+    timeline: "B",
+  }
+  assert.deepEqual(retry, { cursor: HOUR + 80, data: "B", segments: [{ id: "B" }], timeline: "B" })
+  assert.equal(refreshedCursor(a.cursor, false, bTimeline), a.cursor)
 })
 
 function fakeVisibility(initial: boolean) {

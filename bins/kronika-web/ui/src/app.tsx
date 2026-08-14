@@ -241,7 +241,11 @@ function App({ locale, onLocale, t }: {
   const refreshAwaitingSnapshot = useRef(false)
   const segmentsRef = useRef(segments)
   segmentsRef.current = segments
-  const pendingRefresh = useRef<{ readonly timeline: TimelineData; readonly previousSegments: readonly SegmentBound[] } | null>(null)
+  const pendingRefresh = useRef<{
+    readonly timeline: TimelineData
+    readonly previousCursor: number
+    readonly previousSegments: readonly SegmentBound[]
+  } | null>(null)
   const finishRefresh = useCallback((succeeded: boolean) => {
     if (!refreshRequested.current) return
     const pending = pendingRefresh.current
@@ -252,6 +256,7 @@ function App({ locale, onLocale, t }: {
       setTimelineData(hourOf(pending.timeline))
     } else if (pending !== null) {
       setSegments(pending.previousSegments)
+      setCursor(pending.previousCursor)
     }
     pendingRefresh.current = null
     refreshRequested.current = false
@@ -297,7 +302,7 @@ function App({ locale, onLocale, t }: {
       wanted.current = null
       const latest = latestTimelineTimestamp(timeline)
       if (refresh) {
-        pendingRefresh.current = { timeline, previousSegments: segmentsRef.current }
+        pendingRefresh.current = { timeline, previousCursor: cursor, previousSegments: segmentsRef.current }
         const next = refreshedCursor(cursor, followsLatest.current, timeline)
         if (next !== cursor) {
           setSegments(timeline.segments)
