@@ -223,20 +223,20 @@ h2 { font-size: var(--t-md); }
 .help-dot { align-items: center; background: var(--s2); border: 1px solid var(--line4); border-radius: 50%; color: var(--accent3); cursor: help; display: inline-flex; font-size: var(--t-xs); height: 14px; justify-content: center; line-height: 1; padding: 0; width: 14px; }
 .help-dot:focus-visible, button:focus-visible, .entity-row:focus-visible, .entity-scroll:focus-visible { outline: 2px solid var(--accent); }
 .tooltip { background: var(--s2); border: 1px solid var(--line4); box-shadow: 0 8px 24px var(--shadow-a); color: var(--fg); font-size: var(--t-sm); line-height: 1.5; max-height: calc(100vh - 16px); max-width: min(310px, 70vw, calc(100vw - 16px)); overflow: auto; padding: 8px 9px; position: fixed; text-align: left; text-transform: none; width: max-content; z-index: 1000; }
-.timeline-shell { background: var(--s1); border-bottom: 1px solid var(--line2); border-top: 1px solid var(--line2); display: grid; grid-template-columns: 172px minmax(0, 1fr); margin-top: 8px; overflow: hidden; }
+.timeline-shell { background: var(--s1); border-bottom: 1px solid var(--line2); border-top: 1px solid var(--line2); display: flex; flex-direction: column; margin-top: 8px; overflow: hidden; }
 .timeline-empty { align-items: center; background: var(--s1); border-bottom: 1px solid var(--line2); border-top: 1px solid var(--line2); color: var(--fg4); display: flex; font-size: var(--t-sm); justify-content: center; margin-top: 8px; min-height: 72px; }
 .lane-reading { color: var(--fg); flex: 0 0 auto; font-size: var(--t-sm); font-variant-numeric: tabular-nums; margin-left: auto; text-align: right; text-transform: none; white-space: nowrap; }
-.timeline-labels { border-right: 1px solid var(--line2); display: grid; grid-auto-rows: minmax(30px, 1fr); }
-.lane-label { align-items: center; border-bottom: 1px solid var(--line); color: var(--fg3); display: flex; font-size: var(--t-sm); gap: 8px; padding: 0 9px; text-transform: uppercase; }
-.lane-primary { background: var(--s2); border-left: 2px solid var(--accent); color: var(--fg2); }
+.timeline-labels { border-bottom: 1px solid var(--line2); display: flex; overflow-x: auto; }
+.lane-label { align-items: center; border-right: 1px solid var(--line); color: var(--fg3); display: flex; flex: 1 0 140px; font-size: var(--t-sm); gap: 8px; min-height: 34px; padding: 0 9px; text-transform: uppercase; }
+.lane-primary { background: var(--s2); box-shadow: inset 0 -2px var(--accent); color: var(--fg2); }
 .lane-primary .lane-reading { color: var(--accent3); font-size: var(--t-md); font-weight: 620; }
-.lane-overview { background: transparent; border-left: 0; border-right: 0; border-top: 0; cursor: pointer; font-family: inherit; text-align: left; width: 100%; }
+.lane-overview { background: transparent; border-bottom: 0; border-left: 0; border-top: 0; cursor: pointer; font-family: inherit; text-align: left; width: auto; }
 .lane-overview:hover { background: var(--accent-soft); color: var(--accent3); }
 .lane-label .label-help { min-width: 0; }
 .lane-label .label-help > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lane-label:last-child { border-bottom: 0; }
-.uplot-figure.timeline-chart { height: 250px; padding: 7px 7px 3px; }
-.timeline-chart .uplot-host { height: 220px; }
+.lane-label:last-child { border-right: 0; }
+.uplot-figure.timeline-chart { height: 216px; padding: 7px 7px 3px; }
+.timeline-chart .uplot-host { height: 186px; }
 .timeline-chart .chart-current { max-width: 55%; overflow: hidden; text-overflow: ellipsis; }
 .lensbar { align-items: center; background: var(--s2); border: 1px solid var(--line2); border-bottom: 0; display: flex; gap: 9px; margin-top: 8px; min-height: 26px; padding: 0 6px; }
 .lensbar > span { color: var(--fg3); font-size: var(--t-sm); margin-right: 8px; }
@@ -530,7 +530,6 @@ h2 { font-size: var(--t-md); }
   .source-tabs { overflow-x: auto; }
   .cursor-time { order: 9; }
   .workspace { padding-left: 8px; padding-right: 8px; }
-  .timeline-shell { grid-template-columns: 128px minmax(0, 1fr); }
   .lane-label { font-size: var(--t-xs); padding-left: 2px; }
   .lens-tabs { width: 100%; }
   .lens-tabs button { flex: 1; min-width: 0; padding-left: 4px; padding-right: 4px; }
@@ -554,11 +553,9 @@ h2 { font-size: var(--t-md); }
 }
 
 @media (max-width: 520px) {
-  .timeline-shell { display: block; }
-  .timeline-labels { border-bottom: 1px solid var(--line2); border-right: 0; display: flex; overflow-x: auto; }
   .lane-label { flex: 0 0 124px; min-height: 34px; }
-  .uplot-figure.timeline-chart { height: 230px; padding-left: 2px; padding-right: 2px; }
-  .timeline-chart .uplot-host { height: 200px; }
+  .uplot-figure.timeline-chart { height: 216px; padding-left: 2px; padding-right: 2px; }
+  .timeline-chart .uplot-host { height: 186px; }
   .uplot-figure figcaption { padding-left: 4px; padding-right: 4px; }
   .uplot-expanded { padding: 8px 4px; }
   .uplot-expanded .chart-close { right: 5px; top: 5px; }
