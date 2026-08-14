@@ -823,7 +823,8 @@ test("the production artifact preserves wire keys and exact finding page state",
     }
     assert.deepEqual(new Set(chartThemes), new Set(["dark", "light"]))
     const axisText = await cdp.evaluate(`window.__kronikaAxisText`)
-    assert.equal(axisText.some((text) => text.includes("Time, browser local")), true, JSON.stringify(axisText))
+    assert.equal(axisText.some((text) => text.includes("Time, browser local")), false, JSON.stringify(axisText))
+    assert.equal(axisText.some((text) => /^\d{2}:\d{2} (?:GMT|UTC)/.test(text)), true, JSON.stringify(axisText))
     assert.equal(axisText.some((text) => text.includes("%")), true, JSON.stringify(axisText))
     assert.equal(axisText.some((text) => /^0%?$/.test(text)), true, JSON.stringify(axisText))
     assert.equal(axisText.some((text) => /^100%?$/.test(text)), true, JSON.stringify(axisText))

@@ -459,7 +459,7 @@ function chartOptions(
     legend: { show: false },
     scales: { x: { auto: false, range: [hour, end], time: false }, ...scales },
     axes: [
-      { label: locale === "ru" ? "Время, местное в браузере" : "Time, browser local", scale: "x", side: 2, size: 46, space: (_chart, _axis, _scale, _increment, space) => Math.max(84, space), stroke: color("--fg3"), grid: { stroke: color("--line") }, values: (_chart, splits) => splits.map((timestamp) => axisTimeLabel(timestamp, locale)) },
+      { scale: "x", side: 2, size: 28, space: (_chart, _axis, _scale, _increment, space) => Math.max(84, space), stroke: color("--fg3"), grid: { stroke: color("--line") }, values: (_chart, splits) => splits.map((timestamp) => axisTimeLabel(timestamp, locale)) },
       ...partitions.map(({ key, label: labels, unit }, axisIndex) => {
         const grouped = series.filter((line) => scaleKey(line) === key)
         const line = grouped[0]!
