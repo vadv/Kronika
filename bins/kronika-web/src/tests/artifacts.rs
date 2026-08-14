@@ -1883,6 +1883,35 @@ fn a_multi_section_snapshot_applies_the_shared_projection_per_section() {
 }
 
 #[test]
+fn a_multi_section_snapshot_keeps_partitioned_and_shared_predecessors_independent() {
+    let mut fixture = Fixture::new();
+    fixture.append_relation_snapshots(&[(100, 1, 77, 10), (200, 1, 77, 20)], &[], &[]);
+    fixture.append_diskstats(&[(200, 0, 7)]);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_tables&section=os_diskstats&field=datid&field=minor"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("mixed snapshot");
+    let layouts = records
+        .iter()
+        .filter(|record| record["record"] == "layout")
+        .map(|record| record["layout"]["logical_name"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        layouts,
+        [
+            serde_json::json!("pg_stat_user_tables"),
+            serde_json::json!("os_diskstats"),
+        ]
+    );
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["values"], serde_json::json!([1]));
+    assert_eq!(rows[1]["values"], serde_json::json!([0]));
+}
+
+#[test]
 fn snapshot_rows_align_positional_values_with_layout_columns() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(
@@ -3279,6 +3308,136 @@ fn relation_predecessor_follows_a_fallback_sample_into_the_second_segment() {
             .expect("numeric buffer rate");
         assert!((actual - expected).abs() < 1e-12, "{field}: {actual}");
     }
+}
+
+fn four_segment_relation_fixture() -> (Fixture, i64) {
+    let mut fixture = Fixture::new();
+    fixture.append_named_table_snapshots(&[(100_000_000, 1, 11, 10, "first", "public", "orders")]);
+    fixture.append_named_index_snapshots(&[(
+        100_000_000,
+        1,
+        101,
+        20,
+        "first",
+        "public",
+        "orders",
+        "orders_pkey",
+        "CREATE UNIQUE INDEX orders_pkey ON public.orders USING btree (id)",
+    )]);
+    fixture.finish_and_continue(SEGMENT_ID + 1_000);
+    fixture.append_named_table_snapshots(&[(120_000_000, 2, 21, 5, "second", "public", "events")]);
+    fixture.append_named_index_snapshots(&[(
+        120_000_000,
+        2,
+        201,
+        7,
+        "second",
+        "public",
+        "events",
+        "events_pkey",
+        "CREATE UNIQUE INDEX events_pkey ON public.events USING btree (id)",
+    )]);
+    fixture.finish_and_continue(SEGMENT_ID + 2_000);
+    fixture.append_named_table_snapshots(&[(180_000_000, 2, 21, 17, "second", "public", "events")]);
+    fixture.append_named_index_snapshots(&[(
+        180_000_000,
+        2,
+        201,
+        19,
+        "second",
+        "public",
+        "events",
+        "events_pkey",
+        "CREATE UNIQUE INDEX events_pkey ON public.events USING btree (id)",
+    )]);
+    let current_segment = SEGMENT_ID + 3_000;
+    fixture.finish_and_continue(current_segment);
+    fixture.append_named_table_snapshots(&[(200_000_000, 1, 11, 30, "first", "public", "orders")]);
+    fixture.append_named_index_snapshots(&[(
+        200_000_000,
+        1,
+        101,
+        50,
+        "first",
+        "public",
+        "orders",
+        "orders_pkey",
+        "CREATE UNIQUE INDEX orders_pkey ON public.orders USING btree (id)",
+    )]);
+    fixture.finish();
+    (fixture, current_segment)
+}
+
+#[test]
+fn relation_object_snapshots_keep_each_database_predecessor_across_segments() {
+    let (fixture, current_segment) = four_segment_relation_fixture();
+
+    let tables = stream(fixture.prepare(
+        &format!(
+            "/api/segments/{current_segment}/snapshot?at=200000000&section=pg_stat_user_tables&group=object&field=seq_scan"
+        ),
+        None,
+    ))
+    .expect("four-segment table snapshot");
+    let table_rates = relation_records(&tables)
+        .into_iter()
+        .map(|row| {
+            (
+                row["key"]["datid"].as_str().unwrap().to_owned(),
+                row["values"]["seq_scan"].clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(table_rates["1"], serde_json::json!(0.2));
+    assert_eq!(table_rates["2"], serde_json::json!(0.2));
+
+    let first_database = stream(fixture.prepare(
+        &format!(
+            "/api/segments/{current_segment}/snapshot?at=200000000&section=pg_stat_user_tables&group=object&field=seq_scan&where.datid=1"
+        ),
+        None,
+    ))
+    .expect("filtered four-segment table snapshot");
+    let rows = relation_records(&first_database);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["key"]["datid"], "1");
+    assert_eq!(rows[0]["values"]["seq_scan"], serde_json::json!(0.2));
+
+    let indexes = stream(fixture.prepare(
+        &format!(
+            "/api/segments/{current_segment}/snapshot?at=200000000&section=pg_stat_user_indexes&group=object&field=idx_scan"
+        ),
+        None,
+    ))
+    .expect("four-segment index snapshot");
+    let index_rates = relation_records(&indexes)
+        .into_iter()
+        .map(|row| {
+            (
+                row["key"]["datid"].as_str().unwrap().to_owned(),
+                row["values"]["idx_scan"].clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(index_rates["1"], serde_json::json!(0.3));
+    assert_eq!(index_rates["2"], serde_json::json!(0.2));
+}
+
+#[test]
+fn relation_group_history_finds_the_requested_database_predecessor() {
+    let (fixture, _current_segment) = four_segment_relation_fixture();
+
+    let records = stream(fixture.prepare(
+        "/api/hour?from=200000000&to=200000000&section=pg_stat_user_tables&group=database&field=seq_scan&where.datid=1",
+        None,
+    ))
+    .expect("four-segment database history");
+    let rows = relation_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["key"]["datid"], "1");
+    assert_eq!(rows[0]["values"]["seq_scan"], serde_json::json!(0.2));
+    assert_eq!(rows[0]["sample_from"], "100000000");
+    assert_eq!(rows[0]["sample_to"], "200000000");
 }
 
 #[test]

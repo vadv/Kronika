@@ -1572,7 +1572,7 @@ pub(super) fn stream_history(
     let Some((from, to)) = window.from.zip(window.to) else {
         return Ok(());
     };
-    let refs = history_segments(listed, &request.section, from, to);
+    let refs = history_segments(reader, listed, &request.section, datid, from, to, cancelled)?;
     let physical_fields = history_physical_fields(kind, group, &fields);
     let mut sources = Vec::with_capacity(refs.len());
     for segment_ref in refs {
@@ -1783,12 +1783,15 @@ fn history_datid(group: RelationGroup, filters: &[Filter]) -> Result<u32, ApiErr
 }
 
 fn history_segments(
+    reader: &Reader,
     listed: &[SegmentRef],
     logical_name: &str,
+    datid: u32,
     from: i64,
     to: i64,
-) -> Vec<SegmentRef> {
-    let carries = |segment: &SegmentRef| {
+    cancelled: &impl Fn() -> bool,
+) -> Result<Vec<SegmentRef>, ApiError> {
+    let has_section = |segment: &SegmentRef| {
         segment
             .sections()
             .iter()
@@ -1796,7 +1799,9 @@ fn history_segments(
     };
     let mut selected = listed
         .iter()
-        .filter(|segment| carries(segment) && segment.max_ts() >= from && segment.min_ts() <= to)
+        .filter(|segment| {
+            has_section(segment) && segment.max_ts() >= from && segment.min_ts() <= to
+        })
         .cloned()
         .collect::<Vec<_>>();
     let type_ids = selected
@@ -1805,24 +1810,79 @@ fn history_segments(
         .filter(|section| logical_section_name(section.type_id) == Some(logical_name))
         .map(|section| section.type_id)
         .collect::<HashSet<_>>();
-    for type_id in type_ids {
-        if let Some(before) = listed
+    let selected_ids = selected.iter().map(SegmentRef::id).collect::<HashSet<_>>();
+    let mut pending = type_ids;
+    let mut candidates = listed
+        .iter()
+        .filter(|segment| segment.min_ts() < from && !selected_ids.contains(&segment.id()))
+        .filter(|segment| {
+            segment
+                .sections()
+                .iter()
+                .any(|section| pending.contains(&section.type_id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    candidates.sort_unstable_by_key(|segment| (segment.max_ts(), segment.id()));
+    for candidate in candidates.into_iter().rev() {
+        if pending.is_empty() || cancelled() {
+            break;
+        }
+        let segment = reader.open_segment(&candidate)?;
+        let carried = candidate
+            .sections()
             .iter()
-            .filter(|segment| {
-                segment.max_ts() < from
-                    && segment
-                        .sections()
-                        .iter()
-                        .any(|section| section.type_id == type_id)
-            })
-            .max_by_key(|segment| (segment.max_ts(), segment.id()))
-        {
-            selected.push(before.clone());
+            .map(|section| section.type_id)
+            .filter(|type_id| pending.contains(type_id))
+            .collect::<Vec<_>>();
+        let mut used = false;
+        for type_id in carried {
+            if segment_has_datid_before(&segment, type_id, datid, from, cancelled)? {
+                pending.remove(&type_id);
+                used = true;
+            }
+        }
+        if used {
+            selected.push(candidate);
         }
     }
     selected.sort_unstable_by_key(|segment| (segment.min_ts(), segment.id()));
     selected.dedup_by_key(|segment| segment.id());
-    selected
+    Ok(selected)
+}
+
+fn segment_has_datid_before(
+    segment: &Segment,
+    type_id: u32,
+    datid: u32,
+    before: i64,
+    cancelled: &impl Fn() -> bool,
+) -> Result<bool, ApiError> {
+    if segment.rows_of(type_id).is_none() {
+        return Ok(false);
+    }
+    let Some(timestamp) = contract(type_id).and_then(|layout| {
+        layout
+            .columns
+            .iter()
+            .find(|column| column.class == kronika_registry::ColumnClass::Timestamp)
+            .map(|column| column.name)
+    }) else {
+        return Ok(false);
+    };
+    let mut found = false;
+    segment.visit_rows(
+        type_id,
+        &[timestamp, "datid"],
+        0,
+        usize::MAX,
+        |_ordinal, row| {
+            found = unsigned_cell(row.get("datid")) == Some(datid)
+                && timestamp_cell(row.get(timestamp)).is_some_and(|stored| stored < before);
+            !found && !cancelled()
+        },
+    )?;
+    Ok(found)
 }
 
 fn selected_history_layouts(
