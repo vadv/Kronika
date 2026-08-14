@@ -26,7 +26,7 @@ fn main() -> io::Result<()> {
                     "name": column.name,
                     "type": column.ty.code(),
                     "class": column.class.code(),
-                    "unit": column.unit.map(|unit| unit.code()),
+                    "unit": column.unit.map(kronika_registry::Unit::code),
                 })).collect::<Vec<_>>(),
             })
         })
