@@ -304,6 +304,7 @@ export function SystemView({
   cursor,
   data,
   focus,
+  historyRevision,
   hour,
   locale,
   onCursor,
@@ -316,6 +317,7 @@ export function SystemView({
   readonly cursor: number
   readonly data: HourData
   readonly focus: Finding | null
+  readonly historyRevision: number
   readonly hour: number
   readonly locale: Locale
   readonly onCursor: (timestamp: number) => void
@@ -347,7 +349,7 @@ export function SystemView({
   const request = useMemo(() => selectedMetric === undefined ? null : metricHistoryRequest(selectedMetric.spec), [selectedMetric])
   const requestKey = request === null || selectedMetric === undefined ? null : metricRequestKey(hour, selectedMetric.spec, request)
   const needsHistory = chartsVisible && request !== null && requestKey !== null && distinctTimes(fallbackPoints) <= 1
-  const loadedHistory = useHistoryRequest(needsHistory ? requestKey : null, fallbackPoints.at(-1)?.timestamp ?? null,
+  const loadedHistory = useHistoryRequest(needsHistory ? requestKey : null, historyRevision,
     !needsHistory || request === null ? null : (signal) => loadSeries(hour, request.section, request.where, request.fields, signal))
   const selectedPoints = useMemo(() => {
     if (selectedMetric === undefined || loadedHistory.value === null) return fallbackPoints
@@ -417,6 +419,7 @@ export function SystemView({
           contextLabel={activeContext?.label}
           cursor={cursor}
           finding={finding}
+          historyRevision={historyRevision}
           hour={hour}
           key={entity.section}
           label={t(entity.label)}
@@ -437,6 +440,7 @@ function SystemEntityPanel({
   contextLabel,
   cursor,
   finding,
+  historyRevision,
   hour,
   label,
   locale,
@@ -450,6 +454,7 @@ function SystemEntityPanel({
   readonly contextLabel?: string | undefined
   readonly cursor: number
   readonly finding: Finding | null
+  readonly historyRevision: number
   readonly hour: number
   readonly label: string
   readonly locale: Locale
@@ -482,7 +487,7 @@ function SystemEntityPanel({
   const requestSection = historyRequest?.section ?? ""
   const requestTypeId = historyRequest?.typeId
   const visibleHistoryKey = chartsVisible ? historyKey : null
-  const history = useHistoryRequest(visibleHistoryKey, selectedRow?.timestamp ?? null,
+  const history = useHistoryRequest(visibleHistoryKey, historyRevision,
     visibleHistoryKey === null || requestSection === "" || requestTypeId === undefined ? null : (signal) => {
     const fields = JSON.parse(requestFields) as readonly string[]
     const where = JSON.parse(requestWhere) as Readonly<Record<string, string>>
@@ -566,7 +571,7 @@ export function entityHistoryRequest(row: DataRow, column: SystemEntityColumn): 
   const fields = uniqueStrings([...(column.historyFields ?? [field]), ...layout.identity])
   return {
     fields,
-    key: JSON.stringify([row.segmentId, row.typeId, identities, field]),
+    key: JSON.stringify([row.typeId, identities, field]),
     section: row.logicalName,
     typeId: row.typeId,
     where,

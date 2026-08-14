@@ -198,9 +198,13 @@ test("device latency uses exact reset-safe counter operands and a stable major:m
   assert.deepEqual(points.map(({ value }) => value), [null, 5, null, null])
   assert.deepEqual(helpers.entityHistoryRequest(row(2_000_000, "3", "9"), readLatency), {
     fields: ["reads", "read_time_ms", "major", "minor"],
-    key: '["s","1108001",[["major","8"],["minor","1"]],"read_latency_ms"]',
+    key: '["1108001",[["major","8"],["minor","1"]],"read_latency_ms"]',
     section: "os_diskstats", typeId: "1108001", where: { major: "8", minor: "1" },
   })
+  assert.equal(
+    helpers.entityHistoryRequest({ ...row(2_000_000, "3", "9"), segmentId: "next" }, readLatency).key,
+    helpers.entityHistoryRequest(row(2_000_000, "3", "9"), readLatency).key,
+  )
   const current = helpers.systemEntityRows({ ...data, sections: { os_diskstats: [{ ...row(5_000_000, 2, 10), values: { ...row(5_000_000, 2, 10).values, device: "sda", read_sectors: 3, write_sectors: 4, writes: 0, write_time_ms: 1, io_time_ms: 200, io_weighted_time_ms: 500, io_in_progress: 2 } }] } }, "os_diskstats", 5_000_000)[0]
   assert.equal(current.values.device_id, "8:1")
   assert.equal(current.values.read_latency_ms, 5)
@@ -336,7 +340,7 @@ test("hidden mount device IDs remain exact request and history identity", () => 
   const row = { logicalName: "os_mountinfo", ordinal: "0", segmentId: "s", timestamp: 12, typeId: "1112001", values: { major: 8, minor: 1, free_bytes: 4 } }
   assert.deepEqual(helpers.entityHistoryRequest(row, mount.columns.find(({ field }) => field === "free_bytes")), {
     fields: ["free_bytes", "major", "minor"],
-    key: '["s","1112001",[["major","8"],["minor","1"]],"free_bytes"]',
+    key: '["1112001",[["major","8"],["minor","1"]],"free_bytes"]',
     section: "os_mountinfo",
     typeId: "1112001",
     where: { major: "8", minor: "1" },

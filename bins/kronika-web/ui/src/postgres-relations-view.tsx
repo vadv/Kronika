@@ -42,6 +42,7 @@ export interface PostgresRelationsViewProps {
   readonly data: HourData
   readonly densePageState: "idle" | "loading" | "error"
   readonly filters: Readonly<Record<string, string>>
+  readonly historyRevision: number
   readonly hour: number
   readonly lens: RelationLens
   readonly level: RelationGroup
@@ -63,7 +64,7 @@ export interface PostgresRelationsViewProps {
 
 export function PostgresRelationsView(props: PostgresRelationsViewProps) {
   const time = useDisplayTime()
-  const { cursor, data, densePageState, filters, hour, level, locale, onCursor, onLens, onLoadMore, onNavigate, onOrder, onPattern, onRetry, order, pattern, section, t } = props
+  const { cursor, data, densePageState, filters, historyRevision, hour, level, locale, onCursor, onLens, onLoadMore, onNavigate, onOrder, onPattern, onRetry, order, pattern, section, t } = props
   const lens = isRelationLens(section, props.lens) ? props.lens : section === "pg_stat_user_tables" ? "access" : "usage"
   const rows = useMemo(() => relationDataRows(data.sections[section] ?? [], section, level), [data.sections, level, section])
   const rateFields = data.rateColumns[section] ?? []
@@ -110,7 +111,7 @@ export function PostgresRelationsView(props: PostgresRelationsViewProps) {
         t={t}
         testId={section === "pg_stat_user_tables" ? "pg-tables-table" : "pg-indexes-table"}
       />
-      {selected !== null && <RelationDetail cursor={cursor} hour={hour} key={selectedKey} lens={lens} locale={locale} onClose={clearSelection} onCursor={onCursor} onNavigate={navigate} rateFields={rateFields} row={selected} t={t} />}
+      {selected !== null && <RelationDetail cursor={cursor} historyRevision={historyRevision} hour={hour} key={selectedKey} lens={lens} locale={locale} onClose={clearSelection} onCursor={onCursor} onNavigate={navigate} rateFields={rateFields} row={selected} t={t} />}
     </div>
     {(densePageState !== "idle" || hasMore) && <div className="lens-tabs" data-testid="table-paging"><button disabled={densePageState === "loading"} onClick={densePageState === "error" ? onRetry : onLoadMore} type="button">{densePageState === "loading" ? "…" : densePageState === "error" ? "↻" : "+"}</button></div>}
   </>
@@ -147,7 +148,7 @@ function RelationLenses({ active, onLens, section, t }: { readonly active: Relat
   return <div className="lensbar pg-lensbar" data-testid="pg-relation-lenses"><span>{t("pg.lens.label")}</span><div aria-label={t("pg.lens.label")} className="lens-tabs" role="group">{lenses.map((lens) => <button aria-pressed={lens === active} key={lens} onClick={() => onLens(lens)} type="button">{t(`pg.lens.${lens}`)}</button>)}</div></div>
 }
 
-function RelationDetail({ cursor, hour, lens, locale, onClose, onCursor, onNavigate, rateFields, row, t }: { readonly cursor: number; readonly hour: number; readonly lens: RelationLens; readonly locale: Locale; readonly onClose: () => void; readonly onCursor: (timestamp: number) => void; readonly onNavigate: (navigation: RelationNavigation) => void; readonly rateFields: readonly string[]; readonly row: DataRow; readonly t: Translate }) {
+function RelationDetail({ cursor, historyRevision, hour, lens, locale, onClose, onCursor, onNavigate, rateFields, row, t }: { readonly cursor: number; readonly historyRevision: number; readonly hour: number; readonly lens: RelationLens; readonly locale: Locale; readonly onClose: () => void; readonly onCursor: (timestamp: number) => void; readonly onNavigate: (navigation: RelationNavigation) => void; readonly rateFields: readonly string[]; readonly row: DataRow; readonly t: Translate }) {
   const chartsVisible = useChartsVisible()
   const detail = useDetailDismiss(onClose, relationRowKey(row))
   const group = row.relation?.group ?? "object"
@@ -179,7 +180,7 @@ function RelationDetail({ cursor, hour, lens, locale, onClose, onCursor, onNavig
   const historyTarget = !chartsVisible || historyFields.length === 0
     ? null
     : JSON.stringify([hour, row.logicalName, row.typeId, group, historyFilters, historyFields])
-  const loadedHistory = useHistoryRequest(historyTarget, row.timestamp, historyTarget === null ? null : (signal) => loadSeries(
+  const loadedHistory = useHistoryRequest(historyTarget, historyRevision, historyTarget === null ? null : (signal) => loadSeries(
     hour,
     row.logicalName,
     historyFilters,

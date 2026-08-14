@@ -134,9 +134,10 @@ export function DetailDock({
     () => history.filter((series) => series.points.some((point) => point.value !== null && Number.isFinite(point.value))),
     [history],
   )
+  const selectableHistory = availableHistory.length === 0 ? history : availableHistory
   const [selectedHistoryField, setSelectedHistoryField] = useState<string | null>(null)
   const detail = useDetailDismiss(onClose, pid)
-  const selectedHistory = availableHistory.find((series) => series.field === selectedHistoryField) ?? availableHistory[0] ?? null
+  const selectedHistory = selectableHistory.find((series) => series.field === selectedHistoryField) ?? selectableHistory[0] ?? null
   const selectedHistoryPoints = useMemo(
     () => selectedHistory === null ? [] : processChartPoints(selectedHistory, ticksPerSecond),
     [selectedHistory, ticksPerSecond],
@@ -165,7 +166,7 @@ export function DetailDock({
       </dl>
       <ChartOnly><section aria-label={t(`lens.${lens}`)} className="process-history" data-testid="process-history">
         <div aria-label={t(`lens.${lens}`)} className="process-history-selector" role="group">
-          {availableHistory.map((series) => (
+          {selectableHistory.map((series) => (
             <button
               aria-pressed={series.field === selectedHistory?.field}
               data-testid={`process-history-metric-${series.field}`}

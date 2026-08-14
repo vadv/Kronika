@@ -155,7 +155,7 @@ test("overview cards expose only numeric measurements and mark cumulative units 
   assert.match(source, /<PgPreview[^>]*overview section=\{logicalName\}/)
   assert.match(source, /className="process-history-selector"/)
   assert.doesNotMatch(source, /ChartLine/)
-  assert.match(source, /<PlanInfo cursor=\{cursor\} data=\{data\} hour=\{hour\}/)
+  assert.match(source, /<PlanInfo cursor=\{cursor\} data=\{data\} historyRevision=\{historyRevision\} hour=\{hour\}/)
 })
 
 test("Overview multirow histories keep complete fixed identities", () => {

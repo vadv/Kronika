@@ -76,6 +76,7 @@ test("process detail mounts one selected chart and exposes metric actions", asyn
   const source = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../src/detail.tsx", import.meta.url), "utf8"))
 
   assert.match(source, /className="process-history-selector" role="group"/)
+  assert.match(source, /const selectableHistory = availableHistory\.length === 0 \? history : availableHistory/)
   assert.match(source, /aria-pressed=\{series\.field === selectedHistory\?\.field\}/)
   assert.match(source, /data-testid=\{`process-history-metric-\$\{series\.field\}`\}/)
   assert.doesNotMatch(source, /<TimeTicks/)
