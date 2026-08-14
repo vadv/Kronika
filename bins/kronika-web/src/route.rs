@@ -63,11 +63,17 @@ pub(crate) struct SeriesRequest {
     pub(crate) group: Option<RelationGroup>,
 }
 
-/// Optional timestamp bounds for catalog listing only.
+/// Optional inclusive timestamp bounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct Window {
     pub(crate) from: Option<i64>,
     pub(crate) to: Option<i64>,
+}
+
+impl Window {
+    pub(crate) fn contains(self, timestamp: i64) -> bool {
+        self.from.is_none_or(|from| timestamp >= from) && self.to.is_none_or(|to| timestamp <= to)
+    }
 }
 
 /// One logical section in one explicit segment.

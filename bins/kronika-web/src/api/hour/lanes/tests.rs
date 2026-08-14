@@ -4,6 +4,7 @@ use kronika_reader::{Cell, Row};
 use kronika_registry::contract;
 
 use super::{Counters, counter_sum, cpu_busy_ticks, current_points, points, rate};
+use crate::route::Window;
 
 #[test]
 fn counter_points_keep_unusable_subtractions_as_null_and_zero_as_data() {
@@ -20,13 +21,50 @@ fn a_segment_boundary_keeps_the_preceding_counter_reading() {
         busy_ticks: BTreeMap::from([(100, 10), (200, 20)]),
         ..Counters::default()
     };
-    let current = current_points(&counters, 100, 1, 200, 200);
+    let current = current_points(
+        &counters,
+        100,
+        1,
+        200,
+        200,
+        Window {
+            from: Some(200),
+            to: Some(200),
+        },
+    );
     let busy = current
         .iter()
         .find(|point| point.key == "cpu_busy")
         .expect("current busy point");
     assert_eq!(busy.ts, 200);
     assert_eq!(busy.value, Some(100_000.0));
+}
+
+#[test]
+fn public_lane_points_stay_inside_the_inclusive_window() {
+    let counters = Counters {
+        memory: BTreeMap::from([(99, 1.0), (100, 2.0), (200, 3.0), (201, 4.0)]),
+        ..Counters::default()
+    };
+    let current = current_points(
+        &counters,
+        0,
+        0,
+        99,
+        201,
+        Window {
+            from: Some(100),
+            to: Some(200),
+        },
+    );
+
+    assert_eq!(
+        current
+            .iter()
+            .map(|point| (point.ts, point.value))
+            .collect::<Vec<_>>(),
+        [(100, Some(2.0)), (200, Some(3.0))]
+    );
 }
 
 #[test]

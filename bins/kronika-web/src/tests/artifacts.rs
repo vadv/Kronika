@@ -1970,6 +1970,43 @@ fn an_hour_carries_its_segments_and_its_line_in_one_response() {
 }
 
 #[test]
+fn an_hour_keeps_generic_rows_and_lanes_inside_its_inclusive_window() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(99, 0, 9), (100, 0, 0), (200, 0, 2), (201, 0, 1)]);
+
+    let series = stream(fixture.prepare(
+        "/api/hour?from=100&to=200&section=os_diskstats&field=reads&field=discards",
+        None,
+    ))
+    .expect("bounded generic series");
+    let rows = row_records(&series);
+    assert_eq!(
+        rows.iter()
+            .map(|row| row["timestamp"].clone())
+            .collect::<Vec<_>>(),
+        [serde_json::json!("100"), serde_json::json!("200")]
+    );
+    assert_eq!(rows[0]["values"], serde_json::json!(["0", null]));
+    assert_eq!(rows[1]["values"], serde_json::json!(["2", null]));
+
+    let hour =
+        stream(fixture.prepare("/api/hour?from=100&to=200", None)).expect("bounded timeline lanes");
+    let lanes = hour
+        .iter()
+        .filter(|record| record["record"] == "lane")
+        .collect::<Vec<_>>();
+    assert!(!lanes.is_empty());
+    assert!(
+        lanes
+            .iter()
+            .all(|lane| matches!(lane["ts"].as_str(), Some("100" | "200")))
+    );
+    for timestamp in ["100", "200"] {
+        assert!(lanes.iter().any(|lane| lane["ts"] == timestamp));
+    }
+}
+
+#[test]
 fn an_hour_reads_one_index_resource_per_segment_without_statistical_noise() {
     const STEP: i64 = 5 * 60 * 1_000_000;
 

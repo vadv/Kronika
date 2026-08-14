@@ -175,7 +175,8 @@ impl PreparedHour {
                 );
             }
             for segment in &segments {
-                if cancelled() || !emit_series(&reader, segment, &series, emit, cancelled)? {
+                if cancelled() || !emit_series(&reader, segment, window, &series, emit, cancelled)?
+                {
                     return Ok(());
                 }
             }
@@ -206,7 +207,7 @@ impl PreparedHour {
             if !stream_series(SERIES, resource, Some(window), emit, cancelled)? {
                 return Ok(());
             }
-            if !emit_lanes(&reader, segment, &mut lane_state, emit, cancelled)? {
+            if !emit_lanes(&reader, segment, window, &mut lane_state, emit, cancelled)? {
                 return Ok(());
             }
         }
@@ -221,6 +222,7 @@ impl PreparedHour {
 fn emit_series(
     reader: &Reader,
     segment_ref: &SegmentRef,
+    window: Window,
     series: &SeriesRequest,
     emit: &mut impl FnMut(Vec<u8>) -> bool,
     cancelled: &impl Fn() -> bool,
@@ -244,7 +246,14 @@ fn emit_series(
             }))?) {
                 return Ok(false);
             }
-            stream_plans(&segment, &series.section, &plans, emit, cancelled)
+            stream_plans(
+                &segment,
+                &series.section,
+                &plans,
+                Some(window),
+                emit,
+                cancelled,
+            )
         }
         Err(ApiError::NoSuchSection) => Ok(true),
         Err(error) => Err(error),
@@ -254,13 +263,20 @@ fn emit_series(
 fn emit_lanes(
     reader: &Reader,
     segment_ref: &SegmentRef,
+    window: Window,
     state: &mut lanes::State,
     emit: &mut impl FnMut(Vec<u8>) -> bool,
     cancelled: &impl Fn() -> bool,
 ) -> Result<bool, ApiError> {
     let segment = reader.open_segment(segment_ref)?;
     let facts = lanes::facts(&segment)?;
-    for point in lanes::collect(&segment, facts.ticks_per_second, facts.cpu_count, state)? {
+    for point in lanes::collect(
+        &segment,
+        facts.ticks_per_second,
+        facts.cpu_count,
+        window,
+        state,
+    )? {
         if cancelled()
             || !emit(record(json!({
                 "record": "lane",

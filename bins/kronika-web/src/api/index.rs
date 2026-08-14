@@ -92,7 +92,7 @@ impl PreparedIndex {
 pub(super) fn stream_series(
     logical_name: &str,
     resource: ResourceIndex,
-    finding_window: Option<Window>,
+    window: Option<Window>,
     emit: &mut impl FnMut(Vec<u8>) -> bool,
     cancelled: &impl Fn() -> bool,
 ) -> Result<bool, ApiError> {
@@ -104,7 +104,7 @@ pub(super) fn stream_series(
                 } else {
                     logical_section_name(block.type_id).ok_or(ApiError::NoSuchSection)?
                 };
-                if !stream_findings(finding_logical_name, block, finding_window, emit, cancelled)? {
+                if !stream_findings(finding_logical_name, block, window, emit, cancelled)? {
                     return Ok(false);
                 }
                 continue;
@@ -128,7 +128,9 @@ pub(super) fn stream_series(
                 | SeriesBlock::OverallHealth(points)
                 | SeriesBlock::PostgresHealth(points) => {
                     let series = health_series.expect("health block has a series name");
-                    for point in points {
+                    for point in points.into_iter().filter(|point| {
+                        window.is_none_or(|window| window.contains(point.timestamp))
+                    }) {
                         if cancelled()
                             || !emit(record(json!({
                                 "record": "point",
@@ -144,7 +146,9 @@ pub(super) fn stream_series(
                     }
                 }
                 SeriesBlock::PgTransactions { type_id, points } => {
-                    for point in points {
+                    for point in points.into_iter().filter(|point| {
+                        window.is_none_or(|window| window.contains(point.timestamp))
+                    }) {
                         if cancelled()
                             || !emit(record(json!({
                                 "record": "point",
@@ -160,7 +164,9 @@ pub(super) fn stream_series(
                     }
                 }
                 SeriesBlock::PgActiveBackends { type_id, points } => {
-                    for point in points {
+                    for point in points.into_iter().filter(|point| {
+                        window.is_none_or(|window| window.contains(point.timestamp))
+                    }) {
                         if cancelled()
                             || !emit(record(json!({
                                 "record": "point",
@@ -195,10 +201,9 @@ fn stream_findings(
                 .findings
                 .last()
                 .is_none_or(|last| window.to.is_none_or(|to| to >= last.timestamp));
-        block.findings.retain(|finding| {
-            window.from.is_none_or(|from| finding.timestamp >= from)
-                && window.to.is_none_or(|to| finding.timestamp <= to)
-        });
+        block
+            .findings
+            .retain(|finding| window.contains(finding.timestamp));
         block.total_hits = u32::try_from(block.findings.len()).unwrap_or(u32::MAX);
         block.truncated = omitted_may_intersect;
     }
