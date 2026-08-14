@@ -186,17 +186,19 @@ test("the production artifact preserves wire keys and exact finding page state",
     )))
     const localClocks = await cdp.evaluate(`(() => ({
       cursor: document.querySelector('[data-testid="cursor-time"]')?.textContent,
-      cursorUtc: document.querySelector('[data-testid="cursor-time"] small')?.textContent,
+      cursorSecondary: document.querySelector('[data-testid="cursor-time"] small')?.textContent ?? null,
       hour: document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent,
-      hourUtc: document.querySelector('[data-testid="hour-picker-trigger"] small')?.textContent,
+      hourContext: document.querySelector('[data-testid="hour-picker-trigger"] small')?.textContent,
       sample: document.querySelector('.cursor-time')?.textContent.includes('Sample'),
-      updatedUtc: document.querySelector('[data-testid="updated-time"] small')?.textContent,
+      updatedSecondary: document.querySelector('[data-testid="updated-time"] small')?.textContent ?? null,
     }))()`)
     assert.match(localClocks.cursor, /01:30:00\.000 EDT/)
-    assert.equal(localClocks.cursorUtc, "05:30:00.000 UTC")
+    assert.doesNotMatch(localClocks.cursor, /UTC/)
+    assert.equal(localClocks.cursorSecondary, null)
     assert.equal(localClocks.hour, "01:00–02:00 EDT")
-    assert.match(localClocks.hourUtc, /Aug 13, 2026.*05:00–06:00 UTC/)
-    assert.match(localClocks.updatedUtc, / UTC$/)
+    assert.match(localClocks.hourContext, /Aug 13, 2026/)
+    assert.doesNotMatch(localClocks.hourContext, /UTC/)
+    assert.equal(localClocks.updatedSecondary, null)
     assert.equal(localClocks.sample, false)
 
     const initialTheme = await cdp.evaluate(`document.documentElement.dataset.theme`)

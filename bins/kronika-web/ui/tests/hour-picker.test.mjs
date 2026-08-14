@@ -78,6 +78,8 @@ test("the combined picker has no native separate date or hour controls", async (
   assert.match(pickerSource, /ALL_HOURS\.map/)
   assert.match(pickerSource, /aria-pressed=/)
   assert.match(pickerSource, /disabled=\{!hasData\}/)
+  assert.doesNotMatch(pickerSource, /label\.secondary/)
+  assert.doesNotMatch(appSource, /pair\?\.secondary|pair\.secondary/)
   assert.match(pickerSource, /document\.addEventListener\("pointerdown"/)
   assert.match(pickerSource, /event\.key !== "Escape"/)
   assert.match(styles, /\.day-grid[^}]*grid-template-columns:\s*repeat\(7,/s)

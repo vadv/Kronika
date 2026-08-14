@@ -746,7 +746,7 @@ function App({ locale, onLocale, t }: {
 }
 
 function TimePair({ label, pair, testId }: { readonly label: string; readonly pair: ReturnType<typeof localTimePair> | null; readonly testId: string }) {
-  return <span data-testid={testId}><b>{label}</b>{pair?.primary ?? "—"}{pair?.secondary !== null && pair !== null && <small>{pair.secondary}</small>}</span>
+  return <span data-testid={testId}><b>{label}</b>{pair?.primary ?? "—"}</span>
 }
 
 function StateCard({ message }: { readonly message: string }) {

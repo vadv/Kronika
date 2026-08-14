@@ -82,7 +82,7 @@ export function HourPicker({
       aria-expanded={open}
       aria-haspopup="dialog"
       aria-controls="hour-picker-popover"
-      aria-label={label === null ? t("hour.picker") : `${t("hour.picker")}: ${label.date} · ${label.primary}${label.secondary === null ? "" : ` · ${label.secondary}`}`}
+      aria-label={label === null ? t("hour.picker") : `${t("hour.picker")}: ${label.date} · ${label.primary}`}
       className="hour-trigger"
       data-testid="hour-picker-trigger"
       disabled={hour === null}
@@ -91,7 +91,7 @@ export function HourPicker({
       type="button"
     >
       <strong>{label?.primary ?? "—"}</strong>
-      {label !== null && <small>{label.date}{label.secondary === null ? "" : ` · ${label.secondary}`}</small>}
+      {label !== null && <small>{label.date}</small>}
     </button>
     <button aria-label={t("hour.next")} data-testid="hour-next" disabled={hour === null} onClick={() => { setOpen(false); if (hour !== null) changeHour(hour + HOUR_US) }} type="button">›</button>
     {open && hour !== null && <div aria-label={t("hour.picker")} className="hour-popover" data-testid="hour-popover" id="hour-picker-popover" role="dialog">
