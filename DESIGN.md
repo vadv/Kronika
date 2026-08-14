@@ -193,12 +193,14 @@ snapshots.
 No thresholds and no weights inside the OS component. The worst resource
 decides, because an average hides a saturated disk behind an idle CPU.
 
-Health is null when it cannot be computed: the first snapshot of a segment has
+Health is null when it cannot be computed: the first recorded snapshot has
 nothing to subtract from; a counter that went backwards yields no stall time
 to put over the interval; the pressure scope does not describe the recorded
 environment; or either adjacent snapshot lacks a usable counter for CPU,
-memory, or IO. When a missing resource reappears, that complete snapshot starts
-a new baseline.
+memory, or IO. The first snapshot in a later segment uses the immediately
+preceding recorded snapshot when the environment and boot identity match;
+storage boundaries do not reset the baseline. When a missing resource
+reappears, that complete snapshot starts a new baseline.
 
 A container on cgroup v1 has no `*.pressure` files and so no health. The host's
 pressure belongs to the node, and standing in with it would report someone
@@ -244,12 +246,12 @@ overall_health = clamp(100 - os_penalty - postgres_penalty, 0, 100)
 ```
 
 Each combined point has an OS-health timestamp. It uses the latest PostgreSQL
-snapshot not later than that timestamp only while its age is at most the
-recorded effective PostgreSQL interval. There is no interpolation: before the
-first PostgreSQL snapshot and after a stale one the combined value is `null`.
-The index always exposes OS and combined health; it exposes PostgreSQL health
-only when that source is configured. These blocks contain only small points,
-never large source rows.
+snapshot not later than that timestamp, including one from the preceding
+segment, only while its age is at most the recorded effective PostgreSQL
+interval. There is no interpolation: before the first PostgreSQL snapshot and
+after a stale one the combined value is `null`. The index always exposes OS and
+combined health; it exposes PostgreSQL health only when that source is
+configured. These blocks contain only small points, never large source rows.
 
 ## Highlighting
 
@@ -366,7 +368,7 @@ One fixed per-block cap keeps the format bounded. Stored locators remain in
 deterministic timestamp and locator order; `total_hits` and `truncated` make an
 omission visible. This is not ranking.
 
-The IDX format is unreleased. `KRNIDX5` is its one current reader and writer and
+The IDX format is unreleased. `KRNIDX6` is its one current reader and writer and
 changes in place. Web discards and rebuilds any other IDX; there is no
 old-format reader, migration, compatibility branch, or dual write.
 

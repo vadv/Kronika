@@ -3,15 +3,18 @@ use std::path::Path;
 use kronika_format::DictLimits;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId};
 use kronika_reader::{Reader, SegmentKind, SegmentRef};
+use kronika_registry::instance_metadata::InstanceMetadata;
 use kronika_registry::os_cpu::OsCpu;
 use kronika_registry::os_loadavg::OsLoadavg;
 use kronika_registry::os_mountinfo::OsMountinfo;
 use kronika_registry::os_process::OsProcess;
+use kronika_registry::os_psi::OsPsi;
 use kronika_registry::os_topology::OsTopology;
 use kronika_registry::pg_log::{
     PgLogAutovacuum, PgLogCheckpoints, PgLogErrors, PgLogLifecycle, PgLogLockWaits,
     PgLogSlowQueries, PgLogTempFiles,
 };
+use kronika_registry::pg_stat_activity::PgStatActivityV3;
 use kronika_registry::pg_stat_statements::PgStatStatementsV2;
 use kronika_registry::{StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
@@ -64,6 +67,126 @@ fn append_fixture(journal: &mut Journal) {
         .expect("encode part")
         .expect("nonempty part");
     journal.append(address().id, &part).expect("append fixture");
+}
+
+#[derive(Clone, Copy)]
+struct HealthFixture {
+    boot_time: i64,
+    environment: u8,
+    postgres: Option<(i64, u32)>,
+}
+
+fn append_health_fixture(
+    journal: &mut Journal,
+    segment_id: i64,
+    config: HealthFixture,
+    samples: &[(i64, [Option<i64>; 3])],
+) {
+    let mut interner = Interner::new(DictLimits::default());
+    let label = StrId(interner.intern(b"fixture").expect("intern label").get());
+    let active = StrId(interner.intern(b"active").expect("intern state").get());
+    let dictionary = dict::encode(interner.window()).expect("health dictionary");
+    let mut buffers = SectionBuffers::new();
+    buffers
+        .push(InstanceMetadata {
+            ts: Ts(samples.first().expect("health sample").0),
+            hostname: label,
+            kernel_version: label,
+            environment: config.environment,
+            clock_ticks_per_sec: 100,
+            page_size_bytes: 4_096,
+            boot_id: label,
+            btime: Ts(config.boot_time),
+            postgresql_enabled: config.postgres.is_some(),
+            postgresql_interval_seconds: 30,
+            postgresql_effective_cpus: config.postgres.map(|_| 2),
+        })
+        .expect("health metadata row");
+    let scope = if config.environment == 0 { 0 } else { 3 };
+    for &(timestamp, totals) in samples {
+        for (resource, total) in totals.into_iter().enumerate() {
+            let Some(some_total) = total else {
+                continue;
+            };
+            buffers
+                .push(OsPsi {
+                    ts: Ts(timestamp),
+                    resource: u8::try_from(resource).expect("three PSI resources"),
+                    some_avg10: 0.0,
+                    some_avg60: 0.0,
+                    some_avg300: 0.0,
+                    some_total,
+                    full_avg10: None,
+                    full_avg60: None,
+                    full_avg300: None,
+                    full_total: None,
+                    scope,
+                })
+                .expect("PSI row");
+        }
+    }
+    if let Some((timestamp, count)) = config.postgres {
+        for pid in 0..count {
+            buffers
+                .push(activity_row(
+                    timestamp,
+                    i32::try_from(pid).expect("fixture pid"),
+                    active,
+                    label,
+                ))
+                .expect("activity row");
+        }
+    }
+    let part = buffers
+        .flush(&dictionary)
+        .expect("encode health fixture")
+        .expect("nonempty health fixture");
+    journal
+        .append(
+            SegmentId::new(segment_id).expect("health segment id"),
+            &part,
+        )
+        .expect("append health fixture");
+}
+
+fn activity_row(ts: i64, pid: i32, state: StrId, query: StrId) -> PgStatActivityV3 {
+    PgStatActivityV3 {
+        ts: Ts(ts),
+        pid,
+        leader_pid: None,
+        datname: None,
+        usename: None,
+        application_name: state,
+        client_addr: state,
+        backend_type: state,
+        state: Some(state),
+        wait_event_type: None,
+        wait_event: None,
+        query: Some(query),
+        query_id: None,
+        backend_xid_age: None,
+        backend_xmin_age: None,
+        backend_start: Ts(1),
+        xact_start: None,
+        query_start: None,
+        state_change: None,
+    }
+}
+
+fn health_values(resource: &super::ResourceIndex, series: &str) -> Vec<Option<u8>> {
+    resource
+        .index
+        .blocks
+        .iter()
+        .find_map(|block| match (series, block) {
+            ("os", SeriesBlock::OsHealth(points))
+            | ("overall", SeriesBlock::OverallHealth(points))
+            | ("postgres", SeriesBlock::PostgresHealth(points)) => {
+                Some(points.iter().map(|point| point.value).collect())
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 fn process_row(ts: i64, read_bytes: Option<i64>, label: StrId) -> OsProcess {
@@ -415,6 +538,18 @@ fn only_segment(reader: &Reader, kind: SegmentKind) -> SegmentRef {
     segments.into_iter().next().expect("one segment")
 }
 
+fn health_at(root: &Path, segment_id: i64) -> super::ResourceIndex {
+    let reader = Reader::open(root).expect("reader");
+    let segment = reader
+        .catalog_segments(..)
+        .expect("catalog")
+        .segments
+        .into_iter()
+        .find(|segment| segment.id() == segment_id)
+        .expect("health segment");
+    resource(root, &reader, &segment, "health").expect("health resource")
+}
+
 #[test]
 fn an_index_lives_beside_its_finished_segment() {
     assert_eq!(
@@ -426,6 +561,185 @@ fn an_index_lives_beside_its_finished_segment() {
 #[test]
 fn active_data_never_gets_an_index_path() {
     assert_eq!(path_of(Path::new("/data/active.wal")), None);
+}
+
+#[test]
+fn health_uses_the_immediately_preceding_psi_snapshot() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+    let config = HealthFixture {
+        boot_time: SEGMENT_ID - 1_000_000,
+        environment: 0,
+        postgres: None,
+    };
+    append_health_fixture(
+        &mut journal,
+        SEGMENT_ID,
+        config,
+        &[
+            (SEGMENT_ID, [Some(0), Some(0), Some(0)]),
+            (SEGMENT_ID + 1_000_000, [Some(100_000), Some(0), Some(0)]),
+        ],
+    );
+    write_segment(&journal, &writer, address_at(SEGMENT_ID)).expect("finish predecessor");
+    journal.reset().expect("reset after predecessor");
+
+    let current_id = SEGMENT_ID + 2_000_000;
+    append_health_fixture(
+        &mut journal,
+        current_id,
+        config,
+        &[
+            (current_id, [Some(200_000), Some(0), Some(0)]),
+            (current_id + 1_000_000, [Some(300_000), Some(0), Some(0)]),
+        ],
+    );
+    write_segment(&journal, &writer, address_at(current_id)).expect("finish current segment");
+    journal.reset().expect("leave no active segment");
+
+    let selected = health_at(directory.path(), current_id);
+    assert_eq!(health_values(&selected, "os"), [Some(90), Some(90)]);
+    assert_eq!(health_values(&selected, "overall"), [Some(90), Some(90)]);
+    assert!(health_values(&selected, "postgres").is_empty());
+}
+
+#[test]
+fn reset_and_unusable_psi_snapshots_remain_unknown() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+    let config = HealthFixture {
+        boot_time: SEGMENT_ID - 1_000_000,
+        environment: 0,
+        postgres: None,
+    };
+    append_health_fixture(
+        &mut journal,
+        SEGMENT_ID,
+        config,
+        &[(SEGMENT_ID, [Some(200_000), Some(0), Some(0)])],
+    );
+    write_segment(&journal, &writer, address_at(SEGMENT_ID)).expect("finish predecessor");
+    journal.reset().expect("reset after predecessor");
+
+    let current_id = SEGMENT_ID + 1_000_000;
+    append_health_fixture(
+        &mut journal,
+        current_id,
+        config,
+        &[
+            (current_id, [Some(50_000), Some(0), Some(0)]),
+            (current_id + 1_000_000, [Some(150_000), Some(0), None]),
+            (current_id + 2_000_000, [Some(250_000), Some(0), Some(0)]),
+            (current_id + 3_000_000, [Some(350_000), Some(0), Some(0)]),
+        ],
+    );
+    write_segment(&journal, &writer, address_at(current_id)).expect("finish current segment");
+    journal.reset().expect("leave no active segment");
+
+    assert_eq!(
+        health_values(&health_at(directory.path(), current_id), "os"),
+        [None, None, None, Some(90)]
+    );
+}
+
+#[test]
+fn a_different_boot_does_not_seed_os_health() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+    append_health_fixture(
+        &mut journal,
+        SEGMENT_ID,
+        HealthFixture {
+            boot_time: 1,
+            environment: 0,
+            postgres: None,
+        },
+        &[(SEGMENT_ID, [Some(100_000), Some(0), Some(0)])],
+    );
+    write_segment(&journal, &writer, address_at(SEGMENT_ID)).expect("finish predecessor");
+    journal.reset().expect("reset after predecessor");
+
+    let current_id = SEGMENT_ID + 1_000_000;
+    append_health_fixture(
+        &mut journal,
+        current_id,
+        HealthFixture {
+            boot_time: 2,
+            environment: 0,
+            postgres: None,
+        },
+        &[
+            (current_id, [Some(200_000), Some(0), Some(0)]),
+            (current_id + 1_000_000, [Some(300_000), Some(0), Some(0)]),
+        ],
+    );
+    write_segment(&journal, &writer, address_at(current_id)).expect("finish current segment");
+    journal.reset().expect("leave no active segment");
+
+    assert_eq!(
+        health_values(&health_at(directory.path(), current_id), "os"),
+        [None, Some(90)]
+    );
+}
+
+#[test]
+fn overall_uses_fresh_predecessor_postgres_without_copying_its_point() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+    let boot_time = SEGMENT_ID - 1_000_000;
+    append_health_fixture(
+        &mut journal,
+        SEGMENT_ID,
+        HealthFixture {
+            boot_time,
+            environment: 0,
+            postgres: Some((SEGMENT_ID + 1_000_000, 5)),
+        },
+        &[
+            (SEGMENT_ID, [Some(0), Some(0), Some(0)]),
+            (SEGMENT_ID + 1_000_000, [Some(100_000), Some(0), Some(0)]),
+        ],
+    );
+    write_segment(&journal, &writer, address_at(SEGMENT_ID)).expect("finish predecessor");
+    journal.reset().expect("reset after predecessor");
+
+    let current_id = SEGMENT_ID + 2_000_000;
+    append_health_fixture(
+        &mut journal,
+        current_id,
+        HealthFixture {
+            boot_time,
+            environment: 0,
+            postgres: Some((current_id + 500_000, 4)),
+        },
+        &[
+            (current_id, [Some(200_000), Some(0), Some(0)]),
+            (current_id + 1_000_000, [Some(300_000), Some(0), Some(0)]),
+        ],
+    );
+    write_segment(&journal, &writer, address_at(current_id)).expect("finish current segment");
+    journal.reset().expect("leave no active segment");
+
+    let selected = health_at(directory.path(), current_id);
+    assert_eq!(health_values(&selected, "os"), [Some(90), Some(90)]);
+    assert_eq!(health_values(&selected, "overall"), [Some(70), Some(90)]);
+    assert_eq!(health_values(&selected, "postgres"), [Some(100)]);
 }
 
 #[test]

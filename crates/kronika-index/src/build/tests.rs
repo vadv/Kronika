@@ -92,7 +92,7 @@ fn overall_uses_latest_nonfuture_postgres_value_only_through_its_interval() {
         value: Some(80),
     }];
     assert_eq!(
-        overall_points(&os, Some(&postgres), &metadata()),
+        overall_points(&os, Some(&postgres), None, &metadata()),
         [
             HealthPoint {
                 timestamp: 9_000_000,
@@ -118,9 +118,70 @@ fn disabled_postgres_costs_nothing_and_unknown_postgres_is_unknown() {
     }];
     let mut facts = metadata();
     facts.postgresql_enabled = Some(false);
-    assert_eq!(overall_points(&os, None, &facts)[0].value, Some(73));
+    let predecessor = Some(HealthPoint {
+        timestamp: 9,
+        value: Some(1),
+    });
+    assert_eq!(
+        overall_points(&os, None, predecessor, &facts)[0].value,
+        Some(73)
+    );
     facts.postgresql_enabled = None;
-    assert_eq!(overall_points(&os, None, &facts)[0].value, None);
+    assert_eq!(
+        overall_points(&os, None, predecessor, &facts)[0].value,
+        None
+    );
+}
+
+#[test]
+fn predecessor_postgres_is_used_only_while_fresh() {
+    let os = [
+        HealthPoint {
+            timestamp: 40_000_000,
+            value: Some(80),
+        },
+        HealthPoint {
+            timestamp: 40_000_001,
+            value: Some(80),
+        },
+    ];
+    let predecessor = Some(HealthPoint {
+        timestamp: 10_000_000,
+        value: Some(80),
+    });
+    assert_eq!(
+        overall_points(&os, None, predecessor, &metadata()),
+        [
+            HealthPoint {
+                timestamp: 40_000_000,
+                value: Some(60),
+            },
+            HealthPoint {
+                timestamp: 40_000_001,
+                value: None,
+            },
+        ]
+    );
+}
+
+#[test]
+fn current_postgres_supersedes_the_predecessor_component() {
+    let os = [HealthPoint {
+        timestamp: 20_000_000,
+        value: Some(80),
+    }];
+    let current = [HealthPoint {
+        timestamp: 19_000_000,
+        value: Some(90),
+    }];
+    let predecessor = Some(HealthPoint {
+        timestamp: 10_000_000,
+        value: Some(20),
+    });
+    assert_eq!(
+        overall_points(&os, Some(&current), predecessor, &metadata())[0].value,
+        Some(70)
+    );
 }
 
 #[test]
