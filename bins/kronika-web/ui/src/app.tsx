@@ -36,6 +36,7 @@ import { contextualRows, entityContext, findingRoute, type EntityContext } from 
 import { EventsView, type FindingResolution } from "./events-view"
 import { findingHistory, findingHistoryRequest, findingProjection } from "./finding-presentation"
 import { HelpPanel, type Translate } from "./help"
+import { useHistoryRequest } from "./history-request"
 import { HourPicker } from "./hour-picker"
 import { keyboardTargetOwnsArrows } from "./keyboard"
 import { rowMatchesLocator } from "./locator"
@@ -586,17 +587,12 @@ function App({ locale, onLocale, t }: {
   }, [data, findingRow, hour, selectedFinding])
   const pgFocus = selectedFinding !== null && selectedFinding.logicalName.startsWith("pg_") ? contextRow : null
   const joinedActivity = activityFor(selectedProcess, data.activities, selectedProcess?.timestamp ?? cursor)
-  const [processHistory, setProcessHistory] = useState<readonly DataRow[]>([])
   const selectedPid = selectedProcess === null ? null : rawText(value(selectedProcess, "pid"))
-  useEffect(() => {
-    if (hour === null || selectedPid === null || !chartsVisible) {
-      setProcessHistory([])
-      return
-    }
-    const controller = new AbortController()
-    acceptResponse(loadSeries(hour, "os_process", { pid: selectedPid }, PROCESS_HISTORY_FIELDS, controller.signal), controller.signal, setProcessHistory)
-    return () => controller.abort()
-  }, [chartsVisible, hour, selectedPid])
+  const processHistoryKey = !chartsVisible || hour === null || selectedPid === null ? null : JSON.stringify([hour, selectedPid])
+  const processHistory = useHistoryRequest(processHistoryKey, refreshVersion,
+    processHistoryKey === null || hour === null || selectedPid === null
+      ? null
+      : (signal) => loadSeries(hour, "os_process", { pid: selectedPid }, PROCESS_HISTORY_FIELDS, signal))
   const address = useMemo(() => writeAddress({
     at: cursor === 0 ? null : cursor,
     view: viewOf(source, hostSection, pgSection),
@@ -793,7 +789,7 @@ function App({ locale, onLocale, t }: {
       </p>
       {loading && <StateCard message={t("status.loading")} />}
       {!loading && error !== null && <StateCard message={t("status.error")} />}
-      {!loading && error === null && hour !== null && visibleSource === "host" && visibleHostSection === "system" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} hour={hour} locale={locale} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "host" && visibleHostSection === "system" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} t={t} />}
       {!loading && error === null && hour !== null && visibleSource === "host" && visibleHostSection === "processes" && <>
         <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} primaryLane={lens === "cpu" ? "cpu_busy" : lens === "memory" ? "memory" : lens === "disk" ? "io_stall" : "health"} shownAt={shownAt} t={t} /></ChartOnly>
         <div className="lensbar">
@@ -805,10 +801,10 @@ function App({ locale, onLocale, t }: {
         <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} hour={hour} lens={lens} locale={locale} onCursor={chooseCursor} state={processSummary} t={t} />
         <div className={selectedProcess === null ? "process-layout process-layout-table" : "process-layout"}>
           <ProcessTable contextLabel={context?.logicalName === "os_process" ? context.label : undefined} finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} onContextClear={clearEntityContext} onOrder={setOrder} onPattern={setFind} onSelect={selectProcess} order={order} pattern={find} rows={processRows} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
-          {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onClose={() => setSelectedKey(null)} onCursor={chooseCursor} process={selectedProcess} processHistory={processHistory} t={t} ticksPerSecond={ticksPerSecond} />}
+          {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onClose={() => setSelectedKey(null)} onCursor={chooseCursor} process={selectedProcess} processHistory={processHistory.value?.length ? processHistory.value : [selectedProcess]} processHistoryStatus={processHistory.status} t={t} ticksPerSecond={ticksPerSecond} />}
         </div>
       </>}
-      {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onOrder={setOrder} onPattern={setFind} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} hour={hour} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={setRelationSelectedKey} onSection={choosePgSection} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} statementLens={statementLens} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onOrder={setOrder} onPattern={setFind} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={setRelationSelectedKey} onSection={choosePgSection} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} statementLens={statementLens} t={t} />}
       {!loading && error === null && hour !== null && visibleSource === "events" && <EventsView cursor={cursor} data={data} history={findingPoints} hour={hour} locale={locale} onClose={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onShowAll={() => { setEventScope(null); setSelectedFinding(null) }} resolution={findingResolution} resolved={findingRow} scope={eventScope} selected={selectedFinding} t={t} />}
     </section>
 

@@ -150,7 +150,7 @@ test("overview cards expose only numeric measurements and mark cumulative units 
   const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
   assert.match(source, /const \[metricField, setMetricField\] = useState<string \| null>\(preferredField\)/)
   assert.match(source, /const fields = resetField === undefined \? \[field\] : \[field, resetField\]/)
-  assert.match(source, /loadSeries\(hour, row\.logicalName, \{\}, fields, controller\.signal, row\.typeId\)/)
+  assert.match(source, /loadSeries\(hour, row\.logicalName, \{\}, fields, signal, row\.typeId\)/)
   assert.match(source, /OVERVIEW_SINGLETONS\.has\(logicalName\)/)
   assert.match(source, /<PgPreview[^>]*overview section=\{logicalName\}/)
   assert.match(source, /className="process-history-selector"/)
@@ -178,9 +178,9 @@ test("WAL storage keeps exact singleton values and selected-snapshot history wir
   const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
   assert.match(source, /snapshot\(data\.sections\.pg_wal_storage \?\? \[\], cursor\)\[0\]/)
   assert.match(source, /walStorage !== undefined && <WalStorage/)
-  assert.match(source, /loadSeries\(hour, "pg_wal_storage", \{\}, \["wal_files_bytes"\], controller\.signal, row\.typeId\)/)
+  assert.match(source, /loadSeries\(hour, "pg_wal_storage", \{\}, \["wal_files_bytes"\], signal, row\.typeId\)/)
   assert.match(source, /<SeriesChart cursor=\{cursor\} format=\{humanBytes\}/)
-  assert.match(source, /scale="nonnegative" t=\{t\} unit="B"/)
+  assert.match(source, /scale="nonnegative" status=\{loaded\.status\} t=\{t\} unit="B"/)
   assert.match(source, /logicalName !== "pg_wal_storage"/)
 })
 
@@ -311,7 +311,7 @@ test("Activity history is PID-only and loads the complete selected hour", async 
 
   const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
   assert.match(source, /section === "pg_stat_activity"[^\n]*return \["pid"\]/)
-  assert.match(source, /section === "pg_stat_activity"\s*\n\s*\? loadSeries\(hour, section, request\.filters, request\.fields, controller\.signal\)/)
+  assert.match(source, /section === "pg_stat_activity"\s*\n\s*\? await loadSeries\(hour, section, request\.filters, request\.fields, signal\)/)
   assert.doesNotMatch(source, /activity \? \["backend_start"|\["pid", "backend_start"\]/)
 })
 
@@ -427,7 +427,7 @@ test("dense PostgreSQL columns and the Plans tab stay available by section", asy
   assert.match(source, /serverSorted=\{dense\}/)
   assert.match(source, /onNearEnd=\{densePageState === "idle" && canLoadMore \? onLoadMore : undefined\}/)
   assert.match(source, /densePageState === "error" \? onRetry : onLoadMore/)
-  assert.match(source, /loadSeries\(hour, section, request\.filters, request\.fields, controller\.signal, row\.typeId\)/)
+  assert.match(source, /await loadSeries\(hour, section, request\.filters, request\.fields, signal, row\.typeId\)/)
   assert.match(source, /\{ section, fields: \[field\], typeId: row\.typeId \}[\s\S]*fullText: true/)
 })
 

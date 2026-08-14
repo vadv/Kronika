@@ -8,6 +8,7 @@ import { useDetailDismiss } from "./detail-dismiss"
 import { useDisplayTime } from "./display-time-context"
 import { EntityTable, type EntityColumn, type TableOrder } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
+import { useHistoryRequest } from "./history-request"
 import { rawText, value, type Locale } from "./model"
 import {
   INDEX_LENSES,
@@ -163,7 +164,6 @@ function RelationDetail({ cursor, hour, lens, locale, onClose, onCursor, onNavig
   const historyFields = useMemo(() => relationHistoryRequestFields(row.logicalName as RelationSection, group, chartColumns, physicalFields), [chartFields, group, physicalFields, row.logicalName])
   const historyFilters = useMemo(() => relationHistoryFilters(row), [row])
   const [historyField, setHistoryField] = useState(preferredField)
-  const [historyRows, setHistoryRows] = useState<readonly DataRow[]>([])
   useEffect(() => {
     setHistoryField((current) => current !== null && chartFields.split("\u0000").includes(current) ? current : preferredField)
   }, [chartFields, preferredField])
@@ -176,13 +176,19 @@ function RelationDetail({ cursor, hour, lens, locale, onClose, onCursor, onNavig
     }
     return () => controller.abort()
   }, [definitionTarget, row])
-  useEffect(() => {
-    setHistoryRows([])
-    if (!chartsVisible || historyFields.length === 0) return
-    const controller = new AbortController()
-    acceptResponse(loadSeries(hour, row.logicalName, historyFilters, historyFields, controller.signal, object ? row.typeId : undefined, object ? undefined : group), controller.signal, setHistoryRows)
-    return () => controller.abort()
-  }, [chartsVisible, group, historyFields, historyFilters, hour, object, row.logicalName, row.timestamp, row.typeId])
+  const historyTarget = !chartsVisible || historyFields.length === 0
+    ? null
+    : JSON.stringify([hour, row.logicalName, row.typeId, group, historyFilters, historyFields])
+  const loadedHistory = useHistoryRequest(historyTarget, row.timestamp, historyTarget === null ? null : (signal) => loadSeries(
+    hour,
+    row.logicalName,
+    historyFilters,
+    historyFields,
+    signal,
+    object ? row.typeId : undefined,
+    object ? undefined : group,
+  ))
+  const historyRows = loadedHistory.value?.length ? loadedHistory.value : [row]
   const definition = exact ? rawText(value(exact, "indexdef")) : null
   const linked = linkedRelation(row)
   const historyColumn = chartColumns.find(({ field }) => field === historyField)
@@ -194,7 +200,7 @@ function RelationDetail({ cursor, hour, lens, locale, onClose, onCursor, onNavig
     {drill !== null && <div className="lens-tabs"><button data-testid="pg-relation-drill" onClick={() => onNavigate(drill)} type="button">{t(row.relation?.group === "database" ? "pg.relation.level.schema" : row.logicalName === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}</button></div>}
     <ChartOnly>{historyField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history">
       <div aria-label={t("system.history")} className="process-history-selector" role="group">{chartColumns.map((column) => <button aria-pressed={historyField === column.field} data-testid={`pg-relation-chart-${column.field}`} key={column.field} onClick={() => setHistoryField(column.field)} type="button">{t(column.label)}</button>)}</div>
-      <SeriesChart cursor={cursor} format={chartFormat(historyColumn.kind)} helpKey={historyColumn.help ?? "chart.metric.help"} hour={hour} labelKey={historyColumn.label} locale={locale} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} t={t} unit={chartUnit(historyColumn, t("unit.per_second"))} />
+      <SeriesChart cursor={cursor} format={chartFormat(historyColumn.kind)} helpKey={historyColumn.help ?? "chart.metric.help"} hour={hour} labelKey={historyColumn.label} locale={locale} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} status={loadedHistory.status} t={t} unit={chartUnit(historyColumn, t("unit.per_second"))} />
     </section>}</ChartOnly>
     <dl>{columns.map((column) => {
       const label = t(column.label)

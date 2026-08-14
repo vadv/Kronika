@@ -2,6 +2,7 @@ import { useMemo, useRef } from "react"
 
 import { compact, floorHour, humanPercent, type Locale } from "./model"
 import { LabelHelp, type Translate } from "./help"
+import type { HistoryStatus } from "./history-request"
 import { UPlotChart, type ChartScale as SemanticScale, type RecordedSeries } from "./uplot-chart"
 
 export interface ChartPoint {
@@ -18,7 +19,7 @@ export type ChartScale = "auto" | "percent" | "count" | "duration" | "nonnegativ
 
 export function SeriesChart({
   cursor,
-  empty = "—",
+  empty,
   hour,
   helpKey,
   labelKey,
@@ -29,6 +30,7 @@ export function SeriesChart({
   second,
   secondHelpKey,
   secondLabelKey,
+  status = "ready",
   t,
   unit = "",
   onCursor,
@@ -45,6 +47,7 @@ export function SeriesChart({
   readonly second?: readonly ChartPoint[] | undefined
   readonly secondHelpKey?: string | undefined
   readonly secondLabelKey?: string | undefined
+  readonly status?: HistoryStatus | undefined
   readonly t: Translate
   readonly unit?: string | undefined
   readonly onCursor?: ((timestamp: number) => void) | undefined
@@ -66,9 +69,13 @@ export function SeriesChart({
     { color: "cyan", helpKey, id: "primary", label, labelKey, points: visible.points, scale: semantic, tick: stableFormat, unit, value: stableFormat },
     ...(visible.second === undefined || secondHelpKey === undefined || secondLabelKey === undefined ? [] : [{ color: "amber" as const, helpKey: secondHelpKey, id: "secondary", label: t(secondLabelKey), labelKey: secondLabelKey, points: visible.second, scale: semantic, tick: stableFormat, unit, value: stableFormat }]),
   ], [helpKey, label, labelKey, secondHelpKey, secondLabelKey, semantic, stableFormat, t, unit, visible])
+  const statusText = status === "loading"
+    ? t("history.loading")
+    : status === "error" ? t("history.error") : empty ?? t("history.empty")
   return <div className="series-chart">
+    {hasData && status !== "ready" && <p className={`series-status series-status-${status}`} role={status === "error" ? "alert" : "status"}>{statusText}</p>}
     {!hasData
-      ? <><div className="series-reading"><LabelHelp helpKey={helpKey} labelKey={labelKey} t={t} /><span>—</span></div><p className="series-empty">{empty}</p></>
+      ? <><div className="series-reading"><LabelHelp helpKey={helpKey} labelKey={labelKey} t={t} /><span>—</span></div><p className={`series-status series-status-${status}`} role={status === "error" ? "alert" : "status"}>{statusText}</p></>
       : <UPlotChart cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} reading={reading === null ? "—" : formatValue(reading, locale)} series={series} t={t} />}
   </div>
 }

@@ -3487,3 +3487,185 @@ async function stopBrowser(browser) {
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
+
+test("narrow controls stay contained and help never changes selection", { timeout: 60_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const authState = { valid: true }
+  let historyFailure = false
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/catalog") return ndjson(response, [])
+    if (url.pathname === "/api/hour") {
+      if (url.searchParams.has("section") && historyFailure) return ndjson(response, [{ record: "error", error: "history unavailable" }])
+      return ndjson(response, url.searchParams.has("section") ? [] : [
+        ...timelineRecords(HOUR),
+        { record: "lane", segment_id: SEGMENT, lane: "cpu_busy", ts: String(AT), value: 42 },
+      ])
+    }
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
+      return ndjson(response, url.searchParams.getAll("section").includes("pg_stat_activity") ? snapshotRecords() : systemSnapshotRecords())
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("narrow browser server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "kronika-narrow-controls-"))
+  const browser = launchBrowser(profile)
+  const page = { errors: [], external: [], responses: [] }
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width: 480 })
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 })
+    await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=host.system` })
+    await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "the narrow System view", 15_000)
+    await settleLayout(cdp)
+
+    const closed = await cdp.evaluate(`(() => {
+      const actions = document.querySelector('.top-actions').getBoundingClientRect()
+      return {
+        actions: { left: actions.left, right: actions.right, width: actions.width },
+        client: document.documentElement.clientWidth,
+        coarse: matchMedia('(pointer: coarse)').matches,
+        nested: document.querySelectorAll('button button').length,
+        scroll: document.documentElement.scrollWidth,
+        topbarScroll: document.querySelector('.topbar').scrollWidth,
+      }
+    })()`)
+    assert.equal(closed.coarse, true)
+    assert.equal(closed.nested, 0)
+    assert.ok(closed.actions.left >= 0 && closed.actions.right <= closed.client, JSON.stringify(closed))
+    assert.ok(closed.scroll <= closed.client && closed.topbarScroll <= closed.client, JSON.stringify(closed))
+
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+    await settleLayout(cdp)
+    const russianActions = await cdp.evaluate(`(() => {
+      const actions = document.querySelector('.top-actions').getBoundingClientRect()
+      return {
+        client: document.documentElement.clientWidth,
+        left: actions.left,
+        right: actions.right,
+        scroll: document.documentElement.scrollWidth,
+        topbarScroll: document.querySelector('.topbar').scrollWidth,
+      }
+    })()`)
+    assert.ok(russianActions.left >= 0 && russianActions.right <= russianActions.client, JSON.stringify(russianActions))
+    assert.ok(russianActions.scroll <= russianActions.client && russianActions.topbarScroll <= russianActions.client, JSON.stringify(russianActions))
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+    await settleLayout(cdp)
+
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-popover"]') !== null`, "the narrow hour popover")
+    await settleLayout(cdp)
+    const popover = await cdp.evaluate(`(() => {
+      const rect = document.querySelector('[data-testid="hour-popover"]').getBoundingClientRect()
+      return { client: document.documentElement.clientWidth, left: rect.left, right: rect.right, scroll: document.documentElement.scrollWidth }
+    })()`)
+    assert.ok(popover.left >= 0 && popover.right <= popover.client && popover.scroll <= popover.client, JSON.stringify(popover))
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Escape' }))`)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-popover"]') === null`, "Escape closing the hour popover")
+    assert.equal(await cdp.evaluate(`document.activeElement?.dataset.testid`), "hour-picker-trigger")
+
+    await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]').click()`)
+    const selectedMetric = await cdp.evaluate(`document.querySelector('.metric-choice > button[aria-pressed="true"]')?.dataset.testid`)
+    await cdp.evaluate(`(() => {
+      const other = [...document.querySelectorAll('.metric-choice')].find((choice) => choice.querySelector('button').getAttribute('aria-pressed') !== 'true')
+      other.querySelector('.help-dot').click()
+    })()`)
+    await cdp.waitFor(`document.querySelector('[role="tooltip"]') !== null`, "the System metric help")
+    assert.equal(await cdp.evaluate(`document.querySelector('.metric-choice > button[aria-pressed="true"]')?.dataset.testid`), selectedMetric)
+    await cdp.evaluate(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }))`)
+
+    const selectedLane = await cdp.evaluate(`document.querySelector('.lane-select[aria-pressed="true"]')?.textContent`)
+    await cdp.evaluate(`(() => {
+      const other = [...document.querySelectorAll('.lane-label')].find((lane) => lane.querySelector('.lane-select').getAttribute('aria-pressed') !== 'true')
+      other.querySelector('.help-dot').click()
+    })()`)
+    await cdp.waitFor(`document.querySelector('[role="tooltip"]') !== null`, "the timeline lane help")
+    assert.equal(await cdp.evaluate(`document.querySelector('.lane-select[aria-pressed="true"]')?.textContent`), selectedLane)
+    await cdp.evaluate(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }))`)
+
+    await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[1].click()`)
+    await cdp.waitFor(`document.querySelector('.pg-tabs') !== null`, "the PostgreSQL tabs", 15_000)
+    await cdp.evaluate(`([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent.includes('Activity')) ?? document.querySelectorAll('.pg-tabs button')[1]).click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"] .entity-header-cell > .label-help .help-dot') !== null`, "the Activity header help", 15_000)
+    const headerHelp = await cdp.evaluate(`(() => {
+      const button = document.querySelector('[data-testid="pg-activity-table"] .entity-header-cell > .label-help .help-dot')
+      const rect = button.getBoundingClientRect()
+      const style = getComputedStyle(button.closest('.label-help'))
+      button.click()
+      return { height: rect.height, opacity: style.opacity, pointerEvents: style.pointerEvents, width: rect.width }
+    })()`)
+    assert.deepEqual(headerHelp, { height: 44, opacity: "1", pointerEvents: "auto", width: 44 })
+    await cdp.waitFor(`document.querySelector('[role="tooltip"]') !== null`, "the first-touch table help")
+    assert.equal(await cdp.evaluate(`document.querySelectorAll('button button').length`), 0)
+
+    await cdp.evaluate(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }))`)
+    historyFailure = true
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-activity-table"] .entity-row').click()`)
+    await cdp.waitFor(`document.querySelector('.pg-detail .series-status-error') !== null`, "the Activity history error")
+    assert.equal(await cdp.evaluate(`document.querySelector('.pg-detail .series-status-error').textContent`), "Could not load history")
+    const failedHistory = await cdp.evaluate(`(() => {
+      const detail = document.querySelector('.pg-detail')
+      const status = detail.querySelector('.series-status-error').getBoundingClientRect()
+      return { chart: detail.querySelector('.uplot-host') !== null, statusHeight: status.height, text: detail.querySelector('.series-chart')?.textContent ?? '' }
+    })()`)
+    assert.equal(failedHistory.chart, true, JSON.stringify(failedHistory))
+    assert.ok(failedHistory.statusHeight <= 40, JSON.stringify(failedHistory))
+    historyFailure = false
+
+    await cdp.evaluate(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }))`)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width: 960 })
+    await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[0].click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "the 960px System view", 15_000)
+    await settleLayout(cdp)
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-popover"]') !== null`, "the 960px hour popover")
+    const standard = await cdp.evaluate(`(() => {
+      const actions = document.querySelector('.top-actions').getBoundingClientRect()
+      const popover = document.querySelector('[data-testid="hour-popover"]').getBoundingClientRect()
+      const client = document.documentElement.clientWidth
+      return { actionsLeft: actions.left, actionsRight: actions.right, client, popoverLeft: popover.left, popoverRight: popover.right, scroll: document.documentElement.scrollWidth }
+    })()`)
+    assert.ok(standard.actionsLeft >= 0 && standard.actionsRight <= standard.client, JSON.stringify(standard))
+    assert.ok(standard.popoverLeft >= 0 && standard.popoverRight <= standard.client && standard.scroll <= standard.client, JSON.stringify(standard))
+    for (const width of [521, 580, 600, 760, 761]) {
+      await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Escape' }))`)
+      await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width })
+      await settleLayout(cdp)
+      await cdp.evaluate(`document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
+      await cdp.waitFor(`document.querySelector('[data-testid="hour-popover"]') !== null`, `the ${width}px hour popover`)
+      const intermediate = await cdp.evaluate(`(() => {
+        const rect = document.querySelector('[data-testid="hour-popover"]').getBoundingClientRect()
+        const client = document.documentElement.clientWidth
+        return { client, left: rect.left, right: rect.right, scroll: document.documentElement.scrollWidth }
+      })()`)
+      assert.ok(intermediate.left >= 0 && intermediate.right <= intermediate.client && intermediate.scroll <= intermediate.client, `${width}:${JSON.stringify(intermediate)}`)
+    }
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+  } finally {
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await rm(profile, { recursive: true, force: true })
+  }
+})

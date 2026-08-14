@@ -591,7 +591,7 @@ test("detail, empty, navigation, and paging behavior stays on generic exact APIs
   assert.match(source, /row\.logicalName === "pg_stat_user_indexes" \? relationDetailTarget\(row\) : null/)
   assert.match(source, /loadSnapshot\(row\.segmentId, definitionTarget\.at, \[definitionTarget\.request\]/)
   assert.match(source, /relationHistoryRequestFields\(row\.logicalName as RelationSection, group, chartColumns, physicalFields\)/)
-  assert.match(source, /loadSeries\(hour, row\.logicalName, historyFilters, historyFields, controller\.signal, object \? row\.typeId : undefined, object \? undefined : group\)/)
+  assert.match(source, /loadSeries\([\s\S]*?hour,[\s\S]*?row\.logicalName,[\s\S]*?historyFilters,[\s\S]*?historyFields,[\s\S]*?signal,[\s\S]*?object \? row\.typeId : undefined,[\s\S]*?object \? undefined : group,[\s\S]*?\)/)
   assert.match(source, /relationChartableColumn\(row\.logicalName as RelationSection, column, physicalFields, group\)/)
   assert.doesNotMatch(source, /object \? allColumns\.filter/)
   assert.match(source, /className="process-history-selector"/)

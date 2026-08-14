@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 
 import { calendarDateLabel, calendarMonthDays, calendarMonthLabel, type DisplayTimeFormatter } from "./display-time"
 import { useDisplayTime } from "./display-time-context"
@@ -25,6 +25,7 @@ export function HourPicker({
   const [open, setOpen] = useState(false)
   const [day, setDay] = useState(committedDay)
   const [month, setMonth] = useState(committedMonth)
+  const [popover, setPopover] = useState<HourPopoverPlacement | null>(null)
   const root = useRef<HTMLDivElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
   const hourCells = useRef<(HTMLButtonElement | null)[]>([])
@@ -57,6 +58,22 @@ export function HourPicker({
       window.removeEventListener("keydown", escape)
     }
   }, [dayHours, hour, open])
+
+  useLayoutEffect(() => {
+    if (!open) return
+    const place = () => {
+      const anchor = root.current?.getBoundingClientRect()
+      if (anchor === undefined) return
+      setPopover(hourPopoverPlacement(anchor, {
+        compact: window.matchMedia("(max-width: 760px)").matches,
+        height: window.innerHeight,
+        width: document.documentElement.clientWidth,
+      }))
+    }
+    place()
+    window.addEventListener("resize", place)
+    return () => window.removeEventListener("resize", place)
+  }, [open])
 
   const show = () => {
     if (hour === null) return
@@ -96,7 +113,7 @@ export function HourPicker({
       {label !== null && <small>{label.date}</small>}
     </button>
     <button aria-label={t("hour.next")} data-testid="hour-next" disabled={currentIndex < 0 || currentIndex >= selectable.length - 1} onClick={() => move(currentIndex + 1)} type="button">›</button>
-    {open && hour !== null && <div aria-label={t("hour.picker")} className="hour-popover" data-testid="hour-popover" id="hour-picker-popover" role="dialog">
+    {open && hour !== null && <div aria-label={t("hour.picker")} className="hour-popover" data-testid="hour-popover" id="hour-picker-popover" role="dialog" style={popover ?? undefined}>
       <header>
         <strong data-testid="hour-current">{calendarDateLabel(time.dayKey(hour), locale)}</strong>
       </header>
@@ -121,6 +138,25 @@ export function HourPicker({
       </div>
     </div>}
   </div>
+}
+
+interface HourPopoverPlacement {
+  readonly left: number
+  readonly maxHeight: number
+  readonly top: number
+  readonly width: number
+}
+
+export function hourPopoverPlacement(
+  anchor: { readonly bottom: number; readonly left: number },
+  viewport: { readonly compact?: boolean; readonly height: number; readonly width: number },
+): HourPopoverPlacement {
+  const edge = 10
+  const compact = viewport.compact ?? viewport.width <= 760
+  const width = Math.max(0, Math.min(compact ? 304 : 560, viewport.width - 2 * edge))
+  const left = Math.min(Math.max(edge, anchor.left), Math.max(edge, viewport.width - width - edge))
+  const top = Math.max(edge, anchor.bottom + 6)
+  return { left, maxHeight: Math.max(0, viewport.height - top - edge), top, width }
 }
 
 export function catalogueHours(available: readonly number[], current: number | null): readonly number[] {

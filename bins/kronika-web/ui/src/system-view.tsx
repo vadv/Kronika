@@ -1,12 +1,13 @@
 import { registry } from "kronika:registry"
 import { useEffect, useMemo, useState } from "react"
 
-import { acceptResponse, fieldNameForLocator, loadSeries, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
+import { fieldNameForLocator, loadSeries, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
 import { buildMetricSamples } from "./chart"
 import { ChartOnly, useChartsVisible } from "./chart-visibility"
 import { contextualRows, type EntityContext } from "./entity-context"
 import { EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
+import { useHistoryRequest } from "./history-request"
 import { asNumber, humanBytes, humanCores, humanPercent, measure, rawText, shownMoment, snapshot, value, type Locale } from "./model"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
@@ -345,26 +346,18 @@ export function SystemView({
   const fallbackPoints = selectedMetric?.points ?? []
   const request = useMemo(() => selectedMetric === undefined ? null : metricHistoryRequest(selectedMetric.spec), [selectedMetric])
   const requestKey = request === null || selectedMetric === undefined ? null : metricRequestKey(hour, selectedMetric.spec, request)
-  const [loadedHistory, setLoadedHistory] = useState<{ readonly key: string; readonly rows: readonly DataRow[] } | null>(null)
-  useEffect(() => {
-    if (!chartsVisible || request === null || requestKey === null || distinctTimes(fallbackPoints) > 1) {
-      setLoadedHistory(null)
-      return
-    }
-    const controller = new AbortController()
-    acceptResponse(loadSeries(hour, request.section, request.where, request.fields, controller.signal), controller.signal,
-      (rows) => setLoadedHistory({ key: requestKey, rows }), () => setLoadedHistory(null))
-    return () => controller.abort()
-  }, [chartsVisible, fallbackPoints, hour, request, requestKey])
+  const needsHistory = chartsVisible && request !== null && requestKey !== null && distinctTimes(fallbackPoints) <= 1
+  const loadedHistory = useHistoryRequest(needsHistory ? requestKey : null, fallbackPoints.at(-1)?.timestamp ?? null,
+    !needsHistory || request === null ? null : (signal) => loadSeries(hour, request.section, request.where, request.fields, signal))
   const selectedPoints = useMemo(() => {
-    if (selectedMetric === undefined || loadedHistory?.key !== requestKey) return fallbackPoints
-    const loadedPoints = metricHistoryPoints(selectedMetric.spec, loadedHistory.rows)
+    if (selectedMetric === undefined || loadedHistory.value === null) return fallbackPoints
+    const loadedPoints = metricHistoryPoints(selectedMetric.spec, loadedHistory.value)
     return loadedPoints.length === 0 ? fallbackPoints : loadedPoints
-  }, [fallbackPoints, loadedHistory, requestKey, selectedMetric])
-  const historyRows = loadedHistory?.key === requestKey && loadedHistory.rows.length !== 0
-    ? loadedHistory.rows
+  }, [fallbackPoints, loadedHistory.value, selectedMetric])
+  const historyRows = loadedHistory.value !== null && loadedHistory.value.length !== 0
+    ? loadedHistory.value
     : request === null ? [] : sectionRows(data, request.section)
-  const historyUsesRates = loadedHistory?.key !== requestKey
+  const historyUsesRates = loadedHistory.value === null
     && request !== null
     && (data.rateColumns?.[request.section] ?? []).length !== 0
   const breakdown = useMemo(() => selectedMetric === undefined ? [] : resourceBreakdownSeries(
@@ -389,10 +382,13 @@ export function SystemView({
               <div className="metric-grid">
                 {metrics.map(({ points, spec }) => {
                   const output = currentPointValue(points, cursor, locale, spec.unit)
-                  return <button aria-pressed={selectedMetric?.spec.id === spec.id} data-testid={`system-metric-${spec.id}`} key={spec.id} onClick={() => setSelected(spec.id)} type="button">
-                    <LabelHelp helpKey={spec.help} labelKey={spec.label} t={t} />
-                    <strong title={output}>{output}</strong>
-                  </button>
+                  return <div className="metric-choice" key={spec.id}>
+                    <button aria-pressed={selectedMetric?.spec.id === spec.id} data-testid={`system-metric-${spec.id}`} onClick={() => setSelected(spec.id)} type="button">
+                      <span>{t(spec.label)}</span>
+                      <strong title={output}>{output}</strong>
+                    </button>
+                    <LabelHelp helpKey={spec.help} iconOnly labelKey={spec.label} t={t} testId={`system-metric-help-${spec.id}`} />
+                  </div>
                 })}
               </div>
             </section>
@@ -404,8 +400,8 @@ export function SystemView({
         {selectedMetric === undefined
           ? <p className="table-empty">{t("system.no_metrics")}</p>
           : breakdown.length === 0
-            ? <SeriesChart cursor={cursor} empty={t("status.no_data")} format={(reading, place) => metricChartValue(reading, place, selectedMetric.spec.unit)} helpKey={selectedMetric.spec.help} hour={hour} labelKey={selectedMetric.spec.label} locale={locale} onCursor={onCursor} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "nonnegative"} t={t} unit={metricChartUnit(selectedMetric.spec, locale)} />
-            : <div className="series-chart"><UPlotChart cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} reading={currentPointValue(selectedPoints, cursor, locale, selectedMetric.spec.unit)} series={breakdown} t={t} testId={`system-${selectedMetric.spec.group}-composition`} /></div>}
+            ? <SeriesChart cursor={cursor} empty={t("history.empty")} format={(reading, place) => metricChartValue(reading, place, selectedMetric.spec.unit)} helpKey={selectedMetric.spec.help} hour={hour} labelKey={selectedMetric.spec.label} locale={locale} onCursor={onCursor} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "nonnegative"} status={needsHistory ? loadedHistory.status : "ready"} t={t} unit={metricChartUnit(selectedMetric.spec, locale)} />
+            : <div className="series-chart">{needsHistory && loadedHistory.status !== "ready" && <p className={`series-status series-status-${loadedHistory.status}`} role={loadedHistory.status === "error" ? "alert" : "status"}>{t(`history.${loadedHistory.status}`)}</p>}<UPlotChart cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} reading={currentPointValue(selectedPoints, cursor, locale, selectedMetric.spec.unit)} series={breakdown} t={t} testId={`system-${selectedMetric.spec.group}-composition`} /></div>}
       </section></ChartOnly>
     </section>
     <UseTable cursor={cursor} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} t={t} />
@@ -481,24 +477,18 @@ function SystemEntityPanel({
   const selectedColumn = availableColumns.find((column) => column.field === selectedField) ?? availableColumns[0]
   const historyRequest = selectedRow === null || selectedColumn === undefined ? null : entityHistoryRequest(selectedRow, selectedColumn)
   const historyKey = historyRequest === null ? null : `${hour}:${historyRequest.key}`
-  const [history, setHistory] = useState<{ readonly key: string; readonly rows: readonly DataRow[] } | null>(null)
   const requestFields = historyRequest === null ? "[]" : JSON.stringify(historyRequest.fields)
   const requestWhere = historyRequest === null ? "{}" : JSON.stringify(historyRequest.where)
   const requestSection = historyRequest?.section ?? ""
   const requestTypeId = historyRequest?.typeId
-  useEffect(() => {
-    if (!chartsVisible || historyKey === null || requestSection === "" || requestTypeId === undefined) {
-      setHistory(null)
-      return
-    }
-    const controller = new AbortController()
+  const visibleHistoryKey = chartsVisible ? historyKey : null
+  const history = useHistoryRequest(visibleHistoryKey, selectedRow?.timestamp ?? null,
+    visibleHistoryKey === null || requestSection === "" || requestTypeId === undefined ? null : (signal) => {
     const fields = JSON.parse(requestFields) as readonly string[]
     const where = JSON.parse(requestWhere) as Readonly<Record<string, string>>
-    acceptResponse(loadSeries(hour, requestSection, where, fields, controller.signal, requestTypeId), controller.signal,
-      (loaded) => setHistory({ key: historyKey, rows: loaded }), () => setHistory(null))
-    return () => controller.abort()
-  }, [chartsVisible, historyKey, hour, requestFields, requestSection, requestTypeId, requestWhere])
-  const chartRows = history?.key === historyKey ? history.rows : selectedRow === null ? [] : [selectedRow]
+    return loadSeries(hour, requestSection, where, fields, signal, requestTypeId)
+  })
+  const chartRows = history.value?.length ? history.value : selectedRow === null ? [] : [selectedRow]
   const chartPoints = useMemo(() => selectedColumn === undefined ? [] : entityMetricPoints(chartRows, selectedColumn), [chartRows, selectedColumn])
   const chartMetadata = selectedRow === null || selectedColumn === undefined || selectedColumn.historyFields !== undefined
     ? null : registryColumn(selectedRow.typeId, physicalField(selectedColumn, selectedRow.typeId))
@@ -545,6 +535,7 @@ function SystemEntityPanel({
         onCursor={onCursor}
         points={chartPoints}
         scale={selectedColumn.kind === "percent" ? "percent" : "nonnegative"}
+        status={history.status}
         t={t}
         unit={entityMetricUnit(selectedColumn, locale, chartMetadata)}
       />

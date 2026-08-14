@@ -13,6 +13,7 @@ import { EntityTable, EstimatedRows, unit, type EntityColumn, type TableOrder } 
 import type { Translate } from "./help"
 import { acceptResponse, fieldNameForLocator, loadSeries, loadSnapshot } from "./api"
 import { LabelHelp } from "./help"
+import { useHistoryRequest, type HistoryState } from "./history-request"
 import { asNumber, compact, humanBytes, humanDuration, humanPercent, identifier, measure, rawText, snapshot, value, type Locale, shownMoment } from "./model"
 import { activityDurationHistory, activityDurationSource, activityDurationMs, decorateActivityRow, transactionDurationMs } from "./postgres-activity"
 import { decoratePostgresIntervalRow, findingSemanticField, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, physicalField, physicalFields, planDefaultOrder, postgresHistory, postgresIdentity, statementDefaultOrder, unique, type PlanLens, type PostgresSemanticField, type StatementLens } from "./postgres-metrics"
@@ -365,7 +366,7 @@ function PlanInfo({ cursor, data, hour, locale, onCursor, t }: { readonly cursor
       <div><dt>{t("pg.field.dealloc.label")}</dt><dd>{dealloc === null ? "—" : measure(dealloc, locale, t("unit.per_second"))}</dd></div>
       <div><dt>{t("pg.field.stats_reset.label")}</dt><dd>{display(reset, timestamp("stats_reset"), locale, t)}</dd></div>
     </dl>
-    <ChartOnly><SeriesChart cursor={cursor} helpKey="pg.field.dealloc.help" hour={hour} labelKey="pg.field.dealloc.label" locale={locale} onCursor={onCursor} points={history ?? []} scale="nonnegative" t={t} unit={t("unit.per_second")} /></ChartOnly>
+    <ChartOnly><SeriesChart cursor={cursor} helpKey="pg.field.dealloc.help" hour={hour} labelKey="pg.field.dealloc.label" locale={locale} onCursor={onCursor} points={history.value ?? []} scale="nonnegative" status={history.status} t={t} unit={t("unit.per_second")} /></ChartOnly>
   </section>
 }
 
@@ -415,22 +416,14 @@ export function walStoragePoints(rows: readonly DataRow[]): readonly ChartPoint[
 
 function WalStorage({ cursor, hour, locale, onCursor, row, t }: { readonly cursor: number; readonly hour: number; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly row: DataRow; readonly t: Translate }) {
   const chartsVisible = useChartsVisible()
-  const [history, setHistory] = useState<readonly ChartPoint[]>(() => walStoragePoints([row]))
-  useEffect(() => {
-    if (!chartsVisible) {
-      setHistory(walStoragePoints([row]))
-      return
-    }
-    const controller = new AbortController()
-    acceptResponse(loadSeries(hour, "pg_wal_storage", {}, ["wal_files_bytes"], controller.signal, row.typeId), controller.signal, (rows) => {
-      const points = walStoragePoints(rows)
-      setHistory(points.length === 0 ? walStoragePoints([row]) : points)
-    })
-    return () => controller.abort()
-  }, [chartsVisible, hour, row])
+  const target = chartsVisible ? JSON.stringify([hour, row.typeId, "wal_files_bytes"]) : null
+  const loaded = useHistoryRequest(target, row.timestamp, target === null ? null : async (signal) => walStoragePoints(
+    await loadSeries(hour, "pg_wal_storage", {}, ["wal_files_bytes"], signal, row.typeId),
+  ))
+  const history = loaded.value?.length ? loaded.value : walStoragePoints([row])
   return <ChartOnly><section className="pg-overview-section" data-testid="pg-wal-storage">
     <h2><LabelHelp helpKey="pg.wal_storage.help" labelKey="pg.wal_storage.label" t={t} /></h2>
-    <SeriesChart cursor={cursor} format={humanBytes} helpKey="pg.wal_storage.help" hour={hour} labelKey="pg.wal_storage.history" locale={locale} onCursor={onCursor} points={history} scale="nonnegative" t={t} unit="B" />
+    <SeriesChart cursor={cursor} format={humanBytes} helpKey="pg.wal_storage.help" hour={hour} labelKey="pg.wal_storage.history" locale={locale} onCursor={onCursor} points={history} scale="nonnegative" status={loaded.status} t={t} unit="B" />
   </section></ChartOnly>
 }
 
@@ -449,7 +442,7 @@ function OverviewMetrics({ cursor, hour, locale, logicalName, onCursor, row, t }
     <h2>{t(overviewSectionKey(logicalName))}</h2>
     <ChartOnly>{selectedColumn !== undefined && <section className="process-history pg-metric-history">
       <div aria-label={t("system.history")} className="process-history-selector" role="group">{chartColumns.map((column) => <button aria-pressed={metricField === column.field} data-testid={`pg-overview-chart-${column.field}`} key={column.field} onClick={() => setMetricField(column.field)} type="button">{t(overviewFieldKey(column.field))}</button>)}</div>
-      <SeriesChart cursor={cursor} format={chartFormat(selectedColumn.kind)} helpKey={selectedColumn.help ?? "chart.metric.help"} hour={hour} labelKey={overviewFieldKey(selectedColumn.field)} locale={locale} onCursor={onCursor} points={history ?? []} scale={chartScale(selectedColumn)} t={t} unit={chartUnit(selectedColumn, t("unit.per_second"))} />
+      <SeriesChart cursor={cursor} format={chartFormat(selectedColumn.kind)} helpKey={selectedColumn.help ?? "chart.metric.help"} hour={hour} labelKey={overviewFieldKey(selectedColumn.field)} locale={locale} onCursor={onCursor} points={history.value ?? []} scale={chartScale(selectedColumn)} status={history.status} t={t} unit={chartUnit(selectedColumn, t("unit.per_second"))} />
     </section>}</ChartOnly>
     <dl>{registryCardFields(row).map(([field, cell]) => <div key={field}><dt><span>{t(overviewFieldKey(field))}</span></dt><dd>{overviewValue(cell, field, locale, time)}</dd></div>)}</dl>
   </section>
@@ -480,24 +473,20 @@ export function postgresMetricHistory(rows: readonly DataRow[], column: EntityCo
   })
 }
 
-function usePgMetricHistory(hour: number, row: DataRow | null, field: string | null, column: EntityColumn | undefined): readonly ChartPoint[] | null {
+function usePgMetricHistory(hour: number, row: DataRow | null, field: string | null, column: EntityColumn | undefined): HistoryState<readonly ChartPoint[]> {
   const chartsVisible = useChartsVisible()
-  const [loaded, setLoaded] = useState<{ readonly field: string; readonly points: readonly ChartPoint[] } | null>(null)
-  useEffect(() => {
-    setLoaded(null)
-    if (!chartsVisible || row === null || field === null || column === undefined) return
-    const controller = new AbortController()
+  const target = !chartsVisible || row === null || field === null || column === undefined
+    ? null
+    : JSON.stringify([hour, row.logicalName, row.typeId, field])
+  return useHistoryRequest(target, row?.timestamp ?? null, row === null || field === null || column === undefined ? null : async (signal) => {
     const metadata = registry.find((layout) => layout.typeId === row.typeId)?.columnMetadata
       ?.find(({ name }) => name === field)
     const cumulative = metadata?.class === "cumulative" || (metadata === undefined && column.rate === true)
     const resetField = cumulative && registry.find((layout) => layout.typeId === row.typeId)?.columns.includes("stats_reset") === true ? "stats_reset" : undefined
     const fields = resetField === undefined ? [field] : [field, resetField]
-    acceptResponse(loadSeries(hour, row.logicalName, {}, fields, controller.signal, row.typeId), controller.signal, (rows) => {
-      setLoaded({ field, points: postgresMetricHistory(rows, column, cumulative, resetField) })
-    })
-    return () => controller.abort()
-  }, [chartsVisible, column, field, hour, row?.logicalName, row?.timestamp, row?.typeId])
-  return loaded?.field === field ? loaded.points : null
+    const rows = await loadSeries(hour, row.logicalName, {}, fields, signal, row.typeId)
+    return postgresMetricHistory(rows, column, cumulative, resetField)
+  })
 }
 
 const NO_ROWS: readonly DataRow[] = []
@@ -644,6 +633,7 @@ function visibleEntityColumns(columns: readonly EntityColumn[], rows: readonly D
 
 function PgDetail({ allRows, columns, cursor, historyField, hour, locale, onClose, onCursor, overview = false, row, section, t }: { readonly allRows: readonly DataRow[]; readonly columns: readonly EntityColumn[]; readonly cursor: number; readonly historyField: string | null; readonly hour: number; readonly locale: Locale; readonly onClose: () => void; readonly onCursor: (timestamp: number) => void; readonly overview?: boolean | undefined; readonly row: DataRow; readonly section: string; readonly t: Translate }) {
   const entityRows = useMemo(() => allRows.filter((candidate) => sameEntity(candidate, row, section)), [allRows, row, section])
+  const localHistoryRows = useMemo(() => [...entityRows.filter((candidate) => rowKey(candidate) !== rowKey(row)), row], [entityRows, row])
   const dense = section === "pg_stat_statements" || section === "pg_store_plans"
   const chartColumns = useMemo(() => columns.filter((column) => chartableColumn(column)
     && (dense ? denseHistoryFields(row.typeId, column.field).length !== 0 : chartColumnAvailable(section, entityRows, column))), [columns, dense, entityRows, row.typeId, section])
@@ -656,11 +646,11 @@ function PgDetail({ allRows, columns, cursor, historyField, hour, locale, onClos
   const activeMetricField = chartColumns.some(({ field }) => field === metricField) ? metricField : preferredField
   const historyColumn = chartColumns.find((column) => column.field === activeMetricField)
   const loadedHistory = useMemo(() => activeMetricField === null ? [] : buildMetricSamples(
-    entityRows,
+    localHistoryRows,
     (candidate) => Object.hasOwn(candidate.values, activeMetricField) ? chartPointValue(value(candidate, activeMetricField), historyColumn) : undefined,
-  ), [activeMetricField, entityRows, historyColumn])
+  ), [activeMetricField, historyColumn, localHistoryRows])
   const exactHistory = usePostgresMetricHistory(row, section, historyColumn, hour)
-  const history = exactHistory ?? loadedHistory
+  const history = exactHistory.value?.length ? exactHistory.value : loadedHistory
   const textField = section === "pg_store_plans" ? "plan" : "query"
   const exactText = useWholeText(row, section, textField)?.trim() || null
   const fields = columns.filter((column) => column.field !== textField)
@@ -672,7 +662,7 @@ function PgDetail({ allRows, columns, cursor, historyField, hour, locale, onClos
     <header><div><span>{overview ? t(overviewSectionKey(section)) : section === "pg_stat_progress_vacuum" ? section : t(`pg.section.${sectionName(section)}`)}</span><h2>{detailTitle(row, section, t)}</h2></div><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
     <ChartOnly>{activeMetricField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history">
       <div aria-label={t("system.history")} className="process-history-selector" role="group">{chartColumns.map((column) => <button aria-pressed={activeMetricField === column.field} data-testid={`pg-chart-${column.field}`} key={column.field} onClick={() => setMetricField(column.field)} type="button">{t(column.label)}</button>)}</div>
-      <SeriesChart cursor={cursor} helpKey={historyColumn.help ?? "chart.metric.help"} hour={hour} labelKey={historyColumn.label} locale={locale} format={chartFormat(historyColumn.kind)} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} t={t} unit={chartUnit(historyColumn, t("unit.per_second"))} />
+      <SeriesChart cursor={cursor} helpKey={historyColumn.help ?? "chart.metric.help"} hour={hour} labelKey={historyColumn.label} locale={locale} format={chartFormat(historyColumn.kind)} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} status={exactHistory.status} t={t} unit={chartUnit(historyColumn, t("unit.per_second"))} />
     </section>}</ChartOnly>
     {exactText !== null && <section className="query-block"><span>{t(section === "pg_store_plans" ? "pg.plan.label" : "pg.query.label")}<button aria-label={t("common.raw")} className="copy-raw" onClick={() => void navigator.clipboard?.writeText(exactText)} type="button"><Copy aria-hidden="true" size={12} /></button></span><pre data-testid={section === "pg_store_plans" ? "pg-exact-plan" : "pg-exact-query"}>{exactText}</pre></section>}
     <dl>{fields.filter((column) => told(value(row, column.field))).map((column) => <div key={column.field}><dt><span>{column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}</span></dt><dd>{display(value(row, column.field), column, locale, t)}</dd></div>)}</dl>
@@ -731,38 +721,18 @@ export function postgresMetricHistorySamples(rows: readonly DataRow[], row: Data
   return activityDurationHistory(entityHistory, column.field as Parameters<typeof activityDurationHistory>[1])
 }
 
-function usePostgresMetricHistory(row: DataRow, section: string, column: EntityColumn | undefined, hour: number): readonly ChartPoint[] | null {
+function usePostgresMetricHistory(row: DataRow, section: string, column: EntityColumn | undefined, hour: number): HistoryState<readonly ChartPoint[]> {
   const dense = section === "pg_stat_statements" || section === "pg_store_plans"
   const chartsVisible = useChartsVisible()
-  const [history, setHistory] = useState<readonly ChartPoint[] | null>(dense ? [] : null)
-  useEffect(() => {
-    if (column === undefined) {
-      setHistory(dense ? [] : null)
-      return
-    }
-    const request = postgresMetricHistoryRequest(row, section, column)
-    if (!chartsVisible) {
-      setHistory(dense ? [] : null)
-      return
-    }
-    if (request.fields.length === 0) {
-      setHistory([])
-      return
-    }
-    if (request.filters === null) {
-      setHistory(null)
-      return
-    }
-    setHistory([])
-    const controller = new AbortController()
-    const response = section === "pg_stat_activity"
-      ? loadSeries(hour, section, request.filters, request.fields, controller.signal)
-      : loadSeries(hour, section, request.filters, request.fields, controller.signal, row.typeId)
-    acceptResponse(response, controller.signal,
-      (rows) => setHistory(postgresMetricHistorySamples(rows, row, section, column, request)))
-    return () => controller.abort()
-  }, [chartsVisible, column, dense, hour, row, section])
-  return history
+  const request = column === undefined ? null : postgresMetricHistoryRequest(row, section, column)
+  const ready = chartsVisible && request !== null && request.fields.length !== 0 && request.filters !== null
+  const target = ready ? JSON.stringify([hour, section, row.typeId, request.filters, column?.field]) : null
+  return useHistoryRequest(target, row.timestamp, !ready || column === undefined || request === null || request.filters === null ? null : async (signal) => {
+    const rows = section === "pg_stat_activity"
+      ? await loadSeries(hour, section, request.filters, request.fields, signal)
+      : await loadSeries(hour, section, request.filters, request.fields, signal, row.typeId)
+    return postgresMetricHistorySamples(rows, row, section, column, request)
+  })
 }
 
 function historyFields(typeId: string, semantic: PostgresSemanticField): readonly string[] {

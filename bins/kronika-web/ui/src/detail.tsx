@@ -7,6 +7,7 @@ import { ChartOnly } from "./chart-visibility"
 import { useDetailDismiss } from "./detail-dismiss"
 import { useDisplayTime } from "./display-time-context"
 import { LabelHelp, type Translate } from "./help"
+import type { HistoryStatus } from "./history-request"
 import {
   asNumber,
   humanBytes,
@@ -104,6 +105,7 @@ export function DetailDock({
   onCursor,
   process,
   processHistory,
+  processHistoryStatus,
   t,
   ticksPerSecond,
 }: {
@@ -117,6 +119,7 @@ export function DetailDock({
   readonly onCursor: (timestamp: number) => void
   readonly process: DataRow
   readonly processHistory: readonly DataRow[]
+  readonly processHistoryStatus: HistoryStatus
   readonly ticksPerSecond: number | null
   readonly t: Translate
 }) {
@@ -186,6 +189,7 @@ export function DetailDock({
             onCursor={onCursor}
             points={selectedHistoryPoints}
             scale={selectedHistory.scale ?? "nonnegative"}
+            status={processHistoryStatus}
             t={t}
             unit={selectedHistory.unit ?? processChartUnit(selectedHistory.kind, t, ticksPerSecond)}
           />

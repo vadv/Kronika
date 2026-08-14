@@ -227,10 +227,13 @@ function toRecordedSeries(lane: TimelineLane, locale: Locale, t: Translate): rea
 }
 
 function LaneLabel({ label, help, onSelect, primary, reading, t }: { readonly label: string; readonly help: string; readonly onSelect: () => void; readonly primary: boolean; readonly reading: string; readonly t: Translate }) {
-  return <button aria-pressed={primary} className={`lane-label lane-overview${primary ? " lane-primary" : ""}`} onClick={onSelect} type="button">
-    <LabelHelp helpKey={help} labelKey={label} t={t} />
-    <span className="lane-reading">{reading}</span>
-  </button>
+  return <div className={`lane-label lane-overview${primary ? " lane-primary" : ""}`}>
+    <button aria-pressed={primary} className="lane-select" onClick={onSelect} type="button">
+      <span className="lane-name">{t(label)}</span>
+      <span className="lane-reading">{reading}</span>
+    </button>
+    <LabelHelp helpKey={help} iconOnly labelKey={label} t={t} />
+  </div>
 }
 
 export function exactValue(points: readonly SeriesPoint[], cursor: number): number | null {

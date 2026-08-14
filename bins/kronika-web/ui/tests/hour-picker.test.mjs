@@ -6,6 +6,7 @@ import { importModule } from "./import-module.mjs"
 
 const picker = await importModule(`export {
   catalogueHours,
+  hourPopoverPlacement,
   hourHasData,
   hoursForDay,
   pickerFocusIndex,
@@ -53,6 +54,21 @@ test("the three-column exact-hour grid has bounded keyboard navigation", () => {
   assert.equal(picker.pickerFocusIndex(8, "Home", 10), 0)
   assert.equal(picker.pickerFocusIndex(2, "End", 10), 9)
   assert.equal(picker.pickerFocusIndex(2, "Enter", 10), null)
+})
+
+test("the popover stays inside every viewport regardless of the trigger row", () => {
+  assert.deepEqual(picker.hourPopoverPlacement({ bottom: 120, left: 10 }, { height: 900, width: 465 }), {
+    left: 10, maxHeight: 764, top: 126, width: 304,
+  })
+  assert.deepEqual(picker.hourPopoverPlacement({ bottom: 120, left: 430 }, { height: 900, width: 585 }), {
+    left: 271, maxHeight: 764, top: 126, width: 304,
+  })
+  assert.deepEqual(picker.hourPopoverPlacement({ bottom: 90, left: 430 }, { height: 900, width: 945 }), {
+    left: 375, maxHeight: 794, top: 96, width: 560,
+  })
+  assert.deepEqual(picker.hourPopoverPlacement({ bottom: 90, left: 430 }, { compact: false, height: 900, width: 746 }), {
+    left: 176, maxHeight: 794, top: 96, width: 560,
+  })
 })
 
 test("calendar month labels and date counts remain human", () => {
