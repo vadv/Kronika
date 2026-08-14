@@ -55,8 +55,8 @@ pub(super) fn prepare(
     let listed = stored.segments;
     let mut segments = listed
         .iter()
-        .cloned()
         .filter(|segment| overlaps_window(segment.min_ts(), segment.max_ts(), window))
+        .cloned()
         .collect::<Vec<_>>();
     segments.sort_by_key(SegmentRef::min_ts);
     super::catalog::log_open(segments.len(), &stored.warnings, started);

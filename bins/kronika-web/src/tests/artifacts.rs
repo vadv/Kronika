@@ -2145,6 +2145,22 @@ fn process_summary_series_uses_the_complete_set_and_previous_segment() {
 }
 
 #[test]
+fn process_summary_rates_across_active_wal_parts() {
+    let mut fixture = Fixture::new();
+    fixture.append_process_summary_snapshot(1_000_000, 1_000, None, 900_000, 0..3, None);
+    fixture.append_process_summary_snapshot(6_000_000, 1_100, None, 5_500_000, 0..3, None);
+
+    let records = stream(fixture.prepare(
+        "/api/hour?from=6000000&to=6000000&section=os_process_summary&field=user_cores&field=read_bytes_per_second",
+        None,
+    ))
+    .expect("active process summary history");
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"], serde_json::json!([41.0, 4_100.0]));
+}
+
+#[test]
 fn temporary_file_rows_remain_available_through_generic_reads() {
     let mut fixture = Fixture::new();
     fixture.append_log_temp_file(100);
