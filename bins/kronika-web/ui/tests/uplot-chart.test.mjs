@@ -127,6 +127,13 @@ test("tooltip uses seconds only when two samples share a displayed minute", () =
   assert.match(chart.sampleText(series, frame, timestamp, "ru", ru), /41,7 %/)
 })
 
+test("y-axis labels carry only the unit, series names live in the caption", async () => {
+  const source = await readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8")
+  assert.match(source, /\.\.\.\(unit === "" \? \{\} : \{ label: unit \}\)/)
+  assert.doesNotMatch(source, /label: `\$\{labels\}/)
+  assert.match(source, /className="chart-series-labels"/)
+})
+
 test("the built-in legend stays hidden and chart titles use portal help metadata", async () => {
   const source = await readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8")
   const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8")

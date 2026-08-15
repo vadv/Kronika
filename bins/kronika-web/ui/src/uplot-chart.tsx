@@ -490,10 +490,10 @@ function chartOptions(
     scales: { x: { auto: false, range: [hour, end], time: false }, ...scales },
     axes: [
       { scale: "x", side: 2, size: 28, space: (_chart, _axis, _scale, _increment, space) => Math.max(84, space), stroke: color("--fg3"), grid: { stroke: color("--line") }, values: (_chart, splits) => splits.map((timestamp) => axisTimeLabel(timestamp, time)) },
-      ...partitions.map(({ key, label: labels, unit }, axisIndex) => {
+      ...partitions.map(({ key, unit }, axisIndex) => {
         const grouped = series.filter((line) => scaleKey(line) === key)
         const line = grouped[0]!
-        return { label: `${labels}${unit === "" ? "" : `, ${unit}`}`, scale: key, side: axisIndex % 2 === 0 ? 3 : 1, size: 62, stroke: color("--fg3"), grid: { stroke: axisIndex === 0 ? color("--line") : "transparent" }, values: (_chart: uPlot, splits: number[]) => splits.map((value) => (line.tick ?? line.value)(value, locale)) }
+        return { ...(unit === "" ? {} : { label: unit }), scale: key, side: axisIndex % 2 === 0 ? 3 : 1, size: 62, stroke: color("--fg3"), grid: { stroke: axisIndex === 0 ? color("--line") : "transparent" }, values: (_chart: uPlot, splits: number[]) => splits.map((value) => (line.tick ?? line.value)(value, locale)) }
       }),
     ],
     cursor: {
