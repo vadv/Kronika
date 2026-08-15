@@ -829,8 +829,10 @@ export function hasMetric(data: HourData, spec: MetricSpec): boolean {
 }
 
 function derivedPoints(data: HourData, derive: NonNullable<MetricSpec["derive"]>): readonly ChartPoint[] {
-  const [section] = DERIVE_INPUTS[derive]
-  return derivedRowPoints(sectionRows(data, section), derive, (data.rateColumns?.[section] ?? []).length !== 0)
+  const [section, fields] = DERIVE_INPUTS[derive]
+  const announced = data.rateColumns?.[section] ?? []
+  const rates = fields.length === 0 ? announced.length !== 0 : fields.some((field) => announced.includes(field))
+  return derivedRowPoints(sectionRows(data, section), derive, rates)
 }
 
 function derivedRowPoints(rows: readonly DataRow[], derive: NonNullable<MetricSpec["derive"]>, rates: boolean): readonly ChartPoint[] {
@@ -847,14 +849,25 @@ function derivedRowPoints(rows: readonly DataRow[], derive: NonNullable<MetricSp
     if (percentages.some((number) => number === undefined)) return undefined
     return percentages.some((number) => number === null) ? null : Math.min(...percentages as number[])
   })
-  if (derive === "device_busy") return cumulativeRate(aggregateRows(rows, (sampleRows) => maxField(sampleRows, "io_time_ms", 0.1)))
-  if (derive === "device_average_queue") return cumulativeRate(aggregateRows(rows, (sampleRows) => maxField(sampleRows, "io_weighted_time_ms", 0.001)))
+  if (derive === "device_busy") return rateAwareDelta(rows, (sampleRows) => maxField(sampleRows, "io_time_ms"), rates, 0.1)
+  if (derive === "device_average_queue") return rateAwareDelta(rows, (sampleRows) => maxField(sampleRows, "io_weighted_time_ms"), rates, 0.001)
   if (derive === "device_count" || derive === "filesystem_count" || derive === "interface_count") return aggregateRows(rows, (sampleRows) => sampleRows.length)
   if (derive === "device_active_io") return aggregateRows(rows, (sampleRows) => sumFields(sampleRows, ["io_in_progress"]))
   if (derive === "network_rx") return cumulativeRate(aggregateRows(rows, (sampleRows) => sumFields(sampleRows, ["rx_bytes"])))
   if (derive === "network_tx") return cumulativeRate(aggregateRows(rows, (sampleRows) => sumFields(sampleRows, ["tx_bytes"])))
   if (derive === "network_errors") return cumulativeRate(aggregateRows(rows, (sampleRows) => sumFields(sampleRows, ["rx_errs", "tx_errs"])))
   return cumulativeRate(aggregateRows(rows, (sampleRows) => sumFields(sampleRows, ["rx_drop", "tx_drop"])))
+}
+
+// A rollup over a counter the section already stores as a per-second rate is
+// a reading, not a delta: rate columns arrive pre-divided by their interval,
+// and a second division would report a tenth of nothing.
+function rateAwareDelta(rows: readonly DataRow[], aggregate: (rows: readonly DataRow[]) => number | null | undefined, rates: boolean, scale: number): readonly ChartPoint[] {
+  const points = aggregateRows(rows, (sampleRows) => {
+    const value = aggregate(sampleRows)
+    return value === null || value === undefined ? value : value * scale
+  })
+  return rates ? points : cumulativeRate(points)
 }
 
 function aggregateRows(rows: readonly DataRow[], aggregate: (rows: readonly DataRow[]) => number | null | undefined): readonly ChartPoint[] {
@@ -1033,6 +1046,9 @@ function cumulativeRate(points: readonly ChartPoint[]): readonly ChartPoint[] {
 
 function metricClass(spec: MetricSpec): RegistryColumn["class"] | null {
   if (spec.section === undefined || spec.field === undefined) return null
+  // A counter the collector already turns into a rate reads as a gauge here:
+  // the value is a per-second reading, not a climbing total.
+  if ((spec.series ?? "").startsWith("os_")) return "gauge"
   return registry.flatMap((layout) => layout.logicalName === spec.section ? layout.columnMetadata ?? [] : [])
     .find(({ name }) => name === spec.field)?.class ?? null
 }
