@@ -1,9 +1,15 @@
 //! Reads one snapshot and derives counter rates.
 
+mod relation;
+
 use std::cmp::Ordering;
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
+
+#[cfg(test)]
+use std::cell::Cell as Counter;
 
 use kronika_reader::{Cell, Dictionary, Reader, Resolved, Row, Segment, SegmentKind, SegmentRef};
 use kronika_registry::{ColumnClass, ColumnType, contract};
@@ -12,15 +18,25 @@ use serde_json::{Value, json};
 use super::query::{Plan, plans, resolved_dictionary};
 use super::render::{cell, projected_layout, record, shorten};
 use super::{ApiError, CachePolicy, ResponseMeta, explicit_segment_with_listing};
-use crate::route::{DataRequest, SegmentRequest, SnapshotRequest};
+use crate::route::{DataRequest, Order, RelationGroup, SegmentRequest, SnapshotRequest};
+use crate::route::{SeriesRequest, Window};
 
 pub(crate) struct PreparedSnapshot {
-    segment: Segment,
-    earlier: Option<Segment>,
+    reader: Reader,
+    anchor: SegmentRef,
+    prior_sources: Vec<SegmentRef>,
+    relation_predecessors: Vec<SegmentRef>,
     at: i64,
     sections: Vec<SectionPlans>,
+    relation_filters: Vec<crate::route::Filter>,
     by: Vec<String>,
-    top: Option<usize>,
+    direction: Order,
+    group: Option<RelationGroup>,
+    relation_fields: Vec<String>,
+    page_size: Option<usize>,
+    cursor: Option<SnapshotCursor>,
+    binding: u64,
+    search: Vec<GlobPattern>,
     text: Option<usize>,
     row_ordinal: Option<u64>,
 }
@@ -28,7 +44,7 @@ pub(crate) struct PreparedSnapshot {
 type Readings = BTreeMap<Vec<IdentityCell>, CounterReadings>;
 type CounterReadings = BTreeMap<&'static str, Cell>;
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum IdentityCell {
     Null,
     I16(i16),
@@ -49,27 +65,80 @@ struct StagedRow {
     identity: Vec<IdentityCell>,
 }
 
-struct RankedRow {
-    staged: StagedRow,
-    value: Option<OrderValue>,
-}
-
-struct TopRows {
-    limit: usize,
-    rows: BinaryHeap<Reverse<RankedRow>>,
-}
-
 #[derive(Clone, Copy)]
-struct BoundedOrder {
-    column: &'static str,
-    limit: usize,
+struct RowCoordinate {
+    segment_id: i64,
+    ordinal: u64,
 }
 
-#[derive(Clone, Copy)]
-struct RowWindow {
-    start: u64,
-    count: usize,
-    moment: Option<(&'static str, i64)>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SnapshotCursor {
+    segment_id: i64,
+    active_position: u64,
+    context_index: usize,
+    ordinal: u64,
+    binding: u64,
+}
+
+struct PageRows {
+    limit: usize,
+    rows: BinaryHeap<Reverse<PageRankedRow>>,
+}
+
+struct PageRankedRow {
+    staged: PageStagedRow,
+    value: Option<PageOrderValue>,
+    direction: Order,
+}
+
+struct PageStagedRow {
+    context_index: usize,
+    ordinal: u64,
+    row: Row,
+    identity: Vec<IdentityCell>,
+}
+
+enum PageOrderValue {
+    Integer(i128),
+    Float(f64),
+    IntegerRate { delta: i128, elapsed: i64 },
+    FloatRate(f64),
+    IntegerRatio { numerator: u128, denominator: u128 },
+    FloatRatio(f64),
+    Text(Vec<u8>),
+}
+
+#[derive(Clone)]
+struct PageOrder {
+    name: &'static str,
+    kind: PageOrderKind,
+}
+
+#[derive(Clone)]
+enum PageOrderKind {
+    Column(&'static str),
+    CounterRatio {
+        numerator: Vec<&'static str>,
+        denominator: Vec<&'static str>,
+        neutral_nulls: bool,
+    },
+    ValueRatio {
+        numerator: Vec<&'static str>,
+        denominator: Vec<&'static str>,
+    },
+}
+
+enum RowWindow {
+    Untimed,
+    Shared {
+        timestamp: &'static str,
+        current: i64,
+    },
+    Partitioned {
+        timestamp: &'static str,
+        column: &'static str,
+        current: BTreeMap<IdentityCell, i64>,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -83,18 +152,302 @@ struct SectionPlans {
     plans: Vec<Plan>,
 }
 
+struct PageContext<'a> {
+    context_index: usize,
+    plan: &'a Plan,
+    source: &'a SegmentRef,
+    rows: u64,
+    window: RowWindow,
+    previous: Option<Arc<Readings>>,
+    elapsed: Option<i64>,
+    elapsed_by_partition: Arc<BTreeMap<IdentityCell, i64>>,
+    sample_from: Option<i64>,
+    sample_to: Option<i64>,
+    order: Option<PageOrder>,
+    search_columns: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PartitionSource {
+    Earlier(usize),
+    Current,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocatedMoment {
+    at: i64,
+    sources: BTreeSet<PartitionSource>,
+}
+
+#[derive(Clone)]
+struct PartitionMoments {
+    current: LocatedMoment,
+    previous: Option<LocatedMoment>,
+}
+
+struct SelectedPartition {
+    layout_index: usize,
+    type_id: u32,
+    moments: PartitionMoments,
+}
+
+struct PartitionRateState {
+    previous: Arc<Readings>,
+    elapsed_by_partition: Arc<BTreeMap<IdentityCell, i64>>,
+    sample_from: Option<i64>,
+    sample_to: Option<i64>,
+}
+
+#[derive(Clone, Copy)]
+struct SnapshotViewSpec {
+    temporal_partition: &'static str,
+}
+
+impl SnapshotViewSpec {
+    fn for_logical_name(logical_name: &str) -> Option<Self> {
+        match logical_name {
+            "pg_stat_user_tables" | "pg_stat_user_indexes" => Some(Self {
+                temporal_partition: "datid",
+            }),
+            _ => None,
+        }
+    }
+}
+
+impl RowWindow {
+    fn matches(&self, row: &Row) -> bool {
+        match self {
+            Self::Untimed => true,
+            Self::Shared { timestamp, current } => row_timestamp(row, timestamp) == Some(*current),
+            Self::Partitioned {
+                timestamp,
+                column,
+                current,
+            } => row.get(column).is_some_and(|partition| {
+                current
+                    .get(&identity_cell(partition))
+                    .is_some_and(|at| row_timestamp(row, timestamp) == Some(*at))
+            }),
+        }
+    }
+}
+
+fn rows_of(reference: &SegmentRef, type_id: u32) -> Option<u64> {
+    reference
+        .sections()
+        .iter()
+        .find(|section| section.type_id == type_id)
+        .map(|section| section.rows)
+}
+
+impl PageContext<'_> {
+    fn elapsed_for(&self, row: &Row) -> Option<i64> {
+        match &self.window {
+            RowWindow::Partitioned { column, .. } => row
+                .get(column)
+                .and_then(|partition| self.elapsed_by_partition.get(&identity_cell(partition)))
+                .copied(),
+            RowWindow::Untimed | RowWindow::Shared { .. } => self.elapsed,
+        }
+    }
+
+    fn predecessor<'a>(
+        &'a self,
+        row: &Row,
+        identity: &[IdentityCell],
+    ) -> Option<&'a CounterReadings> {
+        let before = self.previous.as_ref()?.get(identity)?;
+        if let Some(column) = self.plan.contract.column("stats_since") {
+            let current = row.get(column.name)?;
+            let previous = before.get(column.name)?;
+            if current != previous {
+                return None;
+            }
+        }
+        Some(before)
+    }
+}
+
+struct PageMetadata {
+    eligible: u64,
+    returned: usize,
+    has_more: bool,
+    next_cursor: Option<String>,
+    page_size: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GlobPattern(Vec<GlobToken>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlobToken {
+    Star,
+    Any,
+    Literal(char),
+}
+
+const SNAPSHOT_CHUNK_ROWS: usize = 16;
+
+#[cfg(test)]
+thread_local! {
+    static PAGE_CHUNK_ROWS: Counter<usize> = const { Counter::new(0) };
+    static PAGE_SOURCE_VISITS: Counter<usize> = const { Counter::new(0) };
+    static PAGE_CANDIDATE_DICTIONARIES: Counter<usize> = const { Counter::new(0) };
+    static CONTEXT_CHUNK_ROWS: Counter<usize> = const { Counter::new(0) };
+    static CONTEXT_STAGED_ROWS: Counter<usize> = const { Counter::new(0) };
+    static CONTEXT_SELECTION_DICTIONARIES: Counter<usize> = const { Counter::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_page_operations() {
+    PAGE_CHUNK_ROWS.set(0);
+    PAGE_SOURCE_VISITS.set(0);
+    PAGE_CANDIDATE_DICTIONARIES.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn page_operations() -> (usize, usize, usize) {
+    (
+        PAGE_SOURCE_VISITS.get(),
+        PAGE_CANDIDATE_DICTIONARIES.get(),
+        PAGE_CHUNK_ROWS.get(),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn reset_context_operations() {
+    CONTEXT_CHUNK_ROWS.set(0);
+    CONTEXT_STAGED_ROWS.set(0);
+    CONTEXT_SELECTION_DICTIONARIES.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn context_operations() -> (usize, usize, usize) {
+    (
+        CONTEXT_CHUNK_ROWS.get(),
+        CONTEXT_STAGED_ROWS.get(),
+        CONTEXT_SELECTION_DICTIONARIES.get(),
+    )
+}
+
+pub(super) fn stream_relation_history(
+    reader: &Reader,
+    listed: &[SegmentRef],
+    window: Window,
+    request: &SeriesRequest,
+    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(), ApiError> {
+    relation::stream_history(reader, listed, window, request, emit, cancelled)
+}
+
+#[cfg(test)]
+pub(crate) use relation::{history_operations, reset_history_operations};
+
 pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedSnapshot, ApiError> {
-    let (reader, segment_ref, segments) = explicit_segment_with_listing(root, request.segment_id)?;
+    let binding = snapshot_binding(&request);
+    let parsed = request
+        .cursor
+        .as_deref()
+        .map(SnapshotCursor::parse)
+        .transpose()?
+        .filter(|cursor| cursor.segment_id == request.segment_id && cursor.binding == binding);
+    if request.cursor.is_some() && parsed.is_none() {
+        return Err(ApiError::BadCursor);
+    }
+    let (reader, current, segments) = explicit_segment_with_listing(root, request.segment_id)?;
+    let segment_ref = pin(current, parsed)?;
     let segment = reader.open_segment(&segment_ref)?;
-    let earlier = preceding(&reader, &segment_ref, segments)?;
+    let active_position = segment_ref.active_position().unwrap_or(0);
+    if parsed.is_some_and(|cursor| cursor.active_position != active_position) {
+        return Err(ApiError::BadCursor);
+    }
+    let relation_fields = request
+        .group
+        .map(|group| relation::output_fields(&request.sections, group, &request.fields))
+        .transpose()?
+        .unwrap_or_default();
+    let (physical_filters, relation_filters) = relation::split_filters(&request)?;
+    let mut physical_request = request.clone();
+    physical_request.filters = physical_filters;
+    let sections = section_plans(&segment, &physical_request)?;
+    let has_relation = sections
+        .iter()
+        .any(|section| SnapshotViewSpec::for_logical_name(&section.logical_name).is_some());
+    let has_other = sections
+        .iter()
+        .any(|section| SnapshotViewSpec::for_logical_name(&section.logical_name).is_none());
+    let prior_sources = if has_other {
+        preceding(
+            &reader,
+            &segment_ref,
+            segments.clone(),
+            &segment,
+            &sections,
+            request.at,
+        )?
+    } else {
+        Vec::new()
+    };
+    let relation_predecessors = if has_relation {
+        relation_preceding(
+            &reader,
+            &segment_ref,
+            segments,
+            &segment,
+            &sections,
+            &physical_request.filters,
+            request.at,
+        )?
+    } else {
+        Vec::new()
+    };
+    validate_search_projection(&request, &sections)?;
+    validate_exact_locator(&segment, &request, &sections)?;
+    drop(segment);
+    Ok(PreparedSnapshot {
+        reader,
+        anchor: segment_ref,
+        prior_sources,
+        relation_predecessors,
+        at: request.at,
+        sections,
+        relation_filters,
+        by: request.by,
+        direction: request.direction,
+        group: request.group,
+        relation_fields,
+        page_size: request.page_size,
+        cursor: parsed,
+        binding,
+        search: request
+            .search
+            .iter()
+            .map(|raw| GlobPattern::new(raw))
+            .collect(),
+        text: request.text,
+        row_ordinal: request.row_ordinal,
+    })
+}
+
+fn section_plans(
+    segment: &Segment,
+    request: &SnapshotRequest,
+) -> Result<Vec<SectionPlans>, ApiError> {
     let shared_projection = request.sections.len() > 1 && !request.fields.is_empty();
     if shared_projection {
-        validate_shared_projection(&segment, &request.sections, &request.fields)?;
+        validate_shared_projection(segment, &request.sections, &request.fields)?;
     }
     let mut sections = Vec::with_capacity(request.sections.len());
-    for logical_name in request.sections {
-        let fields = if shared_projection {
-            section_projection(&segment, &logical_name, &request.fields)
+    for logical_name in &request.sections {
+        let fields = if request.group.is_some() {
+            // Relation reducers need the complete union of columns carried by
+            // the layouts actually present in this segment. An empty generic
+            // projection asks `plans` for exactly that union and keeps older
+            // layouts honest when newer PostgreSQL fields do not exist.
+            Vec::new()
+        } else if shared_projection {
+            section_projection(segment, logical_name, &request.fields)
         } else {
             request.fields.clone()
         };
@@ -112,20 +465,266 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
             after: None,
         };
         // Missing sections are empty so one source cannot fail the snapshot.
-        match plans(&segment, &data, true) {
-            Ok(plans) => sections.push(SectionPlans {
-                logical_name,
-                plans,
-            }),
+        match plans(segment, &data, true) {
+            Ok(mut plans) => {
+                for plan in &mut plans {
+                    let order = page_order(logical_name, plan, &request.by);
+                    plan.add_projection_columns(
+                        &order.as_ref().map_or_else(Vec::new, PageOrder::columns),
+                    );
+                    if plan.contract.column("stats_since").is_some() {
+                        plan.add_projection_columns(&["stats_since"]);
+                    }
+                    if !request.search.is_empty() {
+                        plan.add_projection_columns(&search_columns(logical_name, plan));
+                    }
+                }
+                sections.push(SectionPlans {
+                    logical_name: logical_name.clone(),
+                    plans,
+                });
+            }
             Err(ApiError::NoSuchSection) => {}
             Err(error) => return Err(error),
         }
     }
-    if let Some(ordinal) = request.row_ordinal {
-        if segment.kind() != SegmentKind::Finished {
-            return Err(ApiError::BadCursor);
+    Ok(sections)
+}
+
+impl PageOrder {
+    fn columns(&self) -> Vec<&'static str> {
+        match &self.kind {
+            PageOrderKind::Column(column) => vec![*column],
+            PageOrderKind::CounterRatio {
+                numerator,
+                denominator,
+                ..
+            }
+            | PageOrderKind::ValueRatio {
+                numerator,
+                denominator,
+                ..
+            } => numerator.iter().chain(denominator).copied().collect(),
         }
-        let [section] = sections.as_slice() else {
+    }
+
+    fn dictionary_column(&self, plan: &Plan) -> Option<&'static str> {
+        match &self.kind {
+            PageOrderKind::Column(column)
+                if plan
+                    .contract
+                    .column(column)
+                    .is_some_and(|column| column.ty == ColumnType::StrId) =>
+            {
+                Some(*column)
+            }
+            PageOrderKind::Column(_)
+            | PageOrderKind::CounterRatio { .. }
+            | PageOrderKind::ValueRatio { .. } => None,
+        }
+    }
+}
+
+fn page_order(logical_name: &str, plan: &Plan, requested: &[String]) -> Option<PageOrder> {
+    requested.iter().find_map(|name| {
+        plan.contract
+            .column(name)
+            .map(|column| PageOrder {
+                name: column.name,
+                kind: PageOrderKind::Column(column.name),
+            })
+            .or_else(|| derived_page_order(logical_name, plan, name))
+    })
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "all fixed derived sort tokens remain visibly allowlisted together"
+)]
+fn derived_page_order(logical_name: &str, plan: &Plan, token: &str) -> Option<PageOrder> {
+    let supported = match logical_name {
+        "pg_stat_statements" => matches!(plan.type_id, 1_002_001..=1_002_006),
+        "pg_store_plans" => matches!(plan.type_id, 1_003_001 | 1_004_001 | 1_018_001),
+        "pg_stat_user_tables" => matches!(plan.type_id, 1_013_001..=1_013_004),
+        "pg_stat_user_indexes" => matches!(plan.type_id, 1_014_001..=1_014_002),
+        _ => false,
+    };
+    if !supported {
+        return None;
+    }
+    let column = |names: &[&str]| {
+        names
+            .iter()
+            .find_map(|name| plan.contract.column(name).map(|column| column.name))
+    };
+    let columns = |names: &[&str]| {
+        names
+            .iter()
+            .filter_map(|name| column(&[*name]))
+            .collect::<Vec<_>>()
+    };
+    let counters =
+        |name, numerator: Vec<&'static str>, denominator: Vec<&'static str>, neutral_nulls| {
+            (!numerator.is_empty() && !denominator.is_empty()).then_some(PageOrder {
+                name,
+                kind: PageOrderKind::CounterRatio {
+                    numerator,
+                    denominator,
+                    neutral_nulls,
+                },
+            })
+        };
+    let one_over = |name, numerator: &[&str], denominator: &[&str]| {
+        counters(
+            name,
+            vec![column(numerator)?],
+            vec![column(denominator)?],
+            false,
+        )
+    };
+    let gauges = |name, numerator: &[&str], denominator: &[&str]| {
+        let numerator = columns(numerator);
+        let denominator = columns(denominator);
+        (!numerator.is_empty() && !denominator.is_empty()).then_some(PageOrder {
+            name,
+            kind: PageOrderKind::ValueRatio {
+                numerator,
+                denominator,
+            },
+        })
+    };
+    match token {
+        "derived.mean_exec_ms_per_call" => one_over(
+            "mean_exec_ms_per_call",
+            &["total_exec_time", "total_time"],
+            &["calls"],
+        ),
+        "derived.rows_per_call" => one_over("rows_per_call", &["rows"], &["calls"]),
+        "derived.blocks_per_call" => counters(
+            "blocks_per_call",
+            [
+                "shared_blks_hit",
+                "shared_blks_read",
+                "local_blks_hit",
+                "local_blks_read",
+            ]
+            .iter()
+            .filter_map(|name| column(&[*name]))
+            .collect(),
+            vec![column(&["calls"])?],
+            false,
+        ),
+        "derived.hit_pct" => {
+            let hit = column(&["shared_blks_hit"])?;
+            let read = column(&["shared_blks_read"])?;
+            counters("hit_pct", vec![hit], vec![hit, read], false)
+        }
+        "derived.wal_per_call" => one_over("wal_per_call", &["wal_bytes"], &["calls"]),
+        "derived.plan_time_pct" => {
+            let planning = column(&["total_plan_time"])?;
+            let execution = column(&["total_exec_time", "total_time"])?;
+            counters(
+                "plan_time_pct",
+                vec![planning],
+                vec![planning, execution],
+                false,
+            )
+        }
+        "derived.cv" => Some(PageOrder {
+            name: "cv",
+            kind: PageOrderKind::ValueRatio {
+                numerator: vec![column(&["stddev_exec_time", "stddev_time"])?],
+                denominator: vec![column(&["mean_exec_time", "mean_time"])?],
+            },
+        }),
+        "derived.dead_pct" => gauges("dead_pct", &["n_dead_tup"], &["n_live_tup", "n_dead_tup"]),
+        "derived.hot_pct" => one_over("hot_pct", &["n_tup_hot_upd"], &["n_tup_upd"]),
+        "derived.new_page_pct" => one_over("new_page_pct", &["n_tup_newpage_upd"], &["n_tup_upd"]),
+        "derived.sequential_share_pct" => counters(
+            "sequential_share_pct",
+            columns(&["seq_scan"]),
+            columns(&["seq_scan", "idx_scan"]),
+            true,
+        ),
+        "derived.seq_tuples_per_scan" => {
+            one_over("seq_tuples_per_scan", &["seq_tup_read"], &["seq_scan"])
+        }
+        "derived.idx_tuples_per_scan" => {
+            one_over("idx_tuples_per_scan", &["idx_tup_fetch"], &["idx_scan"])
+        }
+        "derived.buffer_hit_pct" => counters(
+            "buffer_hit_pct",
+            columns(&[
+                "heap_blks_hit",
+                "idx_blks_hit",
+                "toast_blks_hit",
+                "tidx_blks_hit",
+            ]),
+            columns(&[
+                "heap_blks_hit",
+                "heap_blks_read",
+                "idx_blks_hit",
+                "idx_blks_read",
+                "toast_blks_hit",
+                "toast_blks_read",
+                "tidx_blks_hit",
+                "tidx_blks_read",
+            ]),
+            true,
+        ),
+        "derived.vacuum_mean_ms" => {
+            one_over("vacuum_mean_ms", &["total_vacuum_time"], &["vacuum_count"])
+        }
+        "derived.autovacuum_mean_ms" => one_over(
+            "autovacuum_mean_ms",
+            &["total_autovacuum_time"],
+            &["autovacuum_count"],
+        ),
+        "derived.analyze_mean_ms" => one_over(
+            "analyze_mean_ms",
+            &["total_analyze_time"],
+            &["analyze_count"],
+        ),
+        "derived.autoanalyze_mean_ms" => one_over(
+            "autoanalyze_mean_ms",
+            &["total_autoanalyze_time"],
+            &["autoanalyze_count"],
+        ),
+        "derived.tuples_per_scan" => one_over("tuples_per_scan", &["idx_tup_read"], &["idx_scan"]),
+        "derived.fetches_per_scan" => {
+            one_over("fetches_per_scan", &["idx_tup_fetch"], &["idx_scan"])
+        }
+        _ => None,
+    }
+}
+
+fn validate_search_projection(
+    request: &SnapshotRequest,
+    sections: &[SectionPlans],
+) -> Result<(), ApiError> {
+    if request.page_size.is_some() {
+        let [section] = sections else {
+            return Err(ApiError::BadCursor);
+        };
+        if !request.search.is_empty()
+            && !section
+                .plans
+                .iter()
+                .any(|plan| !search_columns(&section.logical_name, plan).is_empty())
+        {
+            return Err(ApiError::BadFilter("search".to_owned()));
+        }
+    }
+    Ok(())
+}
+
+fn validate_exact_locator(
+    segment: &Segment,
+    request: &SnapshotRequest,
+    sections: &[SectionPlans],
+) -> Result<(), ApiError> {
+    if let Some(ordinal) = request.row_ordinal {
+        let [section] = sections else {
             return Err(ApiError::BadCursor);
         };
         let [plan] = section.plans.as_slice() else {
@@ -146,21 +745,12 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
             return Err(ApiError::BadCursor);
         }
     }
-    Ok(PreparedSnapshot {
-        segment,
-        earlier,
-        at: request.at,
-        sections,
-        by: request.by,
-        top: request.top,
-        text: request.text,
-        row_ordinal: request.row_ordinal,
-    })
+    Ok(())
 }
 
 impl PreparedSnapshot {
     pub(super) const fn meta(&self) -> ResponseMeta {
-        ResponseMeta::ok(match self.segment.kind() {
+        ResponseMeta::ok(match self.anchor.kind() {
             SegmentKind::Finished => CachePolicy::Revalidate,
             SegmentKind::Active => CachePolicy::NoStore,
         })
@@ -174,28 +764,184 @@ impl PreparedSnapshot {
         if cancelled()
             || !emit(record(json!({
                 "record": "snapshot",
-                "segment": { "id": self.segment.id().to_string() },
+                "segment": { "id": self.anchor.id().to_string() },
                 "at": self.at.to_string(),
             }))?)
         {
             return Ok(());
         }
+        if self.page_size.is_some() {
+            if self.group.is_some() {
+                return self.emit_relation_page(emit, cancelled);
+            }
+            return self.emit_page(emit, cancelled);
+        }
         for section in &self.sections {
-            for plan in &section.plans {
-                if cancelled() {
+            if SnapshotViewSpec::for_logical_name(&section.logical_name).is_some() {
+                if !self.emit_partitioned_section(section, emit, cancelled)? {
                     return Ok(());
                 }
-                if !self.emit_section(section, plan, emit, cancelled)? {
-                    return Ok(());
+            } else {
+                for (layout_index, plan) in section.plans.iter().enumerate() {
+                    if cancelled() {
+                        return Ok(());
+                    }
+                    if !self.emit_section(section, layout_index, plan, emit, cancelled)? {
+                        return Ok(());
+                    }
                 }
             }
         }
         Ok(())
     }
 
+    fn emit_partitioned_section(
+        &self,
+        section: &SectionPlans,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<bool, ApiError> {
+        for plan in &section.plans {
+            if cancelled() || !Self::emit_layout(section, plan, emit)? {
+                return Ok(false);
+            }
+        }
+        let contexts = self.partitioned_contexts(section, cancelled)?;
+        for context in &contexts {
+            if self.row_ordinal.is_some() && context.source.id() != self.anchor.id() {
+                continue;
+            }
+            if cancelled() || !self.emit_context_rows(context, emit, cancelled)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn emit_context_rows(
+        &self,
+        context: &PageContext<'_>,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<bool, ApiError> {
+        let (start_row, row_count) = self
+            .row_ordinal
+            .map_or((0, usize::MAX), |ordinal| (ordinal, 1));
+        let source = self.reader.open_segment(context.source)?;
+        let selection_dictionary = context.plan.exact_filter_dictionary(&source)?;
+        #[cfg(test)]
+        if context.plan.needs_selection_dictionary() {
+            CONTEXT_SELECTION_DICTIONARIES.set(CONTEXT_SELECTION_DICTIONARIES.get() + 1);
+        }
+        let mut chunk = Vec::with_capacity(SNAPSHOT_CHUNK_ROWS);
+        let mut failure = None;
+        let mut connected = true;
+        source.visit_rows(
+            context.plan.type_id,
+            &context.plan.projection,
+            start_row,
+            row_count,
+            |ordinal, row| {
+                if cancelled() {
+                    return false;
+                }
+                if context.window.matches(&row) {
+                    chunk.push((ordinal, row));
+                }
+                if chunk.len() == SNAPSHOT_CHUNK_ROWS {
+                    match self.emit_context_chunk(
+                        context,
+                        &source,
+                        &selection_dictionary,
+                        &mut chunk,
+                        emit,
+                        cancelled,
+                    ) {
+                        Ok(still_connected) => connected = still_connected,
+                        Err(error) => failure = Some(error),
+                    }
+                }
+                connected && failure.is_none() && !cancelled()
+            },
+        )?;
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        if cancelled() || !connected {
+            return Ok(false);
+        }
+        if chunk.is_empty() {
+            return Ok(true);
+        }
+        self.emit_context_chunk(
+            context,
+            &source,
+            &selection_dictionary,
+            &mut chunk,
+            emit,
+            cancelled,
+        )
+    }
+
+    fn emit_context_chunk(
+        &self,
+        context: &PageContext<'_>,
+        source: &Segment,
+        selection_dictionary: &Dictionary,
+        rows: &mut Vec<(u64, Row)>,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<bool, ApiError> {
+        #[cfg(test)]
+        CONTEXT_CHUNK_ROWS.set(CONTEXT_CHUNK_ROWS.get().max(rows.len()));
+        let mut staged = Vec::new();
+        for (ordinal, row) in rows.drain(..) {
+            context
+                .plan
+                .validate_exact_filter_ids(&row, selection_dictionary)?;
+            if !context.plan.matches(&row, selection_dictionary) {
+                continue;
+            }
+            let Some(identity) = identity_of(context.plan, &row) else {
+                continue;
+            };
+            staged.push(StagedRow {
+                ordinal,
+                row,
+                identity,
+            });
+        }
+        #[cfg(test)]
+        CONTEXT_STAGED_ROWS.set(CONTEXT_STAGED_ROWS.get().saturating_add(staged.len()));
+        if staged.is_empty() {
+            return Ok(true);
+        }
+        let dictionary = retained_dictionary(source, &staged)?;
+        for staged in staged {
+            let before = context.predecessor(&staged.row, &staged.identity);
+            let value = Self::row_record(
+                context.plan,
+                &staged.row,
+                before,
+                context.elapsed_for(&staged.row),
+                RowCoordinate {
+                    segment_id: context.source.id(),
+                    ordinal: staged.ordinal,
+                },
+                &dictionary,
+                self.text,
+            )?;
+            if cancelled() || !emit(record(&value)?) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     fn emit_section(
         &self,
         section: &SectionPlans,
+        layout_index: usize,
         plan: &Plan,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
         cancelled: &impl Fn() -> bool,
@@ -209,108 +955,15 @@ impl PreparedSnapshot {
         let Some(timestamp) = plan.timestamp else {
             return self.emit_untimed(plan, emit, cancelled);
         };
-        // A section's latest sample may be in the preceding segment.
-        let here = Self::moments(&self.segment, plan, timestamp, self.at, cancelled)?;
-        let own = here.is_some();
-        let source = if own {
-            &self.segment
-        } else {
-            let Some(earlier) = self.earlier.as_ref() else {
-                return Ok(true);
-            };
-            earlier
-        };
-        let Some(moments) = (if own {
-            here
-        } else {
-            Self::moments(source, plan, timestamp, self.at, cancelled)?
-        }) else {
-            return Ok(true);
-        };
-        let (previous, before_at) = match moments.previous {
-            Some(previous) => (
-                Self::collect(source, plan, timestamp, previous, cancelled)?,
-                Some(previous),
-            ),
-            None if own => self.earlier_moment(plan, timestamp, cancelled)?,
-            None => (Readings::new(), None),
-        };
-        let elapsed = moments
-            .current
-            .checked_sub(before_at.unwrap_or(moments.current))
-            .filter(|delta| *delta > 0);
-        let (start_row, row_count) = self
-            .row_ordinal
-            .map_or((0, usize::MAX), |ordinal| (ordinal, 1));
-        let rates = RateContext {
-            previous: Some(&previous),
-            elapsed,
-        };
-        if let Some(order) = self.bounded_order(plan) {
-            return self.emit_bounded_rows(
-                source,
-                plan,
-                RowWindow {
-                    start: start_row,
-                    count: row_count,
-                    moment: Some((timestamp, moments.current)),
-                },
-                order,
-                rates,
-                (emit, cancelled),
-            );
+        for context in self.timed_contexts(section, layout_index, plan, timestamp, cancelled)? {
+            if self.row_ordinal.is_some() && context.source.id() != self.anchor.id() {
+                continue;
+            }
+            if cancelled() || !self.emit_context_rows(&context, emit, cancelled)? {
+                return Ok(false);
+            }
         }
-        let mut rows = Vec::new();
-        source.visit_rows(
-            plan.type_id,
-            &plan.projection,
-            start_row,
-            row_count,
-            |ordinal, row| {
-                if cancelled() {
-                    return false;
-                }
-                if row_timestamp(&row, timestamp) != Some(moments.current) {
-                    return true;
-                }
-                rows.push((ordinal, row));
-                true
-            },
-        )?;
-        if cancelled() {
-            return Ok(false);
-        }
-        self.emit_rows(source, plan, rows, rates, emit, cancelled)
-    }
-
-    fn bounded_order(&self, plan: &Plan) -> Option<BoundedOrder> {
-        self.order_column(plan)
-            .zip(self.top)
-            .map(|(column, limit)| BoundedOrder { column, limit })
-    }
-
-    fn order_column(&self, plan: &Plan) -> Option<&'static str> {
-        self.by.iter().find_map(|name| {
-            available_field_index(&plan.fields, name).and_then(|index| plan.fields[index].column)
-        })
-    }
-
-    fn order_and_truncate(
-        &self,
-        plan: &Plan,
-        rates: RateContext<'_>,
-        column: Option<&'static str>,
-        text_ranks: &TextRanks,
-        rows: &mut Vec<StagedRow>,
-    ) {
-        if let Some(column) = column {
-            rows.sort_by(|left, right| {
-                compare_staged(plan, column, right, left, rates, text_ranks)
-            });
-        }
-        if let Some(top) = self.top {
-            rows.truncate(top);
-        }
+        Ok(true)
     }
 
     fn emit_layout(
@@ -348,22 +1001,9 @@ impl PreparedSnapshot {
             previous: None,
             elapsed: None,
         };
-        if let Some(order) = self.bounded_order(plan) {
-            return self.emit_bounded_rows(
-                &self.segment,
-                plan,
-                RowWindow {
-                    start: start_row,
-                    count: row_count,
-                    moment: None,
-                },
-                order,
-                rates,
-                (emit, cancelled),
-            );
-        }
         let mut rows = Vec::new();
-        self.segment.visit_rows(
+        let source = self.reader.open_segment(&self.anchor)?;
+        source.visit_rows(
             plan.type_id,
             &plan.projection,
             start_row,
@@ -379,91 +1019,7 @@ impl PreparedSnapshot {
         if cancelled() {
             return Ok(false);
         }
-        self.emit_rows(&self.segment, plan, rows, rates, emit, cancelled)
-    }
-
-    fn emit_bounded_rows<E, C>(
-        &self,
-        source: &Segment,
-        plan: &Plan,
-        window: RowWindow,
-        order: BoundedOrder,
-        rates: RateContext<'_>,
-        output: (&mut E, &C),
-    ) -> Result<bool, ApiError>
-    where
-        E: FnMut(Vec<u8>) -> bool,
-        C: Fn() -> bool,
-    {
-        let (emit, cancelled) = output;
-        let mut selection_ids = HashSet::new();
-        let mut order_ids = HashSet::new();
-        let text_order = is_text_column(plan, order.column);
-        if plan.selection_needs_dictionary() || text_order {
-            source.visit_rows(
-                plan.type_id,
-                &plan.projection,
-                window.start,
-                window.count,
-                |_ordinal, row| {
-                    if cancelled() {
-                        return false;
-                    }
-                    if window
-                        .moment
-                        .is_none_or(|(timestamp, at)| row_timestamp(&row, timestamp) == Some(at))
-                    {
-                        plan.add_selection_ids(&row, &mut selection_ids);
-                        if text_order && let Some(Cell::StrId(id)) = row.get(order.column) {
-                            order_ids.insert(*id);
-                        }
-                    }
-                    true
-                },
-            )?;
-            if cancelled() {
-                return Ok(false);
-            }
-        }
-        selection_ids.extend(order_ids.iter().copied());
-        let selection_dictionary = resolved_dictionary(source, &selection_ids)?;
-        let text_ranks = lexical_ranks(&selection_dictionary, &order_ids);
-        let mut top_rows = TopRows::new(order.limit);
-        source.visit_rows(
-            plan.type_id,
-            &plan.projection,
-            window.start,
-            window.count,
-            |ordinal, row| {
-                if cancelled() {
-                    return false;
-                }
-                if window
-                    .moment
-                    .is_some_and(|(timestamp, at)| row_timestamp(&row, timestamp) != Some(at))
-                    || !plan.matches(&row, &selection_dictionary)
-                {
-                    return true;
-                }
-                let Some(identity) = identity_of(plan, &row) else {
-                    return true;
-                };
-                let staged = StagedRow {
-                    ordinal,
-                    row,
-                    identity,
-                };
-                top_rows.push(RankedRow {
-                    value: order_value(plan, order.column, &staged, rates, &text_ranks),
-                    staged,
-                });
-                true
-            },
-        )?;
-        if cancelled() {
-            return Ok(false);
-        }
-        self.emit_staged_rows(source, plan, top_rows.finish(), rates, emit, cancelled)
+        self.emit_rows(&source, plan, rows, rates, emit, cancelled)
     }
 
     fn emit_rows(
@@ -476,7 +1032,6 @@ impl PreparedSnapshot {
         cancelled: &impl Fn() -> bool,
     ) -> Result<bool, ApiError> {
         let selection_dictionary = plan.selection_dictionary(source, &rows)?;
-        let order_column = self.order_column(plan);
         let mut staged = Vec::with_capacity(rows.len());
         for (ordinal, row) in rows {
             if !plan.matches(&row, &selection_dictionary) {
@@ -491,21 +1046,6 @@ impl PreparedSnapshot {
                 identity,
             });
         }
-        let text_ranks = match order_column.filter(|column| is_text_column(plan, column)) {
-            Some(column) => {
-                let ids = staged
-                    .iter()
-                    .filter_map(|staged| match staged.row.get(column) {
-                        Some(Cell::StrId(id)) => Some(*id),
-                        _ => None,
-                    })
-                    .collect::<HashSet<_>>();
-                let dictionary = resolved_dictionary(source, &ids)?;
-                lexical_ranks(&dictionary, &ids)
-            }
-            None => TextRanks::new(),
-        };
-        self.order_and_truncate(plan, rates, order_column, &text_ranks, &mut staged);
         self.emit_staged_rows(source, plan, staged, rates, emit, cancelled)
     }
 
@@ -528,7 +1068,10 @@ impl PreparedSnapshot {
                 &staged.row,
                 before,
                 rates.elapsed,
-                staged.ordinal,
+                RowCoordinate {
+                    segment_id: source.id(),
+                    ordinal: staged.ordinal,
+                },
                 &dictionary,
                 self.text,
             )?;
@@ -537,6 +1080,864 @@ impl PreparedSnapshot {
             }
         }
         Ok(true)
+    }
+
+    fn emit_page(
+        &self,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(), ApiError> {
+        let [section] = self.sections.as_slice() else {
+            return Err(ApiError::BadCursor);
+        };
+        for plan in &section.plans {
+            if cancelled() || !Self::emit_layout(section, plan, emit)? {
+                return Ok(());
+            }
+        }
+        let contexts = self.page_contexts(section, cancelled)?;
+        if cancelled() {
+            return Ok(());
+        }
+        let anchor = self
+            .cursor
+            .map(|cursor| self.cursor_anchor(&contexts, cursor))
+            .transpose()?;
+        let page_size = self.page_size.ok_or(ApiError::BadCursor)?;
+        let mut page = PageRows::new(page_size.saturating_add(1));
+        let mut eligible = 0_u64;
+        for context in &contexts {
+            self.scan_page(
+                context,
+                anchor.as_ref(),
+                &mut page,
+                &mut eligible,
+                cancelled,
+            )?;
+            if cancelled() {
+                return Ok(());
+            }
+        }
+        let mut ranked = page.finish();
+        let has_more = ranked.len() > page_size;
+        let next_cursor = has_more.then(|| {
+            let row = &ranked[page_size].staged;
+            SnapshotCursor {
+                segment_id: self.anchor.id(),
+                active_position: self.anchor.active_position().unwrap_or(0),
+                context_index: row.context_index,
+                ordinal: row.ordinal,
+                binding: self.binding,
+            }
+            .encode()
+        });
+        ranked.truncate(page_size);
+        let returned = ranked.len();
+        if !self.emit_page_rows(&contexts, ranked, emit, cancelled)? {
+            return Ok(());
+        }
+        Self::emit_page_trailer(
+            section,
+            &contexts,
+            &PageMetadata {
+                eligible,
+                returned,
+                has_more,
+                next_cursor,
+                page_size,
+            },
+            self.direction,
+            emit,
+        )?;
+        Ok(())
+    }
+
+    fn emit_page_rows(
+        &self,
+        contexts: &[PageContext<'_>],
+        ranked: Vec<PageRankedRow>,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<bool, ApiError> {
+        let mut ids_by_context: HashMap<usize, HashSet<u64>> = HashMap::new();
+        for ranked in &ranked {
+            for (_name, value) in ranked.staged.row.iter() {
+                if let Cell::StrId(id) = value {
+                    ids_by_context
+                        .entry(ranked.staged.context_index)
+                        .or_default()
+                        .insert(*id);
+                }
+            }
+        }
+        let dictionaries = contexts
+            .iter()
+            .map(|context| {
+                let ids = ids_by_context
+                    .get(&context.context_index)
+                    .cloned()
+                    .unwrap_or_default();
+                let source = self.reader.open_segment(context.source)?;
+                resolved_dictionary(&source, &ids)
+                    .map(|dictionary| (context.context_index, dictionary))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
+        for ranked in ranked {
+            let context = contexts
+                .iter()
+                .find(|context| context.context_index == ranked.staged.context_index)
+                .ok_or(ApiError::BadCursor)?;
+            let dictionary = dictionaries
+                .get(&context.context_index)
+                .ok_or(ApiError::BadCursor)?;
+            let before = context.predecessor(&ranked.staged.row, &ranked.staged.identity);
+            let value = Self::row_record(
+                context.plan,
+                &ranked.staged.row,
+                before,
+                context.elapsed_for(&ranked.staged.row),
+                RowCoordinate {
+                    segment_id: context.source.id(),
+                    ordinal: ranked.staged.ordinal,
+                },
+                dictionary,
+                self.text,
+            )?;
+            if cancelled() || !emit(record(&value)?) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn emit_page_trailer(
+        section: &SectionPlans,
+        contexts: &[PageContext<'_>],
+        metadata: &PageMetadata,
+        direction: Order,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+    ) -> Result<(), ApiError> {
+        let mut order_by = Vec::new();
+        for context in contexts {
+            if let Some(order) = &context.order
+                && !order_by.contains(&order.name)
+            {
+                order_by.push(order.name);
+            }
+        }
+        let from = contexts
+            .iter()
+            .filter_map(|context| context.sample_from)
+            .min();
+        let to = contexts
+            .iter()
+            .filter_map(|context| context.sample_to)
+            .max();
+        let _connected = emit(record(json!({
+            "record": "snapshot_page",
+            "logical_name": section.logical_name,
+            "eligible": metadata.eligible.to_string(),
+            "returned": metadata.returned.to_string(),
+            "has_more": metadata.has_more,
+            "truncated": metadata.eligible > metadata.returned as u64,
+            "next_cursor": metadata.next_cursor,
+            "page_size": metadata.page_size,
+            "order_by": order_by,
+            "order_direction": match direction {
+                Order::Asc => "asc",
+                Order::Desc => "desc",
+            },
+            "from": from.map(|value| value.to_string()),
+            "to": to.map(|value| value.to_string()),
+        }))?);
+        Ok(())
+    }
+
+    fn page_contexts<'a>(
+        &'a self,
+        section: &'a SectionPlans,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Vec<PageContext<'a>>, ApiError> {
+        if SnapshotViewSpec::for_logical_name(&section.logical_name).is_some() {
+            return self.partitioned_contexts(section, cancelled);
+        }
+        let mut contexts = Vec::with_capacity(section.plans.len());
+        for (layout_index, plan) in section.plans.iter().enumerate() {
+            if !plan.applies() || cancelled() {
+                continue;
+            }
+            let Some(timestamp) = plan.timestamp else {
+                contexts.push(PageContext {
+                    context_index: layout_index,
+                    plan,
+                    source: &self.anchor,
+                    rows: rows_of(&self.anchor, plan.type_id).unwrap_or(0),
+                    window: RowWindow::Untimed,
+                    previous: None,
+                    elapsed: None,
+                    elapsed_by_partition: Arc::new(BTreeMap::new()),
+                    sample_from: None,
+                    sample_to: None,
+                    order: page_order(&section.logical_name, plan, &self.by),
+                    search_columns: if self.search.is_empty() {
+                        Vec::new()
+                    } else {
+                        search_columns(&section.logical_name, plan)
+                    },
+                });
+                continue;
+            };
+            contexts.extend(self.timed_contexts(
+                section,
+                layout_index,
+                plan,
+                timestamp,
+                cancelled,
+            )?);
+        }
+        Ok(contexts)
+    }
+
+    fn timed_contexts<'a>(
+        &'a self,
+        section: &'a SectionPlans,
+        layout_index: usize,
+        plan: &'a Plan,
+        timestamp: &'static str,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Vec<PageContext<'a>>, ApiError> {
+        let Some(moments) = self.shared_moments(plan, timestamp, cancelled)? else {
+            return Ok(Vec::new());
+        };
+        let order = page_order(&section.logical_name, plan, &self.by);
+        let order_columns = order.as_ref().map_or_else(Vec::new, PageOrder::columns);
+        let mut previous = Readings::new();
+        if let Some(before) = moments.previous {
+            for source_index in (0..self.source_count()).rev() {
+                let source_ref = self.source_for(source_index).ok_or(ApiError::BadCursor)?;
+                if rows_of(source_ref, plan.type_id).is_some() {
+                    let source = self.reader.open_segment(source_ref)?;
+                    previous.extend(Self::collect(
+                        &source,
+                        plan,
+                        timestamp,
+                        before,
+                        &order_columns,
+                        cancelled,
+                    )?);
+                }
+            }
+        }
+        let previous = Arc::new(previous);
+        let elapsed = moments
+            .previous
+            .and_then(|before| moments.current.checked_sub(before))
+            .filter(|elapsed| *elapsed > 0);
+        let mut contexts = Vec::new();
+        for source_index in 0..self.source_count() {
+            let source_ref = self.source_for(source_index).ok_or(ApiError::BadCursor)?;
+            if rows_of(source_ref, plan.type_id).is_none() {
+                continue;
+            }
+            let source = self.reader.open_segment(source_ref)?;
+            if Self::moments(&source, plan, timestamp, moments.current, cancelled)?
+                .is_none_or(|source_moments| source_moments.current != moments.current)
+            {
+                continue;
+            }
+            contexts.push(PageContext {
+                context_index: timed_context_index(layout_index, source_index, self.source_count()),
+                plan,
+                source: source_ref,
+                rows: rows_of(source_ref, plan.type_id).unwrap_or(0),
+                window: RowWindow::Shared {
+                    timestamp,
+                    current: moments.current,
+                },
+                previous: Some(Arc::clone(&previous)),
+                elapsed,
+                elapsed_by_partition: Arc::new(BTreeMap::new()),
+                sample_from: moments.previous,
+                sample_to: Some(moments.current),
+                order: order.clone(),
+                search_columns: if self.search.is_empty() {
+                    Vec::new()
+                } else {
+                    search_columns(&section.logical_name, plan)
+                },
+            });
+        }
+        Ok(contexts)
+    }
+
+    fn shared_moments(
+        &self,
+        plan: &Plan,
+        timestamp: &'static str,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Option<Moments>, ApiError> {
+        let anchor = self.reader.open_segment(&self.anchor)?;
+        let here = Self::moments(&anchor, plan, timestamp, self.at, cancelled)?;
+        drop(anchor);
+        let current = if let Some(here) = here {
+            Some(here.current)
+        } else {
+            let mut fallback = None;
+            for source_ref in &self.prior_sources {
+                if rows_of(source_ref, plan.type_id).is_none() {
+                    continue;
+                }
+                let source = self.reader.open_segment(source_ref)?;
+                if let Some(moments) = Self::moments(&source, plan, timestamp, self.at, cancelled)?
+                {
+                    fallback = Some(
+                        fallback.map_or(moments.current, |chosen: i64| chosen.max(moments.current)),
+                    );
+                }
+            }
+            fallback
+        };
+        let Some(current) = current else {
+            return Ok(None);
+        };
+        let mut previous = None;
+        if let Some(before) = current.checked_sub(1) {
+            for source_index in 0..self.source_count() {
+                let source_ref = self.source_for(source_index).ok_or(ApiError::BadCursor)?;
+                if rows_of(source_ref, plan.type_id).is_none() {
+                    continue;
+                }
+                let source = self.reader.open_segment(source_ref)?;
+                if let Some(moments) = Self::moments(&source, plan, timestamp, before, cancelled)? {
+                    previous = Some(
+                        previous.map_or(moments.current, |chosen: i64| chosen.max(moments.current)),
+                    );
+                }
+            }
+        }
+        Ok(Some(Moments { current, previous }))
+    }
+
+    fn partitioned_contexts<'a>(
+        &'a self,
+        section: &'a SectionPlans,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Vec<PageContext<'a>>, ApiError> {
+        let Some(spec) = SnapshotViewSpec::for_logical_name(&section.logical_name) else {
+            return Ok(Vec::new());
+        };
+        let selected = self.selected_partitions(section, spec, cancelled)?;
+        if cancelled() {
+            return Ok(Vec::new());
+        }
+        let mut contexts = Vec::new();
+        for (layout_index, plan) in section.plans.iter().enumerate() {
+            if !plan.applies() || plan.timestamp.is_none() {
+                continue;
+            }
+            let rate_state =
+                self.partition_rate_state(section, layout_index, plan, &selected, spec, cancelled)?;
+            for source in std::iter::once(PartitionSource::Current).chain(
+                (0..self.relation_predecessors.len())
+                    .rev()
+                    .map(PartitionSource::Earlier),
+            ) {
+                if let Some(context) = self.partitioned_context(
+                    section,
+                    layout_index,
+                    plan,
+                    source,
+                    &selected,
+                    &rate_state,
+                    spec,
+                ) {
+                    contexts.push(context);
+                }
+            }
+        }
+        Ok(contexts)
+    }
+
+    fn selected_partitions(
+        &self,
+        section: &SectionPlans,
+        spec: SnapshotViewSpec,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<BTreeMap<IdentityCell, SelectedPartition>, ApiError> {
+        let mut selected = BTreeMap::<IdentityCell, SelectedPartition>::new();
+        for (layout_index, plan) in section.plans.iter().enumerate() {
+            if !plan.applies() || cancelled() {
+                continue;
+            }
+            let Some(timestamp) = plan.timestamp else {
+                continue;
+            };
+            let mut moments = BTreeMap::new();
+            let anchor = self.reader.open_segment(&self.anchor)?;
+            Self::partition_moments(
+                &anchor,
+                plan,
+                timestamp,
+                spec.temporal_partition,
+                self.at,
+                PartitionSource::Current,
+                &mut moments,
+                cancelled,
+            )?;
+            drop(anchor);
+            for (source_index, earlier_ref) in self.relation_predecessors.iter().enumerate() {
+                let earlier = self.reader.open_segment(earlier_ref)?;
+                Self::partition_moments(
+                    &earlier,
+                    plan,
+                    timestamp,
+                    spec.temporal_partition,
+                    self.at,
+                    PartitionSource::Earlier(source_index),
+                    &mut moments,
+                    cancelled,
+                )?;
+            }
+            for (partition, moments) in moments {
+                let candidate = SelectedPartition {
+                    layout_index,
+                    type_id: plan.type_id,
+                    moments,
+                };
+                let replace = selected.get(&partition).is_none_or(|chosen| {
+                    (candidate.moments.current.at, candidate.type_id)
+                        > (chosen.moments.current.at, chosen.type_id)
+                });
+                if replace {
+                    selected.insert(partition, candidate);
+                }
+            }
+        }
+        Ok(selected)
+    }
+
+    fn partition_rate_state(
+        &self,
+        section: &SectionPlans,
+        layout_index: usize,
+        plan: &Plan,
+        selected: &BTreeMap<IdentityCell, SelectedPartition>,
+        spec: SnapshotViewSpec,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<PartitionRateState, ApiError> {
+        let Some(timestamp) = plan.timestamp else {
+            return Err(ApiError::BadCursor);
+        };
+        let order = page_order(&section.logical_name, plan, &self.by);
+        let order_columns = order.as_ref().map_or_else(Vec::new, PageOrder::columns);
+        let mut previous = Readings::new();
+        let mut elapsed_by_partition = BTreeMap::new();
+        let mut sample_from: Option<i64> = None;
+        let mut sample_to: Option<i64> = None;
+        for (partition, selection) in selected {
+            if selection.layout_index != layout_index {
+                continue;
+            }
+            sample_to = Some(sample_to.map_or(selection.moments.current.at, |chosen| {
+                chosen.max(selection.moments.current.at)
+            }));
+            let Some(before) = selection.moments.previous.as_ref() else {
+                continue;
+            };
+            let Some(elapsed) = selection
+                .moments
+                .current
+                .at
+                .checked_sub(before.at)
+                .filter(|elapsed| *elapsed > 0)
+            else {
+                continue;
+            };
+            let mut before_sources = before
+                .sources
+                .iter()
+                .filter_map(|source| {
+                    self.partition_source(*source)
+                        .map(|reference| (reference.id(), reference))
+                })
+                .collect::<Vec<_>>();
+            before_sources.sort_unstable_by_key(|(segment_id, _reference)| *segment_id);
+            for (_segment_id, before_source_ref) in before_sources {
+                let before_source = self.reader.open_segment(before_source_ref)?;
+                previous.extend(Self::collect_partition(
+                    &before_source,
+                    plan,
+                    timestamp,
+                    before.at,
+                    spec.temporal_partition,
+                    partition,
+                    &order_columns,
+                    cancelled,
+                )?);
+            }
+            elapsed_by_partition.insert(partition.clone(), elapsed);
+            sample_from = Some(sample_from.map_or(before.at, |chosen| chosen.min(before.at)));
+        }
+        Ok(PartitionRateState {
+            previous: Arc::new(previous),
+            elapsed_by_partition: Arc::new(elapsed_by_partition),
+            sample_from,
+            sample_to,
+        })
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the selected layout, source, and partition contract define one context"
+    )]
+    fn partitioned_context<'a>(
+        &'a self,
+        section: &SectionPlans,
+        layout_index: usize,
+        plan: &'a Plan,
+        source_kind: PartitionSource,
+        selected: &BTreeMap<IdentityCell, SelectedPartition>,
+        rate_state: &PartitionRateState,
+        spec: SnapshotViewSpec,
+    ) -> Option<PageContext<'a>> {
+        let timestamp = plan.timestamp?;
+        if !selected.values().any(|selection| {
+            selection.layout_index == layout_index
+                && selection.moments.current.sources.contains(&source_kind)
+        }) {
+            return None;
+        }
+        let source_ref = self.partition_source(source_kind)?;
+        let order = page_order(&section.logical_name, plan, &self.by);
+        let mut current = BTreeMap::new();
+        for (partition, selection) in selected {
+            if selection.layout_index != layout_index
+                || !selection.moments.current.sources.contains(&source_kind)
+            {
+                continue;
+            }
+            current.insert(partition.clone(), selection.moments.current.at);
+        }
+        Some(PageContext {
+            context_index: partition_context_index(
+                layout_index,
+                source_kind,
+                self.relation_predecessors.len(),
+            ),
+            plan,
+            source: source_ref,
+            rows: rows_of(source_ref, plan.type_id).unwrap_or(0),
+            window: RowWindow::Partitioned {
+                timestamp,
+                column: spec.temporal_partition,
+                current,
+            },
+            previous: Some(Arc::clone(&rate_state.previous)),
+            elapsed: None,
+            elapsed_by_partition: Arc::clone(&rate_state.elapsed_by_partition),
+            sample_from: rate_state.sample_from,
+            sample_to: rate_state.sample_to,
+            order,
+            search_columns: if self.search.is_empty() {
+                Vec::new()
+            } else {
+                search_columns(&section.logical_name, plan)
+            },
+        })
+    }
+
+    const fn source_count(&self) -> usize {
+        self.prior_sources.len() + 1
+    }
+
+    fn source_for(&self, source_index: usize) -> Option<&SegmentRef> {
+        if source_index == 0 {
+            Some(&self.anchor)
+        } else {
+            self.prior_sources.get(source_index - 1)
+        }
+    }
+
+    fn partition_source(&self, source: PartitionSource) -> Option<&SegmentRef> {
+        match source {
+            PartitionSource::Current => Some(&self.anchor),
+            PartitionSource::Earlier(index) => self.relation_predecessors.get(index),
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the scan coordinates are explicit to prevent cross-database samples"
+    )]
+    fn partition_moments(
+        segment: &Segment,
+        plan: &Plan,
+        timestamp: &'static str,
+        partition_column: &'static str,
+        at: i64,
+        source: PartitionSource,
+        moments: &mut BTreeMap<IdentityCell, PartitionMoments>,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(), ApiError> {
+        if segment.rows_of(plan.type_id).is_none() {
+            return Ok(());
+        }
+        segment.visit_rows(
+            plan.type_id,
+            &[timestamp, partition_column],
+            0,
+            usize::MAX,
+            |_ordinal, row| {
+                if cancelled() {
+                    return false;
+                }
+                let (Some(stored), Some(partition)) =
+                    (row_timestamp(&row, timestamp), row.get(partition_column))
+                else {
+                    return true;
+                };
+                if stored <= at {
+                    record_partition_moment(
+                        moments,
+                        identity_cell(partition),
+                        LocatedMoment {
+                            at: stored,
+                            sources: BTreeSet::from([source]),
+                        },
+                    );
+                }
+                true
+            },
+        )?;
+        Ok(())
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the exact timestamp and partition keep database predecessors isolated"
+    )]
+    fn collect_partition(
+        segment: &Segment,
+        plan: &Plan,
+        timestamp: &'static str,
+        at: i64,
+        partition_column: &'static str,
+        partition: &IdentityCell,
+        extra_columns: &[&'static str],
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Readings, ApiError> {
+        let mut collected = BTreeMap::new();
+        let mut counters = rate_columns(plan);
+        if plan.contract.column("stats_since").is_some() {
+            counters.push("stats_since");
+        }
+        for column in extra_columns {
+            if plan
+                .contract
+                .column(column)
+                .is_some_and(|declared| declared.class == ColumnClass::Cumulative)
+                && !counters.contains(column)
+            {
+                counters.push(column);
+            }
+        }
+        if counters.is_empty() {
+            return Ok(collected);
+        }
+        let mut projection = counters.clone();
+        projection.extend(plan.contract.identity.iter().copied());
+        projection.extend([timestamp, partition_column]);
+        projection.sort_unstable();
+        projection.dedup();
+        segment.visit_rows(plan.type_id, &projection, 0, usize::MAX, |_ordinal, row| {
+            if cancelled() {
+                return false;
+            }
+            if row_timestamp(&row, timestamp) != Some(at)
+                || row
+                    .get(partition_column)
+                    .is_none_or(|stored| &identity_cell(stored) != partition)
+            {
+                return true;
+            }
+            let Some(key) = identity_of(plan, &row) else {
+                return true;
+            };
+            let mut stored = BTreeMap::new();
+            for name in &counters {
+                if let Some(value) = row.get(name) {
+                    stored.insert(*name, value.clone());
+                }
+            }
+            collected.insert(key, stored);
+            true
+        })?;
+        Ok(collected)
+    }
+
+    fn cursor_anchor(
+        &self,
+        contexts: &[PageContext<'_>],
+        cursor: SnapshotCursor,
+    ) -> Result<PageRankedRow, ApiError> {
+        let context = contexts
+            .iter()
+            .find(|context| context.context_index == cursor.context_index)
+            .ok_or(ApiError::BadCursor)?;
+        if cursor.ordinal >= context.rows {
+            return Err(ApiError::BadCursor);
+        }
+        let source = self.reader.open_segment(context.source)?;
+        let mut stored = None;
+        source.visit_rows(
+            context.plan.type_id,
+            &context.plan.projection,
+            cursor.ordinal,
+            1,
+            |ordinal, row| {
+                stored = Some((ordinal, row));
+                false
+            },
+        )?;
+        let (ordinal, row) = stored.ok_or(ApiError::BadCursor)?;
+        let dictionary = page_dictionary(
+            &source,
+            context,
+            std::slice::from_ref(&(ordinal, row.clone())),
+        )?;
+        self.page_candidate(context, ordinal, row, &dictionary)
+            .ok_or(ApiError::BadCursor)
+    }
+
+    fn scan_page(
+        &self,
+        context: &PageContext<'_>,
+        anchor: Option<&PageRankedRow>,
+        page: &mut PageRows,
+        eligible: &mut u64,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(), ApiError> {
+        let source = self.reader.open_segment(context.source)?;
+        if !context.plan.needs_selection_dictionary()
+            && context.search_columns.is_empty()
+            && context
+                .order
+                .as_ref()
+                .and_then(|order| order.dictionary_column(context.plan))
+                .is_none()
+        {
+            #[cfg(test)]
+            PAGE_SOURCE_VISITS.set(PAGE_SOURCE_VISITS.get() + 1);
+            let dictionary = Dictionary::default();
+            source.visit_rows(
+                context.plan.type_id,
+                &context.plan.projection,
+                0,
+                usize::MAX,
+                |ordinal, row| {
+                    self.rank_page_row(context, anchor, page, eligible, &dictionary, ordinal, row);
+                    !cancelled()
+                },
+            )?;
+            return Ok(());
+        }
+        let mut chunk = Vec::with_capacity(SNAPSHOT_CHUNK_ROWS);
+        #[cfg(test)]
+        PAGE_CHUNK_ROWS.set(SNAPSHOT_CHUNK_ROWS);
+        let mut failure = None;
+        #[cfg(test)]
+        PAGE_SOURCE_VISITS.set(PAGE_SOURCE_VISITS.get() + 1);
+        source.visit_rows(
+            context.plan.type_id,
+            &context.plan.projection,
+            0,
+            usize::MAX,
+            |ordinal, row| {
+                chunk.push((ordinal, row));
+                if chunk.len() == SNAPSHOT_CHUNK_ROWS
+                    && let Err(error) =
+                        self.rank_page_chunk(&source, context, anchor, page, eligible, &mut chunk)
+                {
+                    failure = Some(error);
+                    return false;
+                }
+                !cancelled()
+            },
+        )?;
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        if !cancelled() && !chunk.is_empty() {
+            self.rank_page_chunk(&source, context, anchor, page, eligible, &mut chunk)?;
+        }
+        Ok(())
+    }
+
+    fn rank_page_chunk(
+        &self,
+        source: &Segment,
+        context: &PageContext<'_>,
+        anchor: Option<&PageRankedRow>,
+        page: &mut PageRows,
+        eligible: &mut u64,
+        chunk: &mut Vec<(u64, Row)>,
+    ) -> Result<(), ApiError> {
+        let dictionary = page_dictionary(source, context, chunk)?;
+        for (ordinal, row) in chunk.drain(..) {
+            self.rank_page_row(context, anchor, page, eligible, &dictionary, ordinal, row);
+        }
+        Ok(())
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "ranking keeps request, page, and physical-row coordinates explicit"
+    )]
+    fn rank_page_row(
+        &self,
+        context: &PageContext<'_>,
+        anchor: Option<&PageRankedRow>,
+        page: &mut PageRows,
+        eligible: &mut u64,
+        dictionary: &Dictionary,
+        ordinal: u64,
+        row: Row,
+    ) {
+        let Some(candidate) = self.page_candidate(context, ordinal, row, dictionary) else {
+            return;
+        };
+        *eligible = eligible.saturating_add(1);
+        if anchor.is_none_or(|anchor| candidate.cmp(anchor) != Ordering::Greater) {
+            page.push(candidate);
+        }
+    }
+
+    fn page_candidate(
+        &self,
+        context: &PageContext<'_>,
+        ordinal: u64,
+        row: Row,
+        dictionary: &Dictionary,
+    ) -> Option<PageRankedRow> {
+        if !context.window.matches(&row)
+            || !context.plan.matches(&row, dictionary)
+            || !self.search.is_empty()
+                && !search_matches(&row, dictionary, &context.search_columns, &self.search)
+        {
+            return None;
+        }
+        let identity = identity_of(context.plan, &row)?;
+        let value = page_order_value(context, &row, &identity, dictionary);
+        Some(PageRankedRow {
+            staged: PageStagedRow {
+                context_index: context.context_index,
+                ordinal,
+                row,
+                identity,
+            },
+            value,
+            direction: self.direction,
+        })
     }
 
     fn moments(
@@ -588,10 +1989,25 @@ impl PreparedSnapshot {
         plan: &Plan,
         timestamp: &'static str,
         at: i64,
+        extra_columns: &[&'static str],
         cancelled: &impl Fn() -> bool,
     ) -> Result<Readings, ApiError> {
         let mut collected = BTreeMap::new();
         let counters = rate_columns(plan);
+        let mut counters = counters;
+        if plan.contract.column("stats_since").is_some() {
+            counters.push("stats_since");
+        }
+        for column in extra_columns {
+            if plan
+                .contract
+                .column(column)
+                .is_some_and(|declared| declared.class == ColumnClass::Cumulative)
+                && !counters.contains(column)
+            {
+                counters.push(column);
+            }
+        }
         if counters.is_empty() {
             return Ok(collected);
         }
@@ -629,48 +2045,12 @@ impl PreparedSnapshot {
         Ok(collected)
     }
 
-    fn earlier_moment(
-        &self,
-        plan: &Plan,
-        timestamp: &'static str,
-        cancelled: &impl Fn() -> bool,
-    ) -> Result<(Readings, Option<i64>), ApiError> {
-        let Some(earlier) = self.earlier.as_ref() else {
-            return Ok((BTreeMap::new(), None));
-        };
-        let mut last: Option<i64> = None;
-        earlier.visit_rows(
-            plan.type_id,
-            &[timestamp],
-            0,
-            usize::MAX,
-            |_ordinal, row| {
-                if cancelled() {
-                    return false;
-                }
-                if let Some(stored) = row_timestamp(&row, timestamp)
-                    && last.is_none_or(|chosen| stored > chosen)
-                {
-                    last = Some(stored);
-                }
-                true
-            },
-        )?;
-        let Some(at) = last else {
-            return Ok((BTreeMap::new(), None));
-        };
-        Ok((
-            Self::collect(earlier, plan, timestamp, at, cancelled)?,
-            Some(at),
-        ))
-    }
-
     fn row_record(
         plan: &Plan,
         row: &Row,
         before: Option<&CounterReadings>,
         elapsed: Option<i64>,
-        ordinal: u64,
+        coordinate: RowCoordinate,
         dictionary: &Dictionary,
         text_limit: Option<usize>,
     ) -> Result<Value, ApiError> {
@@ -702,52 +2082,15 @@ impl PreparedSnapshot {
         Ok(json!({
             "record": "row",
             "type_id": plan.type_id.to_string(),
-            "ordinal": ordinal.to_string(),
+            "ordinal": coordinate.ordinal.to_string(),
+            "segment_id": coordinate.segment_id.to_string(),
             "timestamp": stamped.map(|stored| stored.to_string()),
             "values": values,
         }))
     }
 }
 
-fn compare_staged(
-    plan: &Plan,
-    column: &'static str,
-    left: &StagedRow,
-    right: &StagedRow,
-    rates: RateContext<'_>,
-    text_ranks: &TextRanks,
-) -> Ordering {
-    compare_order_values(
-        order_value(plan, column, left, rates, text_ranks),
-        order_value(plan, column, right, rates, text_ranks),
-    )
-}
-
-fn order_value(
-    plan: &Plan,
-    column: &'static str,
-    staged: &StagedRow,
-    rates: RateContext<'_>,
-    text_ranks: &TextRanks,
-) -> Option<OrderValue> {
-    let stored = staged.row.get(column)?;
-    let cumulative = plan
-        .contract
-        .column(column)
-        .is_some_and(|declared| declared.class == ColumnClass::Cumulative);
-    if cumulative {
-        rates.elapsed?;
-        let earlier = rates.previous?.get(&staged.identity)?.get(column)?;
-        counter_delta(stored, earlier).map(OrderValue::Number)
-    } else {
-        match stored {
-            Cell::StrId(id) => text_ranks.get(id).copied().map(OrderValue::Text),
-            _ => ordered_cell(stored).map(OrderValue::Number),
-        }
-    }
-}
-
-impl TopRows {
+impl PageRows {
     const fn new(limit: usize) -> Self {
         Self {
             limit,
@@ -755,7 +2098,7 @@ impl TopRows {
         }
     }
 
-    fn push(&mut self, row: RankedRow) {
+    fn push(&mut self, row: PageRankedRow) {
         if self.limit == 0 {
             return;
         }
@@ -772,10 +2115,10 @@ impl TopRows {
         }
     }
 
-    fn finish(self) -> Vec<StagedRow> {
-        let mut rows: Vec<RankedRow> = self.rows.into_iter().map(|Reverse(row)| row).collect();
+    fn finish(self) -> Vec<PageRankedRow> {
+        let mut rows: Vec<PageRankedRow> = self.rows.into_iter().map(|Reverse(row)| row).collect();
         rows.sort_by(|left, right| right.cmp(left));
-        rows.into_iter().map(|row| row.staged).collect()
+        rows
     }
 
     #[cfg(test)]
@@ -784,39 +2127,138 @@ impl TopRows {
     }
 }
 
-impl PartialEq for RankedRow {
+impl PartialEq for PageRankedRow {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
     }
 }
 
-impl Eq for RankedRow {}
+impl Eq for PageRankedRow {}
 
-impl PartialOrd for RankedRow {
+impl PartialOrd for PageRankedRow {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for RankedRow {
+impl Ord for PageRankedRow {
     fn cmp(&self, other: &Self) -> Ordering {
-        compare_order_values(self.value, other.value)
+        debug_assert_eq!(
+            self.direction, other.direction,
+            "one page heap cannot compare opposite sort directions"
+        );
+        compare_page_order_values(self.value.as_ref(), other.value.as_ref(), self.direction)
+            .then_with(|| other.staged.context_index.cmp(&self.staged.context_index))
             .then_with(|| other.staged.ordinal.cmp(&self.staged.ordinal))
     }
 }
 
-fn compare_order_values(left: Option<OrderValue>, right: Option<OrderValue>) -> Ordering {
-    match (left, right) {
-        (Some(OrderValue::Number(left)), Some(OrderValue::Number(right))) => {
-            compare_ordered(Some(left), Some(right))
+fn compare_page_order_values(
+    left: Option<&PageOrderValue>,
+    right: Option<&PageOrderValue>,
+    direction: Order,
+) -> Ordering {
+    let ordered = match (left, right) {
+        (Some(PageOrderValue::Integer(left)), Some(PageOrderValue::Integer(right))) => {
+            left.cmp(right)
         }
-        (Some(OrderValue::Text(left)), Some(OrderValue::Text(right))) => left.cmp(&right),
+        (Some(PageOrderValue::Float(left)), Some(PageOrderValue::Float(right)))
+        | (Some(PageOrderValue::FloatRate(left)), Some(PageOrderValue::FloatRate(right)))
+        | (Some(PageOrderValue::FloatRatio(left)), Some(PageOrderValue::FloatRatio(right))) => {
+            left.partial_cmp(right).unwrap_or(Ordering::Equal)
+        }
+        (
+            Some(PageOrderValue::IntegerRate {
+                delta: left,
+                elapsed: left_elapsed,
+            }),
+            Some(PageOrderValue::IntegerRate {
+                delta: right,
+                elapsed: right_elapsed,
+            }),
+        ) => (left * i128::from(*right_elapsed)).cmp(&(right * i128::from(*left_elapsed))),
+        (
+            Some(PageOrderValue::IntegerRatio {
+                numerator: left_numerator,
+                denominator: left_denominator,
+            }),
+            Some(PageOrderValue::IntegerRatio {
+                numerator: right_numerator,
+                denominator: right_denominator,
+            }),
+        ) => compare_u128_ratios(
+            *left_numerator,
+            *left_denominator,
+            *right_numerator,
+            *right_denominator,
+        ),
+        (
+            Some(PageOrderValue::IntegerRatio {
+                numerator,
+                denominator,
+            }),
+            Some(PageOrderValue::FloatRatio(right)),
+        ) => integer_ratio_as_f64(*numerator, *denominator)
+            .partial_cmp(right)
+            .unwrap_or(Ordering::Equal),
+        (
+            Some(PageOrderValue::FloatRatio(left)),
+            Some(PageOrderValue::IntegerRatio {
+                numerator,
+                denominator,
+            }),
+        ) => left
+            .partial_cmp(&integer_ratio_as_f64(*numerator, *denominator))
+            .unwrap_or(Ordering::Equal),
+        (Some(PageOrderValue::Text(left)), Some(PageOrderValue::Text(right))) => left.cmp(right),
         (Some(_), Some(_)) | (None, None) => Ordering::Equal,
-        (Some(_), None) => Ordering::Greater,
-        (None, Some(_)) => Ordering::Less,
+        (Some(_), None) => return Ordering::Greater,
+        (None, Some(_)) => return Ordering::Less,
+    };
+    match direction {
+        Order::Asc => ordered.reverse(),
+        Order::Desc => ordered,
     }
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "this path compares an exact ratio with an already inexact floating source"
+)]
+fn integer_ratio_as_f64(numerator: u128, denominator: u128) -> f64 {
+    numerator as f64 / denominator as f64
+}
+
+fn compare_u128_ratios(
+    mut left_numerator: u128,
+    mut left_denominator: u128,
+    mut right_numerator: u128,
+    mut right_denominator: u128,
+) -> Ordering {
+    let mut reverse = false;
+    loop {
+        let whole = (left_numerator / left_denominator).cmp(&(right_numerator / right_denominator));
+        if whole != Ordering::Equal {
+            return if reverse { whole.reverse() } else { whole };
+        }
+        let left_remainder = left_numerator % left_denominator;
+        let right_remainder = right_numerator % right_denominator;
+        let ended = match (left_remainder == 0, right_remainder == 0) {
+            (true, true) => return Ordering::Equal,
+            (true, false) => Some(Ordering::Less),
+            (false, true) => Some(Ordering::Greater),
+            (false, false) => None,
+        };
+        if let Some(ended) = ended {
+            return if reverse { ended.reverse() } else { ended };
+        }
+        (left_numerator, left_denominator) = (left_denominator, left_remainder);
+        (right_numerator, right_denominator) = (right_denominator, right_remainder);
+        reverse = !reverse;
+    }
+}
+
+#[cfg(test)]
 fn compare_ordered(left: Option<OrderedNumber>, right: Option<OrderedNumber>) -> Ordering {
     match (left, right) {
         (Some(OrderedNumber::Integer(left)), Some(OrderedNumber::Integer(right))) => {
@@ -844,49 +2286,457 @@ fn ordered_cell(cell: &Cell) -> Option<OrderedNumber> {
     }
 }
 
-type TextRanks = HashMap<u64, u64>;
-
-#[derive(Clone, Copy)]
-enum OrderValue {
-    Number(OrderedNumber),
-    Text(u64),
-}
-
-fn is_text_column(plan: &Plan, column: &'static str) -> bool {
-    plan.contract
-        .column(column)
-        .is_some_and(|declared| declared.ty == ColumnType::StrId)
-}
-
-/// Assign equal stored text equal ranks without copying it into every row.
-fn lexical_ranks(dictionary: &Dictionary, ids: &HashSet<u64>) -> TextRanks {
-    let mut values = ids
-        .iter()
-        .filter_map(|id| {
-            dictionary
-                .resolve(*id)
-                .map(|resolved| (*id, stored_bytes(resolved)))
-        })
-        .collect::<Vec<_>>();
-    values.sort_unstable_by(|left, right| left.1.cmp(right.1).then_with(|| left.0.cmp(&right.0)));
-
-    let mut ranks = TextRanks::with_capacity(values.len());
-    let mut rank = 0_u64;
-    let mut previous: Option<&[u8]> = None;
-    for (id, bytes) in values {
-        if previous.is_some_and(|previous| previous != bytes) {
-            rank = rank.saturating_add(1);
-        }
-        ranks.insert(id, rank);
-        previous = Some(bytes);
-    }
-    ranks
-}
-
 const fn stored_bytes(resolved: Resolved<'_>) -> &[u8] {
     match resolved {
         Resolved::Str(bytes) => bytes,
         Resolved::Blob(blob) => blob.stored_bytes,
+    }
+}
+
+fn page_dictionary(
+    segment: &Segment,
+    context: &PageContext<'_>,
+    rows: &[(u64, Row)],
+) -> Result<Dictionary, ApiError> {
+    let mut ids = HashSet::new();
+    for (_ordinal, row) in rows {
+        if !context.window.matches(row) {
+            continue;
+        }
+        context.plan.add_selection_ids(row, &mut ids);
+        for column in context.search_columns.iter().copied().chain(
+            context
+                .order
+                .as_ref()
+                .and_then(|order| order.dictionary_column(context.plan)),
+        ) {
+            if let Some(Cell::StrId(id)) = row.get(column) {
+                ids.insert(*id);
+            }
+        }
+    }
+    #[cfg(test)]
+    if !ids.is_empty() {
+        PAGE_CANDIDATE_DICTIONARIES.set(PAGE_CANDIDATE_DICTIONARIES.get() + 1);
+    }
+    resolved_dictionary(segment, &ids)
+}
+
+fn page_order_value(
+    context: &PageContext<'_>,
+    row: &Row,
+    identity: &[IdentityCell],
+    dictionary: &Dictionary,
+) -> Option<PageOrderValue> {
+    let order = context.order.as_ref()?;
+    match &order.kind {
+        PageOrderKind::Column(column) => {
+            column_order_value(context, row, identity, dictionary, column)
+        }
+        PageOrderKind::CounterRatio {
+            numerator,
+            denominator,
+            neutral_nulls,
+        } => {
+            let _elapsed = context.elapsed_for(row)?;
+            let before = context.predecessor(row, identity)?;
+            let numerator = counter_sum(row, before, numerator, *neutral_nulls)?;
+            let denominator = counter_sum(row, before, denominator, *neutral_nulls)?;
+            ratio_order_value(numerator, denominator)
+        }
+        PageOrderKind::ValueRatio {
+            numerator,
+            denominator,
+        } => ratio_order_value(value_sum(row, numerator)?, value_sum(row, denominator)?),
+    }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "an interval of 2^52 microseconds is 142 years"
+)]
+fn column_order_value(
+    context: &PageContext<'_>,
+    row: &Row,
+    identity: &[IdentityCell],
+    dictionary: &Dictionary,
+    column: &'static str,
+) -> Option<PageOrderValue> {
+    let stored = row.get(column)?;
+    let cumulative = context
+        .plan
+        .contract
+        .column(column)
+        .is_some_and(|declared| declared.class == ColumnClass::Cumulative);
+    if cumulative {
+        let elapsed = context.elapsed_for(row)?;
+        let earlier = context.predecessor(row, identity)?.get(column)?;
+        return match counter_delta(stored, earlier)? {
+            OrderedNumber::Integer(delta) => Some(PageOrderValue::IntegerRate { delta, elapsed }),
+            OrderedNumber::Float(delta) => {
+                let seconds = elapsed as f64 / 1_000_000.0;
+                let rate = delta / seconds;
+                rate.is_finite().then_some(PageOrderValue::FloatRate(rate))
+            }
+        };
+    }
+    match stored {
+        Cell::StrId(id) => dictionary
+            .resolve(*id)
+            .map(stored_bytes)
+            .map(<[u8]>::to_vec)
+            .map(PageOrderValue::Text),
+        _ => match ordered_cell(stored)? {
+            OrderedNumber::Integer(value) => Some(PageOrderValue::Integer(value)),
+            OrderedNumber::Float(value) => Some(PageOrderValue::Float(value)),
+        },
+    }
+}
+
+fn counter_sum(
+    row: &Row,
+    before: &CounterReadings,
+    columns: &[&'static str],
+    neutral_nulls: bool,
+) -> Option<OrderedNumber> {
+    let mut sum = None;
+    for column in columns {
+        let (Some(now), Some(earlier)) = (row.get(column), before.get(column)) else {
+            return None;
+        };
+        if neutral_nulls && matches!((now, earlier), (Cell::Null, Cell::Null)) {
+            continue;
+        }
+        let value = counter_delta(now, earlier)?;
+        sum = Some(add_ordered(sum, value)?);
+    }
+    sum
+}
+
+fn value_sum(row: &Row, columns: &[&'static str]) -> Option<OrderedNumber> {
+    let mut sum = None;
+    for column in columns {
+        let value = row.get(column).and_then(ordered_cell)?;
+        sum = Some(add_ordered(sum, value)?);
+    }
+    sum
+}
+
+fn add_ordered(left: Option<OrderedNumber>, right: OrderedNumber) -> Option<OrderedNumber> {
+    match (left, right) {
+        (None, right) => Some(right),
+        (Some(OrderedNumber::Integer(left)), OrderedNumber::Integer(right)) => {
+            left.checked_add(right).map(OrderedNumber::Integer)
+        }
+        (Some(left), right) => {
+            let sum = left.as_f64() + right.as_f64();
+            sum.is_finite().then_some(OrderedNumber::Float(sum))
+        }
+    }
+}
+
+fn ratio_order_value(
+    numerator: OrderedNumber,
+    denominator: OrderedNumber,
+) -> Option<PageOrderValue> {
+    match (numerator, denominator) {
+        (OrderedNumber::Integer(numerator), OrderedNumber::Integer(denominator))
+            if numerator >= 0 && denominator > 0 =>
+        {
+            Some(PageOrderValue::IntegerRatio {
+                numerator: u128::try_from(numerator).ok()?,
+                denominator: u128::try_from(denominator).ok()?,
+            })
+        }
+        (numerator, denominator) => {
+            let denominator = denominator.as_f64();
+            let ratio = numerator.as_f64() / denominator;
+            (denominator > 0.0 && ratio.is_finite()).then_some(PageOrderValue::FloatRatio(ratio))
+        }
+    }
+}
+
+fn search_columns(logical_name: &str, plan: &Plan) -> Vec<&'static str> {
+    allowed_search_columns(logical_name)
+        .iter()
+        .filter_map(|name| plan.contract.column(name).map(|column| column.name))
+        .collect()
+}
+
+fn allowed_search_columns(logical_name: &str) -> &'static [&'static str] {
+    match logical_name {
+        "pg_stat_statements" => &[
+            "query", "queryid", "dbid", "userid", "datname", "usename", "toplevel",
+        ],
+        "pg_store_plans" => &[
+            "plan",
+            "planid",
+            "queryid",
+            "queryid_stat_statements",
+            "dbid",
+            "userid",
+            "datname",
+            "usename",
+        ],
+        "pg_stat_user_tables" => &[
+            "datname",
+            "datid",
+            "schemaname",
+            "relname",
+            "relid",
+            "tablespace",
+        ],
+        "pg_stat_user_indexes" => &[
+            "datname",
+            "datid",
+            "schemaname",
+            "relname",
+            "relid",
+            "indexrelname",
+            "indexrelid",
+            "tablespace",
+            "amname",
+            "indexdef",
+        ],
+        _ => &[],
+    }
+}
+
+fn search_matches(
+    row: &Row,
+    dictionary: &Dictionary,
+    columns: &[&'static str],
+    patterns: &[GlobPattern],
+) -> bool {
+    columns.iter().any(|column| {
+        row.get(column)
+            .and_then(|value| searchable_text(value, dictionary))
+            .is_some_and(|text| patterns.iter().any(|pattern| pattern.matches(&text)))
+    })
+}
+
+fn searchable_text(value: &Cell, dictionary: &Dictionary) -> Option<String> {
+    match value {
+        Cell::I16(value) => Some(value.to_string()),
+        Cell::I32(value) => Some(value.to_string()),
+        Cell::I64(value) | Cell::Ts(value) => Some(value.to_string()),
+        Cell::U32(value) => Some(value.to_string()),
+        Cell::U64(value) => Some(value.to_string()),
+        Cell::F64(value) if value.is_finite() => Some(value.to_string()),
+        Cell::Bool(value) => Some(value.to_string()),
+        Cell::StrId(id) => dictionary
+            .resolve(*id)
+            .and_then(|resolved| std::str::from_utf8(stored_bytes(resolved)).ok())
+            .map(ToOwned::to_owned),
+        Cell::Null | Cell::ListI32(_) | Cell::F64(_) => None,
+    }
+}
+
+impl GlobPattern {
+    fn new(raw: &str) -> Self {
+        let mut tokens = vec![GlobToken::Star];
+        for character in raw.chars() {
+            let token = match character {
+                '*' => GlobToken::Star,
+                '?' => GlobToken::Any,
+                literal => GlobToken::Literal(literal),
+            };
+            if token != GlobToken::Star || tokens.last() != Some(&GlobToken::Star) {
+                tokens.push(token);
+            }
+        }
+        if tokens.last() != Some(&GlobToken::Star) {
+            tokens.push(GlobToken::Star);
+        }
+        Self(tokens)
+    }
+
+    fn matches(&self, candidate: &str) -> bool {
+        let candidate = candidate.chars().collect::<Vec<_>>();
+        let mut pattern_index = 0;
+        let mut candidate_index = 0;
+        let mut star = None;
+        let mut retry = 0;
+        while candidate_index < candidate.len() {
+            match self.0.get(pattern_index) {
+                Some(GlobToken::Literal(wanted))
+                    if unicode_char_equal(*wanted, candidate[candidate_index]) =>
+                {
+                    pattern_index += 1;
+                    candidate_index += 1;
+                }
+                Some(GlobToken::Any) => {
+                    pattern_index += 1;
+                    candidate_index += 1;
+                }
+                Some(GlobToken::Star) => {
+                    star = Some(pattern_index);
+                    pattern_index += 1;
+                    retry = candidate_index;
+                }
+                _ if star.is_some() => {
+                    retry += 1;
+                    candidate_index = retry;
+                    pattern_index = star.unwrap_or(0) + 1;
+                }
+                _ => return false,
+            }
+        }
+        while self.0.get(pattern_index) == Some(&GlobToken::Star) {
+            pattern_index += 1;
+        }
+        pattern_index == self.0.len()
+    }
+}
+
+fn unicode_char_equal(left: char, right: char) -> bool {
+    left.to_lowercase().eq(right.to_lowercase())
+}
+
+impl SnapshotCursor {
+    fn parse(raw: &str) -> Result<Self, ApiError> {
+        let fields = raw.split(',').collect::<Vec<_>>();
+        if fields.len() != 5 {
+            return Err(ApiError::BadCursor);
+        }
+        Ok(Self {
+            segment_id: fields[0].parse().map_err(|_error| ApiError::BadCursor)?,
+            active_position: fields[1].parse().map_err(|_error| ApiError::BadCursor)?,
+            context_index: fields[2].parse().map_err(|_error| ApiError::BadCursor)?,
+            ordinal: fields[3].parse().map_err(|_error| ApiError::BadCursor)?,
+            binding: fields[4].parse().map_err(|_error| ApiError::BadCursor)?,
+        })
+    }
+
+    fn encode(self) -> String {
+        format!(
+            "{},{},{},{},{}",
+            self.segment_id, self.active_position, self.context_index, self.ordinal, self.binding
+        )
+    }
+}
+
+const fn partition_context_index(
+    layout_index: usize,
+    source: PartitionSource,
+    predecessor_count: usize,
+) -> usize {
+    layout_index * (predecessor_count + 1)
+        + match source {
+            PartitionSource::Current => 0,
+            PartitionSource::Earlier(index) => predecessor_count - index,
+        }
+}
+
+const fn timed_context_index(
+    layout_index: usize,
+    source_index: usize,
+    source_count: usize,
+) -> usize {
+    layout_index * source_count + source_index
+}
+
+fn record_partition_moment(
+    moments: &mut BTreeMap<IdentityCell, PartitionMoments>,
+    partition: IdentityCell,
+    located: LocatedMoment,
+) {
+    let Some(chosen) = moments.get_mut(&partition) else {
+        moments.insert(
+            partition,
+            PartitionMoments {
+                current: located,
+                previous: None,
+            },
+        );
+        return;
+    };
+    match located.at.cmp(&chosen.current.at) {
+        Ordering::Equal => chosen.current.sources.extend(located.sources),
+        Ordering::Greater => {
+            chosen.previous = Some(std::mem::replace(&mut chosen.current, located));
+        }
+        Ordering::Less => match chosen.previous.as_mut() {
+            Some(before) => match located.at.cmp(&before.at) {
+                Ordering::Equal => before.sources.extend(located.sources),
+                Ordering::Greater => *before = located,
+                Ordering::Less => {}
+            },
+            None => chosen.previous = Some(located),
+        },
+    }
+}
+
+fn pin(current: SegmentRef, cursor: Option<SnapshotCursor>) -> Result<SegmentRef, ApiError> {
+    let Some(cursor) = cursor else {
+        return Ok(current);
+    };
+    match current.kind() {
+        SegmentKind::Finished if cursor.active_position == 0 => Ok(current),
+        SegmentKind::Active => current
+            .at_active_position(cursor.active_position)
+            .map_err(|_error| ApiError::BadCursor),
+        SegmentKind::Finished => Err(ApiError::BadCursor),
+    }
+}
+
+fn snapshot_binding(request: &SnapshotRequest) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    hash_part(&mut hash, b"segment", &request.segment_id.to_le_bytes());
+    hash_part(&mut hash, b"at", &request.at.to_le_bytes());
+    for section in &request.sections {
+        hash_part(&mut hash, b"section", section.as_bytes());
+    }
+    if let Some(type_id) = request.type_id {
+        hash_part(&mut hash, b"type", &type_id.to_le_bytes());
+    }
+    for field in &request.fields {
+        hash_part(&mut hash, b"field", field.as_bytes());
+    }
+    if let Some(text) = request.text {
+        hash_part(&mut hash, b"text", &text.to_le_bytes());
+    }
+    for filter in &request.filters {
+        hash_part(&mut hash, b"filter-column", filter.column.as_bytes());
+        hash_part(&mut hash, b"filter-value", filter.value.as_bytes());
+    }
+    for search in &request.search {
+        hash_part(&mut hash, b"search", search.as_bytes());
+    }
+    for by in &request.by {
+        hash_part(&mut hash, b"by", by.as_bytes());
+    }
+    if let Some(group) = request.group {
+        hash_part(
+            &mut hash,
+            b"group",
+            match group {
+                RelationGroup::Database => b"database",
+                RelationGroup::Schema => b"schema",
+                RelationGroup::Object => b"object",
+            },
+        );
+    }
+    hash_part(
+        &mut hash,
+        b"direction",
+        match request.direction {
+            Order::Asc => b"asc",
+            Order::Desc => b"desc",
+        },
+    );
+    hash
+}
+
+fn hash_part(hash: &mut u64, tag: &[u8], bytes: &[u8]) {
+    hash_bytes(hash, tag);
+    hash_bytes(hash, bytes);
+}
+
+fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
+    for byte in bytes.len().to_le_bytes().iter().chain(bytes) {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
 }
 
@@ -902,25 +2752,331 @@ fn retained_dictionary(segment: &Segment, rows: &[StagedRow]) -> Result<Dictiona
     resolved_dictionary(segment, &ids)
 }
 
+#[cfg(test)]
 fn available_field_index(fields: &[super::query::OutputField], name: &str) -> Option<usize> {
     fields
         .iter()
         .position(|field| field.name == name && field.column.is_some())
 }
 
+struct RetainedMoment {
+    at: i64,
+    segment_ids: BTreeSet<i64>,
+}
+
+#[derive(Default)]
+struct RetainedMoments {
+    current: Option<RetainedMoment>,
+    previous: Option<RetainedMoment>,
+}
+
+fn relation_preceding(
+    reader: &Reader,
+    segment_ref: &SegmentRef,
+    segments: Vec<SegmentRef>,
+    current: &Segment,
+    sections: &[SectionPlans],
+    filters: &[crate::route::Filter],
+    at: i64,
+) -> Result<Vec<SegmentRef>, ApiError> {
+    let requested_datid = filters
+        .iter()
+        .find(|filter| filter.column == "datid")
+        .and_then(|filter| filter.value.parse::<u32>().ok())
+        .map(IdentityCell::U32);
+    let mut moments = BTreeMap::<(u32, IdentityCell), RetainedMoments>::new();
+    if let Some(datid) = requested_datid.as_ref() {
+        for plan in partitioned_plans(sections) {
+            if plan.applies() && plan.timestamp.is_some() {
+                moments.entry((plan.type_id, datid.clone())).or_default();
+            }
+        }
+    }
+    scan_relation_moments(
+        current,
+        sections,
+        requested_datid.as_ref(),
+        requested_datid.is_none(),
+        at,
+        &mut moments,
+    )?;
+    let compatible = partitioned_plans(sections)
+        .map(|plan| plan.type_id)
+        .collect::<HashSet<_>>();
+    let mut candidates = segments
+        .into_iter()
+        .filter(|candidate| candidate.id() < segment_ref.id() && candidate.min_ts() <= at)
+        .filter(|candidate| {
+            candidate
+                .sections()
+                .iter()
+                .any(|section| compatible.contains(&section.type_id))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_unstable_by_key(|candidate| Reverse((candidate.max_ts(), candidate.id())));
+    for candidate in &candidates {
+        if !moments.is_empty()
+            && moments.values().all(|samples| {
+                samples
+                    .previous
+                    .as_ref()
+                    .is_some_and(|previous| candidate.max_ts() < previous.at)
+            })
+        {
+            break;
+        }
+        let segment = reader.open_segment(candidate)?;
+        scan_relation_moments(
+            &segment,
+            sections,
+            requested_datid.as_ref(),
+            requested_datid.is_none(),
+            at,
+            &mut moments,
+        )?;
+    }
+
+    let mut retained = HashSet::new();
+    for samples in moments.values() {
+        for sample in [&samples.current, &samples.previous].into_iter().flatten() {
+            for segment_id in &sample.segment_ids {
+                if *segment_id != segment_ref.id() {
+                    retained.insert(*segment_id);
+                }
+            }
+        }
+    }
+    let mut selected = candidates
+        .into_iter()
+        .filter(|candidate| retained.contains(&candidate.id()))
+        .collect::<Vec<_>>();
+    selected.sort_unstable_by_key(|candidate| Reverse(candidate.id()));
+    Ok(selected)
+}
+
+fn partitioned_plans(sections: &[SectionPlans]) -> impl Iterator<Item = &Plan> {
+    sections
+        .iter()
+        .filter(|section| SnapshotViewSpec::for_logical_name(&section.logical_name).is_some())
+        .flat_map(|section| section.plans.iter())
+}
+
+fn scan_relation_moments(
+    segment: &Segment,
+    sections: &[SectionPlans],
+    requested_datid: Option<&IdentityCell>,
+    discover: bool,
+    at: i64,
+    moments: &mut BTreeMap<(u32, IdentityCell), RetainedMoments>,
+) -> Result<(), ApiError> {
+    for plan in partitioned_plans(sections) {
+        if !plan.applies() {
+            continue;
+        }
+        let Some(timestamp) = plan.timestamp else {
+            continue;
+        };
+        if segment.rows_of(plan.type_id).is_none() {
+            continue;
+        }
+        segment.visit_rows(
+            plan.type_id,
+            &[timestamp, "datid"],
+            0,
+            usize::MAX,
+            |_ordinal, row| {
+                let (Some(stored), Some(partition)) =
+                    (row_timestamp(&row, timestamp), row.get("datid"))
+                else {
+                    return true;
+                };
+                let partition = identity_cell(partition);
+                if requested_datid.is_some_and(|requested| requested != &partition) {
+                    return true;
+                }
+                let key = (plan.type_id, partition);
+                if discover {
+                    moments.entry(key.clone()).or_default();
+                }
+                if stored <= at
+                    && let Some(selected) = moments.get_mut(&key)
+                {
+                    record_retained_moment(
+                        selected,
+                        RetainedMoment {
+                            at: stored,
+                            segment_ids: BTreeSet::from([segment.id()]),
+                        },
+                    );
+                }
+                true
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn record_retained_moment(moments: &mut RetainedMoments, sample: RetainedMoment) {
+    let Some(current_at) = moments.current.as_ref().map(|current| current.at) else {
+        moments.current = Some(sample);
+        return;
+    };
+    match sample.at.cmp(&current_at) {
+        Ordering::Equal => {
+            if let Some(current) = moments.current.as_mut() {
+                current.segment_ids.extend(sample.segment_ids);
+            }
+        }
+        Ordering::Greater => {
+            moments.previous = moments.current.replace(sample);
+        }
+        Ordering::Less => match moments.previous.as_mut() {
+            Some(previous) => match sample.at.cmp(&previous.at) {
+                Ordering::Equal => previous.segment_ids.extend(sample.segment_ids),
+                Ordering::Greater => *previous = sample,
+                Ordering::Less => {}
+            },
+            None => moments.previous = Some(sample),
+        },
+    }
+}
+
+struct ContributingMoment {
+    at: i64,
+    segment_ids: HashSet<i64>,
+}
+
+#[derive(Default)]
+struct ContributingMoments {
+    current: Option<ContributingMoment>,
+    previous: Option<ContributingMoment>,
+    pinned: bool,
+}
+
 fn preceding(
     reader: &Reader,
     segment_ref: &SegmentRef,
     segments: Vec<SegmentRef>,
-) -> Result<Option<Segment>, ApiError> {
-    let chosen = segments
+    current: &Segment,
+    sections: &[SectionPlans],
+    at: i64,
+) -> Result<Vec<SegmentRef>, ApiError> {
+    let layouts = sections
+        .iter()
+        .filter(|section| SnapshotViewSpec::for_logical_name(&section.logical_name).is_none())
+        .flat_map(|section| section.plans.iter())
+        .filter(|plan| plan.applies())
+        .filter_map(|plan| plan.timestamp.map(|timestamp| (plan.type_id, timestamp)))
+        .collect::<BTreeMap<_, _>>();
+    if layouts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let compatible = layouts.keys().copied().collect::<HashSet<_>>();
+    let mut candidates = segments
         .into_iter()
-        .filter(|candidate| candidate.max_ts() <= segment_ref.min_ts())
-        .max_by_key(SegmentRef::max_ts);
-    chosen
-        .map(|candidate| reader.open_segment(&candidate))
-        .transpose()
-        .map_err(ApiError::from)
+        .filter(|candidate| candidate.id() < segment_ref.id() && candidate.min_ts() <= at)
+        .filter(|candidate| {
+            candidate
+                .sections()
+                .iter()
+                .any(|section| compatible.contains(&section.type_id))
+        })
+        .collect::<Vec<_>>();
+    let mut moments = layouts
+        .keys()
+        .map(|type_id| (*type_id, ContributingMoments::default()))
+        .collect::<BTreeMap<_, _>>();
+    scan_contributing_moments(current, &layouts, at, true, &mut moments)?;
+    candidates.sort_unstable_by_key(|candidate| Reverse((candidate.max_ts(), candidate.id())));
+    for candidate in &candidates {
+        if moments.values().all(|samples| {
+            samples
+                .previous
+                .as_ref()
+                .is_some_and(|previous| candidate.max_ts() < previous.at)
+        }) {
+            break;
+        }
+        let segment = reader.open_segment(candidate)?;
+        scan_contributing_moments(&segment, &layouts, at, false, &mut moments)?;
+    }
+    let retained = moments
+        .values()
+        .flat_map(|moments| [&moments.current, &moments.previous])
+        .filter_map(Option::as_ref)
+        .flat_map(|moment| moment.segment_ids.iter().copied())
+        .filter(|segment_id| *segment_id != segment_ref.id())
+        .collect::<HashSet<_>>();
+    candidates.retain(|candidate| retained.contains(&candidate.id()));
+    candidates.sort_unstable_by_key(|candidate| Reverse(candidate.id()));
+    Ok(candidates)
+}
+
+fn scan_contributing_moments(
+    segment: &Segment,
+    layouts: &BTreeMap<u32, &'static str>,
+    at: i64,
+    pin_current: bool,
+    moments: &mut BTreeMap<u32, ContributingMoments>,
+) -> Result<(), ApiError> {
+    for (&type_id, &timestamp) in layouts {
+        if segment.rows_of(type_id).is_none() {
+            continue;
+        }
+        segment.visit_rows(type_id, &[timestamp], 0, usize::MAX, |_ordinal, row| {
+            if let Some(stored) = row_timestamp(&row, timestamp)
+                && stored <= at
+            {
+                record_contributing_moment(
+                    moments.entry(type_id).or_default(),
+                    stored,
+                    segment.id(),
+                );
+            }
+            true
+        })?;
+    }
+    if pin_current {
+        for samples in moments.values_mut() {
+            samples.pinned = samples.current.is_some();
+        }
+    }
+    Ok(())
+}
+
+fn record_contributing_moment(moments: &mut ContributingMoments, at: i64, segment_id: i64) {
+    let new_moment = || ContributingMoment {
+        at,
+        segment_ids: HashSet::from([segment_id]),
+    };
+    let Some(current_at) = moments.current.as_ref().map(|current| current.at) else {
+        moments.current = Some(new_moment());
+        return;
+    };
+    if moments.pinned && at > current_at {
+        return;
+    }
+    match at.cmp(&current_at) {
+        Ordering::Equal => {
+            if let Some(current) = moments.current.as_mut() {
+                current.segment_ids.insert(segment_id);
+            }
+        }
+        Ordering::Greater => {
+            moments.previous = moments.current.take();
+            moments.current = Some(new_moment());
+        }
+        Ordering::Less => match moments.previous.as_mut() {
+            Some(previous) => match at.cmp(&previous.at) {
+                Ordering::Equal => {
+                    previous.segment_ids.insert(segment_id);
+                }
+                Ordering::Greater => moments.previous = Some(new_moment()),
+                Ordering::Less => {}
+            },
+            None => moments.previous = Some(new_moment()),
+        },
+    }
 }
 
 fn validate_shared_projection(

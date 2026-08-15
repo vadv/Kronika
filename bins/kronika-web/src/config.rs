@@ -1,5 +1,6 @@
 //! Environment-only configuration, validated before the listener starts.
 
+use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -35,19 +36,27 @@ pub(crate) struct Config {
     pub(crate) data_root: PathBuf,
     /// Address to listen on.
     pub(crate) listen: SocketAddr,
-    /// Required account admitted by centralized Basic auth.
+    /// Required account used by centralized authentication.
     pub(crate) account: Account,
+    /// Whether browser session cookies are restricted to TLS connections.
+    pub(crate) cookie_secure: bool,
     /// Explicit source bitset persisted in every derived index.
     pub(crate) sources: u32,
 }
 
-/// Credentials every request has to carry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Credentials accepted directly and used to derive browser sessions.
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Account {
     /// User name.
     pub(crate) user: String,
     /// Password.
     pub(crate) password: String,
+}
+
+impl fmt::Debug for Account {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Account { credentials: [redacted] }")
+    }
 }
 
 impl Config {
@@ -70,11 +79,14 @@ impl Config {
             std::env::var("KRONIKA_WEB_USER").ok(),
             std::env::var("KRONIKA_WEB_PASSWORD").ok(),
         )?;
+        let raw_cookie_secure = std::env::var("KRONIKA_WEB_COOKIE_SECURE").ok();
+        let cookie_secure = cookie_secure(raw_cookie_secure.as_deref())?;
         let sources = source_set(std::env::var("KRONIKA_WEB_SOURCES").ok())?;
         Ok(Self {
             data_root,
             listen,
             account,
+            cookie_secure,
             sources,
         })
     }
@@ -90,6 +102,16 @@ fn account(user: Option<String>, password: Option<String>) -> Result<Account> {
         anyhow::bail!("KRONIKA_WEB_PASSWORD is empty");
     }
     Ok(Account { user, password })
+}
+
+fn cookie_secure(raw: Option<&str>) -> Result<bool> {
+    match raw {
+        None | Some("false") => Ok(false),
+        Some("true") => Ok(true),
+        Some(value) => {
+            anyhow::bail!("KRONIKA_WEB_COOKIE_SECURE={value:?} is not true or false")
+        }
+    }
 }
 
 fn source_set(raw: Option<String>) -> Result<u32> {

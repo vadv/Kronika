@@ -1,7 +1,10 @@
 use kronika_reader::SegmentSection;
 use serde_json::json;
 
-use super::{PreparedCatalog, cursor_value, section_values, source_bit, source_family_values};
+use super::{
+    PreparedCatalog, cursor_value, metric_source_bit, section_values, source_bit,
+    source_family_values,
+};
 use crate::api::CachePolicy;
 use crate::config::{SOURCE_OS, SOURCE_POSTGRESQL};
 
@@ -51,14 +54,22 @@ fn actual_physical_layouts_keep_logical_and_implementation_provenance() {
 
 #[test]
 fn catalog_reports_configured_and_present_source_families_separately() {
-    let values = source_family_values(SOURCE_OS | SOURCE_POSTGRESQL, SOURCE_OS);
+    let values = source_family_values(
+        SOURCE_OS | SOURCE_POSTGRESQL,
+        SOURCE_OS | SOURCE_POSTGRESQL,
+        SOURCE_OS,
+    );
     assert_eq!(values[0]["name"], "os");
     assert_eq!(values[0]["configured"], true);
     assert_eq!(values[0]["present"], true);
+    assert_eq!(values[0]["metrics_present"], true);
     assert_eq!(values[1]["name"], "postgresql");
     assert_eq!(values[1]["configured"], true);
-    assert_eq!(values[1]["present"], false);
+    assert_eq!(values[1]["present"], true);
+    assert_eq!(values[1]["metrics_present"], false);
     assert_eq!(source_bit(1_107_001), Some(SOURCE_OS));
     assert_eq!(source_bit(1_005_004), Some(SOURCE_POSTGRESQL));
+    assert_eq!(metric_source_bit(1_005_004), Some(SOURCE_POSTGRESQL));
+    assert_eq!(metric_source_bit(2_001_001), None);
     assert_eq!(source_bit(1_021_001), None);
 }

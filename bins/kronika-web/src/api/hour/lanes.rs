@@ -6,6 +6,7 @@ use kronika_reader::{Cell, Dictionary, Resolved, Row, Segment};
 use kronika_registry::{contract, logical_section_name};
 
 use crate::api::ApiError;
+use crate::route::Window;
 
 #[cfg(test)]
 mod tests;
@@ -45,6 +46,7 @@ pub(super) fn collect(
     segment: &Segment,
     ticks_per_second: i64,
     cpu_count: i64,
+    window: Window,
     state: &mut State,
 ) -> Result<Vec<LanePoint>, ApiError> {
     for (type_id, _rows) in segment.sections() {
@@ -68,6 +70,7 @@ pub(super) fn collect(
         cpu_count,
         segment.min_ts(),
         segment.max_ts(),
+        window,
     ))
 }
 
@@ -303,10 +306,11 @@ fn current_points(
     cpu_count: i64,
     from: i64,
     to: i64,
+    window: Window,
 ) -> Vec<LanePoint> {
     points(counters, ticks_per_second, cpu_count)
         .into_iter()
-        .filter(|point| point.ts >= from && point.ts <= to)
+        .filter(|point| point.ts >= from && point.ts <= to && window.contains(point.ts))
         .collect()
 }
 

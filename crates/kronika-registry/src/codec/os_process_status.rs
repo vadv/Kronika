@@ -8,8 +8,8 @@ use crate::{Section, Ts};
     id = 1_101_001,
     name = "os_process_status",
     semantics = snapshot_full,
-    sort_key("pid", "starttime", "ts"),
-    identity("pid", "starttime")
+    sort_key("pid", "ts"),
+    identity("pid")
 )]
 pub struct OsProcessStatus {
     /// Collection timestamp, unix microseconds.
@@ -93,8 +93,8 @@ mod tests {
     fn contract_shape() {
         let c = OsProcessStatus::CONTRACT;
         assert_eq!(c.type_id.get(), 1_101_001);
-        assert_eq!(c.sort_key, ["pid", "starttime", "ts"]);
-        assert_eq!(c.identity, ["pid", "starttime"]);
+        assert_eq!(c.sort_key, ["pid", "ts"]);
+        assert_eq!(c.identity, ["pid"]);
     }
 
     #[test]

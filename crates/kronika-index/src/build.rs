@@ -29,6 +29,25 @@ const HOST: u32 = 0;
 const POD: u32 = 1;
 const CONTAINER: u32 = 3;
 
+#[derive(Debug, Clone, Copy, Default)]
+struct HealthSeed {
+    os: Option<StallSnapshot>,
+    postgres: Option<HealthPoint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SnapshotIdentity {
+    environment: Option<u32>,
+    boot_time: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StallSnapshot {
+    timestamp: i64,
+    identity: SnapshotIdentity,
+    stall: Option<Stall>,
+}
+
 /// Why an allowlisted series could not be derived.
 #[derive(Debug)]
 pub enum BuildError {
@@ -75,6 +94,57 @@ impl From<ReaderError> for BuildError {
     fn from(error: ReaderError) -> Self {
         Self::Reader(error)
     }
+}
+
+fn predecessor_health_seed(
+    reader: &Reader,
+    predecessor: Option<&SegmentRef>,
+    requested: &[SeriesKey],
+) -> Result<HealthSeed, BuildError> {
+    let needs_os = requested
+        .iter()
+        .any(|key| matches!(key.kind, SeriesKind::OsHealth | SeriesKind::OverallHealth));
+    let needs_postgres = requested.contains(&SeriesKey::OVERALL_HEALTH);
+    let Some(predecessor) = predecessor.filter(|_| needs_os || needs_postgres) else {
+        return Ok(HealthSeed::default());
+    };
+    let has_psi = predecessor
+        .sections()
+        .iter()
+        .any(|section| section.type_id == OS_PSI_TYPE_ID);
+    let has_metadata = predecessor
+        .sections()
+        .iter()
+        .any(|section| section.type_id == INSTANCE_METADATA_TYPE_ID);
+    if !(needs_os && has_psi || needs_postgres && has_metadata) {
+        return Ok(HealthSeed::default());
+    }
+
+    let segment = reader.open_segment(predecessor)?;
+    let os = if needs_os && has_psi {
+        last_stall_snapshot(&segment)?
+    } else {
+        None
+    };
+    let postgres = if needs_postgres && has_metadata {
+        let metadata = health_metadata(&segment)?;
+        if metadata.postgresql_enabled == Some(true) {
+            let mut activity = BTreeMap::<u32, Vec<ActiveBackendPoint>>::new();
+            for type_id in segment
+                .type_ids()
+                .filter(|type_id| pg_activity_layout(*type_id))
+            {
+                activity.insert(type_id, active_backend_points(&segment, type_id)?);
+            }
+            postgres_health_points(&metadata, &combined_active_points(&activity))
+                .and_then(|points| points.last().copied())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    Ok(HealthSeed { os, postgres })
 }
 
 /// Return the complete current allowlist for a captured segment.
@@ -128,8 +198,8 @@ pub fn build(segment: &Segment) -> Result<Index, BuildError> {
 ///
 /// Returns a production-reader or dictionary-resolution failure.
 pub fn build_selected(segment: &Segment, requested: &[SeriesKey]) -> Result<Index, BuildError> {
-    let finder = FindingBuilder::new(segment, requested)?;
-    let mut index = build_selected_series(segment, requested)?;
+    let finder = FindingBuilder::new(segment, requested);
+    let mut index = build_selected_series(segment, requested, HealthSeed::default())?;
     index.blocks.extend(finder.finish(segment, &index)?);
     index.blocks.sort_by_key(SeriesBlock::key);
     Ok(index)
@@ -156,8 +226,14 @@ pub(crate) fn build_selected_from_reader(
     segment: &Segment,
     requested: &[SeriesKey],
 ) -> Result<Index, BuildError> {
-    let mut finder = FindingBuilder::new(segment, requested)?;
+    let mut finder = FindingBuilder::new(segment, requested);
     let listing = reader.catalog_segments(..segment_ref.min_ts())?;
+    let predecessor = listing
+        .segments
+        .iter()
+        .filter(|prior| prior.kind() == SegmentKind::Finished)
+        .max_by_key(|prior| (prior.max_ts(), prior.id()));
+    let health_seed = predecessor_health_seed(reader, predecessor, requested)?;
     // Include one segment before the 15-minute comparison window.
     let mut priors: Vec<_> = listing
         .segments
@@ -175,13 +251,17 @@ pub(crate) fn build_selected_from_reader(
         let prior = reader.open_segment(&prior_ref)?;
         finder.observe_prior(&prior)?;
     }
-    let mut index = build_selected_series(segment, requested)?;
+    let mut index = build_selected_series(segment, requested, health_seed)?;
     index.blocks.extend(finder.finish(segment, &index)?);
     index.blocks.sort_by_key(SeriesBlock::key);
     Ok(index)
 }
 
-fn build_selected_series(segment: &Segment, requested: &[SeriesKey]) -> Result<Index, BuildError> {
+fn build_selected_series(
+    segment: &Segment,
+    requested: &[SeriesKey],
+    health_seed: HealthSeed,
+) -> Result<Index, BuildError> {
     let mut requested = requested.to_vec();
     requested.sort_unstable();
     requested.dedup();
@@ -194,11 +274,16 @@ fn build_selected_series(segment: &Segment, requested: &[SeriesKey]) -> Result<I
     });
     let metadata = wants_health.then(|| health_metadata(segment)).transpose()?;
     let os_points = if wants_health {
-        health_points(segment)?
+        health_points(segment, health_seed.os)?
     } else {
         Vec::new()
     };
-    let needs_pg_health = requested.contains(&SeriesKey::POSTGRES_HEALTH);
+    let needs_pg_health = requested.iter().any(|key| {
+        matches!(
+            key.kind,
+            SeriesKind::PostgresHealth | SeriesKind::OverallHealth
+        )
+    });
     let mut activity = BTreeMap::<u32, Vec<ActiveBackendPoint>>::new();
     for type_id in segment
         .type_ids()
@@ -227,6 +312,7 @@ fn build_selected_series(segment: &Segment, requested: &[SeriesKey]) -> Result<I
                 blocks.push(SeriesBlock::OverallHealth(overall_points(
                     &os_points,
                     postgres_points.as_deref(),
+                    health_seed.postgres,
                     metadata,
                 )));
             }
@@ -364,6 +450,7 @@ fn postgres_health_points(
 fn overall_points(
     os: &[HealthPoint],
     postgres: Option<&[HealthPoint]>,
+    predecessor_postgres: Option<HealthPoint>,
     metadata: &HealthMetadata,
 ) -> Vec<HealthPoint> {
     let postgres_interval = metadata
@@ -374,22 +461,18 @@ fn overall_points(
         .map(|point| {
             let postgres_penalty = match metadata.postgresql_enabled {
                 Some(false) => SourcePenalty::Disabled,
-                Some(true) => postgres
-                    .and_then(|points| {
-                        points
-                            .iter()
-                            .rev()
-                            .find(|candidate| candidate.timestamp <= point.timestamp)
-                    })
-                    .filter(|candidate| {
-                        postgres_interval.is_some_and(|interval| {
-                            point.timestamp.saturating_sub(candidate.timestamp) <= interval
+                Some(true) => {
+                    latest_postgres_point(postgres, predecessor_postgres, point.timestamp)
+                        .filter(|candidate| {
+                            postgres_interval.is_some_and(|interval| {
+                                point.timestamp.saturating_sub(candidate.timestamp) <= interval
+                            })
                         })
-                    })
-                    .and_then(|candidate| candidate.value)
-                    .map_or(SourcePenalty::Unknown, |health| {
-                        SourcePenalty::Known(100_u8.saturating_sub(health))
-                    }),
+                        .and_then(|candidate| candidate.value)
+                        .map_or(SourcePenalty::Unknown, |health| {
+                            SourcePenalty::Known(100_u8.saturating_sub(health))
+                        })
+                }
                 None => SourcePenalty::Unknown,
             };
             HealthPoint {
@@ -398,6 +481,22 @@ fn overall_points(
             }
         })
         .collect()
+}
+
+fn latest_postgres_point(
+    current: Option<&[HealthPoint]>,
+    predecessor: Option<HealthPoint>,
+    timestamp: i64,
+) -> Option<HealthPoint> {
+    current
+        .and_then(|points| {
+            points
+                .iter()
+                .rev()
+                .find(|candidate| candidate.timestamp <= timestamp)
+                .copied()
+        })
+        .or_else(|| predecessor.filter(|candidate| candidate.timestamp <= timestamp))
 }
 
 fn transaction_points(
@@ -522,14 +621,49 @@ struct PartialStall {
 /// Returns a production-reader failure for either input section.
 pub fn visit_health_points(
     segment: &Segment,
-    mut keep_going: impl FnMut() -> bool,
+    keep_going: impl FnMut() -> bool,
+    visitor: impl FnMut(HealthPoint) -> bool,
+) -> Result<(), ReaderError> {
+    visit_health_points_with_seed(segment, None, keep_going, visitor)
+}
+
+fn visit_health_points_with_seed(
+    segment: &Segment,
+    mut seed: Option<StallSnapshot>,
+    keep_going: impl FnMut() -> bool,
     mut visitor: impl FnMut(HealthPoint) -> bool,
+) -> Result<(), ReaderError> {
+    let mut previous = None;
+    visit_stall_snapshots(segment, keep_going, |snapshot| {
+        if let Some(seed) = seed.take()
+            && seed.identity == snapshot.identity
+        {
+            previous = seed.stall.map(|stall| (seed.timestamp, stall));
+        }
+        let value = previous.and_then(|(before_ts, before)| {
+            snapshot
+                .stall
+                .and_then(|after| health(before, before_ts, after, snapshot.timestamp))
+        });
+        previous = snapshot.stall.map(|stall| (snapshot.timestamp, stall));
+        visitor(HealthPoint {
+            timestamp: snapshot.timestamp,
+            value,
+        })
+    })
+}
+
+fn visit_stall_snapshots(
+    segment: &Segment,
+    mut keep_going: impl FnMut() -> bool,
+    mut visitor: impl FnMut(StallSnapshot) -> bool,
 ) -> Result<(), ReaderError> {
     if segment.rows_of(OS_PSI_TYPE_ID).is_none() || !keep_going() {
         return Ok(());
     }
     let mut running = true;
     let mut environment = None;
+    let mut boot_time = None;
     let metadata_type_id = if segment.rows_of(INSTANCE_METADATA_TYPE_ID).is_some() {
         Some(INSTANCE_METADATA_TYPE_ID)
     } else if segment.rows_of(INSTANCE_METADATA_V1_TYPE_ID).is_some() {
@@ -540,7 +674,7 @@ pub fn visit_health_points(
     if let Some(metadata_type_id) = metadata_type_id {
         segment.visit_rows(
             metadata_type_id,
-            &["environment"],
+            &["environment", "btime"],
             0,
             usize::MAX,
             |_ordinal, row| {
@@ -550,6 +684,9 @@ pub fn visit_health_points(
                 }
                 if let Some(Cell::U32(value)) = row.get("environment") {
                     environment = Some(*value);
+                }
+                if let Some(Cell::Ts(value)) = row.get("btime") {
+                    boot_time = Some(*value);
                 }
                 true
             },
@@ -600,7 +737,6 @@ pub fn visit_health_points(
         return Ok(());
     }
 
-    let mut previous = None;
     for (timestamp, snapshot) in snapshots {
         if !keep_going() {
             break;
@@ -609,21 +745,41 @@ pub fn visit_health_points(
             (Some(cpu), Some(memory), Some(io)) => Some(Stall { cpu, memory, io }),
             _ => None,
         };
-        let value = previous.and_then(|(before_ts, before)| {
-            current.and_then(|after| health(before, before_ts, after, timestamp))
-        });
-        previous = current.map(|stall| (timestamp, stall));
-        if !visitor(HealthPoint { timestamp, value }) {
+        if !visitor(StallSnapshot {
+            timestamp,
+            identity: SnapshotIdentity {
+                environment,
+                boot_time,
+            },
+            stall: current,
+        }) {
             break;
         }
     }
     Ok(())
 }
 
-fn health_points(segment: &Segment) -> Result<Vec<HealthPoint>, ReaderError> {
-    let mut points = Vec::new();
-    visit_health_points(
+fn last_stall_snapshot(segment: &Segment) -> Result<Option<StallSnapshot>, ReaderError> {
+    let mut last = None;
+    visit_stall_snapshots(
         segment,
+        || true,
+        |snapshot| {
+            last = Some(snapshot);
+            true
+        },
+    )?;
+    Ok(last)
+}
+
+fn health_points(
+    segment: &Segment,
+    seed: Option<StallSnapshot>,
+) -> Result<Vec<HealthPoint>, ReaderError> {
+    let mut points = Vec::new();
+    visit_health_points_with_seed(
+        segment,
+        seed,
         || true,
         |point| {
             points.push(point);

@@ -17,7 +17,8 @@ use crate::{Section, StrId, Ts};
     id = 1_001_003,
     name = "pg_stat_activity",
     semantics = snapshot_full,
-    sort_key("ts", "pid")
+    sort_key("pid", "ts"),
+    identity("pid")
 )]
 pub struct PgStatActivityV3 {
     /// Snapshot time, unix microseconds; one value for all rows of a snapshot.
@@ -87,7 +88,8 @@ pub struct PgStatActivityV3 {
     id = 1_001_002,
     name = "pg_stat_activity",
     semantics = snapshot_full,
-    sort_key("ts", "pid")
+    sort_key("pid", "ts"),
+    identity("pid")
 )]
 pub struct PgStatActivityV2 {
     /// Snapshot time, unix microseconds; one value for all rows of a snapshot.
@@ -154,7 +156,8 @@ pub struct PgStatActivityV2 {
     id = 1_001_001,
     name = "pg_stat_activity",
     semantics = snapshot_full,
-    sort_key("ts", "pid")
+    sort_key("pid", "ts"),
+    identity("pid")
 )]
 pub struct PgStatActivityV1 {
     /// Snapshot time, unix microseconds; one value for all rows of a snapshot.
@@ -280,8 +283,9 @@ mod tests {
         let c = PgStatActivityV3::CONTRACT;
         assert_eq!(c.type_id.get(), 1_001_003);
         assert_eq!(c.columns.len(), 19);
-        assert_eq!(c.sort_key, ["ts", "pid"]);
-        // `ts` and `pid` form the sort key and are never null.
+        assert_eq!(c.sort_key, ["pid", "ts"]);
+        assert_eq!(c.identity, ["pid"]);
+        // `pid` and `ts` form the sort key and are never null.
         assert_eq!(c.column("ts").map(|col| col.nullable), Some(false));
         assert_eq!(c.column("pid").map(|col| col.nullable), Some(false));
         // Background backends leave these empty, so they are nullable.
@@ -312,10 +316,9 @@ mod tests {
     }
 
     #[test]
-    fn v3_encode_sorts_by_ts_then_pid() {
-        // Equal timestamps fall back to pid.
+    fn v3_encode_sorts_by_pid_then_ts() {
         let rows = [
-            v3_client(2_000, 1),
+            v3_client(2_000, 5),
             v3_client(1_000, 20),
             v3_client(1_000, 5),
         ];
@@ -324,7 +327,7 @@ mod tests {
             PgStatActivityV3::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
         assert_eq!(
             decoded.iter().map(|r| (r.ts.0, r.pid)).collect::<Vec<_>>(),
-            [(1_000, 5), (1_000, 20), (2_000, 1)]
+            [(1_000, 5), (2_000, 5), (1_000, 20)]
         );
     }
 
@@ -367,7 +370,8 @@ mod tests {
         let c = PgStatActivityV2::CONTRACT;
         assert_eq!(c.type_id.get(), 1_001_002);
         assert_eq!(c.columns.len(), 18);
-        assert_eq!(c.sort_key, ["ts", "pid"]);
+        assert_eq!(c.sort_key, ["pid", "ts"]);
+        assert_eq!(c.identity, ["pid"]);
         assert!(c.column("leader_pid").is_some());
         assert!(c.column("query_id").is_none());
         assert_timestamp_units(c);
@@ -406,7 +410,8 @@ mod tests {
         let c = PgStatActivityV1::CONTRACT;
         assert_eq!(c.type_id.get(), 1_001_001);
         assert_eq!(c.columns.len(), 17);
-        assert_eq!(c.sort_key, ["ts", "pid"]);
+        assert_eq!(c.sort_key, ["pid", "ts"]);
+        assert_eq!(c.identity, ["pid"]);
         assert!(c.column("leader_pid").is_none());
         assert!(c.column("query_id").is_none());
         assert_timestamp_units(c);

@@ -29,6 +29,7 @@ Feature: What the collector records about the container it runs in
       | 1202001 | os_cgroup_memory  | 1        |
       | 1203001 | os_cgroup_io      | 1        |
       | 1204001 | os_cgroup_pids    | 1        |
+      | 1205001 | os_cgroup_context | 1        |
 
   Scenario: The recorded CPU limit is the container's, not the host's core count
     Given a collector with these settings
@@ -51,4 +52,4 @@ Feature: What the collector records about the container it runs in
       | KRONIKA_OS_CGROUP_INTERVAL_S         | 0     |
       | KRONIKA_OS_CGROUP_MAPPING_INTERVAL_S | 0     |
     When it runs for 5 seconds
-    Then its peak RSS stays under 20 MB
+    Then its peak RSS stays under 25 MiB

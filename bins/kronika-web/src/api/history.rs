@@ -4,13 +4,13 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use kronika_index::{OS_PSI_TYPE_ID, visit_health_points};
-use kronika_reader::{Row, Segment, SegmentKind};
+use kronika_reader::{Cell, Row, Segment, SegmentKind};
 use serde_json::json;
 
 use super::query::{Plan, apply_tail, chunk_dictionary, plans};
 use super::render::{cell, projected_layout, record};
 use super::{ApiError, CachePolicy, ResponseMeta, active_tail, explicit_segment};
-use crate::route::{ActiveCursor, DataRequest};
+use crate::route::{ActiveCursor, DataRequest, Window};
 
 const ROW_CHUNK_ROWS: usize = 16;
 
@@ -92,6 +92,7 @@ impl PreparedHistory {
             &self.segment,
             &self.logical_name,
             &self.plans,
+            None,
             emit,
             cancelled,
         )
@@ -125,7 +126,7 @@ impl PreparedHistory {
                         connected = false;
                         return false;
                     }
-                    if let Some(kronika_reader::Cell::Ts(timestamp)) = row.get("ts") {
+                    if let Some(Cell::Ts(timestamp)) = row.get("ts") {
                         timestamps.insert(*timestamp);
                     }
                     true
@@ -270,6 +271,7 @@ pub(super) fn stream_plans(
     segment: &Segment,
     logical_name: &str,
     plans: &[Plan],
+    window: Option<Window>,
     emit: &mut impl FnMut(Vec<u8>) -> bool,
     cancelled: &impl Fn() -> bool,
 ) -> Result<bool, ApiError> {
@@ -308,6 +310,14 @@ pub(super) fn stream_plans(
                 if cancelled() {
                     connected = false;
                     return false;
+                }
+                if window.is_some_and(|window| {
+                    !plan
+                        .timestamp
+                        .and_then(|column| row.get(column))
+                        .is_some_and(|cell| matches!(cell, Cell::Ts(ts) if window.contains(*ts)))
+                }) {
+                    return true;
                 }
                 chunk.push((ordinal, row));
                 if chunk.len() < ROW_CHUNK_ROWS {

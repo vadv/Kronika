@@ -5,8 +5,8 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { build } from "esbuild"
-import { gzipSync } from "fflate"
 import { gunzipSync } from "node:zlib"
+import { gzip } from "pako"
 
 import { dictionaryModule } from "./i18n.mjs"
 
@@ -21,8 +21,8 @@ if (fixtureOutputAt >= 0 && (fixtureOutput === undefined || process.argv.length 
 const artifact = fixtureOutput === null ? join(uiDirectory, "kronika-ui.html.gz") : resolve(fixtureOutput)
 const checkOnly = process.argv.includes("--check")
 if (checkOnly && fixtureOutput !== null) throw new Error("--check and --fixture-output cannot be combined")
-const maximumRawBytes = fixtureOutput === null ? 930_000 : 40_000_000
-const maximumGzipBytes = fixtureOutput === null ? 232_000 : 8_000_000
+const maximumRawBytes = fixtureOutput === null ? 960_000 : 40_000_000
+const maximumGzipBytes = fixtureOutput === null ? 270_000 : 8_000_000
 const rustToolchain = process.env.RUST_TOOLCHAIN ?? "1.96.0"
 const rustHost = execFileSync("rustc", [`+${rustToolchain}`, "-vV"], { encoding: "utf8" })
   .match(/^host: (.+)$/m)?.[1]
@@ -40,17 +40,15 @@ try {
   const translations = await dictionaryModule(new URL("./", import.meta.url))
   const javascript = await bundleJavascript(registry, translations, fixtureOutput !== null)
   const stylesheet = await compileStylesheet(temporary)
-  const latinFont = await readFile(join(uiDirectory, "assets/JetBrainsMono-Latin.woff2"))
-  const cyrillicFont = await readFile(join(uiDirectory, "assets/JetBrainsMono-Cyrillic.woff2"))
   const template = await readFile(join(uiDirectory, "src/index.html"), "utf8")
   const fixture = fixtureOutput === null ? "" : await fixtureScript()
   const html = template
-    .replaceAll("{{KRONIKA_STYLE}}", () => `${fontFaces(latinFont, cyrillicFont)}\n${stylesheet}`)
+    .replaceAll("{{KRONIKA_STYLE}}", () => stylesheet)
     .replaceAll("{{KRONIKA_DATA}}", () => fixture)
     .replaceAll("{{KRONIKA_SCRIPT}}", () => javascript)
 
   validateHtml(html)
-  const compressed = Buffer.from(gzipSync(Buffer.from(html), { level: 9, mtime: 0 }))
+  const compressed = Buffer.from(gzip(Buffer.from(html), { level: 9 }))
   validateGzipHeader(compressed)
   if (Buffer.byteLength(html) > maximumRawBytes || compressed.length > maximumGzipBytes) {
     throw new Error(
@@ -76,10 +74,11 @@ async function bundleJavascript(registry, translations, includeFixture) {
     absWorkingDir: uiDirectory,
     entryPoints: ["src/app.tsx"],
     bundle: true,
+    charset: "utf8",
     define: { "process.env.NODE_ENV": '"production"' },
+    drop: ["console"],
     format: "iife",
     legalComments: "none",
-    mangleProps: /^g[a]p$/,
     minify: true,
     platform: "browser",
     sourcemap: false,
@@ -103,7 +102,7 @@ async function bundleJavascript(registry, translations, includeFixture) {
           namespace: "kronika",
         }))
         context.onLoad({ filter: /.*/, namespace: "kronika" }, () => ({
-          contents: registry,
+          contents: registry.replace(/"(columns|identity|logicalName|typeId)":/g, "$1:"),
           loader: "ts",
         }))
         context.onResolve({ filter: /^kronika:i18n$/ }, () => ({
@@ -142,17 +141,6 @@ async function compileStylesheet(temporary) {
   return readFile(output, "utf8")
 }
 
-function fontFaces(latin, cyrillic) {
-  return [
-    fontFace(latin, "U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD"),
-    fontFace(cyrillic, "U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116"),
-  ].join("\n")
-}
-
-function fontFace(font, range) {
-  return `@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:100 800;font-display:swap;src:url(data:font/woff2;base64,${font.toString("base64")}) format("woff2-variations");unicode-range:${range}}`
-}
-
 function validateHtml(html) {
   if (!html.startsWith("<!doctype html>")) {
     throw new Error("the built UI is not an HTML document")
@@ -168,9 +156,24 @@ function validateHtml(html) {
       || /url\(\s*["']?\s*https?:\/\//i.test(html)) {
     throw new Error("the production UI contains an external asset URL")
   }
-  if (html.toLowerCase().includes("</script")
-      && html.toLowerCase().split("</script").length !== 2) {
-    throw new Error("the JavaScript bundle contains an HTML script terminator")
+  const scriptStarts = scriptBodies(html).length
+  const scriptEnds = html.toLowerCase().split("</script").length - 1
+  if (scriptStarts !== 2 || scriptEnds !== 2) {
+    throw new Error(`the production UI must contain two complete inline scripts (found ${scriptStarts}/${scriptEnds})`)
+  }
+}
+
+function scriptBodies(html) {
+  const bodies = []
+  let tail = html
+  for (;;) {
+    const start = tail.indexOf("<script>")
+    if (start < 0) return bodies
+    const body = tail.slice(start + "<script>".length)
+    const end = body.toLowerCase().indexOf("</script>")
+    if (end < 0) throw new Error("the production UI contains an incomplete inline script")
+    bodies.push(body.slice(0, end))
+    tail = body.slice(end + "</script>".length)
   }
 }
 

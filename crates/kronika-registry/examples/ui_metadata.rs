@@ -22,6 +22,12 @@ fn main() -> io::Result<()> {
                 "logicalName": logical_section_name(contract.type_id.get()),
                 "identity": contract.identity,
                 "columns": contract.columns.iter().map(|column| column.name).collect::<Vec<_>>(),
+                "columnMetadata": contract.columns.iter().map(|column| json!({
+                    "name": column.name,
+                    "type": column.ty.code(),
+                    "class": column.class.code(),
+                    "unit": column.unit.map(kronika_registry::Unit::code),
+                })).collect::<Vec<_>>(),
             })
         })
         .collect::<Vec<_>>();

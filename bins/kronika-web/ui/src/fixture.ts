@@ -68,7 +68,7 @@ export function bundledFixtureHour(start: number): HourData | null {
   const segmentAt = segmentForTimestamp(fixture.os)
   const processes = tableRows(fixture.os, "os_process").filter((row) => within(row.timestamp))
   const activities = tableRows(fixture.pg, "pg_stat_activity").filter((row) => within(row.timestamp))
-  const health = seriesRows(fixture.system.health, "health", "0", { field: "os_health", segmentAt })
+  const health = seriesRows(fixture.system["health"], "health", "0", { field: "os_health", segmentAt })
     .filter((row) => within(row.timestamp))
   const load = seriesRows(fixture.system.load1, "os_loadavg", "1105001", { field: "load1", segmentAt })
     .filter((row) => within(row.timestamp))
@@ -83,18 +83,33 @@ export function bundledFixtureHour(start: number): HourData | null {
       segmentAt,
     }),
   ).filter((row) => within(row.timestamp))
-  const points = fixturePoints(fixture, segmentAt).filter((point) => within(point.timestamp))
+  const points = fixturePoints(fixture, segmentAt, activities).filter((point) => within(point.timestamp))
   const lanePoints = fixtureLanePoints(points, activities)
-  const findings = fixture.findings.map((finding) => ({
+  const findings = fixture["findings"].map((finding) => ({
     segmentId: finding.segment_id,
     logicalName: fixtureLogicalName(finding.type_id),
-    kind: finding.kind,
+    kind: finding["kind"],
     typeId: finding.type_id,
     timestamp: Number(finding.t),
-    category: finding.category ?? null,
+    category: finding["category"] ?? null,
     rowOrdinal: String(finding.row_ordinal),
     fieldOrdinal: finding.field_ordinal,
   })).filter((finding) => within(finding.timestamp))
+  const groupedFindings = new Map<string, { readonly first: typeof findings[number]; count: number }>()
+  for (const finding of findings) {
+    const key = `${finding.segmentId}:${finding.typeId}`
+    const group = groupedFindings.get(key)
+    if (group === undefined) groupedFindings.set(key, { first: finding, count: 1 })
+    else group.count += 1
+  }
+  const findingGroups = [...groupedFindings.values()].map(({ first, count }) => ({
+    segmentId: first.segmentId,
+    logicalName: first.logicalName,
+    typeId: first.typeId,
+    totalHits: count,
+    shown: count,
+    truncated: false,
+  }))
   const sections = {
     os_process: processes,
     pg_stat_activity: activities,
@@ -103,7 +118,10 @@ export function bundledFixtureHour(start: number): HourData | null {
   return {
     sections,
     rateColumns: {},
+    snapshotRows: [],
     availableSections: ["os_process", "pg_stat_activity", "health"],
+    postgresqlConfigured: true,
+    postgresqlPresent: true,
     processes,
     activities,
     load,
@@ -114,6 +132,7 @@ export function bundledFixtureHour(start: number): HourData | null {
     points,
     lanePoints,
     findings,
+    findingGroups,
   }
 }
 
@@ -199,9 +218,9 @@ function isFixture(value: unknown): value is RealHourFixture {
     && typeof candidate.meta.captureToUs === "string"
     && Number.isSafeInteger(candidate.meta.segments)
     && table(candidate.os) && table(candidate.pg)
-    && Array.isArray(candidate.findings)
+    && Array.isArray(candidate["findings"])
     && candidate.system !== undefined
-    && Array.isArray(candidate.system.health)
+    && Array.isArray(candidate.system["health"])
     && Array.isArray(candidate.system.load1)
     && Array.isArray(candidate.system.memAvailable)
     && candidate.system.psi !== null
@@ -211,15 +230,15 @@ function isFixture(value: unknown): value is RealHourFixture {
 function table(value: unknown): value is FixtureTable {
   if (value === null || typeof value !== "object") return false
   const candidate = value as Partial<FixtureTable>
-  return Array.isArray(candidate.columns) && Array.isArray(candidate.snapshots)
+  return Array.isArray(candidate["columns"]) && Array.isArray(candidate.snapshots)
 }
 
 function tableRows(table: FixtureTable, logicalName: string): readonly DataRow[] {
-  const columns = new Map(table.columns.map((name, index) => [name, index]))
+  const columns = new Map(table["columns"].map((name, index) => [name, index]))
   const ordinalIndex = columns.get("ordinal")
   const timestampIndex = columns.get("ts")
-  return table.snapshots.flatMap((snapshot) => snapshot.rows.map((cells, rowIndex) => {
-    const values = Object.fromEntries(table.columns.flatMap((name, index) =>
+  return table.snapshots.flatMap((snapshot) => snapshot["rows"].map((cells, rowIndex) => {
+    const values = Object.fromEntries(table["columns"].flatMap((name, index) =>
       name === "ordinal" || name === "ts" ? [] : [[name, cells[index] ?? null]],
     ))
     return {
@@ -253,10 +272,10 @@ function seriesRows(
   }))
 }
 
-function fixturePoints(fixture: RealHourFixture, segmentAt: (timestamp: number) => string): readonly Point[] {
+function fixturePoints(fixture: RealHourFixture, segmentAt: (timestamp: number) => string, activities: readonly DataRow[]): readonly Point[] {
   const series: readonly [string, string, string, readonly FixturePoint[]][] = [
     ["os_cpu", "1102001", "os_cpu_busy_percent", fixture.system.cpuBusy],
-    ["health", "0", "os_health", fixture.system.health],
+    ["health", "0", "os_health", fixture.system["health"]],
     ["os_loadavg", "1105001", "os_load1", fixture.system.load1],
     ["os_meminfo", "1104001", "os_mem_available_percent", fixture.system.memAvailable],
     ["os_mountinfo", "1112001", "os_min_filesystem_free_percent", fixture.system.minFsFree],
@@ -273,7 +292,23 @@ function fixturePoints(fixture: RealHourFixture, segmentAt: (timestamp: number) 
       value,
     })),
   )
-  return points.concat(Object.entries(fixture.system.psi).flatMap(([resource, values]) =>
+  const active = new Map<string, { readonly segmentId: string; readonly timestamp: number; readonly typeId: string; count: number }>()
+  for (const row of activities) {
+    if (cellText(row.values.state) !== "active") continue
+    const key = `${row.segmentId}:${row.typeId}:${row.timestamp}`
+    const stored = active.get(key) ?? { segmentId: row.segmentId, timestamp: row.timestamp, typeId: row.typeId, count: 0 }
+    stored.count += 1
+    active.set(key, stored)
+  }
+  return points.concat([...active.values()].map((stored) => ({
+    segmentId: stored.segmentId,
+    logicalName: "pg_stat_activity",
+    typeId: stored.typeId,
+    series: "active_backends",
+    timestamp: stored.timestamp,
+    identity: {},
+    value: stored.count,
+  })), Object.entries(fixture.system.psi).flatMap(([resource, values]) =>
     values.map(([timestamp, value]) => ({
       segmentId: segmentAt(Number(timestamp)),
       logicalName: "os_psi",

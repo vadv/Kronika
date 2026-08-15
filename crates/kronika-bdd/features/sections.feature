@@ -42,6 +42,7 @@ Feature: Which sections reach the segment, and how many rows they may hold
       | 1202001 | os_cgroup_memory   | 1        |
       | 1203001 | os_cgroup_io       | 1        |
       | 1204001 | os_cgroup_pids     | 1        |
+      | 1205001 | os_cgroup_context  | 1        |
     And every segment holds these sections
       | type_id | section      | min rows |
       | 3001001 | dict.strings | 1        |

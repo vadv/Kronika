@@ -17,6 +17,16 @@ mod render;
 mod rows;
 mod snapshot;
 
+#[cfg(test)]
+pub(crate) use hour::process_summary::{
+    operations as process_summary_operations, reset_operations as reset_process_summary_operations,
+};
+#[cfg(test)]
+pub(crate) use snapshot::{
+    context_operations, history_operations, page_operations, reset_context_operations,
+    reset_history_operations, reset_page_operations,
+};
+
 /// Cache policy applied centrally after preparation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CachePolicy {
@@ -135,6 +145,22 @@ impl ApiError {
             _ => None,
         }
     }
+
+    pub(crate) fn source_changed_during_read(&self) -> bool {
+        let Self::Unreadable(error) = self else {
+            return false;
+        };
+        let mut source: &(dyn Error + 'static) = error.as_ref();
+        loop {
+            if let Some(reader) = source.downcast_ref::<ReaderError>() {
+                return reader.source_changed_during_read();
+            }
+            let Some(next) = source.source() else {
+                return false;
+            };
+            source = next;
+        }
+    }
 }
 
 impl std::fmt::Display for ApiError {
@@ -190,7 +216,7 @@ pub(crate) fn prepare(
         Route::History(request) => history::prepare(root, request).map(Prepared::History),
         Route::Hour(request) => hour::prepare(root, request, sources).map(Prepared::Hour),
         Route::Rows(request) => rows::prepare(root, request).map(Prepared::Rows),
-        Route::Snapshot(request) => snapshot::prepare(root, request).map(Prepared::Snapshot),
+        Route::Snapshot(request) => snapshot::prepare(root, *request).map(Prepared::Snapshot),
     }
 }
 

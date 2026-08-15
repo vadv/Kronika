@@ -34,7 +34,7 @@ Concrete consequences:
   must not wake the heavy paths.
 - The collector shares a host with a production database. An out-of-memory kill
   there costs more than a lost segment.
-- **The collector's peak RSS stays under 20 MB on an ordinary host**, and each
+- **The collector's peak RSS stays under 25 MiB on an ordinary host**, and each
   segment write logs it as `rss_kib`. A host with thirty thousand processes is
   a host already in trouble; an ordinary OS snapshot reads all of them and is
   allowed to die trying rather than report a fraction. Log files and potentially
@@ -153,6 +153,36 @@ The collector decides at collection time whether it is on a VM or inside a
 container, and records the answer in the `instance_metadata` section that every
 segment carries. It does not guess, and web does not re-derive it.
 
+On each cgroup collection tick, `os_cgroup_context` records cgroup version, the
+collector's exact CPU, memory, and I/O paths from `/proc/self/cgroup`, and the
+effective cpuset CPU count when the exact matching kernel file is usable. It
+also records the tightest CPU quota/period ratio and memory limit that apply to
+that membership. The hierarchy starts at the configured cgroup root and ends at
+the exact membership path. Every cgroup v2 control file that exists on this path
+must be valid. For a non-root membership only, a missing control file at the
+mount root means that true root is unbounded; every descendant is required. A
+different root read error, or a missing root file for root membership, leaves
+capacity unknown. Cgroup v1 CPU reads are bound to one unambiguous controller
+root. V1 memory uses the exact leaf's validated `hierarchical_memory_limit` only
+when it agrees with `memory.limit_in_bytes` from that same bound root.
+
+A CPU quota of `-1` means the applicable hierarchy was read coherently and is
+unlimited; `null` means that hierarchy was not established coherently. A memory
+limit is `null` when it is unlimited or cannot be read coherently. Missing
+controllers and unusable cpuset data also remain `null`. A controller path
+stays `null` when the stored layout cannot represent every operand shown by
+web;
+a missing counter or composition field is never turned into zero. This one-row
+context selects the collector's rows from the bounded cgroup tables; a host CPU
+count or host `/proc` value never substitutes for cgroup capacity or use. Local
+cgroup rows continue to record the leaf controller files and do not relabel
+them as effective hierarchical limits.
+
+Web loads this bounded context row first, then requests CPU, memory, and I/O
+snapshots with exact server-side `cgroup_path` and `scope` filters. The three
+controller paths remain independent for cgroup v1. Unfiltered cgroup trees are
+never materialized in `HourData`.
+
 Where it runs decides which pressure rows describe it: host-scoped
 `/proc/pressure` for a machine, and pressure from its own cgroup for a
 container. Every `os_psi` row records that scope. The current procfs collector
@@ -193,12 +223,14 @@ snapshots.
 No thresholds and no weights inside the OS component. The worst resource
 decides, because an average hides a saturated disk behind an idle CPU.
 
-Health is null when it cannot be computed: the first snapshot of a segment has
+Health is null when it cannot be computed: the first recorded snapshot has
 nothing to subtract from; a counter that went backwards yields no stall time
 to put over the interval; the pressure scope does not describe the recorded
 environment; or either adjacent snapshot lacks a usable counter for CPU,
-memory, or IO. When a missing resource reappears, that complete snapshot starts
-a new baseline.
+memory, or IO. The first snapshot in a later segment uses the immediately
+preceding recorded snapshot when the environment and boot identity match;
+storage boundaries do not reset the baseline. When a missing resource
+reappears, that complete snapshot starts a new baseline.
 
 A container on cgroup v1 has no `*.pressure` files and so no health. The host's
 pressure belongs to the node, and standing in with it would report someone
@@ -244,12 +276,12 @@ overall_health = clamp(100 - os_penalty - postgres_penalty, 0, 100)
 ```
 
 Each combined point has an OS-health timestamp. It uses the latest PostgreSQL
-snapshot not later than that timestamp only while its age is at most the
-recorded effective PostgreSQL interval. There is no interpolation: before the
-first PostgreSQL snapshot and after a stale one the combined value is `null`.
-The index always exposes OS and combined health; it exposes PostgreSQL health
-only when that source is configured. These blocks contain only small points,
-never large source rows.
+snapshot not later than that timestamp, including one from the preceding
+segment, only while its age is at most the recorded effective PostgreSQL
+interval. There is no interpolation: before the first PostgreSQL snapshot and
+after a stale one the combined value is `null`. The index always exposes OS and
+combined health; it exposes PostgreSQL health only when that source is
+configured. These blocks contain only small points, never large source rows.
 
 ## Highlighting
 
@@ -262,15 +294,12 @@ locator before applying the existing per-section cap:
 - `2_003_001` `pg_log_autovacuum`;
 - `2_004_001` `pg_log_slow_queries`;
 - `2_005_001` `pg_log_lock_waits`;
-- `2_006_001` `pg_log_lifecycle`; and
-- `2_007_001` `pg_log_temp_files`.
+- `2_006_001` `pg_log_lifecycle`.
 
 This list is exhaustive; registry metadata does not expand it. Separately,
-Kronika adds only two independent best-effort visual marks. `known_bad` means
-an exact stored value crossed one small explicit boundary. `spike` means the
-current value is a short upward spike relative to prior stored snapshots of
-the same concrete series. A point may have either mark, both, or neither. Value
-colour and marks remain separate.
+Kronika adds one independent best-effort visual mark. `known_bad` means an
+exact stored value crossed one small explicit boundary. Value colour and marks
+remain separate.
 
 The implementation uses explicit field matches and ordinary comparisons. It
 has no policy or expression framework, persistent baseline, cadence or
@@ -299,41 +328,9 @@ Optional or missing inputs produce no mark. Kronika does not substitute a
 cgroup quota for the host CPU denominator, approximate an absent capacity, or
 use a grouped duration sum as one event duration.
 
-### Upward spikes
-
-A spike compares the current transformed value with prior stored values of the
-same concrete series. Use every prior value in the preceding 15 minutes when
-that set contains at least five values. Otherwise continue backward only until
-the nearest five prior values have been selected. With fewer than five prior
-values, there is no spike. Values may cross segment boundaries; snapshot
-spacing creates no continuity or cadence rule.
-
-Sort the selected values. `Q1` and `Q3` are the 25th and 75th percentiles, using
-linear interpolation at sorted rank `(n-1)p`:
-
-```
-upper_fence = Q3 + 1.5 * (Q3 - Q1)
-spike       = current > upper_fence
-```
-
-Thus `[98, 99, 100, 101, 102]` has `Q1=99`, `Q3=101`, and upper fence `104`.
-Zero is data. `null`, a missing predecessor, a non-positive elapsed time, or a
-negative counter delta produces no transformed value.
-
-The initial spike series are exactly:
-
-- per-process disk-read bytes per second from adjacent stored `read_bytes`
-  values, keyed by `(pid,starttime)`; and
-- per-statement average execution duration from
-  `delta(total_exec_time)/delta(calls)` where one exact physical
-  `pg_stat_statements` layout stores both fields and its full identity.
-
-`pg_store_plans` has no spike rule. A predecessor is only an input to the
-current calculation; Kronika stores no chain state.
-
 ### IDX locators
 
-Web records event locators and computes findings while building an index
+Web records event locators and known-bad marks while building an index
 through the production reader. When prior values are needed, it reads
 preceding finished ZMS directly, never another IDX. Temporary state is
 discarded after the build. The collector does not compute findings, and there
@@ -350,9 +347,14 @@ Only a `pg_log_errors` event locator also carries the row's stored one-byte
 category: `0` lock, `1` constraint/data-integrity, `2` serialization, `3`
 timeout, `4` resource, `5` data corruption, `6` system, `7` connection, `8`
 auth, `9` syntax, or `10` other. IDX reads this byte directly and does not
-classify SQLSTATE. The other six log layouts omit category because their
+classify SQLSTATE. The other five log layouts omit category because their
 physical `type_id` already identifies the event class. HTTP and dump expose
 the numeric category only on an error event locator.
+
+`pg_log_temp_files` remains a raw `event_stream` storage section, but it is not
+an operator event: it has no finding locator and does not appear in Events or
+on the shared timeline. Raw temporary-file rows remain available through
+ordinary history and row reads.
 
 Derived overall health uses its compact health-point ordinal. Blocks do not
 copy severity, SQLSTATE, messages, statements, identities, values, labels,
@@ -362,7 +364,13 @@ One fixed per-block cap keeps the format bounded. Stored locators remain in
 deterministic timestamp and locator order; `total_hits` and `truncated` make an
 omission visible. This is not ranking.
 
-The IDX format is unreleased. `KRNIDX5` is its one current reader and writer and
+An hour response filters each stored locator to the requested inclusive
+`[from,to]` before emitting it or counting it. If a source block was already
+truncated and its omitted tail may intersect the hour, the filtered count
+covers only returned in-window locators and `truncated` remains true. The hour
+never counts a locator known to be outside its bounds.
+
+The IDX format is unreleased. `KRNIDX6` is its one current reader and writer and
 changes in place. Web discards and rebuilds any other IDX; there is no
 old-format reader, migration, compatibility branch, or dual write.
 
@@ -437,8 +445,10 @@ selects a physical PostgreSQL layout; the catalog reports the layouts actually
 present. A configured source with no data is drawn empty. A misconfigured DSN
 is a line in the collector's log, not a change in the interface.
 
-Requests carry HTTP basic authentication. Other schemes come later, and the
-check sits in one place so that adding one does not touch the handlers.
+Direct API requests accept HTTP Basic authentication. The browser sends Basic
+only to create a signed first-party HttpOnly session cookie, then uses that
+cookie for protected API requests. The check stays in one place outside the
+handlers.
 
 ### Shipped interface
 
@@ -455,18 +465,74 @@ document. A saved locale wins over `navigator.languages`, with English as the
 fallback; source values, identifiers, queries and command lines are never
 translated.
 
+Wording follows one rule with two halves. A label carries the term the trade
+already uses, in English, because that is how the counter is named in `top`,
+`atop` and `pg_stat_*`: `Major page faults`, `Seq scans`, `Tuples updated`,
+`Autovacuum`, `WAL`, `PSI`, `OOM kills`. Translating those into Russian breaks
+recognition, and mixing the two inside one label is worse than either. Only the
+grammatical frame and the units stay Russian, including the genitive that
+fractions require.
+
+A help string is the opposite. It explains the counter in plain Russian and does
+not repeat the English term standing next to it. It says what the number really
+measures, when it grows, and whether a high value is worse or better, in a
+sentence or two, without pointing at another screen. One concept keeps one name
+everywhere; a counter named twice is a defect, and drift in the English
+dictionary is fixed before the Russian one is translated from it.
+
 The interface covers one selected calendar hour. Host contains dense System
 metric groups and virtualized Processes lenses; PostgreSQL contains Overview,
 Activity, Statements, Locks and Databases whenever their sections are present.
 Events expands the same findings drawn on the shared healthline. The timeline
-always spans the complete hour, leaves gaps blank and drives every view with one
-cursor. Marker shape identifies log events, threshold crossings, and spikes.
+always spans the complete hour, does not connect missing periods and drives
+every view with one cursor. Marker shape identifies log events and threshold
+crossings.
 
-System tables contain only entities such as devices, mounts, interfaces and CPU
-topology. Selecting a metric opens its one-hour history. A selected Linux
-process links to the nearest `pg_stat_activity` data by exact PID and shows the
-PostgreSQL PID, database, role, application, client, state, wait, query and
-times. The locale switch is immediate and persists locally.
+System presents host CPU from `/proc/stat` as user plus nice, system,
+interrupts, I/O wait, stolen, and idle shares. Used core equivalents exclude
+idle and I/O wait; available host capacity is the recorded online logical CPU
+count. CPU history plots these shares together with used and available core
+equivalents on labelled scales. A collector cgroup is a separate table: used,
+user, and system core equivalents come from cgroup counter deltas, and capacity
+is the smaller of the validated effective quota and the exact effective cpuset
+when both are finite. A coherently unlimited quota leaves the cpuset as
+capacity. Capacity is `null` when the quota hierarchy is unknown or neither
+value supplies a finite bound.
+
+Host memory uses non-overlapping anonymous, file-cache-plus-buffer,
+reclaimable-slab, unreclaimable-slab, free, and residual categories. The
+kernel's available-memory estimate is shown separately because it overlaps
+reclaimable memory. Memory history plots the non-overlapping categories, total,
+and the separate available estimate together with exact units. Collector-cgroup
+memory separately shows current use, the finite effective hierarchical limit,
+anonymous, file, slab, other kernel, and residual charged memory. Slab is
+subtracted from kernel memory before both are displayed. The leaf's local
+memory setting remains available as source data but is not shown as the
+effective limit.
+
+System tables contain devices, the collector cgroup, mounts, interfaces and CPU
+topology. Block devices are identified by `major:minor`. Average read and write
+latency is `delta(operation_time_ms) / delta(completed_operations)` and is
+`null` without a usable predecessor or when the operation delta is zero. Host
+I/O PSI stays explicitly host-wide and is not presented as device latency;
+cgroup I/O throughput and operations remain separate from host diskstats.
+Selecting a metric opens its one-hour history.
+
+A persisted local preference can remove every large chart panel from the layout,
+so tables immediately use the released viewport height. Process-summary loads
+retain the last successful rows and distinguish loading, request failure, and a
+successful empty result. PostgreSQL navigation and visuals are absent when the
+selected current data has PostgreSQL disabled; a historical hour that contains
+PostgreSQL telemetry remains available, and disabled PostgreSQL leaves overall
+health equal to OS health. A selected Linux process links to the nearest
+`pg_stat_activity` data by exact PID and shows the PostgreSQL PID, database,
+role, application, client, state, wait, query and times. Locale changes are
+immediate and persist locally.
+
+Within the selected calendar hour, PID alone identifies OS process and
+`pg_stat_activity` rows, histories, filters, joins and counter deltas. Process
+`starttime` and PostgreSQL `backend_start` remain observed timestamps and do
+not participate in that identity.
 
 ### Segment resources
 

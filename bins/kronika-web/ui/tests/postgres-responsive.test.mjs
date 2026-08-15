@@ -6,6 +6,7 @@ import test from "node:test"
 
 const directory = dirname(fileURLToPath(import.meta.url))
 const stylesheet = await readFile(join(directory, "../src/styles.css"), "utf8")
+const app = await readFile(join(directory, "../src/app.tsx"), "utf8")
 
 function mediaBlock(condition) {
   const start = stylesheet.indexOf(`@media (${condition})`)
@@ -21,7 +22,8 @@ function mediaBlock(condition) {
 }
 
 test("PostgreSQL keeps its dock beside the table at 1024 pixels", () => {
-  assert.match(stylesheet, /\.pg-entity-layout \{[^}]*grid-template-columns: minmax\(0, 1fr\) 390px;/)
+  assert.match(stylesheet, /\.pg-entity-layout \{[^}]*grid-template-columns: minmax\(0, 1fr\) clamp\(460px, 32vw, 600px\);/)
+  assert.match(stylesheet, /\.pg-entity-main \{ min-width: 0; \}/)
 
   const processOverlay = mediaBlock("max-width: 1179px")
   assert.match(processOverlay, /\.process-layout/)
@@ -30,4 +32,37 @@ test("PostgreSQL keeps its dock beside the table at 1024 pixels", () => {
   const postgresOverlay = mediaBlock("max-width: 1000px")
   assert.match(postgresOverlay, /\.pg-entity-layout \{ grid-template-columns: minmax\(0, 1fr\); \}/)
   assert.match(postgresOverlay, /\.pg-detail \{[^}]*position: fixed;/)
+})
+
+test("the operator bar wraps before its controls can widen a 1024 pixel page", () => {
+  const compactShell = mediaBlock("max-width: 1179px")
+  assert.match(compactShell, /\.topbar \{[^}]*flex-wrap: wrap;/)
+})
+
+test("every PostgreSQL table view owns the viewport flex chain", () => {
+  assert.match(app, /visibleSource === "postgresql" && pgSection !== "overview"/)
+  assert.match(app, /pg-table-shell/)
+  assert.match(app, /pg-table-workspace/)
+  assert.match(stylesheet, /\.pg-table-shell \{[^}]*height: 100dvh;[^}]*min-height: 0;[^}]*overflow: hidden;/)
+  assert.match(stylesheet, /\.pg-table-shell > \.topbar \{ flex: 0 0 auto; \}/)
+  assert.match(stylesheet, /\.pg-table-workspace \{[^}]*flex: 1 1 0;[^}]*min-height: 0;[^}]*overflow: hidden;/)
+  assert.match(stylesheet, /\.pg-table-shell \.pg-entity-layout \{[^}]*flex: 1 1 0;[^}]*grid-template-rows: minmax\(0, 1fr\);[^}]*min-height: 0;[^}]*overflow: hidden;/)
+  assert.match(stylesheet, /\.pg-table-shell \.pg-entity-main, \.pg-table-shell \.pg-entity-layout \.entity-table \{[^}]*flex: 1 1 0;[^}]*min-height: 0;[^}]*overflow: hidden;/)
+  assert.match(stylesheet, /\.pg-table-shell \.pg-entity-layout \.entity-scroll \{[^}]*flex: 1 1 0;[^}]*height: auto;[^}]*min-height: 0;/)
+  assert.match(stylesheet, /\.charts-hidden\.pg-table-shell \.pg-entity-layout, \.charts-hidden\.pg-table-shell \.pg-entity-layout \.entity-table, \.charts-hidden\.pg-table-shell \.pg-entity-layout \.entity-scroll \{[^}]*flex: 1 1 auto;/)
+  assert.match(stylesheet, /\.pg-table-shell \.pg-detail \{[^}]*max-height: none;[^}]*min-height: 0;/)
+  assert.match(stylesheet, /\.pg-table-shell \.pg-detail \.uplot-figure:not\(\.uplot-expanded\) \{[^}]*flex: 0 0 200px;[^}]*height: 200px;[^}]*max-height: 200px;/)
+})
+
+test("short PostgreSQL workspaces keep a visible chart path without crushing the table", () => {
+  assert.match(stylesheet, /\.pg-table-workspace > \.timeline-shell \{ flex: 0 0 auto; \}/)
+
+  const compact = mediaBlock("max-height: 620px")
+  assert.match(compact, /\.timeline-chart:not\(\.uplot-expanded\)[^{]*\{[^}]*flex-basis: 132px;[^}]*height: 132px;[^}]*min-height: 132px;/)
+  assert.match(compact, /\.timeline-chart:not\(\.uplot-expanded\) \.uplot-host \{ min-height: 102px; \}/)
+
+  const launch = mediaBlock("max-height: 480px")
+  assert.match(launch, /\.timeline-chart:not\(\.uplot-expanded\)[^{]*\{[^}]*flex-basis: 32px;[^}]*height: 32px;[^}]*min-height: 32px;/)
+  assert.match(launch, /\.timeline-chart:not\(\.uplot-expanded\) \.uplot-host,[^}]*\.chart-marker-track \{ display: none; \}/)
+  assert.match(launch, /\.timeline-chart:not\(\.uplot-expanded\) \.chart-expand::before \{ content: attr\(aria-label\); \}/)
 })

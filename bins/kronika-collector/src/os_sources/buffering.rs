@@ -74,6 +74,9 @@ pub(crate) fn push_os_sources(buffers: &mut SectionBuffers, os: &OsSources) -> R
     for row in &os.cgroup_mapping {
         buffer_row(buffers, *row)?;
     }
+    if let Some(row) = os.cgroup_context {
+        buffer_row(buffers, row)?;
+    }
     for row in &os.cgroup_cpu {
         buffer_row(buffers, *row)?;
     }

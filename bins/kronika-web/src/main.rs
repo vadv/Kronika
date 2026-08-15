@@ -17,15 +17,17 @@ mod route;
 mod ui;
 
 use std::convert::Infallible;
+use std::fmt;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result};
 use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::{BodyExt as _, Full};
 use hyper::body::Bytes;
 use hyper::header::{
-    ALLOW, AUTHORIZATION, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_TYPE, ETAG, HeaderValue,
-    IF_NONE_MATCH, VARY, WWW_AUTHENTICATE,
+    ALLOW, AUTHORIZATION, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_TYPE, COOKIE, ETAG, HeaderValue,
+    IF_NONE_MATCH, SET_COOKIE, VARY, WWW_AUTHENTICATE,
 };
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -77,6 +79,9 @@ async fn answer(
     let if_none_match = if_none_match_values(request.headers());
     Ok(match target {
         RequestTarget::Ui { head } => ui::response(head, if_none_match.as_deref()),
+        RequestTarget::Session(session) => {
+            session_response(&config.account, config.cookie_secure, session).unwrap_or_else(failed)
+        }
         RequestTarget::Api { route, accepted } => {
             streamed(config, route, if_none_match, accepted).await
         }
@@ -87,29 +92,62 @@ fn route_request<B>(
     account: &config::Account,
     request: &Request<B>,
 ) -> Result<RequestTarget, RequestError> {
-    if !auth::admits(account, authorization(request.headers())) {
-        return Err(RequestError::Unauthorized);
-    }
-    if ui::is_path(request.uri().path()) {
+    route_request_at(account, request, unix_time())
+}
+
+fn route_request_at<B>(
+    account: &config::Account,
+    request: &Request<B>,
+    now: u64,
+) -> Result<RequestTarget, RequestError> {
+    let path = request.uri().path();
+    if ui::is_path(path) {
         if request.method() != Method::GET && request.method() != Method::HEAD {
             return Err(RequestError::MethodNotAllowed("GET, HEAD"));
         }
         let accepted = AcceptedEncodings::from_headers(request.headers())
-            .ok_or(RequestError::EncodingNotAcceptable)?;
+            .ok_or(RequestError::UiEncodingNotAcceptable)?;
         if !accepted.allows_gzip() {
-            return Err(RequestError::EncodingNotAcceptable);
+            return Err(RequestError::UiEncodingNotAcceptable);
         }
         return Ok(RequestTarget::Ui {
             head: request.method() == Method::HEAD,
         });
     }
-    let route =
-        route::parse(request.uri().path(), request.uri().query()).map_err(RequestError::Route)?;
+    if path == "/auth/session" && request.uri().query().is_none() {
+        if request.method() == Method::GET {
+            return Ok(RequestTarget::Session(SessionTarget::Check {
+                admitted: admitted_session(account, request.headers(), now),
+            }));
+        }
+        if request.method() == Method::POST {
+            let admitted = matches!(
+                authorization(request.headers()),
+                SingleHeader::Value(value) if auth::admits_basic(account, Some(value))
+            );
+            return Ok(RequestTarget::Session(SessionTarget::Login {
+                issued_at: admitted.then_some(now),
+            }));
+        }
+        if request.method() == Method::DELETE {
+            return Ok(RequestTarget::Session(SessionTarget::Clear));
+        }
+        return Ok(RequestTarget::Session(SessionTarget::MethodNotAllowed));
+    }
+    if path != "/api" && !path.starts_with("/api/") {
+        return Err(RequestError::Route(RouteError::NoSuchPath));
+    }
+    if !admitted_api(account, request.headers(), now) {
+        return Err(RequestError::Unauthorized {
+            challenge: !is_ui_request(request.headers()),
+        });
+    }
+    let route = route::parse(path, request.uri().query()).map_err(RequestError::Route)?;
     if request.method() != Method::GET {
         return Err(RequestError::MethodNotAllowed("GET"));
     }
     let accepted = AcceptedEncodings::from_headers(request.headers())
-        .ok_or(RequestError::EncodingNotAcceptable)?;
+        .ok_or(RequestError::ApiEncodingNotAcceptable)?;
     Ok(RequestTarget::Api { route, accepted })
 }
 
@@ -118,24 +156,34 @@ enum RequestTarget {
     Ui {
         head: bool,
     },
+    Session(SessionTarget),
     Api {
         route: route::Route,
         accepted: AcceptedEncodings,
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionTarget {
+    Check { admitted: bool },
+    Login { issued_at: Option<u64> },
+    Clear,
+    MethodNotAllowed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RequestError {
-    Unauthorized,
+    Unauthorized { challenge: bool },
     Route(RouteError),
     MethodNotAllowed(&'static str),
-    EncodingNotAcceptable,
+    UiEncodingNotAcceptable,
+    ApiEncodingNotAcceptable,
 }
 
 impl RequestError {
     fn response(self) -> Response<WebBody> {
         match self {
-            Self::Unauthorized => unauthorized(),
+            Self::Unauthorized { challenge } => unauthorized(challenge),
             Self::Route(RouteError::NoSuchPath) => {
                 refused(StatusCode::NOT_FOUND, "no_such_path", None)
             }
@@ -143,18 +191,75 @@ impl RequestError {
                 refused(StatusCode::BAD_REQUEST, "bad_parameter", Some(&parameter))
             }
             Self::MethodNotAllowed(allow) => method_not_allowed(allow),
-            Self::EncodingNotAcceptable => encoding_not_acceptable(),
+            Self::UiEncodingNotAcceptable => encoding_not_acceptable(false),
+            Self::ApiEncodingNotAcceptable => encoding_not_acceptable(true),
         }
     }
 }
 
-fn authorization(headers: &HeaderMap) -> Option<&str> {
-    let mut values = headers.get_all(AUTHORIZATION).iter();
-    let value = values.next()?;
-    if values.next().is_some() {
-        return None;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SingleHeader<'a> {
+    Absent,
+    Value(&'a str),
+    Invalid,
+}
+
+impl fmt::Debug for SingleHeader<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Absent => f.write_str("Absent"),
+            Self::Value(_) => f.write_str("Value([redacted])"),
+            Self::Invalid => f.write_str("Invalid"),
+        }
     }
-    value.to_str().ok()
+}
+
+fn authorization(headers: &HeaderMap) -> SingleHeader<'_> {
+    unique_header(headers.get_all(AUTHORIZATION).iter())
+}
+
+fn cookie_header(headers: &HeaderMap) -> SingleHeader<'_> {
+    unique_header(headers.get_all(COOKIE).iter())
+}
+
+fn unique_header<'a>(mut values: impl Iterator<Item = &'a HeaderValue>) -> SingleHeader<'a> {
+    let Some(value) = values.next() else {
+        return SingleHeader::Absent;
+    };
+    if values.next().is_some() {
+        return SingleHeader::Invalid;
+    }
+    value
+        .to_str()
+        .map_or(SingleHeader::Invalid, SingleHeader::Value)
+}
+
+fn admitted_session(account: &config::Account, headers: &HeaderMap, now: u64) -> bool {
+    matches!(
+        cookie_header(headers),
+        SingleHeader::Value(value) if auth::admits_session(account, Some(value), now)
+    )
+}
+
+fn admitted_api(account: &config::Account, headers: &HeaderMap, now: u64) -> bool {
+    match authorization(headers) {
+        SingleHeader::Value(value) => auth::admits_basic(account, Some(value)),
+        SingleHeader::Absent => admitted_session(account, headers, now),
+        SingleHeader::Invalid => false,
+    }
+}
+
+fn is_ui_request(headers: &HeaderMap) -> bool {
+    matches!(
+        unique_header(headers.get_all("x-kronika-ui").iter()),
+        SingleHeader::Value("1")
+    )
+}
+
+fn unix_time() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 fn if_none_match_values(headers: &HeaderMap) -> Option<String> {
@@ -175,12 +280,12 @@ async fn streamed(
     if_none_match: Option<String>,
     accepted: AcceptedEncodings,
 ) -> Response<WebBody> {
-    blocking_stream(
+    blocking_stream_with_replay(
         move || {
             api::prepare(
                 &config.data_root,
                 config.sources,
-                route,
+                route.clone(),
                 if_none_match.as_deref(),
             )
         },
@@ -189,30 +294,116 @@ async fn streamed(
     .await
 }
 
+#[cfg(test)]
 async fn blocking_stream(
     prepare: impl FnOnce() -> Result<api::Prepared, ApiError> + Send + 'static,
     accepted: AcceptedEncodings,
 ) -> Response<WebBody> {
+    let mut prepare = Some(prepare);
+    blocking_stream_inner(
+        move || {
+            let Some(prepare) = prepare.take() else {
+                return Err(ApiError::BadCursor);
+            };
+            prepare()
+        },
+        accepted,
+        false,
+    )
+    .await
+}
+
+async fn blocking_stream_with_replay(
+    prepare: impl FnMut() -> Result<api::Prepared, ApiError> + Send + 'static,
+    accepted: AcceptedEncodings,
+) -> Response<WebBody> {
+    blocking_stream_inner(prepare, accepted, true).await
+}
+
+async fn blocking_stream_inner(
+    mut prepare: impl FnMut() -> Result<api::Prepared, ApiError> + Send + 'static,
+    accepted: AcceptedEncodings,
+    replay_source_change: bool,
+) -> Response<WebBody> {
     let (body_tx, body_rx) = mpsc::channel::<BodyItem>(8);
     let (head_tx, head_rx) = oneshot::channel::<Result<StreamHead, ApiError>>();
-    let handle = tokio::task::spawn_blocking(move || match prepare() {
-        Ok(prepared) => {
+    let handle = tokio::task::spawn_blocking(move || {
+        let mut head_tx = Some(head_tx);
+        let mut producer: Option<BodyProducer> = None;
+        let mut replayed = false;
+        loop {
+            let prepared = match prepare() {
+                Ok(prepared) => prepared,
+                Err(error)
+                    if replay_source_change && !replayed && error.source_changed_during_read() =>
+                {
+                    replayed = true;
+                    continue;
+                }
+                Err(error) => {
+                    if let Some(producer) = producer.take() {
+                        producer.fail(error);
+                    } else if let Some(head_tx) = head_tx.take() {
+                        let _sent = head_tx.send(Err(error));
+                    }
+                    return;
+                }
+            };
             let meta = prepared.meta();
             if meta.status == StatusCode::NOT_MODIFIED {
-                let _sent = head_tx.send(Ok(StreamHead::not_modified(meta)));
+                if let Some(producer) = producer.take() {
+                    producer.complete_not_modified(meta);
+                } else if let Some(head_tx) = head_tx.take() {
+                    let _sent = head_tx.send(Ok(StreamHead::not_modified(meta)));
+                }
                 return;
+            }
+            if producer.is_some() {
+                let restarted = producer
+                    .as_mut()
+                    .is_some_and(|producer| producer.restart(meta));
+                if !restarted {
+                    if let Some(producer) = producer.take() {
+                        producer.fail(ApiError::Unreadable(Box::new(std::io::Error::other(
+                            "response replay began after headers",
+                        ))));
+                    }
+                    return;
+                }
+            } else {
+                let Some(head_tx) = head_tx.take() else {
+                    return;
+                };
+                producer = Some(BodyProducer::new(accepted, meta, head_tx, body_tx.clone()));
             }
             let cancellation_tx = body_tx.clone();
             let cancelled = || cancellation_tx.is_closed();
-            let mut producer = BodyProducer::new(accepted, meta, head_tx, body_tx);
-            let result = prepared.stream(&mut |bytes| producer.emit(&bytes), &cancelled);
+            let Some(current) = producer.as_mut() else {
+                return;
+            };
+            let result = prepared.stream(&mut |bytes| current.emit(&bytes), &cancelled);
             match result {
-                Ok(()) => producer.complete(),
-                Err(error) => producer.fail(error),
+                Ok(()) => {
+                    if let Some(producer) = producer.take() {
+                        producer.complete();
+                    }
+                    return;
+                }
+                Err(error)
+                    if replay_source_change
+                        && !replayed
+                        && error.source_changed_during_read()
+                        && current.can_restart() =>
+                {
+                    replayed = true;
+                }
+                Err(error) => {
+                    if let Some(producer) = producer.take() {
+                        producer.fail(error);
+                    }
+                    return;
+                }
             }
-        }
-        Err(error) => {
-            let _sent = head_tx.send(Err(error));
         }
     });
     drop(handle);
@@ -242,7 +433,7 @@ fn response_from_meta(head: StreamHead, receiver: mpsc::Receiver<BodyItem>) -> R
     common_headers(&mut response, head.meta.cache);
     response.headers_mut().insert(
         VARY,
-        HeaderValue::from_static("Authorization, Accept-Encoding"),
+        HeaderValue::from_static("Authorization, Cookie, Accept-Encoding"),
     );
     if head.meta.status != StatusCode::NOT_MODIFIED {
         response.headers_mut().insert(
@@ -278,16 +469,75 @@ fn failed() -> Response<WebBody> {
     )
 }
 
-fn unauthorized() -> Response<WebBody> {
+fn unauthorized(challenge: bool) -> Response<WebBody> {
     let mut response = json_response(
         StatusCode::UNAUTHORIZED,
         json!({ "error": "unauthorized" }).to_string(),
     );
     response.headers_mut().insert(
-        WWW_AUTHENTICATE,
-        HeaderValue::from_static("Basic realm=\"kronika\""),
+        VARY,
+        HeaderValue::from_static("Authorization, Cookie, X-Kronika-UI"),
     );
+    if challenge {
+        response.headers_mut().insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static("Basic realm=\"kronika\""),
+        );
+    }
     response
+}
+
+fn session_response(
+    account: &config::Account,
+    cookie_secure: bool,
+    target: SessionTarget,
+) -> Option<Response<WebBody>> {
+    let (status, cookie, allow) = match target {
+        SessionTarget::Check { admitted: true } => (StatusCode::NO_CONTENT, None, None),
+        SessionTarget::Check { admitted: false } | SessionTarget::Login { issued_at: None } => {
+            (StatusCode::UNAUTHORIZED, None, None)
+        }
+        SessionTarget::Login {
+            issued_at: Some(now),
+        } => (
+            StatusCode::NO_CONTENT,
+            Some(auth::issue_cookie(account, now, cookie_secure)),
+            None,
+        ),
+        SessionTarget::Clear => (
+            StatusCode::NO_CONTENT,
+            Some(auth::clear_cookie(cookie_secure)),
+            None,
+        ),
+        SessionTarget::MethodNotAllowed => (
+            StatusCode::METHOD_NOT_ALLOWED,
+            None,
+            Some("GET, POST, DELETE"),
+        ),
+    };
+    let mut response = Response::new(
+        Full::new(Bytes::new())
+            .map_err(BodyError::from)
+            .boxed_unsync(),
+    );
+    *response.status_mut() = status;
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(
+        VARY,
+        HeaderValue::from_static("Authorization, Cookie, X-Kronika-UI"),
+    );
+    if let Some(cookie) = cookie {
+        let value = HeaderValue::from_str(&cookie).ok()?;
+        response.headers_mut().insert(SET_COOKIE, value);
+    }
+    if let Some(allow) = allow {
+        response
+            .headers_mut()
+            .insert(ALLOW, HeaderValue::from_static(allow));
+    }
+    Some(response)
 }
 
 fn method_not_allowed(allow: &'static str) -> Response<WebBody> {
@@ -301,12 +551,19 @@ fn method_not_allowed(allow: &'static str) -> Response<WebBody> {
     response
 }
 
-fn encoding_not_acceptable() -> Response<WebBody> {
+fn encoding_not_acceptable(api: bool) -> Response<WebBody> {
     let mut response = json_response(
         StatusCode::NOT_ACCEPTABLE,
         json!({ "error": "encoding_not_acceptable" }).to_string(),
     );
-    ui::set_vary(&mut response);
+    if api {
+        response.headers_mut().insert(
+            VARY,
+            HeaderValue::from_static("Authorization, Cookie, Accept-Encoding"),
+        );
+    } else {
+        ui::set_vary(&mut response);
+    }
     response
 }
 
@@ -330,7 +587,7 @@ fn common_headers(response: &mut Response<WebBody>, cache: CachePolicy) {
         .insert(CACHE_CONTROL, HeaderValue::from_static(cache.header()));
     response
         .headers_mut()
-        .insert(VARY, HeaderValue::from_static("Authorization"));
+        .insert(VARY, HeaderValue::from_static("Authorization, Cookie"));
 }
 
 #[cfg(test)]

@@ -6,9 +6,12 @@ use kronika_format::{
     SectionInput, build_part, validate_part,
 };
 use kronika_layout::{DataRoot, FileKind, LayoutLimits, SegmentAddress, SegmentId, WriterOwner};
+use kronika_reader::{Cell, Reader, Resolved, SegmentKind};
+use kronika_registry::os_cgroup_cpu::OsCgroupCpuV2;
+use kronika_registry::os_cgroup_memory::OsCgroupMemoryV2;
 use kronika_registry::os_loadavg::OsLoadavg;
 use kronika_registry::{
-    CodecError, DICT_STRINGS_TYPE_ID, FINAL_DATA_PAGE_BYTES, MAX_SECTION_ROWS, Section, Ts,
+    CodecError, DICT_STRINGS_TYPE_ID, FINAL_DATA_PAGE_BYTES, MAX_SECTION_ROWS, Section, StrId, Ts,
     final_data_body_bound,
 };
 use kronika_writer::{
@@ -64,6 +67,52 @@ fn flushed_window(ts: i64) -> FlushedPart {
         .flush_with_summary(&[])
         .expect("window encodes")
         .expect("one row yields one part")
+}
+
+fn cgroup_v2_window() -> FlushedPart {
+    let mut interner = empty_interner();
+    let path_id = interner.intern(b"/m1").expect("intern cgroup path");
+    let section_path_id = StrId(path_id.get());
+    let mut buffers = SectionBuffers::new();
+    buffers
+        .push(OsCgroupCpuV2 {
+            ts: Ts(101),
+            cgroup_path: section_path_id,
+            usage_usec: 1_000,
+            user_usec: 600,
+            system_usec: 400,
+            throttled_usec: 70,
+            nr_throttled: 2,
+            quota_usec: 200_000,
+            period_usec: 100_000,
+            cpuset_cpus: Some(2),
+            scope: 3,
+        })
+        .expect("buffer cgroup CPU compatibility row");
+    buffers
+        .push(OsCgroupMemoryV2 {
+            ts: Ts(102),
+            cgroup_path: section_path_id,
+            current: 1024,
+            max: Some(2048),
+            anon: 100,
+            file: 200,
+            kernel: 30,
+            slab: 20,
+            shmem: 64,
+            low_events: 1,
+            high_events: 2,
+            max_events: 3,
+            oom_events: 4,
+            oom_kill: 5,
+            scope: 3,
+        })
+        .expect("buffer cgroup memory compatibility row");
+    let dictionary = kronika_writer::dict::encode(interner.window()).expect("encode dictionary");
+    buffers
+        .flush_with_summary(&dictionary)
+        .expect("encode compatibility part")
+        .expect("compatibility rows yield a part")
 }
 
 fn test_config(out_dir: &Path) -> Config {
@@ -589,6 +638,94 @@ fn recovery_publication_failure_keeps_the_readable_journal_canonical() {
         b"conflicting segment"
     );
     assert_eq!(journal.parts().len(), 1);
+}
+
+#[test]
+fn recovery_publishes_persisted_cgroup_v2_rows() {
+    const CPU_V2_TYPE_ID: u32 = 1_201_002;
+    const MEMORY_V2_TYPE_ID: u32 = 1_202_002;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (owner, mut journal) = open_journal(dir.path(), JournalConfig::default().max_journal_len);
+    let part = cgroup_v2_window();
+    journal
+        .append(
+            SegmentId::new(100).expect("valid recovery identity"),
+            &part.body,
+        )
+        .expect("persist compatibility part");
+    drop(journal);
+    drop(owner);
+
+    let (owner, journal) = open_journal(dir.path(), JournalConfig::default().max_journal_len);
+    let persisted_part = journal
+        .read_part(*journal.parts().first().expect("persisted journal part"))
+        .expect("read persisted journal part");
+    let persisted_catalog = validate_part(&persisted_part).expect("validate persisted part");
+    assert!(
+        persisted_catalog
+            .entries
+            .iter()
+            .any(|entry| entry.type_id == CPU_V2_TYPE_ID)
+    );
+    assert!(
+        persisted_catalog
+            .entries
+            .iter()
+            .any(|entry| entry.type_id == MEMORY_V2_TYPE_ID)
+    );
+    drop(journal);
+    drop(owner);
+
+    let root = DataRoot::open(dir.path()).expect("reopen test data root");
+    let owner = root
+        .acquire_writer(LayoutLimits::default())
+        .expect("reacquire test writer");
+    let journal_max_bytes =
+        u64::try_from(JournalConfig::default().max_journal_len).expect("journal cap fits u64");
+    let (journal, recovered_path) =
+        open_collector_journal(&owner, journal_max_bytes).expect("recover compatibility layouts");
+    let recovered_path = recovered_path.expect("nonempty journal writes a segment");
+    assert!(journal.parts().is_empty());
+    assert_eq!(
+        fs::metadata(dir.path().join("active.wal"))
+            .expect("stat reset journal")
+            .len(),
+        JOURNAL_HEADER_LEN as u64
+    );
+
+    let reader = Reader::open(dir.path()).expect("open production reader");
+    let listing = reader.segments(..).expect("list recovered segment");
+    assert!(listing.warnings.is_empty());
+    assert_eq!(listing.segments.len(), 1);
+    assert_eq!(listing.segments[0].kind(), SegmentKind::Finished);
+    let recovered = reader
+        .open_segment(&listing.segments[0])
+        .expect("open recovered segment");
+    assert_eq!(recovered.path(), recovered_path);
+    assert_eq!(recovered.rows_of(CPU_V2_TYPE_ID), Some(1));
+    assert_eq!(recovered.rows_of(MEMORY_V2_TYPE_ID), Some(1));
+
+    let cpu_rows = recovered
+        .rows(CPU_V2_TYPE_ID)
+        .expect("decode recovered cgroup CPU rows");
+    let memory_rows = recovered
+        .rows(MEMORY_V2_TYPE_ID)
+        .expect("decode recovered cgroup memory rows");
+    assert_eq!(cpu_rows[0].get("cpuset_cpus"), Some(&Cell::I64(2)));
+    assert_eq!(memory_rows[0].get("shmem"), Some(&Cell::I64(64)));
+    let Some(Cell::StrId(cpu_path_id)) = cpu_rows[0].get("cgroup_path") else {
+        panic!("cgroup CPU path must remain a dictionary id")
+    };
+    let Some(Cell::StrId(memory_path_id)) = memory_rows[0].get("cgroup_path") else {
+        panic!("cgroup memory path must remain a dictionary id")
+    };
+    assert_eq!(cpu_path_id, memory_path_id);
+    let recovered_dictionary = recovered.dictionary().expect("decode recovered dictionary");
+    assert_eq!(
+        recovered_dictionary.resolve(*cpu_path_id),
+        Some(Resolved::Str(b"/m1"))
+    );
 }
 
 #[test]

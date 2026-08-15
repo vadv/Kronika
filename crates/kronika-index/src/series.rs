@@ -8,7 +8,7 @@ use crate::findings::FindingBlock;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u32)]
 pub enum SeriesKind {
-    /// OS PSI health, including an unknown first point.
+    /// OS PSI health, including an unknown first recorded point.
     OsHealth = 1,
     /// OS health after subtracting every configured service penalty.
     OverallHealth = 2,

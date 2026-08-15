@@ -1,4 +1,4 @@
-//! Sparse source locators and the small upward-spike calculation.
+//! Sparse source locators.
 
 use crate::file::IndexError;
 
@@ -7,7 +7,6 @@ pub const MAX_FINDINGS_PER_BLOCK: usize = 4_096;
 pub(crate) const PG_LOG_ERRORS_TYPE_ID: u32 = 2_001_001;
 pub(crate) const MAX_LOG_ERROR_CATEGORY: u8 = 10;
 
-const FIFTEEN_MINUTES_US: i64 = 15 * 60 * 1_000_000;
 const HEADER_LEN: usize = 9;
 const FINDING_LEN: usize = 15;
 const NO_CATEGORY: u8 = u8::MAX;
@@ -18,7 +17,7 @@ const NO_CATEGORY: u8 = u8::MAX;
 pub enum FindingKind {
     /// An explicit known-bad boundary was crossed.
     KnownBad = 1,
-    /// The current transformed value exceeded its upper Tukey fence.
+    /// Reserved statistical locator kind retained for file compatibility.
     Spike = 2,
     /// A stored row in an explicit event-stream layout.
     Event = 3,
@@ -177,70 +176,6 @@ fn validate(block: &FindingBlock) -> Result<(), IndexError> {
         previous = Some(finding.order_key());
     }
     Ok(())
-}
-
-/// One valid prior transformed value, ordered by timestamp.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PriorValue {
-    /// Snapshot timestamp in unix microseconds.
-    pub timestamp: i64,
-    /// Value used by the spike calculation.
-    pub value: f64,
-}
-
-/// Select every preceding value in fifteen minutes when there are at least
-/// five, otherwise select exactly the nearest five older values.
-#[must_use]
-pub fn select_baseline(prior: &[PriorValue], current_ts: i64) -> Option<&[PriorValue]> {
-    if prior
-        .windows(2)
-        .any(|pair| pair[0].timestamp > pair[1].timestamp)
-        || prior.iter().any(|point| !point.value.is_finite())
-    {
-        return None;
-    }
-    let prior_end = prior.partition_point(|point| point.timestamp < current_ts);
-    if prior_end < 5 {
-        return None;
-    }
-    let window_start_ts = current_ts.saturating_sub(FIFTEEN_MINUTES_US);
-    let window_start =
-        prior[..prior_end].partition_point(|point| point.timestamp < window_start_ts);
-    if prior_end - window_start >= 5 {
-        Some(&prior[window_start..prior_end])
-    } else {
-        Some(&prior[prior_end - 5..prior_end])
-    }
-}
-
-/// Return the upper Tukey fence from at least five finite prior values.
-#[must_use]
-pub fn upper_tukey_fence(values: &[f64]) -> Option<f64> {
-    if values.len() < 5 || values.iter().any(|value| !value.is_finite()) {
-        return None;
-    }
-    let mut sorted = values.to_vec();
-    sorted.sort_by(f64::total_cmp);
-    let q1 = quartile(&sorted, 1)?;
-    let q3 = quartile(&sorted, 3)?;
-    let fence = (q3 - q1).mul_add(1.5, q3);
-    fence.is_finite().then_some(fence)
-}
-
-/// Whether a finite current value is strictly above the prior upper fence.
-#[must_use]
-pub fn is_upward_spike(current: f64, baseline: &[f64]) -> bool {
-    current.is_finite() && upper_tukey_fence(baseline).is_some_and(|fence| current > fence)
-}
-
-fn quartile(sorted: &[f64], numerator: usize) -> Option<f64> {
-    let scaled = sorted.len().checked_sub(1)?.checked_mul(numerator)?;
-    let lower = scaled / 4;
-    let remainder = scaled % 4;
-    let low = *sorted.get(lower)?;
-    let high = *sorted.get(lower.checked_add(usize::from(remainder != 0))?)?;
-    let fraction = [0.0, 0.25, 0.5, 0.75][remainder];
-    Some((high - low).mul_add(fraction, low))
 }
 
 fn u16_at(bytes: &[u8], at: usize) -> Result<u16, IndexError> {

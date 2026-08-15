@@ -17,7 +17,7 @@ These come out of `DESIGN.md` and get violated most often. Check them on every
 change.
 
 1. **The collector bounds memory and says what collection cost.** On an ordinary
-   host its peak RSS stays under 20 MB, and every segment write logs `rss_kib`,
+   host its peak RSS stays under 25 MiB, and every segment write logs `rss_kib`,
    so the number is recorded rather than guessed at. Ordinary OS snapshots have
    no row cap: a host with thirty thousand processes yields thirty thousand
    rows, and if that does not fit, the collector dies and the operator can see

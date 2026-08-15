@@ -8,7 +8,7 @@ const statementIdentity = ["queryid", "userid", "dbid"]
 const statementFields = ["ts", ...statementIdentity, "query", "calls", "rows", "total_exec_time", "blk_read_time"]
 const planIdentity = ["userid", "dbid", "queryid", "planid"]
 const registry = [
-  layout("1100001", "os_process", ["pid"], ["ts", "pid", "read_bytes"]),
+  layout("1100001", "os_process", ["pid"], ["ts", "pid", "starttime", "read_bytes"]),
   layout("1002001", "pg_stat_statements", statementIdentity, ["ts", ...statementIdentity, "query", "calls", "rows", "total_time", "blk_read_time"]),
   layout("1002002", "pg_stat_statements", statementIdentity, statementFields),
   layout("1002003", "pg_stat_statements", [...statementIdentity, "toplevel"], [...statementFields, "toplevel"]),
@@ -21,7 +21,7 @@ const registry = [
   layout("1016001", "pg_store_plans_info", [], ["ts", "dealloc", "stats_reset"]),
 ]
 const helpers = await importModule(
-  'export { locatorMatchesColumn, nextServerOrder } from "../src/entity-table.tsx"; export { rowMatchesLocator } from "../src/locator.ts"; export { PLAN_COLUMNS, STATEMENT_COLUMNS } from "../src/postgres-view.tsx"',
+  'export { filterTableRows, locatorMatchesColumn, nextServerOrder } from "../src/entity-table.tsx"; export { contextualRows, entityContext } from "../src/entity-context.ts"; export { findingHistoryRequest } from "../src/finding-presentation.ts"; export { rowMatchesLocator } from "../src/locator.ts"; export { PLAN_COLUMNS, STATEMENT_COLUMNS } from "../src/postgres-view.tsx"',
   { plugins: [registryPlugin(registry)] },
 )
 
@@ -29,7 +29,7 @@ function layout(typeId, logicalName, identity, fields) {
   return { typeId, logicalName, identity, columns: [...new Set(fields)] }
 }
 
-const row = { segmentId: "segment-a", logicalName: "os_process", typeId: "1100001", ordinal: "7", timestamp: 100, values: { pid: 9, read_bytes: 12 } }
+const row = { segmentId: "segment-a", logicalName: "os_process", typeId: "1100001", ordinal: "7", timestamp: 100, values: { pid: 9, starttime: "80", read_bytes: 12 } }
 const finding = { segmentId: "segment-a", logicalName: "os_process", typeId: "1100001", rowOrdinal: "7", timestamp: 100, fieldOrdinal: 2, kind: "spike", category: null }
 
 test("physical locators match the exact loaded row and mapped cell", () => {
@@ -38,6 +38,15 @@ test("physical locators match the exact loaded row and mapped cell", () => {
   assert.equal(helpers.rowMatchesLocator({ ...row, ordinal: "8" }, finding), false)
   assert.equal(helpers.locatorMatchesColumn({ field: "read_rate", label: "Read", physicalField: { "1100001": "read_bytes" } }, row.typeId, "read_bytes"), true)
   assert.equal(helpers.locatorMatchesColumn({ field: "write_bytes", label: "Write" }, row.typeId, "read_bytes"), false)
+})
+
+test("process finding history is requested and filtered by PID only", async () => {
+  assert.deepEqual(helpers.findingHistoryRequest(finding, row), {
+    fields: ["pid", "read_bytes"],
+    where: { pid: "9" },
+  })
+  const source = await readFile(new URL("../src/app.tsx", import.meta.url), "utf8")
+  assert.match(source, /historyTypeId = selectedFinding\.logicalName === "os_process" \? undefined : selectedFinding\.typeId/)
 })
 
 test("statement execution findings select the interval mean cell", () => {
@@ -67,20 +76,96 @@ test("locator classes, scrolling, and selection state are independent", async ()
   assert.match(entity, /scrollToIndex\(locatedIndex/)
   assert.match(process, /<EntityTable/)
   assert.doesNotMatch(process, /useReactTable|useVirtualizer|locator-row/)
+  assert.match(entity, /at=\{row\.original\.relation \? row\.original\.timestamp : null\}/)
+  assert.match(entity, /title=\{exact\}/)
+  assert.match(entity, /field\.kind === "bytes"\) return unit\(humanBytes\(cell, locale\), field\.rate, per\)/)
+  assert.match(entity, /title=\{kind === "bytes" \|\| kind === "text" \? output : undefined\}>\{output\}/)
+  assert.doesNotMatch(entity, /title=\{unit\(`\$\{rawText\(cell\)\} B`/)
+  assert.doesNotMatch(entity, /kind === "bytes"[^\n]+measure\(cell/)
 })
 
-test("server-ranked tables offer only descending order or no order", () => {
+test("server-ranked tables cycle descending, ascending, and no order", () => {
   assert.deepEqual(helpers.nextServerOrder(undefined, "calls_per_second"), {
     column: "calls_per_second",
     descending: true,
   })
-  assert.equal(helpers.nextServerOrder({ column: "calls_per_second", descending: true }, "calls_per_second"), null)
-  assert.deepEqual(helpers.nextServerOrder({ column: "calls_per_second", descending: false }, "calls_per_second"), {
+  assert.deepEqual(helpers.nextServerOrder({ column: "calls_per_second", descending: true }, "calls_per_second"), {
     column: "calls_per_second",
-    descending: true,
+    descending: false,
   })
+  assert.equal(helpers.nextServerOrder({ column: "calls_per_second", descending: false }, "calls_per_second"), null)
   assert.deepEqual(helpers.nextServerOrder({ column: "calls_per_second", descending: true }, "rows_per_second"), {
     column: "rows_per_second",
     descending: true,
   })
+})
+
+test("server-filtered pages are not filtered again over the loaded subset", () => {
+  const rows = [
+    { ...row, ordinal: "1", values: { pid: 9, read_bytes: 12 } },
+    { ...row, ordinal: "2", values: { pid: 10, read_bytes: 24 } },
+  ]
+  const columns = [{ field: "pid", kind: "id", label: "PID" }]
+  assert.deepEqual(helpers.filterTableRows(rows, columns, "9", false).map(({ ordinal }) => ordinal), ["1"])
+  assert.deepEqual(helpers.filterTableRows(rows, columns, "missing", true), rows)
+})
+
+test("an exact context intersects text search and clearing it preserves that search", () => {
+  const rows = [
+    { ...row, ordinal: "1", values: { ...row.values, pid: 9, cmdline: "postgres writer" } },
+    { ...row, ordinal: "2", values: { ...row.values, pid: 10, starttime: "90", cmdline: "postgres checkpointer" } },
+    { ...row, ordinal: "3", values: { ...row.values, pid: 11, starttime: "91", cmdline: "shell" } },
+  ]
+  const context = helpers.entityContext({ ...finding, rowOrdinal: "1" }, rows[0])
+  const columns = [{ field: "cmdline", kind: "text", label: "Command" }]
+  const intersection = helpers.filterTableRows(helpers.contextualRows(rows, context), columns, "postgres*", false)
+  assert.deepEqual(intersection.map(({ ordinal }) => ordinal), ["1"])
+  const afterClear = helpers.filterTableRows(helpers.contextualRows(rows, null), columns, "postgres*", false)
+  assert.deepEqual(afterClear.map(({ ordinal }) => ordinal), ["1", "2"])
+})
+
+test("the context chip is visible and removable without changing row selection", async () => {
+  const [tableFilter, entity, app] = await Promise.all([
+    readFile(new URL("../src/table-filter.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/entity-table.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/app.tsx", import.meta.url), "utf8"),
+  ])
+  assert.match(tableFilter, /data-testid="entity-context-filter"/)
+  assert.match(tableFilter, /filter\.show_all/)
+  assert.match(entity, /onClick=\{\(\) => onSelect\?\.\(row\.original\)\}/)
+  assert.match(app, /Object\.fromEntries\(context\.identity\)/)
+  const clear = app.match(/const clearEntityContext = useCallback\(\(\) => \{([\s\S]*?)\n  \}, \[\]\)/)?.[1] ?? ""
+  assert.doesNotMatch(clear, /setFind\(/)
+  assert.ok(
+    app.indexOf("findingRow !== null && rowMatchesLocator(findingRow, selectedFinding)")
+      < app.indexOf("const loaded = resolveLocator(data, selectedFinding)?.row ?? null"),
+    "the stable exact locator must win before a newly allocated paged row",
+  )
+})
+
+test("the human context chip and ordinary search are visibly intersected", async () => {
+  const source = await readFile(new URL("../src/table-filter.tsx", import.meta.url), "utf8")
+  assert.match(source, /<strong>\{context\}<\/strong>/)
+  assert.match(source, /filter\.show_all/)
+  assert.match(source, /filter\.and/)
+  assert.match(source, /filter\.text/)
+  assert.match(source, /value=\{pattern\}/)
+  assert.doesNotMatch(source, /filter\.entity/)
+})
+
+test("paged tables keep virtualization and trigger the guarded near-end callback", async () => {
+  const [source, styles] = await Promise.all([
+    readFile(new URL("../src/entity-table.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+  ])
+  const postgres = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
+  assert.match(source, /useVirtualizer/)
+  assert.match(source, /lastVirtualIndex >= rendered\.length - 10/)
+  assert.match(source, /onNearEnd\(\)/)
+  assert.match(source, /className="entity-scroll"[^>]*tabIndex=\{0\}/)
+  assert.match(styles, /\.entity-scroll[^}]*overflow:\s*auto/s)
+  assert.match(styles, /\.entity-scroll:focus-visible[^}]*outline:/s)
+  assert.match(styles, /\.pg-table-shell \.pg-entity-layout \.entity-scroll[^}]*height:\s*auto/s)
+  assert.match(styles, /\.pg-entity-layout \.entity-scroll[^}]*min-height:\s*100px/s)
+  assert.match(postgres, /data-testid="table-paging"/)
 })

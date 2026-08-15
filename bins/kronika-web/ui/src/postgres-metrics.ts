@@ -46,6 +46,11 @@ const BLOCK_COUNTERS = [
   "temp_blks_read", "temp_blks_written",
 ] as const
 
+const DIRECT_ORDER_FIELDS = [
+  ...BLOCK_COUNTERS, "plans", "wal_bytes", "wal_records", "wal_fpi", "wal_buffers_full",
+  "slow_log_calls", "stats_since", "first_call", "last_call",
+] as const
+
 const STATEMENT_FIELDS = [
   "queryid", "userid", "dbid", "toplevel", "datname", "usename", "query",
   "calls", "rows", "plans", "total_time", "total_exec_time", "total_plan_time",
@@ -186,6 +191,22 @@ export function findingSemanticField(typeId: string, physical: string): Postgres
   return null
 }
 
+export function supportsPostgresDerivedOrder(typeId: string, token: string): boolean {
+  const field = token.startsWith("derived.") ? token.slice("derived.".length) : null
+  if (field === null || !["mean_exec_ms_per_call", "rows_per_call", "blocks_per_call", "hit_pct", "wal_per_call", "plan_time_pct", "cv"].includes(field)) return false
+  const layout = postgresLayout(typeId)
+  if (layout === null) return false
+  const has = (...names: string[]) => names.every((name) => layout.fields.includes(name))
+  const semantic = (name: PostgresSemanticField) => physicalField(typeId, name) !== null
+  if (field === "mean_exec_ms_per_call") return semantic("execution_ms_per_second") && semantic("calls_per_second")
+  if (field === "rows_per_call") return semantic("rows_per_second") && semantic("calls_per_second")
+  if (field === "blocks_per_call") return has("shared_blks_hit", "shared_blks_read", "local_blks_hit", "local_blks_read") && semantic("calls_per_second")
+  if (field === "hit_pct") return has("shared_blks_hit", "shared_blks_read")
+  if (field === "wal_per_call") return has("wal_bytes") && semantic("calls_per_second")
+  if (field === "plan_time_pct") return semantic("planning_ms_per_second") && semantic("execution_ms_per_second")
+  return has(...rowExecutionStats(typeId, ["mean", "stddev"]))
+}
+
 function fieldsByType(typeIds: readonly string[], wanted?: readonly string[]): Readonly<Record<string, readonly string[]>> {
   return Object.fromEntries(typeIds.map((typeId) => {
     const projection = postgresProjection(typeId)
@@ -205,26 +226,32 @@ function fieldsByType(typeIds: readonly string[], wanted?: readonly string[]): R
 }
 
 function orderCandidates(typeIds: readonly string[], semantic: PostgresSemanticField): readonly string[] {
+  if (semantic === "mean_exec_ms_per_call") return ["derived.mean_exec_ms_per_call"]
   return unique(typeIds.flatMap((typeId) => {
-    const physical = semantic === "mean_exec_ms_per_call"
-      ? physicalField(typeId, "execution_ms_per_second")
-      : physicalField(typeId, semantic)
+    const physical = physicalField(typeId, semantic)
     return physical === null ? [] : [physical]
   }))
 }
 
 function orderMap(typeIds: readonly string[]): Readonly<Record<string, readonly string[]>> {
   const semantic = Object.fromEntries(SEMANTIC_FIELDS.map((field) => [field, orderCandidates(typeIds, field)]))
+  const derived = (field: string) => [`derived.${field}`]
+  const executionStats = (names: readonly ("min" | "max" | "mean" | "stddev")[]) => unique(
+    typeIds.flatMap((typeId) => rowExecutionStats(typeId, names)),
+  )
   return {
+    ...Object.fromEntries(DIRECT_ORDER_FIELDS.map((field) => [field, [field]])),
     ...semantic,
-    exec_load: semantic.execution_ms_per_second ?? [],
-    rows_per_call: semantic.rows_per_second ?? [],
-    shared_blks_read: ["shared_blks_read"],
-    blocks_per_call: unique(["shared_blks_read", "shared_blks_hit"]),
-    hit_pct: unique(["shared_blks_hit", "shared_blks_read"]),
-    wal_per_call: ["wal_bytes"],
-    plan_time_pct: semantic.planning_ms_per_second ?? [],
-    cv: ["stddev_time", "stddev_exec_time"],
+    rows_per_call: derived("rows_per_call"),
+    blocks_per_call: derived("blocks_per_call"),
+    hit_pct: derived("hit_pct"),
+    wal_per_call: derived("wal_per_call"),
+    plan_time_pct: derived("plan_time_pct"),
+    cv: derived("cv"),
+    min_exec_time_ms: executionStats(["min"]),
+    max_exec_time_ms: executionStats(["max"]),
+    mean_exec_time_ms: executionStats(["mean"]),
+    stddev_exec_time_ms: executionStats(["stddev"]),
   }
 }
 
@@ -233,7 +260,7 @@ function physicalDependencies(typeId: string, field: string): readonly string[] 
     const physical = physicalField(typeId, candidate)
     return physical === null ? [] : [physical]
   }))
-  if (field === "exec_load") return semantic("execution_ms_per_second")
+  if (field === "mean_exec_ms_per_call") return semantic("execution_ms_per_second", "calls_per_second")
   if (field === "rows_per_call") return semantic("rows_per_second", "calls_per_second")
   if (field === "blocks_per_call") return ["shared_blks_hit", "shared_blks_read", "local_blks_hit", "local_blks_read", ...semantic("calls_per_second")]
   if (field === "hit_pct") return ["shared_blks_hit", "shared_blks_read"]
@@ -256,7 +283,7 @@ export interface PostgresSectionRequest {
   readonly section: LayoutKind["section"]
   readonly typeIds: readonly string[]
   readonly fieldsByType: Readonly<Record<string, readonly string[]>>
-  readonly top?: number
+  readonly pageSize?: number
   readonly defaultOrder?: readonly string[]
   readonly order?: Readonly<Record<string, readonly string[]>>
   readonly fallbackOrder?: readonly string[]
@@ -280,15 +307,15 @@ const PLAN_LENS_FIELDS: Readonly<Record<PlanLens, readonly string[]>> = {
   load: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"],
   timing: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", "min_time", "max_time", "mean_time", "stddev_time", "first_call", "last_call"],
   io: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", "shared_blks_read", "shared_blks_hit", "shared_blks_dirtied", "local_blks_hit", "local_blks_read", "temp_blks_read"],
-  identity: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "cmd_type", "relids", "queryid_stat_statements"],
+  identity: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", "cmd_type", "relids", "queryid_stat_statements"],
 }
 
 export function statementRequest(lens: StatementLens): PostgresSectionRequest {
-  return denseLensRequest("pg_stat_statements", PG_STAT_STATEMENTS_TYPE_IDS, STATEMENT_LENS_FIELDS[lens], statementLensOrder(lens))
+  return denseLensRequest("pg_stat_statements", PG_STAT_STATEMENTS_TYPE_IDS, STATEMENT_LENS_FIELDS[lens], statementDefaultOrder(lens))
 }
 
 export function planRequest(lens: PlanLens): PostgresSectionRequest {
-  return denseLensRequest("pg_store_plans", PG_STORE_PLANS_TYPE_IDS, PLAN_LENS_FIELDS[lens], planLensOrder(lens))
+  return denseLensRequest("pg_store_plans", PG_STORE_PLANS_TYPE_IDS, PLAN_LENS_FIELDS[lens], planDefaultOrder(lens))
 }
 
 function denseLensRequest(
@@ -302,25 +329,25 @@ function denseLensRequest(
     section,
     typeIds,
     fieldsByType: fieldsByType(typeIds, wanted),
-    top: 200,
+    pageSize: 200,
     defaultOrder: order[defaultSemantic] ?? [],
     order,
     fallbackOrder: ["calls"],
   }
 }
 
-function statementLensOrder(lens: StatementLens): string {
-  if (lens === "per_call") return "mean_exec_ms_per_call"
+export function statementDefaultOrder(lens: StatementLens): string {
+  if (lens === "per_call") return "calls_per_second"
   if (lens === "io") return "shared_blks_read"
-  if (lens === "resources") return "wal_per_call"
-  if (lens === "stability") return "cv"
+  if (lens === "resources") return "wal_bytes"
+  if (lens === "stability") return "calls_per_second"
   return "execution_ms_per_second"
 }
 
-function planLensOrder(lens: PlanLens): string {
+export function planDefaultOrder(lens: PlanLens): string {
   if (lens === "io") return "shared_blks_read"
-  if (lens === "identity") return "calls_per_second"
-  return "execution_ms_per_second"
+  if (lens === "load") return "execution_ms_per_second"
+  return "calls_per_second"
 }
 
 function isPostgresSemanticField(field: string): field is PostgresSemanticField {
@@ -347,31 +374,31 @@ export function decoratePostgresIntervalRow(row: DataRow): DataRow {
   for (const semantic of SEMANTIC_FIELDS) {
     if (semantic === "mean_exec_ms_per_call") continue
     const physical = aliases[semantic]
-    values[semantic] = physical === undefined ? null : finiteRate(row.values[physical])
+    if (physical !== undefined && Object.hasOwn(row.values, physical)) values[semantic] = finiteRate(row.values[physical])
   }
   const calls = finiteRate(values.calls_per_second)
   const execution = finiteRate(values.execution_ms_per_second)
-  values.mean_exec_ms_per_call = calls !== null && calls > 0 && execution !== null && execution >= 0
-    ? execution / calls
-    : null
-  values.exec_load = execution === null ? null : execution / 1_000
-  values.rows_per_call = ratio(values.rows_per_second, calls)
-  const blockRates = ["shared_blks_hit", "shared_blks_read", "local_blks_hit", "local_blks_read"]
-    .map((field) => finiteRate(values[field]))
-    .filter((cell): cell is number => cell !== null)
-  values.blocks_per_call = blockRates.length === 0 ? null : ratio(blockRates.reduce((total, cell) => total + cell, 0), calls)
+  if (Object.hasOwn(values, "calls_per_second") && Object.hasOwn(values, "execution_ms_per_second")) {
+    values.mean_exec_ms_per_call = calls !== null && calls > 0 && execution !== null && execution >= 0
+      ? execution / calls
+      : null
+  }
+  if (Object.hasOwn(values, "rows_per_second") && Object.hasOwn(values, "calls_per_second")) values.rows_per_call = ratio(values.rows_per_second, calls)
+  const blockFields = ["shared_blks_hit", "shared_blks_read", "local_blks_hit", "local_blks_read"]
+  const blockRates = blockFields.map((field) => finiteRate(values[field])).filter((cell): cell is number => cell !== null)
+  if (Object.hasOwn(values, "calls_per_second") && blockFields.some((field) => Object.hasOwn(values, field))) {
+    values.blocks_per_call = blockRates.length === 0 ? null : ratio(blockRates.reduce((total, cell) => total + cell, 0), calls)
+  }
   const hits = finiteRate(values.shared_blks_hit)
   const reads = finiteRate(values.shared_blks_read)
-  values.hit_pct = hits === null || reads === null || hits + reads <= 0 ? null : (100 * hits) / (hits + reads)
-  values.wal_per_call = ratio(values.wal_bytes, calls)
+  if (Object.hasOwn(values, "shared_blks_hit") && Object.hasOwn(values, "shared_blks_read")) values.hit_pct = hits === null || reads === null || hits + reads <= 0 ? null : (100 * hits) / (hits + reads)
+  if (Object.hasOwn(values, "wal_bytes") && Object.hasOwn(values, "calls_per_second")) values.wal_per_call = ratio(values.wal_bytes, calls)
   const planning = finiteRate(values.planning_ms_per_second)
-  values.plan_time_pct = planning === null || execution === null || planning + execution <= 0 ? null : (100 * planning) / (planning + execution)
+  if (Object.hasOwn(values, "planning_ms_per_second") && Object.hasOwn(values, "execution_ms_per_second")) values.plan_time_pct = planning === null || execution === null || planning + execution <= 0 ? null : (100 * planning) / (planning + execution)
   const oldNames = row.typeId === "1002001" || row.logicalName === "pg_store_plans"
-  values.min_exec_time_ms = finiteRate(values[oldNames ? "min_time" : "min_exec_time"])
-  values.max_exec_time_ms = finiteRate(values[oldNames ? "max_time" : "max_exec_time"])
-  values.mean_exec_time_ms = finiteRate(values[oldNames ? "mean_time" : "mean_exec_time"] ?? values.mean_time)
-  values.stddev_exec_time_ms = finiteRate(values[oldNames ? "stddev_time" : "stddev_exec_time"] ?? values.stddev_time)
-  values.cv = ratio(values.stddev_exec_time_ms, finiteRate(values.mean_exec_time_ms))
+  const executionStats = [["min_exec_time_ms", oldNames ? "min_time" : "min_exec_time"], ["max_exec_time_ms", oldNames ? "max_time" : "max_exec_time"], ["mean_exec_time_ms", oldNames ? "mean_time" : "mean_exec_time"], ["stddev_exec_time_ms", oldNames ? "stddev_time" : "stddev_exec_time"]] as const
+  for (const [semantic, physical] of executionStats) if (Object.hasOwn(values, physical)) values[semantic] = finiteRate(values[physical])
+  if (Object.hasOwn(values, "stddev_exec_time_ms") && Object.hasOwn(values, "mean_exec_time_ms")) values.cv = ratio(values.stddev_exec_time_ms, finiteRate(values.mean_exec_time_ms))
   return { ...row, values }
 }
 
@@ -479,6 +506,6 @@ function numeric(value: bigint | number): number {
   return typeof value === "bigint" ? Number(value) : value
 }
 
-function unique<T>(values: readonly T[]): T[] {
+export function unique<T>(values: readonly T[]): T[] {
   return [...new Set(values)]
 }

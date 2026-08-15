@@ -1,9 +1,8 @@
 import assert from "node:assert/strict"
-import { writeFile } from "node:fs/promises"
 
-const [debugPort, pageUrl, screenshotPath] = process.argv.slice(2)
-if (debugPort === undefined || pageUrl === undefined || screenshotPath === undefined) {
-  throw new Error("usage: node tests/browser-corrections.mjs DEBUG_PORT PAGE_URL SCREENSHOT_PNG")
+const [debugPort, pageUrl] = process.argv.slice(2)
+if (debugPort === undefined || pageUrl === undefined) {
+  throw new Error("usage: node tests/browser-corrections.mjs DEBUG_PORT PAGE_URL")
 }
 const expectedOrigin = new URL(pageUrl).origin
 const targets = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((response) => response.json())
@@ -80,29 +79,29 @@ await waitFor(`document.readyState === "complete" && document.querySelector('[da
 await evaluate(`document.fonts.ready.then(() => true)`)
 
 assert.equal(await evaluate(`document.querySelector('[data-testid="hour-picker"]').querySelectorAll('input, select').length`), 0)
-assert.equal(await evaluate(`document.querySelector('[data-testid="hour-picker-trigger"] strong').textContent.trim()`), "15:00–16:00")
+const initialHourLabel = await evaluate(`document.querySelector('[data-testid="hour-picker-trigger"] strong').textContent.trim()`)
 await evaluate(`document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
-await waitFor(`document.querySelectorAll('.hour-cell').length === 24`, "the hour cells")
-assert.deepEqual(await evaluate(`[...document.querySelectorAll('.hour-cell[data-available="true"]')].map((cell) => cell.dataset.hour)`), ["15", "16"])
-assert.equal(await evaluate(`document.querySelector('.hour-cell[aria-pressed="true"]').dataset.hour`), "15")
+await waitFor(`document.querySelectorAll('.hour-cell').length === 2`, "the exact catalogued hours")
+const nextInstant = await evaluate(`[...document.querySelectorAll('.hour-cell')].find((cell) => cell.getAttribute('aria-pressed') !== 'true').dataset.instant`)
 await evaluate(`document.querySelector('.hour-cell[aria-pressed="true"]').dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' }))`)
-assert.equal(await evaluate(`document.activeElement?.dataset.hour`), "16")
+assert.equal(await evaluate(`document.activeElement?.dataset.instant`), nextInstant)
 await evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }))`)
 await waitFor(`document.querySelector('[data-testid="hour-popover"]') === null`, "Escape close")
 assert.equal(await evaluate(`document.activeElement === document.querySelector('[data-testid="hour-picker-trigger"]')`), true)
 
 await evaluate(`document.querySelector('[data-testid="locale-ru"]').click(); document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
-await waitFor(`document.querySelector('.hour-popover header span')?.textContent.includes('ровно один час')`, "Russian picker copy")
-await evaluate(`document.querySelector('.hour-cell[data-hour="16"]').click()`)
-await waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong').textContent.trim() === '16:00–17:00'`, "cell selection")
+await waitFor(`document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent.length > 0`, "time zone label")
+await evaluate(`document.querySelector('.hour-cell[data-instant="${nextInstant}"]').click()`)
+await waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong').textContent.trim() !== ${JSON.stringify(initialHourLabel)}`, "cell selection")
+const nextHourLabel = await evaluate(`document.querySelector('[data-testid="hour-picker-trigger"] strong').textContent.trim()`)
 assert.equal(await evaluate(`document.querySelector('[data-testid="hour-popover"]') === null`), true)
 assert.equal(await evaluate(`document.activeElement === document.querySelector('[data-testid="hour-picker-trigger"]')`), true)
 await evaluate(`document.querySelector('[data-testid="hour-previous"]').click()`)
-await waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong').textContent.trim() === '15:00–16:00'`, "previous navigation")
+await waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong').textContent.trim() === ${JSON.stringify(initialHourLabel)}`, "previous navigation")
 await evaluate(`document.querySelector('[data-testid="hour-next"]').click()`)
-await waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong').textContent.trim() === '16:00–17:00'`, "next navigation")
+await waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong').textContent.trim() === ${JSON.stringify(nextHourLabel)}`, "next navigation")
 await evaluate(`document.querySelector('[data-testid="hour-previous"]').click(); document.querySelector('[data-testid="locale-en"]').click()`)
-await waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong').textContent.trim() === '15:00–16:00'`, "restored hour")
+await waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong').textContent.trim() === ${JSON.stringify(initialHourLabel)}`, "restored hour")
 
 await evaluate(`document.querySelector('[data-testid="hour-picker-trigger"]').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' })); document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
 await waitFor(`document.querySelector('[data-testid="hour-popover"]') !== null`, "touch open")
@@ -145,27 +144,58 @@ await evaluate(`(() => {
 await waitFor(`document.querySelector('[role="tooltip"]')?.dataset.placement === 'above'`, "tooltip collision flip")
 overlay = await evaluate(`(() => { const rect = document.querySelector('[role="tooltip"]').getBoundingClientRect(); return { bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top } })()`)
 assert.ok(overlay.left >= 0 && overlay.right <= 320 && overlay.top >= 0 && overlay.bottom <= 360)
-const narrowWidths = await evaluate(`[...document.querySelectorAll('.timeline-time-ticks span')].map((tick) => tick.getBoundingClientRect().width)`)
-assert.ok(Math.max(...narrowWidths) - Math.min(...narrowWidths) < 0.1)
+const narrowChart = await evaluate(`(() => {
+  const figure = document.querySelector('[data-testid="hour-timeline"]')
+  const host = figure.querySelector('.uplot-host')
+  const plot = figure.querySelector('.u-over')
+  const canvas = figure.querySelector('canvas')
+  const bounds = (node) => { const rect = node.getBoundingClientRect(); return { bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top, width: rect.width } }
+  return {
+    canvas: bounds(canvas),
+    canvasAriaHidden: canvas.getAttribute('aria-hidden'),
+    host: bounds(host),
+    hostLabel: host.getAttribute('aria-label'),
+    navigator: figure.querySelector('input.chart-navigator[type="range"]') !== null,
+    plot: bounds(plot),
+    scrollWidth: document.documentElement.scrollWidth,
+  }
+})()`)
+assert.equal(narrowChart.canvasAriaHidden, "true")
+assert.equal(narrowChart.navigator, true)
+assert.ok(narrowChart.hostLabel.length > 0)
+assert.ok(narrowChart.plot.width > 100)
+assert.ok(narrowChart.canvas.left >= narrowChart.host.left - 1 && narrowChart.canvas.right <= narrowChart.host.right + 1)
+assert.ok(narrowChart.scrollWidth <= 320)
 
 await viewport(1366, 768)
 await send("Page.reload", { ignoreCache: true })
 await waitFor(`document.querySelector('[data-testid="hour-picker-trigger"]') !== null`, "the reloaded application")
 await evaluate(`document.fonts.ready.then(() => true); document.querySelector('[data-testid="hour-picker-trigger"]').click(); document.querySelector('${help}').dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))`)
 await waitFor(`document.querySelector('[role="tooltip"]') !== null && document.querySelector('[data-testid="hour-popover"]') !== null`, "the combined checkpoint")
-const ticks = await evaluate(`(() => {
-  const nodes = [...document.querySelectorAll('.timeline-time-ticks span')]
-  const widths = nodes.map((node) => node.getBoundingClientRect().width)
-  return { labels: nodes.map((node) => node.textContent.trim()), letterSpacing: getComputedStyle(nodes[0]).letterSpacing, spread: Math.max(...widths) - Math.min(...widths), svgText: document.querySelectorAll('svg text').length }
+const chart = await evaluate(`(() => {
+  const figure = document.querySelector('[data-testid="hour-timeline"]')
+  const canvas = figure.querySelector('canvas')
+  const host = figure.querySelector('.uplot-host')
+  const navigator = figure.querySelector('input.chart-navigator[type="range"]')
+  return {
+    canvasAriaHidden: canvas.getAttribute('aria-hidden'),
+    canvasCount: figure.querySelectorAll('.uplot-host canvas').length,
+    hostLabel: host.getAttribute('aria-label'),
+    hostRole: host.getAttribute('role'),
+    navigatorLabel: navigator.getAttribute('aria-label'),
+    navigatorMaximum: Number(navigator.max),
+    summary: figure.querySelector('.chart-summary').textContent,
+  }
 })()`)
-assert.deepEqual(ticks.labels, ["15:00", "15:10", "15:20", "15:30", "15:40", "15:50", "16:00"])
-assert.ok(ticks.spread < 0.1)
-assert.ok(ticks.letterSpacing === "normal" || ticks.letterSpacing === "0px")
-assert.equal(ticks.svgText, 0)
-const screenshot = await send("Page.captureScreenshot", { captureBeyondViewport: false, format: "png", fromSurface: true })
-await writeFile(screenshotPath, Buffer.from(screenshot.data, "base64"))
+assert.equal(chart.canvasAriaHidden, "true")
+assert.equal(chart.canvasCount, 1)
+assert.equal(chart.hostRole, "img")
+assert.ok(chart.hostLabel.length > 0)
+assert.ok(chart.navigatorLabel.length > 0)
+assert.ok(chart.navigatorMaximum >= 0)
+assert.ok(chart.summary.length > 0)
 
 assert.deepEqual(errors, [])
 assert.deepEqual(external, [])
 socket.close()
-process.stdout.write(`${JSON.stringify({ externalRequests: external.length, pageErrors: errors.length, screenshotPath, ticks }, null, 2)}\n`)
+process.stdout.write(`${JSON.stringify({ chart, externalRequests: external.length, pageErrors: errors.length }, null, 2)}\n`)

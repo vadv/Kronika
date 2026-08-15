@@ -1,4 +1,5 @@
 import type { Cell, DataRow } from "./api"
+import type { Translate } from "./help"
 
 export type Locale = "en" | "ru"
 export type Lens = "generic" | "cpu" | "memory" | "disk"
@@ -37,36 +38,9 @@ export function floorHour(timestamp: number): number {
   return Math.floor(timestamp / 3_600_000_000) * 3_600_000_000
 }
 
-export function inputDay(timestamp: number): string {
-  return new Date(timestamp / 1_000).toISOString().slice(0, 10)
-}
-
-export function inputHour(timestamp: number): number {
-  return new Date(timestamp / 1_000).getUTCHours()
-}
-
-export function selectedHour(day: string, hour: number): number | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day)
-  if (match === null) return null
-  const year = Number(match[1])
-  const month = Number(match[2])
-  const date = Number(match[3])
-  const milliseconds = Date.UTC(year, month - 1, date, hour)
-  return Number.isFinite(milliseconds) ? milliseconds * 1_000 : null
-}
-
-export function formatUtcCell(timestamp: number | null): string {
-  if (timestamp === null || !Number.isFinite(timestamp)) return "—"
-  return new Date(Math.trunc(timestamp / 1_000)).toISOString().slice(0, 19).replace("T", " ")
-}
-
-export function formatUtc(timestamp: number | null): string {
-  if (timestamp === null || !Number.isFinite(timestamp)) return "—"
-  return new Date(Math.trunc(timestamp / 1_000)).toISOString().replace("T", " ").replace("Z", " UTC")
-}
-
-export function shortUtc(timestamp: number): string {
-  return new Date(Math.trunc(timestamp / 1_000)).toISOString().slice(11, 23)
+export interface TimePair {
+  readonly primary: string
+  readonly secondary: string | null
 }
 
 export function nearestTime(rows: readonly DataRow[], target: number): number | null {
@@ -121,7 +95,7 @@ export function processCommand(row: DataRow): string {
 }
 
 export function processKey(row: DataRow): string {
-  return `${identifier(value(row, "pid"))}:${identifier(value(row, "starttime"))}`
+  return identifier(value(row, "pid"))
 }
 
 export function identifier(cell: Cell): string {
@@ -139,12 +113,39 @@ export function measure(cell: Cell, locale: Locale, suffix = ""): string {
   return `${compact(number, locale)}${suffix}`
 }
 
+export function humanPercent(cell: Cell, locale: Locale, suffix = ""): string {
+  const number = asNumber(cell)
+  if (number === null) return "—"
+  const output = number > 0 && number < 0.1
+    ? `<${new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(0.1)}`
+    : new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(number === 0 ? 0 : number)
+  return `${output}${locale === "ru" ? "\u00a0" : ""}%${suffix}`
+}
+
+export function humanCores(cell: Cell, locale: Locale, suffix = ""): string {
+  const number = asNumber(cell)
+  if (number === null) return "—"
+  return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 3 }).format(number === 0 ? 0 : number)}${suffix}`
+}
+
+function durationUnits(locale: Locale) {
+  return locale === "ru"
+    ? { "hour": "ч", minute: "м", millisecond: "мс", "second": "с" }
+    : { "hour": "h", minute: "m", millisecond: "ms", "second": "s" }
+}
+
+// Elapsed wall time is read at a glance, so it stops at whole seconds where a
+// measured duration would still report milliseconds.
+export function humanAge(seconds: number, locale: Locale): string {
+  const whole = Math.max(0, Math.floor(seconds))
+  if (whole < 60) return `${whole} ${durationUnits(locale).second}`
+  return humanDuration(whole * 1_000, locale)
+}
+
 export function humanDuration(cell: Cell, locale: Locale): string {
   const milliseconds = asNumber(cell)
   if (milliseconds === null) return "—"
-  const units = locale === "ru"
-    ? { hour: "ч", minute: "м", millisecond: "мс", second: "с" }
-    : { hour: "h", minute: "m", millisecond: "ms", second: "s" }
+  const units = durationUnits(locale)
   if (Math.abs(milliseconds) < 1_000) return `${compact(milliseconds, locale)} ${units.millisecond}`
   if (Math.abs(milliseconds) < 60_000) return `${decimals(Math.trunc(milliseconds / 100) / 10, locale, 1)} ${units.second}`
   const seconds = Math.floor(Math.abs(milliseconds) / 1_000)
@@ -152,34 +153,40 @@ export function humanDuration(cell: Cell, locale: Locale): string {
   const minutes = Math.floor(seconds / 60)
   if (minutes < 60) return `${sign}${minutes}${units.minute} ${String(seconds % 60).padStart(2, "0")}${units.second}`
   const hours = Math.floor(minutes / 60)
+  if (hours >= 24) return `${sign}${Math.floor(hours / 24)}${locale === "ru" ? "д" : "d"} ${String(hours % 24).padStart(2, "0")}${units.hour}`
   return `${sign}${hours}${units.hour} ${String(minutes % 60).padStart(2, "0")}${units.minute}`
 }
 
-const SCALES: readonly (readonly [string, number])[] = [["T", 1e12], ["G", 1e9], ["M", 1e6], ["k", 1e3]]
-
 export function compact(value: number, locale: Locale): string {
-  if (!Number.isFinite(value)) return "—"
-  const size = Math.abs(value)
-  if (size >= 1e15) return significant(value, locale, "scientific")
-  for (const [mark, scale] of SCALES) {
-    if (size < scale) continue
-    return `${significant(value / scale, locale)}${mark}`
+  const abs = Math.abs(value), notation = abs >= 1e15 || abs > 0 && abs < 1e-6 ? "scientific" : abs >= 1e3 ? "compact" : undefined
+  return isFinite(value) ? new Intl.NumberFormat(locale, { maximumSignificantDigits: 3, notation }).format(value) : "—"
+}
+
+export function estimatedRows(cell: Cell, locale: Locale, t: Translate): TimePair | null {
+  if (!(typeof cell === "number" && Number.isSafeInteger(cell) || typeof cell === "string" && /^\d+$/.test(cell))) return null
+  const value = BigInt(cell)
+  if (value < 0n) return null
+  const compactKind = value >= 1_000n ? "many" : rowPlural(value, locale)
+  const exactKind = rowPlural(value, locale)
+  const notation = value >= 1_000_000_000_000_000n ? "scientific" : value >= 1_000n ? "compact" : undefined
+  const compactValue = new Intl.NumberFormat(locale, { maximumSignificantDigits: 3, notation }).format(value)
+  const exactValue = new Intl.NumberFormat(locale).format(value)
+  return {
+    primary: t(`unit.estimated_rows.${compactKind}`, { value: compactValue }),
+    secondary: t(`unit.estimated_rows.${exactKind}`, { value: exactValue }),
   }
-  return significant(value, locale)
 }
 
 function decimals(value: number, locale: Locale, digits: number): string {
   return new Intl.NumberFormat(locale, { maximumFractionDigits: digits }).format(value)
 }
 
-function significant(value: number, locale: Locale, notation: "scientific" | "standard" = "standard"): string {
-  return new Intl.NumberFormat(locale, {
-    maximumSignificantDigits: 3,
-    notation,
-    useGrouping: false,
-  }).format(value)
+function rowPlural(value: bigint, locale: Locale): "one" | "few" | "many" {
+  if (locale === "en") return value === 1n ? "one" : "many"
+  const last = value % 10n, lastTwo = value % 100n
+  if (last === 1n && lastTwo !== 11n) return "one"
+  return last >= 2n && last <= 4n && (lastTwo < 12n || lastTwo > 14n) ? "few" : "many"
 }
-
 
 const BYTE_UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"] as const
 
@@ -193,20 +200,22 @@ export function humanBytes(cell: Cell, locale: Locale, suffix = ""): string {
     scaled /= 1024
     step += 1
   }
-  const digits = scaled >= 100 || step === 0 ? 0 : 1
-  return `${sign}${new Intl.NumberFormat(locale, { maximumFractionDigits: digits }).format(scaled)} ${BYTE_UNITS[step]}${suffix}`
+  const output = step === 0 && !Number.isInteger(scaled)
+    ? compact(scaled, locale)
+    : new Intl.NumberFormat(locale, { maximumFractionDigits: scaled >= 100 || step === 0 ? 0 : 1 }).format(scaled)
+  return `${sign}${output} ${BYTE_UNITS[step]}${suffix}`
 }
 
-export function cores(cell: Cell, locale: Locale, ticksPerSecond: number | null): string {
+export function cores(cell: Cell, locale: Locale, ticksPerSecond: number | null, suffix = ""): string {
   const number = asNumber(cell)
   if (number === null || ticksPerSecond === null || ticksPerSecond <= 0) return "—"
-  return new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(number / ticksPerSecond)
+  return humanCores(number / ticksPerSecond, locale, suffix)
 }
 
 export function millisecondsPerSecond(cell: Cell, locale: Locale): string {
   const number = asNumber(cell)
   if (number === null) return "—"
-  return new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(number / 1_000_000)
+  return compact(number / 1_000_000, locale)
 }
 
 export function activityFor(

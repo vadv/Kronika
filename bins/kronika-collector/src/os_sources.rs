@@ -4,6 +4,7 @@ use crate::logging::{
 };
 use crate::scheduler::{DueSet, SourceKind};
 use anyhow::Result;
+use kronika_registry::os_cgroup_context::OsCgroupContext;
 use kronika_registry::os_cgroup_cpu::OsCgroupCpu;
 use kronika_registry::os_cgroup_io::OsCgroupIo;
 use kronika_registry::os_cgroup_mapping::OsCgroupMapping;
@@ -84,6 +85,7 @@ pub(crate) struct OsSources {
     processes: Vec<OsProcess>,
     process_status: Vec<OsProcessStatus>,
     cgroup_mapping: Vec<OsCgroupMapping>,
+    cgroup_context: Option<OsCgroupContext>,
     cgroup_cpu: Vec<OsCgroupCpu>,
     cgroup_memory: Vec<OsCgroupMemory>,
     cgroup_io: Vec<OsCgroupIo>,
@@ -116,6 +118,7 @@ impl OsSources {
             processes: Vec::new(),
             process_status: Vec::new(),
             cgroup_mapping: Vec::new(),
+            cgroup_context: None,
             cgroup_cpu: Vec::new(),
             cgroup_memory: Vec::new(),
             cgroup_io: Vec::new(),
@@ -132,6 +135,13 @@ impl OsSources {
     #[cfg(test)]
     pub(crate) const fn mountinfo_empty(&self) -> bool {
         self.mountinfo.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn cgroup_context_only(row: OsCgroupContext) -> Self {
+        let mut sources = Self::empty();
+        sources.cgroup_context = Some(row);
+        sources
     }
 }
 

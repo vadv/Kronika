@@ -3,18 +3,11 @@ import test from "node:test"
 
 import type { Cell, DataRow } from "../src/api.ts"
 import { fittedWidth } from "../src/column-size.ts"
-import { activityFor, compact, formatUtc, identifier, measure, nearestTime, processCommand, processDefaultSort, processLens, rawText, shownMoment, selectedHour, stateText } from "../src/model.ts"
+import { activityFor, compact, cores, estimatedRows, humanAge, humanBytes, humanCores, humanDuration, humanPercent, identifier, measure, millisecondsPerSecond, nearestTime, processCommand, processDefaultSort, processKey, processLens, rawText, shownMoment, stateText, type Locale } from "../src/model.ts"
 
 function row(timestamp: number): DataRow {
   return { segmentId: "7", logicalName: "os_process", typeId: "1100001", ordinal: "0", timestamp, values: {} }
 }
-
-test("UTC hour selection and timestamp presentation are exact", () => {
-  const hour = selectedHour("2026-02-03", 4)
-  assert.equal(hour, Date.UTC(2026, 1, 3, 4) * 1_000)
-  const timestamp = Date.UTC(2026, 1, 3, 14, 44, 5, 678) * 1_000 + 901
-  assert.equal(formatUtc(timestamp), "2026-02-03 14:44:05.678 UTC")
-})
 
 test("nearest stored time chooses the earlier value on a tie", () => {
   assert.equal(nearestTime([row(100), row(300)], 200), 100)
@@ -54,23 +47,50 @@ test("finding fields select the matching process lens", () => {
   assert.equal(processLens("state"), "generic")
 })
 
+test("process identity is PID-only within the selected hour", () => {
+  const process = (pid: number, starttime: string): DataRow => ({
+    ...row(100),
+    values: { pid, starttime },
+  })
+  assert.equal(processKey(process(41, "99")), processKey(process(41, "99")))
+  assert.equal(processKey(process(41, "99")), processKey(process(41, "100")))
+  assert.notEqual(processKey(process(41, "99")), processKey(process(42, "99")))
+})
+
 test("process tables start with CPU and disk sorting chooses the first active signal", () => {
   const process = (values: DataRow["values"]): DataRow => ({ ...row(100), values })
+  assert.equal(processDefaultSort("generic", []), "pid")
   assert.equal(processDefaultSort("cpu", []), "utime")
+  assert.equal(processDefaultSort("memory", []), "rmem_kb")
   assert.equal(processDefaultSort("disk", [process({ read_bytes: 0, write_bytes: 4, syscr: 9 })]), "write_bytes")
   assert.equal(processDefaultSort("disk", [process({ read_bytes: 0, write_bytes: 0, syscr: 9 })]), "syscr")
   assert.equal(processDefaultSort("disk", [process({ read_bytes: 0, write_bytes: 0, syscr: 0, syscw: 0 })]), "read_bytes")
 })
 
-test("counters that arrive as rates are read in units a person thinks in", async () => {
-  const model = await import("../src/model.ts")
-  assert.equal(model.humanBytes(1_572_864, "en"), "1.5 MiB")
-  assert.equal(model.humanBytes(512, "en"), "512 B")
-  assert.equal(model.humanBytes(null, "en"), "—")
-  assert.equal(model.cores(161.01, "en", 100), "1.61")
-  assert.equal(model.cores(161.01, "en", null), "—")
-  assert.equal(model.cores(161.01, "en", 0), "—")
-  assert.equal(model.millisecondsPerSecond(111_622_111.53, "en"), "111.6")
+test("rates and ratios stay bounded without turning small nonzero values into zero", () => {
+  assert.equal(humanBytes(1_572_864, "en"), "1.5 MiB")
+  assert.equal(humanBytes(512, "en"), "512 B")
+  assert.equal(humanBytes(0.49, "en", "/s"), "0.49 B/s")
+  assert.equal(humanBytes(41.729068244136855, "en", "/s"), "41.7 B/s")
+  assert.equal(humanBytes(null, "en"), "—")
+  assert.equal(cores(161.01, "en", 100), "1.61")
+  assert.equal(cores(0.4, "en", 100), "0.004")
+  assert.equal(humanCores(0.00399, "en", " cores"), "0.004 cores")
+  assert.equal(humanCores(1.23, "en", " cores"), "1.23 cores")
+  assert.equal(humanCores(1.23, "ru", " ядра"), "1,23 ядра")
+  assert.equal(humanCores(null, "en"), "—")
+  assert.equal(cores(161.01, "en", null), "—")
+  assert.equal(cores(161.01, "en", 0), "—")
+  assert.equal(millisecondsPerSecond(111_622_111.53, "en"), "112")
+  assert.equal(millisecondsPerSecond(40_000, "en"), "0.04")
+})
+
+test("byte values use locale-aware binary units without compact decimal words", () => {
+  const bytes = 19_757_000_000
+  assert.equal(humanBytes(bytes, "en"), "18.4 GiB")
+  assert.equal(humanBytes(bytes, "ru"), "18,4 GiB")
+  assert.doesNotMatch(humanBytes(bytes, "ru"), /млрд Б/)
+  assert.equal(identifier(String(bytes)), "19757000000")
 })
 
 test("the shown moment is the last sample at or before the cursor", () => {
@@ -90,22 +110,75 @@ test("a fitted column takes the widest cell within bounds", () => {
   assert.equal(fittedWidth(120.2), 133)
 })
 
-test("metric numbers use three significant digits and compact SI scales", () => {
+test("metric numbers use three significant digits and locale-aware compact scales", () => {
   assert.equal(compact(0, "en"), "0")
   assert.equal(compact(0.03, "en"), "0.03")
   assert.equal(compact(9.876, "en"), "9.88")
   assert.equal(compact(999, "en"), "999")
-  assert.equal(compact(1407.48, "en"), "1.41k")
-  assert.equal(compact(9999, "en"), "10k")
-  assert.equal(compact(21_471, "en"), "21.5k")
+  assert.equal(compact(1407.48, "en"), "1.41K")
+  assert.equal(compact(9999, "en"), "10K")
+  assert.equal(compact(21_471, "en"), "21.5K")
   assert.equal(compact(3_052_945.27, "en"), "3.05M")
   assert.equal(compact(452_000_000, "en"), "452M")
-  assert.equal(compact(-21_471, "en"), "-21.5k")
+  assert.equal(compact(-21_471, "en"), "-21.5K")
   assert.equal(compact(4.5e12, "en"), "4.5T")
   assert.equal(compact(Number.MAX_VALUE, "en"), "1.8E308")
   assert.equal(compact(Number.NaN, "en"), "—")
   assert.equal(compact(Number.POSITIVE_INFINITY, "en"), "—")
-  assert.equal(compact(1407.48, "ru"), "1,41k")
-  assert.equal(measure(1407.48, "en", " ms/s"), "1.41k ms/s")
+  assert.equal(compact(1407.48, "ru"), "1,41 тыс.")
+  assert.equal(compact(8_117_857, "ru"), "8,12 млн")
+  assert.equal(compact(1_360_000_000, "ru"), "1,36 млрд")
+  assert.equal(measure(1407.48, "en", " ms/s"), "1.41K ms/s")
+  assert.equal(compact(4e-7, "en"), "4E-7")
+  assert.equal(humanPercent(41.729068244136855, "en"), "41.7%")
+  assert.equal(humanPercent(41.729068244136855, "ru"), "41,7 %")
+  assert.equal(humanPercent(0, "en"), "0%")
+  assert.equal(humanPercent(0.099, "en"), "<0.1%")
+  assert.equal(humanPercent(0.099, "ru"), "<0,1 %")
+  assert.equal(humanPercent(0.1, "en"), "0.1%")
+  assert.equal(humanPercent(12, "en"), "12%")
+  assert.equal(humanPercent(12.04, "en"), "12%")
+  assert.equal(humanPercent(12.05, "en"), "12.1%")
+  assert.equal(humanPercent(null, "en"), "—")
+  assert.equal(humanPercent(4e-7, "en"), "<0.1%")
+  assert.equal(humanDuration(999.999, "en"), "1,000 ms")
+  assert.equal(humanDuration(1_234, "en"), "1.2 s")
+  assert.equal(humanDuration(null, "en"), "—")
   assert.equal(identifier("9007199254740993"), "9007199254740993")
+})
+
+function rowTranslator(locale: Locale) {
+  const copy = locale === "ru"
+    ? { one: "≈{value} строка", few: "≈{value} строки", many: "≈{value} строк" }
+    : { one: "≈{value} row", few: "≈{value} rows", many: "≈{value} rows" }
+  return (key: string, slots: Readonly<Record<string, string | number>> = {}) => copy[key.slice(key.lastIndexOf(".") + 1) as keyof typeof copy].replace("{value}", String(slots.value))
+}
+
+test("estimated row gauges keep compact and exact bigint labels", () => {
+  assert.deepEqual(estimatedRows(713_456, "en", rowTranslator("en")), { primary: "≈713K rows", secondary: "≈713,456 rows" })
+  assert.deepEqual(estimatedRows(12_876, "ru", rowTranslator("ru")), { primary: "≈12,9 тыс. строк", secondary: "≈12 876 строк" })
+  assert.equal(estimatedRows(999, "en", rowTranslator("en"))?.primary, "≈999 rows")
+  assert.equal(estimatedRows(1_000, "en", rowTranslator("en"))?.primary, "≈1K rows")
+  assert.equal(estimatedRows(999_499, "en", rowTranslator("en"))?.primary, "≈999K rows")
+  assert.equal(estimatedRows(999_500, "en", rowTranslator("en"))?.primary, "≈1M rows")
+  assert.equal(estimatedRows("9994999999999999", "en", rowTranslator("en"))?.primary, "≈9.99E15 rows")
+  assert.equal(estimatedRows("9007199254740993", "en", rowTranslator("en"))?.secondary, "≈9,007,199,254,740,993 rows")
+  assert.equal(estimatedRows(null, "ru", rowTranslator("ru")), null)
+})
+
+test("estimated row exact labels use bigint-safe EN and RU plurals", () => {
+  for (const [value, suffix] of [[0, "rows"], [1, "row"], [2, "rows"]] as const) {
+    assert.equal(estimatedRows(value, "en", rowTranslator("en"))?.secondary, `≈${value} ${suffix}`)
+  }
+  for (const [value, suffix] of [[11, "строк"], [12, "строк"], [14, "строк"], [21, "строка"], [22, "строки"], [25, "строк"]] as const) {
+    assert.equal(estimatedRows(value, "ru", rowTranslator("ru"))?.secondary, `≈${value} ${suffix}`)
+  }
+})
+
+test("elapsed wall time reads in whole seconds", () => {
+  assert.equal(humanAge(0, "ru"), "0 с")
+  assert.equal(humanAge(0.94, "ru"), "0 с")
+  assert.equal(humanAge(12.7, "ru"), "12 с")
+  assert.equal(humanAge(12.7, "en"), "12 s")
+  assert.equal(humanAge(95, "ru"), "1м 35с")
 })

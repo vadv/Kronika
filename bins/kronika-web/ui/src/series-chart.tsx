@@ -1,8 +1,9 @@
-import { useId } from "react"
+import { useMemo, useRef } from "react"
 
-import { niceCeiling, numericRuns, svgPath, type NumericPoint } from "./chart"
-import { compact, type Locale } from "./model"
-import { TimeTicks } from "./time-ticks"
+import { compact, floorHour, humanPercent, type Locale } from "./model"
+import { LabelHelp, type Translate } from "./help"
+import type { HistoryStatus } from "./history-request"
+import { UPlotChart, type ChartScale as SemanticScale, type RecordedSeries } from "./uplot-chart"
 
 export interface ChartPoint {
   readonly segmentId: string
@@ -10,71 +11,93 @@ export interface ChartPoint {
   readonly value: number | null
 }
 
-type NumericChartPoint = NumericPoint<ChartPoint>
-export type ChartScale = "auto" | "percent" | "count" | "duration"
+export interface NumericChartPoint extends ChartPoint {
+  readonly value: number
+}
+
+export type ChartScale = "auto" | "percent" | "count" | "duration" | "nonnegative" | "signed"
 
 export function SeriesChart({
   cursor,
-  empty = "—",
+  empty,
   hour,
-  label,
+  helpKey,
+  labelKey,
   locale,
   format,
   points,
-  scale = "auto",
+  scale = "nonnegative",
   second,
+  secondHelpKey,
+  secondLabelKey,
+  status = "ready",
+  t,
+  unit = "",
+  onCursor,
 }: {
   readonly cursor?: number | undefined
   readonly empty?: string | undefined
   readonly hour: number
-  readonly label: string
+  readonly helpKey: string
+  readonly labelKey: string
   readonly locale: Locale
   readonly format?: ((value: number, locale: Locale) => string) | undefined
   readonly points: readonly ChartPoint[]
   readonly scale?: ChartScale | undefined
   readonly second?: readonly ChartPoint[] | undefined
+  readonly secondHelpKey?: string | undefined
+  readonly secondLabelKey?: string | undefined
+  readonly status?: HistoryStatus | undefined
+  readonly t: Translate
+  readonly unit?: string | undefined
+  readonly onCursor?: ((timestamp: number) => void) | undefined
 }) {
-  const title = useId()
-  const end = hour + 3_600_000_000
-  const numeric = numericChartPoints(points, second)
-  const values = numeric.map((point) => point.value)
-  const { low, high } = chartDomain(values, scale)
-  const span = high - low || 1
-  const paths = chartRuns(points)
-  const companion: ReadonlyMap<string, readonly NumericChartPoint[]> = second === undefined ? new Map() : chartRuns(second)
-  const reading = readingAt(points, cursor)
+  const visible = useMemo(() => ({
+    points: pointsInHour(points, hour),
+    second: second === undefined ? undefined : pointsInHour(second, hour),
+  }), [hour, points, second])
+  const numeric = numericChartPoints(visible.points, visible.second)
+  const reading = readingAt(visible.points, cursor)
   const hasData = numeric.length !== 0
-  return <figure className="series-chart">
-    <figcaption id={title}>
-      <span>{label}</span>
-      <span>{reading === null ? "—" : (format ?? compact)(reading, locale)}</span>
-    </figcaption>
-    {!hasData
-      ? <p className="series-empty">{empty}</p>
-      : <><svg aria-labelledby={title} preserveAspectRatio="none" role="img" viewBox="0 0 920 126">
-      {[0, 1, 2, 3, 4, 5, 6].map((tick) => <line className="mini-grid" key={tick} x1={tick / 6 * 920} x2={tick / 6 * 920} y1="5" y2="105" />)}
-      <line className="mini-zero" x1="0" x2="920" y1="105" y2="105" />
-      {cursor !== undefined && cursor >= hour && cursor < end
-        && <line className="cursor-line" x1={(cursor - hour) / (end - hour) * 920} x2={(cursor - hour) / (end - hour) * 920} y1="5" y2="105" />}
-      {[...companion.entries()].map(([segmentId, stored]) => {
-        const path = svgPath(stored.slice().sort((left, right) => left.timestamp - right.timestamp), (point) => [
-          Math.max(0, Math.min(920, (point.timestamp - hour) / (end - hour) * 920)),
-          101 - (point.value - low) / span * 92,
-        ])
-        return <path className="mini-series mini-second" d={path} key={`second:${segmentId}`} />
-      })}
-      {[...paths.entries()].map(([segmentId, stored]) => {
-        const path = svgPath(stored.slice().sort((left, right) => left.timestamp - right.timestamp), (point) => [
-          Math.max(0, Math.min(920, (point.timestamp - hour) / (end - hour) * 920)),
-          101 - (point.value - low) / span * 92,
-        ])
-        return <path className="mini-series" d={path} key={segmentId} />
-      })}
-      </svg>
-      <span aria-hidden="true" className="series-ceiling">{(format ?? compact)(high, locale)}</span>
-      {low !== 0 && <span aria-hidden="true" className="series-floor">{(format ?? compact)(low, locale)}</span>}
-      <TimeTicks className="mini-time-ticks" hour={hour} /></>}
-  </figure>
+  const formatValue = format ?? (scale === "percent" ? humanPercent : compact)
+  const label = t(labelKey)
+  const formatter = useRef(formatValue)
+  formatter.current = formatValue
+  const stableFormat = useMemo(() => (number: number, place: Locale) => formatter.current(number, place), [])
+  const semantic: SemanticScale = scale === "percent" ? "percent" : scale === "auto" || scale === "signed" ? "signed" : "nonnegative"
+  const series = useMemo<readonly RecordedSeries[]>(() => [
+    { color: "cyan", helpKey, id: "primary", label, labelKey, points: visible.points, scale: semantic, tick: stableFormat, unit, value: stableFormat },
+    ...(visible.second === undefined || secondHelpKey === undefined || secondLabelKey === undefined ? [] : [{ color: "amber" as const, helpKey: secondHelpKey, id: "secondary", label: t(secondLabelKey), labelKey: secondLabelKey, points: visible.second, scale: semantic, tick: stableFormat, unit, value: stableFormat }]),
+  ], [helpKey, label, labelKey, secondHelpKey, secondLabelKey, semantic, stableFormat, t, unit, visible])
+  const statusText = status === "loading"
+    ? t("history.loading")
+    : status === "error" ? t("history.error") : empty ?? t("history.empty")
+  const statusLine = <p className={`series-status series-status-${status}`} role={status === "error" ? "alert" : "status"}>{statusText}</p>
+  // An hour that carries no samples stays compact. Anything still resolving keeps the
+  // full frame so the page below does not move while a metric loads.
+  if (!hasData && status === "ready") {
+    return <div className="series-chart">
+      <div className="series-reading"><LabelHelp helpKey={helpKey} labelKey={labelKey} t={t} /><span>—</span></div>
+      {statusLine}
+    </div>
+  }
+  return <div className="series-chart">
+    <UPlotChart
+      cursor={cursor}
+      hour={hour}
+      locale={locale}
+      onCursor={onCursor}
+      reading={reading === null ? "—" : formatValue(reading, locale)}
+      series={series}
+      status={status === "ready" ? undefined : statusLine}
+      t={t}
+    />
+  </div>
+}
+
+export function pointsInHour(points: readonly ChartPoint[], hour: number): readonly ChartPoint[] {
+  const end = hour + 3_600_000_000
+  return points.filter(({ timestamp }) => timestamp >= hour && timestamp < end)
 }
 
 export function numericChartPoints(
@@ -86,24 +109,24 @@ export function numericChartPoints(
 }
 
 export function readingAt(points: readonly ChartPoint[], cursor: number | undefined): number | null {
+  return sampleAtOrBefore(points, cursor)?.value ?? null
+}
+
+export function sampleAtOrBefore(points: readonly ChartPoint[], cursor: number | undefined): ChartPoint | null {
   let chosen: ChartPoint | null = null
   for (const point of points) {
     if (cursor !== undefined && point.timestamp > cursor) continue
-    if (chosen === null || point.timestamp > chosen.timestamp) chosen = point
+    if (chosen === null || point.timestamp >= chosen.timestamp) chosen = point
   }
-  return chosen?.value ?? null
+  return chosen
 }
 
-export function chartDomain(values: readonly number[], scale: ChartScale): { readonly low: number; readonly high: number } {
-  if (scale === "percent") return { low: 0, high: 100 }
-  if (scale === "count" || scale === "duration") {
-    return { low: 0, high: niceCeiling(Math.max(0, ...values)) }
+export function uncollectedStart(points: readonly ChartPoint[], hour: number, now = Date.now() * 1_000): number | null {
+  if (floorHour(now) !== hour) return null
+  const end = hour + 3_600_000_000
+  let latest = hour
+  for (const point of points) {
+    if (point.timestamp >= hour && point.timestamp < end) latest = Math.max(latest, point.timestamp)
   }
-  const low = Math.min(0, ...values)
-  const high = values.length === 0 ? 1 : Math.max(...values)
-  return { low, high: high === low ? low + 1 : high }
-}
-
-export function chartRuns(points: readonly ChartPoint[]): ReadonlyMap<string, readonly NumericChartPoint[]> {
-  return numericRuns(points, (left, right) => left.localeCompare(right))
+  return latest
 }

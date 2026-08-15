@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use kronika_reader::{Cell, Dictionary, Resolved, Row, Segment, SegmentRef};
+use kronika_reader::{Cell, Dictionary, Resolved, Row, Segment, SegmentRef, StrId};
 use kronika_registry::{ColumnClass, ColumnType, TypeContract, contract};
 
 use super::ApiError;
@@ -37,6 +37,7 @@ enum TypedFilter {
     Bytes {
         column: &'static str,
         wanted: Vec<u8>,
+        wanted_id: Option<u64>,
     },
 }
 
@@ -213,12 +214,16 @@ pub(super) fn resolved_dictionary(
         .copied()
         .find(|id| dictionary.resolve(*id).is_none())
     {
-        return Err(ApiError::Unreadable(Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("unresolved dictionary id {unresolved}"),
-        ))));
+        return Err(unresolved_dictionary(unresolved));
     }
     Ok(dictionary)
+}
+
+fn unresolved_dictionary(id: u64) -> ApiError {
+    ApiError::Unreadable(Box::new(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("unresolved dictionary id {id}"),
+    )))
 }
 
 impl Plan {
@@ -246,10 +251,41 @@ impl Plan {
         resolved_dictionary(segment, &ids)
     }
 
-    pub(super) fn selection_needs_dictionary(&self) -> bool {
-        self.filters
+    pub(super) fn exact_filter_dictionary(
+        &self,
+        segment: &Segment,
+    ) -> Result<Dictionary, ApiError> {
+        let ids = self
+            .filters
             .iter()
-            .any(|filter| matches!(filter, TypedFilter::Bytes { .. }))
+            .filter_map(|filter| match filter {
+                TypedFilter::Bytes { wanted_id, .. } => *wanted_id,
+                TypedFilter::Cell { .. } => None,
+            })
+            .collect();
+        segment.dictionary_for(&ids).map_err(ApiError::from)
+    }
+
+    pub(super) fn validate_exact_filter_ids(
+        &self,
+        row: &Row,
+        dictionary: &Dictionary,
+    ) -> Result<(), ApiError> {
+        for filter in &self.filters {
+            let TypedFilter::Bytes {
+                column, wanted_id, ..
+            } = filter
+            else {
+                continue;
+            };
+            let Some(Cell::StrId(actual)) = row.get(column) else {
+                continue;
+            };
+            if *wanted_id == Some(*actual) && dictionary.resolve(*actual).is_none() {
+                return Err(unresolved_dictionary(*actual));
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn add_selection_ids(&self, row: &Row, ids: &mut HashSet<u64>) {
@@ -260,6 +296,20 @@ impl Plan {
                 ids.insert(*id);
             }
         }
+    }
+
+    pub(super) fn needs_selection_dictionary(&self) -> bool {
+        self.filters
+            .iter()
+            .any(|filter| matches!(filter, TypedFilter::Bytes { .. }))
+    }
+
+    /// Add physical inputs needed for computation without exposing them as
+    /// output fields.
+    pub(super) fn add_projection_columns(&mut self, names: &[&'static str]) {
+        self.projection.extend(names.iter().copied());
+        self.projection.sort_unstable();
+        self.projection.dedup();
     }
 }
 
@@ -275,7 +325,7 @@ impl TypedFilter {
             Self::Cell { column, wanted } => row
                 .get(column)
                 .is_some_and(|actual| cells_equal(actual, wanted)),
-            Self::Bytes { column, wanted } => {
+            Self::Bytes { column, wanted, .. } => {
                 let Some(Cell::StrId(id)) = row.get(column) else {
                     return false;
                 };
@@ -327,9 +377,11 @@ fn typed_filter(
         ColumnType::Bool => Cell::Bool(value.parse().map_err(|_error| bad())?),
         ColumnType::Ts => Cell::Ts(value.parse().map_err(|_error| bad())?),
         ColumnType::StrId => {
+            let wanted = value.as_bytes().to_vec();
             return Ok(Some(TypedFilter::Bytes {
                 column: column.name,
-                wanted: value.as_bytes().to_vec(),
+                wanted_id: StrId::of(&wanted).map(StrId::get),
+                wanted,
             }));
         }
         ColumnType::ListI32 => {

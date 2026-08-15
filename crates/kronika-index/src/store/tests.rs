@@ -3,22 +3,25 @@ use std::path::Path;
 use kronika_format::DictLimits;
 use kronika_layout::{DataRoot, LayoutLimits, SegmentAddress, SegmentId};
 use kronika_reader::{Reader, SegmentKind, SegmentRef};
+use kronika_registry::instance_metadata::InstanceMetadata;
 use kronika_registry::os_cpu::OsCpu;
 use kronika_registry::os_loadavg::OsLoadavg;
 use kronika_registry::os_mountinfo::OsMountinfo;
 use kronika_registry::os_process::OsProcess;
+use kronika_registry::os_psi::OsPsi;
 use kronika_registry::os_topology::OsTopology;
 use kronika_registry::pg_log::{
     PgLogAutovacuum, PgLogCheckpoints, PgLogErrors, PgLogLifecycle, PgLogLockWaits,
     PgLogSlowQueries, PgLogTempFiles,
 };
+use kronika_registry::pg_stat_activity::PgStatActivityV3;
 use kronika_registry::pg_stat_statements::PgStatStatementsV2;
 use kronika_registry::{StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 
 use crate::{BuildError, FindingKind, LoadError, SeriesBlock};
 
-use super::{path_of, read, resource};
+use super::{finding_keys, path_of, read, resource, series_keys};
 
 const SEGMENT_ID: i64 = 1_709_164_800_000_000;
 
@@ -64,6 +67,126 @@ fn append_fixture(journal: &mut Journal) {
         .expect("encode part")
         .expect("nonempty part");
     journal.append(address().id, &part).expect("append fixture");
+}
+
+#[derive(Clone, Copy)]
+struct HealthFixture {
+    boot_time: i64,
+    environment: u8,
+    postgres: Option<(i64, u32)>,
+}
+
+fn append_health_fixture(
+    journal: &mut Journal,
+    segment_id: i64,
+    config: HealthFixture,
+    samples: &[(i64, [Option<i64>; 3])],
+) {
+    let mut interner = Interner::new(DictLimits::default());
+    let label = StrId(interner.intern(b"fixture").expect("intern label").get());
+    let active = StrId(interner.intern(b"active").expect("intern state").get());
+    let dictionary = dict::encode(interner.window()).expect("health dictionary");
+    let mut buffers = SectionBuffers::new();
+    buffers
+        .push(InstanceMetadata {
+            ts: Ts(samples.first().expect("health sample").0),
+            hostname: label,
+            kernel_version: label,
+            environment: config.environment,
+            clock_ticks_per_sec: 100,
+            page_size_bytes: 4_096,
+            boot_id: label,
+            btime: Ts(config.boot_time),
+            postgresql_enabled: config.postgres.is_some(),
+            postgresql_interval_seconds: 30,
+            postgresql_effective_cpus: config.postgres.map(|_| 2),
+        })
+        .expect("health metadata row");
+    let scope = if config.environment == 0 { 0 } else { 3 };
+    for &(timestamp, totals) in samples {
+        for (resource, total) in totals.into_iter().enumerate() {
+            let Some(some_total) = total else {
+                continue;
+            };
+            buffers
+                .push(OsPsi {
+                    ts: Ts(timestamp),
+                    resource: u8::try_from(resource).expect("three PSI resources"),
+                    some_avg10: 0.0,
+                    some_avg60: 0.0,
+                    some_avg300: 0.0,
+                    some_total,
+                    full_avg10: None,
+                    full_avg60: None,
+                    full_avg300: None,
+                    full_total: None,
+                    scope,
+                })
+                .expect("PSI row");
+        }
+    }
+    if let Some((timestamp, count)) = config.postgres {
+        for pid in 0..count {
+            buffers
+                .push(activity_row(
+                    timestamp,
+                    i32::try_from(pid).expect("fixture pid"),
+                    active,
+                    label,
+                ))
+                .expect("activity row");
+        }
+    }
+    let part = buffers
+        .flush(&dictionary)
+        .expect("encode health fixture")
+        .expect("nonempty health fixture");
+    journal
+        .append(
+            SegmentId::new(segment_id).expect("health segment id"),
+            &part,
+        )
+        .expect("append health fixture");
+}
+
+fn activity_row(ts: i64, pid: i32, state: StrId, query: StrId) -> PgStatActivityV3 {
+    PgStatActivityV3 {
+        ts: Ts(ts),
+        pid,
+        leader_pid: None,
+        datname: None,
+        usename: None,
+        application_name: state,
+        client_addr: state,
+        backend_type: state,
+        state: Some(state),
+        wait_event_type: None,
+        wait_event: None,
+        query: Some(query),
+        query_id: None,
+        backend_xid_age: None,
+        backend_xmin_age: None,
+        backend_start: Ts(1),
+        xact_start: None,
+        query_start: None,
+        state_change: None,
+    }
+}
+
+fn health_values(resource: &super::ResourceIndex, series: &str) -> Vec<Option<u8>> {
+    resource
+        .index
+        .blocks
+        .iter()
+        .find_map(|block| match (series, block) {
+            ("os", SeriesBlock::OsHealth(points))
+            | ("overall", SeriesBlock::OverallHealth(points))
+            | ("postgres", SeriesBlock::PostgresHealth(points)) => {
+                Some(points.iter().map(|point| point.value).collect())
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 fn process_row(ts: i64, read_bytes: Option<i64>, label: StrId) -> OsProcess {
@@ -415,6 +538,18 @@ fn only_segment(reader: &Reader, kind: SegmentKind) -> SegmentRef {
     segments.into_iter().next().expect("one segment")
 }
 
+fn health_at(root: &Path, segment_id: i64) -> super::ResourceIndex {
+    let reader = Reader::open(root).expect("reader");
+    let segment = reader
+        .catalog_segments(..)
+        .expect("catalog")
+        .segments
+        .into_iter()
+        .find(|segment| segment.id() == segment_id)
+        .expect("health segment");
+    resource(root, &reader, &segment, "health").expect("health resource")
+}
+
 #[test]
 fn an_index_lives_beside_its_finished_segment() {
     assert_eq!(
@@ -426,6 +561,248 @@ fn an_index_lives_beside_its_finished_segment() {
 #[test]
 fn active_data_never_gets_an_index_path() {
     assert_eq!(path_of(Path::new("/data/active.wal")), None);
+}
+
+#[test]
+fn health_uses_the_immediately_preceding_psi_snapshot() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+    let config = HealthFixture {
+        boot_time: SEGMENT_ID - 1_000_000,
+        environment: 0,
+        postgres: None,
+    };
+    append_health_fixture(
+        &mut journal,
+        SEGMENT_ID,
+        config,
+        &[
+            (SEGMENT_ID, [Some(0), Some(0), Some(0)]),
+            (SEGMENT_ID + 1_000_000, [Some(100_000), Some(0), Some(0)]),
+        ],
+    );
+    write_segment(&journal, &writer, address_at(SEGMENT_ID)).expect("finish predecessor");
+    journal.reset().expect("reset after predecessor");
+
+    let current_id = SEGMENT_ID + 2_000_000;
+    append_health_fixture(
+        &mut journal,
+        current_id,
+        config,
+        &[
+            (current_id, [Some(200_000), Some(0), Some(0)]),
+            (current_id + 1_000_000, [Some(300_000), Some(0), Some(0)]),
+        ],
+    );
+    write_segment(&journal, &writer, address_at(current_id)).expect("finish current segment");
+    journal.reset().expect("leave no active segment");
+
+    let selected = health_at(directory.path(), current_id);
+    assert_eq!(health_values(&selected, "os"), [Some(90), Some(90)]);
+    assert_eq!(health_values(&selected, "overall"), [Some(90), Some(90)]);
+    assert!(health_values(&selected, "postgres").is_empty());
+}
+
+#[test]
+fn reset_and_unusable_psi_snapshots_remain_unknown() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+    let config = HealthFixture {
+        boot_time: SEGMENT_ID - 1_000_000,
+        environment: 0,
+        postgres: None,
+    };
+    append_health_fixture(
+        &mut journal,
+        SEGMENT_ID,
+        config,
+        &[(SEGMENT_ID, [Some(200_000), Some(0), Some(0)])],
+    );
+    write_segment(&journal, &writer, address_at(SEGMENT_ID)).expect("finish predecessor");
+    journal.reset().expect("reset after predecessor");
+
+    let current_id = SEGMENT_ID + 1_000_000;
+    append_health_fixture(
+        &mut journal,
+        current_id,
+        config,
+        &[
+            (current_id, [Some(50_000), Some(0), Some(0)]),
+            (current_id + 1_000_000, [Some(150_000), Some(0), None]),
+            (current_id + 2_000_000, [Some(250_000), Some(0), Some(0)]),
+            (current_id + 3_000_000, [Some(350_000), Some(0), Some(0)]),
+        ],
+    );
+    write_segment(&journal, &writer, address_at(current_id)).expect("finish current segment");
+    journal.reset().expect("leave no active segment");
+
+    assert_eq!(
+        health_values(&health_at(directory.path(), current_id), "os"),
+        [None, None, None, Some(90)]
+    );
+}
+
+#[test]
+fn a_different_boot_does_not_seed_os_health() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+    append_health_fixture(
+        &mut journal,
+        SEGMENT_ID,
+        HealthFixture {
+            boot_time: 1,
+            environment: 0,
+            postgres: None,
+        },
+        &[(SEGMENT_ID, [Some(100_000), Some(0), Some(0)])],
+    );
+    write_segment(&journal, &writer, address_at(SEGMENT_ID)).expect("finish predecessor");
+    journal.reset().expect("reset after predecessor");
+
+    let current_id = SEGMENT_ID + 1_000_000;
+    append_health_fixture(
+        &mut journal,
+        current_id,
+        HealthFixture {
+            boot_time: 2,
+            environment: 0,
+            postgres: None,
+        },
+        &[
+            (current_id, [Some(200_000), Some(0), Some(0)]),
+            (current_id + 1_000_000, [Some(300_000), Some(0), Some(0)]),
+        ],
+    );
+    write_segment(&journal, &writer, address_at(current_id)).expect("finish current segment");
+    journal.reset().expect("leave no active segment");
+
+    assert_eq!(
+        health_values(&health_at(directory.path(), current_id), "os"),
+        [None, Some(90)]
+    );
+}
+
+#[test]
+fn overall_uses_fresh_predecessor_postgres_without_copying_its_point() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+    let boot_time = SEGMENT_ID - 1_000_000;
+    append_health_fixture(
+        &mut journal,
+        SEGMENT_ID,
+        HealthFixture {
+            boot_time,
+            environment: 0,
+            postgres: Some((SEGMENT_ID + 1_000_000, 5)),
+        },
+        &[
+            (SEGMENT_ID, [Some(0), Some(0), Some(0)]),
+            (SEGMENT_ID + 1_000_000, [Some(100_000), Some(0), Some(0)]),
+        ],
+    );
+    write_segment(&journal, &writer, address_at(SEGMENT_ID)).expect("finish predecessor");
+    journal.reset().expect("reset after predecessor");
+
+    let current_id = SEGMENT_ID + 2_000_000;
+    append_health_fixture(
+        &mut journal,
+        current_id,
+        HealthFixture {
+            boot_time,
+            environment: 0,
+            postgres: Some((current_id + 500_000, 4)),
+        },
+        &[
+            (current_id, [Some(200_000), Some(0), Some(0)]),
+            (current_id + 1_000_000, [Some(300_000), Some(0), Some(0)]),
+        ],
+    );
+    write_segment(&journal, &writer, address_at(current_id)).expect("finish current segment");
+    journal.reset().expect("leave no active segment");
+
+    let selected = health_at(directory.path(), current_id);
+    assert_eq!(health_values(&selected, "os"), [Some(90), Some(90)]);
+    assert_eq!(health_values(&selected, "overall"), [Some(70), Some(90)]);
+    assert_eq!(health_values(&selected, "postgres"), [Some(100)]);
+}
+
+#[test]
+fn unusable_nearest_inputs_block_older_health_values() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_root = DataRoot::open(directory.path()).expect("data root");
+    let writer = data_root
+        .acquire_writer(LayoutLimits::default())
+        .expect("writer");
+    let mut journal = Journal::open(&writer, JournalConfig::default()).expect("journal");
+    let boot_time = SEGMENT_ID - 1_000_000;
+    append_health_fixture(
+        &mut journal,
+        SEGMENT_ID,
+        HealthFixture {
+            boot_time,
+            environment: 0,
+            postgres: Some((SEGMENT_ID + 1_000_000, 5)),
+        },
+        &[
+            (SEGMENT_ID, [Some(0), Some(0), Some(0)]),
+            (SEGMENT_ID + 1_000_000, [Some(100_000), Some(0), Some(0)]),
+        ],
+    );
+    write_segment(&journal, &writer, address_at(SEGMENT_ID)).expect("finish oldest segment");
+    journal.reset().expect("reset after oldest segment");
+
+    let middle_id = SEGMENT_ID + 2_000_000;
+    append_health_fixture(
+        &mut journal,
+        middle_id,
+        HealthFixture {
+            boot_time,
+            environment: 0,
+            postgres: None,
+        },
+        &[(middle_id, [Some(200_000), Some(0), None])],
+    );
+    write_segment(&journal, &writer, address_at(middle_id)).expect("finish nearest segment");
+    journal.reset().expect("reset after nearest segment");
+
+    let current_id = SEGMENT_ID + 3_000_000;
+    append_health_fixture(
+        &mut journal,
+        current_id,
+        HealthFixture {
+            boot_time,
+            environment: 0,
+            postgres: Some((current_id + 1_500_000, 4)),
+        },
+        &[
+            (current_id, [Some(300_000), Some(0), Some(0)]),
+            (current_id + 1_000_000, [Some(400_000), Some(0), Some(0)]),
+            (current_id + 2_000_000, [Some(500_000), Some(0), Some(0)]),
+        ],
+    );
+    write_segment(&journal, &writer, address_at(current_id)).expect("finish current segment");
+    journal.reset().expect("leave no active segment");
+
+    let selected = health_at(directory.path(), current_id);
+    assert_eq!(health_values(&selected, "os"), [None, Some(90), Some(90)]);
+    assert_eq!(health_values(&selected, "overall"), [None, None, Some(90)]);
+    assert_eq!(health_values(&selected, "postgres"), [Some(100)]);
 }
 
 #[test]
@@ -612,7 +989,6 @@ fn direct_boundaries_and_log_events_use_exact_production_fields() {
         ("pg_log_slow_queries", 2_004_001),
         ("pg_log_lock_waits", 2_005_001),
         ("pg_log_lifecycle", 2_006_001),
-        ("pg_log_temp_files", 2_007_001),
     ] {
         let selected = resource(directory.path(), &reader, &segment, logical_name)
             .expect("log event resource");
@@ -641,6 +1017,18 @@ fn direct_boundaries_and_log_events_use_exact_production_fields() {
         }
     }
 
+    let raw = reader.open_segment(&segment).expect("finished segment");
+    assert_eq!(raw.rows_of(2_007_001), Some(1));
+    assert!(
+        finding_keys(&segment)
+            .iter()
+            .all(|key| key.type_id != 2_007_001)
+    );
+    assert!(series_keys(&segment, "pg_log_temp_files").is_empty());
+    let selected = resource(directory.path(), &reader, &segment, "pg_log_temp_files")
+        .expect("raw temporary-file section has no index resource");
+    assert!(selected.index.blocks.is_empty());
+
     let path = path_of(
         reader
             .open_segment(&segment)
@@ -648,6 +1036,11 @@ fn direct_boundaries_and_log_events_use_exact_production_fields() {
             .path(),
     )
     .expect("index path");
+    assert!(
+        read(&path).expect("current index").blocks.iter().all(
+            |block| !matches!(block, SeriesBlock::Findings(block) if block.type_id == 2_007_001)
+        )
+    );
     let bytes = std::fs::read(path).expect("published index");
     let copied = b"EVENT-SOURCE-MESSAGE-QUERY-STATEMENT-MUST-STAY-IN-ZMS";
     assert!(
@@ -681,7 +1074,7 @@ fn production_builder_rejects_an_invalid_log_error_category() {
 }
 
 #[test]
-fn slow_process_and_statement_spikes_cross_finished_segment_boundaries() {
+fn process_and_statement_metrics_stay_out_of_finding_indexes() {
     const STEP: i64 = 5 * 60 * 1_000_000;
 
     let directory = tempfile::tempdir().expect("tempdir");
@@ -707,17 +1100,17 @@ fn slow_process_and_statement_spikes_cross_finished_segment_boundaries() {
     write_segment(&journal, &writer, address_at(SEGMENT_ID)).expect("finish prior segment");
     journal.reset().expect("reset after prior segment");
 
-    let spike_ts = SEGMENT_ID + 6 * STEP;
+    let current_ts = SEGMENT_ID + 6 * STEP;
     let process_current = [
-        (spike_ts, Some(301_500)),
-        (spike_ts + STEP, None),
-        (spike_ts + 2 * STEP, Some(301_800)),
-        (spike_ts + 3 * STEP, Some(100)),
+        (current_ts, Some(301_500)),
+        (current_ts + STEP, None),
+        (current_ts + 2 * STEP, Some(301_800)),
+        (current_ts + 3 * STEP, Some(100)),
     ];
     let statement_current = [
-        (spike_ts, 6, 10_500.0),
-        (spike_ts + STEP, 0, 0.0),
-        (spike_ts + 2 * STEP, 1, 100.0),
+        (current_ts, 6, 10_500.0),
+        (current_ts + STEP, 0, 0.0),
+        (current_ts + 2 * STEP, 1, 100.0),
     ];
     append_finding_fixture(
         &mut journal,
@@ -735,35 +1128,30 @@ fn slow_process_and_statement_spikes_cross_finished_segment_boundaries() {
         .into_iter()
         .find(|segment| segment.id() == SEGMENT_ID + 1)
         .expect("current finished segment");
-    let process =
-        resource(directory.path(), &reader, &current, "os_process").expect("process findings");
+    let process = resource(directory.path(), &reader, &current, "os_process")
+        .expect("process index selection");
     let statements = resource(directory.path(), &reader, &current, "pg_stat_statements")
-        .expect("statement findings");
+        .expect("statement index selection");
     assert!(process.persisted);
     assert!(statements.persisted);
     assert_eq!(process.index.checksum, statements.index.checksum);
+    assert!(process.index.blocks.is_empty());
+    assert!(statements.index.blocks.is_empty());
+    assert!(
+        finding_keys(&current)
+            .iter()
+            .all(|key| { !matches!(key.type_id, 1_100_001 | 1_002_001..=1_002_006) })
+    );
 
-    let [SeriesBlock::Findings(process)] = process.index.blocks.as_slice() else {
-        panic!("one process finding block");
-    };
-    assert_eq!(process.type_id, 1_100_001);
-    assert_eq!(process.total_hits, 1);
-    assert_eq!(process.findings.len(), 1);
-    assert_eq!(process.findings[0].kind, FindingKind::Spike);
-    assert_eq!(process.findings[0].field_ordinal, 33);
-    assert_eq!(process.findings[0].row_ordinal, 0);
-    assert_eq!(process.findings[0].timestamp, spike_ts);
-
-    let [SeriesBlock::Findings(statements)] = statements.index.blocks.as_slice() else {
-        panic!("one statement finding block");
-    };
-    assert_eq!(statements.type_id, 1_002_002);
-    assert_eq!(statements.total_hits, 1);
-    assert_eq!(statements.findings.len(), 1);
-    assert_eq!(statements.findings[0].kind, FindingKind::Spike);
-    assert_eq!(statements.findings[0].field_ordinal, 10);
-    assert_eq!(statements.findings[0].row_ordinal, 0);
-    assert_eq!(statements.findings[0].timestamp, spike_ts);
+    let raw = reader.open_segment(&current).expect("open current segment");
+    assert_eq!(
+        raw.rows_of(1_100_001),
+        Some(u64::try_from(process_current.len()).expect("small process fixture"))
+    );
+    assert_eq!(
+        raw.rows_of(1_002_002),
+        Some(u64::try_from(statement_current.len()).expect("small statement fixture"))
+    );
 
     let index_path = path_of(
         reader
@@ -772,11 +1160,7 @@ fn slow_process_and_statement_spikes_cross_finished_segment_boundaries() {
             .path(),
     )
     .expect("finished index path");
-    let bytes = std::fs::read(index_path).expect("read published index");
-    assert!(
-        !bytes
-            .windows(b"FINDING-SOURCE-TEXT-MUST-STAY-IN-ZMS".len())
-            .any(|window| window == b"FINDING-SOURCE-TEXT-MUST-STAY-IN-ZMS"),
-        "finding blocks contain locators, not source text"
-    );
+    assert!(read(&index_path).expect("read published index").blocks.iter().all(
+        |block| !matches!(block, SeriesBlock::Findings(block) if matches!(block.type_id, 1_100_001 | 1_002_001..=1_002_006))
+    ));
 }

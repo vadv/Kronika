@@ -5,7 +5,10 @@ use hyper::header::{
     HeaderValue, VARY,
 };
 
-use super::{UI_GZIP, response};
+use flate2::read::GzDecoder;
+use std::io::Read as _;
+
+use super::{UI_CSP, UI_GZIP, response};
 
 #[tokio::test]
 async fn get_and_head_share_the_exact_gzip_representation_headers() {
@@ -31,7 +34,18 @@ async fn get_and_head_share_the_exact_gzip_representation_headers() {
         get.headers().get(VARY),
         Some(&HeaderValue::from_static("Authorization, Accept-Encoding"))
     );
-    assert!(get.headers().contains_key(CONTENT_SECURITY_POLICY));
+    assert_eq!(
+        get.headers()
+            .get(CONTENT_SECURITY_POLICY)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.split(';').any(|directive| {
+                directive
+                    .trim()
+                    .split_ascii_whitespace()
+                    .eq(["form-action", "'none'"])
+            })),
+        Some(true)
+    );
     assert!(get.headers().contains_key(ETAG));
     assert_eq!(
         get.into_body()
@@ -107,4 +121,39 @@ async fn matching_entity_tags_return_the_same_empty_304_representation() {
 fn committed_bytes_have_the_reproducible_gzip_header() {
     assert_eq!(UI_GZIP.get(..4), Some([0x1f, 0x8b, 8, 0].as_slice()));
     assert_eq!(UI_GZIP.get(4..8), Some([0, 0, 0, 0].as_slice()));
+}
+
+#[test]
+fn content_security_policy_allows_both_inline_scripts() {
+    let mut html = String::new();
+    GzDecoder::new(UI_GZIP)
+        .read_to_string(&mut html)
+        .expect("decode embedded UI");
+    let mut scripts = Vec::new();
+    let mut tail = html.as_str();
+    while let Some(start) = tail.find("<script>") {
+        let body = tail
+            .get(start..)
+            .and_then(|script| script.strip_prefix("<script>"))
+            .expect("script starts at a UTF-8 boundary");
+        let (script, rest) = body
+            .split_once("</script>")
+            .expect("complete inline script");
+        scripts.push(script);
+        tail = rest;
+    }
+    assert_eq!(scripts.len(), 2);
+    let script_sources = UI_CSP
+        .split(';')
+        .find(|directive| directive.trim_start().starts_with("script-src "))
+        .expect("script-src directive")
+        .split_ascii_whitespace()
+        .skip(1)
+        .collect::<Vec<_>>();
+    assert_eq!(script_sources.len(), 2);
+    assert!(
+        script_sources
+            .iter()
+            .all(|source| source.starts_with("'sha256-") && source.ends_with('\''))
+    );
 }

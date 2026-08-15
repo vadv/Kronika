@@ -33,6 +33,23 @@ test("Activity marks long transactions and visible wait states", () => {
   assert.equal(semanticValueTone("wait_event_type", "Lock"), "warning")
 })
 
+test("Activity duration tones belong only to active client backends", () => {
+  const activity = (backend_type: string, state = "active") => ({
+    logicalName: "pg_stat_activity",
+    ordinal: "0",
+    segmentId: "a",
+    timestamp: 10_000_000,
+    typeId: "1001003",
+    values: { backend_type, state },
+  })
+  assert.equal(semanticValueTone("query_duration_ms", 5_000, false, activity("client backend")), "critical")
+  assert.equal(semanticValueTone("transaction_duration_ms", 60_000, false, activity("client backend")), "critical")
+  assert.equal(semanticValueTone("query_duration_ms", 5_000, false, activity("walsender")), null)
+  assert.equal(semanticValueTone("transaction_duration_ms", 60_000, false, activity("walsender")), null)
+  assert.equal(semanticValueTone("query_duration_ms", 5_000, false, activity("checkpointer")), null)
+  assert.equal(semanticValueTone("query_duration_ms", 5_000, false, activity("client backend", "idle in transaction")), null)
+})
+
 test("cache hit tones distinguish no accesses from a real zero-percent hit rate", () => {
   assert.equal(semanticValueTone("hit_pct", null), null)
   assert.equal(semanticValueTone("hit_pct", 0), "critical")
@@ -63,6 +80,10 @@ test("semantic tones coexist with exact locator classes", async () => {
   assert.match(table, /data-value-tone=/)
   assert.match(table, /data-locator-cell=/)
   assert.match(table, /value-tone-\$\{tone\}.*locator-cell/)
+  assert.match(table, /aria-label=\{toneText === null \|\| field === undefined \? undefined : `\$\{toneText\}: \$\{cellAriaValue\(stored, field, locale, t\)\}`\}/)
+  assert.doesNotMatch(table, /\$\{toneText\}: \$\{rawText\(stored\)/)
   assert.match(styles, /\.entity-cell\.value-tone-critical/)
+  assert.match(styles, /\.value-tone-mark/)
+  assert.doesNotMatch(styles, /\.entity-cell\.value-tone-critical\s*\{[^}]*box-shadow/)
   assert.match(styles, /\.entity-cell\.locator-known_bad \.entity-value/)
 })

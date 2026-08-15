@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use super::render::record;
 use super::{ApiError, CachePolicy, Prepared, ResponseMeta, explicit_segment};
 use crate::encoding::etag_matches;
-use crate::route::SegmentRequest;
+use crate::route::{SegmentRequest, Window};
 
 pub(crate) struct PreparedIndex {
     meta: ResponseMeta,
@@ -85,13 +85,14 @@ impl PreparedIndex {
         {
             return Ok(());
         }
-        stream_series(&self.logical_name, self.resource, emit, cancelled).map(|_connected| ())
+        stream_series(&self.logical_name, self.resource, None, emit, cancelled).map(|_connected| ())
     }
 }
 
 pub(super) fn stream_series(
     logical_name: &str,
     resource: ResourceIndex,
+    window: Option<Window>,
     emit: &mut impl FnMut(Vec<u8>) -> bool,
     cancelled: &impl Fn() -> bool,
 ) -> Result<bool, ApiError> {
@@ -103,7 +104,7 @@ pub(super) fn stream_series(
                 } else {
                     logical_section_name(block.type_id).ok_or(ApiError::NoSuchSection)?
                 };
-                if !stream_findings(finding_logical_name, block, emit, cancelled)? {
+                if !stream_findings(finding_logical_name, block, window, emit, cancelled)? {
                     return Ok(false);
                 }
                 continue;
@@ -127,7 +128,9 @@ pub(super) fn stream_series(
                 | SeriesBlock::OverallHealth(points)
                 | SeriesBlock::PostgresHealth(points) => {
                     let series = health_series.expect("health block has a series name");
-                    for point in points {
+                    for point in points.into_iter().filter(|point| {
+                        window.is_none_or(|window| window.contains(point.timestamp))
+                    }) {
                         if cancelled()
                             || !emit(record(json!({
                                 "record": "point",
@@ -143,7 +146,9 @@ pub(super) fn stream_series(
                     }
                 }
                 SeriesBlock::PgTransactions { type_id, points } => {
-                    for point in points {
+                    for point in points.into_iter().filter(|point| {
+                        window.is_none_or(|window| window.contains(point.timestamp))
+                    }) {
                         if cancelled()
                             || !emit(record(json!({
                                 "record": "point",
@@ -159,7 +164,9 @@ pub(super) fn stream_series(
                     }
                 }
                 SeriesBlock::PgActiveBackends { type_id, points } => {
-                    for point in points {
+                    for point in points.into_iter().filter(|point| {
+                        window.is_none_or(|window| window.contains(point.timestamp))
+                    }) {
                         if cancelled()
                             || !emit(record(json!({
                                 "record": "point",
@@ -183,10 +190,23 @@ pub(super) fn stream_series(
 
 fn stream_findings(
     logical_name: &str,
-    block: FindingBlock,
+    mut block: FindingBlock,
+    window: Option<Window>,
     emit: &mut impl FnMut(Vec<u8>) -> bool,
     cancelled: &impl Fn() -> bool,
 ) -> Result<bool, ApiError> {
+    if let Some(window) = window {
+        let omitted_may_intersect = block.truncated
+            && block
+                .findings
+                .last()
+                .is_none_or(|last| window.to.is_none_or(|to| to >= last.timestamp));
+        block
+            .findings
+            .retain(|finding| window.contains(finding.timestamp));
+        block.total_hits = u32::try_from(block.findings.len()).unwrap_or(u32::MAX);
+        block.truncated = omitted_may_intersect;
+    }
     if cancelled()
         || !emit(record(json!({
             "record": "findings",
@@ -270,13 +290,15 @@ fn resource_meta(kind: SegmentKind, checksum: Option<u32>) -> Result<ResponseMet
     }
 }
 
-fn block_layout(logical_name: &str, block: &SeriesBlock) -> Result<Value, ApiError> {
+fn block_layout(_logical_name: &str, block: &SeriesBlock) -> Result<Value, ApiError> {
     match block {
         SeriesBlock::OsHealth(_) => Ok(health_layout("os_health")),
         SeriesBlock::OverallHealth(_) => Ok(health_layout("overall_health")),
         SeriesBlock::PostgresHealth(_) => Ok(health_layout("postgres_health")),
-        SeriesBlock::PgTransactions { type_id, .. }
-        | SeriesBlock::PgActiveBackends { type_id, .. } => section_layout(logical_name, *type_id),
+        SeriesBlock::PgTransactions { type_id, .. } => section_layout("pg_stat_database", *type_id),
+        SeriesBlock::PgActiveBackends { type_id, .. } => {
+            section_layout("pg_stat_activity", *type_id)
+        }
         SeriesBlock::Findings(_) => Err(ApiError::NoSuchSection),
     }
 }

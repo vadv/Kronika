@@ -110,7 +110,19 @@ test("snapshot decoration preserves physical cells and derives only available ra
   assert.equal(decorated.values.execution_ms_per_second, 30)
   assert.equal(decorated.values.mean_exec_ms_per_call, 7.5)
   assert.equal(decorated.values.shared_blk_read_ms_per_second, 6)
-  assert.equal(decorated.values.local_blk_read_ms_per_second, null)
+  assert.equal(Object.hasOwn(decorated.values, "local_blk_read_ms_per_second"), false)
+})
+
+test("unavailable composite values and orders stay absent", () => {
+  const old = metrics.decoratePostgresIntervalRow(row("1002001", 10, {
+    calls: 4, total_time: 20, rows: 8,
+  }))
+  assert.equal(Object.hasOwn(old.values, "wal_per_call"), false)
+  assert.equal(Object.hasOwn(old.values, "plan_time_pct"), false)
+  assert.equal(metrics.supportsPostgresDerivedOrder("1002001", "derived.mean_exec_ms_per_call"), true)
+  assert.equal(metrics.supportsPostgresDerivedOrder("1002001", "derived.wal_per_call"), false)
+  assert.equal(metrics.supportsPostgresDerivedOrder("1002001", "derived.plan_time_pct"), false)
+  assert.equal(metrics.supportsPostgresDerivedOrder("1002002", "derived.wal_per_call"), true)
 })
 
 test("history subtracts exact counters before conversion and rejects unusable intervals", () => {
@@ -146,8 +158,15 @@ test("history subtracts exact counters before conversion and rejects unusable in
   assert.equal(metrics.postgresInterval(after, missing).mean_exec_ms_per_call, null)
   const unavailable = row("1002002", 4_000_000, { calls: null, total_exec_time: null })
   assert.equal(metrics.postgresInterval(after, unavailable).mean_exec_ms_per_call, null)
-  const zero = row("1002002", 4_000_000, { calls: after.values.calls, total_exec_time: 140 })
-  assert.equal(metrics.postgresInterval(after, zero).mean_exec_ms_per_call, null)
+  const zero = row("1002002", 4_000_000, { calls: after.values.calls, rows: after.values.rows, total_exec_time: after.values.total_exec_time })
+  const zeroInterval = metrics.postgresInterval(after, zero)
+  assert.equal(zeroInterval.calls_per_second, 0)
+  assert.equal(zeroInterval.execution_ms_per_second, 0)
+  assert.equal(zeroInterval.rows_per_second, 0)
+  assert.equal(zeroInterval.mean_exec_ms_per_call, null)
+  assert.deepEqual(metrics.postgresHistory([before, after, zero]).map(({ calls_per_second, mean_exec_ms_per_call }) => [calls_per_second, mean_exec_ms_per_call]), [
+    [null, null], [1.5, 10], [0, null],
+  ])
   const backwards = row("1002002", 2_000_000, { calls: "9007199254740996", total_exec_time: 140 })
   assert.equal(metrics.postgresInterval(after, backwards).mean_exec_ms_per_call, null)
   const executionReset = row("1002002", 4_000_000, { calls: "9007199254740996", total_exec_time: 1 })
@@ -170,33 +189,46 @@ test("a physical statement spike selects interval mean execution time", () => {
 
 test("statement lenses project only their exact physical operands", () => {
   const perCall = metrics.statementRequest("per_call")
-  assert.equal(perCall.top, 200)
-  assert.deepEqual(perCall.defaultOrder, ["total_time", "total_exec_time"])
+  assert.equal(perCall.pageSize, 200)
+  assert.deepEqual(perCall.defaultOrder, ["calls"])
+  assert.equal(metrics.statementDefaultOrder("per_call"), "calls_per_second")
   assert.ok(perCall.fieldsByType["1002001"].includes("rows"))
   assert.ok(perCall.fieldsByType["1002001"].includes("calls"))
   assert.ok(perCall.fieldsByType["1002001"].includes("shared_blks_hit"))
   assert.equal(perCall.fieldsByType["1002001"].includes("wal_bytes"), false)
   assert.equal(perCall.fieldsByType["1002001"].includes("shared_blks_dirtied"), false)
+  assert.deepEqual(perCall.order.mean_exec_ms_per_call, ["derived.mean_exec_ms_per_call"])
+  assert.deepEqual(perCall.order.rows_per_call, ["derived.rows_per_call"])
+  assert.deepEqual(perCall.order.blocks_per_call, ["derived.blocks_per_call"])
 
   const io = metrics.statementRequest("io")
   assert.ok(io.fieldsByType["1002001"].includes("shared_blks_dirtied"))
   assert.equal(io.fieldsByType["1002001"].includes("blk_read_time"), false)
+  assert.deepEqual(io.order.hit_pct, ["derived.hit_pct"])
+  assert.deepEqual(io.order.shared_blks_dirtied, ["shared_blks_dirtied"])
 
   const resources = metrics.statementRequest("resources")
   assert.ok(resources.fieldsByType["1002006"].includes("temp_blks_written"))
   assert.equal(resources.fieldsByType["1002006"].includes("temp_blks_read"), false)
+  assert.deepEqual(resources.defaultOrder, ["wal_bytes"])
+  assert.equal(metrics.statementDefaultOrder("resources"), "wal_bytes")
+  assert.deepEqual(resources.order.wal_per_call, ["derived.wal_per_call"])
+  assert.deepEqual(resources.order.plan_time_pct, ["derived.plan_time_pct"])
 
   const stability = metrics.statementRequest("stability")
   assert.ok(stability.fieldsByType["1002001"].includes("mean_time"))
   assert.ok(stability.fieldsByType["1002001"].includes("stddev_time"))
   assert.ok(stability.fieldsByType["1002006"].includes("mean_exec_time"))
   assert.ok(stability.fieldsByType["1002006"].includes("stddev_exec_time"))
+  assert.deepEqual(stability.defaultOrder, ["calls"])
+  assert.deepEqual(stability.order.cv, ["derived.cv"])
+  assert.deepEqual(stability.order.mean_exec_time_ms, ["mean_time", "mean_exec_time"])
 })
 
 test("plan lenses keep bounded rows and direct per-plan statistics", () => {
   for (const lens of ["load", "timing", "io", "identity"]) {
     const request = metrics.planRequest(lens)
-    assert.equal(request.top, 200)
+    assert.equal(request.pageSize, 200)
     assert.ok(request.fieldsByType["1003001"].includes("plan"))
   }
   const timing = metrics.planRequest("timing")
@@ -204,8 +236,12 @@ test("plan lenses keep bounded rows and direct per-plan statistics", () => {
     assert.ok(timing.fieldsByType["1003001"].includes(field))
   }
   assert.equal(timing.fieldsByType["1003001"].includes("queryid_stat_statements"), false)
+  assert.deepEqual(timing.order.mean_exec_time_ms, ["mean_time"])
+  assert.deepEqual(timing.order.first_call, ["first_call"])
   const identity = metrics.planRequest("identity")
   assert.ok(identity.fieldsByType["1004001"].includes("queryid_stat_statements"))
+  assert.ok(identity.fieldsByType["1003001"].includes("calls"))
+  assert.deepEqual(identity.defaultOrder, ["calls"])
   assert.equal(identity.fieldsByType["1003001"].includes("mean_time"), false)
   const decorated = metrics.decoratePostgresIntervalRow(
     row("1003001", 10, { calls: 2, total_time: 20, min_time: 2, max_time: 15, mean_time: 10, stddev_time: 3 }, "a"),

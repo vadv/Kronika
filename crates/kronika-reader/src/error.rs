@@ -21,6 +21,23 @@ pub enum ReaderError {
     },
 }
 
+impl ReaderError {
+    /// Whether reopening the data root may select a source that replaced this one.
+    #[must_use]
+    pub fn source_changed_during_read(&self) -> bool {
+        match self {
+            Self::Io(error) => error.kind() == std::io::ErrorKind::Interrupted,
+            Self::Store(StoreError::Io(error)) => matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound
+                    | std::io::ErrorKind::Interrupted
+                    | std::io::ErrorKind::UnexpectedEof
+            ),
+            Self::Store(_) | Self::Section { .. } => false,
+        }
+    }
+}
+
 impl fmt::Display for ReaderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

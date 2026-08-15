@@ -1,15 +1,16 @@
 use http_body_util::BodyExt as _;
 use hyper::header::{
-    ACCEPT_ENCODING, ALLOW, CACHE_CONTROL, CONTENT_ENCODING, ETAG, IF_NONE_MATCH, VARY,
-    WWW_AUTHENTICATE,
+    ACCEPT_ENCODING, ALLOW, CACHE_CONTROL, CONTENT_ENCODING, COOKIE, ETAG, IF_NONE_MATCH,
+    SET_COOKIE, VARY, WWW_AUTHENTICATE,
 };
 use hyper::{Method, Request, StatusCode};
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
-    RequestTarget, authorization, if_none_match_values, response_from_meta, route_request,
+    RequestTarget, SingleHeader, authorization, if_none_match_values, response_from_meta,
+    route_request, route_request_at, session_response,
 };
-use crate::api::{CachePolicy, Prepared, ResponseMeta};
+use crate::api::{ApiError, CachePolicy, Prepared, ResponseMeta};
 use crate::body::StreamHead;
 use crate::config::Account;
 use crate::encoding::AcceptedEncodings;
@@ -35,6 +36,55 @@ fn request(method: Method, target: &str) -> Request<()> {
         .expect("request")
 }
 
+fn public_request(method: Method, target: &str) -> Request<()> {
+    Request::builder()
+        .method(method)
+        .uri(target)
+        .body(())
+        .expect("request")
+}
+
+fn session_request(
+    method: Method,
+    authorization: Option<&str>,
+    cookie: Option<&str>,
+) -> Request<()> {
+    let mut request = public_request(method, "/auth/session");
+    if let Some(authorization) = authorization {
+        request.headers_mut().insert(
+            hyper::header::AUTHORIZATION,
+            hyper::header::HeaderValue::from_str(authorization).expect("authorization header"),
+        );
+    }
+    if let Some(cookie) = cookie {
+        request.headers_mut().insert(
+            COOKIE,
+            hyper::header::HeaderValue::from_str(cookie).expect("cookie header"),
+        );
+    }
+    request
+        .headers_mut()
+        .insert("x-kronika-ui", hyper::header::HeaderValue::from_static("1"));
+    request
+}
+
+fn session_route_response(
+    request: &Request<()>,
+    now: u64,
+    cookie_secure: bool,
+) -> hyper::Response<super::WebBody> {
+    match route_request_at(&account(), request, now).expect("session route") {
+        RequestTarget::Session(target) => {
+            session_response(&account(), cookie_secure, target).expect("session response")
+        }
+        other => panic!("expected session target, got {other:?}"),
+    }
+}
+
+fn request_cookie(set_cookie: &str) -> &str {
+    set_cookie.split(';').next().expect("request cookie")
+}
+
 fn rejection(method: Method, target: &str) -> hyper::Response<super::WebBody> {
     route_request(&account(), &request(method, target))
         .expect_err("request is rejected")
@@ -43,35 +93,55 @@ fn rejection(method: Method, target: &str) -> hyper::Response<super::WebBody> {
 
 #[test]
 fn authentication_is_mandatory_and_central() {
-    let request = Request::builder()
-        .uri("/api/catalog")
-        .body(())
-        .expect("request");
-    let response = route_request(&account(), &request)
-        .expect_err("missing credentials")
-        .response();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    for target in ["/api", "/api/", "/api/catalog", "/api/not-a-resource"] {
+        let response = route_request(&account(), &public_request(Method::GET, target))
+            .expect_err("missing credentials")
+            .response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{target}");
+        assert_eq!(
+            response.headers().get(WWW_AUTHENTICATE),
+            Some(&hyper::header::HeaderValue::from_static(
+                "Basic realm=\"kronika\""
+            )),
+            "{target}"
+        );
+        assert_eq!(response.headers().get(VARY), Some(&unauthorized_vary()));
+        assert!(
+            !response
+                .headers()
+                .contains_key("access-control-allow-origin")
+        );
+    }
+}
+
+#[test]
+fn the_shell_is_public_even_with_invalid_authorization() {
+    let root = public_request(Method::GET, "/");
     assert_eq!(
-        response.headers().get(WWW_AUTHENTICATE),
-        Some(&hyper::header::HeaderValue::from_static(
-            "Basic realm=\"kronika\""
-        ))
-    );
-    assert_eq!(response.headers().get(VARY), Some(&auth_header()));
-    assert!(
-        !response
-            .headers()
-            .contains_key("access-control-allow-origin")
+        route_request(&account(), &root),
+        Ok(RequestTarget::Ui { head: false })
     );
 
-    let request = Request::builder().uri("/").body(()).expect("UI request");
-    assert_eq!(
-        route_request(&account(), &request)
-            .expect_err("UI also requires credentials")
-            .response()
-            .status(),
-        StatusCode::UNAUTHORIZED
+    let mut index = public_request(Method::HEAD, "/index.html");
+    index.headers_mut().insert(
+        hyper::header::AUTHORIZATION,
+        hyper::header::HeaderValue::from_static("Basic invalid"),
     );
+    assert_eq!(
+        route_request(&account(), &index),
+        Ok(RequestTarget::Ui { head: true })
+    );
+}
+
+#[test]
+fn public_non_api_paths_are_not_found() {
+    for target in ["/health", "/index.html/", "/api-not-a-resource"] {
+        let response = route_request(&account(), &public_request(Method::GET, target))
+            .expect_err("unknown public path")
+            .response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{target}");
+        assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+    }
 }
 
 #[test]
@@ -81,13 +151,297 @@ fn duplicate_authorization_fields_are_refused() {
         hyper::header::AUTHORIZATION,
         hyper::header::HeaderValue::from_static(AUTHORIZATION),
     );
-    assert!(authorization(request.headers()).is_none());
+    assert_eq!(authorization(request.headers()), SingleHeader::Invalid);
     assert_eq!(
         route_request(&account(), &request)
             .expect_err("ambiguous credentials")
             .response()
             .status(),
         StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn session_get_is_query_free_empty_and_unchallenged() {
+    const NOW: u64 = 1_786_579_200;
+    let response = session_route_response(&session_request(Method::GET, None, None), NOW, false);
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response.headers().get(CACHE_CONTROL),
+        Some(&hyper::header::HeaderValue::from_static("no-store"))
+    );
+    assert_eq!(response.headers().get(VARY), Some(&unauthorized_vary()));
+    assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+    assert!(!response.headers().contains_key(SET_COOKIE));
+    assert!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .expect("session body")
+            .to_bytes()
+            .is_empty()
+    );
+
+    let queried = public_request(Method::GET, "/auth/session?next=/");
+    assert_eq!(
+        route_request_at(&account(), &queried, NOW)
+            .expect_err("query is not a session route")
+            .response()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn session_post_issues_a_credential_free_cookie() {
+    const NOW: u64 = 1_786_579_200;
+    let response = session_route_response(
+        &session_request(Method::POST, Some(AUTHORIZATION), None),
+        NOW,
+        false,
+    );
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        response.headers().get(CACHE_CONTROL),
+        Some(&hyper::header::HeaderValue::from_static("no-store"))
+    );
+    assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+    let cookie = response
+        .headers()
+        .get(SET_COOKIE)
+        .expect("session cookie")
+        .to_str()
+        .expect("ASCII cookie");
+    assert!(cookie.starts_with("kronika_session=v1."));
+    assert!(!cookie.contains("dba"));
+    assert!(!cookie.contains("secret"));
+    assert!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .expect("session body")
+            .to_bytes()
+            .is_empty()
+    );
+}
+
+#[test]
+fn invalid_session_post_is_unchallenged_and_does_not_change_the_cookie() {
+    const NOW: u64 = 1_786_579_200;
+    let response = session_route_response(
+        &session_request(Method::POST, Some("Basic ZGJhOndyb25n"), None),
+        NOW,
+        false,
+    );
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+    assert!(!response.headers().contains_key(SET_COOKIE));
+}
+
+#[test]
+fn duplicate_authorization_cannot_create_a_session() {
+    const NOW: u64 = 1_786_579_200;
+    let mut request = session_request(Method::POST, Some(AUTHORIZATION), None);
+    request.headers_mut().append(
+        hyper::header::AUTHORIZATION,
+        hyper::header::HeaderValue::from_static(AUTHORIZATION),
+    );
+    let response = session_route_response(&request, NOW, false);
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(!response.headers().contains_key(SET_COOKIE));
+    assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+}
+
+#[test]
+fn valid_cookie_restores_session_and_authorizes_browser_api() {
+    const NOW: u64 = 1_786_579_200;
+    let login = session_route_response(
+        &session_request(Method::POST, Some(AUTHORIZATION), None),
+        NOW,
+        false,
+    );
+    let cookie = request_cookie(
+        login
+            .headers()
+            .get(SET_COOKIE)
+            .expect("session cookie")
+            .to_str()
+            .expect("ASCII cookie"),
+    );
+
+    let get = session_route_response(
+        &session_request(Method::GET, None, Some(cookie)),
+        NOW,
+        false,
+    );
+    assert_eq!(get.status(), StatusCode::NO_CONTENT);
+    assert!(!get.headers().contains_key(SET_COOKIE));
+
+    let mut api = public_request(Method::GET, "/api/catalog");
+    api.headers_mut().insert(
+        COOKIE,
+        hyper::header::HeaderValue::from_str(cookie).expect("cookie header"),
+    );
+    api.headers_mut()
+        .insert("x-kronika-ui", hyper::header::HeaderValue::from_static("1"));
+    assert!(matches!(
+        route_request_at(&account(), &api, NOW),
+        Ok(RequestTarget::Api { .. })
+    ));
+}
+
+#[test]
+fn expired_cookie_is_rejected_without_implicit_cleanup() {
+    const NOW: u64 = 1_786_579_200;
+    let issued = crate::auth::issue_cookie(&account(), NOW, false);
+    let cookie = request_cookie(&issued);
+    let expired_at = NOW + crate::auth::SESSION_MAX_AGE;
+
+    let get = session_route_response(
+        &session_request(Method::GET, None, Some(cookie)),
+        expired_at,
+        false,
+    );
+    assert_eq!(get.status(), StatusCode::UNAUTHORIZED);
+    assert!(!get.headers().contains_key(SET_COOKIE));
+
+    let mut api = public_request(Method::GET, "/api/catalog");
+    api.headers_mut().insert(
+        COOKIE,
+        hyper::header::HeaderValue::from_str(cookie).expect("cookie header"),
+    );
+    api.headers_mut()
+        .insert("x-kronika-ui", hyper::header::HeaderValue::from_static("1"));
+    let response = route_request_at(&account(), &api, expired_at)
+        .expect_err("expired session")
+        .response();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(!response.headers().contains_key(SET_COOKIE));
+    assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+}
+
+#[test]
+fn direct_basic_api_remains_available() {
+    const NOW: u64 = 1_786_579_200;
+    assert!(matches!(
+        route_request_at(&account(), &request(Method::GET, "/api/catalog"), NOW),
+        Ok(RequestTarget::Api { .. })
+    ));
+}
+
+#[test]
+fn marked_browser_api_unauthorized_is_silent_and_does_not_clear() {
+    const NOW: u64 = 1_786_579_200;
+    let mut request = public_request(Method::GET, "/api/catalog");
+    request
+        .headers_mut()
+        .insert("x-kronika-ui", hyper::header::HeaderValue::from_static("1"));
+    let response = route_request_at(&account(), &request, NOW)
+        .expect_err("missing browser session")
+        .response();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+    assert!(!response.headers().contains_key(SET_COOKIE));
+}
+
+#[test]
+fn malformed_or_duplicate_authorization_does_not_fall_back_to_cookie() {
+    const NOW: u64 = 1_786_579_200;
+    let issued = crate::auth::issue_cookie(&account(), NOW, false);
+    let cookie = request_cookie(&issued);
+
+    for duplicate in [false, true] {
+        let mut request = public_request(Method::GET, "/api/catalog");
+        request.headers_mut().insert(
+            COOKIE,
+            hyper::header::HeaderValue::from_str(cookie).expect("cookie header"),
+        );
+        request.headers_mut().insert(
+            hyper::header::AUTHORIZATION,
+            hyper::header::HeaderValue::from_static("Basic invalid"),
+        );
+        request
+            .headers_mut()
+            .insert("x-kronika-ui", hyper::header::HeaderValue::from_static("1"));
+        if duplicate {
+            request.headers_mut().append(
+                hyper::header::AUTHORIZATION,
+                hyper::header::HeaderValue::from_static(AUTHORIZATION),
+            );
+        }
+        let response = route_request_at(&account(), &request, NOW)
+            .expect_err("authorization field takes precedence")
+            .response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{duplicate}");
+        assert!(!response.headers().contains_key(SET_COOKIE));
+    }
+}
+
+#[test]
+fn duplicate_cookie_fields_are_not_a_session() {
+    const NOW: u64 = 1_786_579_200;
+    let issued = crate::auth::issue_cookie(&account(), NOW, false);
+    let cookie = request_cookie(&issued);
+    let mut request = session_request(Method::GET, None, Some(cookie));
+    request.headers_mut().append(
+        COOKIE,
+        hyper::header::HeaderValue::from_str(cookie).expect("cookie header"),
+    );
+    let response = session_route_response(&request, NOW, false);
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(!response.headers().contains_key(SET_COOKIE));
+}
+
+#[tokio::test]
+async fn session_delete_is_idempotent_and_clears_the_exact_scope() {
+    const NOW: u64 = 1_786_579_200;
+    let response = session_route_response(&session_request(Method::DELETE, None, None), NOW, true);
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        response
+            .headers()
+            .get(SET_COOKIE)
+            .and_then(|value| value.to_str().ok()),
+        Some("kronika_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0; Secure")
+    );
+    assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+    assert!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .expect("session body")
+            .to_bytes()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn unsupported_session_method_stays_inside_the_empty_session_boundary() {
+    const NOW: u64 = 1_786_579_200;
+    let response = session_route_response(&session_request(Method::PUT, None, None), NOW, false);
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(
+        response.headers().get(ALLOW),
+        Some(&hyper::header::HeaderValue::from_static(
+            "GET, POST, DELETE"
+        ))
+    );
+    assert_eq!(
+        response.headers().get(CACHE_CONTROL),
+        Some(&hyper::header::HeaderValue::from_static("no-store"))
+    );
+    assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+    assert!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .expect("session body")
+            .to_bytes()
+            .is_empty()
     );
 }
 
@@ -129,7 +483,9 @@ fn only_the_two_exact_ui_paths_admit_get_and_head() {
         })
     ));
 
-    let post = rejection(Method::POST, "/");
+    let post = route_request(&account(), &public_request(Method::POST, "/"))
+        .expect_err("shell POST is rejected")
+        .response();
     assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
     assert_eq!(
         post.headers().get(ALLOW),
@@ -178,7 +534,7 @@ fn an_api_client_that_refuses_every_coding_gets_an_explicit_406() {
     assert_eq!(
         response.headers().get(VARY),
         Some(&hyper::header::HeaderValue::from_static(
-            "Authorization, Accept-Encoding"
+            "Authorization, Cookie, Accept-Encoding"
         ))
     );
 }
@@ -226,7 +582,7 @@ async fn response_metadata_controls_private_cache_headers_etag_and_vary() {
     assert_eq!(
         response.headers().get(VARY),
         Some(&hyper::header::HeaderValue::from_static(
-            "Authorization, Accept-Encoding"
+            "Authorization, Cookie, Accept-Encoding"
         ))
     );
     assert!(!response.headers().contains_key(CONTENT_ENCODING));
@@ -241,8 +597,8 @@ async fn response_metadata_controls_private_cache_headers_etag_and_vary() {
     );
 }
 
-const fn auth_header() -> hyper::header::HeaderValue {
-    hyper::header::HeaderValue::from_static("Authorization")
+const fn unauthorized_vary() -> hyper::header::HeaderValue {
+    hyper::header::HeaderValue::from_static("Authorization, Cookie, X-Kronika-UI")
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -276,5 +632,107 @@ async fn blocking_resource_work_does_not_stall_the_current_thread_runtime() {
     assert_eq!(
         response.await.expect("response task").status(),
         StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn changed_journal_generation_replays_preparation_once() {
+    let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = std::sync::Arc::clone(&attempts);
+    let response = super::blocking_stream_with_replay(
+        move || {
+            if observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+                return Err(ApiError::Unreadable(Box::new(
+                    kronika_reader::ReaderError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "active part belongs to another journal generation",
+                    )),
+                )));
+            }
+            Ok(Prepared::Empty(ResponseMeta {
+                status: StatusCode::OK,
+                cache: CachePolicy::NoStore,
+                etag: None,
+            }))
+        },
+        AcceptedEncodings::default(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::Relaxed), 2);
+}
+
+#[test]
+fn source_change_detection_reaches_reader_errors_inside_index_wrappers() {
+    let wrapped = ApiError::from(kronika_index::LoadError::Build(
+        kronika_index::BuildError::Reader(kronika_reader::ReaderError::Io(std::io::Error::from(
+            std::io::ErrorKind::Interrupted,
+        ))),
+    ));
+    assert!(wrapped.source_changed_during_read());
+
+    let unrelated = ApiError::Unreadable(Box::new(std::io::Error::from(
+        std::io::ErrorKind::UnexpectedEof,
+    )));
+    assert!(!unrelated.source_changed_during_read());
+}
+
+#[tokio::test]
+async fn changed_source_replay_is_bounded_and_does_not_repeat_refusals() {
+    let changed_attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = std::sync::Arc::clone(&changed_attempts);
+    let changed = super::blocking_stream_with_replay(
+        move || {
+            observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(ApiError::Unreadable(Box::new(
+                kronika_reader::ReaderError::Io(std::io::Error::from(
+                    std::io::ErrorKind::Interrupted,
+                )),
+            )))
+        },
+        AcceptedEncodings::default(),
+    )
+    .await;
+    assert_eq!(changed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        changed_attempts.load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+
+    let broken_attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = std::sync::Arc::clone(&broken_attempts);
+    let broken = super::blocking_stream_with_replay(
+        move || {
+            observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(ApiError::Unreadable(Box::new(
+                kronika_reader::ReaderError::Io(std::io::Error::from(
+                    std::io::ErrorKind::InvalidData,
+                )),
+            )))
+        },
+        AcceptedEncodings::default(),
+    )
+    .await;
+    assert_eq!(broken.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        broken_attempts.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+
+    let refused_attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = std::sync::Arc::clone(&refused_attempts);
+    let refused = super::blocking_stream_with_replay(
+        move || {
+            observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(ApiError::NoSuchSegment)
+        },
+        AcceptedEncodings::default(),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        refused_attempts.load(std::sync::atomic::Ordering::Relaxed),
+        1
     );
 }

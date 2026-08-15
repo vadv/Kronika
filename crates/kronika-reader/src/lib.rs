@@ -20,7 +20,7 @@ use kronika_store::{ActiveSnapshot, FinalUnit, LocalDir, read_catalog};
 
 pub use dictionary::Dictionary;
 pub use error::ReaderError;
-pub use kronika_format::{BlobEntry, Resolved};
+pub use kronika_format::{BlobEntry, Resolved, StrId};
 pub use kronika_registry::{Cell, Row};
 pub use kronika_store::{StoreObject, StoreWarning, StoreWarningReason};
 pub use segment::{Section, Segment};

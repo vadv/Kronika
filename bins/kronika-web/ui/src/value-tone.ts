@@ -1,8 +1,8 @@
-import type { Cell } from "./api"
+import type { Cell, DataRow } from "./api"
 
 export type ValueTone = "good" | "warning" | "critical" | "inactive"
 
-export function semanticValueTone(field: string, cell: Cell, rate = false): ValueTone | null {
+export function semanticValueTone(field: string, cell: Cell, rate = false, row?: DataRow): ValueTone | null {
   const text = typeof cell === "string" ? cell.trim() : null
   if (field === "state") {
     if (text === "idle in transaction (aborted)") return "critical"
@@ -13,6 +13,10 @@ export function semanticValueTone(field: string, cell: Cell, rate = false): Valu
   const number = numericCell(cell)
   if (number === null) return null
   if (rate && number === 0) return "inactive"
+
+  if ((field === "query_duration_ms" || field === "transaction_duration_ms")
+    && row !== undefined
+    && !isActiveClient(row)) return null
 
   switch (field) {
     case "mean_exec_ms_per_call":
@@ -36,6 +40,16 @@ export function semanticValueTone(field: string, cell: Cell, rate = false): Valu
     default:
       return null
   }
+}
+
+function isActiveClient(row: DataRow): boolean {
+  return textCell(row.values.backend_type) === "client backend" && textCell(row.values.state) === "active"
+}
+
+function textCell(cell: Cell | undefined): string | null {
+  return typeof cell === "string" || typeof cell === "number" || typeof cell === "boolean"
+    ? String(cell).trim()
+    : null
 }
 
 function numericCell(cell: Cell): number | null {

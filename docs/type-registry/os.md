@@ -29,8 +29,8 @@ The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 
 | `type_id` | Source | Semantics | Sort key |
 |-----------|--------|-----------|----------|
-| `1_100_001` | `/proc/PID/{stat,status,io,cmdline}`, hot set | `snapshot_full` | `(pid, starttime, ts)` |
-| `1_101_001` | `/proc/PID/status`, extended set | `snapshot_full` | `(pid, starttime, ts)` |
+| `1_100_001` | `/proc/PID/{stat,status,io,cmdline}`, hot set | `snapshot_full` | `(pid, ts)` |
+| `1_101_001` | `/proc/PID/status`, extended set | `snapshot_full` | `(pid, ts)` |
 | `1_102_001` | `/proc/stat`: CPU lines | `snapshot_full` | `(cpu_id, ts)` |
 | `1_103_001` | `/proc/stat` singletons and `/proc/uptime` | `snapshot_full` | `(ts)` |
 | `1_104_001` | `/proc/meminfo` | `snapshot_full` | `(ts)` |
@@ -50,11 +50,57 @@ The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 | `1_118_001` | `/proc/net/snmp6` | `snapshot_full` | `(ts)` |
 | `1_119_001` | `/proc/net/rpc/nfs` | `snapshot_full` | `(ts)` |
 | `1_120_001` | `/proc/net/rpc/nfsd` | `snapshot_full` | `(ts)` |
-| `1_200_001` | cgroup: process mapping | `snapshot_full` | `(pid, starttime, ts)` |
+| `1_200_001` | cgroup: process mapping | `snapshot_full` | `(pid, ts)` |
 | `1_201_001` | cgroup: cpu | `snapshot_full` | `(cgroup_path, ts)` |
+| `1_201_002` | cgroup: cpu with effective cpuset, retained reader layout | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_202_001` | cgroup: memory | `snapshot_full` | `(cgroup_path, ts)` |
+| `1_202_002` | cgroup: memory with shared memory, retained reader layout | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_203_001` | cgroup: io | `snapshot_full` | `(cgroup_path, major, minor, ts)` |
 | `1_204_001` | cgroup: pids | `snapshot_full` | `(cgroup_path, ts)` |
+| `1_205_001` | collector cgroup context | `snapshot_full` | `(ts)` |
+
+The collector currently writes the `1_201_001` and `1_202_001` layouts. The
+`002` layouts remain registered because existing WAL and ZMS files carry them.
+
+`os_cgroup_context` records the collector process's exact controller paths from
+`/proc/self/cgroup`. On cgroup v2 the CPU, memory, and I/O paths are the unified
+path. On cgroup v1 they remain controller-specific. `cpuset_cpus` is the count
+from `cpuset.cpus.effective` on v2 or `cpuset.effective_cpus` on v1; it is null
+when the exact file is missing or cannot be parsed. Cpuset collection does not
+walk to an ancestor or substitute the host CPU count.
+
+`effective_cpu_quota_usec` and `effective_cpu_period_usec` store the exact pair
+with the smallest quota/period ratio from the configured cgroup root through
+the membership leaf. A quota of `-1` with a positive period means every
+required controller-bearing level was validated as unlimited. Both fields are
+null when any required level is missing or malformed. Cgroup v2 reads
+`cpu.max` from the mount root through the leaf. For non-root membership,
+`NotFound` at the mount
+root alone means an unbounded true root; every descendant is required. Other
+root errors are not ignored, and root membership requires a readable root file.
+Cgroup v1 binds one unambiguous CPU-controller root at the membership leaf,
+then reads `cpu.cfs_quota_us` and `cpu.cfs_period_us` from that same root at
+every ancestor. Ratios are compared as ratios, not as raw quota values.
+
+`effective_memory_max` stores the smallest finite v2 `memory.max` across the
+same exact hierarchy and applies the same v2 mount-root rule. On cgroup v1, the
+field uses the exact leaf's validated `hierarchical_memory_limit`, which already
+applies the kernel's hierarchy semantics. The value and the leaf's
+`memory.limit_in_bytes` must come from the same bound controller root. A finite
+hierarchical value cannot exceed a finite local value, and an unlimited
+hierarchical value cannot accompany a finite local value. The field is null for
+a validated unlimited value and when these inputs cannot be read coherently. V1
+`-1` and values at or above half of `i64::MAX` are unlimited sentinels, never
+byte limits.
+
+`cgroup_version` is `0` when membership cannot be read or matched to the cgroup
+tree used for collection. On v1 `cpu_path` is null when the `cpu` and `cpuacct`
+controllers place the process at different paths, because no single stored
+cgroup CPU row then contains both usage and quota. A controller path is also
+null when the current stored layout lacks any counter or composition operand
+presented by web; partial legacy files are not represented as zero. Local CPU
+quota and memory-limit columns continue to report the exact leaf files; they
+are not renamed as effective hierarchy values.
 
 The collection period is not part of a `type_id`. The collector's scheduler
 sets it per source; the intervals and their defaults are listed in the
