@@ -163,12 +163,12 @@ test("dense-table help is factual, concise, and complete in both locales", async
     }
   }
 
-  assert.match(english["pg.field.calls_per_second.help"], /reset-safe.*interval duration.*calls\/s/i)
+  assert.match(english["pg.field.calls_per_second.help"], /times per second this statement ran.*call frequency or the weight/i)
   assert.match(english["pg.field.execution_ms_per_second.help"], /wall-clock second.*exceed 1000.*overlap/i)
-  assert.match(english["pg.field.mean_exec_ms_per_call.help"], /execution-time increase.*calls increase.*unavailable.*no calls/i)
-  assert.match(english["pg.field.rows_per_second.help"], /pg_stat_statements.*interval duration.*returned or affected/i)
+  assert.match(english["pg.field.mean_exec_ms_per_call.help"], /one execution took on average.*unavailable without calls/i)
+  assert.match(english["pg.field.rows_per_second.help"], /rows per second the statement returns or affects/i)
   assert.equal(english["pg.field.statement_database.help"], "Database associated with this physical statement entry.")
-  assert.match(russian["pg.field.calls_per_second.help"], /прирост.*длительность интервала.*вызовах\/с/i)
+  assert.match(russian["pg.field.calls_per_second.help"], /раз в секунду выполнялся.*частота вызовов или тяжесть/i)
 })
 
 test("obsolete status and internal collection copy stay out of the UI", async () => {
