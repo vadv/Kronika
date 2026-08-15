@@ -46,6 +46,7 @@ import {
   activityFor,
   asNumber,
   floorHour,
+  humanDuration,
   interpolate,
   processKey,
   processLens,
@@ -752,7 +753,7 @@ function App({ locale, onLocale, t }: {
 
   const stretchPostgres = visibleSource === "postgresql" && pgSection !== "overview"
   const cursorTime = cursor === 0 ? null : time.clock(cursor)
-  const updatedTime = lastUpdated === null ? null : time.clock(lastUpdated)
+  const updatedClock = lastUpdated === null ? null : time.clock(lastUpdated)
   return <ChartVisibilityProvider value={chartsVisible}><main className={`app-shell${stretchPostgres ? " pg-table-shell" : ""}${chartsVisible ? "" : " charts-hidden"}`}>
     <header className="topbar">
       <span className="brand-mark"><Activity aria-hidden="true" size={15} strokeWidth={2} /></span>
@@ -772,7 +773,7 @@ function App({ locale, onLocale, t }: {
       <HourPicker availableHours={availableHours} changeHour={changeHour} hour={hour} locale={locale} t={t} />
       <div aria-live="polite" className="cursor-time">
         <TimeValue label={t("hour.cursor_label")} output={cursorTime} testId="cursor-time" />
-        {updatedTime !== null && <TimeValue label={t("refresh.updated")} output={updatedTime} testId="updated-time" />}
+        {lastUpdated !== null && updatedClock !== null && <UpdatedAge at={lastUpdated} clock={updatedClock} locale={locale} t={t} />}
         {refreshFailed && <span>{t("refresh.error")}</span>}
         {cursorState !== "ready" && <span className={cursorState === "loading" ? "cursor-behind" : "cursor-missing"} data-testid="cursor-behind">{t(cursorState === "loading" ? "status.updating" : "status.no_sample")}</span>}
       </div>
@@ -828,6 +829,18 @@ function App({ locale, onLocale, t }: {
 
 function TimeValue({ label, output, testId }: { readonly label: string; readonly output: string | null; readonly testId: string }) {
   return <span data-testid={testId}><b>{label}</b>{output ?? "—"}</span>
+}
+
+// How stale the page is answers the operator's question; the wall clock of the
+// last refresh only answers it after arithmetic, and costs twice the width.
+function UpdatedAge({ at, clock, locale, t }: { readonly at: number; readonly clock: string; readonly locale: Locale; readonly t: Translate }) {
+  const [now, setNow] = useState(() => Date.now() * 1_000)
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now() * 1_000), 1_000)
+    return () => clearInterval(timer)
+  }, [])
+  const age = humanDuration(Math.max(0, now - at) / 1_000, locale)
+  return <span data-testid="updated-time" title={`${t("refresh.updated")} ${clock}`}>{t("refresh.ago", { age })}</span>
 }
 
 function StateCard({ message }: { readonly message: string }) {
