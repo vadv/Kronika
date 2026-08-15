@@ -196,11 +196,9 @@ const RESOURCE_LANE: Readonly<Record<UseResourceKey, string>> = {
 // A UseTable row picks the whole group and opens the metric the row
 // reports: the lane the table already shows, if any, else the first in the group.
 function resourceSelection(data: HourData, available: readonly { readonly points: readonly ChartPoint[]; readonly spec: MetricSpec }[], resource: UseResourceKey): string | null {
-  const group = RESOURCE_GROUP[resource]
   const lane = RESOURCE_LANE[resource]
-  const carriesLane = (spec: MetricSpec) => normalizedMetricPoints(data, spec).some((point) => point.value !== null)
-  const laneMetric = available.find(({ spec }) => timelineLane(spec.id) === lane && carriesLane(spec))
-  const target = laneMetric ?? available.find(({ spec }) => spec.group === group)
+  const laneMetric = available.find(({ spec }) => normalizedMetricLanes(spec).some(([name]) => name === lane))
+  const target = laneMetric ?? available.find(({ spec }) => spec.group === RESOURCE_GROUP[resource])
   return target?.spec.id ?? null
 }
 
@@ -224,7 +222,7 @@ function groupLane(group: MetricSpec["group"]): string {
 function metricLane(spec: MetricSpec): string {
   if (normalizedMetricLanes(spec).some(([lane]) => lane === spec.id)) return spec.id
   const lane = timelineLane(spec.id)
-  if (lane !== "health") return lane
+  if (lane !== "health" || spec.id === "health") return lane
   return groupLane(spec.group)
 }
 
