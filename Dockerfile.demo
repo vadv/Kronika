@@ -57,10 +57,13 @@ RUN install -m 0755 target/x86_64-unknown-linux-gnu/release/kronika-collector /u
     && install -m 0755 target/x86_64-unknown-linux-gnu/release/kronika-demo /usr/local/bin/ \
     && install -m 0755 scripts/demo-entrypoint.sh /usr/local/bin/demo-entrypoint.sh \
     && rm -rf /work/target
-# kronika-demo keeps its own segment tree at KRONIKA_DEMO_DIR/segments (see
-# demo-entrypoint.sh), so a host directory with prior YYYY/MM/DD/*.zms files
-# mounted here is picked up immediately from its "segments" subdirectory,
-# with no import step.
-VOLUME ["/var/lib/kronika/data"]
+# No VOLUME here on purpose: it would make Docker create an anonymous
+# volume at this path on every run that does not bind-mount one, which
+# then has to be found and pruned by hand. kronika-demo keeps its own
+# segment tree at KRONIKA_DEMO_DIR/segments (see demo-entrypoint.sh), so a
+# real host directory with prior YYYY/MM/DD/*.zms files bind-mounted at
+# /var/lib/kronika/data is picked up immediately from its "segments"
+# subdirectory, with no import step. Without a bind mount the directory is
+# just ordinary container-local storage, gone when the container is removed.
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/demo-entrypoint.sh"]
