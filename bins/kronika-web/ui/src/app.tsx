@@ -1,4 +1,4 @@
-import { Activity, ChartLine } from "lucide-react"
+import { Activity, ChartLine, Moon, Sun } from "lucide-react"
 import { translation } from "kronika:i18n"
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react"
 import { createRoot } from "react-dom/client"
@@ -784,7 +784,7 @@ function App({ locale, onLocale, t }: {
         <button aria-label={t("refresh.action")} className="icon-button" disabled={refreshing || !refreshReady} onClick={requestRefresh} title={t("refresh.action")} type="button">↻</button>
         <TimezoneSelect mode={time.mode} setMode={time.setMode} t={t} />
         <button aria-label={t("common.theme.switch")} className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title={t(theme === "dark" ? "common.theme.light" : "common.theme.dark")} type="button">
-          {theme === "dark" ? "☀" : "☾"}
+          {theme === "dark" ? <Sun aria-hidden="true" size={14} /> : <Moon aria-hidden="true" size={14} />}
         </button>
         <div aria-label={t("locale.switch")} className="locale-switch" role="group">
           {(["ru", "en"] as const).map((choice) => <button aria-pressed={locale === choice} data-testid={`locale-${choice}`} key={choice} onClick={() => onLocale(choice)} type="button">{t(`locale.${choice}`)}</button>)}
