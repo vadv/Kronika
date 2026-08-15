@@ -16,7 +16,7 @@ import { UseTable, type UseResourceKey } from "./use-table"
 
 interface MetricSpec {
   readonly id: string
-  readonly group: "cpu" | "load" | "memory" | "pressure" | "storage" | "network"
+  readonly group: "host" | "cpu" | "load" | "memory" | "pressure" | "storage" | "network"
   readonly label: string
   readonly help: string
   readonly section?: string
@@ -33,6 +33,8 @@ interface MetricSpec {
     | "mem_file_cache"
     | "mem_other"
     | "filesystem_free_min"
+    | "device_busy"
+    | "device_average_queue"
     | "device_count"
     | "device_active_io"
     | "filesystem_count"
@@ -91,7 +93,7 @@ export interface CgroupSnapshotPlan {
 }
 
 export const SYSTEM_METRICS: readonly MetricSpec[] = [
-  metric("health", "cpu", "system.metric.health", "health", "os_health", "%"),
+  metric("health", "host", "system.metric.health", "health", "os_health", "%"),
   derivedMetric("cpu_used_cores", "cpu", "system.metric.cpu_used_cores", "cpu_used_cores", "cpu_used_cores", " cores"),
   derivedMetric("cpu_capacity", "cpu", "system.metric.cpu_capacity", "cpu_capacity", "cpu_capacity", " cores"),
   derivedMetric("cpu_user", "cpu", "system.metric.cpu_user", "cpu_user", "cpu_user", "%"),
@@ -122,6 +124,8 @@ export const SYSTEM_METRICS: readonly MetricSpec[] = [
   pressureMetric("cpu_pressure", "system.metric.cpu_pressure", 0),
   pressureMetric("memory_pressure", "system.metric.memory_pressure", 1),
   pressureMetric("io_pressure", "system.metric.io_pressure", 2),
+  derivedMetric("device_busy", "storage", "system.metric.device_busy", "os_device_busy", "device_busy", "%"),
+  derivedMetric("device_average_queue", "storage", "system.metric.device_average_queue", "os_device_average_queue", "device_average_queue", ""),
   derivedMetric("filesystem_free_min", "storage", "system.metric.filesystem_free_min", "os_min_filesystem_free_percent", "filesystem_free_min", "%"),
   derivedMetric("device_count", "storage", "system.metric.device_count", "os_device_count", "device_count", ""),
   derivedMetric("device_active_io", "storage", "system.metric.device_active_io", "os_device_active_io", "device_active_io", ""),
@@ -140,6 +144,7 @@ const MEMORY_BREAKDOWN_IDS = ["mem_total", "mem_available", "mem_anon", "mem_fil
 const BREAKDOWN_COLORS: readonly RecordedSeries["color"][] = ["cyan", "green", "blue", "amber", "violet", "red", "gray", "rose"]
 
 const GROUP_LABELS: readonly { readonly id: MetricSpec["group"]; readonly label: string }[] = [
+  { id: "host", label: "system.metric.health.label" },
   { id: "cpu", label: "system.group.cpu" },
   { id: "load", label: "system.group.load" },
   { id: "memory", label: "system.group.memory" },
@@ -151,7 +156,7 @@ const GROUP_LABELS: readonly { readonly id: MetricSpec["group"]; readonly label:
 // The console stays balanced without a floor: one column leads with the CPU,
 // memory and pressure groups, the other carries load, storage and network.
 const GROUP_COLUMNS: readonly (readonly MetricSpec["group"][])[] = [
-  ["cpu", "memory", "pressure"],
+  ["host", "cpu", "memory", "pressure"],
   ["load", "storage", "network"],
 ]
 
@@ -167,6 +172,8 @@ const DERIVE_INPUTS: Readonly<Record<NonNullable<MetricSpec["derive"]>, readonly
   mem_file_cache: ["os_meminfo", ["cached", "buffers"]],
   mem_other: ["os_meminfo", ["mem_total", "mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim"]],
   filesystem_free_min: ["os_mountinfo", ["total_bytes", "free_bytes"]],
+  device_busy: ["os_diskstats", ["io_time_ms"]],
+  device_average_queue: ["os_diskstats", ["io_weighted_time_ms"]],
   device_count: ["os_diskstats", []],
   device_active_io: ["os_diskstats", ["io_in_progress"]],
   filesystem_count: ["os_mountinfo", []],
@@ -187,27 +194,24 @@ const RESOURCE_GROUP: Readonly<Record<UseResourceKey, MetricSpec["group"]>> = {
 }
 
 const RESOURCE_LANE: Readonly<Record<UseResourceKey, string>> = {
-  cpu: "cpu_busy",
-  memory: "memory",
-  disk: "disk_busy",
-  network: "net_rx",
+  cpu: "cpu_used_cores",
+  memory: "mem_available",
+  disk: "device_busy",
+  network: "network_rx",
 }
 
 // A UseTable row picks the whole group and opens the metric the row
 // reports: the lane the table already shows, if any, else the first in the group.
-function resourceSelection(data: HourData, available: readonly { readonly points: readonly ChartPoint[]; readonly spec: MetricSpec }[], resource: UseResourceKey): string | null {
+function resourceSelection(available: readonly { readonly points: readonly ChartPoint[]; readonly spec: MetricSpec }[], resource: UseResourceKey): string | null {
   const lane = RESOURCE_LANE[resource]
-  const laneMetric = available.find(({ spec }) => normalizedMetricLanes(spec).some(([name]) => name === lane))
-  const target = laneMetric ?? available.find(({ spec }) => spec.group === RESOURCE_GROUP[resource])
+  const target = available.find(({ spec }) => spec.id === lane) ?? available.find(({ spec }) => spec.group === RESOURCE_GROUP[resource])
   return target?.spec.id ?? null
 }
 
 // The group of every metric a resource row opens: both the lane the row leads
 // with and the submetrics its chips offer.
 function metricResource(spec: MetricSpec): UseResourceKey | null {
-  const lane = timelineLane(spec.id)
-  const match = (Object.keys(RESOURCE_LANE) as UseResourceKey[]).find((key) => RESOURCE_LANE[key] === lane)
-  return match ?? null
+  return (Object.keys(RESOURCE_GROUP) as UseResourceKey[]).find((key) => RESOURCE_GROUP[key] === spec.group) ?? null
 }
 
 // The lane the detail chart leads with when a group is picked without a row:
@@ -427,7 +431,7 @@ export function SystemView({
   return <>
     <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane={selectedMetric === undefined ? "health" : metricLane(selectedMetric.spec)} shownAt={shownAt} t={t} /></ChartOnly>
     <UseTable cursor={cursor} lanePoints={data.lanePoints} locale={locale} onSelect={(resource) => {
-      const target = resourceSelection(data, available, resource)
+      const target = resourceSelection(available, resource)
       if (target !== null) setSelected(target)
     }} selected={selectedResource} t={t} />
     <section className="system-console">
@@ -839,6 +843,8 @@ function derivedRowPoints(rows: readonly DataRow[], derive: NonNullable<MetricSp
     if (percentages.some((number) => number === undefined)) return undefined
     return percentages.some((number) => number === null) ? null : Math.min(...percentages as number[])
   })
+  if (derive === "device_busy") return cumulativeRate(aggregateRows(rows, (sampleRows) => maxField(sampleRows, "io_time_ms", 0.1)))
+  if (derive === "device_average_queue") return cumulativeRate(aggregateRows(rows, (sampleRows) => maxField(sampleRows, "io_weighted_time_ms", 0.001)))
   if (derive === "device_count" || derive === "filesystem_count" || derive === "interface_count") return aggregateRows(rows, (sampleRows) => sampleRows.length)
   if (derive === "device_active_io") return aggregateRows(rows, (sampleRows) => sumFields(sampleRows, ["io_in_progress"]))
   if (derive === "network_rx") return cumulativeRate(aggregateRows(rows, (sampleRows) => sumFields(sampleRows, ["rx_bytes"])))
@@ -859,6 +865,19 @@ function aggregateRows(rows: readonly DataRow[], aggregate: (rows: readonly Data
     [...groups.values()].sort((left, right) => left.timestamp - right.timestamp || left.segmentId.localeCompare(right.segmentId)),
     (stored) => aggregate(stored.rows),
   )
+}
+
+// The worst device carries the rollup: a host is as busy as its busiest disk,
+// an average would hide one saturated device behind idle ones.
+function maxField(rows: readonly DataRow[], field: string, scale: number): number | null | undefined {
+  let peak: number | null = null
+  for (const row of rows) {
+    const stored = storedNumber(row, field)
+    if (stored === undefined) return undefined
+    if (stored === null) continue
+    if (peak === null || stored > peak) peak = stored
+  }
+  return peak === null ? null : peak * scale
 }
 
 function sumFields(rows: readonly DataRow[], fields: readonly string[]): number | null | undefined {

@@ -439,7 +439,7 @@ test("the committed hour supplies only honest System metrics with complete histo
   const available = helpers.SYSTEM_METRICS.map((metric) => ({ metric, points: helpers.metricPoints(hour, metric) }))
     .filter(({ points }) => points.some((point) => point.value !== null && Number.isFinite(point.value)))
   assert.ok(available.length >= 7)
-  assert.deepEqual([...new Set(available.map(({ metric }) => metric.group))], ["cpu", "load", "memory", "pressure", "storage"])
+  assert.deepEqual([...new Set(available.map(({ metric }) => metric.group))], ["host", "load", "memory", "pressure", "storage"])
 
   const health = available.find(({ metric }) => metric.id === "health")?.points ?? []
   const expected = fixture.system.health.filter(([timestamp]) => Number(timestamp) >= hourStart && Number(timestamp) < hourStart + 3_600_000_000)
@@ -454,7 +454,7 @@ test("System uses the audited balanced groups without a forced console floor", a
     readFile(new URL("../src/system-view.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
   ])
-  assert.match(source, /\["cpu", "memory", "pressure"\]/)
+  assert.match(source, /\["host", "cpu", "memory", "pressure"\]/)
   assert.match(source, /\["load", "storage", "network"\]/)
   assert.match(styles, /\.system-console \{[^}]*align-items: start;/)
   assert.doesNotMatch(styles, /\.system-console \{[^}]*min-height:/)
