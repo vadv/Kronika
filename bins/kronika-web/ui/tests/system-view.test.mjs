@@ -45,9 +45,9 @@ test("system current values use the stored observation at or before the cursor",
   assert.equal(helpers.currentValue(semantic, { ...spec, unit: "%" }, 100, "en"), "<0.1%")
   assert.equal(helpers.metricPoints(semantic, spec)[0].value, 0.099)
   const core = { points: [{ segmentId: "a", series: "test", timestamp: 100, value: 0.00399 }] }
-  assert.equal(helpers.currentValue(core, { ...spec, unit: " cores" }, 100, "en"), "0.004 cores")
-  assert.equal(helpers.currentValue(core, { ...spec, unit: " cores" }, 100, "ru"), "0,004 ядра")
-  assert.equal(helpers.metricChartValue(0.00399, "ru", " cores"), "0,004 ядра")
+  assert.equal(helpers.currentValue(core, { ...spec, unit: " cores" }, 100, "en"), "0.004")
+  assert.equal(helpers.currentValue(core, { ...spec, unit: " cores" }, 100, "ru"), "0,004")
+  assert.equal(helpers.metricChartValue(0.00399, "ru", " cores"), "0,004")
   assert.equal(helpers.metricPoints(core, spec)[0].value, 0.00399)
 })
 
@@ -95,7 +95,7 @@ test("system cards derive production values when fixture-only series are absent"
     },
   }
   const derived = (name) => helpers.metricPoints(production, { ...spec, derive: name, series: "missing" }).map((point) => point.value)
-  assert.equal(helpers.currentValue(production, { ...spec, derive: "cpu_used_cores", series: "missing", unit: " cores" }, 200, "en"), "0.2 cores")
+  assert.equal(helpers.currentValue(production, { ...spec, derive: "cpu_used_cores", series: "missing", unit: " cores" }, 200, "en"), "0.2")
   const unknownScope = {
     ...production,
     sections: {

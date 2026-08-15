@@ -302,7 +302,7 @@ export function cellAriaValue(cell: Cell, field: Pick<EntityColumn, "field" | "k
   if (field.kind === "duration") return humanDuration(cell, locale)
   if (field.kind === "microseconds") return measure(cell, locale, unit(t("unit.us"), field.rate, per))
   if (field.kind === "percent") return humanPercent(cell, locale, field.rate === true ? per : "")
-  if (field.kind === "cores") return humanCores(cell, locale, unit(t("unit.cores"), field.rate, per))
+  if (field.kind === "cores") return humanCores(cell, locale, field.rate === true ? per : "")
   if (field.kind === "boolean") return cell === true ? locale === "ru" ? "да" : "true" : cell === false ? locale === "ru" ? "нет" : "false" : rawText(cell) ?? "—"
   if (field.kind === "estimated_rows") return estimatedRows(cell, locale, t)?.primary ?? "—"
   if (field.kind === "number") return measure(cell, locale, unit("", field.rate, per))

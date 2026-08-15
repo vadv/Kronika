@@ -62,7 +62,7 @@ interface RegistryColumn {
 export function metricChartUnit(spec: MetricSpec, locale: Locale): string {
   if (spec.unit === "%") return "%"
   if (spec.unit === " KiB") return "KiB"
-  if (spec.unit === " cores") return locale === "ru" ? "ядра" : "cores"
+  if (spec.unit === " cores") return "cores"
   if (spec.unit === " B") return locale === "ru" ? "байты/с" : "bytes/s"
   if (spec.id === "network_errors" || spec.id === "network_drops") return locale === "ru" ? "1/с" : "1/s"
   if (metricClass(spec) === "cumulative") return locale === "ru" ? "1/с" : "1/s"
@@ -603,7 +603,7 @@ function physicalField(column: EntityColumn, typeId: string): string {
 
 function entityMetricUnit(column: SystemEntityColumn, locale: Locale, metadata: RegistryColumn | null): string {
   const perSecond = metadata?.class === "cumulative" || column.rate === true ? "/s" : ""
-  if (column.kind === "cores") return locale === "ru" ? "ядра" : "cores"
+  if (column.kind === "cores") return "cores"
   if (column.field === "speed_mbit") return "Mbit/s"
   if (column.field === "mhz_max") return "MHz"
   if (column.kind === "bytes" || column.kind === "kib") return `${locale === "ru" ? "байты" : "bytes"}${perSecond}`
@@ -616,7 +616,7 @@ function entityMetricUnit(column: SystemEntityColumn, locale: Locale, metadata: 
 
 function entityMetricValue(reading: number, locale: Locale, column: SystemEntityColumn, metadata: RegistryColumn | null): string {
   const suffix = metadata?.class === "cumulative" || column.rate === true ? "/s" : ""
-  if (column.kind === "cores") return humanCores(reading, locale, locale === "ru" ? " ядра" : " cores")
+  if (column.kind === "cores") return humanCores(reading, locale)
   if (column.field === "speed_mbit") return measure(reading, locale, " Mbit/s")
   if (column.field === "mhz_max") return measure(reading, locale, " MHz")
   if (column.kind === "bytes") return humanBytes(reading, locale, suffix)
@@ -943,7 +943,7 @@ function registryColumn(typeId: string, field: string): RegistryColumn | null {
 
 export function metricValue(value: Cell, locale: Locale, unit: string): string {
   if (unit === "%") return humanPercent(value, locale)
-  if (unit === " cores") return humanCores(value, locale, locale === "ru" ? " ядра" : unit)
+  if (unit === " cores") return humanCores(value, locale)
   if (unit === " KiB") return humanBytes(asNumber(value) === null ? null : (asNumber(value) ?? 0) * 1024, locale)
   if (unit === " B") return humanBytes(value, locale, "/s")
   return measure(value, locale, unit)
@@ -951,7 +951,7 @@ export function metricValue(value: Cell, locale: Locale, unit: string): string {
 
 export function metricChartValue(value: number, locale: Locale, unit: string): string {
   if (unit === "%") return humanPercent(value, locale)
-  if (unit === " cores") return humanCores(value, locale, locale === "ru" ? " ядра" : unit)
+  if (unit === " cores") return humanCores(value, locale)
   if (unit === " KiB") return measure(value, locale, " KiB")
   if (unit === " B") return humanBytes(value, locale, "/s")
   return measure(value, locale)
