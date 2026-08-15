@@ -18,7 +18,10 @@ test("narrow controls stay bounded and coarse-pointer table help is immediately 
   assert.match(styles, /\.hour-popover[^}]*position:\s*fixed/)
   assert.match(styles, /@media \(max-width: 520px\)[\s\S]*?\.top-actions[^}]*flex-wrap:\s*wrap/)
   assert.match(styles, /@media \(hover: none\), \(pointer: coarse\)[\s\S]*?\.entity-header-cell > \.label-help[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/)
-  assert.match(styles, /@media \(hover: none\), \(pointer: coarse\)[\s\S]*?\.help-dot[^}]*height:\s*44px[^}]*width:\s*44px/)
+  // 14px mark plus 15px of invisible reach on each side is the 44px platform minimum
+  // without a dot that dwarfs the rows behind it.
+  assert.match(styles, /@media \(hover: none\), \(pointer: coarse\)[\s\S]*?\.help-dot::after[^}]*inset:\s*-15px/)
+  assert.doesNotMatch(styles, /@media \(hover: none\), \(pointer: coarse\)[\s\S]*?\.help-dot[^:][^}]*width:\s*44px/)
 })
 
 test("history placeholders are compact and name loading, error, and empty states", async () => {

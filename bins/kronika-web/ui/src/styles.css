@@ -608,9 +608,12 @@ h2 { font-size: var(--t-md); }
 }
 
 @media (hover: none), (pointer: coarse) {
-  .entity-head { height: 44px; }
-  .entity-header-cell > .label-help { align-self: stretch; height: 44px; margin-left: 0; opacity: 1; pointer-events: auto; }
-  .entity-header-cell > .label-help .help-dot { height: 44px; width: 44px; }
+  .entity-head { height: 36px; }
+  .entity-header-cell > .label-help { align-self: stretch; height: 36px; margin-left: 0; opacity: 1; pointer-events: auto; }
+  /* Touch needs a large target, not a large mark: the dot keeps its size and
+     grows an invisible one that reaches the platform minimum. */
+  .entity-header-cell > .label-help .help-dot { position: relative; }
+  .entity-header-cell > .label-help .help-dot::after { content: ""; inset: -15px; position: absolute; }
 }
 
 @media (min-width: 761px) and (max-width: 1000px) {
