@@ -128,12 +128,24 @@ export function humanCores(cell: Cell, locale: Locale, suffix = ""): string {
   return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 3 }).format(number === 0 ? 0 : number)}${suffix}`
 }
 
+function durationUnits(locale: Locale) {
+  return locale === "ru"
+    ? { "hour": "ч", minute: "м", millisecond: "мс", "second": "с" }
+    : { "hour": "h", minute: "m", millisecond: "ms", "second": "s" }
+}
+
+// Elapsed wall time is read at a glance, so it stops at whole seconds where a
+// measured duration would still report milliseconds.
+export function humanAge(seconds: number, locale: Locale): string {
+  const whole = Math.max(0, Math.floor(seconds))
+  if (whole < 60) return `${whole} ${durationUnits(locale).second}`
+  return humanDuration(whole * 1_000, locale)
+}
+
 export function humanDuration(cell: Cell, locale: Locale): string {
   const milliseconds = asNumber(cell)
   if (milliseconds === null) return "—"
-  const units = locale === "ru"
-    ? { "hour": "ч", minute: "м", millisecond: "мс", "second": "с" }
-    : { "hour": "h", minute: "m", millisecond: "ms", "second": "s" }
+  const units = durationUnits(locale)
   if (Math.abs(milliseconds) < 1_000) return `${compact(milliseconds, locale)} ${units.millisecond}`
   if (Math.abs(milliseconds) < 60_000) return `${decimals(Math.trunc(milliseconds / 100) / 10, locale, 1)} ${units.second}`
   const seconds = Math.floor(Math.abs(milliseconds) / 1_000)

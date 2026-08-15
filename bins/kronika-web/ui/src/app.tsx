@@ -46,7 +46,7 @@ import {
   activityFor,
   asNumber,
   floorHour,
-  humanDuration,
+  humanAge,
   interpolate,
   processKey,
   processLens,
@@ -839,7 +839,7 @@ function UpdatedAge({ at, clock, locale, t }: { readonly at: number; readonly cl
     const timer = setInterval(() => setNow(Date.now() * 1_000), 1_000)
     return () => clearInterval(timer)
   }, [])
-  const age = humanDuration(Math.max(0, now - at) / 1_000, locale)
+  const age = humanAge((now - at) / 1_000_000, locale)
   return <span data-testid="updated-time" title={`${t("refresh.updated")} ${clock}`}>{t("refresh.ago", { age })}</span>
 }
 

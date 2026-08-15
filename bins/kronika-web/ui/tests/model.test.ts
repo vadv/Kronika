@@ -3,7 +3,7 @@ import test from "node:test"
 
 import type { Cell, DataRow } from "../src/api.ts"
 import { fittedWidth } from "../src/column-size.ts"
-import { activityFor, compact, cores, estimatedRows, humanBytes, humanCores, humanDuration, humanPercent, identifier, measure, millisecondsPerSecond, nearestTime, processCommand, processDefaultSort, processKey, processLens, rawText, shownMoment, stateText, type Locale } from "../src/model.ts"
+import { activityFor, compact, cores, estimatedRows, humanAge, humanBytes, humanCores, humanDuration, humanPercent, identifier, measure, millisecondsPerSecond, nearestTime, processCommand, processDefaultSort, processKey, processLens, rawText, shownMoment, stateText, type Locale } from "../src/model.ts"
 
 function row(timestamp: number): DataRow {
   return { segmentId: "7", logicalName: "os_process", typeId: "1100001", ordinal: "0", timestamp, values: {} }
@@ -173,4 +173,12 @@ test("estimated row exact labels use bigint-safe EN and RU plurals", () => {
   for (const [value, suffix] of [[11, "строк"], [12, "строк"], [14, "строк"], [21, "строка"], [22, "строки"], [25, "строк"]] as const) {
     assert.equal(estimatedRows(value, "ru", rowTranslator("ru"))?.secondary, `≈${value} ${suffix}`)
   }
+})
+
+test("elapsed wall time reads in whole seconds", () => {
+  assert.equal(humanAge(0, "ru"), "0 с")
+  assert.equal(humanAge(0.94, "ru"), "0 с")
+  assert.equal(humanAge(12.7, "ru"), "12 с")
+  assert.equal(humanAge(12.7, "en"), "12 s")
+  assert.equal(humanAge(95, "ru"), "1м 35с")
 })
