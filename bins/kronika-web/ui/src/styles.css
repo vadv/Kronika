@@ -13,97 +13,147 @@
 .u-cursor-pt { background-clip: padding-box !important; border: 0 solid; border-radius: 50%; }
 .u-axis.u-off, .u-select.u-off, .u-cursor-x.u-off, .u-cursor-y.u-off, .u-cursor-pt.u-off { display: none; }
 
+/* Theme tokens (dark values). Every color lives in the --color-* namespace so
+   utilities (`text-fg3`, `bg-s2`, `border-line2`) resolve to the same values as
+   the legacy aliases below; light theme overrides the tokens, aliases follow. */
 @theme {
   --font-mono: ui-monospace, monospace;
+
+  --color-bg: #070a0d;
+  --color-s1: #0a0e12;
+  --color-s2: #0e151b;
+  --color-s3: #101b23;
+  --color-s4: #13252d;
+  --color-zebra: #0b1116;
+  --color-s-sticky: #070a0deb;
+  --color-line: #1b242d;
+  --color-line2: #202832;
+  --color-line3: #2a3642;
+  --color-line4: #3a4a59;
+  --color-fg-hi: #f2f4f7;
+  --color-fg: #e6e9ee;
+  --color-fg2: #aeb7c2;
+  --color-fg3: #7d8997;
+  --color-fg4: #687585;
+  --color-fg-null: #53606d;
+  --color-accent: #22d3ee;
+  --color-accent2: #67e8f9;
+  --color-accent3: #a5f3fc;
+  --color-accent-soft: #22d3ee1f;
+  --color-accent-line: #22d3ee66;
+  --color-bad: #f43f5e;
+  --color-bad-edge: #fecdd3;
+  --color-warn: #f59e0b;
+  --color-warn-edge: #fde68a;
+  --color-event: #a78bfa;
+  --color-event-edge: #ddd6fe;
+  --color-ok: #6ee7b7;
+  --color-cursor: #f4f4f5;
+  --color-chart-future: #111820c7;
+  --color-chart-unavailable: #18212ba8;
+  --color-chart-threshold: #f43f5e1c;
+  --color-shadow: #030609;
+  --color-shadow-a: #00000099;
+  --color-shadow-b: #0000003d;
+
+  --text-xs: 10px;
+  --text-sm: 11px;
+  --text-md: 13px;
+  --text-lg: 16px;
+  --spacing-row: 23px;
+  --spacing-head: 26px;
 }
 
 :root, [data-theme="dark"] {
   color-scheme: dark;
-  --bg: #070a0d;
-  --s1: #0a0e12;
-  --s2: #0e151b;
-  --s3: #101b23;
-  --s4: #13252d;
-  --zebra: #0b1116;
-  --s-sticky: #070a0deb;
-  --line: #1b242d;
-  --line2: #202832;
-  --line3: #2a3642;
-  --line4: #3a4a59;
-  --fg-hi: #f2f4f7;
-  --fg: #e6e9ee;
-  --fg2: #aeb7c2;
-  --fg3: #7d8997;
-  --fg4: #687585;
-  --fg-null: #53606d;
-  --accent: #22d3ee;
-  --accent2: #67e8f9;
-  --accent3: #a5f3fc;
-  --accent-soft: #22d3ee1f;
-  --accent-line: #22d3ee66;
-  --bad: #f43f5e;
-  --bad-edge: #fecdd3;
-  --warn: #f59e0b;
-  --warn-edge: #fde68a;
-  --event: #a78bfa;
-  --event-edge: #ddd6fe;
-  --ok: #6ee7b7;
-  --cursor: #f4f4f5;
-  --chart-future: #111820c7;
-  --chart-unavailable: #18212ba8;
-  --chart-threshold: #f43f5e1c;
-  --shadow: #030609;
-  --shadow-a: #00000099;
-  --shadow-b: #0000003d;
 }
 
 [data-theme="light"] {
   color-scheme: light;
-  --bg: #f4f5f7;
-  --s1: #ffffff;
-  --s2: #f0f2f5;
-  --s3: #eef1f5;
-  --s4: #e4eef6;
-  --zebra: #fafbfc;
-  --s-sticky: #f4f5f7eb;
-  --line: #eceef1;
-  --line2: #e2e5ea;
-  --line3: #d3d8df;
-  --line4: #b9c0ca;
-  --fg-hi: #0f172a;
-  --fg: #1f2937;
-  --fg2: #374151;
-  --fg3: #566072;
-  --fg4: #5f6875;
-  --fg-null: #7b8593;
-  --accent: #0369a1;
-  --accent2: #075985;
-  --accent3: #0c4a6e;
-  --accent-soft: #0369a114;
-  --accent-line: #0369a159;
-  --bad: #b42318;
-  --bad-edge: #7f1d1d;
-  --warn: #b54708;
-  --warn-edge: #7c2d12;
-  --event: #6d28d9;
-  --event-edge: #4c1d95;
-  --ok: #027a48;
-  --cursor: #0f172a;
-  --chart-future: #e5e7ebc7;
-  --chart-unavailable: #dce1e8a8;
-  --chart-threshold: #b4231818;
-  --shadow: #94a3b8;
-  --shadow-a: #64748b3d;
-  --shadow-b: #64748b29;
+  --color-bg: #f4f5f7;
+  --color-s1: #ffffff;
+  --color-s2: #f0f2f5;
+  --color-s3: #eef1f5;
+  --color-s4: #e4eef6;
+  --color-zebra: #fafbfc;
+  --color-s-sticky: #f4f5f7eb;
+  --color-line: #eceef1;
+  --color-line2: #e2e5ea;
+  --color-line3: #d3d8df;
+  --color-line4: #b9c0ca;
+  --color-fg-hi: #0f172a;
+  --color-fg: #1f2937;
+  --color-fg2: #374151;
+  --color-fg3: #566072;
+  --color-fg4: #5f6875;
+  --color-fg-null: #7b8593;
+  --color-accent: #0369a1;
+  --color-accent2: #075985;
+  --color-accent3: #0c4a6e;
+  --color-accent-soft: #0369a114;
+  --color-accent-line: #0369a159;
+  --color-bad: #b42318;
+  --color-bad-edge: #7f1d1d;
+  --color-warn: #b54708;
+  --color-warn-edge: #7c2d12;
+  --color-event: #6d28d9;
+  --color-event-edge: #4c1d95;
+  --color-ok: #027a48;
+  --color-cursor: #0f172a;
+  --color-chart-future: #e5e7ebc7;
+  --color-chart-unavailable: #dce1e8a8;
+  --color-chart-threshold: #b4231818;
+  --color-shadow: #94a3b8;
+  --color-shadow-a: #64748b3d;
+  --color-shadow-b: #64748b29;
 }
 
+/* Legacy aliases: the semantic class CSS below still reads var(--bg) and
+   friends. They resolve through the theme tokens, so both themes stay correct
+   while views migrate to utilities and these lines shrink away. */
 :root {
-  --t-xs: 10px;
-  --t-sm: 11px;
-  --t-md: 13px;
-  --t-lg: 16px;
-  --row: 23px;
-  --head: 26px;
+  --bg: var(--color-bg);
+  --s1: var(--color-s1);
+  --s2: var(--color-s2);
+  --s3: var(--color-s3);
+  --s4: var(--color-s4);
+  --zebra: var(--color-zebra);
+  --s-sticky: var(--color-s-sticky);
+  --line: var(--color-line);
+  --line2: var(--color-line2);
+  --line3: var(--color-line3);
+  --line4: var(--color-line4);
+  --fg-hi: var(--color-fg-hi);
+  --fg: var(--color-fg);
+  --fg2: var(--color-fg2);
+  --fg3: var(--color-fg3);
+  --fg4: var(--color-fg4);
+  --fg-null: var(--color-fg-null);
+  --accent: var(--color-accent);
+  --accent2: var(--color-accent2);
+  --accent3: var(--color-accent3);
+  --accent-soft: var(--color-accent-soft);
+  --accent-line: var(--color-accent-line);
+  --bad: var(--color-bad);
+  --bad-edge: var(--color-bad-edge);
+  --warn: var(--color-warn);
+  --warn-edge: var(--color-warn-edge);
+  --event: var(--color-event);
+  --event-edge: var(--color-event-edge);
+  --ok: var(--color-ok);
+  --cursor: var(--color-cursor);
+  --chart-future: var(--color-chart-future);
+  --chart-unavailable: var(--color-chart-unavailable);
+  --chart-threshold: var(--color-chart-threshold);
+  --shadow: var(--color-shadow);
+  --shadow-a: var(--color-shadow-a);
+  --shadow-b: var(--color-shadow-b);
+  --t-xs: var(--text-xs);
+  --t-sm: var(--text-sm);
+  --t-md: var(--text-md);
+  --t-lg: var(--text-lg);
+  --row: var(--spacing-row);
+  --head: var(--spacing-head);
   font-family: ui-monospace, monospace;
   background: var(--bg);
   color: var(--fg);
