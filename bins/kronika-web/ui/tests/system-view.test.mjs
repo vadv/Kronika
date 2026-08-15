@@ -419,6 +419,22 @@ test("System entity charts include numeric measurements and exclude identities a
   ]).map(({ timestamp, value }) => [timestamp, value]), [[1, 0], [3, null]])
 })
 
+test("a cumulative metric stays absent until its section announces rate columns", async () => {
+  const spec = { field: "reads", group: "storage", help: "x", id: "reads", label: "x", section: "os_diskstats", unit: "" }
+  const row = { logicalName: "os_diskstats", ordinal: "0", segmentId: "a", timestamp: 1, typeId: "1108001", values: { major: 8, minor: 0, reads: 10 } }
+  const registry = [
+    { typeId: "1108001", logicalName: "os_diskstats", identity: ["major", "minor"], columns: ["ts", "major", "minor", "reads"], columnMetadata: [
+      { name: "ts", type: "timestamp_us", class: "timestamp", unit: null },
+      { name: "major", type: "i32", class: "label", unit: null },
+      { name: "minor", type: "i32", class: "label", unit: null },
+      { name: "reads", type: "u64", class: "cumulative", unit: "count" },
+    ] },
+  ]
+  const cumulative = await importModule('export { hasMetric } from "../src/system-view.tsx"', { plugins: [registryPlugin(registry)] })
+  assert.equal(cumulative.hasMetric({ points: [], sections: { os_diskstats: [row] }, rateColumns: {} }, spec), false)
+  assert.equal(cumulative.hasMetric({ points: [], sections: { os_diskstats: [row] }, rateColumns: { os_diskstats: ["reads"] } }, spec), true)
+})
+
 test("registry cumulative fields become reset-safe rates across storage segments", () => {
   const spec = { field: "reads", group: "storage", help: "x", id: "reads", label: "x", section: "os_diskstats", unit: "" }
   const row = (segmentId, timestamp, reads) => ({ logicalName: "os_diskstats", ordinal: String(timestamp), segmentId, timestamp, typeId: "1108001", values: { major: 8, minor: 0, reads } })

@@ -745,6 +745,10 @@ export function metricPoints(data: HourData, spec: MetricSpec): readonly ChartPo
   }
   if (spec.derive !== undefined) return derivedPoints(data, spec.derive)
   if (spec.section === undefined || spec.field === undefined) return []
+  // Counter rollups stay absent until the section layout announces its rate
+  // columns; without the rates a raw counter reads as a climbing total, not a
+  // per-second value.
+  if (metricClass(spec) === "cumulative" && !(data.rateColumns?.[spec.section] ?? []).includes(spec.field)) return []
   const field = spec.field
   return buildMetricSamples(sectionRows(data, spec.section), (row) => {
     if (spec.resource !== undefined && asNumber(value(row, "resource")) !== spec.resource) return undefined
