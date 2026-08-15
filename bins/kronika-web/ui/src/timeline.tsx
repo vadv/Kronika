@@ -6,7 +6,7 @@ import { useDisplayTime } from "./display-time-context"
 import { findingOrder, findingSummary } from "./finding-presentation"
 import { LabelHelp, type Translate } from "./help"
 import { keyboardTargetOwnsArrows, moveCursor, orderedRecordedTimes } from "./keyboard"
-import { asNumber, compact, humanPercent, type Locale, value } from "./model"
+import { asNumber, compact, humanDuration, humanPercent, type Locale, value } from "./model"
 import { emptyHourStatusKey } from "./refresh"
 import { sampleAtOrBefore, uncollectedStart } from "./series-chart"
 import { UPlotChart, type ChartDecoration, type RecordedSeries } from "./uplot-chart"
@@ -211,7 +211,7 @@ export function timelineDecorations(
 
 function toRecordedSeries(lane: TimelineLane, locale: Locale, t: Translate): readonly RecordedSeries[] {
   const percent = ["health", "cpu_busy", "cpu_stall", "memory", "io_stall"].includes(lane.key)
-  const unit = percent ? "%" : lane.key === "oldest_xact" ? (locale === "ru" ? "с" : "s") : (locale === "ru" ? "количество" : "count")
+  const unit = percent ? "%" : lane.key === "oldest_xact" ? "" : (locale === "ru" ? "количество" : "count")
   return lane.series.map((line) => ({
     color: line.color,
     helpKey: `lane.${lane.key}.help`,
@@ -253,7 +253,7 @@ export function healthEvaluationAtOrBefore(
 }
 
 function format(number: number, key: string, locale: Locale): string {
-  if (key === "oldest_xact") return `${compact(number, locale)} ${locale === "ru" ? "с" : "s"}`
+  if (key === "oldest_xact") return humanDuration(number * 1_000, locale)
   if (key === "pg_running" || key === "pg_waiting") return compact(number, locale)
   return humanPercent(number, locale)
 }

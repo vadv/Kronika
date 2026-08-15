@@ -242,6 +242,19 @@ test("a lane reading between two samples repeats the previous sample instead of 
   assert.equal(helpers.laneReading(lane, 130, "en", t), "7")
 })
 
+test("a transaction age lane reading scales durations like table cells do", () => {
+  const lane = {
+    key: "oldest_xact",
+    series: [{ color: "violet", field: "pg_oldest_xact", points: [
+      { segmentId: "a", timestamp: 100, value: 0.00509 },
+      { segmentId: "a", timestamp: 130, value: 3725 },
+    ] }],
+  }
+  const t = (key) => key
+  assert.equal(helpers.laneReading(lane, 115, "ru", t), "5,09 мс")
+  assert.equal(helpers.laneReading(lane, 130, "ru", t), "1ч 02м")
+})
+
 test("a health lane reading keeps the shared evaluation timestamp", () => {
   const lane = {
     key: "health",
