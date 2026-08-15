@@ -465,6 +465,21 @@ document. A saved locale wins over `navigator.languages`, with English as the
 fallback; source values, identifiers, queries and command lines are never
 translated.
 
+Wording follows one rule with two halves. A label carries the term the trade
+already uses, in English, because that is how the counter is named in `top`,
+`atop` and `pg_stat_*`: `Major page faults`, `Seq scans`, `Tuples updated`,
+`Autovacuum`, `WAL`, `PSI`, `OOM kills`. Translating those into Russian breaks
+recognition, and mixing the two inside one label is worse than either. Only the
+grammatical frame and the units stay Russian, including the genitive that
+fractions require.
+
+A help string is the opposite. It explains the counter in plain Russian and does
+not repeat the English term standing next to it. It says what the number really
+measures, when it grows, and whether a high value is worse or better, in a
+sentence or two, without pointing at another screen. One concept keeps one name
+everywhere; a counter named twice is a defect, and drift in the English
+dictionary is fixed before the Russian one is translated from it.
+
 The interface covers one selected calendar hour. Host contains dense System
 metric groups and virtualized Processes lenses; PostgreSQL contains Overview,
 Activity, Statements, Locks and Databases whenever their sections are present.
