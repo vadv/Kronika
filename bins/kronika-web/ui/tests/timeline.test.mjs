@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { importModule, registryPlugin } from "./import-module.mjs"
 
 const helpers = await importModule(
-  'export { FindingMarker, MARKER_CLUSTER_PX, exactValue, findingShape, findingTrack, groupFindings, healthEvaluationAtOrBefore, healthThreshold, healthTimelineSeries, sampleWindow, selectedTimelineTimes, timelineDecorations, timelineRecordedTimes } from "../src/timeline.tsx"',
+  'export { FindingMarker, MARKER_CLUSTER_PX, exactValue, findingShape, findingTrack, groupFindings, healthEvaluationAtOrBefore, healthThreshold, healthTimelineSeries, laneReading, sampleWindow, selectedTimelineTimes, timelineDecorations, timelineRecordedTimes } from "../src/timeline.tsx"',
   { plugins: [registryPlugin([{ typeId: "1104001", logicalName: "os_meminfo", columns: ["ts", "mem_total", "mem_free", "mem_available"] }])] },
 )
 
@@ -220,11 +220,45 @@ test("timeline distinguishes unavailable edges from the uncollected current-hour
   ])
 })
 
-test("timeline readings use only an exact observation", () => {
+test("health lane readings use only an exact observation", () => {
   const points = [10, null, 12].map((value, index) => ({ segmentId: "a", timestamp: index + 1, value }))
   assert.equal(helpers.exactValue(points, 2), null)
   assert.equal(helpers.exactValue(points, 3), 12)
   assert.equal(helpers.exactValue(points, 4), null)
+})
+
+test("a lane reading between two samples repeats the previous sample instead of a dash", () => {
+  const lane = {
+    key: "pg_running",
+    series: [{ color: "cyan", field: "pg_running", points: [
+      { segmentId: "a", timestamp: 100, value: 3 },
+      { segmentId: "a", timestamp: 130, value: 7 },
+    ] }],
+  }
+  const t = (key) => key
+  assert.equal(helpers.laneReading(lane, 99, "en", t), "—")
+  assert.equal(helpers.laneReading(lane, 100, "en", t), "3")
+  assert.equal(helpers.laneReading(lane, 115, "en", t), "3")
+  assert.equal(helpers.laneReading(lane, 130, "en", t), "7")
+})
+
+test("a health lane reading keeps the shared evaluation timestamp", () => {
+  const lane = {
+    key: "health",
+    series: [
+      { color: "cyan", field: "overall_health", points: [
+        { segmentId: "a", timestamp: 100, value: 62 },
+        { segmentId: "a", timestamp: 130, value: 45 },
+      ] },
+      { color: "amber", field: "os_health", points: [
+        { segmentId: "a", timestamp: 100, value: 90 },
+        { segmentId: "a", timestamp: 130, value: 80 },
+      ] },
+    ],
+  }
+  const t = (key) => key
+  assert.equal(helpers.laneReading(lane, 99, "en", t), "lane.health.overall_health — · lane.health.os_health —")
+  assert.equal(helpers.laneReading(lane, 115, "en", t), "lane.health.overall_health 62% · lane.health.os_health 90%")
 })
 
 test("only overall health owns the below-50 band and exact findings map to tracks", () => {

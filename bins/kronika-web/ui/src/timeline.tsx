@@ -8,7 +8,7 @@ import { LabelHelp, type Translate } from "./help"
 import { keyboardTargetOwnsArrows, moveCursor, orderedRecordedTimes } from "./keyboard"
 import { asNumber, compact, humanPercent, type Locale, value } from "./model"
 import { emptyHourStatusKey } from "./refresh"
-import { uncollectedStart } from "./series-chart"
+import { sampleAtOrBefore, uncollectedStart } from "./series-chart"
 import { UPlotChart, type ChartDecoration, type RecordedSeries } from "./uplot-chart"
 
 export const MARKER_CLUSTER_PX = 88
@@ -115,7 +115,7 @@ export function Timeline({
   const healthAt = selected?.key === "health" ? healthEvaluationAtOrBefore(selected.series, cursor) : null
   const current = (selected?.series ?? []).map((line) => {
     const key = selected?.key ?? "health"
-    const number = key === "health" ? healthAt === null ? null : exactValue(line.points, healthAt) : exactValue(line.points, cursor)
+    const number = key === "health" ? healthAt === null ? null : exactValue(line.points, healthAt) : sampleAtOrBefore(line.points, cursor)?.value ?? null
     return `${key === "health" ? `${t(`lane.health.${line.field}`)} ` : ""}${number === null ? "—" : format(number, key, locale)}`
   }).join(" · ")
   const decorations = useMemo(
@@ -258,10 +258,10 @@ function format(number: number, key: string, locale: Locale): string {
   return humanPercent(number, locale)
 }
 
-function laneReading(lane: TimelineLane, cursor: number, locale: Locale, t: Translate): string {
+export function laneReading(lane: TimelineLane, cursor: number, locale: Locale, t: Translate): string {
   const healthAt = lane.key === "health" ? healthEvaluationAtOrBefore(lane.series, cursor) : null
   return lane.series.map((line) => {
-    const number = lane.key === "health" ? healthAt === null ? null : exactValue(line.points, healthAt) : exactValue(line.points, cursor)
+    const number = lane.key === "health" ? healthAt === null ? null : exactValue(line.points, healthAt) : sampleAtOrBefore(line.points, cursor)?.value ?? null
     const output = number === null ? "—" : format(number, lane.key, locale)
     return lane.key === "health" ? `${t(`lane.health.${line.field}`)} ${output}` : output
   }).join(" · ")
