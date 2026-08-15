@@ -163,7 +163,7 @@ h2 { font-size: var(--t-md); }
 .locale-switch button, .icon-button { background: transparent; border: 0; cursor: pointer; }
 .locale-switch button { color: var(--fg4); font-size: var(--t-xs); height: 22px; padding: 0 6px; }
 .locale-switch button[aria-pressed="true"] { background: var(--s4); color: var(--accent3); }
-.timezone-select { background: var(--s2); border: 1px solid var(--line3); color: var(--fg2); font-size: var(--t-xs); height: 24px; max-width: 128px; padding: 0 4px; }
+.timezone-select { background: var(--s2); border: 1px solid var(--line3); color: var(--fg2); font-size: var(--t-xs); height: 24px; max-width: 176px; padding: 0 4px; }
 .icon-button { align-items: center; border: 1px solid var(--line3); display: flex; height: 24px; justify-content: center; min-width: 24px; }
 .charts-toggle { color: var(--fg2); padding: 0 6px; white-space: nowrap; }
 .source-tabs { flex: 0 0 auto; gap: 2px; }

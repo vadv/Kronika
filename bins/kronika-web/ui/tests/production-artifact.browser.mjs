@@ -96,7 +96,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     }))()`)
     assert.equal(browserMode.at, String(AT))
     assert.equal(browserMode.zone, "browser")
-    assert.equal(browserMode.zoneLabel, "Browser local")
+    assert.equal(browserMode.zoneLabel, "Browser time")
     assert.equal(browserMode.zoneSelectors, 1)
     assert.match(browserMode.cursor, /08:30:00/)
     assert.match(browserMode.hour, /08:00–09:00/)
@@ -159,9 +159,9 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
       Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(select, "browser")
       select.dispatchEvent(new Event("change", { bubbles: true }))
     })()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent === "Browser local" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("08:30:00") === true`, "the Browser display restore")
+    await cdp.waitFor(`document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent === "Browser time" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("08:30:00") === true`, "the Browser display restore")
     await cdp.send("Page.reload")
-    await cdp.waitFor(`document.querySelector('[data-testid="timezone-select"]')?.value === "browser" && document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent === "Browser local" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("08:30:00") === true`, "the persisted Browser display", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="timezone-select"]')?.value === "browser" && document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent === "Browser time" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("08:30:00") === true`, "the persisted Browser display", 15_000)
 
     await cdp.evaluate(`document.querySelector(".source-tabs button:first-child").click()`)
     await cdp.waitFor(`document.querySelector(".source-tabs button:first-child")?.getAttribute("aria-current") === "page"`, "the Host history destination")
@@ -694,7 +694,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(russianPicker.context, null)
     assert.match(russianPicker.day, /13\.08\.2026/)
     assert.doesNotMatch(russianPicker.text, /GMT|UTC/)
-    assert.equal(russianPicker.zoneLabel, "Локальное время браузера")
+    assert.equal(russianPicker.zoneLabel, "Время браузера")
     assert.equal(await cdp.evaluate(`document.querySelector('.cursor-time')?.textContent.includes('Отсчёт')`), false)
     await cdp.evaluate(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'mouse' }))`)
     await cdp.waitFor(`document.querySelector('[data-testid="hour-popover"]') === null`, "picker outside close")
@@ -732,7 +732,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(select, "browser")
       select.dispatchEvent(new Event("change", { bubbles: true }))
     })()`)
-    await cdp.waitFor(`document.documentElement.lang === "en" && document.querySelector('[data-testid="timezone-select"]')?.value === "browser" && document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent === "Browser local" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("01:30:00")`, "the local-time restore")
+    await cdp.waitFor(`document.documentElement.lang === "en" && document.querySelector('[data-testid="timezone-select"]')?.value === "browser" && document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent === "Browser time" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("01:30:00")`, "the local-time restore")
 
     await cdp.evaluate(`([...document.querySelectorAll(".pg-tabs button")].find((button) => button.textContent === "Tables")).click()`)
     await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-tables-table"] .entity-row').length === 1`, "the relation wire row")
@@ -1359,7 +1359,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(select, "browser")
       select.dispatchEvent(new Event("change", { bubbles: true }))
     })()`)
-    await cdp.waitFor(`document.documentElement.lang === "en" && document.querySelector('[data-testid="timezone-select"]')?.value === "browser" && document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent === "Browser local" && document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")?.startsWith("01:14:55;")`, "the chart local-time restore")
+    await cdp.waitFor(`document.documentElement.lang === "en" && document.querySelector('[data-testid="timezone-select"]')?.value === "browser" && document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent === "Browser time" && document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")?.startsWith("01:14:55;")`, "the chart local-time restore")
 
     const navigateTo = async (timestamp) => {
       const target = await cdp.evaluate(`(() => {
