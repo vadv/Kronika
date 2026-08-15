@@ -12,7 +12,7 @@ import { asNumber, humanBytes, humanCores, humanPercent, measure, rawText, shown
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 import { UPlotChart, type RecordedSeries } from "./uplot-chart"
-import { UseTable } from "./use-table"
+import { UseTable, type UseResourceKey } from "./use-table"
 
 interface MetricSpec {
   readonly id: string
@@ -139,13 +139,20 @@ const CPU_BREAKDOWN_IDS = ["cpu_used_cores", "cpu_capacity", "cpu_user", "cpu_sy
 const MEMORY_BREAKDOWN_IDS = ["mem_total", "mem_available", "mem_anon", "mem_file_cache", "mem_s_reclaimable", "mem_s_unreclaim", "mem_free", "mem_other"] as const
 const BREAKDOWN_COLORS: readonly RecordedSeries["color"][] = ["cyan", "green", "blue", "amber", "violet", "red", "gray", "rose"]
 
-const GROUPS: readonly { readonly id: MetricSpec["group"]; readonly label: string }[] = [
+const GROUP_LABELS: readonly { readonly id: MetricSpec["group"]; readonly label: string }[] = [
   { id: "cpu", label: "system.group.cpu" },
   { id: "load", label: "system.group.load" },
   { id: "memory", label: "system.group.memory" },
   { id: "pressure", label: "system.group.pressure" },
   { id: "storage", label: "system.group.storage" },
   { id: "network", label: "system.group.network" },
+]
+
+// The console stays balanced without a floor: one column leads with the CPU,
+// memory and pressure groups, the other carries load, storage and network.
+const GROUP_COLUMNS: readonly (readonly MetricSpec["group"][])[] = [
+  ["cpu", "memory", "pressure"],
+  ["load", "storage", "network"],
 ]
 
 const DERIVE_INPUTS: Readonly<Record<NonNullable<MetricSpec["derive"]>, readonly [string, readonly string[]]>> = {
@@ -170,11 +177,56 @@ const DERIVE_INPUTS: Readonly<Record<NonNullable<MetricSpec["derive"]>, readonly
   network_drops: ["os_netdev", ["rx_drop", "tx_drop"]],
 }
 
+// A UseTable row picks the whole group; the lane the row reports is the metric
+// the detail chart opens on. Grouped metrics keep their own lanes.
+const RESOURCE_GROUP: Readonly<Record<UseResourceKey, MetricSpec["group"]>> = {
+  cpu: "cpu",
+  memory: "memory",
+  disk: "storage",
+  network: "network",
+}
 
-const GROUP_COLUMNS: readonly (readonly MetricSpec["group"][])[] = [
-  ["cpu", "memory", "pressure"],
-  ["load", "storage", "network"],
-]
+const RESOURCE_LANE: Readonly<Record<UseResourceKey, string>> = {
+  cpu: "cpu_busy",
+  memory: "memory",
+  disk: "disk_busy",
+  network: "net_rx",
+}
+
+// A UseTable row picks the whole group and opens the metric the row
+// reports: the lane the table already shows, if any, else the first in the group.
+function resourceSelection(data: HourData, available: readonly { readonly points: readonly ChartPoint[]; readonly spec: MetricSpec }[], resource: UseResourceKey): string | null {
+  const group = RESOURCE_GROUP[resource]
+  const lane = RESOURCE_LANE[resource]
+  const carriesLane = (spec: MetricSpec) => normalizedMetricPoints(data, spec).some((point) => point.value !== null)
+  const laneMetric = available.find(({ spec }) => timelineLane(spec.id) === lane && carriesLane(spec))
+  const target = laneMetric ?? available.find(({ spec }) => spec.group === group)
+  return target?.spec.id ?? null
+}
+
+// The group of every metric a resource row opens: both the lane the row leads
+// with and the submetrics its chips offer.
+function metricResource(spec: MetricSpec): UseResourceKey | null {
+  const lane = timelineLane(spec.id)
+  const match = (Object.keys(RESOURCE_LANE) as UseResourceKey[]).find((key) => RESOURCE_LANE[key] === lane)
+  return match ?? null
+}
+
+// The lane the detail chart leads with when a group is picked without a row:
+// the resource lane when the group belongs to one, otherwise the health track.
+function groupLane(group: MetricSpec["group"]): string {
+  const match = (Object.keys(RESOURCE_GROUP) as UseResourceKey[]).find((key) => RESOURCE_GROUP[key] === group)
+  return match === undefined ? "health" : RESOURCE_LANE[match]
+}
+
+// A metric's own lane: the metric's exact id when the timeline carries it, the
+// mapped lane for normalized metrics, otherwise the resource or health lane.
+function metricLane(spec: MetricSpec): string {
+  if (normalizedMetricLanes(spec).some(([lane]) => lane === spec.id)) return spec.id
+  const lane = timelineLane(spec.id)
+  if (lane !== "health") return lane
+  return groupLane(spec.group)
+}
 
 export const SYSTEM_ENTITIES: readonly {
   readonly section: string
@@ -333,6 +385,7 @@ export function SystemView({
     if (available.some(({ spec }) => spec.id === selected)) return
     setSelected(available[0]?.spec.id ?? "")
   }, [available, selected])
+  const selectMetric = (id: string) => setSelected(id)
   useEffect(() => {
     if (focus === null) return
     const field = fieldNameForLocator(focus)
@@ -345,6 +398,7 @@ export function SystemView({
     if (match !== undefined) setSelected(match.spec.id)
   }, [available, data, focus])
   const selectedMetric = available.find(({ spec }) => spec.id === selected) ?? available[0]
+  const selectedResource = selectedMetric === undefined ? null : metricResource(selectedMetric.spec)
   const fallbackPoints = selectedMetric?.points ?? []
   const request = useMemo(() => selectedMetric === undefined ? null : metricHistoryRequest(selectedMetric.spec), [selectedMetric])
   const requestKey = request === null || selectedMetric === undefined ? null : metricRequestKey(hour, selectedMetric.spec, request)
@@ -369,23 +423,29 @@ export function SystemView({
     locale,
     t,
   ), [historyRows, historyUsesRates, locale, selectedMetric, t])
+  const secondLane = selectedMetric === undefined ? null : secondMetricLane(selectedMetric.spec)
+  const secondPoints = useMemo(() => secondLane === null ? undefined : laneChartPoints(data, secondLane), [data, secondLane])
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   return <>
-    <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane={timelineLane(selectedMetric?.spec.id)} shownAt={shownAt} t={t} /></ChartOnly>
+    <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane={selectedMetric === undefined ? "health" : metricLane(selectedMetric.spec)} shownAt={shownAt} t={t} /></ChartOnly>
+    <UseTable cursor={cursor} lanePoints={data.lanePoints} locale={locale} onSelect={(resource) => {
+      const target = resourceSelection(data, available, resource)
+      if (target !== null) setSelected(target)
+    }} selected={selectedResource} t={t} />
     <section className="system-console">
       <div className="metric-groups">
-        {GROUP_COLUMNS.map((column, index) => <div className="metric-column" key={index}>
-          {column.map((id) => {
-            const group = GROUPS.find((candidate) => candidate.id === id)
-            const metrics = available.filter(({ spec }) => spec.group === id)
-            if (group === undefined || metrics.length === 0) return null
-            return <section className="metric-group" data-testid={`system-group-${group.id}`} key={group.id}>
-              <h2><span>{t(group.label)}</span></h2>
+        {GROUP_COLUMNS.map((groups, index) => <div className="metric-column" key={index}>
+          {groups.map((group) => {
+            const metrics = available.filter(({ spec }) => spec.group === group)
+            if (metrics.length === 0) return null
+            const label = GROUP_LABELS.find((candidate) => candidate.id === group)?.label ?? "system.metric.health.label"
+            return <section className="metric-group" data-testid={`system-group-${group}`} key={group}>
+              <h2><span>{t(label)}</span></h2>
               <div className="metric-grid">
                 {metrics.map(({ points, spec }) => {
                   const output = currentPointValue(points, cursor, locale, spec.unit)
                   return <div className="metric-choice" key={spec.id}>
-                    <button aria-pressed={selectedMetric?.spec.id === spec.id} data-testid={`system-metric-${spec.id}`} onClick={() => setSelected(spec.id)} type="button">
+                    <button aria-pressed={selectedMetric?.spec.id === spec.id} data-testid={`system-metric-${spec.id}`} onClick={() => selectMetric(spec.id)} type="button">
                       <span>{t(spec.label)}</span>
                       <strong title={output}>{output}</strong>
                     </button>
@@ -402,11 +462,11 @@ export function SystemView({
         {selectedMetric === undefined
           ? <p className="table-empty">{t("system.no_metrics")}</p>
           : breakdown.length === 0
-            ? <SeriesChart cursor={cursor} empty={t("history.empty")} format={(reading, place) => metricChartValue(reading, place, selectedMetric.spec.unit)} helpKey={selectedMetric.spec.help} hour={hour} labelKey={selectedMetric.spec.label} locale={locale} onCursor={onCursor} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "nonnegative"} status={needsHistory ? loadedHistory.status : "ready"} t={t} unit={metricChartUnit(selectedMetric.spec, locale)} />
+            ? <SeriesChart cursor={cursor} empty={t("history.empty")} format={(reading, place) => metricChartValue(reading, place, selectedMetric.spec.unit)} helpKey={selectedMetric.spec.help} hour={hour} labelKey={selectedMetric.spec.label} locale={locale} onCursor={onCursor} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "nonnegative"} second={secondPoints} secondHelpKey={secondLane === null ? undefined : `lane.${secondLane}.help`} secondLabelKey={secondLane === null ? undefined : `lane.${secondLane}.label`} status={needsHistory ? loadedHistory.status : "ready"} t={t} unit={metricChartUnit(selectedMetric.spec, locale)} />
             : <div className="series-chart"><UPlotChart cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} reading={currentPointValue(selectedPoints, cursor, locale, selectedMetric.spec.unit)} series={breakdown} status={!needsHistory || loadedHistory.status === "ready" ? undefined : <p className={`series-status series-status-${loadedHistory.status}`} role={loadedHistory.status === "error" ? "alert" : "status"}>{t(`history.${loadedHistory.status}`)}</p>} t={t} testId={`system-${selectedMetric.spec.group}-composition`} /></div>}
       </section></ChartOnly>
     </section>
-    <UseTable cursor={cursor} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} t={t} />
+
     <section className="entity-panels">
       {SYSTEM_ENTITIES.map((entity) => {
         const allRows = systemEntityRows(data, entity.section, cursor)
@@ -635,19 +695,38 @@ function timelineLane(metric: string | undefined): string {
   return "health"
 }
 
-function normalizedMetricPoints(data: HourData, spec: MetricSpec): readonly ChartPoint[] {
-  const mapping: Readonly<Record<string, readonly [string, (value: number) => number]>> = {
-    cpu_pressure: ["cpu_stall", (number) => number],
-    io_pressure: ["io_stall", (number) => number],
-    network_rx: ["net_rx", (number) => number],
-    network_tx: ["net_tx", (number) => number],
-    network_errors: ["net_errors", (number) => number],
-    network_drops: ["net_drop", (number) => number],
-    oom_kill: ["mem_oom", (number) => number],
+// The lanes a metric reports on the timeline, with the transform the stored
+// lane value needs to match the metric's unit.
+function normalizedMetricLanes(spec: MetricSpec): readonly (readonly [string, (value: number) => number])[] {
+  const mapping: Readonly<Record<string, readonly (readonly [string, (value: number) => number])[]>> = {
+    cpu_pressure: [["cpu_stall", (number) => number]],
+    io_pressure: [["io_stall", (number) => number]],
+    network_rx: [["net_rx", (number) => number], ["net_tx", (number) => number]],
+    network_errors: [["net_errors", (number) => number]],
+    network_drops: [["net_drop", (number) => number]],
+    oom_kill: [["mem_oom", (number) => number]],
   }
-  const selected = mapping[spec.id]
-  if (selected === undefined) return []
-  const [lane, transform] = selected
+  return mapping[spec.id] ?? []
+}
+
+// The second timeline lane a metric chart overlays, when the pair shares the
+// metric's unit. Only the network throughput pair qualifies today.
+function secondMetricLane(spec: MetricSpec): string | null {
+  return spec.id === "network_rx" ? "net_tx" : null
+}
+
+function laneChartPoints(data: HourData, lane: string): readonly ChartPoint[] {
+  return data.lanePoints.filter((point) => point.lane === lane).map((point) => ({
+    segmentId: point.segmentId,
+    timestamp: point.timestamp,
+    value: point.value,
+  }))
+}
+
+function normalizedMetricPoints(data: HourData, spec: MetricSpec): readonly ChartPoint[] {
+  const selected = normalizedMetricLanes(spec)
+  if (selected.length === 0) return []
+  const [lane, transform] = selected[0]!
   return data.lanePoints.filter((point) => point.lane === lane).map((point) => ({
     segmentId: point.segmentId,
     timestamp: point.timestamp,
