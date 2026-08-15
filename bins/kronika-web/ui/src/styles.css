@@ -403,8 +403,9 @@ h2 { font-size: var(--t-md); }
 .use-row { border-bottom: 1px solid var(--line); }
 .use-row:last-child { border-bottom: 0; }
 .use-resource { align-self: center; color: var(--fg2); font-size: var(--t-sm); padding: 7px 8px; text-transform: uppercase; }
-.use-cell { border-left: 1px solid var(--line); min-width: 0; }
-.use-cell-action { align-items: baseline; background: transparent; border: 0; color: var(--fg3); cursor: pointer; display: flex; gap: 7px; justify-content: space-between; min-height: 38px; padding: 6px 8px; text-align: left; width: 100%; }
+.use-cell { border-left: 1px solid var(--line); min-width: 0; position: relative; }
+.use-cell > .label-help { position: absolute; right: 7px; top: 6px; }
+.use-cell-action { align-items: baseline; background: transparent; border: 0; color: var(--fg3); cursor: pointer; display: flex; gap: 7px; justify-content: space-between; min-height: 38px; padding: 6px 26px 6px 8px; text-align: left; width: 100%; }
 .use-cell-action:hover { background: var(--s3); }
 .use-cell-action[aria-pressed="true"] { background: var(--accent-soft); box-shadow: inset 2px 0 var(--accent); color: var(--fg); }
 .use-cell-action span { font-size: var(--t-xs); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

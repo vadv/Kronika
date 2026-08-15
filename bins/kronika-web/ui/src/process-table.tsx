@@ -4,7 +4,7 @@ import { acceptResponse, loadSeries, type Cell, type DataRow, type Finding } fro
 import { buildMetricSamples } from "./chart"
 import { ChartOnly } from "./chart-visibility"
 import { EntityTable, type EntityColumn, type TableOrder } from "./entity-table"
-import type { Translate } from "./help"
+import { LabelHelp, type Translate } from "./help"
 import {
   asNumber,
   cores,
@@ -157,9 +157,12 @@ export function ProcessSummary({ cursor, dispatch, hour, lens, locale, onCursor,
   return <section aria-label={t("process.summary.title")} className="process-summary metric-grid">
     {metrics.map((metric) => {
       const output = processSummaryOutput(readingAt(processSummaryPoints(history, metric), cursor), metric, locale, t)
-      return <button aria-pressed={active.field === metric.field} key={metric.field} onClick={() => setSelected(metric.field)} type="button">
-        <span>{t(metric.key)}</span><strong>{output}</strong>
-      </button>
+      return <div className="metric-choice" key={metric.field}>
+        <button aria-pressed={active.field === metric.field} onClick={() => setSelected(metric.field)} type="button">
+          <span>{t(metric.key)}</span><strong>{output}</strong>
+        </button>
+        <LabelHelp helpKey={metric.help} iconOnly labelKey={metric.key} t={t} testId={`process-summary-help-${metric.field}`} />
+      </div>
     })}
     {statusKey !== null && <p aria-live="polite" className="process-summary-status" data-testid="process-summary-status">{t(statusKey)}</p>}
     <ChartOnly>{history.length !== 0 && <div className="process-summary-history">

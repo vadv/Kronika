@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 
 import type { LanePoint } from "./api"
 import { ChartOnly } from "./chart-visibility"
-import type { Translate } from "./help"
+import { LabelHelp, type Translate } from "./help"
 import { humanBytes, humanPercent, measure, type Locale } from "./model"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 
@@ -111,6 +111,7 @@ export function UseTable({
             <span>{t(`use.lane.${cell.lane}`)}</span>
             <strong>{[primary, ...(secondary === null ? [] : [secondary])].join(" · ")}</strong>
           </button>
+          <LabelHelp helpKey={useLaneHelp(cell.lane)} iconOnly labelKey={`use.lane.${cell.lane}`} t={t} />
         </span>
       })}
     </div>)}
