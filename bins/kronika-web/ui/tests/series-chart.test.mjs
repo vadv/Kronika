@@ -1,13 +1,30 @@
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
+import { createRequire } from "node:module"
+import { dirname } from "node:path"
+import { fileURLToPath } from "node:url"
 import test from "node:test"
 
-import { importModule } from "./import-module.mjs"
+import { build } from "esbuild"
+import { createElement } from "react"
+import { renderToStaticMarkup } from "react-dom/server"
 
-const helpers = await importModule(`
-  export { numericChartPoints, pointsInHour, readingAt, sampleAtOrBefore, uncollectedStart } from "../src/series-chart.tsx"
-  export { buildMetricSamples } from "../src/chart.ts"
-`)
+const directory = dirname(fileURLToPath(import.meta.url))
+const compiled = await build({
+  bundle: true,
+  external: ["react", "react/jsx-runtime"],
+  format: "cjs",
+  platform: "node",
+  stdin: {
+    contents: 'export { numericChartPoints, pointsInHour, readingAt, sampleAtOrBefore, SeriesChart, uncollectedStart } from "../src/series-chart.tsx"; export { buildMetricSamples } from "../src/chart.ts"',
+    loader: "tsx",
+    resolveDir: directory,
+  },
+  write: false,
+})
+const loaded = { exports: {} }
+new Function("module", "exports", "require", compiled.outputFiles[0].text)(loaded, loaded.exports, createRequire(import.meta.url))
+const helpers = loaded.exports
 
 test("a recorded null is the reading at its timestamp", () => {
   const points = [10, null, 12].map((value, index) => ({ segmentId: "a", timestamp: index + 1, value }))
@@ -54,6 +71,46 @@ test("an all-null chart has no drawable samples while zero remains data", () => 
   assert.equal(helpers.numericChartPoints([
     { segmentId: "a", timestamp: 1, value: 0 },
   ]).length, 1)
+})
+
+test("the frame stays while a metric resolves and collapses only for an hour without samples", async () => {
+  const render = (points, status) => renderToStaticMarkup(createElement(helpers.SeriesChart, {
+    helpKey: "m.help",
+    hour: 0,
+    labelKey: "m.label",
+    locale: "en",
+    points,
+    status,
+    t: (key) => key,
+  }))
+  for (const status of ["loading", "error"]) {
+    const markup = render([], status)
+    assert.match(markup, /class="uplot-figure"/)
+    assert.match(markup, /class="uplot-host"/)
+    assert.match(markup, /class="uplot-status"/)
+    assert.match(markup, new RegExp(`series-status series-status-${status}`))
+  }
+  const settledEmpty = render([], "ready")
+  assert.doesNotMatch(settledEmpty, /class="uplot-figure"/)
+  assert.match(settledEmpty, /class="series-reading"/)
+  assert.match(settledEmpty, /series-status series-status-ready/)
+  const ready = render([{ segmentId: "a", timestamp: 1, value: 2 }], "ready")
+  assert.match(ready, /class="uplot-figure"/)
+  assert.doesNotMatch(ready, /uplot-status/)
+  const loadingWithData = render([{ segmentId: "a", timestamp: 1, value: 2 }], "loading")
+  assert.match(loadingWithData, /class="uplot-status"/)
+  assert.match(loadingWithData, /history\.loading/)
+
+  const [source, chart, styles] = await Promise.all([
+    readFile(new URL("../src/series-chart.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+  ])
+  assert.equal((source.match(/<UPlotChart/g) ?? []).length, 1)
+  assert.doesNotMatch(source, /hasData\s*\?/)
+  assert.match(chart, /\{status !== undefined && <div className="uplot-status">\{status\}<\/div>\}/)
+  assert.match(styles, /\.uplot-figure \{[^}]*height: 200px/)
+  assert.match(styles, /\.uplot-status \{[^}]*pointer-events: none;[^}]*position: absolute/)
 })
 
 test("a series uses only selected-hour points for emptiness, readout, and plotting", async () => {

@@ -90,7 +90,7 @@ await waitFor(`document.querySelector('[data-testid="hour-popover"]') === null`,
 assert.equal(await evaluate(`document.activeElement === document.querySelector('[data-testid="hour-picker-trigger"]')`), true)
 
 await evaluate(`document.querySelector('[data-testid="locale-ru"]').click(); document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
-await waitFor(`document.querySelector('.hour-popover header span')?.textContent.length > 0`, "picker zone")
+await waitFor(`document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent.length > 0`, "time zone label")
 await evaluate(`document.querySelector('.hour-cell[data-instant="${nextInstant}"]').click()`)
 await waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong').textContent.trim() !== ${JSON.stringify(initialHourLabel)}`, "cell selection")
 const nextHourLabel = await evaluate(`document.querySelector('[data-testid="hour-picker-trigger"] strong').textContent.trim()`)

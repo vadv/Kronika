@@ -72,11 +72,26 @@ export function SeriesChart({
   const statusText = status === "loading"
     ? t("history.loading")
     : status === "error" ? t("history.error") : empty ?? t("history.empty")
+  const statusLine = <p className={`series-status series-status-${status}`} role={status === "error" ? "alert" : "status"}>{statusText}</p>
+  // An hour that carries no samples stays compact. Anything still resolving keeps the
+  // full frame so the page below does not move while a metric loads.
+  if (!hasData && status === "ready") {
+    return <div className="series-chart">
+      <div className="series-reading"><LabelHelp helpKey={helpKey} labelKey={labelKey} t={t} /><span>—</span></div>
+      {statusLine}
+    </div>
+  }
   return <div className="series-chart">
-    {hasData && status !== "ready" && <p className={`series-status series-status-${status}`} role={status === "error" ? "alert" : "status"}>{statusText}</p>}
-    {!hasData
-      ? <><div className="series-reading"><LabelHelp helpKey={helpKey} labelKey={labelKey} t={t} /><span>—</span></div><p className={`series-status series-status-${status}`} role={status === "error" ? "alert" : "status"}>{statusText}</p></>
-      : <UPlotChart cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} reading={reading === null ? "—" : formatValue(reading, locale)} series={series} t={t} />}
+    <UPlotChart
+      cursor={cursor}
+      hour={hour}
+      locale={locale}
+      onCursor={onCursor}
+      reading={reading === null ? "—" : formatValue(reading, locale)}
+      series={series}
+      status={status === "ready" ? undefined : statusLine}
+      t={t}
+    />
   </div>
 }
 

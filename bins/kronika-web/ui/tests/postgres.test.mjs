@@ -33,7 +33,7 @@ const helpers = await importModule(
 )
 
 const overviewHelpers = await importModule(
-  'export { overviewChartColumns } from "../src/postgres-view.tsx"',
+  'export { overviewChartColumns, pgMetricHistoryPlan } from "../src/postgres-view.tsx"',
   { plugins: [registryPlugin([{
     typeId: "overview-1", logicalName: "pg_stat_checkpointer", identity: ["kind_id"],
     columns: ["ts", "kind_id", "mode", "writes", "latency_ms", "enabled"],
@@ -45,6 +45,9 @@ const overviewHelpers = await importModule(
       { name: "latency_ms", type: "f64", class: "gauge", unit: "milliseconds" },
       { name: "enabled", type: "bool", class: "label", unit: null },
     ],
+  }, {
+    typeId: "info-1", logicalName: "pg_store_plans_info", identity: [],
+    columns: ["ts", "dealloc", "stats_reset"],
   }])],
   },
 )
@@ -149,13 +152,32 @@ test("overview cards expose only numeric measurements and mark cumulative units 
   assert.deepEqual(overviewHelpers.overviewChartColumns(stored).map(({ field, rate }) => [field, rate === true]), [["writes", true], ["latency_ms", false]])
   const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
   assert.match(source, /const \[metricField, setMetricField\] = useState<string \| null>\(preferredField\)/)
-  assert.match(source, /const fields = resetField === undefined \? \[field\] : \[field, resetField\]/)
-  assert.match(source, /loadSeries\(hour, row\.logicalName, \{\}, fields, signal, row\.typeId\)/)
+  assert.match(source, /loadSeries\(hour, row\.logicalName, \{\}, plan\.fields, signal, row\.typeId\)/)
   assert.match(source, /OVERVIEW_SINGLETONS\.has\(logicalName\)/)
   assert.match(source, /<PgPreview[^>]*overview section=\{logicalName\}/)
   assert.match(source, /className="process-history-selector"/)
   assert.doesNotMatch(source, /ChartLine/)
   assert.match(source, /<PlanInfo cursor=\{cursor\} data=\{data\} historyRevision=\{historyRevision\} hour=\{hour\}/)
+})
+
+test("one overview history request covers every chart field and shares a single stats_reset", async () => {
+  const rate = (field) => ({ field, kind: "number", label: field, rate: true, sortable: true, width: 125 })
+  const gauge = { field: "latency_ms", kind: "milliseconds", label: "latency_ms", width: 145 }
+
+  const info = overviewHelpers.pgMetricHistoryPlan("info-1", [rate("dealloc")])
+  assert.deepEqual(info.fields, ["dealloc", "stats_reset"])
+  assert.deepEqual(info.columns.map(({ cumulative, resetField }) => [cumulative, resetField ?? null]), [[true, "stats_reset"]])
+
+  const mixed = overviewHelpers.pgMetricHistoryPlan("overview-1", [rate("writes"), gauge])
+  assert.deepEqual(mixed.fields, ["writes", "latency_ms"])
+  assert.deepEqual(mixed.columns.map(({ column, cumulative, resetField }) => [column.field, cumulative, resetField ?? null]), [
+    ["writes", true, null],
+    ["latency_ms", false, null],
+  ])
+
+  const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
+  assert.match(source, /JSON\.stringify\(\[hour, row\.logicalName, row\.typeId\]\)/)
+  assert.doesNotMatch(source, /JSON\.stringify\(\[hour, row\.logicalName, row\.typeId, /)
 })
 
 test("Overview multirow histories keep complete fixed identities", () => {

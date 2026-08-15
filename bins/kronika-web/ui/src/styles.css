@@ -362,12 +362,12 @@ h2 { font-size: var(--t-md); }
 .series-reading > .label-help { min-width: 0; }
 .series-reading > .label-help > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .series-reading .help-dot, .chart-series-labels .help-dot { flex: 0 0 auto; }
+.series-reading span:last-child { color: var(--fg2); flex: 0 0 auto; font-variant-numeric: tabular-nums; text-transform: none; white-space: nowrap; }
 .chart-series-labels { align-items: center; display: flex; flex: 1 1 auto; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; white-space: nowrap; }
 .chart-series-labels::-webkit-scrollbar { display: none; }
 .chart-series-labels > .label-help { flex: 0 0 auto; }
 .chart-series-labels > .label-help + .label-help::before { color: var(--fg4); content: "·"; margin-right: 6px; }
 .chart-series-labels .label-help > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.series-reading span:last-child { color: var(--fg2); flex: 0 0 auto; font-variant-numeric: tabular-nums; text-transform: none; white-space: nowrap; }
 .chart-current { color: var(--fg2); font-variant-numeric: tabular-nums; font-weight: 500; grid-column: 2; max-width: 55%; min-width: 0; overflow: hidden; text-overflow: ellipsis; text-transform: none; white-space: nowrap; }
 .uplot-figure { display: flex; flex-direction: column; height: 200px; margin: 0; max-width: 100%; min-width: 0; overflow: hidden; position: relative; }
 .uplot-figure figcaption { display: grid; flex: 0 0 auto; grid-template-columns: minmax(0, 1fr) auto auto; }
@@ -393,6 +393,8 @@ h2 { font-size: var(--t-md); }
 .chart-marker-track .marker-button { pointer-events: auto; }
 .series-status { align-items: center; color: var(--fg4); display: flex; font-size: var(--t-sm); min-height: 30px; margin: 0; padding: 3px 0; }
 .series-status-error { color: var(--warn); }
+.uplot-status { align-items: center; bottom: 28px; display: flex; justify-content: center; left: var(--chart-plot-left, 0); pointer-events: none; position: absolute; right: 0; top: var(--chart-plot-top, 26px); z-index: 8; }
+.uplot-status .series-status { background: var(--s2); border: 1px solid var(--line2); min-height: 0; padding: 3px 9px; }
 .use-table { background: var(--s2); border: 1px solid var(--line2); margin-top: 8px; }
 .use-table > header, .use-row { display: grid; grid-template-columns: minmax(96px, 130px) repeat(3, minmax(0, 1fr)); }
 .use-table > header { border-bottom: 1px solid var(--line2); color: var(--fg3); font-size: var(--t-xs); text-transform: uppercase; }

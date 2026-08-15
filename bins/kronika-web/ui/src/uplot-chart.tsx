@@ -66,6 +66,7 @@ export function UPlotChart({
   markerLayer,
   onPlotWidth,
   referenceTimestamp,
+  status,
   testId,
   threshold,
   t,
@@ -81,6 +82,7 @@ export function UPlotChart({
   readonly reading?: string | undefined
   readonly referenceTimestamp?: number | undefined
   readonly series: readonly RecordedSeries[]
+  readonly status?: ReactNode | undefined
   readonly testId?: string | undefined
   readonly threshold?: ChartThreshold | undefined
   readonly t: Translate
@@ -272,6 +274,7 @@ export function UPlotChart({
     </figcaption>
     <p className="chart-summary" id={summaryId}>{summary}</p>
     <div aria-describedby={summaryId} aria-label={series.map(({ label, unit }) => `${label}${unit === "" ? "" : `, ${unit}`}`).join("; ")} className="uplot-host" ref={host} role="img" />
+    {status !== undefined && <div className="uplot-status">{status}</div>}
     {markerLayer !== undefined && <div className="chart-marker-track">{markerLayer}</div>}
     {exact !== null && <div aria-hidden="true" className="chart-tooltip">
       <time><strong>{exact.time}</strong></time>

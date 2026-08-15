@@ -356,10 +356,11 @@ function PgPreview({ columns: prescribedColumns, cursor, data, focus, historyRev
 }
 
 const PLAN_DEALLOC_COLUMN = rateNumber("dealloc")
+const PLAN_DEALLOC_COLUMNS: readonly EntityColumn[] = [PLAN_DEALLOC_COLUMN]
 
 function PlanInfo({ cursor, data, historyRevision, hour, locale, onCursor, t }: { readonly cursor: number; readonly data: HourData; readonly historyRevision: number; readonly hour: number; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly t: Translate }) {
   const row = snapshot(data.sections.pg_store_plans_info ?? [], cursor)[0] ?? null
-  const history = usePgMetricHistory(hour, row, "dealloc", PLAN_DEALLOC_COLUMN, historyRevision)
+  const history = usePgMetricHistory(hour, row, PLAN_DEALLOC_COLUMNS, historyRevision)
   if (row === null) return null
   const dealloc = value(row, "dealloc")
   const reset = value(row, "stats_reset")
@@ -369,7 +370,7 @@ function PlanInfo({ cursor, data, historyRevision, hour, locale, onCursor, t }: 
       <div><dt>{t("pg.field.dealloc.label")}</dt><dd>{dealloc === null ? "—" : measure(dealloc, locale, t("unit.per_second"))}</dd></div>
       <div><dt>{t("pg.field.stats_reset.label")}</dt><dd>{display(reset, timestamp("stats_reset"), locale, t)}</dd></div>
     </dl>
-    <ChartOnly><SeriesChart cursor={cursor} helpKey="pg.field.dealloc.help" hour={hour} labelKey="pg.field.dealloc.label" locale={locale} onCursor={onCursor} points={history.value ?? []} scale="nonnegative" status={history.status} t={t} unit={t("unit.per_second")} /></ChartOnly>
+    <ChartOnly><SeriesChart cursor={cursor} helpKey="pg.field.dealloc.help" hour={hour} labelKey="pg.field.dealloc.label" locale={locale} onCursor={onCursor} points={history.value?.get(PLAN_DEALLOC_COLUMN.field) ?? []} scale="nonnegative" status={history.status} t={t} unit={t("unit.per_second")} /></ChartOnly>
   </section>
 }
 
@@ -440,12 +441,12 @@ function OverviewMetrics({ cursor, historyRevision, hour, locale, logicalName, o
     setMetricField((current) => current !== null && chartFields.split("\u0000").includes(current) ? current : preferredField)
   }, [chartFields, preferredField])
   const selectedColumn = chartColumns.find(({ field }) => field === metricField)
-  const history = usePgMetricHistory(hour, row, metricField, selectedColumn, historyRevision)
+  const history = usePgMetricHistory(hour, row, chartColumns, historyRevision)
   return <section className="pg-overview-section">
     <h2>{t(overviewSectionKey(logicalName))}</h2>
     <ChartOnly>{selectedColumn !== undefined && <section className="process-history pg-metric-history">
       <div aria-label={t("system.history")} className="process-history-selector" role="group">{chartColumns.map((column) => <button aria-pressed={metricField === column.field} data-testid={`pg-overview-chart-${column.field}`} key={column.field} onClick={() => setMetricField(column.field)} type="button">{t(overviewFieldKey(column.field))}</button>)}</div>
-      <SeriesChart cursor={cursor} format={chartFormat(selectedColumn.kind)} helpKey={selectedColumn.help ?? "chart.metric.help"} hour={hour} labelKey={overviewFieldKey(selectedColumn.field)} locale={locale} onCursor={onCursor} points={history.value ?? []} scale={chartScale(selectedColumn)} status={history.status} t={t} unit={chartUnit(selectedColumn, t("unit.per_second"))} />
+      <SeriesChart cursor={cursor} format={chartFormat(selectedColumn.kind)} helpKey={selectedColumn.help ?? "chart.metric.help"} hour={hour} labelKey={overviewFieldKey(selectedColumn.field)} locale={locale} onCursor={onCursor} points={history.value?.get(selectedColumn.field) ?? []} scale={chartScale(selectedColumn)} status={history.status} t={t} unit={chartUnit(selectedColumn, t("unit.per_second"))} />
     </section>}</ChartOnly>
     <dl>{registryCardFields(row).map(([field, cell]) => <div key={field}><dt><span>{t(overviewFieldKey(field))}</span></dt><dd>{overviewValue(cell, field, locale, time)}</dd></div>)}</dl>
   </section>
@@ -476,19 +477,36 @@ export function postgresMetricHistory(rows: readonly DataRow[], column: EntityCo
   })
 }
 
-function usePgMetricHistory(hour: number, row: DataRow | null, field: string | null, column: EntityColumn | undefined, historyRevision: number): HistoryState<readonly ChartPoint[]> {
-  const chartsVisible = useChartsVisible()
-  const target = !chartsVisible || row === null || field === null || column === undefined
-    ? null
-    : JSON.stringify([hour, row.logicalName, row.typeId, field])
-  return useHistoryRequest(target, historyRevision, row === null || field === null || column === undefined ? null : async (signal) => {
-    const metadata = registry.find((layout) => layout.typeId === row.typeId)?.columnMetadata
-      ?.find(({ name }) => name === field)
+export interface PgMetricHistoryColumnPlan {
+  readonly column: EntityColumn
+  readonly cumulative: boolean
+  readonly resetField: "stats_reset" | undefined
+}
+
+export function pgMetricHistoryPlan(typeId: string, columns: readonly EntityColumn[]): { readonly columns: readonly PgMetricHistoryColumnPlan[]; readonly fields: readonly string[] } {
+  const layout = registry.find((candidate) => candidate.typeId === typeId)
+  const hasReset = layout?.columns.includes("stats_reset") === true
+  const planned = columns.map((column) => {
+    const metadata = layout?.columnMetadata?.find(({ name }) => name === column.field)
     const cumulative = metadata?.class === "cumulative" || (metadata === undefined && column.rate === true)
-    const resetField = cumulative && registry.find((layout) => layout.typeId === row.typeId)?.columns.includes("stats_reset") === true ? "stats_reset" : undefined
-    const fields = resetField === undefined ? [field] : [field, resetField]
-    const rows = await loadSeries(hour, row.logicalName, {}, fields, signal, row.typeId)
-    return postgresMetricHistory(rows, column, cumulative, resetField)
+    return { column, cumulative, resetField: cumulative && hasReset ? "stats_reset" as const : undefined }
+  })
+  const fields = uniqueText([
+    ...columns.map(({ field }) => field),
+    ...(planned.some(({ resetField }) => resetField !== undefined) ? ["stats_reset"] : []),
+  ])
+  return { columns: planned, fields }
+}
+
+function usePgMetricHistory(hour: number, row: DataRow | null, columns: readonly EntityColumn[], historyRevision: number): HistoryState<ReadonlyMap<string, readonly ChartPoint[]>> {
+  const chartsVisible = useChartsVisible()
+  const target = !chartsVisible || row === null || columns.length === 0
+    ? null
+    : JSON.stringify([hour, row.logicalName, row.typeId])
+  return useHistoryRequest(target, historyRevision, row === null || columns.length === 0 ? null : async (signal) => {
+    const plan = pgMetricHistoryPlan(row.typeId, columns)
+    const rows = await loadSeries(hour, row.logicalName, {}, plan.fields, signal, row.typeId)
+    return new Map(plan.columns.map(({ column, cumulative, resetField }) => [column.field, postgresMetricHistory(rows, column, cumulative, resetField)]))
   })
 }
 
