@@ -235,7 +235,7 @@ h2 { font-size: var(--t-md); }
 .lane-primary .lane-reading { color: var(--accent3); font-size: var(--t-md); font-weight: 620; }
 .lane-overview { background: transparent; text-align: left; width: auto; }
 .lane-overview:hover { background: var(--accent-soft); color: var(--accent3); }
-.lane-select { align-items: center; align-self: stretch; background: transparent; border: 0; cursor: pointer; display: flex; flex: 1 1 auto; font-family: inherit; min-width: 0; padding: 0; text-align: left; text-transform: inherit; }
+.lane-select { align-items: center; align-self: stretch; background: transparent; border: 0; cursor: pointer; display: flex; flex: 1 1 auto; font-family: inherit; gap: 8px; min-width: 0; padding: 0; text-align: left; text-transform: inherit; }
 .lane-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lane-label > .label-help { flex: 0 0 auto; }
 .lane-label:last-child { border-right: 0; }
