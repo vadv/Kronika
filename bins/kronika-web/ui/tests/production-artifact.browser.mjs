@@ -1845,7 +1845,8 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     await settleLayout(cdp)
     const hiddenProcessHeight = await cdp.evaluate(`document.querySelector('.process-table .entity-scroll').getBoundingClientRect().height`)
     assert.ok(hiddenProcessHeight > shownProcessHeight, JSON.stringify({ hiddenProcessHeight, shownProcessHeight }))
-    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').textContent`), "Show charts")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').getAttribute("aria-label")`), "Show charts")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').getAttribute("aria-pressed")`), "false")
     await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
     await cdp.waitFor(`document.querySelector('.process-summary-history .uplot-host canvas') !== null`, "the restored process-summary chart")
 

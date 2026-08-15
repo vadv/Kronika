@@ -1,4 +1,4 @@
-import { Activity } from "lucide-react"
+import { Activity, ChartLine } from "lucide-react"
 import { translation } from "kronika:i18n"
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react"
 import { createRoot } from "react-dom/client"
@@ -778,7 +778,7 @@ function App({ locale, onLocale, t }: {
       </div>
 
       <div className="top-actions">
-        <button className="icon-button charts-toggle" data-testid="charts-toggle" onClick={() => setChartsVisible((shown) => !shown)} type="button">{t(chartsVisible ? "common.charts.hide" : "common.charts.show")}</button>
+        <button aria-label={t(chartsVisible ? "common.charts.hide" : "common.charts.show")} aria-pressed={chartsVisible} className="icon-button charts-toggle" data-testid="charts-toggle" onClick={() => setChartsVisible((shown) => !shown)} title={t(chartsVisible ? "common.charts.hide" : "common.charts.show")} type="button"><ChartLine aria-hidden="true" size={14} /></button>
         <button aria-label={t("refresh.action")} className="icon-button" disabled={refreshing || !refreshReady} onClick={requestRefresh} title={t("refresh.action")} type="button">↻</button>
         <select aria-label={t("timezone.switch")} className="timezone-select" data-testid="timezone-select" onChange={(event) => time.setMode(event.currentTarget.value as DisplayTimeZone)} value={time.mode}>
           <option value="browser">{t("timezone.browser")}</option>

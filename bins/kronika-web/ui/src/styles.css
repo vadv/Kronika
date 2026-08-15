@@ -165,7 +165,8 @@ h2 { font-size: var(--t-md); }
 .locale-switch button[aria-pressed="true"] { background: var(--s4); color: var(--accent3); }
 .timezone-select { background: var(--s2); border: 1px solid var(--line3); color: var(--fg2); font-size: var(--t-xs); height: 24px; max-width: 176px; padding: 0 4px; }
 .icon-button { align-items: center; border: 1px solid var(--line3); display: flex; height: 24px; justify-content: center; min-width: 24px; }
-.charts-toggle { color: var(--fg2); padding: 0 6px; white-space: nowrap; }
+.charts-toggle { color: var(--fg2); }
+.charts-toggle[aria-pressed="true"] { background: var(--s4); color: var(--accent3); }
 .source-tabs { flex: 0 0 auto; gap: 2px; }
 .source-tabs button { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--fg3); cursor: pointer; font-size: var(--t-xs); letter-spacing: .06em; padding: 8px 9px 6px; text-transform: uppercase; }
 .source-tabs .source-active { border-bottom-color: var(--accent); color: var(--accent3); }
@@ -594,7 +595,6 @@ h2 { font-size: var(--t-md); }
 @media (max-width: 520px) {
   .top-actions { flex: 1 1 100%; flex-wrap: wrap; gap: 4px 6px; margin-left: 0; max-width: 100%; min-width: 0; }
   .top-actions > * + * { margin-left: 0; }
-  .top-actions .charts-toggle { flex: 1 1 auto; min-width: 0; }
   .top-actions .timezone-select { flex: 1 1 104px; min-width: 0; }
   .lane-label { flex: 0 0 124px; min-height: 34px; }
   .uplot-figure.timeline-chart { height: 216px; padding-left: 2px; padding-right: 2px; }
