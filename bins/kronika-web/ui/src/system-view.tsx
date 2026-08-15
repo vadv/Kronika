@@ -849,8 +849,8 @@ function derivedRowPoints(rows: readonly DataRow[], derive: NonNullable<MetricSp
     if (percentages.some((number) => number === undefined)) return undefined
     return percentages.some((number) => number === null) ? null : Math.min(...percentages as number[])
   })
-  if (derive === "device_busy") return rateAwareDelta(rows, (sampleRows) => maxField(sampleRows, "io_time_ms"), rates, 0.1)
-  if (derive === "device_average_queue") return rateAwareDelta(rows, (sampleRows) => maxField(sampleRows, "io_weighted_time_ms"), rates, 0.001)
+  if (derive === "device_busy") return peakDeviceRate(rows, "io_time_ms", rates, 0.1)
+  if (derive === "device_average_queue") return peakDeviceRate(rows, "io_weighted_time_ms", rates, 0.001)
   if (derive === "device_count" || derive === "filesystem_count" || derive === "interface_count") return aggregateRows(rows, (sampleRows) => sampleRows.length)
   if (derive === "device_active_io") return aggregateRows(rows, (sampleRows) => sumFields(sampleRows, ["io_in_progress"]))
   if (derive === "network_rx") return cumulativeRate(aggregateRows(rows, (sampleRows) => sumFields(sampleRows, ["rx_bytes"])))
@@ -859,15 +859,30 @@ function derivedRowPoints(rows: readonly DataRow[], derive: NonNullable<MetricSp
   return cumulativeRate(aggregateRows(rows, (sampleRows) => sumFields(sampleRows, ["rx_drop", "tx_drop"])))
 }
 
-// A rollup over a counter the section already stores as a per-second rate is
-// a reading, not a delta: rate columns arrive pre-divided by their interval,
-// and a second division would report a tenth of nothing.
-function rateAwareDelta(rows: readonly DataRow[], aggregate: (rows: readonly DataRow[]) => number | null | undefined, rates: boolean, scale: number): readonly ChartPoint[] {
-  const points = aggregateRows(rows, (sampleRows) => {
-    const value = aggregate(sampleRows)
-    return value === null || value === undefined ? value : value * scale
-  })
-  return rates ? points : cumulativeRate(points)
+// The rollup peaks across devices at every instant. Counter layouts divide
+// per device first — the peak of sums would double-count devices that share a
+// busy period — while rate layouts peak directly.
+function peakDeviceRate(rows: readonly DataRow[], field: string, rates: boolean, scale: number): readonly ChartPoint[] {
+  if (rates) return aggregateRows(rows, (sampleRows) => maxField(sampleRows, field, scale))
+  const devices = new Map<string, DataRow[]>()
+  for (const row of rows) {
+    const key = rawText(value(row, "major")) + ":" + rawText(value(row, "minor"))
+    const stored = devices.get(key) ?? []
+    stored.push(row)
+    devices.set(key, stored)
+  }
+  const instants = new Map<string, { readonly segmentId: string; readonly timestamp: number; peak: number | null }>()
+  for (const deviceRows of devices.values()) {
+    for (const point of exactCounterRatePoints(deviceRows, field, scale)) {
+      const key = `${point.segmentId}:${point.timestamp}`
+      const stored = instants.get(key) ?? { segmentId: point.segmentId, timestamp: point.timestamp, peak: null }
+      if (point.value !== null && (stored.peak === null || point.value > stored.peak)) stored.peak = point.value
+      instants.set(key, stored)
+    }
+  }
+  return [...instants.values()]
+    .sort((left, right) => left.timestamp - right.timestamp || left.segmentId.localeCompare(right.segmentId))
+    .map(({ segmentId, timestamp, peak }) => ({ segmentId, timestamp, value: peak }))
 }
 
 function aggregateRows(rows: readonly DataRow[], aggregate: (rows: readonly DataRow[]) => number | null | undefined): readonly ChartPoint[] {

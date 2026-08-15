@@ -435,6 +435,18 @@ test("a cumulative metric stays absent until its section announces rate columns"
   assert.equal(cumulative.hasMetric({ points: [], sections: { os_diskstats: [row] }, rateColumns: { os_diskstats: ["reads"] } }, spec), true)
 })
 
+test("the storage rollups peak across devices and honor pre-computed rates", () => {
+  const row = (timestamp, major, ioTime) => ({ logicalName: "os_diskstats", ordinal: `${major}:${timestamp}`, segmentId: "a", timestamp, typeId: "1108001", values: { major, minor: 0, io_time_ms: ioTime } })
+  const busy = helpers.SYSTEM_METRICS.find(({ id }) => id === "device_busy")
+  const counter = helpers.metricPoints({ points: [], sections: { os_diskstats: [
+    row(1_000_000, 7, 100), row(1_000_000, 8, 300),
+    row(2_000_000, 7, 200), row(2_000_000, 8, 700),
+  ] }, rateColumns: { os_diskstats: ["io_time_ms"] } }, busy).map(({ value }) => value)
+  assert.deepEqual(counter, [30, 70])
+  const storedRates = helpers.metricPoints({ points: [], sections: { os_diskstats: [row(1_000_000, 7, 0.2), row(1_000_000, 8, 0.7)] }, rateColumns: { os_diskstats: ["io_time_ms"] } }, busy)
+  assert.ok(Math.abs((storedRates[0]?.value ?? 0) - 0.07) < 1e-9)
+})
+
 test("registry cumulative fields become reset-safe rates across storage segments", () => {
   const spec = { field: "reads", group: "storage", help: "x", id: "reads", label: "x", section: "os_diskstats", unit: "" }
   const row = (segmentId, timestamp, reads) => ({ logicalName: "os_diskstats", ordinal: String(timestamp), segmentId, timestamp, typeId: "1108001", values: { major: 8, minor: 0, reads } })
