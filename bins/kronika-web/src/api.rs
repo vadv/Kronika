@@ -145,6 +145,22 @@ impl ApiError {
             _ => None,
         }
     }
+
+    pub(crate) fn source_changed_during_read(&self) -> bool {
+        let Self::Unreadable(error) = self else {
+            return false;
+        };
+        let mut source: &(dyn Error + 'static) = error.as_ref();
+        loop {
+            if let Some(reader) = source.downcast_ref::<ReaderError>() {
+                return reader.source_changed_during_read();
+            }
+            let Some(next) = source.source() else {
+                return false;
+            };
+            source = next;
+        }
+    }
 }
 
 impl std::fmt::Display for ApiError {

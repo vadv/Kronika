@@ -10,7 +10,7 @@ use super::{
     RequestTarget, SingleHeader, authorization, if_none_match_values, response_from_meta,
     route_request, route_request_at, session_response,
 };
-use crate::api::{CachePolicy, Prepared, ResponseMeta};
+use crate::api::{ApiError, CachePolicy, Prepared, ResponseMeta};
 use crate::body::StreamHead;
 use crate::config::Account;
 use crate::encoding::AcceptedEncodings;
@@ -632,5 +632,107 @@ async fn blocking_resource_work_does_not_stall_the_current_thread_runtime() {
     assert_eq!(
         response.await.expect("response task").status(),
         StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn changed_journal_generation_replays_preparation_once() {
+    let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = std::sync::Arc::clone(&attempts);
+    let response = super::blocking_stream_with_replay(
+        move || {
+            if observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+                return Err(ApiError::Unreadable(Box::new(
+                    kronika_reader::ReaderError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "active part belongs to another journal generation",
+                    )),
+                )));
+            }
+            Ok(Prepared::Empty(ResponseMeta {
+                status: StatusCode::OK,
+                cache: CachePolicy::NoStore,
+                etag: None,
+            }))
+        },
+        AcceptedEncodings::default(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::Relaxed), 2);
+}
+
+#[test]
+fn source_change_detection_reaches_reader_errors_inside_index_wrappers() {
+    let wrapped = ApiError::from(kronika_index::LoadError::Build(
+        kronika_index::BuildError::Reader(kronika_reader::ReaderError::Io(std::io::Error::from(
+            std::io::ErrorKind::Interrupted,
+        ))),
+    ));
+    assert!(wrapped.source_changed_during_read());
+
+    let unrelated = ApiError::Unreadable(Box::new(std::io::Error::from(
+        std::io::ErrorKind::UnexpectedEof,
+    )));
+    assert!(!unrelated.source_changed_during_read());
+}
+
+#[tokio::test]
+async fn changed_source_replay_is_bounded_and_does_not_repeat_refusals() {
+    let changed_attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = std::sync::Arc::clone(&changed_attempts);
+    let changed = super::blocking_stream_with_replay(
+        move || {
+            observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(ApiError::Unreadable(Box::new(
+                kronika_reader::ReaderError::Io(std::io::Error::from(
+                    std::io::ErrorKind::Interrupted,
+                )),
+            )))
+        },
+        AcceptedEncodings::default(),
+    )
+    .await;
+    assert_eq!(changed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        changed_attempts.load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+
+    let broken_attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = std::sync::Arc::clone(&broken_attempts);
+    let broken = super::blocking_stream_with_replay(
+        move || {
+            observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(ApiError::Unreadable(Box::new(
+                kronika_reader::ReaderError::Io(std::io::Error::from(
+                    std::io::ErrorKind::InvalidData,
+                )),
+            )))
+        },
+        AcceptedEncodings::default(),
+    )
+    .await;
+    assert_eq!(broken.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        broken_attempts.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+
+    let refused_attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = std::sync::Arc::clone(&refused_attempts);
+    let refused = super::blocking_stream_with_replay(
+        move || {
+            observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(ApiError::NoSuchSegment)
+        },
+        AcceptedEncodings::default(),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        refused_attempts.load(std::sync::atomic::Ordering::Relaxed),
+        1
     );
 }

@@ -9,11 +9,41 @@ use kronika_registry::{Cell, Section as _, StrId as RegistryStrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use sha2::{Digest as _, Sha256};
 
-use super::{Dictionary, Reader, Segment};
+use super::{Dictionary, Reader, ReaderError, Segment};
 
 /// A segment covering ten to twenty microseconds.
 const MIN: i64 = 10;
 const MAX: i64 = 20;
+
+#[test]
+fn only_replaced_io_sources_are_reopenable() {
+    assert!(
+        ReaderError::Io(std::io::Error::from(std::io::ErrorKind::Interrupted))
+            .source_changed_during_read()
+    );
+    for kind in [
+        std::io::ErrorKind::NotFound,
+        std::io::ErrorKind::Interrupted,
+        std::io::ErrorKind::UnexpectedEof,
+    ] {
+        assert!(
+            ReaderError::Store(kronika_store::StoreError::Io(std::io::Error::from(kind)))
+                .source_changed_during_read(),
+            "segment I/O kind {kind:?}"
+        );
+    }
+    for kind in [
+        std::io::ErrorKind::NotFound,
+        std::io::ErrorKind::UnexpectedEof,
+        std::io::ErrorKind::InvalidData,
+    ] {
+        assert!(
+            !ReaderError::Io(std::io::Error::from(kind)).source_changed_during_read(),
+            "directory I/O kind {kind:?}"
+        );
+    }
+    assert!(!ReaderError::Store(kronika_store::StoreError::BadMagic).source_changed_during_read());
+}
 
 #[test]
 fn an_unbounded_range_takes_every_segment() {
@@ -162,7 +192,7 @@ fn a_segment_reference_cannot_cross_reader_roots() {
         .expect_err("a reference is bound to the reader that listed it");
     assert!(matches!(
         error,
-        super::ReaderError::Io(ref source) if source.kind() == std::io::ErrorKind::InvalidInput
+        ReaderError::Io(ref source) if source.kind() == std::io::ErrorKind::InvalidInput
     ));
 }
 

@@ -1179,11 +1179,27 @@ function layoutRecord(record: Record<string, unknown>): RowLayout | null {
 }
 
 async function request(path: string, signal: AbortSignal): Promise<readonly Record<string, unknown>[]> {
-  const response = await apiFetch(path, { headers: { Accept: "application/x-ndjson" }, signal })
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status} for ${path}`)
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let response: Response
+    try {
+      response = await apiFetch(path, { headers: { Accept: "application/x-ndjson" }, signal })
+    } catch (error) {
+      signal.throwIfAborted()
+      if (attempt === 0 && error instanceof TypeError) continue
+      throw error
+    }
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} for ${path}`)
+    }
+    try {
+      return await readNdjson(response, path, signal)
+    } catch (error) {
+      signal.throwIfAborted()
+      if (attempt === 0 && error instanceof TypeError) continue
+      throw error
+    }
   }
-  return readNdjson(response, path, signal)
+  throw new Error(`HTTP read failed for ${path}`)
 }
 
 function catalogSegments(records: readonly Record<string, unknown>[]): readonly Segment[] {

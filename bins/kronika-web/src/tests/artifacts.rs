@@ -1479,6 +1479,101 @@ async fn below_threshold_ndjson_stays_identity_when_it_is_allowed() {
 }
 
 #[tokio::test]
+async fn an_active_snapshot_restarts_from_the_finished_segment_after_rollover() {
+    let mut fixture = Fixture::new();
+    fixture.append_health();
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=instance_metadata&field=postgresql_interval_seconds&text=160"
+    );
+    let (path, query) = target.split_once('?').expect("snapshot query");
+    let route = crate::route::parse(path, Some(query)).expect("snapshot route");
+    let first = crate::api::prepare(fixture.root(), SOURCES, route.clone(), None)
+        .expect("prepare active snapshot");
+    fixture.finish_and_continue(SEGMENT_ID + 1_000);
+
+    let root = fixture.root().to_owned();
+    let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = std::sync::Arc::clone(&attempts);
+    let mut first = Some(first);
+    let response = crate::blocking_stream_with_replay(
+        move || {
+            observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if let Some(first) = first.take() {
+                return Ok(first);
+            }
+            crate::api::prepare(&root, SOURCES, route.clone(), None)
+        },
+        accepted("identity"),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::Relaxed), 2);
+    assert_eq!(
+        response.headers().get(hyper::header::CACHE_CONTROL),
+        Some(&HeaderValue::from_static("private,no-cache")),
+        "the finished retry controls the response cache policy"
+    );
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("replayed snapshot body")
+        .to_bytes();
+    let records = body
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice::<Value>(line).expect("snapshot JSON"))
+        .collect::<Vec<_>>();
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["segment_id"], SEGMENT_ID.to_string());
+    assert_eq!(rows[0]["values"], serde_json::json!(["30"]));
+}
+
+#[tokio::test]
+async fn a_started_active_response_is_not_spliced_to_a_new_generation() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(
+        &(0..2_000)
+            .map(|minor| (100, minor, i64::from(minor)))
+            .collect::<Vec<_>>(),
+    );
+    fixture.append_diskstats(&[(100, 2_000, 2_000)]);
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=os_diskstats&field=minor&field=reads&text=160"
+    );
+    let (path, query) = target.split_once('?').expect("snapshot query");
+    let route = crate::route::parse(path, Some(query)).expect("snapshot route");
+    let first = crate::api::prepare(fixture.root(), SOURCES, route.clone(), None)
+        .expect("prepare large active snapshot");
+    let root = fixture.root().to_owned();
+    let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = std::sync::Arc::clone(&attempts);
+    let mut first = Some(first);
+    let response = crate::blocking_stream_with_replay(
+        move || {
+            observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if let Some(first) = first.take() {
+                return Ok(first);
+            }
+            crate::api::prepare(&root, SOURCES, route.clone(), None)
+        },
+        accepted("identity"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+    fixture.finish_and_continue(SEGMENT_ID + 1_000);
+    assert!(
+        response.into_body().collect().await.is_err(),
+        "an already-started response must end instead of mixing segment generations"
+    );
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
 async fn a_small_real_read_failure_returns_500_before_success_headers() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[(100, 0, 7)]);
@@ -2673,6 +2768,17 @@ fn active_snapshot_cursor_pins_the_original_wal_prefix() {
         .find(|record| record["record"] == "snapshot_page")
         .expect("fresh page trailer");
     assert_eq!(page["eligible"], "5");
+
+    fixture.finish_and_continue(SEGMENT_ID + 1_000);
+    let (path, query) = format!("{base}&cursor={cursor}")
+        .split_once('?')
+        .map(|(path, query)| (path.to_owned(), query.to_owned()))
+        .expect("finished cursor target");
+    let route = crate::route::parse(&path, Some(&query)).expect("finished cursor route");
+    assert!(matches!(
+        crate::api::prepare(fixture.root(), SOURCES, route, None),
+        Err(ApiError::BadCursor)
+    ));
 }
 
 #[test]

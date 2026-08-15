@@ -1150,6 +1150,70 @@ test("projected history retains segment provenance and exact type", async () => 
   }
 })
 
+test("a read-only resource retries one response-body transport failure", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  let attempts = 0
+  globalThis.fetch = async () => {
+    attempts += 1
+    if (attempts === 1) {
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`${JSON.stringify({ record: "padding", value: "x".repeat(9_000) })}\n`))
+          controller.error(new TypeError("response body closed during journal rollover"))
+        },
+      }))
+    }
+    return ndjson([
+      { record: "series_segment", segment: { id: "segment-a" } },
+      {
+        record: "layout",
+        layout: {
+          type_id: "1105001", logical_name: "os_loadavg", columns: [{ name: "load1" }],
+        },
+      },
+      { record: "row", type_id: "1105001", ordinal: "0", timestamp: String(START), values: [1.5] },
+    ])
+  }
+  try {
+    const rows = await api.loadSeries(
+      START,
+      "os_loadavg",
+      {},
+      ["load1"],
+      new AbortController().signal,
+    )
+    assert.equal(attempts, 2)
+    assert.deepEqual(rows.map((row) => row.values), [{ load1: 1.5 }])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("a read-only resource does not retry a client refusal", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  let attempts = 0
+  globalThis.fetch = async () => {
+    attempts += 1
+    return new Response(null, { status: 400 })
+  }
+  try {
+    await assert.rejects(api.loadSeries(
+      START,
+      "os_loadavg",
+      {},
+      ["load1"],
+      new AbortController().signal,
+    ), /HTTP 400/)
+    assert.equal(attempts, 1)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test("Activity history uses its exact production projection and yields numeric durations", async () => {
   const api = await activityWireApi()
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")

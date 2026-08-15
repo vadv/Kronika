@@ -280,12 +280,12 @@ async fn streamed(
     if_none_match: Option<String>,
     accepted: AcceptedEncodings,
 ) -> Response<WebBody> {
-    blocking_stream(
+    blocking_stream_with_replay(
         move || {
             api::prepare(
                 &config.data_root,
                 config.sources,
-                route,
+                route.clone(),
                 if_none_match.as_deref(),
             )
         },
@@ -294,30 +294,116 @@ async fn streamed(
     .await
 }
 
+#[cfg(test)]
 async fn blocking_stream(
     prepare: impl FnOnce() -> Result<api::Prepared, ApiError> + Send + 'static,
     accepted: AcceptedEncodings,
 ) -> Response<WebBody> {
+    let mut prepare = Some(prepare);
+    blocking_stream_inner(
+        move || {
+            let Some(prepare) = prepare.take() else {
+                return Err(ApiError::BadCursor);
+            };
+            prepare()
+        },
+        accepted,
+        false,
+    )
+    .await
+}
+
+async fn blocking_stream_with_replay(
+    prepare: impl FnMut() -> Result<api::Prepared, ApiError> + Send + 'static,
+    accepted: AcceptedEncodings,
+) -> Response<WebBody> {
+    blocking_stream_inner(prepare, accepted, true).await
+}
+
+async fn blocking_stream_inner(
+    mut prepare: impl FnMut() -> Result<api::Prepared, ApiError> + Send + 'static,
+    accepted: AcceptedEncodings,
+    replay_source_change: bool,
+) -> Response<WebBody> {
     let (body_tx, body_rx) = mpsc::channel::<BodyItem>(8);
     let (head_tx, head_rx) = oneshot::channel::<Result<StreamHead, ApiError>>();
-    let handle = tokio::task::spawn_blocking(move || match prepare() {
-        Ok(prepared) => {
+    let handle = tokio::task::spawn_blocking(move || {
+        let mut head_tx = Some(head_tx);
+        let mut producer: Option<BodyProducer> = None;
+        let mut replayed = false;
+        loop {
+            let prepared = match prepare() {
+                Ok(prepared) => prepared,
+                Err(error)
+                    if replay_source_change && !replayed && error.source_changed_during_read() =>
+                {
+                    replayed = true;
+                    continue;
+                }
+                Err(error) => {
+                    if let Some(producer) = producer.take() {
+                        producer.fail(error);
+                    } else if let Some(head_tx) = head_tx.take() {
+                        let _sent = head_tx.send(Err(error));
+                    }
+                    return;
+                }
+            };
             let meta = prepared.meta();
             if meta.status == StatusCode::NOT_MODIFIED {
-                let _sent = head_tx.send(Ok(StreamHead::not_modified(meta)));
+                if let Some(producer) = producer.take() {
+                    producer.complete_not_modified(meta);
+                } else if let Some(head_tx) = head_tx.take() {
+                    let _sent = head_tx.send(Ok(StreamHead::not_modified(meta)));
+                }
                 return;
+            }
+            if producer.is_some() {
+                let restarted = producer
+                    .as_mut()
+                    .is_some_and(|producer| producer.restart(meta));
+                if !restarted {
+                    if let Some(producer) = producer.take() {
+                        producer.fail(ApiError::Unreadable(Box::new(std::io::Error::other(
+                            "response replay began after headers",
+                        ))));
+                    }
+                    return;
+                }
+            } else {
+                let Some(head_tx) = head_tx.take() else {
+                    return;
+                };
+                producer = Some(BodyProducer::new(accepted, meta, head_tx, body_tx.clone()));
             }
             let cancellation_tx = body_tx.clone();
             let cancelled = || cancellation_tx.is_closed();
-            let mut producer = BodyProducer::new(accepted, meta, head_tx, body_tx);
-            let result = prepared.stream(&mut |bytes| producer.emit(&bytes), &cancelled);
+            let Some(current) = producer.as_mut() else {
+                return;
+            };
+            let result = prepared.stream(&mut |bytes| current.emit(&bytes), &cancelled);
             match result {
-                Ok(()) => producer.complete(),
-                Err(error) => producer.fail(error),
+                Ok(()) => {
+                    if let Some(producer) = producer.take() {
+                        producer.complete();
+                    }
+                    return;
+                }
+                Err(error)
+                    if replay_source_change
+                        && !replayed
+                        && error.source_changed_during_read()
+                        && current.can_restart() =>
+                {
+                    replayed = true;
+                }
+                Err(error) => {
+                    if let Some(producer) = producer.take() {
+                        producer.fail(error);
+                    }
+                    return;
+                }
             }
-        }
-        Err(error) => {
-            let _sent = head_tx.send(Err(error));
         }
     });
     drop(handle);

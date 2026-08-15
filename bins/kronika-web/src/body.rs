@@ -105,6 +105,27 @@ impl BodyProducer {
         }
     }
 
+    pub(crate) const fn can_restart(&self) -> bool {
+        matches!(self.state, ProducerState::Staging(_))
+    }
+
+    pub(crate) fn restart(&mut self, meta: ResponseMeta) -> bool {
+        let ProducerState::Staging(prefix) = &mut self.state else {
+            return false;
+        };
+        prefix.clear();
+        self.meta = Some(meta);
+        true
+    }
+
+    pub(crate) fn complete_not_modified(mut self, meta: ResponseMeta) {
+        self.state = ProducerState::Stopped;
+        self.meta = None;
+        if let Some(head) = self.head.take() {
+            let _sent = head.send(Ok(StreamHead::not_modified(meta)));
+        }
+    }
+
     pub(crate) fn complete(mut self) {
         let state = std::mem::replace(&mut self.state, ProducerState::Stopped);
         match state {
