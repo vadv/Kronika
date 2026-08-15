@@ -73,6 +73,7 @@ import {
   clearCgroupSnapshotRows,
 } from "./system-view"
 import { Timeline } from "./timeline"
+import { TimezoneSelect } from "./timezone-select"
 
 type Source = "host" | "postgresql" | "events"
 type Theme = "dark" | "light"
@@ -781,10 +782,7 @@ function App({ locale, onLocale, t }: {
       <div className="top-actions">
         <button aria-label={t(chartsVisible ? "common.charts.hide" : "common.charts.show")} aria-pressed={chartsVisible} className="icon-button charts-toggle" data-testid="charts-toggle" onClick={() => setChartsVisible((shown) => !shown)} title={t(chartsVisible ? "common.charts.hide" : "common.charts.show")} type="button"><ChartLine aria-hidden="true" size={14} /></button>
         <button aria-label={t("refresh.action")} className="icon-button" disabled={refreshing || !refreshReady} onClick={requestRefresh} title={t("refresh.action")} type="button">↻</button>
-        <select aria-label={t("timezone.switch")} className="timezone-select" data-testid="timezone-select" onChange={(event) => time.setMode(event.currentTarget.value as DisplayTimeZone)} value={time.mode}>
-          <option value="browser">{t("timezone.browser")}</option>
-          <option value="utc">{t("timezone.utc")}</option>
-        </select>
+        <TimezoneSelect mode={time.mode} setMode={time.setMode} t={t} />
         <button aria-label={t("common.theme.switch")} className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title={t(theme === "dark" ? "common.theme.light" : "common.theme.dark")} type="button">
           {theme === "dark" ? "☀" : "☾"}
         </button>

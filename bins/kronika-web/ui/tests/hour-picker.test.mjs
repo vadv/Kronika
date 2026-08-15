@@ -79,13 +79,15 @@ test("calendar month labels and date counts remain human", () => {
 })
 
 test("the combined picker has no native date/time controls or invented local hours", async () => {
-  const [pickerSource, appSource, styles] = await Promise.all([
+  const [pickerSource, appSource, timezoneSource, styles] = await Promise.all([
     readFile(new URL("../src/hour-picker.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/app.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/timezone-select.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
   ])
   assert.doesNotMatch(pickerSource, /<input\b|<select\b|type=["']date["']|type=["']time["']/)
-  assert.match(appSource, /data-testid="timezone-select"/)
+  assert.match(appSource, /<TimezoneSelect\b/)
+  assert.match(timezoneSource, /data-testid="timezone-select"/)
   assert.match(pickerSource, /data-testid="hour-picker-trigger"/)
   assert.match(pickerSource, /data-testid="hour-popover"/)
   assert.match(pickerSource, /dayHours\.map/)

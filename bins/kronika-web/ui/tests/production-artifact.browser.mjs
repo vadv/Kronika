@@ -28,6 +28,16 @@ const SESSION_COOKIE = `kronika_session=v1.2000000000.${"A".repeat(43)}`
 const SLOW_PATTERN = 'SELECT "bulkoperations_bulktask"."id" FROM "bulkoperations_bulktask" WHERE "bulkoperations_bulktask"."status" = ? AND "bulkoperations_bulktask"."tenant_partition_with_a_deliberately_long_identifier" = ?'
 const SLOW_QUERY = `${SLOW_PATTERN.replaceAll("?", "'pending'")} ORDER BY "bulkoperations_bulktask"."created_at" DESC LIMIT 250`
 
+
+const ZONE_VALUE = `document.querySelector('[data-testid="timezone-select"]')?.getAttribute("data-value")`
+const ZONE_LABEL = `document.querySelector('[data-testid="timezone-select"] .timezone-select-value')?.textContent`
+
+async function switchZone(cdp, zone) {
+  await cdp.evaluate(`document.querySelector('[data-testid="timezone-select"]').click()`)
+  await cdp.waitFor(`document.querySelector('[data-testid="timezone-option-${zone}"]') !== null`, `the ${zone} timezone option`)
+  await cdp.evaluate(`document.querySelector('[data-testid="timezone-option-${zone}"]').click()`)
+}
+
 test("display timezone and human chart precision stay global", { timeout: 60_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const requests = []
@@ -90,8 +100,8 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
       overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth || document.querySelector(".topbar").scrollWidth > document.querySelector(".topbar").clientWidth,
       status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent ?? "",
       updated: document.querySelector('[data-testid="updated-time"]')?.textContent ?? "",
-      zone: document.querySelector('[data-testid="timezone-select"]')?.value,
-      zoneLabel: document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent ?? "",
+      zone: document.querySelector('[data-testid="timezone-select"]')?.getAttribute("data-value"),
+      zoneLabel: document.querySelector('[data-testid="timezone-select"] .timezone-select-value')?.textContent ?? "",
       zoneSelectors: document.querySelectorAll('[data-testid="timezone-select"]').length,
     }))()`)
     assert.equal(browserMode.at, String(AT))
@@ -125,12 +135,8 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     assert.match(tooltip, /41\.7%/)
     assert.doesNotMatch(tooltip, /41\.729068|GMT|UTC|\.000/)
     const apiBeforeSwitch = requests.filter(({ path }) => path.startsWith("/api/")).length
-    await cdp.evaluate(`(() => {
-      const select = document.querySelector('[data-testid="timezone-select"]')
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(select, "utc")
-      select.dispatchEvent(new Event("change", { bubbles: true }))
-    })()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="timezone-select"]')?.value === "utc" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("05:30:00") === true`, "the UTC display mode")
+    await switchZone(cdp, "utc")
+    await cdp.waitFor(`document.querySelector('[data-testid="timezone-select"]')?.getAttribute("data-value") === "utc" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("05:30:00") === true`, "the UTC display mode")
     await hover()
     const utcMode = await cdp.evaluate(`(() => ({
       at: new URL(location.href).searchParams.get("at"),
@@ -139,8 +145,8 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
       status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent ?? "",
       tooltip: document.querySelector('[data-testid="hour-timeline"] .chart-tooltip')?.textContent ?? "",
       updated: document.querySelector('[data-testid="updated-time"]')?.textContent ?? "",
-      zone: document.querySelector('[data-testid="timezone-select"]')?.value,
-      zoneLabel: document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent ?? "",
+      zone: document.querySelector('[data-testid="timezone-select"]')?.getAttribute("data-value"),
+      zoneLabel: document.querySelector('[data-testid="timezone-select"] .timezone-select-value')?.textContent ?? "",
     }))()`)
     assert.equal(utcMode.at, String(AT))
     assert.equal(utcMode.zone, "utc")
@@ -154,14 +160,10 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
       assert.doesNotMatch(output, /GMT|UTC|\.\d{3}(?!\d)/)
     }
     assert.equal(requests.filter(({ path }) => path.startsWith("/api/")).length, apiBeforeSwitch)
-    await cdp.evaluate(`(() => {
-      const select = document.querySelector('[data-testid="timezone-select"]')
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(select, "browser")
-      select.dispatchEvent(new Event("change", { bubbles: true }))
-    })()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent === "Browser time" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("08:30:00") === true`, "the Browser display restore")
+    await switchZone(cdp, "browser")
+    await cdp.waitFor(`document.querySelector('[data-testid="timezone-select"] .timezone-select-value')?.textContent === "Browser time" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("08:30:00") === true`, "the Browser display restore")
     await cdp.send("Page.reload")
-    await cdp.waitFor(`document.querySelector('[data-testid="timezone-select"]')?.value === "browser" && document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent === "Browser time" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("08:30:00") === true`, "the persisted Browser display", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="timezone-select"]')?.getAttribute("data-value") === "browser" && document.querySelector('[data-testid="timezone-select"] .timezone-select-value')?.textContent === "Browser time" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("08:30:00") === true`, "the persisted Browser display", 15_000)
 
     await cdp.evaluate(`document.querySelector(".source-tabs button:first-child").click()`)
     await cdp.waitFor(`document.querySelector(".source-tabs button:first-child")?.getAttribute("aria-current") === "page"`, "the Host history destination")
@@ -176,7 +178,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${AT}" && new URL(location.href).searchParams.get("view") === "pg.statements"`, "the exact back selection")
     await cdp.evaluate(`history.forward()`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${BEFORE_AT}" && new URL(location.href).searchParams.get("view") === null`, "the exact forward selection")
-    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="timezone-select"]')?.value`), "browser")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="timezone-select"]')?.getAttribute("data-value")`), "browser")
     assert.equal(await cdp.evaluate(`document.documentElement.scrollWidth <= document.documentElement.clientWidth`), true)
     assert.deepEqual(result.errors, [])
     assert.deepEqual(result.external, [])
@@ -689,7 +691,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       context: document.querySelector('.hour-popover > header > span')?.textContent ?? null,
       day: document.querySelector('.day-cell[data-day="2026-08-13"]')?.getAttribute('aria-label'),
       text: document.querySelector('[data-testid="hour-popover"]')?.textContent ?? "",
-      zoneLabel: document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent ?? "",
+      zoneLabel: ${ZONE_LABEL} ?? "",
     }))()`)
     assert.equal(russianPicker.context, null)
     assert.match(russianPicker.day, /13\.08\.2026/)
@@ -700,13 +702,9 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.waitFor(`document.querySelector('[data-testid="hour-popover"]') === null`, "picker outside close")
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
 
-    await cdp.evaluate(`(() => {
-      document.querySelector('[data-testid="locale-ru"]').click()
-      const select = document.querySelector('[data-testid="timezone-select"]')
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(select, "utc")
-      select.dispatchEvent(new Event("change", { bubbles: true }))
-    })()`)
-    await cdp.waitFor(`document.documentElement.lang === "ru" && document.querySelector('[data-testid="timezone-select"]')?.value === "utc" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("05:30:00")`, "the UTC re-render")
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+    await switchZone(cdp, "utc")
+    await cdp.waitFor(`document.documentElement.lang === "ru" && ${ZONE_VALUE} === "utc" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("05:30:00")`, "the UTC re-render")
     const utcClocks = await cdp.evaluate(`(() => ({
       cursor: document.querySelector('[data-testid="cursor-time"]')?.textContent,
       cursorSecondary: document.querySelector('[data-testid="cursor-time"] small') !== null,
@@ -714,7 +712,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       hourZoneSuffix: document.querySelector('[data-testid="hour-picker-trigger"] small')?.textContent.includes('UTC') ?? false,
       updated: document.querySelector('[data-testid="updated-time"]')?.textContent ?? "",
       updatedSecondary: document.querySelector('[data-testid="updated-time"] small') !== null,
-      zoneLabel: document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent ?? "",
+      zoneLabel: ${ZONE_LABEL} ?? "",
     }))()`)
     assert.equal(utcClocks.zoneLabel, "UTC")
     assert.match(utcClocks.cursor, /05:30:00/)
@@ -726,13 +724,9 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(utcClocks.cursorSecondary, false)
     assert.equal(utcClocks.hourZoneSuffix, false)
     assert.equal(utcClocks.updatedSecondary, false)
-    await cdp.evaluate(`(() => {
-      document.querySelector('[data-testid="locale-en"]').click()
-      const select = document.querySelector('[data-testid="timezone-select"]')
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(select, "browser")
-      select.dispatchEvent(new Event("change", { bubbles: true }))
-    })()`)
-    await cdp.waitFor(`document.documentElement.lang === "en" && document.querySelector('[data-testid="timezone-select"]')?.value === "browser" && document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent === "Browser time" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("01:30:00")`, "the local-time restore")
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+    await switchZone(cdp, "browser")
+    await cdp.waitFor(`document.documentElement.lang === "en" && ${ZONE_VALUE} === "browser" && ${ZONE_LABEL} === "Browser time" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("01:30:00")`, "the local-time restore")
 
     await cdp.evaluate(`([...document.querySelectorAll(".pg-tabs button")].find((button) => button.textContent === "Tables")).click()`)
     await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-tables-table"] .entity-row').length === 1`, "the relation wire row")
@@ -1343,23 +1337,15 @@ test("the production artifact preserves wire keys and exact finding page state",
     await point(QUARTER, QUARTER_PREVIOUS)
     assert.equal(await cdp.evaluate(`document.querySelectorAll('[data-testid="hour-timeline"] .uplot').length`), 1)
 
-    await cdp.evaluate(`(() => {
-      document.querySelector('[data-testid="locale-ru"]').click()
-      const select = document.querySelector('[data-testid="timezone-select"]')
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(select, "utc")
-      select.dispatchEvent(new Event("change", { bubbles: true }))
-    })()`)
-    await cdp.waitFor(`document.documentElement.lang === "ru" && document.querySelector('[data-testid="timezone-select"]')?.value === "utc" && document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent === "UTC" && document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")?.startsWith("05:14:55;")`, "the chart UTC render")
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+    await switchZone(cdp, "utc")
+    await cdp.waitFor(`document.documentElement.lang === "ru" && ${ZONE_VALUE} === "utc" && ${ZONE_LABEL} === "UTC" && document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")?.startsWith("05:14:55;")`, "the chart UTC render")
     const utcSample = await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")`)
     assert.match(utcSample, /^05:14:55;/)
     assert.doesNotMatch(utcSample, /GMT|UTC|\.\d{3}(?!\d)/)
-    await cdp.evaluate(`(() => {
-      document.querySelector('[data-testid="locale-en"]').click()
-      const select = document.querySelector('[data-testid="timezone-select"]')
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(select, "browser")
-      select.dispatchEvent(new Event("change", { bubbles: true }))
-    })()`)
-    await cdp.waitFor(`document.documentElement.lang === "en" && document.querySelector('[data-testid="timezone-select"]')?.value === "browser" && document.querySelector('[data-testid="timezone-select"]')?.selectedOptions[0]?.textContent === "Browser time" && document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")?.startsWith("01:14:55;")`, "the chart local-time restore")
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+    await switchZone(cdp, "browser")
+    await cdp.waitFor(`document.documentElement.lang === "en" && ${ZONE_VALUE} === "browser" && ${ZONE_LABEL} === "Browser time" && document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")?.startsWith("01:14:55;")`, "the chart local-time restore")
 
     const navigateTo = async (timestamp) => {
       const target = await cdp.evaluate(`(() => {
