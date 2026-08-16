@@ -465,6 +465,29 @@ test("the storage rollups peak across devices and honor pre-computed rates", () 
   assert.ok(Math.abs((storedRates[0]?.value ?? 0) - 0.07) < 1e-9)
 })
 
+test("the storage dock breaks device busy down to the devices that registered activity", () => {
+  const row = (timestamp, major, device, ioTime) => ({
+    logicalName: "os_diskstats", ordinal: `${major}:${timestamp}`, segmentId: "a", timestamp, typeId: "1108001",
+    values: { major, minor: 0, device, io_time_ms: ioTime, io_weighted_time_ms: ioTime },
+  })
+  const rows = [
+    row(1_000_000, 8, "sda", 100), row(2_000_000, 8, "sda", 400),
+    row(1_000_000, 9, "sdb", 50), row(2_000_000, 9, "sdb", 50),
+  ]
+  const series = helpers.resourceBreakdownSeries("device_busy", rows, false, "en", (key) => key)
+  assert.deepEqual(series.map(({ label }) => label), ["sda"])
+  assert.deepEqual(series[0].points.map(({ value }) => value), [null, 30])
+  assert.equal(series[0].unit, "%")
+  const allIdle = helpers.resourceBreakdownSeries("device_busy", [row(1_000_000, 9, "sdb", 50), row(2_000_000, 9, "sdb", 50)], false, "en", (key) => key)
+  assert.deepEqual(allIdle.map(({ label }) => label), ["sdb"])
+  const rated = helpers.resourceBreakdownSeries("device_busy", [row(1_000_000, 8, "sda", 0.42)], true, "en", (key) => key)
+  assert.deepEqual(rated.map(({ label }) => label), ["sda"])
+  assert.ok(Math.abs((rated[0].points[0]?.value ?? 0) - 0.042) < 1e-9)
+  const queue = helpers.resourceBreakdownSeries("device_average_queue", [row(1_000_000, 8, "sda", 42)], true, "en", (key) => key)
+  assert.deepEqual(queue.map(({ label }) => label), ["sda"])
+  assert.ok(Math.abs((queue[0].points[0]?.value ?? 0) - 0.042) < 1e-9)
+})
+
 test("registry cumulative fields become reset-safe rates across storage segments", () => {
   const spec = { field: "reads", group: "storage", help: "x", id: "reads", label: "x", section: "os_diskstats", unit: "" }
   const row = (segmentId, timestamp, reads) => ({ logicalName: "os_diskstats", ordinal: String(timestamp), segmentId, timestamp, typeId: "1108001", values: { major: 8, minor: 0, reads } })

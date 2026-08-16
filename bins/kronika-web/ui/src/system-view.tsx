@@ -174,8 +174,8 @@ const DERIVE_INPUTS: Readonly<Record<NonNullable<MetricSpec["derive"]>, readonly
   mem_file_cache: ["os_meminfo", ["cached", "buffers"]],
   mem_other: ["os_meminfo", ["mem_total", "mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim"]],
   filesystem_free_min: ["os_mountinfo", ["total_bytes", "free_bytes"]],
-  device_busy: ["os_diskstats", ["io_time_ms"]],
-  device_average_queue: ["os_diskstats", ["io_weighted_time_ms"]],
+  device_busy: ["os_diskstats", ["io_time_ms", "device"]],
+  device_average_queue: ["os_diskstats", ["io_weighted_time_ms", "device"]],
   device_count: ["os_diskstats", []],
   device_active_io: ["os_diskstats", ["io_in_progress"]],
   filesystem_count: ["os_mountinfo", []],
@@ -848,6 +848,8 @@ export function resourceBreakdownSeries(
   locale: Locale,
   t: Translate,
 ): readonly RecordedSeries[] {
+  if (selectedId === "device_busy") return deviceBreakdownSeries(rows, "io_time_ms", 0.1, rates, locale)
+  if (selectedId === "device_average_queue") return deviceBreakdownSeries(rows, "io_weighted_time_ms", 0.001, rates, locale)
   const ids: readonly string[] = CPU_BREAKDOWN_IDS.includes(selectedId as typeof CPU_BREAKDOWN_IDS[number])
     ? CPU_BREAKDOWN_IDS
     : MEMORY_BREAKDOWN_IDS.includes(selectedId as typeof MEMORY_BREAKDOWN_IDS[number]) ? MEMORY_BREAKDOWN_IDS : []
@@ -968,6 +970,54 @@ function peakDeviceRate(rows: readonly DataRow[], field: string, rates: boolean,
   return [...instants.values()]
     .sort((left, right) => left.timestamp - right.timestamp || left.segmentId.localeCompare(right.segmentId))
     .map(({ segmentId, timestamp, peak }) => ({ segmentId, timestamp, value: peak }))
+}
+
+// The dock's storage chart is the rollup broken back down: one line per
+// device, computed exactly like the peak's per-device leg. A device that
+// registered no activity all hour is a flat zero and stays out of the
+// picture; if every device was idle the flat truth is shown whole.
+function deviceBreakdownSeries(
+  rows: readonly DataRow[],
+  field: string,
+  scale: number,
+  rates: boolean,
+  locale: Locale,
+): readonly RecordedSeries[] {
+  const devices = new Map<string, { readonly name: string; readonly rows: DataRow[] }>()
+  for (const row of rows) {
+    const key = `${rawText(value(row, "major"))}:${rawText(value(row, "minor"))}`
+    const stored = devices.get(key) ?? { name: rawText(value(row, "device")) ?? key, rows: [] }
+    stored.rows.push(row)
+    devices.set(key, stored)
+  }
+  const series = [...devices.entries()].map(([key, device]) => {
+    const points = rates
+      ? buildMetricSamples(device.rows, (row) => {
+          const stored = storedNumber(row, field)
+          return stored === undefined ? undefined : stored === null ? null : stored * scale
+        })
+      : exactCounterRatePoints(device.rows, field, scale)
+    const peak = points.reduce((max, point) => point.value !== null && point.value > max ? point.value : max, 0)
+    return { device, key, peak, points }
+  })
+  const active = series.filter(({ points }) => points.some((point) => point.value !== null && point.value > 0))
+  const shown = (active.length === 0 ? series : active).sort((left, right) => right.peak - left.peak || left.key.localeCompare(right.key))
+  const percent = scale === 0.1
+  const format = percent
+    ? (reading: number, place: Locale) => metricChartValue(reading, place, "%")
+    : (reading: number, place: Locale) => measure(reading, place)
+  return shown.map(({ device, key, points }, index) => ({
+    color: BREAKDOWN_COLORS[index % BREAKDOWN_COLORS.length]!,
+    helpKey: percent ? "system.field.device_busy.help" : "system.field.average_queue.help",
+    id: `device_${key}`,
+    label: device.name,
+    labelKey: device.name,
+    points,
+    scale: percent ? "percent" as const : "nonnegative" as const,
+    tick: format,
+    unit: percent ? "%" : locale === "ru" ? "количество" : "count",
+    value: format,
+  }))
 }
 
 function aggregateRows(rows: readonly DataRow[], aggregate: (rows: readonly DataRow[]) => number | null | undefined): readonly ChartPoint[] {
