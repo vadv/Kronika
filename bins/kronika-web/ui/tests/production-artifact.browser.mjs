@@ -1892,7 +1892,12 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     holdCgroups = true
     await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowLeft" }))`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${BEFORE_AT}"`, "the changed System cursor")
-    await cdp.waitFor(`["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"].every((section) => document.querySelector('[data-testid="system-' + section + '"]') === null)`, "prior cgroup rows cleared while the new key loads")
+    // Loading is not absence: the panels may hold their frames with the loading
+    // line, but no prior rows are visible while the new key loads.
+    await cdp.waitFor(`["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"].every((section) => {
+      const panel = document.querySelector('[data-testid="system-' + section + '"]')
+      return panel === null || (panel.querySelectorAll(".entity-row").length === 0 && panel.textContent.includes("Loading rows"))
+    })`, "prior cgroup rows cleared while the new key loads")
     await waitForRequests(() => heldCgroups.length === 3)
     const replacementPaths = {
       os_cgroup_cpu: "/collector/cpu-before",
@@ -1907,7 +1912,10 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     holdCgroups = true
     await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowRight" }))`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${AT}"`, "the failed System cursor")
-    await cdp.waitFor(`["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"].every((section) => document.querySelector('[data-testid="system-' + section + '"]') === null)`, "prior cgroup rows cleared before a failed exact load")
+    await cdp.waitFor(`["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"].every((section) => {
+      const panel = document.querySelector('[data-testid="system-' + section + '"]')
+      return panel === null || (panel.querySelectorAll(".entity-row").length === 0 && panel.textContent.includes("Loading rows"))
+    })`, "prior cgroup rows cleared before a failed exact load")
     await waitForRequests(() => heldCgroups.length === 3)
     holdCgroups = false
     for (const held of heldCgroups.splice(0)) {
@@ -2417,7 +2425,11 @@ test("snapshot request targets hide rejected replacements until retry succeeds",
     await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${BEFORE_AT}"`, "ordinary System target B")
     await waitForRequests(() => pendingSystemFailure !== null)
     await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]')?.classList.contains("cursor-behind") === true`, "ordinary System target B loading", 15_000)
-    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') === null && document.querySelector('[data-testid="system-metric-mem_anon"]') === null && document.querySelector('[data-testid="system-panel-os_diskstats"]') === null`), true)
+    assert.equal(await cdp.evaluate(`(() => {
+      const panel = document.querySelector('[data-testid="system-panel-os_diskstats"]')
+      return document.querySelector('[data-testid="system-metric-cpu_used_cores"]') === null && document.querySelector('[data-testid="system-metric-mem_anon"]') === null
+        && panel !== null && panel.querySelectorAll(".entity-row").length === 0 && panel.textContent.includes("Loading rows")
+    })()`), true)
     brokenNdjson(pendingSystemFailure)
     pendingSystemFailure = null
     await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]')?.classList.contains("cursor-missing") === true`, "ordinary System target B error", 15_000)

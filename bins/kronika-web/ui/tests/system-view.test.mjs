@@ -556,6 +556,9 @@ test("System keeps the audited balanced groups and opens charts only inside the 
   // spec from the static catalog, not from the presence of points.
   assert.match(source, /selected !== "" \|\| first === undefined/)
   assert.match(source, /SYSTEM_METRICS\.find\(\(spec\) => spec\.id === selected\)/)
+  // Entity panels say loading while their snapshot catches up; only a section
+  // the hour does not carry at all stays absent.
+  assert.match(source, /rows\.length === 0 && activeContext === null && !tablesLoading/)
   // The dock rides the scroll (sticky), its selector reads as the tab strip,
   // and grid cells carry the open-marker so the click's target is visible.
   assert.match(styles, /\.system-dock \{[^}]*position: sticky/)

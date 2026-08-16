@@ -369,6 +369,7 @@ export function SystemView({
   onCursor,
   onContextClear,
   onFinding,
+  tablesLoading = false,
   t,
 }: {
   readonly context: EntityContext | null
@@ -382,6 +383,7 @@ export function SystemView({
   readonly onCursor: (timestamp: number) => void
   readonly onContextClear: () => void
   readonly onFinding: (finding: Finding) => void
+  readonly tablesLoading?: boolean | undefined
   readonly t: Translate
 }) {
   const chartsVisible = useChartsVisible()
@@ -517,7 +519,10 @@ export function SystemView({
         const allRows = systemEntityRows(data, entity.section, cursor)
         const activeContext = context?.logicalName === entity.section ? context : null
         const rows = contextualRows(allRows, activeContext, activeContext === null ? null : contextRow)
-        if (rows.length === 0 && activeContext === null) return null
+        // A section the hour carries is loading, not absent, while its
+        // snapshot catches up; a section without rows stays honestly absent.
+        if (rows.length === 0 && activeContext === null && !tablesLoading) return null
+        if (rows.length === 0 && activeContext === null && !data.availableSections.includes(entity.section)) return null
         const finding = focus?.logicalName === entity.section ? focus : null
         return <SystemEntityPanel
           columns={entity.columns}
@@ -533,6 +538,7 @@ export function SystemView({
           onCursor={onCursor}
           rows={rows}
           section={entity.section}
+          tablesLoading={tablesLoading}
           t={t}
         />
       })}
@@ -601,6 +607,7 @@ function SystemEntityPanel({
   columns,
   contextLabel,
   cursor,
+  tablesLoading,
   finding,
   historyRevision,
   hour,
@@ -623,6 +630,7 @@ function SystemEntityPanel({
   readonly onContextClear?: (() => void) | undefined
   readonly onCursor: (timestamp: number) => void
   readonly rows: readonly DataRow[]
+  readonly tablesLoading?: boolean | undefined
   readonly section: string
   readonly t: Translate
 }) {
@@ -669,6 +677,7 @@ function SystemEntityPanel({
       columns={columns}
       contextLabel={contextLabel}
       empty={t("table.no_rows")}
+      loading={tablesLoading && rows.length === 0}
       finding={finding}
       findingField={finding === null ? null : fieldNameForLocator(finding)}
       label={label}
