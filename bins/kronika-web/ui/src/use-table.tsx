@@ -53,6 +53,7 @@ export const USE_COLUMNS = ["utilisation", "saturation", "errors"] as const
 // resource whose submetrics the detail area below charts and lists. Cells stay
 // static readings; the per-cell chart moved to the submetric chips.
 export function UseTable({
+  canOpen,
   cursor,
   lanePoints,
   locale,
@@ -60,6 +61,7 @@ export function UseTable({
   selected,
   t,
 }: {
+  readonly canOpen?: (resource: UseResourceKey) => boolean
   readonly cursor: number
   readonly lanePoints: readonly LanePoint[]
   readonly locale: Locale
@@ -74,20 +76,25 @@ export function UseTable({
       <span role="columnheader">{t("use.resource")}</span>
       {USE_COLUMNS.map((column) => <span key={column} role="columnheader">{t(`use.${column}`)}</span>)}
     </header>
-    {shown.map((resource) => <div
-      aria-selected={selected === resource.key}
-      className="use-row"
-      data-testid={`use-row-${resource.key}`}
-      key={resource.key}
-      onClick={() => onSelect(resource.key)}
-      onKeyDown={(event) => {
-        if (event.key !== "Enter" && event.key !== " ") return
-        event.preventDefault()
-        onSelect(resource.key)
-      }}
-      role="row"
-      tabIndex={0}
-    >
+    {shown.map((resource) => {
+      // A row whose group has no metrics to chart stays honest: no pointer, no
+      // dead click.
+      const openable = canOpen?.(resource.key) ?? true
+      return <div
+        aria-disabled={!openable}
+        aria-selected={selected === resource.key}
+        className="use-row"
+        data-testid={`use-row-${resource.key}`}
+        key={resource.key}
+        onClick={openable ? () => onSelect(resource.key) : undefined}
+        onKeyDown={openable ? (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return
+          event.preventDefault()
+          onSelect(resource.key)
+        } : undefined}
+        role="row"
+        tabIndex={openable ? 0 : undefined}
+      >
       <span className="use-resource" role="cell">{t(`use.resource.${resource.key}`)}</span>
       {USE_COLUMNS.map((column) => {
         const cell = resource[column]
@@ -104,7 +111,8 @@ export function UseTable({
           <LabelHelp helpKey={useLaneHelp(cell.lane)} iconOnly labelKey={`use.lane.${cell.lane}`} t={t} />
         </span>
       })}
-    </div>)}
+    </div>
+    })}
   </section>
 }
 

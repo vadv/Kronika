@@ -385,11 +385,15 @@ h2 { font-size: var(--t-md); }
 .pg-title .label-help { color: var(--fg); font-size: var(--t-sm); text-transform: uppercase; }
 .query-block pre { color: var(--event-edge); font: inherit; font-size: var(--t-sm); line-height: 1.55; margin: 8px 0 0; max-height: 170px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 
-.system-console { align-items: start; display: grid; gap: 8px; grid-template-columns: minmax(0, 1.45fr) minmax(330px, .8fr); margin-top: 8px; }
+.system-layout { align-items: start; display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr) clamp(460px, 32vw, 600px); margin-top: 8px; min-width: 0; }
+.system-layout-closed { grid-template-columns: minmax(0, 1fr); }
+.system-main { min-width: 0; }
+.system-main > .use-table { margin-top: 0; }
+.system-main > .metric-groups, .system-main > .table-empty { margin-top: 8px; }
 .metric-groups { display: grid; gap: 7px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .metric-column { display: flex; flex-direction: column; min-width: 0; }
 .metric-column > .metric-group + .metric-group { margin-top: 7px; }
-.metric-group, .metric-history, .entity-panel, .pg-overview, .pg-preview, .events-console { background: var(--s1); border: 1px solid var(--line2); min-width: 0; }
+.metric-group, .entity-panel, .pg-overview, .pg-preview, .events-console { background: var(--s1); border: 1px solid var(--line2); min-width: 0; }
 .metric-group > h2, .entity-panel > h2, .pg-preview > h2 {
   align-items: center; background: var(--s2); border-bottom: 1px solid var(--line2); color: var(--fg3); display: flex;
   font-size: var(--t-xs); font-weight: 500; gap: 7px; letter-spacing: .08em; min-height: 28px; padding: 0 9px; text-transform: uppercase;
@@ -410,11 +414,6 @@ h2 { font-size: var(--t-md); }
 .process-summary > button span, .metric-grid .label-help { font-size: var(--t-xs); max-width: 100%; text-transform: uppercase; }
 .metric-grid .label-help { letter-spacing: .025em; }
 .metric-grid > button strong { color: var(--fg); display: block; font-size: var(--t-md); font-variant-numeric: tabular-nums; font-weight: 560; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.metric-history { display: flex; flex-direction: column; }
-.metric-history > header { align-items: center; background: var(--s2); border-bottom: 1px solid var(--line2); display: flex; justify-content: space-between; min-height: 29px; padding: 0 9px; }
-.metric-history > header span { color: var(--fg4); font-size: var(--t-xs); text-transform: uppercase; }
-.metric-history > header strong { color: var(--fg2); font-size: var(--t-sm); font-weight: 500; }
-.metric-history > .series-chart { display: flex; flex: 1 1 auto; flex-direction: column; }
 .series-chart { margin: 0; min-width: 0; padding: 8px 9px 5px; position: relative; }
 .series-reading, .uplot-figure figcaption { align-items: baseline; color: var(--fg3); display: flex; font-size: var(--t-xs); gap: 8px; margin-bottom: 5px; text-transform: uppercase; }
 .series-reading > .label-help { min-width: 0; }
@@ -458,6 +457,8 @@ h2 { font-size: var(--t-md); }
 .use-table > header { border-bottom: 1px solid var(--line2); color: var(--fg3); font-size: var(--t-xs); text-transform: uppercase; }
 .use-table > header span { padding: 5px 8px; }
 .use-row { border-bottom: 1px solid var(--line); cursor: pointer; }
+.use-row[aria-disabled="true"] { cursor: default; }
+.use-row[aria-disabled="true"]:hover { background: none; }
 .use-row:last-child { border-bottom: 0; }
 .use-row:hover { background: var(--s3); }
 .use-row:focus-visible { outline: 2px solid var(--cursor); outline-offset: -2px; }
@@ -551,6 +552,9 @@ h2 { font-size: var(--t-md); }
 .pg-detail dt { align-items: center; display: flex; gap: 5px; min-width: 0; }
 .pg-detail dt > span { min-width: 0; }
 .pg-detail dd, .event-detail dd { color: var(--fg); font-size: var(--t-xs); font-variant-numeric: tabular-nums; line-height: 1.4; margin: 0; text-align: right; }
+/* The System dock rides on a scrolling page, not a viewport shell: it sizes to
+   its content and only the narrow-screen overlay scrolls internally. */
+.system-dock { border-left: 1px solid var(--line3); max-height: none; overflow: visible; }
 .query-block > span { align-items: center; color: var(--fg3); display: flex; font-size: var(--t-xs); justify-content: space-between; text-transform: uppercase; }
 .copy-raw { align-items: center; background: transparent; border: 1px solid var(--line4); color: var(--accent3); cursor: pointer; display: inline-flex; flex: 0 0 auto; font-size: var(--t-xs); justify-content: center; padding: 2px 3px; text-transform: uppercase; }
 
@@ -607,7 +611,6 @@ h2 { font-size: var(--t-md); }
 
 .charts-hidden { display: flex; flex-direction: column; height: 100dvh; min-height: 0; }
 .charts-hidden .workspace { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; }
-.charts-hidden .system-console { grid-template-columns: minmax(0, 1fr); }
 .charts-hidden .process-layout, .charts-hidden .entity-panels, .charts-hidden .events-console { flex: 1 1 auto; min-height: 0; }
 .charts-hidden .process-table, .charts-hidden .entity-panel, .charts-hidden .entity-panels .entity-table, .charts-hidden .events-console { display: flex; flex-direction: column; }
 .charts-hidden .entity-panels { grid-auto-rows: minmax(0, 1fr); }
@@ -684,7 +687,6 @@ h2 { font-size: var(--t-md); }
   .topbar { flex-wrap: wrap; padding: 4px 8px; row-gap: 4px; }
   .process-layout { grid-template-columns: minmax(0, 1fr); }
   .detail-dock { border-left: 1px solid var(--line3); bottom: 10px; box-shadow: -15px 0 45px var(--shadow-a); max-height: calc(100vh - 160px); max-width: 430px; position: fixed; right: 10px; top: 150px; width: min(430px, calc(100vw - 20px)); z-index: 80; }
-  .system-console { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-height: 620px) {
@@ -705,4 +707,8 @@ h2 { font-size: var(--t-md); }
   .pg-entity-layout { grid-template-columns: minmax(0, 1fr); }
   .pg-detail { border-left: 1px solid var(--line3); bottom: 10px; box-shadow: -15px 0 45px var(--shadow-a); max-height: calc(100vh - 160px); max-width: 440px; position: fixed; right: 10px; top: 150px; width: min(440px, calc(100vw - 20px)); z-index: 80; }
   .pg-table-shell .pg-detail { max-height: calc(100dvh - 160px); }
+  .system-layout { grid-template-columns: minmax(0, 1fr); }
+  /* The dock overlays content-sized: a pinned bottom edge would leave a void
+     band under the short chart. */
+  .system-dock { bottom: auto; max-height: calc(100dvh - 160px); overflow: auto; }
 }

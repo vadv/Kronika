@@ -1,9 +1,11 @@
 import { registry } from "kronika:registry"
-import { useEffect, useMemo, useState } from "react"
+import { X } from "lucide-react"
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import { fieldNameForLocator, loadSeries, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
 import { buildMetricSamples } from "./chart"
 import { ChartOnly, useChartsVisible } from "./chart-visibility"
+import { useDetailDismiss } from "./detail-dismiss"
 import { contextualRows, type EntityContext } from "./entity-context"
 import { EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
@@ -383,13 +385,22 @@ export function SystemView({
   const available = useMemo(() => SYSTEM_METRICS.map((spec) => ({ points: metricPoints(data, spec), spec }))
     .filter(({ points }) => points.some((point) => point.value !== null && Number.isFinite(point.value))), [data])
   const [selected, setSelected] = useState(available[0]?.spec.id ?? "")
+  const [dockOpen, setDockOpen] = useState(false)
   useEffect(() => {
     if (available.some(({ spec }) => spec.id === selected)) return
     setSelected(available[0]?.spec.id ?? "")
   }, [available, selected])
-  const selectMetric = (id: string) => setSelected(id)
+  const openMetric = (id: string) => {
+    setSelected(id)
+    setDockOpen(true)
+  }
+  const appliedFocus = useRef<Finding | null>(null)
   useEffect(() => {
-    if (focus === null) return
+    if (focus === null) {
+      appliedFocus.current = null
+      return
+    }
+    if (focus === appliedFocus.current) return
     const field = fieldNameForLocator(focus)
     const focusedRow = resolveLocator(data, focus)?.row ?? null
     const resource = asNumber(value(focusedRow, "resource"))
@@ -397,14 +408,19 @@ export function SystemView({
     const match = available.find(({ spec }) => spec.section === focus.logicalName && spec.field === field
       && (spec.resource === undefined || spec.resource === resource))
       ?? (fallback === null ? undefined : available.find(({ spec }) => spec.id === fallback))
-    if (match !== undefined) setSelected(match.spec.id)
+    if (match !== undefined) {
+      appliedFocus.current = focus
+      setSelected(match.spec.id)
+      setDockOpen(true)
+    }
   }, [available, data, focus])
   const selectedMetric = available.find(({ spec }) => spec.id === selected) ?? available[0]
   const selectedResource = selectedMetric === undefined ? null : metricResource(selectedMetric.spec)
+  const dockShown = chartsVisible && dockOpen && selectedMetric !== undefined
   const fallbackPoints = selectedMetric?.points ?? []
   const request = useMemo(() => selectedMetric === undefined ? null : metricHistoryRequest(selectedMetric.spec), [selectedMetric])
   const requestKey = request === null || selectedMetric === undefined ? null : metricRequestKey(hour, selectedMetric.spec, request)
-  const needsHistory = chartsVisible && request !== null && requestKey !== null && distinctTimes(fallbackPoints) <= 1
+  const needsHistory = dockShown && request !== null && requestKey !== null && distinctTimes(fallbackPoints) <= 1
   const loadedHistory = useHistoryRequest(needsHistory ? requestKey : null, historyRevision,
     !needsHistory || request === null ? null : (signal) => loadSeries(hour, request.section, request.where, request.fields, signal))
   const selectedPoints = useMemo(() => {
@@ -430,44 +446,52 @@ export function SystemView({
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   return <>
     <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane={selectedMetric === undefined ? "health" : metricLane(selectedMetric.spec)} shownAt={shownAt} t={t} /></ChartOnly>
-    <UseTable cursor={cursor} lanePoints={data.lanePoints} locale={locale} onSelect={(resource) => {
-      const target = resourceSelection(available, resource)
-      if (target !== null) setSelected(target)
-    }} selected={selectedResource} t={t} />
-    <section className="system-console">
-      <div className="metric-groups">
-        {GROUP_COLUMNS.map((groups, index) => <div className="metric-column" key={index}>
-          {groups.map((group) => {
-            const metrics = available.filter(({ spec }) => spec.group === group)
-            if (metrics.length === 0) return null
-            const label = GROUP_LABELS.find((candidate) => candidate.id === group)?.label ?? "system.metric.health.label"
-            return <section className="metric-group" data-testid={`system-group-${group}`} key={group}>
-              <h2><span>{t(label)}</span></h2>
-              <div className="metric-grid">
-                {metrics.map(({ points, spec }) => {
-                  const output = currentPointValue(points, cursor, locale, spec.unit)
-                  return <div className="metric-choice" key={spec.id}>
-                    <button aria-pressed={selectedMetric?.spec.id === spec.id} data-testid={`system-metric-${spec.id}`} onClick={() => selectMetric(spec.id)} type="button">
-                      <span>{t(spec.label)}</span>
-                      <strong title={output}>{output}</strong>
-                    </button>
-                    <LabelHelp helpKey={spec.help} iconOnly labelKey={spec.label} t={t} testId={`system-metric-help-${spec.id}`} />
-                  </div>
-                })}
-              </div>
-            </section>
-          })}
-        </div>)}
-      </div>
-      <ChartOnly><section className="metric-history">
-        <header><span>{t("system.history")}</span><strong>{selectedMetric === undefined ? "—" : t(selectedMetric.spec.label)}</strong></header>
-        {selectedMetric === undefined
+    <div className={dockShown ? "system-layout" : "system-layout system-layout-closed"}>
+      <div className="system-main">
+        <UseTable canOpen={(resource) => resourceSelection(available, resource) !== null} cursor={cursor} lanePoints={data.lanePoints} locale={locale} onSelect={(resource) => {
+          const target = resourceSelection(available, resource)
+          if (target !== null) openMetric(target)
+        }} selected={dockShown ? selectedResource : null} t={t} />
+        {available.length === 0
           ? <p className="table-empty">{t("system.no_metrics")}</p>
-          : breakdown.length === 0
-            ? <SeriesChart cursor={cursor} empty={t("history.empty")} format={(reading, place) => metricChartValue(reading, place, selectedMetric.spec.unit)} helpKey={selectedMetric.spec.help} hour={hour} labelKey={selectedMetric.spec.label} locale={locale} onCursor={onCursor} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "nonnegative"} second={secondPoints} secondHelpKey={secondLane === null ? undefined : "system.metric.network_tx.help"} secondLabelKey={secondLane === null ? undefined : "system.metric.network_tx.label"} status={needsHistory ? loadedHistory.status : "ready"} t={t} unit={metricChartUnit(selectedMetric.spec, locale)} />
-            : <div className="series-chart"><UPlotChart cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} reading={currentPointValue(selectedPoints, cursor, locale, selectedMetric.spec.unit)} series={breakdown} status={!needsHistory || loadedHistory.status === "ready" ? undefined : <p className={`series-status series-status-${loadedHistory.status}`} role={loadedHistory.status === "error" ? "alert" : "status"}>{t(`history.${loadedHistory.status}`)}</p>} t={t} testId={`system-${selectedMetric.spec.group}-composition`} /></div>}
-      </section></ChartOnly>
-    </section>
+          : <div className="metric-groups">
+            {GROUP_COLUMNS.map((groups, index) => <div className="metric-column" key={index}>
+              {groups.map((group) => {
+                const metrics = available.filter(({ spec }) => spec.group === group)
+                if (metrics.length === 0) return null
+                const label = GROUP_LABELS.find((candidate) => candidate.id === group)?.label ?? "system.metric.health.label"
+                return <section className="metric-group" data-testid={`system-group-${group}`} key={group}>
+                  <h2><span>{t(label)}</span></h2>
+                  <div className="metric-grid">
+                    {metrics.map(({ points, spec }) => {
+                      const output = currentPointValue(points, cursor, locale, spec.unit)
+                      return <div className="metric-choice" key={spec.id}>
+                        <button aria-pressed={dockShown && selectedMetric?.spec.id === spec.id} data-testid={`system-metric-${spec.id}`} onClick={() => openMetric(spec.id)} type="button">
+                          <span>{t(spec.label)}</span>
+                          <strong title={output}>{output}</strong>
+                        </button>
+                        <LabelHelp helpKey={spec.help} iconOnly labelKey={spec.label} t={t} testId={`system-metric-help-${spec.id}`} />
+                      </div>
+                    })}
+                  </div>
+                </section>
+              })}
+            </div>)}
+          </div>}
+      </div>
+      {dockShown && selectedMetric !== undefined && <SystemDock
+        chart={breakdown.length === 0
+          ? <SeriesChart cursor={cursor} empty={t("history.empty")} format={(reading, place) => metricChartValue(reading, place, selectedMetric.spec.unit)} helpKey={selectedMetric.spec.help} hour={hour} labelKey={selectedMetric.spec.label} locale={locale} onCursor={onCursor} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "nonnegative"} second={secondPoints} secondHelpKey={secondLane === null ? undefined : "system.metric.network_tx.help"} secondLabelKey={secondLane === null ? undefined : "system.metric.network_tx.label"} status={needsHistory ? loadedHistory.status : "ready"} t={t} unit={metricChartUnit(selectedMetric.spec, locale)} />
+          : <div className="series-chart"><UPlotChart cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} reading={currentPointValue(selectedPoints, cursor, locale, selectedMetric.spec.unit)} series={breakdown} status={!needsHistory || loadedHistory.status === "ready" ? undefined : <p className={`series-status series-status-${loadedHistory.status}`} role={loadedHistory.status === "error" ? "alert" : "status"}>{t(`history.${loadedHistory.status}`)}</p>} t={t} testId={`system-${selectedMetric.spec.group}-composition`} /></div>}
+        group={selectedMetric.spec.group}
+        label={GROUP_LABELS.find((candidate) => candidate.id === selectedMetric.spec.group)?.label ?? "system.metric.health.label"}
+        metrics={available.filter(({ spec }) => spec.group === selectedMetric.spec.group).map(({ spec }) => spec)}
+        onClose={() => setDockOpen(false)}
+        onSelect={setSelected}
+        selected={selectedMetric.spec.id}
+        t={t}
+      />}
+    </div>
 
     <section className="entity-panels">
       {SYSTEM_ENTITIES.map((entity) => {
@@ -495,6 +519,43 @@ export function SystemView({
       })}
     </section>
   </>
+}
+
+// The dock is the System counterpart of the PostgreSQL detail panel: a click
+// on a Use row or a metric chip opens it on the resource's group, and the chart
+// lives only inside it — nothing on the page silently swaps its content.
+function SystemDock({
+  chart,
+  group,
+  label,
+  metrics,
+  onClose,
+  onSelect,
+  selected,
+  t,
+}: {
+  readonly chart: ReactNode
+  readonly group: MetricSpec["group"]
+  readonly label: string
+  readonly metrics: readonly MetricSpec[]
+  readonly onClose: () => void
+  readonly onSelect: (id: string) => void
+  readonly selected: string
+  readonly t: Translate
+}) {
+  const detail = useDetailDismiss(onClose, `system:${group}`)
+  return <aside aria-label={t(label)} className="pg-detail system-dock" data-testid="system-dock" ref={detail}>
+    <header>
+      <div><span>{t("system.history")}</span><h2>{t(label)}</h2></div>
+      <button aria-label={t("common.close")} onClick={onClose} type="button"><X aria-hidden="true" size={14} /></button>
+    </header>
+    <section className="process-history">
+      <div aria-label={t(label)} className="process-history-selector" role="group">
+        {metrics.map((spec) => <button aria-pressed={spec.id === selected} data-testid={`system-dock-metric-${spec.id}`} key={spec.id} onClick={() => onSelect(spec.id)} type="button">{t(spec.label)}</button>)}
+      </div>
+      {chart}
+    </section>
+  </aside>
 }
 
 function SystemEntityPanel({

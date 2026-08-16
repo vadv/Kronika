@@ -477,13 +477,23 @@ test("the committed hour supplies only honest System metrics with complete histo
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
 })
 
-test("System uses the audited balanced groups without a forced console floor", async () => {
+test("System keeps the audited balanced groups and opens charts only inside the dock", async () => {
   const [source, styles] = await Promise.all([
     readFile(new URL("../src/system-view.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
   ])
   assert.match(source, /\["host", "cpu", "memory", "pressure"\]/)
   assert.match(source, /\["load", "storage", "network"\]/)
-  assert.match(styles, /\.system-console \{[^}]*align-items: start;/)
-  assert.doesNotMatch(styles, /\.system-console \{[^}]*min-height:/)
+  // The dock, not a standing console chart: closed by default, opened by a Use
+  // row or a metric chip, dismissed like the PostgreSQL detail panel.
+  assert.match(source, /useState\(false\)/)
+  assert.match(source, /dockShown && selectedMetric !== undefined && <SystemDock/)
+  assert.match(source, /data-testid="system-dock"/)
+  assert.match(source, /useDetailDismiss\(onClose, `system:\$\{group\}`\)/)
+  assert.match(source, /chartsVisible && dockOpen/)
+  assert.doesNotMatch(source, /metric-history|system-console/)
+  assert.match(styles, /\.system-layout \{[^}]*align-items: start;/)
+  assert.match(styles, /\.system-layout \{[^}]*clamp\(460px, 32vw, 600px\)/)
+  assert.doesNotMatch(styles, /\.system-layout \{[^}]*min-height:/)
+  assert.doesNotMatch(styles, /\.metric-history|\.system-console/)
 })
