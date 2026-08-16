@@ -2698,7 +2698,7 @@ test("production System projections show exact CPU memory and device readings", 
     await hoverContractChart(cdp, "system-memory-composition")
     const memoryTooltip = await cdp.evaluate(`document.querySelector('[data-testid="system-memory-composition"] .chart-tooltip').textContent`)
     for (const expected of [
-      /MemTotal[^\d]*1\.02K KiB/, /AnonPages[^\d]*256 KiB/, /Page cache[^\d]*192 KiB/,
+      /MemTotal[^\d]*1 MiB/, /AnonPages[^\d]*256 KiB/, /Page cache[^\d]*192 KiB/,
       /Reclaimable slab[^\d]*64 KiB/, /Unreclaimable slab[^\d]*32 KiB/, /MemFree[^\d]*128 KiB/,
       /Other memory[^\d]*352 KiB/,
     ]) assert.match(memoryTooltip, expected)

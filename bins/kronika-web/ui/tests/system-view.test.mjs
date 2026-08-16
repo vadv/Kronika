@@ -7,7 +7,7 @@ import { importModule, registryPlugin } from "./import-module.mjs"
 import { parseDictionary, validateDictionaries } from "../scripts/i18n.mjs"
 
 const helpers = await importModule(
-  'export { effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, clearCgroupSnapshotRows, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, resourceBreakdownSeries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
+  'export { dockGroupMetrics, effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, clearCgroupSnapshotRows, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, resourceBreakdownSeries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
   { plugins: [registryPlugin([
     { typeId: "1108001", logicalName: "os_diskstats", identity: ["major", "minor"], columns: ["ts", "major", "minor", "device", "io_in_progress"] },
     { typeId: "1112001", logicalName: "os_mountinfo", identity: ["major", "minor"], columns: ["ts", "major", "minor", "mount_point", "source", "fstype", "free_bytes", "total_bytes", "is_k8s_infra"] },
@@ -384,11 +384,29 @@ test("System history requests are selected-metric keys with exact physical input
   for (const field of ["mem_total", "mem_available", "mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim"]) assert.ok(memoryRequest.fields.includes(field))
   assert.equal(helpers.metricRequestKey(100, cpu, cpuRequest), helpers.metricRequestKey(100, cpu, cpuRequest))
   assert.notEqual(helpers.metricRequestKey(100, cpu, cpuRequest), helpers.metricRequestKey(200, cpu, cpuRequest))
-  assert.equal(helpers.metricChartUnit({ ...spec, unit: " KiB" }, "en"), "KiB")
+  assert.equal(helpers.metricChartUnit({ ...spec, unit: " KiB" }, "en"), "B")
+  assert.equal(helpers.metricChartValue(16_777_216, "en", " KiB"), "16 GiB")
+  assert.equal(helpers.metricChartValue(256, "ru", " KiB"), "256 KiB")
   assert.equal(helpers.metricChartUnit({ ...spec, unit: " B" }, "en"), "bytes/s")
   assert.equal(helpers.metricChartUnit({ ...spec, unit: " B" }, "ru"), "байты/с")
   assert.equal(helpers.metricChartUnit({ ...spec, id: "network_errors" }, "en"), "1/s")
   assert.equal(helpers.metricChartUnit({ ...spec, id: "network_drops" }, "ru"), "1/с")
+})
+
+test("the dock offers one chip for a breakdown instead of a strip that repeats the chart legend", () => {
+  const metric = (id, group) => ({ group, help: `${id}.help`, id, label: `${id}.label`, unit: "" })
+  const cpu = ["cpu_used_cores", "cpu_capacity", "cpu_user", "cpu_system", "procs_running", "procs_blocked"].map((id) => metric(id, "cpu"))
+  const dock = helpers.dockGroupMetrics(cpu, "cpu_used_cores")
+  assert.deepEqual(dock.chips.map(({ id }) => id), ["cpu_used_cores", "procs_running", "procs_blocked"])
+  assert.equal(dock.chartChip("cpu_user"), "cpu_used_cores")
+  assert.equal(dock.chartChip("procs_running"), "procs_running")
+  const memory = ["mem_total", "mem_anon", "swap_free"].map((id) => metric(id, "memory"))
+  const fallback = helpers.dockGroupMetrics(memory, "mem_available")
+  assert.deepEqual(fallback.chips.map(({ id }) => id), ["mem_total", "swap_free"])
+  const network = ["network_rx", "network_tx"].map((id) => metric(id, "network"))
+  const plain = helpers.dockGroupMetrics(network, undefined)
+  assert.deepEqual(plain.chips.map(({ id }) => id), ["network_rx", "network_tx"])
+  assert.equal(plain.chartChip("network_tx"), "network_tx")
 })
 
 test("System entity charts include numeric measurements and exclude identities and categories", () => {

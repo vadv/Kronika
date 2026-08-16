@@ -65,7 +65,7 @@ interface RegistryColumn {
 
 export function metricChartUnit(spec: MetricSpec, locale: Locale): string {
   if (spec.unit === "%") return "%"
-  if (spec.unit === " KiB") return "KiB"
+  if (spec.unit === " KiB") return "B"
   if (spec.unit === " cores") return "cores"
   if (spec.unit === " B") return locale === "ru" ? "байты/с" : "bytes/s"
   if (spec.id === "network_errors" || spec.id === "network_drops") return locale === "ru" ? "1/с" : "1/s"
@@ -417,6 +417,12 @@ export function SystemView({
   const selectedMetric = available.find(({ spec }) => spec.id === selected) ?? available[0]
   const selectedResource = selectedMetric === undefined ? null : metricResource(selectedMetric.spec)
   const dockShown = chartsVisible && dockOpen && selectedMetric !== undefined
+  const dockMeta = useMemo(() => {
+    if (selectedMetric === undefined) return { chips: [] as readonly MetricSpec[], chartChip: (id: string) => id }
+    const group = selectedMetric.spec.group
+    const lane = (Object.keys(RESOURCE_GROUP) as UseResourceKey[]).find((key) => RESOURCE_GROUP[key] === group)
+    return dockGroupMetrics(available.filter(({ spec }) => spec.group === group).map(({ spec }) => spec), lane === undefined ? undefined : RESOURCE_LANE[lane])
+  }, [available, selectedMetric])
   const fallbackPoints = selectedMetric?.points ?? []
   const request = useMemo(() => selectedMetric === undefined ? null : metricHistoryRequest(selectedMetric.spec), [selectedMetric])
   const requestKey = request === null || selectedMetric === undefined ? null : metricRequestKey(hour, selectedMetric.spec, request)
@@ -485,10 +491,10 @@ export function SystemView({
           : <div className="series-chart"><UPlotChart cursor={cursor} hour={hour} locale={locale} onCursor={onCursor} reading={currentPointValue(selectedPoints, cursor, locale, selectedMetric.spec.unit)} series={breakdown} status={!needsHistory || loadedHistory.status === "ready" ? undefined : <p className={`series-status series-status-${loadedHistory.status}`} role={loadedHistory.status === "error" ? "alert" : "status"}>{t(`history.${loadedHistory.status}`)}</p>} t={t} testId={`system-${selectedMetric.spec.group}-composition`} /></div>}
         group={selectedMetric.spec.group}
         label={GROUP_LABELS.find((candidate) => candidate.id === selectedMetric.spec.group)?.label ?? "system.metric.health.label"}
-        metrics={available.filter(({ spec }) => spec.group === selectedMetric.spec.group).map(({ spec }) => spec)}
+        metrics={dockMeta.chips}
         onClose={() => setDockOpen(false)}
         onSelect={setSelected}
-        selected={selectedMetric.spec.id}
+        selected={dockMeta.chartChip(selectedMetric.spec.id)}
         t={t}
       />}
     </div>
@@ -815,6 +821,24 @@ export function metricPoints(data: HourData, spec: MetricSpec): readonly ChartPo
     if (spec.resource !== undefined && asNumber(value(row, "resource")) !== spec.resource) return undefined
     return storedNumber(row, field)
   })
+}
+
+const BREAKDOWN_MEMBER_IDS: ReadonlySet<string> = new Set([...CPU_BREAKDOWN_IDS, ...MEMORY_BREAKDOWN_IDS])
+
+// The composition chart already legends every breakdown member; the dock offers
+// one chip for it — the group's lane metric — instead of a strip of chips that
+// all draw the same picture.
+export function dockGroupMetrics(
+  groupMetrics: readonly MetricSpec[],
+  laneId: string | undefined,
+): { readonly chips: readonly MetricSpec[]; readonly chartChip: (id: string) => string } {
+  const members = groupMetrics.filter((spec) => BREAKDOWN_MEMBER_IDS.has(spec.id))
+  if (members.length === 0) return { chips: groupMetrics, chartChip: (id) => id }
+  const anchor = members.find((spec) => spec.id === laneId) ?? members[0]!
+  return {
+    chips: groupMetrics.filter((spec) => !BREAKDOWN_MEMBER_IDS.has(spec.id) || spec.id === anchor.id),
+    chartChip: (id) => BREAKDOWN_MEMBER_IDS.has(id) ? anchor.id : id,
+  }
 }
 
 export function resourceBreakdownSeries(
@@ -1144,7 +1168,8 @@ export function metricValue(value: Cell, locale: Locale, unit: string): string {
 export function metricChartValue(value: number, locale: Locale, unit: string): string {
   if (unit === "%") return humanPercent(value, locale)
   if (unit === " cores") return humanCores(value, locale)
-  if (unit === " KiB") return measure(value, locale, " KiB")
+  // Memory charts read in bytes: an axis of «млн KiB» is a lie of scale.
+  if (unit === " KiB") return humanBytes(value * 1024, locale)
   if (unit === " B") return humanBytes(value, locale, "/s")
   return measure(value, locale)
 }
