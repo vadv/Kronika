@@ -572,7 +572,7 @@ function chartOptions(
       ...partitions.map(({ key, unit }, axisIndex) => {
         const grouped = series.filter((line) => scaleKey(line) === key)
         const line = grouped[0]!
-        return { ...(unit === "" ? {} : { label: unit }), scale: key, side: axisIndex % 2 === 0 ? 3 : 1, size: 62, stroke: color("--fg3"), grid: { stroke: axisIndex === 0 ? color("--line") : "transparent" }, values: (_chart: uPlot, splits: number[]) => {
+        return { ...(unit === "" || line.tickAxis === "duration" ? {} : { label: unit }), scale: key, side: axisIndex % 2 === 0 ? 3 : 1, size: 62, stroke: color("--fg3"), grid: { stroke: axisIndex === 0 ? color("--line") : "transparent" }, values: (_chart: uPlot, splits: number[]) => {
           // Duration axes read in one unit chosen from the range top.
           if (line.tickAxis === "duration") {
             const peak = Math.max(0, ...splits)

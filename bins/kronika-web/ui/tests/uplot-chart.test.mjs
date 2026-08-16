@@ -152,7 +152,7 @@ test("tooltip uses seconds only when two samples share a displayed minute", () =
 
 test("y-axis labels carry only the unit, series names live in the caption", async () => {
   const source = await readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8")
-  assert.match(source, /\.\.\.\(unit === "" \? \{\} : \{ label: unit \}\)/)
+  assert.match(source, /\.\.\.\(unit === "" \|\| line\.tickAxis === "duration" \? \{\} : \{ label: unit \}\)/)
   assert.doesNotMatch(source, /label: `\$\{labels\}/)
   assert.match(source, /className="chart-series-labels"/)
 })
