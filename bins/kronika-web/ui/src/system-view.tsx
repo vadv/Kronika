@@ -386,9 +386,13 @@ export function SystemView({
     .filter(({ points }) => points.some((point) => point.value !== null && Number.isFinite(point.value))), [data])
   const [selected, setSelected] = useState(available[0]?.spec.id ?? "")
   const [dockOpen, setDockOpen] = useState(false)
+  // Only an empty startup selection is auto-resolved. A chosen metric stays
+  // chosen across refresh swaps that briefly hide its section — the dock must
+  // not abandon the resource mid-read.
   useEffect(() => {
-    if (available.some(({ spec }) => spec.id === selected)) return
-    setSelected(available[0]?.spec.id ?? "")
+    const first = available[0]
+    if (selected !== "" || first === undefined) return
+    setSelected(first.spec.id)
   }, [available, selected])
   const openMetric = (id: string) => {
     setSelected(id)
@@ -414,7 +418,13 @@ export function SystemView({
       setDockOpen(true)
     }
   }, [available, data, focus])
-  const selectedMetric = available.find(({ spec }) => spec.id === selected) ?? available[0]
+  const selectedSpec = SYSTEM_METRICS.find((spec) => spec.id === selected) ?? available[0]?.spec
+  // The spec comes from the static catalog so the dock keeps its frame while
+  // its section is mid-reload; the points honestly empty out for that window.
+  const selectedMetric = selectedSpec === undefined ? undefined : {
+    points: available.find(({ spec }) => spec.id === selectedSpec.id)?.points ?? [],
+    spec: selectedSpec,
+  }
   const selectedResource = selectedMetric === undefined ? null : metricResource(selectedMetric.spec)
   const dockShown = chartsVisible && dockOpen && selectedMetric !== undefined
   const dockMeta = useMemo(() => {

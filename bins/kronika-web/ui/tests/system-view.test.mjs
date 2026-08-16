@@ -532,6 +532,11 @@ test("System keeps the audited balanced groups and opens charts only inside the 
   assert.match(source, /data-testid="system-dock"/)
   assert.match(source, /useDetailDismiss\(onClose, `system:\$\{group\}`\)/)
   assert.match(source, /chartsVisible && dockOpen/)
+  // A chosen metric survives a refresh swap that briefly hides its section:
+  // only the empty startup selection auto-resolves, and the dock reads the
+  // spec from the static catalog, not from the presence of points.
+  assert.match(source, /selected !== "" \|\| first === undefined/)
+  assert.match(source, /SYSTEM_METRICS\.find\(\(spec\) => spec\.id === selected\)/)
   assert.doesNotMatch(source, /metric-history|system-console/)
   assert.match(styles, /\.system-layout \{[^}]*align-items: start;/)
   assert.match(styles, /\.system-layout \{[^}]*clamp\(460px, 32vw, 600px\)/)
