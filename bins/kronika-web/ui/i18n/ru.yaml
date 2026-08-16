@@ -18,6 +18,8 @@ nav.no_data: "Для этого источника нет данных в выб
 section.system: "Система"
 section.processes: "Процессы"
 status.loading: "Загрузка часа…"
+status.loading_received: "Принято {bytes}"
+status.loading_last: "в прошлый раз ~{age}"
 status.error: "Не удалось загрузить выбранный час"
 status.no_data: "В выбранном часу нет данных"
 status.no_data_current: "Данных пока нет. После обновления они могут появиться."

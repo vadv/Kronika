@@ -47,6 +47,7 @@ import {
   asNumber,
   floorHour,
   humanAge,
+  humanBytes,
   interpolate,
   processKey,
   processLens,
@@ -179,6 +180,8 @@ function App({ locale, onLocale, t }: {
   const [currentSnapshot, setCurrentSnapshot] = useState<CurrentSnapshot>(EMPTY_CURRENT_SNAPSHOT)
   const pgPresent = hasPostgresTelemetry(timelineData)
   const [loading, setLoading] = useState(true)
+  const [loadProgress, setLoadProgress] = useState<LoadProgress | undefined>(undefined)
+  const loadThrottle = useRef(0)
   const [error, setError] = useState<string | null>(null)
   const [source, setSource] = useState<Source>(sourceOf(opened.current.view))
   const [hostSection, setHostSection] = useState<HostSection>(hostSectionOf(opened.current.view))
@@ -332,8 +335,15 @@ function App({ locale, onLocale, t }: {
       setLoading(true)
       setRefreshing(false)
       setError(null)
+      setLoadProgress({ received: 0, startedAt: Date.now() * 1_000, lastSeconds: readLastLoadSeconds() })
     }
-    void loadTimeline(hour, controller.signal).then((timeline) => {
+    const loadStartedAt = Date.now() * 1_000
+    void loadTimeline(hour, controller.signal, refresh ? undefined : (received) => {
+      const now = Date.now()
+      if (now - loadThrottle.current < 250) return
+      loadThrottle.current = now
+      setLoadProgress((current) => current === undefined ? current : { ...current, received })
+    }).then((timeline) => {
       const asked = wanted.current
       wanted.current = null
       const latest = latestTimelineTimestamp(timeline)
@@ -358,6 +368,7 @@ function App({ locale, onLocale, t }: {
         setCursor(followsLatest.current ? latest : asked ?? latest)
         setLastUpdated(Date.now() * 1_000)
         setRefreshing(false)
+        writeLastLoadSeconds((Date.now() * 1_000 - loadStartedAt) / 1_000_000)
       }
       setLoading(false)
     }).catch((reason: unknown) => {
@@ -800,8 +811,8 @@ function App({ locale, onLocale, t }: {
         {visibleSource === "host" ? ` · ${t(`section.${visibleHostSection}`)}` : ""}
         {visibleSource === "postgresql" ? ` · ${t(`pg.section.${pgSection}`)}` : ""}
       </p>
-      {loading && <StateCard busy message={t("status.loading")} />}
-      {!loading && error !== null && <StateCard message={t("status.error")} />}
+      {loading && <StateCard busy locale={locale} message={t("status.loading")} progress={loadProgress} t={t} />}
+      {!loading && error !== null && <StateCard locale={locale} message={t("status.error")} t={t} />}
       {!loading && error === null && hour !== null && visibleSource === "host" && visibleHostSection === "system" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} t={t} />}
       {!loading && error === null && hour !== null && visibleSource === "host" && visibleHostSection === "processes" && <>
         <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} primaryLane={lens === "cpu" ? "cpu_busy" : lens === "memory" ? "memory" : lens === "disk" ? "io_stall" : "health"} shownAt={shownAt} t={t} /></ChartOnly>
@@ -841,8 +852,60 @@ function UpdatedAge({ at, clock, locale, t }: { readonly at: number; readonly cl
   return <span data-testid="updated-time" title={`${t("refresh.updated")} ${clock}`}>{t("refresh.ago", { age })}</span>
 }
 
-function StateCard({ busy = false, message }: { readonly busy?: boolean; readonly message: string }) {
-  return <div className="loading-card" {...(busy ? { role: "status" } : {})}><p className="eyebrow">KRONIKA</p><h2>{busy && <span aria-hidden="true" className="loading-ring" />}{message}</h2></div>
+interface LoadProgress {
+  readonly received: number
+  readonly startedAt: number
+  readonly lastSeconds: number | null
+}
+
+// The previous completed initial load is a fact from this browser, shown as
+// history — never as a promise about the current one.
+const LOAD_SECONDS_KEY = "kronika.hourload-seconds"
+
+function readLastLoadSeconds(): number | null {
+  try {
+    const stored = localStorage.getItem(LOAD_SECONDS_KEY)
+    if (stored === null) return null
+    const seconds = Number(stored)
+    return Number.isFinite(seconds) && seconds >= 1 ? seconds : null
+  } catch {
+    return null
+  }
+}
+
+function writeLastLoadSeconds(seconds: number): void {
+  try {
+    localStorage.setItem(LOAD_SECONDS_KEY, String(Math.round(seconds * 10) / 10))
+  } catch {
+    // The hint is optional; storage denial is not an error.
+  }
+}
+
+function StateCard({ busy = false, locale, message, progress, t }: {
+  readonly busy?: boolean
+  readonly locale: Locale
+  readonly message: string
+  readonly progress?: LoadProgress | undefined
+  readonly t: Translate
+}) {
+  const [now, setNow] = useState(() => Date.now() * 1_000)
+  useEffect(() => {
+    if (progress === undefined) return
+    const timer = setInterval(() => setNow(Date.now() * 1_000), 500)
+    return () => clearInterval(timer)
+  }, [progress === undefined]) // eslint-disable-line react-hooks/exhaustive-deps
+  return <div className="loading-card" {...(busy ? { role: "status" } : {})}>
+    <p className="eyebrow">KRONIKA</p>
+    <h2>{busy && <span aria-hidden="true" className="loading-ring" />}{message}</h2>
+    {progress !== undefined && <p className="loading-detail" data-testid="loading-detail">{progressDetail(progress, now, locale, t)}</p>}
+  </div>
+}
+
+function progressDetail(progress: LoadProgress, now: number, locale: Locale, t: Translate): string {
+  const elapsed = humanAge(Math.max(0, (now - progress.startedAt) / 1_000_000), locale)
+  const parts = [t("status.loading_received", { bytes: humanBytes(progress.received, locale) }), elapsed]
+  if (progress.lastSeconds !== null) parts.push(t("status.loading_last", { age: humanAge(progress.lastSeconds, locale) }))
+  return parts.join(" · ")
 }
 
 function initialPageOptions(

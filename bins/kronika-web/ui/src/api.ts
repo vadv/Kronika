@@ -279,7 +279,7 @@ export interface SnapshotRequestGroup {
   readonly requests: readonly SectionRequest[]
 }
 
-export async function loadTimeline(start: number | null, signal: AbortSignal): Promise<TimelineData> {
+export async function loadTimeline(start: number | null, signal: AbortSignal, onBytes?: (received: number) => void): Promise<TimelineData> {
   const range = bundledFixtureRange()
   const requested = floorHour(start ?? range?.from ?? 0)
   const fixture = bundledFixtureHour(requested)
@@ -295,7 +295,7 @@ export async function loadTimeline(start: number | null, signal: AbortSignal): P
     }
   }
   const window = start === null ? "" : `?from=${start}&to=${start + 3_600_000_000 - 1}`
-  const records = await request(`/api/hour${window}`, signal)
+  const records = await request(`/api/hour${window}`, signal, onBytes)
   const header = records.find((record) => record.record === "hour")
   const catalog = records.find((record) => record.record === "catalog")
   const hour = header?.from === null || header?.from === undefined
@@ -1178,7 +1178,7 @@ function layoutRecord(record: Record<string, unknown>): RowLayout | null {
   }
 }
 
-async function request(path: string, signal: AbortSignal): Promise<readonly Record<string, unknown>[]> {
+async function request(path: string, signal: AbortSignal, onBytes?: (received: number) => void): Promise<readonly Record<string, unknown>[]> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let response: Response
     try {
@@ -1192,7 +1192,7 @@ async function request(path: string, signal: AbortSignal): Promise<readonly Reco
       throw new Error(`HTTP ${response.status} for ${path}`)
     }
     try {
-      return await readNdjson(response, path, signal)
+      return await readNdjson(response, path, signal, onBytes)
     } catch (error) {
       signal.throwIfAborted()
       if (attempt === 0 && error instanceof TypeError) continue
