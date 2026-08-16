@@ -41,6 +41,7 @@ export interface PostgresRelationsViewProps {
   readonly cursor: number
   readonly data: HourData
   readonly densePageState: "idle" | "loading" | "error"
+  readonly tablesLoading: boolean
   readonly filters: Readonly<Record<string, string>>
   readonly historyRevision: number
   readonly hour: number
@@ -64,7 +65,7 @@ export interface PostgresRelationsViewProps {
 
 export function PostgresRelationsView(props: PostgresRelationsViewProps) {
   const time = useDisplayTime()
-  const { cursor, data, densePageState, filters, historyRevision, hour, level, locale, onCursor, onLens, onLoadMore, onNavigate, onOrder, onPattern, onRetry, order, pattern, section, t } = props
+  const { cursor, data, densePageState, tablesLoading, filters, historyRevision, hour, level, locale, onCursor, onLens, onLoadMore, onNavigate, onOrder, onPattern, onRetry, order, pattern, section, t } = props
   const lens = isRelationLens(section, props.lens) ? props.lens : section === "pg_stat_user_tables" ? "access" : "usage"
   const rows = useMemo(() => relationDataRows(data.sections[section] ?? [], section, level), [data.sections, level, section])
   const rateFields = data.rateColumns[section] ?? []
@@ -93,6 +94,7 @@ export function PostgresRelationsView(props: PostgresRelationsViewProps) {
     <div className={selected === null ? "pg-entity-layout pg-table-only" : "pg-entity-layout"} data-pg-section={section === "pg_stat_user_tables" ? "tables" : "indexes"}>
       <EntityTable
         columns={columns}
+        loading={tablesLoading}
         empty={t(emptyHourStatusKey(hour))}
         label={t(section === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}
         locale={locale}

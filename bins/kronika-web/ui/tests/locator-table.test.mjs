@@ -70,6 +70,9 @@ test("statement execution findings select the interval mean cell", () => {
 test("locator classes, scrolling, and selection state are independent", async () => {
   const entity = await readFile(new URL("../src/entity-table.tsx", import.meta.url), "utf8")
   const process = await readFile(new URL("../src/process-table.tsx", import.meta.url), "utf8")
+  // Loading and empty are different truths; the table never reports one as the other.
+  assert.match(entity, /\? loading/)
+  assert.match(entity, /table-loading/)
   assert.match(entity, /aria-selected=/)
   assert.match(entity, /locator-row/)
   assert.match(entity, /locator-cell/)

@@ -49,6 +49,7 @@ export function EntityTable({
   finding,
   findingField,
   label,
+  loading = false,
   locale,
   onOrder,
   onPattern,
@@ -73,6 +74,7 @@ export function EntityTable({
   readonly finding?: Finding | null | undefined
   readonly findingField?: string | null | undefined
   readonly label: string
+  readonly loading?: boolean | undefined
   readonly locale: Locale
   readonly onOrder?: ((order: TableOrder | null) => void) | undefined
   readonly onPattern?: ((pattern: string) => void) | undefined
@@ -200,7 +202,10 @@ export function EntityTable({
         })}
       </div>
       {rendered.length === 0
-        ? <p className="table-empty">{pattern === "" ? empty : t("filter.none")}</p>
+        ? loading
+          // Loading and empty are different truths; never report one as the other.
+          ? <p className="table-empty table-loading" role="status"><span aria-hidden="true" className="loading-ring" />{t("table.loading")}</p>
+          : <p className="table-empty">{pattern === "" ? empty : t("filter.none")}</p>
         : <div className="virtual-body" style={{ height: virtual.getTotalSize(), width }}>
           {virtual.getVirtualItems().map((item) => {
             const row = rendered[item.index]

@@ -38,6 +38,7 @@ export function EventsView({
   data,
   history,
   hour,
+  loading = false,
   locale,
   onCursor,
   onClose,
@@ -53,6 +54,7 @@ export function EventsView({
   readonly data: HourData
   readonly history: readonly ChartPoint[]
   readonly hour: number
+  readonly loading?: boolean | undefined
   readonly locale: Locale
   readonly onCursor: (timestamp: number) => void
   readonly onClose: () => void
@@ -111,7 +113,9 @@ export function EventsView({
       </header>
       <div className={`events-layout${active === null ? " events-list-only" : ""}`}>
         <div className="event-list" ref={list} role="list">
-          {visible.length === 0 && <div className="table-empty">{t("events.empty")}</div>}
+          {visible.length === 0 && (loading
+        ? <p className="table-empty table-loading" role="status"><span aria-hidden="true" className="loading-ring" />{t("table.loading")}</p>
+        : <div className="table-empty">{t("events.empty")}</div>)}
           <div className="event-list-body" style={{ height: virtual.getTotalSize() }}>
             {virtual.getVirtualItems().map((item) => {
               const finding = visible[item.index]
