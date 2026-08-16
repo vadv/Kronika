@@ -566,7 +566,7 @@ function SystemDock({
       <button aria-label={t("common.close")} onClick={onClose} type="button"><X aria-hidden="true" size={14} /></button>
     </header>
     <section className="process-history">
-      <div aria-label={t(label)} className="process-history-selector" role="group">
+      <div aria-label={t(label)} className="process-history-selector dock-tabs" role="group">
         {metrics.map((spec) => <button aria-pressed={spec.id === selected} data-testid={`system-dock-metric-${spec.id}`} key={spec.id} onClick={() => onSelect(spec.id)} type="button">{t(spec.label)}</button>)}
       </div>
       {chart}

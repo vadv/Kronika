@@ -537,6 +537,11 @@ test("System keeps the audited balanced groups and opens charts only inside the 
   // spec from the static catalog, not from the presence of points.
   assert.match(source, /selected !== "" \|\| first === undefined/)
   assert.match(source, /SYSTEM_METRICS\.find\(\(spec\) => spec\.id === selected\)/)
+  // The dock rides the scroll (sticky), its selector reads as the tab strip,
+  // and grid cells carry the open-marker so the click's target is visible.
+  assert.match(styles, /\.system-dock \{[^}]*position: sticky/)
+  assert.match(source, /process-history-selector dock-tabs/)
+  assert.match(styles, /\.metric-groups \.metric-choice > button::after \{[^}]*content: "↗"/)
   assert.doesNotMatch(source, /metric-history|system-console/)
   assert.match(styles, /\.system-layout \{[^}]*align-items: start;/)
   assert.match(styles, /\.system-layout \{[^}]*clamp\(460px, 32vw, 600px\)/)

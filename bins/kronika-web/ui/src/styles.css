@@ -566,9 +566,19 @@ h2 { font-size: var(--t-md); }
 .pg-detail dt { align-items: center; display: flex; gap: 5px; min-width: 0; }
 .pg-detail dt > span { min-width: 0; }
 .pg-detail dd, .event-detail dd { color: var(--fg); font-size: var(--t-xs); font-variant-numeric: tabular-nums; line-height: 1.4; margin: 0; text-align: right; }
-/* The System dock rides on a scrolling page, not a viewport shell: it sizes to
-   its content and only the narrow-screen overlay scrolls internally. */
-.system-dock { border-left: 1px solid var(--line3); max-height: none; overflow: visible; }
+/* The System dock rides on a scrolling page, not a viewport shell: it pins to
+   the viewport top while the overview column scrolls, so a click below the
+   fold has its effect in view. Its height is bounded and scrolls internally. */
+.system-dock { border-left: 1px solid var(--line3); max-height: calc(100dvh - 52px); overflow: auto; position: sticky; top: 44px; }
+/* The dock's metric selector is the same tab strip the lens bar uses. */
+.dock-tabs { border: 1px solid var(--line3); display: flex; flex-wrap: wrap; gap: 0; overflow: visible; padding: 0; }
+.dock-tabs button { background: transparent; border: 0; border-right: 1px solid var(--line); color: var(--fg3); cursor: pointer; font-size: var(--t-xs); min-height: 24px; padding: 3px 8px; text-transform: uppercase; }
+.dock-tabs button:hover { background: var(--s3); }
+.dock-tabs button[aria-pressed="true"] { background: var(--s4); color: var(--accent3); }
+/* Grid cells open the dock; the corner marker says so before the click. */
+.metric-groups .metric-choice > button::after { bottom: 5px; color: var(--fg4); content: "↗"; font-size: 11px; opacity: .55; position: absolute; right: 7px; }
+.metric-groups .metric-choice > button:hover::after, .metric-groups .metric-choice > button:focus-visible::after { color: var(--accent3); opacity: 1; }
+.metric-groups .metric-choice > button strong { padding-right: 14px; }
 .query-block > span { align-items: center; color: var(--fg3); display: flex; font-size: var(--t-xs); justify-content: space-between; text-transform: uppercase; }
 .copy-raw { align-items: center; background: transparent; border: 1px solid var(--line4); color: var(--accent3); cursor: pointer; display: inline-flex; flex: 0 0 auto; font-size: var(--t-xs); justify-content: center; padding: 2px 3px; text-transform: uppercase; }
 
@@ -701,6 +711,8 @@ h2 { font-size: var(--t-md); }
   .topbar { flex-wrap: wrap; padding: 4px 8px; row-gap: 4px; }
   .process-layout { grid-template-columns: minmax(0, 1fr); }
   .detail-dock { border-left: 1px solid var(--line3); bottom: 10px; box-shadow: -15px 0 45px var(--shadow-a); max-height: calc(100vh - 160px); max-width: 430px; position: fixed; right: 10px; top: 150px; width: min(430px, calc(100vw - 20px)); z-index: 80; }
+  /* The topbar may wrap here; keep the pinned dock clear of it. */
+  .system-dock { max-height: calc(100dvh - 82px); top: 74px; }
 }
 
 @media (max-height: 620px) {
