@@ -393,9 +393,7 @@ h2 { font-size: var(--t-md); }
 .pg-title .label-help { color: var(--fg); font-size: var(--t-sm); text-transform: uppercase; }
 .query-block pre { color: var(--event-edge); font: inherit; font-size: var(--t-sm); line-height: 1.55; margin: 8px 0 0; max-height: 170px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 
-.system-layout { align-items: start; display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr) clamp(460px, 32vw, 600px); margin-top: 8px; min-width: 0; }
-.system-layout-closed { grid-template-columns: minmax(0, 1fr); }
-.system-main { min-width: 0; }
+.system-main { margin-top: 8px; min-width: 0; }
 .system-main > .use-table { margin-top: 0; }
 .system-main > .metric-groups, .system-main > .table-empty { margin-top: 8px; }
 .metric-groups { display: grid; gap: 7px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -569,10 +567,11 @@ h2 { font-size: var(--t-md); }
 .pg-detail dt { align-items: center; display: flex; gap: 5px; min-width: 0; }
 .pg-detail dt > span { min-width: 0; }
 .pg-detail dd, .event-detail dd { color: var(--fg); font-size: var(--t-xs); font-variant-numeric: tabular-nums; line-height: 1.4; margin: 0; text-align: right; }
-/* The System dock rides on a scrolling page, not a viewport shell: it pins to
-   the viewport top while the overview column scrolls, so a click below the
-   fold has its effect in view. Its height is bounded and scrolls internally. */
-.system-dock { border-left: 1px solid var(--line3); max-height: calc(100dvh - 52px); overflow: auto; position: sticky; top: 44px; }
+/* The System dock unfolds full-width under the resource table: the chart is
+   the content being opened, so it gets the stage — real height, whole width,
+   same on every screen. Opening scrolls it into view, Esc/X fold it back. */
+.system-dock { border: 1px solid var(--line3); margin-top: 8px; max-height: none; overflow: visible; }
+.system-dock .uplot-figure:not(.uplot-expanded) { height: 320px; }
 /* The dock's metric selector is the same tab strip the lens bar uses. */
 .dock-tabs { border: 1px solid var(--line3); display: flex; flex-wrap: wrap; gap: 0; overflow: visible; padding: 0; }
 .dock-tabs button { background: transparent; border: 0; border-right: 1px solid var(--line); color: var(--fg3); cursor: pointer; font-size: var(--t-xs); min-height: 24px; padding: 3px 8px; text-transform: uppercase; }
@@ -714,8 +713,6 @@ h2 { font-size: var(--t-md); }
   .topbar { flex-wrap: wrap; padding: 4px 8px; row-gap: 4px; }
   .process-layout { grid-template-columns: minmax(0, 1fr); }
   .detail-dock { border-left: 1px solid var(--line3); bottom: 10px; box-shadow: -15px 0 45px var(--shadow-a); max-height: calc(100vh - 160px); max-width: 430px; position: fixed; right: 10px; top: 150px; width: min(430px, calc(100vw - 20px)); z-index: 80; }
-  /* The topbar may wrap here; keep the pinned dock clear of it. */
-  .system-dock { max-height: calc(100dvh - 82px); top: 74px; }
 }
 
 @media (max-height: 620px) {
@@ -736,8 +733,6 @@ h2 { font-size: var(--t-md); }
   .pg-entity-layout { grid-template-columns: minmax(0, 1fr); }
   .pg-detail { border-left: 1px solid var(--line3); bottom: 10px; box-shadow: -15px 0 45px var(--shadow-a); max-height: calc(100vh - 160px); max-width: 440px; position: fixed; right: 10px; top: 150px; width: min(440px, calc(100vw - 20px)); z-index: 80; }
   .pg-table-shell .pg-detail { max-height: calc(100dvh - 160px); }
-  .system-layout { grid-template-columns: minmax(0, 1fr); }
-  /* The dock overlays content-sized: a pinned bottom edge would leave a void
-     band under the short chart. */
-  .system-dock { bottom: auto; max-height: calc(100dvh - 160px); overflow: auto; }
+  /* The System dock is not an overlay: it unfolds in the page flow. */
+  .system-dock { bottom: auto; box-shadow: none; max-height: none; max-width: none; overflow: visible; position: static; right: auto; top: auto; width: auto; }
 }

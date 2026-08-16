@@ -1059,7 +1059,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     })()`)
     assert.equal(hostClick, "Host")
     await cdp.evaluate(`document.querySelector('.section-tabs [role="tab"]:first-child').click()`)
-    await cdp.waitFor(`document.querySelector(".system-layout") !== null`, "the System view")
+    await cdp.waitFor(`document.querySelector(".system-main") !== null`, "the System view")
     const system = await cdp.evaluate(`(() => ({
       buttons: [...document.querySelectorAll('[data-testid^="system-metric-"]')].map((button) => [button.dataset.testid, button.getAttribute("aria-pressed")]),
       dock: document.querySelector('[data-testid="system-dock"]') !== null,
@@ -1091,7 +1091,7 @@ test("the production artifact preserves wire keys and exact finding page state",
           const rect = node.getBoundingClientRect()
           return { bottom: rect.bottom, height: rect.height, left: rect.left, right: rect.right, top: rect.top, width: rect.width }
         }
-        const consolePanel = document.querySelector(".system-layout")
+        const consolePanel = document.querySelector(".system-main")
         const main = document.querySelector(".system-main")
         const history = document.querySelector('[data-testid="system-dock"]')
         const chart = history.querySelector(".uplot-figure")
@@ -1149,9 +1149,12 @@ test("the production artifact preserves wire keys and exact finding page state",
           },
         })
       }))))`)
-      assert.ok(layout.chart.height >= 180 && layout.chart.height <= 220, `${width}x${height} System chart height: ${JSON.stringify(layout)}`)
-      assert.ok(layout.host.height >= 150, `${width}x${height} System chart host height: ${JSON.stringify(layout)}`)
-      assert.ok(layout.plot.height >= 80, `${width}x${height} System plot height: ${JSON.stringify(layout)}`)
+      assert.ok(layout.chart.height >= 300 && layout.chart.height <= 360, `${width}x${height} System chart height: ${JSON.stringify(layout)}`)
+      assert.ok(layout.host.height >= 220, `${width}x${height} System chart host height: ${JSON.stringify(layout)}`)
+      assert.ok(layout.plot.height >= 160, `${width}x${height} System plot height: ${JSON.stringify(layout)}`)
+      assert.ok(Math.abs(layout.history.left - layout.main.left) <= 1 && Math.abs(layout.history.right - layout.main.right) <= 1,
+        `${width}x${height} System dock takes the full width: ${JSON.stringify(layout)}`)
+      assert.ok(Math.abs(layout.history.top - layout.resource.bottom - 8) <= 1.5, `${width}x${height} System dock unfolds under the resource table: ${JSON.stringify(layout)}`)
       assert.ok(layout.timeline.figure.height >= 216 && layout.timeline.host.height >= 186 && layout.timeline.plot.height >= 100,
         `${width}x${height} timeline plot height: ${JSON.stringify(layout)}`)
       assert.deepEqual(layout.chartAccess.canvasAriaHidden, "true")
@@ -1160,12 +1163,10 @@ test("the production artifact preserves wire keys and exact finding page state",
       assert.match(layout.chartAccess.hostLabel, /%/)
       assert.equal(layout.chartAccess.navigator, true)
       assert.ok(layout.chartAccess.summary.length > 0)
-      assert.ok(layout.history.height <= 420 && layout.historyTail >= -1 && layout.historyTail <= 30, `${width}x${height} compact System dock: ${JSON.stringify(layout)}`)
-      assert.ok(Math.abs(layout.history.top - layout.main.top) <= 1, `${width}x${height} System dock aligned with the overview column: ${JSON.stringify(layout)}`)
-      assert.ok(layout.history.left >= layout.main.right - 1, `${width}x${height} System dock right of the overview column: ${JSON.stringify(layout)}`)
+      assert.ok(layout.history.height - layout.chart.height <= 170 && layout.historyTail >= -1 && layout.historyTail <= 30, `${width}x${height} compact System dock: ${JSON.stringify(layout)}`)
       assert.ok(layout.columnSpread <= 220, `${width}x${height} balanced System summary: ${JSON.stringify(layout)}`)
       assert.ok(Math.abs(layout.console.bottom - layout.contentBottom) <= 1.5, `${width}x${height} content-sized System layout: ${JSON.stringify(layout)}`)
-      assert.ok(layout.groupsTop - layout.resource.bottom >= 7 && layout.groupsTop - layout.resource.bottom <= 10, `${width}x${height} System resource separation: ${JSON.stringify(layout)}`)
+      assert.ok(layout.groupsTop - layout.history.bottom >= 7 && layout.groupsTop - layout.history.bottom <= 10, `${width}x${height} System dock separation: ${JSON.stringify(layout)}`)
       assert.ok(layout.chart.left >= layout.history.left - 1 && layout.chart.right <= layout.history.right + 1
         && layout.chart.top >= layout.history.top - 1 && layout.chart.bottom <= layout.history.bottom + 1,
       `${width}x${height} System chart containment: ${JSON.stringify(layout)}`)
@@ -1865,7 +1866,7 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
 
     summaryMode = "fail"
     await cdp.evaluate(`document.querySelectorAll('.section-tabs [role="tab"]')[0].click()`)
-    await cdp.waitFor(`document.querySelector('.system-layout') !== null`, "System before same-hour summary remount")
+    await cdp.waitFor(`document.querySelector('.system-main') !== null`, "System before same-hour summary remount")
     await cdp.waitFor(`["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"].every((section) => document.querySelector('[data-testid="system-' + section + '"] .entity-row') !== null)`, "the exact collector cgroup rows", 15_000)
     const systemHistoryBefore = historyRequests("os_cpu").length
     await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]').click()`)
@@ -1929,7 +1930,7 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
 
     summaryMode = "hold"
     await cdp.evaluate(`document.querySelectorAll('.section-tabs [role="tab"]')[0].click()`)
-    await cdp.waitFor(`document.querySelector('.system-layout') !== null`, "System before held same-hour summary remount")
+    await cdp.waitFor(`document.querySelector('.system-main') !== null`, "System before held same-hour summary remount")
     await cdp.evaluate(`document.querySelectorAll('.section-tabs [role="tab"]')[1].click()`)
     await waitForRequests(() => heldSummaries.length !== 0)
     await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Loading process totals…" && document.querySelector('.process-summary .metric-choice > button strong')?.textContent === "719"`, "same-hour loading with retained totals", 15_000)
@@ -2088,7 +2089,7 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     await cdp.evaluate(`document.querySelector('.source-tabs button:first-child').click()`)
     await cdp.waitFor(`document.querySelector('.section-tabs [role="tab"]:first-child') !== null`, "Host sections")
     await cdp.evaluate(`document.querySelector('.section-tabs [role="tab"]:first-child').click()`)
-    await cdp.waitFor(`document.querySelector('.system-layout') !== null`, "System with charts hidden")
+    await cdp.waitFor(`document.querySelector('.system-main') !== null`, "System with charts hidden")
     await waitForRequests(() => snapshotRequests("os_cpu").length > hiddenSystemSnapshotsBefore)
     await delay(100)
     assert.equal(historyRequests("os_cpu").length, hiddenSystemHistoryBefore)
@@ -2106,7 +2107,7 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     const persistedSystemHistoryBefore = historyRequests("os_cpu").length
     const persistedSystemSnapshotsBefore = snapshotRequests("os_cpu").length
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=host.system` })
-    await cdp.waitFor(`document.querySelector('[data-testid="charts-toggle"]')?.getAttribute("aria-label") === "Show charts" && document.querySelector('.system-layout') !== null`, "the persisted hidden preference", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="charts-toggle"]')?.getAttribute("aria-label") === "Show charts" && document.querySelector('.system-main') !== null`, "the persisted hidden preference", 15_000)
     await waitForRequests(() => snapshotRequests("os_cpu").length > persistedSystemSnapshotsBefore)
     await delay(100)
     assert.equal(historyRequests("os_cpu").length, persistedSystemHistoryBefore)
@@ -2167,7 +2168,7 @@ test("PostgreSQL is unavailable without current telemetry and returns for a stor
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1024 })
     await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.overview` })
-    await cdp.waitFor(`document.querySelector('.system-layout') !== null && document.querySelector('.source-tabs button:first-child')?.getAttribute('aria-current') === "page"`, "the synchronous Host destination", 15_000)
+    await cdp.waitFor(`document.querySelector('.system-main') !== null && document.querySelector('.source-tabs button:first-child')?.getAttribute('aria-current') === "page"`, "the synchronous Host destination", 15_000)
     await cdp.waitFor(`new URL(location.href).searchParams.get('view') === "host.system"`, "the canonical Host address", 15_000)
     const unavailable = await cdp.evaluate(`(() => {
       const sourceButtons = document.querySelectorAll('.source-tabs button')

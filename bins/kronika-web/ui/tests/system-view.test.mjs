@@ -559,14 +559,12 @@ test("System keeps the audited balanced groups and opens charts only inside the 
   // Entity panels say loading while their snapshot catches up; only a section
   // the hour does not carry at all stays absent.
   assert.match(source, /rows\.length === 0 && activeContext === null && !tablesLoading/)
-  // The dock rides the scroll (sticky), its selector reads as the tab strip,
-  // and grid cells carry the open-marker so the click's target is visible.
-  assert.match(styles, /\.system-dock \{[^}]*position: sticky/)
+  // The dock unfolds full-width under the resource table with a real chart
+  // height; opening scrolls it into view, and grid cells carry the open-marker.
+  assert.match(source, /scrollIntoView\(\{ block: "nearest" \}\)/)
   assert.match(source, /process-history-selector dock-tabs/)
+  assert.match(styles, /\.system-dock \.uplot-figure:not\(\.uplot-expanded\) \{[^}]*height: 320px/)
   assert.match(styles, /\.metric-groups \.metric-choice > button::after \{[^}]*content: "↗"/)
-  assert.doesNotMatch(source, /metric-history|system-console/)
-  assert.match(styles, /\.system-layout \{[^}]*align-items: start;/)
-  assert.match(styles, /\.system-layout \{[^}]*clamp\(460px, 32vw, 600px\)/)
-  assert.doesNotMatch(styles, /\.system-layout \{[^}]*min-height:/)
-  assert.doesNotMatch(styles, /\.metric-history|\.system-console/)
+  assert.doesNotMatch(source, /metric-history|system-console|system-layout/)
+  assert.doesNotMatch(styles, /\.metric-history|\.system-console|\.system-layout/)
 })

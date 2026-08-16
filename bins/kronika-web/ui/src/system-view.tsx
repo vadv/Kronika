@@ -467,12 +467,23 @@ export function SystemView({
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   return <>
     <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane={selectedMetric === undefined ? "health" : metricLane(selectedMetric.spec)} shownAt={shownAt} t={t} /></ChartOnly>
-    <div className={dockShown ? "system-layout" : "system-layout system-layout-closed"}>
-      <div className="system-main">
+    <div className="system-main">
         <UseTable canOpen={(resource) => resourceSelection(available, resource) !== null} cursor={cursor} lanePoints={data.lanePoints} locale={locale} onSelect={(resource) => {
           const target = resourceSelection(available, resource)
           if (target !== null) openMetric(target)
         }} selected={dockShown ? selectedResource : null} t={t} />
+      {dockShown && selectedMetric !== undefined && <SystemDock
+        chart={breakdown.length === 0
+          ? <SeriesChart cursor={cursor} empty={t("history.empty")} format={(reading, place) => metricChartValue(reading, place, selectedMetric.spec.unit)} helpKey={selectedMetric.spec.help} hour={hour} labelKey={selectedMetric.spec.label} locale={locale} onCursor={onCursor} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "nonnegative"} second={secondPoints} secondHelpKey={secondLane === null ? undefined : "system.metric.network_tx.help"} secondLabelKey={secondLane === null ? undefined : "system.metric.network_tx.label"} stats status={needsHistory ? loadedHistory.status : "ready"} t={t} unit={metricChartUnit(selectedMetric.spec, locale)} />
+          : <div className="series-chart"><UPlotChart cursor={cursor} hour={hour} isolate={{ anchor: selectedMetric.spec.id }} locale={locale} onCursor={onCursor} reading={currentPointValue(selectedPoints, cursor, locale, selectedMetric.spec.unit)} series={breakdown} stats status={!needsHistory || loadedHistory.status === "ready" ? undefined : <p className={`series-status series-status-${loadedHistory.status}`} role={loadedHistory.status === "error" ? "alert" : "status"}>{t(`history.${loadedHistory.status}`)}</p>} t={t} testId={`system-${selectedMetric.spec.group}-composition`} /></div>}
+        group={selectedMetric.spec.group}
+        label={GROUP_LABELS.find((candidate) => candidate.id === selectedMetric.spec.group)?.label ?? "system.metric.health.label"}
+        metrics={dockMeta.chips}
+        onClose={() => setDockOpen(false)}
+        onSelect={setSelected}
+        selected={dockMeta.chartChip(selectedMetric.spec.id)}
+        t={t}
+      />}
         {available.length === 0
           ? <p className="table-empty">{t("system.no_metrics")}</p>
           : <div className="metric-groups">
@@ -499,19 +510,6 @@ export function SystemView({
               })}
             </div>)}
           </div>}
-      </div>
-      {dockShown && selectedMetric !== undefined && <SystemDock
-        chart={breakdown.length === 0
-          ? <SeriesChart cursor={cursor} empty={t("history.empty")} format={(reading, place) => metricChartValue(reading, place, selectedMetric.spec.unit)} helpKey={selectedMetric.spec.help} hour={hour} labelKey={selectedMetric.spec.label} locale={locale} onCursor={onCursor} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "nonnegative"} second={secondPoints} secondHelpKey={secondLane === null ? undefined : "system.metric.network_tx.help"} secondLabelKey={secondLane === null ? undefined : "system.metric.network_tx.label"} stats status={needsHistory ? loadedHistory.status : "ready"} t={t} unit={metricChartUnit(selectedMetric.spec, locale)} />
-          : <div className="series-chart"><UPlotChart cursor={cursor} hour={hour} isolate={{ anchor: selectedMetric.spec.id }} locale={locale} onCursor={onCursor} reading={currentPointValue(selectedPoints, cursor, locale, selectedMetric.spec.unit)} series={breakdown} stats status={!needsHistory || loadedHistory.status === "ready" ? undefined : <p className={`series-status series-status-${loadedHistory.status}`} role={loadedHistory.status === "error" ? "alert" : "status"}>{t(`history.${loadedHistory.status}`)}</p>} t={t} testId={`system-${selectedMetric.spec.group}-composition`} /></div>}
-        group={selectedMetric.spec.group}
-        label={GROUP_LABELS.find((candidate) => candidate.id === selectedMetric.spec.group)?.label ?? "system.metric.health.label"}
-        metrics={dockMeta.chips}
-        onClose={() => setDockOpen(false)}
-        onSelect={setSelected}
-        selected={dockMeta.chartChip(selectedMetric.spec.id)}
-        t={t}
-      />}
     </div>
 
     <section className="entity-panels">
@@ -569,6 +567,11 @@ function SystemDock({
   readonly t: Translate
 }) {
   const detail = useDetailDismiss(onClose, `system:${group}`)
+  // The click may have happened below the fold; bring the opened panel into
+  // view once, minimally.
+  useEffect(() => {
+    detail.current?.scrollIntoView({ block: "nearest" })
+  }, [])
   return <aside aria-label={t(label)} className="pg-detail system-dock" data-testid="system-dock" ref={detail}>
     <header>
       <div><span>{t("system.history")}</span><h2>{t(label)}</h2></div>
