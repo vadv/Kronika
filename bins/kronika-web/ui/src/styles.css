@@ -434,7 +434,7 @@ h2 { font-size: var(--t-md); }
 /* A picker legend wraps instead of hiding members behind a scroll edge. */
 .uplot-isolatable .chart-series-labels { flex-wrap: wrap; overflow: visible; row-gap: 4px; white-space: normal; }
 .uplot-isolatable figcaption { flex-wrap: wrap; row-gap: 4px; }
-.uplot-isolatable .chart-current { margin-left: auto; }
+.uplot-isolatable .chart-current { flex: 0 0 auto; margin-left: auto; max-width: none; }
 .chart-series-labels::-webkit-scrollbar { display: none; }
 .chart-series-labels > .label-help { flex: 0 0 auto; }
 .chart-series-labels > .label-help + .label-help::before { color: var(--fg4); content: "·"; margin-right: 6px; }
