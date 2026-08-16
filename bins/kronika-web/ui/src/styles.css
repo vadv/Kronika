@@ -439,7 +439,7 @@ h2 { font-size: var(--t-md); }
 .chart-series-labels > .label-help { flex: 0 0 auto; }
 .chart-series-labels > .label-help + .label-help::before { color: var(--fg4); content: "·"; margin-right: 6px; }
 .chart-series-labels .label-help > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chart-current { color: var(--fg2); font-variant-numeric: tabular-nums; font-weight: 500; grid-column: 2; max-width: 55%; min-width: 0; overflow: hidden; text-overflow: ellipsis; text-transform: none; white-space: nowrap; }
+.chart-current { color: var(--fg2); flex: 0 0 auto; font-variant-numeric: tabular-nums; font-weight: 500; grid-column: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; text-transform: none; white-space: nowrap; }
 .uplot-figure { display: flex; flex-direction: column; height: 200px; margin: 0; max-width: 100%; min-width: 0; overflow: hidden; position: relative; }
 .uplot-figure figcaption { display: grid; flex: 0 0 auto; grid-template-columns: minmax(0, 1fr) auto auto; }
 .chart-title { grid-column: 1; }
