@@ -4,10 +4,33 @@ import test from "node:test"
 
 import { importModule } from "./import-module.mjs"
 
-const chart = await importModule('export { alignRecordedSeries, axisTimeLabel, chartSecondsUseful, chartSummary, compactChartTime, exactReadings, isolatedSampleIndices, nearestRecordedTimestamp, sampleText, scalePartitions, scaleRange } from "../src/uplot-chart.tsx"; export { createDisplayTimeFormatter } from "../src/display-time.ts"; export { compact, humanPercent } from "../src/model.ts"')
+const chart = await importModule('export { alignRecordedSeries, axisTimeLabel, chartSecondsUseful, chartSummary, compactChartTime, effectiveIsolation, exactReadings, isolatedSampleIndices, nearestRecordedTimestamp, sampleText, scalePartitions, scaleRange, seriesStats } from "../src/uplot-chart.tsx"; export { createDisplayTimeFormatter } from "../src/display-time.ts"; export { compact, humanPercent } from "../src/model.ts"')
 
 const format = (value) => String(value)
 const line = (id, unit, scale, points) => ({ color: "cyan", helpKey: `${id}.help`, id, label: id, labelKey: `${id}.label`, points, scale, unit, value: format })
+
+test("series stats are the nearest-rank percentiles of exactly the drawn samples", () => {
+  assert.equal(chart.seriesStats([]), null)
+  assert.deepEqual(chart.seriesStats([7]), { last: 7, max: 7, min: 7, p50: 7, p90: 7, p99: 7 })
+  const hundred = Array.from({ length: 100 }, (_, index) => index + 1)
+  assert.deepEqual(chart.seriesStats(hundred), { last: 100, max: 100, min: 1, p50: 50, p90: 90, p99: 99 })
+  // Time order, not size order, picks the last sample; non-finite values drop out.
+  assert.deepEqual(chart.seriesStats([9, 1, 5, Number.NaN, 3]), { last: 3, max: 9, min: 1, p50: 3, p90: 9, p99: 9 })
+})
+
+test("a crowded chart isolates onto its anchor until the operator chooses", () => {
+  const many = ["used", "capacity", "user", "system", "irq"]
+  assert.equal(chart.effectiveIsolation(many, undefined, "used"), "used")
+  assert.equal(chart.effectiveIsolation(many, undefined, "missing"), "used")
+  assert.equal(chart.effectiveIsolation(many, undefined, undefined), "used")
+  assert.equal(chart.effectiveIsolation(many, null, "used"), null)
+  assert.equal(chart.effectiveIsolation(many, "system", "used"), "system")
+  assert.equal(chart.effectiveIsolation(many, "gone", "used"), "used")
+  const few = ["rx", "tx"]
+  assert.equal(chart.effectiveIsolation(few, undefined, "rx"), null)
+  assert.equal(chart.effectiveIsolation(few, "tx", "rx"), "tx")
+  assert.equal(chart.effectiveIsolation(["solo"], undefined, undefined), null)
+})
 
 test("aligned data distinguishes missing rows, explicit nulls, zero and storage boundaries", () => {
   const frame = chart.alignRecordedSeries([

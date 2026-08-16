@@ -52,11 +52,53 @@ export interface ChartThreshold {
   readonly seriesId: string
 }
 
+// Many series on one chart read as spaghetti: the legend becomes the picker,
+// one series at a time, with "All" returning the composition.
+export interface SeriesIsolation {
+  readonly anchor?: string | undefined
+}
+
+export interface SeriesStats {
+  readonly last: number
+  readonly max: number
+  readonly min: number
+  readonly p50: number
+  readonly p90: number
+  readonly p99: number
+}
+
+// Statistics of the drawn samples, nearest-rank: the chart claims nothing the
+// pixels do not show. `last` is the latest sample in time order.
+export function seriesStats(values: readonly number[]): SeriesStats | null {
+  const finite = values.filter((value) => Number.isFinite(value))
+  if (finite.length === 0) return null
+  const sorted = [...finite].sort((left, right) => left - right)
+  const pick = (quantile: number) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(quantile * sorted.length) - 1))]!
+  return { last: finite.at(-1)!, max: sorted.at(-1)!, min: sorted[0]!, p50: pick(0.5), p90: pick(0.9), p99: pick(0.99) }
+}
+
+const ISOLATE_ABOVE = 4
+
+// The operator's explicit choice wins; untouched state auto-isolates a crowded
+// chart onto its anchor series (or the first) and leaves small charts whole.
+export function effectiveIsolation(
+  seriesIds: readonly string[],
+  choice: string | null | undefined,
+  anchor: string | undefined,
+): string | null {
+  if (seriesIds.length <= 1) return null
+  if (choice !== undefined && choice !== null && seriesIds.includes(choice)) return choice
+  if (choice === null) return null
+  if (seriesIds.length > ISOLATE_ABOVE) return anchor !== undefined && seriesIds.includes(anchor) ? anchor : seriesIds[0]!
+  return null
+}
+
 const NO_DECORATIONS: readonly ChartDecoration[] = []
 
 export function UPlotChart({
   cursor,
   hour,
+  isolate,
   locale,
   onCursor,
   reading,
@@ -66,6 +108,7 @@ export function UPlotChart({
   markerLayer,
   onPlotWidth,
   referenceTimestamp,
+  stats = false,
   status,
   testId,
   threshold,
@@ -75,6 +118,7 @@ export function UPlotChart({
   readonly cursor?: number | undefined
   readonly decorations?: readonly ChartDecoration[] | undefined
   readonly hour: number
+  readonly isolate?: SeriesIsolation | undefined
   readonly locale: Locale
   readonly markerLayer?: ReactNode | undefined
   readonly onCursor?: ((timestamp: number) => void) | undefined
@@ -82,6 +126,7 @@ export function UPlotChart({
   readonly reading?: string | undefined
   readonly referenceTimestamp?: number | undefined
   readonly series: readonly RecordedSeries[]
+  readonly stats?: boolean | undefined
   readonly status?: ReactNode | undefined
   readonly testId?: string | undefined
   readonly threshold?: ChartThreshold | undefined
@@ -103,13 +148,18 @@ export function UPlotChart({
   const pagePosition = useRef({ left: 0, top: 0 })
   const returnFocus = useRef(false)
   const end = hour + 3_600_000_000
-  const visibleSeries = useMemo(() => series.map((line) => ({
+  const [isolatedChoice, setIsolatedChoice] = useState<string | null | undefined>(undefined)
+  const isolatedId = isolate === undefined
+    ? null
+    : effectiveIsolation(series.map(({ id }) => id), isolatedChoice, isolate.anchor)
+  const drawnSeries = isolatedId === null ? series : series.filter(({ id }) => id === isolatedId)
+  const visibleSeries = useMemo(() => drawnSeries.map((line) => ({
     ...line,
     points: line.points.filter(({ timestamp }) => timestamp >= hour && timestamp < end),
-  })), [end, hour, series])
+  })), [drawnSeries, end, hour])
   const frame = useMemo(() => alignRecordedSeries(visibleSeries), [visibleSeries])
   const [themeRevision, setThemeRevision] = useState(0)
-  const exact = hovered === null ? null : exactReadings(frame, series, hovered, locale, time)
+  const exact = hovered === null ? null : exactReadings(frame, drawnSeries, hovered, locale, time)
   const selected = cursor === undefined || cursor < hour || cursor >= end ? null : cursor
   const keyboardTimestamp = frame.timestamps[keyboardIndex] ?? null
   onCursorRef.current = onCursor
@@ -253,6 +303,16 @@ export function UPlotChart({
   }
 
   const summary = chartSummary(visibleSeries, frame, hour, end, locale, time)
+  const isolatable = isolate !== undefined && series.length > 1
+  const statsLine = useMemo(() => {
+    if (!stats || visibleSeries.length !== 1) return null
+    const line = visibleSeries[0]!
+    const values = Array.from(frame.data[1] ?? []).filter((value): value is number => typeof value === "number")
+    const measured = seriesStats(values)
+    if (measured === null) return null
+    const format = (number: number) => line.value(number, locale)
+    return `min ${format(measured.min)} · max ${format(measured.max)} · last ${format(measured.last)} · p50 ${format(measured.p50)} · p90 ${format(measured.p90)} · p99 ${format(measured.p99)}`
+  }, [frame.data, locale, stats, visibleSeries])
   return <figure
     aria-labelledby={expanded ? titleId : undefined}
     aria-modal={expanded ? "true" : undefined}
@@ -262,7 +322,21 @@ export function UPlotChart({
     role={expanded ? "dialog" : undefined}
   >
     <figcaption id={titleId}>
-      <span className="chart-series-labels">{series.map((line) => <LabelHelp helpKey={line.helpKey} key={line.id} labelKey={line.labelKey} t={t} />)}</span>
+      <span className="chart-series-labels">{isolatable && <button
+        aria-pressed={isolatedId === null}
+        className="series-pick"
+        data-testid={testId === undefined ? undefined : `${testId}-all`}
+        onClick={() => setIsolatedChoice(null)}
+        type="button"
+      >{t("chart.series.all")}</button>}{series.map((line) => isolatable
+        ? <span className="series-choice" key={line.id}><button
+          aria-pressed={isolatedId === line.id}
+          className="series-pick"
+          data-testid={testId === undefined ? undefined : `${testId}-series-${line.id}`}
+          onClick={() => setIsolatedChoice(isolatedId === line.id ? null : line.id)}
+          type="button"
+        >{line.label}</button><LabelHelp helpKey={line.helpKey} iconOnly labelKey={line.labelKey} t={t} /></span>
+        : <LabelHelp helpKey={line.helpKey} key={line.id} labelKey={line.labelKey} t={t} />)}</span>
       {reading !== undefined && <strong className="chart-current">{reading}</strong>}
       <button
         aria-label={expanded ? (locale === "ru" ? "Закрыть развёрнутый график" : "Close expanded chart") : (locale === "ru" ? "Развернуть график" : "Expand chart")}
@@ -273,7 +347,8 @@ export function UPlotChart({
       >{expanded ? "×" : "↗"}</button>
     </figcaption>
     <p className="chart-summary" id={summaryId}>{summary}</p>
-    <div aria-describedby={summaryId} aria-label={series.map(({ label, unit }) => `${label}${unit === "" ? "" : `, ${unit}`}`).join("; ")} className="uplot-host" ref={host} role="img" />
+    <div aria-describedby={summaryId} aria-label={drawnSeries.map(({ label, unit }) => `${label}${unit === "" ? "" : `, ${unit}`}`).join("; ")} className="uplot-host" ref={host} role="img" />
+    {statsLine !== null && <p className="chart-stats" data-testid="chart-stats">{statsLine}</p>}
     {status !== undefined && <div className="uplot-status">{status}</div>}
     {markerLayer !== undefined && <div className="chart-marker-track">{markerLayer}</div>}
     {exact !== null && <div aria-hidden="true" className="chart-tooltip">

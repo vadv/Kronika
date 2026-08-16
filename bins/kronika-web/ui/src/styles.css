@@ -422,6 +422,11 @@ h2 { font-size: var(--t-md); }
 .series-chart { margin: 0; min-width: 0; padding: 8px 9px 5px; position: relative; }
 .series-reading, .uplot-figure figcaption { align-items: baseline; color: var(--fg3); display: flex; font-size: var(--t-xs); gap: 8px; margin-bottom: 5px; text-transform: uppercase; }
 .series-reading > .label-help { min-width: 0; }
+.series-choice { align-items: center; display: inline-flex; gap: 2px; min-width: 0; }
+.series-pick { background: var(--s2); border: 1px solid var(--line3); color: var(--fg2); cursor: pointer; font-size: var(--t-xs); min-height: 20px; padding: 1px 6px; }
+.series-pick:hover { background: var(--s3); }
+.series-pick[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--fg); }
+.chart-stats { color: var(--fg3); font-size: var(--t-xs); font-variant-numeric: tabular-nums; margin: 3px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .series-reading > .label-help > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .series-reading .help-dot, .chart-series-labels .help-dot { flex: 0 0 auto; }
 .series-reading span:last-child { color: var(--fg2); flex: 0 0 auto; font-variant-numeric: tabular-nums; text-transform: none; white-space: nowrap; }

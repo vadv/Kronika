@@ -31,6 +31,7 @@ export function SeriesChart({
   secondHelpKey,
   secondLabelKey,
   status = "ready",
+  stats = false,
   t,
   unit = "",
   onCursor,
@@ -48,6 +49,7 @@ export function SeriesChart({
   readonly secondHelpKey?: string | undefined
   readonly secondLabelKey?: string | undefined
   readonly status?: HistoryStatus | undefined
+  readonly stats?: boolean | undefined
   readonly t: Translate
   readonly unit?: string | undefined
   readonly onCursor?: ((timestamp: number) => void) | undefined
@@ -89,6 +91,7 @@ export function SeriesChart({
       onCursor={onCursor}
       reading={reading === null ? "—" : formatValue(reading, locale)}
       series={series}
+      stats={stats}
       status={status === "ready" ? undefined : statusLine}
       t={t}
     />
