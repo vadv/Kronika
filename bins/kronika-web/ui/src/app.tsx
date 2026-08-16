@@ -800,7 +800,7 @@ function App({ locale, onLocale, t }: {
         {visibleSource === "host" ? ` · ${t(`section.${visibleHostSection}`)}` : ""}
         {visibleSource === "postgresql" ? ` · ${t(`pg.section.${pgSection}`)}` : ""}
       </p>
-      {loading && <StateCard message={t("status.loading")} />}
+      {loading && <StateCard busy message={t("status.loading")} />}
       {!loading && error !== null && <StateCard message={t("status.error")} />}
       {!loading && error === null && hour !== null && visibleSource === "host" && visibleHostSection === "system" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} t={t} />}
       {!loading && error === null && hour !== null && visibleSource === "host" && visibleHostSection === "processes" && <>
@@ -841,8 +841,8 @@ function UpdatedAge({ at, clock, locale, t }: { readonly at: number; readonly cl
   return <span data-testid="updated-time" title={`${t("refresh.updated")} ${clock}`}>{t("refresh.ago", { age })}</span>
 }
 
-function StateCard({ message }: { readonly message: string }) {
-  return <div className="loading-card"><p className="eyebrow">KRONIKA</p><h2>{message}</h2></div>
+function StateCard({ busy = false, message }: { readonly busy?: boolean; readonly message: string }) {
+  return <div className="loading-card" {...(busy ? { role: "status" } : {})}><p className="eyebrow">KRONIKA</p><h2>{busy && <span aria-hidden="true" className="loading-ring" />}{message}</h2></div>
 }
 
 function initialPageOptions(

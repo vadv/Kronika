@@ -272,6 +272,11 @@ h2 { font-size: var(--t-md); }
 .workspace-behind .entity-table, .workspace-behind .process-summary, .workspace-behind .pg-detail, .workspace-behind .process-dock { opacity: 0.55; transition: opacity 120ms linear; }
 .loading-card { background: var(--s1); border: 1px solid var(--line2); margin: 12vh auto; max-width: 620px; padding: 30px; }
 .loading-card h2 { margin-top: 8px; }
+/* The single infinite animation a screen may have: data is on its way.
+   Inline with the message — the card grows by nothing. */
+.loading-ring { animation: loading-spin .9s linear infinite; border: 2px solid var(--line3); border-radius: 50%; border-top-color: var(--accent); display: inline-block; height: 14px; margin-right: 9px; vertical-align: -2px; width: 14px; }
+@keyframes loading-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .loading-ring { animation: none; } }
 .help-panel { background: var(--s1); border-left: 1px solid var(--line4); bottom: 0; box-shadow: -20px 0 50px var(--shadow-a); max-width: 430px; overflow: auto; padding: 18px; position: fixed; right: 0; top: 0; width: min(92vw, 430px); z-index: 100; }
 .panel-head { align-items: center; display: flex; justify-content: space-between; }
 .shortcut { background: var(--s2); border: 1px solid var(--line3); color: var(--accent2); font-size: var(--t-sm); padding: 8px; }
