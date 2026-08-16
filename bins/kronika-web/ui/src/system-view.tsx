@@ -145,6 +145,9 @@ const CPU_BREAKDOWN_IDS = ["cpu_used_cores", "cpu_capacity", "cpu_user", "cpu_sy
 const MEMORY_BREAKDOWN_IDS = ["mem_total", "mem_available", "mem_anon", "mem_file_cache", "mem_s_reclaimable", "mem_s_unreclaim", "mem_free", "mem_other"] as const
 const BREAKDOWN_COLORS: readonly RecordedSeries["color"][] = ["cyan", "green", "blue", "amber", "violet", "red", "gray", "rose"]
 
+// The mount history request fetches both sides of the pair at once.
+const MOUNT_PAIR_COLUMN: SystemEntityColumn = { ...bytes("free_bytes"), historyFields: ["free_bytes", "total_bytes"] }
+
 const GROUP_LABELS: readonly { readonly id: MetricSpec["group"]; readonly label: string }[] = [
   { id: "host", label: "system.metric.health.label" },
   { id: "cpu", label: "system.group.cpu" },
@@ -574,6 +577,26 @@ function SystemDock({
   </aside>
 }
 
+// A mount's free and total bytes are one fact: how full the filesystem is.
+// The pair charts together — used space against the total ceiling — instead of
+// two switchable single-series charts that make the operator subtract in their
+// head. Used is derived elementarily, total − free, the way df reports it.
+export function mountPairSeries(rows: readonly DataRow[], t: Translate): readonly RecordedSeries[] {
+  const total = buildMetricSamples(rows, (row) => storedNumber(row, "total_bytes"))
+  const used = buildMetricSamples(rows, (row) => {
+    const capacity = storedNumber(row, "total_bytes")
+    const free = storedNumber(row, "free_bytes")
+    if (capacity === undefined || free === undefined) return undefined
+    return capacity === null || free === null || capacity < free ? null : capacity - free
+  })
+  if (!used.some((point) => point.value !== null) && !total.some((point) => point.value !== null)) return []
+  const format = (reading: number, place: Locale) => humanBytes(reading, place)
+  return [
+    { color: "cyan", helpKey: "system.field.used_bytes.help", id: "used_bytes", label: t("system.field.used_bytes.label"), labelKey: "system.field.used_bytes.label", points: used, scale: "nonnegative", tick: format, unit: "B", value: format },
+    { color: "gray", helpKey: "system.field.total_bytes.help", id: "total_bytes", label: t("system.field.total_bytes.label"), labelKey: "system.field.total_bytes.label", points: total, scale: "nonnegative", tick: format, unit: "B", value: format },
+  ]
+}
+
 function SystemEntityPanel({
   columns,
   contextLabel,
@@ -619,7 +642,10 @@ function SystemEntityPanel({
     setSelectedField(availableColumns[0]?.field ?? "")
   }, [availableColumns, selectedField])
   const selectedColumn = availableColumns.find((column) => column.field === selectedField) ?? availableColumns[0]
-  const historyRequest = selectedRow === null || selectedColumn === undefined ? null : entityHistoryRequest(selectedRow, selectedColumn)
+  const mountPair = section === "os_mountinfo" && selectedRow !== null
+    && Object.hasOwn(selectedRow.values, "free_bytes") && Object.hasOwn(selectedRow.values, "total_bytes")
+  const requestColumn = mountPair ? MOUNT_PAIR_COLUMN : selectedColumn
+  const historyRequest = selectedRow === null || requestColumn === undefined ? null : entityHistoryRequest(selectedRow, requestColumn)
   const historyKey = historyRequest === null ? null : `${hour}:${historyRequest.key}`
   const requestFields = historyRequest === null ? "[]" : JSON.stringify(historyRequest.fields)
   const requestWhere = historyRequest === null ? "{}" : JSON.stringify(historyRequest.where)
@@ -634,6 +660,7 @@ function SystemEntityPanel({
   })
   const chartRows = history.value?.length ? history.value : selectedRow === null ? [] : [selectedRow]
   const chartPoints = useMemo(() => selectedColumn === undefined ? [] : entityMetricPoints(chartRows, selectedColumn), [chartRows, selectedColumn])
+  const pairSeries = useMemo(() => mountPair ? mountPairSeries(chartRows, t) : null, [chartRows, mountPair, t])
   const chartMetadata = selectedRow === null || selectedColumn === undefined || selectedColumn.historyFields !== undefined
     ? null : registryColumn(selectedRow.typeId, physicalField(selectedColumn, selectedRow.typeId))
   return <section className="entity-panel" data-testid={`system-panel-${section}`}>
@@ -661,28 +688,44 @@ function SystemEntityPanel({
       t={t}
       testId={`system-${section}`}
     />
-    <ChartOnly>{selectedRow !== null && selectedColumn !== undefined && <section className="system-entity-history" data-testid={`system-${section}-history`}>
+    <ChartOnly>{selectedRow !== null && (mountPair || selectedColumn !== undefined) && <section className="system-entity-history" data-testid={`system-${section}-history`}>
       <header>
-        <div className="system-history-selector" role="group">
-          {availableColumns.map((column) => <button aria-pressed={column.field === selectedColumn.field} key={column.field} onClick={() => setSelectedField(column.field)} type="button">{t(column.label)}</button>)}
-        </div>
+        {mountPair
+          ? <div className="system-history-selector" role="group" />
+          : <div className="system-history-selector" role="group">
+            {availableColumns.map((column) => <button aria-pressed={column.field === selectedColumn?.field} key={column.field} onClick={() => setSelectedField(column.field)} type="button">{t(column.label)}</button>)}
+          </div>}
         <button aria-label={t("common.close")} className="system-history-close" onClick={() => setSelectedKey(null)} type="button">×</button>
       </header>
-      <SeriesChart
-        cursor={cursor}
-        empty={t("status.no_data")}
-        format={(reading, place) => entityMetricValue(reading, place, selectedColumn, chartMetadata)}
-        helpKey={selectedColumn.help ?? "chart.metric.help"}
-        hour={hour}
-        labelKey={selectedColumn.label}
-        locale={locale}
-        onCursor={onCursor}
-        points={chartPoints}
-        scale={selectedColumn.kind === "percent" ? "percent" : "nonnegative"}
-        status={history.status}
-        t={t}
-        unit={entityMetricUnit(selectedColumn, locale, chartMetadata)}
-      />
+      {mountPair
+        ? pairSeries === null || (pairSeries.length === 0 && history.status === "ready")
+          ? <p className="table-empty">{t("status.no_data")}</p>
+          : <div className="series-chart"><UPlotChart
+              cursor={cursor}
+              hour={hour}
+              locale={locale}
+              onCursor={onCursor}
+              reading={(() => { const stored = readingAt(pairSeries?.[0]?.points ?? [], cursor); return stored === null ? "—" : humanBytes(stored, locale) })()}
+              series={pairSeries ?? []}
+              status={history.status === "ready" ? undefined : <p className={`series-status series-status-${history.status}`} role={history.status === "error" ? "alert" : "status"}>{t(`history.${history.status}`)}</p>}
+              t={t}
+              testId={`system-${section}-pair`}
+            /></div>
+        : selectedColumn !== undefined && <SeriesChart
+            cursor={cursor}
+            empty={t("status.no_data")}
+            format={(reading, place) => entityMetricValue(reading, place, selectedColumn, chartMetadata)}
+            helpKey={selectedColumn.help ?? "chart.metric.help"}
+            hour={hour}
+            labelKey={selectedColumn.label}
+            locale={locale}
+            onCursor={onCursor}
+            points={chartPoints}
+            scale={selectedColumn.kind === "percent" ? "percent" : "nonnegative"}
+            status={history.status}
+            t={t}
+            unit={entityMetricUnit(selectedColumn, locale, chartMetadata)}
+          />}
     </section>}</ChartOnly>
   </section>
 }

@@ -7,7 +7,7 @@ import { importModule, registryPlugin } from "./import-module.mjs"
 import { parseDictionary, validateDictionaries } from "../scripts/i18n.mjs"
 
 const helpers = await importModule(
-  'export { dockGroupMetrics, effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, clearCgroupSnapshotRows, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, resourceBreakdownSeries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
+  'export { dockGroupMetrics, effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, clearCgroupSnapshotRows, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, mountPairSeries, resourceBreakdownSeries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
   { plugins: [registryPlugin([
     { typeId: "1108001", logicalName: "os_diskstats", identity: ["major", "minor"], columns: ["ts", "major", "minor", "device", "io_in_progress"] },
     { typeId: "1112001", logicalName: "os_mountinfo", identity: ["major", "minor"], columns: ["ts", "major", "minor", "mount_point", "source", "fstype", "free_bytes", "total_bytes", "is_k8s_infra"] },
@@ -364,6 +364,9 @@ test("System entity headers have exact EN/RU help without obvious or orphan entr
     assert.equal(Object.hasOwn(english, column.help), true, column.help)
     assert.equal(Object.hasOwn(russian, column.help), true, column.help)
   }
+  // The mount pair chart's series carry field help without being columns.
+  const viewSource = await readFile(new URL("../src/system-view.tsx", import.meta.url), "utf8")
+  for (const match of viewSource.matchAll(/system\.field\.([a-z0-9_]+)\.help/g)) usedHelp.add(`system.field.${match[1]}.help`)
   const dictionaryHelp = Object.keys(english).filter((key) => /^system\.field\.[^.]+\.help$/.test(key)).sort()
   assert.deepEqual([...usedHelp].sort(), dictionaryHelp)
 })
@@ -495,6 +498,22 @@ test("registry cumulative fields become reset-safe rates across storage segments
     row("a", 1_000_000, 10), row("a", 2_000_000, 14), row("b", 3_000_000, 20), row("b", 4_000_000, null), row("b", 5_000_000, 1), row("b", 6_000_000, 3),
   ]).map(({ value }) => value), [null, 4, 6, null, null, 2])
   assert.equal(rateHelpers.metricChartUnit(spec, "en"), "1/s")
+})
+
+test("a mount history is one used-against-total pair, not two switchable singles", () => {
+  const row = (timestamp, free, total) => ({
+    logicalName: "os_mountinfo", ordinal: String(timestamp), segmentId: "a", timestamp, typeId: "1102001",
+    values: { free_bytes: free, total_bytes: total },
+  })
+  const t = (key) => key
+  const series = helpers.mountPairSeries([row(1_000_000, 300, 1000), row(2_000_000, 250, 1000)], t)
+  assert.deepEqual(series.map(({ id }) => id), ["used_bytes", "total_bytes"])
+  assert.deepEqual(series[0].points.map(({ value }) => value), [700, 750])
+  assert.deepEqual(series[1].points.map(({ value }) => value), [1000, 1000])
+  // A filesystem reporting more free than it holds is a read error, not a negative used.
+  const broken = helpers.mountPairSeries([row(1_000_000, 1500, 1000)], t)
+  assert.deepEqual(broken[0].points.map(({ value }) => value), [null])
+  assert.deepEqual(helpers.mountPairSeries([{ ...row(1_000_000, null, null), values: {} }], t), [])
 })
 
 test("the committed hour supplies only honest System metrics with complete histories", async () => {
