@@ -316,7 +316,7 @@ export function UPlotChart({
   return <figure
     aria-labelledby={expanded ? titleId : undefined}
     aria-modal={expanded ? "true" : undefined}
-    className={`uplot-figure${className === undefined ? "" : ` ${className}`}${expanded ? " uplot-expanded" : ""}`}
+    className={`uplot-figure${className === undefined ? "" : ` ${className}`}${expanded ? " uplot-expanded" : ""}${isolatable ? " uplot-isolatable" : ""}`}
     data-testid={testId}
     ref={shell}
     role={expanded ? "dialog" : undefined}
