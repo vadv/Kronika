@@ -157,6 +157,16 @@ export function humanDuration(cell: Cell, locale: Locale): string {
   return `${sign}${hours}${units.hour} ${String(minutes % 60).padStart(2, "0")}${units.minute}`
 }
 
+// One unit for the whole axis: composite «33м 20с» / «1ч 06м» ticks read as
+// noise. The unit comes from the top of the range and holds for every tick.
+export function humanDurationAxis(milliseconds: number, rangeMax: number, locale: Locale): string {
+  const units = durationUnits(locale)
+  const format = (value: number) => new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(Math.round(value * 10) / 10)
+  if (rangeMax < 90_000) return `${format(milliseconds / 1_000)} ${units.second}`
+  if (rangeMax < 5_400_000) return `${format(milliseconds / 60_000)} ${units.minute}`
+  return `${format(milliseconds / 3_600_000)} ${units.hour}`
+}
+
 export function compact(value: number, locale: Locale): string {
   const abs = Math.abs(value), notation = abs >= 1e15 || abs > 0 && abs < 1e-6 ? "scientific" : abs >= 1e3 ? "compact" : undefined
   return isFinite(value) ? new Intl.NumberFormat(locale, { maximumSignificantDigits: 3, notation }).format(value) : "—"

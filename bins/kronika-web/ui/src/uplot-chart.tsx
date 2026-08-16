@@ -4,7 +4,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Reac
 import type { DisplayTimeFormatter } from "./display-time"
 import { useDisplayTime } from "./display-time-context"
 import { LabelHelp, type Translate } from "./help"
-import type { Locale } from "./model"
+import { humanDurationAxis, type Locale } from "./model"
 
 export type ChartScale = "percent" | "nonnegative" | "signed"
 
@@ -23,6 +23,7 @@ export interface RecordedSeries {
   readonly points: readonly RecordedPoint[]
   readonly scale: ChartScale
   readonly tick?: ((number: number, locale: Locale) => string) | undefined
+  readonly tickAxis?: "duration" | undefined
   readonly unit: string
   readonly value: (number: number, locale: Locale) => string
 }
@@ -571,7 +572,14 @@ function chartOptions(
       ...partitions.map(({ key, unit }, axisIndex) => {
         const grouped = series.filter((line) => scaleKey(line) === key)
         const line = grouped[0]!
-        return { ...(unit === "" ? {} : { label: unit }), scale: key, side: axisIndex % 2 === 0 ? 3 : 1, size: 62, stroke: color("--fg3"), grid: { stroke: axisIndex === 0 ? color("--line") : "transparent" }, values: (_chart: uPlot, splits: number[]) => splits.map((value) => (line.tick ?? line.value)(value, locale)) }
+        return { ...(unit === "" ? {} : { label: unit }), scale: key, side: axisIndex % 2 === 0 ? 3 : 1, size: 62, stroke: color("--fg3"), grid: { stroke: axisIndex === 0 ? color("--line") : "transparent" }, values: (_chart: uPlot, splits: number[]) => {
+          // Duration axes read in one unit chosen from the range top.
+          if (line.tickAxis === "duration") {
+            const peak = Math.max(0, ...splits)
+            return splits.map((value) => humanDurationAxis(value, peak, locale))
+          }
+          return splits.map((value) => (line.tick ?? line.value)(value, locale))
+        } }
       }),
     ],
     cursor: {

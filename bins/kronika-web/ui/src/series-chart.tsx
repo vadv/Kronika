@@ -19,6 +19,7 @@ export type ChartScale = "auto" | "percent" | "count" | "duration" | "nonnegativ
 
 export function SeriesChart({
   cursor,
+  durationAxis = false,
   empty,
   hour,
   helpKey,
@@ -37,6 +38,7 @@ export function SeriesChart({
   onCursor,
 }: {
   readonly cursor?: number | undefined
+  readonly durationAxis?: boolean | undefined
   readonly empty?: string | undefined
   readonly hour: number
   readonly helpKey: string
@@ -68,9 +70,9 @@ export function SeriesChart({
   const stableFormat = useMemo(() => (number: number, place: Locale) => formatter.current(number, place), [])
   const semantic: SemanticScale = scale === "percent" ? "percent" : scale === "auto" || scale === "signed" ? "signed" : "nonnegative"
   const series = useMemo<readonly RecordedSeries[]>(() => [
-    { color: "cyan", helpKey, id: "primary", label, labelKey, points: visible.points, scale: semantic, tick: stableFormat, unit, value: stableFormat },
-    ...(visible.second === undefined || secondHelpKey === undefined || secondLabelKey === undefined ? [] : [{ color: "amber" as const, helpKey: secondHelpKey, id: "secondary", label: t(secondLabelKey), labelKey: secondLabelKey, points: visible.second, scale: semantic, tick: stableFormat, unit, value: stableFormat }]),
-  ], [helpKey, label, labelKey, secondHelpKey, secondLabelKey, semantic, stableFormat, t, unit, visible])
+    { color: "cyan", helpKey, id: "primary", label, labelKey, points: visible.points, scale: semantic, tick: stableFormat, tickAxis: durationAxis ? "duration" : undefined, unit, value: stableFormat },
+    ...(visible.second === undefined || secondHelpKey === undefined || secondLabelKey === undefined ? [] : [{ color: "amber" as const, helpKey: secondHelpKey, id: "secondary", label: t(secondLabelKey), labelKey: secondLabelKey, points: visible.second, scale: semantic, tick: stableFormat, tickAxis: (durationAxis ? "duration" : undefined) as "duration" | undefined, unit, value: stableFormat }]),
+  ], [durationAxis, helpKey, label, labelKey, secondHelpKey, secondLabelKey, semantic, stableFormat, t, unit, visible])
   const statusText = status === "loading"
     ? t("history.loading")
     : status === "error" ? t("history.error") : empty ?? t("history.empty")

@@ -220,7 +220,7 @@ test("generic registry cards never present raw collection or identity fields as 
   assert.equal(helpers.columnsFor([stored]).some(({ field }) => field === "ts"), false)
 })
 
-test("activity keeps a compact operator table and uses relative detail durations", () => {
+test("activity keeps a compact operator table and uses relative detail durations", async () => {
   assert.deepEqual(
     helpers.ACTIVITY_COLUMNS[0],
     { field: "pid", kind: "id", label: "pg.field.pid.label", sticky: true, width: 78 },
@@ -242,6 +242,10 @@ test("activity keeps a compact operator table and uses relative detail durations
   assert.deepEqual(helpers.activityColumns(false), helpers.ACTIVITY_COLUMNS)
   assert.deepEqual(helpers.activityColumns(true).slice(0, 4).map(({ field }) => field), ["pid", "backend_type", "datname", "usename"])
   assert.deepEqual(helpers.ACTIVITY_DEFAULT_ORDER, { column: "query_duration_ms", descending: true })
+  // Backend age can only ever chart as a slope-1 ramp; the chip is gone, the
+  // number stays in the detail list.
+  const viewSource = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8"))
+  assert.match(viewSource, /column\.field !== "backend_age_ms"/)
 })
 
 test("activity hides only ordinary idle and derives elapsed time from the selected observation", () => {
