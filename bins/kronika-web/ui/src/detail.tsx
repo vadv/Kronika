@@ -145,20 +145,20 @@ export function DetailDock({
   return (
     <aside
       aria-label={t("detail.process.title")}
-      className="detail-dock"
+      className="overflow-y-auto border border-line3 border-l-0 bg-s2 p-[13px] max-h-[min(570px,calc(100vh-370px))] max-[1179px]:fixed max-[1179px]:bottom-2.5 max-[1179px]:right-2.5 max-[1179px]:top-[150px] max-[1179px]:z-80 max-[1179px]:w-[min(430px,calc(100vw-20px))] max-[1179px]:max-w-[430px] max-[1179px]:max-h-[calc(100vh-160px)] max-[1179px]:border-l max-[1179px]:shadow-[-15px_0_45px_var(--color-shadow-a)]"
       data-testid={activity === null ? "process-dock" : "pg-linked-dock"}
       ref={detail}
     >
-      <div className="panel-head detail-head">
+      <div className="panel-head flex items-center justify-between border-b border-line3 pb-2.5">
         <div>
-          <LabelHelp helpKey="detail.process.help" labelKey="detail.process.title" t={t} />
-          <p className="detail-identity">PID {pid}</p>
+          <span className="text-sm uppercase text-fg2"><LabelHelp helpKey="detail.process.help" labelKey="detail.process.title" t={t} /></span>
+          <p className="mt-[5px] text-lg font-[650] text-fg-hi">PID {pid}</p>
         </div>
-        <button aria-label={t("common.close")} className="icon-button dock-close" onClick={onClose} type="button"><X aria-hidden="true" size={15} /></button>
+        <button aria-label={t("common.close")} className="icon-button flex-none" onClick={onClose} type="button"><X aria-hidden="true" size={15} /></button>
       </div>
-      <section className="command-block" title={commandPath}>
-        <code data-testid="process-cmdline">{processCommand(process)}</code>
-        <button aria-label={t("common.raw")} className="copy-raw" onClick={() => void navigator.clipboard?.writeText(processCommand(process))} type="button"><Copy aria-hidden="true" size={12} /></button>
+      <section className="mt-2 flex items-center gap-1.5 border border-line3 bg-s1 px-1.5 py-[5px]" title={commandPath}>
+        <code className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-sm leading-[1.5] text-fg [font-family:inherit] hover:overflow-visible hover:whitespace-normal hover:[text-overflow:clip] hover:[overflow-wrap:anywhere]" data-testid="process-cmdline">{processCommand(process)}</code>
+        <button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center border border-line4 bg-transparent px-[3px] py-0.5 text-xs uppercase text-accent3" onClick={() => void navigator.clipboard?.writeText(processCommand(process))} type="button"><Copy aria-hidden="true" size={12} /></button>
       </section>
       <dl className="detail-list">
         <DetailField help="col.pid.help" label="col.pid.label" t={t} value={identifier(value(process, "pid"))} />
@@ -197,9 +197,9 @@ export function DetailDock({
         )}
       </section></ChartOnly>
 
-      {activity !== null && <section className="pg-section">
-        <div className="pg-title">
-          <h3>{t("detail.pg_pid", { pid: identifier(value(activity, "pid")) })}</h3>
+      {activity !== null && <section className="mt-[13px] border-t border-line4 pt-3">
+        <div className="flex items-center">
+          <h3 className="m-0 text-sm font-[560] text-fg">{t("detail.pg_pid", { pid: identifier(value(activity, "pid")) })}</h3>
         </div>
         <dl className="detail-list">
           <DetailField help="detail.pg_snapshot.help" label="detail.pg_snapshot.label" t={t} value={activityTime === null ? "—" : <Timestamp raw={activityTime} t={t} />} />
@@ -209,9 +209,9 @@ export function DetailDock({
           })}
           {ACTIVITY_FIELDS.map(([field, key, kind]) => <DetailField help={`${key}.help`} key={field} label={`${key}.label`} t={t} value={formatActivity(value(activity, field), kind, locale, t)} />)}
         </dl>
-        <section className="query-block">
-          <LabelHelp helpKey="pg.query.help" labelKey="pg.query.label" t={t} />
-          <pre data-testid="pg-exact-query">{rawText(value(activity, "query")) ?? "—"}</pre>
+        <section className="mt-2 border border-line3 bg-s1 px-1.5 py-[5px]">
+          <span className="flex items-center justify-between text-xs uppercase text-fg3"><LabelHelp helpKey="pg.query.help" labelKey="pg.query.label" t={t} /></span>
+          <pre className="mx-0 mb-0 mt-2 max-h-[170px] overflow-auto whitespace-pre-wrap break-words text-sm leading-[1.55] text-event-edge [font:inherit]" data-testid="pg-exact-query">{rawText(value(activity, "query")) ?? "—"}</pre>
         </section>
       </section>}
     </aside>
