@@ -74,8 +74,8 @@ await Promise.all([send("Page.enable"), send("Runtime.enable"), send("Network.en
 await send("Page.navigate", { url: pageUrl })
 errors.length = 0
 external.length = 0
-await waitFor(`document.readyState === "complete" && (document.querySelector(".login-card") !== null || document.querySelector('[data-testid="hour-picker-trigger"]') !== null)`, "login or application")
-if (await evaluate(`document.querySelector(".login-card") !== null`)) {
+await waitFor(`document.readyState === "complete" && (document.querySelector('[data-testid="login-card"]') !== null || document.querySelector('[data-testid="hour-picker-trigger"]') !== null)`, "login or application")
+if (await evaluate(`document.querySelector('[data-testid="login-card"]') !== null`)) {
   await evaluate(`(() => {
     const set = (name, stored) => {
       const input = document.querySelector('[name="' + name + '"]')

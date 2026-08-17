@@ -519,7 +519,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
     await cdp.send("Emulation.setTimezoneOverride", { timezoneId: "America/New_York" })
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.activity` })
-    await cdp.waitFor(`document.querySelector(".login-card") !== null`, "login form")
+    await cdp.waitFor(`document.querySelector('[data-testid="login-card"]') !== null`, "login form")
     await cdp.evaluate(`(() => {
       const set = (name, value) => {
         const input = document.querySelector('[name="' + name + '"]')
@@ -1473,7 +1473,7 @@ test("the minified artifact restores and clears its opaque browser session", { t
 
     let started = requests.length
     await cdp.send("Page.navigate", { url: pageUrl })
-    await cdp.waitFor(`document.querySelector(".login-card") !== null`, "initial login")
+    await cdp.waitFor(`document.querySelector('[data-testid="login-card"]') !== null`, "initial login")
     assertBootstrapBeforeApi(requests.slice(started), false)
     await submitLogin(cdp)
     await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"]') !== null`, "signed-in application")
@@ -1529,11 +1529,11 @@ test("the minified artifact restores and clears its opaque browser session", { t
     const postsBeforeLogout = requests.filter(({ method, path }) => method === "POST" && path === "/auth/session").length
     started = requests.length
     await cdp.evaluate(`document.querySelector('.top-actions button[title="Sign out"]').click()`)
-    await cdp.waitFor(`document.querySelector(".login-card") !== null`, "logout")
+    await cdp.waitFor(`document.querySelector('[data-testid="login-card"]') !== null`, "logout")
     assert.equal(requests.slice(started).filter(({ method, path }) => method === "DELETE" && path === "/auth/session").length, 1)
     started = requests.length
     await cdp.send("Page.reload")
-    await cdp.waitFor(`document.querySelector(".login-card") !== null`, "signed-out reload")
+    await cdp.waitFor(`document.querySelector('[data-testid="login-card"]') !== null`, "signed-out reload")
     await waitForRequests(() => requests.slice(started).some(({ method, path }) => method === "GET" && path === "/auth/session"))
     const signedOutReload = requests.slice(started)
     assert.equal(signedOutReload.some(({ path }) => path.startsWith("/api/")), false)
@@ -1547,7 +1547,7 @@ test("the minified artifact restores and clears its opaque browser session", { t
     rejectNextApi = true
     started = requests.length
     await cdp.evaluate(`document.querySelector('[data-testid="hour-previous"]').click()`)
-    await cdp.waitFor(`document.querySelector(".login-card .login-message")?.textContent.includes("session ended") === true`, "one expired-session transition")
+    await cdp.waitFor(`document.querySelector('[data-testid="login-message"]')?.textContent.includes("session ended") === true`, "one expired-session transition")
     await delay(300)
     const expiryRequests = requests.slice(started)
     assert.equal(expiryRequests.filter(({ path }) => path.startsWith("/api/")).length, 1)
@@ -1627,7 +1627,7 @@ test("the slow-query detail keeps readable labels and contained values", { timeo
     await enablePage(cdp)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 882, mobile: false, width: 1280 })
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=events` })
-    await cdp.waitFor(`document.querySelector(".login-card") !== null`, "login form")
+    await cdp.waitFor(`document.querySelector('[data-testid="login-card"]') !== null`, "login form")
     await submitLogin(cdp)
     await cdp.waitFor(`document.querySelector(".event-item button") !== null`, "the slow-query event")
     await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click(); document.querySelector(".event-item button").click()`)
