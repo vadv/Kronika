@@ -577,8 +577,8 @@ function SystemDock({
       <div><span>{t("system.history")}</span><h2>{t(label)}</h2></div>
       <button aria-label={t("common.close")} onClick={onClose} type="button"><X aria-hidden="true" size={14} /></button>
     </header>
-    <section className="process-history">
-      <div aria-label={t(label)} className="process-history-selector dock-tabs" role="group">
+    <section className="process-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]">
+      <div aria-label={t(label)} className="dock-tabs history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">
         {metrics.map((spec) => <button aria-pressed={spec.id === selected} data-testid={`system-dock-metric-${spec.id}`} key={spec.id} onClick={() => onSelect(spec.id)} type="button">{t(spec.label)}</button>)}
       </div>
       {chart}

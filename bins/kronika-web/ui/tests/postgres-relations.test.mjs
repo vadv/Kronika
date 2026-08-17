@@ -594,7 +594,7 @@ test("detail, empty, navigation, and paging behavior stays on generic exact APIs
   assert.match(source, /loadSeries\([\s\S]*?hour,[\s\S]*?row\.logicalName,[\s\S]*?historyFilters,[\s\S]*?historyFields,[\s\S]*?signal,[\s\S]*?object \? row\.typeId : undefined,[\s\S]*?object \? undefined : group,[\s\S]*?\)/)
   assert.match(source, /relationChartableColumn\(row\.logicalName as RelationSection, column, physicalFields, group\)/)
   assert.doesNotMatch(source, /object \? allColumns\.filter/)
-  assert.match(source, /className="process-history-selector"/)
+  assert.match(source, /aria-label=\{t\("system.history"\)\} className="[^"]*overflow-x-auto/)
   assert.doesNotMatch(source, /ChartLine/)
   assert.match(source, /onCursor=\{onCursor\}/)
   assert.match(source, /value\(row, column\.field\) !== null \|\| value\(row, `\$\{column\.field\}_never`\) === true/)

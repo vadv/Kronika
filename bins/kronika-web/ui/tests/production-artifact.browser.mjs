@@ -1738,7 +1738,7 @@ test("aggregate relation detail charts exact server history", { timeout: 60_000 
       const chart = detail.querySelector('.uplot-host')
       const plot = detail.querySelector('.u-over')
       const table = document.querySelector('[data-testid="pg-indexes-table"]')
-      const selectors = [...detail.querySelectorAll('.process-history-selector button')]
+      const selectors = [...detail.querySelectorAll('.history-selector button')]
       return {
         chartWidth: chart.getBoundingClientRect().width,
         detailWidth: detail.getBoundingClientRect().width,

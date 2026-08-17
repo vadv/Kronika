@@ -155,7 +155,7 @@ test("overview cards expose only numeric measurements and mark cumulative units 
   assert.match(source, /loadSeries\(hour, row\.logicalName, \{\}, plan\.fields, signal, row\.typeId\)/)
   assert.match(source, /OVERVIEW_SINGLETONS\.has\(logicalName\)/)
   assert.match(source, /<PgPreview[^>]*overview section=\{logicalName\}/)
-  assert.match(source, /className="process-history-selector"/)
+  assert.match(source, /aria-label=\{t\("system.history"\)\} className="[^"]*overflow-x-auto/)
   assert.doesNotMatch(source, /ChartLine/)
   assert.match(source, /<PlanInfo cursor=\{cursor\} data=\{data\} historyRevision=\{historyRevision\} hour=\{hour\}/)
 })
