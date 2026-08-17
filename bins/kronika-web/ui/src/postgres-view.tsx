@@ -349,8 +349,8 @@ function PgPreview({ columns: prescribedColumns, cursor, data, tablesLoading, fo
   useEffect(() => setSelected((current) => selectedEntity(rows, current, section)), [rows, section])
   const selectedKey = selected === null ? null : rowKey(selected)
   const initialHistory = columns.find(chartableColumn)?.field ?? null
-  return <section className="pg-preview mt-2">
-    <h2>{overview ? t(overviewSectionKey(section)) : section}</h2>
+  return <section className="pg-preview panel mt-2">
+    <h2 className="panel-head">{overview ? t(overviewSectionKey(section)) : section}</h2>
     <div className={`pg-entity-layout mt-2 grid min-w-0 ${selected === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)_clamp(460px,32vw,600px)]"} max-[1000px]:grid-cols-[minmax(0,1fr)]`}>
       <EntityTable columns={columns} empty={t("table.no_rows")} label={section} loading={tablesLoading} locale={locale} onSelect={setSelected} rows={rows} selectedKey={selectedKey ?? (focus === null ? null : rowKey(focus))} status={initialHistory === null ? undefined : <span>{t("system.history")}</span>} t={t} />
       {selected !== null && <PgDetail allRows={allRows} columns={columns} cursor={cursor} historyField={initialHistory} historyRevision={historyRevision} hour={hour} locale={locale} onClose={() => setSelected(null)} onCursor={onCursor} overview={overview} row={selected} section={section} t={t} />}

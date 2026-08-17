@@ -201,7 +201,7 @@ test("expanded charts keep one bounded action and restore both page scroll locks
   assert.match(stylesheet, /\.uplot-expanded figcaption \{[^}]*grid-template-columns: minmax\(0, 1fr\) auto 44px;[^}]*min-height: 44px;/)
   assert.match(source, /chart-expand[\s\S]{0,200}?expanded \? "inline-flex h-11 min-w-11/)
   assert.match(stylesheet, /--chart-marker-end-reserve: 52px/)
-  assert.match(stylesheet, /\.chart-marker-track \{[^}]*width: max\(1px, calc\(var\(--chart-plot-width,[^}]* - var\(--chart-marker-end-reserve, 0px\)\)\);/)
+  assert.match(source, /w-\[max\(1px,calc\(var\(--chart-plot-width,calc\(100%_-_70px\)\)_-_var\(--chart-marker-end-reserve,0px\)\)\)\]/)
   for (const side of ["top", "right", "bottom", "left"]) {
     assert.equal((stylesheet.match(new RegExp(`env\\(safe-area-inset-${side}, 0px\\)`, "g")) ?? []).length, 2)
   }

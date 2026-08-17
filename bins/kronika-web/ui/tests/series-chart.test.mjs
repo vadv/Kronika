@@ -86,7 +86,7 @@ test("the frame stays while a metric resolves and collapses only for an hour wit
   for (const status of ["loading", "error"]) {
     const markup = render([], status)
     assert.match(markup, /class="uplot-figure"/)
-    assert.match(markup, /class="uplot-host"/)
+    assert.match(markup, /class="uplot-host /)
     assert.match(markup, /class="uplot-status"/)
     assert.match(markup, new RegExp(`role="(?:alert|status)">history\\.${status === "ready" ? "empty" : status}`))
   }

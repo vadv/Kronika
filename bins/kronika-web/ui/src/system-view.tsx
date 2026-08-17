@@ -492,9 +492,9 @@ export function SystemView({
                 const metrics = available.filter(({ spec }) => spec.group === group)
                 if (metrics.length === 0) return null
                 const label = GROUP_LABELS.find((candidate) => candidate.id === group)?.label ?? "system.metric.health.label"
-                return <section className="metric-group" data-testid={`system-group-${group}`} key={group}>
-                  <h2><span>{t(label)}</span></h2>
-                  <div className="metric-grid grid grid-cols-2">
+                return <section className="metric-group panel" data-testid={`system-group-${group}`} key={group}>
+                  <h2 className="panel-head"><span>{t(label)}</span></h2>
+                  <div className="metric-grid grid-cols-2">
                     {metrics.map(({ points, spec }) => {
                       const output = currentPointValue(points, cursor, locale, spec.unit)
                       return <div className="metric-choice" key={spec.id}>
@@ -674,8 +674,8 @@ function SystemEntityPanel({
   const pairSeries = useMemo(() => mountPair ? mountPairSeries(chartRows, t) : null, [chartRows, mountPair, t])
   const chartMetadata = selectedRow === null || selectedColumn === undefined || selectedColumn.historyFields !== undefined
     ? null : registryColumn(selectedRow.typeId, physicalField(selectedColumn, selectedRow.typeId))
-  return <section className="entity-panel min-w-0" data-testid={`system-panel-${section}`}>
-    <h2><span>{label}</span></h2>
+  return <section className="entity-panel panel min-w-0" data-testid={`system-panel-${section}`}>
+    <h2 className="panel-head"><span>{label}</span></h2>
     <EntityTable
       columns={columns}
       contextLabel={contextLabel}

@@ -338,7 +338,7 @@ export function UPlotChart({
           type="button"
         >{line.label}</button><LabelHelp helpKey={line.helpKey} iconOnly labelKey={line.labelKey} t={t} /></span>
         : <LabelHelp helpKey={line.helpKey} key={line.id} labelKey={line.labelKey} t={t} />)}</span>
-      {reading !== undefined && <strong className={`chart-current col-start-2 min-w-0 flex-none overflow-hidden text-ellipsis whitespace-nowrap font-medium normal-case tabular-nums text-fg2 ${isolatable ? "ml-auto max-w-none" : ""}`}>{reading}</strong>}
+      {reading !== undefined && <strong className={`chart-current col-start-2 min-w-0 flex-none [.timeline-chart_&]:max-w-[55%] [.timeline-chart_&]:overflow-hidden [.timeline-chart_&]:text-ellipsis [.uplot-expanded_&]:max-w-[min(42vw,36rem)] max-[520px]:[.uplot-expanded_&]:max-w-[40vw] overflow-hidden text-ellipsis whitespace-nowrap font-medium normal-case tabular-nums text-fg2 ${isolatable ? "ml-auto max-w-none" : ""}`}>{reading}</strong>}
       <button
         aria-label={expanded ? (locale === "ru" ? "Закрыть развёрнутый график" : "Close expanded chart") : (locale === "ru" ? "Развернуть график" : "Expand chart")}
         className={`chart-expand col-start-3 cursor-pointer border border-line3 bg-s2 p-0 ${expanded ? "inline-flex h-11 min-w-11 items-center justify-center text-lg" : "h-[22px] min-w-[22px]"}`}
@@ -348,10 +348,10 @@ export function UPlotChart({
       >{expanded ? "×" : "↗"}</button>
     </figcaption>
     <p className="chart-summary absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]" id={summaryId}>{summary}</p>
-    <div aria-describedby={summaryId} aria-label={drawnSeries.map(({ label, unit }) => `${label}${unit === "" ? "" : `, ${unit}`}`).join("; ")} className="uplot-host" ref={host} role="img" />
+    <div aria-describedby={summaryId} aria-label={drawnSeries.map(({ label, unit }) => `${label}${unit === "" ? "" : `, ${unit}`}`).join("; ")} className="uplot-host h-[180px] w-full min-w-0 max-w-full min-h-0 flex-auto overflow-hidden [&>.uplot]:h-full [&>.uplot]:!w-full [&_.u-wrap]:max-w-full [.timeline-chart_&]:h-auto [.timeline-chart_&]:min-h-[186px] max-[520px]:[.timeline-chart_&]:h-[186px] [.uplot-expanded_&]:h-auto [.uplot-expanded_&]:flex-auto [.timeline-chart.uplot-expanded_&]:min-h-0" ref={host} role="img" />
     {statsLine !== null && <p className="mx-0 mb-0 mt-[3px] overflow-hidden text-ellipsis whitespace-nowrap text-xs tabular-nums text-fg3" data-testid="chart-stats">{statsLine}</p>}
     {status !== undefined && <div className="uplot-status">{status}</div>}
-    {markerLayer !== undefined && <div className="chart-marker-track">{markerLayer}</div>}
+    {markerLayer !== undefined && <div className="pointer-events-none absolute z-[7] h-[34px] left-[var(--chart-plot-left,62px)] top-[var(--chart-plot-top,25px)] w-[max(1px,calc(var(--chart-plot-width,calc(100%_-_70px))_-_var(--chart-marker-end-reserve,0px)))] max-[480px]:[.pg-table-workspace_.timeline-chart:not(.uplot-expanded)_&]:hidden" data-testid="chart-marker-track">{markerLayer}</div>}
     {exact !== null && <div aria-hidden="true" className="chart-tooltip pointer-events-none grid max-w-[min(340px,82vw)] gap-[3px] border border-line4 bg-s2 p-[7px] text-xs shadow-[0_8px_20px_var(--color-shadow-a)] [&_small]:text-fg3 [&_span]:flex [&_span]:justify-between [&_span]:gap-2 [&_strong]:font-medium [&_strong]:text-fg [&_time]:flex [&_time]:justify-between [&_time]:gap-2">
       <time><strong>{exact.time}</strong></time>
       {exact.values.map(({ label, output, unit }) => <span key={label}>{label}{unit === "" ? "" : ` (${unit})`}<strong>{output}</strong></span>)}

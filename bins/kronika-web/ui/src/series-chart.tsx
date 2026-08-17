@@ -80,12 +80,12 @@ export function SeriesChart({
   // An hour that carries no samples stays compact. Anything still resolving keeps the
   // full frame so the page below does not move while a metric loads.
   if (!hasData && status === "ready") {
-    return <div className="series-chart">
+    return <div className="series-chart [.process-history_&]:mt-0 [.process-history_&]:min-w-0 [.process-history_&]:border [.process-history_&]:border-line2 [.process-history_&]:px-[7px] [.process-history_&]:pb-1 [.process-history_&]:pt-1.5 [.system-entity-history_&]:pt-1">
       <div className="series-reading mb-[5px] flex items-baseline gap-2 text-xs uppercase text-fg3 [&>.label-help]:min-w-0 [&>span:last-child]:flex-none [&>span:last-child]:whitespace-nowrap [&>span:last-child]:normal-case [&>span:last-child]:tabular-nums [&>span:last-child]:text-fg2"><LabelHelp helpKey={helpKey} labelKey={labelKey} t={t} /><span>—</span></div>
       {statusLine}
     </div>
   }
-  return <div className="series-chart">
+  return <div className="series-chart [.process-history_&]:mt-0 [.process-history_&]:min-w-0 [.process-history_&]:border [.process-history_&]:border-line2 [.process-history_&]:px-[7px] [.process-history_&]:pb-1 [.process-history_&]:pt-1.5 [.system-entity-history_&]:pt-1">
     <UPlotChart
       cursor={cursor}
       hour={hour}

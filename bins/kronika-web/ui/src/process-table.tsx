@@ -154,7 +154,7 @@ export function ProcessSummary({ cursor, dispatch, hour, lens, locale, onCursor,
   }, [hour])
   const activePoints = useMemo(() => processSummaryPoints(history, active), [active, history])
   const statusKey = status === "loading" ? "process.summary.loading" : status === "error" ? "process.summary.error" : status === "empty" ? "status.no_data" : null
-  return <section aria-label={t("process.summary.title")} className="process-summary metric-grid grid grid-cols-4 max-[760px]:grid-cols-2">
+  return <section aria-label={t("process.summary.title")} className="process-summary metric-grid grid-cols-4 border-l border-line2 max-[760px]:grid-cols-2 [&>button_span]:block [&>button_span]:max-w-full [&>button_span]:overflow-hidden [&>button_span]:text-ellipsis [&>button_span]:whitespace-nowrap [&>button_span]:text-xs [&>button_span]:uppercase">
     {metrics.map((metric) => {
       const output = processSummaryOutput(readingAt(processSummaryPoints(history, metric), cursor), metric, locale, t)
       return <div className="metric-choice" key={metric.field}>
@@ -257,7 +257,7 @@ export function ProcessTable({
     ? { column: "pid", descending: false }
     : { column: processDefaultSort(lens, rows), descending: true }
   return <EntityTable
-    className="process-table"
+    className="process-table min-w-0 overflow-hidden border border-line2 bg-s1"
     columns={columns}
     contextLabel={contextLabel}
     empty={t("table.empty")}
