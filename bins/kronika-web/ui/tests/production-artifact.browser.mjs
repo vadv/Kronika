@@ -434,11 +434,19 @@ test("the production artifact preserves wire keys and exact finding page state",
     }
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
       const sections = url.searchParams.getAll("section")
-      if (url.searchParams.has("row_ordinal") && sections.includes("pg_stat_user_indexes")) {
+      if (sections.includes("pg_store_plans")) {
+        ndjson(response, planRecords())
+      } else if (url.searchParams.has("row_ordinal") && sections.includes("pg_stat_user_indexes")) {
         ndjson(response, exactIndexRecords())
       } else if (url.searchParams.has("row_ordinal")) {
         ndjson(response, statementRecords(false))
       } else if (sections.includes("pg_stat_statements")) {
+        const planNavigation = url.searchParams.get("where.queryid") === "42"
+          && url.searchParams.get("where.userid") === "10" && url.searchParams.get("where.dbid") === "20"
+        if (planNavigation) {
+          ndjson(response, planStatementRecords())
+          return
+        }
         const filtered = ["queryid", "userid", "dbid", "toplevel"].every((field) => url.searchParams.has(`where.${field}`))
         if (filtered && heldContextPage === null) {
           heldContextPage = response
@@ -986,6 +994,22 @@ test("the production artifact preserves wire keys and exact finding page state",
 
     await cdp.evaluate(`([...document.querySelectorAll(".source-tabs button")].find((button) => button.textContent === "Events")).click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="event-item"] button') !== null`, "the statement finding")
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 360 })
+    await settleLayout(cdp)
+    const eventSearch = await cdp.evaluate(`(() => {
+      const input = document.querySelector('[data-testid="events-console"] input[type="search"]')
+      const label = input.closest('label')
+      const icon = label.querySelector('svg')
+      const box = (node) => { const value = node.getBoundingClientRect(); return { left: value.left, right: value.right, width: value.width } }
+      return { client: document.documentElement.clientWidth, icon: box(icon), input: box(input), label: box(label), nav: [...document.querySelectorAll('.source-tabs button')].map((button) => button.textContent), placeholder: input.placeholder, scroll: document.documentElement.scrollWidth }
+    })()`)
+    assert.deepEqual(eventSearch.nav, ["Host", "Processes", "PostgreSQL", "Events"])
+    assert.equal(eventSearch.placeholder, "Поиск по отметкам")
+    assert.ok(eventSearch.icon.right <= eventSearch.input.left + 1, JSON.stringify(eventSearch))
+    assert.ok(eventSearch.label.left >= -1 && eventSearch.label.right <= eventSearch.client + 1 && eventSearch.scroll <= eventSearch.client, JSON.stringify(eventSearch))
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
     await cdp.evaluate(`document.querySelector('[data-testid="event-item"] button').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="entity-context-filter"]') !== null`, "the exact statement context")
     await contextPage
@@ -1052,26 +1076,72 @@ test("the production artifact preserves wire keys and exact finding page state",
       assert.ok(placement.paging.top >= placement.table.bottom - 1, `${width}px paging below table: ${JSON.stringify(placement)}`)
     }
 
+    await cdp.evaluate(`document.querySelector('.pg-detail .pg-detail-head button:last-child').click(); ([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent.includes('Plans'))).click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-plans-table"] .entity-row') !== null`, "the Vadv Plans row")
+    const planTable = await cdp.evaluate(`(() => ({
+      headers: [...document.querySelectorAll('[data-testid="pg-plans-table"] [role="columnheader"]')].map((header) => header.textContent),
+      row: document.querySelector('[data-testid="pg-plans-table"] .entity-row').textContent,
+    }))()`)
+    assert.match(planTable.headers.join(" "), /Plan summary/)
+    assert.match(planTable.headers.join(" "), /Last query ID/i)
+    assert.doesNotMatch(planTable.headers.join(" "), /(?:^|\s)Query ID(?:\s|$)/)
+    assert.match(planTable.row, /Merge Join.*Seq Scan.*Index Scan/)
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-plans-table"] .entity-row').click()`)
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-plan-node"]').length === 3`, "the readable execution plan")
+    const planDetail = await cdp.evaluate(`(() => ({
+      nodes: [...document.querySelectorAll('[data-testid="pg-plan-node"] h3')].map((node) => node.textContent),
+      rawOpen: document.querySelector('[data-testid="pg-plan-view"] details').open,
+      unavailable: document.querySelector('[data-testid="pg-plan-query-unavailable"]') !== null,
+    }))()`)
+    assert.deepEqual(planDetail.nodes, ["Merge Join", "Seq Scanpublic.orders", "Index Scanpublic.customersusing customers_pkey"])
+    assert.equal(planDetail.rawOpen, false)
+    assert.equal(planDetail.unavailable, false)
+    await cdp.evaluate(`([...document.querySelectorAll('.pg-detail-head button')].find((button) => button.textContent.includes('Open query'))).click()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.statements" && new URL(location.href).searchParams.get("stmt_match") === "last"`, "the best-effort plan query route")
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-statements-table"] .entity-row')?.textContent.includes("select from plan_navigation") === true`, "the matched last query")
+    const planContext = await cdp.evaluate(`document.querySelector('[data-testid="entity-context-filter"]').textContent`)
+    assert.match(planContext, /best-effort last Query ID 42/i)
+    const planQueryRequest = requests.find(({ query }) => query.includes("where.queryid=42") && query.includes("where.dbid=20") && query.includes("where.userid=10"))
+    assert.notEqual(planQueryRequest, undefined, JSON.stringify(requests.map(({ query }) => query), null, 2))
+    const planQueryParameters = new URLSearchParams(planQueryRequest.query)
+    assert.equal(planQueryParameters.has("where.toplevel"), false)
+    assert.equal(planQueryParameters.has("type_id"), false)
+    assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("at")`), String(AT))
+    await cdp.evaluate(`history.back()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.plans"`, "browser back to Plans")
+
     const hostClick = await cdp.evaluate(`(() => {
       const button = document.querySelector(".source-tabs button:first-child")
       button.click()
       return button.textContent
     })()`)
     assert.equal(hostClick, "Host")
-    await cdp.evaluate(`document.querySelector('.source-tabs button:first-child').click()`)
-    await cdp.waitFor(`document.querySelector(".system-main") !== null`, "the System view")
+    await cdp.evaluate(`(() => {
+      history.pushState({}, "", "/?at=${AT}&view=host.overview")
+      dispatchEvent(new PopStateEvent("popstate"))
+    })()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="host-section-overview"]')?.getAttribute("aria-selected") === "true" && document.querySelector(".system-main") !== null`, "the System Overview")
+    await delay(600)
     const system = await cdp.evaluate(`(() => ({
-      buttons: [...document.querySelectorAll('[data-testid^="system-metric-"]')].map((button) => [button.dataset.testid, button.getAttribute("aria-pressed")]),
       dock: document.querySelector('[data-testid="system-dock"]') !== null,
       lane: document.querySelector("[data-primary]")?.textContent ?? null,
+      metric: new URL(location.href).searchParams.get("metric"),
+      selectedMetric: document.querySelector('[data-testid="system-dock-metric-cpu_used_cores"]')?.getAttribute("aria-pressed") ?? null,
       source: document.querySelector(".source-active")?.textContent ?? null,
     }))()`)
     assert.equal(system.source, "Host")
-    // Before the operator picks a resource no metric is pressed and no dock is open.
-    assert.equal(system.buttons.every(([, pressed]) => pressed !== "true"), true, JSON.stringify(system))
-    assert.equal(system.dock, false, JSON.stringify(system))
-    assert.match(system.lane ?? "", /Health/)
+    // Overview opens directly on the first factual CPU metric.
+    assert.equal(system.selectedMetric, "true", JSON.stringify(system))
+    assert.equal(system.dock, true, JSON.stringify(system))
+    assert.equal(system.metric, "cpu_used_cores", JSON.stringify(system))
     await cdp.waitFor(`document.querySelector('[data-testid="use-table"]') !== null`, "the System resource table")
+    const topology = await cdp.evaluate(`(() => {
+      const panel = document.querySelector('[data-testid="system-panel-os_topology"]')
+      const row = panel?.querySelector('.entity-row')
+      row?.click()
+      return { history: panel?.querySelector('[data-testid="system-os_topology-history"]') !== null, selected: row?.getAttribute('aria-selected') ?? null, tabIndex: row?.getAttribute('tabindex') ?? null }
+    })()`)
+    assert.deepEqual(topology, { history: false, selected: "false", tabIndex: null })
     await cdp.evaluate(`document.querySelector('[data-testid="use-row-disk"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-dock"]') !== null`, "the System resource dock")
     // The row lives on the overview, the metric chip on the resource it opened.
@@ -1079,15 +1149,21 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(rowSelected, "true")
     await cdp.evaluate(`document.querySelector('[data-testid="host-section-storage"]').click()`)
     const dockState = await cdp.evaluate(`(() => ({
-      chipPressed: document.querySelector('[data-testid="system-metric-filesystem_free_min"]')?.getAttribute("aria-pressed"),
-      dockChipPressed: document.querySelector('[data-testid="system-dock-metric-filesystem_free_min"]')?.getAttribute("aria-pressed"),
+      card: document.querySelector('[data-testid^="system-metric-"][aria-pressed="true"]')?.dataset.testid ?? null,
+      dock: document.querySelector('[data-testid^="system-dock-metric-"][aria-pressed="true"]')?.dataset.testid ?? null,
       title: document.querySelector('[data-testid="system-dock"] h2')?.textContent ?? null,
     }))()`)
-    assert.deepEqual(dockState, { chipPressed: "true", dockChipPressed: "true", title: "Storage" })
+    assert.equal(dockState.title, "Storage")
+    assert.notEqual(dockState.card, null, JSON.stringify(dockState))
+    assert.equal(dockState.dock, dockState.card.replace("system-metric-", "system-dock-metric-"), JSON.stringify(dockState))
     await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "the CPU cards", 15_000)
     await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-dock"] h2')?.textContent === "CPU" && document.querySelector('[data-testid="system-dock"] .uplot-host canvas') !== null`, "the System dock chart")
+    await assertHoverGeometryStable(cdp, '[data-testid="system-cpu-composition"]', "wide System dock")
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width: 420 })
+    await settleLayout(cdp)
+    await assertHoverGeometryStable(cdp, '[data-testid="system-cpu-composition"]', "420px System dock")
     for (const [width, height] of [[1920, 1080], [1366, 768], [1280, 431], [1024, 768], [1024, 1366]]) {
       await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
       const layout = await cdp.evaluate(`document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -1278,6 +1354,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     const chartRequestsBeforeExpand = requests.filter(({ path }) => path.startsWith("/api/")).length
     await cdp.evaluate(`document.querySelector(".system-dock .chart-expand").click()`)
     await cdp.waitFor(`document.querySelector('.system-dock [role="dialog"][aria-modal="true"].uplot-expanded') !== null`, "the expanded chart dialog")
+    await assertHoverGeometryStable(cdp, '.system-dock [role="dialog"]', "expanded System chart")
     const expanded = await cdp.evaluate(`(() => {
       const dialog = document.querySelector('.system-dock [role="dialog"]')
       const rect = dialog.getBoundingClientRect()
@@ -3156,6 +3233,35 @@ async function settleLayout(cdp) {
   await cdp.evaluate("document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))")
 }
 
+async function assertHoverGeometryStable(cdp, selector, label) {
+  const expression = (position) => `(() => {
+    const figure = document.querySelector(${JSON.stringify(selector)})
+    const pick = (node) => { const box = node.getBoundingClientRect(); return [box.left, box.top, box.width, box.height] }
+    const plot = figure.querySelector('.u-over')
+    const box = plot.getBoundingClientRect()
+    return {
+      point: { x: box.left + box.width * ${position}, y: box.top + box.height * 0.45 },
+      boxes: {
+        figure: pick(figure), caption: pick(figure.querySelector('figcaption')),
+        host: pick(figure.querySelector('.uplot-host')), plot: pick(plot), canvas: pick(figure.querySelector('canvas')),
+      },
+    }
+  })()`
+  const before = await cdp.evaluate(expression(0.25))
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...before.point })
+  await cdp.waitFor(`document.querySelector(${JSON.stringify(selector)})?.querySelector('[data-testid="chart-hover-readout"]') !== null`, `${label} hover readout`)
+  const middle = await cdp.evaluate(expression(0.55))
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...middle.point })
+  const after = await cdp.evaluate(expression(0.8))
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...after.point })
+  const moved = await cdp.evaluate(expression(0.8))
+  for (const key of Object.keys(before.boxes)) {
+    for (const current of [middle.boxes[key], moved.boxes[key]]) {
+      before.boxes[key].forEach((value, index) => assert.ok(Math.abs(value - current[index]) <= 0.75, `${label} ${key} moved: ${JSON.stringify({ after: moved.boxes, before: before.boxes })}`))
+    }
+  }
+}
+
 function timelineRecords(hour = HOUR, cgroups = false) {
   const shift = hour - HOUR
   const shifted = (timestamp) => String(timestamp + shift)
@@ -3172,6 +3278,9 @@ function timelineRecords(hour = HOUR, cgroups = false) {
         implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256",
       }, {
         logical_name: "pg_stat_statements", physical_name: "pg_stat_statements", type_id: "1002003",
+        implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "512",
+      }, {
+        logical_name: "pg_store_plans", physical_name: "pg_store_plans", type_id: "1004001",
         implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "512",
       }, {
         logical_name: "os_cpu", physical_name: "os_cpu", type_id: "1102001",
@@ -3261,6 +3370,8 @@ function systemSnapshotRecords(cgroupContext = false, at = AT) {
     row("1102001", "cpu-all", [String(at), -1, 20, 5, 10, 50, 5, 2, 3, 5, 0], at),
     row("1102001", "cpu-0", [String(at), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], at),
     row("1102001", "cpu-1", [String(at), 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], at),
+    layout("1113001", "os_topology", ["ts", "cpu_id", "model_name", "mhz_max", "core_id", "socket_id", "numa_node", "scope"]),
+    row("1113001", "topology-0", [String(at), 0, "Artifact CPU", null, 0, 0, 0, 0], at),
     layout("1103001", "os_stat", ["ts", "ctxt", "procs_running", "procs_blocked"]),
     row("1103001", "1", [String(at), 1_234_567, 3, 1], at),
     layout("1105001", "os_loadavg", ["ts", "load1", "load5", "load15", "running", "total"]),
@@ -3471,6 +3582,23 @@ function statementRecords(page, eligible = 1, hasMore = false, rowCount = eligib
       order_by: ["total_exec_time", "calls"], order_direction: "desc", from: String(AT - 5_000_000), to: String(AT),
     }] : []),
   ]
+}
+
+function planRecords() {
+  const columns = ["ts", "userid", "dbid", "queryid", "planid", "queryid_stat_statements", "datname", "usename", "plan", "calls", "total_time", "rows"]
+  const plan = '{"p":{"t":"u","j":"l","7":"(orders.customer_id = customers.id)","l":[{"t":"h","n":"orders","s":"public","5":"(status = open)"},{"t":"i","n":"customers","s":"public","i":"customers_pkey","8":"(id > 0)"}]}}{},"r":[]'
+  return [
+    { record: "layout", rates: ["calls", "total_time", "rows"], layout: { type_id: "1004001", logical_name: "pg_store_plans", columns: columns.map((name) => ({ name })) } },
+    { record: "row", segment_id: SEGMENT, type_id: "1004001", ordinal: "201", timestamp: String(AT), values: [String(AT), 10, 20, 0, 77, 42, "operators", "reporter", plan, 3, 12, 4] },
+    { record: "snapshot_page", logical_name: "pg_store_plans", eligible: "1", returned: "1", has_more: false, truncated: false, next_cursor: null, page_size: 200, order_by: ["total_time", "calls"], order_direction: "desc", from: String(AT - 5_000_000), to: String(AT) },
+  ]
+}
+
+function planStatementRecords() {
+  return statementRecords(true).map((record) => record.record !== "row" ? record : {
+    ...record,
+    values: record.values.map((stored, index) => index === 1 ? "42" : index === 7 ? "select from plan_navigation" : stored),
+  })
 }
 
 function targetedActivityRecords(query, timestamp) {
