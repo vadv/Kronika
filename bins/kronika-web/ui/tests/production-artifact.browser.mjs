@@ -165,8 +165,8 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     await cdp.send("Page.reload")
     await cdp.waitFor(`document.querySelector('[data-testid="timezone-select"]')?.getAttribute("data-value") === "browser" && document.querySelector('[data-testid="timezone-value"]')?.textContent === "Browser time" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("08:30:00") === true`, "the persisted Browser display", 15_000)
 
-    await cdp.evaluate(`document.querySelector(".source-tabs button:first-child").click()`)
-    await cdp.waitFor(`document.querySelector(".source-tabs button:first-child")?.getAttribute("aria-current") === "page"`, "the Host history destination")
+    await cdp.evaluate(`document.querySelector('[data-testid="process-tab"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="process-tab"]')?.getAttribute("aria-current") === "page"`, "the Processes history destination")
     assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("view")`), null)
     await cdp.evaluate(`(() => {
       const navigator = document.querySelector('[data-testid="hour-timeline"] input.chart-navigator')
@@ -964,7 +964,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     }
     await cdp.evaluate(`document.querySelector(".source-tabs button:first-child").click(); document.querySelector('[data-testid="locale-ru"]').click()`)
     await cdp.waitFor(`document.querySelector(".section-tabs") !== null`, "the host tabs")
-    await cdp.evaluate(`document.querySelector('.section-tabs [role="tab"]:first-child').click()`)
+    await cdp.evaluate(`document.querySelector('.source-tabs button:first-child').click()`)
     await systemPage
     await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]') !== null`, "the crowded Russian loading bar")
     for (const [width, height] of [[1920, 1080], [1366, 768], [1024, 768]]) {
@@ -1058,7 +1058,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       return button.textContent
     })()`)
     assert.equal(hostClick, "Host")
-    await cdp.evaluate(`document.querySelector('.section-tabs [role="tab"]:first-child').click()`)
+    await cdp.evaluate(`document.querySelector('.source-tabs button:first-child').click()`)
     await cdp.waitFor(`document.querySelector(".system-main") !== null`, "the System view")
     const system = await cdp.evaluate(`(() => ({
       buttons: [...document.querySelectorAll('[data-testid^="system-metric-"]')].map((button) => [button.dataset.testid, button.getAttribute("aria-pressed")]),
@@ -1074,15 +1074,20 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.waitFor(`document.querySelector('[data-testid="use-table"]') !== null`, "the System resource table")
     await cdp.evaluate(`document.querySelector('[data-testid="use-row-disk"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-dock"]') !== null`, "the System resource dock")
+    // The row lives on the overview, the metric chip on the resource it opened.
+    const rowSelected = await cdp.evaluate(`document.querySelector('[data-testid="use-row-disk"]')?.getAttribute("aria-selected")`)
+    assert.equal(rowSelected, "true")
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-storage"]').click()`)
     const dockState = await cdp.evaluate(`(() => ({
       chipPressed: document.querySelector('[data-testid="system-metric-filesystem_free_min"]')?.getAttribute("aria-pressed"),
       dockChipPressed: document.querySelector('[data-testid="system-dock-metric-filesystem_free_min"]')?.getAttribute("aria-pressed"),
-      rowSelected: document.querySelector('[data-testid="use-row-disk"]')?.getAttribute("aria-selected"),
       title: document.querySelector('[data-testid="system-dock"] h2')?.textContent ?? null,
     }))()`)
-    assert.deepEqual(dockState, { chipPressed: "true", dockChipPressed: "true", rowSelected: "true", title: "Storage" })
-    await cdp.evaluate(`document.querySelector('[data-testid="system-metric-health"]').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="system-dock"] h2')?.textContent === "OS health" && document.querySelector('[data-testid="system-dock"] .uplot-host canvas') !== null`, "the System dock chart")
+    assert.deepEqual(dockState, { chipPressed: "true", dockChipPressed: "true", title: "Storage" })
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "the CPU cards", 15_000)
+    await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-dock"] h2')?.textContent === "CPU" && document.querySelector('[data-testid="system-dock"] .uplot-host canvas') !== null`, "the System dock chart")
     for (const [width, height] of [[1920, 1080], [1366, 768], [1280, 431], [1024, 768], [1024, 1366]]) {
       await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
       const layout = await cdp.evaluate(`document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -1098,14 +1103,16 @@ test("the production artifact preserves wire keys and exact finding page state",
         const canvas = chart.querySelector("canvas")
         const host = chart.querySelector(".uplot-host")
         const plot = chart.querySelector(".u-over")
-        const resource = document.querySelector('[data-testid="use-table"]')
         const groups = document.querySelector(".metric-groups")
         const timeline = document.querySelector('[data-testid="hour-timeline"]')
-        const columns = [...document.querySelectorAll(".metric-column")]
-        const columnBottoms = columns.map((column) => Math.max(...[...column.querySelectorAll(".metric-group")].map((group) => group.getBoundingClientRect().bottom)))
-        const summaryBottom = Math.max(...columnBottoms)
+        const cards = [...document.querySelectorAll(".metric-choice")].map((card) => card.getBoundingClientRect())
+        const cardSpread = Math.max(0, ...cards.map((card) => {
+          const row = cards.filter((other) => Math.abs(other.top - card.top) <= 1).map((other) => other.bottom)
+          return Math.max(...row) - Math.min(...row)
+        }))
+        const summaryBottom = Math.max(...[...document.querySelectorAll(".metric-group")].map((group) => group.getBoundingClientRect().bottom))
         const contentBottom = Math.max(summaryBottom, history.getBoundingClientRect().bottom)
-        const panels = [document.querySelector(".timeline-shell"), ...document.querySelectorAll(".metric-group"), history, resource]
+        const panels = [document.querySelector(".timeline-shell"), ...document.querySelectorAll(".metric-group"), history]
         const overlaps = []
         for (let left = 0; left < panels.length; left += 1) {
           for (let right = left + 1; right < panels.length; right += 1) {
@@ -1129,7 +1136,7 @@ test("the production artifact preserves wire keys and exact finding page state",
             navigator: chart.querySelector('input.chart-navigator[type="range"]') !== null,
             summary: chart.querySelector(".chart-summary")?.textContent ?? "",
           },
-          columnSpread: Math.max(...columnBottoms) - Math.min(...columnBottoms),
+          cardSpread,
           console: bounds(consolePanel),
           contentBottom,
           documentClientWidth: document.documentElement.clientWidth,
@@ -1141,7 +1148,6 @@ test("the production artifact preserves wire keys and exact finding page state",
           main: bounds(main),
           overlaps,
           plot: bounds(plot),
-          resource: bounds(resource),
           timeline: {
             figure: bounds(timeline),
             host: bounds(timeline.querySelector(".uplot-host")),
@@ -1154,17 +1160,17 @@ test("the production artifact preserves wire keys and exact finding page state",
       assert.ok(layout.plot.height >= 160, `${width}x${height} System plot height: ${JSON.stringify(layout)}`)
       assert.ok(Math.abs(layout.history.left - layout.main.left) <= 1 && Math.abs(layout.history.right - layout.main.right) <= 1,
         `${width}x${height} System dock takes the full width: ${JSON.stringify(layout)}`)
-      assert.ok(Math.abs(layout.history.top - layout.resource.bottom - 8) <= 1.5, `${width}x${height} System dock unfolds under the resource table: ${JSON.stringify(layout)}`)
+      assert.ok(Math.abs(layout.history.top - layout.main.top) <= 1, `${width}x${height} System dock heads the resource tab: ${JSON.stringify(layout)}`)
       assert.ok(layout.timeline.figure.height >= 216 && layout.timeline.host.height >= 186 && layout.timeline.plot.height >= 100,
         `${width}x${height} timeline plot height: ${JSON.stringify(layout)}`)
       assert.deepEqual(layout.chartAccess.canvasAriaHidden, "true")
       assert.equal(layout.chartAccess.canvasCount, 1)
       assert.equal(layout.chartAccess.hostRole, "img")
-      assert.match(layout.chartAccess.hostLabel, /%/)
+      assert.match(layout.chartAccess.hostLabel, /CPU used.*cores/)
       assert.equal(layout.chartAccess.navigator, true)
       assert.ok(layout.chartAccess.summary.length > 0)
       assert.ok(layout.history.height - layout.chart.height <= 170 && layout.historyTail >= -1 && layout.historyTail <= 30, `${width}x${height} compact System dock: ${JSON.stringify(layout)}`)
-      assert.ok(layout.columnSpread <= 220, `${width}x${height} balanced System summary: ${JSON.stringify(layout)}`)
+      assert.ok(layout.cardSpread <= 1 && layout.cardSpread > -1, `${width}x${height} ragged System metric row: ${JSON.stringify(layout)}`)
       assert.ok(Math.abs(layout.console.bottom - layout.contentBottom) <= 1.5, `${width}x${height} content-sized System layout: ${JSON.stringify(layout)}`)
       assert.ok(layout.groupsTop - layout.history.bottom >= 7 && layout.groupsTop - layout.history.bottom <= 10, `${width}x${height} System dock separation: ${JSON.stringify(layout)}`)
       assert.ok(layout.chart.left >= layout.history.left - 1 && layout.chart.right <= layout.history.right + 1
@@ -1173,6 +1179,15 @@ test("the production artifact preserves wire keys and exact finding page state",
       assert.ok(layout.documentScrollWidth <= layout.documentClientWidth, `${width}x${height} System document overflow: ${JSON.stringify(layout)}`)
       assert.deepEqual(layout.overlaps, [], `${width}x${height} System panel overlaps`)
     }
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 1080, mobile: false, width: 1920 })
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-overview"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="use-table"]') !== null`, "the overview resource table")
+    const overviewOrder = await cdp.evaluate(`(() => {
+      const table = document.querySelector('[data-testid="use-table"]').getBoundingClientRect()
+      const dock = document.querySelector('[data-testid="system-dock"]')?.getBoundingClientRect() ?? null
+      return { gap: dock === null ? null : dock.top - table.bottom }
+    })()`)
+    assert.ok(overviewOrder.gap !== null && Math.abs(overviewOrder.gap - 8) <= 1.5, `overview dock under the resource table: ${JSON.stringify(overviewOrder)}`)
     await cdp.evaluate(`(() => {
       if (window.__kronikaAxisText !== undefined) return
       window.__kronikaAxisText = []
@@ -1211,7 +1226,7 @@ test("the production artifact preserves wire keys and exact finding page state",
         }))))`)
         assert.equal(state.canvasAriaHidden, "true", `${theme} ${width}px canvas accessibility: ${JSON.stringify(state)}`)
         assert.equal(state.hostRole, "img", `${theme} ${width}px chart role: ${JSON.stringify(state)}`)
-        assert.match(state.hostLabel, /%/, `${theme} ${width}px chart unit: ${JSON.stringify(state)}`)
+        assert.match(state.hostLabel, /CPU used.*cores/, `${theme} ${width}px chart unit: ${JSON.stringify(state)}`)
         assert.equal(state.navigatorCount, 1, `${theme} ${width}px sample navigator: ${JSON.stringify(state)}`)
         assert.ok(state.summary.length > 0, `${theme} ${width}px chart summary: ${JSON.stringify(state)}`)
         assert.ok(state.plot.width >= 120, `${theme} ${width}px plot width: ${JSON.stringify(state)}`)
@@ -1289,10 +1304,20 @@ test("the production artifact preserves wire keys and exact finding page state",
       last.focus()
       last.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Tab" }))
     })()`)
-    assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector('.system-dock [role="dialog"] .chart-series-labels .help-dot')`), true)
+    // Tab off the last control lands on the dialog's first one, whatever the
+    // chart puts there: a series picker for a composition, a help dot otherwise.
+    const wrapped = await cdp.evaluate(`(() => {
+      const dialog = document.querySelector('.system-dock [role="dialog"]')
+      return {
+        active: document.activeElement?.className ?? null,
+        first: dialog.querySelector("button, input, [tabindex]")?.className ?? null,
+        isFirst: document.activeElement === dialog.querySelector("button, input, [tabindex]"),
+      }
+    })()`)
+    assert.equal(wrapped.isFirst, true, JSON.stringify(wrapped))
     await cdp.evaluate(`(() => {
-      const first = document.querySelector('.system-dock [role="dialog"] .chart-series-labels .help-dot')
-      first.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Tab", shiftKey: true }))
+      const dialog = document.querySelector('.system-dock [role="dialog"]')
+      dialog.querySelector("button, input, [tabindex]").dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Tab", shiftKey: true }))
     })()`)
     assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector('.system-dock [role="dialog"] input.chart-navigator')`), true)
     await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }))`)
@@ -1849,7 +1874,7 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     await enablePage(cdp)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1024 })
     await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
-    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=host.processes&lens=generic` })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=processes&lens=generic` })
     await cdp.waitFor(`document.querySelector('.process-summary .metric-choice > button strong')?.textContent === "719"`, "719 process-summary rows", 15_000)
     await cdp.waitFor(`document.querySelector('[data-testid="process-summary-history"] .uplot-host canvas') !== null`, "the process-summary chart")
     await settleLayout(cdp)
@@ -1865,9 +1890,15 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     await cdp.waitFor(`document.querySelector('[data-testid="process-summary-history"] .uplot-host canvas') !== null`, "the restored process-summary chart")
 
     summaryMode = "fail"
-    await cdp.evaluate(`document.querySelectorAll('.section-tabs [role="tab"]')[0].click()`)
-    await cdp.waitFor(`document.querySelector('.system-main') !== null`, "System before same-hour summary remount")
-    await cdp.waitFor(`["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"].every((section) => document.querySelector('[data-testid="system-' + section + '"] .entity-row') !== null)`, "the exact collector cgroup rows", 15_000)
+    // Each cgroup panel now lives with the resource it belongs to.
+    await cdp.evaluate(`document.querySelector('.source-tabs button:first-child').click()`)
+    await cdp.waitFor(`document.querySelector('.system-main') !== null`, "Host before same-hour summary remount")
+    for (const [panel, tab] of [["os_cgroup_cpu", "cpu"], ["os_cgroup_memory", "memory"], ["os_cgroup_io", "storage"]]) {
+      await cdp.evaluate(`document.querySelector('[data-testid="host-section-${tab}"]').click()`)
+      await cdp.waitFor(`document.querySelector('[data-testid="system-${panel}"] .entity-row') !== null`, `the ${panel} panel`, 15_000)
+    }
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "the CPU metrics", 15_000)
     const systemHistoryBefore = historyRequests("os_cpu").length
     await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]').click()`)
     await waitForRequests(() => historyRequests("os_cpu").length > systemHistoryBefore)
@@ -1909,7 +1940,12 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     assert.equal(heldCgroups.every(({ url }) => url.searchParams.get("at") === String(BEFORE_AT) && url.searchParams.get("where.scope") === "3"), true)
     holdCgroups = false
     for (const held of heldCgroups.splice(0)) if (!held.response.destroyed) ndjson(held.response, cgroupSnapshotRecords(held.url))
-    await cdp.waitFor(`["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"].every((section) => document.querySelector('[data-testid="system-' + section + '"] .entity-row') !== null)`, "the replacement collector cgroup rows", 15_000)
+    // The panels answer on their own sections now.
+    for (const [panel, tab] of [["os_cgroup_cpu", "cpu"], ["os_cgroup_memory", "memory"], ["os_cgroup_io", "storage"]]) {
+      await cdp.evaluate(`document.querySelector('[data-testid="host-section-${tab}"]').click()`)
+      await cdp.waitFor(`document.querySelector('[data-testid="system-${panel}"] .entity-row') !== null`, "the replacement collector cgroup rows", 15_000)
+    }
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]').click()`)
     holdCgroups = true
     await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowRight" }))`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${AT}"`, "the failed System cursor")
@@ -1924,14 +1960,14 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
       held.response.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8" })
       held.response.end("{")
     }
-    await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]') === null && ["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"].every((section) => document.querySelector('[data-testid="system-' + section + '"]') === null)`, "no stale cgroup rows after exact-load failures", 15_000)
-    await cdp.evaluate(`document.querySelectorAll('.section-tabs [role="tab"]')[1].click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]') === null && document.querySelector('[data-testid="system-os_cgroup_cpu"]') === null`, "no stale cgroup rows after exact-load failures", 15_000)
+    await cdp.evaluate(`document.querySelector('[data-testid="process-tab"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Could not load process totals" && document.querySelector('.process-summary .metric-choice > button strong')?.textContent === "719"`, "same-hour error with retained totals", 15_000)
 
     summaryMode = "hold"
-    await cdp.evaluate(`document.querySelectorAll('.section-tabs [role="tab"]')[0].click()`)
+    await cdp.evaluate(`document.querySelector('.source-tabs button:first-child').click()`)
     await cdp.waitFor(`document.querySelector('.system-main') !== null`, "System before held same-hour summary remount")
-    await cdp.evaluate(`document.querySelectorAll('.section-tabs [role="tab"]')[1].click()`)
+    await cdp.evaluate(`document.querySelector('[data-testid="process-tab"]').click()`)
     await waitForRequests(() => heldSummaries.length !== 0)
     await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Loading process totals…" && document.querySelector('.process-summary .metric-choice > button strong')?.textContent === "719"`, "same-hour loading with retained totals", 15_000)
     const sameHourSummaries = heldSummaries.splice(0)
@@ -2088,7 +2124,7 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     const hiddenSystemHistoryBefore = historyRequests("os_cpu").length
     await cdp.evaluate(`document.querySelector('.source-tabs button:first-child').click()`)
     await cdp.waitFor(`document.querySelector('.section-tabs [role="tab"]:first-child') !== null`, "Host sections")
-    await cdp.evaluate(`document.querySelector('.section-tabs [role="tab"]:first-child').click()`)
+    await cdp.evaluate(`document.querySelector('.source-tabs button:first-child').click()`)
     await cdp.waitFor(`document.querySelector('.system-main') !== null`, "System with charts hidden")
     await waitForRequests(() => snapshotRequests("os_cpu").length > hiddenSystemSnapshotsBefore)
     await delay(100)
@@ -2106,7 +2142,7 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
 
     const persistedSystemHistoryBefore = historyRequests("os_cpu").length
     const persistedSystemSnapshotsBefore = snapshotRequests("os_cpu").length
-    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=host.system` })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=host.overview` })
     await cdp.waitFor(`document.querySelector('[data-testid="charts-toggle"]')?.getAttribute("aria-label") === "Show charts" && document.querySelector('.system-main') !== null`, "the persisted hidden preference", 15_000)
     await waitForRequests(() => snapshotRequests("os_cpu").length > persistedSystemSnapshotsBefore)
     await delay(100)
@@ -2169,17 +2205,18 @@ test("PostgreSQL is unavailable without current telemetry and returns for a stor
     await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.overview` })
     await cdp.waitFor(`document.querySelector('.system-main') !== null && document.querySelector('.source-tabs button:first-child')?.getAttribute('aria-current') === "page"`, "the synchronous Host destination", 15_000)
-    await cdp.waitFor(`new URL(location.href).searchParams.get('view') === "host.system"`, "the canonical Host address", 15_000)
+    await cdp.waitFor(`new URL(location.href).searchParams.get('view') === "host.overview"`, "the canonical Host address", 15_000)
     const unavailable = await cdp.evaluate(`(() => {
       const sourceButtons = document.querySelectorAll('.source-tabs button')
       return {
-        pgDisabled: sourceButtons[1].disabled,
+        pgDisabled: sourceButtons[2].disabled,
         pgPanels: document.querySelectorAll('.pg-tabs, .pg-overview, [data-testid^="pg-"]').length,
         pgHealth: document.querySelector('[data-primary]')?.textContent.includes('PostgreSQL') ?? false,
         view: new URL(location.href).searchParams.get('view'),
       }
     })()`)
-    assert.deepEqual(unavailable, { pgDisabled: true, pgHealth: false, pgPanels: 0, view: "host.system" })
+    assert.deepEqual(unavailable, { pgDisabled: true, pgHealth: false, pgPanels: 0, view: "host.overview" })
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]')?.click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "the host CPU cards", 15_000)
     await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-cpu-composition"] .u-over') !== null`, "the CPU composition history")
@@ -2213,7 +2250,7 @@ test("PostgreSQL is unavailable without current telemetry and returns for a stor
 
     historical = true
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.overview` })
-    await cdp.waitFor(`document.querySelector('.pg-tabs') !== null && document.querySelectorAll('.source-tabs button')[1]?.getAttribute('aria-current') === "page"`, "the stored PostgreSQL hour", 15_000)
+    await cdp.waitFor(`document.querySelector('.pg-tabs') !== null && document.querySelectorAll('.source-tabs button')[2]?.getAttribute('aria-current') === "page"`, "the stored PostgreSQL hour", 15_000)
     assert.equal(await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[1].disabled`), false)
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
@@ -2420,20 +2457,34 @@ test("snapshot request targets hide rejected replacements until retry succeeds",
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 1280 })
     await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
 
-    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=host.system` })
-    await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null && document.querySelector('[data-testid="system-metric-mem_anon"]') !== null && document.querySelector('[data-testid="system-panel-os_diskstats"]')?.textContent.includes("device_target_A") === true`, "ordinary System target A", 15_000)
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=host.overview` })
+    await cdp.waitFor(`document.querySelector('[data-testid^="host-section-"]') !== null`, "the host sections", 15_000)
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]')?.click()`)
+    // CPU, memory and the device panel answer on their own sections now.
+    await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "ordinary System target A cpu", 15_000)
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-memory"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-metric-mem_anon"]') !== null`, "ordinary System target A memory", 15_000)
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-storage"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-panel-os_diskstats"]')?.textContent.includes("device_target_A") === true`, "ordinary System target A devices", 15_000)
     await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowLeft" }))`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${BEFORE_AT}"`, "ordinary System target B")
     await waitForRequests(() => pendingSystemFailure !== null)
     await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"] .loading-ring') !== null`, "ordinary System target B loading", 15_000)
+    // The metric cards clear while the new key loads; the device panel keeps its
+    // frame and says it is loading, each on its own section.
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]').click()`)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') === null`), true)
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-memory"]').click()`)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-metric-mem_anon"]') === null`), true)
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-storage"]').click()`)
     assert.equal(await cdp.evaluate(`(() => {
       const panel = document.querySelector('[data-testid="system-panel-os_diskstats"]')
-      return document.querySelector('[data-testid="system-metric-cpu_used_cores"]') === null && document.querySelector('[data-testid="system-metric-mem_anon"]') === null
-        && panel !== null && panel.querySelectorAll(".entity-row").length === 0 && panel.textContent.includes("Loading rows")
+      return panel !== null && panel.querySelectorAll(".entity-row").length === 0 && panel.textContent.includes("Loading rows")
     })()`), true)
     brokenNdjson(pendingSystemFailure)
     pendingSystemFailure = null
     await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]')?.classList.contains("cursor-missing") === true`, "ordinary System target B error", 15_000)
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]')?.click()`)
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') === null && document.querySelector('[data-testid="system-metric-mem_anon"]') === null && document.querySelector('[data-testid="system-panel-os_diskstats"]') === null`), true)
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"]') !== null`), true)
 
@@ -2576,7 +2627,7 @@ test("production health keeps staggered components on one stored evaluation", { 
 
     const readAt = async (hour, fragments) => {
       const evaluation = hour + 1_800_000_000
-      await cdp.send("Page.navigate", { url: `${origin}/?at=${evaluation}&view=host.system` })
+      await cdp.send("Page.navigate", { url: `${origin}/?at=${evaluation}&view=host.overview` })
       await cdp.waitFor(`document.querySelector('[data-primary] [data-testid="lane-reading"]') !== null`, "the health contract reading", 15_000)
       await cdp.waitFor(`(() => {
         const text = document.querySelector('[data-primary] [data-testid="lane-reading"]')?.textContent ?? ''
@@ -2619,7 +2670,7 @@ test("production health keeps staggered components on one stored evaluation", { 
       assert.match(output, /OS[^\d]*84%/)
       assert.doesNotMatch(output, /PostgreSQL/)
     }
-    assert.equal(await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[1].disabled`), true)
+    assert.equal(await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[2].disabled`), true)
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
   } finally {
@@ -2672,7 +2723,9 @@ test("production System projections show exact CPU memory and device readings", 
     await enablePage(cdp)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width: 1280 })
     await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
-    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=host.system` })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=host.overview` })
+    await cdp.waitFor(`document.querySelector('[data-testid^="host-section-"]') !== null`, "the host sections", 15_000)
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]')?.click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"] strong')?.textContent === "0.9"`, "the exact CPU projection", 15_000)
 
     const card = async (id) => cdp.evaluate(`document.querySelector('[data-testid="system-metric-${id}"] strong')?.textContent ?? null`)
@@ -2685,6 +2738,7 @@ test("production System projections show exact CPU memory and device readings", 
       user: await card("cpu_user"),
     }, { available: "2", iowait: "5%", steal: "5%", system: "10%", used: "0.9", user: "25%" })
 
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]')?.click()`)
     await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-cpu-composition"] .u-over') !== null`, "the CPU contract chart")
     await waitForRequests(() => requests.some(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("section") === "os_cpu"))
@@ -2698,6 +2752,8 @@ test("production System projections show exact CPU memory and device readings", 
       /System CPU[^\d]*10%/, /I\/O wait[^\d]*5%/, /Steal[^\d]*5%/,
     ]) assert.match(cpu, expected)
 
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-memory"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-metric-mem_anon"]') !== null`, "the memory cards", 15_000)
     const memory = {
       anon: await card("mem_anon"), cache: await card("mem_file_cache"), free: await card("mem_free"),
       other: await card("mem_other"), reclaimable: await card("mem_s_reclaimable"), total: await card("mem_total"),
@@ -2708,6 +2764,7 @@ test("production System projections show exact CPU memory and device readings", 
       reclaimable: "64 KiB", total: "1 MiB", unreclaimable: "32 KiB",
     })
     assert.equal(256 + 192 + 64 + 32 + 128 + 352, 1024)
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-memory"]')?.click()`)
     await cdp.evaluate(`document.querySelector('[data-testid="system-metric-mem_anon"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-memory-composition"] .u-over') !== null`, "the memory contract chart")
     await waitForRequests(() => requests.some(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("section") === "os_meminfo"))
@@ -2722,6 +2779,7 @@ test("production System projections show exact CPU memory and device readings", 
       /Other memory[^\d]*352 KiB/,
     ]) assert.match(memoryTooltip, expected)
 
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-storage"]').click()`)
     await cdp.waitFor(`document.querySelectorAll('[data-testid="system-os_diskstats"] .entity-row').length === 2`, "the two projected devices", 15_000)
     const devices = await cdp.evaluate(`(() => {
       const table = document.querySelector('[data-testid="system-os_diskstats"]')
@@ -3779,7 +3837,9 @@ test("narrow controls stay contained and help never changes selection", { timeou
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width: 480 })
     await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 })
     await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
-    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=host.system` })
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=host.overview` })
+    await cdp.waitFor(`document.querySelector('[data-testid^="host-section-"]') !== null`, "the host sections", 15_000)
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]')?.click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "the narrow System view", 15_000)
     await settleLayout(cdp)
 
@@ -3828,6 +3888,7 @@ test("narrow controls stay contained and help never changes selection", { timeou
     await cdp.waitFor(`document.querySelector('[data-testid="hour-popover"]') === null`, "Escape closing the hour popover")
     assert.equal(await cdp.evaluate(`document.activeElement?.dataset.testid`), "hour-picker-trigger")
 
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]')?.click()`)
     await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]').click()`)
     const selectedMetric = await cdp.evaluate(`document.querySelector('.metric-choice > button[aria-pressed="true"]')?.dataset.testid`)
     await cdp.evaluate(`(() => {
@@ -3847,7 +3908,7 @@ test("narrow controls stay contained and help never changes selection", { timeou
     assert.equal(await cdp.evaluate(`document.querySelector('.lane-select[aria-pressed="true"]')?.textContent`), selectedLane)
     await cdp.evaluate(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }))`)
 
-    await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[1].click()`)
+    await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[2].click()`)
     await cdp.waitFor(`document.querySelector('.pg-tabs') !== null`, "the PostgreSQL tabs", 15_000)
     await cdp.evaluate(`([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent.includes('Activity')) ?? document.querySelectorAll('.pg-tabs button')[1]).click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"] .entity-header-cell > .label-help .help-dot') !== null`, "the Activity header help", 15_000)
@@ -3910,6 +3971,7 @@ test("narrow controls stay contained and help never changes selection", { timeou
     await cdp.evaluate(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }))`)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width: 960 })
     await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[0].click()`)
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]')?.click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "the 960px System view", 15_000)
     await settleLayout(cdp)
     await cdp.evaluate(`document.querySelector('[data-testid="hour-picker-trigger"]').click()`)

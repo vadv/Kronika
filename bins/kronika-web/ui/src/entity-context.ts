@@ -47,6 +47,17 @@ export function contextualRows(
   return filtered.length === 0 && exact !== null && contextMatches(exact, context) ? [exact] : filtered
 }
 
+// A system finding names the section that owns its resource; anything else
+// about the machine belongs to the overview.
+export function hostSectionForFinding(finding: Finding): "overview" | "cpu" | "memory" | "storage" | "network" {
+  const name = finding.logicalName
+  if (name === "os_cpu" || name === "os_loadavg" || name === "os_cgroup_cpu") return "cpu"
+  if (name === "os_memory" || name === "os_vmstat" || name === "os_cgroup_memory") return "memory"
+  if (name === "os_diskstats" || name === "os_mountinfo" || name === "os_cgroup_io") return "storage"
+  if (name === "os_netdev") return "network"
+  return "overview"
+}
+
 export function findingRoute(finding: Finding): FindingRoute {
   const name = finding.logicalName
   if (name === "os_process") return "processes"

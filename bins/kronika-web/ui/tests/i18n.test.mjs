@@ -73,8 +73,8 @@ test("project dictionaries cover the active UI keys", async () => {
   }
 
   const required = new Set([
-    ...["host", "postgresql", "events"].map((name) => `nav.${name}`),
-    ...["system", "processes"].map((name) => `section.${name}`),
+    ...["host", "processes", "postgresql", "events"].map((name) => `nav.${name}`),
+    ...["overview", "cpu", "memory", "storage", "network"].map((name) => `section.${name}`),
     ...["generic", "cpu", "memory", "disk"].map((name) => `lens.${name}`),
     ...["event", "known_bad", "spike"].map((name) => `locator.${name}`),
     ...["overview", "activity", "statements", "plans", "locks", "databases"].map((name) => `pg.section.${name}`),

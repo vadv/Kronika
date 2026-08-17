@@ -7,7 +7,7 @@ test("an address survives a round trip through the query string", () => {
   const address = {
     ...DEFAULT_ADDRESS,
     at: 1_786_445_580_254_226,
-    view: "host.processes" as const,
+    view: "processes" as const,
     lens: "cpu" as const,
     pgLens: "load" as const,
     sort: { column: "utime", descending: true },
@@ -50,7 +50,7 @@ test("an unreadable value falls back instead of failing", () => {
   const address = readAddress("at=tomorrow&view=host.klingon&lens=quantum&sort=")
 
   assert.equal(address.at, null)
-  assert.equal(address.view, "host.processes")
+  assert.equal(address.view, "processes")
   assert.equal(address.lens, "cpu")
   assert.equal(address.sort, null)
 })
@@ -76,7 +76,7 @@ test("PostgreSQL lenses survive navigation only on their tables", () => {
   assert.equal(readAddress("view=pg.statements&pg_lens=stability").pgLens, "stability")
   assert.equal(writeAddress({ ...DEFAULT_ADDRESS, view: "pg.plans", pgLens: "timing" }), "/?view=pg.plans&pg_lens=timing")
   assert.equal(readAddress("view=pg.plans&pg_lens=timing").pgLens, "timing")
-  assert.equal(writeAddress({ ...DEFAULT_ADDRESS, view: "host.system", pgLens: "io" }), "/?view=host.system")
+  assert.equal(writeAddress({ ...DEFAULT_ADDRESS, view: "host.overview", pgLens: "io" }), "/?view=host.overview")
   assert.equal(readAddress("view=pg.plans&pg_lens=regression").pgLens, "load")
 })
 
