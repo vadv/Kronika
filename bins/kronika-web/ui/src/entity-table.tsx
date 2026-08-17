@@ -34,6 +34,7 @@ export interface EntityColumn {
   readonly width?: number
   readonly sticky?: boolean | string
   readonly sortable?: boolean
+  readonly available?: ((row: DataRow) => boolean) | undefined
 }
 
 export interface TableOrder {

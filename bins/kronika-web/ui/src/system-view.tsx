@@ -277,7 +277,8 @@ export const SYSTEM_ENTITIES: readonly {
   },
   {
     section: "os_topology", label: "system.entities.topology",
-    columns: [id("cpu_id", 90, true), id("socket_id"), id("core_id"), id("numa_node"), text("model_name", 300), number("mhz_max")],
+    columns: [id("cpu_id", 90, true), id("socket_id"), id("core_id"), id("numa_node"), text("model_name", 300), number("mhz_max")]
+      .map((column) => ({ ...column, chartable: false })),
   },
 ]
 
@@ -359,9 +360,11 @@ export function SystemView({
   historyRevision,
   hour,
   locale,
+  metric,
   onCursor,
   onContextClear,
   onFinding,
+  onMetric,
   tablesLoading = false,
   t,
 }: {
@@ -374,9 +377,11 @@ export function SystemView({
   readonly historyRevision: number
   readonly hour: number
   readonly locale: Locale
+  readonly metric: string | null
   readonly onCursor: (timestamp: number) => void
   readonly onContextClear: () => void
   readonly onFinding: (finding: Finding) => void
+  readonly onMetric: (metric: string | null) => void
   readonly tablesLoading?: boolean | undefined
   readonly t: Translate
 }) {
@@ -384,19 +389,34 @@ export function SystemView({
   const available = useMemo(() => SYSTEM_METRICS.map((spec) => ({ points: metricPoints(data, spec), spec }))
     .filter(({ points }) => points.some((point) => point.value !== null && Number.isFinite(point.value))), [data])
   const sectionMetrics = useMemo(() => available.filter(({ spec }) => spec.group === section), [available, section])
-  const [selected, setSelected] = useState(available[0]?.spec.id ?? "")
-  const [dockOpen, setDockOpen] = useState(false)
-  // Only an empty startup selection is auto-resolved. A chosen metric stays
-  // chosen across refresh swaps that briefly hide its section — the dock must
-  // not abandon the resource mid-read.
+  const [dismissedOverview, setDismissedOverview] = useState(false)
+  const autoMetric = useRef<string | null>(null)
+  // Overview opens on the first metric that has a factual sample. A metric in
+  // the address is an explicit operator choice and is never replaced here.
   useEffect(() => {
     const first = available[0]
-    if (selected !== "" || first === undefined) return
-    setSelected(first.spec.id)
-  }, [available, selected])
+    if (section !== "overview" || dismissedOverview || first === undefined) return
+    if (metric === null) {
+      autoMetric.current = first.spec.id
+      onMetric(first.spec.id)
+      return
+    }
+    if (autoMetric.current !== metric) {
+      autoMetric.current = null
+      return
+    }
+    if (first.spec.id !== metric) {
+      autoMetric.current = first.spec.id
+      onMetric(first.spec.id)
+    }
+  }, [available, dismissedOverview, metric, onMetric, section])
+  useEffect(() => {
+    if (section !== "overview") setDismissedOverview(false)
+  }, [section])
   const openMetric = (id: string) => {
-    setSelected(id)
-    setDockOpen(true)
+    autoMetric.current = null
+    setDismissedOverview(false)
+    onMetric(id)
   }
   const appliedFocus = useRef<Finding | null>(null)
   useEffect(() => {
@@ -414,11 +434,11 @@ export function SystemView({
       ?? (fallback === null ? undefined : available.find(({ spec }) => spec.id === fallback))
     if (match !== undefined) {
       appliedFocus.current = focus
-      setSelected(match.spec.id)
-      setDockOpen(true)
+      autoMetric.current = null
+      onMetric(match.spec.id)
     }
-  }, [available, data, focus])
-  const selectedSpec = SYSTEM_METRICS.find((spec) => spec.id === selected) ?? available[0]?.spec
+  }, [available, data, focus, onMetric])
+  const selectedSpec = metric === null ? undefined : SYSTEM_METRICS.find((spec) => spec.id === metric)
   // The spec comes from the static catalog so the dock keeps its frame while
   // its section is mid-reload; the points honestly empty out for that window.
   const selectedMetric = selectedSpec === undefined ? undefined : {
@@ -426,7 +446,7 @@ export function SystemView({
     spec: selectedSpec,
   }
   const selectedResource = selectedMetric === undefined ? null : metricResource(selectedMetric.spec)
-  const dockShown = chartsVisible && dockOpen && selectedMetric !== undefined
+  const dockShown = chartsVisible && selectedMetric !== undefined
   const dockMeta = useMemo(() => {
     if (selectedMetric === undefined) return { chips: [] as readonly MetricSpec[], chartChip: (id: string) => id }
     const group = selectedMetric.spec.group
@@ -474,8 +494,8 @@ export function SystemView({
         group={selectedMetric.spec.group}
         label={`section.${selectedMetric.spec.group}`}
         metrics={dockMeta.chips}
-        onClose={() => setDockOpen(false)}
-        onSelect={setSelected}
+        onClose={() => { setDismissedOverview(true); onMetric(null) }}
+        onSelect={openMetric}
         selected={dockMeta.chartChip(selectedMetric.spec.id)}
         t={t}
       />}

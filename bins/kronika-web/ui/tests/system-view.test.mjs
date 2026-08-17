@@ -65,6 +65,13 @@ test("system histories omit rows whose layout does not own the selected field", 
   assert.deepEqual(helpers.metricPoints(direct, { ...spec, field: "oom_kill", section: "os_vmstat", series: "missing" }).map((point) => [point.timestamp, point.value]), [[1, 1], [3, null]])
 })
 
+test("CPU topology is a static table without selection history", () => {
+  const topology = helpers.SYSTEM_ENTITIES.find(({ section }) => section === "os_topology")
+  assert.ok(topology)
+  assert.equal(topology.columns.every(({ chartable }) => chartable === false), true)
+  assert.deepEqual(helpers.chartableEntityColumns(topology.columns), [])
+})
+
 test("system cards derive production values when fixture-only series are absent", () => {
   const cpu = (timestamp, user, system, idle) => ({
     logicalName: "os_cpu", ordinal: String(timestamp), segmentId: "a", timestamp, typeId: "1102001",
@@ -538,7 +545,7 @@ test("the committed hour supplies only honest System metrics with complete histo
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
 })
 
-test("System keeps the audited balanced groups and opens charts only inside the dock", async () => {
+test("System keeps the audited groups and opens Overview on factual CPU history", async () => {
   const [source, styles] = await Promise.all([
     readFile(new URL("../src/system-view.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
@@ -548,18 +555,16 @@ test("System keeps the audited balanced groups and opens charts only inside the 
   assert.match(source, /SECTION_ENTITIES: Readonly<Record<HostSection, readonly string\[\]>>/)
   assert.match(source, /storage: \["os_diskstats", "os_mountinfo", "os_cgroup_io"\]/)
   assert.match(source, /const sectionMetrics = useMemo\(\(\) => available\.filter\(\(\{ spec \}\) => spec\.group === section\)/)
-  // The dock, not a standing console chart: closed by default, opened by a Use
-  // row or a metric chip, dismissed like the PostgreSQL detail panel.
-  assert.match(source, /useState\(false\)/)
+  // Overview resolves its first factual metric while an explicit URL metric
+  // remains authoritative. The chart still lives only in the dock.
+  assert.match(source, /section !== "overview" \|\| dismissedOverview \|\| first === undefined/)
+  assert.match(source, /if \(metric === null\) \{[\s\S]*autoMetric\.current = first\.spec\.id[\s\S]*onMetric\(first\.spec\.id\)/)
+  assert.match(source, /if \(autoMetric\.current !== metric\) \{[\s\S]*autoMetric\.current = null/)
   assert.match(source, /dockShown && selectedMetric !== undefined && <SystemDock/)
   assert.match(source, /data-testid="system-dock"/)
   assert.match(source, /useDetailDismiss\(onClose, `system:\$\{group\}`\)/)
-  assert.match(source, /chartsVisible && dockOpen/)
-  // A chosen metric survives a refresh swap that briefly hides its section:
-  // only the empty startup selection auto-resolves, and the dock reads the
-  // spec from the static catalog, not from the presence of points.
-  assert.match(source, /selected !== "" \|\| first === undefined/)
-  assert.match(source, /SYSTEM_METRICS\.find\(\(spec\) => spec\.id === selected\)/)
+  assert.match(source, /chartsVisible && selectedMetric !== undefined/)
+  assert.match(source, /SYSTEM_METRICS\.find\(\(spec\) => spec\.id === metric\)/)
   // Entity panels say loading while their snapshot catches up; only a section
   // the hour does not carry at all stays absent.
   assert.match(source, /rows\.length === 0 && activeContext === null && !tablesLoading/)

@@ -78,6 +78,19 @@ export function seriesStats(values: readonly number[]): SeriesStats | null {
   return { last: finite.at(-1)!, max: sorted.at(-1)!, min: sorted[0]!, p50: pick(0.5), p90: pick(0.9), p99: pick(0.99) }
 }
 
+export interface ChartStatsRow {
+  readonly line: RecordedSeries
+  readonly stats: SeriesStats
+}
+
+export function chartStatsRows(series: readonly RecordedSeries[], frame: ChartFrame): readonly ChartStatsRow[] {
+  return series.flatMap((line, ordinal) => {
+    const values = Array.from(frame.data[ordinal + 1] ?? []).filter((value): value is number => typeof value === "number")
+    const measured = seriesStats(values)
+    return measured === null ? [] : [{ line, stats: measured }]
+  })
+}
+
 const ISOLATE_ABOVE = 4
 
 // The operator's explicit choice wins; untouched state auto-isolates a crowded
@@ -305,15 +318,7 @@ export function UPlotChart({
 
   const summary = chartSummary(visibleSeries, frame, hour, end, locale, time)
   const isolatable = isolate !== undefined && series.length > 1
-  const statsLine = useMemo(() => {
-    if (!stats || visibleSeries.length !== 1) return null
-    const line = visibleSeries[0]!
-    const values = Array.from(frame.data[1] ?? []).filter((value): value is number => typeof value === "number")
-    const measured = seriesStats(values)
-    if (measured === null) return null
-    const format = (number: number) => line.value(number, locale)
-    return `min ${format(measured.min)} · max ${format(measured.max)} · last ${format(measured.last)} · p50 ${format(measured.p50)} · p90 ${format(measured.p90)} · p99 ${format(measured.p99)}`
-  }, [frame.data, locale, stats, visibleSeries])
+  const statsRows = useMemo(() => stats ? chartStatsRows(visibleSeries, frame) : [], [frame, stats, visibleSeries])
   return <figure
     aria-labelledby={expanded ? titleId : undefined}
     aria-modal={expanded ? "true" : undefined}
@@ -322,22 +327,22 @@ export function UPlotChart({
     ref={shell}
     role={expanded ? "dialog" : undefined}
   >
-    <figcaption className="mb-[5px] grid flex-none grid-cols-[minmax(0,1fr)_auto_auto] items-baseline gap-2 text-xs uppercase text-fg3 [.uplot-expanded_&]:min-h-11 [.uplot-expanded_&]:grid-cols-[minmax(0,1fr)_auto_44px] [.uplot-expanded_&]:items-center [.uplot-isolatable_&]:flex-wrap [.uplot-isolatable_&]:gap-y-1 max-[520px]:px-1 [.uplot-expanded_&]:max-[520px]:gap-1" id={titleId}>
+    <figcaption className="mb-[5px] grid min-h-[24px] flex-none grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 text-xs uppercase text-fg3 [.uplot-expanded_&]:min-h-11 [.uplot-expanded_&]:grid-cols-[minmax(0,1fr)_auto_44px] [.uplot-isolatable_&]:gap-y-1 max-[520px]:px-1 [.uplot-expanded_&]:max-[520px]:gap-1" id={titleId}>
       <span className={`chart-series-labels flex min-w-0 flex-auto items-center gap-1.5 [&::-webkit-scrollbar]:hidden ${isolatable ? "flex-wrap gap-y-1 overflow-visible whitespace-normal" : "overflow-x-auto whitespace-nowrap [scrollbar-width:none]"}`}>{isolatable && <button
         aria-pressed={isolatedId === null}
         className="series-pick min-h-5 cursor-pointer border border-line3 bg-s2 px-1.5 py-px text-xs text-fg2 hover:bg-s3 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg"
         data-testid={testId === undefined ? undefined : `${testId}-all`}
         onClick={() => setIsolatedChoice(null)}
         type="button"
-      >{t("chart.series.all")}</button>}{series.map((line) => isolatable
+      ><span aria-hidden="true" className="mr-1 inline-block h-1.5 w-1.5 bg-fg4" />{t("chart.series.all")}</button>}{series.map((line) => isolatable
         ? <span className="inline-flex min-w-0 items-center gap-0.5" key={line.id}><button
           aria-pressed={isolatedId === line.id}
           className="series-pick min-h-5 cursor-pointer border border-line3 bg-s2 px-1.5 py-px text-xs text-fg2 hover:bg-s3 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg"
           data-testid={testId === undefined ? undefined : `${testId}-series-${line.id}`}
           onClick={() => setIsolatedChoice(isolatedId === line.id ? null : line.id)}
           type="button"
-        >{line.label}</button><LabelHelp helpKey={line.helpKey} iconOnly labelKey={line.labelKey} t={t} /></span>
-        : <LabelHelp helpKey={line.helpKey} key={line.id} labelKey={line.labelKey} t={t} />)}</span>
+        ><span aria-hidden="true" className="mr-1 inline-block h-1.5 w-1.5" style={{ backgroundColor: `var(${chartColor(line.color)})` }} />{line.label}</button><LabelHelp helpKey={line.helpKey} iconOnly labelKey={line.labelKey} t={t} /></span>
+        : <span className="inline-flex min-w-0 items-center gap-1" key={line.id}><span aria-hidden="true" className="h-1.5 w-1.5 flex-none" style={{ backgroundColor: `var(${chartColor(line.color)})` }} /><LabelHelp helpKey={line.helpKey} labelKey={line.labelKey} t={t} /></span>)}</span>
       {reading !== undefined && <strong className={`chart-current col-start-2 min-w-0 flex-none [.timeline-chart_&]:max-w-[55%] [.timeline-chart_&]:overflow-hidden [.timeline-chart_&]:text-ellipsis [.uplot-expanded_&]:max-w-[min(42vw,36rem)] max-[520px]:[.uplot-expanded_&]:max-w-[40vw] overflow-hidden text-ellipsis whitespace-nowrap font-medium normal-case tabular-nums text-fg2 ${isolatable ? "ml-auto max-w-none" : ""}`}>{reading}</strong>}
       <button
         aria-label={expanded ? (locale === "ru" ? "Закрыть развёрнутый график" : "Close expanded chart") : (locale === "ru" ? "Развернуть график" : "Expand chart")}
@@ -349,10 +354,18 @@ export function UPlotChart({
     </figcaption>
     <p className="chart-summary absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]" id={summaryId}>{summary}</p>
     <div aria-describedby={summaryId} aria-label={drawnSeries.map(({ label, unit }) => `${label}${unit === "" ? "" : `, ${unit}`}`).join("; ")} className="uplot-host h-[180px] w-full min-w-0 max-w-full min-h-0 flex-auto overflow-hidden [&>.uplot]:h-full [&>.uplot]:!w-full [&_.u-wrap]:max-w-full [.timeline-chart_&]:h-auto [.timeline-chart_&]:min-h-[186px] max-[520px]:[.timeline-chart_&]:h-[186px] [.uplot-expanded_&]:h-auto [.uplot-expanded_&]:flex-auto [.timeline-chart.uplot-expanded_&]:min-h-0" ref={host} role="img" />
-    {statsLine !== null && <p className="mx-0 mb-0 mt-[3px] overflow-hidden text-ellipsis whitespace-nowrap text-xs tabular-nums text-fg3" data-testid="chart-stats">{statsLine}</p>}
+    {stats && <div className="mt-1 h-12 flex-none overflow-auto border-t border-line2 pt-1 text-[11px] tabular-nums text-fg3 [scrollbar-width:thin]" data-testid="chart-stats">
+      {statsRows.length !== 0 && <div className="grid min-w-[390px] grid-cols-[minmax(90px,1.6fr)_repeat(6,minmax(54px,1fr))] gap-x-2 px-1 text-right max-[520px]:min-w-0 max-[520px]:grid-cols-[minmax(90px,1.6fr)_repeat(3,minmax(54px,1fr))] [&>*:first-child]:text-left">
+        <span>{t("chart.stats.series")}</span><span>{t("chart.stats.last")}</span><span>{t("chart.stats.min")}</span><span>{t("chart.stats.max")}</span><span className="max-[520px]:hidden">{t("chart.stats.p50")}</span><span className="max-[520px]:hidden">{t("chart.stats.p90")}</span><span className="max-[520px]:hidden">{t("chart.stats.p99")}</span>
+        {statsRows.map(({ line, stats: measured }) => <div className="contents" key={line.id}>
+          <strong className="overflow-hidden text-ellipsis whitespace-nowrap text-left font-medium text-fg2"><span aria-hidden="true" className="mr-1 inline-block h-1.5 w-1.5" style={{ backgroundColor: `var(${chartColor(line.color)})` }} />{line.label}</strong>
+          <span className="text-fg2">{line.value(measured.last, locale)}</span><span>{line.value(measured.min, locale)}</span><span>{line.value(measured.max, locale)}</span><span className="max-[520px]:hidden">{line.value(measured.p50, locale)}</span><span className="max-[520px]:hidden">{line.value(measured.p90, locale)}</span><span className="max-[520px]:hidden">{line.value(measured.p99, locale)}</span>
+        </div>)}
+      </div>}
+    </div>}
     {status !== undefined && <div className="uplot-status pointer-events-none absolute bottom-7 right-0 z-[8] flex items-center justify-center left-[var(--chart-plot-left,0)] top-[var(--chart-plot-top,26px)] [&_[data-testid=series-status]]:min-h-0 [&_[data-testid=series-status]]:border [&_[data-testid=series-status]]:border-line2 [&_[data-testid=series-status]]:bg-s2 [&_[data-testid=series-status]]:px-[9px] [&_[data-testid=series-status]]:py-[3px]">{status}</div>}
     {markerLayer !== undefined && <div className="pointer-events-none absolute z-[7] h-[34px] left-[var(--chart-plot-left,62px)] top-[var(--chart-plot-top,25px)] w-[max(1px,calc(var(--chart-plot-width,calc(100%_-_70px))_-_var(--chart-marker-end-reserve,0px)))]" data-testid="chart-marker-track">{markerLayer}</div>}
-    {exact !== null && <div aria-hidden="true" className="chart-tooltip pointer-events-none grid max-w-[min(340px,82vw)] gap-[3px] border border-line4 bg-s2 p-[7px] text-xs shadow-[0_8px_20px_var(--color-shadow-a)] [&_small]:text-fg3 [&_span]:flex [&_span]:justify-between [&_span]:gap-2 [&_strong]:font-medium [&_strong]:text-fg [&_time]:flex [&_time]:justify-between [&_time]:gap-2">
+    {exact !== null && <div aria-hidden="true" className="chart-tooltip pointer-events-none absolute right-2 z-[9] grid max-w-[min(340px,calc(100%_-_16px))] gap-[3px] border border-line4 bg-s2/95 p-[7px] text-xs shadow-[0_8px_20px_var(--color-shadow-a)] top-[calc(var(--chart-plot-top,26px)+6px)] [&_span]:flex [&_span]:justify-between [&_span]:gap-3 [&_strong]:font-medium [&_strong]:text-fg [&_time]:flex [&_time]:justify-between [&_time]:gap-2" data-testid="chart-hover-readout">
       <time><strong>{exact.time}</strong></time>
       {exact.values.map(({ label, output, unit }) => <span key={label}>{label}{unit === "" ? "" : ` (${unit})`}<strong>{output}</strong></span>)}
     </div>}

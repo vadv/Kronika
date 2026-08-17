@@ -236,6 +236,7 @@ test("plan lenses keep bounded rows and direct per-plan statistics", () => {
     assert.ok(timing.fieldsByType["1003001"].includes(field))
   }
   assert.equal(timing.fieldsByType["1003001"].includes("queryid_stat_statements"), false)
+  assert.equal(timing.fieldsByType["1004001"].includes("queryid_stat_statements"), true)
   assert.deepEqual(timing.order.mean_exec_time_ms, ["mean_time"])
   assert.deepEqual(timing.order.first_call, ["first_call"])
   const identity = metrics.planRequest("identity")

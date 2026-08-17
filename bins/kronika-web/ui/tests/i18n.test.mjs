@@ -57,6 +57,7 @@ test("project dictionaries cover the active UI keys", async () => {
     "help.tsx",
     "hour-picker.tsx",
     "postgres-view.tsx",
+    "plan-view.tsx",
     "process-table.tsx",
     "system-view.tsx",
     "timeline.tsx",
@@ -107,6 +108,9 @@ test("plan copy identifies unavailable values and vadv attribution", async () =>
   assert.equal(russian["common.unavailable"], "—")
   assert.equal(english["pg.section.plans"], "Plans")
   assert.equal(russian["pg.section.plans"], "Plans")
+  for (const key of ["nav.host", "nav.processes", "nav.postgresql", "nav.events"]) {
+    assert.equal(russian[key], english[key])
+  }
   assert.equal(russian["pg.activity.idle"], "Idle")
   assert.equal(russian["pg.field.query_duration_ms.label"], "Query time")
   assert.equal(russian["pg.field.transaction_duration_ms.label"], "Xact time")

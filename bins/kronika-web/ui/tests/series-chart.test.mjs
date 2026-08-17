@@ -111,6 +111,8 @@ test("the frame stays while a metric resolves and collapses only for an hour wit
   assert.match(chart, /status !== undefined && <div className="uplot-status /)
   assert.match(chart, /uplot-figure[^`]*h-\[200px\]/)
   assert.match(chart, /uplot-status pointer-events-none absolute/)
+  assert.match(chart, /chart-tooltip pointer-events-none absolute/)
+  assert.match(chart, /data-testid="chart-hover-readout"/)
 })
 
 test("a series uses only selected-hour points for emptiness, readout, and plotting", async () => {

@@ -123,3 +123,20 @@ test("relation selection is separate from hierarchy filters", () => {
   assert.equal(readAddress(written.slice(1)).row, selected)
   assert.equal(readAddress("view=pg.statements&row=hidden").row, null)
 })
+
+test("Host metric and plan-to-query context are URL-native and route-scoped", () => {
+  const target = { dbId: "16384", match: "last" as const, planId: "77", queryId: "42", sourceTypeId: "1004001", topLevel: null, userId: "10" }
+  const host = writeAddress({ ...DEFAULT_ADDRESS, view: "host.overview", metric: "cpu_used_cores" })
+  assert.equal(host, "/?view=host.overview&metric=cpu_used_cores")
+  assert.equal(readAddress(host.slice(1)).metric, "cpu_used_cores")
+  assert.equal(readAddress("?view=host.cpu&metric=cpu_user").metric, null)
+
+  const query = writeAddress({ ...DEFAULT_ADDRESS, at: 1_700_000_000_000_000, view: "pg.statements", statementTarget: target })
+  assert.equal(query, "/?at=1700000000000000&view=pg.statements&stmt_qid=42&stmt_dbid=16384&stmt_userid=10&stmt_match=last&stmt_source=1004001&stmt_plan=77")
+  assert.deepEqual(readAddress(query).statementTarget, target)
+  assert.deepEqual(readAddress("?view=pg.statements&stmt_qid=-42&stmt_dbid=16384&stmt_userid=10&stmt_match=exact&stmt_source=1003001&stmt_plan=-77").statementTarget, {
+    dbId: "16384", match: "exact", planId: "-77", queryId: "-42", sourceTypeId: "1003001", topLevel: null, userId: "10",
+  })
+  assert.equal(readAddress("?view=pg.plans&stmt_qid=42&stmt_dbid=1&stmt_userid=1&stmt_match=last&stmt_source=1004001&stmt_plan=77").statementTarget, null)
+  assert.equal(readAddress("?view=pg.statements&stmt_qid=0&stmt_dbid=1&stmt_userid=1&stmt_match=last&stmt_source=1004001&stmt_plan=77").statementTarget, null)
+})

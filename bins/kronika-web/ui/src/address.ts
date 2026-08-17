@@ -1,3 +1,5 @@
+import type { StatementTarget } from "./statement-navigation"
+
 export interface Address {
   readonly at: number | null
   readonly view: View
@@ -11,6 +13,8 @@ export interface Address {
   readonly sort: { readonly column: string; readonly descending: boolean } | null
   readonly row: string | null
   readonly find: string
+  readonly metric: string | null
+  readonly statementTarget: StatementTarget | null
 }
 
 export type View =
@@ -65,6 +69,8 @@ export const DEFAULT_ADDRESS: Address = {
   sort: null,
   row: null,
   find: "",
+  metric: null,
+  statementTarget: null,
 }
 
 export function readAddress(search: string): Address {
@@ -80,6 +86,7 @@ export function readAddress(search: string): Address {
   const datid = relation && pgLevel !== "database" ? oid("datid") : null
   const sort = parameters.get("sort") ?? ""
   const column = sort.startsWith("-") ? sort.slice(1) : sort
+  const statementTarget = resolvedView === "pg.statements" ? readStatementTarget(parameters) : null
   return {
     at: Number.isSafeInteger(at) && at > 0 ? at : null,
     view: resolvedView,
@@ -93,6 +100,8 @@ export function readAddress(search: string): Address {
     sort: column === "" ? null : { column, descending: sort.startsWith("-") },
     row: resolvedView === "processes" || relation ? parameters.get("row") : null,
     find: parameters.get("find") ?? "",
+    metric: resolvedView === "host.overview" && /^[a-z0-9_.-]+$/.test(parameters.get("metric") ?? "") ? parameters.get("metric") : null,
+    statementTarget,
   }
 }
 
@@ -112,8 +121,35 @@ export function writeAddress(address: Address): string {
   if ((address.view === "processes" || relation)
     && address.row !== null && address.row !== "") parameters.set("row", address.row)
   if (address.find !== "") parameters.set("find", address.find)
+  if (address.view === "host.overview" && address.metric !== null) parameters.set("metric", address.metric)
+  if (address.view === "pg.statements" && address.statementTarget !== null) writeStatementTarget(parameters, address.statementTarget)
   const query = parameters.toString()
   return query === "" ? "/" : `/?${query}`
+}
+
+function readStatementTarget(parameters: URLSearchParams): StatementTarget | null {
+  const unsigned = (name: string) => /^\d+$/.test(parameters.get(name) ?? "") ? parameters.get(name) : null
+  const signed = (name: string) => /^-?\d+$/.test(parameters.get(name) ?? "") ? parameters.get(name) : null
+  const queryId = signed("stmt_qid")
+  const dbId = unsigned("stmt_dbid")
+  const userId = unsigned("stmt_userid")
+  const planId = signed("stmt_plan")
+  const sourceTypeId = unsigned("stmt_source")
+  const match = parameters.get("stmt_match")
+  const top = parameters.get("stmt_top")
+  if (queryId === null || queryId === "0" || dbId === null || userId === null || planId === null || sourceTypeId === null
+    || (match !== "exact" && match !== "last") || (top !== null && top !== "true" && top !== "false")) return null
+  return { dbId, match, planId, queryId, sourceTypeId, topLevel: top === null ? null : top === "true", userId }
+}
+
+function writeStatementTarget(parameters: URLSearchParams, target: StatementTarget): void {
+  parameters.set("stmt_qid", target.queryId)
+  parameters.set("stmt_dbid", target.dbId)
+  parameters.set("stmt_userid", target.userId)
+  if (target.topLevel !== null) parameters.set("stmt_top", String(target.topLevel))
+  parameters.set("stmt_match", target.match)
+  parameters.set("stmt_source", target.sourceTypeId)
+  parameters.set("stmt_plan", target.planId)
 }
 
 export function viewOf(source: string, hostSection: string, pgSection: string): View {

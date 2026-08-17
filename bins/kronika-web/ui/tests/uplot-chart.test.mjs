@@ -4,7 +4,7 @@ import test from "node:test"
 
 import { importModule } from "./import-module.mjs"
 
-const chart = await importModule('export { alignRecordedSeries, axisTimeLabel, chartSecondsUseful, chartSummary, compactChartTime, effectiveIsolation, exactReadings, isolatedSampleIndices, nearestRecordedTimestamp, sampleText, scalePartitions, scaleRange, seriesStats } from "../src/uplot-chart.tsx"; export { createDisplayTimeFormatter } from "../src/display-time.ts"; export { compact, humanPercent } from "../src/model.ts"')
+const chart = await importModule('export { alignRecordedSeries, axisTimeLabel, chartSecondsUseful, chartStatsRows, chartSummary, compactChartTime, effectiveIsolation, exactReadings, isolatedSampleIndices, nearestRecordedTimestamp, sampleText, scalePartitions, scaleRange, seriesStats } from "../src/uplot-chart.tsx"; export { createDisplayTimeFormatter } from "../src/display-time.ts"; export { compact, humanPercent } from "../src/model.ts"')
 
 const format = (value) => String(value)
 const line = (id, unit, scale, points) => ({ color: "cyan", helpKey: `${id}.help`, id, label: id, labelKey: `${id}.label`, points, scale, unit, value: format })
@@ -16,6 +16,18 @@ test("series stats are the nearest-rank percentiles of exactly the drawn samples
   assert.deepEqual(chart.seriesStats(hundred), { last: 100, max: 100, min: 1, p50: 50, p90: 90, p99: 99 })
   // Time order, not size order, picks the last sample; non-finite values drop out.
   assert.deepEqual(chart.seriesStats([9, 1, 5, Number.NaN, 3]), { last: 3, max: 9, min: 1, p50: 3, p90: 9, p99: 9 })
+})
+
+test("statistics stay associated with every visible series", () => {
+  const series = [
+    line("cpu", "%", "percent", [{ segmentId: "a", timestamp: 1, value: 10 }, { segmentId: "a", timestamp: 2, value: 20 }]),
+    line("wait", "%", "percent", [{ segmentId: "a", timestamp: 1, value: null }, { segmentId: "a", timestamp: 2, value: 3 }]),
+  ]
+  const rows = chart.chartStatsRows(series, chart.alignRecordedSeries(series))
+  assert.deepEqual(rows.map(({ line: shown, stats }) => [shown.id, stats]), [
+    ["cpu", { last: 20, max: 20, min: 10, p50: 10, p90: 20, p99: 20 }],
+    ["wait", { last: 3, max: 3, min: 3, p50: 3, p90: 3, p99: 3 }],
+  ])
 })
 
 test("a crowded chart isolates onto its anchor until the operator chooses", () => {

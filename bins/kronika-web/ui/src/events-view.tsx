@@ -109,7 +109,10 @@ export function EventsView({
         </div>
         <span className="text-xs tabular-nums text-fg3">{t("events.count", { "shown": visible.length, total: original })}{omitted > 0 ? ` · ${t("events.omitted", { count: omitted })}` : ""}</span>
         {scope !== null && <button className="min-h-[29px] cursor-pointer border border-line4 bg-s2 px-[9px] text-xs uppercase text-accent3" onClick={onShowAll} type="button">{t("events.show_all", { count: scope.length })}</button>}
-        <label className="flex h-[29px] items-center border border-line3 pl-[7px] text-[0] text-fg4"><Search aria-hidden="true" size={13} /><span>{t("events.search")}</span><input aria-label={t("events.search")} className="ml-1.5 h-[27px] w-[min(280px,30vw)] border-0 bg-transparent text-sm text-fg2 outline-none max-[760px]:w-full" onChange={(event) => setSearch(event.target.value)} type="search" value={search} /></label>
+        <label className="grid h-[29px] grid-cols-[20px_minmax(0,1fr)] items-center border border-line3 px-[5px] text-fg4 max-[760px]:w-full">
+          <span aria-hidden="true" className="grid h-full w-5 place-items-center"><Search size={13} /></span>
+          <input aria-label={t("events.search")} className="h-[27px] min-w-0 w-[min(280px,30vw)] border-0 bg-transparent px-1 text-sm text-fg2 outline-none placeholder:text-fg4 max-[760px]:w-full" onChange={(event) => setSearch(event.target.value)} placeholder={t("events.search")} type="search" value={search} />
+        </label>
       </header>
       <div className={`grid min-h-[430px] charts-hidden:min-h-0 charts-hidden:flex-1 max-[760px]:grid-cols-[minmax(0,1fr)] ${active === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(360px,.78fr)_minmax(0,1.22fr)]"}`}>
         <div className={`h-[min(570px,calc(100vh-360px))] min-h-[390px] overflow-auto border-line2 charts-hidden:h-auto charts-hidden:min-h-0 max-[760px]:h-[260px] max-[760px]:min-h-[180px] max-[760px]:border-r-0 ${active === null ? "" : "border-r"}`} ref={list} role="list">
