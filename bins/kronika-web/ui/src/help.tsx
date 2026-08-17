@@ -98,13 +98,16 @@ export function LabelHelp({
   }, [open, t(helpKey)])
   return (
     <>
-      <span className="label-help" onMouseEnter={enter} onMouseLeave={leave} ref={root}>
+      {/* Touch needs a large target, not a large mark: in a table head the mark
+          steps in by its own reach and grows an invisible 36x36 target, which
+          fits inside the cell and takes nothing from the next column. */}
+      <span className="label-help relative inline-flex items-center [&>*+*]:ml-[5px] [.detail-dt_&]:block [.detail-dt_&]:max-w-full [.detail-dt_&>span]:block [.detail-dt_&>span]:w-fit [.detail-dt_&>span]:max-w-full [.detail-dt_&>span]:overflow-hidden [.detail-dt_&>span]:text-ellipsis [.detail-dt_&>span]:whitespace-nowrap [.detail-dt_&>span]:border-b [.detail-dt_&>span]:border-dotted [.detail-dt_&>span]:border-line4 [.lane-label>&]:flex-none [.chart-series-labels>&]:flex-none [.chart-series-labels>&+&]:before:mr-1.5 [.chart-series-labels>&+&]:before:text-fg4 [.chart-series-labels>&+&]:before:content-['·'] [.chart-series-labels_&>span]:overflow-hidden [.chart-series-labels_&>span]:text-ellipsis [.chart-series-labels_&>span]:whitespace-nowrap [.series-reading>&]:min-w-0 [.series-reading>&>span]:overflow-hidden [.series-reading>&>span]:text-ellipsis [.series-reading>&>span]:whitespace-nowrap [.use-cell>&]:absolute [.use-cell>&]:right-[7px] [.use-cell>&]:top-1.5 [.metric-choice>&]:absolute [.metric-choice>&]:right-[7px] [.metric-choice>&]:top-[7px] [.metric-grid_&]:max-w-full [.metric-grid_&]:text-xs [.metric-grid_&]:uppercase [.metric-grid_&]:tracking-[.025em] [.entity-header-cell>&]:ml-1 [.entity-header-cell>&]:flex-none [.entity-header-cell>&]:opacity-0 [.entity-header-cell>&]:pointer-events-none [.entity-header-cell>&]:transition-opacity [.entity-header-cell>&]:duration-[120ms] [.entity-header-cell:hover>&]:opacity-100 [.entity-header-cell:hover>&]:pointer-events-auto [.entity-header-cell:focus-within>&]:opacity-100 [.entity-header-cell:focus-within>&]:pointer-events-auto coarse:[.entity-header-cell>&]:ml-0 coarse:[.entity-header-cell>&]:mr-[11px] coarse:[.entity-header-cell>&]:h-9 coarse:[.entity-header-cell>&]:self-stretch coarse:[.entity-header-cell>&]:opacity-100 coarse:[.entity-header-cell>&]:pointer-events-auto" onMouseEnter={enter} onMouseLeave={leave} ref={root}>
         {!iconOnly && <span>{t(labelKey)}</span>}
         <button
           aria-describedby={open ? id : undefined}
           aria-expanded={open}
           aria-label={`${t(labelKey)} — ${t("help.open")}`}
-          className="help-dot"
+          className="help-dot inline-flex h-3.5 w-3.5 cursor-help items-center justify-center rounded-full border border-line4 bg-s2 p-0 text-xs leading-none text-accent3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent [.series-reading_&]:flex-none [.chart-series-labels_&]:flex-none [.detail-dt_&]:absolute [.detail-dt_&]:inset-0 [.detail-dt_&]:m-0 [.detail-dt_&]:w-auto [.detail-dt_&]:border-0 [.detail-dt_&]:opacity-0 [.detail-dt_&]:focus-visible:opacity-100 coarse:[.entity-header-cell_&]:relative coarse:[.entity-header-cell_&]:after:absolute coarse:[.entity-header-cell_&]:after:-inset-[11px] coarse:[.entity-header-cell_&]:after:content-['']"
           data-testid={testId}
           onBlur={close}
           onClick={() => {

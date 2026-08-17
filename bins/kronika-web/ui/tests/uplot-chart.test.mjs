@@ -159,12 +159,12 @@ test("y-axis labels carry only the unit, series names live in the caption", asyn
 
 test("the built-in legend stays hidden and chart titles use portal help metadata", async () => {
   const source = await readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8")
-  const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8")
+  const help = await readFile(new URL("../src/help.tsx", import.meta.url), "utf8")
   assert.match(source, /legend: \{ show: false \}/)
   assert.match(source, /chart-series-labels/)
   assert.match(source, /<LabelHelp helpKey=\{line\.helpKey\}/)
   assert.match(source, /chart-series-labels[\s\S]{0,300}?overflow-x-auto/)
-  assert.match(styles, /\.chart-series-labels \.help-dot \{[^}]*flex: 0 0 auto;/)
+  assert.match(help, /\[\.chart-series-labels_&\]:flex-none/)
 })
 
 test("expanded charts keep one bounded action and restore both page scroll locks", async () => {

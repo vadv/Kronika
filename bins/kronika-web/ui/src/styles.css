@@ -69,6 +69,8 @@
 @keyframes loading-spin { to { transform: rotate(360deg); } }
 
 @custom-variant charts-hidden (&:where(.charts-hidden *));
+/* A touch pointer, at any width: the help mark needs a real target there. */
+@custom-variant coarse (@media (hover: none), (pointer: coarse));
 
 /* The detail key/value row, shared by the process dock, the PostgreSQL detail
    and the event detail. */
@@ -99,10 +101,6 @@
 }
 /* The help label inside a detail dt keeps the dotted mark and a full-area
    invisible hit target. */
-.detail-dt .label-help { display: block; max-width: 100%; }
-.detail-dt .label-help > span { border-bottom: 1px dotted var(--color-line4); display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: fit-content; }
-.detail-dt .help-dot { border: 0; bottom: 0; left: 0; margin: 0; opacity: 0; position: absolute; right: 0; top: 0; width: auto; }
-.detail-dt .help-dot:focus-visible { opacity: 1; }
 
 /* PostgreSQL screen components. Repeated compositions live as utilities so the
    markup stays readable and the rules stay inside the utilities layer. */
@@ -270,11 +268,7 @@ h2 { font-size: var(--text-md); }
    drop the pin and shift the column by its own offset. */
 /* The single infinite animation a screen may have: data is on its way.
    Inline with the message — the card grows by nothing. */
-.label-help { align-items: center; display: inline-flex; position: relative; }
-.label-help > * + * { margin-left: 5px; }
-.help-dot { align-items: center; background: var(--color-s2); border: 1px solid var(--color-line4); border-radius: 50%; color: var(--color-accent3); cursor: help; display: inline-flex; font-size: var(--text-xs); height: 14px; justify-content: center; line-height: 1; padding: 0; width: 14px; }
-.help-dot:focus-visible, button:focus-visible, .entity-row:focus-visible, .entity-scroll:focus-visible { outline: 2px solid var(--color-accent); }
-.lane-label > .label-help { flex: 0 0 auto; }
+button:focus-visible { outline: 2px solid var(--color-accent); }
 .uplot-figure.timeline-chart { flex: 0 0 216px; height: 216px; min-height: 216px; padding: 7px 7px 3px; }
 .timeline-chart .uplot-host { height: auto; min-height: 186px; }
 .timeline-chart .chart-current { max-width: 55%; overflow: hidden; text-overflow: ellipsis; }
@@ -291,17 +285,11 @@ h2 { font-size: var(--text-md); }
 .metric-grid > button { background: var(--color-s1); border: 0; border-bottom: 1px solid var(--color-line); border-right: 1px solid var(--color-line); color: var(--color-fg3); cursor: pointer; min-height: 60px; padding: 7px 8px; text-align: left; }
 .metric-grid > button:hover { background: var(--color-s3); }
 .metric-grid > button[aria-pressed="true"] { background: var(--color-s4); box-shadow: inset 2px 0 var(--color-accent); color: var(--color-accent3); }
-.process-summary > button span, .metric-grid .label-help { font-size: var(--text-xs); max-width: 100%; text-transform: uppercase; }
-.metric-grid .label-help { letter-spacing: .025em; }
+.process-summary > button span { font-size: var(--text-xs); max-width: 100%; text-transform: uppercase; }
 .metric-grid > button strong { color: var(--color-fg); display: block; font-size: var(--text-md); font-variant-numeric: tabular-nums; font-weight: 560; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .uplot-figure figcaption { align-items: baseline; color: var(--color-fg3); display: flex; font-size: var(--text-xs); gap: 8px; margin-bottom: 5px; text-transform: uppercase; }
-.series-reading > .label-help > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.series-reading .help-dot, .chart-series-labels .help-dot { flex: 0 0 auto; }
 /* A picker legend wraps instead of hiding members behind a scroll edge. */
 .uplot-isolatable figcaption { flex-wrap: wrap; row-gap: 4px; }
-.chart-series-labels > .label-help { flex: 0 0 auto; }
-.chart-series-labels > .label-help + .label-help::before { color: var(--color-fg4); content: "·"; margin-right: 6px; }
-.chart-series-labels .label-help > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .uplot-figure { display: flex; flex-direction: column; height: 200px; margin: 0; max-width: 100%; min-width: 0; overflow: hidden; position: relative; }
 .uplot-figure figcaption { display: grid; flex: 0 0 auto; grid-template-columns: minmax(0, 1fr) auto auto; }
 .uplot-host { flex: 1 1 auto; height: 180px; max-width: 100%; min-height: 0; min-width: 0; overflow: hidden; width: 100%; }
@@ -316,14 +304,10 @@ h2 { font-size: var(--text-md); }
 .chart-marker-track { height: 34px; left: var(--chart-plot-left, 62px); pointer-events: none; position: absolute; top: var(--chart-plot-top, 25px); width: max(1px, calc(var(--chart-plot-width, calc(100% - 70px)) - var(--chart-marker-end-reserve, 0px))); z-index: 7; }
 .uplot-status { align-items: center; bottom: 28px; display: flex; justify-content: center; left: var(--chart-plot-left, 0); pointer-events: none; position: absolute; right: 0; top: var(--chart-plot-top, 26px); z-index: 8; }
 .uplot-status .series-status { background: var(--color-s2); border: 1px solid var(--color-line2); min-height: 0; padding: 3px 9px; }
-.use-cell > .label-help { position: absolute; right: 7px; top: 6px; }
-.metric-choice > .label-help { position: absolute; right: 7px; top: 7px; }
 .system-entity-history .series-chart { padding-top: 4px; }
 /* Scrolling something into view parks it flush against the port, where the
    scrollbar clips whatever reaches past its box: a focus outline, a touch
    target. The padding keeps that reach on screen. */
-.entity-header-cell > .label-help { flex: 0 0 auto; margin-left: 4px; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
-.entity-header-cell:hover > .label-help, .entity-header-cell:focus-within > .label-help { opacity: 1; pointer-events: auto; }
 
 .pg-tabs { background: var(--color-s1); border: 1px solid var(--color-line2); display: flex; margin-top: 8px; min-height: 35px; overflow-x: auto; }
 .pg-tabs button { align-items: center; background: transparent; border: 0; border-right: 1px solid var(--color-line2); color: var(--color-fg3); cursor: pointer; display: flex; flex: 0 0 auto; font-size: var(--text-xs); gap: 6px; letter-spacing: .04em; padding: 0 13px; text-transform: uppercase; }
@@ -384,18 +368,6 @@ h2 { font-size: var(--text-md); }
   .uplot-expanded { padding: max(8px, env(safe-area-inset-top, 0px)) max(4px, env(safe-area-inset-right, 0px)) max(8px, env(safe-area-inset-bottom, 0px)) max(4px, env(safe-area-inset-left, 0px)); }
   .uplot-expanded figcaption { gap: 4px; }
   .uplot-expanded .chart-current { max-width: 40vw; }
-}
-
-@media (hover: none), (pointer: coarse) {
-  .entity-head { height: 36px; }
-  .entity-header-cell > .label-help { align-self: stretch; height: 36px; margin-left: 0; margin-right: 11px; opacity: 1; pointer-events: auto; }
-  /* Touch needs a large target, not a large mark: the dot keeps its size and
-     grows an invisible one around it. Flush against the column edge that reach
-     was clipped by the table's scroll box down to 6px, so the mark steps in by
-     its own reach and the target fits inside the cell: 36x36, taking nothing
-     from the neighbouring column. */
-  .entity-header-cell > .label-help .help-dot { position: relative; }
-  .entity-header-cell > .label-help .help-dot::after { content: ""; inset: -11px; position: absolute; }
 }
 
 @media (min-width: 761px) and (max-width: 1000px) {
