@@ -695,7 +695,7 @@ function PgDetail({ allRows, columns, cursor, historyField, historyRevision, hou
       <SeriesChart cursor={cursor} durationAxis={historyColumn.kind === "duration"} helpKey={historyColumn.help ?? "chart.metric.help"} hour={hour} labelKey={historyColumn.label} locale={locale} format={chartFormat(historyColumn.kind)} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} status={exactHistory.status} t={t} unit={chartUnit(historyColumn, t("unit.per_second"))} />
     </section>}</ChartOnly>
     {exactText !== null && <section className="query-block"><span>{t(section === "pg_store_plans" ? "pg.plan.label" : "pg.query.label")}<button aria-label={t("common.raw")} className="copy-raw" onClick={() => void navigator.clipboard?.writeText(exactText)} type="button"><Copy aria-hidden="true" size={12} /></button></span><pre data-testid={section === "pg_store_plans" ? "pg-exact-plan" : "pg-exact-query"}>{exactText}</pre></section>}
-    <dl>{fields.filter((column) => told(value(row, column.field))).map((column) => <div key={column.field}><dt><span>{column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}</span></dt><dd>{display(value(row, column.field), column, locale, t)}</dd></div>)}</dl>
+    <dl className="m-0 mt-2">{fields.filter((column) => told(value(row, column.field))).map((column) => <div className="detail-row max-[520px]:detail-row-stacked" key={column.field}><dt className="detail-dt">{column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}</dt><dd className="detail-dd max-[520px]:text-left">{display(value(row, column.field), column, locale, t)}</dd></div>)}</dl>
   </aside>
 }
 

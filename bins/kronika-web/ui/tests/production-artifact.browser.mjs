@@ -985,8 +985,8 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
 
     await cdp.evaluate(`([...document.querySelectorAll(".source-tabs button")].find((button) => button.textContent === "Events")).click()`)
-    await cdp.waitFor(`document.querySelector(".event-item button") !== null`, "the statement finding")
-    await cdp.evaluate(`document.querySelector(".event-item button").click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="event-item"] button') !== null`, "the statement finding")
+    await cdp.evaluate(`document.querySelector('[data-testid="event-item"] button').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="entity-context-filter"]') !== null`, "the exact statement context")
     await contextPage
     const preview = await cdp.evaluate(`(() => ({
@@ -1629,10 +1629,10 @@ test("the slow-query detail keeps readable labels and contained values", { timeo
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=events` })
     await cdp.waitFor(`document.querySelector('[data-testid="login-card"]') !== null`, "login form")
     await submitLogin(cdp)
-    await cdp.waitFor(`document.querySelector(".event-item button") !== null`, "the slow-query event")
-    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click(); document.querySelector(".event-item button").click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="event-item"] button') !== null`, "the slow-query event")
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click(); document.querySelector('[data-testid="event-item"] button').click()`)
     await cdp.waitFor(
-      `[...document.querySelectorAll(".event-detail dt")].some((label) => label.textContent.trim().toLocaleUpperCase("ru-RU") === "SAMPLE")`,
+      `[...document.querySelectorAll('[data-testid="event-detail"] dt')].some((label) => label.textContent.trim().toLocaleUpperCase("ru-RU") === "SAMPLE")`,
       "the resolved slow-query detail",
     )
     await settleLayout(cdp)
@@ -2101,7 +2101,7 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "No data in the selected hour"`, "visible process cards retained with charts hidden")
     assert.equal(await cdp.evaluate(`document.querySelector('.uplot-figure, .series-chart, .timeline-shell, .timeline-empty, .process-summary-history, .process-history') === null`), true)
     await cdp.evaluate(`([...document.querySelectorAll('.source-tabs button')].find((button) => button.textContent === "Events")).click()`)
-    await cdp.waitFor(`document.querySelector('.events-console') !== null`, "Events with charts hidden")
+    await cdp.waitFor(`document.querySelector('[data-testid="events-console"]') !== null`, "Events with charts hidden")
     assert.equal(await cdp.evaluate(`document.querySelector('.uplot-figure, .series-chart, .timeline-shell, .timeline-empty') === null`), true)
 
     const persistedSystemHistoryBefore = historyRequests("os_cpu").length
@@ -3046,7 +3046,7 @@ function slowQueryRecords() {
 
 function detailGeometryExpression() {
   return `(() => {
-    const rows = [...document.querySelectorAll(".event-detail dl > div")]
+    const rows = [...document.querySelectorAll('[data-testid="event-detail"] dl > div')]
     const byLabel = (text) => rows.find((row) => row.querySelector("dt")?.textContent.trim().toLocaleUpperCase("ru-RU") === text)
     const bounds = (node) => {
       const rect = node.getBoundingClientRect()
@@ -3081,7 +3081,7 @@ function detailGeometryExpression() {
     return {
       clientWidth: document.documentElement.clientWidth,
       innerWidth: window.innerWidth,
-      list: bounds(document.querySelector(".event-detail dl")),
+      list: bounds(document.querySelector('[data-testid="event-detail"] dl')),
       numeric,
       pattern: measured("PATTERN"),
       sample: measured("SAMPLE"),

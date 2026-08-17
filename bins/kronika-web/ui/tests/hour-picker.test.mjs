@@ -94,6 +94,9 @@ test("the combined picker has no native date/time controls or invented local hou
   assert.doesNotMatch(pickerSource, /ALL_HOURS|selectedHour|Date\.UTC/)
   assert.match(pickerSource, /data-instant=\{candidate\}/)
   assert.match(pickerSource, /document\.addEventListener\("pointerdown"/)
+  // The popover portals to body: no in-page stacking context can trap it.
+  assert.match(pickerSource, /createPortal\(/)
+  assert.match(pickerSource, /document\.body\)/)
   assert.match(styles, /\.day-grid[^}]*grid-template-columns:\s*repeat\(7,/s)
   assert.match(styles, /\.hour-grid[^}]*grid-template-columns:\s*repeat\(3,/s)
   assert.match(styles, /\.hour-popover[^}]*calc\(100vw - 20px\)/s)

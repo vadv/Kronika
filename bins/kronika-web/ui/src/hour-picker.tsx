@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 
 import { calendarDateLabel, calendarMonthDays, calendarMonthLabel, type DisplayTimeFormatter } from "./display-time"
 import { useDisplayTime } from "./display-time-context"
@@ -27,6 +28,7 @@ export function HourPicker({
   const [month, setMonth] = useState(committedMonth)
   const [popover, setPopover] = useState<HourPopoverPlacement | null>(null)
   const root = useRef<HTMLDivElement>(null)
+  const popoverNode = useRef<HTMLDivElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
   const hourCells = useRef<(HTMLButtonElement | null)[]>([])
   const availableDays = useMemo(() => new Set(selectable.map((candidate) => time.dayKey(candidate))), [selectable, time])
@@ -41,7 +43,7 @@ export function HourPicker({
     const selected = dayHours.indexOf(hour ?? Number.NaN)
     const frame = requestAnimationFrame(() => hourCells.current[Math.max(0, selected)]?.focus())
     const dismiss = (event: PointerEvent) => {
-      if (event.target instanceof Node && root.current?.contains(event.target)) return
+      if (event.target instanceof Node && (root.current?.contains(event.target) || popoverNode.current?.contains(event.target))) return
       setOpen(false)
     }
     const escape = (event: globalThis.KeyboardEvent) => {
@@ -91,7 +93,7 @@ export function HourPicker({
     className="hour-picker"
     data-testid="hour-picker"
     onBlur={(event) => {
-      if (event.relatedTarget instanceof Node && root.current?.contains(event.relatedTarget)) return
+      if (event.relatedTarget instanceof Node && (root.current?.contains(event.relatedTarget) || popoverNode.current?.contains(event.relatedTarget))) return
       setOpen(false)
     }}
     ref={root}
@@ -113,7 +115,7 @@ export function HourPicker({
       {label !== null && <small>{label.date}</small>}
     </button>
     <button aria-label={t("hour.next")} data-testid="hour-next" disabled={currentIndex < 0 || currentIndex >= selectable.length - 1} onClick={() => move(currentIndex + 1)} type="button">›</button>
-    {open && hour !== null && <div aria-label={t("hour.picker")} className="hour-popover" data-testid="hour-popover" id="hour-picker-popover" role="dialog" style={popover ?? undefined}>
+    {open && hour !== null && createPortal(<div aria-label={t("hour.picker")} className="hour-popover" data-testid="hour-popover" id="hour-picker-popover" ref={popoverNode} role="dialog" style={popover ?? undefined}>
       <header>
         <strong data-testid="hour-current">{calendarDateLabel(time.dayKey(hour), locale)}</strong>
       </header>
@@ -136,7 +138,7 @@ export function HourPicker({
           return <button aria-label={clock} aria-pressed={candidate === hour} className="hour-cell" data-instant={candidate} key={candidate} onClick={() => { changeHour(candidate); setOpen(false); trigger.current?.focus() }} onKeyDown={(event) => { const next = pickerFocusIndex(index, event.key, dayHours.length); if (next !== null) { event.preventDefault(); hourCells.current[next]?.focus() } }} ref={(node) => { hourCells.current[index] = node }} tabIndex={candidate === hour || hour !== null && time.dayKey(hour) !== day && index === 0 ? 0 : -1} type="button">{clock}</button>
         })}
       </div>
-    </div>}
+    </div>, document.body)}
   </div>
 }
 
