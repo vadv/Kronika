@@ -189,9 +189,9 @@ function FindingDetail({ cursor, data, finding, history, hour, locale, onClose, 
 }
 
 function KindIcon({ kind }: { readonly kind: Finding["kind"] }): ReactNode {
-  if (kind === "event") return <CircleAlert aria-hidden="true" className="kind-event" size={15} />
-  if (kind === "known_bad") return <Diamond aria-hidden="true" className="kind-known_bad" size={15} />
-  return <TriangleAlert aria-hidden="true" className="kind-spike" size={15} />
+  if (kind === "event") return <CircleAlert aria-hidden="true" className="text-event" size={15} />
+  if (kind === "known_bad") return <Diamond aria-hidden="true" className="text-bad" size={15} />
+  return <TriangleAlert aria-hidden="true" className="text-warn" size={15} />
 }
 
 export function categoryLabel(category: number, t: Translate): string {

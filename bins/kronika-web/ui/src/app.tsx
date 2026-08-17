@@ -770,7 +770,7 @@ function App({ locale, onLocale, t }: {
   const updatedClock = lastUpdated === null ? null : time.clock(lastUpdated)
   return <ChartVisibilityProvider value={chartsVisible}><main className={`app-shell${stretchPostgres ? " pg-table-shell" : ""}${chartsVisible ? "" : " charts-hidden"}`}>
     <header className="topbar">
-      <span className="brand-mark"><Activity aria-hidden="true" size={15} strokeWidth={2} /></span>
+      <span className="flex flex-none items-center text-accent2"><Activity aria-hidden="true" size={15} strokeWidth={2} /></span>
       <h1>{t("app.title")}</h1>
 
       <nav aria-label={t("nav.sources")} className="source-tabs">
@@ -779,7 +779,7 @@ function App({ locale, onLocale, t }: {
         {eventsPresent && <button aria-current={visibleSource === "events" ? "page" : undefined} className={visibleSource === "events" ? "source-active" : undefined} onClick={() => { setEventScope(null); setSelectedFinding(null); setSource("events") }} type="button">{t("nav.events")}</button>}
       </nav>
 
-      {visibleSource === "host" && <div className="section-tabs" role="tablist">
+      {visibleSource === "host" && <div className="section-tabs flex items-center border border-line3 [&>button]:cursor-pointer [&>button]:border-0 [&>button]:bg-transparent [&>button]:px-[9px] [&>button]:py-[5px] [&>button]:text-xs [&>button]:uppercase [&>button]:text-fg3 [&>button[aria-selected=true]]:bg-s4 [&>button[aria-selected=true]]:text-accent3" role="tablist">
         <button aria-selected={visibleHostSection === "system"} onClick={() => setHostSection("system")} role="tab" type="button">{t("section.system")}</button>
         <button aria-selected={visibleHostSection === "processes"} data-testid="process-tab" onClick={() => setHostSection("processes")} role="tab" type="button">{t("section.processes")}</button>
       </div>}
@@ -789,7 +789,7 @@ function App({ locale, onLocale, t }: {
         <TimeValue label={t("hour.cursor_label")} output={cursorTime} testId="cursor-time" />
         {lastUpdated !== null && updatedClock !== null && <UpdatedAge at={lastUpdated} clock={updatedClock} locale={locale} t={t} />}
         {cursorState === "loading" && <span className="flex items-center gap-1.5 text-xs uppercase text-fg3" data-testid="cursor-behind" role="status"><span aria-hidden="true" className="loading-ring" />{t("status.updating")}</span>}
-        {cursorState === "missing" && <span className="cursor-missing" data-testid="cursor-behind">{t("status.no_sample")}</span>}
+        {cursorState === "missing" && <span className="cursor-missing ml-2 text-xs uppercase text-warn" data-testid="cursor-behind">{t("status.no_sample")}</span>}
         {refreshFailed && <span>{t("refresh.error")}</span>}
       </div>
 
@@ -809,7 +809,7 @@ function App({ locale, onLocale, t }: {
     </header>
 
     <section className={`workspace${stretchPostgres ? " pg-table-workspace" : ""}`}>
-      <p aria-live="polite" className="live-note">
+      <p aria-live="polite" className="absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]">
         {t(`nav.${visibleSource}`)}
         {visibleSource === "host" ? ` · ${t(`section.${visibleHostSection}`)}` : ""}
         {visibleSource === "postgresql" ? ` · ${t(`pg.section.${pgSection}`)}` : ""}
@@ -901,7 +901,7 @@ function StateCard({ busy = false, locale, message, progress, t }: {
   }, [progress === undefined]) // eslint-disable-line react-hooks/exhaustive-deps
   return <div className="grid min-h-[calc(100dvh-35px)] place-items-center p-4">
     <div className="w-full max-w-[440px] border border-line2 bg-s1 px-6 py-7 text-center shadow-[0_18px_55px_var(--color-shadow-a)]" data-testid="state-card" {...(busy ? { role: "status" } : {})}>
-      <p className="eyebrow">KRONIKA</p>
+      <p className="m-0 text-xs uppercase tracking-[.1em] text-fg4">KRONIKA</p>
       <h2 className="mt-2">{busy && <span aria-hidden="true" className="loading-ring" />}{message}</h2>
       {progress !== undefined && <p className="mt-2.5 text-xs tabular-nums text-fg3" data-testid="loading-detail">{progressDetail(progress, now, locale, t)}</p>}
     </div>

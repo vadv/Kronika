@@ -297,7 +297,7 @@ export function formatCell(kind: Field["kind"], cell: Cell, locale: Locale, t: T
 export function CellValue({ field, linked, locale, row, t, ticksPerSecond }: { readonly field: Field; readonly linked: boolean; readonly locale: Locale; readonly row: DataRow; readonly t: Translate; readonly ticksPerSecond: number | null }) {
   const cell = field.field === undefined ? null : value(row, field.field)
   const output = field.kind === "command" ? processCommand(row) : formatCell(field.kind, cell, locale, t, ticksPerSecond)
-  return <span className={`block overflow-hidden text-ellipsis whitespace-nowrap ${field.kind === "command" ? "w-full text-fg" : "numeric-cell tabular-nums"}`} title={output}>{field.kind === "command" && linked && <span className="pg-badge">PG</span>}{output}</span>
+  return <span className={`block overflow-hidden text-ellipsis whitespace-nowrap ${field.kind === "command" ? "w-full text-fg" : "numeric-cell tabular-nums"}`} title={output}>{field.kind === "command" && linked && <span className="mr-1.5 inline-block border border-accent-line bg-accent-soft px-1 py-0.5 align-[1px] text-xs font-bold tracking-[.06em] text-accent2">PG</span>}{output}</span>
 }
 
 function sortable(row: DataRow, field: Field): string | number | null {

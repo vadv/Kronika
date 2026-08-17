@@ -151,9 +151,9 @@ test("finding kinds have non-color shape identities", () => {
     const [marker] = helpers.groupFindings([finding(kind, 100, "1")], 0, 1_000, 100, 10)
     return renderToStaticMarkup(createElement(helpers.FindingMarker, { marker, onActivate() {}, share: 0.1, t: (key) => key }))
   }
-  assert.match(render("event"), /fill="var\(--event\)"/)
-  assert.match(render("known_bad"), /fill="var\(--bad\)"/)
-  assert.match(render("spike"), /stroke="var\(--warn\)"/)
+  assert.match(render("event"), /fill="var\(--color-event\)"/)
+  assert.match(render("known_bad"), /fill="var\(--color-bad\)"/)
+  assert.match(render("spike"), /stroke="var\(--color-warn\)"/)
 })
 
 test("health metrics share stored evaluation timestamps and a strict nonfuture cursor", () => {

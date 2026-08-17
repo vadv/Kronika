@@ -170,7 +170,7 @@ export function HelpPanel({
     <aside aria-label={t("help.title")} className="fixed bottom-0 right-0 top-0 z-[100] w-[min(92vw,430px)] max-w-[430px] overflow-auto border-l border-line4 bg-s1 p-[18px] shadow-[-20px_0_50px_var(--color-shadow-a)]" data-testid="help-panel">
       <div className="flex items-center justify-between">
         <div>
-          <p className="eyebrow">?</p>
+          <p className="m-0 text-xs uppercase tracking-[.1em] text-fg4">?</p>
           <h2>{t("help.title")}</h2>
         </div>
         <button aria-label={t("help.close")} className="icon-button" onClick={onClose} type="button">×</button>
