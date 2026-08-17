@@ -1063,7 +1063,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     const system = await cdp.evaluate(`(() => ({
       buttons: [...document.querySelectorAll('[data-testid^="system-metric-"]')].map((button) => [button.dataset.testid, button.getAttribute("aria-pressed")]),
       dock: document.querySelector('[data-testid="system-dock"]') !== null,
-      lane: document.querySelector(".lane-primary")?.textContent ?? null,
+      lane: document.querySelector("[data-primary]")?.textContent ?? null,
       source: document.querySelector(".source-active")?.textContent ?? null,
     }))()`)
     assert.equal(system.source, "Host")
@@ -2175,7 +2175,7 @@ test("PostgreSQL is unavailable without current telemetry and returns for a stor
       return {
         pgDisabled: sourceButtons[1].disabled,
         pgPanels: document.querySelectorAll('.pg-tabs, .pg-overview, [data-testid^="pg-"]').length,
-        pgHealth: document.querySelector('.lane-primary')?.textContent.includes('PostgreSQL') ?? false,
+        pgHealth: document.querySelector('[data-primary]')?.textContent.includes('PostgreSQL') ?? false,
         view: new URL(location.href).searchParams.get('view'),
       }
     })()`)
@@ -2577,12 +2577,12 @@ test("production health keeps staggered components on one stored evaluation", { 
     const readAt = async (hour, fragments) => {
       const evaluation = hour + 1_800_000_000
       await cdp.send("Page.navigate", { url: `${origin}/?at=${evaluation}&view=host.system` })
-      await cdp.waitFor(`document.querySelector('.lane-primary .lane-reading') !== null`, "the health contract reading", 15_000)
+      await cdp.waitFor(`document.querySelector('[data-primary] [data-testid="lane-reading"]') !== null`, "the health contract reading", 15_000)
       await cdp.waitFor(`(() => {
-        const text = document.querySelector('.lane-primary .lane-reading')?.textContent ?? ''
+        const text = document.querySelector('[data-primary] [data-testid="lane-reading"]')?.textContent ?? ''
         return ${JSON.stringify(fragments)}.every((fragment) => text.includes(fragment))
       })()`, "the expected health component values", 15_000)
-      const reading = await cdp.evaluate(`document.querySelector('.lane-primary .lane-reading').textContent`)
+      const reading = await cdp.evaluate(`document.querySelector('[data-primary] [data-testid="lane-reading"]').textContent`)
       await cdp.evaluate(`(() => {
         const plot = document.querySelector('[data-testid="hour-timeline"] .u-over')
         const bounds = plot.getBoundingClientRect()
@@ -3896,11 +3896,11 @@ test("narrow controls stay contained and help never changes selection", { timeou
     await cdp.evaluate(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }))`)
     historyFailure = true
     await cdp.evaluate(`document.querySelector('[data-testid="pg-activity-table"] .entity-row').click()`)
-    await cdp.waitFor(`document.querySelector('.pg-detail .series-status-error') !== null`, "the Activity history error")
-    assert.equal(await cdp.evaluate(`document.querySelector('.pg-detail .series-status-error').textContent`), "Could not load history")
+    await cdp.waitFor(`document.querySelector('.pg-detail [data-testid="series-status"][data-status="error"]') !== null`, "the Activity history error")
+    assert.equal(await cdp.evaluate(`document.querySelector('.pg-detail [data-testid="series-status"][data-status="error"]').textContent`), "Could not load history")
     const failedHistory = await cdp.evaluate(`(() => {
       const detail = document.querySelector('.pg-detail')
-      const status = detail.querySelector('.series-status-error').getBoundingClientRect()
+      const status = detail.querySelector('[data-testid="series-status"][data-status="error"]').getBoundingClientRect()
       return { chart: detail.querySelector('.uplot-host') !== null, statusHeight: status.height, text: detail.querySelector('.series-chart')?.textContent ?? '' }
     })()`)
     assert.equal(failedHistory.chart, true, JSON.stringify(failedHistory))

@@ -139,7 +139,7 @@ test("mixed clusters show numeric composition without rail labels or a band", as
   ])
   assert.doesNotMatch(source, /marker-cluster-summary|className="finding-rail"/)
   assert.doesNotMatch(styles, /\.marker-cluster-summary|\.finding-rail|\.neutral-rail/)
-  assert.match(styles, new RegExp(`width: ${helpers.MARKER_CLUSTER_PX - 8}px`))
+  assert.match(source, /width: MARKER_CLUSTER_PX - 8/)
   assert.deepEqual(helpers.groupFindings([], 0, 1_000, 100), [])
 })
 
@@ -298,8 +298,8 @@ test("timeline controls stay above a full-width plot without a redundant time ti
     readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
     readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8"),
   ])
-  assert.match(styles, /\.timeline-shell \{[^}]*flex-direction: column;[^}]*overflow: hidden; \}/)
-  assert.match(styles, /\.timeline-labels \{[^}]*display: flex;[^}]*overflow-x: auto; \}/)
+  assert.match(source, /timeline-shell[^"]*flex-col[^"]*overflow-hidden/)
+  assert.match(source, /className="flex flex-none overflow-x-auto border-b border-line2"/)
   assert.match(styles, /\.uplot-figure\.timeline-chart \{[^}]*min-height: 216px;[^}]*padding:/)
   assert.ok(source.indexOf('className="timeline-labels"') < source.indexOf('className="timeline-chart"'))
   assert.doesNotMatch(chart, /Time, browser local|Время, местное в браузере/)

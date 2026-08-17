@@ -154,16 +154,16 @@ test("y-axis labels carry only the unit, series names live in the caption", asyn
   const source = await readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8")
   assert.match(source, /\.\.\.\(unit === "" \|\| line\.tickAxis === "duration" \? \{\} : \{ label: unit \}\)/)
   assert.doesNotMatch(source, /label: `\$\{labels\}/)
-  assert.match(source, /className="chart-series-labels"/)
+  assert.match(source, /chart-series-labels/)
 })
 
 test("the built-in legend stays hidden and chart titles use portal help metadata", async () => {
   const source = await readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8")
   const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8")
   assert.match(source, /legend: \{ show: false \}/)
-  assert.match(source, /className="chart-series-labels"/)
+  assert.match(source, /chart-series-labels/)
   assert.match(source, /<LabelHelp helpKey=\{line\.helpKey\}/)
-  assert.match(styles, /\.chart-series-labels \{[^}]*overflow-x: auto;/)
+  assert.match(source, /chart-series-labels[\s\S]{0,300}?overflow-x-auto/)
   assert.match(styles, /\.chart-series-labels \.help-dot \{[^}]*flex: 0 0 auto;/)
 })
 
@@ -175,7 +175,7 @@ test("expanded charts keep one bounded action and restore both page scroll locks
     readFile(new URL("../src/index.html", import.meta.url), "utf8"),
   ])
 
-  assert.equal((source.match(/className="chart-expand"/g) ?? []).length, 1)
+  assert.equal((source.match(/chart-expand/g) ?? []).length, 1)
   assert.doesNotMatch(source, /className="chart-close"/)
   assert.doesNotMatch(stylesheet, /\.chart-close/)
   assert.match(source, /const rootOverflow = document\.documentElement\.style\.overflow/)
@@ -199,7 +199,7 @@ test("expanded charts keep one bounded action and restore both page scroll locks
   assert.match(stylesheet, /\.uplot-figure figcaption \{[^}]*display: grid;[^}]*grid-template-columns: minmax\(0, 1fr\) auto auto;/)
   assert.match(stylesheet, /html \{[^}]*overflow-anchor: none;/)
   assert.match(stylesheet, /\.uplot-expanded figcaption \{[^}]*grid-template-columns: minmax\(0, 1fr\) auto 44px;[^}]*min-height: 44px;/)
-  assert.match(stylesheet, /\.uplot-expanded \.chart-expand \{[^}]*height: 44px;[^}]*min-width: 44px;/)
+  assert.match(source, /chart-expand[\s\S]{0,200}?expanded \? "inline-flex h-11 min-w-11/)
   assert.match(stylesheet, /--chart-marker-end-reserve: 52px/)
   assert.match(stylesheet, /\.chart-marker-track \{[^}]*width: max\(1px, calc\(var\(--chart-plot-width,[^}]* - var\(--chart-marker-end-reserve, 0px\)\)\);/)
   for (const side of ["top", "right", "bottom", "left"]) {

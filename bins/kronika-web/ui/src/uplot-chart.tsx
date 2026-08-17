@@ -323,43 +323,43 @@ export function UPlotChart({
     role={expanded ? "dialog" : undefined}
   >
     <figcaption id={titleId}>
-      <span className="chart-series-labels">{isolatable && <button
+      <span className={`chart-series-labels flex min-w-0 flex-auto items-center gap-1.5 [&::-webkit-scrollbar]:hidden ${isolatable ? "flex-wrap gap-y-1 overflow-visible whitespace-normal" : "overflow-x-auto whitespace-nowrap [scrollbar-width:none]"}`}>{isolatable && <button
         aria-pressed={isolatedId === null}
-        className="series-pick"
+        className="series-pick min-h-5 cursor-pointer border border-line3 bg-s2 px-1.5 py-px text-xs text-fg2 hover:bg-s3 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg"
         data-testid={testId === undefined ? undefined : `${testId}-all`}
         onClick={() => setIsolatedChoice(null)}
         type="button"
       >{t("chart.series.all")}</button>}{series.map((line) => isolatable
-        ? <span className="series-choice" key={line.id}><button
+        ? <span className="inline-flex min-w-0 items-center gap-0.5" key={line.id}><button
           aria-pressed={isolatedId === line.id}
-          className="series-pick"
+          className="series-pick min-h-5 cursor-pointer border border-line3 bg-s2 px-1.5 py-px text-xs text-fg2 hover:bg-s3 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg"
           data-testid={testId === undefined ? undefined : `${testId}-series-${line.id}`}
           onClick={() => setIsolatedChoice(isolatedId === line.id ? null : line.id)}
           type="button"
         >{line.label}</button><LabelHelp helpKey={line.helpKey} iconOnly labelKey={line.labelKey} t={t} /></span>
         : <LabelHelp helpKey={line.helpKey} key={line.id} labelKey={line.labelKey} t={t} />)}</span>
-      {reading !== undefined && <strong className="chart-current">{reading}</strong>}
+      {reading !== undefined && <strong className={`chart-current col-start-2 min-w-0 flex-none overflow-hidden text-ellipsis whitespace-nowrap font-medium normal-case tabular-nums text-fg2 ${isolatable ? "ml-auto max-w-none" : ""}`}>{reading}</strong>}
       <button
         aria-label={expanded ? (locale === "ru" ? "Закрыть развёрнутый график" : "Close expanded chart") : (locale === "ru" ? "Развернуть график" : "Expand chart")}
-        className="chart-expand"
+        className={`chart-expand col-start-3 cursor-pointer border border-line3 bg-s2 p-0 ${expanded ? "inline-flex h-11 min-w-11 items-center justify-center text-lg" : "h-[22px] min-w-[22px]"}`}
         onClick={() => expanded ? collapse() : expand()}
         ref={opener}
         type="button"
       >{expanded ? "×" : "↗"}</button>
     </figcaption>
-    <p className="chart-summary" id={summaryId}>{summary}</p>
+    <p className="chart-summary absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]" id={summaryId}>{summary}</p>
     <div aria-describedby={summaryId} aria-label={drawnSeries.map(({ label, unit }) => `${label}${unit === "" ? "" : `, ${unit}`}`).join("; ")} className="uplot-host" ref={host} role="img" />
-    {statsLine !== null && <p className="chart-stats" data-testid="chart-stats">{statsLine}</p>}
+    {statsLine !== null && <p className="mx-0 mb-0 mt-[3px] overflow-hidden text-ellipsis whitespace-nowrap text-xs tabular-nums text-fg3" data-testid="chart-stats">{statsLine}</p>}
     {status !== undefined && <div className="uplot-status">{status}</div>}
     {markerLayer !== undefined && <div className="chart-marker-track">{markerLayer}</div>}
-    {exact !== null && <div aria-hidden="true" className="chart-tooltip">
+    {exact !== null && <div aria-hidden="true" className="chart-tooltip pointer-events-none grid max-w-[min(340px,82vw)] gap-[3px] border border-line4 bg-s2 p-[7px] text-xs shadow-[0_8px_20px_var(--color-shadow-a)] [&_small]:text-fg3 [&_span]:flex [&_span]:justify-between [&_span]:gap-2 [&_strong]:font-medium [&_strong]:text-fg [&_time]:flex [&_time]:justify-between [&_time]:gap-2">
       <time><strong>{exact.time}</strong></time>
       {exact.values.map(({ label, output, unit }) => <span key={label}>{label}{unit === "" ? "" : ` (${unit})`}<strong>{output}</strong></span>)}
     </div>}
     <input
       aria-label={locale === "ru" ? "Точная запись графика" : "Exact chart sample"}
       aria-valuetext={keyboardTimestamp === null ? undefined : sampleText(series, frame, keyboardTimestamp, locale, time)}
-      className="chart-navigator"
+      className="chart-navigator absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)] focus:left-2 focus:z-[9] focus:h-7 focus:w-[min(320px,calc(100%-16px))] focus:[clip-path:none]"
       data-recorded-timestamp={keyboardTimestamp ?? undefined}
       disabled={frame.timestamps.length === 0}
       max={Math.max(0, frame.timestamps.length - 1)}

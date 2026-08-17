@@ -76,12 +76,12 @@ export function SeriesChart({
   const statusText = status === "loading"
     ? t("history.loading")
     : status === "error" ? t("history.error") : empty ?? t("history.empty")
-  const statusLine = <p className={`series-status series-status-${status}`} role={status === "error" ? "alert" : "status"}>{statusText}</p>
+  const statusLine = <p data-status={status} data-testid="series-status" className={`flex min-h-[30px] items-center px-0 py-[3px] text-sm ${status === "error" ? "text-warn" : "text-fg4"}`} role={status === "error" ? "alert" : "status"}>{statusText}</p>
   // An hour that carries no samples stays compact. Anything still resolving keeps the
   // full frame so the page below does not move while a metric loads.
   if (!hasData && status === "ready") {
     return <div className="series-chart">
-      <div className="series-reading"><LabelHelp helpKey={helpKey} labelKey={labelKey} t={t} /><span>—</span></div>
+      <div className="series-reading mb-[5px] flex items-baseline gap-2 text-xs uppercase text-fg3 [&>.label-help]:min-w-0 [&>span:last-child]:flex-none [&>span:last-child]:whitespace-nowrap [&>span:last-child]:normal-case [&>span:last-child]:tabular-nums [&>span:last-child]:text-fg2"><LabelHelp helpKey={helpKey} labelKey={labelKey} t={t} /><span>—</span></div>
       {statusLine}
     </div>
   }
