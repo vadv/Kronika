@@ -72,7 +72,7 @@ test("locator classes, scrolling, and selection state are independent", async ()
   const process = await readFile(new URL("../src/process-table.tsx", import.meta.url), "utf8")
   // Loading and empty are different truths; the table never reports one as the other.
   assert.match(entity, /\? loading/)
-  assert.match(entity, /table-loading/)
+  assert.match(entity, /table-empty flex items-baseline" role="status"/)
   assert.match(entity, /aria-selected=/)
   assert.match(entity, /locator-row/)
   assert.match(entity, /locator-cell/)
@@ -148,7 +148,7 @@ test("the context chip is visible and removable without changing row selection",
 
 test("the human context chip and ordinary search are visibly intersected", async () => {
   const source = await readFile(new URL("../src/table-filter.tsx", import.meta.url), "utf8")
-  assert.match(source, /<strong>\{context\}<\/strong>/)
+  assert.match(source, /<strong className="[^"]*">\{context\}<\/strong>/)
   assert.match(source, /filter\.show_all/)
   assert.match(source, /filter\.and/)
   assert.match(source, /filter\.text/)
@@ -165,8 +165,8 @@ test("paged tables keep virtualization and trigger the guarded near-end callback
   assert.match(source, /useVirtualizer/)
   assert.match(source, /lastVirtualIndex >= rendered\.length - 10/)
   assert.match(source, /onNearEnd\(\)/)
-  assert.match(source, /className="entity-scroll"[^>]*tabIndex=\{0\}/)
-  assert.match(styles, /\.entity-scroll[^}]*overflow:\s*auto/s)
+  assert.match(source, /className="entity-scroll[^"]*"[^>]*tabIndex=\{0\}/)
+  assert.match(source, /className="entity-scroll[^"]*overflow-auto/)
   assert.match(styles, /\.entity-scroll:focus-visible[^}]*outline:/s)
   assert.match(styles, /\.pg-table-shell \.pg-entity-layout \.entity-scroll[^}]*height:\s*auto/s)
   assert.match(styles, /\.pg-entity-layout \.entity-scroll[^}]*min-height:\s*100px/s)

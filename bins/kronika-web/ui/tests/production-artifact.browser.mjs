@@ -762,7 +762,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     relationMode = "long"
     await cdp.evaluate(`([...document.querySelectorAll('[data-testid="pg-relation-lenses"] button')].find((button) => button.textContent === "Size and buffers")).click()`)
     await cdp.waitFor(`(() => { const node = document.querySelector('[data-testid="pg-tables-table"] .entity-scroll'); return node !== null && node.scrollWidth > node.clientWidth })()`, "the wide size and buffers table")
-    await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"] .virtual-body')?.style.height === "4600px"`, "the long virtual relation table")
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"] [data-testid="virtual-body"]')?.style.height === "4600px"`, "the long virtual relation table")
     const estimate = await cdp.evaluate(`(() => {
       const node = [...document.querySelectorAll('[data-testid="pg-tables-table"] [title]')].find((cell) => cell.title.includes('9,007,199,254,740,993'))
       return node === undefined ? null : { label: node.getAttribute('aria-label'), text: node.textContent, title: node.title }
@@ -795,7 +795,7 @@ test("the production artifact preserves wire keys and exact finding page state",
           rowHeight: firstRow?.getBoundingClientRect().height ?? 0,
           stickyLeft: sticky.getBoundingClientRect().left,
           tableLeft: bodyRect.left,
-          virtualHeight: table.querySelector('.virtual-body').getBoundingClientRect().height,
+          virtualHeight: table.querySelector('[data-testid="virtual-body"]').getBoundingClientRect().height,
           visibleRows: [...table.querySelectorAll('.entity-row')].filter((row) => {
             const rect = row.getBoundingClientRect()
             return rect.bottom > bodyRect.top && rect.top < bodyRect.bottom
@@ -833,7 +833,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     }
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
     await cdp.evaluate(`(() => { const body = document.querySelector('[data-testid="pg-tables-table"] .entity-scroll'); body.scrollTop = body.scrollHeight })()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"] .virtual-body')?.style.height === "4715px"`, "the one guarded relation cursor page")
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"] [data-testid="virtual-body"]')?.style.height === "4715px"`, "the one guarded relation cursor page")
     const cursorPages = requests.filter(({ query }) => new URLSearchParams(query).get("cursor") === "viewport-page-two")
     assert.equal(cursorPages.length, 1, JSON.stringify(cursorPages))
     await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-scroll').scrollTop = 0`)
@@ -889,11 +889,11 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.evaluate(`document.querySelector(".pg-detail header button").click()`)
     relationMode = "short"
     await cdp.evaluate(`([...document.querySelectorAll('[data-testid="pg-relation-lenses"] button')].find((button) => button.textContent === "State")).click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="pg-indexes-table"] .virtual-body')?.style.height === "69px"`, "the short relation set")
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-indexes-table"] [data-testid="virtual-body"]')?.style.height === "69px"`, "the short relation set")
     const shortTable = await cdp.evaluate(`(() => {
       const body = document.querySelector('[data-testid="pg-indexes-table"] .entity-scroll')
       const bounds = body.getBoundingClientRect()
-      return { bottom: bounds.bottom, clientHeight: document.documentElement.clientHeight, height: bounds.height, rows: document.querySelectorAll('[data-testid="pg-indexes-table"] .entity-row').length, virtual: document.querySelector('[data-testid="pg-indexes-table"] .virtual-body').getBoundingClientRect().height }
+      return { bottom: bounds.bottom, clientHeight: document.documentElement.clientHeight, height: bounds.height, rows: document.querySelectorAll('[data-testid="pg-indexes-table"] .entity-row').length, virtual: document.querySelector('[data-testid="pg-indexes-table"] [data-testid="virtual-body"]').getBoundingClientRect().height }
     })()`)
     assert.equal(shortTable.rows, 3)
     assert.equal(shortTable.virtual, 69)

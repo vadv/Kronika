@@ -14,9 +14,10 @@ test("metric selection and help use sibling controls", async () => {
 })
 
 test("narrow controls stay bounded and coarse-pointer table help is immediately reachable", async () => {
-  const [styles, picker] = await Promise.all([
+  const [styles, picker, entityTable] = await Promise.all([
     readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
     readFile(new URL("../src/hour-picker.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/entity-table.tsx", import.meta.url), "utf8"),
   ])
   assert.match(picker.match(/<div[^>]*data-testid="hour-popover"[^>]*>/s)?.[0] ?? "", /\bfixed\b/)
   assert.match(styles, /@media \(max-width: 520px\)[\s\S]*?\.top-actions[^}]*flex-wrap:\s*wrap/)
@@ -25,7 +26,7 @@ test("narrow controls stay bounded and coarse-pointer table help is immediately 
   // fits inside the cell instead of being clipped by the column edge.
   assert.match(styles, /@media \(hover: none\), \(pointer: coarse\)[\s\S]*?\.label-help[^}]*margin-right:\s*11px/)
   assert.match(styles, /@media \(hover: none\), \(pointer: coarse\)[\s\S]*?\.help-dot::after[^}]*inset:\s*-11px/)
-  assert.match(styles, /\.entity-scroll[^}]*scroll-padding-inline-end/)
+  assert.match(entityTable, /scroll-padding-inline-end:15px/)
   assert.doesNotMatch(styles, /@media \(hover: none\), \(pointer: coarse\)[\s\S]*?\.help-dot[^:][^}]*width:\s*44px/)
 })
 

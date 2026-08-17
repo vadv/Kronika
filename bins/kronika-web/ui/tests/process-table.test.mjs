@@ -32,13 +32,14 @@ test("process sticky headers share live offsets and stacking classes with their 
     { id: "rmem_kb", size: 142, sticky: false },
   ])
   assert.deepEqual([...offsets], [["pid", 0], ["command", 86]])
-  assert.equal(helpers.sticky({ sticky: "sticky-pid" }, true), "entity-header-cell entity-sticky sticky-pid")
-  assert.equal(helpers.sticky({ numeric: true, sticky: "sticky-command" }, false), "entity-cell align-right entity-sticky sticky-command")
+  // The hooks a pinned column needs, whatever presentation rides along with them.
+  const head = helpers.sticky({ sticky: "sticky-pid" }, true).split(" ")
+  const body = helpers.sticky({ numeric: true, sticky: "sticky-command" }, false).split(" ")
+  for (const name of ["entity-header-cell", "entity-sticky", "sticky-pid", "sticky", "left-0", "z-40"]) assert.ok(head.includes(name), `${name} in ${head}`)
+  for (const name of ["entity-cell", "align-right", "entity-sticky", "sticky-command", "sticky", "left-0", "z-[12]"]) assert.ok(body.includes(name), `${name} in ${body}`)
   const source = await readFile(new URL("../src/entity-table.tsx", import.meta.url), "utf8")
   const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8")
   assert.equal(source.match(/left: pinnedLeft\.get\(/g)?.length, 2)
-  assert.match(styles, /\.entity-sticky \{[^}]*position: sticky;[^}]*z-index: 12;/)
-  assert.match(styles, /\.entity-header-cell\.entity-sticky \{[^}]*z-index: 40;/)
   assert.match(styles, /@media \(max-width: 760px\)[\s\S]*\.sticky-command \{[^}]*position: static;/)
 })
 

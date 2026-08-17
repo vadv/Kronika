@@ -77,6 +77,11 @@
 @utility detail-dt {
   color: var(--fg3); font-size: var(--t-xs); hyphens: none; min-width: 0; overflow: hidden; overflow-wrap: normal; text-transform: uppercase; word-break: normal;
 }
+/* The empty/loading paragraph shared by the entity table, the events console
+   and the System panels. */
+@utility table-empty {
+  color: var(--fg4); font-size: var(--t-sm); padding: 22px;
+}
 @utility detail-dd {
   color: var(--fg); font-size: var(--t-xs); font-variant-numeric: tabular-nums; line-height: 1.4; margin: 0; max-width: 100%; min-width: 0; overflow-wrap: anywhere; text-align: right;
 }
@@ -234,18 +239,12 @@ h2 { font-size: var(--t-md); }
 .cursor-time small { color: var(--fg4); font-size: var(--t-xs); }
 /* A pinned header is already a positioning context; giving it `relative` would
    drop the pin and shift the column by its own offset. */
-.entity-head [role="columnheader"] { user-select: none; }
-.entity-header-cell:not(.entity-sticky) { position: relative; }
-.column-grip { bottom: 0; cursor: col-resize; position: absolute; right: 0; top: 0; touch-action: none; width: 7px; }
-.column-grip:hover { background: var(--accent3); opacity: 0.5; }
 .cursor-missing { color: var(--warn); font-size: var(--t-xs); margin-left: 8px; text-transform: uppercase; }
 /* The single infinite animation a screen may have: data is on its way.
    Inline with the message — the card grows by nothing. */
 .loading-ring { animation: loading-spin .9s linear infinite; border: 2px solid var(--line3); border-radius: 50%; border-top-color: var(--accent); display: inline-block; height: 14px; margin-right: 9px; vertical-align: -2px; width: 14px; }
 @keyframes loading-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .loading-ring { animation: none; } }
-.table-empty.table-loading { align-items: baseline; display: flex; }
-.table-empty .loading-ring { height: 11px; margin-right: 7px; vertical-align: -1px; width: 11px; }
 .label-help { align-items: center; display: inline-flex; position: relative; }
 .label-help > * + * { margin-left: 5px; }
 .help-dot { align-items: center; background: var(--s2); border: 1px solid var(--line4); border-radius: 50%; color: var(--accent3); cursor: help; display: inline-flex; font-size: var(--t-xs); height: 14px; justify-content: center; line-height: 1; padding: 0; width: 14px; }
@@ -281,19 +280,7 @@ h2 { font-size: var(--t-md); }
 .process-summary > button span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .process-table { background: var(--s1); border: 1px solid var(--line2); min-width: 0; overflow: hidden; }
 .process-table .entity-scroll { height: min(570px, calc(100vh - 370px)); min-height: 300px; }
-.table-filter { align-items: center; background: var(--s2); border-bottom: 1px solid var(--line2); color: var(--fg3); display: flex; gap: 6px; min-height: 26px; padding: 0 7px; }
-.table-filter input { background: transparent; border: 0; color: var(--fg); flex: 1 1 auto; font-family: inherit; font-size: var(--t-sm); min-width: 0; outline: none; padding: 4px 0; }
-.entity-context-filter { align-items: center; background: var(--accent-soft); border: 1px solid var(--accent2); color: var(--fg); display: inline-flex; font-size: var(--t-xs); gap: 6px; max-width: 58%; overflow: hidden; padding-left: 6px; white-space: nowrap; }
-.entity-context-filter strong { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
-.entity-context-filter button { align-items: center; align-self: stretch; border-left: 1px solid var(--accent2); color: var(--fg2); display: inline-flex; gap: 3px; padding: 0 5px; }
 .filter-intersection { color: var(--fg4); font-size: var(--t-xs); }
-.table-text-search { align-items: center; color: var(--fg3); display: inline-flex; flex: 0 0 auto; font-size: var(--t-xs); gap: 3px; }
-.table-filter input::placeholder { color: var(--fg4); }
-.table-filter input::-webkit-search-cancel-button { appearance: none; display: none; }
-.table-filter-count { color: var(--fg3); flex: 0 0 auto; font-size: var(--t-xs); font-variant-numeric: tabular-nums; }
-.table-filter button { align-items: center; background: transparent; border: 0; color: var(--accent3); cursor: pointer; display: inline-flex; flex: 0 0 auto; padding: 2px; }
-.table-status { align-items: center; background: color-mix(in srgb, var(--s2) 82%, transparent); border-bottom: 1px solid var(--line2); color: var(--fg3); display: flex; flex-wrap: wrap; font-size: var(--t-xs); gap: 3px 14px; min-height: 26px; padding: 4px 7px; }
-.table-status strong { color: var(--fg2); font-weight: 650; }
 .process-table .entity-header-cell, .process-table .entity-cell { padding-left: 8px; padding-right: 8px; }
 .process-table .entity-header-cell { letter-spacing: .035em; }
 .align-right .entity-sort { justify-content: flex-end; }
@@ -314,10 +301,6 @@ h2 { font-size: var(--t-md); }
 .sticky-command { box-shadow: 5px 0 8px var(--shadow-b); }
 .entity-sticky.sticky-pid { box-shadow: none; }
 .process-table .entity-header-cell.sticky-pid, .process-table .entity-header-cell.sticky-command { background: var(--s2); z-index: 40; }
-.virtual-body { position: relative; }
-.table-empty { color: var(--fg4); font-size: var(--t-sm); padding: 22px; }
-.timestamp-value { align-items: center; display: inline-flex; gap: 5px; }
-.timestamp-value button { align-items: center; background: transparent; border: 1px solid var(--line4); color: var(--accent3); cursor: pointer; display: inline-flex; justify-content: center; padding: 2px 3px; }
 .query-block pre { color: var(--event-edge); font: inherit; font-size: var(--t-sm); line-height: 1.55; margin: 8px 0 0; max-height: 170px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 
 .system-main { margin-top: 8px; min-width: 0; }
@@ -421,40 +404,18 @@ h2 { font-size: var(--t-md); }
 .system-history-selector button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--fg); }
 .system-history-close { font-size: var(--t-md); min-width: 27px; padding: 1px 5px; }
 .system-entity-history .series-chart { padding-top: 4px; }
-.entity-table { background: var(--s1); min-width: 0; overflow: hidden; }
 /* Scrolling something into view parks it flush against the port, where the
    scrollbar clips whatever reaches past its box: a focus outline, a touch
    target. The padding keeps that reach on screen. */
-.entity-scroll { height: min(310px, 36vh); min-height: 154px; overflow: auto; position: relative; scroll-padding-inline-end: 15px; }
-.entity-head { background: var(--s2); display: flex; height: var(--head); min-width: 100%; position: sticky; top: 0; z-index: 30; }
-.entity-header-cell, .entity-cell { border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); flex: 0 0 auto; min-width: 0; overflow: hidden; padding: 0 7px; }
-.entity-header-cell { align-items: center; color: var(--fg3); display: flex; font-size: var(--t-xs); letter-spacing: .025em; text-transform: uppercase; }
-.entity-header-cell .entity-sort { align-items: center; background: transparent; border: 0; color: inherit; cursor: pointer; display: flex; flex: 1 1 auto; height: 100%; justify-content: space-between; min-width: 0; padding: 0; text-align: left; text-transform: inherit; }
-.entity-header-cell .entity-sort:disabled { cursor: default; }
-.entity-header-cell .entity-sort span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .entity-header-cell > .label-help { flex: 0 0 auto; margin-left: 4px; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
 .entity-header-cell:hover > .label-help, .entity-header-cell:focus-within > .label-help { opacity: 1; pointer-events: auto; }
-.entity-header-cell i { color: var(--accent2); font-style: normal; margin-left: 5px; }
-.entity-row { background: var(--s1); cursor: default; display: flex; left: 0; min-width: 100%; position: absolute; top: 0; }
-.entity-row:nth-child(even) { background: var(--zebra); }
-.entity-row[tabindex="0"] { cursor: pointer; }
-.entity-row[tabindex="0"]:hover { background: var(--s3); }
-.entity-row[aria-selected="true"] { background: var(--s4); box-shadow: inset 2px 0 var(--accent); }
 .entity-row[aria-selected="true"].locator-known_bad { box-shadow: inset 2px 0 var(--accent), inset 5px 0 var(--bad); }
 .entity-row[aria-selected="true"].locator-spike { box-shadow: inset 2px 0 var(--accent), inset 0 0 0 1px var(--warn); }
-.entity-cell { align-items: center; color: var(--fg2); display: flex; font-size: var(--t-xs); height: var(--row); font-variant-numeric: tabular-nums; }
-.entity-value { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
 .entity-cell.value-tone-good .entity-value { color: var(--ok); }
 .entity-cell.value-tone-warning .entity-value { color: var(--warn); }
 .entity-cell.value-tone-critical .entity-value { color: var(--bad); }
 .entity-cell.value-tone-inactive .entity-value { color: var(--fg4); }
-.value-tone-mark { border-left: 2px solid currentColor; flex: 0 0 2px; height: 10px; margin-right: 5px; }
 .entity-cell.locator-known_bad .entity-value { color: var(--fg-hi); }
-.text-value { color: var(--fg); }
-.id-value { color: var(--fg2); }
-.null-cell { color: var(--fg-null); }
-.entity-sticky { background: inherit; box-shadow: 5px 0 8px var(--shadow-b); left: 0; position: sticky; z-index: 12; }
-.entity-header-cell.entity-sticky { background: var(--s2); z-index: 40; }
 
 .pg-tabs { background: var(--s1); border: 1px solid var(--line2); display: flex; margin-top: 8px; min-height: 35px; overflow-x: auto; }
 .pg-tabs button { align-items: center; background: transparent; border: 0; border-right: 1px solid var(--line2); color: var(--fg3); cursor: pointer; display: flex; flex: 0 0 auto; font-size: var(--t-xs); gap: 6px; letter-spacing: .04em; padding: 0 13px; text-transform: uppercase; }

@@ -265,7 +265,7 @@ function Timestamp({ cell, raw, t }: { readonly cell?: Cell; readonly raw?: numb
   const time = useDisplayTime()
   const timestamp = raw ?? asNumber(cell ?? null)
   if (timestamp === null || timestamp === undefined) return <>—</>
-  return <span className="timestamp-value"><span>{time.timestamp(timestamp)}</span><button aria-label={t("common.raw")} onClick={() => void navigator.clipboard?.writeText(String(timestamp))} type="button"><Copy aria-hidden="true" size={12} /></button></span>
+  return <span className="inline-flex items-center gap-[5px]"><span>{time.timestamp(timestamp)}</span><button aria-label={t("common.raw")} className="inline-flex cursor-pointer items-center justify-center border border-line4 bg-transparent px-[3px] py-0.5 text-accent3" onClick={() => void navigator.clipboard?.writeText(String(timestamp))} type="button"><Copy aria-hidden="true" size={12} /></button></span>
 }
 
 function formatActivity(cell: Cell, kind: string, locale: Locale, t: Translate): ReactNode {

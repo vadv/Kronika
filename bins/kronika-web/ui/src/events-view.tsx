@@ -114,7 +114,7 @@ export function EventsView({
       <div className={`grid min-h-[430px] charts-hidden:min-h-0 charts-hidden:flex-1 max-[760px]:grid-cols-[minmax(0,1fr)] ${active === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(360px,.78fr)_minmax(0,1.22fr)]"}`}>
         <div className={`h-[min(570px,calc(100vh-360px))] min-h-[390px] overflow-auto border-line2 charts-hidden:h-auto charts-hidden:min-h-0 max-[760px]:h-[260px] max-[760px]:min-h-[180px] max-[760px]:border-r-0 ${active === null ? "" : "border-r"}`} ref={list} role="list">
           {visible.length === 0 && (loading
-        ? <p className="table-empty table-loading" role="status"><span aria-hidden="true" className="loading-ring" />{t("table.loading")}</p>
+        ? <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>
         : <div className="table-empty">{t("events.empty")}</div>)}
           <div className="relative" style={{ height: virtual.getTotalSize() }}>
             {virtual.getVirtualItems().map((item) => {
