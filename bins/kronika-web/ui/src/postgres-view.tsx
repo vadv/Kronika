@@ -232,7 +232,7 @@ export function PostgresView({
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   return <>
     <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane={section === "statements" || section === "plans" ? "pg_running" : section === "activity" || section === "locks" ? "pg_waiting" : "health"} shownAt={shownAt} t={t} /></ChartOnly>
-    <nav aria-label={t("pg.sections")} className="pg-tabs">
+    <nav aria-label={t("pg.sections")} className="pg-tabs mt-2 flex min-h-[35px] overflow-x-auto border border-line2 bg-s1 [&>button]:flex [&>button]:flex-none [&>button]:cursor-pointer [&>button]:items-center [&>button]:gap-1.5 [&>button]:border-0 [&>button]:border-r [&>button]:border-line2 [&>button]:bg-transparent [&>button]:text-xs [&>button]:uppercase [&>button]:tracking-[.04em] [&>button]:text-fg3 [&>button:disabled]:cursor-not-allowed [&>button:disabled]:opacity-35 [&>button[aria-current=page]]:bg-s4 [&>button[aria-current=page]]:text-accent3 [&>button[aria-current=page]]:shadow-[inset_0_-2px_var(--color-accent)]">
       {TABS.map((tab) => {
         const enabled = tab.id === "plans" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)
         return <button aria-current={section === tab.id ? "page" : undefined} disabled={!enabled} key={tab.id} onClick={() => { if (section !== tab.id) onOrder(null); onSection(tab.id) }} title={enabled ? undefined : t("pg.no_section_data")} type="button"><span>{t(`pg.section.${tab.id}`)}</span></button>
@@ -245,7 +245,7 @@ export function PostgresView({
     {section === "plans" && available("pg_store_plans_info") && <PlanInfo cursor={cursor} data={data} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} t={t} />}
     {section === "plans" && <PostgresLensBar active={planLens} choices={["load", "timing", "io", "identity"]} onChange={onPlanLens} prefix="plan" t={t} />}
     {section === "plans" && available("pg_store_plans") && <PgEntityView columns={planColumns(planLens)} context={context} tablesLoading={tablesLoading} defaultOrder={{ column: planDefaultOrder(planLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onOrder={onOrder} onPattern={onPattern} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_store_plans" ? focusFinding : null} focus={focus} historyField="mean_exec_ms_per_call" historyRevision={historyRevision} locale={locale} section="pg_store_plans" t={t} />}
-    {section === "plans" && !available("pg_store_plans") && <p className="pg-empty" data-testid="pg-plans-empty">{t("pg.plans.empty")}</p>}
+    {section === "plans" && !available("pg_store_plans") && <p className="m-0 border border-line2 p-[22px] text-sm text-fg3" data-testid="pg-plans-empty">{t("pg.plans.empty")}</p>}
     {section === "locks" && <PgEntityView columns={LOCK_COLUMNS} context={context} tablesLoading={tablesLoading} onContextClear={onContextClear} onCursor={onCursor} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_locks" ? focusFinding : null} focus={focus} historyField={null} historyRevision={historyRevision} locale={locale} section="pg_locks" t={t} />}
     {section === "databases" && <PgEntityView columns={DATABASE_COLUMNS} context={context} tablesLoading={tablesLoading} onContextClear={onContextClear} onCursor={onCursor} onOrder={onOrder} order={order} onPattern={onPattern} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_database" ? focusFinding : null} focus={focus} historyField="xact_commit" historyRevision={historyRevision} locale={locale} section="pg_stat_database" t={t} />}
     {section === "tables" && <PostgresRelationsView cursor={cursor} data={data} tablesLoading={tablesLoading} densePageState={densePageState} filters={relationFilters} historyRevision={historyRevision} hour={hour} lens={relationLens} level={relationLevel} locale={locale} onCursor={onCursor} onLens={onRelationLens} onLoadMore={onLoadMore} onNavigate={onRelationNavigate} onOrder={onOrder} onPattern={onPattern} onRetry={onRetry} onSelectedKey={onRelationSelectedKey} order={order} pattern={pattern} section="pg_stat_user_tables" selectedKey={relationSelectedKey} t={t} />}
@@ -322,7 +322,7 @@ function ActivityView({ context, cursor, data, finding, focus, historyRevision, 
     [focus, showIdle, showSystem],
   )
   return <>
-    <div className="lensbar pg-lensbar" role="group" aria-label={t("pg.section.activity")}>
+    <div className="lensbar flex-wrap" role="group" aria-label={t("pg.section.activity")}>
       <div className="lens-tabs">
         <button aria-pressed={showSystem} data-testid="activity-filter-system" onClick={() => setShowSystem((shown) => !shown)} type="button">{t("pg.activity.system")}</button>
         <button aria-pressed={showIdle} data-testid="activity-filter-idle" onClick={() => setShowIdle((shown) => !shown)} type="button">{t("pg.activity.idle")}</button>
@@ -333,7 +333,7 @@ function ActivityView({ context, cursor, data, finding, focus, historyRevision, 
 }
 
 function PostgresLensBar<L extends string>({ active, choices, onChange, prefix, t }: { readonly active: L; readonly choices: readonly L[]; readonly onChange: (lens: L) => void; readonly prefix: "statement" | "plan"; readonly t: Translate }) {
-  return <div className="lensbar pg-lensbar"><span>{t("pg.lens.label")}</span><div className="lens-tabs" role="group" aria-label={t("pg.lens.label")}>{choices.map((choice) => <button aria-pressed={active === choice} data-testid={`${prefix}-lens-${choice}`} key={choice} onClick={() => onChange(choice)} type="button">{t(`pg.lens.${choice}`)}</button>)}</div><div className="value-tone-legend" aria-label={t("pg.value.legend")}><i className="tone-good" />{t("pg.value.good")}<i className="tone-warning" />{t("pg.value.warning")}<i className="tone-critical" />{t("pg.value.critical")}</div></div>
+  return <div className="lensbar flex-wrap"><span>{t("pg.lens.label")}</span><div className="lens-tabs" role="group" aria-label={t("pg.lens.label")}>{choices.map((choice) => <button aria-pressed={active === choice} data-testid={`${prefix}-lens-${choice}`} key={choice} onClick={() => onChange(choice)} type="button">{t(`pg.lens.${choice}`)}</button>)}</div><div className="value-tone-legend" aria-label={t("pg.value.legend")}><i className="tone-good" />{t("pg.value.good")}<i className="tone-warning" />{t("pg.value.warning")}<i className="tone-critical" />{t("pg.value.critical")}</div></div>
 }
 
 function PgPreview({ columns: prescribedColumns, cursor, data, tablesLoading, focus, historyRevision, hour, locale, onCursor, overview = false, section, t }: { readonly columns?: readonly EntityColumn[] | undefined; readonly cursor: number; readonly data: HourData; readonly tablesLoading: boolean; readonly focus: DataRow | null; readonly historyRevision: number; readonly hour: number; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly overview?: boolean | undefined; readonly section: string; readonly t: Translate }) {
@@ -349,9 +349,9 @@ function PgPreview({ columns: prescribedColumns, cursor, data, tablesLoading, fo
   useEffect(() => setSelected((current) => selectedEntity(rows, current, section)), [rows, section])
   const selectedKey = selected === null ? null : rowKey(selected)
   const initialHistory = columns.find(chartableColumn)?.field ?? null
-  return <section className="pg-preview">
+  return <section className="pg-preview mt-2">
     <h2>{overview ? t(overviewSectionKey(section)) : section}</h2>
-    <div className={selected === null ? "pg-entity-layout pg-table-only" : "pg-entity-layout"}>
+    <div className={`pg-entity-layout mt-2 grid min-w-0 ${selected === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)_clamp(460px,32vw,600px)]"} max-[1000px]:grid-cols-[minmax(0,1fr)]`}>
       <EntityTable columns={columns} empty={t("table.no_rows")} label={section} loading={tablesLoading} locale={locale} onSelect={setSelected} rows={rows} selectedKey={selectedKey ?? (focus === null ? null : rowKey(focus))} status={initialHistory === null ? undefined : <span>{t("system.history")}</span>} t={t} />
       {selected !== null && <PgDetail allRows={allRows} columns={columns} cursor={cursor} historyField={initialHistory} historyRevision={historyRevision} hour={hour} locale={locale} onClose={() => setSelected(null)} onCursor={onCursor} overview={overview} row={selected} section={section} t={t} />}
     </div>
@@ -389,8 +389,8 @@ function Overview({ cursor, data, historyRevision, hour, locale, onCursor, table
   if (locks.length !== 0) totals.push(["pg.overview.lock_rows", locks.length])
   const walStorage = snapshot(data.sections.pg_wal_storage ?? [], cursor)[0]
   const overviewSections = groupSections(data.pgOverview.filter(({ logicalName }) => logicalName !== "pg_wal_storage"))
-  return <section className="pg-overview">
-    <div className="overview-metrics">{totals.map(([label, output]) => <article key={label}><span>{t(label)}</span><strong>{measure(output, locale)}</strong></article>)}</div>
+  return <section className="mt-2 p-2">
+    <div className="overview-metrics grid grid-cols-[repeat(auto-fit,minmax(130px,1fr))] [&>article]:min-h-[58px] [&>article]:border [&>article]:border-line [&>article]:bg-s1 [&>article]:p-2 [&>article+article]:border-l-0 [&_span]:block [&_span]:text-xs [&_span]:uppercase [&_span]:text-fg3 [&_strong]:mt-[7px] [&_strong]:block [&_strong]:text-lg [&_strong]:font-[560] [&_strong]:text-fg">{totals.map(([label, output]) => <article key={label}><span>{t(label)}</span><strong>{measure(output, locale)}</strong></article>)}</div>
     <OverviewActivityHistory cursor={cursor} data={data} hour={hour} locale={locale} onCursor={onCursor} t={t} />
     {walStorage !== undefined && <WalStorage cursor={cursor} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} row={walStorage} t={t} />}
     {overviewSections.map(([logicalName, allRows]) => {
@@ -613,8 +613,8 @@ function PgEntityView({
     </button>
     : undefined
   const status = historyField === null ? snapshotStatus : <>{snapshotStatus}<span>{t("system.history")}</span></>
-  return <div className={selected === null ? "pg-entity-layout pg-table-only" : "pg-entity-layout"} data-pg-section={sectionName(section)} data-testid="pg-entity-layout">
-    <div className="pg-entity-main">
+  return <div className={`pg-entity-layout mt-2 grid min-w-0 ${selected === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)_clamp(460px,32vw,600px)]"} max-[1000px]:grid-cols-[minmax(0,1fr)]`} data-pg-section={sectionName(section)} data-testid="pg-entity-layout">
+    <div className="pg-entity-main min-w-0">
       <EntityTable columns={visibleColumns} contextLabel={activeContext?.label} empty={t("table.no_rows")} loading={tablesLoading} finding={finding} findingField={finding === null || finding === undefined ? null : fieldNameForLocator(finding)} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onContextClear={activeContext === null ? undefined : onContextClear} onNearEnd={densePageState === "idle" && canLoadMore ? onLoadMore : undefined} onOrder={onOrder} onPattern={onPattern} onSelect={setSelected} order={activeOrder} pattern={pattern} serverSorted={dense} rows={rows} selectedKey={selectedKey} status={status} t={t} testId={`pg-${sectionName(section)}-table`} />
       {paging !== undefined && <div className="lens-tabs" data-testid="table-paging">{paging}</div>}
     </div>
@@ -689,7 +689,7 @@ function PgDetail({ allRows, columns, cursor, historyField, historyRevision, hou
     : `${section}:${rowKey(row)}`
   const detail = useDetailDismiss(onClose, detailIdentity)
   return <aside className="pg-detail" data-testid="pg-detail" ref={detail}>
-    <header><div><span>{overview ? t(overviewSectionKey(section)) : section === "pg_stat_progress_vacuum" ? section : t(`pg.section.${sectionName(section)}`)}</span><h2>{detailTitle(row, section, t)}</h2></div><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
+    <header className="pg-detail-head"><div><span>{overview ? t(overviewSectionKey(section)) : section === "pg_stat_progress_vacuum" ? section : t(`pg.section.${sectionName(section)}`)}</span><h2>{detailTitle(row, section, t)}</h2></div><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
     <ChartOnly>{activeMetricField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]">
       <div aria-label={t("system.history")} className="history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">{chartColumns.map((column) => <button aria-pressed={activeMetricField === column.field} className="min-h-[28px] flex-none cursor-pointer border border-line3 bg-s2 px-[7px] py-1 text-xs text-fg2 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg" data-testid={`pg-chart-${column.field}`} key={column.field} onClick={() => setMetricField(column.field)} type="button">{t(column.label)}</button>)}</div>
       <SeriesChart cursor={cursor} durationAxis={historyColumn.kind === "duration"} helpKey={historyColumn.help ?? "chart.metric.help"} hour={hour} labelKey={historyColumn.label} locale={locale} format={chartFormat(historyColumn.kind)} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} status={exactHistory.status} t={t} unit={chartUnit(historyColumn, t("unit.per_second"))} />

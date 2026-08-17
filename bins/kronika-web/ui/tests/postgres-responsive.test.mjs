@@ -21,9 +21,10 @@ function mediaBlock(condition) {
   assert.fail(`unterminated ${condition} media query`)
 }
 
-test("PostgreSQL keeps its dock beside the table at 1024 pixels", () => {
-  assert.match(stylesheet, /\.pg-entity-layout \{[^}]*grid-template-columns: minmax\(0, 1fr\) clamp\(460px, 32vw, 600px\);/)
-  assert.match(stylesheet, /\.pg-entity-main \{ min-width: 0; \}/)
+test("PostgreSQL keeps its dock beside the table at 1024 pixels", async () => {
+  const postgres = await readFile(join(directory, "../src/postgres-view.tsx"), "utf8")
+  assert.match(postgres, /grid-cols-\[minmax\(0,1fr\)_clamp\(460px,32vw,600px\)\]/)
+  assert.match(postgres, /className="pg-entity-main min-w-0"/)
 
   const processOverlay = mediaBlock("max-width: 1179px")
   assert.doesNotMatch(processOverlay, /\.pg-(?:entity-layout|detail)/)
@@ -31,7 +32,8 @@ test("PostgreSQL keeps its dock beside the table at 1024 pixels", () => {
   assert.match(app, /max-\[1179px\]:grid-cols-\[minmax\(0,1fr\)\]/)
 
   const postgresOverlay = mediaBlock("max-width: 1000px")
-  assert.match(postgresOverlay, /\.pg-entity-layout \{ grid-template-columns: minmax\(0, 1fr\); \}/)
+  // The layout collapses on the markup; the dock still becomes a fixed overlay.
+  assert.match(postgres, /max-\[1000px\]:grid-cols-\[minmax\(0,1fr\)\]/)
   assert.match(postgresOverlay, /\.pg-detail \{[^}]*position: fixed;/)
 })
 

@@ -92,6 +92,40 @@
 .detail-dt .help-dot { border: 0; bottom: 0; left: 0; margin: 0; opacity: 0; position: absolute; right: 0; top: 0; width: auto; }
 .detail-dt .help-dot:focus-visible { opacity: 1; }
 
+/* PostgreSQL screen components. Repeated compositions live as utilities so the
+   markup stays readable and the rules stay inside the utilities layer. */
+@utility lensbar {
+  align-items: center; background: var(--s2); border: 1px solid var(--line2); border-bottom: 0; display: flex; gap: 9px; margin-top: 8px; min-height: 26px; padding: 0 6px;
+  & > span { color: var(--fg3); font-size: var(--t-sm); margin-right: 8px; }
+}
+@utility lens-tabs {
+  border: 1px solid var(--line3); display: flex;
+  & > button { background: transparent; border: 0; color: var(--fg3); cursor: pointer; font-size: var(--t-xs); min-width: 58px; padding: 4px 8px; text-transform: uppercase; }
+  & > button[aria-pressed="true"] { background: var(--s4); color: var(--accent3); }
+}
+@utility query-block {
+  background: var(--s1); border: 1px solid var(--line3); margin-top: 8px; padding: 5px 6px;
+  & > span { align-items: center; color: var(--fg3); display: flex; font-size: var(--t-xs); justify-content: space-between; text-transform: uppercase; }
+  & > pre { color: var(--event-edge); font: inherit; font-size: var(--t-sm); line-height: 1.55; margin: 8px 0 0; max-height: 170px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+}
+@utility pg-detail {
+  background: var(--s2); border: 1px solid var(--line3); border-left: 0; max-height: min(560px, calc(100vh - 355px)); overflow: auto; padding: 11px;
+}
+@utility pg-detail-head {
+  align-items: flex-start; background: var(--s2); border-bottom: 1px solid var(--line3); display: flex; justify-content: space-between; padding-bottom: 9px; position: sticky; top: -11px; z-index: 2;
+  & span { color: var(--fg3); font-size: var(--t-xs); text-transform: uppercase; }
+  & h2 { font-size: var(--t-md); margin-top: 4px; overflow-wrap: anywhere; }
+  & button { align-items: center; background: transparent; border: 1px solid var(--line3); color: var(--fg2); cursor: pointer; display: flex; height: 26px; justify-content: center; width: 26px; }
+}
+@utility pg-overview-section {
+  background: var(--s1); border: 1px solid var(--line2); margin-top: 8px;
+  & > h2 { background: var(--s2); border-bottom: 1px solid var(--line2); color: var(--fg3); font-size: var(--t-xs); font-weight: 500; letter-spacing: .08em; margin: 0; min-height: 28px; padding: 8px 9px 0; text-transform: uppercase; }
+  & > dl { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); margin: 0; }
+  & > dl > div { border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); min-height: 46px; padding: 7px 8px; }
+  & dt { color: var(--fg3); font-size: var(--t-xs); overflow-wrap: anywhere; text-transform: uppercase; }
+  & dd { color: var(--fg); font-size: var(--t-sm); margin: 6px 0 0; overflow-wrap: anywhere; }
+}
+
 :root, [data-theme="dark"] {
   color-scheme: dark;
 }
@@ -253,18 +287,11 @@ h2 { font-size: var(--t-md); }
 .uplot-figure.timeline-chart { flex: 0 0 216px; height: 216px; min-height: 216px; padding: 7px 7px 3px; }
 .timeline-chart .uplot-host { height: auto; min-height: 186px; }
 .timeline-chart .chart-current { max-width: 55%; overflow: hidden; text-overflow: ellipsis; }
-.lensbar { align-items: center; background: var(--s2); border: 1px solid var(--line2); border-bottom: 0; display: flex; gap: 9px; margin-top: 8px; min-height: 26px; padding: 0 6px; }
-.lensbar > span { color: var(--fg3); font-size: var(--t-sm); margin-right: 8px; }
-.lens-tabs { border: 1px solid var(--line3); display: flex; }
-.lens-tabs button { background: transparent; border: 0; color: var(--fg3); cursor: pointer; font-size: var(--t-xs); min-width: 58px; padding: 4px 8px; text-transform: uppercase; }
-.lens-tabs button[aria-pressed="true"] { background: var(--s4); color: var(--accent3); }
-.pg-lensbar { flex-wrap: wrap; }
 .value-tone-legend { align-items: center; color: var(--fg4); display: flex; font-size: var(--t-xs); gap: 5px; margin-left: auto; }
 .value-tone-legend i { border-radius: 50%; display: inline-block; height: 6px; margin-left: 8px; width: 6px; }
 .value-tone-legend .tone-good { background: var(--ok); }
 .value-tone-legend .tone-warning { background: var(--warn); }
 .value-tone-legend .tone-critical { background: var(--bad); }
-.pg-empty { border: 1px solid var(--line2); color: var(--fg3); font-size: var(--t-sm); margin: 0; padding: 22px; }
 .process-summary > button span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .process-table { background: var(--s1); border: 1px solid var(--line2); min-width: 0; overflow: hidden; }
 .process-table .entity-scroll { height: min(570px, calc(100vh - 370px)); min-height: 300px; }
@@ -289,7 +316,6 @@ h2 { font-size: var(--t-md); }
 .sticky-command { box-shadow: 5px 0 8px var(--shadow-b); }
 .entity-sticky.sticky-pid { box-shadow: none; }
 .process-table .entity-header-cell.sticky-pid, .process-table .entity-header-cell.sticky-command { background: var(--s2); z-index: 40; }
-.query-block pre { color: var(--event-edge); font: inherit; font-size: var(--t-sm); line-height: 1.55; margin: 8px 0 0; max-height: 170px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 
 .system-main { margin-top: 8px; min-width: 0; }
 .system-main > .use-table { margin-top: 0; }
@@ -386,24 +412,7 @@ h2 { font-size: var(--t-md); }
 .pg-tabs button { align-items: center; background: transparent; border: 0; border-right: 1px solid var(--line2); color: var(--fg3); cursor: pointer; display: flex; flex: 0 0 auto; font-size: var(--t-xs); gap: 6px; letter-spacing: .04em; padding: 0 13px; text-transform: uppercase; }
 .pg-tabs button[aria-current="page"] { background: var(--s4); box-shadow: inset 0 -2px var(--accent); color: var(--accent3); }
 .pg-tabs button:disabled { cursor: not-allowed; opacity: .35; }
-.pg-overview { margin-top: 8px; padding: 8px; }
-.overview-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
-.overview-metrics article { background: var(--s1); border: 1px solid var(--line); min-height: 58px; padding: 8px; }
-.overview-metrics article + article { border-left: 0; }
-.overview-metrics span { color: var(--fg3); display: block; font-size: var(--t-xs); text-transform: uppercase; }
-.overview-metrics strong { color: var(--fg); display: block; font-size: var(--t-lg); font-weight: 560; margin-top: 7px; }
-.pg-preview { margin-top: 8px; }
-.pg-overview-section { background: var(--s1); border: 1px solid var(--line2); margin-top: 8px; }
-.pg-overview-section > h2 { background: var(--s2); border-bottom: 1px solid var(--line2); color: var(--fg3); font-size: var(--t-xs); font-weight: 500; letter-spacing: .08em; margin: 0; min-height: 28px; padding: 8px 9px 0; text-transform: uppercase; }
-.pg-overview-section dl { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); margin: 0; }
-.pg-overview-section dl > div { border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); min-height: 46px; padding: 7px 8px; }
-.pg-overview-section dt { color: var(--fg3); font-size: var(--t-xs); overflow-wrap: anywhere; text-transform: uppercase; }
-.pg-overview-section dd { color: var(--fg); font-size: var(--t-sm); margin: 6px 0 0; overflow-wrap: anywhere; }
-.pg-entity-layout { display: grid; grid-template-columns: minmax(0, 1fr) clamp(460px, 32vw, 600px); margin-top: 8px; min-width: 0; }
-.pg-entity-main { min-width: 0; }
-.pg-table-only { grid-template-columns: minmax(0, 1fr); }
 .pg-entity-layout .entity-scroll { height: min(560px, calc(100dvh - 475px)); min-height: 100px; }
-.pg-detail { background: var(--s2); border: 1px solid var(--line3); border-left: 0; max-height: min(560px, calc(100vh - 355px)); overflow: auto; padding: 11px; }
 .pg-table-shell { display: flex; flex-direction: column; height: 100dvh; min-height: 0; overflow: hidden; }
 .pg-table-shell > .topbar { flex: 0 0 auto; }
 .pg-table-workspace { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; overflow: hidden; }
@@ -415,9 +424,6 @@ h2 { font-size: var(--t-md); }
 .pg-table-shell .pg-detail { max-height: none; min-height: 0; overscroll-behavior: contain; }
 .pg-table-shell .pg-detail .uplot-figure:not(.uplot-expanded) { flex: 0 0 200px; height: 200px; max-height: 200px; }
 .pg-detail > header { align-items: flex-start; background: var(--s2); border-bottom: 1px solid var(--line3); display: flex; justify-content: space-between; padding-bottom: 9px; position: sticky; top: -11px; z-index: 2; }
-.pg-detail > header span { color: var(--fg3); font-size: var(--t-xs); text-transform: uppercase; }
-.pg-detail > header h2 { font-size: var(--t-md); margin-top: 4px; overflow-wrap: anywhere; }
-.pg-detail > header button { align-items: center; background: transparent; border: 1px solid var(--line3); color: var(--fg2); cursor: pointer; display: flex; height: 26px; justify-content: center; width: 26px; }
 /* The System dock unfolds full-width under the resource table: the chart is
    the content being opened, so it gets the stage — real height, whole width,
    same on every screen. Opening scrolls it into view, Esc/X fold it back. */
@@ -432,7 +438,6 @@ h2 { font-size: var(--t-md); }
 .metric-groups .metric-choice > button::after { bottom: 5px; color: var(--fg4); content: "↗"; font-size: 11px; opacity: .55; position: absolute; right: 7px; }
 .metric-groups .metric-choice > button:hover::after, .metric-groups .metric-choice > button:focus-visible::after { color: var(--accent3); opacity: 1; }
 .metric-groups .metric-choice > button strong { padding-right: 14px; }
-.query-block > span { align-items: center; color: var(--fg3); display: flex; font-size: var(--t-xs); justify-content: space-between; text-transform: uppercase; }
 .copy-raw { align-items: center; background: transparent; border: 1px solid var(--line4); color: var(--accent3); cursor: pointer; display: inline-flex; flex: 0 0 auto; font-size: var(--t-xs); justify-content: center; padding: 2px 3px; text-transform: uppercase; }
 
 .kind-event { color: var(--event); }
@@ -465,7 +470,7 @@ h2 { font-size: var(--t-md); }
   .use-cell-body { align-items: flex-start; flex-direction: column; gap: 2px; min-width: 0; padding-left: 5px; padding-right: 5px; }
   .use-cell-body strong { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
   .overview-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .pg-overview-section dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .unused-pg-overview-dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .overview-metrics article + article { border-left: 1px solid var(--line); }
 }
 
@@ -497,7 +502,7 @@ h2 { font-size: var(--t-md); }
   .metric-groups { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .entity-panels { grid-template-columns: minmax(0, 1fr); }
   .overview-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .pg-overview-section dl { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .unused-pg-overview-dl { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 @media (max-width: 1179px) {
@@ -519,7 +524,6 @@ h2 { font-size: var(--t-md); }
 }
 
 @media (max-width: 1000px) {
-  .pg-entity-layout { grid-template-columns: minmax(0, 1fr); }
   .pg-detail { border-left: 1px solid var(--line3); bottom: 10px; box-shadow: -15px 0 45px var(--shadow-a); max-height: calc(100vh - 160px); max-width: 440px; position: fixed; right: 10px; top: 150px; width: min(440px, calc(100vw - 20px)); z-index: 80; }
   .pg-table-shell .pg-detail { max-height: calc(100dvh - 160px); }
   /* The System dock is not an overlay: it unfolds in the page flow. */
