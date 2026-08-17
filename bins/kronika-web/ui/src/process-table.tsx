@@ -154,7 +154,7 @@ export function ProcessSummary({ cursor, dispatch, hour, lens, locale, onCursor,
   }, [hour])
   const activePoints = useMemo(() => processSummaryPoints(history, active), [active, history])
   const statusKey = status === "loading" ? "process.summary.loading" : status === "error" ? "process.summary.error" : status === "empty" ? "status.no_data" : null
-  return <section aria-label={t("process.summary.title")} className="process-summary metric-grid">
+  return <section aria-label={t("process.summary.title")} className="process-summary metric-grid grid grid-cols-4 max-[760px]:grid-cols-2">
     {metrics.map((metric) => {
       const output = processSummaryOutput(readingAt(processSummaryPoints(history, metric), cursor), metric, locale, t)
       return <div className="metric-choice" key={metric.field}>

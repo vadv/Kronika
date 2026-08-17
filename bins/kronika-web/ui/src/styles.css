@@ -126,6 +126,36 @@
   & dd { color: var(--fg); font-size: var(--t-sm); margin: 6px 0 0; overflow-wrap: anywhere; }
 }
 
+/* System screen components: the resource table, the metric groups and the dock
+   tab strip. Repeated compositions stay named for the same reason as the
+   PostgreSQL ones. */
+@utility use-table {
+  background: var(--s2); border: 1px solid var(--line2); margin-top: 8px;
+}
+@utility use-row {
+  border-bottom: 1px solid var(--line); cursor: pointer; display: grid; grid-template-columns: minmax(96px, 130px) repeat(3, minmax(0, 1fr));
+  &:last-child { border-bottom: 0; }
+  &:hover { background: var(--s3); }
+  &:focus-visible { outline: 2px solid var(--cursor); outline-offset: -2px; }
+  &[aria-selected="true"] { background: var(--s4); box-shadow: inset 2px 0 var(--accent); }
+  &[aria-disabled="true"] { cursor: default; }
+  &[aria-disabled="true"]:hover { background: none; }
+}
+@utility metric-choice {
+  border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); min-height: 60px; position: relative;
+  & > button { background: var(--s1); border: 0; color: var(--fg3); cursor: pointer; height: 100%; padding: 7px 27px 7px 8px; text-align: left; width: 100%; }
+  & > button:hover { background: var(--s3); }
+  & > button[aria-pressed="true"] { background: var(--s4); box-shadow: inset 2px 0 var(--accent); color: var(--accent3); }
+  & > button > span { display: block; font-size: var(--t-xs); max-width: 100%; overflow: hidden; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+  & > button strong { color: var(--fg); display: block; font-size: var(--t-md); font-variant-numeric: tabular-nums; font-weight: 560; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+@utility dock-tabs {
+  border: 1px solid var(--line3); display: flex; flex-wrap: wrap; gap: 0; overflow: visible; padding: 0;
+  & button { background: transparent; border: 0; border-right: 1px solid var(--line); color: var(--fg3); cursor: pointer; font-size: var(--t-xs); min-height: 24px; padding: 3px 8px; text-transform: uppercase; }
+  & button:hover { background: var(--s3); }
+  & button[aria-pressed="true"] { background: var(--s4); color: var(--accent3); }
+}
+
 :root, [data-theme="dark"] {
   color-scheme: dark;
 }
@@ -317,30 +347,16 @@ h2 { font-size: var(--t-md); }
 .entity-sticky.sticky-pid { box-shadow: none; }
 .process-table .entity-header-cell.sticky-pid, .process-table .entity-header-cell.sticky-command { background: var(--s2); z-index: 40; }
 
-.system-main { margin-top: 8px; min-width: 0; }
-.system-main > .use-table { margin-top: 0; }
-.system-main > .metric-groups, .system-main > .table-empty { margin-top: 8px; }
-.metric-groups { display: grid; gap: 7px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.metric-column { display: flex; flex-direction: column; min-width: 0; }
-.metric-column > .metric-group + .metric-group { margin-top: 7px; }
 .metric-group, .entity-panel, .pg-overview, .pg-preview { background: var(--s1); border: 1px solid var(--line2); min-width: 0; }
 .metric-group > h2, .entity-panel > h2, .pg-preview > h2 {
   align-items: center; background: var(--s2); border-bottom: 1px solid var(--line2); color: var(--fg3); display: flex;
   font-size: var(--t-xs); font-weight: 500; gap: 7px; letter-spacing: .08em; min-height: 28px; padding: 0 9px; text-transform: uppercase;
 }
 .metric-group > h2 svg, .entity-panel > h2 svg { color: var(--fg4); }
-.metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.process-summary.metric-grid { border-left: 1px solid var(--line2); grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.process-summary.metric-grid { border-left: 1px solid var(--line2); }
 .metric-grid > button { background: var(--s1); border: 0; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); color: var(--fg3); cursor: pointer; min-height: 60px; padding: 7px 8px; text-align: left; }
 .metric-grid > button:hover { background: var(--s3); }
 .metric-grid > button[aria-pressed="true"] { background: var(--s4); box-shadow: inset 2px 0 var(--accent); color: var(--accent3); }
-.metric-choice { border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); min-height: 60px; position: relative; }
-.metric-choice > button { background: var(--s1); border: 0; color: var(--fg3); cursor: pointer; height: 100%; padding: 7px 27px 7px 8px; text-align: left; width: 100%; }
-.metric-choice > button:hover { background: var(--s3); }
-.metric-choice > button[aria-pressed="true"] { background: var(--s4); box-shadow: inset 2px 0 var(--accent); color: var(--accent3); }
-.metric-choice > button > span { display: block; font-size: var(--t-xs); max-width: 100%; overflow: hidden; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
-.metric-choice > button strong { color: var(--fg); display: block; font-size: var(--t-md); font-variant-numeric: tabular-nums; font-weight: 560; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.metric-choice > .label-help { position: absolute; right: 7px; top: 7px; }
 .process-summary > button span, .metric-grid .label-help { font-size: var(--t-xs); max-width: 100%; text-transform: uppercase; }
 .metric-grid .label-help { letter-spacing: .025em; }
 .metric-grid > button strong { color: var(--fg); display: block; font-size: var(--t-md); font-variant-numeric: tabular-nums; font-weight: 560; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -368,32 +384,8 @@ h2 { font-size: var(--t-md); }
 .chart-marker-track { height: 34px; left: var(--chart-plot-left, 62px); pointer-events: none; position: absolute; top: var(--chart-plot-top, 25px); width: max(1px, calc(var(--chart-plot-width, calc(100% - 70px)) - var(--chart-marker-end-reserve, 0px))); z-index: 7; }
 .uplot-status { align-items: center; bottom: 28px; display: flex; justify-content: center; left: var(--chart-plot-left, 0); pointer-events: none; position: absolute; right: 0; top: var(--chart-plot-top, 26px); z-index: 8; }
 .uplot-status .series-status { background: var(--s2); border: 1px solid var(--line2); min-height: 0; padding: 3px 9px; }
-.use-table { background: var(--s2); border: 1px solid var(--line2); margin-top: 8px; }
-.use-table > header, .use-row { display: grid; grid-template-columns: minmax(96px, 130px) repeat(3, minmax(0, 1fr)); }
-.use-table > header { border-bottom: 1px solid var(--line2); color: var(--fg3); font-size: var(--t-xs); text-transform: uppercase; }
-.use-table > header span { padding: 5px 8px; }
-.use-row { border-bottom: 1px solid var(--line); cursor: pointer; }
-.use-row[aria-disabled="true"] { cursor: default; }
-.use-row[aria-disabled="true"]:hover { background: none; }
-.use-row:last-child { border-bottom: 0; }
-.use-row:hover { background: var(--s3); }
-.use-row:focus-visible { outline: 2px solid var(--cursor); outline-offset: -2px; }
-.use-row[aria-selected="true"] { background: var(--s4); box-shadow: inset 2px 0 var(--accent); }
-.use-resource { align-self: center; color: var(--fg2); font-size: var(--t-sm); padding: 7px 8px; text-transform: uppercase; }
-.use-cell { border-left: 1px solid var(--line); min-width: 0; position: relative; }
 .use-cell > .label-help { position: absolute; right: 7px; top: 6px; }
-.use-cell-body { align-items: baseline; color: var(--fg3); display: flex; gap: 7px; justify-content: space-between; min-height: 38px; padding: 6px 26px 6px 8px; }
-.use-cell-body > span { font-size: var(--t-xs); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.use-cell-body strong { color: var(--fg2); flex: 0 0 auto; font-size: var(--t-sm); font-variant-numeric: tabular-nums; font-weight: 500; white-space: nowrap; }
-.use-absent { align-items: center; color: var(--fg4); display: flex; justify-content: center; }
-.entity-panels { display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 8px; }
-.entity-panel { min-width: 0; }
-.system-entity-history { border: 1px solid var(--line2); border-top: 0; min-width: 0; }
-.system-entity-history > header { align-items: flex-start; display: flex; gap: 6px; justify-content: space-between; padding: 6px 7px 0; }
-.system-history-selector { display: flex; gap: 4px; max-width: calc(100% - 30px); overflow-x: auto; padding-bottom: 3px; scrollbar-width: thin; }
-.system-history-selector button, .system-history-close { background: var(--s2); border: 1px solid var(--line3); color: var(--fg2); cursor: pointer; flex: 0 0 auto; font-size: var(--t-xs); min-height: 27px; padding: 4px 7px; }
-.system-history-selector button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--fg); }
-.system-history-close { font-size: var(--t-md); min-width: 27px; padding: 1px 5px; }
+.metric-choice > .label-help { position: absolute; right: 7px; top: 7px; }
 .system-entity-history .series-chart { padding-top: 4px; }
 /* Scrolling something into view parks it flush against the port, where the
    scrollbar clips whatever reaches past its box: a focus outline, a touch
@@ -427,13 +419,8 @@ h2 { font-size: var(--t-md); }
 /* The System dock unfolds full-width under the resource table: the chart is
    the content being opened, so it gets the stage — real height, whole width,
    same on every screen. Opening scrolls it into view, Esc/X fold it back. */
-.system-dock { border: 1px solid var(--line3); margin-top: 8px; max-height: none; overflow: visible; }
 .system-dock .uplot-figure:not(.uplot-expanded) { height: 320px; }
 /* The dock's metric selector is the same tab strip the lens bar uses. */
-.dock-tabs { border: 1px solid var(--line3); display: flex; flex-wrap: wrap; gap: 0; overflow: visible; padding: 0; }
-.dock-tabs button { background: transparent; border: 0; border-right: 1px solid var(--line); color: var(--fg3); cursor: pointer; font-size: var(--t-xs); min-height: 24px; padding: 3px 8px; text-transform: uppercase; }
-.dock-tabs button:hover { background: var(--s3); }
-.dock-tabs button[aria-pressed="true"] { background: var(--s4); color: var(--accent3); }
 /* Grid cells open the dock; the corner marker says so before the click. */
 .metric-groups .metric-choice > button::after { bottom: 5px; color: var(--fg4); content: "↗"; font-size: 11px; opacity: .55; position: absolute; right: 7px; }
 .metric-groups .metric-choice > button:hover::after, .metric-groups .metric-choice > button:focus-visible::after { color: var(--accent3); opacity: 1; }
@@ -460,11 +447,9 @@ h2 { font-size: var(--t-md); }
   .workspace { padding-left: 8px; padding-right: 8px; }
   .lens-tabs { width: 100%; }
   .lens-tabs button { flex: 1; min-width: 0; padding-left: 4px; padding-right: 4px; }
-  .process-summary.metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sticky-command { box-shadow: none; position: static; }
   .process-table .entity-header-cell.sticky-command { position: static; }
   .metric-groups, .entity-panels { grid-template-columns: minmax(0, 1fr); }
-  .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .use-table > header, .use-row { grid-template-columns: 80px repeat(3, minmax(0, 1fr)); }
   .use-table > header span, .use-resource { padding-left: 5px; padding-right: 5px; }
   .use-cell-body { align-items: flex-start; flex-direction: column; gap: 2px; min-width: 0; padding-left: 5px; padding-right: 5px; }
