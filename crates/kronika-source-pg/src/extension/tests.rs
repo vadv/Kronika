@@ -58,6 +58,9 @@ fn inventory_is_one_marked_catalog_query_with_exact_capability_checks() {
     assert!(INVENTORY_QUERY.contains("has_function_privilege"));
     assert!(INVENTORY_QUERY.contains("pg_has_role('pg_read_all_stats', 'USAGE')"));
     assert!(INVENTORY_QUERY.contains("'26 26 20 20'"));
+    assert!(INVENTORY_QUERY.contains("f.proname = 'pg_store_plans_textplan'"));
+    assert!(INVENTORY_QUERY.contains("f.proargtypes = '25'::pg_catalog.oidvector"));
+    assert!(INVENTORY_QUERY.contains("AS store_plans_text_converter"));
     assert!(INVENTORY_QUERY.contains("queryid_stat_statements"));
     assert!(INVENTORY_QUERY.contains("store_plans_ossc_columns"));
     assert!(INVENTORY_QUERY.contains("store_plans_datasentinel_columns"));

@@ -20,6 +20,7 @@ fn inventory(extversion: &str, reader: bool, full_visibility: bool) -> Inventory
         store_plans_zero_arg: false,
         store_plans_bool_arg: false,
         store_plans_key_getter: false,
+        store_plans_text_converter: false,
         store_plans_ossc_columns: false,
         store_plans_vadv_columns: false,
         store_plans_datasentinel_columns: false,

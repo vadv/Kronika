@@ -89,7 +89,7 @@ const PLAN_SUMMARY_COLUMN: EntityColumn = {
   help: "pg.plan.summary.help",
   label: "pg.plan.summary.label",
   physicalField: "plan",
-  render: (row) => <PlanSummary raw={rawText(value(row, "plan")) ?? ""} />,
+  render: (row) => <PlanSummary raw={rawText(value(row, "plan"))} />,
   sortable: false,
   sticky: true,
   width: 440,
@@ -726,7 +726,8 @@ function PgDetail({ allRows, columns, cursor, historyField, historyRevision, hou
   const exactHistory = usePostgresMetricHistory(row, section, historyColumn, hour, historyRevision)
   const history = exactHistory.value?.length ? exactHistory.value : loadedHistory
   const textField = section === "pg_store_plans" ? "plan" : "query"
-  const exactText = useWholeText(row, section, textField)?.trim() || null
+  const wholeText = useWholeText(row, section, textField)
+  const exactText = wholeText?.trim() || null
   const planTarget = section === "pg_store_plans" ? statementTargetForPlan(row) : null
   const fields = columns.filter((column) => column.field !== textField)
   const detailIdentity = section === "pg_stat_activity"
@@ -740,9 +741,9 @@ function PgDetail({ allRows, columns, cursor, historyField, historyRevision, hou
       <div aria-label={t("system.history")} className="history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">{chartColumns.map((column) => <button aria-pressed={activeMetricField === column.field} className="min-h-[28px] flex-none cursor-pointer border border-line3 bg-s2 px-[7px] py-1 text-xs text-fg2 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg" data-testid={`pg-chart-${column.field}`} key={column.field} onClick={() => setMetricField(column.field)} type="button">{t(column.label)}</button>)}</div>
       <SeriesChart cursor={cursor} durationAxis={historyColumn.kind === "duration"} helpKey={historyColumn.help ?? "chart.metric.help"} hour={hour} labelKey={historyColumn.label} locale={locale} format={chartFormat(historyColumn.kind)} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} status={exactHistory.status} t={t} unit={chartUnit(historyColumn, t("unit.per_second"))} />
     </section>}</ChartOnly>
-    {exactText !== null && (section === "pg_store_plans"
-      ? <PlanView raw={exactText} t={t} />
-      : <section className="query-block"><span>{t("pg.query.label")}<button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center border border-line4 bg-transparent px-[3px] py-0.5 text-xs uppercase text-accent3" onClick={() => void navigator.clipboard?.writeText(exactText)} type="button"><Copy aria-hidden="true" size={12} /></button></span><pre data-testid="pg-exact-query">{exactText}</pre></section>)}
+    {section === "pg_store_plans"
+      ? <PlanView raw={wholeText} t={t} />
+      : exactText !== null && <section className="query-block"><span>{t("pg.query.label")}<button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center border border-line4 bg-transparent px-[3px] py-0.5 text-xs uppercase text-accent3" onClick={() => void navigator.clipboard?.writeText(exactText)} type="button"><Copy aria-hidden="true" size={12} /></button></span><pre data-testid="pg-exact-query">{exactText}</pre></section>}
     <dl className="m-0 mt-2">{fields.filter((column) => (column.available?.(row) ?? true) && told(value(row, column.field))).map((column) => <div className="detail-row max-[520px]:detail-row-stacked" key={column.field}><dt className="detail-dt">{column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}</dt><dd className="detail-dd max-[520px]:text-left">{column.render === undefined ? display(value(row, column.field), column, locale, t) : column.render(row)}</dd></div>)}</dl>
   </aside>
 }

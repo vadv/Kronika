@@ -75,8 +75,10 @@ installation on the next pass.
 layout per column set. `pg_store_plans` is identified by its callable interface
 and result columns rather than `extversion`: the collector keeps separate OSSC
 and Datasentinel layouts for their zero-argument readers, and recognizes the
-vadv boolean reader with its four-key plan getter. It also discovers the exact
-readable `pg_stat_statements_info` and `pg_store_plans_info` views. Each info
+vadv boolean reader only with its four-key plan getter and executable native
+text converter. The collector composes those functions in the discovered
+schema so every stored `plan` is bounded human-readable text. It also discovers
+the exact readable `pg_stat_statements_info` and `pg_store_plans_info` views. Each info
 view is selected independently of its main statistics reader. The complete
 layout map is in
 [PostgreSQL metric types](../../docs/type-registry/postgresql-metrics.md).

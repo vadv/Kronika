@@ -1085,16 +1085,20 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.match(planTable.headers.join(" "), /Plan summary/)
     assert.match(planTable.headers.join(" "), /Last query ID/i)
     assert.doesNotMatch(planTable.headers.join(" "), /(?:^|\s)Query ID(?:\s|$)/)
-    assert.match(planTable.row, /Merge Join.*Seq Scan.*Index Scan/)
+    assert.match(planTable.row, /Merge Join.*cost=0\.85\.\.81\.42/)
     await cdp.evaluate(`document.querySelector('[data-testid="pg-plans-table"] .entity-row').click()`)
-    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-plan-node"]').length === 3`, "the readable execution plan")
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-text-plan"]') !== null`, "the native text execution plan")
     const planDetail = await cdp.evaluate(`(() => ({
-      nodes: [...document.querySelectorAll('[data-testid="pg-plan-node"] h3')].map((node) => node.textContent),
-      rawOpen: document.querySelector('[data-testid="pg-plan-view"] details').open,
+      copy: document.querySelector('[data-testid="pg-plan-view"] button')?.textContent ?? null,
+      bodyCount: document.querySelectorAll('[data-testid="pg-text-plan"]').length,
+      secondaryDisclosure: document.querySelector('[data-testid="pg-plan-view"] details') !== null,
+      text: document.querySelector('[data-testid="pg-text-plan"]').textContent,
       unavailable: document.querySelector('[data-testid="pg-plan-query-unavailable"]') !== null,
     }))()`)
-    assert.deepEqual(planDetail.nodes, ["Merge Join", "Seq Scanpublic.orders", "Index Scanpublic.customersusing customers_pkey"])
-    assert.equal(planDetail.rawOpen, false)
+    assert.equal(planDetail.text, VADV_TEXT_PLAN)
+    assert.equal(planDetail.copy, "Copy")
+    assert.equal(planDetail.bodyCount, 1)
+    assert.equal(planDetail.secondaryDisclosure, false)
     assert.equal(planDetail.unavailable, false)
     await cdp.evaluate(`([...document.querySelectorAll('.pg-detail-head button')].find((button) => button.textContent.includes('Open query'))).click()`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.statements" && new URL(location.href).searchParams.get("stmt_match") === "last"`, "the best-effort plan query route")
@@ -3584,12 +3588,20 @@ function statementRecords(page, eligible = 1, hasMore = false, rowCount = eligib
   ]
 }
 
+const VADV_TEXT_PLAN = [
+  "Merge Join  (cost=0.85..81.42 rows=12 width=64)",
+  "  Merge Cond: (orders.customer_id = customers.id)",
+  "  ->  Seq Scan on orders  (cost=0.00..20.00 rows=400 width=32)",
+  "        Filter: (status = 'open'::text)",
+  "  ->  Index Scan using customers_pkey on customers  (cost=0.42..8.44 rows=1 width=32)",
+  "        Index Cond: (id > 0)",
+].join("\n")
+
 function planRecords() {
   const columns = ["ts", "userid", "dbid", "queryid", "planid", "queryid_stat_statements", "datname", "usename", "plan", "calls", "total_time", "rows"]
-  const plan = '{"p":{"t":"u","j":"l","7":"(orders.customer_id = customers.id)","l":[{"t":"h","n":"orders","s":"public","5":"(status = open)"},{"t":"i","n":"customers","s":"public","i":"customers_pkey","8":"(id > 0)"}]}}{},"r":[]'
   return [
     { record: "layout", rates: ["calls", "total_time", "rows"], layout: { type_id: "1004001", logical_name: "pg_store_plans", columns: columns.map((name) => ({ name })) } },
-    { record: "row", segment_id: SEGMENT, type_id: "1004001", ordinal: "201", timestamp: String(AT), values: [String(AT), 10, 20, 0, 77, 42, "operators", "reporter", plan, 3, 12, 4] },
+    { record: "row", segment_id: SEGMENT, type_id: "1004001", ordinal: "201", timestamp: String(AT), values: [String(AT), 10, 20, 0, 77, 42, "operators", "reporter", VADV_TEXT_PLAN, 3, 12, 4] },
     { record: "snapshot_page", logical_name: "pg_store_plans", eligible: "1", returned: "1", has_more: false, truncated: false, next_cursor: null, page_size: 200, order_by: ["total_time", "calls"], order_direction: "desc", from: String(AT - 5_000_000), to: String(AT) },
   ]
 }

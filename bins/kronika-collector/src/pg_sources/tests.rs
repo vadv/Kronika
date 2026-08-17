@@ -225,6 +225,7 @@ fn statements_info_remains_available_without_full_statement_visibility() {
             store_plans_zero_arg: false,
             store_plans_bool_arg: false,
             store_plans_key_getter: false,
+            store_plans_text_converter: false,
             store_plans_ossc_columns: false,
             store_plans_vadv_columns: false,
             store_plans_datasentinel_columns: false,

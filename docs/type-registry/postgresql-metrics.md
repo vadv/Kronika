@@ -39,7 +39,12 @@ The `pg_stat_statements` layout follows its extension version. The
 not by `extversion`. OSSC, Datasentinel, and vadv have distinct layouts.
 Datasentinel adds relation OIDs and command type to the OSSC-shaped counters;
 vadv has an internal `queryid`, `queryid_stat_statements`, and a four-key plan
-getter.
+getter. The vadv layout is usable only when the same extension also exposes an
+immediately executable, non-set-returning `text -> text` plan converter. The
+collector nests that converter around the keyed getter in the discovered
+schema, then applies the 65,536-character bound. Thus `plan` is bounded
+human-readable text in every supported layout; compact extension payloads do
+not cross the PostgreSQL collection boundary.
 
 Small administrative reads use Simple Query Protocol. Typed metric reads use
 one-shot unnamed Extended Protocol queries. Queries run sequentially without
@@ -115,7 +120,7 @@ names; without permission to execute that function the section is absent.
 | `1_002_005` | `pg_stat_statements` | `pg_stat_statements` 1.11 | discovered installation | `conditional_full` |
 | `1_002_006` | `pg_stat_statements` | `pg_stat_statements` 1.12+ | discovered installation | `conditional_full` |
 | `1_003_001` | `pg_store_plans_ossc` | OSSC-compatible zero-argument reader | discovered installation | `conditional_full` |
-| `1_004_001` | `pg_store_plans_vadv` | vadv-compatible boolean reader and four-key getter | discovered installation | `conditional_full` |
+| `1_004_001` | `pg_store_plans_vadv` | vadv-compatible boolean reader, four-key getter, and native text converter | discovered installation | `conditional_full` |
 | `1_015_001` | `pg_stat_statements_info` | `pg_stat_statements` 1.9+ | discovered installation | `snapshot_full` |
 | `1_016_001` | `pg_store_plans_info` | exact readable `dealloc, stats_reset` view | discovered installation | `snapshot_full` |
 | `1_018_001` | `pg_store_plans_datasentinel` | Datasentinel-compatible zero-argument reader with `relids` and `cmd_type` | discovered installation | `conditional_full` |
