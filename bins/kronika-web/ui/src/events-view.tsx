@@ -18,7 +18,7 @@ import {
   findingSource,
 } from "./finding-presentation"
 import type { Translate } from "./help"
-import { asNumber, compact, humanBytes, humanPercent, identifier, type Locale, rawText, shownMoment } from "./model"
+import { asNumber, compact, humanBytes, humanDuration, humanPercent, identifier, type Locale, rawText, shownMoment } from "./model"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 
@@ -177,6 +177,7 @@ function FindingDetail({ cursor, data, finding, history, hour, locale, onClose, 
     </>}
     <ChartOnly>{metric.field !== null && points.some(({ value }) => typeof value === "number" && Number.isFinite(value)) && <SeriesChart
       cursor={cursor}
+      durationAxis={metric.unit === "milliseconds"}
       format={(number, place) => formatMetric(number, metric.unit, place, t)}
       helpKey={metric.helpKey}
       hour={hour}
@@ -218,7 +219,7 @@ export function eventValue(finding: Finding, field: string, cell: Cell, locale: 
   const number = asNumber(cell)
   if (number !== null && field.endsWith("_bytes")) return humanBytes(number, locale)
   if (number !== null && field.endsWith("_kb")) return `${compact(number, locale)} KiB`
-  if (number !== null && field.endsWith("_ms")) return `${compact(number, locale)}${t("unit.ms")}`
+  if (number !== null && field.endsWith("_ms")) return humanDuration(number, locale)
   if (number !== null && field.endsWith("_mbs")) return `${compact(number, locale)} MB/s`
   if (number !== null) return compact(number, locale)
   return rawText(cell) ?? "—"
@@ -239,7 +240,7 @@ function enumValueKey(logicalName: string, field: string, number: number | null)
 export function formatMetric(value: number | null, unit: ReturnType<typeof findingMetric>["unit"], locale: Locale, t: Translate): string {
   if (value === null) return "—"
   if (unit === "percent") return humanPercent(value, locale)
-  if (unit === "milliseconds") return `${compact(value, locale)}${t("unit.ms")}`
+  if (unit === "milliseconds") return humanDuration(value, locale)
   if (unit === "milliseconds_per_call") return `${compact(value, locale)}${t("unit.ms")}${t("unit.per_call")}`
   if (unit === "bytes_per_second") return `${humanBytes(value, locale)}${t("unit.per_second")}`
   return compact(value, locale)
@@ -247,7 +248,7 @@ export function formatMetric(value: number | null, unit: ReturnType<typeof findi
 
 function metricUnit(unit: ReturnType<typeof findingMetric>["unit"], locale: Locale): string {
   if (unit === "percent") return "%"
-  if (unit === "milliseconds") return "ms"
+  if (unit === "milliseconds") return ""
   if (unit === "milliseconds_per_call") return "ms/call"
   if (unit === "bytes_per_second") return "bytes/s"
   if (unit === "count") return locale === "ru" ? "количество" : "count"

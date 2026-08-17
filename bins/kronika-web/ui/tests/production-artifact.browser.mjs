@@ -1681,7 +1681,7 @@ test("the minified artifact restores and clears its opaque browser session", { t
   }
 })
 
-test("the slow-query detail keeps readable labels and contained values", { timeout: 60_000 }, async () => {
+test("the slow-query detail keeps readable labels and human event time", { timeout: 60_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const authState = { valid: false }
   const server = createServer((request, response) => {
@@ -1761,8 +1761,22 @@ test("the slow-query detail keeps readable labels and contained values", { timeo
     assert.ok(landscape.numeric.every(({ height }) => height <= 24), JSON.stringify(landscape.numeric))
     assert.ok(Math.max(...landscape.numeric.map(({ right }) => right)) - Math.min(...landscape.numeric.map(({ right }) => right)) <= 1)
     assert.equal(landscape.numeric[0]?.text, "3")
-    assert.match(landscape.numeric[1]?.text ?? "", /3,83[\s\u00a0]?тыс\.\s*мс/)
-    assert.match(landscape.numeric[2]?.text ?? "", /7,66[\s\u00a0]?тыс\.\s*мс/)
+    assert.equal(landscape.numeric[1]?.text, "6,2 с")
+    assert.equal(landscape.numeric[2]?.text, "12,5 с")
+    assert.equal(landscape.chart.current, "6,2 с")
+    assert.doesNotMatch(landscape.labels.join("\n"), /,\s*(?:ms|мс)$/imu)
+    assert.doesNotMatch(landscape.text, /тыс\.\s*мс/iu)
+    assert.doesNotMatch(landscape.chart.label, /(?:^|[, (])(?:ms|мс)(?:$|[,)])/iu)
+
+    const hoverPoint = await cdp.evaluate(`(() => {
+      const bounds = document.querySelector('[data-testid="event-detail"] .u-over').getBoundingClientRect()
+      return { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 }
+    })()`)
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...hoverPoint })
+    await cdp.waitFor(`document.querySelector('[data-testid="event-detail"] [data-testid="chart-hover-readout"]') !== null`, "the slow-query human duration hover")
+    const hover = await cdp.evaluate(`document.querySelector('[data-testid="event-detail"] [data-testid="chart-hover-readout"]').textContent`)
+    assert.match(hover, /6,2\sс/u)
+    assert.doesNotMatch(hover, /тыс\.\s*мс|\(мс\)/iu)
 
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 882, mobile: false, width: 480 })
     await settleLayout(cdp)
@@ -3173,8 +3187,8 @@ function slowQueryTimelineRecords() {
     },
     { record: "index", segment: { id: SEGMENT }, logical_name: "health", checksum: null },
     {
-      record: "finding", logical_name: "pg_log_slow_queries", kind: "event", type_id: "2004001",
-      field_ordinal: 0, row_ordinal: "3", ts: String(AT),
+      record: "finding", logical_name: "pg_log_slow_queries", kind: "known_bad", type_id: "2004001",
+      field_ordinal: 4, row_ordinal: "3", ts: String(AT),
     },
   ]
 }
@@ -3183,7 +3197,7 @@ function slowQueryRecords() {
   const columns = ["ts", "pattern", "sample", "count", "max_duration_ms", "total_duration_ms"]
   return [
     layout("2004001", "pg_log_slow_queries", columns),
-    row("2004001", "3", [String(AT), SLOW_PATTERN, SLOW_QUERY, 3, 3_831, 7_662]),
+    row("2004001", "3", [String(AT), SLOW_PATTERN, SLOW_QUERY, 3, 6_290, 12_580]),
   ]
 }
 
@@ -3215,20 +3229,26 @@ function detailGeometryExpression() {
         },
       }
     }
-    const numeric = ["REPEATS", "MAX DURATION, MS", "TOTAL DURATION, MS"].map((text) => {
+    const numeric = ["REPEATS", "MAX DURATION", "TOTAL DURATION"].map((text) => {
       const row = byLabel(text)
       const output = row.querySelector("dd")
       const rect = output.getBoundingClientRect()
       return { align: getComputedStyle(output).textAlign, height: row.getBoundingClientRect().height, right: rect.right, text: output.textContent.trim() }
     })
     return {
+      chart: {
+        current: document.querySelector('[data-testid="event-detail"] .chart-current')?.textContent.trim() ?? "",
+        label: document.querySelector('[data-testid="event-detail"] .uplot-host')?.getAttribute("aria-label") ?? "",
+      },
       clientWidth: document.documentElement.clientWidth,
       innerWidth: window.innerWidth,
+      labels: rows.map((row) => row.querySelector("dt")?.textContent.trim() ?? ""),
       list: bounds(document.querySelector('[data-testid="event-detail"] dl')),
       numeric,
       pattern: measured("PATTERN"),
       sample: measured("SAMPLE"),
       scrollWidth: document.documentElement.scrollWidth,
+      text: document.querySelector('[data-testid="event-detail"]')?.textContent ?? "",
     }
   })()`
 }
