@@ -894,10 +894,12 @@ function StateCard({ busy = false, locale, message, progress, t }: {
     const timer = setInterval(() => setNow(Date.now() * 1_000), 500)
     return () => clearInterval(timer)
   }, [progress === undefined]) // eslint-disable-line react-hooks/exhaustive-deps
-  return <div className="loading-card" {...(busy ? { role: "status" } : {})}>
-    <p className="eyebrow">KRONIKA</p>
-    <h2>{busy && <span aria-hidden="true" className="loading-ring" />}{message}</h2>
-    {progress !== undefined && <p className="loading-detail" data-testid="loading-detail">{progressDetail(progress, now, locale, t)}</p>}
+  return <div className="grid min-h-[calc(100dvh-35px)] place-items-center p-4">
+    <div className="w-full max-w-[440px] border border-line2 bg-s1 px-6 py-7 text-center shadow-[0_18px_55px_var(--color-shadow-a)]" data-testid="state-card" {...(busy ? { role: "status" } : {})}>
+      <p className="eyebrow">KRONIKA</p>
+      <h2 className="mt-2">{busy && <span aria-hidden="true" className="loading-ring" />}{message}</h2>
+      {progress !== undefined && <p className="mt-2.5 text-xs tabular-nums text-fg3" data-testid="loading-detail">{progressDetail(progress, now, locale, t)}</p>}
+    </div>
   </div>
 }
 
