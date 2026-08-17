@@ -29,11 +29,11 @@ import {
 } from "./api"
 import { ChartOnly, ChartVisibilityProvider, loadChartVisibility } from "./chart-visibility"
 import type { TableOrder } from "./entity-table"
-import { hostSectionOf, pgSectionOf, readAddress, sourceOf, stepOf, viewOf, writeAddress, type PgLens } from "./address"
+import { HOST_SECTIONS, hostSectionOf, pgSectionOf, readAddress, sourceOf, stepOf, viewOf, writeAddress, type HostSection, type PgLens, type Source } from "./address"
 import { DetailDock, PROCESS_HISTORY_FIELDS } from "./detail"
 import { loadDisplayTimeZone, saveDisplayTimeZone, type DisplayTimeZone } from "./display-time"
 import { DisplayTimeProvider, useDisplayTime } from "./display-time-context"
-import { contextualRows, entityContext, findingRoute, type EntityContext } from "./entity-context"
+import { contextualRows, entityContext, findingRoute, hostSectionForFinding, type EntityContext } from "./entity-context"
 import { EventsView, type FindingResolution } from "./events-view"
 import { findingHistory, findingHistoryRequest, findingProjection } from "./finding-presentation"
 import { HelpPanel, type Translate } from "./help"
@@ -76,9 +76,7 @@ import {
 import { Timeline } from "./timeline"
 import { TimezoneSelect } from "./timezone-select"
 
-type Source = "host" | "postgresql" | "events"
 type Theme = "dark" | "light"
-type HostSection = "system" | "processes"
 
 const EMPTY_DATA: HourData = {
   sections: {}, rateColumns: {}, snapshotRows: [], availableSections: [], postgresqlConfigured: false, postgresqlPresent: false, processes: [], activities: [], load: [], memory: [], pressure: [], health: [],
@@ -93,7 +91,7 @@ interface CurrentSnapshot {
 const EMPTY_CURRENT_SNAPSHOT: CurrentSnapshot = { data: EMPTY_DATA, target: null }
 
 const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
-  system: [...TIMELINE_REQUESTS, ...SYSTEM_REQUESTS],
+  host: [...TIMELINE_REQUESTS, ...SYSTEM_REQUESTS],
   processes: [...TIMELINE_REQUESTS, { section: "os_process" }, { section: "pg_stat_activity" }, { section: "instance_metadata" }],
   "postgresql:overview": [...TIMELINE_REQUESTS, ...POSTGRESQL_OVERVIEW_REQUESTS],
   "postgresql:activity": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlActivity.map(section)],
@@ -186,7 +184,6 @@ function App({ locale, onLocale, t }: {
   const [source, setSource] = useState<Source>(sourceOf(opened.current.view))
   const [hostSection, setHostSection] = useState<HostSection>(hostSectionOf(opened.current.view))
   const visibleSource: Source = source === "postgresql" && !pgPresent ? "host" : source
-  const visibleHostSection: HostSection = source === "postgresql" && !pgPresent ? "system" : hostSection
   const [pgSection, setPgSection] = useState<PostgresSection>(pgSectionOf(opened.current.view))
   const [statementLens, setStatementLens] = useState<StatementLens>(statementLensOf(opened.current.pgLens))
   const [planLens, setPlanLens] = useState<PlanLens>(planLensOf(opened.current.pgLens))
@@ -226,7 +223,8 @@ function App({ locale, onLocale, t }: {
   useEffect(() => {
     try { localStorage.setItem("kronika.charts", chartsVisible ? "1" : "0") } catch {}
   }, [chartsVisible])
-  const baseViewKey = visibleSource === "host" ? visibleHostSection : visibleSource === "postgresql" ? `postgresql:${pgSection}` : "events"
+  // Host sections read the same hour: switching resource tabs must not refetch.
+  const baseViewKey = visibleSource === "host" ? "host" : visibleSource === "processes" ? "processes" : visibleSource === "postgresql" ? `postgresql:${pgSection}` : "events"
   const viewKey = pgSection === "statements" && visibleSource === "postgresql"
     ? `${baseViewKey}:${statementLens}`
     : pgSection === "plans" && visibleSource === "postgresql" ? `${baseViewKey}:${planLens}` : baseViewKey
@@ -729,8 +727,7 @@ function App({ locale, onLocale, t }: {
     }
     const route = findingRoute(finding)
     if (route === "processes") {
-      setSource("host")
-      setHostSection("processes")
+      setSource("processes")
       setLens(processLens(fieldNameForLocator(finding)))
       setSystemFocus(null)
       if (resolved !== null) setSelectedKey(processKey(resolved.row))
@@ -738,7 +735,7 @@ function App({ locale, onLocale, t }: {
     }
     if (route === "system") {
       setSource("host")
-      setHostSection("system")
+      setHostSection(hostSectionForFinding(finding))
       setSystemFocus(finding)
       return
     }
@@ -758,10 +755,10 @@ function App({ locale, onLocale, t }: {
     ? HELP_POSTGRESQL
     : visibleSource === "events"
       ? HELP_EVENTS
-      : visibleHostSection === "processes" ? HELP_PROCESS : HELP_SYSTEM
+      : visibleSource === "processes" ? HELP_PROCESS : HELP_SYSTEM
   useEffect(() => {
     if (loading) return
-    if (source === "postgresql" && !pgPresent) { setHostSection("system"); setSource("host") }
+    if (source === "postgresql" && !pgPresent) setSource("host")
     if (source === "events" && !eventsPresent) setSource("host")
   }, [eventsPresent, loading, pgPresent, source])
 
@@ -775,13 +772,13 @@ function App({ locale, onLocale, t }: {
 
       <nav aria-label={t("nav.sources")} className="source-tabs max-[760px]:overflow-x-auto">
         <button aria-current={visibleSource === "host" ? "page" : undefined} className={visibleSource === "host" ? "source-active" : undefined} onClick={() => setSource("host")} type="button">{t("nav.host")}</button>
+        <button aria-current={visibleSource === "processes" ? "page" : undefined} className={visibleSource === "processes" ? "source-active" : undefined} data-testid="process-tab" onClick={() => setSource("processes")} type="button">{t("nav.processes")}</button>
         <button aria-current={visibleSource === "postgresql" ? "page" : undefined} className={visibleSource === "postgresql" ? "source-active" : undefined} disabled={!pgPresent} onClick={() => setSource("postgresql")} title={pgPresent ? undefined : t("nav.no_data")} type="button">{t("nav.postgresql")}</button>
         {eventsPresent && <button aria-current={visibleSource === "events" ? "page" : undefined} className={visibleSource === "events" ? "source-active" : undefined} onClick={() => { setEventScope(null); setSelectedFinding(null); setSource("events") }} type="button">{t("nav.events")}</button>}
       </nav>
 
       {visibleSource === "host" && <div className="section-tabs flex items-center border border-line3 [&>button]:cursor-pointer [&>button]:border-0 [&>button]:bg-transparent [&>button]:px-[9px] [&>button]:py-[5px] [&>button]:text-xs [&>button]:uppercase [&>button]:text-fg3 [&>button[aria-selected=true]]:bg-s4 [&>button[aria-selected=true]]:text-accent3" role="tablist">
-        <button aria-selected={visibleHostSection === "system"} onClick={() => setHostSection("system")} role="tab" type="button">{t("section.system")}</button>
-        <button aria-selected={visibleHostSection === "processes"} data-testid="process-tab" onClick={() => setHostSection("processes")} role="tab" type="button">{t("section.processes")}</button>
+        {HOST_SECTIONS.map((section) => <button aria-selected={hostSection === section} data-testid={`host-section-${section}`} key={section} onClick={() => setHostSection(section)} role="tab" type="button">{t(`section.${section}`)}</button>)}
       </div>}
 
       <HourPicker availableHours={availableHours} changeHour={changeHour} hour={hour} locale={locale} t={t} />
@@ -811,16 +808,16 @@ function App({ locale, onLocale, t }: {
     <section className={`workspace px-2.5 pb-5 pt-2 max-[760px]:px-2 charts-hidden:flex charts-hidden:min-h-0 charts-hidden:flex-auto charts-hidden:flex-col${stretchPostgres ? " pg-table-workspace flex min-h-0 flex-1 flex-col overflow-hidden [&>.timeline-shell]:flex-none [&>.pg-tabs]:flex-none [&>.lensbar]:flex-none [&>[data-testid=table-paging]]:flex-none" : ""}`}>
       <p aria-live="polite" className="absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]">
         {t(`nav.${visibleSource}`)}
-        {visibleSource === "host" ? ` · ${t(`section.${visibleHostSection}`)}` : ""}
+        {visibleSource === "host" ? ` · ${t(`section.${hostSection}`)}` : ""}
         {visibleSource === "postgresql" ? ` · ${t(`pg.section.${pgSection}`)}` : ""}
       </p>
       {loading && <StateCard busy locale={locale} message={t("status.loading")} progress={loadProgress} t={t} />}
       {!loading && error !== null && <StateCard locale={locale} message={t("status.error")} t={t} />}
-      {!loading && error === null && hour !== null && visibleSource === "host" && visibleHostSection === "system" && <SystemView context={context} contextRow={contextRow} cursor={cursor} tablesLoading={cursorState === "loading"} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} t={t} />}
-      {!loading && error === null && hour !== null && visibleSource === "host" && visibleHostSection === "processes" && <>
+      {!loading && error === null && hour !== null && visibleSource === "host" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} section={hostSection} t={t} tablesLoading={cursorState === "loading"} />}
+      {!loading && error === null && hour !== null && visibleSource === "processes" && <>
         <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} primaryLane={lens === "cpu" ? "cpu_busy" : lens === "memory" ? "memory" : lens === "disk" ? "io_stall" : "health"} shownAt={shownAt} t={t} /></ChartOnly>
         <div className="lensbar">
-          <div aria-label={t("section.processes")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1 max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">
+          <div aria-label={t("nav.processes")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1 max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">
             {(["cpu", "memory", "disk", "generic"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => { if (choice !== lens) setOrder(null); setLens(choice) }} type="button">{t(`lens.${choice}`)}</button>)}
           </div>
           <span>{processRows[0] === undefined ? t("status.no_data") : time.timestamp(processRows[0].timestamp)}</span>

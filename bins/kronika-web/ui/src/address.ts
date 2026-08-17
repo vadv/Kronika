@@ -14,8 +14,12 @@ export interface Address {
 }
 
 export type View =
-  | "host.system"
-  | "host.processes"
+  | "host.overview"
+  | "host.cpu"
+  | "host.memory"
+  | "host.storage"
+  | "host.network"
+  | "processes"
   | "pg.overview"
   | "pg.activity"
   | "pg.statements"
@@ -27,13 +31,19 @@ export type View =
   | "events"
 
 type Lens = "generic" | "cpu" | "memory" | "disk"
+// The machine is read one resource at a time; the overview says which one is
+// tight and the rest answer for themselves.
+export type HostSection = "overview" | "cpu" | "memory" | "storage" | "network"
+export const HOST_SECTIONS: readonly HostSection[] = ["overview", "cpu", "memory", "storage", "network"]
+export type Source = "host" | "processes" | "postgresql" | "events"
 export type PgLens = "load" | "per_call" | "io" | "resources" | "stability" | "timing" | "identity"
   | "access" | "changes" | "maintenance" | "size_buffers" | "freeze"
   | "usage" | "low_activity" | "state"
 export type PgLevel = "database" | "schema" | "object"
 
 const VIEWS: readonly View[] = [
-  "host.system", "host.processes",
+  "host.overview", "host.cpu", "host.memory", "host.storage", "host.network",
+  "processes",
   "pg.overview", "pg.activity", "pg.statements", "pg.plans", "pg.locks", "pg.databases", "pg.tables", "pg.indexes",
   "events",
 ]
@@ -44,7 +54,7 @@ const PG_LEVELS: readonly PgLevel[] = ["database", "schema", "object"]
 
 export const DEFAULT_ADDRESS: Address = {
   at: null,
-  view: "host.processes",
+  view: "processes",
   lens: "cpu",
   pgLens: "load",
   pgLevel: "object",
@@ -81,7 +91,7 @@ export function readAddress(search: string): Address {
     relid: relation && pgLevel === "object" && datid !== null ? oid("relid") : null,
     indexrelid: resolvedView === "pg.indexes" && pgLevel === "object" && datid !== null ? oid("indexrelid") : null,
     sort: column === "" ? null : { column, descending: sort.startsWith("-") },
-    row: resolvedView === "host.processes" || relation ? parameters.get("row") : null,
+    row: resolvedView === "processes" || relation ? parameters.get("row") : null,
     find: parameters.get("find") ?? "",
   }
 }
@@ -91,7 +101,7 @@ export function writeAddress(address: Address): string {
   const relation = address.view === "pg.tables" || address.view === "pg.indexes"
   if (address.at !== null) parameters.set("at", String(address.at))
   if (address.view !== DEFAULT_ADDRESS.view) parameters.set("view", address.view)
-  if (address.lens !== DEFAULT_ADDRESS.lens && address.view === "host.processes") parameters.set("lens", address.lens)
+  if (address.lens !== DEFAULT_ADDRESS.lens && address.view === "processes") parameters.set("lens", address.lens)
   if (address.pgLens !== DEFAULT_ADDRESS.pgLens && (relation || address.view === "pg.statements" || address.view === "pg.plans")) parameters.set("pg_lens", address.pgLens)
   if (relation && address.pgLevel !== DEFAULT_ADDRESS.pgLevel) parameters.set("level", address.pgLevel)
   if (relation && address.pgLevel !== "database" && address.datid !== null) parameters.set("datid", address.datid)
@@ -99,7 +109,7 @@ export function writeAddress(address: Address): string {
   if (relation && address.pgLevel === "object" && address.relid !== null) parameters.set("relid", address.relid)
   if (address.view === "pg.indexes" && address.pgLevel === "object" && address.indexrelid !== null) parameters.set("indexrelid", address.indexrelid)
   if (address.sort !== null) parameters.set("sort", `${address.sort.descending ? "-" : ""}${address.sort.column}`)
-  if ((address.view === "host.processes" || relation)
+  if ((address.view === "processes" || relation)
     && address.row !== null && address.row !== "") parameters.set("row", address.row)
   if (address.find !== "") parameters.set("find", address.find)
   const query = parameters.toString()
@@ -108,17 +118,19 @@ export function writeAddress(address: Address): string {
 
 export function viewOf(source: string, hostSection: string, pgSection: string): View {
   if (source === "events") return "events"
+  if (source === "processes") return "processes"
   if (source === "postgresql") return `pg.${pgSection}` as View
-  return hostSection === "system" ? "host.system" : "host.processes"
+  return `host.${hostSection}` as View
 }
 
-export function sourceOf(view: View): "host" | "postgresql" | "events" {
-  if (view === "events") return "events"
+export function sourceOf(view: View): Source {
+  if (view === "events" || view === "processes") return view
   return view.startsWith("pg.") ? "postgresql" : "host"
 }
 
-export function hostSectionOf(view: View): "system" | "processes" {
-  return view === "host.system" ? "system" : "processes"
+export function hostSectionOf(view: View): HostSection {
+  const section = view.startsWith("host.") ? view.slice(5) : "overview"
+  return HOST_SECTIONS.includes(section as HostSection) ? section as HostSection : "overview"
 }
 
 export function pgSectionOf(view: View): "overview" | "activity" | "statements" | "plans" | "locks" | "databases" | "tables" | "indexes" {

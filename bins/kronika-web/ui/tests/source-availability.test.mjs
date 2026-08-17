@@ -16,7 +16,7 @@ test("PostgreSQL availability follows configuration or selected-hour telemetry",
 test("the unavailable PostgreSQL route renders Host synchronously", async () => {
   const source = await readFile(new URL("../src/app.tsx", import.meta.url), "utf8")
   assert.match(source, /const visibleSource: Source = source === "postgresql" && !pgPresent \? "host" : source/)
-  assert.match(source, /const visibleHostSection: HostSection = source === "postgresql" && !pgPresent \? "system" : hostSection/)
+  assert.match(source, /if \(source === "postgresql" && !pgPresent\) setSource\("host"\)/)
   assert.match(source, /visibleSource === "postgresql" && <PostgresView/)
   assert.match(source, /disabled=\{!pgPresent\}/)
 })

@@ -143,13 +143,15 @@ export const DATABASE_COLUMNS: readonly EntityColumn[] = [
   number("temp_files", 125), bytes("temp_bytes", 145), number("conflicts", 125), number("deadlocks", 125), number("frozen_xid_age", 155),
 ]
 
-const TABS: readonly { readonly id: PostgresSection; readonly sections?: readonly string[] }[] = [
+// Live work first — who runs, who blocks, what they run — then the stored
+// objects, each group ordered by scope. `divide` opens the second group.
+const TABS: readonly { readonly id: PostgresSection; readonly sections?: readonly string[]; readonly divide?: true }[] = [
   { id: "overview" },
   { id: "activity", sections: ["pg_stat_activity", "pg_stat_progress_vacuum"] },
+  { id: "locks", sections: ["pg_locks"] },
   { id: "statements", sections: ["pg_stat_statements"] },
   { id: "plans", sections: ["pg_store_plans", "pg_store_plans_info"] },
-  { id: "locks", sections: ["pg_locks"] },
-  { id: "databases", sections: ["pg_stat_database"] },
+  { divide: true, id: "databases", sections: ["pg_stat_database"] },
   { id: "tables", sections: ["pg_stat_user_tables"] },
   { id: "indexes", sections: ["pg_stat_user_indexes"] },
 ]
@@ -235,7 +237,7 @@ export function PostgresView({
     <nav aria-label={t("pg.sections")} className="pg-tabs mt-2 flex min-h-[35px] overflow-x-auto border border-line2 bg-s1 [&>button]:flex [&>button]:flex-none [&>button]:cursor-pointer [&>button]:items-center [&>button]:gap-1.5 [&>button]:border-0 [&>button]:border-r [&>button]:border-line2 [&>button]:bg-transparent [&>button]:text-xs [&>button]:uppercase [&>button]:tracking-[.04em] [&>button]:text-fg3 [&>button:disabled]:cursor-not-allowed [&>button:disabled]:opacity-35 [&>button[aria-current=page]]:bg-s4 [&>button[aria-current=page]]:text-accent3 [&>button[aria-current=page]]:shadow-[inset_0_-2px_var(--color-accent)]">
       {TABS.map((tab) => {
         const enabled = tab.id === "plans" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)
-        return <button aria-current={section === tab.id ? "page" : undefined} disabled={!enabled} key={tab.id} onClick={() => { if (section !== tab.id) onOrder(null); onSection(tab.id) }} title={enabled ? undefined : t("pg.no_section_data")} type="button"><span>{t(`pg.section.${tab.id}`)}</span></button>
+        return <button aria-current={section === tab.id ? "page" : undefined} className={tab.divide === true ? "ml-2 border-l border-line4" : undefined} disabled={!enabled} key={tab.id} onClick={() => { if (section !== tab.id) onOrder(null); onSection(tab.id) }} title={enabled ? undefined : t("pg.no_section_data")} type="button"><span>{t(`pg.section.${tab.id}`)}</span></button>
       })}
     </nav>
     {section === "overview" && <Overview cursor={cursor} data={data} historyRevision={historyRevision} tablesLoading={tablesLoading} hour={hour} locale={locale} onCursor={onCursor} t={t} />}

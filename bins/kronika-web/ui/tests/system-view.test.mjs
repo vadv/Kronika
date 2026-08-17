@@ -526,14 +526,15 @@ test("the committed hour supplies only honest System metrics with complete histo
 
   const available = helpers.SYSTEM_METRICS.map((metric) => ({ metric, points: helpers.metricPoints(hour, metric) }))
     .filter(({ points }) => points.some((point) => point.value !== null && Number.isFinite(point.value)))
-  assert.ok(available.length >= 7)
-  assert.deepEqual([...new Set(available.map(({ metric }) => metric.group))], ["host", "load", "memory", "pressure", "storage"])
+  // The health card left with its duplicate; the fixture's own metrics remain.
+  assert.ok(available.length >= 6, `available metrics: ${available.length}`)
+  // A resource owns its metrics now: load rides with the CPU, PSI with the
+  // resource it presses on.
+  assert.deepEqual([...new Set(available.map(({ metric }) => metric.group))].sort(), ["cpu", "memory", "storage"])
 
-  const health = available.find(({ metric }) => metric.id === "health")?.points ?? []
-  const expected = fixture.system.health.filter(([timestamp]) => Number(timestamp) >= hourStart && Number(timestamp) < hourStart + 3_600_000_000)
-  assert.equal(health.length, expected.length)
-  assert.equal(health[0]?.timestamp, Number(expected[0]?.[0]))
-  assert.equal(health.at(-1)?.timestamp, Number(expected.at(-1)?.[0]))
+  // Health is read from the top bar and the timeline lane; a metric card here
+  // would be the same number a third time.
+  assert.equal(helpers.SYSTEM_METRICS.some((metric) => metric.id === "health"), false)
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
 })
 
@@ -542,8 +543,11 @@ test("System keeps the audited balanced groups and opens charts only inside the 
     readFile(new URL("../src/system-view.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
   ])
-  assert.match(source, /\["host", "cpu", "memory", "pressure"\]/)
-  assert.match(source, /\["load", "storage", "network"\]/)
+  // One section at a time, and each section owns the entities that make up its
+  // resource.
+  assert.match(source, /SECTION_ENTITIES: Readonly<Record<HostSection, readonly string\[\]>>/)
+  assert.match(source, /storage: \["os_diskstats", "os_mountinfo", "os_cgroup_io"\]/)
+  assert.match(source, /const sectionMetrics = useMemo\(\(\) => available\.filter\(\(\{ spec \}\) => spec\.group === section\)/)
   // The dock, not a standing console chart: closed by default, opened by a Use
   // row or a metric chip, dismissed like the PostgreSQL detail panel.
   assert.match(source, /useState\(false\)/)
