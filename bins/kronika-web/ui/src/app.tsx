@@ -768,12 +768,12 @@ function App({ locale, onLocale, t }: {
   const stretchPostgres = visibleSource === "postgresql" && pgSection !== "overview"
   const cursorTime = cursor === 0 ? null : time.clock(cursor)
   const updatedClock = lastUpdated === null ? null : time.clock(lastUpdated)
-  return <ChartVisibilityProvider value={chartsVisible}><main className={`app-shell${stretchPostgres ? " pg-table-shell" : ""}${chartsVisible ? "" : " charts-hidden"}`}>
-    <header className="topbar">
+  return <ChartVisibilityProvider value={chartsVisible}><main className={`app-shell min-h-screen${stretchPostgres || !chartsVisible ? " flex h-dvh min-h-0 flex-col overflow-hidden" : ""}${stretchPostgres ? " pg-table-shell" : ""}${chartsVisible ? "" : " charts-hidden"}`}>
+    <header className="topbar max-[1179px]:flex-wrap max-[1179px]:gap-y-1 max-[1179px]:px-2 max-[1179px]:py-1 [.pg-table-shell>&]:flex-none">
       <span className="flex flex-none items-center text-accent2"><Activity aria-hidden="true" size={15} strokeWidth={2} /></span>
       <h1>{t("app.title")}</h1>
 
-      <nav aria-label={t("nav.sources")} className="source-tabs">
+      <nav aria-label={t("nav.sources")} className="source-tabs max-[760px]:overflow-x-auto">
         <button aria-current={visibleSource === "host" ? "page" : undefined} className={visibleSource === "host" ? "source-active" : undefined} onClick={() => setSource("host")} type="button">{t("nav.host")}</button>
         <button aria-current={visibleSource === "postgresql" ? "page" : undefined} className={visibleSource === "postgresql" ? "source-active" : undefined} disabled={!pgPresent} onClick={() => setSource("postgresql")} title={pgPresent ? undefined : t("nav.no_data")} type="button">{t("nav.postgresql")}</button>
         {eventsPresent && <button aria-current={visibleSource === "events" ? "page" : undefined} className={visibleSource === "events" ? "source-active" : undefined} onClick={() => { setEventScope(null); setSelectedFinding(null); setSource("events") }} type="button">{t("nav.events")}</button>}
@@ -785,7 +785,7 @@ function App({ locale, onLocale, t }: {
       </div>}
 
       <HourPicker availableHours={availableHours} changeHour={changeHour} hour={hour} locale={locale} t={t} />
-      <div aria-live="polite" className="cursor-time">
+      <div aria-live="polite" className="cursor-time max-[760px]:order-9">
         <TimeValue label={t("hour.cursor_label")} output={cursorTime} testId="cursor-time" />
         {lastUpdated !== null && updatedClock !== null && <UpdatedAge at={lastUpdated} clock={updatedClock} locale={locale} t={t} />}
         {cursorState === "loading" && <span className="flex items-center gap-1.5 text-xs uppercase text-fg3" data-testid="cursor-behind" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none animate-loading-spin motion-reduce:animate-none" />{t("status.updating")}</span>}
@@ -793,7 +793,7 @@ function App({ locale, onLocale, t }: {
         {refreshFailed && <span>{t("refresh.error")}</span>}
       </div>
 
-      <div className="top-actions">
+      <div className="top-actions max-[520px]:m-0 max-[520px]:min-w-0 max-[520px]:max-w-full max-[520px]:flex-[1_1_100%] max-[520px]:flex-wrap max-[520px]:gap-x-1.5 max-[520px]:gap-y-1 max-[520px]:[&>*+*]:ml-0 max-[520px]:[&_.timezone-select]:min-w-0 max-[520px]:[&_.timezone-select]:flex-[1_1_104px]">
         <button aria-label={t(chartsVisible ? "common.charts.hide" : "common.charts.show")} aria-pressed={chartsVisible} className="icon-button text-fg2 aria-pressed:bg-s4 aria-pressed:text-accent3" data-testid="charts-toggle" onClick={() => setChartsVisible((shown) => !shown)} title={t(chartsVisible ? "common.charts.hide" : "common.charts.show")} type="button"><ChartLine aria-hidden="true" size={14} /></button>
         <button aria-label={t("refresh.action")} className="icon-button" disabled={refreshing || !refreshReady} onClick={requestRefresh} title={t("refresh.action")} type="button">↻</button>
         <TimezoneSelect mode={time.mode} setMode={time.setMode} t={t} />
@@ -808,7 +808,7 @@ function App({ locale, onLocale, t }: {
       </div>
     </header>
 
-    <section className={`workspace${stretchPostgres ? " pg-table-workspace" : ""}`}>
+    <section className={`workspace px-2.5 pb-5 pt-2 max-[760px]:px-2 charts-hidden:flex charts-hidden:min-h-0 charts-hidden:flex-auto charts-hidden:flex-col${stretchPostgres ? " pg-table-workspace flex min-h-0 flex-1 flex-col overflow-hidden [&>.timeline-shell]:flex-none [&>.pg-tabs]:flex-none [&>.lensbar]:flex-none [&>[data-testid=table-paging]]:flex-none" : ""}`}>
       <p aria-live="polite" className="absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]">
         {t(`nav.${visibleSource}`)}
         {visibleSource === "host" ? ` · ${t(`section.${visibleHostSection}`)}` : ""}
@@ -820,7 +820,7 @@ function App({ locale, onLocale, t }: {
       {!loading && error === null && hour !== null && visibleSource === "host" && visibleHostSection === "processes" && <>
         <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} primaryLane={lens === "cpu" ? "cpu_busy" : lens === "memory" ? "memory" : lens === "disk" ? "io_stall" : "health"} shownAt={shownAt} t={t} /></ChartOnly>
         <div className="lensbar">
-          <div aria-label={t("section.processes")} className="lens-tabs" role="group">
+          <div aria-label={t("section.processes")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1 max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">
             {(["cpu", "memory", "disk", "generic"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => { if (choice !== lens) setOrder(null); setLens(choice) }} type="button">{t(`lens.${choice}`)}</button>)}
           </div>
           <span>{processRows[0] === undefined ? t("status.no_data") : time.timestamp(processRows[0].timestamp)}</span>

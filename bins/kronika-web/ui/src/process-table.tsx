@@ -257,7 +257,7 @@ export function ProcessTable({
     ? { column: "pid", descending: false }
     : { column: processDefaultSort(lens, rows), descending: true }
   return <EntityTable
-    className="process-table min-w-0 overflow-hidden border border-line2 bg-s1"
+    className="process-table min-w-0 overflow-hidden border border-line2 bg-s1 charts-hidden:flex charts-hidden:flex-col"
     columns={columns}
     contextLabel={contextLabel}
     empty={t("table.empty")}

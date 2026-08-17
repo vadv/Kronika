@@ -72,7 +72,7 @@ export function UseTable({
   const shown = useMemo(() => shownUseResources(lanePoints), [lanePoints])
   if (shown.length === 0) return null
   return <section aria-label={t("use.title")} className="use-table" data-testid="use-table" role="table">
-    <header className="grid grid-cols-[minmax(96px,130px)_repeat(3,minmax(0,1fr))] border-b border-line2 text-xs uppercase text-fg3 [&>span]:px-2 [&>span]:py-[5px] max-[760px]:grid-cols-[80px_repeat(3,minmax(0,1fr))]" role="row">
+    <header className="grid grid-cols-[minmax(96px,130px)_repeat(3,minmax(0,1fr))] border-b border-line2 text-xs uppercase text-fg3 [&>span]:px-2 [&>span]:py-[5px] max-[760px]:grid-cols-[80px_repeat(3,minmax(0,1fr))] max-[760px]:[&>span]:px-[5px]" role="row">
       <span role="columnheader">{t("use.resource")}</span>
       {USE_COLUMNS.map((column) => <span key={column} role="columnheader">{t(`use.${column}`)}</span>)}
     </header>
@@ -95,7 +95,7 @@ export function UseTable({
         role="row"
         tabIndex={openable ? 0 : undefined}
       >
-      <span className="use-resource self-center px-2 py-[7px] text-sm uppercase text-fg2" role="cell">{t(`use.resource.${resource.key}`)}</span>
+      <span className="use-resource self-center px-2 py-[7px] text-sm uppercase text-fg2 max-[760px]:px-[5px]" role="cell">{t(`use.resource.${resource.key}`)}</span>
       {USE_COLUMNS.map((column) => {
         const cell = resource[column]
         if (cell === null || !laneHasReading(lanePoints, cell.lane)) {
@@ -104,7 +104,7 @@ export function UseTable({
         const primary = currentLaneReading(lanePoints, cell.lane, cursor, locale, cell.kind, t("unit.per_second"))
         const secondary = cell.second === undefined ? null : currentLaneReading(lanePoints, cell.second, cursor, locale, cell.kind, t("unit.per_second"))
         return <span className="use-cell relative min-w-0 border-l border-line" key={column} role="cell">
-          <span className="use-cell-body flex min-h-[38px] items-baseline justify-between gap-[7px] py-1.5 pl-2 pr-[26px] text-fg3 [&>span]:min-w-0 [&>span]:overflow-hidden [&>span]:text-ellipsis [&>span]:whitespace-nowrap [&>span]:text-xs [&_strong]:flex-none [&_strong]:whitespace-nowrap [&_strong]:text-sm [&_strong]:font-medium [&_strong]:tabular-nums [&_strong]:text-fg2">
+          <span className="use-cell-body flex min-h-[38px] items-baseline justify-between gap-[7px] py-1.5 pl-2 pr-[26px] text-fg3 max-[760px]:min-w-0 max-[760px]:flex-col max-[760px]:items-start max-[760px]:gap-0.5 max-[760px]:px-[5px] max-[760px]:[&_strong]:max-w-full max-[760px]:[&_strong]:overflow-hidden max-[760px]:[&_strong]:text-ellipsis [&>span]:min-w-0 [&>span]:overflow-hidden [&>span]:text-ellipsis [&>span]:whitespace-nowrap [&>span]:text-xs [&_strong]:flex-none [&_strong]:whitespace-nowrap [&_strong]:text-sm [&_strong]:font-medium [&_strong]:tabular-nums [&_strong]:text-fg2">
             <span>{t(`use.lane.${cell.lane}`)}</span>
             <strong>{[primary, ...(secondary === null ? [] : [secondary])].join(" · ")}</strong>
           </span>
