@@ -39,6 +39,6 @@ test("field help uses a fixed top-level portal above every workspace layer", asy
   assert.match(tooltip, /\bfixed\b/)
   assert.match(tooltip, /z-\[1000\]/)
   assert.match(tooltip, /max-w-\[min\(310px,70vw,calc\(100vw_-_16px\)\)\]/)
-  assert.match(styles, /\.entity-header-cell > \.label-help[^}]*opacity:\s*0/s)
-  assert.match(styles, /\.entity-header-cell:focus-within > \.label-help[^}]*opacity:\s*1/s)
+  assert.match(source, /\[\.entity-header-cell>&\]:opacity-0/)
+  assert.match(source, /\[\.entity-header-cell:focus-within>&\]:opacity-100/)
 })

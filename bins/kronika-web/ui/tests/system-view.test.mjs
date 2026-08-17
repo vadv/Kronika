@@ -563,8 +563,8 @@ test("System keeps the audited balanced groups and opens charts only inside the 
   // height; opening scrolls it into view, and grid cells carry the open-marker.
   assert.match(source, /scrollIntoView\(\{ block: "nearest" \}\)/)
   assert.match(source, /className="dock-tabs [^"]*overflow-x-auto/)
-  assert.match(styles, /\.system-dock \.uplot-figure:not\(\.uplot-expanded\) \{[^}]*height: 320px/)
-  assert.match(styles, /\.metric-groups \.metric-choice > button::after \{[^}]*content: "↗"/)
+  assert.match(await readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8"), /\[\.system-dock_&:not\(\.uplot-expanded\)\]:h-80/)
+  assert.match(source, /\[\.metric-groups_&>button\]:after:content-\['↗'\]/)
   assert.doesNotMatch(source, /metric-history|system-console|system-layout/)
   assert.doesNotMatch(styles, /\.metric-history|\.system-console|\.system-layout/)
 })

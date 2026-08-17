@@ -108,7 +108,7 @@ await waitFor(`document.querySelector('[data-testid="hour-popover"]') !== null`,
 await evaluate(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }))`)
 await waitFor(`document.querySelector('[data-testid="hour-popover"]') === null`, "touch outside close")
 
-const help = `.timeline-labels .help-dot`
+const help = `.lane-label .help-dot`
 await evaluate(`document.querySelector('${help}').dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))`)
 await waitFor(`document.querySelector('[role="tooltip"]') !== null`, "hover tooltip")
 let overlay = await evaluate(`(() => {

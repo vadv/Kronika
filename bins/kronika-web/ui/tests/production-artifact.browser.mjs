@@ -279,7 +279,7 @@ test("expanded uPlot keeps one unobscured close action at responsive widths", { 
         const title = header.querySelector(".chart-series-labels")
         const current = header.querySelector(".chart-current")
         const control = header.querySelector(".chart-expand")
-        const markers = [...dialog.querySelectorAll(".chart-marker-track .marker-button")]
+        const markers = [...dialog.querySelectorAll('[data-testid="chart-marker-track"] .marker-button')]
         const lastMarker = markers.at(-1)
         const bounds = (node) => {
           const rect = node.getBoundingClientRect()

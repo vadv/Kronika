@@ -85,20 +85,20 @@ test("the frame stays while a metric resolves and collapses only for an hour wit
   }))
   for (const status of ["loading", "error"]) {
     const markup = render([], status)
-    assert.match(markup, /class="uplot-figure"/)
-    assert.match(markup, /class="uplot-host"/)
-    assert.match(markup, /class="uplot-status"/)
+    assert.match(markup, /class="uplot-figure /)
+    assert.match(markup, /class="uplot-host /)
+    assert.match(markup, /class="uplot-status /)
     assert.match(markup, new RegExp(`role="(?:alert|status)">history\\.${status === "ready" ? "empty" : status}`))
   }
   const settledEmpty = render([], "ready")
-  assert.doesNotMatch(settledEmpty, /class="uplot-figure"/)
+  assert.doesNotMatch(settledEmpty, /class="uplot-figure /)
   assert.match(settledEmpty, /class="series-reading /)
   assert.match(settledEmpty, /text-fg4[^"]*" role="status">history\.empty/)
   const ready = render([{ segmentId: "a", timestamp: 1, value: 2 }], "ready")
-  assert.match(ready, /class="uplot-figure"/)
+  assert.match(ready, /class="uplot-figure /)
   assert.doesNotMatch(ready, /uplot-status/)
   const loadingWithData = render([{ segmentId: "a", timestamp: 1, value: 2 }], "loading")
-  assert.match(loadingWithData, /class="uplot-status"/)
+  assert.match(loadingWithData, /class="uplot-status /)
   assert.match(loadingWithData, /history\.loading/)
 
   const [source, chart, styles] = await Promise.all([
@@ -108,9 +108,9 @@ test("the frame stays while a metric resolves and collapses only for an hour wit
   ])
   assert.equal((source.match(/<UPlotChart/g) ?? []).length, 1)
   assert.doesNotMatch(source, /hasData\s*\?/)
-  assert.match(chart, /\{status !== undefined && <div className="uplot-status">\{status\}<\/div>\}/)
-  assert.match(styles, /\.uplot-figure \{[^}]*height: 200px/)
-  assert.match(styles, /\.uplot-status \{[^}]*pointer-events: none;[^}]*position: absolute/)
+  assert.match(chart, /status !== undefined && <div className="uplot-status /)
+  assert.match(chart, /uplot-figure[^`]*h-\[200px\]/)
+  assert.match(chart, /uplot-status pointer-events-none absolute/)
 })
 
 test("a series uses only selected-hour points for emptiness, readout, and plotting", async () => {

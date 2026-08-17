@@ -486,18 +486,18 @@ export function SystemView({
       />}
         {available.length === 0
           ? <p className="table-empty">{t("system.no_metrics")}</p>
-          : <div className="metric-groups grid grid-cols-2 gap-[7px] max-[760px]:grid-cols-1 max-[1000px]:min-[761px]:grid-cols-2">
+          : <div className="metric-groups grid grid-cols-2 gap-[7px] max-[1000px]:min-[761px]:grid-cols-2 max-[760px]:grid-cols-1">
             {GROUP_COLUMNS.map((groups, index) => <div className="metric-column flex min-w-0 flex-col [&>.metric-group+.metric-group]:mt-[7px]" key={index}>
               {groups.map((group) => {
                 const metrics = available.filter(({ spec }) => spec.group === group)
                 if (metrics.length === 0) return null
                 const label = GROUP_LABELS.find((candidate) => candidate.id === group)?.label ?? "system.metric.health.label"
-                return <section className="metric-group" data-testid={`system-group-${group}`} key={group}>
-                  <h2><span>{t(label)}</span></h2>
-                  <div className="metric-grid grid grid-cols-2">
+                return <section className="metric-group panel" data-testid={`system-group-${group}`} key={group}>
+                  <h2 className="panel-head"><span>{t(label)}</span></h2>
+                  <div className="metric-grid grid-cols-2">
                     {metrics.map(({ points, spec }) => {
                       const output = currentPointValue(points, cursor, locale, spec.unit)
-                      return <div className="metric-choice" key={spec.id}>
+                      return <div className="metric-choice [.metric-groups_&>button]:after:absolute [.metric-groups_&>button]:after:bottom-[5px] [.metric-groups_&>button]:after:right-[7px] [.metric-groups_&>button]:after:text-[11px] [.metric-groups_&>button]:after:text-fg4 [.metric-groups_&>button]:after:opacity-55 [.metric-groups_&>button]:after:content-['↗'] [.metric-groups_&>button:hover]:after:text-accent3 [.metric-groups_&>button:hover]:after:opacity-100 [.metric-groups_&>button:focus-visible]:after:text-accent3 [.metric-groups_&>button:focus-visible]:after:opacity-100 [.metric-groups_&>button_strong]:pr-3.5" key={spec.id}>
                         <button aria-pressed={dockShown && selectedMetric?.spec.id === spec.id} data-testid={`system-metric-${spec.id}`} onClick={() => openMetric(spec.id)} type="button">
                           <span>{t(spec.label)}</span>
                           <strong title={output}>{output}</strong>
@@ -512,7 +512,7 @@ export function SystemView({
           </div>}
     </div>
 
-    <section className="entity-panels mt-2 grid grid-cols-2 gap-2 max-[1000px]:grid-cols-1">
+    <section className="entity-panels mt-2 grid grid-cols-2 gap-2 max-[1000px]:grid-cols-1 charts-hidden:min-h-0 charts-hidden:flex-auto charts-hidden:auto-rows-fr">
       {SYSTEM_ENTITIES.map((entity) => {
         const allRows = systemEntityRows(data, entity.section, cursor)
         const activeContext = context?.logicalName === entity.section ? context : null
@@ -572,8 +572,8 @@ function SystemDock({
   useEffect(() => {
     detail.current?.scrollIntoView({ block: "nearest" })
   }, [])
-  return <aside aria-label={t(label)} className="pg-detail system-dock mt-2 max-h-none overflow-visible border border-line3" data-testid="system-dock" ref={detail}>
-    <header>
+  return <aside aria-label={t(label)} className="pg-detail system-dock mt-2 max-h-none overflow-visible border border-line3 max-[1000px]:static max-[1000px]:bottom-auto max-[1000px]:right-auto max-[1000px]:top-auto max-[1000px]:w-auto max-[1000px]:max-w-none max-[1000px]:max-h-none max-[1000px]:overflow-visible max-[1000px]:shadow-none" data-testid="system-dock" ref={detail}>
+    <header className="pg-detail-head">
       <div><span>{t("system.history")}</span><h2>{t(label)}</h2></div>
       <button aria-label={t("common.close")} onClick={onClose} type="button"><X aria-hidden="true" size={14} /></button>
     </header>
@@ -674,8 +674,8 @@ function SystemEntityPanel({
   const pairSeries = useMemo(() => mountPair ? mountPairSeries(chartRows, t) : null, [chartRows, mountPair, t])
   const chartMetadata = selectedRow === null || selectedColumn === undefined || selectedColumn.historyFields !== undefined
     ? null : registryColumn(selectedRow.typeId, physicalField(selectedColumn, selectedRow.typeId))
-  return <section className="entity-panel min-w-0" data-testid={`system-panel-${section}`}>
-    <h2><span>{label}</span></h2>
+  return <section className="entity-panel panel min-w-0 charts-hidden:flex charts-hidden:flex-col" data-testid={`system-panel-${section}`}>
+    <h2 className="panel-head"><span>{label}</span></h2>
     <EntityTable
       columns={columns}
       contextLabel={contextLabel}
@@ -701,7 +701,7 @@ function SystemEntityPanel({
       testId={`system-${section}`}
     />
     <ChartOnly>{selectedRow !== null && (mountPair || selectedColumn !== undefined) && <section className="system-entity-history min-w-0 border border-t-0 border-line2" data-testid={`system-${section}-history`}>
-      <header>
+      <header className="flex items-start justify-between gap-1.5 px-[7px] pt-1.5">
         {mountPair
           ? <div className="system-history-selector flex max-w-[calc(100%-30px)] gap-1 overflow-x-auto pb-[3px] [scrollbar-width:thin] [&>button]:min-h-[27px] [&>button]:flex-none [&>button]:cursor-pointer [&>button]:border [&>button]:border-line3 [&>button]:bg-s2 [&>button]:px-[7px] [&>button]:py-1 [&>button]:text-xs [&>button]:text-fg2 [&>button[aria-pressed=true]]:border-accent [&>button[aria-pressed=true]]:bg-accent-soft [&>button[aria-pressed=true]]:text-fg" role="group" />
           : <div className="system-history-selector flex max-w-[calc(100%-30px)] gap-1 overflow-x-auto pb-[3px] [scrollbar-width:thin] [&>button]:min-h-[27px] [&>button]:flex-none [&>button]:cursor-pointer [&>button]:border [&>button]:border-line3 [&>button]:bg-s2 [&>button]:px-[7px] [&>button]:py-1 [&>button]:text-xs [&>button]:text-fg2 [&>button[aria-pressed=true]]:border-accent [&>button[aria-pressed=true]]:bg-accent-soft [&>button[aria-pressed=true]]:text-fg" role="group">

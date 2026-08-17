@@ -159,12 +159,12 @@ test("y-axis labels carry only the unit, series names live in the caption", asyn
 
 test("the built-in legend stays hidden and chart titles use portal help metadata", async () => {
   const source = await readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8")
-  const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8")
+  const help = await readFile(new URL("../src/help.tsx", import.meta.url), "utf8")
   assert.match(source, /legend: \{ show: false \}/)
   assert.match(source, /chart-series-labels/)
   assert.match(source, /<LabelHelp helpKey=\{line\.helpKey\}/)
   assert.match(source, /chart-series-labels[\s\S]{0,300}?overflow-x-auto/)
-  assert.match(styles, /\.chart-series-labels \.help-dot \{[^}]*flex: 0 0 auto;/)
+  assert.match(help, /\[\.chart-series-labels_&\]:flex-none/)
 })
 
 test("expanded charts keep one bounded action and restore both page scroll locks", async () => {
@@ -196,13 +196,17 @@ test("expanded charts keep one bounded action and restore both page scroll locks
   assert.doesNotMatch(markerSource, /--chart-marker-end-reserve/)
   assert.doesNotMatch(html, /viewport-fit=cover/)
 
-  assert.match(stylesheet, /\.uplot-figure figcaption \{[^}]*display: grid;[^}]*grid-template-columns: minmax\(0, 1fr\) auto auto;/)
+  assert.match(source, /grid-cols-\[minmax\(0,1fr\)_auto_auto\]/)
   assert.match(stylesheet, /html \{[^}]*overflow-anchor: none;/)
-  assert.match(stylesheet, /\.uplot-expanded figcaption \{[^}]*grid-template-columns: minmax\(0, 1fr\) auto 44px;[^}]*min-height: 44px;/)
-  assert.match(source, /chart-expand[\s\S]{0,200}?expanded \? "inline-flex h-11 min-w-11/)
-  assert.match(stylesheet, /--chart-marker-end-reserve: 52px/)
-  assert.match(stylesheet, /\.chart-marker-track \{[^}]*width: max\(1px, calc\(var\(--chart-plot-width,[^}]* - var\(--chart-marker-end-reserve, 0px\)\)\);/)
+  assert.match(source, /\[\.uplot-expanded_&\]:grid-cols-\[minmax\(0,1fr\)_auto_44px\]/)
+  assert.match(source, /expanded \? "inline-flex h-11 min-w-11/)
+  assert.match(source, /\[--chart-marker-end-reserve:52px\]/)
+  assert.match(source, /w-\[max\(1px,calc\(var\(--chart-plot-width,calc\(100%_-_70px\)\)_-_var\(--chart-marker-end-reserve,0px\)\)\)\]/)
+  // Both the ordinary expanded padding and the narrow-screen one clear the
+  // notch on every side; one lives in the stylesheet, one on the markup.
   for (const side of ["top", "right", "bottom", "left"]) {
-    assert.equal((stylesheet.match(new RegExp(`env\\(safe-area-inset-${side}, 0px\\)`, "g")) ?? []).length, 2)
+    const inStylesheet = (stylesheet.match(new RegExp(`env\\(safe-area-inset-${side}, 0px\\)`, "g")) ?? []).length
+    const inMarkup = (source.match(new RegExp(`env\\(safe-area-inset-${side},0px\\)`, "g")) ?? []).length
+    assert.equal(inStylesheet + inMarkup, 2, side)
   }
 })
