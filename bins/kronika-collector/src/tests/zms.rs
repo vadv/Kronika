@@ -6,6 +6,7 @@ use kronika_layout::{DataRoot, LayoutLimits, WriterOwner};
 use kronika_reader::{Cell, Reader, Resolved, Row, SegmentKind};
 use kronika_registry::os_cgroup_context::OsCgroupContext;
 use kronika_registry::{PgWalStorage, StrId, Ts, section_name};
+use kronika_source_pg::activity::{ActivityRow, ActivityVersion};
 use kronika_source_pg::query::{BATCH_LOGICAL_BYTES, BATCH_ROWS};
 use kronika_source_pg::settings::SettingsRow;
 use kronika_source_pg::statements::{StatementsRow, StatementsVersion};
@@ -34,8 +35,11 @@ const PLAN_ROW_OVERHEAD_BYTES: usize = 274;
 const PG_STAT_STATEMENTS_V6_TYPE_ID: u32 = 1_002_006;
 const PG_STORE_PLANS_VADV_TYPE_ID: u32 = 1_004_001;
 const PG_WAL_STORAGE_TYPE_ID: u32 = 1_020_001;
+const PG_STAT_ACTIVITY_V3_TYPE_ID: u32 = 1_001_004;
 const CGROUP_CONTEXT_TYPE_ID: u32 = 1_205_001;
 const WAL_STORAGE_SNAPSHOTS_PER_HOUR: usize = 120;
+const ACTIVITY_SNAPSHOTS_PER_HOUR: usize = 120;
+const ACTIVITY_ROWS_PER_SNAPSHOT: usize = 64;
 const CGROUP_CONTEXT_SNAPSHOTS_PER_HOUR: usize = 360;
 const BASE_TS: i64 = 1_700_000_000_000_000;
 const PRE_CHANGE_ZMS_BYTES: u64 = 3_141_820;
@@ -107,6 +111,23 @@ fn owner(root: &Path) -> WriterOwner {
         .expect("open replay data root")
         .acquire_writer(LayoutLimits::default())
         .expect("acquire replay writer")
+}
+
+fn self_cpu_ticks() -> u64 {
+    let stat = std::fs::read_to_string("/proc/self/stat").expect("read test process stat");
+    let after_comm = stat.rsplit_once(')').expect("process stat has comm").1;
+    let mut fields = after_comm.split_whitespace();
+    let user: u64 = fields
+        .nth(11)
+        .expect("process stat has user CPU")
+        .parse()
+        .expect("user CPU is numeric");
+    let system: u64 = fields
+        .next()
+        .expect("process stat has system CPU")
+        .parse()
+        .expect("system CPU is numeric");
+    user.saturating_add(system)
 }
 
 fn settings_row() -> SettingsRow {
@@ -829,6 +850,141 @@ fn wal_storage_hour_reports_raw_and_finished_costs() {
         section.bytes,
         marginal_zms_bytes,
         zms_bytes
+    );
+}
+
+#[test]
+fn activity_datid_hour_reports_production_writer_costs() {
+    let directory = tempfile::tempdir().expect("create Activity cost directory");
+    let writer = owner(directory.path());
+    let mut journal =
+        Journal::open(&writer, JournalConfig::default()).expect("open Activity journal");
+    let config = config(directory.path(), u64::MAX);
+    let mut segment = SegmentState::default();
+    let mut write_report = ReplayWriteReport::default();
+    let cpu_before = self_cpu_ticks();
+    let started = std::time::Instant::now();
+
+    {
+        let mut replay = ReplayAppend {
+            journal: &mut journal,
+            writer: &writer,
+            config: &config,
+            segment: &mut segment,
+            settings: &[],
+            report: &mut write_report,
+        };
+        for sample in 0..ACTIVITY_SNAPSHOTS_PER_HOUR {
+            let sample = i64::try_from(sample).expect("sample count fits i64");
+            let ts = BASE_TS.saturating_add(sample.saturating_mul(30_000_000));
+            let rows = (0..ACTIVITY_ROWS_PER_SNAPSHOT)
+                .map(|backend| {
+                    let backend = i32::try_from(backend).expect("backend count fits i32");
+                    let background = backend % 16 == 15;
+                    ActivityRow {
+                        ts,
+                        pid: 10_000_i32.saturating_add(backend),
+                        leader_pid: None,
+                        datid: (!background).then_some(
+                            16_384_u32
+                                .saturating_add(u32::try_from(backend % 4).unwrap_or_default()),
+                        ),
+                        datname: (!background).then(|| format!("app_{}", backend % 4)),
+                        usename: (!background).then(|| "application".to_owned()),
+                        application_name: if background {
+                            String::new()
+                        } else {
+                            "postgres-driver".to_owned()
+                        },
+                        client_addr: if background {
+                            String::new()
+                        } else {
+                            "10.0.0.10".to_owned()
+                        },
+                        backend_type: if background {
+                            "autovacuum worker".to_owned()
+                        } else {
+                            "client backend".to_owned()
+                        },
+                        state: (!background).then(|| "active".to_owned()),
+                        wait_event_type: (backend % 5 == 0).then(|| "Lock".to_owned()),
+                        wait_event: (backend % 5 == 0).then(|| "transactionid".to_owned()),
+                        query: (!background)
+                            .then(|| format!("select payload from work_{}", backend % 16)),
+                        query_id: (!background)
+                            .then_some(90_000_i64.saturating_add(i64::from(backend % 16))),
+                        backend_xid_age: (!background)
+                            .then_some(i64::from(backend).saturating_mul(10)),
+                        backend_xmin_age: (!background)
+                            .then_some(i64::from(backend).saturating_mul(20)),
+                        backend_start: BASE_TS
+                            .saturating_sub(i64::from(backend).saturating_mul(1_000_000)),
+                        xact_start: (!background).then_some(ts.saturating_sub(5_000_000)),
+                        query_start: (!background).then_some(ts.saturating_sub(2_000_000)),
+                        state_change: (!background).then_some(ts.saturating_sub(2_000_000)),
+                    }
+                })
+                .collect();
+            replay.append(&PgBatch::Activity(ActivityVersion::V3, rows), ts);
+        }
+    }
+
+    let raw_wal_bytes = journal.bytes();
+    let path = close_open_segment(&mut journal, &writer, &mut segment, "test-end")
+        .expect("write Activity cost segment");
+    let reader = Reader::open(directory.path()).expect("open Activity cost reader");
+    let listing = reader.segments(..).expect("list Activity cost segment");
+    let reference = listing.segments.first().expect("one Activity segment");
+    let stored = reader
+        .open_segment(reference)
+        .expect("open finished Activity segment");
+    let rows = stored
+        .rows(PG_STAT_ACTIVITY_V3_TYPE_ID)
+        .expect("read Activity rows");
+    let section = stored
+        .sections()
+        .find(|(type_id, _section)| *type_id == PG_STAT_ACTIVITY_V3_TYPE_ID)
+        .map(|(_type_id, section)| section)
+        .expect("Activity section is catalogued");
+    let zms_bytes = std::fs::metadata(path)
+        .expect("stat Activity segment")
+        .len();
+    let marginal_zms_bytes = section
+        .bytes
+        .saturating_add(u64::try_from(ENTRY_LEN).expect("catalog entry length fits u64"));
+    let elapsed_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let cpu_ticks = self_cpu_ticks().saturating_sub(cpu_before);
+    let rss_kib = peak_rss_kib();
+
+    assert_eq!(listing.segments.len(), 1);
+    assert_eq!(write_report.appended_windows, ACTIVITY_SNAPSHOTS_PER_HOUR);
+    assert_eq!(
+        stored.window_count(),
+        u32::try_from(ACTIVITY_SNAPSHOTS_PER_HOUR).expect("sample count fits u32")
+    );
+    assert_eq!(
+        rows.len(),
+        ACTIVITY_SNAPSHOTS_PER_HOUR.saturating_mul(ACTIVITY_ROWS_PER_SNAPSHOT)
+    );
+    assert!(
+        rows.iter()
+            .any(|row| matches!(row.get("datid"), Some(Cell::U32(16_384..=16_387))))
+    );
+    assert!(rows.iter().any(|row| row.get("datid") == Some(&Cell::Null)));
+    assert!(raw_wal_bytes < 16 * 1024 * 1024);
+    assert!(section.bytes < 2 * 1024 * 1024);
+    assert!(zms_bytes < 2 * 1024 * 1024);
+    println!(
+        "pg_stat_activity_datid_cost rows={} raw_wal_bytes={} peak_wal_bytes={} section_bytes={} marginal_zms_bytes={} zms_bytes={} elapsed_us={} cpu_ticks={} peak_rss_kib={}",
+        rows.len(),
+        raw_wal_bytes,
+        write_report.peak_wal_bytes,
+        section.bytes,
+        marginal_zms_bytes,
+        zms_bytes,
+        elapsed_us,
+        cpu_ticks,
+        rss_kib
     );
 }
 

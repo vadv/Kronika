@@ -54,7 +54,7 @@ const TEST_REGISTRY = [
     columns: ["ts", "pid", "datname", "state", "query", "backend_start", "xact_start", "query_start", "state_change"],
   },
   {
-    typeId: "1001003",
+    typeId: "1001004",
     logicalName: "pg_stat_activity",
     columns: ["ts", "pid", "backend_type", "state", "query_start", "xact_start"],
   },
@@ -648,10 +648,10 @@ test("the bundled review fixture answers detail reads without HTTP", async () =>
     const snapshot = await api.loadSnapshot(
       "segment-a",
       START + 2,
-      [{ section: "pg_stat_activity", fields: ["query"], typeId: "1001003" }],
+      [{ section: "pg_stat_activity", fields: ["query"], typeId: "1001004" }],
       new AbortController().signal,
       undefined,
-      { filters: { pid: "7" }, typeId: "1001003", fullText: true },
+      { filters: { pid: "7" }, typeId: "1001004", fullText: true },
     )
     assert.deepEqual(snapshot.activities[0]?.values, { query: "select exact" })
     const beforeFirstSample = await api.loadSnapshot(
@@ -665,8 +665,8 @@ test("the bundled review fixture answers detail reads without HTTP", async () =>
       "segment-a",
       START + 2,
       [
-        { section: "pg_stat_activity", fields: ["pid"], typeId: "1001003" },
-        { section: "pg_stat_activity", fields: ["query"], typeId: "1001003" },
+        { section: "pg_stat_activity", fields: ["pid"], typeId: "1001004" },
+        { section: "pg_stat_activity", fields: ["query"], typeId: "1001004" },
       ],
       new AbortController().signal,
     )
@@ -729,7 +729,7 @@ function apiFixture() {
       snapshots: [{
         segment_id: "segment-a",
         ts: String(START + 1),
-        type_id: "1001003",
+        type_id: "1001004",
         rows: [[String(START + 1), "8", 7, null, "client backend", "active", null, String(START), "select exact"]],
       }],
     },
@@ -813,14 +813,14 @@ test("the timeline carries every finding without per-section index requests", as
         record: "finished_segment", id: "7", min_ts: String(START), max_ts: String(START + 10),
         sections: [
           { logical_name: "os_process", type_id: "1100001" },
-          { logical_name: "pg_stat_activity", type_id: "1001003" },
+          { logical_name: "pg_stat_activity", type_id: "1001004" },
           { logical_name: "pg_stat_statements", type_id: "1002002" },
           { logical_name: "pg_log_errors", type_id: "2001001" },
         ],
       },
       { record: "index", segment: { id: "7" }, logical_name: "health", checksum: null },
       { record: "finding", logical_name: "os_process", kind: "spike", type_id: "1100001", field_ordinal: 33, row_ordinal: "1", ts: String(START + 1) },
-      { record: "finding", logical_name: "pg_stat_activity", kind: "known_bad", type_id: "1001003", field_ordinal: 0, row_ordinal: "2", ts: String(START + 2) },
+      { record: "finding", logical_name: "pg_stat_activity", kind: "known_bad", type_id: "1001004", field_ordinal: 0, row_ordinal: "2", ts: String(START + 2) },
       { record: "finding", logical_name: "pg_stat_statements", kind: "spike", type_id: "1002002", field_ordinal: 10, row_ordinal: "3", ts: String(START + 3) },
       { record: "finding", logical_name: "pg_log_errors", kind: "event", type_id: "2001001", field_ordinal: 0, row_ordinal: "4", ts: String(START + 4), category: 8 },
     ])
@@ -1005,7 +1005,7 @@ test("snapshot requests choose and group the newest compatible layout anchors", 
     },
     {
       id: "200", minTs: START - 10, maxTs: START,
-      sections: [{ logicalName: "pg_stat_activity", typeId: "1001003" }],
+      sections: [{ logicalName: "pg_stat_activity", typeId: "1001004" }],
     },
     {
       id: "300", minTs: START - 5, maxTs: START,
@@ -1023,8 +1023,8 @@ test("snapshot requests choose and group the newest compatible layout anchors", 
     { section: "os_loadavg", fields: ["load1"] },
     {
       section: "pg_stat_activity",
-      typeIds: ["1001001", "1001003"],
-      fieldsByType: { "1001001": ["pid"], "1001003": ["pid", "backend_type"] },
+      typeIds: ["1001001", "1001004"],
+      fieldsByType: { "1001001": ["pid"], "1001004": ["pid", "backend_type"] },
     },
     {
       section: "pg_stat_statements",
@@ -1042,7 +1042,7 @@ test("snapshot requests choose and group the newest compatible layout anchors", 
   ])), [
     [["os_loadavg", null, null], ["pg_stat_statements", null, 20]],
     [["pg_stat_activity", "1001001", null]],
-    [["pg_stat_activity", "1001003", null]],
+    [["pg_stat_activity", "1001004", null]],
   ])
 
   const exactOldLayout = api.snapshotRequestGroups(segments, START, [{
@@ -1061,13 +1061,13 @@ test("grouped snapshot loads merge equal-time layouts and retain physical row so
     },
     {
       id: "200", minTs: START, maxTs: START,
-      sections: [{ logicalName: "pg_stat_activity", typeId: "1001003" }],
+      sections: [{ logicalName: "pg_stat_activity", typeId: "1001004" }],
     },
   ]
   const groups = api.snapshotRequestGroups(segments, START, [{
     section: "pg_stat_activity",
-    typeIds: ["1001001", "1001003"],
-    fieldsByType: { "1001001": ["pid", "state"], "1001003": ["pid", "backend_type"] },
+    typeIds: ["1001001", "1001004"],
+    fieldsByType: { "1001001": ["pid", "state"], "1001004": ["pid", "backend_type"] },
   }])
   const seen: string[] = []
   const originalFetch = globalThis.fetch
@@ -1094,11 +1094,11 @@ test("grouped snapshot loads merge equal-time layouts and retain physical row so
     const snapshot = await api.loadSnapshotGroups(groups, START, new AbortController().signal)
     assert.deepEqual(seen, [
       "/api/segments/100/snapshot:1001001",
-      "/api/segments/200/snapshot:1001003",
+      "/api/segments/200/snapshot:1001004",
     ])
     assert.deepEqual(snapshot.sections.pg_stat_activity?.map((row) => [row.segmentId, row.typeId]), [
       ["91", "1001001"],
-      ["191", "1001003"],
+      ["191", "1001004"],
     ])
     assert.deepEqual(snapshot.rateColumns.pg_stat_activity, ["state", "backend_type"])
   } finally {
@@ -1219,7 +1219,7 @@ test("Activity history uses its exact production projection and yields numeric d
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
   const selected = {
     logicalName: "pg_stat_activity", ordinal: "8", segmentId: "segment-a",
-    timestamp: START + 20_000_000, typeId: "1001003",
+    timestamp: START + 20_000_000, typeId: "1001004",
     values: {
       pid: 4242,
       state: "active",
@@ -1249,16 +1249,16 @@ test("Activity history uses its exact production projection and yields numeric d
       {
         record: "layout",
         layout: {
-          type_id: "1001003", logical_name: "pg_stat_activity",
+          type_id: "1001004", logical_name: "pg_stat_activity",
           columns: request.fields.map((name) => ({ name })),
         },
       },
       {
-        record: "row", type_id: "1001003", ordinal: "7", timestamp: String(START + 10_000_000),
+        record: "row", type_id: "1001004", ordinal: "7", timestamp: String(START + 10_000_000),
         values: [4242, "active", String(START + 5_000_000)],
       },
       {
-        record: "row", type_id: "1001003", ordinal: "8", timestamp: String(START + 20_000_000),
+        record: "row", type_id: "1001004", ordinal: "8", timestamp: String(START + 20_000_000),
         values: [4242, "active", String(START + 12_000_000)],
       },
     ])

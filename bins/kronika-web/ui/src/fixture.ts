@@ -13,7 +13,7 @@ interface FixtureTable {
 type FixturePoint = readonly [string, number | null, string?]
 
 const FIXTURE_TYPE_NAMES: Readonly<Record<string, string>> = {
-  "1001003": "pg_stat_activity",
+  "1001004": "pg_stat_activity",
   "1002003": "pg_stat_statements",
   "1100001": "os_process",
   "1102001": "os_cpu",

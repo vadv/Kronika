@@ -639,7 +639,7 @@ function App({ locale, onLocale, t }: {
     sort: order,
     row: activeRelation
       ? relationSelectedKey
-      : source === "host" || source === "processes" || source === "events" ? selectedKey : null,
+      : source === "host" || source === "processes" || source === "postgresql" || source === "events" ? selectedKey : null,
     find,
     metric: source === "host" ? systemMetric : null,
     mode: source === "host" ? hostMode : null,
@@ -697,6 +697,7 @@ function App({ locale, onLocale, t }: {
   }, [activeRelationLens, pgSection])
   const choosePgSection = useCallback((next: PostgresSection) => {
     const crossing = next !== pgSection
+    if (crossing) setSelectedKey(null)
     setRelationSelectedKey(null)
     setPgSection(next)
     if (next !== "statements") setStatementTarget(null)
@@ -712,11 +713,12 @@ function App({ locale, onLocale, t }: {
     setHostMode(defaultHostMode(next))
     setHostSection(next)
   }, [])
-  const openPlanQuery = useCallback((target: StatementTarget) => {
+  const openStatements = useCallback((target: StatementTarget) => {
     setSource("postgresql")
     setPgSection("statements")
     setStatementLens("load")
     setStatementTarget(target)
+    setSelectedKey(null)
     setFind("")
     setOrder(null)
   }, [])
@@ -794,7 +796,7 @@ function App({ locale, onLocale, t }: {
       <nav aria-label={t("nav.sources")} className="source-tabs max-[760px]:overflow-x-auto">
         <button aria-current={visibleSource === "processes" ? "page" : undefined} className={visibleSource === "processes" ? "source-active" : undefined} data-testid="process-tab" onClick={() => { setSelectedKey(null); setSource("processes") }} type="button">{t("nav.processes")}</button>
         <button aria-current={visibleSource === "host" ? "page" : undefined} className={visibleSource === "host" ? "source-active" : undefined} onClick={() => { setSystemFocus(null); setSelectedKey(null); setSource("host") }} type="button">{t("nav.host")}</button>
-        <button aria-current={visibleSource === "postgresql" ? "page" : undefined} className={visibleSource === "postgresql" ? "source-active" : undefined} onClick={() => setSource("postgresql")} title={pgPresent ? undefined : t("nav.no_data")} type="button">{t("nav.postgresql")}</button>
+        <button aria-current={visibleSource === "postgresql" ? "page" : undefined} className={visibleSource === "postgresql" ? "source-active" : undefined} onClick={() => { setSelectedKey(null); setSource("postgresql") }} title={pgPresent ? undefined : t("nav.no_data")} type="button">{t("nav.postgresql")}</button>
         <button aria-current={visibleSource === "events" ? "page" : undefined} className={visibleSource === "events" ? "source-active" : undefined} onClick={() => { setEventScope(null); setSelectedFinding(null); setSource("events") }} title={eventsPresent ? undefined : t("nav.no_data")} type="button">{t("nav.events")}</button>
       </nav>
 
@@ -849,7 +851,7 @@ function App({ locale, onLocale, t }: {
           {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onClose={() => setSelectedKey(null)} onCursor={chooseCursor} process={selectedProcess} processHistory={processHistory.value?.length ? processHistory.value : [selectedProcess]} processHistoryStatus={processHistory.status} t={t} ticksPerSecond={ticksPerSecond} />}
         </div>
       </>}
-      {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} tablesLoading={cursorState === "loading"} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onOpenPlanQuery={openPlanQuery} onOrder={setOrder} onPattern={setFind} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={setRelationSelectedKey} onSection={choosePgSection} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} statementLens={statementLens} statementTarget={activeStatementTarget} onStatementTargetClear={() => setStatementTarget(null)} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} tablesLoading={cursorState === "loading"} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onOpenStatements={openStatements} onOrder={setOrder} onPattern={setFind} onSelectedKey={setSelectedKey} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={setRelationSelectedKey} onSection={choosePgSection} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} selectedKey={selectedKey} statementLens={statementLens} statementTarget={activeStatementTarget} onStatementTargetClear={() => setStatementTarget(null)} t={t} />}
       {!loading && error === null && hour !== null && visibleSource === "events" && <EventsView cursor={cursor} data={data} loading={cursorState === "loading"} history={findingPoints} hour={hour} locale={locale} onClose={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onShowAll={() => { setEventScope(null); setSelectedFinding(null) }} resolution={findingResolution} resolved={findingRow} scope={eventScope} selected={selectedFinding} t={t} />}
     </section>
 

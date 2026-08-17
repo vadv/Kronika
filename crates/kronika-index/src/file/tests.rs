@@ -20,7 +20,7 @@ fn sample() -> Index {
                 }],
             },
             SeriesBlock::PgActiveBackends {
-                type_id: 1_001_003,
+                type_id: 1_001_004,
                 points: vec![ActiveBackendPoint {
                     timestamp: 42,
                     count: 4,
@@ -188,7 +188,7 @@ fn the_allowlist_stays_small_at_far_more_than_one_normal_segment() {
                     .collect(),
             },
             SeriesBlock::PgActiveBackends {
-                type_id: 1_001_003,
+                type_id: 1_001_004,
                 points: (0..1_000)
                     .map(|timestamp| ActiveBackendPoint {
                         timestamp,

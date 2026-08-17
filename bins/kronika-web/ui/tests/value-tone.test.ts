@@ -39,7 +39,7 @@ test("Activity duration tones belong only to active client backends", () => {
     ordinal: "0",
     segmentId: "a",
     timestamp: 10_000_000,
-    typeId: "1001003",
+    typeId: "1001004",
     values: { backend_type, state },
   })
   assert.equal(semanticValueTone("query_duration_ms", 5_000, false, activity("client backend")), "critical")

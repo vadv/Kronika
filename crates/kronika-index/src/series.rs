@@ -187,7 +187,7 @@ pub(crate) const fn pg_database_layout(type_id: u32) -> bool {
 }
 
 pub(crate) const fn pg_activity_layout(type_id: u32) -> bool {
-    matches!(type_id, 1_001_001..=1_001_003)
+    matches!(type_id, 1_001_001 | 1_001_002 | 1_001_004)
 }
 
 fn encode_health(points: &[HealthPoint]) -> Result<Vec<u8>, IndexError> {

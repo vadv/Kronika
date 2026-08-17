@@ -1100,11 +1100,11 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(planDetail.bodyCount, 1)
     assert.equal(planDetail.secondaryDisclosure, false)
     assert.equal(planDetail.unavailable, false)
-    await cdp.evaluate(`([...document.querySelectorAll('.pg-detail-head button')].find((button) => button.textContent.includes('Open query'))).click()`)
-    await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.statements" && new URL(location.href).searchParams.get("stmt_match") === "last"`, "the best-effort plan query route")
+    await cdp.evaluate(`([...document.querySelectorAll('.pg-detail-head button')].find((button) => button.textContent.includes('Related statements'))).click()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.statements" && new URL(location.href).searchParams.get("stmt_origin") === "plan" && new URL(location.href).searchParams.get("stmt_relation") === "last"`, "the related plan statement route")
     await cdp.waitFor(`document.querySelector('[data-testid="pg-statements-table"] .entity-row')?.textContent.includes("select from plan_navigation") === true`, "the matched last query")
     const planContext = await cdp.evaluate(`document.querySelector('[data-testid="entity-context-filter"]').textContent`)
-    assert.match(planContext, /best-effort last Query ID 42/i)
+    assert.match(planContext, /related last-attributed Query ID 42/i)
     const planQueryRequest = requests.find(({ query }) => query.includes("where.queryid=42") && query.includes("where.dbid=20") && query.includes("where.userid=10"))
     assert.notEqual(planQueryRequest, undefined, JSON.stringify(requests.map(({ query }) => query), null, 2))
     const planQueryParameters = new URLSearchParams(planQueryRequest.query)
@@ -2943,7 +2943,7 @@ function healthContractTimeline(hour) {
       record: "finished_segment", id: SEGMENT, min_ts: String(hour), max_ts: String(evaluation),
       sections: [
         { logical_name: "os_cpu", physical_name: "os_cpu", type_id: "1102001", implementation: "linux", source_family: "system", rows: "3", bytes: "384" },
-        ...(postgresql ? [{ logical_name: "pg_stat_activity", physical_name: "pg_stat_activity", type_id: "1001003", implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256" }] : []),
+        ...(postgresql ? [{ logical_name: "pg_stat_activity", physical_name: "pg_stat_activity", type_id: "1001004", implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256" }] : []),
       ],
     },
     { record: "index", segment: { id: SEGMENT }, logical_name: "health", checksum: null },
@@ -3077,7 +3077,7 @@ function viewportActivityTimeline() {
     { record: "catalog", from: String(HOUR), to: String(HOUR + HOUR_US - 1), source_families: [{ name: "postgresql", configured: true, present: true, metrics_present: true }] },
     {
       record: "finished_segment", id: SEGMENT, min_ts: String(HOUR), max_ts: String(AFTER_AT),
-      sections: [{ logical_name: "pg_stat_activity", physical_name: "pg_stat_activity", type_id: "1001003", implementation: "postgresql", source_family: "postgresql", rows: "120", bytes: "4096" }],
+      sections: [{ logical_name: "pg_stat_activity", physical_name: "pg_stat_activity", type_id: "1001004", implementation: "postgresql", source_family: "postgresql", rows: "120", bytes: "4096" }],
     },
     { record: "index", segment: { id: SEGMENT }, logical_name: "health", checksum: null },
     { record: "point", type_id: "0", series: "os_health", ts: String(AT), identity: {}, value: 81 },
@@ -3159,7 +3159,7 @@ function viewportDockGeometry() {
 
 function sourceTimelineRecords(historical) {
   const sections = [{ logical_name: "os_cpu", physical_name: "os_cpu", type_id: "1102001", implementation: "linux", source_family: "system", rows: "1", bytes: "128" }]
-  if (historical) sections.push({ logical_name: "pg_stat_activity", physical_name: "pg_stat_activity", type_id: "1001003", implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256" })
+  if (historical) sections.push({ logical_name: "pg_stat_activity", physical_name: "pg_stat_activity", type_id: "1001004", implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256" })
   return [
     { record: "hour", from: String(HOUR), to: String(HOUR + HOUR_US - 1), available_hours: [String(HOUR)] },
     { record: "catalog", from: String(HOUR), to: String(HOUR + HOUR_US - 1), source_families: [{ name: "postgresql", configured: false, present: historical, metrics_present: historical }] },
@@ -3298,7 +3298,7 @@ function timelineRecords(hour = HOUR, cgroups = false) {
     {
       record: "finished_segment", id: SEGMENT, min_ts: String(hour), max_ts: shifted(AFTER_AT),
       sections: [{
-        logical_name: "pg_stat_activity", physical_name: "pg_stat_activity", type_id: "1001003",
+        logical_name: "pg_stat_activity", physical_name: "pg_stat_activity", type_id: "1001004",
         implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256",
       }, {
         logical_name: "pg_stat_statements", physical_name: "pg_stat_statements", type_id: "1002003",
@@ -3556,19 +3556,19 @@ function exactIndexRecords() {
 
 function snapshotRecords() {
   const columns = [
-    "ts", "pid", "leader_pid", "datname", "usename", "application_name", "client_addr", "backend_type",
+    "ts", "pid", "leader_pid", "datid", "datname", "usename", "application_name", "client_addr", "backend_type",
     "state", "wait_event_type", "wait_event", "query", "query_id", "backend_xid_age", "backend_xmin_age",
     "backend_start", "xact_start", "query_start", "state_change",
   ]
   return [
     {
       record: "layout", rates: [],
-      layout: { type_id: "1001003", logical_name: "pg_stat_activity", columns: columns.map((name) => ({ name })) },
+      layout: { type_id: "1001004", logical_name: "pg_stat_activity", columns: columns.map((name) => ({ name })) },
     },
     {
-      record: "row", segment_id: SEGMENT, type_id: "1001003", ordinal: "73", timestamp: String(AT),
+      record: "row", segment_id: SEGMENT, type_id: "1001004", ordinal: "73", timestamp: String(AT),
       values: [
-        String(AT), 4242, null, "operators", "kronika", "artifact-test", "127.0.0.1", "client backend",
+        String(AT), 4242, null, 20, "operators", "kronika", "artifact-test", "127.0.0.1", "client backend",
         "active", null, null, "select artifact_wire_contract", "991", null, "7",
         String(AT - 60_000_000), String(AT - 30_000_000), String(AT - 5_000_000), String(AT - 1_000_000),
       ],
@@ -3584,8 +3584,8 @@ function activityHistoryRecords(url) {
   ]
   return [
     { record: "series_segment", segment: { id: SEGMENT } },
-    layout("1001003", "pg_stat_activity", fields),
-    ...samples.map((sample, index) => row("1001003", String(70 + index), fields.map((field) => sample[field] ?? null), sample.timestamp)),
+    layout("1001004", "pg_stat_activity", fields),
+    ...samples.map((sample, index) => row("1001004", String(70 + index), fields.map((field) => sample[field] ?? null), sample.timestamp)),
   ]
 }
 
@@ -3639,7 +3639,7 @@ function targetedActivityRecords(query, timestamp) {
     : {
         ...record,
         timestamp: String(timestamp),
-        values: record.values.map((value, index) => index === 0 ? String(timestamp) : index === 11 ? query : value),
+        values: record.values.map((value, index) => index === 0 ? String(timestamp) : index === 12 ? query : value),
       })
 }
 

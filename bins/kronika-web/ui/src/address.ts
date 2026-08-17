@@ -87,6 +87,7 @@ export function readAddress(search: string): Address {
   const resolvedView = VIEWS.find((known) => known === view) ?? DEFAULT_ADDRESS.view
   const oid = (name: string) => /^[1-9]\d*$/.test(parameters.get(name) ?? "") ? parameters.get(name) : null
   const relation = resolvedView === "pg.tables" || resolvedView === "pg.indexes"
+  const postgresEntity = isPostgresEntityView(resolvedView)
   const host = resolvedView.startsWith("host.")
   const hostSection = hostSectionOf(resolvedView)
   const datid = relation && pgLevel !== "database" ? oid("datid") : null
@@ -104,7 +105,9 @@ export function readAddress(search: string): Address {
     relid: relation && pgLevel === "object" && datid !== null ? oid("relid") : null,
     indexrelid: resolvedView === "pg.indexes" && pgLevel === "object" && datid !== null ? oid("indexrelid") : null,
     sort: column === "" ? null : { column, descending: sort.startsWith("-") },
-    row: resolvedView === "processes" || relation || host || resolvedView === "events" ? parameters.get("row") : null,
+    row: postgresEntity
+      ? postgresEntityRow(parameters.get("row"))
+      : resolvedView === "processes" || relation || host || resolvedView === "events" ? parameters.get("row") : null,
     find: parameters.get("find") ?? "",
     metric: host && /^[a-z0-9_.-]+$/.test(parameters.get("metric") ?? "") ? parameters.get("metric") : null,
     mode: hostModeOf(hostSection, parameters.get("mode")),
@@ -125,7 +128,8 @@ export function writeAddress(address: Address): string {
   if (relation && address.pgLevel === "object" && address.relid !== null) parameters.set("relid", address.relid)
   if (address.view === "pg.indexes" && address.pgLevel === "object" && address.indexrelid !== null) parameters.set("indexrelid", address.indexrelid)
   if (address.sort !== null) parameters.set("sort", `${address.sort.descending ? "-" : ""}${address.sort.column}`)
-  if ((address.view === "processes" || relation || address.view.startsWith("host.") || address.view === "events")
+  if ((address.view === "processes" || relation || address.view.startsWith("host.") || address.view === "events"
+      || (isPostgresEntityView(address.view) && postgresEntityRow(address.row) !== null))
     && address.row !== null && address.row !== "") parameters.set("row", address.row)
   if (address.find !== "") parameters.set("find", address.find)
   if (address.view.startsWith("host.") && address.metric !== null) parameters.set("metric", address.metric)
@@ -136,28 +140,61 @@ export function writeAddress(address: Address): string {
 }
 
 function readStatementTarget(parameters: URLSearchParams): StatementTarget | null {
-  const unsigned = (name: string) => /^\d+$/.test(parameters.get(name) ?? "") ? parameters.get(name) : null
-  const signed = (name: string) => /^-?\d+$/.test(parameters.get(name) ?? "") ? parameters.get(name) : null
-  const queryId = signed("stmt_qid")
-  const dbId = unsigned("stmt_dbid")
-  const userId = unsigned("stmt_userid")
-  const planId = signed("stmt_plan")
-  const sourceTypeId = unsigned("stmt_source")
-  const match = parameters.get("stmt_match")
-  const top = parameters.get("stmt_top")
-  if (queryId === null || queryId === "0" || dbId === null || userId === null || planId === null || sourceTypeId === null
-    || (match !== "exact" && match !== "last") || (top !== null && top !== "true" && top !== "false")) return null
-  return { dbId, match, planId, queryId, sourceTypeId, topLevel: top === null ? null : top === "true", userId }
+  const queryId = signed64(parameters.get("stmt_qid"))
+  const dbId = oid(parameters.get("stmt_dbid"))
+  const origin = parameters.get("stmt_origin")
+  if (queryId === null || queryId === "0" || dbId === null) return null
+  if (origin === "activity") {
+    return parameters.get("stmt_top") === "true"
+      ? { dbId, origin, queryId, topLevel: true }
+      : null
+  }
+  const userId = oid(parameters.get("stmt_userid"))
+  const planId = signed64(parameters.get("stmt_plan"))
+  const sourceTypeId = unsignedDecimal(parameters.get("stmt_source"))
+  const relation = parameters.get("stmt_relation")
+  if (origin !== "plan" || userId === null || planId === null || sourceTypeId === null
+    || (relation !== "shared" && relation !== "last")) return null
+  return { dbId, origin, planId, queryId, relation, sourceTypeId, userId }
 }
 
 function writeStatementTarget(parameters: URLSearchParams, target: StatementTarget): void {
+  parameters.set("stmt_origin", target.origin)
   parameters.set("stmt_qid", target.queryId)
   parameters.set("stmt_dbid", target.dbId)
+  if (target.origin === "activity") {
+    parameters.set("stmt_top", "true")
+    return
+  }
   parameters.set("stmt_userid", target.userId)
-  if (target.topLevel !== null) parameters.set("stmt_top", String(target.topLevel))
-  parameters.set("stmt_match", target.match)
+  parameters.set("stmt_relation", target.relation)
   parameters.set("stmt_source", target.sourceTypeId)
   parameters.set("stmt_plan", target.planId)
+}
+
+function unsignedDecimal(stored: string | null): string | null {
+  return stored !== null && /^\d+$/.test(stored) ? stored : null
+}
+
+function oid(stored: string | null): string | null {
+  if (stored === null || !/^[1-9]\d*$/.test(stored)) return null
+  const parsed = BigInt(stored)
+  return parsed <= 4_294_967_295n ? stored : null
+}
+
+function signed64(stored: string | null): string | null {
+  if (stored === null || !/^-?\d+$/.test(stored)) return null
+  const parsed = BigInt(stored)
+  return parsed >= -9_223_372_036_854_775_808n && parsed <= 9_223_372_036_854_775_807n ? stored : null
+}
+
+function isPostgresEntityView(view: View): boolean {
+  return view === "pg.activity" || view === "pg.statements" || view === "pg.plans"
+    || view === "pg.locks" || view === "pg.databases"
+}
+
+function postgresEntityRow(stored: string | null): string | null {
+  return stored !== null && /^[^:]+:\d+:[^:]+$/.test(stored) ? stored : null
 }
 
 export function viewOf(source: string, hostSection: string, pgSection: string): View {

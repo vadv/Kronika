@@ -69,7 +69,7 @@ function row(typeId, values, logicalName = "pg_stat_statements") {
 }
 
 function activityRow(ordinal, values, timestamp = 10_000_000) {
-  return { logicalName: "pg_stat_activity", ordinal, segmentId: "a", timestamp, typeId: "1001003", values }
+  return { logicalName: "pg_stat_activity", ordinal, segmentId: "a", timestamp, typeId: "1001004", values }
 }
 
 test("PostgreSQL durations are not formatted as Unix timestamps", () => {

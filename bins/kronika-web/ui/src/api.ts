@@ -221,7 +221,7 @@ export interface ResolvedLocator {
 }
 
 export const ACTIVITY_FIELDS = [
-  "pid", "leader_pid", "datname", "usename", "application_name", "client_addr", "backend_type",
+  "pid", "leader_pid", "datid", "datname", "usename", "application_name", "client_addr", "backend_type",
   "state", "wait_event_type", "wait_event", "query", "query_id", "backend_xid_age",
   "backend_xmin_age", "backend_start", "xact_start", "query_start", "state_change",
 ] as const

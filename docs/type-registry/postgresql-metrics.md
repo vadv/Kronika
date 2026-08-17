@@ -17,6 +17,12 @@ Views tied to a database are read from each connectable database in that
 instance. A source that is absent, unsupported, or unreadable produces no
 section for that read.
 
+For PostgreSQL 14–18, `pg_stat_activity` type `1_001_004` stores nullable
+`datid` directly from the server view beside `query_id`. Shared and background
+backends retain a null database OID. Activity identity remains PID; the OID is
+only an operator navigation predicate for related top-level
+`pg_stat_statements` rows and is never derived from a database name.
+
 The collector keeps one healthy connection per database across collection
 cycles. Database and extension discovery runs about every five minutes. A
 database that appears gets a connection; one that disappears loses it.
@@ -63,7 +69,7 @@ connection is closed.
 |---|---|---|---|---|
 | `1_001_001` | `pg_stat_activity` | 10–12 | instance | `snapshot_full` |
 | `1_001_002` | `pg_stat_activity` | 13 | instance | `snapshot_full` |
-| `1_001_003` | `pg_stat_activity` | 14–18 | instance | `snapshot_full` |
+| `1_001_004` | `pg_stat_activity` | 14–18 | instance | `snapshot_full` |
 | `1_005_001` | `pg_stat_database` | 10–11 | instance | `snapshot_full` |
 | `1_005_002` | `pg_stat_database` | 12–13 | instance | `snapshot_full` |
 | `1_005_003` | `pg_stat_database` | 14–17 | instance | `snapshot_full` |

@@ -48,7 +48,7 @@ Feature: What a PostgreSQL server reports reaches the segment
       | 1007001 | pg_stat_wal            | 1        |
       | 1020001 | pg_wal_storage         | 1        |
       | 1005003 | pg_stat_database       | 1        |
-      | 1001003 | pg_stat_activity       | 1        |
+      | 1001004 | pg_stat_activity       | 1        |
       | 1013002 | pg_stat_user_tables    | 1        |
       | 1014001 | pg_stat_user_indexes   | 1        |
     And some segment records these rows

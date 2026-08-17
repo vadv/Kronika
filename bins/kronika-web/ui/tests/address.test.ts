@@ -125,7 +125,7 @@ test("relation selection is separate from hierarchy filters", () => {
 })
 
 test("Host master/detail modes and plan-to-query context are URL-native and route-scoped", () => {
-  const target = { dbId: "16384", match: "last" as const, planId: "77", queryId: "42", sourceTypeId: "1004001", topLevel: null, userId: "10" }
+  const target = { dbId: "16384", origin: "plan" as const, planId: "77", queryId: "42", relation: "last" as const, sourceTypeId: "1004001", userId: "10" }
   const host = writeAddress({ ...DEFAULT_ADDRESS, view: "host.overview", metric: "cpu_used_cores" })
   assert.equal(host, "/?view=host.overview&metric=cpu_used_cores")
   assert.equal(readAddress(host.slice(1)).metric, "cpu_used_cores")
@@ -138,11 +138,19 @@ test("Host master/detail modes and plan-to-query context are URL-native and rout
   assert.equal(readAddress("?view=host.cpu&mode=topology").mode, "topology")
 
   const query = writeAddress({ ...DEFAULT_ADDRESS, at: 1_700_000_000_000_000, view: "pg.statements", statementTarget: target })
-  assert.equal(query, "/?at=1700000000000000&view=pg.statements&stmt_qid=42&stmt_dbid=16384&stmt_userid=10&stmt_match=last&stmt_source=1004001&stmt_plan=77")
+  assert.equal(query, "/?at=1700000000000000&view=pg.statements&stmt_origin=plan&stmt_qid=42&stmt_dbid=16384&stmt_userid=10&stmt_relation=last&stmt_source=1004001&stmt_plan=77")
   assert.deepEqual(readAddress(query).statementTarget, target)
-  assert.deepEqual(readAddress("?view=pg.statements&stmt_qid=-42&stmt_dbid=16384&stmt_userid=10&stmt_match=exact&stmt_source=1003001&stmt_plan=-77").statementTarget, {
-    dbId: "16384", match: "exact", planId: "-77", queryId: "-42", sourceTypeId: "1003001", topLevel: null, userId: "10",
+  assert.deepEqual(readAddress("?view=pg.statements&stmt_origin=plan&stmt_qid=-42&stmt_dbid=16384&stmt_userid=10&stmt_relation=shared&stmt_source=1003001&stmt_plan=-77").statementTarget, {
+    dbId: "16384", origin: "plan", planId: "-77", queryId: "-42", relation: "shared", sourceTypeId: "1003001", userId: "10",
   })
-  assert.equal(readAddress("?view=pg.plans&stmt_qid=42&stmt_dbid=1&stmt_userid=1&stmt_match=last&stmt_source=1004001&stmt_plan=77").statementTarget, null)
-  assert.equal(readAddress("?view=pg.statements&stmt_qid=0&stmt_dbid=1&stmt_userid=1&stmt_match=last&stmt_source=1004001&stmt_plan=77").statementTarget, null)
+  const activity = { dbId: "4294967295", origin: "activity" as const, queryId: "-9223372036854775808", topLevel: true as const }
+  const activityQuery = writeAddress({ ...DEFAULT_ADDRESS, view: "pg.statements", statementTarget: activity })
+  assert.equal(activityQuery, "/?view=pg.statements&stmt_origin=activity&stmt_qid=-9223372036854775808&stmt_dbid=4294967295&stmt_top=true")
+  assert.deepEqual(readAddress(activityQuery.slice(1)).statementTarget, activity)
+  const activityRow = writeAddress({ ...DEFAULT_ADDRESS, view: "pg.activity", row: "1700000000000000:1001004:73" })
+  assert.equal(activityRow, "/?view=pg.activity&row=1700000000000000%3A1001004%3A73")
+  assert.equal(readAddress(activityRow.slice(1)).row, "1700000000000000:1001004:73")
+  assert.equal(readAddress("?view=pg.plans&stmt_origin=plan&stmt_qid=42&stmt_dbid=1&stmt_userid=1&stmt_relation=last&stmt_source=1004001&stmt_plan=77").statementTarget, null)
+  assert.equal(readAddress("?view=pg.statements&stmt_origin=activity&stmt_qid=0&stmt_dbid=1&stmt_top=true").statementTarget, null)
+  assert.equal(readAddress("?view=pg.statements&stmt_origin=activity&stmt_qid=42&stmt_dbid=4294967296&stmt_top=true").statementTarget, null)
 })

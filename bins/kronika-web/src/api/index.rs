@@ -370,7 +370,7 @@ fn health_layout(series: &str) -> Value {
                 OS_PSI_TYPE_ID.to_string(),
                 "1001001",
                 "1001002",
-                "1001003",
+                "1001004",
             ],
         },
     })

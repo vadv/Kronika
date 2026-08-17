@@ -1,5 +1,5 @@
 //! Collects `pg_stat_activity` rows for types `1_001_001`, `1_001_002`, and
-//! `1_001_003`.
+//! `1_001_004`.
 //!
 //! Collection returns owned raw rows. The collector interns strings when it
 //! writes the segment dictionary, so this crate does not depend on the writer.
@@ -18,7 +18,7 @@ pub enum ActivityVersion {
     V1,
     /// PG 13: type `1_001_002` (adds `leader_pid`).
     V2,
-    /// PG 14-18: type `1_001_003` (adds `query_id`).
+    /// PG 14-18: type `1_001_004` (adds `datid` and `query_id`).
     V3,
 }
 
@@ -83,7 +83,7 @@ pub const fn activity_query(version: ActivityVersion) -> &'static str {
              ORDER BY pid"
         ),
         ActivityVersion::V3 => marked!(
-            "SELECT pid, leader_pid, datname::text AS datname, usename::text AS usename, \
+            "SELECT pid, leader_pid, datid, datname::text AS datname, usename::text AS usename, \
              coalesce(application_name, '') AS application_name, \
              coalesce(host(client_addr), '') AS client_addr, \
              backend_type, state, wait_event_type, wait_event, \
@@ -115,6 +115,8 @@ pub struct ActivityRow {
     pub pid: i32,
     /// Parallel-group leader pid.
     pub leader_pid: Option<i32>,
+    /// Database OID; absent for shared/background backends and pre-PG14 layouts.
+    pub datid: Option<u32>,
     /// Database name.
     pub datname: Option<String>,
     /// Role name.
@@ -149,7 +151,7 @@ pub struct ActivityRow {
     pub state_change: Option<i64>,
 }
 
-/// Build a `1_001_003` row, interning strings through `intern`.
+/// Build a `1_001_004` row, interning strings through `intern`.
 ///
 /// # Errors
 /// Returns the interner's error if any string cannot be interned.
@@ -161,6 +163,7 @@ pub fn to_v3<E>(
         ts: Ts(row.ts),
         pid: row.pid,
         leader_pid: row.leader_pid,
+        datid: row.datid,
         datname: opt(&mut intern, row.datname.as_deref())?,
         usename: opt(&mut intern, row.usename.as_deref())?,
         application_name: intern(row.application_name.as_bytes())?,
@@ -248,6 +251,10 @@ fn row_from_pg(row: &tokio_postgres::Row, version: ActivityVersion) -> anyhow::R
             ActivityVersion::V1 => None,
             ActivityVersion::V2 | ActivityVersion::V3 => row.try_get("leader_pid")?,
         },
+        datid: match version {
+            ActivityVersion::V1 | ActivityVersion::V2 => None,
+            ActivityVersion::V3 => row.try_get("datid")?,
+        },
         datname: row.try_get("datname")?,
         usename: row.try_get("usename")?,
         application_name: row.try_get("application_name")?,
@@ -306,6 +313,7 @@ mod tests {
             ts: 2_000,
             pid: 42,
             leader_pid: Some(7),
+            datid: Some(16_384),
             datname: Some("app".to_owned()),
             usename: Some("alice".to_owned()),
             application_name: "psql".to_owned(),
@@ -340,8 +348,10 @@ mod tests {
         assert!(!activity_query(ActivityVersion::V1).contains("query_id"));
         assert!(activity_query(ActivityVersion::V2).contains("leader_pid"));
         assert!(!activity_query(ActivityVersion::V2).contains("query_id"));
+        assert!(!activity_query(ActivityVersion::V2).contains("datid"));
         assert!(activity_query(ActivityVersion::V3).contains("leader_pid"));
         assert!(activity_query(ActivityVersion::V3).contains("query_id"));
+        assert!(activity_query(ActivityVersion::V3).contains("datid"));
         for v in [
             ActivityVersion::V1,
             ActivityVersion::V2,
@@ -387,6 +397,7 @@ mod tests {
         assert_eq!(r.ts.0, 2_000);
         assert_eq!(r.pid, 42);
         assert_eq!(r.leader_pid, Some(7));
+        assert_eq!(r.datid, Some(16_384));
         assert_eq!(r.datname, Some(fake_intern(b"app").unwrap()));
         assert_eq!(r.application_name, fake_intern(b"psql").unwrap());
         assert_eq!(r.client_addr, fake_intern(b"").unwrap());

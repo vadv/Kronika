@@ -53,11 +53,19 @@ test("null and blank plans have an honest unavailable state", () => {
 
 const row = (typeId, values) => ({ logicalName: "pg_store_plans", ordinal: "0", segmentId: "s", timestamp: 10, typeId, values })
 
-test("plan navigation uses exact IDs for OSSC and best-effort last IDs for vadv", () => {
-  const exact = plans.statementTargetForPlan(row("1003001", { dbid: 7, planid: "22", queryid: "11", userid: 8 }))
-  assert.deepEqual(exact, { dbId: "7", match: "exact", planId: "22", queryId: "11", sourceTypeId: "1003001", topLevel: null, userId: "8" })
+test("plan navigation uses shared IDs for OSSC and the last-attributed ID for vadv", () => {
+  const shared = plans.statementTargetForPlan(row("1003001", { dbid: 7, planid: "22", queryid: "11", userid: 8 }))
+  assert.deepEqual(shared, { dbId: "7", origin: "plan", planId: "22", queryId: "11", relation: "shared", sourceTypeId: "1003001", userId: "8" })
   const last = plans.statementTargetForPlan(row("1004001", { dbid: 7, planid: "22", queryid: 0, queryid_stat_statements: "33", userid: 8 }))
-  assert.deepEqual(last, { dbId: "7", match: "last", planId: "22", queryId: "33", sourceTypeId: "1004001", topLevel: null, userId: "8" })
+  assert.deepEqual(last, { dbId: "7", origin: "plan", planId: "22", queryId: "33", relation: "last", sourceTypeId: "1004001", userId: "8" })
   assert.deepEqual(plans.statementTargetFilters(last), { dbid: "7", queryid: "33", userid: "8" })
   assert.equal(plans.statementTargetForPlan(row("1004001", { dbid: 7, planid: "22", queryid: 0, queryid_stat_statements: 0, userid: 8 })), null)
+})
+
+test("Activity navigation filters every effective user by database, query ID and top-level semantics", () => {
+  const target = plans.statementTargetForActivity({ ...row("1001004", { datid: 16384, query_id: "-42" }), logicalName: "pg_stat_activity" })
+  assert.deepEqual(target, { dbId: "16384", origin: "activity", queryId: "-42", topLevel: true })
+  assert.deepEqual(plans.statementTargetFilters(target), { dbid: "16384", queryid: "-42", toplevel: "true" })
+  assert.equal(plans.statementTargetForActivity({ ...row("1001004", { datid: 16384, query_id: 0 }), logicalName: "pg_stat_activity" }), null)
+  assert.equal(plans.statementTargetForActivity({ ...row("1001004", { datid: null, query_id: 42 }), logicalName: "pg_stat_activity" }), null)
 })

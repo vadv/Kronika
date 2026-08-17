@@ -154,6 +154,7 @@ fn activity_row(ts: i64, pid: i32, state: StrId, query: StrId) -> PgStatActivity
         ts: Ts(ts),
         pid,
         leader_pid: None,
+        datid: None,
         datname: None,
         usename: None,
         application_name: state,

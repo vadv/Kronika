@@ -1320,6 +1320,7 @@ fn activity(ts: i64, pid: i32, state: StrId, query: StrId) -> PgStatActivityV3 {
         ts: Ts(ts),
         pid,
         leader_pid: None,
+        datid: None,
         datname: None,
         usename: None,
         application_name: state,

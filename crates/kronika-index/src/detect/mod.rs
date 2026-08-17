@@ -191,7 +191,9 @@ pub(crate) fn finding_layout(type_id: u32) -> bool {
                 | OS_LOADAVG
                 | OS_VMSTAT
                 | OS_MOUNTINFO
-                | 1_001_001..=1_001_003
+                | 1_001_001
+                | 1_001_002
+                | 1_001_004
                 | 1_005_001..=1_005_004
         )
 }
@@ -232,7 +234,7 @@ const fn database_layouts() -> [u32; 4] {
 }
 
 const fn activity_layouts() -> [u32; 3] {
-    [1_001_001, 1_001_002, 1_001_003]
+    [1_001_001, 1_001_002, 1_001_004]
 }
 
 #[cfg(test)]

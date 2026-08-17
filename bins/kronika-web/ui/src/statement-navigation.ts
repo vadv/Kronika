@@ -1,13 +1,22 @@
 import type { DataRow } from "./api"
 import { rawText, value } from "./model"
 
-export interface StatementTarget {
+export type StatementTarget = ActivityStatementTarget | PlanStatementTarget
+
+export interface ActivityStatementTarget {
   readonly dbId: string
-  readonly match: "exact" | "last"
+  readonly origin: "activity"
+  readonly queryId: string
+  readonly topLevel: true
+}
+
+export interface PlanStatementTarget {
+  readonly dbId: string
+  readonly origin: "plan"
   readonly planId: string
   readonly queryId: string
+  readonly relation: "shared" | "last"
   readonly sourceTypeId: string
-  readonly topLevel: boolean | null
   readonly userId: string
 }
 
@@ -20,23 +29,30 @@ export function statementTargetForPlan(row: DataRow): StatementTarget | null {
   const userId = rawText(value(row, "userid"))
   const planId = rawText(value(row, "planid"))
   if (queryId === null || queryId === "0" || dbId === null || userId === null || planId === null) return null
-  const storedTopLevel = value(row, "toplevel")
   return {
     dbId,
-    match: vadv ? "last" : "exact",
+    origin: "plan",
     planId,
     queryId,
+    relation: vadv ? "last" : "shared",
     sourceTypeId: row.typeId,
-    topLevel: typeof storedTopLevel === "boolean" ? storedTopLevel : null,
     userId,
   }
+}
+
+export function statementTargetForActivity(row: DataRow): ActivityStatementTarget | null {
+  const queryId = rawText(value(row, "query_id"))
+  const dbId = rawText(value(row, "datid"))
+  if (queryId === null || queryId === "0" || dbId === null || dbId === "0") return null
+  return { dbId, origin: "activity", queryId, topLevel: true }
 }
 
 export function statementTargetFilters(target: StatementTarget): Readonly<Record<string, string>> {
   return {
     dbid: target.dbId,
     queryid: target.queryId,
-    userid: target.userId,
-    ...(target.topLevel === null ? {} : { toplevel: String(target.topLevel) }),
+    ...(target.origin === "activity"
+      ? { toplevel: "true" }
+      : { userid: target.userId }),
   }
 }

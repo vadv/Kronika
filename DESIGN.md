@@ -529,6 +529,16 @@ health equal to OS health. A selected Linux process links to the nearest
 role, application, client, state, wait, query and times. Locale changes are
 immediate and persist locally.
 
+PostgreSQL related-row navigation is confined to the PostgreSQL feature area
+and stored in the URL. For PostgreSQL 14–18 an Activity row can open every
+retained `pg_stat_statements` row at the unchanged cursor whose `dbid` and
+nonzero signed `queryid` match the row's nullable `datid` and `query_id`, with
+`toplevel=true`; it deliberately does not filter by role. A plan row uses the
+layout's available shared database, role and query identifiers, while vadv
+uses only its nonzero last-attributed `queryid_stat_statements`. These actions
+show related cumulative rows, select none automatically and make no claim
+about one exact execution.
+
 Within the selected calendar hour, PID alone identifies OS process and
 `pg_stat_activity` rows, histories, filters, joins and counter deltas. Process
 `starttime` and PostgreSQL `backend_start` remain observed timestamps and do

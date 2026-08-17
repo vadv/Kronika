@@ -730,7 +730,7 @@ fn layout(fields: &[FieldSpec]) -> Value {
             "unit": field.unit,
             "nullable": field.nullable,
         })).collect::<Vec<_>>(),
-        "provenance": { "inputs": ["1100001", "1001001", "1001002", "1001003"] },
+        "provenance": { "inputs": ["1100001", "1001001", "1001002", "1001004"] },
     })
 }
 

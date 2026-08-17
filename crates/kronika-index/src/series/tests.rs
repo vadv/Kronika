@@ -40,7 +40,7 @@ fn each_allowlisted_block_roundtrips() {
             ],
         },
         SeriesBlock::PgActiveBackends {
-            type_id: 1_001_003,
+            type_id: 1_001_004,
             points: vec![ActiveBackendPoint {
                 timestamp: 10,
                 count: 4,
