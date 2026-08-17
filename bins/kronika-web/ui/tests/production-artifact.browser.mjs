@@ -111,7 +111,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     assert.match(browserMode.cursor, /08:30:00/)
     assert.match(browserMode.hour, /08:00–09:00/)
     assert.match(browserMode.status, /08:30:00/)
-    assert.match(browserMode.updated, /^\d+ [smh] ago$|^\d+ min ago$/)
+    assert.match(browserMode.updated, /^(?:Updated)?\d+ [smh] ago$|^(?:Updated)?\d+ min ago$/)
     for (const output of [browserMode.cursor, browserMode.hour, browserMode.status, browserMode.updated]) {
       assert.doesNotMatch(output, /GMT|UTC|\.\d{3}(?!\d)/)
     }
@@ -155,7 +155,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     assert.match(utcMode.hour, /05:00–06:00/)
     assert.match(utcMode.status, /05:30:00/)
     assert.match(utcMode.tooltip, /05:30:00/)
-    assert.match(utcMode.updated, /^\d+ [smh] ago$|^\d+ min ago$/)
+    assert.match(utcMode.updated, /^(?:Updated)?\d+ [smh] ago$|^(?:Updated)?\d+ min ago$/)
     for (const output of [utcMode.cursor, utcMode.hour, utcMode.status, utcMode.tooltip, utcMode.updated]) {
       assert.doesNotMatch(output, /GMT|UTC|\.\d{3}(?!\d)/)
     }
@@ -570,7 +570,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.match(localClocks.hourContext, /08\/13\/2026/)
     assert.doesNotMatch(localClocks.hourContext, /GMT|UTC/)
     // The status line reports staleness as an age, not a wall clock (app.tsx UpdatedAge).
-    assert.match(localClocks.updated, /^\d+ [smh] ago$|^\d+ min ago$/)
+    assert.match(localClocks.updated, /^(?:Updated)?\d+ [smh] ago$|^(?:Updated)?\d+ min ago$/)
     assert.doesNotMatch(localClocks.updated, /GMT|UTC|\.\d{3}(?!\d)/)
     assert.equal(localClocks.updatedSecondary, null)
     assert.equal(localClocks.sample, false)
@@ -720,7 +720,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.match(utcClocks.hour, /05:00–06:00/)
     assert.doesNotMatch(utcClocks.cursor, /GMT|UTC|\.\d{3}(?!\d)/)
     assert.doesNotMatch(utcClocks.hour, /GMT|UTC|\.\d{3}(?!\d)/)
-    assert.match(utcClocks.updated, /^\d+ \S+ назад$/)
+    assert.match(utcClocks.updated, /^(?:Обновлено)?\d+ \S+ назад$/)
     assert.doesNotMatch(utcClocks.updated, /GMT|UTC|\.\d{3}(?!\d)/)
     assert.equal(utcClocks.cursorSecondary, false)
     assert.equal(utcClocks.hourZoneSuffix, false)
@@ -2425,7 +2425,7 @@ test("snapshot request targets hide rejected replacements until retry succeeds",
     await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowLeft" }))`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${BEFORE_AT}"`, "ordinary System target B")
     await waitForRequests(() => pendingSystemFailure !== null)
-    await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]')?.classList.contains("cursor-behind") === true`, "ordinary System target B loading", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"] .loading-ring') !== null`, "ordinary System target B loading", 15_000)
     assert.equal(await cdp.evaluate(`(() => {
       const panel = document.querySelector('[data-testid="system-panel-os_diskstats"]')
       return document.querySelector('[data-testid="system-metric-cpu_used_cores"]') === null && document.querySelector('[data-testid="system-metric-mem_anon"]') === null
@@ -2442,7 +2442,7 @@ test("snapshot request targets hide rejected replacements until retry succeeds",
     await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowLeft" }))`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${BEFORE_AT}"`, "ordinary PostgreSQL target B")
     await waitForRequests(() => pendingActivityFailure !== null)
-    await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]')?.classList.contains("cursor-behind") === true`, "ordinary PostgreSQL target B loading", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"] .loading-ring') !== null`, "ordinary PostgreSQL target B loading", 15_000)
     assert.equal(await cdp.evaluate(`(() => {
       const table = document.querySelector('[data-testid="pg-activity-table"]')
       return table !== null && !table.textContent.includes("activity_target_A") && table.querySelector('.entity-row') === null

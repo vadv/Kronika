@@ -458,6 +458,7 @@ function App({ locale, onLocale, t }: {
           if (stale()) return
           setCurrentSnapshot({ data: incoming, target: snapshotTarget })
           setCursorState("ready")
+          setLastUpdated(Date.now() * 1_000)
           if (completesRefresh) finishRefresh(true)
         })
         .catch((reason: unknown) => {
@@ -502,6 +503,7 @@ function App({ locale, onLocale, t }: {
             }))
             setDensePageState("idle")
             setCursorState("ready")
+            setLastUpdated(Date.now() * 1_000)
             if (completesRefresh && pageCursor === undefined) finishRefresh(true)
           }).catch((reason: unknown) => {
             if (stale()) return
@@ -786,8 +788,9 @@ function App({ locale, onLocale, t }: {
       <div aria-live="polite" className="cursor-time">
         <TimeValue label={t("hour.cursor_label")} output={cursorTime} testId="cursor-time" />
         {lastUpdated !== null && updatedClock !== null && <UpdatedAge at={lastUpdated} clock={updatedClock} locale={locale} t={t} />}
+        {cursorState === "loading" && <span className="flex items-center gap-1.5 text-xs uppercase text-fg3" data-testid="cursor-behind" role="status"><span aria-hidden="true" className="loading-ring" />{t("status.updating")}</span>}
+        {cursorState === "missing" && <span className="cursor-missing" data-testid="cursor-behind">{t("status.no_sample")}</span>}
         {refreshFailed && <span>{t("refresh.error")}</span>}
-        {cursorState !== "ready" && <span className={cursorState === "loading" ? "cursor-behind" : "cursor-missing"} data-testid="cursor-behind">{t(cursorState === "loading" ? "status.updating" : "status.no_sample")}</span>}
       </div>
 
       <div className="top-actions">
@@ -805,7 +808,7 @@ function App({ locale, onLocale, t }: {
       </div>
     </header>
 
-    <section className={`${cursorState === "loading" ? "workspace workspace-behind" : "workspace"}${stretchPostgres ? " pg-table-workspace" : ""}`}>
+    <section className={`workspace${stretchPostgres ? " pg-table-workspace" : ""}`}>
       <p aria-live="polite" className="live-note">
         {t(`nav.${visibleSource}`)}
         {visibleSource === "host" ? ` · ${t(`section.${visibleHostSection}`)}` : ""}
@@ -849,7 +852,9 @@ function UpdatedAge({ at, clock, locale, t }: { readonly at: number; readonly cl
     return () => clearInterval(timer)
   }, [])
   const age = humanAge((now - at) / 1_000_000, locale)
-  return <span data-testid="updated-time" title={`${t("refresh.updated")} ${clock}`}>{t("refresh.ago", { age })}</span>
+  // Its own lane, so the freshness never reads as part of the cursor time. The
+  // word steps aside on narrow bars; the title keeps it.
+  return <span className="flex items-baseline gap-1 border-l border-line3 pl-[9px] text-xs text-fg4" data-testid="updated-time" title={`${t("refresh.updated")} ${clock}`}><b className="font-medium uppercase text-fg4 max-[900px]:hidden">{t("refresh.updated")}</b>{t("refresh.ago", { age })}</span>
 }
 
 interface LoadProgress {
