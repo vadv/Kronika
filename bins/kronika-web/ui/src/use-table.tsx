@@ -99,7 +99,7 @@ export function UseTable({
       {USE_COLUMNS.map((column) => {
         const cell = resource[column]
         if (cell === null || !laneHasReading(lanePoints, cell.lane)) {
-          return <span className="use-cell use-absent" key={column} role="cell" title={t("use.not_measured")}>—</span>
+          return <span className="use-cell relative flex min-w-0 items-center justify-center border-l border-line text-fg4" key={column} role="cell" title={t("use.not_measured")}>—</span>
         }
         const primary = currentLaneReading(lanePoints, cell.lane, cursor, locale, cell.kind, t("unit.per_second"))
         const secondary = cell.second === undefined ? null : currentLaneReading(lanePoints, cell.second, cursor, locale, cell.kind, t("unit.per_second"))

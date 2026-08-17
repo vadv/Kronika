@@ -13,9 +13,9 @@
 .u-cursor-pt { background-clip: padding-box !important; border: 0 solid; border-radius: 50%; }
 .u-axis.u-off, .u-select.u-off, .u-cursor-x.u-off, .u-cursor-y.u-off, .u-cursor-pt.u-off { display: none; }
 
-/* Theme tokens (dark values). Every color lives in the --color-* namespace so
-   utilities (`text-fg3`, `bg-s2`, `border-line2`) resolve to the same values as
-   the legacy aliases below; light theme overrides the tokens, aliases follow. */
+/* Theme tokens (dark values). Every colour lives in the --color-* namespace, so
+   a utility (`text-fg3`), a rule and a chart sampling the name from script all
+   read the same value; the light theme redefines the same names. */
 @theme {
   --font-mono: ui-monospace, monospace;
 
@@ -290,7 +290,6 @@ h2 { font-size: var(--text-md); }
 .locator-cell.locator-known_bad { background: color-mix(in srgb, var(--color-bad) 22%, transparent); color: var(--color-fg-hi); }
 .locator-cell.locator-spike { outline: 1px solid var(--color-warn); outline-offset: -2px; }
 .process-table .entity-cell { font-size: var(--text-sm); }
-.pg-badge { background: var(--color-accent-soft); border: 1px solid var(--color-accent-line); color: var(--color-accent2); display: inline-block; font-size: var(--text-xs); font-weight: 700; letter-spacing: .06em; margin-right: 6px; padding: 2px 4px; vertical-align: 1px; }
 .sticky-pid, .sticky-command { background: inherit; position: sticky; z-index: 10; }
 .sticky-command { box-shadow: 5px 0 8px var(--color-shadow-b); }
 .entity-sticky.sticky-pid { box-shadow: none; }
@@ -319,7 +318,6 @@ h2 { font-size: var(--text-md); }
 .chart-series-labels .label-help > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .uplot-figure { display: flex; flex-direction: column; height: 200px; margin: 0; max-width: 100%; min-width: 0; overflow: hidden; position: relative; }
 .uplot-figure figcaption { display: grid; flex: 0 0 auto; grid-template-columns: minmax(0, 1fr) auto auto; }
-.chart-title { grid-column: 1; }
 .uplot-host { flex: 1 1 auto; height: 180px; max-width: 100%; min-height: 0; min-width: 0; overflow: hidden; width: 100%; }
 .uplot-host > .uplot { height: 100%; width: 100% !important; }
 .uplot-host .u-wrap { max-width: 100%; }
