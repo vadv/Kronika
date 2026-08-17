@@ -1851,7 +1851,7 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=host.processes&lens=generic` })
     await cdp.waitFor(`document.querySelector('.process-summary .metric-choice > button strong')?.textContent === "719"`, "719 process-summary rows", 15_000)
-    await cdp.waitFor(`document.querySelector('.process-summary-history .uplot-host canvas') !== null`, "the process-summary chart")
+    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-history"] .uplot-host canvas') !== null`, "the process-summary chart")
     await settleLayout(cdp)
     const shownProcessHeight = await cdp.evaluate(`document.querySelector('.process-table .entity-scroll').getBoundingClientRect().height`)
     await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
@@ -1862,7 +1862,7 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').getAttribute("aria-label")`), "Show charts")
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').getAttribute("aria-pressed")`), "false")
     await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
-    await cdp.waitFor(`document.querySelector('.process-summary-history .uplot-host canvas') !== null`, "the restored process-summary chart")
+    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-history"] .uplot-host canvas') !== null`, "the restored process-summary chart")
 
     summaryMode = "fail"
     await cdp.evaluate(`document.querySelectorAll('.section-tabs [role="tab"]')[0].click()`)

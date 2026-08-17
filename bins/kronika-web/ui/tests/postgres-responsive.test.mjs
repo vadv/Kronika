@@ -26,8 +26,9 @@ test("PostgreSQL keeps its dock beside the table at 1024 pixels", () => {
   assert.match(stylesheet, /\.pg-entity-main \{ min-width: 0; \}/)
 
   const processOverlay = mediaBlock("max-width: 1179px")
-  assert.match(processOverlay, /\.process-layout/)
   assert.doesNotMatch(processOverlay, /\.pg-(?:entity-layout|detail)/)
+  // The process layout collapses on the markup now, at the same breakpoint.
+  assert.match(app, /max-\[1179px\]:grid-cols-\[minmax\(0,1fr\)\]/)
 
   const postgresOverlay = mediaBlock("max-width: 1000px")
   assert.match(postgresOverlay, /\.pg-entity-layout \{ grid-template-columns: minmax\(0, 1fr\); \}/)

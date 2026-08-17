@@ -826,7 +826,7 @@ function App({ locale, onLocale, t }: {
           <span>{processRows[0] === undefined ? t("status.no_data") : time.timestamp(processRows[0].timestamp)}</span>
         </div>
         <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} hour={hour} lens={lens} locale={locale} onCursor={chooseCursor} state={processSummary} t={t} />
-        <div className={selectedProcess === null ? "process-layout process-layout-table" : "process-layout"}>
+        <div className={`grid min-w-0 charts-hidden:min-h-0 charts-hidden:flex-auto max-[1179px]:grid-cols-[minmax(0,1fr)] ${selectedProcess === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)_360px]"}`}>
           <ProcessTable contextLabel={context?.logicalName === "os_process" ? context.label : undefined} finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} onContextClear={clearEntityContext} onOrder={setOrder} onPattern={setFind} onSelect={selectProcess} order={order} pattern={find} rows={processRows} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
           {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onClose={() => setSelectedKey(null)} onCursor={chooseCursor} process={selectedProcess} processHistory={processHistory.value?.length ? processHistory.value : [selectedProcess]} processHistoryStatus={processHistory.status} t={t} ticksPerSecond={ticksPerSecond} />}
         </div>
