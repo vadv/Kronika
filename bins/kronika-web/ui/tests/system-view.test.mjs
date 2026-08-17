@@ -547,7 +547,7 @@ test("System keeps the audited balanced groups and opens charts only inside the 
   // resource.
   assert.match(source, /SECTION_ENTITIES: Readonly<Record<HostSection, readonly string\[\]>>/)
   assert.match(source, /storage: \["os_diskstats", "os_mountinfo", "os_cgroup_io"\]/)
-  assert.match(source, /available\.filter\(\(\{ spec \}\) => spec\.group === group\)/)
+  assert.match(source, /const sectionMetrics = useMemo\(\(\) => available\.filter\(\(\{ spec \}\) => spec\.group === section\)/)
   // The dock, not a standing console chart: closed by default, opened by a Use
   // row or a metric chip, dismissed like the PostgreSQL detail panel.
   assert.match(source, /useState\(false\)/)
