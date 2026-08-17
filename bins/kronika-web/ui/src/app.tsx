@@ -29,7 +29,7 @@ import {
 } from "./api"
 import { ChartOnly, ChartVisibilityProvider, loadChartVisibility } from "./chart-visibility"
 import type { TableOrder } from "./entity-table"
-import { HOST_SECTIONS, hostSectionOf, pgSectionOf, readAddress, sourceOf, stepOf, viewOf, writeAddress, type HostSection, type PgLens, type Source } from "./address"
+import { defaultHostMode, HOST_SECTIONS, hostSectionOf, pgSectionOf, readAddress, sourceOf, stepOf, viewOf, writeAddress, type HostMode, type HostSection, type PgLens, type Source } from "./address"
 import { DetailDock, PROCESS_HISTORY_FIELDS } from "./detail"
 import { loadDisplayTimeZone, saveDisplayTimeZone, type DisplayTimeZone } from "./display-time"
 import { DisplayTimeProvider, useDisplayTime } from "./display-time-context"
@@ -184,6 +184,7 @@ function App({ locale, onLocale, t }: {
   const [error, setError] = useState<string | null>(null)
   const [source, setSource] = useState<Source>(sourceOf(opened.current.view))
   const [hostSection, setHostSection] = useState<HostSection>(hostSectionOf(opened.current.view))
+  const [hostMode, setHostMode] = useState<HostMode | null>(opened.current.mode)
   const [systemMetric, setSystemMetric] = useState<string | null>(opened.current.metric)
   const visibleSource = source
   const [pgSection, setPgSection] = useState<PostgresSection>(pgSectionOf(opened.current.view))
@@ -638,11 +639,12 @@ function App({ locale, onLocale, t }: {
     sort: order,
     row: activeRelation
       ? relationSelectedKey
-      : selectedKey,
+      : source === "host" || source === "processes" || source === "events" ? selectedKey : null,
     find,
-    metric: source === "host" && hostSection === "overview" ? systemMetric : null,
+    metric: source === "host" ? systemMetric : null,
+    mode: source === "host" ? hostMode : null,
     statementTarget: source === "postgresql" && pgSection === "statements" ? statementTarget : null,
-  }), [activeRelation, activeRelationLens, cursor, find, hostSection, lens, order, pgSection, planLens, relationFilters, relationLevel, relationSelectedKey, selectedKey, source, statementLens, statementTarget, systemMetric])
+  }), [activeRelation, activeRelationLens, cursor, find, hostMode, hostSection, lens, order, pgSection, planLens, relationFilters, relationLevel, relationSelectedKey, selectedKey, source, statementLens, statementTarget, systemMetric])
   const steps = useRef<string | null>(null)
   useEffect(() => {
     if (window.location.pathname + window.location.search === address) return
@@ -655,6 +657,7 @@ function App({ locale, onLocale, t }: {
       const opening = readAddress(window.location.search)
       setSource(sourceOf(opening.view))
       setHostSection(hostSectionOf(opening.view))
+      setHostMode(opening.mode)
       setSystemMetric(opening.metric)
       setPgSection(pgSectionOf(opening.view))
       setLens(opening.lens)
@@ -704,7 +707,9 @@ function App({ locale, onLocale, t }: {
   }, [pgSection, relationSection])
   const chooseHostSection = useCallback((next: HostSection) => {
     setSystemFocus(null)
-    if (next === "overview") setSystemMetric(null)
+    setSystemMetric(null)
+    setSelectedKey(null)
+    setHostMode(defaultHostMode(next))
     setHostSection(next)
   }, [])
   const openPlanQuery = useCallback((target: StatementTarget) => {
@@ -787,8 +792,8 @@ function App({ locale, onLocale, t }: {
       <h1>{t("app.title")}</h1>
 
       <nav aria-label={t("nav.sources")} className="source-tabs max-[760px]:overflow-x-auto">
-        <button aria-current={visibleSource === "processes" ? "page" : undefined} className={visibleSource === "processes" ? "source-active" : undefined} data-testid="process-tab" onClick={() => setSource("processes")} type="button">{t("nav.processes")}</button>
-        <button aria-current={visibleSource === "host" ? "page" : undefined} className={visibleSource === "host" ? "source-active" : undefined} onClick={() => { setSystemFocus(null); setSource("host") }} type="button">{t("nav.host")}</button>
+        <button aria-current={visibleSource === "processes" ? "page" : undefined} className={visibleSource === "processes" ? "source-active" : undefined} data-testid="process-tab" onClick={() => { setSelectedKey(null); setSource("processes") }} type="button">{t("nav.processes")}</button>
+        <button aria-current={visibleSource === "host" ? "page" : undefined} className={visibleSource === "host" ? "source-active" : undefined} onClick={() => { setSystemFocus(null); setSelectedKey(null); setSource("host") }} type="button">{t("nav.host")}</button>
         <button aria-current={visibleSource === "postgresql" ? "page" : undefined} className={visibleSource === "postgresql" ? "source-active" : undefined} onClick={() => setSource("postgresql")} title={pgPresent ? undefined : t("nav.no_data")} type="button">{t("nav.postgresql")}</button>
         <button aria-current={visibleSource === "events" ? "page" : undefined} className={visibleSource === "events" ? "source-active" : undefined} onClick={() => { setEventScope(null); setSelectedFinding(null); setSource("events") }} title={eventsPresent ? undefined : t("nav.no_data")} type="button">{t("nav.events")}</button>
       </nav>
@@ -829,7 +834,7 @@ function App({ locale, onLocale, t }: {
       </p>
       {loading && <StateCard busy locale={locale} message={t("status.loading")} progress={loadProgress} t={t} />}
       {!loading && error !== null && <StateCard locale={locale} message={t("status.error")} t={t} />}
-      {!loading && error === null && hour !== null && visibleSource === "host" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} metric={systemMetric} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onMetric={setSystemMetric} section={hostSection} t={t} tablesLoading={cursorState === "loading"} />}
+      {!loading && error === null && hour !== null && visibleSource === "host" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} metric={systemMetric} mode={hostMode} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onMetric={setSystemMetric} onMode={(next) => { setHostMode(next); setSystemMetric(null); setSelectedKey(null) }} onSelectedKey={setSelectedKey} section={hostSection} selectedKey={selectedKey} t={t} tablesLoading={cursorState === "loading"} />}
       {!loading && error === null && hour !== null && visibleSource === "processes" && <>
         <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} primaryLane={lens === "cpu" ? "cpu_busy" : lens === "memory" ? "memory" : lens === "disk" ? "io_stall" : "health"} shownAt={shownAt} t={t} /></ChartOnly>
         <div className="lensbar">

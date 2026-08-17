@@ -14,6 +14,7 @@ export interface Address {
   readonly row: string | null
   readonly find: string
   readonly metric: string | null
+  readonly mode: HostMode | null
   readonly statementTarget: StatementTarget | null
 }
 
@@ -23,6 +24,7 @@ export type View =
   | "host.memory"
   | "host.storage"
   | "host.network"
+  | "host.cgroups"
   | "processes"
   | "pg.overview"
   | "pg.activity"
@@ -37,8 +39,9 @@ export type View =
 type Lens = "generic" | "cpu" | "memory" | "disk"
 // The machine is read one resource at a time; the overview says which one is
 // tight and the rest answer for themselves.
-export type HostSection = "overview" | "cpu" | "memory" | "storage" | "network"
-export const HOST_SECTIONS: readonly HostSection[] = ["overview", "cpu", "memory", "storage", "network"]
+export type HostSection = "overview" | "cpu" | "memory" | "storage" | "network" | "cgroups"
+export const HOST_SECTIONS: readonly HostSection[] = ["overview", "cpu", "memory", "storage", "network", "cgroups"]
+export type HostMode = "history" | "topology" | "io" | "filesystems" | "cpu" | "memory" | "tasks"
 export type Source = "host" | "processes" | "postgresql" | "events"
 export type PgLens = "load" | "per_call" | "io" | "resources" | "stability" | "timing" | "identity"
   | "access" | "changes" | "maintenance" | "size_buffers" | "freeze"
@@ -46,7 +49,7 @@ export type PgLens = "load" | "per_call" | "io" | "resources" | "stability" | "t
 export type PgLevel = "database" | "schema" | "object"
 
 const VIEWS: readonly View[] = [
-  "host.overview", "host.cpu", "host.memory", "host.storage", "host.network",
+  "host.overview", "host.cpu", "host.memory", "host.storage", "host.network", "host.cgroups",
   "processes",
   "pg.overview", "pg.activity", "pg.statements", "pg.plans", "pg.locks", "pg.databases", "pg.tables", "pg.indexes",
   "events",
@@ -70,6 +73,7 @@ export const DEFAULT_ADDRESS: Address = {
   row: null,
   find: "",
   metric: null,
+  mode: null,
   statementTarget: null,
 }
 
@@ -83,6 +87,8 @@ export function readAddress(search: string): Address {
   const resolvedView = VIEWS.find((known) => known === view) ?? DEFAULT_ADDRESS.view
   const oid = (name: string) => /^[1-9]\d*$/.test(parameters.get(name) ?? "") ? parameters.get(name) : null
   const relation = resolvedView === "pg.tables" || resolvedView === "pg.indexes"
+  const host = resolvedView.startsWith("host.")
+  const hostSection = hostSectionOf(resolvedView)
   const datid = relation && pgLevel !== "database" ? oid("datid") : null
   const sort = parameters.get("sort") ?? ""
   const column = sort.startsWith("-") ? sort.slice(1) : sort
@@ -98,9 +104,10 @@ export function readAddress(search: string): Address {
     relid: relation && pgLevel === "object" && datid !== null ? oid("relid") : null,
     indexrelid: resolvedView === "pg.indexes" && pgLevel === "object" && datid !== null ? oid("indexrelid") : null,
     sort: column === "" ? null : { column, descending: sort.startsWith("-") },
-    row: resolvedView === "processes" || relation ? parameters.get("row") : null,
+    row: resolvedView === "processes" || relation || host || resolvedView === "events" ? parameters.get("row") : null,
     find: parameters.get("find") ?? "",
-    metric: resolvedView === "host.overview" && /^[a-z0-9_.-]+$/.test(parameters.get("metric") ?? "") ? parameters.get("metric") : null,
+    metric: host && /^[a-z0-9_.-]+$/.test(parameters.get("metric") ?? "") ? parameters.get("metric") : null,
+    mode: hostModeOf(hostSection, parameters.get("mode")),
     statementTarget,
   }
 }
@@ -118,10 +125,11 @@ export function writeAddress(address: Address): string {
   if (relation && address.pgLevel === "object" && address.relid !== null) parameters.set("relid", address.relid)
   if (address.view === "pg.indexes" && address.pgLevel === "object" && address.indexrelid !== null) parameters.set("indexrelid", address.indexrelid)
   if (address.sort !== null) parameters.set("sort", `${address.sort.descending ? "-" : ""}${address.sort.column}`)
-  if ((address.view === "processes" || relation)
+  if ((address.view === "processes" || relation || address.view.startsWith("host.") || address.view === "events")
     && address.row !== null && address.row !== "") parameters.set("row", address.row)
   if (address.find !== "") parameters.set("find", address.find)
-  if (address.view === "host.overview" && address.metric !== null) parameters.set("metric", address.metric)
+  if (address.view.startsWith("host.") && address.metric !== null) parameters.set("metric", address.metric)
+  if (address.view.startsWith("host.") && address.mode !== null && address.mode !== defaultHostMode(hostSectionOf(address.view))) parameters.set("mode", address.mode)
   if (address.view === "pg.statements" && address.statementTarget !== null) writeStatementTarget(parameters, address.statementTarget)
   const query = parameters.toString()
   return query === "" ? "/" : `/?${query}`
@@ -167,6 +175,25 @@ export function sourceOf(view: View): Source {
 export function hostSectionOf(view: View): HostSection {
   const section = view.startsWith("host.") ? view.slice(5) : "overview"
   return HOST_SECTIONS.includes(section as HostSection) ? section as HostSection : "overview"
+}
+
+export function defaultHostMode(section: HostSection): HostMode | null {
+  if (section === "cpu") return "history"
+  if (section === "storage") return "io"
+  if (section === "cgroups") return "cpu"
+  return null
+}
+
+export function hostModeOf(section: HostSection, stored: string | null): HostMode | null {
+  const allowed: Readonly<Record<HostSection, readonly HostMode[]>> = {
+    overview: [],
+    cpu: ["history", "topology"],
+    memory: [],
+    storage: ["io", "filesystems", "topology"],
+    network: [],
+    cgroups: ["cpu", "memory", "io", "tasks"],
+  }
+  return allowed[section].find((mode) => mode === stored) ?? defaultHostMode(section)
 }
 
 export function pgSectionOf(view: View): "overview" | "activity" | "statements" | "plans" | "locks" | "databases" | "tables" | "indexes" {

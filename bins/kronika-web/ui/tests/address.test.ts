@@ -124,12 +124,18 @@ test("relation selection is separate from hierarchy filters", () => {
   assert.equal(readAddress("view=pg.statements&row=hidden").row, null)
 })
 
-test("Host metric and plan-to-query context are URL-native and route-scoped", () => {
+test("Host master/detail modes and plan-to-query context are URL-native and route-scoped", () => {
   const target = { dbId: "16384", match: "last" as const, planId: "77", queryId: "42", sourceTypeId: "1004001", topLevel: null, userId: "10" }
   const host = writeAddress({ ...DEFAULT_ADDRESS, view: "host.overview", metric: "cpu_used_cores" })
   assert.equal(host, "/?view=host.overview&metric=cpu_used_cores")
   assert.equal(readAddress(host.slice(1)).metric, "cpu_used_cores")
-  assert.equal(readAddress("?view=host.cpu&metric=cpu_user").metric, null)
+  assert.equal(readAddress("?view=host.cpu&metric=cpu_user").metric, "cpu_user")
+  const filesystem = writeAddress({ ...DEFAULT_ADDRESS, view: "host.storage", mode: "filesystems", row: "mount:8:1:/", metric: "free_bytes" })
+  assert.equal(filesystem, "/?view=host.storage&row=mount%3A8%3A1%3A%2F&metric=free_bytes&mode=filesystems")
+  assert.equal(readAddress(filesystem.slice(1)).mode, "filesystems")
+  assert.equal(readAddress(filesystem.slice(1)).row, "mount:8:1:/")
+  assert.equal(readAddress("?view=host.storage&mode=made-up").mode, "io")
+  assert.equal(readAddress("?view=host.cpu&mode=topology").mode, "topology")
 
   const query = writeAddress({ ...DEFAULT_ADDRESS, at: 1_700_000_000_000_000, view: "pg.statements", statementTarget: target })
   assert.equal(query, "/?at=1700000000000000&view=pg.statements&stmt_qid=42&stmt_dbid=16384&stmt_userid=10&stmt_match=last&stmt_source=1004001&stmt_plan=77")

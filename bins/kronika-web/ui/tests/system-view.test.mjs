@@ -507,19 +507,20 @@ test("registry cumulative fields become reset-safe rates across storage segments
   assert.equal(rateHelpers.metricChartUnit(spec, "en"), "1/s")
 })
 
-test("a mount history is one used-against-total pair, not two switchable singles", () => {
+test("a mount history charts exact available against total without inventing used space", () => {
   const row = (timestamp, free, total) => ({
     logicalName: "os_mountinfo", ordinal: String(timestamp), segmentId: "a", timestamp, typeId: "1102001",
     values: { free_bytes: free, total_bytes: total },
   })
   const t = (key) => key
   const series = helpers.mountPairSeries([row(1_000_000, 300, 1000), row(2_000_000, 250, 1000)], t)
-  assert.deepEqual(series.map(({ id }) => id), ["used_bytes", "total_bytes"])
-  assert.deepEqual(series[0].points.map(({ value }) => value), [700, 750])
+  assert.deepEqual(series.map(({ id }) => id), ["available_bytes", "total_bytes"])
+  assert.deepEqual(series[0].points.map(({ value }) => value), [300, 250])
   assert.deepEqual(series[1].points.map(({ value }) => value), [1000, 1000])
-  // A filesystem reporting more free than it holds is a read error, not a negative used.
+  // The exact available gauge is preserved even when the source is internally
+  // inconsistent; the UI does not manufacture an allocated-space result.
   const broken = helpers.mountPairSeries([row(1_000_000, 1500, 1000)], t)
-  assert.deepEqual(broken[0].points.map(({ value }) => value), [null])
+  assert.deepEqual(broken[0].points.map(({ value }) => value), [1500])
   assert.deepEqual(helpers.mountPairSeries([{ ...row(1_000_000, null, null), values: {} }], t), [])
 })
 
@@ -550,11 +551,13 @@ test("System keeps the audited groups and opens Overview on factual CPU history"
     readFile(new URL("../src/system-view.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
   ])
-  // One section at a time, and each section owns the entities that make up its
-  // resource.
-  assert.match(source, /SECTION_ENTITIES: Readonly<Record<HostSection, readonly string\[\]>>/)
-  assert.match(source, /storage: \["os_diskstats", "os_mountinfo", "os_cgroup_io"\]/)
-  assert.match(source, /const sectionMetrics = useMemo\(\(\) => available\.filter\(\(\{ spec \}\) => spec\.group === section\)/)
+  // One operator question at a time: cgroup accounting is dedicated, and
+  // Storage separates device I/O, filesystems and topology.
+  assert.match(source, /storage: \["io", "filesystems", "topology"\]/)
+  assert.match(source, /cgroups: \["cpu", "memory", "io", "tasks"\]/)
+  assert.match(source, /if \(section === "storage"\)[\s\S]*mode === "filesystems"[\s\S]*\["os_mountinfo"\]/)
+  assert.doesNotMatch(source, /storage: \["os_diskstats", "os_mountinfo", "os_cgroup_io"\]/)
+  assert.match(source, /const sectionMetrics = useMemo\(\(\) => referenceMode \? \[\] : available\.filter/)
   // Overview resolves its first factual metric while an explicit URL metric
   // remains authoritative. The chart still lives only in the dock.
   assert.match(source, /section !== "overview" \|\| dismissedOverview \|\| first === undefined/)
