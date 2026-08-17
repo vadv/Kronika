@@ -43,7 +43,7 @@ test("process sticky headers share live offsets and stacking classes with their 
   assert.match(source, /max-\[760px\]:static/)
 })
 
-test("all sixteen process cards use the exact complete-set history projection", async () => {
+test("all sixteen process aggregate readings use the exact complete-set history projection", async () => {
   assert.deepEqual(helpers.PROCESS_SUMMARY_FIELDS, [
     "processes", "threads", "runnable", "postgresql",
     "user_cores", "system_cores", "run_delay_ms_per_second", "context_switches_per_second",

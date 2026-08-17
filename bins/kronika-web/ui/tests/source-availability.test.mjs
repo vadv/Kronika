@@ -13,10 +13,17 @@ test("PostgreSQL availability follows configuration or selected-hour telemetry",
   assert.equal(hasPostgresTelemetry(data(false, true)), true)
 })
 
-test("the unavailable PostgreSQL route renders Host synchronously", async () => {
+test("unavailable peer routes remain explicit and never redirect into Host", async () => {
   const source = await readFile(new URL("../src/app.tsx", import.meta.url), "utf8")
-  assert.match(source, /const visibleSource: Source = source === "postgresql" && !pgPresent \? "host" : source/)
-  assert.match(source, /if \(source === "postgresql" && !pgPresent\) setSource\("host"\)/)
+  assert.match(source, /const visibleSource = source/)
+  assert.doesNotMatch(source, /if \(source === "postgresql" && !pgPresent\) setSource\("host"\)/)
+  assert.doesNotMatch(source, /if \(source === "events" && !eventsPresent\) setSource\("host"\)/)
   assert.match(source, /visibleSource === "postgresql" && <PostgresView/)
-  assert.match(source, /disabled=\{!pgPresent\}/)
+  assert.match(source, /title=\{pgPresent \? undefined : t\("nav\.no_data"\)\}/)
+  assert.match(source, /title=\{eventsPresent \? undefined : t\("nav\.no_data"\)\}/)
+  const processes = source.indexOf('data-testid="process-tab"')
+  const host = source.indexOf('setSource("host")', processes)
+  const postgresql = source.indexOf('setSource("postgresql")', host)
+  const events = source.indexOf('setSource("events")', postgresql)
+  assert.ok(processes < host && host < postgresql && postgresql < events)
 })

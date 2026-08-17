@@ -22,7 +22,7 @@ test("each large chart container follows the shared visibility preference", asyn
     "events-view.tsx": 2,
     "postgres-relations-view.tsx": 1,
     "postgres-view.tsx": 6,
-    "process-table.tsx": 1,
+    "process-table.tsx": 0,
     "system-view.tsx": 2,
   }
   for (const [file, count] of Object.entries(expected)) {
@@ -33,4 +33,6 @@ test("each large chart container follows the shared visibility preference", asyn
   assert.match(app, /data-testid="charts-toggle"/)
   assert.match(app, /kronika\.charts/)
   assert.match(app, /charts-hidden/)
+  const processes = await readFile(new URL("../src/process-table.tsx", import.meta.url), "utf8")
+  assert.doesNotMatch(processes, /process-summary-history/)
 })

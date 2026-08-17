@@ -300,7 +300,8 @@ test("timeline controls stay above a full-width plot without a redundant time ti
   ])
   assert.match(source, /timeline-shell[^"]*flex-col[^"]*overflow-hidden/)
   assert.match(source, /className="flex flex-none overflow-x-auto border-b border-line2"/)
-  assert.match(chart, /\[&\.timeline-chart\]:min-h-\[216px\][\s\S]{0,120}?\[&\.timeline-chart\]:pt-\[7px\]/)
+  assert.match(chart, /\[&\.timeline-chart\]:min-h-\[128px\][\s\S]{0,120}?\[&\.timeline-chart\]:pt-\[4px\]/)
+  assert.match(chart, /\[\.timeline-chart_&\]:min-h-\[101px\]/)
   // The lane strip renders above the plot; comparing by a class name that no
   // longer exists made this pass on two -1s.
   assert.ok(source.indexOf('className="flex flex-none overflow-x-auto border-b border-line2"') < source.indexOf('className="timeline-chart"'))

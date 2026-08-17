@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState, type Dispatch } from "react"
 
 import { acceptResponse, loadSeries, type Cell, type DataRow, type Finding } from "./api"
 import { buildMetricSamples } from "./chart"
-import { ChartOnly } from "./chart-visibility"
 import { EntityTable, type EntityColumn, type TableOrder } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import {
@@ -130,21 +129,18 @@ export function processSummaryReducer(state: ProcessSummaryState, action: Proces
   return { hour: action.hour, history: action.rows, status: action.rows.length === 0 ? "empty" : "ready" }
 }
 
-export function ProcessSummary({ cursor, dispatch, hour, lens, locale, onCursor, state, t }: {
+export function ProcessSummary({ cursor, dispatch, hour, lens, locale, state, t }: {
   readonly cursor: number
   readonly dispatch: Dispatch<ProcessSummaryAction>
   readonly hour: number
   readonly lens: Lens
   readonly locale: Locale
-  readonly onCursor: (timestamp: number) => void
   readonly state: ProcessSummaryState
   readonly t: Translate
 }) {
   const metrics = PROCESS_SUMMARY_METRICS[lens]
-  const [selected, setSelected] = useState(metrics[0]!.field)
   const history = state.hour === hour ? state.history : []
   const status = state.hour === hour ? state.status : "loading"
-  const active = metrics.find(({ field }) => field === selected) ?? metrics[0]!
   useEffect(() => {
     const controller = new AbortController()
     dispatch({ hour, type: "loading" })
@@ -152,22 +148,17 @@ export function ProcessSummary({ cursor, dispatch, hour, lens, locale, onCursor,
       (rows) => dispatch({ hour, type: "loaded", rows }), () => dispatch({ hour, type: "error" }))
     return () => controller.abort()
   }, [hour])
-  const activePoints = useMemo(() => processSummaryPoints(history, active), [active, history])
   const statusKey = status === "loading" ? "process.summary.loading" : status === "error" ? "process.summary.error" : status === "empty" ? "status.no_data" : null
-  return <section aria-label={t("process.summary.title")} className="process-summary metric-grid grid-cols-4 border-l border-line2 max-[760px]:grid-cols-2 [&>button_span]:block [&>button_span]:max-w-full [&>button_span]:overflow-hidden [&>button_span]:text-ellipsis [&>button_span]:whitespace-nowrap [&>button_span]:text-xs [&>button_span]:uppercase">
+  return <section aria-label={t("process.summary.title")} className="process-summary grid grid-cols-4 border-l border-line2 max-[760px]:grid-cols-2">
     {metrics.map((metric) => {
       const output = processSummaryOutput(readingAt(processSummaryPoints(history, metric), cursor), metric, locale, t)
-      return <div className="metric-choice" key={metric.field}>
-        <button aria-pressed={active.field === metric.field} onClick={() => setSelected(metric.field)} type="button">
-          <span>{t(metric.key)}</span><strong>{output}</strong>
-        </button>
+      return <div className="relative flex min-h-[42px] min-w-0 items-center gap-2 border-b border-r border-line px-2 pr-7" key={metric.field}>
+        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-xs uppercase text-fg3">{t(metric.key)}</span>
+        <strong className="flex-none text-md font-[560] tabular-nums text-fg">{output}</strong>
         <LabelHelp helpKey={metric.help} iconOnly labelKey={metric.key} t={t} testId={`process-summary-help-${metric.field}`} />
       </div>
     })}
     {statusKey !== null && <p aria-live="polite" className="col-[1/-1] m-0 min-h-[26px] px-2 py-[7px] text-xs text-fg3" data-testid="process-summary-status">{t(statusKey)}</p>}
-    <ChartOnly>{history.length !== 0 && <div className="col-[1/-1] min-w-0 border-b border-line2" data-testid="process-summary-history">
-      <SeriesChart cursor={cursor} empty={t("status.no_data")} format={processSummaryFormat(active, t)} helpKey={active.help} hour={hour} labelKey={active.key} locale={locale} onCursor={onCursor} points={activePoints} t={t} unit={processSummaryUnit(active, locale, t)} />
-    </div>}</ChartOnly>
   </section>
 }
 
