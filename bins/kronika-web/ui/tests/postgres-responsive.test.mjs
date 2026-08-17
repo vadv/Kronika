@@ -7,6 +7,7 @@ import test from "node:test"
 const directory = dirname(fileURLToPath(import.meta.url))
 const stylesheet = await readFile(join(directory, "../src/styles.css"), "utf8")
 const app = await readFile(join(directory, "../src/app.tsx"), "utf8")
+const entityTable = await readFile(join(directory, "../src/entity-table.tsx"), "utf8")
 
 function mediaBlock(condition) {
   const start = stylesheet.indexOf(`@media (${condition})`)
@@ -51,7 +52,7 @@ test("every PostgreSQL table view owns the viewport flex chain", () => {
   assert.match(stylesheet, /\.pg-table-workspace \{[^}]*flex: 1 1 0;[^}]*min-height: 0;[^}]*overflow: hidden;/)
   assert.match(stylesheet, /\.pg-table-shell \.pg-entity-layout \{[^}]*flex: 1 1 0;[^}]*grid-template-rows: minmax\(0, 1fr\);[^}]*min-height: 0;[^}]*overflow: hidden;/)
   assert.match(stylesheet, /\.pg-table-shell \.pg-entity-main, \.pg-table-shell \.pg-entity-layout \.entity-table \{[^}]*flex: 1 1 0;[^}]*min-height: 0;[^}]*overflow: hidden;/)
-  assert.match(stylesheet, /\.pg-table-shell \.pg-entity-layout \.entity-scroll \{[^}]*flex: 1 1 0;[^}]*height: auto;[^}]*min-height: 0;/)
+  assert.match(entityTable, /\[\.pg-table-shell_\.pg-entity-layout_&\]:flex-1/)
   assert.match(stylesheet, /\.charts-hidden\.pg-table-shell \.pg-entity-layout, \.charts-hidden\.pg-table-shell \.pg-entity-layout \.entity-table, \.charts-hidden\.pg-table-shell \.pg-entity-layout \.entity-scroll \{[^}]*flex: 1 1 auto;/)
   assert.match(stylesheet, /\.pg-table-shell \.pg-detail \{[^}]*max-height: none;[^}]*min-height: 0;/)
   assert.match(stylesheet, /\.pg-table-shell \.pg-detail \.uplot-figure:not\(\.uplot-expanded\) \{[^}]*flex: 0 0 200px;[^}]*height: 200px;[^}]*max-height: 200px;/)

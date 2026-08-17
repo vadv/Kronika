@@ -62,7 +62,11 @@
   --text-lg: 16px;
   --spacing-row: 23px;
   --spacing-head: 26px;
-}
+
+  --animate-loading-spin: loading-spin .9s linear infinite;
+  }
+
+@keyframes loading-spin { to { transform: rotate(360deg); } }
 
 @custom-variant charts-hidden (&:where(.charts-hidden *));
 
@@ -79,6 +83,14 @@
 }
 /* The empty/loading paragraph shared by the entity table, the events console
    and the System panels. */
+@utility loading-ring {
+  border: 2px solid var(--color-line3); border-radius: 50%; border-top-color: var(--color-accent); display: inline-block; height: 14px; margin-right: 6px; width: 14px;
+}
+@utility align-right {
+  text-align: right;
+  & .entity-value, & .numeric-cell { display: block; text-align: right; width: 100%; }
+  & .entity-sort { justify-content: flex-end; text-align: right; }
+}
 @utility table-empty {
   color: var(--color-fg4); font-size: var(--text-sm); padding: 22px;
 }
@@ -254,16 +266,10 @@ body {
 h1, h2 { color: var(--color-fg-hi); font-weight: 650; margin: 0; }
 h1 { font-size: var(--text-sm); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
 h2 { font-size: var(--text-md); }
-.charts-toggle { color: var(--color-fg2); }
-.charts-toggle[aria-pressed="true"] { background: var(--color-s4); color: var(--color-accent3); }
-.source-tabs button { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--color-fg3); cursor: pointer; font-size: var(--text-xs); letter-spacing: .06em; padding: 8px 9px 6px; text-transform: uppercase; }
 /* A pinned header is already a positioning context; giving it `relative` would
    drop the pin and shift the column by its own offset. */
 /* The single infinite animation a screen may have: data is on its way.
    Inline with the message — the card grows by nothing. */
-.loading-ring { animation: loading-spin .9s linear infinite; border: 2px solid var(--color-line3); border-radius: 50%; border-top-color: var(--color-accent); display: inline-block; height: 14px; margin-right: 9px; vertical-align: -2px; width: 14px; }
-@keyframes loading-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .loading-ring { animation: none; } }
 .label-help { align-items: center; display: inline-flex; position: relative; }
 .label-help > * + * { margin-left: 5px; }
 .help-dot { align-items: center; background: var(--color-s2); border: 1px solid var(--color-line4); border-radius: 50%; color: var(--color-accent3); cursor: help; display: inline-flex; font-size: var(--text-xs); height: 14px; justify-content: center; line-height: 1; padding: 0; width: 14px; }
@@ -274,26 +280,6 @@ h2 { font-size: var(--text-md); }
 .timeline-chart .chart-current { max-width: 55%; overflow: hidden; text-overflow: ellipsis; }
 .process-summary > button span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .process-table { background: var(--color-s1); border: 1px solid var(--color-line2); min-width: 0; overflow: hidden; }
-.process-table .entity-scroll { height: min(570px, calc(100vh - 370px)); min-height: 300px; }
-.process-table .entity-header-cell, .process-table .entity-cell { padding-left: 8px; padding-right: 8px; }
-.process-table .entity-header-cell { letter-spacing: .035em; }
-.align-right .entity-sort { justify-content: flex-end; }
-.align-right .entity-sort { text-align: right; }
-.entity-cell.align-right { text-align: right; }
-.align-right .numeric-cell, .align-right .entity-value { display: block; text-align: right; width: 100%; }
-.process-table .entity-row { cursor: pointer; }
-.process-table .entity-row:hover { background: var(--color-s3); }
-.locator-row.locator-known_bad { box-shadow: inset 3px 0 var(--color-bad); }
-.locator-row.locator-spike { box-shadow: inset 0 0 0 1px var(--color-warn); }
-.locator-row[aria-selected="true"].locator-known_bad { box-shadow: inset 2px 0 var(--color-accent), inset 5px 0 var(--color-bad); }
-.locator-row[aria-selected="true"].locator-spike { box-shadow: inset 2px 0 var(--color-accent), inset 0 0 0 1px var(--color-warn); }
-.locator-cell.locator-known_bad { background: color-mix(in srgb, var(--color-bad) 22%, transparent); color: var(--color-fg-hi); }
-.locator-cell.locator-spike { outline: 1px solid var(--color-warn); outline-offset: -2px; }
-.process-table .entity-cell { font-size: var(--text-sm); }
-.sticky-pid, .sticky-command { background: inherit; position: sticky; z-index: 10; }
-.sticky-command { box-shadow: 5px 0 8px var(--color-shadow-b); }
-.entity-sticky.sticky-pid { box-shadow: none; }
-.process-table .entity-header-cell.sticky-pid, .process-table .entity-header-cell.sticky-command { background: var(--color-s2); z-index: 40; }
 
 .entity-panel, .pg-overview, .pg-preview { background: var(--color-s1); border: 1px solid var(--color-line2); min-width: 0; }
 .metric-group > h2, .entity-panel > h2, .pg-preview > h2 {
@@ -338,19 +324,11 @@ h2 { font-size: var(--text-md); }
    target. The padding keeps that reach on screen. */
 .entity-header-cell > .label-help { flex: 0 0 auto; margin-left: 4px; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
 .entity-header-cell:hover > .label-help, .entity-header-cell:focus-within > .label-help { opacity: 1; pointer-events: auto; }
-.entity-row[aria-selected="true"].locator-known_bad { box-shadow: inset 2px 0 var(--color-accent), inset 5px 0 var(--color-bad); }
-.entity-row[aria-selected="true"].locator-spike { box-shadow: inset 2px 0 var(--color-accent), inset 0 0 0 1px var(--color-warn); }
-.entity-cell.value-tone-good .entity-value { color: var(--color-ok); }
-.entity-cell.value-tone-warning .entity-value { color: var(--color-warn); }
-.entity-cell.value-tone-critical .entity-value { color: var(--color-bad); }
-.entity-cell.value-tone-inactive .entity-value { color: var(--color-fg4); }
-.entity-cell.locator-known_bad .entity-value { color: var(--color-fg-hi); }
 
 .pg-tabs { background: var(--color-s1); border: 1px solid var(--color-line2); display: flex; margin-top: 8px; min-height: 35px; overflow-x: auto; }
 .pg-tabs button { align-items: center; background: transparent; border: 0; border-right: 1px solid var(--color-line2); color: var(--color-fg3); cursor: pointer; display: flex; flex: 0 0 auto; font-size: var(--text-xs); gap: 6px; letter-spacing: .04em; padding: 0 13px; text-transform: uppercase; }
 .pg-tabs button[aria-current="page"] { background: var(--color-s4); box-shadow: inset 0 -2px var(--color-accent); color: var(--color-accent3); }
 .pg-tabs button:disabled { cursor: not-allowed; opacity: .35; }
-.pg-entity-layout .entity-scroll { height: min(560px, calc(100dvh - 475px)); min-height: 100px; }
 .pg-table-shell { display: flex; flex-direction: column; height: 100dvh; min-height: 0; overflow: hidden; }
 .pg-table-shell > .topbar { flex: 0 0 auto; }
 .pg-table-workspace { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; overflow: hidden; }
@@ -358,10 +336,8 @@ h2 { font-size: var(--text-md); }
 .pg-table-workspace > .pg-tabs, .pg-table-workspace > .lensbar, .pg-table-workspace > [data-testid="table-paging"] { flex: 0 0 auto; }
 .pg-table-shell .pg-entity-layout { flex: 1 1 0; grid-template-rows: minmax(0, 1fr); min-height: 0; overflow: hidden; }
 .pg-table-shell .pg-entity-main, .pg-table-shell .pg-entity-layout .entity-table { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; overflow: hidden; }
-.pg-table-shell .pg-entity-layout .entity-scroll { flex: 1 1 0; height: auto; min-height: 0; }
 .pg-table-shell .pg-detail { max-height: none; min-height: 0; overscroll-behavior: contain; }
 .pg-table-shell .pg-detail .uplot-figure:not(.uplot-expanded) { flex: 0 0 200px; height: 200px; max-height: 200px; }
-.pg-detail > header { align-items: flex-start; background: var(--color-s2); border-bottom: 1px solid var(--color-line3); display: flex; justify-content: space-between; padding-bottom: 9px; position: sticky; top: -11px; z-index: 2; }
 /* The System dock unfolds full-width under the resource table: the chart is
    the content being opened, so it gets the stage — real height, whole width,
    same on every screen. Opening scrolls it into view, Esc/X fold it back. */
@@ -371,7 +347,6 @@ h2 { font-size: var(--text-md); }
 .metric-groups .metric-choice > button::after { bottom: 5px; color: var(--color-fg4); content: "↗"; font-size: 11px; opacity: .55; position: absolute; right: 7px; }
 .metric-groups .metric-choice > button:hover::after, .metric-groups .metric-choice > button:focus-visible::after { color: var(--color-accent3); opacity: 1; }
 .metric-groups .metric-choice > button strong { padding-right: 14px; }
-.copy-raw { align-items: center; background: transparent; border: 1px solid var(--color-line4); color: var(--color-accent3); cursor: pointer; display: inline-flex; flex: 0 0 auto; font-size: var(--text-xs); justify-content: center; padding: 2px 3px; text-transform: uppercase; }
 
 
 .process-history .series-chart { border: 1px solid var(--color-line2); margin-top: 0; min-width: 0; padding: 6px 7px 4px; }
@@ -381,7 +356,6 @@ h2 { font-size: var(--text-md); }
 .charts-hidden .entity-panels { flex: 1 1 auto; min-height: 0; }
 .charts-hidden .process-table, .charts-hidden .entity-panel, .charts-hidden .entity-panels .entity-table { display: flex; flex-direction: column; }
 .charts-hidden .entity-panels { grid-auto-rows: minmax(0, 1fr); }
-.charts-hidden .process-table .entity-scroll, .charts-hidden .entity-panels .entity-scroll { flex: 1 1 auto; height: auto; min-height: 154px; }
 .charts-hidden.pg-table-shell .pg-entity-layout, .charts-hidden.pg-table-shell .pg-entity-layout .entity-table, .charts-hidden.pg-table-shell .pg-entity-layout .entity-scroll { flex: 1 1 auto; }
 
 @media (max-width: 760px) {
@@ -390,8 +364,6 @@ h2 { font-size: var(--text-md); }
   .workspace { padding-left: 8px; padding-right: 8px; }
   .lens-tabs { width: 100%; }
   .lens-tabs button { flex: 1; min-width: 0; padding-left: 4px; padding-right: 4px; }
-  .sticky-command { box-shadow: none; position: static; }
-  .process-table .entity-header-cell.sticky-command { position: static; }
   .metric-groups, .entity-panels { grid-template-columns: minmax(0, 1fr); }
   .use-table > header, .use-row { grid-template-columns: 80px repeat(3, minmax(0, 1fr)); }
   .use-table > header span, .use-resource { padding-left: 5px; padding-right: 5px; }

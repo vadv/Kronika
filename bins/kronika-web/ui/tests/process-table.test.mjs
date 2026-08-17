@@ -40,7 +40,7 @@ test("process sticky headers share live offsets and stacking classes with their 
   const source = await readFile(new URL("../src/entity-table.tsx", import.meta.url), "utf8")
   const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8")
   assert.equal(source.match(/left: pinnedLeft\.get\(/g)?.length, 2)
-  assert.match(styles, /@media \(max-width: 760px\)[\s\S]*\.sticky-command \{[^}]*position: static;/)
+  assert.match(source, /max-\[760px\]:static/)
 })
 
 test("all sixteen process cards use the exact complete-set history projection", async () => {

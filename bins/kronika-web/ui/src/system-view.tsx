@@ -573,7 +573,7 @@ function SystemDock({
     detail.current?.scrollIntoView({ block: "nearest" })
   }, [])
   return <aside aria-label={t(label)} className="pg-detail system-dock mt-2 max-h-none overflow-visible border border-line3" data-testid="system-dock" ref={detail}>
-    <header>
+    <header className="pg-detail-head">
       <div><span>{t("system.history")}</span><h2>{t(label)}</h2></div>
       <button aria-label={t("common.close")} onClick={onClose} type="button"><X aria-hidden="true" size={14} /></button>
     </header>
@@ -701,7 +701,7 @@ function SystemEntityPanel({
       testId={`system-${section}`}
     />
     <ChartOnly>{selectedRow !== null && (mountPair || selectedColumn !== undefined) && <section className="system-entity-history min-w-0 border border-t-0 border-line2" data-testid={`system-${section}-history`}>
-      <header>
+      <header className="flex items-start justify-between gap-1.5 px-[7px] pt-1.5">
         {mountPair
           ? <div className="system-history-selector flex max-w-[calc(100%-30px)] gap-1 overflow-x-auto pb-[3px] [scrollbar-width:thin] [&>button]:min-h-[27px] [&>button]:flex-none [&>button]:cursor-pointer [&>button]:border [&>button]:border-line3 [&>button]:bg-s2 [&>button]:px-[7px] [&>button]:py-1 [&>button]:text-xs [&>button]:text-fg2 [&>button[aria-pressed=true]]:border-accent [&>button[aria-pressed=true]]:bg-accent-soft [&>button[aria-pressed=true]]:text-fg" role="group" />
           : <div className="system-history-selector flex max-w-[calc(100%-30px)] gap-1 overflow-x-auto pb-[3px] [scrollbar-width:thin] [&>button]:min-h-[27px] [&>button]:flex-none [&>button]:cursor-pointer [&>button]:border [&>button]:border-line3 [&>button]:bg-s2 [&>button]:px-[7px] [&>button]:py-1 [&>button]:text-xs [&>button]:text-fg2 [&>button[aria-pressed=true]]:border-accent [&>button[aria-pressed=true]]:bg-accent-soft [&>button[aria-pressed=true]]:text-fg" role="group">

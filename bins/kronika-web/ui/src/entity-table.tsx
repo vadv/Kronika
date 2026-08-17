@@ -185,7 +185,7 @@ export function EntityTable({
   return <section className={`entity-table min-w-0 overflow-hidden bg-s1${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
     {status !== undefined && <div className="flex min-h-[26px] flex-wrap items-center gap-x-[14px] gap-y-[3px] border-b border-line2 bg-[color-mix(in_srgb,var(--color-s2)_82%,transparent)] px-[7px] py-1 text-xs text-fg3 [&_strong]:font-[650] [&_strong]:text-fg2" data-testid="table-status">{status}</div>}
     {(onPattern !== undefined || contextLabel !== undefined) && <TableFilter context={contextLabel} kept={serverSorted === true ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} t={t} total={rows.length} />}
-    <div aria-label={label} className="entity-scroll relative h-[min(310px,36vh)] min-h-[154px] overflow-auto [scroll-padding-inline-end:15px]" ref={parent} role="table" tabIndex={0}>
+    <div aria-label={label} className="entity-scroll relative h-[min(310px,36vh)] min-h-[154px] overflow-auto [scroll-padding-inline-end:15px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent [.process-table_&]:h-[min(570px,calc(100vh-370px))] [.process-table_&]:min-h-[300px] [.pg-entity-layout_&]:h-[min(560px,calc(100dvh-475px))] [.pg-entity-layout_&]:min-h-[100px] [.pg-table-shell_.pg-entity-layout_&]:h-auto [.pg-table-shell_.pg-entity-layout_&]:min-h-0 [.pg-table-shell_.pg-entity-layout_&]:flex-1 charts-hidden:h-auto charts-hidden:min-h-[154px] charts-hidden:flex-auto" ref={parent} role="table" tabIndex={0}>
       <div className="entity-head sticky top-0 z-30 flex h-head min-w-full bg-s2 [&_[role=columnheader]]:select-none" ref={head} role="row" style={{ width }}>
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {
           const sorted = header.column.getIsSorted()
@@ -204,7 +204,7 @@ export function EntityTable({
       {rendered.length === 0
         ? loading
           // Loading and empty are different truths; never report one as the other.
-          ? <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>
+          ? <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>
           : <p className="table-empty">{pattern === "" ? empty : t("filter.none")}</p>
         : <div className="relative" data-testid="virtual-body" style={{ height: virtual.getTotalSize(), width }}>
           {virtual.getVirtualItems().map((item) => {
@@ -216,7 +216,7 @@ export function EntityTable({
             return <div
               aria-label={rowLabel?.(row.original)}
               aria-selected={selectedKey === key}
-              className={`entity-row absolute left-0 top-0 flex min-w-full bg-s1 even:bg-zebra aria-selected:bg-s4 aria-selected:shadow-[inset_2px_0_var(--color-accent)] ${onSelect === undefined ? "cursor-default" : "cursor-pointer hover:bg-s3"}${activeFinding === null ? "" : ` locator-row locator-${activeFinding.kind}`}`}
+              className={`entity-row absolute left-0 top-0 flex min-w-full bg-s1 even:bg-zebra aria-selected:bg-s4 aria-selected:shadow-[inset_2px_0_var(--color-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent [.process-table_&]:cursor-pointer [.process-table_&]:hover:bg-s3 ${onSelect === undefined ? "cursor-default" : "cursor-pointer hover:bg-s3"}${activeFinding === null ? "" : ` ${LOCATOR_ROW[activeFinding.kind]}`}`}
               data-locator-row={located || undefined}
               key={row.id}
               onClick={() => onSelect?.(row.original)}
@@ -235,7 +235,7 @@ export function EntityTable({
                 const stored = field === undefined ? null : value(row.original, field.field)
                 const tone = field === undefined ? null : semanticValueTone(field.field, stored, field.rate, row.original)
                 const toneText = tone === null || tone === "inactive" ? null : t(`pg.value.${tone}`)
-                return <div aria-label={toneText === null || field === undefined ? undefined : `${toneText}: ${cellAriaValue(stored, field, locale, t)}`} className={`${sticky(cell.column.columnDef.meta, false)}${tone === null ? "" : ` value-tone-${tone}`}${exact ? ` locator-cell locator-${activeFinding.kind}` : ""}`} data-locator-cell={exact || undefined} data-value-tone={tone ?? undefined} key={cell.id} role="cell" style={{ left: pinnedLeft.get(cell.column.id), width: cell.column.getSize() }}>
+                return <div aria-label={toneText === null || field === undefined ? undefined : `${toneText}: ${cellAriaValue(stored, field, locale, t)}`} className={`${sticky(cell.column.columnDef.meta, false)}${tone === null ? "" : ` value-tone-${tone} ${VALUE_TONE[tone] ?? ""}`}${exact ? ` locator-cell ${LOCATOR_CELL[activeFinding.kind] ?? ""}` : ""}`} data-locator-cell={exact || undefined} data-value-tone={tone ?? undefined} key={cell.id} role="cell" style={{ left: pinnedLeft.get(cell.column.id), width: cell.column.getSize() }}>
                   {toneText !== null && <span aria-hidden="true" className="mr-[5px] h-2.5 flex-none border-l-2 border-current" />}
                   {flexRender(cell.column.columnDef.cell, cell.getContext())}
                 </div>
@@ -245,6 +245,23 @@ export function EntityTable({
         </div>}
     </div>
   </section>
+}
+
+// A row and a cell mark a finding with their own edge; selection keeps its
+// accent stripe alongside.
+const LOCATOR_ROW: Readonly<Record<string, string>> = {
+  known_bad: "shadow-[inset_3px_0_var(--color-bad)] aria-selected:shadow-[inset_2px_0_var(--color-accent),inset_5px_0_var(--color-bad)]",
+  spike: "shadow-[inset_0_0_0_1px_var(--color-warn)] aria-selected:shadow-[inset_2px_0_var(--color-accent),inset_0_0_0_1px_var(--color-warn)]",
+}
+const LOCATOR_CELL: Readonly<Record<string, string>> = {
+  known_bad: "bg-[color-mix(in_srgb,var(--color-bad)_22%,transparent)] text-fg-hi [&_.entity-value]:text-fg-hi",
+  spike: "outline outline-1 -outline-offset-2 outline-warn",
+}
+const VALUE_TONE: Readonly<Record<string, string>> = {
+  good: "[&_.entity-value]:text-ok",
+  warning: "[&_.entity-value]:text-warn",
+  critical: "[&_.entity-value]:text-bad",
+  inactive: "[&_.entity-value]:text-fg4",
 }
 
 export function nextServerOrder(current: TableOrder | undefined, column: string): TableOrder | null {
@@ -329,16 +346,22 @@ export function sticky(meta: unknown, head: boolean): string {
   const cell = meta as { readonly sticky?: boolean | string; readonly numeric?: boolean } | undefined
   // Shared box first, then the head/body difference. The names stay as hooks
   // for the per-table overrides that have not moved onto markup yet.
-  const box = "flex-none min-w-0 overflow-hidden border-b border-r border-line px-[7px]"
+  // Shared box first, then the head/body difference, then what the process
+  // table asks of both. The names stay as hooks for the tests.
+  const box = "flex-none min-w-0 overflow-hidden border-b border-r border-line px-[7px] [.process-table_&]:px-2"
   const pinned = cell?.sticky === true || typeof cell?.sticky === "string"
+  const name = typeof cell?.sticky === "string" ? cell.sticky : ""
   return [
     box,
     head
-      ? `entity-header-cell flex items-center text-xs uppercase tracking-[.025em] text-fg3${pinned ? " bg-s2 z-40" : " relative"}`
-      : "entity-cell flex h-row items-center text-xs tabular-nums text-fg2",
+      ? `entity-header-cell flex items-center text-xs uppercase tracking-[.025em] text-fg3 [.process-table_&]:tracking-[.035em]${pinned ? " bg-s2 z-40" : " relative"}`
+      : "entity-cell flex h-row items-center text-xs tabular-nums text-fg2 [.process-table_&]:text-sm",
     cell?.numeric === true ? "align-right" : "",
-    pinned ? "entity-sticky sticky left-0 z-[12] bg-inherit shadow-[5px_0_8px_var(--color-shadow-b)]" : "",
-    typeof cell?.sticky === "string" ? cell.sticky : "",
+    pinned ? "entity-sticky sticky left-0 z-[12] bg-inherit" : "",
+    name,
+    // The pinned command column casts a shadow over the scrolled body; the pid
+    // column sits behind it and must not.
+    name === "sticky-command" ? "shadow-[5px_0_8px_var(--color-shadow-b)] max-[760px]:static max-[760px]:shadow-none" : "",
   ].filter(Boolean).join(" ")
 }
 
