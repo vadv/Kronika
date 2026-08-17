@@ -511,14 +511,14 @@ function chartOptions(
       if (scale !== undefined) {
         const boundary = chart.valToPos(threshold.below, scale, true)
         const zero = chart.valToPos(0, scale, true)
-        context.fillStyle = color("--chart-threshold")
+        context.fillStyle = color("--color-chart-threshold")
         context.fillRect(chart.bbox.left, Math.min(boundary, zero), chart.bbox.width, Math.abs(zero - boundary))
       }
     }
     for (const decoration of decorations) {
       const from = chart.valToPos(Math.max(hour, decoration.from), "x", true)
       const to = chart.valToPos(Math.min(end, decoration.to), "x", true)
-      context.fillStyle = color(decoration.tone === "future" ? "--chart-future" : "--chart-unavailable")
+      context.fillStyle = color(decoration.tone === "future" ? "--color-chart-future" : "--color-chart-unavailable")
       context.fillRect(Math.min(from, to), chart.bbox.top, Math.abs(to - from), chart.bbox.height)
     }
     context.restore()
@@ -529,7 +529,7 @@ function chartOptions(
     context.save()
     if (referenceTimestamp !== undefined && referenceTimestamp >= hour && referenceTimestamp < end) {
       const x = chart.valToPos(referenceTimestamp, "x", true)
-      context.strokeStyle = color("--fg4")
+      context.strokeStyle = color("--color-fg4")
       context.setLineDash([2 * uPlot.pxRatio, 3 * uPlot.pxRatio])
       context.beginPath()
       context.moveTo(x, chart.bbox.top)
@@ -538,7 +538,7 @@ function chartOptions(
     }
     if (selectedTimestamp !== null) {
       const x = chart.valToPos(selectedTimestamp, "x", true)
-      context.strokeStyle = color("--cursor")
+      context.strokeStyle = color("--color-cursor")
       context.setLineDash([3 * uPlot.pxRatio, 3 * uPlot.pxRatio])
       context.beginPath()
       context.moveTo(x, chart.bbox.top)
@@ -568,11 +568,11 @@ function chartOptions(
     legend: { show: false },
     scales: { x: { auto: false, range: [hour, end], time: false }, ...scales },
     axes: [
-      { scale: "x", side: 2, size: 28, space: (_chart, _axis, _scale, _increment, space) => Math.max(84, space), stroke: color("--fg3"), grid: { stroke: color("--line") }, values: (_chart, splits) => splits.map((timestamp) => axisTimeLabel(timestamp, time)) },
+      { scale: "x", side: 2, size: 28, space: (_chart, _axis, _scale, _increment, space) => Math.max(84, space), stroke: color("--color-fg3"), grid: { stroke: color("--color-line") }, values: (_chart, splits) => splits.map((timestamp) => axisTimeLabel(timestamp, time)) },
       ...partitions.map(({ key, unit }, axisIndex) => {
         const grouped = series.filter((line) => scaleKey(line) === key)
         const line = grouped[0]!
-        return { ...(unit === "" || line.tickAxis === "duration" ? {} : { label: unit }), scale: key, side: axisIndex % 2 === 0 ? 3 : 1, size: 62, stroke: color("--fg3"), grid: { stroke: axisIndex === 0 ? color("--line") : "transparent" }, values: (_chart: uPlot, splits: number[]) => {
+        return { ...(unit === "" || line.tickAxis === "duration" ? {} : { label: unit }), scale: key, side: axisIndex % 2 === 0 ? 3 : 1, size: 62, stroke: color("--color-fg3"), grid: { stroke: axisIndex === 0 ? color("--color-line") : "transparent" }, values: (_chart: uPlot, splits: number[]) => {
           // Duration axes read in one unit chosen from the range top.
           if (line.tickAxis === "duration") {
             const peak = Math.max(0, ...splits)
@@ -608,14 +608,14 @@ function chartOptions(
 }
 
 function chartColor(tone: RecordedSeries["color"]): string {
-  if (tone === "cyan") return "--accent"
-  if (tone === "amber") return "--warn"
-  if (tone === "violet") return "--event"
-  if (tone === "green") return "--ok"
-  if (tone === "red") return "--bad"
-  if (tone === "blue") return "--accent2"
-  if (tone === "rose") return "--bad-edge"
-  return "--fg3"
+  if (tone === "cyan") return "--color-accent"
+  if (tone === "amber") return "--color-warn"
+  if (tone === "violet") return "--color-event"
+  if (tone === "green") return "--color-ok"
+  if (tone === "red") return "--color-bad"
+  if (tone === "blue") return "--color-accent2"
+  if (tone === "rose") return "--color-bad-edge"
+  return "--color-fg3"
 }
 
 export function axisTimeLabel(timestamp: number, time: Pick<DisplayTimeFormatter, "axis">): string {
