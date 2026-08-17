@@ -2,13 +2,13 @@ import { registry } from "kronika:registry"
 import { X } from "lucide-react"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
+import type { HostSection } from "./address"
 import { fieldNameForLocator, loadSeries, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
 import { buildMetricSamples } from "./chart"
 import { ChartOnly, useChartsVisible } from "./chart-visibility"
 import { useDetailDismiss } from "./detail-dismiss"
 import { contextualRows, type EntityContext } from "./entity-context"
 import { EntityTable, type EntityColumn } from "./entity-table"
-import type { HostSection } from "./address"
 import { LabelHelp, type Translate } from "./help"
 import { useHistoryRequest } from "./history-request"
 import { asNumber, humanBytes, humanCores, humanPercent, measure, rawText, shownMoment, snapshot, value, type Locale } from "./model"
@@ -156,7 +156,6 @@ const SECTION_ENTITIES: Readonly<Record<HostSection, readonly string[]>> = {
   storage: ["os_diskstats", "os_mountinfo", "os_cgroup_io"],
   network: ["os_netdev"],
 }
-
 
 const DERIVE_INPUTS: Readonly<Record<NonNullable<MetricSpec["derive"]>, readonly [string, readonly string[]]>> = {
   cpu_user: ["os_cpu", CPU_FIELDS],

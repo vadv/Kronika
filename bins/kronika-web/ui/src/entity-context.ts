@@ -1,5 +1,6 @@
 import { registry } from "kronika:registry"
 
+import type { HostSection } from "./address"
 import { type DataRow, type Finding } from "./api"
 import type { Translate } from "./help"
 import { rawText, value } from "./model"
@@ -47,15 +48,17 @@ export function contextualRows(
   return filtered.length === 0 && exact !== null && contextMatches(exact, context) ? [exact] : filtered
 }
 
-// A system finding names the section that owns its resource; anything else
-// about the machine belongs to the overview.
-export function hostSectionForFinding(finding: Finding): "overview" | "cpu" | "memory" | "storage" | "network" {
-  const name = finding.logicalName
-  if (name === "os_cpu" || name === "os_loadavg" || name === "os_cgroup_cpu") return "cpu"
-  if (name === "os_memory" || name === "os_vmstat" || name === "os_cgroup_memory") return "memory"
-  if (name === "os_diskstats" || name === "os_mountinfo" || name === "os_cgroup_io") return "storage"
-  if (name === "os_netdev") return "network"
-  return "overview"
+// A system finding names the section that owns its resource. What describes the
+// machine as a whole — health, topology, PSI, interrupts — stays on the overview.
+const FINDING_SECTIONS: Readonly<Record<string, HostSection>> = {
+  os_cgroup_cpu: "cpu", os_cpu: "cpu", os_loadavg: "cpu", os_stat: "cpu",
+  os_cgroup_memory: "memory", os_meminfo: "memory", os_numa: "memory", os_vmstat: "memory",
+  os_cgroup_io: "storage", os_diskstats: "storage", os_mountinfo: "storage", os_nfs_client: "storage", os_nfs_server: "storage",
+  os_netdev: "network", os_netstat: "network", os_snmp: "network",
+}
+
+export function hostSectionForFinding(finding: Finding): HostSection {
+  return FINDING_SECTIONS[finding.logicalName] ?? "overview"
 }
 
 export function findingRoute(finding: Finding): FindingRoute {
