@@ -206,7 +206,7 @@ button { color: inherit; }
   top: 0;
   z-index: 50;
 }
-.top-actions, .locale-switch, .source-tabs, .section-tabs, .hour-picker { align-items: center; display: flex; }
+.top-actions, .locale-switch, .source-tabs, .section-tabs { align-items: center; display: flex; }
 .top-actions { margin-left: auto; }
 .top-actions > * + *, .locale-switch > * + * { margin-left: 6px; }
 .live-note { clip-path: inset(50%); height: 1px; margin: 0; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
@@ -219,14 +219,6 @@ h2 { font-size: var(--t-md); }
 .locale-switch button, .icon-button { background: transparent; border: 0; cursor: pointer; }
 .locale-switch button { color: var(--fg4); font-size: var(--t-xs); height: 22px; padding: 0 6px; }
 .locale-switch button[aria-pressed="true"] { background: var(--s4); color: var(--accent3); }
-.timezone-select { align-items: center; background: var(--s2); border: 1px solid var(--line3); color: var(--fg2); cursor: pointer; display: flex; font-size: var(--t-xs); gap: 4px; height: 24px; padding: 0 4px 0 6px; }
-.timezone-select-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.timezone-select-icon { color: var(--fg4); font-size: 8px; }
-.timezone-positioner { z-index: 1150; }
-.timezone-popup { background: var(--s1); border: 1px solid var(--line4); box-shadow: 0 8px 24px var(--shadow-a); min-width: var(--trigger-width); padding: 3px; }
-.timezone-option { color: var(--fg2); cursor: pointer; font-size: var(--t-xs); outline: none; padding: 5px 8px; user-select: none; white-space: nowrap; }
-.timezone-option[data-highlighted] { background: var(--s3); color: var(--fg); }
-.timezone-option[data-selected] { color: var(--accent3); }
 .icon-button { align-items: center; border: 1px solid var(--line3); display: flex; height: 24px; justify-content: center; min-width: 24px; }
 .charts-toggle { color: var(--fg2); }
 .charts-toggle[aria-pressed="true"] { background: var(--s4); color: var(--accent3); }
@@ -237,31 +229,6 @@ h2 { font-size: var(--t-md); }
 .section-tabs { border: 1px solid var(--line3); }
 .section-tabs button { background: transparent; border: 0; color: var(--fg3); cursor: pointer; font-size: var(--t-xs); padding: 5px 9px; text-transform: uppercase; }
 .section-tabs button[aria-selected="true"] { background: var(--s4); color: var(--accent3); }
-.hour-picker { gap: 4px; position: relative; }
-.hour-picker > button { background: var(--zebra); border: 1px solid var(--line3); color: var(--fg2); cursor: pointer; height: 34px; }
-.hour-picker > button:not(.hour-trigger) { align-items: center; display: flex; justify-content: center; padding: 0; width: 22px; }
-.hour-picker > button:disabled { cursor: not-allowed; opacity: .45; }
-.hour-trigger { align-items: flex-start; display: flex; flex-direction: column; justify-content: center; min-width: 180px; padding: 0 8px; text-align: left; }
-.hour-trigger strong { color: var(--fg); font-size: var(--t-xs); font-weight: 600; line-height: 1.2; white-space: nowrap; }
-.hour-trigger small { color: var(--fg4); font-size: var(--t-xs); line-height: 1; text-transform: uppercase; }
-/* Portaled to body: above every in-page layer, like the timezone positioner. */
-.hour-popover { background: var(--s1); border: 1px solid var(--line4); box-shadow: 0 15px 38px var(--shadow-a); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); left: 10px; max-height: calc(100vh - 20px); overflow: auto; padding: 9px; position: fixed; top: 10px; width: min(560px, calc(100vw - 20px)); z-index: 1150; }
-.hour-popover > header { align-items: center; border-bottom: 1px solid var(--line3); display: flex; grid-column: 1 / -1; justify-content: space-between; min-height: 27px; padding: 0 2px 7px; }
-.hour-popover > header strong { color: var(--fg); font-size: var(--t-sm); font-weight: 560; text-transform: uppercase; }
-.hour-popover > header span { color: var(--fg4); font-size: var(--t-xs); margin-left: 8px; text-transform: uppercase; }
-.day-picker { border-right: 1px solid var(--line3); min-width: 0; padding: 7px 9px 0 0; }
-.month-navigation { align-items: center; display: flex; justify-content: space-between; }
-.month-navigation button { background: transparent; border: 0; cursor: pointer; }
-.month-navigation button:disabled { cursor: not-allowed; opacity: .3; }
-.month-navigation strong { color: var(--fg2); font-size: var(--t-sm); }
-.day-grid { display: grid; gap: 2px; grid-template-columns: repeat(7, minmax(0, 1fr)); }
-.day-cell { background: transparent; border: 0; color: var(--fg-null); height: 27px; padding: 0; }
-.day-cell-available { background: var(--s2); border: 1px solid var(--line2); color: var(--fg2); cursor: pointer; }
-.day-cell[aria-pressed="true"] { background: var(--s4); border-color: var(--accent2); color: var(--accent3); }
-.hour-grid { align-content: start; display: grid; gap: 4px; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 7px 0 0 9px; }
-.hour-cell { background: var(--s2); border: 1px solid var(--line2); color: var(--fg3); cursor: pointer; font-size: var(--t-xs); height: 31px; padding: 0 2px; white-space: nowrap; }
-.hour-cell:hover { background: var(--s3); color: var(--fg); }
-.hour-cell[aria-pressed="true"] { background: var(--s4); border-color: var(--accent2); box-shadow: inset 0 0 0 1px var(--accent-line); color: var(--accent3); }
 .workspace { padding: 8px 10px 20px; }
 .cursor-time { align-items: center; color: var(--accent3); display: flex; flex: 0 1 auto; flex-wrap: wrap; font-size: var(--t-sm); font-variant-numeric: tabular-nums; gap: 9px; }
 .cursor-time > span { align-items: baseline; display: inline-flex; gap: 4px; white-space: nowrap; }
@@ -281,18 +248,10 @@ h2 { font-size: var(--t-md); }
 @media (prefers-reduced-motion: reduce) { .loading-ring { animation: none; } }
 .table-empty.table-loading { align-items: baseline; display: flex; }
 .table-empty .loading-ring { height: 11px; margin-right: 7px; vertical-align: -1px; width: 11px; }
-.help-panel { background: var(--s1); border-left: 1px solid var(--line4); bottom: 0; box-shadow: -20px 0 50px var(--shadow-a); max-width: 430px; overflow: auto; padding: 18px; position: fixed; right: 0; top: 0; width: min(92vw, 430px); z-index: 100; }
-.panel-head { align-items: center; display: flex; justify-content: space-between; }
-.shortcut { background: var(--s2); border: 1px solid var(--line3); color: var(--accent2); font-size: var(--t-sm); padding: 8px; }
-.help-list { margin: 18px 0; }
-.help-list div { border-top: 1px solid var(--line2); padding: 12px 0; }
-.help-list dt { color: var(--fg); font-size: var(--t-sm); }
-.help-list dd { color: var(--fg3); font-size: var(--t-sm); line-height: 1.6; margin: 5px 0 0; }
 .label-help { align-items: center; display: inline-flex; position: relative; }
 .label-help > * + * { margin-left: 5px; }
 .help-dot { align-items: center; background: var(--s2); border: 1px solid var(--line4); border-radius: 50%; color: var(--accent3); cursor: help; display: inline-flex; font-size: var(--t-xs); height: 14px; justify-content: center; line-height: 1; padding: 0; width: 14px; }
 .help-dot:focus-visible, button:focus-visible, .entity-row:focus-visible, .entity-scroll:focus-visible { outline: 2px solid var(--accent); }
-.tooltip { background: var(--s2); border: 1px solid var(--line4); box-shadow: 0 8px 24px var(--shadow-a); color: var(--fg); font-size: var(--t-sm); line-height: 1.5; max-height: calc(100vh - 16px); max-width: min(310px, 70vw, calc(100vw - 16px)); overflow: auto; padding: 8px 9px; position: fixed; text-align: left; text-transform: none; width: max-content; z-index: 1000; }
 .timeline-shell { background: var(--s1); border-bottom: 1px solid var(--line2); border-top: 1px solid var(--line2); display: flex; flex-direction: column; margin-top: 8px; overflow: hidden; }
 .timeline-empty { align-items: center; background: var(--s1); border-bottom: 1px solid var(--line2); border-top: 1px solid var(--line2); color: var(--fg4); display: flex; font-size: var(--t-sm); justify-content: center; margin-top: 8px; min-height: 72px; }
 .lane-reading { color: var(--fg); flex: 0 0 auto; font-size: var(--t-sm); font-variant-numeric: tabular-nums; margin-left: auto; text-align: right; text-transform: none; white-space: nowrap; }
@@ -472,7 +431,10 @@ h2 { font-size: var(--t-md); }
 .system-history-close { font-size: var(--t-md); min-width: 27px; padding: 1px 5px; }
 .system-entity-history .series-chart { padding-top: 4px; }
 .entity-table { background: var(--s1); min-width: 0; overflow: hidden; }
-.entity-scroll { height: min(310px, 36vh); min-height: 154px; overflow: auto; position: relative; }
+/* Scrolling something into view parks it flush against the port, where the
+   scrollbar clips whatever reaches past its box: a focus outline, a touch
+   target. The padding keeps that reach on screen. */
+.entity-scroll { height: min(310px, 36vh); min-height: 154px; overflow: auto; position: relative; scroll-padding-inline-end: 15px; }
 .entity-head { background: var(--s2); display: flex; height: var(--head); min-width: 100%; position: sticky; top: 0; z-index: 30; }
 .entity-header-cell, .entity-cell { border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); flex: 0 0 auto; min-width: 0; overflow: hidden; padding: 0 7px; }
 .entity-header-cell { align-items: center; color: var(--fg3); display: flex; font-size: var(--t-xs); letter-spacing: .025em; text-transform: uppercase; }
@@ -583,11 +545,6 @@ h2 { font-size: var(--t-md); }
 .charts-hidden.pg-table-shell .pg-entity-layout, .charts-hidden.pg-table-shell .pg-entity-layout .entity-table, .charts-hidden.pg-table-shell .pg-entity-layout .entity-scroll { flex: 1 1 auto; }
 
 @media (max-width: 760px) {
-  .hour-trigger { min-width: 0; }
-  .hour-popover { grid-template-columns: minmax(0, 1fr); width: min(304px, calc(100vw - 20px)); }
-  .hour-popover > header { grid-column: 1; }
-  .day-picker { border-bottom: 1px solid var(--line3); border-right: 0; padding: 7px 0; }
-  .hour-grid { margin: 8px 0 0; }
   .source-tabs { overflow-x: auto; }
   .cursor-time { order: 9; }
   .workspace { padding-left: 8px; padding-right: 8px; }
@@ -623,11 +580,14 @@ h2 { font-size: var(--t-md); }
 
 @media (hover: none), (pointer: coarse) {
   .entity-head { height: 36px; }
-  .entity-header-cell > .label-help { align-self: stretch; height: 36px; margin-left: 0; opacity: 1; pointer-events: auto; }
+  .entity-header-cell > .label-help { align-self: stretch; height: 36px; margin-left: 0; margin-right: 11px; opacity: 1; pointer-events: auto; }
   /* Touch needs a large target, not a large mark: the dot keeps its size and
-     grows an invisible one that reaches the platform minimum. */
+     grows an invisible one around it. Flush against the column edge that reach
+     was clipped by the table's scroll box down to 6px, so the mark steps in by
+     its own reach and the target fits inside the cell: 36x36, taking nothing
+     from the neighbouring column. */
   .entity-header-cell > .label-help .help-dot { position: relative; }
-  .entity-header-cell > .label-help .help-dot::after { content: ""; inset: -15px; position: absolute; }
+  .entity-header-cell > .label-help .help-dot::after { content: ""; inset: -11px; position: absolute; }
 }
 
 @media (min-width: 761px) and (max-width: 1000px) {

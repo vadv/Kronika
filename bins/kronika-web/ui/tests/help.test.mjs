@@ -33,9 +33,12 @@ test("field help uses a fixed top-level portal above every workspace layer", asy
   assert.match(source, /document\.addEventListener\("pointerdown", outside, true\)/)
   assert.match(source, /window\.addEventListener\("scroll", update, true\)/)
   assert.match(source, /event\.key !== "Escape"/)
-  assert.match(styles, /\.tooltip[^}]*position:\s*fixed/s)
-  assert.match(styles, /\.tooltip[^}]*z-index:\s*1000/s)
-  assert.match(styles, /\.tooltip[^}]*max-width:[^;}]*100vw/s)
+  // The tooltip is portaled and placed by script: it stays fixed, above every
+  // in-page layer, and narrower than the viewport it is measured against.
+  const tooltip = source.match(/<span\s+className="[^"]*"\s+data-placement/s)?.[0] ?? ""
+  assert.match(tooltip, /\bfixed\b/)
+  assert.match(tooltip, /z-\[1000\]/)
+  assert.match(tooltip, /max-w-\[min\(310px,70vw,calc\(100vw_-_16px\)\)\]/)
   assert.match(styles, /\.entity-header-cell > \.label-help[^}]*opacity:\s*0/s)
   assert.match(styles, /\.entity-header-cell:focus-within > \.label-help[^}]*opacity:\s*1/s)
 })

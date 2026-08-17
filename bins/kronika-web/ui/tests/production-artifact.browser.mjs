@@ -30,7 +30,7 @@ const SLOW_QUERY = `${SLOW_PATTERN.replaceAll("?", "'pending'")} ORDER BY "bulko
 
 
 const ZONE_VALUE = `document.querySelector('[data-testid="timezone-select"]')?.getAttribute("data-value")`
-const ZONE_LABEL = `document.querySelector('[data-testid="timezone-select"] .timezone-select-value')?.textContent`
+const ZONE_LABEL = `document.querySelector('[data-testid="timezone-value"]')?.textContent`
 
 async function switchZone(cdp, zone) {
   await cdp.evaluate(`document.querySelector('[data-testid="timezone-select"]').click()`)
@@ -101,7 +101,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
       status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent ?? "",
       updated: document.querySelector('[data-testid="updated-time"]')?.textContent ?? "",
       zone: document.querySelector('[data-testid="timezone-select"]')?.getAttribute("data-value"),
-      zoneLabel: document.querySelector('[data-testid="timezone-select"] .timezone-select-value')?.textContent ?? "",
+      zoneLabel: document.querySelector('[data-testid="timezone-value"]')?.textContent ?? "",
       zoneSelectors: document.querySelectorAll('[data-testid="timezone-select"]').length,
     }))()`)
     assert.equal(browserMode.at, String(AT))
@@ -146,7 +146,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
       tooltip: document.querySelector('[data-testid="hour-timeline"] .chart-tooltip')?.textContent ?? "",
       updated: document.querySelector('[data-testid="updated-time"]')?.textContent ?? "",
       zone: document.querySelector('[data-testid="timezone-select"]')?.getAttribute("data-value"),
-      zoneLabel: document.querySelector('[data-testid="timezone-select"] .timezone-select-value')?.textContent ?? "",
+      zoneLabel: document.querySelector('[data-testid="timezone-value"]')?.textContent ?? "",
     }))()`)
     assert.equal(utcMode.at, String(AT))
     assert.equal(utcMode.zone, "utc")
@@ -161,9 +161,9 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     }
     assert.equal(requests.filter(({ path }) => path.startsWith("/api/")).length, apiBeforeSwitch)
     await switchZone(cdp, "browser")
-    await cdp.waitFor(`document.querySelector('[data-testid="timezone-select"] .timezone-select-value')?.textContent === "Browser time" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("08:30:00") === true`, "the Browser display restore")
+    await cdp.waitFor(`document.querySelector('[data-testid="timezone-value"]')?.textContent === "Browser time" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("08:30:00") === true`, "the Browser display restore")
     await cdp.send("Page.reload")
-    await cdp.waitFor(`document.querySelector('[data-testid="timezone-select"]')?.getAttribute("data-value") === "browser" && document.querySelector('[data-testid="timezone-select"] .timezone-select-value')?.textContent === "Browser time" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("08:30:00") === true`, "the persisted Browser display", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="timezone-select"]')?.getAttribute("data-value") === "browser" && document.querySelector('[data-testid="timezone-value"]')?.textContent === "Browser time" && document.querySelector('[data-testid="cursor-time"]')?.textContent.includes("08:30:00") === true`, "the persisted Browser display", 15_000)
 
     await cdp.evaluate(`document.querySelector(".source-tabs button:first-child").click()`)
     await cdp.waitFor(`document.querySelector(".source-tabs button:first-child")?.getAttribute("aria-current") === "page"`, "the Host history destination")
@@ -584,15 +584,15 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.waitFor(`document.querySelector('[data-testid="picker-month"]')?.textContent.includes("August") === true`, "the August calendar")
     const initialPicker = await cdp.evaluate(`(() => ({
       currentAction: document.querySelector('[data-testid="hour-current"]')?.tagName,
-      currentDay: document.querySelector('.day-cell[data-day="2026-08-13"]')?.getAttribute('aria-pressed'),
-      currentHour: document.querySelector('.hour-cell[data-instant="${HOUR}"]')?.getAttribute('aria-pressed'),
-      boundaryDayDisabled: document.querySelector('.day-cell[data-day="2026-08-09"]')?.disabled,
-      boundaryDayVisible: document.querySelector('.day-cell[data-day="2026-08-09"]')?.getBoundingClientRect().height > 0,
+      currentDay: document.querySelector('[data-testid="day-cell"][data-day="2026-08-13"]')?.getAttribute('aria-pressed'),
+      currentHour: document.querySelector('[data-testid="hour-cell"][data-instant="${HOUR}"]')?.getAttribute('aria-pressed'),
+      boundaryDayDisabled: document.querySelector('[data-testid="day-cell"][data-day="2026-08-09"]')?.disabled,
+      boundaryDayVisible: document.querySelector('[data-testid="day-cell"][data-day="2026-08-09"]')?.getBoundingClientRect().height > 0,
       headerToggle: document.querySelector('[data-testid="hour-popover"] > header button') !== null,
-      hourCount: document.querySelectorAll('.hour-cell').length,
+      hourCount: document.querySelectorAll('[data-testid="hour-cell"]').length,
       popovers: document.querySelectorAll('[data-testid="hour-popover"]').length,
       separateControls: document.querySelector('[data-testid="hour-popover"]').querySelectorAll('input, select').length,
-      unavailableDay: document.querySelector('.day-cell[data-day="2026-08-12"]')?.disabled,
+      unavailableDay: document.querySelector('[data-testid="day-cell"][data-day="2026-08-12"]')?.disabled,
     }))()`)
     assert.deepEqual(initialPicker, {
       currentAction: "STRONG",
@@ -611,9 +611,9 @@ test("the production artifact preserves wire keys and exact finding page state",
       await cdp.evaluate("document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))")
       const size = await cdp.evaluate(`(() => {
         const popover = document.querySelector('[data-testid="hour-popover"]').getBoundingClientRect()
-        const calendar = document.querySelector('.day-picker').getBoundingClientRect()
-        const hours = document.querySelector('.hour-grid').getBoundingClientRect()
-        const boundaryDay = document.querySelector('.day-cell[data-day="2026-08-09"]').getBoundingClientRect()
+        const calendar = document.querySelector('[data-testid="day-picker"]').getBoundingClientRect()
+        const hours = document.querySelector('[data-testid="hour-grid"]').getBoundingClientRect()
+        const boundaryDay = document.querySelector('[data-testid="day-cell"][data-day="2026-08-09"]').getBoundingClientRect()
         return {
           calendar: { bottom: calendar.bottom, left: calendar.left, right: calendar.right, top: calendar.top },
           clientHeight: document.documentElement.clientHeight,
@@ -633,15 +633,15 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width: 480 })
     await settleLayout(cdp)
     const narrow = await cdp.evaluate(`(() => {
-      const calendar = document.querySelector('.day-picker').getBoundingClientRect()
-      const hours = document.querySelector('.hour-grid').getBoundingClientRect()
+      const calendar = document.querySelector('[data-testid="day-picker"]').getBoundingClientRect()
+      const hours = document.querySelector('[data-testid="hour-grid"]').getBoundingClientRect()
       const popover = document.querySelector('[data-testid="hour-popover"]').getBoundingClientRect()
       return { calendarBottom: calendar.bottom, clientWidth: document.documentElement.clientWidth, hoursTop: hours.top, popoverLeft: popover.left, popoverRight: popover.right, scrollWidth: document.documentElement.scrollWidth }
     })()`)
     assert.ok(narrow.calendarBottom <= narrow.hoursTop, `narrow picker stack: ${JSON.stringify(narrow)}`)
     assert.ok(narrow.popoverLeft >= 0 && narrow.popoverRight <= narrow.clientWidth && narrow.scrollWidth <= narrow.clientWidth, `narrow picker bounds: ${JSON.stringify(narrow)}`)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
-    await cdp.evaluate(`document.querySelector('.hour-cell[data-instant="${HOUR}"]').dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'ArrowRight' }))`)
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-cell"][data-instant="${HOUR}"]').dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'ArrowRight' }))`)
     assert.equal(await cdp.evaluate(`document.activeElement?.dataset.instant`), String(HOUR + HOUR_US))
     await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Escape' }))`)
     await cdp.waitFor(`document.querySelector('[data-testid="hour-popover"]') === null`, "picker Escape close")
@@ -650,11 +650,11 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.waitFor(`document.documentElement.dataset.theme === ${JSON.stringify(initialTheme)}`, "the initial theme")
 
     await cdp.evaluate(`document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
-    await cdp.waitFor(`document.querySelector('.day-cell[data-day="2026-08-09"]')?.getBoundingClientRect().height > 0`, "boundary day immediately visible")
-    await cdp.evaluate(`document.querySelector('.day-cell[data-day="2026-08-09"]').click()`)
-    await cdp.waitFor(`document.querySelector('.day-cell[data-day="2026-08-09"]')?.getAttribute('aria-pressed') === "true"`, "the local August 9 hours")
-    assert.equal(await cdp.evaluate(`document.querySelectorAll('.hour-cell').length`), 1)
-    await cdp.evaluate(`document.querySelector('.hour-cell[data-instant="${AUGUST_HOUR}"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="day-cell"][data-day="2026-08-09"]')?.getBoundingClientRect().height > 0`, "boundary day immediately visible")
+    await cdp.evaluate(`document.querySelector('[data-testid="day-cell"][data-day="2026-08-09"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="day-cell"][data-day="2026-08-09"]')?.getAttribute('aria-pressed') === "true"`, "the local August 9 hours")
+    assert.equal(await cdp.evaluate(`document.querySelectorAll('[data-testid="hour-cell"]').length`), 1)
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-cell"][data-instant="${AUGUST_HOUR}"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent === "23:00–00:00"`, "the exact local boundary hour")
     await cdp.waitFor(`Math.floor(Number(new URLSearchParams(location.search).get("at")) / ${HOUR_US}) * ${HOUR_US} === ${AUGUST_HOUR}`, "the exact boundary address")
     assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector('[data-testid="hour-picker-trigger"]')`), true)
@@ -663,9 +663,9 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(new URLSearchParams(augustRequest.query).get("to"), String(AUGUST_HOUR + HOUR_US - 1))
 
     await cdp.evaluate(`document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
-    await cdp.evaluate(`document.querySelector('.day-cell[data-day="2026-08-13"]').click()`)
-    await cdp.waitFor(`document.querySelector('.hour-cell[data-instant="${HOUR + HOUR_US}"]') !== null`, "the recorded August 13 hour")
-    await cdp.evaluate(`document.querySelector('.hour-cell[data-instant="${HOUR + HOUR_US}"]').click()`)
+    await cdp.evaluate(`document.querySelector('[data-testid="day-cell"][data-day="2026-08-13"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-cell"][data-instant="${HOUR + HOUR_US}"]') !== null`, "the recorded August 13 hour")
+    await cdp.evaluate(`document.querySelector('[data-testid="hour-cell"][data-instant="${HOUR + HOUR_US}"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent === "02:00–03:00"`, "the recorded local August 13 selection")
     await cdp.evaluate(`document.querySelector('[data-testid="hour-previous"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="hour-picker-trigger"] strong')?.textContent === "23:00–00:00"`, "the previous catalogued instant")
@@ -689,8 +689,8 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click(); document.querySelector('[data-testid="hour-picker-trigger"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="picker-month"]')?.textContent.toLocaleLowerCase("ru").includes("август") === true`, "the Russian calendar month")
     const russianPicker = await cdp.evaluate(`(() => ({
-      context: document.querySelector('.hour-popover > header > span')?.textContent ?? null,
-      day: document.querySelector('.day-cell[data-day="2026-08-13"]')?.getAttribute('aria-label'),
+      context: document.querySelector('[data-testid="hour-popover"] > header > span')?.textContent ?? null,
+      day: document.querySelector('[data-testid="day-cell"][data-day="2026-08-13"]')?.getAttribute('aria-label'),
       text: document.querySelector('[data-testid="hour-popover"]')?.textContent ?? "",
       zoneLabel: ${ZONE_LABEL} ?? "",
     }))()`)
@@ -3859,8 +3859,8 @@ test("narrow controls stay contained and help never changes selection", { timeou
       const after = getComputedStyle(button, "::after")
       const x = rect.left + rect.width / 2
       const y = rect.top + rect.height / 2
-      // The mark stays small; the touch target grows invisibly via ::after and
-      // is clipped only by the cell's own box.
+      // The mark stays small; the touch target grows invisibly via ::after,
+      // and every side of it has to survive the cell and the scroll port.
       const reach = (dx, dy) => {
         let grown = 0
         for (let step = 1; step <= 15; step += 1) {
@@ -3882,13 +3882,14 @@ test("narrow controls stay contained and help never changes selection", { timeou
     })()`)
     assert.deepEqual(
       [headerHelp.afterContent, headerHelp.afterInset, headerHelp.height, headerHelp.opacity, headerHelp.pointerEvents, headerHelp.width],
-      ['""', "-15px", 14, "1", "auto", 14],
+      ['""', "-11px", 14, "1", "auto", 14],
       JSON.stringify(headerHelp),
     )
-    // The invisible target grows 15px into free space; it never overlaps the
-    // column grip or the next cell, so at the cell edge the reach is shorter.
-    assert.ok(headerHelp.reach.up >= 13 && headerHelp.reach.down >= 13 && headerHelp.reach.left >= 13, JSON.stringify(headerHelp))
-    assert.ok(headerHelp.reach.right >= 5, JSON.stringify(headerHelp))
+    // 36x36 around a 14px mark, reached from every side. Flush against the
+    // table's scroll port the right half used to be clipped to 6px; the mark
+    // now steps in and the port keeps scroll padding, and nothing of the
+    // neighbouring column is taken.
+    assert.deepEqual(headerHelp.reach, { down: 15, left: 15, right: 15, up: 15 }, JSON.stringify(headerHelp))
     await cdp.waitFor(`document.querySelector('[role="tooltip"]') !== null`, "the first-touch table help")
     assert.equal(await cdp.evaluate(`document.querySelectorAll('button button').length`), 0)
 

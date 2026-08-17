@@ -149,7 +149,7 @@ export function DetailDock({
       data-testid={activity === null ? "process-dock" : "pg-linked-dock"}
       ref={detail}
     >
-      <div className="panel-head flex items-center justify-between border-b border-line3 pb-2.5">
+      <div className="flex items-center justify-between border-b border-line3 pb-2.5">
         <div>
           <span className="text-sm uppercase text-fg2"><LabelHelp helpKey="detail.process.help" labelKey="detail.process.title" t={t} /></span>
           <p className="mt-[5px] text-lg font-[650] text-fg-hi">PID {pid}</p>
