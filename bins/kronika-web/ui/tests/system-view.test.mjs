@@ -7,7 +7,7 @@ import { importModule, registryPlugin } from "./import-module.mjs"
 import { parseDictionary, validateDictionaries } from "../scripts/i18n.mjs"
 
 const helpers = await importModule(
-  'export { effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, clearCgroupSnapshotRows, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, resourceBreakdownSeries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
+  'export { dockGroupMetrics, effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, clearCgroupSnapshotRows, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, mountPairSeries, resourceBreakdownSeries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
   { plugins: [registryPlugin([
     { typeId: "1108001", logicalName: "os_diskstats", identity: ["major", "minor"], columns: ["ts", "major", "minor", "device", "io_in_progress"] },
     { typeId: "1112001", logicalName: "os_mountinfo", identity: ["major", "minor"], columns: ["ts", "major", "minor", "mount_point", "source", "fstype", "free_bytes", "total_bytes", "is_k8s_infra"] },
@@ -364,6 +364,9 @@ test("System entity headers have exact EN/RU help without obvious or orphan entr
     assert.equal(Object.hasOwn(english, column.help), true, column.help)
     assert.equal(Object.hasOwn(russian, column.help), true, column.help)
   }
+  // The mount pair chart's series carry field help without being columns.
+  const viewSource = await readFile(new URL("../src/system-view.tsx", import.meta.url), "utf8")
+  for (const match of viewSource.matchAll(/system\.field\.([a-z0-9_]+)\.help/g)) usedHelp.add(`system.field.${match[1]}.help`)
   const dictionaryHelp = Object.keys(english).filter((key) => /^system\.field\.[^.]+\.help$/.test(key)).sort()
   assert.deepEqual([...usedHelp].sort(), dictionaryHelp)
 })
@@ -384,11 +387,29 @@ test("System history requests are selected-metric keys with exact physical input
   for (const field of ["mem_total", "mem_available", "mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim"]) assert.ok(memoryRequest.fields.includes(field))
   assert.equal(helpers.metricRequestKey(100, cpu, cpuRequest), helpers.metricRequestKey(100, cpu, cpuRequest))
   assert.notEqual(helpers.metricRequestKey(100, cpu, cpuRequest), helpers.metricRequestKey(200, cpu, cpuRequest))
-  assert.equal(helpers.metricChartUnit({ ...spec, unit: " KiB" }, "en"), "KiB")
+  assert.equal(helpers.metricChartUnit({ ...spec, unit: " KiB" }, "en"), "B")
+  assert.equal(helpers.metricChartValue(16_777_216, "en", " KiB"), "16 GiB")
+  assert.equal(helpers.metricChartValue(256, "ru", " KiB"), "256 KiB")
   assert.equal(helpers.metricChartUnit({ ...spec, unit: " B" }, "en"), "bytes/s")
   assert.equal(helpers.metricChartUnit({ ...spec, unit: " B" }, "ru"), "байты/с")
   assert.equal(helpers.metricChartUnit({ ...spec, id: "network_errors" }, "en"), "1/s")
   assert.equal(helpers.metricChartUnit({ ...spec, id: "network_drops" }, "ru"), "1/с")
+})
+
+test("the dock offers one chip for a breakdown instead of a strip that repeats the chart legend", () => {
+  const metric = (id, group) => ({ group, help: `${id}.help`, id, label: `${id}.label`, unit: "" })
+  const cpu = ["cpu_used_cores", "cpu_capacity", "cpu_user", "cpu_system", "procs_running", "procs_blocked"].map((id) => metric(id, "cpu"))
+  const dock = helpers.dockGroupMetrics(cpu, "cpu_used_cores")
+  assert.deepEqual(dock.chips.map(({ id }) => id), ["cpu_used_cores", "procs_running", "procs_blocked"])
+  assert.equal(dock.chartChip("cpu_user"), "cpu_used_cores")
+  assert.equal(dock.chartChip("procs_running"), "procs_running")
+  const memory = ["mem_total", "mem_anon", "swap_free"].map((id) => metric(id, "memory"))
+  const fallback = helpers.dockGroupMetrics(memory, "mem_available")
+  assert.deepEqual(fallback.chips.map(({ id }) => id), ["mem_total", "swap_free"])
+  const network = ["network_rx", "network_tx"].map((id) => metric(id, "network"))
+  const plain = helpers.dockGroupMetrics(network, undefined)
+  assert.deepEqual(plain.chips.map(({ id }) => id), ["network_rx", "network_tx"])
+  assert.equal(plain.chartChip("network_tx"), "network_tx")
 })
 
 test("System entity charts include numeric measurements and exclude identities and categories", () => {
@@ -419,6 +440,57 @@ test("System entity charts include numeric measurements and exclude identities a
   ]).map(({ timestamp, value }) => [timestamp, value]), [[1, 0], [3, null]])
 })
 
+test("a cumulative metric stays absent until its section announces rate columns", async () => {
+  const spec = { field: "reads", group: "storage", help: "x", id: "reads", label: "x", section: "os_diskstats", unit: "" }
+  const row = { logicalName: "os_diskstats", ordinal: "0", segmentId: "a", timestamp: 1, typeId: "1108001", values: { major: 8, minor: 0, reads: 10 } }
+  const registry = [
+    { typeId: "1108001", logicalName: "os_diskstats", identity: ["major", "minor"], columns: ["ts", "major", "minor", "reads"], columnMetadata: [
+      { name: "ts", type: "timestamp_us", class: "timestamp", unit: null },
+      { name: "major", type: "i32", class: "label", unit: null },
+      { name: "minor", type: "i32", class: "label", unit: null },
+      { name: "reads", type: "u64", class: "cumulative", unit: "count" },
+    ] },
+  ]
+  const cumulative = await importModule('export { hasMetric } from "../src/system-view.tsx"', { plugins: [registryPlugin(registry)] })
+  assert.equal(cumulative.hasMetric({ points: [], sections: { os_diskstats: [row] }, rateColumns: {} }, spec), false)
+  assert.equal(cumulative.hasMetric({ points: [], sections: { os_diskstats: [row] }, rateColumns: { os_diskstats: ["reads"] } }, spec), true)
+})
+
+test("the storage rollups peak across devices and honor pre-computed rates", () => {
+  const row = (timestamp, major, ioTime) => ({ logicalName: "os_diskstats", ordinal: `${major}:${timestamp}`, segmentId: "a", timestamp, typeId: "1108001", values: { major, minor: 0, io_time_ms: ioTime } })
+  const busy = helpers.SYSTEM_METRICS.find(({ id }) => id === "device_busy")
+  const counter = helpers.metricPoints({ points: [], sections: { os_diskstats: [
+    row(1_000_000, 7, 100), row(1_000_000, 8, 300),
+    row(2_000_000, 7, 200), row(2_000_000, 8, 700),
+  ] }, rateColumns: { os_diskstats: ["io_time_ms"] } }, busy).map(({ value }) => value)
+  assert.deepEqual(counter, [30, 70])
+  const storedRates = helpers.metricPoints({ points: [], sections: { os_diskstats: [row(1_000_000, 7, 0.2), row(1_000_000, 8, 0.7)] }, rateColumns: { os_diskstats: ["io_time_ms"] } }, busy)
+  assert.ok(Math.abs((storedRates[0]?.value ?? 0) - 0.07) < 1e-9)
+})
+
+test("the storage dock breaks device busy down to the devices that registered activity", () => {
+  const row = (timestamp, major, device, ioTime) => ({
+    logicalName: "os_diskstats", ordinal: `${major}:${timestamp}`, segmentId: "a", timestamp, typeId: "1108001",
+    values: { major, minor: 0, device, io_time_ms: ioTime, io_weighted_time_ms: ioTime },
+  })
+  const rows = [
+    row(1_000_000, 8, "sda", 100), row(2_000_000, 8, "sda", 400),
+    row(1_000_000, 9, "sdb", 50), row(2_000_000, 9, "sdb", 50),
+  ]
+  const series = helpers.resourceBreakdownSeries("device_busy", rows, false, "en", (key) => key)
+  assert.deepEqual(series.map(({ label }) => label), ["sda"])
+  assert.deepEqual(series[0].points.map(({ value }) => value), [null, 30])
+  assert.equal(series[0].unit, "%")
+  const allIdle = helpers.resourceBreakdownSeries("device_busy", [row(1_000_000, 9, "sdb", 50), row(2_000_000, 9, "sdb", 50)], false, "en", (key) => key)
+  assert.deepEqual(allIdle.map(({ label }) => label), ["sdb"])
+  const rated = helpers.resourceBreakdownSeries("device_busy", [row(1_000_000, 8, "sda", 0.42)], true, "en", (key) => key)
+  assert.deepEqual(rated.map(({ label }) => label), ["sda"])
+  assert.ok(Math.abs((rated[0].points[0]?.value ?? 0) - 0.042) < 1e-9)
+  const queue = helpers.resourceBreakdownSeries("device_average_queue", [row(1_000_000, 8, "sda", 42)], true, "en", (key) => key)
+  assert.deepEqual(queue.map(({ label }) => label), ["sda"])
+  assert.ok(Math.abs((queue[0].points[0]?.value ?? 0) - 0.042) < 1e-9)
+})
+
 test("registry cumulative fields become reset-safe rates across storage segments", () => {
   const spec = { field: "reads", group: "storage", help: "x", id: "reads", label: "x", section: "os_diskstats", unit: "" }
   const row = (segmentId, timestamp, reads) => ({ logicalName: "os_diskstats", ordinal: String(timestamp), segmentId, timestamp, typeId: "1108001", values: { major: 8, minor: 0, reads } })
@@ -426,6 +498,22 @@ test("registry cumulative fields become reset-safe rates across storage segments
     row("a", 1_000_000, 10), row("a", 2_000_000, 14), row("b", 3_000_000, 20), row("b", 4_000_000, null), row("b", 5_000_000, 1), row("b", 6_000_000, 3),
   ]).map(({ value }) => value), [null, 4, 6, null, null, 2])
   assert.equal(rateHelpers.metricChartUnit(spec, "en"), "1/s")
+})
+
+test("a mount history is one used-against-total pair, not two switchable singles", () => {
+  const row = (timestamp, free, total) => ({
+    logicalName: "os_mountinfo", ordinal: String(timestamp), segmentId: "a", timestamp, typeId: "1102001",
+    values: { free_bytes: free, total_bytes: total },
+  })
+  const t = (key) => key
+  const series = helpers.mountPairSeries([row(1_000_000, 300, 1000), row(2_000_000, 250, 1000)], t)
+  assert.deepEqual(series.map(({ id }) => id), ["used_bytes", "total_bytes"])
+  assert.deepEqual(series[0].points.map(({ value }) => value), [700, 750])
+  assert.deepEqual(series[1].points.map(({ value }) => value), [1000, 1000])
+  // A filesystem reporting more free than it holds is a read error, not a negative used.
+  const broken = helpers.mountPairSeries([row(1_000_000, 1500, 1000)], t)
+  assert.deepEqual(broken[0].points.map(({ value }) => value), [null])
+  assert.deepEqual(helpers.mountPairSeries([{ ...row(1_000_000, null, null), values: {} }], t), [])
 })
 
 test("the committed hour supplies only honest System metrics with complete histories", async () => {
@@ -439,7 +527,7 @@ test("the committed hour supplies only honest System metrics with complete histo
   const available = helpers.SYSTEM_METRICS.map((metric) => ({ metric, points: helpers.metricPoints(hour, metric) }))
     .filter(({ points }) => points.some((point) => point.value !== null && Number.isFinite(point.value)))
   assert.ok(available.length >= 7)
-  assert.deepEqual([...new Set(available.map(({ metric }) => metric.group))], ["cpu", "load", "memory", "pressure", "storage"])
+  assert.deepEqual([...new Set(available.map(({ metric }) => metric.group))], ["host", "load", "memory", "pressure", "storage"])
 
   const health = available.find(({ metric }) => metric.id === "health")?.points ?? []
   const expected = fixture.system.health.filter(([timestamp]) => Number(timestamp) >= hourStart && Number(timestamp) < hourStart + 3_600_000_000)
@@ -449,13 +537,34 @@ test("the committed hour supplies only honest System metrics with complete histo
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
 })
 
-test("System uses the audited balanced groups without a forced console floor", async () => {
+test("System keeps the audited balanced groups and opens charts only inside the dock", async () => {
   const [source, styles] = await Promise.all([
     readFile(new URL("../src/system-view.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
   ])
-  assert.match(source, /\["cpu", "memory", "pressure"\]/)
+  assert.match(source, /\["host", "cpu", "memory", "pressure"\]/)
   assert.match(source, /\["load", "storage", "network"\]/)
-  assert.match(styles, /\.system-console \{[^}]*align-items: start;/)
-  assert.doesNotMatch(styles, /\.system-console \{[^}]*min-height:/)
+  // The dock, not a standing console chart: closed by default, opened by a Use
+  // row or a metric chip, dismissed like the PostgreSQL detail panel.
+  assert.match(source, /useState\(false\)/)
+  assert.match(source, /dockShown && selectedMetric !== undefined && <SystemDock/)
+  assert.match(source, /data-testid="system-dock"/)
+  assert.match(source, /useDetailDismiss\(onClose, `system:\$\{group\}`\)/)
+  assert.match(source, /chartsVisible && dockOpen/)
+  // A chosen metric survives a refresh swap that briefly hides its section:
+  // only the empty startup selection auto-resolves, and the dock reads the
+  // spec from the static catalog, not from the presence of points.
+  assert.match(source, /selected !== "" \|\| first === undefined/)
+  assert.match(source, /SYSTEM_METRICS\.find\(\(spec\) => spec\.id === selected\)/)
+  // Entity panels say loading while their snapshot catches up; only a section
+  // the hour does not carry at all stays absent.
+  assert.match(source, /rows\.length === 0 && activeContext === null && !tablesLoading/)
+  // The dock unfolds full-width under the resource table with a real chart
+  // height; opening scrolls it into view, and grid cells carry the open-marker.
+  assert.match(source, /scrollIntoView\(\{ block: "nearest" \}\)/)
+  assert.match(source, /className="dock-tabs [^"]*overflow-x-auto/)
+  assert.match(styles, /\.system-dock \.uplot-figure:not\(\.uplot-expanded\) \{[^}]*height: 320px/)
+  assert.match(styles, /\.metric-groups \.metric-choice > button::after \{[^}]*content: "↗"/)
+  assert.doesNotMatch(source, /metric-history|system-console|system-layout/)
+  assert.doesNotMatch(styles, /\.metric-history|\.system-console|\.system-layout/)
 })

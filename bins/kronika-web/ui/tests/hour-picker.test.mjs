@@ -79,20 +79,26 @@ test("calendar month labels and date counts remain human", () => {
 })
 
 test("the combined picker has no native date/time controls or invented local hours", async () => {
-  const [pickerSource, appSource, styles] = await Promise.all([
+  const [pickerSource, appSource, timezoneSource] = await Promise.all([
     readFile(new URL("../src/hour-picker.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/app.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+    readFile(new URL("../src/timezone-select.tsx", import.meta.url), "utf8"),
   ])
   assert.doesNotMatch(pickerSource, /<input\b|<select\b|type=["']date["']|type=["']time["']/)
-  assert.match(appSource, /data-testid="timezone-select"/)
+  assert.match(appSource, /<TimezoneSelect\b/)
+  assert.match(timezoneSource, /data-testid="timezone-select"/)
   assert.match(pickerSource, /data-testid="hour-picker-trigger"/)
   assert.match(pickerSource, /data-testid="hour-popover"/)
   assert.match(pickerSource, /dayHours\.map/)
   assert.doesNotMatch(pickerSource, /ALL_HOURS|selectedHour|Date\.UTC/)
   assert.match(pickerSource, /data-instant=\{candidate\}/)
   assert.match(pickerSource, /document\.addEventListener\("pointerdown"/)
-  assert.match(styles, /\.day-grid[^}]*grid-template-columns:\s*repeat\(7,/s)
-  assert.match(styles, /\.hour-grid[^}]*grid-template-columns:\s*repeat\(3,/s)
-  assert.match(styles, /\.hour-popover[^}]*calc\(100vw - 20px\)/s)
+  // The popover portals to body: no in-page stacking context can trap it.
+  assert.match(pickerSource, /createPortal\(/)
+  assert.match(pickerSource, /document\.body\)/)
+  // Layout moved from named CSS rules onto the markup: a week per day row,
+  // three hours per hour row, and a popover that never exceeds the viewport.
+  assert.match(pickerSource.match(/<div[^>]*data-testid="day-grid"[^>]*>/s)?.[0] ?? "", /grid-cols-7/)
+  assert.match(pickerSource.match(/<div[^>]*data-testid="hour-grid"[^>]*>/s)?.[0] ?? "", /grid-cols-3/)
+  assert.match(pickerSource.match(/<div[^>]*data-testid="hour-popover"[^>]*>/s)?.[0] ?? "", /w-\[min\(560px,calc\(100vw_-_20px\)\)\]/)
 })

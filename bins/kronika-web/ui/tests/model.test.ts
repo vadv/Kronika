@@ -3,7 +3,7 @@ import test from "node:test"
 
 import type { Cell, DataRow } from "../src/api.ts"
 import { fittedWidth } from "../src/column-size.ts"
-import { activityFor, compact, cores, estimatedRows, humanAge, humanBytes, humanCores, humanDuration, humanPercent, identifier, measure, millisecondsPerSecond, nearestTime, processCommand, processDefaultSort, processKey, processLens, rawText, shownMoment, stateText, type Locale } from "../src/model.ts"
+import { activityFor, compact, cores, estimatedRows, humanAge, humanBytes, humanCores, humanDuration, humanDurationAxis, humanPercent, identifier, measure, millisecondsPerSecond, nearestTime, processCommand, processDefaultSort, processKey, processLens, rawText, shownMoment, stateText, type Locale } from "../src/model.ts"
 
 function row(timestamp: number): DataRow {
   return { segmentId: "7", logicalName: "os_process", typeId: "1100001", ordinal: "0", timestamp, values: {} }
@@ -144,6 +144,11 @@ test("metric numbers use three significant digits and locale-aware compact scale
   assert.equal(humanDuration(999.999, "en"), "1,000 ms")
   assert.equal(humanDuration(1_234, "en"), "1.2 s")
   assert.equal(humanDuration(null, "en"), "—")
+  // Axis ticks share one unit chosen from the range top.
+  assert.equal(humanDurationAxis(1_998_000, 3_996_000, "ru"), "33,3 м")
+  assert.equal(humanDurationAxis(0, 3_996_000, "ru"), "0 м")
+  assert.equal(humanDurationAxis(5_400_000, 7_200_000, "en"), "1.5 h")
+  assert.equal(humanDurationAxis(1_500, 45_000, "en"), "1.5 s")
   assert.equal(identifier("9007199254740993"), "9007199254740993")
 })
 

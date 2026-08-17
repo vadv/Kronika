@@ -42,21 +42,33 @@ export function Login({ expired, locale, onLocale, t }: {
   }
 
   const message = error === null ? expired ? t("auth.expired") : null : t(`auth.${error}`)
-  return <main className="login-shell">
-    <section className="login-card">
-      <header>
-        <span className="login-mark"><Activity aria-hidden="true" size={18} /></span>
-        <strong>{t("app.title")}</strong>
-        <div aria-label={t("locale.switch")} className="locale-switch" role="group">
+  return <main className="grid min-h-screen items-center p-6 max-[760px]:p-2.5">
+    <section className="mx-auto w-full max-w-[440px] border border-line3 bg-s1 p-[18px] shadow-[0_18px_55px_var(--color-shadow-a)] max-[760px]:p-3.5" data-testid="login-card">
+      <header className="flex min-h-[30px] items-center border-b border-line2 pb-3">
+        <span className="mr-2 flex items-center text-accent2"><Activity aria-hidden="true" size={18} /></span>
+        <strong className="text-sm tracking-[.06em] text-fg-hi">{t("app.title")}</strong>
+        <div aria-label={t("locale.switch")} className="locale-switch ml-auto" role="group">
           {(["ru", "en"] as const).map((choice) => <button aria-pressed={locale === choice} key={choice} onClick={() => onLocale(choice)} type="button">{t(`locale.${choice}`)}</button>)}
         </div>
       </header>
-      <div className="login-title"><LockKeyhole aria-hidden="true" size={20} /><div><h1>{t("auth.title")}</h1><p>{t("auth.subtitle")}</p></div></div>
-      <form autoComplete="off" onSubmit={(event) => { void submit(event) }}>
-        <label><span>{t("auth.user")}</span><input autoCapitalize="none" autoComplete="username" autoFocus disabled={busy} name="username" onChange={(event) => setUser(event.target.value)} required spellCheck={false} type="text" value={user} /></label>
-        <label><span>{t("auth.password")}</span><input autoComplete="current-password" disabled={busy} name="password" onChange={(event) => setPassword(event.target.value)} required type="password" value={password} /></label>
-        {message !== null && <p aria-live="polite" className="login-message">{message}</p>}
-        <button disabled={busy} type="submit">{t(busy ? "auth.signing_in" : "auth.submit")}</button>
+      <div className="grid grid-cols-[22px_minmax(0,1fr)] items-start gap-[11px] px-0.5 pb-[18px] pt-6">
+        <LockKeyhole aria-hidden="true" className="mt-px text-accent2" size={20} />
+        <div>
+          <h1 className="text-lg normal-case tracking-normal">{t("auth.title")}</h1>
+          <p className="mt-[7px] text-sm leading-[1.55] text-fg3">{t("auth.subtitle")}</p>
+        </div>
+      </div>
+      <form autoComplete="off" className="grid gap-3" onSubmit={(event) => { void submit(event) }}>
+        <label>
+          <span className="mb-[5px] block text-xs uppercase text-fg3">{t("auth.user")}</span>
+          <input autoCapitalize="none" autoComplete="username" autoFocus className="h-9 w-full border border-line4 bg-bg px-[9px] text-fg outline-none focus:border-accent focus:shadow-[0_0_0_1px_var(--color-accent-line)]" disabled={busy} name="username" onChange={(event) => setUser(event.target.value)} required spellCheck={false} type="text" value={user} />
+        </label>
+        <label>
+          <span className="mb-[5px] block text-xs uppercase text-fg3">{t("auth.password")}</span>
+          <input autoComplete="current-password" className="h-9 w-full border border-line4 bg-bg px-[9px] text-fg outline-none focus:border-accent focus:shadow-[0_0_0_1px_var(--color-accent-line)]" disabled={busy} name="password" onChange={(event) => setPassword(event.target.value)} required type="password" value={password} />
+        </label>
+        {message !== null && <p aria-live="polite" className="border-l-2 border-warn px-2 py-[5px] text-sm leading-[1.45] text-fg2" data-testid="login-message">{message}</p>}
+        <button className="mt-0.5 h-9 border border-accent2 bg-accent text-sm font-bold uppercase text-bg disabled:cursor-wait disabled:opacity-65" disabled={busy} type="submit">{t(busy ? "auth.signing_in" : "auth.submit")}</button>
       </form>
     </section>
   </main>

@@ -4,7 +4,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Reac
 import type { DisplayTimeFormatter } from "./display-time"
 import { useDisplayTime } from "./display-time-context"
 import { LabelHelp, type Translate } from "./help"
-import type { Locale } from "./model"
+import { humanDurationAxis, type Locale } from "./model"
 
 export type ChartScale = "percent" | "nonnegative" | "signed"
 
@@ -23,6 +23,7 @@ export interface RecordedSeries {
   readonly points: readonly RecordedPoint[]
   readonly scale: ChartScale
   readonly tick?: ((number: number, locale: Locale) => string) | undefined
+  readonly tickAxis?: "duration" | undefined
   readonly unit: string
   readonly value: (number: number, locale: Locale) => string
 }
@@ -52,11 +53,53 @@ export interface ChartThreshold {
   readonly seriesId: string
 }
 
+// Many series on one chart read as spaghetti: the legend becomes the picker,
+// one series at a time, with "All" returning the composition.
+export interface SeriesIsolation {
+  readonly anchor?: string | undefined
+}
+
+export interface SeriesStats {
+  readonly last: number
+  readonly max: number
+  readonly min: number
+  readonly p50: number
+  readonly p90: number
+  readonly p99: number
+}
+
+// Statistics of the drawn samples, nearest-rank: the chart claims nothing the
+// pixels do not show. `last` is the latest sample in time order.
+export function seriesStats(values: readonly number[]): SeriesStats | null {
+  const finite = values.filter((value) => Number.isFinite(value))
+  if (finite.length === 0) return null
+  const sorted = [...finite].sort((left, right) => left - right)
+  const pick = (quantile: number) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(quantile * sorted.length) - 1))]!
+  return { last: finite.at(-1)!, max: sorted.at(-1)!, min: sorted[0]!, p50: pick(0.5), p90: pick(0.9), p99: pick(0.99) }
+}
+
+const ISOLATE_ABOVE = 4
+
+// The operator's explicit choice wins; untouched state auto-isolates a crowded
+// chart onto its anchor series (or the first) and leaves small charts whole.
+export function effectiveIsolation(
+  seriesIds: readonly string[],
+  choice: string | null | undefined,
+  anchor: string | undefined,
+): string | null {
+  if (seriesIds.length <= 1) return null
+  if (choice !== undefined && choice !== null && seriesIds.includes(choice)) return choice
+  if (choice === null) return null
+  if (seriesIds.length > ISOLATE_ABOVE) return anchor !== undefined && seriesIds.includes(anchor) ? anchor : seriesIds[0]!
+  return null
+}
+
 const NO_DECORATIONS: readonly ChartDecoration[] = []
 
 export function UPlotChart({
   cursor,
   hour,
+  isolate,
   locale,
   onCursor,
   reading,
@@ -66,6 +109,7 @@ export function UPlotChart({
   markerLayer,
   onPlotWidth,
   referenceTimestamp,
+  stats = false,
   status,
   testId,
   threshold,
@@ -75,6 +119,7 @@ export function UPlotChart({
   readonly cursor?: number | undefined
   readonly decorations?: readonly ChartDecoration[] | undefined
   readonly hour: number
+  readonly isolate?: SeriesIsolation | undefined
   readonly locale: Locale
   readonly markerLayer?: ReactNode | undefined
   readonly onCursor?: ((timestamp: number) => void) | undefined
@@ -82,6 +127,7 @@ export function UPlotChart({
   readonly reading?: string | undefined
   readonly referenceTimestamp?: number | undefined
   readonly series: readonly RecordedSeries[]
+  readonly stats?: boolean | undefined
   readonly status?: ReactNode | undefined
   readonly testId?: string | undefined
   readonly threshold?: ChartThreshold | undefined
@@ -103,13 +149,18 @@ export function UPlotChart({
   const pagePosition = useRef({ left: 0, top: 0 })
   const returnFocus = useRef(false)
   const end = hour + 3_600_000_000
-  const visibleSeries = useMemo(() => series.map((line) => ({
+  const [isolatedChoice, setIsolatedChoice] = useState<string | null | undefined>(undefined)
+  const isolatedId = isolate === undefined
+    ? null
+    : effectiveIsolation(series.map(({ id }) => id), isolatedChoice, isolate.anchor)
+  const drawnSeries = isolatedId === null ? series : series.filter(({ id }) => id === isolatedId)
+  const visibleSeries = useMemo(() => drawnSeries.map((line) => ({
     ...line,
     points: line.points.filter(({ timestamp }) => timestamp >= hour && timestamp < end),
-  })), [end, hour, series])
+  })), [drawnSeries, end, hour])
   const frame = useMemo(() => alignRecordedSeries(visibleSeries), [visibleSeries])
   const [themeRevision, setThemeRevision] = useState(0)
-  const exact = hovered === null ? null : exactReadings(frame, series, hovered, locale, time)
+  const exact = hovered === null ? null : exactReadings(frame, drawnSeries, hovered, locale, time)
   const selected = cursor === undefined || cursor < hour || cursor >= end ? null : cursor
   const keyboardTimestamp = frame.timestamps[keyboardIndex] ?? null
   onCursorRef.current = onCursor
@@ -253,37 +304,62 @@ export function UPlotChart({
   }
 
   const summary = chartSummary(visibleSeries, frame, hour, end, locale, time)
+  const isolatable = isolate !== undefined && series.length > 1
+  const statsLine = useMemo(() => {
+    if (!stats || visibleSeries.length !== 1) return null
+    const line = visibleSeries[0]!
+    const values = Array.from(frame.data[1] ?? []).filter((value): value is number => typeof value === "number")
+    const measured = seriesStats(values)
+    if (measured === null) return null
+    const format = (number: number) => line.value(number, locale)
+    return `min ${format(measured.min)} · max ${format(measured.max)} · last ${format(measured.last)} · p50 ${format(measured.p50)} · p90 ${format(measured.p90)} · p99 ${format(measured.p99)}`
+  }, [frame.data, locale, stats, visibleSeries])
   return <figure
     aria-labelledby={expanded ? titleId : undefined}
     aria-modal={expanded ? "true" : undefined}
-    className={`uplot-figure${className === undefined ? "" : ` ${className}`}${expanded ? " uplot-expanded" : ""}`}
+    className={`uplot-figure${className === undefined ? "" : ` ${className}`}${expanded ? " uplot-expanded" : ""}${isolatable ? " uplot-isolatable" : ""}`}
     data-testid={testId}
     ref={shell}
     role={expanded ? "dialog" : undefined}
   >
     <figcaption id={titleId}>
-      <span className="chart-series-labels">{series.map((line) => <LabelHelp helpKey={line.helpKey} key={line.id} labelKey={line.labelKey} t={t} />)}</span>
-      {reading !== undefined && <strong className="chart-current">{reading}</strong>}
+      <span className={`chart-series-labels flex min-w-0 flex-auto items-center gap-1.5 [&::-webkit-scrollbar]:hidden ${isolatable ? "flex-wrap gap-y-1 overflow-visible whitespace-normal" : "overflow-x-auto whitespace-nowrap [scrollbar-width:none]"}`}>{isolatable && <button
+        aria-pressed={isolatedId === null}
+        className="series-pick min-h-5 cursor-pointer border border-line3 bg-s2 px-1.5 py-px text-xs text-fg2 hover:bg-s3 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg"
+        data-testid={testId === undefined ? undefined : `${testId}-all`}
+        onClick={() => setIsolatedChoice(null)}
+        type="button"
+      >{t("chart.series.all")}</button>}{series.map((line) => isolatable
+        ? <span className="inline-flex min-w-0 items-center gap-0.5" key={line.id}><button
+          aria-pressed={isolatedId === line.id}
+          className="series-pick min-h-5 cursor-pointer border border-line3 bg-s2 px-1.5 py-px text-xs text-fg2 hover:bg-s3 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg"
+          data-testid={testId === undefined ? undefined : `${testId}-series-${line.id}`}
+          onClick={() => setIsolatedChoice(isolatedId === line.id ? null : line.id)}
+          type="button"
+        >{line.label}</button><LabelHelp helpKey={line.helpKey} iconOnly labelKey={line.labelKey} t={t} /></span>
+        : <LabelHelp helpKey={line.helpKey} key={line.id} labelKey={line.labelKey} t={t} />)}</span>
+      {reading !== undefined && <strong className={`chart-current col-start-2 min-w-0 flex-none overflow-hidden text-ellipsis whitespace-nowrap font-medium normal-case tabular-nums text-fg2 ${isolatable ? "ml-auto max-w-none" : ""}`}>{reading}</strong>}
       <button
         aria-label={expanded ? (locale === "ru" ? "Закрыть развёрнутый график" : "Close expanded chart") : (locale === "ru" ? "Развернуть график" : "Expand chart")}
-        className="chart-expand"
+        className={`chart-expand col-start-3 cursor-pointer border border-line3 bg-s2 p-0 ${expanded ? "inline-flex h-11 min-w-11 items-center justify-center text-lg" : "h-[22px] min-w-[22px]"}`}
         onClick={() => expanded ? collapse() : expand()}
         ref={opener}
         type="button"
       >{expanded ? "×" : "↗"}</button>
     </figcaption>
-    <p className="chart-summary" id={summaryId}>{summary}</p>
-    <div aria-describedby={summaryId} aria-label={series.map(({ label, unit }) => `${label}${unit === "" ? "" : `, ${unit}`}`).join("; ")} className="uplot-host" ref={host} role="img" />
+    <p className="chart-summary absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]" id={summaryId}>{summary}</p>
+    <div aria-describedby={summaryId} aria-label={drawnSeries.map(({ label, unit }) => `${label}${unit === "" ? "" : `, ${unit}`}`).join("; ")} className="uplot-host" ref={host} role="img" />
+    {statsLine !== null && <p className="mx-0 mb-0 mt-[3px] overflow-hidden text-ellipsis whitespace-nowrap text-xs tabular-nums text-fg3" data-testid="chart-stats">{statsLine}</p>}
     {status !== undefined && <div className="uplot-status">{status}</div>}
     {markerLayer !== undefined && <div className="chart-marker-track">{markerLayer}</div>}
-    {exact !== null && <div aria-hidden="true" className="chart-tooltip">
+    {exact !== null && <div aria-hidden="true" className="chart-tooltip pointer-events-none grid max-w-[min(340px,82vw)] gap-[3px] border border-line4 bg-s2 p-[7px] text-xs shadow-[0_8px_20px_var(--color-shadow-a)] [&_small]:text-fg3 [&_span]:flex [&_span]:justify-between [&_span]:gap-2 [&_strong]:font-medium [&_strong]:text-fg [&_time]:flex [&_time]:justify-between [&_time]:gap-2">
       <time><strong>{exact.time}</strong></time>
       {exact.values.map(({ label, output, unit }) => <span key={label}>{label}{unit === "" ? "" : ` (${unit})`}<strong>{output}</strong></span>)}
     </div>}
     <input
       aria-label={locale === "ru" ? "Точная запись графика" : "Exact chart sample"}
       aria-valuetext={keyboardTimestamp === null ? undefined : sampleText(series, frame, keyboardTimestamp, locale, time)}
-      className="chart-navigator"
+      className="chart-navigator absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)] focus:left-2 focus:z-[9] focus:h-7 focus:w-[min(320px,calc(100%-16px))] focus:[clip-path:none]"
       data-recorded-timestamp={keyboardTimestamp ?? undefined}
       disabled={frame.timestamps.length === 0}
       max={Math.max(0, frame.timestamps.length - 1)}
@@ -435,14 +511,14 @@ function chartOptions(
       if (scale !== undefined) {
         const boundary = chart.valToPos(threshold.below, scale, true)
         const zero = chart.valToPos(0, scale, true)
-        context.fillStyle = color("--chart-threshold")
+        context.fillStyle = color("--color-chart-threshold")
         context.fillRect(chart.bbox.left, Math.min(boundary, zero), chart.bbox.width, Math.abs(zero - boundary))
       }
     }
     for (const decoration of decorations) {
       const from = chart.valToPos(Math.max(hour, decoration.from), "x", true)
       const to = chart.valToPos(Math.min(end, decoration.to), "x", true)
-      context.fillStyle = color(decoration.tone === "future" ? "--chart-future" : "--chart-unavailable")
+      context.fillStyle = color(decoration.tone === "future" ? "--color-chart-future" : "--color-chart-unavailable")
       context.fillRect(Math.min(from, to), chart.bbox.top, Math.abs(to - from), chart.bbox.height)
     }
     context.restore()
@@ -453,7 +529,7 @@ function chartOptions(
     context.save()
     if (referenceTimestamp !== undefined && referenceTimestamp >= hour && referenceTimestamp < end) {
       const x = chart.valToPos(referenceTimestamp, "x", true)
-      context.strokeStyle = color("--fg4")
+      context.strokeStyle = color("--color-fg4")
       context.setLineDash([2 * uPlot.pxRatio, 3 * uPlot.pxRatio])
       context.beginPath()
       context.moveTo(x, chart.bbox.top)
@@ -462,7 +538,7 @@ function chartOptions(
     }
     if (selectedTimestamp !== null) {
       const x = chart.valToPos(selectedTimestamp, "x", true)
-      context.strokeStyle = color("--cursor")
+      context.strokeStyle = color("--color-cursor")
       context.setLineDash([3 * uPlot.pxRatio, 3 * uPlot.pxRatio])
       context.beginPath()
       context.moveTo(x, chart.bbox.top)
@@ -492,11 +568,18 @@ function chartOptions(
     legend: { show: false },
     scales: { x: { auto: false, range: [hour, end], time: false }, ...scales },
     axes: [
-      { scale: "x", side: 2, size: 28, space: (_chart, _axis, _scale, _increment, space) => Math.max(84, space), stroke: color("--fg3"), grid: { stroke: color("--line") }, values: (_chart, splits) => splits.map((timestamp) => axisTimeLabel(timestamp, time)) },
+      { scale: "x", side: 2, size: 28, space: (_chart, _axis, _scale, _increment, space) => Math.max(84, space), stroke: color("--color-fg3"), grid: { stroke: color("--color-line") }, values: (_chart, splits) => splits.map((timestamp) => axisTimeLabel(timestamp, time)) },
       ...partitions.map(({ key, unit }, axisIndex) => {
         const grouped = series.filter((line) => scaleKey(line) === key)
         const line = grouped[0]!
-        return { ...(unit === "" ? {} : { label: unit }), scale: key, side: axisIndex % 2 === 0 ? 3 : 1, size: 62, stroke: color("--fg3"), grid: { stroke: axisIndex === 0 ? color("--line") : "transparent" }, values: (_chart: uPlot, splits: number[]) => splits.map((value) => (line.tick ?? line.value)(value, locale)) }
+        return { ...(unit === "" || line.tickAxis === "duration" ? {} : { label: unit }), scale: key, side: axisIndex % 2 === 0 ? 3 : 1, size: 62, stroke: color("--color-fg3"), grid: { stroke: axisIndex === 0 ? color("--color-line") : "transparent" }, values: (_chart: uPlot, splits: number[]) => {
+          // Duration axes read in one unit chosen from the range top.
+          if (line.tickAxis === "duration") {
+            const peak = Math.max(0, ...splits)
+            return splits.map((value) => humanDurationAxis(value, peak, locale))
+          }
+          return splits.map((value) => (line.tick ?? line.value)(value, locale))
+        } }
       }),
     ],
     cursor: {
@@ -525,14 +608,14 @@ function chartOptions(
 }
 
 function chartColor(tone: RecordedSeries["color"]): string {
-  if (tone === "cyan") return "--accent"
-  if (tone === "amber") return "--warn"
-  if (tone === "violet") return "--event"
-  if (tone === "green") return "--ok"
-  if (tone === "red") return "--bad"
-  if (tone === "blue") return "--accent2"
-  if (tone === "rose") return "--bad-edge"
-  return "--fg3"
+  if (tone === "cyan") return "--color-accent"
+  if (tone === "amber") return "--color-warn"
+  if (tone === "violet") return "--color-event"
+  if (tone === "green") return "--color-ok"
+  if (tone === "red") return "--color-bad"
+  if (tone === "blue") return "--color-accent2"
+  if (tone === "rose") return "--color-bad-edge"
+  return "--color-fg3"
 }
 
 export function axisTimeLabel(timestamp: number, time: Pick<DisplayTimeFormatter, "axis">): string {

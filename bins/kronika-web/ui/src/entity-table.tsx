@@ -49,6 +49,7 @@ export function EntityTable({
   finding,
   findingField,
   label,
+  loading = false,
   locale,
   onOrder,
   onPattern,
@@ -73,6 +74,7 @@ export function EntityTable({
   readonly finding?: Finding | null | undefined
   readonly findingField?: string | null | undefined
   readonly label: string
+  readonly loading?: boolean | undefined
   readonly locale: Locale
   readonly onOrder?: ((order: TableOrder | null) => void) | undefined
   readonly onPattern?: ((pattern: string) => void) | undefined
@@ -180,28 +182,31 @@ export function EntityTable({
     if (locatedIndex >= 0) virtual.scrollToIndex(locatedIndex, { align: "center" })
   }, [finding, locatedIndex, virtual])
   const width = table.getTotalSize()
-  return <section className={`entity-table${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
-    {status !== undefined && <div className="table-status" data-testid="table-status">{status}</div>}
+  return <section className={`entity-table min-w-0 overflow-hidden bg-s1${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
+    {status !== undefined && <div className="flex min-h-[26px] flex-wrap items-center gap-x-[14px] gap-y-[3px] border-b border-line2 bg-[color-mix(in_srgb,var(--color-s2)_82%,transparent)] px-[7px] py-1 text-xs text-fg3 [&_strong]:font-[650] [&_strong]:text-fg2" data-testid="table-status">{status}</div>}
     {(onPattern !== undefined || contextLabel !== undefined) && <TableFilter context={contextLabel} kept={serverSorted === true ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} t={t} total={rows.length} />}
-    <div aria-label={label} className="entity-scroll" ref={parent} role="table" tabIndex={0}>
-      <div className="entity-head" ref={head} role="row" style={{ width }}>
+    <div aria-label={label} className="entity-scroll relative h-[min(310px,36vh)] min-h-[154px] overflow-auto [scroll-padding-inline-end:15px]" ref={parent} role="table" tabIndex={0}>
+      <div className="entity-head sticky top-0 z-30 flex h-head min-w-full bg-s2 [&_[role=columnheader]]:select-none" ref={head} role="row" style={{ width }}>
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {
           const sorted = header.column.getIsSorted()
           return <div className={sticky(header.column.columnDef.meta, true)} key={header.id} role="columnheader" style={{ left: pinnedLeft.get(header.column.id), width: header.getSize() }}>
-            <button className="entity-sort" disabled={!header.column.getCanSort()} onClick={serverSorted === true
+            <button className="entity-sort flex h-full min-w-0 flex-auto cursor-pointer items-center justify-between border-0 bg-transparent p-0 text-left uppercase text-[inherit] disabled:cursor-default [&>span]:overflow-hidden [&>span]:text-ellipsis [&>span]:whitespace-nowrap" disabled={!header.column.getCanSort()} onClick={serverSorted === true
               ? () => onOrder?.(nextServerOrder(order, header.column.id))
               : header.column.getToggleSortingHandler()} type="button">
               <span>{flexRender(header.column.columnDef.header, header.getContext())}</span>
-              {sorted !== false && <i>{sorted === "asc" ? "↑" : "↓"}</i>}
+              {sorted !== false && <i className="ml-[5px] not-italic text-accent2">{sorted === "asc" ? "↑" : "↓"}</i>}
             </button>
             {columnHelp(header.column.columnDef.meta) !== null && <LabelHelp helpKey={columnHelp(header.column.columnDef.meta)!.help} iconOnly labelKey={columnHelp(header.column.columnDef.meta)!.label} t={t} />}
-            <span className="column-grip" onDoubleClick={() => fit(header.column.id, index)} onMouseDown={header.getResizeHandler()} onTouchStart={header.getResizeHandler()} />
+            <span className="column-grip absolute bottom-0 right-0 top-0 w-[7px] cursor-col-resize touch-none hover:bg-accent3 hover:opacity-50" onDoubleClick={() => fit(header.column.id, index)} onMouseDown={header.getResizeHandler()} onTouchStart={header.getResizeHandler()} />
           </div>
         })}
       </div>
       {rendered.length === 0
-        ? <p className="table-empty">{pattern === "" ? empty : t("filter.none")}</p>
-        : <div className="virtual-body" style={{ height: virtual.getTotalSize(), width }}>
+        ? loading
+          // Loading and empty are different truths; never report one as the other.
+          ? <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>
+          : <p className="table-empty">{pattern === "" ? empty : t("filter.none")}</p>
+        : <div className="relative" data-testid="virtual-body" style={{ height: virtual.getTotalSize(), width }}>
           {virtual.getVirtualItems().map((item) => {
             const row = rendered[item.index]
             if (row === undefined) return null
@@ -211,7 +216,7 @@ export function EntityTable({
             return <div
               aria-label={rowLabel?.(row.original)}
               aria-selected={selectedKey === key}
-              className={`entity-row${activeFinding === null ? "" : ` locator-row locator-${activeFinding.kind}`}`}
+              className={`entity-row absolute left-0 top-0 flex min-w-full bg-s1 even:bg-zebra aria-selected:bg-s4 aria-selected:shadow-[inset_2px_0_var(--color-accent)] ${onSelect === undefined ? "cursor-default" : "cursor-pointer hover:bg-s3"}${activeFinding === null ? "" : ` locator-row locator-${activeFinding.kind}`}`}
               data-locator-row={located || undefined}
               key={row.id}
               onClick={() => onSelect?.(row.original)}
@@ -231,7 +236,7 @@ export function EntityTable({
                 const tone = field === undefined ? null : semanticValueTone(field.field, stored, field.rate, row.original)
                 const toneText = tone === null || tone === "inactive" ? null : t(`pg.value.${tone}`)
                 return <div aria-label={toneText === null || field === undefined ? undefined : `${toneText}: ${cellAriaValue(stored, field, locale, t)}`} className={`${sticky(cell.column.columnDef.meta, false)}${tone === null ? "" : ` value-tone-${tone}`}${exact ? ` locator-cell locator-${activeFinding.kind}` : ""}`} data-locator-cell={exact || undefined} data-value-tone={tone ?? undefined} key={cell.id} role="cell" style={{ left: pinnedLeft.get(cell.column.id), width: cell.column.getSize() }}>
-                  {toneText !== null && <span aria-hidden="true" className="value-tone-mark" />}
+                  {toneText !== null && <span aria-hidden="true" className="mr-[5px] h-2.5 flex-none border-l-2 border-current" />}
                   {flexRender(cell.column.columnDef.cell, cell.getContext())}
                 </div>
               })}
@@ -279,16 +284,16 @@ export function unit(base: string, rate: boolean | undefined, perSecond = "/s"):
 
 function Cell({ at, cell, kind = "text", locale, rate, t }: { readonly at: number | null; readonly cell: Cell; readonly kind?: EntityColumn["kind"]; readonly locale: Locale; readonly rate?: boolean | undefined; readonly t: Translate }) {
   const time = useDisplayTime()
-  if (cell === null) return <span className="null-cell">—</span>
+  if (cell === null) return <span className="text-fg-null">—</span>
   if (kind === "timestamp") {
     const timestamp = asNumber(cell)
     if (timestamp === null) return "—"
     const exact = time.timestamp(timestamp)
-    return <time className="entity-value" title={exact}>{at === null ? exact : humanDuration((at - timestamp) / 1_000, locale)}</time>
+    return <time className="entity-value block w-full overflow-hidden text-ellipsis whitespace-nowrap" title={exact}>{at === null ? exact : humanDuration((at - timestamp) / 1_000, locale)}</time>
   }
   if (kind === "estimated_rows") return <EstimatedRows cell={cell} locale={locale} t={t} />
   const output = cellAriaValue(cell, { field: "", kind, ...(rate === undefined ? {} : { rate }) }, locale, t)
-  const className = `entity-value${kind === "id" ? " id-value" : kind === "text" ? " text-value" : ""}`
+  const className = `entity-value block w-full overflow-hidden text-ellipsis whitespace-nowrap${kind === "id" ? " text-fg2" : kind === "text" ? " text-fg" : ""}`
   return <span className={className} title={kind === "bytes" || kind === "text" ? output : undefined}>{output}</span>
 }
 
@@ -311,7 +316,7 @@ export function cellAriaValue(cell: Cell, field: Pick<EntityColumn, "field" | "k
 
 export function EstimatedRows({ cell, locale, t }: { readonly cell: Cell; readonly locale: Locale; readonly t: Translate }) {
   const rows = estimatedRows(cell, locale, t)
-  return rows === null ? "—" : <span aria-label={rows.secondary ?? undefined} className="entity-value" title={rows.secondary ?? undefined}>{rows.primary}</span>
+  return rows === null ? "—" : <span aria-label={rows.secondary ?? undefined} className="entity-value block w-full overflow-hidden text-ellipsis whitespace-nowrap" title={rows.secondary ?? undefined}>{rows.primary}</span>
 }
 
 function sortable(cell: Cell, kind: EntityColumn["kind"]): string | number | boolean | null {
@@ -322,10 +327,18 @@ function sortable(cell: Cell, kind: EntityColumn["kind"]): string | number | boo
 
 export function sticky(meta: unknown, head: boolean): string {
   const cell = meta as { readonly sticky?: boolean | string; readonly numeric?: boolean } | undefined
+  // Shared box first, then the head/body difference. The names stay as hooks
+  // for the per-table overrides that have not moved onto markup yet.
+  const box = "flex-none min-w-0 overflow-hidden border-b border-r border-line px-[7px]"
+  const pinned = cell?.sticky === true || typeof cell?.sticky === "string"
   return [
-    head ? "entity-header-cell" : "entity-cell",
+    box,
+    head
+      ? `entity-header-cell flex items-center text-xs uppercase tracking-[.025em] text-fg3${pinned ? " bg-s2 z-40" : " relative"}`
+      : "entity-cell flex h-row items-center text-xs tabular-nums text-fg2",
     cell?.numeric === true ? "align-right" : "",
-    cell?.sticky === true ? "entity-sticky" : typeof cell?.sticky === "string" ? `entity-sticky ${cell.sticky}` : "",
+    pinned ? "entity-sticky sticky left-0 z-[12] bg-inherit shadow-[5px_0_8px_var(--color-shadow-b)]" : "",
+    typeof cell?.sticky === "string" ? cell.sticky : "",
   ].filter(Boolean).join(" ")
 }
 

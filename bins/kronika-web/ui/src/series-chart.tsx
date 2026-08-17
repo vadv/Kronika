@@ -19,6 +19,7 @@ export type ChartScale = "auto" | "percent" | "count" | "duration" | "nonnegativ
 
 export function SeriesChart({
   cursor,
+  durationAxis = false,
   empty,
   hour,
   helpKey,
@@ -31,11 +32,13 @@ export function SeriesChart({
   secondHelpKey,
   secondLabelKey,
   status = "ready",
+  stats = false,
   t,
   unit = "",
   onCursor,
 }: {
   readonly cursor?: number | undefined
+  readonly durationAxis?: boolean | undefined
   readonly empty?: string | undefined
   readonly hour: number
   readonly helpKey: string
@@ -48,6 +51,7 @@ export function SeriesChart({
   readonly secondHelpKey?: string | undefined
   readonly secondLabelKey?: string | undefined
   readonly status?: HistoryStatus | undefined
+  readonly stats?: boolean | undefined
   readonly t: Translate
   readonly unit?: string | undefined
   readonly onCursor?: ((timestamp: number) => void) | undefined
@@ -66,18 +70,18 @@ export function SeriesChart({
   const stableFormat = useMemo(() => (number: number, place: Locale) => formatter.current(number, place), [])
   const semantic: SemanticScale = scale === "percent" ? "percent" : scale === "auto" || scale === "signed" ? "signed" : "nonnegative"
   const series = useMemo<readonly RecordedSeries[]>(() => [
-    { color: "cyan", helpKey, id: "primary", label, labelKey, points: visible.points, scale: semantic, tick: stableFormat, unit, value: stableFormat },
-    ...(visible.second === undefined || secondHelpKey === undefined || secondLabelKey === undefined ? [] : [{ color: "amber" as const, helpKey: secondHelpKey, id: "secondary", label: t(secondLabelKey), labelKey: secondLabelKey, points: visible.second, scale: semantic, tick: stableFormat, unit, value: stableFormat }]),
-  ], [helpKey, label, labelKey, secondHelpKey, secondLabelKey, semantic, stableFormat, t, unit, visible])
+    { color: "cyan", helpKey, id: "primary", label, labelKey, points: visible.points, scale: semantic, tick: stableFormat, tickAxis: durationAxis ? "duration" : undefined, unit, value: stableFormat },
+    ...(visible.second === undefined || secondHelpKey === undefined || secondLabelKey === undefined ? [] : [{ color: "amber" as const, helpKey: secondHelpKey, id: "secondary", label: t(secondLabelKey), labelKey: secondLabelKey, points: visible.second, scale: semantic, tick: stableFormat, tickAxis: (durationAxis ? "duration" : undefined) as "duration" | undefined, unit, value: stableFormat }]),
+  ], [durationAxis, helpKey, label, labelKey, secondHelpKey, secondLabelKey, semantic, stableFormat, t, unit, visible])
   const statusText = status === "loading"
     ? t("history.loading")
     : status === "error" ? t("history.error") : empty ?? t("history.empty")
-  const statusLine = <p className={`series-status series-status-${status}`} role={status === "error" ? "alert" : "status"}>{statusText}</p>
+  const statusLine = <p data-status={status} data-testid="series-status" className={`flex min-h-[30px] items-center px-0 py-[3px] text-sm ${status === "error" ? "text-warn" : "text-fg4"}`} role={status === "error" ? "alert" : "status"}>{statusText}</p>
   // An hour that carries no samples stays compact. Anything still resolving keeps the
   // full frame so the page below does not move while a metric loads.
   if (!hasData && status === "ready") {
     return <div className="series-chart">
-      <div className="series-reading"><LabelHelp helpKey={helpKey} labelKey={labelKey} t={t} /><span>—</span></div>
+      <div className="series-reading mb-[5px] flex items-baseline gap-2 text-xs uppercase text-fg3 [&>.label-help]:min-w-0 [&>span:last-child]:flex-none [&>span:last-child]:whitespace-nowrap [&>span:last-child]:normal-case [&>span:last-child]:tabular-nums [&>span:last-child]:text-fg2"><LabelHelp helpKey={helpKey} labelKey={labelKey} t={t} /><span>—</span></div>
       {statusLine}
     </div>
   }
@@ -89,6 +93,7 @@ export function SeriesChart({
       onCursor={onCursor}
       reading={reading === null ? "—" : formatValue(reading, locale)}
       series={series}
+      stats={stats}
       status={status === "ready" ? undefined : statusLine}
       t={t}
     />

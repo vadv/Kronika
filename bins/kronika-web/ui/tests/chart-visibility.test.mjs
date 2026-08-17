@@ -23,8 +23,7 @@ test("each large chart container follows the shared visibility preference", asyn
     "postgres-relations-view.tsx": 1,
     "postgres-view.tsx": 6,
     "process-table.tsx": 1,
-    "system-view.tsx": 3,
-    "use-table.tsx": 1,
+    "system-view.tsx": 2,
   }
   for (const [file, count] of Object.entries(expected)) {
     const source = await readFile(new URL(`../src/${file}`, import.meta.url), "utf8")

@@ -4,7 +4,7 @@ import test from "node:test"
 
 import { importModule } from "./import-module.mjs"
 
-const { availableUseChartKeys, reading } = await importModule('export { availableUseChartKeys, reading } from "../src/use-table.tsx"')
+const { reading } = await importModule('export { reading } from "../src/use-table.tsx"')
 
 test("a resource reading carries the unit of what it measures", () => {
   assert.equal(reading(61.06, "en", "share", "/s"), "61.1%")
@@ -14,18 +14,11 @@ test("a resource reading carries the unit of what it measures", () => {
   assert.equal(reading(21_471, "ru", "rate", "/с"), "21,5 тыс./с")
 })
 
-test("the resource table offers exact numeric histories and combines compatible network lanes", async () => {
-  const lane = (name, timestamp, value) => ({ lane: name, logicalName: "x", segmentId: "a", timestamp, typeId: "1", value })
-  const points = [
-    lane("cpu_busy", 1, 0),
-    lane("cpu_busy", 2, null),
-    lane("net_rx", 1, 10),
-    lane("net_tx", 1, 20),
-    lane("net_drop", 1, null),
-  ]
-  assert.deepEqual(availableUseChartKeys(points), ["cpu-utilisation", "network-utilisation"])
+test("the resource table selects a resource per row and keeps the network pair in one cell", async () => {
   const source = await readFile(new URL("../src/use-table.tsx", import.meta.url), "utf8")
-  assert.equal(source.match(/<SeriesChart/g)?.length, 1)
-  assert.match(source, /second=\{selected\.second\.length/)
-  assert.match(source, /aria-pressed=\{selected\?\.key === choice\.key\}/)
+  assert.equal(source.includes("<SeriesChart"), false)
+  assert.match(source, /data-testid=\{`use-row-\$\{resource\.key\}`\}/)
+  assert.match(source, /aria-selected=\{selected === resource\.key\}/)
+  assert.match(source, /cell\.second === undefined \? null : currentLaneReading/)
 })
+

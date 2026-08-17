@@ -1,4 +1,4 @@
-import { Activity, ChartLine } from "lucide-react"
+import { Activity, ChartLine, Moon, Sun } from "lucide-react"
 import { translation } from "kronika:i18n"
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react"
 import { createRoot } from "react-dom/client"
@@ -47,6 +47,7 @@ import {
   asNumber,
   floorHour,
   humanAge,
+  humanBytes,
   interpolate,
   processKey,
   processLens,
@@ -73,6 +74,7 @@ import {
   clearCgroupSnapshotRows,
 } from "./system-view"
 import { Timeline } from "./timeline"
+import { TimezoneSelect } from "./timezone-select"
 
 type Source = "host" | "postgresql" | "events"
 type Theme = "dark" | "light"
@@ -178,6 +180,8 @@ function App({ locale, onLocale, t }: {
   const [currentSnapshot, setCurrentSnapshot] = useState<CurrentSnapshot>(EMPTY_CURRENT_SNAPSHOT)
   const pgPresent = hasPostgresTelemetry(timelineData)
   const [loading, setLoading] = useState(true)
+  const [loadProgress, setLoadProgress] = useState<LoadProgress | undefined>(undefined)
+  const loadThrottle = useRef(0)
   const [error, setError] = useState<string | null>(null)
   const [source, setSource] = useState<Source>(sourceOf(opened.current.view))
   const [hostSection, setHostSection] = useState<HostSection>(hostSectionOf(opened.current.view))
@@ -331,8 +335,15 @@ function App({ locale, onLocale, t }: {
       setLoading(true)
       setRefreshing(false)
       setError(null)
+      setLoadProgress({ received: 0, startedAt: Date.now() * 1_000, lastSeconds: readLastLoadSeconds() })
     }
-    void loadTimeline(hour, controller.signal).then((timeline) => {
+    const loadStartedAt = Date.now() * 1_000
+    void loadTimeline(hour, controller.signal, refresh ? undefined : (received) => {
+      const now = Date.now()
+      if (now - loadThrottle.current < 250) return
+      loadThrottle.current = now
+      setLoadProgress((current) => current === undefined ? current : { ...current, received })
+    }).then((timeline) => {
       const asked = wanted.current
       wanted.current = null
       const latest = latestTimelineTimestamp(timeline)
@@ -357,6 +368,7 @@ function App({ locale, onLocale, t }: {
         setCursor(followsLatest.current ? latest : asked ?? latest)
         setLastUpdated(Date.now() * 1_000)
         setRefreshing(false)
+        writeLastLoadSeconds((Date.now() * 1_000 - loadStartedAt) / 1_000_000)
       }
       setLoading(false)
     }).catch((reason: unknown) => {
@@ -446,6 +458,7 @@ function App({ locale, onLocale, t }: {
           if (stale()) return
           setCurrentSnapshot({ data: incoming, target: snapshotTarget })
           setCursorState("ready")
+          setLastUpdated(Date.now() * 1_000)
           if (completesRefresh) finishRefresh(true)
         })
         .catch((reason: unknown) => {
@@ -490,6 +503,7 @@ function App({ locale, onLocale, t }: {
             }))
             setDensePageState("idle")
             setCursorState("ready")
+            setLastUpdated(Date.now() * 1_000)
             if (completesRefresh && pageCursor === undefined) finishRefresh(true)
           }).catch((reason: unknown) => {
             if (stale()) return
@@ -756,7 +770,7 @@ function App({ locale, onLocale, t }: {
   const updatedClock = lastUpdated === null ? null : time.clock(lastUpdated)
   return <ChartVisibilityProvider value={chartsVisible}><main className={`app-shell${stretchPostgres ? " pg-table-shell" : ""}${chartsVisible ? "" : " charts-hidden"}`}>
     <header className="topbar">
-      <span className="brand-mark"><Activity aria-hidden="true" size={15} strokeWidth={2} /></span>
+      <span className="flex flex-none items-center text-accent2"><Activity aria-hidden="true" size={15} strokeWidth={2} /></span>
       <h1>{t("app.title")}</h1>
 
       <nav aria-label={t("nav.sources")} className="source-tabs">
@@ -765,7 +779,7 @@ function App({ locale, onLocale, t }: {
         {eventsPresent && <button aria-current={visibleSource === "events" ? "page" : undefined} className={visibleSource === "events" ? "source-active" : undefined} onClick={() => { setEventScope(null); setSelectedFinding(null); setSource("events") }} type="button">{t("nav.events")}</button>}
       </nav>
 
-      {visibleSource === "host" && <div className="section-tabs" role="tablist">
+      {visibleSource === "host" && <div className="section-tabs flex items-center border border-line3 [&>button]:cursor-pointer [&>button]:border-0 [&>button]:bg-transparent [&>button]:px-[9px] [&>button]:py-[5px] [&>button]:text-xs [&>button]:uppercase [&>button]:text-fg3 [&>button[aria-selected=true]]:bg-s4 [&>button[aria-selected=true]]:text-accent3" role="tablist">
         <button aria-selected={visibleHostSection === "system"} onClick={() => setHostSection("system")} role="tab" type="button">{t("section.system")}</button>
         <button aria-selected={visibleHostSection === "processes"} data-testid="process-tab" onClick={() => setHostSection("processes")} role="tab" type="button">{t("section.processes")}</button>
       </div>}
@@ -774,19 +788,17 @@ function App({ locale, onLocale, t }: {
       <div aria-live="polite" className="cursor-time">
         <TimeValue label={t("hour.cursor_label")} output={cursorTime} testId="cursor-time" />
         {lastUpdated !== null && updatedClock !== null && <UpdatedAge at={lastUpdated} clock={updatedClock} locale={locale} t={t} />}
+        {cursorState === "loading" && <span className="flex items-center gap-1.5 text-xs uppercase text-fg3" data-testid="cursor-behind" role="status"><span aria-hidden="true" className="loading-ring" />{t("status.updating")}</span>}
+        {cursorState === "missing" && <span className="cursor-missing ml-2 text-xs uppercase text-warn" data-testid="cursor-behind">{t("status.no_sample")}</span>}
         {refreshFailed && <span>{t("refresh.error")}</span>}
-        {cursorState !== "ready" && <span className={cursorState === "loading" ? "cursor-behind" : "cursor-missing"} data-testid="cursor-behind">{t(cursorState === "loading" ? "status.updating" : "status.no_sample")}</span>}
       </div>
 
       <div className="top-actions">
         <button aria-label={t(chartsVisible ? "common.charts.hide" : "common.charts.show")} aria-pressed={chartsVisible} className="icon-button charts-toggle" data-testid="charts-toggle" onClick={() => setChartsVisible((shown) => !shown)} title={t(chartsVisible ? "common.charts.hide" : "common.charts.show")} type="button"><ChartLine aria-hidden="true" size={14} /></button>
         <button aria-label={t("refresh.action")} className="icon-button" disabled={refreshing || !refreshReady} onClick={requestRefresh} title={t("refresh.action")} type="button">↻</button>
-        <select aria-label={t("timezone.switch")} className="timezone-select" data-testid="timezone-select" onChange={(event) => time.setMode(event.currentTarget.value as DisplayTimeZone)} value={time.mode}>
-          <option value="browser">{t("timezone.browser")}</option>
-          <option value="utc">{t("timezone.utc")}</option>
-        </select>
+        <TimezoneSelect mode={time.mode} setMode={time.setMode} t={t} />
         <button aria-label={t("common.theme.switch")} className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title={t(theme === "dark" ? "common.theme.light" : "common.theme.dark")} type="button">
-          {theme === "dark" ? "☀" : "☾"}
+          {theme === "dark" ? <Sun aria-hidden="true" size={14} /> : <Moon aria-hidden="true" size={14} />}
         </button>
         <div aria-label={t("locale.switch")} className="locale-switch" role="group">
           {(["ru", "en"] as const).map((choice) => <button aria-pressed={locale === choice} data-testid={`locale-${choice}`} key={choice} onClick={() => onLocale(choice)} type="button">{t(`locale.${choice}`)}</button>)}
@@ -796,15 +808,15 @@ function App({ locale, onLocale, t }: {
       </div>
     </header>
 
-    <section className={`${cursorState === "loading" ? "workspace workspace-behind" : "workspace"}${stretchPostgres ? " pg-table-workspace" : ""}`}>
-      <p aria-live="polite" className="live-note">
+    <section className={`workspace${stretchPostgres ? " pg-table-workspace" : ""}`}>
+      <p aria-live="polite" className="absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]">
         {t(`nav.${visibleSource}`)}
         {visibleSource === "host" ? ` · ${t(`section.${visibleHostSection}`)}` : ""}
         {visibleSource === "postgresql" ? ` · ${t(`pg.section.${pgSection}`)}` : ""}
       </p>
-      {loading && <StateCard message={t("status.loading")} />}
-      {!loading && error !== null && <StateCard message={t("status.error")} />}
-      {!loading && error === null && hour !== null && visibleSource === "host" && visibleHostSection === "system" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} t={t} />}
+      {loading && <StateCard busy locale={locale} message={t("status.loading")} progress={loadProgress} t={t} />}
+      {!loading && error !== null && <StateCard locale={locale} message={t("status.error")} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "host" && visibleHostSection === "system" && <SystemView context={context} contextRow={contextRow} cursor={cursor} tablesLoading={cursorState === "loading"} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} t={t} />}
       {!loading && error === null && hour !== null && visibleSource === "host" && visibleHostSection === "processes" && <>
         <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} primaryLane={lens === "cpu" ? "cpu_busy" : lens === "memory" ? "memory" : lens === "disk" ? "io_stall" : "health"} shownAt={shownAt} t={t} /></ChartOnly>
         <div className="lensbar">
@@ -814,13 +826,13 @@ function App({ locale, onLocale, t }: {
           <span>{processRows[0] === undefined ? t("status.no_data") : time.timestamp(processRows[0].timestamp)}</span>
         </div>
         <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} hour={hour} lens={lens} locale={locale} onCursor={chooseCursor} state={processSummary} t={t} />
-        <div className={selectedProcess === null ? "process-layout process-layout-table" : "process-layout"}>
+        <div className={`grid min-w-0 charts-hidden:min-h-0 charts-hidden:flex-auto max-[1179px]:grid-cols-[minmax(0,1fr)] ${selectedProcess === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)_360px]"}`}>
           <ProcessTable contextLabel={context?.logicalName === "os_process" ? context.label : undefined} finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} onContextClear={clearEntityContext} onOrder={setOrder} onPattern={setFind} onSelect={selectProcess} order={order} pattern={find} rows={processRows} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
           {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onClose={() => setSelectedKey(null)} onCursor={chooseCursor} process={selectedProcess} processHistory={processHistory.value?.length ? processHistory.value : [selectedProcess]} processHistoryStatus={processHistory.status} t={t} ticksPerSecond={ticksPerSecond} />}
         </div>
       </>}
-      {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onOrder={setOrder} onPattern={setFind} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={setRelationSelectedKey} onSection={choosePgSection} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} statementLens={statementLens} t={t} />}
-      {!loading && error === null && hour !== null && visibleSource === "events" && <EventsView cursor={cursor} data={data} history={findingPoints} hour={hour} locale={locale} onClose={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onShowAll={() => { setEventScope(null); setSelectedFinding(null) }} resolution={findingResolution} resolved={findingRow} scope={eventScope} selected={selectedFinding} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} tablesLoading={cursorState === "loading"} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onOrder={setOrder} onPattern={setFind} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={setRelationSelectedKey} onSection={choosePgSection} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} statementLens={statementLens} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "events" && <EventsView cursor={cursor} data={data} loading={cursorState === "loading"} history={findingPoints} hour={hour} locale={locale} onClose={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onShowAll={() => { setEventScope(null); setSelectedFinding(null) }} resolution={findingResolution} resolved={findingRow} scope={eventScope} selected={selectedFinding} t={t} />}
     </section>
 
     {helpOpen && <HelpPanel items={helpItems} onClose={() => setHelpOpen(false)} t={t} />}
@@ -840,11 +852,67 @@ function UpdatedAge({ at, clock, locale, t }: { readonly at: number; readonly cl
     return () => clearInterval(timer)
   }, [])
   const age = humanAge((now - at) / 1_000_000, locale)
-  return <span data-testid="updated-time" title={`${t("refresh.updated")} ${clock}`}>{t("refresh.ago", { age })}</span>
+  // Its own lane, so the freshness never reads as part of the cursor time. The
+  // word steps aside on narrow bars; the title keeps it.
+  return <span className="flex items-baseline gap-1 border-l border-line3 pl-[9px] text-xs text-fg4" data-testid="updated-time" title={`${t("refresh.updated")} ${clock}`}><b className="font-medium uppercase text-fg4 max-[900px]:hidden">{t("refresh.updated")}</b>{t("refresh.ago", { age })}</span>
 }
 
-function StateCard({ message }: { readonly message: string }) {
-  return <div className="loading-card"><p className="eyebrow">KRONIKA</p><h2>{message}</h2></div>
+interface LoadProgress {
+  readonly received: number
+  readonly startedAt: number
+  readonly lastSeconds: number | null
+}
+
+// The previous completed initial load is a fact from this browser, shown as
+// history — never as a promise about the current one.
+const LOAD_SECONDS_KEY = "kronika.hourload-seconds"
+
+function readLastLoadSeconds(): number | null {
+  try {
+    const stored = localStorage.getItem(LOAD_SECONDS_KEY)
+    if (stored === null) return null
+    const seconds = Number(stored)
+    return Number.isFinite(seconds) && seconds >= 1 ? seconds : null
+  } catch {
+    return null
+  }
+}
+
+function writeLastLoadSeconds(seconds: number): void {
+  try {
+    localStorage.setItem(LOAD_SECONDS_KEY, String(Math.round(seconds * 10) / 10))
+  } catch {
+    // The hint is optional; storage denial is not an error.
+  }
+}
+
+function StateCard({ busy = false, locale, message, progress, t }: {
+  readonly busy?: boolean
+  readonly locale: Locale
+  readonly message: string
+  readonly progress?: LoadProgress | undefined
+  readonly t: Translate
+}) {
+  const [now, setNow] = useState(() => Date.now() * 1_000)
+  useEffect(() => {
+    if (progress === undefined) return
+    const timer = setInterval(() => setNow(Date.now() * 1_000), 500)
+    return () => clearInterval(timer)
+  }, [progress === undefined]) // eslint-disable-line react-hooks/exhaustive-deps
+  return <div className="grid min-h-[calc(100dvh-35px)] place-items-center p-4">
+    <div className="w-full max-w-[440px] border border-line2 bg-s1 px-6 py-7 text-center shadow-[0_18px_55px_var(--color-shadow-a)]" data-testid="state-card" {...(busy ? { role: "status" } : {})}>
+      <p className="m-0 text-xs uppercase tracking-[.1em] text-fg4">KRONIKA</p>
+      <h2 className="mt-2">{busy && <span aria-hidden="true" className="loading-ring" />}{message}</h2>
+      {progress !== undefined && <p className="mt-2.5 text-xs tabular-nums text-fg3" data-testid="loading-detail">{progressDetail(progress, now, locale, t)}</p>}
+    </div>
+  </div>
+}
+
+function progressDetail(progress: LoadProgress, now: number, locale: Locale, t: Translate): string {
+  const elapsed = humanAge(Math.max(0, (now - progress.startedAt) / 1_000_000), locale)
+  const parts = [t("status.loading_received", { bytes: humanBytes(progress.received, locale) }), elapsed]
+  if (progress.lastSeconds !== null) parts.push(t("status.loading_last", { age: humanAge(progress.lastSeconds, locale) }))
+  return parts.join(" · ")
 }
 
 function initialPageOptions(

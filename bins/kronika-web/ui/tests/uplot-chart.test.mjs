@@ -4,10 +4,33 @@ import test from "node:test"
 
 import { importModule } from "./import-module.mjs"
 
-const chart = await importModule('export { alignRecordedSeries, axisTimeLabel, chartSecondsUseful, chartSummary, compactChartTime, exactReadings, isolatedSampleIndices, nearestRecordedTimestamp, sampleText, scalePartitions, scaleRange } from "../src/uplot-chart.tsx"; export { createDisplayTimeFormatter } from "../src/display-time.ts"; export { compact, humanPercent } from "../src/model.ts"')
+const chart = await importModule('export { alignRecordedSeries, axisTimeLabel, chartSecondsUseful, chartSummary, compactChartTime, effectiveIsolation, exactReadings, isolatedSampleIndices, nearestRecordedTimestamp, sampleText, scalePartitions, scaleRange, seriesStats } from "../src/uplot-chart.tsx"; export { createDisplayTimeFormatter } from "../src/display-time.ts"; export { compact, humanPercent } from "../src/model.ts"')
 
 const format = (value) => String(value)
 const line = (id, unit, scale, points) => ({ color: "cyan", helpKey: `${id}.help`, id, label: id, labelKey: `${id}.label`, points, scale, unit, value: format })
+
+test("series stats are the nearest-rank percentiles of exactly the drawn samples", () => {
+  assert.equal(chart.seriesStats([]), null)
+  assert.deepEqual(chart.seriesStats([7]), { last: 7, max: 7, min: 7, p50: 7, p90: 7, p99: 7 })
+  const hundred = Array.from({ length: 100 }, (_, index) => index + 1)
+  assert.deepEqual(chart.seriesStats(hundred), { last: 100, max: 100, min: 1, p50: 50, p90: 90, p99: 99 })
+  // Time order, not size order, picks the last sample; non-finite values drop out.
+  assert.deepEqual(chart.seriesStats([9, 1, 5, Number.NaN, 3]), { last: 3, max: 9, min: 1, p50: 3, p90: 9, p99: 9 })
+})
+
+test("a crowded chart isolates onto its anchor until the operator chooses", () => {
+  const many = ["used", "capacity", "user", "system", "irq"]
+  assert.equal(chart.effectiveIsolation(many, undefined, "used"), "used")
+  assert.equal(chart.effectiveIsolation(many, undefined, "missing"), "used")
+  assert.equal(chart.effectiveIsolation(many, undefined, undefined), "used")
+  assert.equal(chart.effectiveIsolation(many, null, "used"), null)
+  assert.equal(chart.effectiveIsolation(many, "system", "used"), "system")
+  assert.equal(chart.effectiveIsolation(many, "gone", "used"), "used")
+  const few = ["rx", "tx"]
+  assert.equal(chart.effectiveIsolation(few, undefined, "rx"), null)
+  assert.equal(chart.effectiveIsolation(few, "tx", "rx"), "tx")
+  assert.equal(chart.effectiveIsolation(["solo"], undefined, undefined), null)
+})
 
 test("aligned data distinguishes missing rows, explicit nulls, zero and storage boundaries", () => {
   const frame = chart.alignRecordedSeries([
@@ -129,18 +152,18 @@ test("tooltip uses seconds only when two samples share a displayed minute", () =
 
 test("y-axis labels carry only the unit, series names live in the caption", async () => {
   const source = await readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8")
-  assert.match(source, /\.\.\.\(unit === "" \? \{\} : \{ label: unit \}\)/)
+  assert.match(source, /\.\.\.\(unit === "" \|\| line\.tickAxis === "duration" \? \{\} : \{ label: unit \}\)/)
   assert.doesNotMatch(source, /label: `\$\{labels\}/)
-  assert.match(source, /className="chart-series-labels"/)
+  assert.match(source, /chart-series-labels/)
 })
 
 test("the built-in legend stays hidden and chart titles use portal help metadata", async () => {
   const source = await readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8")
   const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8")
   assert.match(source, /legend: \{ show: false \}/)
-  assert.match(source, /className="chart-series-labels"/)
+  assert.match(source, /chart-series-labels/)
   assert.match(source, /<LabelHelp helpKey=\{line\.helpKey\}/)
-  assert.match(styles, /\.chart-series-labels \{[^}]*overflow-x: auto;/)
+  assert.match(source, /chart-series-labels[\s\S]{0,300}?overflow-x-auto/)
   assert.match(styles, /\.chart-series-labels \.help-dot \{[^}]*flex: 0 0 auto;/)
 })
 
@@ -152,7 +175,7 @@ test("expanded charts keep one bounded action and restore both page scroll locks
     readFile(new URL("../src/index.html", import.meta.url), "utf8"),
   ])
 
-  assert.equal((source.match(/className="chart-expand"/g) ?? []).length, 1)
+  assert.equal((source.match(/chart-expand/g) ?? []).length, 1)
   assert.doesNotMatch(source, /className="chart-close"/)
   assert.doesNotMatch(stylesheet, /\.chart-close/)
   assert.match(source, /const rootOverflow = document\.documentElement\.style\.overflow/)
@@ -176,7 +199,7 @@ test("expanded charts keep one bounded action and restore both page scroll locks
   assert.match(stylesheet, /\.uplot-figure figcaption \{[^}]*display: grid;[^}]*grid-template-columns: minmax\(0, 1fr\) auto auto;/)
   assert.match(stylesheet, /html \{[^}]*overflow-anchor: none;/)
   assert.match(stylesheet, /\.uplot-expanded figcaption \{[^}]*grid-template-columns: minmax\(0, 1fr\) auto 44px;[^}]*min-height: 44px;/)
-  assert.match(stylesheet, /\.uplot-expanded \.chart-expand \{[^}]*height: 44px;[^}]*min-width: 44px;/)
+  assert.match(source, /chart-expand[\s\S]{0,200}?expanded \? "inline-flex h-11 min-w-11/)
   assert.match(stylesheet, /--chart-marker-end-reserve: 52px/)
   assert.match(stylesheet, /\.chart-marker-track \{[^}]*width: max\(1px, calc\(var\(--chart-plot-width,[^}]* - var\(--chart-marker-end-reserve, 0px\)\)\);/)
   for (const side of ["top", "right", "bottom", "left"]) {

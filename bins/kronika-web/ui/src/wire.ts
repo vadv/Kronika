@@ -2,10 +2,13 @@ export async function readNdjson(
   response: Response,
   path: string,
   signal: AbortSignal,
+  onBytes?: ((received: number) => void) | undefined,
 ): Promise<readonly Record<string, unknown>[]> {
   signal.throwIfAborted()
   if (response.body === null) {
-    const records = parseText(await response.text(), path)
+    const body = await response.text()
+    onBytes?.(new TextEncoder().encode(body).byteLength)
+    const records = parseText(body, path)
     signal.throwIfAborted()
     return records
   }
@@ -14,6 +17,7 @@ export async function readNdjson(
   const decoder = new TextDecoder()
   const reader = response.body.getReader()
   let pending = ""
+  let received = 0
   const abort = () => { void reader.cancel(signal.reason).catch(() => undefined) }
   signal.addEventListener("abort", abort, { once: true })
 
@@ -22,6 +26,9 @@ export async function readNdjson(
       const { done, value } = await reader.read()
       signal.throwIfAborted()
       if (done) break
+      received += value.byteLength
+      // The counter reports bytes that actually arrived, nothing predicted.
+      onBytes?.(received)
       pending = consume(`${pending}${decoder.decode(value, { stream: true })}`, records, path)
     }
     pending += decoder.decode()

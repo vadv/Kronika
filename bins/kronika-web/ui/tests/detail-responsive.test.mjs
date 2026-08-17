@@ -29,28 +29,20 @@ function blockAfter(marker, source = stylesheet) {
   assert.fail(`unterminated ${marker}`)
 }
 
-test("all detail key/value rows share a readable label track and bounded value track", () => {
-  const row = blockAfter(".detail-list > div, .pg-detail dl > div, .event-detail dl > div")
-  assert.match(row, /grid-template-columns:\s*minmax\(10rem, 30%\) minmax\(0, 1fr\)/)
-
-  const label = blockAfter(".detail-list dt, .pg-detail dt, .event-detail dt")
-  assert.match(label, /hyphens:\s*none/)
-  assert.match(label, /overflow:\s*hidden/)
-  assert.match(label, /overflow-wrap:\s*normal/)
-  assert.match(label, /word-break:\s*normal/)
-
-  const value = blockAfter(".detail-list dd, .pg-detail dd, .event-detail dd")
-  assert.match(value, /min-width:\s*0/)
-  assert.match(value, /overflow-wrap:\s*anywhere/)
-  assert.match(stylesheet, /\.pg-detail dd, \.event-detail dd \{[^}]*font-variant-numeric:\s*tabular-nums;[^}]*text-align:\s*right;/)
+test("all detail key/value rows share a readable label track and bounded value track", async () => {
+  // the shared row pattern lives in @utility detail-row/detail-dt/detail-dd and
+  // every detail surface — process dock, PostgreSQL detail, event detail — uses it
+  assert.match(stylesheet, /@utility detail-row \{[^}]*minmax\(10rem, 30%\) minmax\(0, 1fr\)/s)
+  assert.match(stylesheet, /@utility detail-dd \{[^}]*overflow-wrap:\s*anywhere;[^}]*text-align:\s*right;/s)
+  for (const view of ["detail.tsx", "postgres-view.tsx", "events-view.tsx"]) {
+    const source = await readFile(new URL(`../src/${view}`, import.meta.url), "utf8")
+    assert.match(source, /detail-row max-\[520px\]:detail-row-stacked/, view)
+    assert.match(source, /detail-dd/, view)
+  }
 })
 
 test("narrow detail rows stack labels above values", () => {
-  const narrow = blockAfter("@media (max-width: 520px)")
-  const row = blockAfter(".detail-list > div, .pg-detail dl > div, .event-detail dl > div", narrow)
-  assert.match(row, /align-items:\s*start/)
-  assert.match(row, /grid-template-columns:\s*minmax\(0, 1fr\)/)
-  assert.match(narrow, /\.detail-list dd, \.pg-detail dd, \.event-detail dd \{ text-align: left; \}/)
+  assert.match(stylesheet, /@utility detail-row-stacked \{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s)
 })
 
 test("slow-query detail keeps text followed by compact numeric values", () => {

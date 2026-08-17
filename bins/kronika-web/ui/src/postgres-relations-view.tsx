@@ -41,6 +41,7 @@ export interface PostgresRelationsViewProps {
   readonly cursor: number
   readonly data: HourData
   readonly densePageState: "idle" | "loading" | "error"
+  readonly tablesLoading: boolean
   readonly filters: Readonly<Record<string, string>>
   readonly historyRevision: number
   readonly hour: number
@@ -64,7 +65,7 @@ export interface PostgresRelationsViewProps {
 
 export function PostgresRelationsView(props: PostgresRelationsViewProps) {
   const time = useDisplayTime()
-  const { cursor, data, densePageState, filters, historyRevision, hour, level, locale, onCursor, onLens, onLoadMore, onNavigate, onOrder, onPattern, onRetry, order, pattern, section, t } = props
+  const { cursor, data, densePageState, tablesLoading, filters, historyRevision, hour, level, locale, onCursor, onLens, onLoadMore, onNavigate, onOrder, onPattern, onRetry, order, pattern, section, t } = props
   const lens = isRelationLens(section, props.lens) ? props.lens : section === "pg_stat_user_tables" ? "access" : "usage"
   const rows = useMemo(() => relationDataRows(data.sections[section] ?? [], section, level), [data.sections, level, section])
   const rateFields = data.rateColumns[section] ?? []
@@ -90,9 +91,10 @@ export function PostgresRelationsView(props: PostgresRelationsViewProps) {
   return <>
     <RelationLevels filters={filters} level={level} onNavigate={navigate} section={section} t={t} />
     <RelationLenses active={lens} onLens={onLens} section={section} t={t} />
-    <div className={selected === null ? "pg-entity-layout pg-table-only" : "pg-entity-layout"} data-pg-section={section === "pg_stat_user_tables" ? "tables" : "indexes"}>
+    <div className={`pg-entity-layout mt-2 grid min-w-0 ${selected === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)_clamp(460px,32vw,600px)]"} max-[1000px]:grid-cols-[minmax(0,1fr)]`} data-pg-section={section === "pg_stat_user_tables" ? "tables" : "indexes"}>
       <EntityTable
         columns={columns}
+        loading={tablesLoading}
         empty={t(emptyHourStatusKey(hour))}
         label={t(section === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}
         locale={locale}
@@ -145,7 +147,7 @@ function RelationLevels({ filters, level, onNavigate, section, t }: { readonly f
 
 function RelationLenses({ active, onLens, section, t }: { readonly active: RelationLens; readonly onLens: (lens: RelationLens) => void; readonly section: RelationSection; readonly t: Translate }) {
   const lenses: readonly RelationLens[] = section === "pg_stat_user_tables" ? TABLE_LENSES : INDEX_LENSES
-  return <div className="lensbar pg-lensbar" data-testid="pg-relation-lenses"><span>{t("pg.lens.label")}</span><div aria-label={t("pg.lens.label")} className="lens-tabs" role="group">{lenses.map((lens) => <button aria-pressed={lens === active} key={lens} onClick={() => onLens(lens)} type="button">{t(`pg.lens.${lens}`)}</button>)}</div></div>
+  return <div className="lensbar flex-wrap" data-testid="pg-relation-lenses"><span>{t("pg.lens.label")}</span><div aria-label={t("pg.lens.label")} className="lens-tabs" role="group">{lenses.map((lens) => <button aria-pressed={lens === active} key={lens} onClick={() => onLens(lens)} type="button">{t(`pg.lens.${lens}`)}</button>)}</div></div>
 }
 
 function RelationDetail({ cursor, historyRevision, hour, lens, locale, onClose, onCursor, onNavigate, rateFields, row, t }: { readonly cursor: number; readonly historyRevision: number; readonly hour: number; readonly lens: RelationLens; readonly locale: Locale; readonly onClose: () => void; readonly onCursor: (timestamp: number) => void; readonly onNavigate: (navigation: RelationNavigation) => void; readonly rateFields: readonly string[]; readonly row: DataRow; readonly t: Translate }) {
@@ -196,11 +198,11 @@ function RelationDetail({ cursor, historyRevision, hour, lens, locale, onClose, 
   const history = useMemo(() => historyColumn === undefined ? [] : relationMetricHistory(historyRows, historyColumn, group), [group, historyColumn, historyRows])
   const drill = relationDrill(row)
   return <aside className="pg-detail" data-testid="pg-relation-detail" ref={detail}>
-    <header><h2>{relationRowLabel(row)}</h2><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
+    <header className="pg-detail-head"><h2>{relationRowLabel(row)}</h2><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
     {linked !== null && <div className="lens-tabs"><button data-testid="pg-relation-link" onClick={() => onNavigate(linked)} type="button">{t(row.logicalName === "pg_stat_user_tables" ? "pg.relation.indexes" : "pg.relation.table")}</button></div>}
     {drill !== null && <div className="lens-tabs"><button data-testid="pg-relation-drill" onClick={() => onNavigate(drill)} type="button">{t(row.relation?.group === "database" ? "pg.relation.level.schema" : row.logicalName === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}</button></div>}
-    <ChartOnly>{historyField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history">
-      <div aria-label={t("system.history")} className="process-history-selector" role="group">{chartColumns.map((column) => <button aria-pressed={historyField === column.field} data-testid={`pg-relation-chart-${column.field}`} key={column.field} onClick={() => setHistoryField(column.field)} type="button">{t(column.label)}</button>)}</div>
+    <ChartOnly>{historyField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]">
+      <div aria-label={t("system.history")} className="history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">{chartColumns.map((column) => <button aria-pressed={historyField === column.field} className="min-h-[28px] flex-none cursor-pointer border border-line3 bg-s2 px-[7px] py-1 text-xs text-fg2 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg" data-testid={`pg-relation-chart-${column.field}`} key={column.field} onClick={() => setHistoryField(column.field)} type="button">{t(column.label)}</button>)}</div>
       <SeriesChart cursor={cursor} format={chartFormat(historyColumn.kind)} helpKey={historyColumn.help ?? "chart.metric.help"} hour={hour} labelKey={historyColumn.label} locale={locale} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} status={loadedHistory.status} t={t} unit={chartUnit(historyColumn, t("unit.per_second"))} />
     </section>}</ChartOnly>
     <dl>{columns.map((column) => {

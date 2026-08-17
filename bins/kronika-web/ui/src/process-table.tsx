@@ -154,7 +154,7 @@ export function ProcessSummary({ cursor, dispatch, hour, lens, locale, onCursor,
   }, [hour])
   const activePoints = useMemo(() => processSummaryPoints(history, active), [active, history])
   const statusKey = status === "loading" ? "process.summary.loading" : status === "error" ? "process.summary.error" : status === "empty" ? "status.no_data" : null
-  return <section aria-label={t("process.summary.title")} className="process-summary metric-grid">
+  return <section aria-label={t("process.summary.title")} className="process-summary metric-grid grid grid-cols-4 max-[760px]:grid-cols-2">
     {metrics.map((metric) => {
       const output = processSummaryOutput(readingAt(processSummaryPoints(history, metric), cursor), metric, locale, t)
       return <div className="metric-choice" key={metric.field}>
@@ -164,8 +164,8 @@ export function ProcessSummary({ cursor, dispatch, hour, lens, locale, onCursor,
         <LabelHelp helpKey={metric.help} iconOnly labelKey={metric.key} t={t} testId={`process-summary-help-${metric.field}`} />
       </div>
     })}
-    {statusKey !== null && <p aria-live="polite" className="process-summary-status" data-testid="process-summary-status">{t(statusKey)}</p>}
-    <ChartOnly>{history.length !== 0 && <div className="process-summary-history">
+    {statusKey !== null && <p aria-live="polite" className="col-[1/-1] m-0 min-h-[26px] px-2 py-[7px] text-xs text-fg3" data-testid="process-summary-status">{t(statusKey)}</p>}
+    <ChartOnly>{history.length !== 0 && <div className="col-[1/-1] min-w-0 border-b border-line2" data-testid="process-summary-history">
       <SeriesChart cursor={cursor} empty={t("status.no_data")} format={processSummaryFormat(active, t)} helpKey={active.help} hour={hour} labelKey={active.key} locale={locale} onCursor={onCursor} points={activePoints} t={t} unit={processSummaryUnit(active, locale, t)} />
     </div>}</ChartOnly>
   </section>
@@ -297,7 +297,7 @@ export function formatCell(kind: Field["kind"], cell: Cell, locale: Locale, t: T
 export function CellValue({ field, linked, locale, row, t, ticksPerSecond }: { readonly field: Field; readonly linked: boolean; readonly locale: Locale; readonly row: DataRow; readonly t: Translate; readonly ticksPerSecond: number | null }) {
   const cell = field.field === undefined ? null : value(row, field.field)
   const output = field.kind === "command" ? processCommand(row) : formatCell(field.kind, cell, locale, t, ticksPerSecond)
-  return <span className={field.kind === "command" ? "command-cell" : "numeric-cell"} title={output}>{field.kind === "command" && linked && <span className="pg-badge">PG</span>}{output}</span>
+  return <span className={`block overflow-hidden text-ellipsis whitespace-nowrap ${field.kind === "command" ? "w-full text-fg" : "numeric-cell tabular-nums"}`} title={output}>{field.kind === "command" && linked && <span className="mr-1.5 inline-block border border-accent-line bg-accent-soft px-1 py-0.5 align-[1px] text-xs font-bold tracking-[.06em] text-accent2">PG</span>}{output}</span>
 }
 
 function sortable(row: DataRow, field: Field): string | number | null {

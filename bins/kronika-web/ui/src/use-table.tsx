@@ -1,12 +1,26 @@
-import { useEffect, useMemo, useState } from "react"
+import { useMemo } from "react"
 
 import type { LanePoint } from "./api"
-import { ChartOnly } from "./chart-visibility"
 import { LabelHelp, type Translate } from "./help"
 import { humanBytes, humanPercent, measure, type Locale } from "./model"
-import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
+import { readingAt, type ChartPoint } from "./series-chart"
 
-const RESOURCES: readonly Resource[] = [
+export type UseResourceKey = "cpu" | "memory" | "disk" | "network"
+
+export interface UseCell {
+  readonly lane: string
+  readonly kind: "share" | "rate" | "count" | "bytes"
+  readonly second?: string
+}
+
+export interface UseResource {
+  readonly key: UseResourceKey
+  readonly utilisation: UseCell | null
+  readonly saturation: UseCell | null
+  readonly errors: UseCell | null
+}
+
+export const USE_RESOURCES: readonly UseResource[] = [
   {
     key: "cpu",
     utilisation: { lane: "cpu_busy", kind: "share" },
@@ -33,111 +47,103 @@ const RESOURCES: readonly Resource[] = [
   },
 ]
 
-interface Cell {
-  readonly lane: string
-  readonly kind: "share" | "rate" | "count" | "bytes"
-  readonly second?: string
-}
+export const USE_COLUMNS = ["utilisation", "saturation", "errors"] as const
 
-interface Resource {
-  readonly key: string
-  readonly utilisation: Cell | null
-  readonly saturation: Cell | null
-  readonly errors: Cell | null
-}
-
-interface ChartChoice {
-  readonly cell: Cell
-  readonly column: (typeof COLUMNS)[number]
-  readonly key: string
-  readonly points: readonly ChartPoint[]
-  readonly resource: Resource
-  readonly second: readonly ChartPoint[]
-}
-
+// The grid is the host overview: a row is one resource, a click chooses the
+// resource whose submetrics the detail area below charts and lists. Cells stay
+// static readings; the per-cell chart moved to the submetric chips.
 export function UseTable({
+  canOpen,
   cursor,
-  hour,
   lanePoints,
   locale,
-  onCursor,
+  onSelect,
+  selected,
   t,
 }: {
+  readonly canOpen?: (resource: UseResourceKey) => boolean
   readonly cursor: number
-  readonly hour: number
   readonly lanePoints: readonly LanePoint[]
   readonly locale: Locale
-  readonly onCursor: (timestamp: number) => void
+  readonly onSelect: (resource: UseResourceKey) => void
+  readonly selected: UseResourceKey | null
   readonly t: Translate
 }) {
-  const shown = useMemo(() => RESOURCES.filter((resource) => COLUMNS.some((column) => {
-    const cell = resource[column]
-    return cell !== null && lanePoints.some((point) => point.lane === cell.lane)
-  })), [lanePoints])
-  const choices = useMemo(() => buildUseChartChoices(lanePoints, shown), [lanePoints, shown])
-  const [selectedKey, setSelectedKey] = useState(choices[0]?.key ?? "")
-  useEffect(() => {
-    if (choices.some((choice) => choice.key === selectedKey)) return
-    setSelectedKey(choices[0]?.key ?? "")
-  }, [choices, selectedKey])
-  const selected = choices.find((choice) => choice.key === selectedKey) ?? choices[0]
+  const shown = useMemo(() => shownUseResources(lanePoints), [lanePoints])
   if (shown.length === 0) return null
-  return <section aria-label={t("use.title")} className="use-table" data-testid="use-table">
-    <header>
-      <span>{t("use.resource")}</span>
-      {COLUMNS.map((column) => <span key={column}>{t(`use.${column}`)}</span>)}
+  return <section aria-label={t("use.title")} className="use-table" data-testid="use-table" role="table">
+    <header className="grid grid-cols-[minmax(96px,130px)_repeat(3,minmax(0,1fr))] border-b border-line2 text-xs uppercase text-fg3 [&>span]:px-2 [&>span]:py-[5px] max-[760px]:grid-cols-[80px_repeat(3,minmax(0,1fr))]" role="row">
+      <span role="columnheader">{t("use.resource")}</span>
+      {USE_COLUMNS.map((column) => <span key={column} role="columnheader">{t(`use.${column}`)}</span>)}
     </header>
-    {shown.map((resource) => <div className="use-row" key={resource.key}>
-      <span className="use-resource">{t(`use.resource.${resource.key}`)}</span>
-      {COLUMNS.map((column) => {
+    {shown.map((resource) => {
+      // A row whose group has no metrics to chart stays honest: no pointer, no
+      // dead click.
+      const openable = canOpen?.(resource.key) ?? true
+      return <div
+        aria-disabled={!openable}
+        aria-selected={selected === resource.key}
+        className="use-row"
+        data-testid={`use-row-${resource.key}`}
+        key={resource.key}
+        onClick={openable ? () => onSelect(resource.key) : undefined}
+        onKeyDown={openable ? (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return
+          event.preventDefault()
+          onSelect(resource.key)
+        } : undefined}
+        role="row"
+        tabIndex={openable ? 0 : undefined}
+      >
+      <span className="use-resource self-center px-2 py-[7px] text-sm uppercase text-fg2" role="cell">{t(`use.resource.${resource.key}`)}</span>
+      {USE_COLUMNS.map((column) => {
         const cell = resource[column]
-        const choice = choices.find((candidate) => candidate.resource.key === resource.key && candidate.column === column)
-        if (cell === null || choice === undefined) return <span className="use-cell use-absent" key={column} title={t("use.not_measured")}>—</span>
-        const primary = currentReading(choice.points, cursor, locale, cell.kind, t("unit.per_second"))
-        const secondary = cell.second === undefined ? null : currentReading(choice.second, cursor, locale, cell.kind, t("unit.per_second"))
-        const values = [
-          `${t(`use.lane.${cell.lane}`)}: ${primary}`,
-          ...(cell.second === undefined ? [] : [`${t(`use.lane.${cell.second}`)}: ${secondary}`]),
-        ]
-        return <span className="use-cell" key={column}>
-          <button
-            aria-label={values.join("; ")}
-            aria-pressed={selected?.key === choice.key}
-            className="use-cell-action"
-            data-testid={`use-metric-${choice.key}`}
-            onClick={() => setSelectedKey(choice.key)}
-            type="button"
-          >
+        if (cell === null || !laneHasReading(lanePoints, cell.lane)) {
+          return <span className="use-cell relative flex min-w-0 items-center justify-center border-l border-line text-fg4" key={column} role="cell" title={t("use.not_measured")}>—</span>
+        }
+        const primary = currentLaneReading(lanePoints, cell.lane, cursor, locale, cell.kind, t("unit.per_second"))
+        const secondary = cell.second === undefined ? null : currentLaneReading(lanePoints, cell.second, cursor, locale, cell.kind, t("unit.per_second"))
+        return <span className="use-cell relative min-w-0 border-l border-line" key={column} role="cell">
+          <span className="use-cell-body flex min-h-[38px] items-baseline justify-between gap-[7px] py-1.5 pl-2 pr-[26px] text-fg3 [&>span]:min-w-0 [&>span]:overflow-hidden [&>span]:text-ellipsis [&>span]:whitespace-nowrap [&>span]:text-xs [&_strong]:flex-none [&_strong]:whitespace-nowrap [&_strong]:text-sm [&_strong]:font-medium [&_strong]:tabular-nums [&_strong]:text-fg2">
             <span>{t(`use.lane.${cell.lane}`)}</span>
             <strong>{[primary, ...(secondary === null ? [] : [secondary])].join(" · ")}</strong>
-          </button>
+          </span>
           <LabelHelp helpKey={useLaneHelp(cell.lane)} iconOnly labelKey={`use.lane.${cell.lane}`} t={t} />
         </span>
       })}
-    </div>)}
-    <ChartOnly>{selected !== undefined && <section className="use-history" data-testid="use-history">
-      <SeriesChart
-        cursor={cursor}
-        empty={t("status.no_data")}
-        format={(stored, place) => reading(stored, place, selected.cell.kind, t("unit.per_second"))}
-        helpKey={useLaneHelp(selected.cell.lane)}
-        hour={hour}
-        labelKey={`use.lane.${selected.cell.lane}`}
-        locale={locale}
-        onCursor={onCursor}
-        points={selected.points}
-        scale={selected.cell.kind === "share" ? "percent" : "nonnegative"}
-        second={selected.second.length === 0 ? undefined : selected.second}
-        secondHelpKey={selected.cell.second === undefined ? undefined : useLaneHelp(selected.cell.second)}
-        secondLabelKey={selected.cell.second === undefined ? undefined : `use.lane.${selected.cell.second}`}
-        t={t}
-        unit={cellUnit(selected.cell.kind, locale)}
-      />
-    </section>}</ChartOnly>
+    </div>
+    })}
   </section>
 }
 
-const COLUMNS = ["utilisation", "saturation", "errors"] as const
+export function shownUseResources(lanePoints: readonly LanePoint[]): readonly UseResource[] {
+  return USE_RESOURCES.filter((resource) => USE_COLUMNS.some((column) => {
+    const cell = resource[column]
+    return cell !== null && laneHasReading(lanePoints, cell.lane)
+  }))
+}
+
+export function laneHasReading(lanePoints: readonly LanePoint[], lane: string): boolean {
+  return lanePoints.some((point) => point.lane === lane && point.value !== null && Number.isFinite(point.value))
+}
+
+export function laneSeriesPoints(lanePoints: readonly LanePoint[], lane: string): readonly ChartPoint[] {
+  return lanePoints
+    .filter((point) => point.lane === lane)
+    .map((point) => ({ segmentId: point.segmentId, timestamp: point.timestamp, value: point.value }))
+}
+
+export function currentLaneReading(
+  lanePoints: readonly LanePoint[],
+  lane: string,
+  cursor: number,
+  locale: Locale,
+  kind: UseCell["kind"],
+  perSecond: string,
+): string {
+  const stored = readingAt(laneSeriesPoints(lanePoints, lane), cursor)
+  return stored === null ? "—" : reading(stored, locale, kind, perSecond)
+}
 
 const USE_LANE_HELP: Readonly<Record<string, string>> = {
   cpu_busy: "lane.cpu_busy.help",
@@ -153,50 +159,11 @@ const USE_LANE_HELP: Readonly<Record<string, string>> = {
   net_tx: "system.metric.network_tx.help",
 }
 
-function useLaneHelp(lane: string): string {
+export function useLaneHelp(lane: string): string {
   return USE_LANE_HELP[lane] ?? "chart.metric.help"
 }
 
-export function availableUseChartKeys(lanePoints: readonly LanePoint[]): readonly string[] {
-  return buildUseChartChoices(lanePoints, RESOURCES).map((choice) => choice.key)
-}
-
-function buildUseChartChoices(lanePoints: readonly LanePoint[], resources: readonly Resource[]): readonly ChartChoice[] {
-  return resources.flatMap((resource) => COLUMNS.flatMap((column) => {
-    const cell = resource[column]
-    if (cell === null) return []
-    const points = seriesOf(lanePoints, cell.lane)
-    if (!points.some((point) => point.value !== null && Number.isFinite(point.value))) return []
-    return [{
-      cell,
-      column,
-      key: `${resource.key}-${column}`,
-      points,
-      resource,
-      second: cell.second === undefined ? [] : seriesOf(lanePoints, cell.second),
-    }]
-  }))
-}
-
-function currentReading(points: readonly ChartPoint[], cursor: number, locale: Locale, kind: Cell["kind"], perSecond: string): string {
-  const stored = readingAt(points, cursor)
-  return stored === null ? "—" : reading(stored, locale, kind, perSecond)
-}
-
-function cellUnit(kind: Cell["kind"], locale: Locale): string {
-  if (kind === "share") return "%"
-  if (kind === "bytes") return locale === "ru" ? "байты/с" : "bytes/s"
-  if (kind === "rate") return locale === "ru" ? "1/с" : "1/s"
-  return locale === "ru" ? "количество" : "count"
-}
-
-function seriesOf(lanePoints: readonly LanePoint[], lane: string): readonly ChartPoint[] {
-  return lanePoints
-    .filter((point) => point.lane === lane)
-    .map((point) => ({ segmentId: point.segmentId, timestamp: point.timestamp, value: point.value }))
-}
-
-export function reading(value: number, locale: Locale, kind: Cell["kind"], perSecond: string): string {
+export function reading(value: number, locale: Locale, kind: UseCell["kind"], perSecond: string): string {
   if (kind === "share") return humanPercent(value, locale)
   if (kind === "bytes") return humanBytes(value, locale, perSecond)
   if (kind === "count") return measure(value, locale)

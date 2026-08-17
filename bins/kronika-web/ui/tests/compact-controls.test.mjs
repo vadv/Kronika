@@ -7,20 +7,26 @@ test("metric selection and help use sibling controls", async () => {
     readFile(new URL("../src/timeline.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/system-view.tsx", import.meta.url), "utf8"),
   ])
-  assert.match(timeline, /className="lane-select"[\s\S]*?<\/button>\s*<LabelHelp[^>]*iconOnly/)
+  assert.match(timeline, /className="lane-select[^"]*"[\s\S]*?<\/button>\s*<LabelHelp[^>]*iconOnly/)
   assert.match(system, /className="metric-choice"[\s\S]*?<\/button>\s*<LabelHelp[^>]*iconOnly/)
   assert.doesNotMatch(timeline, /<button(?:(?!<\/button>)[\s\S])*<LabelHelp/)
   assert.doesNotMatch(system, /<button(?:(?!<\/button>)[\s\S])*<LabelHelp/)
 })
 
 test("narrow controls stay bounded and coarse-pointer table help is immediately reachable", async () => {
-  const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8")
-  assert.match(styles, /\.hour-popover[^}]*position:\s*fixed/)
+  const [styles, picker, entityTable] = await Promise.all([
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+    readFile(new URL("../src/hour-picker.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/entity-table.tsx", import.meta.url), "utf8"),
+  ])
+  assert.match(picker.match(/<div[^>]*data-testid="hour-popover"[^>]*>/s)?.[0] ?? "", /\bfixed\b/)
   assert.match(styles, /@media \(max-width: 520px\)[\s\S]*?\.top-actions[^}]*flex-wrap:\s*wrap/)
   assert.match(styles, /@media \(hover: none\), \(pointer: coarse\)[\s\S]*?\.entity-header-cell > \.label-help[^}]*opacity:\s*1[^}]*pointer-events:\s*auto/)
-  // 14px mark plus 15px of invisible reach on each side is the 44px platform minimum
-  // without a dot that dwarfs the rows behind it.
-  assert.match(styles, /@media \(hover: none\), \(pointer: coarse\)[\s\S]*?\.help-dot::after[^}]*inset:\s*-15px/)
+  // 36x36 around a 14px mark: the mark steps in by its own reach so the target
+  // fits inside the cell instead of being clipped by the column edge.
+  assert.match(styles, /@media \(hover: none\), \(pointer: coarse\)[\s\S]*?\.label-help[^}]*margin-right:\s*11px/)
+  assert.match(styles, /@media \(hover: none\), \(pointer: coarse\)[\s\S]*?\.help-dot::after[^}]*inset:\s*-11px/)
+  assert.match(entityTable, /scroll-padding-inline-end:15px/)
   assert.doesNotMatch(styles, /@media \(hover: none\), \(pointer: coarse\)[\s\S]*?\.help-dot[^:][^}]*width:\s*44px/)
 })
 
@@ -32,8 +38,8 @@ test("history placeholders are compact and name loading, error, and empty states
     readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8"),
   ])
   assert.match(chart, /status === "loading"[\s\S]*?history\.loading[\s\S]*?status === "error"[\s\S]*?history\.error[\s\S]*?history\.empty/)
-  assert.match(styles, /\.series-status[^}]*min-height:\s*30px/)
-  assert.doesNotMatch(styles, /\.series-(?:empty|status)[^}]*height:\s*200px/)
+  assert.match(chart, /min-h-\[30px\][^"]*text-sm/)
+  assert.doesNotMatch(chart, /min-h-\[200px\]/)
   for (const dictionary of [en, ru]) {
     assert.match(dictionary, /^history\.loading:/m)
     assert.match(dictionary, /^history\.error:/m)
