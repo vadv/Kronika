@@ -1960,7 +1960,11 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
       held.response.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8" })
       held.response.end("{")
     }
-    await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]') === null && document.querySelector('[data-testid="system-os_cgroup_cpu"]') === null`, "no stale cgroup rows after exact-load failures", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]') === null`, "the cursor caught up after exact-load failures", 15_000)
+    for (const [panel, tab] of [["os_cgroup_cpu", "cpu"], ["os_cgroup_memory", "memory"], ["os_cgroup_io", "storage"]]) {
+      await cdp.evaluate(`document.querySelector('[data-testid="host-section-${tab}"]').click()`)
+      await cdp.waitFor(`document.querySelector('[data-testid="system-${panel}"]') === null`, `no stale ${panel} rows after exact-load failures`, 15_000)
+    }
     await cdp.evaluate(`document.querySelector('[data-testid="process-tab"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Could not load process totals" && document.querySelector('.process-summary .metric-choice > button strong')?.textContent === "719"`, "same-hour error with retained totals", 15_000)
 
