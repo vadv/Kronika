@@ -77,7 +77,10 @@ impl NormalizedDictionary {
         Ok(())
     }
 
-    pub(super) fn sections(&self) -> Result<Vec<crate::dict::DictSection>, WriteError> {
+    pub(super) fn write_sections_to(
+        &self,
+        out: &mut (impl std::io::Write + Send),
+    ) -> Result<Vec<crate::dict::WrittenDictSection>, WriteError> {
         let snapshots = self.values.iter().map(|(&str_id, value)| {
             let (stored_bytes, full_len, truncated, full_sha256, placement) = match value {
                 DictionaryValue::String(bytes) => (
@@ -111,7 +114,7 @@ impl NormalizedDictionary {
                 blob_required: placement == Placement::Blobs,
             }
         });
-        crate::dict::encode_final_entries(snapshots).map_err(WriteError::Codec)
+        crate::dict::encode_final_entries_to(snapshots, out).map_err(WriteError::Codec)
     }
 }
 
