@@ -46,6 +46,8 @@ type NamedIndexSnapshot<'a> = (
 
 type DmlTableSnapshot<'a> = (i64, u32, u32, [i64; 4], &'a str, &'a str, &'a str);
 
+type SizedTableSnapshot<'a> = (i64, u32, u32, i64, Option<i64>, &'a str, &'a str, &'a str);
+
 struct Fixture {
     directory: tempfile::TempDir,
     writer: WriterOwner,
@@ -674,6 +676,50 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append named table snapshots");
+    }
+
+    fn append_sized_table_snapshots(&mut self, rows: &[SizedTableSnapshot<'_>]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let tablespace = StrId(
+            interner
+                .intern(b"pg_default")
+                .expect("intern tablespace")
+                .get(),
+        );
+        let mut buffers = SectionBuffers::new();
+        for &(ts, datid, relid, main, toast, datname, schema, table) in rows {
+            let mut row = user_table(ts, datid, relid, 0);
+            row.main_fork_bytes = main;
+            row.toast_bytes = toast;
+            row.datname = StrId(
+                interner
+                    .intern(datname.as_bytes())
+                    .expect("intern database")
+                    .get(),
+            );
+            row.schemaname = StrId(
+                interner
+                    .intern(schema.as_bytes())
+                    .expect("intern schema")
+                    .get(),
+            );
+            row.relname = StrId(
+                interner
+                    .intern(table.as_bytes())
+                    .expect("intern table")
+                    .get(),
+            );
+            row.tablespace = tablespace;
+            buffers.push(row).expect("sized table row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("encode sized table dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode sized table snapshots")
+            .expect("nonempty sized table snapshots");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append sized table snapshots");
     }
 
     fn append_dml_table_snapshots(&mut self, rows: &[DmlTableSnapshot<'_>]) {
@@ -3158,10 +3204,8 @@ fn snapshot_cursor_rejects_every_bound_query_shape_mismatch() {
         let path = format!("/api/segments/{segment_id}/snapshot");
         let query = format!("{query}&cursor={cursor}");
         let route = crate::route::parse(&path, Some(&query)).expect("mismatch route");
-        assert!(matches!(
-            crate::api::prepare(fixture.root(), SOURCES, route, None),
-            Err(ApiError::BadCursor)
-        ));
+        let result = crate::api::prepare(fixture.root(), SOURCES, route, None);
+        assert!(matches!(result, Err(ApiError::BadCursor)), "{query}");
     }
 
     let compatible_size = shape.replacen("page_size=1", "page_size=4", 1);
@@ -4152,6 +4196,65 @@ fn relation_search_runs_before_group_sort_and_page() {
     assert_eq!(page["eligible"], "1");
     assert_eq!(page["returned"], "1");
     assert_eq!(page["has_more"], false);
+}
+
+#[test]
+fn relation_comparison_filters_reduced_hidden_metrics_before_page() {
+    const MB: i64 = 1_000_000;
+    let mut fixture = Fixture::new();
+    fixture.append_sized_table_snapshots(&[
+        (100, 1, 1, 50 * MB, Some(10 * MB), "db", "pair", "first"),
+        (100, 1, 2, 30 * MB, Some(30 * MB), "db", "pair", "second"),
+        (100, 1, 3, 100 * MB, None, "db", "boundary", "exact"),
+        (100, 1, 999, 150 * MB, None, "db", "large", "outside_page"),
+    ]);
+    fixture.finish();
+
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=pg_stat_user_tables&field=table_count&page_size=1"
+    );
+    let objects =
+        stream(fixture.prepare(&format!("{base}&group=object&search=size%3E100MB"), None))
+            .expect("hidden object size comparison");
+    let rows = relation_records(&objects);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["key"]["relid"], "999");
+    let page = objects
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("object comparison trailer");
+    assert_eq!(page["eligible"], "1");
+    assert_eq!(page["returned"], "1");
+
+    let grouped = stream(fixture.prepare(
+        &format!("{base}&group=schema&search=schema%3Apair%20AND%20size%3E100MB"),
+        None,
+    ))
+    .expect("post-reducer schema size comparison");
+    let rows = relation_records(&grouped);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["key"]["schemaname"], "pair");
+    assert_eq!(rows[0]["values"]["table_count"], "2");
+    let layout = grouped
+        .iter()
+        .find(|record| record["record"] == "relation_layout")
+        .expect("relation comparison layout");
+    assert_eq!(layout["columns"].as_array().map(Vec::len), Some(1));
+    assert_eq!(layout["columns"][0]["name"], "table_count");
+
+    for operator in ["%3E", "%3C"] {
+        let boundary = stream(fixture.prepare(
+            &format!("{base}&group=object&search=table_name%3Aexact%20AND%20size{operator}100MB"),
+            None,
+        ))
+        .expect("exact size boundary comparison");
+        assert!(relation_records(&boundary).is_empty());
+        let page = boundary
+            .iter()
+            .find(|record| record["record"] == "snapshot_page")
+            .expect("boundary comparison trailer");
+        assert_eq!(page["eligible"], "0");
+    }
 }
 
 #[test]

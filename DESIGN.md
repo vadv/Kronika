@@ -628,26 +628,51 @@ explicitly selected metric history, not a loose vertical dump of every
 physical field. Tablespace remains an object fact, not a grouping level.
 
 Every entity table uses one bounded public search language and one URL-owned
-applied expression. Ordinary input without a colon is free text. Structured
-input is at most eight `field:value` clauses joined only by case-insensitive
-`AND`; string values may be quoted with `\"` and `\\` escapes and may use `*`
-and `?`, while decimal identifiers are exact and never globbed. Each surface
-owns a compact field registry containing canonical names, aliases, type,
-physical projection and help. Aliases canonicalize to the same chip; unknown
-or unavailable fields and malformed selectors are errors, never text
-fallbacks. `query_id` and `plan_id` are the only public plan/query identifier
+applied expression. Ordinary input without field syntax is free text.
+Structured input is at most eight predicates joined only by case-insensitive
+`AND`: exact IDs and string/glob values keep `field:value`, while registered
+quantities use strictly `field>quantity` or `field<quantity`. `>=`, `<=`,
+`==`, `!=` and `=` are rejected as atomic operators. `OR`, prefix `NOT` and
+parentheses are reserved outside quoted/text literals and return unsupported
+syntax; their future precedence is `NOT`, then `AND`, then `OR`, but this
+version executes no future boolean form.
+
+The field registry belongs to the whole entity surface, independent of lens,
+requested projection and visible columns. It contains only curated public
+names, aliases, types, operators, units and help; physical reducer inputs,
+layout names and internal identifiers never become search vocabulary. Thus
+Tables `size` works outside the size lens and means the authoritative
+`displayed_storage_bytes` reducer (main fork plus TOAST), while Indexes `size`
+means its main fork. Tables additionally register `table_count`, `buffer_hit`,
+`seq_scan_rate`, `change_rate`, `autovacuum_rate`, `autovacuum_mean` and
+`xid_age`; Indexes register `index_count`, `buffer_hit` and `scan_rate`.
+`query_id` and `plan_id` remain the only public plan/query identifier
 spellings, independent of physical extension layout.
+
+Quantity literals are exact checked decimal values and never pass through a
+JavaScript number. Bytes accept case-sensitive SI `B` through `EB` and IEC
+`KiB` through `EiB`: `100MB` is exactly 100,000,000 bytes and `100MiB` is
+exactly 104,857,600 bytes. Counts are integral and unitless, rates use `/s`,
+durations use `ns`, `us`, `ms`, `s`, `min` or `h`, and percentages use `%`.
+Signs, exponent notation, grouping and nonfinite values are invalid. Missing
+or unavailable values never become zero and match neither strict operator.
+Displayed humanization does not participate in comparison.
 
 The token field keeps an editable draft separate from the last valid applied
 expression. Submission is atomic: an invalid span is marked and announced
 while the URL, request and last successful rows remain unchanged. A valid
-expression becomes removable keyboard controls; manual entry, paste and
-related-row links all produce this same state. Progressive RU/EN help lists
-only the current surface's fields and rules. The server parses and validates
-the same bounded expression, adds only its registered physical projection,
-and filters the complete eligible set before semantic ordering and cursor
-pagination. Search refusal, a successful empty set and transport failure are
-distinct; refresh failure retains the last successful data.
+expression becomes removable keyboard controls whose comparison form uses the
+localized semantic label plus the exact operator and threshold; manual entry,
+paste and related-row links all produce this same state. Progressive RU/EN
+help lists the complete current surface registry and rules. The server parses
+and validates the same bounded expression and loads the exact hidden
+dependency closure. String/member predicates select physical contributors
+before aggregation. Quantity/result predicates compare the authoritative
+object or grouped reducer after aggregation and before semantic ordering,
+cursor validation and pagination. This gives grouped comparisons HAVING-like
+semantics without exposing a generic query engine. Search refusal, a
+successful empty set and transport failure are distinct; refresh failure
+retains the last successful data.
 
 PostgreSQL related-row navigation is confined to the PostgreSQL feature area
 and stored as that same public expression in the URL. For PostgreSQL 14–18 an

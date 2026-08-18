@@ -53,11 +53,90 @@ test("parser limits expression, clauses, values, and exact signed bigint text", 
 })
 
 test("each surface exposes only its useful canonical public fields", () => {
-  assert.deepEqual(searchFields("pg_stat_user_tables").map(({ key }) => key), ["text", "database", "schema", "table_name", "tablespace"])
+  assert.deepEqual(searchFields("pg_stat_user_tables").map(({ key }) => key), [
+    "text", "database", "schema", "table_name", "tablespace", "size", "table_count",
+    "buffer_hit", "seq_scan_rate", "change_rate", "autovacuum_rate", "autovacuum_mean", "xid_age",
+  ])
   assert.deepEqual(searchFields("pg_store_plans").map(({ key }) => key), ["text", "query_id", "plan_id", "database", "role"])
   assert.equal(parseSearch("plan_id:42", "pg_stat_statements").ok, false)
   assert.equal(parseSearch("table_name:orders", "pg_stat_user_tables").ok, true)
   assert.equal(searchFields("pg_store_plans").some((field) => field.key.includes("queryid_stat")), false)
+})
+
+test("strict comparisons canonicalize exact quantities without Number conversion", () => {
+  const parsed = parseSearch(" schema:public and size > 100.000MB AND seq_scan_rate<0.5/s ", "pg_stat_user_tables")
+  assert.equal(parsed.ok, true)
+  if (!parsed.ok) return
+  assert.equal(parsed.query.canonical, "schema:public AND size>100MB AND seq_scan_rate<0.5/s")
+  assert.equal(parsed.query.expr.kind, "and")
+  assert.deepEqual(
+    parsed.query.clauses.slice(1).map(({ operator, quantity }) => [
+      operator, quantity.number, quantity.unit, quantity.numerator, quantity.denominator,
+    ]),
+    [[">", "100", "MB", 100_000_000n, 1n], ["<", "0.5", "/s", 1n, 2n]],
+  )
+  assert.equal(canonicalSearch([{ key: "size", operator: ">", value: "100.000MB" }], "pg_stat_user_indexes"), "size>100MB")
+})
+
+test("SI, IEC, duration, percentage, and count units retain exact boundaries", () => {
+  const quantities = [
+    ["size>100MB", 100_000_000n, 1n],
+    ["size>100MiB", 104_857_600n, 1n],
+    ["size>0.5KiB", 512n, 1n],
+    ["autovacuum_mean<250000us", 250n, 1n],
+    ["buffer_hit>99.95%", 1_999n, 20n],
+    ["table_count<18446744073709551615", 18_446_744_073_709_551_615n, 1n],
+  ]
+  for (const [expression, numerator, denominator] of quantities) {
+    const parsed = parseSearch(expression, "pg_stat_user_tables")
+    assert.equal(parsed.ok, true, expression)
+    if (!parsed.ok) continue
+    assert.equal(parsed.query.clauses[0].quantity.numerator, numerator, expression)
+    assert.equal(parsed.query.clauses[0].quantity.denominator, denominator, expression)
+  }
+  for (const expression of [
+    "size>0.1B", "size>100", "size>100mb", "size>100 MB", 'size>"100MB"',
+    "buffer_hit>100.1%", "table_count>1.5", "size>-1MB", "size>1e3MB",
+    "size>1,000MB", "size>1_MB", "size>NaN", "size>Infinity",
+  ]) assert.equal(parseSearch(expression, "pg_stat_user_tables").ok, false, expression)
+})
+
+test("non-v1 operators are atomic and future syntax is reserved", () => {
+  for (const [expression, code, token] of [
+    ["size>=100MB", "unsupported_operator", ">="],
+    ["size<=100MB", "unsupported_operator", "<="],
+    ["size==100MB", "unsupported_operator", "=="],
+    ["size!=100MB", "unsupported_operator", "!="],
+    ["size=100MB", "unsupported_operator", "="],
+    ["size=>100MB", "malformed_operator", "=>"],
+    ["size<>100MB", "malformed_operator", "<>"],
+    ["size:100MB", "operator_not_allowed", ":"],
+    ["schema>public", "operator_not_allowed", ">"],
+    ["size>100MB OR size<1GB", "unsupported_syntax", "OR"],
+    ["NOT size>100MB", "unsupported_syntax", "NOT"],
+    ["(size>100MB)", "unsupported_syntax", "("],
+    ["size>100MB)", "unsupported_syntax", ")"],
+  ]) {
+    const parsed = parseSearch(expression, "pg_stat_user_tables")
+    assert.equal(parsed.ok, false, expression)
+    if (parsed.ok) continue
+    assert.equal(parsed.error.code, code, expression)
+    assert.equal(expression.slice(parsed.error.start, parsed.error.end), token, expression)
+  }
+  assert.equal(parseSearch('text:"size>100MB OR (later)"', "pg_stat_user_tables").ok, true)
+})
+
+test("comparison fields are surface-wide and never expose reducer dependencies", () => {
+  const tableFields = searchFields("pg_stat_user_tables")
+  const indexFields = searchFields("pg_stat_user_indexes")
+  assert.equal(tableFields.find(({ key }) => key === "size")?.columns.length, 0)
+  assert.equal(indexFields.find(({ key }) => key === "size")?.columns.length, 0)
+  for (const expression of ["size>100MB", "xid_age<1000", "autovacuum_mean>250ms"]) {
+    assert.equal(parseSearch(expression, "pg_stat_user_tables").ok, true, expression)
+  }
+  for (const internal of ["displayed_storage_bytes>1B", "main_fork_bytes>1B", "buffer_hit_pct>90%"]) {
+    assert.equal(parseSearch(internal, "pg_stat_user_tables").ok, false, internal)
+  }
 })
 
 test("client matching is conjunctive, globbed only for strings, and fork-transparent", () => {

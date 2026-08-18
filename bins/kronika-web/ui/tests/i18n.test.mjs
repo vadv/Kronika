@@ -32,13 +32,14 @@ test("PostgreSQL buffer and block metric labels stay canonical English in RU", a
   const english = parseDictionary(englishSource, "en.yaml")
   const russian = parseDictionary(russianSource, "ru.yaml")
   validateDictionaries(english, russian)
-  const keys = Object.keys(english).filter((key) => key.endsWith(".label") && /(?:blks|blocks|buffer_hit)/.test(key))
+  const keys = Object.keys(english).filter((key) => !key.startsWith("filter.field.") && key.endsWith(".label") && /(?:blks|blocks|buffer_hit)/.test(key))
   assert.ok(keys.length >= 29)
   for (const key of keys) assert.equal(russian[key], english[key], key)
   assert.equal(english["pg.field.shared_blks_read.label"], "Shared buffer read bytes")
   assert.equal(english["pg.field.shared_blks_hit.label"], "Shared buffer hit bytes")
   assert.equal(english["pg.field.temp_blks_written.label"], "Temp buffer written bytes")
   assert.match(russian["pg.field.shared_blks_read.help"], /[А-Яа-яЁё]/u)
+  assert.equal(russian["filter.field.buffer_hit.label"], "Попадания в буфер")
 })
 
 test("hour empty states are provisional only while the selected hour is open", async () => {

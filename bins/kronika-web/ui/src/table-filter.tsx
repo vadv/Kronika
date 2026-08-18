@@ -3,7 +3,7 @@ import { useEffect, useId, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 
 import type { Translate } from "./help"
-import { parseSearch, searchFields, type SearchError, type SearchSurface, withoutSearchClause } from "./search"
+import { parseSearch, searchFields, type SearchClause, type SearchError, type SearchSurface, withoutSearchClause } from "./search"
 
 export function TableFilter({
   context,
@@ -64,6 +64,7 @@ export function TableFilter({
           <span aria-hidden="true" className="grid h-full w-[18px] place-items-center"><Search size={12} /></span>
           <input
             aria-describedby={error === null ? undefined : errorId}
+            aria-errormessage={error === null ? undefined : errorId}
             aria-invalid={error === null ? undefined : true}
             aria-label={t("filter.label")}
             className="min-w-0 w-full border-0 bg-transparent px-1 py-1 text-sm text-fg outline-none [font-family:inherit] placeholder:text-fg4 [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-cancel-button]:appearance-none"
@@ -93,13 +94,20 @@ export function TableFilter({
     </div>
     {applied?.structured === true && applied.clauses.length > 0 && <div aria-label={t("filter.tokens")} className="mt-1 flex min-w-0 flex-wrap gap-1" data-testid="search-chips">
       {applied.clauses.map((clause, index) => <span className="inline-flex max-w-full items-center border border-accent2 bg-accent-soft text-xs text-fg" key={`${clause.key}:${clause.value}:${index}`}>
-        <span className="max-w-[240px] overflow-hidden text-ellipsis whitespace-nowrap px-1.5 py-0.5"><strong>{clause.key}</strong>: {clause.value}</span>
-        <button aria-label={t("filter.token.remove", { field: clause.key, value: clause.value })} className="inline-flex self-stretch cursor-pointer items-center border-0 border-l border-accent2 bg-transparent px-1 text-fg2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => onPattern?.(withoutSearchClause(applied, index))} type="button"><X aria-hidden="true" size={11} /></button>
+        <SearchChip clause={clause} t={t} />
+        <button aria-label={t("filter.token.remove", { field: clause.field.kind === "quantity" ? t(`filter.field.${clause.key}.label`) : clause.key, value: clause.field.kind === "quantity" ? `${clause.operator} ${clause.quantity?.number ?? clause.value} ${clause.quantity?.unit ?? ""}`.trim() : clause.value })} className="inline-flex self-stretch cursor-pointer items-center border-0 border-l border-accent2 bg-transparent px-1 text-fg2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => onPattern?.(withoutSearchClause(applied, index))} type="button"><X aria-hidden="true" size={11} /></button>
       </span>)}
     </div>}
     {error !== null && <SearchErrorMessage draft={draft} error={error} id={errorId} t={t} />}
     {help && typeof document !== "undefined" && createPortal(<SearchHelp onClose={() => { setHelp(false); queueMicrotask(() => helpButton.current?.focus()) }} surface={surface} t={t} />, document.body)}
   </div>
+}
+
+function SearchChip({ clause, t }: { readonly clause: SearchClause; readonly t: Translate }) {
+  if (clause.field.kind !== "quantity") return <span className="max-w-[240px] overflow-hidden text-ellipsis whitespace-nowrap px-1.5 py-0.5"><strong>{clause.key}</strong>: {clause.value}</span>
+  return <span className="max-w-[280px] overflow-hidden text-ellipsis whitespace-nowrap px-1.5 py-0.5" title={clause.canonical}>
+    <strong>{t(`filter.field.${clause.key}.label`)}</strong><span aria-hidden="true"> · </span>{clause.operator} {clause.quantity?.number}<span aria-hidden="true"> </span>{clause.quantity?.unit}
+  </span>
 }
 
 function SearchErrorMessage({ draft, error, id, t }: { readonly draft: string; readonly error: SearchError; readonly id: string; readonly t: Translate }) {
@@ -143,7 +151,8 @@ function SearchHelp({ onClose, surface, t }: { readonly onClose: () => void; rea
 function searchExamples(surface: SearchSurface): readonly string[] {
   if (surface === "pg_store_plans") return ["plan_id:3704532795 AND query_id:-912345", 'database:app AND text:"nested loop"']
   if (surface === "pg_stat_statements" || surface === "pg_stat_activity") return ["query_id:-912345", 'database:app AND text:"select orders*"']
-  if (surface === "pg_stat_user_tables" || surface === "pg_stat_user_indexes") return ["table_name:orders AND schema:public", 'database:app AND schema:"Sales Data"']
+  if (surface === "pg_stat_user_tables") return ["size>100MB", "schema:public AND size>100MiB", 'seq_scan_rate>0.5/s AND text:"orders"']
+  if (surface === "pg_stat_user_indexes") return ["size>100MB", "schema:public AND buffer_hit<99.5%", "scan_rate>10/s AND table_name:orders"]
   if (surface === "os_process") return ["pid:4242", "command:postgres*"]
   if (surface === "events") return ["kind:event AND source:postgres*", 'text:"lock timeout"']
   return ["database:app", "state:active"]
