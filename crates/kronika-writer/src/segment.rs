@@ -284,28 +284,22 @@ fn spool_dictionary_sections(
     journal: &Journal,
     strings: &[SectionDescriptor],
     blobs: &[SectionDescriptor],
-    out: &mut impl Write,
+    out: &mut (impl Write + Send),
     spooled: &mut Vec<SpooledSection>,
     offset: &mut u64,
 ) -> Result<(), WriteError> {
     let dictionary = normalize_dictionary(journal, strings, blobs)?;
-    for section in dictionary.sections()? {
-        let len = u64::try_from(section.body.len()).map_err(|_overflow| {
-            WriteError::ArithmeticOverflow {
-                what: "dictionary section length",
-            }
-        })?;
-        check_final_section_len(len)?;
-        out.write_all(&section.body)?;
+    for section in dictionary.write_sections_to(out)? {
+        check_final_section_len(section.len)?;
         spooled.push(SpooledSection {
             type_id: section.type_id,
             rows: section.rows,
             offset: *offset,
-            len,
-            crc32c: crc32c(&section.body),
+            len: section.len,
+            crc32c: section.crc32c,
         });
         *offset = offset
-            .checked_add(len)
+            .checked_add(section.len)
             .ok_or(WriteError::ArithmeticOverflow {
                 what: "spool offset",
             })?;
