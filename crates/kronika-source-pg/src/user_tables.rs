@@ -1,4 +1,4 @@
-//! `pg_stat_user_tables` collection for types `1_013_001`..`1_013_004`.
+//! `pg_stat_user_tables` collection for types `1_013_005`..`1_013_008`.
 //!
 //! One row per table of the connected database, merging what the table did
 //! (`pg_stat_user_tables`), what it cost in buffers (`pg_statio_user_tables`),
@@ -13,20 +13,20 @@ use kronika_registry::pg_stat_user_tables::{
 use kronika_registry::{StrId, Ts};
 use tokio_postgres::types::Type;
 
-use crate::Session;
 use crate::databases::Database;
 use crate::query::{self, Batch, BatchError, BatchWrite, QueryStats};
+use crate::{Session, intern_opt as opt};
 
 /// The `pg_stat_user_tables` layout selected by the server major version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserTablesVersion {
-    /// PG 10-12: type `1_013_001` (base layout).
+    /// PG 10-12: type `1_013_005` (base layout).
     V1,
-    /// PG 13-15: type `1_013_002` (adds `n_ins_since_vacuum`).
+    /// PG 13-15: type `1_013_006` (adds `n_ins_since_vacuum`).
     V2,
-    /// PG 16-17: type `1_013_003` (adds new-page updates and last-scan times).
+    /// PG 16-17: type `1_013_007` (adds new-page updates and last-scan times).
     V3,
-    /// PG 18: type `1_013_004` (adds cumulative vacuum and analyze times).
+    /// PG 18: type `1_013_008` (adds cumulative vacuum and analyze times).
     V4,
 }
 
@@ -47,7 +47,14 @@ pub const fn user_tables_version(major: u32) -> UserTablesVersion {
 /// The columns every layout shares.
 const COMMON_COLUMNS: &str = "st.relid, \
      st.schemaname::text AS schemaname, st.relname::text AS relname, \
-     coalesce(ts.spcname, dts.spcname)::text AS tablespace, \
+     CASE WHEN c.relkind = 'p' THEN NULL \
+          ELSE COALESCE(NULLIF(c.reltablespace, 0), d.dattablespace) \
+     END::oid AS tablespace_oid, \
+     CASE WHEN c.relkind = 'p' THEN NULL ELSE ets.spcname::text END AS tablespace, \
+     CASE WHEN c.reltoastrelid = 0 THEN true \
+          ELSE COALESCE(NULLIF(tc.reltablespace, 0), d.dattablespace) = \
+               COALESCE(NULLIF(c.reltablespace, 0), d.dattablespace) \
+     END AS toast_tablespace_matches_heap, \
      coalesce(st.seq_scan, 0) AS seq_scan, \
      coalesce(st.seq_tup_read, 0) AS seq_tup_read, \
      st.idx_scan, st.idx_tup_fetch, \
@@ -66,36 +73,37 @@ const COMMON_COLUMNS: &str = "st.relid, \
      (extract(epoch from st.last_autovacuum) * 1e6)::int8 AS last_autovacuum_us, \
      (extract(epoch from st.last_analyze) * 1e6)::int8 AS last_analyze_us, \
      (extract(epoch from st.last_autoanalyze) * 1e6)::int8 AS last_autoanalyze_us, \
-     coalesce(pg_relation_size(st.relid), 0) AS main_fork_bytes, \
+     coalesce(pg_catalog.pg_relation_size(st.relid), 0) AS main_fork_bytes, \
      CASE WHEN c.reltoastrelid <> 0 \
-          THEN pg_total_relation_size(c.reltoastrelid) END AS toast_bytes, \
+          THEN pg_catalog.pg_total_relation_size(c.reltoastrelid) END AS toast_bytes, \
      tst.n_live_tup AS toast_n_live_tup, \
      tst.n_dead_tup AS toast_n_dead_tup, \
      (extract(epoch from tst.last_autovacuum) * 1e6)::int8 AS toast_last_autovacuum_us, \
      CASE WHEN c.relkind = 'p' THEN NULL \
-          ELSE age(c.relfrozenxid)::int8 END AS xid_age, \
+          ELSE pg_catalog.age(c.relfrozenxid)::int8 END AS xid_age, \
      CASE WHEN c.relkind = 'p' THEN NULL \
-          ELSE mxid_age(c.relminmxid)::int8 END AS mxid_age, \
+          ELSE pg_catalog.mxid_age(c.relminmxid)::int8 END AS mxid_age, \
      c.reltuples::int8 AS reltuples, \
      coalesce(sio.heap_blks_read, 0) AS heap_blks_read, \
      coalesce(sio.heap_blks_hit, 0) AS heap_blks_hit, \
      sio.idx_blks_read, sio.idx_blks_hit, \
      sio.toast_blks_read, sio.toast_blks_hit, \
      sio.tidx_blks_read, sio.tidx_blks_hit, \
-     (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us";
+     (extract(epoch from pg_catalog.statement_timestamp()) * 1e6)::int8 AS ts_us";
 
 /// The joins every layout shares.
 ///
 /// The TOAST relation is joined through `pg_stat_all_tables` rather than the
 /// `user` view: a TOAST table lives in `pg_toast`, which the `user` views leave
 /// out.
-const COMMON_FROM: &str = " FROM pg_stat_user_tables st \
-     JOIN pg_class c ON c.oid = st.relid \
-     LEFT JOIN pg_statio_user_tables sio ON sio.relid = st.relid \
-     LEFT JOIN pg_stat_all_tables tst ON tst.relid = c.reltoastrelid \
-     LEFT JOIN pg_tablespace ts ON ts.oid = c.reltablespace \
-     LEFT JOIN pg_tablespace dts ON dts.oid = \
-         (SELECT dattablespace FROM pg_database WHERE datname = current_database())";
+const COMMON_FROM: &str = " FROM pg_catalog.pg_stat_user_tables st \
+     JOIN pg_catalog.pg_class c ON c.oid = st.relid \
+     JOIN pg_catalog.pg_database d ON d.datname = pg_catalog.current_database() \
+     LEFT JOIN pg_catalog.pg_statio_user_tables sio ON sio.relid = st.relid \
+     LEFT JOIN pg_catalog.pg_stat_all_tables tst ON tst.relid = c.reltoastrelid \
+     LEFT JOIN pg_catalog.pg_class tc ON tc.oid = c.reltoastrelid \
+     LEFT JOIN pg_catalog.pg_tablespace ets \
+       ON ets.oid = COALESCE(NULLIF(c.reltablespace, 0), d.dattablespace)";
 
 /// The SQL for one layout.
 #[must_use]
@@ -153,8 +161,10 @@ pub struct UserTablesRow {
     pub schemaname: String,
     /// Table name.
     pub relname: String,
-    /// Tablespace name.
-    pub tablespace: String,
+    /// Effective tablespace oid; `None` for a storage-less partitioned parent.
+    pub tablespace_oid: Option<u32>,
+    /// Effective tablespace name; `None` for a storage-less parent or missing label.
+    pub tablespace: Option<String>,
     /// Sequential scans.
     pub seq_scan: i64,
     /// Live rows fetched by sequential scans.
@@ -243,7 +253,7 @@ pub struct UserTablesRow {
     pub tidx_blks_hit: Option<i64>,
 }
 
-/// Build a `1_013_004` row (PG18 layout).
+/// Build a `1_013_008` row (PG18 layout).
 ///
 /// # Errors
 /// Returns the interner's error.
@@ -258,7 +268,8 @@ pub fn to_v4<E>(
         relid: row.relid,
         schemaname: intern(row.schemaname.as_bytes())?,
         relname: intern(row.relname.as_bytes())?,
-        tablespace: intern(row.tablespace.as_bytes())?,
+        tablespace_oid: row.tablespace_oid,
+        tablespace: opt(&mut intern, row.tablespace.as_deref())?,
         seq_scan: row.seq_scan,
         seq_tup_read: row.seq_tup_read,
         idx_scan: row.idx_scan,
@@ -305,7 +316,7 @@ pub fn to_v4<E>(
     })
 }
 
-/// Build a `1_013_003` row (PG16-17 layout, no cumulative times).
+/// Build a `1_013_007` row (PG16-17 layout, no cumulative times).
 ///
 /// # Errors
 /// Returns the interner's error.
@@ -320,7 +331,8 @@ pub fn to_v3<E>(
         relid: row.relid,
         schemaname: intern(row.schemaname.as_bytes())?,
         relname: intern(row.relname.as_bytes())?,
-        tablespace: intern(row.tablespace.as_bytes())?,
+        tablespace_oid: row.tablespace_oid,
+        tablespace: opt(&mut intern, row.tablespace.as_deref())?,
         seq_scan: row.seq_scan,
         seq_tup_read: row.seq_tup_read,
         idx_scan: row.idx_scan,
@@ -363,7 +375,7 @@ pub fn to_v3<E>(
     })
 }
 
-/// Build a `1_013_002` row (PG13-15 layout, no PG16 columns).
+/// Build a `1_013_006` row (PG13-15 layout, no PG16 columns).
 ///
 /// # Errors
 /// Returns the interner's error.
@@ -378,7 +390,8 @@ pub fn to_v2<E>(
         relid: row.relid,
         schemaname: intern(row.schemaname.as_bytes())?,
         relname: intern(row.relname.as_bytes())?,
-        tablespace: intern(row.tablespace.as_bytes())?,
+        tablespace_oid: row.tablespace_oid,
+        tablespace: opt(&mut intern, row.tablespace.as_deref())?,
         seq_scan: row.seq_scan,
         seq_tup_read: row.seq_tup_read,
         idx_scan: row.idx_scan,
@@ -418,7 +431,7 @@ pub fn to_v2<E>(
     })
 }
 
-/// Build a `1_013_001` row (PG10-12 base layout).
+/// Build a `1_013_005` row (PG10-12 base layout).
 ///
 /// # Errors
 /// Returns the interner's error.
@@ -433,7 +446,8 @@ pub fn to_v1<E>(
         relid: row.relid,
         schemaname: intern(row.schemaname.as_bytes())?,
         relname: intern(row.relname.as_bytes())?,
-        tablespace: intern(row.tablespace.as_bytes())?,
+        tablespace_oid: row.tablespace_oid,
+        tablespace: opt(&mut intern, row.tablespace.as_deref())?,
         seq_scan: row.seq_scan,
         seq_tup_read: row.seq_tup_read,
         idx_scan: row.idx_scan,
@@ -478,13 +492,19 @@ fn row_from_pg(
     database: &Database,
     version: UserTablesVersion,
 ) -> anyhow::Result<UserTablesRow> {
+    let relid = row.try_get("relid")?;
+    validate_toast_tablespace(
+        relid,
+        row.try_get::<_, bool>("toast_tablespace_matches_heap")?,
+    )?;
     Ok(UserTablesRow {
         ts: row.try_get("ts_us")?,
         datid: database.oid,
         datname: database.name.clone(),
-        relid: row.try_get("relid")?,
+        relid,
         schemaname: row.try_get("schemaname")?,
         relname: row.try_get("relname")?,
+        tablespace_oid: row.try_get("tablespace_oid")?,
         tablespace: row.try_get("tablespace")?,
         seq_scan: row.try_get("seq_scan")?,
         seq_tup_read: row.try_get("seq_tup_read")?,
@@ -550,6 +570,13 @@ fn row_from_pg(
         tidx_blks_read: row.try_get("tidx_blks_read")?,
         tidx_blks_hit: row.try_get("tidx_blks_hit")?,
     })
+}
+
+fn validate_toast_tablespace(relid: u32, matches_heap: bool) -> anyhow::Result<()> {
+    if !matches_heap {
+        anyhow::bail!("table {relid} has TOAST storage in a different tablespace");
+    }
+    Ok(())
 }
 
 /// Collect every table of the database `client` is attached to.

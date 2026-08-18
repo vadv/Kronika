@@ -92,12 +92,12 @@ PostgreSQL CancelRequest, затем закрывает соединение.
 | `1_012_001` | `pg_stat_progress_vacuum` | 10–16 | инстанс | `conditional_full` |
 | `1_012_002` | `pg_stat_progress_vacuum` | 17 | инстанс | `conditional_full` |
 | `1_012_003` | `pg_stat_progress_vacuum` | 18 | инстанс | `conditional_full` |
-| `1_013_001` | `pg_stat_user_tables` | 10–12 | каждая база | `snapshot_full` |
-| `1_013_002` | `pg_stat_user_tables` | 13–15 | каждая база | `snapshot_full` |
-| `1_013_003` | `pg_stat_user_tables` | 16–17 | каждая база | `snapshot_full` |
-| `1_013_004` | `pg_stat_user_tables` | 18 | каждая база | `snapshot_full` |
-| `1_014_001` | `pg_stat_user_indexes` | 10–15 | каждая база | `snapshot_full` |
-| `1_014_002` | `pg_stat_user_indexes` | 16–18 | каждая база | `snapshot_full` |
+| `1_013_005` | `pg_stat_user_tables` | 10–12 | каждая база | `snapshot_full` |
+| `1_013_006` | `pg_stat_user_tables` | 13–15 | каждая база | `snapshot_full` |
+| `1_013_007` | `pg_stat_user_tables` | 16–17 | каждая база | `snapshot_full` |
+| `1_013_008` | `pg_stat_user_tables` | 18 | каждая база | `snapshot_full` |
+| `1_014_003` | `pg_stat_user_indexes` | 10–15 | каждая база | `snapshot_full` |
+| `1_014_004` | `pg_stat_user_indexes` | 16–18 | каждая база | `snapshot_full` |
 | `1_017_001` | `pg_stat_checkpointer` | 17 | инстанс | `snapshot_full` |
 | `1_017_002` | `pg_stat_checkpointer` | 18 | инстанс | `snapshot_full` |
 | `1_019_001` | `pg_settings` | 10–18 | сессия метрик | `on_change` |
@@ -120,6 +120,13 @@ PostgreSQL CancelRequest, затем закрывает соединение.
 `pg_wal_storage` хранит одну точную сумму размеров обычных файлов, возвращённых
 `pg_ls_waldir()`. Коллектор не читает вложенные каталоги и не определяет
 назначение файлов по именам; без права на вызов этой функции секция отсутствует.
+Секции отношений хранят действующий кластерный OID табличного пространства и
+необязательное имя из каталога. Нулевой `reltablespace` разрешается через
+фактический `dattablespace` подключённой базы, в том числе через нестандартное
+пространство по умолчанию. У родителя секционированной таблицы без хранения нет
+действующего размещения; строка индекса независимо хранит размещение самого
+индекса. Размер таблицы по-прежнему включает основной fork heap и TOAST, но не
+включает пользовательские индексы.
 
 ## Представления расширений
 

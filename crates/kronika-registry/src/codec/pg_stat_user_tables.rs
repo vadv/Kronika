@@ -1,4 +1,4 @@
-//! Type `1_013_001`..`1_013_004`: `pg_stat_user_tables`.
+//! Type `1_013_005`..`1_013_008`: `pg_stat_user_tables`.
 //!
 //! Per-table statistics, one row per selected table per database. In PG 10-18
 //! the column set only grows: `n_ins_since_vacuum` arrives in PG13;
@@ -15,7 +15,7 @@
 
 use crate::{Section, StrId, Ts};
 
-/// Type `1_013_004`: `pg_stat_user_tables` on PG 18 (V3 plus the four cumulative
+/// Type `1_013_008`: `pg_stat_user_tables` on PG 18 (V3 plus the four cumulative
 /// vacuum/analyze timing columns).
 ///
 /// One row per selected table per database. `idx_*` columns are `None` when the
@@ -24,7 +24,7 @@ use crate::{Section, StrId, Ts};
 /// `total_*_time` columns are `f64` milliseconds, so the layout drops `Eq`.
 #[derive(Debug, Clone, Copy, PartialEq, Section)]
 #[section(
-    id = 1_013_004,
+    id = 1_013_008,
     name = "pg_stat_user_tables",
     semantics = snapshot_full,
     sort_key("datid", "relid", "ts"),
@@ -49,9 +49,12 @@ pub struct PgStatUserTablesV4 {
     /// Table name.
     #[column(l)]
     pub relname: StrId,
-    /// Tablespace name; `pg_default` when the table uses the default tablespace.
+    /// Effective tablespace oid; `None` for a storage-less partitioned parent.
     #[column(l)]
-    pub tablespace: StrId,
+    pub tablespace_oid: Option<u32>,
+    /// Effective tablespace name; `None` for a storage-less parent or missing label.
+    #[column(l)]
+    pub tablespace: Option<StrId>,
     /// Sequential scans.
     #[column(c, unit = count)]
     pub seq_scan: i64,
@@ -183,7 +186,7 @@ pub struct PgStatUserTablesV4 {
     pub tidx_blks_hit: Option<i64>,
 }
 
-/// Type `1_013_003`: `pg_stat_user_tables` on PG 16-17 (V2 plus
+/// Type `1_013_007`: `pg_stat_user_tables` on PG 16-17 (V2 plus
 /// `n_tup_newpage_upd` and the `last_seq_scan`/`last_idx_scan` timestamps).
 ///
 /// One row per selected table per database. `idx_*` columns are `None` when the
@@ -191,7 +194,7 @@ pub struct PgStatUserTablesV4 {
 /// relation; `last_*` timestamps are `None` when the event never happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Section)]
 #[section(
-    id = 1_013_003,
+    id = 1_013_007,
     name = "pg_stat_user_tables",
     semantics = snapshot_full,
     sort_key("datid", "relid", "ts"),
@@ -216,9 +219,12 @@ pub struct PgStatUserTablesV3 {
     /// Table name.
     #[column(l)]
     pub relname: StrId,
-    /// Tablespace name; `pg_default` when the table uses the default tablespace.
+    /// Effective tablespace oid; `None` for a storage-less partitioned parent.
     #[column(l)]
-    pub tablespace: StrId,
+    pub tablespace_oid: Option<u32>,
+    /// Effective tablespace name; `None` for a storage-less parent or missing label.
+    #[column(l)]
+    pub tablespace: Option<StrId>,
     /// Sequential scans.
     #[column(c, unit = count)]
     pub seq_scan: i64,
@@ -338,12 +344,12 @@ pub struct PgStatUserTablesV3 {
     pub tidx_blks_hit: Option<i64>,
 }
 
-/// Type `1_013_002`: `pg_stat_user_tables` on PG 13-15 (V1 plus
+/// Type `1_013_006`: `pg_stat_user_tables` on PG 13-15 (V1 plus
 /// `n_ins_since_vacuum`, no PG16 columns). Column meanings match
 /// [`PgStatUserTablesV3`] for fields present in this layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Section)]
 #[section(
-    id = 1_013_002,
+    id = 1_013_006,
     name = "pg_stat_user_tables",
     semantics = snapshot_full,
     sort_key("datid", "relid", "ts"),
@@ -368,9 +374,12 @@ pub struct PgStatUserTablesV2 {
     /// Table name.
     #[column(l)]
     pub relname: StrId,
-    /// Tablespace name; `pg_default` when the table uses the default tablespace.
+    /// Effective tablespace oid; `None` for a storage-less partitioned parent.
     #[column(l)]
-    pub tablespace: StrId,
+    pub tablespace_oid: Option<u32>,
+    /// Effective tablespace name; `None` for a storage-less parent or missing label.
+    #[column(l)]
+    pub tablespace: Option<StrId>,
     /// Sequential scans.
     #[column(c, unit = count)]
     pub seq_scan: i64,
@@ -481,12 +490,12 @@ pub struct PgStatUserTablesV2 {
     pub tidx_blks_hit: Option<i64>,
 }
 
-/// Type `1_013_001`: `pg_stat_user_tables` on PG 10-12 (base layout, no
+/// Type `1_013_005`: `pg_stat_user_tables` on PG 10-12 (base layout, no
 /// `n_ins_since_vacuum` and no PG16 columns). Column meanings match
 /// [`PgStatUserTablesV3`] for fields present in this layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Section)]
 #[section(
-    id = 1_013_001,
+    id = 1_013_005,
     name = "pg_stat_user_tables",
     semantics = snapshot_full,
     sort_key("datid", "relid", "ts"),
@@ -511,9 +520,12 @@ pub struct PgStatUserTablesV1 {
     /// Table name.
     #[column(l)]
     pub relname: StrId,
-    /// Tablespace name; `pg_default` when the table uses the default tablespace.
+    /// Effective tablespace oid; `None` for a storage-less partitioned parent.
     #[column(l)]
-    pub tablespace: StrId,
+    pub tablespace_oid: Option<u32>,
+    /// Effective tablespace name; `None` for a storage-less parent or missing label.
+    #[column(l)]
+    pub tablespace: Option<StrId>,
     /// Sequential scans.
     #[column(c, unit = count)]
     pub seq_scan: i64,
@@ -662,7 +674,8 @@ mod tests {
             relid,
             schemaname: StrId(2),
             relname: StrId(u64::from(relid) | 1),
-            tablespace: StrId(4),
+            tablespace_oid: Some(1_663),
+            tablespace: Some(StrId(4)),
             seq_scan: 10,
             seq_tup_read: 1_000,
             idx_scan: None,
@@ -712,11 +725,16 @@ mod tests {
     #[test]
     fn v4_contract_shape() {
         let c = PgStatUserTablesV4::CONTRACT;
-        assert_eq!(c.type_id.get(), 1_013_004);
-        assert_eq!(c.columns.len(), 50);
+        assert_eq!(c.type_id.get(), 1_013_008);
+        assert_eq!(c.columns.len(), 51);
         assert_eq!(c.sort_key, ["datid", "relid", "ts"]);
         assert_eq!(c.column("ts").map(|col| col.nullable), Some(false));
         assert_eq!(c.column("relid").map(|col| col.nullable), Some(false));
+        assert_eq!(
+            c.column("tablespace_oid").map(|col| col.nullable),
+            Some(true)
+        );
+        assert_eq!(c.column("tablespace").map(|col| col.nullable), Some(true));
         assert_eq!(c.column("idx_scan").map(|col| col.nullable), Some(true));
         assert!(c.column("total_vacuum_time").is_some());
         assert!(c.column("total_autovacuum_time").is_some());
@@ -742,8 +760,8 @@ mod tests {
     #[test]
     fn v3_contract_shape() {
         let c = PgStatUserTablesV3::CONTRACT;
-        assert_eq!(c.type_id.get(), 1_013_003);
-        assert_eq!(c.columns.len(), 46);
+        assert_eq!(c.type_id.get(), 1_013_007);
+        assert_eq!(c.columns.len(), 47);
         assert_eq!(c.sort_key, ["datid", "relid", "ts"]);
         assert_eq!(c.column("ts").map(|col| col.nullable), Some(false));
         assert_eq!(c.column("relid").map(|col| col.nullable), Some(false));
@@ -759,8 +777,8 @@ mod tests {
     #[test]
     fn v2_drops_pg16_columns() {
         let c = PgStatUserTablesV2::CONTRACT;
-        assert_eq!(c.type_id.get(), 1_013_002);
-        assert_eq!(c.columns.len(), 43);
+        assert_eq!(c.type_id.get(), 1_013_006);
+        assert_eq!(c.columns.len(), 44);
         assert!(c.column("n_ins_since_vacuum").is_some());
         assert!(c.column("n_tup_newpage_upd").is_none());
         assert!(c.column("last_seq_scan").is_none());
@@ -770,8 +788,8 @@ mod tests {
     #[test]
     fn v1_is_base_layout() {
         let c = PgStatUserTablesV1::CONTRACT;
-        assert_eq!(c.type_id.get(), 1_013_001);
-        assert_eq!(c.columns.len(), 42);
+        assert_eq!(c.type_id.get(), 1_013_005);
+        assert_eq!(c.columns.len(), 43);
         assert!(c.column("n_ins_since_vacuum").is_none());
         assert_common_contract(c);
     }
@@ -784,7 +802,8 @@ mod tests {
             relid,
             schemaname: StrId(2),
             relname: StrId(u64::from(relid) | 1),
-            tablespace: StrId(4),
+            tablespace_oid: Some(1_663),
+            tablespace: Some(StrId(4)),
             seq_scan: 10,
             seq_tup_read: 1_000,
             idx_scan: None,
