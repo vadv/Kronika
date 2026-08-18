@@ -14,7 +14,8 @@ export interface DisplayTimeFormatter {
   hourLabel(timestamp: number): string
   hourRange(timestamp: number): { readonly date: string; readonly primary: string }
   monthKey(timestamp: number): string
-  timestamp(timestamp: number | null): string
+  range(from: number, to: number, context?: number): { readonly from: string; readonly to: string }
+  timestamp(timestamp: number | null, context?: number): string
 }
 
 interface PreferenceStorage {
@@ -48,6 +49,15 @@ export function createDisplayTimeFormatter(locale: Locale, mode: DisplayTimeZone
     return `${value.hour}:${value.minute}${seconds ? `:${value.second}` : ""}`
   }
   const dayKey = (timestamp: number) => civilLabel(parts(timestamp))
+  const timestamp = (value: number | null, context?: number) => value === null || !Number.isFinite(value)
+    ? "—"
+    : context !== undefined && dayKey(value) === dayKey(context) ? time(value, true) : `${date(value)} · ${time(value, true)}`
+  const range = (from: number, to: number, context?: number) => {
+    const compact = context !== undefined && dayKey(from) === dayKey(context) && dayKey(to) === dayKey(context) && dayKey(from) === dayKey(to)
+    return compact
+      ? { from: time(from, true), to: time(to, true) }
+      : { from: timestamp(from), to: timestamp(to) }
+  }
   return {
     mode,
     axis: time,
@@ -64,7 +74,8 @@ export function createDisplayTimeFormatter(locale: Locale, mode: DisplayTimeZone
       }
     },
     monthKey: (timestamp) => dayKey(timestamp).slice(0, 7),
-    timestamp: (timestamp) => timestamp === null || !Number.isFinite(timestamp) ? "—" : `${date(timestamp)} · ${time(timestamp, true)}`,
+    range,
+    timestamp,
   }
 }
 

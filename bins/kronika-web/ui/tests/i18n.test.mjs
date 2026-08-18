@@ -24,6 +24,23 @@ test("locale validation checks key and placeholder parity", () => {
   )
 })
 
+test("PostgreSQL buffer and block metric labels stay canonical English in RU", async () => {
+  const [englishSource, russianSource] = await Promise.all([
+    readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8"),
+  ])
+  const english = parseDictionary(englishSource, "en.yaml")
+  const russian = parseDictionary(russianSource, "ru.yaml")
+  validateDictionaries(english, russian)
+  const keys = Object.keys(english).filter((key) => key.endsWith(".label") && /(?:blks|blocks|buffer_hit)/.test(key))
+  assert.ok(keys.length >= 29)
+  for (const key of keys) assert.equal(russian[key], english[key], key)
+  assert.equal(english["pg.field.shared_blks_read.label"], "Shared buffer read bytes")
+  assert.equal(english["pg.field.shared_blks_hit.label"], "Shared buffer hit bytes")
+  assert.equal(english["pg.field.temp_blks_written.label"], "Temp buffer written bytes")
+  assert.match(russian["pg.field.shared_blks_read.help"], /[А-Яа-яЁё]/u)
+})
+
 test("hour empty states are provisional only while the selected hour is open", async () => {
   const [englishSource, russianSource] = await Promise.all([
     readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),

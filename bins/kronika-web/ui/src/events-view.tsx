@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import type { Cell, DataRow, Finding, HourData } from "./api"
 import { ChartOnly } from "./chart-visibility"
 import { useDetailDismiss } from "./detail-dismiss"
+import { DetailList, DetailRow } from "./detail-list"
 import { useDisplayTime } from "./display-time-context"
 import {
   findingCategory,
@@ -173,7 +174,7 @@ function FindingDetail({ cursor, data, finding, history, hour, locale, onClose, 
           : `${formatMetric(readings.previous, metric.unit, locale, t)} → ${formatMetric(readings.current, metric.unit, locale, t)}`}</strong>
         {metric.boundary !== null && <small className="text-xs text-fg3">{t("events.boundary", { "boundary": metric.boundary })}</small>}
       </section>}
-      <dl className="m-0 mt-2">{findingDetailFields(row, finding).map(([field, cell]) => <div className="detail-row max-[520px]:detail-row-stacked" key={field}><dt className="detail-dt">{eventFieldLabel(field, t)}</dt><dd className="detail-dd max-[520px]:text-left">{eventValue(finding, field, cell, locale, t)}</dd></div>)}</dl>
+      <DetailList>{findingDetailFields(row, finding).map(([field, cell]) => <DetailRow key={field} term={eventFieldLabel(field, t)}>{eventValue(finding, field, cell, locale, t)}</DetailRow>)}</DetailList>
     </>}
     <ChartOnly>{metric.field !== null && points.some(({ value }) => typeof value === "number" && Number.isFinite(value)) && <SeriesChart
       cursor={cursor}

@@ -33,7 +33,7 @@ import type { TableOrder } from "./entity-table"
 import { defaultHostMode, HOST_SECTIONS, hostSectionOf, pgSectionOf, readAddress, sourceOf, stepOf, viewOf, writeAddress, type HostMode, type HostSection, type PgLens, type Source } from "./address"
 import { DetailDock, PROCESS_HISTORY_FIELDS } from "./detail"
 import { loadDisplayTimeZone, saveDisplayTimeZone, type DisplayTimeZone } from "./display-time"
-import { DisplayTimeProvider, useDisplayTime } from "./display-time-context"
+import { DisplayTimeProvider, DisplayTimeScope, useDisplayTime } from "./display-time-context"
 import { contextualRows, entityContext, findingRoute, hostSectionForFinding, type EntityContext } from "./entity-context"
 import { EventsView, type FindingResolution } from "./events-view"
 import { findingHistory, findingHistoryRequest, findingProjection } from "./finding-presentation"
@@ -800,7 +800,7 @@ function App({ locale, onLocale, t }: {
   const stretchPostgres = visibleSource === "postgresql" && pgSection !== "overview"
   const cursorTime = cursor === 0 ? null : time.clock(cursor)
   const updatedClock = lastUpdated === null ? null : time.clock(lastUpdated)
-  return <ChartVisibilityProvider value={chartsVisible}><main className={`app-shell min-h-screen${stretchPostgres || !chartsVisible ? " flex h-dvh min-h-0 flex-col overflow-hidden" : ""}${stretchPostgres ? " pg-table-shell" : ""}${chartsVisible ? "" : " charts-hidden"}`}>
+  return <DisplayTimeScope hour={hour}><ChartVisibilityProvider value={chartsVisible}><main className={`app-shell min-h-screen${stretchPostgres || visibleSource === "processes" || !chartsVisible ? " flex h-dvh min-h-0 flex-col overflow-hidden" : ""}${stretchPostgres ? " pg-table-shell" : ""}${chartsVisible ? "" : " charts-hidden"}`}>
     <header className="topbar max-[1179px]:flex-wrap max-[1179px]:gap-y-1 max-[1179px]:px-2 max-[1179px]:py-1 [.pg-table-shell>&]:flex-none">
       <span className="flex flex-none items-center text-accent2"><Activity aria-hidden="true" size={15} strokeWidth={2} /></span>
       <h1>{t("app.title")}</h1>
@@ -840,7 +840,7 @@ function App({ locale, onLocale, t }: {
       </div>
     </header>
 
-    <section className={`workspace px-2.5 pb-5 pt-2 max-[760px]:px-2 charts-hidden:flex charts-hidden:min-h-0 charts-hidden:flex-auto charts-hidden:flex-col${stretchPostgres ? " pg-table-workspace flex min-h-0 flex-1 flex-col overflow-hidden [&>.timeline-shell]:flex-none [&>.pg-tabs]:flex-none [&>.lensbar]:flex-none [&>[data-testid=table-paging]]:flex-none" : ""}`}>
+    <section className={`workspace px-2.5 pb-5 pt-2 max-[760px]:px-2 charts-hidden:flex charts-hidden:min-h-0 charts-hidden:flex-auto charts-hidden:flex-col${stretchPostgres ? " pg-table-workspace flex min-h-0 flex-1 flex-col overflow-hidden [&>.timeline-shell]:flex-none [&>.pg-tabs]:flex-none [&>.lensbar]:flex-none [&>[data-testid=table-paging]]:flex-none" : ""}${visibleSource === "processes" ? " process-workspace flex min-h-0 flex-1 flex-col overflow-hidden [&>.timeline-shell]:flex-none [&>.lensbar]:flex-none [&>.process-summary]:flex-none" : ""}`}>
       <p aria-live="polite" className="absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]">
         {t(`nav.${visibleSource}`)}
         {visibleSource === "host" ? ` · ${t(`section.${hostSection}`)}` : ""}
@@ -851,14 +851,14 @@ function App({ locale, onLocale, t }: {
       {!loading && error === null && hour !== null && visibleSource === "host" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} metric={systemMetric} mode={hostMode} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onMetric={setSystemMetric} onMode={(next) => { setHostMode(next); setSystemMetric(null); setSelectedKey(null) }} onSelectedKey={setSelectedKey} section={hostSection} selectedKey={selectedKey} t={t} tablesLoading={cursorState === "loading"} />}
       {!loading && error === null && hour !== null && visibleSource === "processes" && <>
         <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} primaryLane={lens === "cpu" ? "cpu_busy" : lens === "memory" ? "memory" : lens === "disk" ? "io_stall" : "health"} shownAt={shownAt} t={t} /></ChartOnly>
-        <div className="lensbar">
+        <div className="lensbar !mt-0 border-t-0">
           <div aria-label={t("nav.processes")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1 max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">
             {(["cpu", "memory", "disk", "generic"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => { if (choice !== lens) setOrder(null); setLens(choice) }} type="button">{t(`lens.${choice}`)}</button>)}
           </div>
-          <span>{processRows[0] === undefined ? t("status.no_data") : time.timestamp(processRows[0].timestamp)}</span>
+          <span>{processRows[0] === undefined ? t("status.no_data") : time.timestamp(processRows[0].timestamp, hour)}</span>
         </div>
         <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} hour={hour} lens={lens} locale={locale} state={processSummary} t={t} />
-        <div className={`grid min-w-0 charts-hidden:min-h-0 charts-hidden:flex-auto max-[1179px]:grid-cols-[minmax(0,1fr)] ${selectedProcess === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)_360px]"}`}>
+        <div className={`process-main grid min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)] overflow-hidden max-[1179px]:grid-cols-[minmax(0,1fr)] ${selectedProcess === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)_360px]"}`}>
           <ProcessTable contextLabel={context?.logicalName === "os_process" ? context.label : undefined} finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} onContextClear={clearEntityContext} onOrder={setOrder} onPattern={setFind} onSelect={selectProcess} order={order} pattern={find} rows={processRows} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
           {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onClose={() => setSelectedKey(null)} onCursor={chooseCursor} process={selectedProcess} processHistory={processHistory.value?.length ? processHistory.value : [selectedProcess]} processHistoryStatus={processHistory.status} t={t} ticksPerSecond={ticksPerSecond} />}
         </div>
@@ -868,7 +868,7 @@ function App({ locale, onLocale, t }: {
     </section>
 
     {helpOpen && <HelpPanel items={helpItems} onClose={() => setHelpOpen(false)} t={t} />}
-  </main></ChartVisibilityProvider>
+  </main></ChartVisibilityProvider></DisplayTimeScope>
 }
 
 function TimeValue({ label, output, testId }: { readonly label: string; readonly output: string | null; readonly testId: string }) {

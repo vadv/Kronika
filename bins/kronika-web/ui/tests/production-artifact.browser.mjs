@@ -111,6 +111,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     assert.match(browserMode.cursor, /08:30:00/)
     assert.match(browserMode.hour, /08:00–09:00/)
     assert.match(browserMode.status, /08:30:00/)
+    assert.doesNotMatch(browserMode.status, /\b\d{2}[./]\d{2}[./]2026\b/)
     assert.match(browserMode.updated, /^(?:Updated)?\d+ [smh] ago$|^(?:Updated)?\d+ min ago$/)
     for (const output of [browserMode.cursor, browserMode.hour, browserMode.status, browserMode.updated]) {
       assert.doesNotMatch(output, /GMT|UTC|\.\d{3}(?!\d)/)
@@ -131,8 +132,8 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     }
     await hover()
     const tooltip = await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] .chart-tooltip').textContent`)
-    assert.match(tooltip, /08:30:00/)
-    assert.match(tooltip, /41\.7%/)
+    assert.match(tooltip, /08:30:07/)
+    assert.match(tooltip, /48%/)
     assert.doesNotMatch(tooltip, /41\.729068|GMT|UTC|\.000/)
     const apiBeforeSwitch = requests.filter(({ path }) => path.startsWith("/api/")).length
     await switchZone(cdp, "utc")
@@ -154,7 +155,8 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     assert.match(utcMode.cursor, /05:30:00/)
     assert.match(utcMode.hour, /05:00–06:00/)
     assert.match(utcMode.status, /05:30:00/)
-    assert.match(utcMode.tooltip, /05:30:00/)
+    assert.doesNotMatch(utcMode.status, /\b\d{2}[./]\d{2}[./]2026\b/)
+    assert.match(utcMode.tooltip, /05:30:07/)
     assert.match(utcMode.updated, /^(?:Updated)?\d+ [smh] ago$|^(?:Updated)?\d+ min ago$/)
     for (const output of [utcMode.cursor, utcMode.hour, utcMode.status, utcMode.tooltip, utcMode.updated]) {
       assert.doesNotMatch(output, /GMT|UTC|\.\d{3}(?!\d)/)
@@ -739,6 +741,12 @@ test("the production artifact preserves wire keys and exact finding page state",
 
     await cdp.evaluate(`([...document.querySelectorAll(".pg-tabs button")].find((button) => button.textContent === "Tables")).click()`)
     await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-tables-table"] .entity-row').length === 1`, "the relation wire row")
+    const postgresJoinGap = await cdp.evaluate(`(() => {
+      const timeline = document.querySelector('.timeline-shell').getBoundingClientRect()
+      const controls = document.querySelector('.workspace > .pg-tabs').getBoundingClientRect()
+      return controls.top - timeline.bottom
+    })()`)
+    assert.ok(postgresJoinGap <= 1, `PostgreSQL major-region gap ${postgresJoinGap}px`)
     const relationRow = await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-row').textContent`)
     assert.match(relationRow, /artifact_db/)
     assert.match(relationRow, /artifact_table/)
@@ -758,10 +766,18 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(relationQuery.getAll("field").includes("relid"), true)
     await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-row').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-relation-detail"]') !== null`, "the table detail")
-    const tableDetail = await cdp.evaluate(`(() => ({
-      labels: [...document.querySelectorAll('[data-testid="pg-relation-detail"] dt')].map((label) => label.textContent),
-      values: [...document.querySelectorAll('[data-testid="pg-relation-detail"] dd')].map((value) => value.textContent),
-    }))()`)
+    const tableDetail = await cdp.evaluate(`(() => {
+      const detail = document.querySelector('[data-testid="pg-relation-detail"]')
+      const rows = [...detail.querySelectorAll('dl > .detail-row')]
+      return {
+        compactRows: rows.length,
+        maxRowHeight: Math.max(...rows.map((row) => row.getBoundingClientRect().height)),
+        aligned: rows.every((row) => { const term = row.querySelector('dt').getBoundingClientRect(); const value = row.querySelector('dd').getBoundingClientRect(); return value.left > term.left && Math.abs(value.top - term.top) <= 2 }),
+        labels: [...detail.querySelectorAll('dt')].map((label) => label.textContent),
+        values: [...detail.querySelectorAll('dd')].map((value) => value.textContent),
+      }
+    })()`)
+    assert.ok(tableDetail.compactRows > 0 && tableDetail.maxRowHeight <= 35 && tableDetail.aligned, JSON.stringify(tableDetail))
     assert.doesNotMatch(tableDetail.labels.join(" "), /Database ID|Table OID|Index OID/)
     assert.equal(tableDetail.values.includes("42"), false)
     assert.equal(tableDetail.values.includes("73"), false)
@@ -860,9 +876,13 @@ test("the production artifact preserves wire keys and exact finding page state",
       const nodes = [...document.querySelectorAll('[data-testid="pg-relation-detail"] [title]')]
       const exact = nodes.find((node) => node.title.includes('9 007 199 254 740 993'))
       const toast = nodes.find((node) => node.title.includes('713 456'))
-      return { exact: exact?.title ?? null, toast: toast?.textContent ?? null, toastExact: toast?.title ?? null }
+      const labels = [...document.querySelectorAll('[data-testid="pg-relation-detail"] dt')].map((node) => node.textContent.trim())
+      return { exact: exact?.title ?? null, labels, toast: toast?.textContent ?? null, toastExact: toast?.title ?? null }
     })()`)
-    assert.deepEqual(russianEstimate, { exact: "≈9 007 199 254 740 993 строки", toast: "≈713 тыс. строк", toastExact: "≈713 456 строк" })
+    assert.equal(russianEstimate.exact, "≈9 007 199 254 740 993 строки")
+    assert.equal(russianEstimate.toast, "≈713 тыс. строк")
+    assert.equal(russianEstimate.toastExact, "≈713 456 строк")
+    assert.equal(russianEstimate.labels.filter((label) => /buffer|blks/i.test(label)).some((label) => /[А-Яа-яЁё]/u.test(label)), false)
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
     await cdp.waitFor(`document.documentElement.lang === "en"`, "the English estimate restore")
     relationMode = "single"
@@ -889,9 +909,11 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.waitFor(`document.querySelector('[data-testid="pg-exact-indexdef"]')?.textContent.includes("CREATE UNIQUE INDEX artifact_index") === true`, "the exact index definition")
     assert.ok(requests.some(({ query }) => query.includes("row_ordinal=8") && !query.includes("text=")))
     const indexDetail = await cdp.evaluate(`(() => ({
+      compactRows: document.querySelectorAll('[data-testid="pg-relation-detail"] dl > .detail-row').length,
       labels: [...document.querySelectorAll('[data-testid="pg-relation-detail"] dt')].map((label) => label.textContent),
       values: [...document.querySelectorAll('[data-testid="pg-relation-detail"] dd')].map((value) => value.textContent),
     }))()`)
+    assert.ok(indexDetail.compactRows > 0)
     assert.doesNotMatch(indexDetail.labels.join(" "), /Database ID|Table OID|Index OID/)
     for (const oid of ["42", "73", "74"]) assert.equal(indexDetail.values.includes(oid), false)
     await cdp.evaluate(`document.querySelector(".pg-detail header button").click()`)
@@ -946,6 +968,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.waitFor(`location.search.includes("level=database")`, "database rollup restored")
     await cdp.evaluate(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-relation-drill"]') !== null`, "explicit rollup drill action")
+    assert.ok(await cdp.evaluate(`document.querySelectorAll('[data-testid="pg-relation-detail"] dl > .detail-row').length > 0`))
     await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-drill"]').click()`)
     await cdp.waitFor(`location.search.includes("level=schema") && location.search.includes("datid=42")`, "database-scoped schema drill")
     await cdp.evaluate(`([...document.querySelectorAll(".workspace .lensbar button")].find((button) => button.textContent === "All")).click()`)
@@ -970,9 +993,9 @@ test("the production artifact preserves wire keys and exact finding page state",
       const size = await cdp.evaluate(`({ clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth })`)
       assert.ok(size.scrollWidth <= size.clientWidth, `${width}px relation overflow: ${JSON.stringify(size)}`)
     }
-    await cdp.evaluate(`document.querySelector(".source-tabs button:first-child").click(); document.querySelector('[data-testid="locale-ru"]').click()`)
+    await cdp.evaluate(`document.querySelector(".source-tabs button:nth-child(2)").click(); document.querySelector('[data-testid="locale-ru"]').click()`)
     await cdp.waitFor(`document.querySelector(".section-tabs") !== null`, "the host tabs")
-    await cdp.evaluate(`document.querySelector('.source-tabs button:first-child').click()`)
+    await cdp.evaluate(`document.querySelector('.source-tabs button:nth-child(2)').click()`)
     await systemPage
     await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]') !== null`, "the crowded Russian loading bar")
     for (const [width, height] of [[1920, 1080], [1366, 768], [1024, 768]]) {
@@ -1115,7 +1138,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.plans"`, "browser back to Plans")
 
     const hostClick = await cdp.evaluate(`(() => {
-      const button = document.querySelector(".source-tabs button:first-child")
+      const button = document.querySelector(".source-tabs button:nth-child(2)")
       button.click()
       return button.textContent
     })()`)
@@ -1617,9 +1640,15 @@ test("the minified artifact restores and clears its opaque browser session", { t
     await cdp.send("Target.closeTarget", { targetId: created.targetId })
     tabSocket.close()
 
+    await cdp.send("Browser.close")
+    await Promise.race([
+      new Promise((resolve) => browser.once("exit", resolve)),
+      delay(2_000),
+    ])
+    await stopBrowser(browser)
     socket.close()
     socket = undefined
-    await stopBrowser(browser)
+    await delay(200)
     await rm(join(profile, "DevToolsActivePort"), { force: true })
     browser = launchBrowser(profile)
     debugPort = await browserDebugPort(profile, browser)
@@ -1761,9 +1790,9 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
     assert.ok(landscape.numeric.every(({ height }) => height <= 24), JSON.stringify(landscape.numeric))
     assert.ok(Math.max(...landscape.numeric.map(({ right }) => right)) - Math.min(...landscape.numeric.map(({ right }) => right)) <= 1)
     assert.equal(landscape.numeric[0]?.text, "3")
-    assert.equal(landscape.numeric[1]?.text, "6,2 с")
-    assert.equal(landscape.numeric[2]?.text, "12,5 с")
-    assert.equal(landscape.chart.current, "6,2 с")
+    assert.equal(landscape.numeric[1]?.text, "6,29 с")
+    assert.equal(landscape.numeric[2]?.text, "12,6 с")
+    assert.equal(landscape.chart.current, "6,29 с")
     assert.doesNotMatch(landscape.labels.join("\n"), /,\s*(?:ms|мс)$/imu)
     assert.doesNotMatch(landscape.text, /тыс\.\s*мс/iu)
     assert.doesNotMatch(landscape.chart.label, /(?:^|[, (])(?:ms|мс)(?:$|[,)])/iu)
@@ -1775,7 +1804,7 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
     await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...hoverPoint })
     await cdp.waitFor(`document.querySelector('[data-testid="event-detail"] [data-testid="chart-hover-readout"]') !== null`, "the slow-query human duration hover")
     const hover = await cdp.evaluate(`document.querySelector('[data-testid="event-detail"] [data-testid="chart-hover-readout"]').textContent`)
-    assert.match(hover, /6,2\sс/u)
+    assert.match(hover, /6,29\sс/u)
     assert.doesNotMatch(hover, /тыс\.\s*мс|\(мс\)/iu)
 
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 882, mobile: false, width: 480 })
@@ -1970,8 +1999,8 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1024 })
     await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=processes&lens=generic` })
-    await cdp.waitFor(`document.querySelector('.process-summary .metric-choice > button strong')?.textContent === "719"`, "719 process-summary rows", 15_000)
-    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-history"] .uplot-host canvas') !== null`, "the process-summary chart")
+    await cdp.waitFor(`document.querySelector('.process-summary > div:first-child strong')?.textContent === "719"`, "719 process-summary rows", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] .uplot-host canvas') !== null`, "the Process timeline")
     await settleLayout(cdp)
     const shownProcessHeight = await cdp.evaluate(`document.querySelector('.process-table .entity-scroll').getBoundingClientRect().height`)
     await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
@@ -1982,14 +2011,68 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').getAttribute("aria-label")`), "Show charts")
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').getAttribute("aria-pressed")`), "false")
     await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-history"] .uplot-host canvas') !== null`, "the restored process-summary chart")
+    await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] .uplot-host canvas') !== null`, "the restored Process timeline")
+
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="process-table"] .entity-row').length > 10`, "the full-height process table")
+    const processJoinGap = await cdp.evaluate(`(() => {
+      const timeline = document.querySelector('.timeline-shell').getBoundingClientRect()
+      const controls = document.querySelector('.process-workspace > .lensbar').getBoundingClientRect()
+      return controls.top - timeline.bottom
+    })()`)
+    assert.ok(processJoinGap <= 1, `Process major-region gap ${processJoinGap}px`)
+    await cdp.evaluate(`([...document.querySelectorAll('[data-testid="process-table"] .entity-row')].find((row) => row.textContent.includes("2686712"))).click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-linked-dock"] [data-testid="pg-exact-query"]')?.textContent.includes("select activity_for_2686712") === true`, "the PID-first linked Activity query")
+    await cdp.evaluate(`document.querySelector('[data-testid="lens-cpu"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="process-history-metric-majflt"]') !== null`, "Major page faults history")
+    const cpuDetail = await cdp.evaluate(`(() => ({
+      labels: [...document.querySelectorAll('[data-testid="pg-linked-dock"] dt')].map((node) => node.textContent),
+      schedulerChips: ["nice", "prio", "rtprio"].filter((field) => document.querySelector('[data-testid="process-history-metric-' + field + '"]') !== null),
+      snapshot: document.querySelector('[data-testid="pg-linked-dock"]')?.textContent ?? "",
+    }))()`)
+    assert.equal(cpuDetail.schedulerChips.length, 0)
+    for (const label of ["Nice", "Priority", "RT priority"]) assert.ok(cpuDetail.labels.some((value) => value.startsWith(label)), JSON.stringify(cpuDetail.labels))
+    assert.doesNotMatch(cpuDetail.snapshot, /\b\d{2}[./]\d{2}[./]2026\b/)
+    for (const lens of ["cpu", "memory", "disk", "generic"]) {
+      await cdp.evaluate(`document.querySelector('[data-testid="lens-${lens}"]').click()`)
+      await settleLayout(cdp)
+      const geometry = await cdp.evaluate(`(() => {
+        const box = (node) => { const value = node.getBoundingClientRect(); return { bottom: value.bottom, top: value.top } }
+        const main = document.querySelector('.process-main')
+        const table = document.querySelector('[data-testid="process-table"]')
+        const scroll = table.querySelector('.entity-scroll')
+        const dock = document.querySelector('[data-testid="pg-linked-dock"]')
+        return { dock: box(dock), dockClient: dock.clientHeight, dockScroll: dock.scrollHeight, main: box(main), scrollClient: scroll.clientHeight, scrollScroll: scroll.scrollHeight, table: box(table), viewport: innerHeight }
+      })()`)
+      assert.ok(geometry.viewport - geometry.main.bottom >= 0 && geometry.viewport - geometry.main.bottom <= 21, `${lens} remaining row: ${JSON.stringify(geometry)}`)
+      assert.ok(Math.abs(geometry.table.top - geometry.main.top) <= 1 && Math.abs(geometry.table.bottom - geometry.main.bottom) <= 1, `${lens} table row: ${JSON.stringify(geometry)}`)
+      assert.ok(Math.abs(geometry.dock.top - geometry.main.top) <= 1 && Math.abs(geometry.dock.bottom - geometry.main.bottom) <= 1, `${lens} dock row: ${JSON.stringify(geometry)}`)
+      assert.ok(geometry.scrollScroll > geometry.scrollClient, `${lens} independent table scroll: ${JSON.stringify(geometry)}`)
+    }
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 800 })
+    await settleLayout(cdp)
+    const narrowProcess = await cdp.evaluate(`(() => {
+      const dock = document.querySelector('[data-testid="pg-linked-dock"]').getBoundingClientRect()
+      const main = document.querySelector('.process-main').getBoundingClientRect()
+      return { dockBottom: dock.bottom, dockTop: dock.top, mainBottom: main.bottom, viewport: innerHeight }
+    })()`)
+    assert.ok(narrowProcess.dockTop >= 0 && narrowProcess.dockBottom <= narrowProcess.viewport && narrowProcess.viewport - narrowProcess.mainBottom <= 21, JSON.stringify(narrowProcess))
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1024 })
 
     summaryMode = "fail"
-    // Each cgroup panel now lives with the resource it belongs to.
-    await cdp.evaluate(`document.querySelector('.source-tabs button:first-child').click()`)
+    await cdp.evaluate(`document.querySelector('.source-tabs button:nth-child(2)').click()`)
     await cdp.waitFor(`document.querySelector('.system-main') !== null`, "Host before same-hour summary remount")
-    for (const [panel, tab] of [["os_cgroup_cpu", "cpu"], ["os_cgroup_memory", "memory"], ["os_cgroup_io", "storage"]]) {
-      await cdp.evaluate(`document.querySelector('[data-testid="host-section-${tab}"]').click()`)
+    const hostJoinGap = await cdp.evaluate(`(() => {
+      const timeline = document.querySelector('.timeline-shell').getBoundingClientRect()
+      const primary = document.querySelector('.workspace > .lensbar, .workspace > .system-main').getBoundingClientRect()
+      return primary.top - timeline.bottom
+    })()`)
+    assert.ok(hostJoinGap <= 1, `Host major-region gap ${hostJoinGap}px`)
+    await cdp.waitFor(`document.querySelector('[data-testid="host-section-cgroups"]') !== null`, "the cgroups section", 15_000)
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-cgroups"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="host-cgroups-modes"]') !== null`, "the cgroup modes")
+    for (const [panel, mode] of [["os_cgroup_cpu", 0], ["os_cgroup_memory", 1], ["os_cgroup_io", 2]]) {
+      await cdp.evaluate(`document.querySelectorAll('[data-testid="host-cgroups-modes"] button')[${mode}].click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="system-${panel}"] .entity-row') !== null`, `the ${panel} panel`, 15_000)
     }
     await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]').click()`)
@@ -2003,9 +2086,9 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     assert.notEqual(primarySystem, undefined)
     assert.deepEqual(primarySystem.getAll("section").filter((section) => section.startsWith("os_cgroup_") && section !== "os_cgroup_context"), [])
     const expectedCgroups = {
-      os_cgroup_cpu: "/collector/cpu",
-      os_cgroup_memory: "/collector/memory",
-      os_cgroup_io: "/collector/io",
+      os_cgroup_cpu: null,
+      os_cgroup_memory: null,
+      os_cgroup_io: null,
     }
     for (const [section, path] of Object.entries(expectedCgroups)) {
       const matches = systemSnapshots.filter((query) => query.getAll("section").includes(section))
@@ -2013,9 +2096,11 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
       for (const query of matches) {
         assert.deepEqual(query.getAll("section"), [section])
         assert.equal(query.get("where.cgroup_path"), path)
-        assert.equal(query.get("where.scope"), "3")
+        assert.equal(query.get("where.scope"), null)
       }
     }
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-cgroups"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="host-cgroups-modes"]') !== null`, "the cgroup cursor workspace")
     holdCgroups = true
     await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowLeft" }))`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${BEFORE_AT}"`, "the changed System cursor")
@@ -2027,20 +2112,18 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     })`, "prior cgroup rows cleared while the new key loads")
     await waitForRequests(() => heldCgroups.length === 3)
     const replacementPaths = {
-      os_cgroup_cpu: "/collector/cpu-before",
-      os_cgroup_memory: "/collector/memory-before",
-      os_cgroup_io: "/collector/io-before",
+      os_cgroup_cpu: null,
+      os_cgroup_memory: null,
+      os_cgroup_io: null,
     }
     assert.deepEqual(Object.fromEntries(heldCgroups.map(({ url }) => [url.searchParams.get("section"), url.searchParams.get("where.cgroup_path")])), replacementPaths)
-    assert.equal(heldCgroups.every(({ url }) => url.searchParams.get("at") === String(BEFORE_AT) && url.searchParams.get("where.scope") === "3"), true)
+    assert.equal(heldCgroups.every(({ url }) => url.searchParams.get("at") === String(BEFORE_AT) && url.searchParams.get("where.scope") === null), true)
     holdCgroups = false
     for (const held of heldCgroups.splice(0)) if (!held.response.destroyed) ndjson(held.response, cgroupSnapshotRecords(held.url))
-    // The panels answer on their own sections now.
-    for (const [panel, tab] of [["os_cgroup_cpu", "cpu"], ["os_cgroup_memory", "memory"], ["os_cgroup_io", "storage"]]) {
-      await cdp.evaluate(`document.querySelector('[data-testid="host-section-${tab}"]').click()`)
+    for (const [panel, mode] of [["os_cgroup_cpu", 0], ["os_cgroup_memory", 1], ["os_cgroup_io", 2]]) {
+      await cdp.evaluate(`document.querySelectorAll('[data-testid="host-cgroups-modes"] button')[${mode}].click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="system-${panel}"] .entity-row') !== null`, "the replacement collector cgroup rows", 15_000)
     }
-    await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]').click()`)
     holdCgroups = true
     await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowRight" }))`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${AT}"`, "the failed System cursor")
@@ -2056,41 +2139,40 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
       held.response.end("{")
     }
     await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]') === null`, "the cursor caught up after exact-load failures", 15_000)
-    for (const [panel, tab] of [["os_cgroup_cpu", "cpu"], ["os_cgroup_memory", "memory"], ["os_cgroup_io", "storage"]]) {
-      await cdp.evaluate(`document.querySelector('[data-testid="host-section-${tab}"]').click()`)
+    for (const [panel, mode] of [["os_cgroup_cpu", 0], ["os_cgroup_memory", 1], ["os_cgroup_io", 2]]) {
+      await cdp.evaluate(`document.querySelectorAll('[data-testid="host-cgroups-modes"] button')[${mode}].click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="system-${panel}"]') === null`, `no stale ${panel} rows after exact-load failures`, 15_000)
     }
     await cdp.evaluate(`document.querySelector('[data-testid="process-tab"]').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Could not load process totals" && document.querySelector('.process-summary .metric-choice > button strong')?.textContent === "719"`, "same-hour error with retained totals", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Could not load process totals" && document.querySelector('.process-summary > div:first-child strong')?.textContent === "719"`, "same-hour error with retained totals", 15_000)
 
     summaryMode = "hold"
-    await cdp.evaluate(`document.querySelector('.source-tabs button:first-child').click()`)
+    await cdp.evaluate(`document.querySelector('.source-tabs button:nth-child(2)').click()`)
     await cdp.waitFor(`document.querySelector('.system-main') !== null`, "System before held same-hour summary remount")
     await cdp.evaluate(`document.querySelector('[data-testid="process-tab"]').click()`)
     await waitForRequests(() => heldSummaries.length !== 0)
-    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Loading process totals…" && document.querySelector('.process-summary .metric-choice > button strong')?.textContent === "719"`, "same-hour loading with retained totals", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Loading process totals…" && document.querySelector('.process-summary > div:first-child strong')?.textContent === "719"`, "same-hour loading with retained totals", 15_000)
     const sameHourSummaries = heldSummaries.splice(0)
     for (const held of sameHourSummaries) if (!held.destroyed) ndjson(held, processSummaryRecords(HOUR, 2, 720))
-    await cdp.waitFor(`document.querySelector('.process-summary .metric-choice > button strong')?.textContent === "720" && document.querySelector('[data-testid="process-summary-status"]') === null`, "same-hour replacement totals", 15_000)
+    await cdp.waitFor(`document.querySelector('.process-summary > div:first-child strong')?.textContent === "720" && document.querySelector('[data-testid="process-summary-status"]') === null`, "same-hour replacement totals", 15_000)
 
     summaryMode = "hold"
     await cdp.evaluate(`document.querySelector('[data-testid="hour-next"]').click()`)
     await waitForRequests(() => heldSummaries.length !== 0)
-    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Loading process totals…" && document.querySelector('.process-summary .metric-choice > button strong')?.textContent === "—" && document.querySelector('.process-summary-history') === null`, "cleared totals during a cross-hour load", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Loading process totals…" && document.querySelector('.process-summary > div:first-child strong')?.textContent === "—"`, "cleared totals during a cross-hour load", 15_000)
     summaryMode = "good"
     await cdp.evaluate(`document.querySelector('[data-testid="hour-previous"]').click()`)
-    await cdp.waitFor(`document.querySelector('.process-summary .metric-choice > button strong')?.textContent === "721" && document.querySelector('[data-testid="process-summary-status"]') === null`, "replacement totals after the aborted request", 15_000)
+    await cdp.waitFor(`document.querySelector('.process-summary > div:first-child strong')?.textContent === "721" && document.querySelector('[data-testid="process-summary-status"]') === null`, "replacement totals after the aborted request", 15_000)
     for (const held of heldSummaries) if (!held.destroyed) ndjson(held, processSummaryRecords(HOUR + HOUR_US, 2, 999))
     await delay(100)
-    assert.equal(await cdp.evaluate(`document.querySelector('.process-summary .metric-choice > button strong')?.textContent`), "721")
+    assert.equal(await cdp.evaluate(`document.querySelector('.process-summary > div:first-child strong')?.textContent`), "721")
 
     summaryMode = "fail"
     await cdp.evaluate(`document.querySelector('[data-testid="hour-next"]').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Could not load process totals" && document.querySelector('.process-summary .metric-choice > button strong')?.textContent === "—" && document.querySelector('.process-summary-history') === null`, "cross-hour summary request failure without prior totals", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Could not load process totals" && document.querySelector('.process-summary > div:first-child strong')?.textContent === "—"`, "cross-hour summary request failure without prior totals", 15_000)
     summaryMode = "empty"
     await cdp.evaluate(`document.querySelector('[data-testid="hour-previous"]').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "No data in the selected hour" && document.querySelector('.process-summary .metric-choice > button strong')?.textContent === "—"`, "successful empty process totals", 15_000)
-    assert.equal(await cdp.evaluate(`document.querySelector('.process-summary-history') === null`), true)
+    await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "No data in the selected hour" && document.querySelector('.process-summary > div:first-child strong')?.textContent === "—"`, "successful empty process totals", 15_000)
 
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.activity` })
     await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"] .entity-row') !== null`, "the activity table", 15_000)
@@ -2221,9 +2303,9 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
 
     const hiddenSystemSnapshotsBefore = snapshotRequests("os_cpu").length
     const hiddenSystemHistoryBefore = historyRequests("os_cpu").length
-    await cdp.evaluate(`document.querySelector('.source-tabs button:first-child').click()`)
+    await cdp.evaluate(`document.querySelector('.source-tabs button:nth-child(2)').click()`)
     await cdp.waitFor(`document.querySelector('.section-tabs [role="tab"]:first-child') !== null`, "Host sections")
-    await cdp.evaluate(`document.querySelector('.source-tabs button:first-child').click()`)
+    await cdp.evaluate(`document.querySelector('.source-tabs button:nth-child(2)').click()`)
     await cdp.waitFor(`document.querySelector('.system-main') !== null`, "System with charts hidden")
     await waitForRequests(() => snapshotRequests("os_cpu").length > hiddenSystemSnapshotsBefore)
     await delay(100)
@@ -2303,8 +2385,7 @@ test("PostgreSQL is unavailable without current telemetry and returns for a stor
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1024 })
     await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.overview` })
-    await cdp.waitFor(`document.querySelector('.system-main') !== null && document.querySelector('.source-tabs button:first-child')?.getAttribute('aria-current') === "page"`, "the synchronous Host destination", 15_000)
-    await cdp.waitFor(`new URL(location.href).searchParams.get('view') === "host.overview"`, "the canonical Host address", 15_000)
+    await cdp.waitFor(`document.querySelector('.pg-tabs') !== null && document.querySelectorAll('.source-tabs button')[2]?.getAttribute('aria-current') === "page"`, "the explicit PostgreSQL destination", 15_000)
     const unavailable = await cdp.evaluate(`(() => {
       const sourceButtons = document.querySelectorAll('.source-tabs button')
       return {
@@ -2314,7 +2395,9 @@ test("PostgreSQL is unavailable without current telemetry and returns for a stor
         view: new URL(location.href).searchParams.get('view'),
       }
     })()`)
-    assert.deepEqual(unavailable, { pgDisabled: true, pgHealth: false, pgPanels: 0, view: "host.overview" })
+    assert.deepEqual(unavailable, { pgDisabled: false, pgHealth: false, pgPanels: 1, view: "pg.overview" })
+    await cdp.evaluate(`document.querySelector('.source-tabs button:nth-child(2)').click()`)
+    await cdp.waitFor(`document.querySelector('.system-main') !== null`, "the Host destination", 15_000)
     await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]')?.click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "the host CPU cards", 15_000)
     await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]').click()`)
@@ -2344,13 +2427,10 @@ test("PostgreSQL is unavailable without current telemetry and returns for a stor
       assert.match(cpuChart.tooltip, new RegExp(label))
     }
     assert.equal(await cdp.evaluate(`document.documentElement.scrollWidth <= document.documentElement.clientWidth`), true)
-    const firstPageRequests = requests.slice()
-    assert.equal(firstPageRequests.some(({ path, query }) => path.includes("/snapshot") && new URLSearchParams(query).getAll("section").some((section) => section.startsWith("pg_"))), false)
-
     historical = true
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.overview` })
     await cdp.waitFor(`document.querySelector('.pg-tabs') !== null && document.querySelectorAll('.source-tabs button')[2]?.getAttribute('aria-current') === "page"`, "the stored PostgreSQL hour", 15_000)
-    assert.equal(await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[1].disabled`), false)
+    assert.equal(await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[2].disabled`), false)
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
   } finally {
@@ -2364,8 +2444,13 @@ test("PostgreSQL is unavailable without current telemetry and returns for a stor
 test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const authState = { valid: true }
+  const requests = []
+  const fixture = viewportActivityRows(new URL("http://fixture/snapshot"))
+  assert.equal(fixture[0]?.layout?.logical_name, "pg_stat_activity")
+  assert.equal(fixture.length, 121)
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    requests.push(`${url.pathname}?${url.searchParams}`)
     if (url.pathname === "/") {
       response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
       response.end(html)
@@ -2407,12 +2492,14 @@ test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, as
       value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1),
     })
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.activity` })
-    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-activity-table"] .entity-row').length > 8`, "the viewport activity table", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"]') !== null`, "the viewport activity table", 15_000)
+    await waitForRequests(() => requests.some((value) => value.startsWith(`/api/segments/${SEGMENT}/snapshot?`)))
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"] .entity-row') !== null`, "the viewport activity rows", 15_000)
 
     for (const [width, height] of [[1280, 882], [1366, 768], [960, 882], [390, 480]]) {
       await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
       await settleLayout(cdp)
-      await cdp.evaluate(`document.querySelector('[data-testid="pg-detail"] header button')?.click()`)
+      await cdp.evaluate(`document.querySelector('[data-testid="pg-detail"] header button:last-child')?.click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"]') === null`, `${width}x${height} closed detail`)
       await cdp.evaluate(`(() => {
         const scroll = document.querySelector('[data-testid="pg-activity-table"] .entity-scroll')
@@ -2460,7 +2547,7 @@ test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, as
       assert.ok(scrolled.close.top >= scrolled.dock.top - 1 && scrolled.close.bottom <= scrolled.dock.bottom + 1, `${width}x${height} visible close: ${JSON.stringify(scrolled)}`)
       assert.ok(scrolled.lastDetail.top >= scrolled.header.bottom - 1 && scrolled.lastDetail.bottom <= scrolled.dock.bottom + 1, `${width}x${height} reachable detail fields: ${JSON.stringify(scrolled)}`)
 
-      await cdp.evaluate(`document.querySelector('[data-testid="pg-detail"] header button').click()`)
+      await cdp.evaluate(`document.querySelector('[data-testid="pg-detail"] header button:last-child').click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"]') === null`, `${width}x${height} detail close`)
       const closed = await cdp.evaluate(viewportTableGeometry())
       assert.ok(Math.abs(closed.table.scrollLeft - before.table.scrollLeft) <= 1, `${width}x${height} horizontal scroll on close: ${JSON.stringify({ before, closed })}`)
@@ -2769,7 +2856,7 @@ test("production health keeps staggered components on one stored evaluation", { 
       assert.match(output, /OS[^\d]*84%/)
       assert.doesNotMatch(output, /PostgreSQL/)
     }
-    assert.equal(await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[2].disabled`), true)
+    assert.equal(await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[2].disabled`), false)
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
   } finally {
@@ -3088,7 +3175,7 @@ function viewportActivityTimeline() {
 
 function viewportActivityRows(url) {
   const selected = url.searchParams.get("where.pid")
-  const [activityLayout, template] = snapshotRecords()
+  const [activityLayout, template] = activityFixtureSeed()
   const rows = Array.from({ length: 120 }, (_, index) => viewportActivityRow(template, 3_000 + index, AT, index))
     .filter((record) => selected === null || String(record.values[1]) === selected)
   return [activityLayout, ...rows]
@@ -3096,7 +3183,7 @@ function viewportActivityRows(url) {
 
 function viewportActivityHistory(url) {
   const pid = Number(url.searchParams.get("where.pid") ?? "3000")
-  const [activityLayout, template] = snapshotRecords()
+  const [activityLayout, template] = activityFixtureSeed()
   return [
     { record: "series_segment", segment: { id: SEGMENT } },
     activityLayout,
@@ -3107,10 +3194,15 @@ function viewportActivityHistory(url) {
   ]
 }
 
+function activityFixtureSeed() {
+  const records = snapshotRecords().filter((record) => (record.record === "layout" ? record.layout.type_id : record.type_id) === "1001004")
+  return [records.find(({ record }) => record === "layout"), records.find(({ record }) => record === "row")]
+}
+
 function viewportActivityRow(template, pid, timestamp, index) {
   const query = `select pg_sleep(0.01), payload from operator_activity where pid = ${pid} and payload = '${"activity-detail-".repeat(24)}'`
   const values = [
-    String(timestamp), pid, 1, "operator_database", "operator_role", "viewport-regression", "192.0.2.42", "client backend",
+    String(timestamp), pid, 1, 20, "operator_database", "operator_role", "viewport-regression", "192.0.2.42", "client backend",
     "active", "Lock", "transactionid", query, String(9_000_000 + pid), 42 + index, 21 + index,
     String(timestamp - 3_000_000_000), String(timestamp - 900_000_000), String(timestamp - 180_000_000), String(timestamp - 60_000_000),
   ]
@@ -3309,7 +3401,13 @@ function timelineRecords(hour = HOUR, cgroups = false) {
       }, {
         logical_name: "os_cpu", physical_name: "os_cpu", type_id: "1102001",
         implementation: "linux", source_family: "system", rows: "1", bytes: "128",
+      }, {
+        logical_name: "os_process", physical_name: "os_process", type_id: "1100001",
+        implementation: "linux", source_family: "system", rows: "80", bytes: "16384",
       }, ...(cgroups ? [{
+        logical_name: "instance_metadata", physical_name: "instance_metadata", type_id: "1000001",
+        implementation: "linux", source_family: "system", rows: "1", bytes: "64",
+      }, {
         logical_name: "os_cgroup_context", physical_name: "os_cgroup_context", type_id: "1205001",
         implementation: "linux", source_family: "system", rows: "1", bytes: "128",
       }, {
@@ -3409,6 +3507,8 @@ function systemSnapshotRecords(cgroupContext = false, at = AT) {
     layout("1108001", "os_diskstats", ["ts", "major", "minor", "device", "reads", "writes", "read_sectors", "write_sectors", "read_time_ms", "write_time_ms", "io_time_ms", "io_weighted_time_ms", "io_in_progress", "scope"]),
     row("1108001", "7", [String(at), 8, 0, "device_target_A", 100, 50, 200, 150, 1_000, 500, 2_000, 2_500, 1, 0], at),
     ...(cgroupContext ? [
+      layout("1000001", "instance_metadata", ["environment"]),
+      row("1000001", "metadata", [1], at),
       layout("1205001", "os_cgroup_context", [
         "ts", "cgroup_version", "cpu_path", "memory_path", "io_path", "cpuset_cpus",
         "effective_cpu_quota_usec", "effective_cpu_period_usec", "effective_memory_max", "scope",
@@ -3555,12 +3655,28 @@ function exactIndexRecords() {
 }
 
 function snapshotRecords() {
+  const processColumns = [
+    "ts", "pid", "comm", "cmdline", "ppid", "uid", "euid", "gid", "egid", "num_threads", "tty", "exit_signal",
+    "state", "utime", "stime", "rundelay_ns", "blkdelay_ticks", "nvcsw", "nivcsw", "curcpu", "nice", "prio", "rtprio", "policy",
+    "rmem_kb", "vmem_kb", "vswap_kb", "minflt", "majflt", "read_bytes", "write_bytes", "syscr", "syscw", "rchar", "wchar", "cancelled_write_bytes",
+  ]
   const columns = [
     "ts", "pid", "leader_pid", "datid", "datname", "usename", "application_name", "client_addr", "backend_type",
     "state", "wait_event_type", "wait_event", "query", "query_id", "backend_xid_age", "backend_xmin_age",
     "backend_start", "xact_start", "query_start", "state_change",
   ]
+  const processValues = (pid, index) => [
+    String(AT), pid, pid === 2_686_712 ? "postgres" : `worker-${index}`, pid === 2_686_712 ? "postgres: artifact_db artifact_role 192.0.2.72" : null,
+    1, 1000, 1000, 1000, 1000, 2 + index % 4, 0, 17, index % 3 === 0 ? 82 : 83,
+    1000 + index, 300 + index, 5_000_000 + index, 12 + index, 50 + index, 3 + index, index % 8, -5, 15, 0, 0,
+    1024 + index, 4096 + index, index % 3, 20 + index, 2 + index, 4096 + index, 8192 + index, 4 + index, 5 + index, 16_384 + index, 32_768 + index, 0,
+  ]
   return [
+    layout("1100001", "os_process", processColumns),
+    ...Array.from({ length: 80 }, (_, index) => {
+      const pid = index === 27 ? 2_686_712 : 2_686_800 + index
+      return row("1100001", String(index), processValues(pid, index), AT)
+    }),
     {
       record: "layout", rates: [],
       layout: { type_id: "1001004", logical_name: "pg_stat_activity", columns: columns.map((name) => ({ name })) },
@@ -3571,6 +3687,14 @@ function snapshotRecords() {
         String(AT), 4242, null, 20, "operators", "kronika", "artifact-test", "127.0.0.1", "client backend",
         "active", null, null, "select artifact_wire_contract", "991", null, "7",
         String(AT - 60_000_000), String(AT - 30_000_000), String(AT - 5_000_000), String(AT - 1_000_000),
+      ],
+    },
+    {
+      record: "row", segment_id: SEGMENT, type_id: "1001004", ordinal: "74", timestamp: String(AT - 2_000_000),
+      values: [
+        String(AT - 2_000_000), 2_686_712, null, 21, "artifact_db", "artifact_role", "offset-activity", "192.0.2.72", "client backend",
+        "active", "IO", "DataFileRead", "select activity_for_2686712", "992", "3", "8",
+        String(AT - 120_000_000), String(AT - 45_000_000), String(AT - 7_000_000), String(AT - 2_500_000),
       ],
     },
   ]
@@ -4134,7 +4258,7 @@ test("narrow controls stay contained and help never changes selection", { timeou
 
     await cdp.evaluate(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }))`)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width: 960 })
-    await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[0].click()`)
+    await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[1].click()`)
     await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]')?.click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "the 960px System view", 15_000)
     await settleLayout(cdp)

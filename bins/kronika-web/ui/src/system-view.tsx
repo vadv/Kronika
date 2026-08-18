@@ -535,12 +535,12 @@ export function SystemView({
   const policyRows = section === "cpu" && mode === "topology" ? systemEntityRows(data, "os_cpufreq_policy", cursor) : []
   return <>
     <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane={selectedMetric === undefined ? "health" : metricLane(selectedMetric.spec)} shownAt={shownAt} t={t} /></ChartOnly>
-    {modes.length > 0 && <div aria-label={t(`section.${section}`)} className="lensbar mt-2" data-testid={`host-${section}-modes`} role="group">
+    {modes.length > 0 && <div aria-label={t(`section.${section}`)} className="lensbar !mt-0 border-t-0" data-testid={`host-${section}-modes`} role="group">
       <div className="lens-tabs">
         {modes.map((choice) => <button aria-pressed={mode === choice} key={choice} onClick={() => onMode(choice)} type="button">{t(`host.mode.${choice}`)}</button>)}
       </div>
     </div>}
-    <div className="system-main mt-2 min-w-0 [&>.use-table]:mt-0 [&>.metric-groups]:mt-2 [&>.table-empty]:mt-2">
+    <div className={`${modes.length === 0 ? "mt-0" : "mt-2"} system-main min-w-0 [&>.use-table]:mt-0 [&>.metric-groups]:mt-2 [&>.table-empty]:mt-2`}>
         {section === "overview" && <UseTable canOpen={(resource) => resourceSelection(available, resource) !== null} cursor={cursor} lanePoints={data.lanePoints} locale={locale} onSelect={(resource) => {
           const target = resourceSelection(available, resource)
           if (target !== null) openMetric(target)

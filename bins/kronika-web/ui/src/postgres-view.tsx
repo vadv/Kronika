@@ -7,6 +7,7 @@ import { buildMetricSamples } from "./chart"
 import { ChartOnly, useChartsVisible } from "./chart-visibility"
 import { contextMatches, contextualRows, type EntityContext } from "./entity-context"
 import { useDetailDismiss } from "./detail-dismiss"
+import { DetailList, DetailRow } from "./detail-list"
 import { createDisplayTimeFormatter, type DisplayTimeFormatter } from "./display-time"
 import { useDisplayTime } from "./display-time-context"
 import { EntityTable, EstimatedRows, unit, type EntityColumn, type TableOrder } from "./entity-table"
@@ -270,7 +271,7 @@ export function PostgresView({
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   return <>
     <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane={section === "statements" || section === "plans" ? "pg_running" : section === "activity" || section === "locks" ? "pg_waiting" : "health"} shownAt={shownAt} t={t} /></ChartOnly>
-    <nav aria-label={t("pg.sections")} className="pg-tabs mt-2 flex min-h-[35px] overflow-x-auto border border-line2 bg-s1 [&>button]:flex [&>button]:flex-none [&>button]:cursor-pointer [&>button]:items-center [&>button]:gap-1.5 [&>button]:border-0 [&>button]:border-r [&>button]:border-line2 [&>button]:bg-transparent [&>button]:text-xs [&>button]:uppercase [&>button]:tracking-[.04em] [&>button]:text-fg3 [&>button:disabled]:cursor-not-allowed [&>button:disabled]:opacity-35 [&>button[aria-current=page]]:bg-s4 [&>button[aria-current=page]]:text-accent3 [&>button[aria-current=page]]:shadow-[inset_0_-2px_var(--color-accent)]">
+    <nav aria-label={t("pg.sections")} className="pg-tabs !mt-0 flex min-h-[35px] overflow-x-auto border border-t-0 border-line2 bg-s1 [&>button]:flex [&>button]:flex-none [&>button]:cursor-pointer [&>button]:items-center [&>button]:gap-1.5 [&>button]:border-0 [&>button]:border-r [&>button]:border-line2 [&>button]:bg-transparent [&>button]:text-xs [&>button]:uppercase [&>button]:tracking-[.04em] [&>button]:text-fg3 [&>button:disabled]:cursor-not-allowed [&>button:disabled]:opacity-35 [&>button[aria-current=page]]:bg-s4 [&>button[aria-current=page]]:text-accent3 [&>button[aria-current=page]]:shadow-[inset_0_-2px_var(--color-accent)]">
       {TABS.map((tab) => {
         const enabled = tab.id === "plans" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)
         return <button aria-current={section === tab.id ? "page" : undefined} className={tab.divide === true ? "ml-2 border-l border-line4" : undefined} disabled={!enabled} key={tab.id} onClick={() => { if (section !== tab.id) onOrder(null); onSection(tab.id) }} title={enabled ? undefined : t("pg.no_section_data")} type="button"><span>{t(`pg.section.${tab.id}`)}</span></button>
@@ -708,16 +709,17 @@ export function tableState(
   order: TableOrder | undefined,
   locale: Locale,
   t: Translate,
-  time: Pick<DisplayTimeFormatter, "timestamp"> = createDisplayTimeFormatter(locale, "browser"),
+  time: Pick<DisplayTimeFormatter, "range" | "timestamp"> = createDisplayTimeFormatter(locale, "browser"),
   focusPreview: "loading" | "outside" | null = null,
 ): ReactNode {
   const count = (value: number) => new Intl.NumberFormat(locale).format(value)
   const shown = t("pg.table.shown", { "returned": count(rowCount), "eligible": count(metadata?.eligible ?? rowCount) })
   const semanticOrder = order?.column ?? null
   const serverOrder = metadata?.orderBy.join(", ") ?? null
-  const interval = metadata === undefined || metadata.from === null || metadata.to === null
+  const intervalTimes = metadata === undefined || metadata.from === null || metadata.to === null ? null : time.range(metadata.from, metadata.to)
+  const interval = intervalTimes === null
     ? t("pg.table.interval_unavailable")
-    : t("pg.table.interval", { from: time.timestamp(metadata.from), to: time.timestamp(metadata.to) })
+    : t("pg.table.interval", intervalTimes)
   return <>
     <span>{t("pg.table.cursor", { time: time.timestamp(cursor) })}</span>
     {focusPreview !== null && <span>{t(`pg.table.focus_${focusPreview}`)}</span>}
@@ -780,7 +782,7 @@ function PgDetail({ allRows, columns, cursor, historyField, historyRevision, hou
     {section === "pg_store_plans"
       ? <PlanView raw={wholeText} t={t} />
       : exactText !== null && <section className="query-block"><span>{t("pg.query.label")}<button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center border border-line4 bg-transparent px-[3px] py-0.5 text-xs uppercase text-accent3" onClick={() => void navigator.clipboard?.writeText(exactText)} type="button"><Copy aria-hidden="true" size={12} /></button></span><pre data-testid="pg-exact-query">{exactText}</pre></section>}
-    <dl className="m-0 mt-2">{fields.filter((column) => (column.available?.(row) ?? true) && told(value(row, column.field))).map((column) => <div className="detail-row max-[520px]:detail-row-stacked" key={column.field}><dt className="detail-dt">{column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}</dt><dd className="detail-dd max-[520px]:text-left">{column.render === undefined ? display(value(row, column.field), column, locale, t) : column.render(row)}</dd></div>)}</dl>
+    <DetailList>{fields.filter((column) => (column.available?.(row) ?? true) && told(value(row, column.field))).map((column) => <DetailRow key={column.field} term={column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}>{column.render === undefined ? display(value(row, column.field), column, locale, t) : column.render(row)}</DetailRow>)}</DetailList>
   </aside>
 }
 

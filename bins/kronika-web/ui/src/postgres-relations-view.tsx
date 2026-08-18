@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react"
 import { acceptResponse, loadSeries, loadSnapshot, type DataRow, type HourData } from "./api"
 import { ChartOnly, useChartsVisible } from "./chart-visibility"
 import { useDetailDismiss } from "./detail-dismiss"
+import { DetailList, DetailRow } from "./detail-list"
 import { useDisplayTime } from "./display-time-context"
 import { EntityTable, type EntityColumn, type TableOrder } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
@@ -206,10 +207,10 @@ function RelationDetail({ blockSize, cursor, historyRevision, hour, lens, locale
       <div aria-label={t("system.history")} className="history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">{chartColumns.map((column) => <button aria-pressed={historyField === column.field} className="min-h-[28px] flex-none cursor-pointer border border-line3 bg-s2 px-[7px] py-1 text-xs text-fg2 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg" data-testid={`pg-relation-chart-${column.field}`} key={column.field} onClick={() => setHistoryField(column.field)} type="button">{t(column.label)}</button>)}</div>
       <SeriesChart cursor={cursor} durationAxis={historyColumn.kind === "milliseconds" || historyColumn.kind === "duration" || historyColumn.kind === "microseconds"} format={chartFormat(historyColumn.kind, historyColumn.rate === true ? t("unit.per_second") : "")} helpKey={historyColumn.help ?? "chart.metric.help"} hour={hour} labelKey={historyColumn.label} locale={locale} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} status={loadedHistory.status} t={t} tickFormat={chartFormat(historyColumn.kind, historyColumn.rate === true ? t("unit.per_second") : "")} unit={chartUnit(historyColumn, t("unit.per_second"))} />
     </section>}</ChartOnly>
-    <dl>{columns.map((column) => {
+    <DetailList>{columns.map((column) => {
       const label = t(column.label)
-      return <div key={column.field}><dt><span>{column.help === undefined ? label : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}</span></dt><dd>{scanValue(row, column, locale, t)}</dd></div>
-    })}</dl>
+      return <DetailRow key={column.field} term={column.help === undefined ? label : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}>{scanValue(row, column, locale, t)}</DetailRow>
+    })}</DetailList>
     {definitionTarget !== null && <section className="query-block"><span>{t("pg.relation.definition")}{definition !== null && <button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center border border-line4 bg-transparent px-[3px] py-0.5 text-xs uppercase text-accent3" onClick={() => void navigator.clipboard?.writeText(definition)} type="button"><Copy aria-hidden="true" size={12} /></button>}</span><pre data-testid="pg-exact-indexdef">{exact === undefined ? t("status.loading") : definition ?? t("common.unavailable")}</pre></section>}
   </aside>
 }

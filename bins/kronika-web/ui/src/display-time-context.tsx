@@ -27,6 +27,19 @@ export function DisplayTimeProvider({ children, locale, mode, setMode }: {
   return <DisplayTimeContext.Provider value={value}>{children}</DisplayTimeContext.Provider>
 }
 
+// The selected hour establishes one civil date for every descendant. Ordinary
+// timestamp/range rendering becomes compact only when the value is unambiguous
+// in that date; numeric instants remain exact.
+export function DisplayTimeScope({ children, hour }: { readonly children: ReactNode; readonly hour: number | null }) {
+  const parent = useContext(DisplayTimeContext)
+  const value = useMemo<DisplayTimeValue>(() => hour === null ? parent : ({
+    ...parent,
+    range: (from, to) => parent.range(from, to, hour),
+    timestamp: (timestamp) => parent.timestamp(timestamp, hour),
+  }), [hour, parent])
+  return <DisplayTimeContext.Provider value={value}>{children}</DisplayTimeContext.Provider>
+}
+
 export function useDisplayTime(): DisplayTimeValue {
   return useContext(DisplayTimeContext)
 }

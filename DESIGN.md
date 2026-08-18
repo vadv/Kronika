@@ -492,6 +492,10 @@ measures, when it grows, and whether a high value is worse or better, in a
 sentence or two, without pointing at another screen. One concept keeps one name
 everywhere; a counter named twice is a defect, and drift in the English
 dictionary is fixed before the Russian one is translated from it.
+The buffer/block byte families are one such contract: labels such as `Shared
+buffer read bytes`, `Shared buffer hit bytes`, and their local, temporary,
+heap, index, and TOAST counterparts remain the same natural English terms in
+both dictionaries; Russian help explains their semantics in Russian.
 
 The interface covers one selected calendar hour. Host contains dense System
 metric groups and virtualized Processes lenses; PostgreSQL contains Overview,
@@ -500,6 +504,12 @@ Events expands the same findings drawn on the shared healthline. The timeline
 always spans the complete hour, does not connect missing periods and drives
 every view with one cursor. Marker shape identifies log events and threshold
 crossings.
+That selected hour establishes the civil date for the whole workspace. A
+cursor, snapshot, table interval, detail or chart readout inside the selected
+day shows time only; a value outside that day, or either endpoint of a
+cross-day comparison, shows the full date. One contextual formatter owns this
+presentation, while stored instants, addresses, joins and copied exact values
+remain unchanged.
 
 System presents host CPU from `/proc/stat` as user plus nice, system,
 interrupts, I/O wait, stolen, and idle shares. Used core equivalents exclude
@@ -558,6 +568,13 @@ health equal to OS health. A selected Linux process links to the nearest
 role, application, client, state, wait, query and times. Locale changes are
 immediate and persist locally.
 
+Processes uses the whole viewport row left after the timeline, controls and
+summary. Its virtual table and adjacent selected-process dock share that row
+and scroll independently on wide screens; the narrow dock remains bounded.
+CPU history offers temporal counters and gauges, including major page faults,
+but keeps scheduler references such as nice, priority and realtime priority as
+compact cursor-time facts rather than graph choices.
+
 Every displayed duration uses one adaptive formatter across tables, details,
 current readings, axes, hover and statistics. It chooses ns, µs, ms, s, min or
 h from magnitude and preserves semantic denominators such as `/s` and `/call`;
@@ -574,6 +591,15 @@ reserving large framed boards. A boundary is draggable only when it controls a
 real split; otherwise the layout stays light. The exact current `pg_wal` file
 size is a subordinate value with optional history, not a primary overview
 chart.
+The shared Processes, Host and PostgreSQL shells join their timeline and
+primary controls directly with a light content-sized boundary. Empty spacer
+tracks and strong nonfunctional splitter bands are forbidden; a visible resize
+handle exists only for a real bounded accessible split.
+
+PostgreSQL Tables and Indexes use lens-specific details at database, schema and
+object level. The dock is one compact two-column operator-fact list plus one
+explicitly selected metric history, not a loose vertical dump of every
+physical field. Tablespace remains an object fact, not a grouping level.
 
 PostgreSQL related-row navigation is confined to the PostgreSQL feature area
 and stored in the URL. For PostgreSQL 14–18 an Activity row can open every
@@ -588,7 +614,10 @@ about one exact execution.
 Within the selected calendar hour, PID alone identifies OS process and
 `pg_stat_activity` rows, histories, filters, joins and counter deltas. Process
 `starttime` and PostgreSQL `backend_start` remain observed timestamps and do
-not participate in that identity.
+not participate in that identity. For a process-to-Activity join, retained
+rows are filtered by exact PID before the cursor-nearest timestamp is chosen.
+Per-database collection timestamps may differ slightly, so a globally nearer
+row for another PID must never hide or replace the selected backend.
 
 ### Segment resources
 

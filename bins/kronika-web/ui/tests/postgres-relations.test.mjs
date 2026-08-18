@@ -153,6 +153,16 @@ test("rendered relation columns hide numeric identity while requests retain it",
   }
 })
 
+test("all relation levels use the shared compact detail composition", async () => {
+  const source = await readFile(new URL("../src/postgres-relations-view.tsx", import.meta.url), "utf8")
+  assert.match(source, /<DetailList>\{columns\.map/)
+  assert.match(source, /<DetailRow key=\{column\.field\}/)
+  assert.doesNotMatch(source, /<dl>|<dt>|<dd>/)
+  for (const section of relation.RELATION_SECTIONS) for (const lens of section === "pg_stat_user_tables" ? relation.TABLE_LENSES : relation.INDEX_LENSES) {
+    for (const group of relation.RELATION_GROUPS) assert.ok(view.relationDetailColumns(section, lens, group).length > 0, `${section}:${lens}:${group}`)
+  }
+})
+
 test("wire rows preserve explicit aggregate identity and never invent a physical locator", () => {
   const databaseLayout = layout(layoutRecord("pg_stat_user_tables", "database", [
     column("table_count", "number", "count", false),

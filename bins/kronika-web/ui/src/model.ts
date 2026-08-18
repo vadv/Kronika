@@ -267,12 +267,15 @@ export function activityFor(
   cursor: number,
 ): { readonly row: DataRow | null; readonly snapshotTime: number | null } {
   if (process === null) return { row: null, snapshotTime: null }
-  const activitySnapshot = snapshot(activities, cursor)
-  const snapshotTime = activitySnapshot[0]?.timestamp ?? null
   const pid = asNumber(value(process, "pid"))
-  const row = pid === null
-    ? null
-    : activitySnapshot.find((activity) => asNumber(value(activity, "pid")) === pid) ?? null
+  if (pid === null) return { row: null, snapshotTime: null }
+  // One collection pass can stamp each database's Activity rows a little
+  // differently. Resolve identity first so an unrelated database cannot own
+  // the globally nearest timestamp and hide the selected backend.
+  const matching = activities.filter((activity) => asNumber(value(activity, "pid")) === pid)
+  const activitySnapshot = snapshot(matching, cursor)
+  const snapshotTime = activitySnapshot[0]?.timestamp ?? null
+  const row = activitySnapshot[0] ?? null
   return { row, snapshotTime }
 }
 

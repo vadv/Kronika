@@ -40,6 +40,16 @@ test("activity linking uses the cursor-nearest PG snapshot and exact PID", () =>
   assert.equal(processCommand(process), "worker")
 })
 
+test("activity linking filters exact PID before choosing its nearest per-database snapshot", () => {
+  const process = { ...row(300), values: { pid: 77, comm: "postgres", cmdline: null } }
+  const matching = { ...row(286), values: { pid: 77, datname: "app", query: "select exact_backend" } }
+  const globallyCloserOtherDatabase = { ...row(299), ordinal: "1", values: { pid: 78, datname: "postgres", query: "select wrong_backend" } }
+  const linked = activityFor(process, [globallyCloserOtherDatabase, matching], 300)
+  assert.equal(linked.snapshotTime, 286)
+  assert.equal(linked.row?.values.query, "select exact_backend")
+  assert.equal(activityFor({ ...process, values: { pid: 79 } }, [globallyCloserOtherDatabase, matching], 300).row, null)
+})
+
 test("finding fields select the matching process lens", () => {
   assert.equal(processLens("read_bytes"), "disk")
   assert.equal(processLens("rmem_kb"), "memory")
