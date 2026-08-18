@@ -44,6 +44,12 @@ test("invalid selectors identify the exact offending span and never become text"
 
 test("parser limits expression, clauses, values, and exact signed bigint text", () => {
   assert.equal(parseSearch("x".repeat(SEARCH_MAX_EXPRESSION + 1), "os_process").ok, false)
+  const unicodeValue = parseSearch("😀".repeat(SEARCH_MAX_VALUE + 1), "os_process")
+  assert.equal(unicodeValue.ok, false)
+  assert.equal(unicodeValue.error.code, "value_too_long")
+  const unicodeExpression = parseSearch("😀".repeat(SEARCH_MAX_EXPRESSION + 1), "os_process")
+  assert.equal(unicodeExpression.ok, false)
+  assert.equal(unicodeExpression.error.code, "expression_too_long")
   assert.equal(parseSearch(`text:${"x".repeat(SEARCH_MAX_VALUE + 1)}`, "os_process").ok, false)
   assert.equal(parseSearch(Array.from({ length: SEARCH_MAX_CLAUSES + 1 }, () => "state:active").join(" AND "), "pg_stat_activity").ok, false)
   assert.equal(parseSearch("query_id:-9223372036854775808", "pg_stat_statements").ok, true)

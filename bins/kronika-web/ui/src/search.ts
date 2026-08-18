@@ -158,7 +158,7 @@ export function searchFields(surface: SearchSurface): readonly SearchField[] {
 }
 
 export function parseSearch(input: string, surface: SearchSurface): SearchParseResult {
-  if (input.length > SEARCH_MAX_EXPRESSION) return failure("expression_too_long", 0, input.length)
+  if ([...input].length > SEARCH_MAX_EXPRESSION) return failure("expression_too_long", 0, input.length)
   const first = firstNonSpace(input, 0)
   if (first === input.length) return success("", [], null, false)
   const future = firstReserved(input)
