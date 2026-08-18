@@ -322,6 +322,73 @@ const SEARCH_MAX_CLAUSES: usize = 8;
 const SEARCH_MAX_VALUE_CHARS: usize = 256;
 
 const SNAPSHOT_CHUNK_ROWS: usize = 16;
+const PROCESS_USER_TYPE_ID: u32 = 1_124_001;
+const PROCESS_VIRTUAL_FIELDS: &[&str] = &["user", "effective_user"];
+const MAX_PROCESS_USERS: usize = 4 * 1024;
+
+#[derive(Default)]
+struct ProcessUsers {
+    names: HashMap<(u8, u32), String>,
+}
+
+impl ProcessUsers {
+    fn load(segment: &Segment, plan: &Plan) -> Result<Self, ApiError> {
+        if plan.contract.name != "os_process" || segment.rows_of(PROCESS_USER_TYPE_ID).is_none() {
+            return Ok(Self::default());
+        }
+        let mut encoded = Vec::new();
+        let mut ids = HashSet::new();
+        segment.visit_rows(
+            PROCESS_USER_TYPE_ID,
+            &["uid", "username", "scope"],
+            0,
+            MAX_PROCESS_USERS.saturating_add(1),
+            |_ordinal, row| {
+                let (Some(Cell::U32(uid)), Some(Cell::StrId(username)), Some(Cell::U32(scope))) =
+                    (row.get("uid"), row.get("username"), row.get("scope"))
+                else {
+                    return true;
+                };
+                ids.insert(*username);
+                encoded.push((*scope, *uid, *username));
+                encoded.len() <= MAX_PROCESS_USERS
+            },
+        )?;
+        if encoded.len() > MAX_PROCESS_USERS {
+            return Err(ApiError::Unreadable(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "os_user exceeds the per-segment mapping limit",
+            ))));
+        }
+        let dictionary = resolved_dictionary(segment, &ids)?;
+        let mut names = HashMap::with_capacity(encoded.len());
+        for (scope, uid, username) in encoded {
+            let Ok(scope) = u8::try_from(scope) else {
+                continue;
+            };
+            let Some(Resolved::Str(bytes)) = dictionary.resolve(username) else {
+                continue;
+            };
+            let Ok(username) = std::str::from_utf8(bytes) else {
+                continue;
+            };
+            names
+                .entry((scope, uid))
+                .or_insert_with(|| username.to_owned());
+        }
+        Ok(Self { names })
+    }
+
+    fn for_row<'a>(&'a self, row: &Row, uid_column: &str) -> Option<&'a str> {
+        let (Some(Cell::U32(scope)), Some(Cell::U32(uid))) =
+            (row.get("scope"), row.get(uid_column))
+        else {
+            return None;
+        };
+        let scope = u8::try_from(*scope).ok()?;
+        self.names.get(&(scope, *uid)).map(String::as_str)
+    }
+}
 
 #[cfg(test)]
 thread_local! {
@@ -496,12 +563,33 @@ fn section_plans(
         if shared_projection && fields.is_empty() {
             continue;
         }
+        let selected_virtual = if logical_name == "os_process" {
+            if fields.is_empty() {
+                PROCESS_VIRTUAL_FIELDS.to_vec()
+            } else {
+                fields
+                    .iter()
+                    .filter_map(|field| {
+                        PROCESS_VIRTUAL_FIELDS
+                            .contains(&field.as_str())
+                            .then_some(field.as_str())
+                    })
+                    .collect()
+            }
+        } else {
+            Vec::new()
+        };
+        let physical_fields = fields
+            .iter()
+            .filter(|field| !PROCESS_VIRTUAL_FIELDS.contains(&field.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
         let data = DataRequest {
             segment: SegmentRequest {
                 segment_id: request.segment_id,
                 section: logical_name.clone(),
             },
-            fields,
+            fields: physical_fields.clone(),
             filters: request.filters.clone(),
             type_id: request.type_id,
             after: None,
@@ -510,6 +598,18 @@ fn section_plans(
         match plans(segment, &data, true) {
             Ok(mut plans) => {
                 for plan in &mut plans {
+                    if !fields.is_empty() {
+                        plan.retain_output_fields(&physical_fields);
+                    }
+                    for field in &selected_virtual {
+                        plan.add_virtual_output(field);
+                    }
+                    if !fields.is_empty() {
+                        plan.order_output_fields(&fields);
+                    }
+                    if !selected_virtual.is_empty() {
+                        plan.add_projection_columns(&["uid", "euid", "scope"]);
+                    }
                     let order = page_order(logical_name, plan, &request.by);
                     plan.add_projection_columns(
                         &order.as_ref().map_or_else(Vec::new, PageOrder::columns),
@@ -869,6 +969,7 @@ impl PreparedSnapshot {
             .row_ordinal
             .map_or((0, usize::MAX), |ordinal| (ordinal, 1));
         let source = self.reader.open_segment(context.source)?;
+        let process_users = ProcessUsers::load(&source, context.plan)?;
         let selection_dictionary = context.plan.exact_filter_dictionary(&source)?;
         #[cfg(test)]
         if context.plan.needs_selection_dictionary() {
@@ -893,6 +994,7 @@ impl PreparedSnapshot {
                     match self.emit_context_chunk(
                         context,
                         &source,
+                        &process_users,
                         &selection_dictionary,
                         &mut chunk,
                         emit,
@@ -917,6 +1019,7 @@ impl PreparedSnapshot {
         self.emit_context_chunk(
             context,
             &source,
+            &process_users,
             &selection_dictionary,
             &mut chunk,
             emit,
@@ -928,6 +1031,7 @@ impl PreparedSnapshot {
         &self,
         context: &PageContext<'_>,
         source: &Segment,
+        process_users: &ProcessUsers,
         selection_dictionary: &Dictionary,
         rows: &mut Vec<(u64, Row)>,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
@@ -970,6 +1074,7 @@ impl PreparedSnapshot {
                     ordinal: staged.ordinal,
                 },
                 &dictionary,
+                process_users,
                 self.text,
             )?;
             if cancelled() || !emit(record(&value)?) {
@@ -1022,9 +1127,30 @@ impl PreparedSnapshot {
                 )
             })
             .collect::<Vec<_>>();
+        let mut layout = projected_layout(&section.logical_name, plan.contract, &fields);
+        if section.logical_name == "os_process"
+            && let Some(columns) = layout.get_mut("columns").and_then(Value::as_array_mut)
+        {
+            for column in columns {
+                if column
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| PROCESS_VIRTUAL_FIELDS.contains(&name))
+                {
+                    *column = json!({
+                        "name": column.get("name").cloned().unwrap_or(Value::Null),
+                        "type": "dictionary_value",
+                        "class": "label",
+                        "unit": "none",
+                        "nullable": true,
+                        "available": true,
+                    });
+                }
+            }
+        }
         Ok(emit(record(json!({
             "record": "layout",
-            "layout": projected_layout(&section.logical_name, plan.contract, &fields),
+            "layout": layout,
             "rates": rate_columns(plan),
         }))?))
     }
@@ -1100,6 +1226,7 @@ impl PreparedSnapshot {
         cancelled: &impl Fn() -> bool,
     ) -> Result<bool, ApiError> {
         let dictionary = retained_dictionary(source, &staged)?;
+        let process_users = ProcessUsers::load(source, plan)?;
         for staged in staged {
             let before = rates
                 .previous
@@ -1114,6 +1241,7 @@ impl PreparedSnapshot {
                     ordinal: staged.ordinal,
                 },
                 &dictionary,
+                &process_users,
                 self.text,
             )?;
             if cancelled() || !emit(record(&value)?) {
@@ -1140,9 +1268,17 @@ impl PreparedSnapshot {
         if cancelled() {
             return Ok(());
         }
+        let process_users = contexts
+            .iter()
+            .map(|context| {
+                let source = self.reader.open_segment(context.source)?;
+                ProcessUsers::load(&source, context.plan)
+                    .map(|users| (context.context_index, users))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
         let anchor = self
             .cursor
-            .map(|cursor| self.cursor_anchor(&contexts, cursor))
+            .map(|cursor| self.cursor_anchor(&contexts, &process_users, cursor))
             .transpose()?;
         let page_size = self.page_size.ok_or(ApiError::BadCursor)?;
         let mut page = PageRows::new(page_size.saturating_add(1));
@@ -1150,6 +1286,9 @@ impl PreparedSnapshot {
         for context in &contexts {
             self.scan_page(
                 context,
+                process_users
+                    .get(&context.context_index)
+                    .ok_or(ApiError::BadCursor)?,
                 anchor.as_ref(),
                 &mut page,
                 &mut eligible,
@@ -1174,7 +1313,7 @@ impl PreparedSnapshot {
         });
         ranked.truncate(page_size);
         let returned = ranked.len();
-        if !self.emit_page_rows(&contexts, ranked, emit, cancelled)? {
+        if !self.emit_page_rows(&contexts, &process_users, ranked, emit, cancelled)? {
             return Ok(());
         }
         Self::emit_page_trailer(
@@ -1196,6 +1335,7 @@ impl PreparedSnapshot {
     fn emit_page_rows(
         &self,
         contexts: &[PageContext<'_>],
+        process_users: &HashMap<usize, ProcessUsers>,
         ranked: Vec<PageRankedRow>,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
         cancelled: &impl Fn() -> bool,
@@ -1242,6 +1382,9 @@ impl PreparedSnapshot {
                     ordinal: ranked.staged.ordinal,
                 },
                 dictionary,
+                process_users
+                    .get(&context.context_index)
+                    .ok_or(ApiError::BadCursor)?,
                 self.text,
             )?;
             if cancelled() || !emit(record(&value)?) {
@@ -1816,6 +1959,7 @@ impl PreparedSnapshot {
     fn cursor_anchor(
         &self,
         contexts: &[PageContext<'_>],
+        process_users: &HashMap<usize, ProcessUsers>,
         cursor: SnapshotCursor,
     ) -> Result<PageRankedRow, ApiError> {
         let context = contexts
@@ -1843,13 +1987,22 @@ impl PreparedSnapshot {
             context,
             std::slice::from_ref(&(ordinal, row.clone())),
         )?;
-        self.page_candidate(context, ordinal, row, &dictionary)
-            .ok_or(ApiError::BadCursor)
+        self.page_candidate(
+            context,
+            process_users
+                .get(&context.context_index)
+                .ok_or(ApiError::BadCursor)?,
+            ordinal,
+            row,
+            &dictionary,
+        )
+        .ok_or(ApiError::BadCursor)
     }
 
     fn scan_page(
         &self,
         context: &PageContext<'_>,
+        process_users: &ProcessUsers,
         anchor: Option<&PageRankedRow>,
         page: &mut PageRows,
         eligible: &mut u64,
@@ -1873,7 +2026,16 @@ impl PreparedSnapshot {
                 0,
                 usize::MAX,
                 |ordinal, row| {
-                    self.rank_page_row(context, anchor, page, eligible, &dictionary, ordinal, row);
+                    self.rank_page_row(
+                        context,
+                        process_users,
+                        anchor,
+                        page,
+                        eligible,
+                        &dictionary,
+                        ordinal,
+                        row,
+                    );
                     !cancelled()
                 },
             )?;
@@ -1893,8 +2055,15 @@ impl PreparedSnapshot {
             |ordinal, row| {
                 chunk.push((ordinal, row));
                 if chunk.len() == SNAPSHOT_CHUNK_ROWS
-                    && let Err(error) =
-                        self.rank_page_chunk(&source, context, anchor, page, eligible, &mut chunk)
+                    && let Err(error) = self.rank_page_chunk(
+                        &source,
+                        context,
+                        process_users,
+                        anchor,
+                        page,
+                        eligible,
+                        &mut chunk,
+                    )
                 {
                     failure = Some(error);
                     return false;
@@ -1906,7 +2075,15 @@ impl PreparedSnapshot {
             return Err(error);
         }
         if !cancelled() && !chunk.is_empty() {
-            self.rank_page_chunk(&source, context, anchor, page, eligible, &mut chunk)?;
+            self.rank_page_chunk(
+                &source,
+                context,
+                process_users,
+                anchor,
+                page,
+                eligible,
+                &mut chunk,
+            )?;
         }
         Ok(())
     }
@@ -1915,6 +2092,7 @@ impl PreparedSnapshot {
         &self,
         source: &Segment,
         context: &PageContext<'_>,
+        process_users: &ProcessUsers,
         anchor: Option<&PageRankedRow>,
         page: &mut PageRows,
         eligible: &mut u64,
@@ -1922,7 +2100,16 @@ impl PreparedSnapshot {
     ) -> Result<(), ApiError> {
         let dictionary = page_dictionary(source, context, chunk)?;
         for (ordinal, row) in chunk.drain(..) {
-            self.rank_page_row(context, anchor, page, eligible, &dictionary, ordinal, row);
+            self.rank_page_row(
+                context,
+                process_users,
+                anchor,
+                page,
+                eligible,
+                &dictionary,
+                ordinal,
+                row,
+            );
         }
         Ok(())
     }
@@ -1934,6 +2121,7 @@ impl PreparedSnapshot {
     fn rank_page_row(
         &self,
         context: &PageContext<'_>,
+        process_users: &ProcessUsers,
         anchor: Option<&PageRankedRow>,
         page: &mut PageRows,
         eligible: &mut u64,
@@ -1941,7 +2129,8 @@ impl PreparedSnapshot {
         ordinal: u64,
         row: Row,
     ) {
-        let Some(candidate) = self.page_candidate(context, ordinal, row, dictionary) else {
+        let Some(candidate) = self.page_candidate(context, process_users, ordinal, row, dictionary)
+        else {
             return;
         };
         *eligible = eligible.saturating_add(1);
@@ -1953,6 +2142,7 @@ impl PreparedSnapshot {
     fn page_candidate(
         &self,
         context: &PageContext<'_>,
+        process_users: &ProcessUsers,
         ordinal: u64,
         row: Row,
         dictionary: &Dictionary,
@@ -1960,7 +2150,14 @@ impl PreparedSnapshot {
         if !context.window.matches(&row)
             || !context.plan.matches(&row, dictionary)
             || self.search.as_ref().is_some_and(|search| {
-                !search_matches(context.logical_name, context.plan, &row, dictionary, search)
+                !search_matches(
+                    context.logical_name,
+                    context.plan,
+                    &row,
+                    dictionary,
+                    Some(process_users),
+                    search,
+                )
             })
         {
             return None;
@@ -2091,13 +2288,23 @@ impl PreparedSnapshot {
         elapsed: Option<i64>,
         coordinate: RowCoordinate,
         dictionary: &Dictionary,
+        process_users: &ProcessUsers,
         text_limit: Option<usize>,
     ) -> Result<Value, ApiError> {
         let stamped = plan.timestamp.and_then(|column| row_timestamp(row, column));
         let mut values = Vec::with_capacity(plan.fields.len());
         for field in &plan.fields {
             let Some(column) = field.column else {
-                values.push(Value::Null);
+                let uid_column = match field.name.as_str() {
+                    "user" => Some("uid"),
+                    "effective_user" => Some("euid"),
+                    _ => None,
+                };
+                values.push(
+                    uid_column
+                        .and_then(|column| process_users.for_row(row, column))
+                        .map_or(Value::Null, |name| Value::String(name.to_owned())),
+                );
                 continue;
             };
             let stored = row.get(column);
@@ -2534,6 +2741,7 @@ fn search_matches(
     plan: &Plan,
     row: &Row,
     dictionary: &Dictionary,
+    process_users: Option<&ProcessUsers>,
     search: &StructuredSearch,
 ) -> bool {
     search.clauses.iter().all(|clause| {
@@ -2544,17 +2752,43 @@ fn search_matches(
         {
             return false;
         }
+        if logical_name == "os_process" {
+            let name_matches = |uid_column| {
+                process_users
+                    .and_then(|users| users.for_row(row, uid_column))
+                    .is_some_and(|name| search_value_matches(name, &clause.value))
+            };
+            match clause.key {
+                "user" => return name_matches("uid"),
+                "effective_user" => return name_matches("euid"),
+                "text" => {
+                    if name_matches("uid") || name_matches("euid") {
+                        return true;
+                    }
+                    return ["comm", "cmdline"].iter().any(|column| {
+                        row.get(column)
+                            .and_then(|value| searchable_text(value, dictionary))
+                            .is_some_and(|text| search_value_matches(&text, &clause.value))
+                    });
+                }
+                _ => {}
+            }
+        }
         search_clause_columns(logical_name, plan, clause.key)
             .iter()
             .any(|column| {
                 row.get(column)
                     .and_then(|value| searchable_text(value, dictionary))
-                    .is_some_and(|text| match &clause.value {
-                        SearchValue::Identifier(wanted) => text == *wanted,
-                        SearchValue::Pattern(pattern) => pattern.matches(&text),
-                    })
+                    .is_some_and(|text| search_value_matches(&text, &clause.value))
             })
     })
+}
+
+fn search_value_matches(text: &str, value: &SearchValue) -> bool {
+    match value {
+        SearchValue::Identifier(wanted) => text == wanted,
+        SearchValue::Pattern(pattern) => pattern.matches(text),
+    }
 }
 
 impl StructuredSearch {
@@ -2742,6 +2976,7 @@ fn valid_search_identifier(value: &str, signed: bool) -> bool {
 
 fn search_fields(logical_name: &str) -> &'static [SearchField] {
     match logical_name {
+        "os_process" => PROCESS_SEARCH_FIELDS,
         "pg_stat_statements" => STATEMENT_SEARCH_FIELDS,
         "pg_store_plans" => PLAN_SEARCH_FIELDS,
         "pg_stat_user_tables" => TABLE_SEARCH_FIELDS,
@@ -2827,6 +3062,17 @@ const INDEX_SEARCH_FIELDS: &[SearchField] = &[
     search_string("access_method", &["method"], &["amname"]),
     search_string("definition", &[], &["indexdef"]),
     search_string("tablespace", &[], &["tablespace"]),
+];
+const PROCESS_SEARCH_FIELDS: &[SearchField] = &[
+    search_string("text", &["q"], &["comm", "cmdline", "uid", "euid", "scope"]),
+    search_string("user", &["username"], &["uid", "scope"]),
+    search_string("effective_user", &["euser"], &["euid", "scope"]),
+    search_id("user_id", &["uid"], &["uid"], false),
+    search_id("effective_user_id", &["euid"], &["euid"], false),
+    search_id("pid", &[], &["pid"], true),
+    search_id("parent_pid", &["ppid"], &["ppid"], true),
+    search_string("command", &["cmd"], &["comm", "cmdline"]),
+    search_string("state", &[], &["state"]),
 ];
 
 fn searchable_text(value: &Cell, dictionary: &Dictionary) -> Option<String> {

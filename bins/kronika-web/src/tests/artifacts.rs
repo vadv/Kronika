@@ -15,6 +15,7 @@ use kronika_registry::os_diskstats::OsDiskstats;
 use kronika_registry::os_netdev::OsNetdev;
 use kronika_registry::os_process::OsProcess;
 use kronika_registry::os_psi::OsPsi;
+use kronika_registry::os_user::OsUser;
 use kronika_registry::pg_log::{PgLogErrors, PgLogTempFiles};
 use kronika_registry::pg_stat_activity::PgStatActivityV3;
 use kronika_registry::pg_stat_statements::PgStatStatementsV2;
@@ -398,6 +399,55 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append process summary snapshot");
+    }
+
+    fn append_user_processes(
+        &mut self,
+        ts: i64,
+        processes: &[(i32, u32, u32)],
+        names: &[(u32, &str)],
+    ) {
+        let mut interner = Interner::new(DictLimits::default());
+        let command = StrId(
+            interner
+                .intern(b"fixture-worker")
+                .expect("intern command")
+                .get(),
+        );
+        let mut buffers = SectionBuffers::new();
+        for &(pid, uid, euid) in processes {
+            let mut row = process(ts, None, command);
+            row.pid = pid;
+            row.starttime = Ts(SEGMENT_ID - 1_000_000 + i64::from(pid));
+            row.uid = uid;
+            row.euid = euid;
+            buffers.push(row).expect("process row fits");
+        }
+        for &(uid, name) in names {
+            let username = StrId(
+                interner
+                    .intern(name.as_bytes())
+                    .expect("intern user name")
+                    .get(),
+            );
+            buffers
+                .push(OsUser {
+                    ts: Ts(ts),
+                    uid,
+                    username,
+                    source: 0,
+                    scope: 0,
+                })
+                .expect("user row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("encode process user dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode process user fixture")
+            .expect("nonempty process user fixture");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append process user fixture");
     }
 
     fn append_statement_universe(&mut self, rows: i64) {
@@ -3097,6 +3147,81 @@ fn plan_search_finds_a_match_outside_the_old_first_two_hundred() {
     assert_eq!(page["eligible"], "1");
     assert_eq!(page["returned"], "1");
     assert_eq!(page["has_more"], false);
+}
+
+#[test]
+fn process_user_search_filters_the_full_set_and_keeps_real_and_effective_names_distinct() {
+    let mut fixture = Fixture::new();
+    let processes = (0..205)
+        .map(|pid| {
+            if pid == 0 {
+                (pid, 26, 27)
+            } else if pid == 1 {
+                (pid, 9_999, 9_999)
+            } else {
+                (pid, 1_000, 1_000)
+            }
+        })
+        .collect::<Vec<_>>();
+    fixture.append_user_processes(
+        100,
+        &processes,
+        &[(26, "postgres"), (27, "postgres-worker"), (1_000, "app")],
+    );
+    fixture.finish();
+
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=os_process&field=pid&field=user&field=effective_user&field=uid&field=euid&by=pid&page_size=1"
+    );
+    let records = stream(fixture.prepare(&format!("{base}&search=username%3Apostgres"), None))
+        .expect("real user search");
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0]["values"],
+        serde_json::json!([0, "postgres", "postgres-worker", 26, 27])
+    );
+    let page = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("process page trailer");
+    assert_eq!(page["eligible"], "1");
+
+    let effective =
+        stream(fixture.prepare(&format!("{base}&search=euser%3Apostgres-worker"), None))
+            .expect("effective user search");
+    assert_eq!(row_records(&effective)[0]["values"][0], 0);
+
+    let unresolved = stream(fixture.prepare(&format!("{base}&search=user_id%3A9999"), None))
+        .expect("numeric unresolved user search");
+    assert_eq!(
+        row_records(&unresolved)[0]["values"],
+        serde_json::json!([1, null, null, 9_999, 9_999])
+    );
+}
+
+#[test]
+fn process_user_join_uses_the_mapping_from_each_historical_segment() {
+    let mut fixture = Fixture::new();
+    fixture.append_user_processes(100, &[(10, 26, 26)], &[(26, "old-name")]);
+    let second_segment = SEGMENT_ID + 1_000;
+    fixture.finish_and_continue(second_segment);
+    fixture.append_user_processes(200, &[(10, 26, 26)], &[(26, "new-name")]);
+    fixture.finish();
+
+    for (segment, at, expected) in [
+        (SEGMENT_ID, 100, "old-name"),
+        (second_segment, 200, "new-name"),
+    ] {
+        let target = format!(
+            "/api/segments/{segment}/snapshot?at={at}&section=os_process&field=pid&field=user&field=uid&by=pid&page_size=10"
+        );
+        let records = stream(fixture.prepare(&target, None)).expect("historical process snapshot");
+        assert_eq!(
+            row_records(&records)[0]["values"],
+            serde_json::json!([10, expected, 26])
+        );
+    }
 }
 
 #[test]

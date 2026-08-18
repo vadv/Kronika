@@ -53,6 +53,7 @@ The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 | `1_121_001` | CPUFreq policy membership, driver, source, and hardware range from sysfs | `on_change` | `(policy_id, ts)` |
 | `1_122_001` | CPUFreq policy frequencies, allowed range, and online CPU count from sysfs | `snapshot_full` | `(policy_id, ts)` |
 | `1_123_001` | exact sysfs partition-to-parent block-device edges | `on_change` | `(major, minor, ts)` |
+| `1_124_001` | observed process UID-to-username references from `/etc/passwd` | `on_change` | `(scope, uid, ts)` |
 | `1_200_001` | cgroup: process mapping | `snapshot_full` | `(pid, ts)` |
 | `1_201_001` | cgroup: cpu | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_201_002` | cgroup: cpu with effective cpuset, retained reader layout | `snapshot_full` | `(cgroup_path, ts)` |
@@ -133,9 +134,10 @@ One policy sample is never copied into per-logical-CPU rows.
 
 ## Bounds
 
-A single procfs read is capped at 4 MiB by a format constant. There is no row
-cap on a source: a host with thirty thousand processes produces thirty thousand
-rows. The `segment_write_finish` log record reports peak RSS as `rss_kib`.
+A single procfs read is capped at 4 MiB by a format constant. Process snapshots
+have no row cap: a host with thirty thousand processes produces thirty thousand
+rows. User-reference capture is separately capped as described below. The
+`segment_write_finish` log record reports peak RSS as `rss_kib`.
 
 ## Units
 
@@ -263,6 +265,7 @@ bind-mount ancestry emit no inferred edge.
 | Metric | atop | predecessor | internal | Kronika |
 | --- | :-: | :-: | :-: | :-: |
 | Identity: pid, ppid, uid, gid, name, command line, start time | ✓ | ✓ | ✓ | ✓ `1_100` |
+| Real and effective user names, with numeric UID retained | ✓ | ✓ | ✓ | ✓ `1_100`, `1_124` |
 | State, threads, priority, nice, policy, real-time priority, current CPU | ✓ | ✓ | ✓ | ✓ `1_100` |
 | User and system CPU time | ✓ | ✓ | ✓ | ✓ `1_100` |
 | Run-queue delay and block-I/O delay | ✓ | ✓ | ✓ | ✓ `1_100` |
@@ -274,6 +277,27 @@ bind-mount ancestry emit no inferred edge.
 | File descriptor table size | — | — | — | ✓ `1_101` |
 | cgroup of a process | ✓ | ✓ | ✓ | ✓ `1_200` |
 | Per-thread rows, `wchan`, proportional set size | ✓ | — | — | — (not collected) |
+
+`os_user` records at most one mapping for each observed `(scope, uid)` in an
+open segment. Only real and effective UIDs from successfully decoded
+`os_process` rows are candidates. A new UID observed later in the same segment
+is appended through the normal WAL path; a failed append leaves it eligible for
+the next window. The row stores the collection timestamp, UID, interned user
+name, provenance `source=0` (`/etc/passwd`), and scope.
+
+The collector reads exactly `/etc/passwd` once per open segment. The read is
+bounded to 256 KiB, each line to 4 KiB, the parsed snapshot to 4,096 entries,
+and each user name to 256 bytes. Malformed or overlong entries are skipped;
+an oversized file or entry count disables only user-name enrichment for that
+segment. There is no NSS, LDAP, SSSD, or web-service lookup. Missing and
+dynamic users therefore remain numeric in the API and interface.
+
+Readers join `os_process` only to `os_user` and `dict.strings` from the same
+segment, keyed by `(scope, uid)`. Human-facing `user` and `effective_user`
+search selectors are resolved by the server before ordering and pagination;
+`user_id` and `effective_user_id` remain exact numeric selectors. Ordinary
+text search covers command plus both resolved names. No query path consults
+the live host identity database.
 
 ### cgroup and container
 

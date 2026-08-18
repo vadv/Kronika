@@ -12,7 +12,9 @@ use kronika_registry::os_cgroup_memory::OsCgroupMemory;
 use kronika_registry::os_cgroup_pids::OsCgroupPids;
 use kronika_registry::os_cpufreq::{OsCpufreq, OsCpufreqPolicy};
 use kronika_registry::os_mountinfo::OsMountinfo;
-use kronika_registry::{PgWalStorage, StrId, Ts, section_name};
+use kronika_registry::{DICT_STRINGS_TYPE_ID, PgWalStorage, StrId, Ts, section_name};
+use kronika_source_os::PasswdSnapshot;
+use kronika_source_os::passwd::MAX_PASSWD_BYTES;
 use kronika_source_os::{SysFs, block_topology, cgroup, cpufreq};
 use kronika_source_pg::activity::{ActivityRow, ActivityVersion};
 use kronika_source_pg::query::{BATCH_LOGICAL_BYTES, BATCH_ROWS};
@@ -24,7 +26,7 @@ use kronika_writer::{Journal, JournalConfig, SectionBuffers};
 use crate::append_pending_pg_batch;
 use crate::config::Config;
 use crate::logging::peak_rss_kib;
-use crate::os_sources::{OsSources, push_os_sources};
+use crate::os_sources::{OsSources, UserReferences, push_os_sources};
 use crate::pg_sources::{PgBatch, push_pg_batch};
 use crate::scheduler::{Intervals, Scheduler};
 use crate::segments::{
@@ -59,6 +61,10 @@ const CPUFREQ_POLICY_TYPE_ID: u32 = 1_121_001;
 const CPUFREQ_TYPE_ID: u32 = 1_122_001;
 const MOUNTINFO_TYPE_ID: u32 = 1_112_002;
 const BLOCK_TOPOLOGY_TYPE_ID: u32 = 1_123_001;
+const USER_TYPE_ID: u32 = 1_124_001;
+const USER_COST_CHILD_ENV: &str = "KRONIKA_USER_COST_CHILD";
+const USER_COST_TEST: &str =
+    "tests::zms::process_user_references_report_production_storage_and_resource_costs";
 const WAL_STORAGE_SNAPSHOTS_PER_HOUR: usize = 120;
 const ACTIVITY_SNAPSHOTS_PER_HOUR: usize = 120;
 const ACTIVITY_ROWS_PER_SNAPSHOT: usize = 64;
@@ -1251,6 +1257,297 @@ fn write_cpufreq_fixture(root: &Path, policies: usize) {
             std::fs::write(path.join(name), value).expect("write CPUFreq attribute");
         }
     }
+}
+
+struct UserCostArtifact {
+    rows: usize,
+    raw_wal_bytes: usize,
+    raw_section_bytes: u64,
+    raw_dictionary_section_bytes: u64,
+    user_zms_section_bytes: u64,
+    dictionary_zms_section_bytes: u64,
+    marginal_zms_bytes: u64,
+    zms_bytes: u64,
+    collection_elapsed_us: u64,
+    collection_cpu_ticks: u64,
+    collection_rss_baseline_kib: u64,
+    collection_peak_rss_kib: u64,
+    writer_elapsed_us: u64,
+    writer_cpu_ticks: u64,
+    writer_peak_rss_kib: u64,
+}
+
+fn passwd_fixture(entries: usize) -> (PasswdSnapshot, Vec<u32>) {
+    use std::fmt::Write as _;
+
+    let mut contents = String::with_capacity(entries.saturating_mul(48));
+    let mut uids = Vec::with_capacity(entries);
+    for index in 0..entries {
+        let uid = 10_000_u32.saturating_add(u32::try_from(index).unwrap_or(u32::MAX));
+        writeln!(
+            contents,
+            "user{index:04}:x:{uid}:{uid}::/srv/user{index:04}:/bin/false"
+        )
+        .expect("write passwd fixture row");
+        uids.push(uid);
+    }
+    let file = tempfile::NamedTempFile::new().expect("create passwd fixture");
+    std::fs::write(file.path(), contents).expect("write passwd fixture");
+    let snapshot = PasswdSnapshot::read(file.path()).expect("read passwd fixture");
+    assert_eq!(snapshot.len(), entries);
+    (snapshot, uids)
+}
+
+fn user_cost_artifact(
+    passwd: PasswdSnapshot,
+    uids: &[u32],
+    samples: usize,
+    observations_per_sample: usize,
+) -> UserCostArtifact {
+    let directory = tempfile::tempdir().expect("create user cost directory");
+    let writer = owner(directory.path());
+    let mut journal =
+        Journal::open(&writer, JournalConfig::default()).expect("open user cost journal");
+    let config = config(directory.path(), u64::MAX);
+    let mut segment = SegmentState::default();
+    let mut references = UserReferences::with_passwd(passwd);
+    let collection_rss_baseline_kib = peak_rss_kib();
+    let mut collection_elapsed_us = 0_u64;
+    let mut collection_cpu_ticks = 0_u64;
+    let mut collection_peak_rss_kib = collection_rss_baseline_kib;
+    let mut writer_elapsed_us = 0_u64;
+    let mut writer_cpu_ticks = 0_u64;
+    let mut raw_section_bytes = 0_u64;
+    let mut raw_dictionary_section_bytes = 0_u64;
+    let mut appended = 0_usize;
+
+    for sample in 0..samples {
+        let sample_i64 = i64::try_from(sample).expect("sample count fits i64");
+        let ts = BASE_TS.saturating_add(sample_i64.saturating_mul(30_000_000));
+        let observed = uids.iter().copied().cycle().take(observations_per_sample);
+        let collection_cpu_before = self_cpu_ticks();
+        let collection_started = std::time::Instant::now();
+        let (rows, pending) = references.prepare_rows(segment.interner_mut(), 0, ts, observed);
+        collection_elapsed_us = collection_elapsed_us.saturating_add(
+            u64::try_from(collection_started.elapsed().as_micros()).unwrap_or(u64::MAX),
+        );
+        collection_cpu_ticks = collection_cpu_ticks
+            .saturating_add(self_cpu_ticks().saturating_sub(collection_cpu_before));
+        if sample == 0 {
+            collection_peak_rss_kib = peak_rss_kib();
+        }
+        if rows.is_empty() {
+            continue;
+        }
+        let writer_cpu_before = self_cpu_ticks();
+        let writer_started = std::time::Instant::now();
+        appended = appended.saturating_add(rows.len());
+        let mut buffers = SectionBuffers::new();
+        push_os_sources(&mut buffers, &OsSources::users_only(rows))
+            .expect("buffer user reference rows");
+        let flushed = encode_window(buffers, segment.interner()).expect("encode user window");
+        raw_section_bytes = raw_section_bytes.saturating_add(
+            flushed
+                .summary
+                .sections
+                .iter()
+                .find(|section| section.type_id == USER_TYPE_ID)
+                .map(|section| u64::try_from(section.body_bytes).unwrap_or(u64::MAX))
+                .expect("user section encoded"),
+        );
+        raw_dictionary_section_bytes = raw_dictionary_section_bytes.saturating_add(
+            flushed
+                .summary
+                .sections
+                .iter()
+                .find(|section| section.type_id == DICT_STRINGS_TYPE_ID)
+                .map(|section| u64::try_from(section.body_bytes).unwrap_or(u64::MAX))
+                .expect("user dictionary section encoded"),
+        );
+        let completed = append_window_and_maybe_close(
+            &mut journal,
+            &writer,
+            &config,
+            &mut segment,
+            ts,
+            false,
+            &flushed,
+        )
+        .expect("append user window");
+        assert!(completed.is_empty());
+        references.mark_recorded(&pending);
+        writer_elapsed_us = writer_elapsed_us.saturating_add(
+            u64::try_from(writer_started.elapsed().as_micros()).unwrap_or(u64::MAX),
+        );
+        writer_cpu_ticks =
+            writer_cpu_ticks.saturating_add(self_cpu_ticks().saturating_sub(writer_cpu_before));
+    }
+
+    let raw_wal_bytes = journal.bytes();
+    let writer_cpu_before = self_cpu_ticks();
+    let writer_started = std::time::Instant::now();
+    let path = close_open_segment(&mut journal, &writer, &mut segment, "test-end")
+        .expect("write user cost segment");
+    writer_elapsed_us = writer_elapsed_us
+        .saturating_add(u64::try_from(writer_started.elapsed().as_micros()).unwrap_or(u64::MAX));
+    writer_cpu_ticks =
+        writer_cpu_ticks.saturating_add(self_cpu_ticks().saturating_sub(writer_cpu_before));
+    let writer_peak_rss_kib = peak_rss_kib();
+    let reader = Reader::open(directory.path()).expect("open user cost reader");
+    let listing = reader.segments(..).expect("list user cost segment");
+    let stored = reader
+        .open_segment(listing.segments.first().expect("one user cost segment"))
+        .expect("open user cost segment");
+    let rows = stored.rows(USER_TYPE_ID).expect("read user rows");
+    let dictionary = stored.dictionary().expect("read user dictionary");
+    for row in &rows {
+        let Some(Cell::StrId(username)) = row.get("username") else {
+            panic!("user name is a dictionary reference");
+        };
+        assert!(matches!(
+            dictionary.resolve(*username),
+            Some(Resolved::Str(_))
+        ));
+    }
+    let section_bytes = |wanted| {
+        stored
+            .sections()
+            .find(|(type_id, _)| *type_id == wanted)
+            .map(|(_, section)| section.bytes)
+            .expect("user artifact section catalogued")
+    };
+    let user_zms_section_bytes = section_bytes(USER_TYPE_ID);
+    let dictionary_zms_section_bytes = section_bytes(DICT_STRINGS_TYPE_ID);
+    let marginal_zms_bytes = user_zms_section_bytes
+        .saturating_add(dictionary_zms_section_bytes)
+        .saturating_add(2 * u64::try_from(ENTRY_LEN).unwrap_or(0));
+    let zms_bytes = std::fs::metadata(path).expect("stat user segment").len();
+    assert_eq!(rows.len(), appended);
+
+    UserCostArtifact {
+        rows: rows.len(),
+        raw_wal_bytes,
+        raw_section_bytes,
+        raw_dictionary_section_bytes,
+        user_zms_section_bytes,
+        dictionary_zms_section_bytes,
+        marginal_zms_bytes,
+        zms_bytes,
+        collection_elapsed_us,
+        collection_cpu_ticks,
+        collection_rss_baseline_kib,
+        collection_peak_rss_kib,
+        writer_elapsed_us,
+        writer_cpu_ticks,
+        writer_peak_rss_kib,
+    }
+}
+
+fn print_user_cost(label: &str, artifact: &UserCostArtifact) {
+    println!(
+        "os_user_cost case={label} rows={} raw_wal_bytes={} raw_section_bytes={} raw_dictionary_section_bytes={} user_zms_section_bytes={} dictionary_zms_section_bytes={} marginal_zms_bytes={} zms_bytes={} collection_elapsed_us={} collection_cpu_ticks={} collection_rss_baseline_kib={} collection_peak_rss_kib={} collection_rss_growth_kib={} writer_elapsed_us={} writer_cpu_ticks={} writer_peak_rss_kib={}",
+        artifact.rows,
+        artifact.raw_wal_bytes,
+        artifact.raw_section_bytes,
+        artifact.raw_dictionary_section_bytes,
+        artifact.user_zms_section_bytes,
+        artifact.dictionary_zms_section_bytes,
+        artifact.marginal_zms_bytes,
+        artifact.zms_bytes,
+        artifact.collection_elapsed_us,
+        artifact.collection_cpu_ticks,
+        artifact.collection_rss_baseline_kib,
+        artifact.collection_peak_rss_kib,
+        artifact
+            .collection_peak_rss_kib
+            .saturating_sub(artifact.collection_rss_baseline_kib),
+        artifact.writer_elapsed_us,
+        artifact.writer_cpu_ticks,
+        artifact.writer_peak_rss_kib,
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the user-reference acceptance artifact compares bounded capture cases through the production WAL and ZMS path"
+)]
+fn process_user_references_report_production_storage_and_resource_costs() {
+    if std::env::var_os(USER_COST_CHILD_ENV).is_none() {
+        let executable = std::env::current_exe().expect("locate collector test binary");
+        let output = std::process::Command::new(executable)
+            .args(["--exact", USER_COST_TEST, "--nocapture", "--test-threads=1"])
+            .env(USER_COST_CHILD_ENV, "1")
+            .output()
+            .expect("run isolated user cost child");
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "isolated user cost child exited with {}",
+            output.status
+        );
+        return;
+    }
+
+    let (shared_passwd, shared_uids) = passwd_fixture(1);
+    let shared = user_cost_artifact(shared_passwd, &shared_uids, 120, 1_000);
+    let (ordinary_passwd, ordinary_uids) = passwd_fixture(16);
+    let ordinary = user_cost_artifact(ordinary_passwd, &ordinary_uids, 1, 16);
+    let (high_passwd, high_uids) = passwd_fixture(4_096);
+    let high = user_cost_artifact(high_passwd, &high_uids, 1, 4_096);
+
+    let (unresolved_passwd, _unresolved_uids) = passwd_fixture(1);
+    let mut unresolved = UserReferences::with_passwd(unresolved_passwd);
+    let mut unresolved_interner =
+        kronika_writer::Interner::new(kronika_format::DictLimits::default());
+    let (unresolved_rows, unresolved_pending) =
+        unresolved.prepare_rows(&mut unresolved_interner, 0, BASE_TS, [u32::MAX]);
+    assert!(unresolved_rows.is_empty());
+    assert!(unresolved_pending.is_empty());
+
+    let malformed_file = tempfile::NamedTempFile::new().expect("create malformed fixture");
+    std::fs::write(
+        malformed_file.path(),
+        b"bad\nvalid:x:12000:12000::/:/bin/false\n",
+    )
+    .expect("write malformed fixture");
+    let malformed = PasswdSnapshot::read(malformed_file.path()).expect("read malformed fixture");
+    assert_eq!(malformed.len(), 1);
+    assert_eq!(malformed.rejected_lines(), 1);
+
+    let oversized_file = tempfile::NamedTempFile::new().expect("create oversized fixture");
+    std::fs::write(
+        oversized_file.path(),
+        vec![b'x'; MAX_PASSWD_BYTES.saturating_add(1)],
+    )
+    .expect("write oversized fixture");
+    assert!(PasswdSnapshot::read(oversized_file.path()).is_err());
+
+    assert_eq!(shared.rows, 1);
+    assert_eq!(ordinary.rows, 16);
+    assert_eq!(high.rows, 4_096);
+    assert!(shared.raw_wal_bytes < 32 * 1024);
+    assert!(ordinary.raw_wal_bytes < 32 * 1024);
+    assert!(high.raw_wal_bytes < 512 * 1024);
+    assert!(shared.zms_bytes < 32 * 1024);
+    assert!(ordinary.zms_bytes < 32 * 1024);
+    assert!(high.zms_bytes < 512 * 1024);
+    assert!(
+        high.collection_peak_rss_kib
+            .saturating_sub(high.collection_rss_baseline_kib)
+            <= 10 * 1_024
+    );
+    print_user_cost("shared", &shared);
+    print_user_cost("ordinary", &ordinary);
+    print_user_cost("high_cardinality", &high);
+    println!(
+        "os_user_cost shared_process_observations={} repeated_samples={} unresolved_rows={} malformed_rejected={} oversized_rows=0",
+        1_000 * 120,
+        120,
+        unresolved_rows.len(),
+        malformed.rejected_lines(),
+    );
 }
 
 #[test]

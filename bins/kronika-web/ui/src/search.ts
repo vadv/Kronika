@@ -90,10 +90,13 @@ const SEARCH_FIELDS: Readonly<Record<SearchSurface, readonly SearchField[]>> = {
     string("category", ["category"]),
   ],
   os_process: [
-    text(["cmdline", "comm"]), id("pid", ["pid"]),
+    text(["cmdline", "comm", "user", "effective_user"]),
+    string("user", ["user"], ["username"]),
+    string("effective_user", ["effective_user"], ["euser"]),
+    id("user_id", ["uid"], ["uid"]), id("effective_user_id", ["euid"]),
+    id("pid", ["pid"]),
     id("parent_pid", ["ppid"]),
     string("command", ["cmdline", "comm"], ["cmd"]),
-    id("user_id", ["uid"]), id("effective_user_id", ["euid"], ["euid"]),
     string("state", ["state"]),
   ],
   pg_stat_activity: [

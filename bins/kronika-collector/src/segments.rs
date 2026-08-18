@@ -19,6 +19,8 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use crate::os_sources::UserReferences;
+
 mod admission;
 mod open;
 
@@ -66,6 +68,7 @@ pub(crate) struct SegmentState {
     opened_at: Option<Instant>,
     admission: SegmentAdmission,
     interner: Interner,
+    users: UserReferences,
     pg_settings_present: bool,
 }
 
@@ -76,6 +79,7 @@ impl Default for SegmentState {
             opened_at: None,
             admission: SegmentAdmission::default(),
             interner: Interner::new(kronika_format::DictLimits::default()),
+            users: UserReferences::default(),
             pg_settings_present: false,
         }
     }
@@ -92,6 +96,22 @@ impl SegmentState {
 
     pub(crate) const fn interner_mut(&mut self) -> &mut Interner {
         &mut self.interner
+    }
+
+    pub(crate) fn os_state_mut(&mut self) -> (&mut Interner, &mut UserReferences) {
+        (&mut self.interner, &mut self.users)
+    }
+
+    pub(crate) fn mark_users_recorded(&mut self, pending: &[(u8, u32)]) {
+        self.users.mark_recorded(pending);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_user_snapshot(passwd: kronika_source_os::PasswdSnapshot) -> Self {
+        Self {
+            users: UserReferences::with_passwd(passwd),
+            ..Self::default()
+        }
     }
 
     pub(crate) const fn needs_pg_settings(&self) -> bool {

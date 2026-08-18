@@ -53,6 +53,7 @@ pub mod os_snmp6;
 pub mod os_softirq;
 pub mod os_stat;
 pub mod os_topology;
+pub mod os_user;
 pub mod os_vmstat;
 pub mod pg_locks;
 pub mod pg_log;
