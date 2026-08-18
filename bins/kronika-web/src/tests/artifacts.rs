@@ -4794,6 +4794,10 @@ fn relation_search_runs_before_group_sort_and_page() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture proves grouped comparison behavior across every reducer phase"
+)]
 fn relation_comparison_filters_reduced_hidden_metrics_before_page() {
     const MB: i64 = 1_000_000;
     let mut fixture = Fixture::new();

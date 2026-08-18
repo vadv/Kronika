@@ -692,14 +692,19 @@ impl GroupKey {
 
     fn search_text(&self, name: &str) -> Option<&str> {
         match (self, name) {
-            (Self::Database { datname, .. } | Self::Schema { datname, .. }, "datname")
-            | (Self::Table { datname, .. } | Self::Index { datname, .. }, "datname") => {
-                Some(datname)
-            }
-            (Self::Schema { schemaname, .. }, "schemaname")
-            | (Self::Table { schemaname, .. } | Self::Index { schemaname, .. }, "schemaname") => {
-                Some(schemaname)
-            }
+            (
+                Self::Database { datname, .. }
+                | Self::Schema { datname, .. }
+                | Self::Table { datname, .. }
+                | Self::Index { datname, .. },
+                "datname",
+            ) => Some(datname),
+            (
+                Self::Schema { schemaname, .. }
+                | Self::Table { schemaname, .. }
+                | Self::Index { schemaname, .. },
+                "schemaname",
+            ) => Some(schemaname),
             (Self::Table { relname, .. } | Self::Index { relname, .. }, "relname") => Some(relname),
             (Self::Index { indexrelname, .. }, "indexrelname") => Some(indexrelname),
             _ => None,

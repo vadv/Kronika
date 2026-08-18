@@ -404,7 +404,10 @@ impl<'a> Parser<'a> {
                 next_byte(self.raw, self.cursor),
             ));
         }
-        let raw_key = &self.raw[key_start..self.cursor];
+        let raw_key = self
+            .raw
+            .get(key_start..self.cursor)
+            .expect("the ASCII field scan preserves UTF-8 boundaries");
         let Some(field) = self.fields.iter().find(|field| {
             field.key.eq_ignore_ascii_case(raw_key)
                 || field
@@ -425,7 +428,10 @@ impl<'a> Parser<'a> {
         {
             self.cursor += 1;
         }
-        let token = &self.raw[operator_start..self.cursor];
+        let token = self
+            .raw
+            .get(operator_start..self.cursor)
+            .expect("the ASCII operator scan preserves UTF-8 boundaries");
         let operator = match token {
             ":" => SearchOperator::Colon,
             ">" => SearchOperator::Greater,
@@ -491,7 +497,11 @@ impl<'a> Parser<'a> {
                 let after = skip_space(self.raw, next);
                 if after > next {
                     let unit_end = next_token(self.raw, after);
-                    if looks_like_unit(&self.raw[after..unit_end]) {
+                    let unit = self
+                        .raw
+                        .get(after..unit_end)
+                        .expect("the unit scan preserves UTF-8 boundaries");
+                    if looks_like_unit(unit) {
                         return Err(diagnostic("whitespace_before_unit", after, unit_end));
                     }
                 }
@@ -536,7 +546,7 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn consume_token(&mut self, start: usize, end: usize) -> Result<(), SearchDiagnostic> {
+    const fn consume_token(&mut self, start: usize, end: usize) -> Result<(), SearchDiagnostic> {
         if self.tokens >= SEARCH_MAX_TOKENS {
             return Err(diagnostic("too_many_tokens", start, end));
         }
