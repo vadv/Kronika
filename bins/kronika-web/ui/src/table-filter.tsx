@@ -11,6 +11,7 @@ export function TableFilter({
   onContextClear,
   onPattern,
   pattern,
+  groupedRelations = false,
   surface,
   t,
   total,
@@ -20,6 +21,7 @@ export function TableFilter({
   readonly onContextClear?: (() => void) | undefined
   readonly onPattern?: ((pattern: string) => void) | undefined
   readonly pattern: string
+  readonly groupedRelations?: boolean | undefined
   readonly surface: SearchSurface
   readonly t: Translate
   readonly total: number
@@ -30,15 +32,15 @@ export function TableFilter({
   const errorId = useId()
   const helpButton = useRef<HTMLButtonElement>(null)
   const input = useRef<HTMLInputElement>(null)
-  const draftResult = parseSearch(draft, surface)
-  const appliedResult = parseSearch(pattern, surface)
+  const draftResult = parseSearch(draft, surface, { groupedRelations })
+  const appliedResult = parseSearch(pattern, surface, { groupedRelations })
   const invalidApplied = draft === pattern && pattern !== "" && !appliedResult.ok
   const error = (submitted || invalidApplied) && !draftResult.ok ? draftResult.error : null
   const applied = appliedResult.ok ? appliedResult.query : null
   useEffect(() => {
     setDraft(pattern)
     setSubmitted(false)
-  }, [pattern, surface])
+  }, [groupedRelations, pattern, surface])
   const apply = () => {
     setSubmitted(true)
     if (!draftResult.ok) return
@@ -149,10 +151,10 @@ function SearchHelp({ onClose, surface, t }: { readonly onClose: () => void; rea
 }
 
 function searchExamples(surface: SearchSurface): readonly string[] {
-  if (surface === "pg_store_plans") return ["plan_id:3704532795 AND query_id:-912345", 'database:app AND text:"nested loop"']
-  if (surface === "pg_stat_statements" || surface === "pg_stat_activity") return ["query_id:-912345", 'database:app AND text:"select orders*"']
-  if (surface === "pg_stat_user_tables") return ["size>100MB", "schema:public AND size>100MiB", 'seq_scan_rate>0.5/s AND text:"orders"']
-  if (surface === "pg_stat_user_indexes") return ["size>100MB", "schema:public AND buffer_hit<99.5%", "scan_rate>10/s AND table_name:orders"]
+  if (surface === "pg_store_plans") return ["plan_id:3704532795 OR query_id:-912345", 'database:app AND (text:"nested loop" OR text:"hash join")']
+  if (surface === "pg_stat_statements" || surface === "pg_stat_activity") return ["query_id:-912345", 'database:app AND (text:"select orders*" OR text:"update orders*")']
+  if (surface === "pg_stat_user_tables") return ["size>100MB", "(schema:public OR schema:audit) AND size>100MiB", "schema:public AND (buffer_hit<90% OR seq_scan_rate>0.5/s)"]
+  if (surface === "pg_stat_user_indexes") return ["size>100MB", "(schema:public OR schema:audit) AND buffer_hit<99.5%", "table_name:orders AND (scan_rate>10/s OR size>100MiB)"]
   if (surface === "os_process") return ["pid:4242", "command:postgres*"]
   if (surface === "events") return ["kind:event AND source:postgres*", 'text:"lock timeout"']
   return ["database:app", "state:active"]

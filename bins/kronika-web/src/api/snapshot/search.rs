@@ -3,6 +3,8 @@ use super::GlobPattern;
 pub(super) const SEARCH_MAX_CLAUSES: usize = 8;
 pub(super) const SEARCH_MAX_VALUE_CHARS: usize = 256;
 const SEARCH_MAX_EXPRESSION_CHARS: usize = 1_024;
+const SEARCH_MAX_GROUP_DEPTH: usize = 4;
+const SEARCH_MAX_TOKENS: usize = 31;
 const SEARCH_MAX_SIGNIFICANT_DIGITS: usize = 38;
 const SEARCH_MAX_FRACTIONAL_DIGITS: usize = 9;
 
@@ -16,11 +18,17 @@ pub(super) struct StructuredSearch {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Expr {
     Predicate(SearchClause),
-    And(Vec<Self>),
+    And(Box<Self>, Box<Self>),
+    Or {
+        left: Box<Self>,
+        right: Box<Self>,
+        operator_span: (usize, usize),
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SearchClause {
+    canonical: String,
     pub(super) key: &'static str,
     pub(super) operator: SearchOperator,
     pub(super) value: SearchValue,
@@ -86,14 +94,6 @@ pub(super) struct SearchDiagnostic {
 }
 
 impl StructuredSearch {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one bounded pass keeps diagnostics, canonicalization, and clause order aligned"
-    )]
-    #[expect(
-        clippy::string_slice,
-        reason = "all parser offsets advance only across ASCII grammar bytes or UTF-8 char widths"
-    )]
     pub(super) fn parse(raw: &str, logical_name: &str) -> Result<Self, SearchDiagnostic> {
         if raw.chars().count() > SEARCH_MAX_EXPRESSION_CHARS {
             return Err(diagnostic("expression_too_long", 0, raw.len()));
@@ -106,18 +106,16 @@ impl StructuredSearch {
         if first == raw.len() {
             return Err(diagnostic("missing_value", first, first));
         }
-        if let Some((start, end)) = first_reserved(raw) {
+        if let Some((start, end)) = first_unsupported(raw) {
             return Err(diagnostic("unsupported_syntax", start, end));
         }
         if !has_structured_syntax(raw) {
-            if let Some((start, end)) = standalone_and(raw) {
-                return Err(diagnostic("expected_colon", start, end));
-            }
             let value = raw.trim();
             if value.chars().count() > SEARCH_MAX_VALUE_CHARS {
                 return Err(diagnostic("value_too_long", first, raw.len()));
             }
             let clause = SearchClause {
+                canonical: value.to_owned(),
                 key: "text",
                 operator: SearchOperator::Colon,
                 value: SearchValue::Pattern(GlobPattern::new(value)),
@@ -128,164 +126,28 @@ impl StructuredSearch {
                 canonical: value.to_owned(),
             });
         }
-
-        let mut clauses = Vec::new();
-        let mut canonical = Vec::new();
-        let mut cursor = first;
-        while cursor < raw.len() {
-            if clauses.len() >= SEARCH_MAX_CLAUSES {
-                return Err(diagnostic("too_many_clauses", cursor, raw.len()));
+        let mut parser = Parser::new(raw, fields, first);
+        let expr = parser.parse_expression(0)?;
+        parser.cursor = skip_space(raw, parser.cursor);
+        if parser.cursor != raw.len() {
+            if raw.as_bytes().get(parser.cursor) == Some(&b')') {
+                return Err(diagnostic(
+                    "unbalanced_parenthesis",
+                    parser.cursor,
+                    parser.cursor + 1,
+                ));
             }
-            if let Some((start, end)) = reserved_at(raw, cursor) {
-                return Err(diagnostic("unsupported_syntax", start, end));
-            }
-            let key_start = cursor;
-            while raw
-                .as_bytes()
-                .get(cursor)
-                .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
-            {
-                cursor += 1;
-            }
-            if cursor == key_start {
-                return Err(diagnostic("empty_clause", cursor, next_byte(raw, cursor)));
-            }
-            let raw_key = &raw[key_start..cursor];
-            let Some(field) = fields.iter().find(|field| {
-                field.key.eq_ignore_ascii_case(raw_key)
-                    || field
-                        .aliases
-                        .iter()
-                        .any(|alias| alias.eq_ignore_ascii_case(raw_key))
-            }) else {
-                return Err(diagnostic("unknown_field", key_start, cursor));
-            };
-
-            cursor = skip_space(raw, cursor);
-            let operator_start = cursor;
-            while raw
-                .as_bytes()
-                .get(cursor)
-                .is_some_and(|byte| matches!(byte, b'!' | b'<' | b'>' | b'=' | b':'))
-            {
-                cursor += 1;
-            }
-            let token = &raw[operator_start..cursor];
-            let operator = match token {
-                ":" => SearchOperator::Colon,
-                ">" => SearchOperator::Greater,
-                "<" => SearchOperator::Less,
-                ">=" | "<=" | "==" | "!=" | "=" => {
-                    return Err(diagnostic("unsupported_operator", operator_start, cursor));
-                }
-                "" => {
-                    return Err(diagnostic(
-                        "expected_colon",
-                        operator_start,
-                        next_byte(raw, operator_start),
-                    ));
-                }
-                _ => return Err(diagnostic("malformed_operator", operator_start, cursor)),
-            };
-            let comparison = !matches!(operator, SearchOperator::Colon);
-            if comparison != matches!(field.kind, SearchFieldKind::Quantity(_)) {
-                return Err(diagnostic("operator_not_allowed", operator_start, cursor));
-            }
-            cursor = skip_space(raw, cursor);
-            if cursor == raw.len() {
-                return Err(diagnostic("missing_value", cursor, cursor));
-            }
-            if comparison && raw.as_bytes().get(cursor) == Some(&b'"') {
-                let (_, end) = parse_quoted(raw, cursor)?;
-                return Err(diagnostic("quoted_quantity", cursor, end));
-            }
-            let (value, next, quoted) = parse_value(raw, cursor)?;
-            if value.is_empty() {
-                return Err(diagnostic("missing_value", cursor, next));
-            }
-            if value.chars().count() > SEARCH_MAX_VALUE_CHARS {
-                return Err(diagnostic("value_too_long", cursor, next));
-            }
-
-            let parsed_value = match field.kind {
-                SearchFieldKind::String => SearchValue::Pattern(GlobPattern::new(&value)),
-                SearchFieldKind::Identifier { signed } => {
-                    if !valid_identifier(&value, signed) {
-                        return Err(diagnostic("invalid_identifier", cursor, next));
-                    }
-                    SearchValue::Identifier(value.clone())
-                }
-                SearchFieldKind::Quantity(result) => {
-                    if quoted {
-                        return Err(diagnostic("quoted_quantity", cursor, next));
-                    }
-                    if let Some((offset, _)) =
-                        value.char_indices().find(|(_, c)| matches!(c, '(' | ')'))
-                    {
-                        return Err(diagnostic(
-                            "unsupported_syntax",
-                            cursor + offset,
-                            cursor + offset + 1,
-                        ));
-                    }
-                    let after = skip_space(raw, next);
-                    if after > next {
-                        let unit_end = next_space(raw, after);
-                        if looks_like_unit(&raw[after..unit_end]) {
-                            return Err(diagnostic("whitespace_before_unit", after, unit_end));
-                        }
-                    }
-                    SearchValue::Quantity(parse_quantity(&value, result.kind, cursor)?)
-                }
-            };
-            let rendered_value = match &parsed_value {
-                SearchValue::Identifier(value) => value.clone(),
-                SearchValue::Pattern(_) => canonical_value(&value),
-                SearchValue::Quantity(quantity) => quantity.canonical.clone(),
-            };
-            let rendered_operator = match operator {
-                SearchOperator::Colon => ":",
-                SearchOperator::Greater => ">",
-                SearchOperator::Less => "<",
-            };
-            canonical.push(format!("{}{rendered_operator}{rendered_value}", field.key));
-            clauses.push(SearchClause {
-                key: field.key,
-                operator,
-                value: parsed_value,
-            });
-            cursor = skip_space(raw, next);
-            if cursor == raw.len() {
-                break;
-            }
-            if let Some((start, end)) = reserved_at(raw, cursor) {
-                return Err(diagnostic("unsupported_syntax", start, end));
-            }
-            let rest = &raw[cursor..];
-            if rest
-                .get(..3)
-                .is_none_or(|token| !token.eq_ignore_ascii_case("AND"))
-                || rest
-                    .as_bytes()
-                    .get(3)
-                    .is_none_or(|byte| !byte.is_ascii_whitespace())
-            {
-                return Err(diagnostic("expected_and", cursor, next_space(raw, cursor)));
-            }
-            cursor = skip_space(raw, cursor + 3);
-            if cursor == raw.len() {
-                return Err(diagnostic("empty_clause", raw.len() - 3, raw.len()));
-            }
+            return Err(diagnostic(
+                "expected_boolean_operator",
+                parser.cursor,
+                next_token(raw, parser.cursor),
+            ));
         }
-        let expr = if clauses.len() == 1 {
-            Expr::Predicate(clauses[0].clone())
-        } else {
-            Expr::And(clauses.iter().cloned().map(Expr::Predicate).collect())
-        };
+        let canonical = canonical_expr(&expr, 0);
         Ok(Self {
             expr,
-            clauses,
-            canonical: canonical.join(" AND "),
+            clauses: parser.clauses,
+            canonical,
         })
     }
 
@@ -297,6 +159,26 @@ impl StructuredSearch {
         self.clauses
             .iter()
             .filter(|clause| !matches!(clause.value, SearchValue::Quantity(_)))
+    }
+
+    pub(super) fn validate_grouped_phase(&self) -> Result<(), SearchDiagnostic> {
+        phase(&self.expr).map(|_phase| ())
+    }
+
+    pub(super) fn matches_member(&self, mut predicate: impl FnMut(&SearchClause) -> bool) -> bool {
+        evaluate(&self.expr, &mut |clause| {
+            matches!(clause.value, SearchValue::Quantity(_)) || predicate(clause)
+        })
+    }
+
+    pub(super) fn matches_result(&self, mut predicate: impl FnMut(&SearchClause) -> bool) -> bool {
+        evaluate(&self.expr, &mut |clause| {
+            !matches!(clause.value, SearchValue::Quantity(_)) || predicate(clause)
+        })
+    }
+
+    pub(super) fn matches_all(&self, mut predicate: impl FnMut(&SearchClause) -> bool) -> bool {
+        evaluate(&self.expr, &mut predicate)
     }
 
     pub(super) fn result_clauses(
@@ -315,6 +197,354 @@ impl StructuredSearch {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Member,
+    Result,
+    Both,
+}
+
+fn phase(expr: &Expr) -> Result<Phase, SearchDiagnostic> {
+    match expr {
+        Expr::Predicate(clause) => Ok(if matches!(clause.value, SearchValue::Quantity(_)) {
+            Phase::Result
+        } else {
+            Phase::Member
+        }),
+        Expr::And(left, right) => Ok(match (phase(left)?, phase(right)?) {
+            (Phase::Member, Phase::Member) => Phase::Member,
+            (Phase::Result, Phase::Result) => Phase::Result,
+            _ => Phase::Both,
+        }),
+        Expr::Or {
+            left,
+            right,
+            operator_span,
+        } => {
+            let left = phase(left)?;
+            let right = phase(right)?;
+            if left == right && !matches!(left, Phase::Both) {
+                Ok(left)
+            } else {
+                Err(diagnostic(
+                    "mixed_phase_or",
+                    operator_span.0,
+                    operator_span.1,
+                ))
+            }
+        }
+    }
+}
+
+fn evaluate(expr: &Expr, predicate: &mut impl FnMut(&SearchClause) -> bool) -> bool {
+    match expr {
+        Expr::Predicate(clause) => predicate(clause),
+        Expr::And(left, right) => evaluate(left, predicate) && evaluate(right, predicate),
+        Expr::Or { left, right, .. } => evaluate(left, predicate) || evaluate(right, predicate),
+    }
+}
+
+fn canonical_expr(expr: &Expr, parent_precedence: u8) -> String {
+    let (precedence, rendered) = match expr {
+        Expr::Predicate(clause) => (3, canonical_clause(clause)),
+        Expr::And(left, right) => (
+            2,
+            format!(
+                "{} AND {}",
+                canonical_expr(left, 2),
+                canonical_expr(right, 2)
+            ),
+        ),
+        Expr::Or { left, right, .. } => (
+            1,
+            format!(
+                "{} OR {}",
+                canonical_expr(left, 1),
+                canonical_expr(right, 1)
+            ),
+        ),
+    };
+    if precedence < parent_precedence {
+        format!("({rendered})")
+    } else {
+        rendered
+    }
+}
+
+fn canonical_clause(clause: &SearchClause) -> String {
+    clause.canonical.clone()
+}
+
+struct Parser<'a> {
+    raw: &'a str,
+    fields: &'static [SearchField],
+    cursor: usize,
+    clauses: Vec<SearchClause>,
+    tokens: usize,
+}
+
+impl<'a> Parser<'a> {
+    const fn new(raw: &'a str, fields: &'static [SearchField], cursor: usize) -> Self {
+        Self {
+            raw,
+            fields,
+            cursor,
+            clauses: Vec::new(),
+            tokens: 0,
+        }
+    }
+
+    fn parse_expression(&mut self, depth: usize) -> Result<Expr, SearchDiagnostic> {
+        self.parse_or(depth)
+    }
+
+    fn parse_or(&mut self, depth: usize) -> Result<Expr, SearchDiagnostic> {
+        let mut left = self.parse_and(depth)?;
+        loop {
+            self.cursor = skip_space(self.raw, self.cursor);
+            let Some((start, end)) = keyword_at(self.raw, self.cursor, "OR") else {
+                return Ok(left);
+            };
+            self.consume_token(start, end)?;
+            self.cursor = skip_space(self.raw, end);
+            self.require_operand(start, end)?;
+            let right = self.parse_and(depth)?;
+            left = Expr::Or {
+                left: Box::new(left),
+                right: Box::new(right),
+                operator_span: (start, end),
+            };
+        }
+    }
+
+    fn parse_and(&mut self, depth: usize) -> Result<Expr, SearchDiagnostic> {
+        let mut left = self.parse_primary(depth)?;
+        loop {
+            self.cursor = skip_space(self.raw, self.cursor);
+            let Some((start, end)) = keyword_at(self.raw, self.cursor, "AND") else {
+                return Ok(left);
+            };
+            self.consume_token(start, end)?;
+            self.cursor = skip_space(self.raw, end);
+            self.require_operand(start, end)?;
+            let right = self.parse_primary(depth)?;
+            left = Expr::And(Box::new(left), Box::new(right));
+        }
+    }
+
+    fn parse_primary(&mut self, depth: usize) -> Result<Expr, SearchDiagnostic> {
+        self.cursor = skip_space(self.raw, self.cursor);
+        if let Some((start, end)) = keyword_at(self.raw, self.cursor, "NOT") {
+            return Err(diagnostic("unsupported_syntax", start, end));
+        }
+        for keyword in ["AND", "OR"] {
+            if let Some((start, end)) = keyword_at(self.raw, self.cursor, keyword) {
+                return Err(diagnostic("missing_operand", start, end));
+            }
+        }
+        if self.raw.as_bytes().get(self.cursor) == Some(&b')') {
+            return Err(diagnostic(
+                "unbalanced_parenthesis",
+                self.cursor,
+                self.cursor + 1,
+            ));
+        }
+        if self.raw.as_bytes().get(self.cursor) != Some(&b'(') {
+            return self.parse_predicate();
+        }
+
+        let open = self.cursor;
+        self.consume_token(open, open + 1)?;
+        if depth >= SEARCH_MAX_GROUP_DEPTH {
+            return Err(diagnostic("group_too_deep", open, open + 1));
+        }
+        self.cursor = skip_space(self.raw, open + 1);
+        if self.raw.as_bytes().get(self.cursor) == Some(&b')') {
+            return Err(diagnostic("empty_group", open, self.cursor + 1));
+        }
+        if self.cursor == self.raw.len() {
+            return Err(diagnostic("unbalanced_parenthesis", open, open + 1));
+        }
+        let expr = self.parse_expression(depth + 1)?;
+        self.cursor = skip_space(self.raw, self.cursor);
+        if self.raw.as_bytes().get(self.cursor) != Some(&b')') {
+            return Err(diagnostic("unbalanced_parenthesis", open, open + 1));
+        }
+        let close = self.cursor;
+        self.consume_token(close, close + 1)?;
+        self.cursor += 1;
+        Ok(expr)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "predicate parsing keeps field, operator, value, and diagnostic spans aligned"
+    )]
+    fn parse_predicate(&mut self) -> Result<Expr, SearchDiagnostic> {
+        if self.cursor == self.raw.len() {
+            return Err(diagnostic("missing_operand", self.cursor, self.cursor));
+        }
+        if self.clauses.len() >= SEARCH_MAX_CLAUSES {
+            return Err(diagnostic("too_many_clauses", self.cursor, self.raw.len()));
+        }
+        let start = self.cursor;
+        let key_start = self.cursor;
+        while self
+            .raw
+            .as_bytes()
+            .get(self.cursor)
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        {
+            self.cursor += 1;
+        }
+        if self.cursor == key_start {
+            return Err(diagnostic(
+                "empty_clause",
+                self.cursor,
+                next_byte(self.raw, self.cursor),
+            ));
+        }
+        let raw_key = &self.raw[key_start..self.cursor];
+        let Some(field) = self.fields.iter().find(|field| {
+            field.key.eq_ignore_ascii_case(raw_key)
+                || field
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(raw_key))
+        }) else {
+            return Err(diagnostic("unknown_field", key_start, self.cursor));
+        };
+
+        self.cursor = skip_space(self.raw, self.cursor);
+        let operator_start = self.cursor;
+        while self
+            .raw
+            .as_bytes()
+            .get(self.cursor)
+            .is_some_and(|byte| matches!(byte, b'!' | b'<' | b'>' | b'=' | b':'))
+        {
+            self.cursor += 1;
+        }
+        let token = &self.raw[operator_start..self.cursor];
+        let operator = match token {
+            ":" => SearchOperator::Colon,
+            ">" => SearchOperator::Greater,
+            "<" => SearchOperator::Less,
+            ">=" | "<=" | "==" | "!=" | "=" => {
+                return Err(diagnostic(
+                    "unsupported_operator",
+                    operator_start,
+                    self.cursor,
+                ));
+            }
+            "" => {
+                return Err(diagnostic(
+                    "expected_colon",
+                    operator_start,
+                    next_byte(self.raw, operator_start),
+                ));
+            }
+            _ => {
+                return Err(diagnostic(
+                    "malformed_operator",
+                    operator_start,
+                    self.cursor,
+                ));
+            }
+        };
+        let comparison = !matches!(operator, SearchOperator::Colon);
+        if comparison != matches!(field.kind, SearchFieldKind::Quantity(_)) {
+            return Err(diagnostic(
+                "operator_not_allowed",
+                operator_start,
+                self.cursor,
+            ));
+        }
+        self.cursor = skip_space(self.raw, self.cursor);
+        if self.cursor == self.raw.len() || self.raw.as_bytes().get(self.cursor) == Some(&b')') {
+            return Err(diagnostic("missing_value", self.cursor, self.cursor));
+        }
+        if comparison && self.raw.as_bytes().get(self.cursor) == Some(&b'"') {
+            let (_, end) = parse_quoted(self.raw, self.cursor)?;
+            return Err(diagnostic("quoted_quantity", self.cursor, end));
+        }
+        let value_start = self.cursor;
+        let (value, next, quoted) = parse_value(self.raw, self.cursor)?;
+        if value.is_empty() {
+            return Err(diagnostic("missing_value", self.cursor, next));
+        }
+        if value.chars().count() > SEARCH_MAX_VALUE_CHARS {
+            return Err(diagnostic("value_too_long", self.cursor, next));
+        }
+        let parsed_value = match field.kind {
+            SearchFieldKind::String => SearchValue::Pattern(GlobPattern::new(&value)),
+            SearchFieldKind::Identifier { signed } => {
+                if !valid_identifier(&value, signed) {
+                    return Err(diagnostic("invalid_identifier", self.cursor, next));
+                }
+                SearchValue::Identifier(value.clone())
+            }
+            SearchFieldKind::Quantity(result) => {
+                if quoted {
+                    return Err(diagnostic("quoted_quantity", self.cursor, next));
+                }
+                let after = skip_space(self.raw, next);
+                if after > next {
+                    let unit_end = next_token(self.raw, after);
+                    if looks_like_unit(&self.raw[after..unit_end]) {
+                        return Err(diagnostic("whitespace_before_unit", after, unit_end));
+                    }
+                }
+                SearchValue::Quantity(parse_quantity(&value, result.kind, value_start)?)
+            }
+        };
+        self.cursor = next;
+        let operator_text = match operator {
+            SearchOperator::Colon => ":",
+            SearchOperator::Greater => ">",
+            SearchOperator::Less => "<",
+        };
+        let canonical_value = match &parsed_value {
+            SearchValue::Identifier(value) => value.clone(),
+            SearchValue::Pattern(_) => canonical_value(&value),
+            SearchValue::Quantity(quantity) => quantity.canonical.clone(),
+        };
+        let clause = SearchClause {
+            canonical: format!("{}{operator_text}{canonical_value}", field.key),
+            key: field.key,
+            operator,
+            value: parsed_value,
+        };
+        self.consume_token(start, next)?;
+        self.clauses.push(clause.clone());
+        Ok(Expr::Predicate(clause))
+    }
+
+    fn require_operand(
+        &self,
+        operator_start: usize,
+        operator_end: usize,
+    ) -> Result<(), SearchDiagnostic> {
+        if self.cursor == self.raw.len() || self.raw.as_bytes().get(self.cursor) == Some(&b')') {
+            return Err(diagnostic("missing_operand", operator_start, operator_end));
+        }
+        for keyword in ["AND", "OR"] {
+            if let Some((start, end)) = keyword_at(self.raw, self.cursor, keyword) {
+                return Err(diagnostic("missing_operand", start, end));
+            }
+        }
+        Ok(())
+    }
+
+    fn consume_token(&mut self, start: usize, end: usize) -> Result<(), SearchDiagnostic> {
+        if self.tokens >= SEARCH_MAX_TOKENS {
+            return Err(diagnostic("too_many_tokens", start, end));
+        }
+        self.tokens += 1;
+        Ok(())
+    }
+}
+
 pub(super) fn search_fields(logical_name: &str) -> &'static [SearchField] {
     match logical_name {
         "pg_stat_statements" => STATEMENT_SEARCH_FIELDS,
@@ -322,6 +552,16 @@ pub(super) fn search_fields(logical_name: &str) -> &'static [SearchField] {
         "pg_stat_user_tables" => TABLE_SEARCH_FIELDS,
         "pg_stat_user_indexes" => INDEX_SEARCH_FIELDS,
         _ => &[],
+    }
+}
+
+pub(super) fn result_field(logical_name: &str, key: &str) -> Option<ResultField> {
+    let field = search_fields(logical_name)
+        .iter()
+        .find(|field| field.key == key)?;
+    match field.kind {
+        SearchFieldKind::Quantity(result) => Some(result),
+        SearchFieldKind::Identifier { .. } | SearchFieldKind::String => None,
     }
 }
 
@@ -567,7 +807,7 @@ fn parse_value(input: &str, start: usize) -> Result<(String, usize, bool), Searc
         let (value, end) = parse_quoted(input, start)?;
         Ok((value, end, true))
     } else {
-        let end = next_space(input, start);
+        let end = next_token(input, start);
         Ok((input[start..end].to_owned(), end, false))
     }
 }
@@ -606,10 +846,9 @@ fn parse_quoted(input: &str, start: usize) -> Result<(String, usize), SearchDiag
 }
 
 fn canonical_value(value: &str) -> String {
-    if value
-        .bytes()
-        .all(|byte| !byte.is_ascii_whitespace() && !matches!(byte, b':' | b'"' | b'\\'))
-    {
+    if value.bytes().all(|byte| {
+        !byte.is_ascii_whitespace() && !matches!(byte, b':' | b'"' | b'\\' | b'(' | b')')
+    }) {
         return value.to_owned();
     }
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
@@ -636,21 +875,29 @@ fn valid_identifier(value: &str, signed: bool) -> bool {
 fn has_structured_syntax(input: &str) -> bool {
     let mut quoted = false;
     let mut escaped = false;
-    for character in input.chars() {
+    for (start, character) in input.char_indices() {
         if escaped {
             escaped = false;
         } else if quoted && character == '\\' {
             escaped = true;
         } else if character == '"' {
             quoted = !quoted;
-        } else if !quoted && matches!(character, ':' | '<' | '>' | '!' | '=') {
-            return true;
+        } else if !quoted {
+            if matches!(character, ':' | '<' | '>' | '!' | '=' | '(' | ')') {
+                return true;
+            }
+            if ["AND", "OR", "NOT"]
+                .iter()
+                .any(|keyword| keyword_at(input, start, keyword).is_some())
+            {
+                return true;
+            }
         }
     }
     false
 }
 
-fn first_reserved(input: &str) -> Option<(usize, usize)> {
+fn first_unsupported(input: &str) -> Option<(usize, usize)> {
     let mut quoted = false;
     let mut escaped = false;
     for (start, character) in input.char_indices() {
@@ -660,56 +907,31 @@ fn first_reserved(input: &str) -> Option<(usize, usize)> {
             escaped = true;
         } else if character == '"' {
             quoted = !quoted;
-        } else if !quoted && let Some(span) = reserved_at(input, start) {
+        } else if !quoted && let Some(span) = keyword_at(input, start, "NOT") {
             return Some(span);
         }
     }
     None
 }
 
-fn reserved_at(input: &str, start: usize) -> Option<(usize, usize)> {
-    if matches!(input.as_bytes().get(start), Some(b'(' | b')')) {
-        return Some((start, start + 1));
-    }
-    for token in ["NOT", "OR"] {
-        let end = start + token.len();
-        if input
-            .get(start..end)
-            .is_some_and(|value| value.eq_ignore_ascii_case(token))
-            && (start == 0
-                || input
-                    .as_bytes()
-                    .get(start - 1)
-                    .is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b'('))
+fn keyword_at(input: &str, start: usize, keyword: &str) -> Option<(usize, usize)> {
+    let end = start.checked_add(keyword.len())?;
+    if !input
+        .get(start..end)
+        .is_some_and(|token| token.eq_ignore_ascii_case(keyword))
+        || (start > 0
             && input
                 .as_bytes()
-                .get(end)
-                .is_none_or(|byte| byte.is_ascii_whitespace() || matches!(byte, b'(' | b')'))
-        {
-            return Some((start, end));
-        }
+                .get(start - 1)
+                .is_some_and(|byte| !byte.is_ascii_whitespace() && !matches!(byte, b'(' | b')')))
+        || input
+            .as_bytes()
+            .get(end)
+            .is_some_and(|byte| !byte.is_ascii_whitespace() && !matches!(byte, b'(' | b')'))
+    {
+        return None;
     }
-    None
-}
-
-#[expect(
-    clippy::string_slice,
-    reason = "candidate boundaries are accepted only around the three ASCII AND bytes"
-)]
-fn standalone_and(input: &str) -> Option<(usize, usize)> {
-    let bytes = input.as_bytes();
-    let mut start = 0;
-    while start + 3 <= input.len() {
-        let end = start + 3;
-        if input[start..end].eq_ignore_ascii_case("AND")
-            && (start == 0 || bytes[start - 1].is_ascii_whitespace())
-            && bytes.get(end).is_none_or(u8::is_ascii_whitespace)
-        {
-            return Some((start, end));
-        }
-        start += 1;
-    }
-    None
+    Some((start, end))
 }
 
 fn looks_like_unit(token: &str) -> bool {
@@ -738,11 +960,11 @@ fn skip_space(input: &str, mut cursor: usize) -> usize {
     cursor
 }
 
-fn next_space(input: &str, mut cursor: usize) -> usize {
+fn next_token(input: &str, mut cursor: usize) -> usize {
     while input
         .as_bytes()
         .get(cursor)
-        .is_some_and(|byte| !byte.is_ascii_whitespace())
+        .is_some_and(|byte| !byte.is_ascii_whitespace() && !matches!(byte, b'(' | b')'))
     {
         cursor += 1;
     }

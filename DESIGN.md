@@ -635,13 +635,16 @@ the current page.
 
 Every entity table uses one bounded public search language and one URL-owned
 applied expression. Ordinary input without field syntax is free text.
-Structured input is at most eight predicates joined only by case-insensitive
-`AND`: exact IDs and string/glob values keep `field:value`, while registered
-quantities use strictly `field>quantity` or `field<quantity`. `>=`, `<=`,
-`==`, `!=` and `=` are rejected as atomic operators. `OR`, prefix `NOT` and
-parentheses are reserved outside quoted/text literals and return unsupported
-syntax; their future precedence is `NOT`, then `AND`, then `OR`, but this
-version executes no future boolean form.
+Structured input is a bounded boolean expression of at most eight predicates,
+31 syntax tokens, four levels of parentheses and 1,024 characters. Binary
+`AND` and `OR` are case-insensitive on input and canonical uppercase on output;
+`AND` binds more tightly than `OR`, parentheses override precedence, and each
+level associates left. Exact IDs and string/glob values keep `field:value`,
+while registered quantities use strictly `field>quantity` or
+`field<quantity`. `>=`, `<=`, `==`, `!=` and `=` are rejected as atomic
+operators. Prefix `NOT` remains reserved outside quoted/text literals and
+returns unsupported syntax. XOR, implicit operators and arbitrary query
+syntax do not exist.
 
 The field registry belongs to the whole entity surface, independent of lens,
 requested projection and visible columns. It contains only curated public
@@ -672,11 +675,16 @@ localized semantic label plus the exact operator and threshold; manual entry,
 paste and related-row links all produce this same state. Progressive RU/EN
 help lists the complete current surface registry and rules. The server parses
 and validates the same bounded expression and loads the exact hidden
-dependency closure. String/member predicates select physical contributors
-before aggregation. Quantity/result predicates compare the authoritative
-object or grouped reducer after aggregation and before semantic ordering,
-cursor validation and pagination. This gives grouped comparisons HAVING-like
-semantics without exposing a generic query engine. Search refusal, a
+dependency closure. At object level the complete boolean expression is
+evaluated only after the object reducer has made identity, text and metrics
+available. At database, schema and tablespace levels, string/member predicates
+select physical contributors before aggregation and quantity/result predicates
+compare the authoritative grouped reducer after aggregation and before
+semantic ordering, cursor validation and pagination. `AND` can join these two
+parts. Every `OR` subtree must stay wholly on one side: member-only alternatives
+run before the reducer, result-only alternatives run after it, and a mixed
+alternative is rejected atomically as `mixed_phase_or`. This preserves exact
+boolean meaning without exposing a generic query engine. Search refusal, a
 successful empty set and transport failure are distinct; refresh failure
 retains the last successful data.
 

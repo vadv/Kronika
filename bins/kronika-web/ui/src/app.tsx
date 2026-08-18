@@ -256,7 +256,9 @@ function App({ locale, onLocale, t }: {
   const densePattern = viewRequests.some((request) => request.pageSize !== undefined) ? find.trim() : ""
   const denseCandidate = viewRequests.find((request) => request.pageSize !== undefined)
   const denseSurface = denseCandidate === undefined ? null : searchSurfaceOf(denseCandidate.section)
-  const denseSearchValid = densePattern === "" || denseSurface === null || parseSearch(densePattern, denseSurface).ok
+  const denseSearchValid = densePattern === "" || denseSurface === null || parseSearch(densePattern, denseSurface, {
+    groupedRelations: denseCandidate !== undefined && "group" in denseCandidate && denseCandidate.group !== undefined && denseCandidate.group !== "object",
+  }).ok
   const requestedSnapshots = viewRequests.filter((request) => request.section !== "health" && (request.pageSize === undefined || denseSearchValid)).map((request) => request.pageSize !== undefined && request.section === context?.logicalName
     ? { ...request, typeIds: [context.typeId] } : request)
   const snapshotGroups = snapshotRequestGroups(segments, cursor, requestedSnapshots)
