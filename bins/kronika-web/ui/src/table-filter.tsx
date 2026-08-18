@@ -1,4 +1,4 @@
-import { Check, CircleHelp, Copy, Search, X } from "lucide-react"
+import { Search, X } from "lucide-react"
 import { useEffect, useId, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 
@@ -39,14 +39,6 @@ export function TableFilter({
     setDraft(pattern)
     setSubmitted(false)
   }, [pattern, surface])
-  useEffect(() => {
-    if (!help) return
-    const close = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setHelp(false)
-    }
-    window.addEventListener("keydown", close)
-    return () => window.removeEventListener("keydown", close)
-  }, [help])
   const apply = () => {
     setSubmitted(true)
     if (!draftResult.ok) return
@@ -91,9 +83,9 @@ export function TableFilter({
             value={draft}
           />
         </label>
-        <button aria-label={t("filter.apply")} className="ml-1 inline-flex h-[27px] flex-none cursor-pointer items-center border border-line4 bg-s3 px-1.5 text-accent3" type="submit"><Check aria-hidden="true" size={13} /></button>
+        <button aria-label={t("filter.apply")} className="ml-1 inline-flex h-[27px] flex-none cursor-pointer items-center border border-line4 bg-s3 px-1.5 text-xs font-semibold text-accent3" type="submit">✓</button>
       </form>}
-      {onPattern !== undefined && <button aria-expanded={help} aria-label={t("filter.help.open")} className="inline-flex h-7 w-7 flex-none cursor-pointer items-center justify-center border border-line3 bg-transparent text-accent3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => setHelp((open) => !open)} ref={helpButton} type="button"><CircleHelp aria-hidden="true" size={14} /></button>}
+      {onPattern !== undefined && <button aria-expanded={help} aria-label={t("filter.help.open")} className="inline-flex h-7 w-7 flex-none cursor-pointer items-center justify-center border border-line3 bg-transparent text-sm font-semibold text-accent3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => setHelp((open) => !open)} ref={helpButton} type="button">?</button>}
       {pattern !== "" && <>
         {kept >= 0 && <span className="flex-none text-xs tabular-nums text-fg3">{t("filter.kept", { kept: String(kept), total: String(total) })}</span>}
         <button aria-label={t("filter.clear")} className="inline-flex flex-none cursor-pointer items-center border-0 bg-transparent p-0.5 text-accent3" onClick={clear} type="button"><X aria-hidden="true" size={12} /></button>
@@ -125,6 +117,7 @@ function SearchHelp({ onClose, surface, t }: { readonly onClose: () => void; rea
   const close = useRef<HTMLButtonElement>(null)
   useEffect(() => { close.current?.focus() }, [])
   return <div className="fixed inset-0 z-[1100] flex items-start justify-end bg-[color-mix(in_srgb,var(--color-shadow)_34%,transparent)] p-2" data-testid="search-help" onKeyDown={(event) => {
+    if (event.key === "Escape") { event.preventDefault(); onClose(); return }
     if (event.key !== "Tab") return
     const focusable = [...(dialog.current?.querySelectorAll<HTMLElement>("button") ?? [])]
     if (focusable.length === 0) return
@@ -142,7 +135,7 @@ function SearchHelp({ onClose, surface, t }: { readonly onClose: () => void; rea
         {fields.map((field) => <div className="border-t border-line2 pt-2" key={field.key}><dt><code className="text-accent3">{field.key}</code>{field.aliases.length === 0 ? null : <span className="ml-2 text-xs text-fg4">{t("filter.help.aliases", { aliases: field.aliases.join(", ") })}</span>}</dt><dd className="m-0 mt-1 text-fg3">{t(field.help)}</dd></div>)}
       </dl>
       <h3 className="mt-3 text-xs uppercase tracking-[.05em] text-fg3">{t("filter.help.examples")}</h3>
-      <div className="grid gap-1.5">{examples.map((example) => <button className="flex min-w-0 cursor-pointer items-center justify-between gap-2 border border-line3 bg-s2 px-2 py-1.5 text-left text-fg2" key={example} onClick={() => void navigator.clipboard?.writeText(example)} type="button"><code className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{example}</code><Copy aria-label={t("filter.help.copy")} className="flex-none text-accent3" size={13} /></button>)}</div>
+      <div className="grid gap-1.5">{examples.map((example) => <button aria-label={`${t("filter.help.copy")}: ${example}`} className="min-w-0 cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap border border-line3 bg-s2 px-2 py-1.5 text-left text-fg2" key={example} onClick={() => void navigator.clipboard?.writeText(example)} type="button"><code>{example}</code></button>)}</div>
     </aside>
   </div>
 }

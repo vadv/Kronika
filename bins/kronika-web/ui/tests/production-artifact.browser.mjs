@@ -73,7 +73,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
   const address = server.address()
   if (address === null || typeof address === "string") throw new Error("focused browser server has no TCP address")
   const origin = `http://127.0.0.1:${address.port}`
-  const profile = await mkdtemp(join(tmpdir(), "kronika-timezone-browser-"))
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
   const browser = launchBrowser(profile)
   const result = { errors: [], external: [], responses: [] }
   let socket
@@ -234,7 +234,7 @@ test("expanded uPlot keeps one unobscured close action at responsive widths", { 
   const address = server.address()
   if (address === null || typeof address === "string") throw new Error("expanded-chart browser server has no TCP address")
   const origin = `http://127.0.0.1:${address.port}`
-  const profile = await mkdtemp(join(tmpdir(), "kronika-expanded-chart-browser-"))
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
   const browser = launchBrowser(profile)
   const page = { errors: [], external: [], responses: [] }
   let socket
@@ -482,7 +482,7 @@ test("the production artifact preserves wire keys and exact finding page state",
   const address = server.address()
   if (address === null || typeof address === "string") throw new Error("artifact test server has no TCP address")
   const origin = `http://127.0.0.1:${address.port}`
-  const profile = await mkdtemp(join(tmpdir(), "kronika-artifact-browser-"))
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
   const browser = launchBrowser(profile)
   let socket
   try {
@@ -551,6 +551,8 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.match(rendered.row, /4242/)
     assert.match(rendered.row, /select artifact_wire_contract/)
     assert.equal(rendered.missing, null)
+    await assertCompactTimelineContained(cdp, ".workspace > .pg-tabs", "PostgreSQL")
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
     assert.ok(requests.some(({ path }) => path === `/api/segments/${SEGMENT}/snapshot`))
     const firstApi = requests.findIndex(({ path }) => path.startsWith("/api/"))
     const login = requests.findIndex(({ method, path }) => method === "POST" && path === "/auth/session")
@@ -909,10 +911,11 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.ok(requests.some(({ query }) => query.includes("row_ordinal=8") && !query.includes("text=")))
     const indexDetail = await cdp.evaluate(`(() => ({
       compactRows: document.querySelectorAll('[data-testid="pg-relation-detail"] dl > .detail-row').length,
+      html: document.querySelector('[data-testid="pg-relation-detail"]')?.outerHTML ?? null,
       labels: [...document.querySelectorAll('[data-testid="pg-relation-detail"] dt')].map((label) => label.textContent),
       values: [...document.querySelectorAll('[data-testid="pg-relation-detail"] dd')].map((value) => value.textContent),
     }))()`)
-    assert.ok(indexDetail.compactRows > 0)
+    assert.ok(indexDetail.compactRows > 0, indexDetail.html)
     assert.doesNotMatch(indexDetail.labels.join(" "), /Database ID|Table OID|Index OID/)
     for (const oid of ["42", "73", "74"]) assert.equal(indexDetail.values.includes(oid), false)
     await cdp.evaluate(`document.querySelector(".pg-detail header button").click()`)
@@ -1028,10 +1031,37 @@ test("the production artifact preserves wire keys and exact finding page state",
       const box = (node) => { const value = node.getBoundingClientRect(); return { left: value.left, right: value.right, width: value.width } }
       return { client: document.documentElement.clientWidth, icon: box(icon), input: box(input), label: box(label), nav: [...document.querySelectorAll('.source-tabs button')].map((button) => button.textContent), placeholder: input.placeholder, scroll: document.documentElement.scrollWidth }
     })()`)
-    assert.deepEqual(eventSearch.nav, ["Host", "Processes", "PostgreSQL", "Events"])
-    assert.equal(eventSearch.placeholder, "Поиск по отметкам")
+    assert.deepEqual(eventSearch.nav, ["Processes", "Host", "PostgreSQL", "Events"])
+    assert.equal(eventSearch.placeholder, "Текст или field:value AND field:value")
     assert.ok(eventSearch.icon.right <= eventSearch.input.left + 1, JSON.stringify(eventSearch))
     assert.ok(eventSearch.label.left >= -1 && eventSearch.label.right <= eventSearch.client + 1 && eventSearch.scroll <= eventSearch.client, JSON.stringify(eventSearch))
+    await cdp.evaluate(`document.querySelector('[data-testid="events-console"] [aria-label="Синтаксис и поля поиска"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="search-help"] [role="dialog"]') !== null`, "the narrow RU search help")
+    const searchHelp = await cdp.evaluate(`(() => {
+      const overlay = document.querySelector('[data-testid="search-help"]')
+      const dialog = overlay.querySelector('[role="dialog"]')
+      const bounds = dialog.getBoundingClientRect()
+      return {
+        active: document.activeElement?.getAttribute("aria-label") ?? "",
+        ariaModal: dialog.getAttribute("aria-modal"),
+        fields: dialog.textContent,
+        left: bounds.left, right: bounds.right,
+        viewport: document.documentElement.clientWidth,
+        scroll: document.documentElement.scrollWidth,
+      }
+    })()`)
+    assert.equal(searchHelp.ariaModal, "true")
+    assert.match(searchHelp.active, /Закрыть/)
+    assert.match(searchHelp.fields, /kind/)
+    assert.match(searchHelp.fields, /source/)
+    assert.match(searchHelp.fields, /category/)
+    assert.doesNotMatch(searchHelp.fields, /queryid_stat_statements|planid|relname/)
+    assert.ok(searchHelp.left >= -1 && searchHelp.right <= searchHelp.viewport + 1 && searchHelp.scroll <= searchHelp.viewport, JSON.stringify(searchHelp))
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+    await cdp.waitFor(`document.querySelector('[data-testid="search-help"]') === null`, "search help closed by Escape")
+    assert.equal(await cdp.evaluate(`document.activeElement?.getAttribute("aria-label")`), "Синтаксис и поля поиска")
+    await assertSearchControlContained(cdp, "Events search")
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
     await cdp.evaluate(`document.querySelector('[data-testid="event-item"] button').click()`)
@@ -1074,11 +1104,71 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(requests.filter(({ query }) => query.includes("where.queryid=") && query.includes("page_size=200")).length, 1)
     await cdp.evaluate(`document.querySelector('[data-testid="pg-statements-table"] .entity-row').click()`)
     await cdp.waitFor(`document.querySelector(".pg-detail") !== null`, "detail after explicit row selection")
-    await cdp.evaluate(`document.querySelector(".pg-detail header button").click(); document.querySelector('[data-testid="entity-context-filter"] button').click()`)
+    await cdp.evaluate(`document.querySelector(".pg-detail .pg-detail-head button:last-child").click(); document.querySelector('[data-testid="entity-context-filter"] button').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent.includes("Loaded 50 of 4,807") === true`, "the paged full statement set")
     await cdp.waitFor(`document.querySelector('[data-testid="table-paging"]') !== null`, "active statement paging")
+
+    const invalidSearchStart = requests.length
+    const lastValidRows = await cdp.evaluate(`(() => ({
+      first: document.querySelector('[data-testid="pg-statements-table"] .entity-row')?.textContent ?? "",
+      status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent ?? "",
+    }))()`)
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('[data-testid="table-filter"]')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "query_id:9007199254740991 AND taname:orders")
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, data: "query_id:9007199254740991 AND taname:orders", inputType: "insertFromPaste" }))
+      input.form.requestSubmit()
+    })()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="search-error"] mark')?.textContent === "taname"`, "the exact invalid selector span")
+    const invalidSearch = await cdp.evaluate(`(() => ({
+      error: document.querySelector('[data-testid="search-error"]')?.textContent ?? "",
+      first: document.querySelector('[data-testid="pg-statements-table"] .entity-row')?.textContent ?? "",
+      invalid: document.querySelector('[data-testid="table-filter"]')?.getAttribute("aria-invalid"),
+      status: document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent ?? "",
+      url: new URL(location.href).searchParams.get("find"),
+    }))()`)
+    assert.match(invalidSearch.error, /Unknown field “taname”/)
+    assert.equal(invalidSearch.invalid, "true")
+    assert.deepEqual({ first: invalidSearch.first, status: invalidSearch.status }, lastValidRows)
+    assert.equal(invalidSearch.url, null)
+    assert.equal(requests.slice(invalidSearchStart).some(({ query }) => query.includes("taname")), false)
+
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('[data-testid="table-filter"]')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "query_id:9007199254740991 and db:operators")
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, data: "query_id:9007199254740991 and db:operators", inputType: "insertFromPaste" }))
+      input.form.requestSubmit()
+    })()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "query_id:9007199254740991 AND database:operators" && document.querySelectorAll('[data-testid="search-chips"] button').length === 2`, "canonical pasted search chips")
+    const canonicalSearchState = await cdp.evaluate(`(() => ({
+      input: document.querySelector('[data-testid="table-filter"]').value,
+      labels: [...document.querySelectorAll('[data-testid="search-chips"] button')].map((button) => button.getAttribute("aria-label")),
+    }))()`)
+    assert.equal(canonicalSearchState.input, "query_id:9007199254740991 AND database:operators")
+    assert.deepEqual(canonicalSearchState.labels, [
+      "Remove query_id: 9007199254740991",
+      "Remove database: operators",
+    ])
+    await cdp.evaluate(`document.querySelector('[data-testid="search-chips"] button').focus()`)
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: " ", code: "Space", windowsVirtualKeyCode: 32 })
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: " ", code: "Space", windowsVirtualKeyCode: 32 })
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "database:operators"`, "keyboard chip removal")
+    await cdp.evaluate(`history.back()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "query_id:9007199254740991 AND database:operators" && document.querySelectorAll('[data-testid="search-chips"] button').length === 2`, "Back restores the canonical search")
+    await cdp.evaluate(`history.forward()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "database:operators" && document.querySelectorAll('[data-testid="search-chips"] button').length === 1`, "Forward restores the removed chip")
+    await cdp.evaluate(`document.querySelector('[aria-label="Clear the filter"]').click()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === null && document.querySelector('[data-testid="search-chips"]') === null`, "clear restores ordinary rows")
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent.includes("Loaded 50 of 4,807") === true`, "the search-clear page")
+
     await cdp.evaluate(`document.querySelector('[data-testid="pg-statements-table"] .entity-row').click()`)
     await cdp.waitFor(`document.querySelector(".pg-detail") !== null`, "detail beside active paging")
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-statement-related-plans"]').click()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.plans" && new URL(location.href).searchParams.get("find") === "database:operators AND role:reporter AND query_id:9007199254740991"`, "Statement opens every matching Plan through public search")
+    await waitForRequests(() => requests.some(({ query }) => new URLSearchParams(query).get("search") === "database:operators AND role:reporter AND query_id:9007199254740991"))
+    await cdp.evaluate(`history.back()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.statements" && document.querySelector(".pg-detail") !== null`, "Back restores Statement detail")
+    await assertDetailRowsDoNotOverlap(cdp, "Statement exact ID detail")
     for (const [width, height] of [[1920, 1080], [1366, 768], [1024, 768]]) {
       await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
       await cdp.evaluate("document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))")
@@ -1107,9 +1197,15 @@ test("the production artifact preserves wire keys and exact finding page state",
       row: document.querySelector('[data-testid="pg-plans-table"] .entity-row').textContent,
     }))()`)
     assert.match(planTable.headers.join(" "), /Plan summary/)
-    assert.match(planTable.headers.join(" "), /Last query ID/i)
+    assert.match(planTable.headers.join(" "), /Related query ID/i)
     assert.doesNotMatch(planTable.headers.join(" "), /(?:^|\s)Query ID(?:\s|$)/)
     assert.match(planTable.row, /Merge Join.*cost=0\.85\.\.81\.42/)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="related-planid"]') !== null`), true)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="related-queryid_stat_statements"]') !== null`), true)
+    await cdp.evaluate(`document.querySelector('[data-testid="related-planid"]').click()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.plans" && new URL(location.href).searchParams.get("find") === "plan_id:77"`, "Plan ID opens the shared Plans filter")
+    await cdp.evaluate(`history.back()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.plans" && new URL(location.href).searchParams.get("find") === null`, "Back restores the unfiltered Plans page")
     await cdp.evaluate(`document.querySelector('[data-testid="pg-plans-table"] .entity-row').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-text-plan"]') !== null`, "the native text execution plan")
     const planDetail = await cdp.evaluate(`(() => ({
@@ -1142,8 +1238,26 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.evaluate(`history.back()`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.plans"`, "browser back to Plans")
 
+    await cdp.evaluate(`([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent.includes('Activity'))).click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"] .entity-row') !== null`, "Activity rows for related navigation")
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-activity-table"] .entity-row').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-related-statements"]')?.disabled === false`, "Activity related Statements action")
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-activity-related-statements"]').click()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.statements" && new URL(location.href).searchParams.get("find") === "database:operators AND query_id:991"`, "Activity opens all matching Statements")
+    await waitForRequests(() => requests.some(({ query }) => new URLSearchParams(query).get("search") === "database:operators AND query_id:991"))
+    const activityQueryRequest = requests.find(({ query }) => new URLSearchParams(query).get("search") === "database:operators AND query_id:991")
+    assert.notEqual(activityQueryRequest, undefined)
+    assert.equal(new URLSearchParams(activityQueryRequest.query).has("where.userid"), false)
+    assert.equal(new URLSearchParams(activityQueryRequest.query).has("where.toplevel"), false)
+    await cdp.evaluate(`history.back()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.activity" && document.querySelector('[data-testid="pg-activity-table"]') !== null`, "Back restores Activity")
+
+    await cdp.evaluate(`document.querySelector('[data-testid="process-tab"]').click()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("view") === null && document.querySelector('[data-testid="hour-timeline"]') !== null`, "Processes timeline")
+    await assertCompactTimelineContained(cdp, ".workspace > .lensbar", "Processes")
+
     const hostClick = await cdp.evaluate(`(() => {
-      const button = document.querySelector(".source-tabs button:nth-child(2)")
+      const button = [...document.querySelectorAll(".source-tabs button")].find((candidate) => candidate.textContent === "Host")
       button.click()
       return button.textContent
     })()`)
@@ -1153,6 +1267,8 @@ test("the production artifact preserves wire keys and exact finding page state",
       dispatchEvent(new PopStateEvent("popstate"))
     })()`)
     await cdp.waitFor(`document.querySelector('[data-testid="host-section-overview"]')?.getAttribute("aria-selected") === "true" && document.querySelector(".system-main") !== null`, "the System Overview")
+    await assertCompactTimelineContained(cdp, ".system-main", "Host")
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
     await delay(600)
     const system = await cdp.evaluate(`(() => ({
       dock: document.querySelector('[data-testid="system-dock"]') !== null,
@@ -1167,27 +1283,11 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(system.dock, true, JSON.stringify(system))
     assert.equal(system.metric, "cpu_used_cores", JSON.stringify(system))
     await cdp.waitFor(`document.querySelector('[data-testid="use-table"]') !== null`, "the System resource table")
-    const topology = await cdp.evaluate(`(() => {
-      const panel = document.querySelector('[data-testid="system-panel-os_topology"]')
-      const row = panel?.querySelector('.entity-row')
-      row?.click()
-      return { history: panel?.querySelector('[data-testid="system-os_topology-history"]') !== null, selected: row?.getAttribute('aria-selected') ?? null, tabIndex: row?.getAttribute('tabindex') ?? null }
-    })()`)
-    assert.deepEqual(topology, { history: false, selected: "false", tabIndex: null })
     await cdp.evaluate(`document.querySelector('[data-testid="use-row-disk"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-dock"]') !== null`, "the System resource dock")
     // The row lives on the overview, the metric chip on the resource it opened.
     const rowSelected = await cdp.evaluate(`document.querySelector('[data-testid="use-row-disk"]')?.getAttribute("aria-selected")`)
     assert.equal(rowSelected, "true")
-    await cdp.evaluate(`document.querySelector('[data-testid="host-section-storage"]').click()`)
-    const dockState = await cdp.evaluate(`(() => ({
-      card: document.querySelector('[data-testid^="system-metric-"][aria-pressed="true"]')?.dataset.testid ?? null,
-      dock: document.querySelector('[data-testid^="system-dock-metric-"][aria-pressed="true"]')?.dataset.testid ?? null,
-      title: document.querySelector('[data-testid="system-dock"] h2')?.textContent ?? null,
-    }))()`)
-    assert.equal(dockState.title, "Storage")
-    assert.notEqual(dockState.card, null, JSON.stringify(dockState))
-    assert.equal(dockState.dock, dockState.card.replace("system-metric-", "system-dock-metric-"), JSON.stringify(dockState))
     await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "the CPU cards", 15_000)
     await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]').click()`)
@@ -1212,7 +1312,6 @@ test("the production artifact preserves wire keys and exact finding page state",
         const host = chart.querySelector(".uplot-host")
         const plot = chart.querySelector(".u-over")
         const groups = document.querySelector(".metric-groups")
-        const timeline = document.querySelector('[data-testid="hour-timeline"]')
         const cards = [...document.querySelectorAll(".metric-choice")].map((card) => card.getBoundingClientRect())
         const cardSpread = Math.max(0, ...cards.map((card) => {
           const row = cards.filter((other) => Math.abs(other.top - card.top) <= 1).map((other) => other.bottom)
@@ -1256,11 +1355,6 @@ test("the production artifact preserves wire keys and exact finding page state",
           main: bounds(main),
           overlaps,
           plot: bounds(plot),
-          timeline: {
-            figure: bounds(timeline),
-            host: bounds(timeline.querySelector(".uplot-host")),
-            plot: bounds(timeline.querySelector(".u-over")),
-          },
         })
       }))))`)
       assert.ok(layout.chart.height >= 300 && layout.chart.height <= 360, `${width}x${height} System chart height: ${JSON.stringify(layout)}`)
@@ -1269,8 +1363,6 @@ test("the production artifact preserves wire keys and exact finding page state",
       assert.ok(Math.abs(layout.history.left - layout.main.left) <= 1 && Math.abs(layout.history.right - layout.main.right) <= 1,
         `${width}x${height} System dock takes the full width: ${JSON.stringify(layout)}`)
       assert.ok(Math.abs(layout.history.top - layout.main.top) <= 1, `${width}x${height} System dock heads the resource tab: ${JSON.stringify(layout)}`)
-      assert.ok(layout.timeline.figure.height >= 216 && layout.timeline.host.height >= 186 && layout.timeline.plot.height >= 100,
-        `${width}x${height} timeline plot height: ${JSON.stringify(layout)}`)
       assert.deepEqual(layout.chartAccess.canvasAriaHidden, "true")
       assert.equal(layout.chartAccess.canvasCount, 1)
       assert.equal(layout.chartAccess.hostRole, "img")
@@ -1440,37 +1532,6 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="use-row-disk"]')?.getAttribute("aria-selected")`), "false")
 
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
-    await cdp.evaluate(`(() => {
-      const plot = document.querySelector('[data-testid="hour-timeline"] .u-over')
-      const bounds = plot.getBoundingClientRect()
-      const clientX = bounds.left + (${AT + 3_000_000} - ${HOUR}) / ${HOUR_US} * bounds.width
-      const clientY = bounds.top + bounds.height / 2
-      plot.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, clientX, clientY }))
-      plot.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX, clientY }))
-    })()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] .chart-tooltip') !== null`, "the exact chart tooltip")
-    const tooltip = await cdp.evaluate(`(() => {
-      const tooltip = document.querySelector('[data-testid="hour-timeline"] .chart-tooltip')
-      return {
-        primary: tooltip.querySelector("time strong")?.textContent ?? "",
-        secondary: tooltip.querySelector("time small")?.textContent ?? "",
-        values: [...tooltip.querySelectorAll(":scope > span")].map((node) => node.textContent),
-      }
-    })()`)
-    assert.equal(tooltip.primary, "01:30:00")
-    assert.doesNotMatch(tooltip.primary, /GMT|UTC|\.\d{3}(?!\d)/)
-    assert.equal(tooltip.secondary, "")
-    assert.equal(tooltip.values.length, 3)
-    assert.equal(tooltip.values.some((text) => text.includes("82") && text.includes("%")), true, JSON.stringify(tooltip))
-    assert.equal(tooltip.values.some((text) => text.includes("64") && text.includes("%")), true, JSON.stringify(tooltip))
-    assert.equal(tooltip.values.some((text) => text.includes("46") && text.includes("%")), true, JSON.stringify(tooltip))
-
-    await cdp.evaluate(`(() => {
-      const navigator = document.querySelector('[data-testid="hour-timeline"] input.chart-navigator')
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(navigator, "3")
-      navigator.dispatchEvent(new Event("input", { bubbles: true }))
-    })()`)
-    await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${AT}"`, "keyboard sample address")
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').dataset.recordedTimestamp`), String(AT))
     const sampleText = await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').getAttribute("aria-valuetext")`)
     assert.match(sampleText, /^01:30:00;/)
@@ -1489,7 +1550,8 @@ test("the production artifact preserves wire keys and exact finding page state",
       await cdp.evaluate(`(() => {
         const plot = document.querySelector('[data-testid="hour-timeline"] .u-over')
         const bounds = plot.getBoundingClientRect()
-        const clientX = bounds.left + (${target} - ${HOUR}) / ${HOUR_US} * bounds.width
+        const range = ${HOUR_US} * (1 + 52 / Math.max(1, bounds.width))
+        const clientX = bounds.left + (${target} - ${HOUR}) / range * bounds.width
         plot.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX, isPrimary: true, pointerId: 7, pointerType: "mouse" }))
       })()`)
       await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${expected}"`, `pointer snap to ${expected}`)
@@ -1595,7 +1657,7 @@ test("the minified artifact restores and clears its opaque browser session", { t
   if (address === null || typeof address === "string") throw new Error("session test server has no TCP address")
   const origin = `http://127.0.0.1:${address.port}`
   const pageUrl = `${origin}/?at=${AT}&view=pg.activity`
-  const profile = await mkdtemp(join(tmpdir(), "kronika-session-browser-"))
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
   let browser = launchBrowser(profile)
   let socket
   try {
@@ -1755,7 +1817,7 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
   const address = server.address()
   if (address === null || typeof address === "string") throw new Error("artifact test server has no TCP address")
   const origin = `http://127.0.0.1:${address.port}`
-  const profile = await mkdtemp(join(tmpdir(), "kronika-detail-browser-"))
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
   const browser = launchBrowser(profile)
   let socket
   try {
@@ -1823,7 +1885,7 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
     assert.ok(Math.abs(narrow.sample.label.width - narrow.sample.row.width) <= 1, JSON.stringify(narrow.sample))
     assert.ok(narrow.sample.value.scrollWidth <= narrow.sample.value.clientWidth + 1, JSON.stringify(narrow.sample))
     assert.ok(narrow.pattern.value.scrollWidth <= narrow.pattern.value.clientWidth + 1, JSON.stringify(narrow.pattern))
-    assert.equal(narrow.numeric.every(({ align }) => align === "left"), true)
+    assert.equal(narrow.numeric.every(({ align }) => align === "left"), true, JSON.stringify(narrow.numeric))
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
   } finally {
@@ -1861,7 +1923,7 @@ test("aggregate relation detail charts exact server history", { timeout: 60_000 
   const address = server.address()
   if (address === null || typeof address === "string") throw new Error("relation chart server has no TCP address")
   const origin = `http://127.0.0.1:${address.port}`
-  const profile = await mkdtemp(join(tmpdir(), "kronika-relation-chart-browser-"))
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
   const browser = launchBrowser(profile)
   let socket
   try {
@@ -1991,7 +2053,7 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
   const address = server.address()
   if (address === null || typeof address === "string") throw new Error("chart browser server has no TCP address")
   const origin = `http://127.0.0.1:${address.port}`
-  const profile = await mkdtemp(join(tmpdir(), "kronika-chart-browser-"))
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
   const browser = launchBrowser(profile)
   const page = { errors: [], external: [], responses: [] }
   let socket
@@ -2377,7 +2439,7 @@ test("PostgreSQL is unavailable without current telemetry and returns for a stor
   const address = server.address()
   if (address === null || typeof address === "string") throw new Error("source browser server has no TCP address")
   const origin = `http://127.0.0.1:${address.port}`
-  const profile = await mkdtemp(join(tmpdir(), "kronika-source-browser-"))
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
   const browser = launchBrowser(profile)
   const page = { errors: [], external: [], responses: [] }
   let socket
@@ -2480,7 +2542,7 @@ test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, as
   const address = server.address()
   if (address === null || typeof address === "string") throw new Error("viewport browser server has no TCP address")
   const origin = `http://127.0.0.1:${address.port}`
-  const profile = await mkdtemp(join(tmpdir(), "kronika-pg-detail-viewport-"))
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
   const browser = launchBrowser(profile)
   const page = { errors: [], external: [], responses: [] }
   const measurements = []
@@ -2635,7 +2697,7 @@ test("snapshot request targets hide rejected replacements until retry succeeds",
   const address = server.address()
   if (address === null || typeof address === "string") throw new Error("snapshot-target browser server has no TCP address")
   const origin = `http://127.0.0.1:${address.port}`
-  const profile = await mkdtemp(join(tmpdir(), "kronika-snapshot-target-browser-"))
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
   const browser = launchBrowser(profile)
   const page = { errors: [], external: [], responses: [] }
   let socket
@@ -2804,7 +2866,7 @@ test("production health keeps staggered components on one stored evaluation", { 
   const address = server.address()
   if (address === null || typeof address === "string") throw new Error("health contract server has no TCP address")
   const origin = `http://127.0.0.1:${address.port}`
-  const profile = await mkdtemp(join(tmpdir(), "kronika-health-contract-browser-"))
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
   const browser = launchBrowser(profile)
   let socket
   try {
@@ -2903,7 +2965,7 @@ test("production System projections show exact CPU memory and device readings", 
   const address = server.address()
   if (address === null || typeof address === "string") throw new Error("System contract server has no TCP address")
   const origin = `http://127.0.0.1:${address.port}`
-  const profile = await mkdtemp(join(tmpdir(), "kronika-system-contract-browser-"))
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
   const browser = launchBrowser(profile)
   let socket
   try {
@@ -3354,6 +3416,110 @@ async function settleLayout(cdp) {
   await cdp.evaluate("document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))")
 }
 
+async function assertCompactTimelineContained(cdp, followingSelector, label) {
+  for (const width of [800, 1280]) {
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width })
+    await settleLayout(cdp)
+    const pointer = await cdp.evaluate(`(() => {
+      const plot = document.querySelector('[data-testid="hour-timeline"] .u-over').getBoundingClientRect()
+      return { x: plot.right - 1, y: plot.top + plot.height / 2 }
+    })()`)
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...pointer })
+    const geometry = await cdp.evaluate(`(() => {
+      const bounds = (node) => { const rect = node.getBoundingClientRect(); return { bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top } }
+      const figure = document.querySelector('[data-testid="hour-timeline"]')
+      const shell = figure.closest('.timeline-shell')
+      const plot = figure.querySelector('.u-over')
+      const cursor = figure.querySelector('.u-cursor-x')
+      return {
+        axes: [...figure.querySelectorAll('.u-axis')].map(bounds),
+        cursor: cursor === null ? null : bounds(cursor),
+        figure: { ...bounds(figure), height: figure.getBoundingClientRect().height },
+        following: bounds(document.querySelector(${JSON.stringify(followingSelector)})),
+        plot: bounds(plot),
+        rightReserve: figure.getBoundingClientRect().right - plot.getBoundingClientRect().right,
+        shell: bounds(shell),
+      }
+    })()`)
+    assert.ok(geometry.figure.height >= 127 && geometry.figure.height <= 133, `${label} ${width}px compact figure: ${JSON.stringify(geometry)}`)
+    for (const axis of geometry.axes) {
+      assert.ok(axis.left >= geometry.figure.left - 1 && axis.right <= geometry.figure.right + 1
+        && axis.top >= geometry.figure.top - 1 && axis.bottom <= geometry.figure.bottom + 1,
+      `${label} ${width}px axis containment: ${JSON.stringify(geometry)}`)
+    }
+    assert.ok(geometry.cursor !== null && geometry.cursor.left >= geometry.figure.left - 1
+      && geometry.cursor.right <= geometry.figure.right + 1 && geometry.cursor.bottom <= geometry.figure.bottom + 1,
+    `${label} ${width}px cursor containment: ${JSON.stringify(geometry)}`)
+    assert.ok(geometry.rightReserve >= 30, `${label} ${width}px final-label reserve: ${JSON.stringify(geometry)}`)
+    assert.ok(geometry.following.top >= geometry.shell.bottom - 1, `${label} ${width}px following-region overlap: ${JSON.stringify(geometry)}`)
+  }
+}
+
+async function assertDetailRowsDoNotOverlap(cdp, label) {
+  for (const locale of ["ru", "en"]) {
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-${locale}"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === ${JSON.stringify(locale)}`, `${label} ${locale} locale`)
+    for (const width of [360, 800, 1280]) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width })
+      await settleLayout(cdp)
+      const geometry = await cdp.evaluate(`(() => {
+        const detail = document.querySelector('[data-testid="pg-detail"]')
+        const box = detail.getBoundingClientRect()
+        const rows = [...detail.querySelectorAll('dl > .detail-row')].map((row) => {
+          const term = row.querySelector('dt').getBoundingClientRect()
+          const value = row.querySelector('dd').getBoundingClientRect()
+          const horizontal = Math.min(term.right, value.right) - Math.max(term.left, value.left)
+          const vertical = Math.min(term.bottom, value.bottom) - Math.max(term.top, value.top)
+          return { horizontal, term: { left: term.left, right: term.right }, value: { left: value.left, right: value.right }, vertical }
+        })
+        return { detail: { left: box.left, right: box.right }, rows, scroll: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth }
+      })()`)
+      assert.ok(geometry.rows.length > 0, `${label} ${locale} ${width}px rows`)
+      assert.equal(geometry.rows.some(({ horizontal, vertical }) => horizontal > 0.5 && vertical > 0.5), false,
+        `${label} ${locale} ${width}px overlap: ${JSON.stringify(geometry)}`)
+      assert.ok(geometry.rows.every(({ term, value }) => term.left >= geometry.detail.left - 1 && term.right <= geometry.detail.right + 1
+        && value.left >= geometry.detail.left - 1 && value.right <= geometry.detail.right + 1),
+      `${label} ${locale} ${width}px containment: ${JSON.stringify(geometry)}`)
+      assert.ok(geometry.scroll <= geometry.viewport, `${label} ${locale} ${width}px document overflow: ${JSON.stringify(geometry)}`)
+    }
+  }
+}
+
+async function assertSearchControlContained(cdp, label) {
+  for (const locale of ["ru", "en"]) {
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-${locale}"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === ${JSON.stringify(locale)}`, `${label} ${locale} locale`)
+    for (const width of [360, 800, 1280]) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width })
+      await settleLayout(cdp)
+      const closed = await cdp.evaluate(`(() => {
+        const root = document.querySelector('[data-testid="events-console"] [data-search-surface="events"]')
+        const parts = [root.querySelector('form'), root.querySelector('input'), root.querySelector('[aria-label="' + (${JSON.stringify(locale)} === 'ru' ? 'Применить поиск' : 'Apply search') + '"]'), root.querySelector('[aria-expanded]')]
+        return {
+          bounds: parts.map((part) => { const box = part.getBoundingClientRect(); return { left: box.left, right: box.right } }),
+          scroll: document.documentElement.scrollWidth,
+          viewport: document.documentElement.clientWidth,
+        }
+      })()`)
+      assert.ok(closed.bounds.every(({ left, right }) => left >= -1 && right <= closed.viewport + 1)
+        && closed.scroll <= closed.viewport, `${label} ${locale} ${width}px control: ${JSON.stringify(closed)}`)
+      await cdp.evaluate(`document.querySelector('[data-testid="events-console"] [aria-expanded]').click()`)
+      await cdp.waitFor(`document.querySelector('[data-testid="search-help"] [role="dialog"]') !== null`, `${label} ${locale} ${width}px help`)
+      const opened = await cdp.evaluate(`(() => {
+        const dialog = document.querySelector('[data-testid="search-help"] [role="dialog"]')
+        const box = dialog.getBoundingClientRect()
+        return { active: dialog.contains(document.activeElement), bottom: box.bottom, left: box.left, right: box.right, top: box.top, viewportHeight: innerHeight, viewportWidth: innerWidth }
+      })()`)
+      assert.ok(opened.active && opened.left >= -1 && opened.right <= opened.viewportWidth + 1
+        && opened.top >= -1 && opened.bottom <= opened.viewportHeight + 1,
+      `${label} ${locale} ${width}px help containment: ${JSON.stringify(opened)}`)
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+      await cdp.waitFor(`document.querySelector('[data-testid="search-help"]') === null`, `${label} ${locale} ${width}px help close`)
+    }
+  }
+}
+
 async function assertHoverGeometryStable(cdp, selector, label) {
   const expression = (position) => `(() => {
     const figure = document.querySelector(${JSON.stringify(selector)})
@@ -3563,7 +3729,8 @@ function relationRecords(url, mode) {
   const logicalName = indexes ? "pg_stat_user_indexes" : "pg_stat_user_tables"
   const group = url.searchParams.get("group") ?? "object"
   const state = url.searchParams.getAll("field").includes("invalid_count")
-  const sized = url.searchParams.getAll("field").includes("reltuples")
+  const requestedFields = url.searchParams.getAll("field")
+  const sized = requestedFields.includes("reltuples") || requestedFields.includes("main_fork_bytes")
   const page = url.searchParams.get("cursor")
   const count = mode === "long" ? page === null ? 200 : 5 : mode === "short" ? 3 : 1
   const offset = page === null ? 0 : 200
@@ -3579,7 +3746,9 @@ function relationRecords(url, mode) {
       ? group === "object"
         ? [wire("tablespace", "text", "none"), wire("amname", "text", "none"), wire("indisvalid", "bool", "none"), wire("indisready", "bool", "none"), wire("indisunique", "bool", "none"), wire("indisprimary", "bool", "none")]
         : [wire("index_count"), wire("invalid_count"), wire("unready_count"), wire("unique_count"), wire("primary_count"), wire("exclusion_count")]
-      : [wire("tablespace", "text", "none"), wire("amname", "text", "none"), wire("idx_scan", "number", "per_second")]
+      : sized
+        ? [wire("tablespace", "text", "none"), wire("amname", "text", "none"), wire("main_fork_bytes", "number", "bytes"), wire("idx_blks_read", "number", "per_second"), wire("idx_blks_hit", "number", "per_second"), wire("buffer_hit_pct", "number", "percent")]
+        : [wire("tablespace", "text", "none"), wire("amname", "text", "none"), wire("idx_scan", "number", "per_second")]
     : sized
       ? [wire("tablespace", "text", "none"), wire("main_fork_bytes", "number", "bytes"), wire("toast_bytes", "number", "bytes"), wire("reltuples"), wire("toast_n_live_tup"), wire("toast_n_dead_tup")]
       : [wire("tablespace", "text", "none"), wire("seq_scan", "number", "per_second")]
@@ -3588,7 +3757,9 @@ function relationRecords(url, mode) {
       ? group === "object"
         ? { tablespace: "pg_default", amname: "btree", indisvalid: true, indisready: true, indisunique: true, indisprimary: true }
         : { index_count: 363, invalid_count: 0, unready_count: 0, unique_count: 223, primary_count: 111, exclusion_count: 0 }
-      : { tablespace: "pg_default", amname: "btree", idx_scan: 3 }
+      : sized
+        ? { tablespace: "pg_default", amname: "btree", main_fork_bytes: 524_288, idx_blks_read: 2, idx_blks_hit: 14, buffer_hit_pct: 87.5 }
+        : { tablespace: "pg_default", amname: "btree", idx_scan: 3 }
     : sized
       ? { tablespace: "pg_default", main_fork_bytes: 1_048_576, toast_bytes: 131_072, reltuples: "9007199254740993", toast_n_live_tup: "713456", toast_n_dead_tup: "12876" }
       : { tablespace: "pg_default", seq_scan: 3 }
@@ -4117,7 +4288,7 @@ test("narrow controls stay contained and help never changes selection", { timeou
   const address = server.address()
   if (address === null || typeof address === "string") throw new Error("narrow browser server has no TCP address")
   const origin = `http://127.0.0.1:${address.port}`
-  const profile = await mkdtemp(join(tmpdir(), "kronika-narrow-controls-"))
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
   const browser = launchBrowser(profile)
   const page = { errors: [], external: [], responses: [] }
   let socket

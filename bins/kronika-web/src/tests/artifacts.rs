@@ -2863,6 +2863,51 @@ fn statement_search_finds_a_match_outside_the_old_first_two_hundred() {
 }
 
 #[test]
+fn structured_statement_search_filters_the_full_set_before_sort_and_page() {
+    let mut fixture = Fixture::new();
+    fixture.append_statement_universe(205);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=pg_stat_statements&field=queryid&field=query&by=queryid&page_size=200&search=query_id%3A0%20AND%20text%3A%22owner%20blocker-needle%20outside%20page%20one%22"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("structured statement search");
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0]["values"],
+        serde_json::json!(["0", "owner blocker-needle outside page one"])
+    );
+    let page = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("structured statement page trailer");
+    assert_eq!(page["eligible"], "1");
+    assert_eq!(page["returned"], "1");
+    assert_eq!(page["has_more"], false);
+}
+
+#[test]
+fn structured_statement_search_preserves_bigint_text_across_the_api() {
+    let mut fixture = Fixture::new();
+    fixture.append_statement_snapshots(&[
+        (100, 9_007_199_254_740_993, 1, 1.0),
+        (100, -9_007_199_254_740_993, 1, 1.0),
+    ]);
+    fixture.finish();
+
+    for query_id in ["9007199254740993", "-9007199254740993"] {
+        let target = format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=pg_stat_statements&field=queryid&by=queryid&page_size=1&search=query_id%3A{query_id}"
+        );
+        let records = stream(fixture.prepare(&target, None)).expect("exact bigint search");
+        let rows = row_records(&records);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["values"][0], query_id);
+    }
+}
+
+#[test]
 fn numeric_statement_page_scans_the_source_once_without_candidate_dictionary_reads() {
     let mut fixture = Fixture::new();
     fixture.append_statement_universe(205);
@@ -3060,7 +3105,7 @@ fn snapshot_cursor_rejects_every_bound_query_shape_mismatch() {
     fixture.append_statement_universe(5);
     fixture.finish();
     let path = format!("/api/segments/{SEGMENT_ID}/snapshot");
-    let shape = "at=100&section=pg_stat_statements&field=queryid&field=query&by=queryid&by=userid&page_size=1&search=fixture&search=statement&text=80&where.dbid=73&where.userid=72&type_id=1002002";
+    let shape = "at=100&section=pg_stat_statements&field=queryid&field=query&by=queryid&by=userid&page_size=1&search=text%3Afixture%20AND%20text%3Astatement&text=80&where.dbid=73&where.userid=72&type_id=1002002";
     let first = stream(fixture.prepare(&format!("{path}?{shape}"), None)).expect("bound page");
     let cursor = first
         .iter()
@@ -3086,8 +3131,8 @@ fn snapshot_cursor_rejects_every_bound_query_shape_mismatch() {
         (
             SEGMENT_ID,
             shape.replacen(
-                "search=fixture&search=statement",
-                "search=statement&search=fixture",
+                "search=text%3Afixture%20AND%20text%3Astatement",
+                "search=text%3Astatement%20AND%20text%3Afixture",
                 1,
             ),
         ),
@@ -4094,7 +4139,7 @@ fn relation_search_runs_before_group_sort_and_page() {
     fixture.finish();
 
     let target = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_tables&group=object&field=seq_scan&by=seq_scan&page_size=200&search=needle_outside"
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_tables&group=object&field=seq_scan&by=seq_scan&page_size=200&search=table_name%3Aneedle_outside_unfiltered_page%20AND%20schema%3Apublic"
     );
     let records = stream(fixture.prepare(&target, None)).expect("searched relation page");
     let rows = relation_records(&records);

@@ -1631,7 +1631,7 @@ impl PreparedSnapshot {
     )]
     fn partitioned_context<'a>(
         &'a self,
-        section: &SectionPlans,
+        section: &'a SectionPlans,
         layout_index: usize,
         plan: &'a Plan,
         source_kind: PartitionSource,
@@ -2514,11 +2514,11 @@ fn search_clause_columns(logical_name: &str, plan: &Plan, key: &str) -> Vec<&'st
     else {
         return Vec::new();
     };
-    let wanted = if logical_name == "pg_store_plans" && key == "query_id" {
+    let wanted: &[&str] = if logical_name == "pg_store_plans" && key == "query_id" {
         if plan.type_id == 1_004_001 {
-            &["queryid_stat_statements"] as &[&str]
+            &["queryid_stat_statements"]
         } else {
-            &["queryid"] as &[&str]
+            &["queryid"]
         }
     } else {
         field.columns
@@ -2599,7 +2599,9 @@ impl StructuredSearch {
             if cursor == key_start {
                 return Err(ApiError::BadFilter("search".to_owned()));
             }
-            let raw_key = &input[key_start..cursor];
+            let raw_key = input
+                .get(key_start..cursor)
+                .ok_or_else(|| ApiError::BadFilter("search".to_owned()))?;
             let Some(field) = fields.iter().find(|field| {
                 field.key.eq_ignore_ascii_case(raw_key)
                     || field
@@ -2636,9 +2638,12 @@ impl StructuredSearch {
             if cursor == input.len() {
                 break;
             }
-            let rest = &input[cursor..];
-            if rest.len() < 3
-                || !rest[..3].eq_ignore_ascii_case("AND")
+            let rest = input
+                .get(cursor..)
+                .ok_or_else(|| ApiError::BadFilter("search".to_owned()))?;
+            if rest
+                .get(..3)
+                .is_none_or(|token| !token.eq_ignore_ascii_case("AND"))
                 || rest
                     .as_bytes()
                     .get(3)
@@ -2668,24 +2673,26 @@ fn parse_search_value(input: &str, start: usize) -> Result<(String, usize), ApiE
         {
             end += 1;
         }
-        return (end > start)
-            .then(|| (input[start..end].to_owned(), end))
+        return input
+            .get(start..end)
+            .filter(|value| !value.is_empty())
+            .map(|value| (value.to_owned(), end))
             .ok_or_else(|| ApiError::BadFilter("search".to_owned()));
     }
     let mut value = String::new();
     let mut cursor = start + 1;
     while cursor < input.len() {
-        let character = input[cursor..]
-            .chars()
-            .next()
+        let character = input
+            .get(cursor..)
+            .and_then(|rest| rest.chars().next())
             .ok_or_else(|| ApiError::BadFilter("search".to_owned()))?;
         if character == '"' {
             return Ok((value, cursor + 1));
         }
         if character == '\\' {
-            let escaped = input[cursor + 1..]
-                .chars()
-                .next()
+            let escaped = input
+                .get(cursor + 1..)
+                .and_then(|rest| rest.chars().next())
                 .filter(|escaped| *escaped == '"' || *escaped == '\\')
                 .ok_or_else(|| ApiError::BadFilter("search".to_owned()))?;
             value.push(escaped);
@@ -3007,7 +3014,7 @@ fn snapshot_binding(request: &SnapshotRequest) -> u64 {
         hash_part(&mut hash, b"filter-column", filter.column.as_bytes());
         hash_part(&mut hash, b"filter-value", filter.value.as_bytes());
     }
-    for search in &request.search {
+    if let Some(search) = &request.search {
         hash_part(&mut hash, b"search", search.as_bytes());
     }
     for by in &request.by {

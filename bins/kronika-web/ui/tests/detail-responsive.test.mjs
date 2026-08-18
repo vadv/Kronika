@@ -34,9 +34,10 @@ test("all detail key/value rows share a readable label track and bounded value t
   // every detail surface — process dock, PostgreSQL detail, event detail — uses it
   assert.match(stylesheet, /@utility detail-row \{[^}]*minmax\(0, min\(10rem, 40%\)\) minmax\(0, 1fr\)/s)
   assert.match(stylesheet, /@utility detail-dd \{[^}]*overflow-wrap:\s*anywhere;[^}]*text-align:\s*right;/s)
+  assert.match(stylesheet, /@utility detail-dd \{[^}]*@media \(max-width: 520px\) \{ text-align: left; \}/s)
   const composition = await readFile(new URL("../src/detail-list.tsx", import.meta.url), "utf8")
   assert.match(composition, /detail-row max-\[520px\]:detail-row-stacked/)
-  assert.match(composition, /detail-dd max-\[520px\]:text-left/)
+  assert.match(composition, /className={`detail-dd/)
   for (const view of ["detail.tsx", "postgres-view.tsx", "events-view.tsx", "postgres-relations-view.tsx"]) {
     const source = await readFile(new URL(`../src/${view}`, import.meta.url), "utf8")
     assert.match(source, /DetailList/, view)

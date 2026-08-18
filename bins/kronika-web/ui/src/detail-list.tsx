@@ -13,6 +13,6 @@ export function DetailRow({ children, term, valueClassName }: {
 }) {
   return <div className="detail-row max-[520px]:detail-row-stacked">
     <dt className="detail-dt">{term}</dt>
-    <dd className={`detail-dd max-[520px]:text-left${valueClassName === undefined ? "" : ` ${valueClassName}`}`}>{children}</dd>
+    <dd className={`detail-dd${valueClassName === undefined ? "" : ` ${valueClassName}`}`}>{children}</dd>
   </div>
 }
