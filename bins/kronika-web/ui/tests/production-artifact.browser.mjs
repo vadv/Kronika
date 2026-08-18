@@ -1939,7 +1939,7 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
     await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-indexes-table"] .entity-row').length === 1`, "the tablespace index aggregate")
     const summary = await cdp.evaluate(`(() => ({
       cells: [...document.querySelector('[data-testid="pg-indexes-table"] .entity-row').querySelectorAll('[role="cell"]')].map((cell) => cell.textContent),
-      levels: [...document.querySelectorAll('.lensbar:first-of-type button')].map((button) => button.textContent),
+      levels: [...document.querySelectorAll('nav.lensbar button')].map((button) => button.textContent),
     }))()`)
     assert.equal(summary.cells[0], "fast_ssd")
     assert.match(summary.cells[1], /363/)
@@ -1999,7 +1999,7 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
     const narrow = await cdp.evaluate(`(() => ({
       clientWidth: document.documentElement.clientWidth,
       scrollWidth: document.documentElement.scrollWidth,
-      buttons: [...document.querySelectorAll('.lensbar:first-of-type .lens-tabs button')].map((button) => ({ text: button.textContent, width: button.getBoundingClientRect().width })),
+      buttons: [...document.querySelectorAll('nav.lensbar .lens-tabs button')].map((button) => ({ text: button.textContent, width: button.getBoundingClientRect().width })),
     }))()`)
     assert.ok(narrow.scrollWidth <= narrow.clientWidth, JSON.stringify(narrow))
     assert.deepEqual(narrow.buttons.map(({ text }) => text), ["Indexes", "Schemas", "Databases", "Tablespaces"])
