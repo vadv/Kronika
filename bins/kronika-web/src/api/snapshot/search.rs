@@ -547,6 +547,7 @@ impl<'a> Parser<'a> {
 
 pub(super) fn search_fields(logical_name: &str) -> &'static [SearchField] {
     match logical_name {
+        "os_process" => PROCESS_SEARCH_FIELDS,
         "pg_stat_statements" => STATEMENT_SEARCH_FIELDS,
         "pg_store_plans" => PLAN_SEARCH_FIELDS,
         "pg_stat_user_tables" => TABLE_SEARCH_FIELDS,
@@ -1140,4 +1141,15 @@ const INDEX_SEARCH_FIELDS: &[SearchField] = &[
         "idx_scan",
         &["idx_scan"],
     ),
+];
+const PROCESS_SEARCH_FIELDS: &[SearchField] = &[
+    search_string("text", &["q"], &["comm", "cmdline", "uid", "euid", "scope"]),
+    search_string("user", &["username"], &["uid", "scope"]),
+    search_string("effective_user", &["euser"], &["euid", "scope"]),
+    search_id("user_id", &["uid"], &["uid"], false),
+    search_id("effective_user_id", &["euid"], &["euid"], false),
+    search_id("pid", &[], &["pid"], false),
+    search_id("parent_pid", &["ppid"], &["ppid"], false),
+    search_string("command", &["cmd"], &["comm", "cmdline"]),
+    search_string("state", &[], &["state"]),
 ];

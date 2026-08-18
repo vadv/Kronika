@@ -40,5 +40,8 @@ pub use numa::{node_id_from_dir, parse_node_meminfo};
 pub mod proc;
 pub use proc::stat::{CpuRow, ParseError, parse_cpu};
 
+pub mod passwd;
+pub use passwd::PasswdSnapshot;
+
 mod scope;
 pub use scope::{OsScope, detect_container, net_scope};

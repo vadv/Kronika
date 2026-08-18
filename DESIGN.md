@@ -688,6 +688,15 @@ boolean meaning without exposing a generic query engine. Search refusal, a
 successful empty set and transport failure are distinct; refresh failure
 retains the last successful data.
 
+Process user names are capture-time reference data, not facts reconstructed
+from the host at query time. Each segment may carry one `os_user` row per
+observed real or effective `(scope, uid)`, with the name interned in that
+segment's string dictionary. Process reads join only within that segment.
+`user` and `effective_user` search the resolved names before ordering and
+pagination, while `user_id` and `effective_user_id` retain exact numeric
+semantics. An unresolved UID remains visible as a number and never triggers a
+live identity lookup.
+
 PostgreSQL related-row navigation is confined to the PostgreSQL feature area
 and stored as that same public expression in the URL. For PostgreSQL 14–18 an
 Activity row, including Activity joined to a selected process, can open every

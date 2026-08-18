@@ -311,6 +311,31 @@ impl Plan {
         self.projection.sort_unstable();
         self.projection.dedup();
     }
+
+    /// Keep only the requested physical output fields.
+    pub(super) fn retain_output_fields(&mut self, names: &[String]) {
+        self.fields.retain(|field| names.contains(&field.name));
+    }
+
+    /// Add a server-derived output field backed by separately captured data.
+    pub(super) fn add_virtual_output(&mut self, name: &str) {
+        if self.fields.iter().all(|field| field.name != name) {
+            self.fields.push(OutputField {
+                name: name.to_owned(),
+                column: None,
+            });
+        }
+    }
+
+    /// Restore caller field order after physical and virtual planning.
+    pub(super) fn order_output_fields(&mut self, names: &[String]) {
+        self.fields.sort_by_key(|field| {
+            names
+                .iter()
+                .position(|name| name == &field.name)
+                .unwrap_or(usize::MAX)
+        });
+    }
 }
 
 impl TypedFilter {

@@ -1,16 +1,18 @@
 use super::{
     DueSet, Instant, Interner, OsCgroupMapping, OsSources, ProcFs, ProcessError, SourceKind, Ts,
-    intern_str, log_collection_finish, log_count_degraded, log_degraded, process_facts,
-    read_process_with_cgroup,
+    UserReferences, intern_str, log_collection_finish, log_count_degraded, log_degraded,
+    process_facts, read_process_with_cgroup,
 };
 
 #[allow(
+    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "process sections share procfs enumeration and degradation counters"
+    reason = "process sections share procfs enumeration, segment user state, and degradation counters"
 )]
 pub(super) fn collect_process_sections(
     fs: &ProcFs,
     interner: &mut Interner,
+    users: &mut UserReferences,
     scope: u8,
     ts: i64,
     due: &DueSet,
@@ -97,10 +99,11 @@ pub(super) fn collect_process_sections(
                 .cmdline
                 .as_deref()
                 .and_then(|value| intern_str(interner, hot_type_id, "process", value));
-            os.processes
-                .push(kronika_source_os::proc::process::to_hot_section(
-                    &read.hot, scope, comm, cmdline,
-                ));
+            let row =
+                kronika_source_os::proc::process::to_hot_section(&read.hot, scope, comm, cmdline);
+            users.observe(scope, row.uid);
+            users.observe(scope, row.euid);
+            os.processes.push(row);
         }
         if status_due {
             os.process_status
@@ -158,6 +161,7 @@ pub(super) fn collect_process_sections(
         );
     }
     if hot_due {
+        (os.users, os.pending_users) = users.prepare_rows(interner, scope, ts, std::iter::empty());
         log_collection_finish(hot_type_id, "procfs", os.processes.len(), started.elapsed());
     }
     if status_due {

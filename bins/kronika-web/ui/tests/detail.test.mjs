@@ -83,6 +83,16 @@ test("process detail mounts one selected chart and exposes metric actions", asyn
   assert.equal(source.match(/<SeriesChart/g)?.length, 1)
 })
 
+test("process details expose each user identity exactly once in every lens", () => {
+  const process = row(1, { pid: 77, uid: 26, euid: 27, user: "postgres", effective_user: "worker", utime: 10, rmem_kb: 20, read_bytes: 30 })
+  for (const lens of ["generic", "cpu", "memory", "disk"]) {
+    const ids = detail.processDetailFields(lens, process).map(({ id }) => id)
+    assert.equal(ids.filter((id) => id === "user").length, 1, lens)
+    assert.equal(ids.filter((id) => id === "effective_user").length, 1, lens)
+    assert.equal(new Set(ids).size, ids.length, lens)
+  }
+})
+
 test("scheduler references stay in CPU detail while temporal fault metrics stay chartable", async () => {
   for (const field of ["nice", "prio", "rtprio"]) assert.equal(detail.PROCESS_HISTORY_FIELDS.includes(field), false, field)
   assert.equal(detail.PROCESS_HISTORY_FIELDS.includes("majflt"), true)

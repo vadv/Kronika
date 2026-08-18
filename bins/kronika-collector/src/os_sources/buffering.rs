@@ -77,6 +77,9 @@ pub(crate) fn push_os_sources(buffers: &mut SectionBuffers, os: &OsSources) -> R
     for row in &os.processes {
         buffer_row(buffers, *row)?;
     }
+    for row in &os.users {
+        buffer_row(buffers, *row)?;
+    }
     for row in &os.process_status {
         buffer_row(buffers, *row)?;
     }

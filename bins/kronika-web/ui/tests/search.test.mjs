@@ -67,6 +67,11 @@ test("each surface exposes only its useful canonical public fields", () => {
   assert.equal(parseSearch("plan_id:42", "pg_stat_statements").ok, false)
   assert.equal(parseSearch("table_name:orders", "pg_stat_user_tables").ok, true)
   assert.equal(searchFields("pg_store_plans").some((field) => field.key.includes("queryid_stat")), false)
+  assert.deepEqual(searchFields("os_process").map(({ key }) => key), [
+    "text", "user", "effective_user", "user_id", "effective_user_id", "pid", "parent_pid", "command", "state",
+  ])
+  const process = parseSearch("username:postgres AND euser:postgres* AND uid:26 AND euid:27", "os_process")
+  assert.equal(process.ok && process.query.canonical, "user:postgres AND effective_user:postgres* AND user_id:26 AND effective_user_id:27")
 })
 
 test("strict comparisons canonicalize exact quantities without Number conversion", () => {

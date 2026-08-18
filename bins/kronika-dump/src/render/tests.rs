@@ -8,6 +8,7 @@ use kronika_layout::{DataRoot, LayoutLimits, SegmentId};
 use kronika_reader::{BlobEntry, Resolved};
 use kronika_registry::instance_metadata::{Environment, InstanceMetadataV1};
 use kronika_registry::os_psi::OsPsi;
+use kronika_registry::os_user::OsUser;
 use kronika_registry::{DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict};
 
@@ -237,6 +238,19 @@ fn dictionary_section_selectors_dump_their_rows() {
 }
 
 #[test]
+fn user_reference_dump_resolves_the_captured_name() {
+    let (_directory, segment) = user_segment();
+    let mut output = Vec::new();
+    section(&mut output, true, &segment, 1_124_001, 0).expect("dump user reference");
+    let row: serde_json::Value = serde_json::from_slice(&output).expect("user JSON line");
+    assert_eq!(row["type_id"], 1_124_001);
+    assert_eq!(row["row"]["uid"], 26);
+    assert_eq!(row["row"]["username"], "postgres");
+    assert_eq!(row["row"]["source"], 0);
+    assert_eq!(row["row"]["scope"], 0);
+}
+
+#[test]
 fn a_size_report_accounts_for_the_captured_file() {
     let (_directory, segment) = dictionary_segment();
     let mut output = Vec::new();
@@ -306,6 +320,43 @@ fn dictionary_segment() -> (tempfile::TempDir, kronika_reader::Segment) {
         .flush(&dictionary)
         .expect("encode part")
         .expect("dictionary part");
+    let segment_id = SegmentId::new(1_709_164_800_000_000).expect("segment id");
+    let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
+    journal.append(segment_id, &part).expect("append part");
+    drop(journal);
+
+    let reader = kronika_reader::Reader::open(directory.path()).expect("open reader");
+    let listing = reader.segments(..).expect("list segment");
+    assert_eq!(listing.segments.len(), 1);
+    let segment = reader
+        .open_segment(&listing.segments[0])
+        .expect("open segment");
+    (directory, segment)
+}
+
+fn user_segment() -> (tempfile::TempDir, kronika_reader::Segment) {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let root = DataRoot::open(directory.path()).expect("open data root");
+    let owner = root
+        .acquire_writer(LayoutLimits::default())
+        .expect("acquire writer");
+    let mut interner = Interner::new(DictLimits::default());
+    let username = interner.intern(b"postgres").expect("intern user name");
+    let mut sections = SectionBuffers::new();
+    sections
+        .push(OsUser {
+            ts: Ts(1_709_164_800_000_000),
+            uid: 26,
+            username: StrId(username.get()),
+            source: 0,
+            scope: 0,
+        })
+        .expect("buffer user reference");
+    let dictionary = dict::encode(interner.window()).expect("encode dictionary");
+    let part = sections
+        .flush(&dictionary)
+        .expect("encode part")
+        .expect("user part");
     let segment_id = SegmentId::new(1_709_164_800_000_000).expect("segment id");
     let mut journal = Journal::open(&owner, JournalConfig::default()).expect("open journal");
     journal.append(segment_id, &part).expect("append part");

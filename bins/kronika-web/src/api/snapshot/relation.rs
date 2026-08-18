@@ -3401,6 +3401,7 @@ fn scan_context(
                             context.plan,
                             &row,
                             &dictionary,
+                            None,
                             search,
                         )
                     }))

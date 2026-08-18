@@ -129,8 +129,21 @@ const id = (key: string, columns: readonly string[], aliases: readonly string[] 
 const quantity = (key: string, kind: QuantityKind): SearchField => ({ aliases: [], columns: [], help: `filter.field.${key}.help`, key, kind: "quantity", quantity: kind })
 
 const SEARCH_FIELDS: Readonly<Record<SearchSurface, readonly SearchField[]>> = {
-  events: [text(["category", "source", "logical_name"]), string("kind", ["kind"]), string("source", ["source", "logical_name"]), string("category", ["category"])],
-  os_process: [text(["cmdline", "comm"]), id("pid", ["pid"]), id("parent_pid", ["ppid"]), string("command", ["cmdline", "comm"], ["cmd"]), id("user_id", ["uid"]), id("effective_user_id", ["euid"], ["euid"]), string("state", ["state"])],
+  events: [
+    text(["category", "source", "logical_name"]),
+    string("kind", ["kind"]), string("source", ["source", "logical_name"]),
+    string("category", ["category"]),
+  ],
+  os_process: [
+    text(["cmdline", "comm", "user", "effective_user"]),
+    string("user", ["user"], ["username"]),
+    string("effective_user", ["effective_user"], ["euser"]),
+    id("user_id", ["uid"], ["uid"]), id("effective_user_id", ["euid"], ["euid"]),
+    id("pid", ["pid"]),
+    id("parent_pid", ["ppid"]),
+    string("command", ["cmdline", "comm"], ["cmd"]),
+    string("state", ["state"]),
+  ],
   pg_stat_activity: [
     text(["query", "datname", "usename", "application_name", "client_addr", "state", "wait_event_type", "wait_event"]),
     id("query_id", ["query_id"], [], true), id("pid", ["pid"]), string("database", ["datname"], ["db"]), string("role", ["usename"], ["user"]),
