@@ -99,7 +99,7 @@ pub fn write_segment(
     let mut temporary = owner.create_zms_temp(address)?;
     let mut spool = owner.create_zms_temp(address)?;
     let summary = write_tmp(journal, &mut temporary, &mut spool)?;
-    drop(spool);
+    spool.discard()?;
     let generated = temporary.try_clone_file()?;
     if !validate_segment(&generated, summary)? {
         return Err(WriteError::GeneratedSegmentInvalid);
