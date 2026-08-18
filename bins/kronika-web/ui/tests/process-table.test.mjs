@@ -4,7 +4,7 @@ import test from "node:test"
 
 import { importModule, registryPlugin } from "./import-module.mjs"
 
-const helpers = await importModule('export { LENS_FIELDS, PROCESS_SUMMARY_FIELDS, PROCESS_SUMMARY_METRICS, PROCESS_USER_FIELDS, processSummaryFormat, processSummaryOutput, processSummaryPoints, processSummaryReducer, processSummaryUnit, processTableDefaultOrder, processUser } from "../src/process-table.tsx"; export { sticky, stickyOffsets } from "../src/entity-table.tsx"', { plugins: [registryPlugin([])] })
+const helpers = await importModule('export { LENS_FIELDS, PROCESS_SUMMARY_FIELDS, PROCESS_SUMMARY_METRICS, PROCESS_USER_FIELDS, processSummaryFormat, processSummaryOutput, processSummaryPoints, processSummaryReducer, processSummaryUnit, processTableDefaultOrder, processUser, processUserSearch } from "../src/process-table.tsx"; export { sticky, stickyOffsets } from "../src/entity-table.tsx"', { plugins: [registryPlugin([])] })
 const { LENS_FIELDS } = helpers
 
 test("process lenses keep identity first, lens metrics next, and state last", () => {
@@ -30,6 +30,9 @@ test("process users retain exact numeric identity and honest unresolved fallback
   const row = (values) => ({ logicalName: "os_process", ordinal: "1", segmentId: "a", timestamp: 1, typeId: "1100001", values })
   assert.equal(helpers.processUser(row({ uid: 26, user: "postgres" }), user), "postgres (26)")
   assert.equal(helpers.processUser(row({ euid: 9999, effective_user: null }), effective), "9999")
+  assert.equal(helpers.processUserSearch(row({ uid: 26, user: "postgres" }), user), "user:postgres")
+  assert.equal(helpers.processUserSearch(row({ euid: 27, effective_user: "postgres worker" }), effective), 'effective_user:"postgres worker"')
+  assert.equal(helpers.processUserSearch(row({ euid: 9999, effective_user: null }), effective), null)
   assert.deepEqual(helpers.processTableDefaultOrder("generic"), { column: "pid", descending: false })
   assert.deepEqual(helpers.processTableDefaultOrder("disk"), { column: "read_bytes", descending: true })
 })

@@ -2082,6 +2082,7 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
 
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
     await cdp.waitFor(`document.querySelectorAll('[data-testid="process-table"] .entity-row').length > 10`, "the full-height process table")
+    await cdp.waitFor(`[...document.querySelectorAll('[data-testid="process-table"] .entity-row')].some((row) => row.textContent.includes("2686712"))`, "the captured-user process row")
     const processJoinGap = await cdp.evaluate(`(() => {
       const timeline = document.querySelector('.timeline-shell').getBoundingClientRect()
       const controls = document.querySelector('.process-workspace > .lensbar').getBoundingClientRect()
@@ -2096,23 +2097,36 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     })()`)
     assert.equal(capturedUsers.User, "postgres (26)")
     assert.equal(capturedUsers["Effective user"], "postgres-worker (27)")
+    await cdp.evaluate(`([...document.querySelectorAll('[data-testid="process-table"] .entity-row')].find((row) => row.textContent.includes("2686712"))).querySelector('[data-testid="process-user-filter-user"]').click()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "user:postgres"`, "resolved real user opens canonical name search")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="process-dock"]') === null`), true)
+    await cdp.evaluate(`document.querySelector('[aria-label="Clear the filter"]').click()`)
+    await delay(400)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === null && [...document.querySelectorAll('[data-testid="process-table"] .entity-row')].some((row) => row.textContent.includes("2686712"))`, "process rows restored after real-user search")
+    await cdp.evaluate(`([...document.querySelectorAll('[data-testid="process-table"] .entity-row')].find((row) => row.textContent.includes("2686712"))).querySelector('[data-testid="process-user-filter-effective_user"]').click()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "effective_user:postgres-worker"`, "resolved effective user opens canonical name search")
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=processes&lens=generic` })
+    await cdp.waitFor(`[...document.querySelectorAll('[data-testid="process-table"] .entity-row')].some((row) => row.textContent.includes("2686712"))`, "ordinary process rows restored after user search")
     await cdp.evaluate(`([...document.querySelectorAll('[data-testid="process-table"] .entity-row')].find((row) => row.textContent.includes("2686712"))).click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-linked-dock"] [data-testid="pg-exact-query"]')?.textContent.includes("select activity_for_2686712") === true`, "the PID-first linked Activity query")
     await cdp.evaluate(`document.querySelector('[data-testid="lens-cpu"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="process-history-metric-majflt"]') !== null`, "Major page faults history")
     const cpuDetail = await cdp.evaluate(`(() => ({
-      labels: [...document.querySelectorAll('[data-testid="pg-linked-dock"] dt')].map((node) => node.textContent),
+      labels: [...document.querySelectorAll('[data-testid="pg-linked-dock"] > dl:first-of-type dt')].map((node) => node.textContent),
       schedulerChips: ["nice", "prio", "rtprio"].filter((field) => document.querySelector('[data-testid="process-history-metric-' + field + '"]') !== null),
       snapshot: document.querySelector('[data-testid="pg-linked-dock"]')?.textContent ?? "",
     }))()`)
     assert.equal(cpuDetail.schedulerChips.length, 0)
     for (const label of ["Nice", "Priority", "RT priority"]) assert.ok(cpuDetail.labels.some((value) => value.startsWith(label)), JSON.stringify(cpuDetail.labels))
+    assert.equal(cpuDetail.labels.filter((value) => value === "User?").length, 1, JSON.stringify(cpuDetail.labels))
+    assert.equal(cpuDetail.labels.filter((value) => value === "Effective user?").length, 1, JSON.stringify(cpuDetail.labels))
     assert.match(cpuDetail.snapshot, /postgres \(26\)/)
     assert.match(cpuDetail.snapshot, /postgres-worker \(27\)/)
     assert.doesNotMatch(cpuDetail.snapshot, /\b\d{2}[./]\d{2}[./]2026\b/)
     for (const lens of ["cpu", "memory", "disk", "generic"]) {
       await cdp.evaluate(`document.querySelector('[data-testid="lens-${lens}"]').click()`)
       await settleLayout(cdp)
+      await cdp.waitFor(`document.querySelector('[data-testid="table-paging"]') === null`, `${lens} process page settled`)
       const geometry = await cdp.evaluate(`(() => {
         const box = (node) => { const value = node.getBoundingClientRect(); return { bottom: value.bottom, top: value.top } }
         const main = document.querySelector('.process-main')

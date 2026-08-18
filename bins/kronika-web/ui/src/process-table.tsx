@@ -20,6 +20,7 @@ import {
   type Lens,
   type Locale,
 } from "./model"
+import { canonicalSearch } from "./search"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 
 export interface Field {
@@ -249,13 +250,13 @@ export function ProcessTable({
       ...(help === undefined ? {} : { help }),
       kind: entityKind(field.kind),
       label: field.label,
-      render: (row) => <CellValue field={field} locale={locale} linked={linkedPids.has(asNumber(value(row, "pid")) ?? -1)} row={row} t={t} ticksPerSecond={ticksPerSecond} />,
+      render: (row) => <CellValue field={field} locale={locale} linked={linkedPids.has(asNumber(value(row, "pid")) ?? -1)} onSearch={onPattern} row={row} t={t} ticksPerSecond={ticksPerSecond} />,
       sortValue: (row) => sortable(row, field),
       sortable: field.kind !== "user",
       ...(field.sticky === undefined ? {} : { sticky: `sticky-${field.sticky}` }),
       width: field.size,
     }
-  }), [lens, linkedPids, locale, t, ticksPerSecond])
+  }), [lens, linkedPids, locale, onPattern, t, ticksPerSecond])
   const activeOrder = order ?? processTableDefaultOrder(lens)
   const canLoadMore = metadata?.hasMore === true && metadata.nextCursor !== null
   const paging = densePageState !== "idle" || canLoadMore
@@ -269,7 +270,7 @@ export function ProcessTable({
   })}</strong>
   return <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
     <EntityTable
-    className="process-table flex min-h-0 min-w-0 flex-col overflow-hidden border border-line2 bg-s1"
+    className="process-table flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-line2 bg-s1"
     columns={columns}
     contextLabel={contextLabel}
     empty={t("table.empty")}
@@ -319,16 +320,26 @@ export function formatCell(kind: Field["kind"], cell: Cell, locale: Locale, t: T
   }
 }
 
-export function CellValue({ field, linked, locale, row, t, ticksPerSecond }: { readonly field: Field; readonly linked: boolean; readonly locale: Locale; readonly row: DataRow; readonly t: Translate; readonly ticksPerSecond: number | null }) {
+export function CellValue({ field, linked, locale, onSearch, row, t, ticksPerSecond }: { readonly field: Field; readonly linked: boolean; readonly locale: Locale; readonly onSearch?: ((pattern: string) => void) | undefined; readonly row: DataRow; readonly t: Translate; readonly ticksPerSecond: number | null }) {
   const cell = field.field === undefined ? null : value(row, field.field)
   const output = field.kind === "command" ? processCommand(row) : field.kind === "user" ? processUser(row, field) : formatCell(field.kind, cell, locale, t, ticksPerSecond)
-  return <span className={`block overflow-hidden text-ellipsis whitespace-nowrap ${field.kind === "command" || field.kind === "user" ? "w-full text-fg" : "numeric-cell tabular-nums"}`} title={output}>{field.kind === "command" && linked && <span className="mr-1.5 inline-block border border-accent-line bg-accent-soft px-1 py-0.5 align-[1px] text-xs font-bold tracking-[.06em] text-accent2">PG</span>}{output}</span>
+  const userSearch = field.kind === "user" ? processUserSearch(row, field) : null
+  return <span className={`block overflow-hidden text-ellipsis whitespace-nowrap ${field.kind === "command" || field.kind === "user" ? "w-full text-fg" : "numeric-cell tabular-nums"}`} title={output}>{field.kind === "command" && linked && <span className="mr-1.5 inline-block border border-accent-line bg-accent-soft px-1 py-0.5 align-[1px] text-xs font-bold tracking-[.06em] text-accent2">PG</span>}{userSearch !== null && onSearch !== undefined
+    ? <button className="max-w-full cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap border-0 bg-transparent p-0 text-left text-accent3 underline decoration-dotted underline-offset-2" data-testid={`process-user-filter-${field.id}`} onClick={(event) => { event.stopPropagation(); onSearch(userSearch) }} type="button">{output}</button>
+    : output}</span>
 }
 
 export function processUser(row: DataRow, field: Field): string {
   const uid = identifier(value(row, field.id === "effective_user" ? "euid" : "uid"))
   const name = field.field === undefined ? null : rawText(value(row, field.field))
   return name === null || name.trim() === "" ? uid : `${name} (${uid})`
+}
+
+export function processUserSearch(row: DataRow, field: Field): string | null {
+  if (field.kind !== "user" || field.field === undefined) return null
+  const name = rawText(value(row, field.field))
+  if (name === null || name.trim() === "") return null
+  return canonicalSearch([{ key: field.id, value: name }], "os_process")
 }
 
 function sortable(row: DataRow, field: Field): string | number | null {
