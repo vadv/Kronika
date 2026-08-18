@@ -7,7 +7,7 @@ import { importModule, registryPlugin } from "./import-module.mjs"
 import { parseDictionary, validateDictionaries } from "../scripts/i18n.mjs"
 
 const helpers = await importModule(
-  'export { dockGroupMetrics, effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, clearCgroupSnapshotRows, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, mountPairSeries, resourceBreakdownSeries, storageTopologyEntries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
+  'export { dockGroupMetrics, effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, clearCgroupSnapshotRows, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, mountPairSeries, recordedEnvironment, resourceBreakdownSeries, storageTopologyEntries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
   { plugins: [registryPlugin([
     { typeId: "1108001", logicalName: "os_diskstats", identity: ["major", "minor"], columns: ["ts", "major", "minor", "device", "io_in_progress"] },
     { typeId: "1112002", logicalName: "os_mountinfo", identity: ["major", "minor", "mount_point"], columns: ["ts", "major", "minor", "mount_point", "root", "fstype", "source", "is_k8s_infra", "total_bytes", "free_bytes", "total_inodes", "available_inodes", "scope"] },
@@ -254,11 +254,13 @@ test("collector cgroup rows keep leaf settings factual and use effective hierarc
     os_cgroup_io: [row("os_cgroup_io", "/mine", { major: 8, minor: 0, rbytes: 10, wbytes: 20, rios: 1, wios: 2 })],
   } }
   const cpu = helpers.systemEntityRows(source, "os_cgroup_cpu", 10)
-  assert.equal(cpu.length, 1)
-  assert.equal(cpu[0].values.cgroup_used_cores, 1.5)
-  assert.equal(cpu[0].values.cgroup_other_cores, 0.1)
-  assert.equal(cpu[0].values.cgroup_quota, 2)
-  assert.equal(cpu[0].values.cgroup_capacity, 0.5)
+  assert.equal(cpu.length, 2)
+  const collector = cpu.find(({ values }) => values.cgroup_path === "/mine")
+  assert.equal(collector.values.cgroup_used_cores, 1.5)
+  assert.equal(collector.values.cgroup_other_cores, 0.1)
+  assert.equal(collector.values.cgroup_quota, 2)
+  assert.equal(collector.values.cgroup_capacity, 0.5)
+  assert.equal(cpu.find(({ values }) => values.cgroup_path === "/other").values.cgroup_capacity, null)
   const columns = helpers.SYSTEM_ENTITIES.find(({ section }) => section === "os_cgroup_cpu").columns
   for (const field of ["cgroup_used_cores", "cgroup_user_cores", "cgroup_system_cores", "cgroup_other_cores", "cgroup_capacity", "cgroup_quota"]) {
     assert.equal(columns.find((column) => column.field === field).kind, "cores", field)
@@ -280,34 +282,34 @@ test("collector cgroup rows keep leaf settings factual and use effective hierarc
   assert.equal(malformedMemory.values.effective_memory_max, null)
 })
 
-test("System loads cgroup entities only through exact controller-specific plans", () => {
-  for (const section of ["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"]) {
+test("System loads cgroups only for the recorded container environment", () => {
+  for (const section of ["os_cgroup_context", "os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io", "os_cgroup_pids"]) {
     assert.equal(helpers.SYSTEM_REQUESTS.some((request) => request.section === section), false)
     const request = helpers.CGROUP_SNAPSHOT_REQUESTS.find((candidate) => candidate.section === section)
-    assert.ok(request.fields.includes("cgroup_path"), section)
-    assert.ok(request.fields.includes("scope"), section)
+    assert.ok(request, section)
   }
-  assert.equal(helpers.SYSTEM_REQUESTS.some(({ section }) => section === "os_cgroup_context"), true)
+  assert.equal(helpers.SYSTEM_REQUESTS.some(({ section, fields }) => section === "instance_metadata" && fields.includes("environment")), true)
 
-  const context = {
-    logicalName: "os_cgroup_context", ordinal: "context", segmentId: "segment-a", timestamp: 10, typeId: "1205001",
-    values: { cpu_path: "/cpu/collector", memory_path: "/memory/collector", io_path: "/io/collector", scope: 3 },
-  }
-  const source = { sections: { os_cgroup_context: [context] } }
-  const plan = helpers.cgroupSnapshotPlan("segment-a", 12, source)
-  assert.equal(plan.key, '["segment-a",12,"/cpu/collector","/memory/collector","/io/collector","3"]')
-  assert.deepEqual(Object.fromEntries(plan.loads.map(({ filters, request }) => [request.section, filters])), {
-    os_cgroup_cpu: { cgroup_path: "/cpu/collector", scope: "3" },
-    os_cgroup_memory: { cgroup_path: "/memory/collector", scope: "3" },
-    os_cgroup_io: { cgroup_path: "/io/collector", scope: "3" },
+  const metadata = (environment) => ({
+    logicalName: "instance_metadata", ordinal: "metadata", segmentId: "segment-a", timestamp: 10, typeId: "1021002",
+    values: { environment },
   })
+  const machine = { sections: { instance_metadata: [metadata(0)] } }
+  assert.equal(helpers.recordedEnvironment(machine, 12), "machine")
+  assert.deepEqual(helpers.cgroupSnapshotPlan("segment-a", 12, machine).loads, [])
 
-  const wrongSegment = helpers.cgroupSnapshotPlan("segment-b", 12, source)
-  assert.deepEqual(wrongSegment.loads, [])
-  const unusableScope = helpers.cgroupSnapshotPlan("segment-a", 12, {
-    sections: { os_cgroup_context: [{ ...context, values: { ...context.values, scope: null } }] },
-  })
-  assert.deepEqual(unusableScope.loads, [])
+  const container = { sections: { instance_metadata: [metadata(1)] } }
+  assert.equal(helpers.recordedEnvironment(container, 12), "container")
+  const plan = helpers.cgroupSnapshotPlan("segment-a", 12, container)
+  assert.equal(plan.key, '["segment-a",12,"container"]')
+  assert.deepEqual(plan.loads.map(({ filters, request }) => [request.section, filters]), [
+    ["os_cgroup_cpu", {}],
+    ["os_cgroup_memory", {}],
+    ["os_cgroup_io", {}],
+    ["os_cgroup_pids", {}],
+    ["os_cgroup_context", {}],
+  ])
+  assert.equal(helpers.recordedEnvironment({ sections: {} }, 12), null)
 })
 
 test("changing a cgroup snapshot key removes every prior exact entity row", () => {
@@ -319,13 +321,15 @@ test("changing a cgroup snapshot key removes every prior exact entity row", () =
       os_cgroup_cpu: [{ logicalName: "os_cgroup_cpu", ordinal: "cpu", segmentId: "s", timestamp: 1, typeId: "1201001", values: {} }],
       os_cgroup_memory: [{ logicalName: "os_cgroup_memory", ordinal: "memory", segmentId: "s", timestamp: 1, typeId: "1202001", values: {} }],
       os_cgroup_io: [{ logicalName: "os_cgroup_io", ordinal: "io", segmentId: "s", timestamp: 1, typeId: "1203001", values: {} }],
+      os_cgroup_pids: [{ logicalName: "os_cgroup_pids", ordinal: "pids", segmentId: "s", timestamp: 1, typeId: "1204001", values: {} }],
     },
   })
   assert.equal(cleared.sections.os_cpu, preserved)
-  assert.equal(cleared.sections.os_cgroup_context.length, 1)
+  assert.equal(cleared.sections.os_cgroup_context, undefined)
   assert.equal(cleared.sections.os_cgroup_cpu, undefined)
   assert.equal(cleared.sections.os_cgroup_memory, undefined)
   assert.equal(cleared.sections.os_cgroup_io, undefined)
+  assert.equal(cleared.sections.os_cgroup_pids, undefined)
 })
 
 test("System never depends on process rows loaded by another view", async () => {
@@ -417,8 +421,8 @@ test("System history requests are selected-metric keys with exact physical input
   assert.equal(helpers.metricChartUnit({ ...spec, unit: " KiB" }, "en"), "B")
   assert.equal(helpers.metricChartValue(16_777_216, "en", " KiB"), "16 GiB")
   assert.equal(helpers.metricChartValue(256, "ru", " KiB"), "256 KiB")
-  assert.equal(helpers.metricChartUnit({ ...spec, unit: " B" }, "en"), "bytes/s")
-  assert.equal(helpers.metricChartUnit({ ...spec, unit: " B" }, "ru"), "байты/с")
+  assert.equal(helpers.metricChartUnit({ ...spec, unit: " B" }, "en"), "")
+  assert.equal(helpers.metricChartUnit({ ...spec, unit: " B" }, "ru"), "")
   assert.equal(helpers.metricChartUnit({ ...spec, id: "network_errors" }, "en"), "1/s")
   assert.equal(helpers.metricChartUnit({ ...spec, id: "network_drops" }, "ru"), "1/с")
 })

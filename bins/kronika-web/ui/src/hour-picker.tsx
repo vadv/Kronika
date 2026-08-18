@@ -98,7 +98,7 @@ export function HourPicker({
     }}
     ref={root}
   >
-    <button aria-label={t("hour.previous")} className="h-[34px] cursor-pointer border border-line3 bg-zebra text-fg2 disabled:cursor-not-allowed disabled:opacity-45 flex w-[22px] items-center justify-center p-0" data-testid="hour-previous" disabled={currentIndex <= 0} onClick={() => move(currentIndex - 1)} type="button">‹</button>
+    <button aria-label={t("hour.previous")} className="h-[34px] cursor-pointer border border-line3 bg-zebra text-lg text-fg2 disabled:cursor-not-allowed disabled:opacity-45 flex w-[22px] items-center justify-center p-0" data-testid="hour-previous" disabled={currentIndex <= 0} onClick={() => move(currentIndex - 1)} type="button">‹</button>
     <button
       aria-controls="hour-picker-popover"
       aria-expanded={open}
@@ -114,28 +114,28 @@ export function HourPicker({
       <strong className="whitespace-nowrap text-xs font-semibold leading-[1.2] text-fg">{label?.primary ?? "—"}</strong>
       {label !== null && <small className="text-xs uppercase leading-none text-fg4">{label.date}</small>}
     </button>
-    <button aria-label={t("hour.next")} className="h-[34px] cursor-pointer border border-line3 bg-zebra text-fg2 disabled:cursor-not-allowed disabled:opacity-45 flex w-[22px] items-center justify-center p-0" data-testid="hour-next" disabled={currentIndex < 0 || currentIndex >= selectable.length - 1} onClick={() => move(currentIndex + 1)} type="button">›</button>
+    <button aria-label={t("hour.next")} className="h-[34px] cursor-pointer border border-line3 bg-zebra text-lg text-fg2 disabled:cursor-not-allowed disabled:opacity-45 flex w-[22px] items-center justify-center p-0" data-testid="hour-next" disabled={currentIndex < 0 || currentIndex >= selectable.length - 1} onClick={() => move(currentIndex + 1)} type="button">›</button>
     {open && hour !== null && createPortal(<div aria-label={t("hour.picker")} className="fixed left-2.5 top-2.5 z-[1150] grid max-h-[calc(100vh_-_20px)] w-[min(560px,calc(100vw_-_20px))] grid-cols-2 overflow-auto border border-line4 bg-s1 p-[9px] shadow-[0_15px_38px_var(--color-shadow-a)] max-[760px]:w-[min(304px,calc(100vw_-_20px))] max-[760px]:grid-cols-1" data-testid="hour-popover" id="hour-picker-popover" ref={popoverNode} role="dialog" style={popover ?? undefined}>
       <header className="col-span-full flex min-h-[27px] items-center justify-between border-b border-line3 px-0.5 pb-[7px] max-[760px]:col-span-1">
         <strong className="text-sm font-[560] uppercase text-fg" data-testid="hour-current">{calendarDateLabel(time.dayKey(hour), locale)}</strong>
       </header>
       <div className="min-w-0 border-r border-line3 pb-0 pl-0 pr-[9px] pt-[7px] max-[760px]:border-b max-[760px]:border-r-0 max-[760px]:px-0 max-[760px]:py-[7px]" data-testid="day-picker">
         <div className="flex items-center justify-between">
-          <button aria-label={t("hour.month.previous")} className="cursor-pointer border-0 bg-transparent disabled:cursor-not-allowed disabled:opacity-30" disabled={monthIndex <= 0} onClick={() => setMonth(months[monthIndex - 1] ?? month)} type="button">‹</button>
-          <strong aria-live="polite" className="text-sm text-fg2" data-testid="picker-month">{calendarMonthLabel(month, locale)}</strong>
-          <button aria-label={t("hour.month.next")} className="cursor-pointer border-0 bg-transparent disabled:cursor-not-allowed disabled:opacity-30" disabled={monthIndex < 0 || monthIndex >= months.length - 1} onClick={() => setMonth(months[monthIndex + 1] ?? month)} type="button">›</button>
+          <button aria-label={t("hour.month.previous")} className="cursor-pointer border-0 bg-transparent text-lg disabled:cursor-not-allowed disabled:opacity-30" disabled={monthIndex <= 0} onClick={() => setMonth(months[monthIndex - 1] ?? month)} type="button">‹</button>
+          <strong aria-live="polite" className="text-md font-semibold text-fg2" data-testid="picker-month">{calendarMonthLabel(month, locale)}</strong>
+          <button aria-label={t("hour.month.next")} className="cursor-pointer border-0 bg-transparent text-lg disabled:cursor-not-allowed disabled:opacity-30" disabled={monthIndex < 0 || monthIndex >= months.length - 1} onClick={() => setMonth(months[monthIndex + 1] ?? month)} type="button">›</button>
         </div>
         <div aria-label={t("hour.picker")} className="grid grid-cols-7 gap-0.5" data-testid="day-grid" role="group">
           {calendarMonthDays(month).map((candidate) => {
             const hasData = availableDays.has(candidate)
-            return <button aria-label={calendarDateLabel(candidate, locale)} aria-pressed={candidate === day} className={`h-[27px] p-0 aria-pressed:border-accent2 aria-pressed:bg-s4 aria-pressed:text-accent3 ${hasData ? "cursor-pointer border border-line2 bg-s2 text-fg2" : "border-0 bg-transparent text-fg-null"}`} data-day={candidate} data-testid="day-cell" disabled={!hasData} key={candidate} onClick={() => setDay(candidate)} type="button">{candidate.slice(-2)}</button>
+            return <button aria-label={calendarDateLabel(candidate, locale)} aria-pressed={candidate === day} className={`h-[29px] p-0 font-sans text-md font-[560] tabular-nums aria-pressed:border-accent2 aria-pressed:bg-s4 aria-pressed:text-accent3 ${hasData ? "cursor-pointer border border-line2 bg-s2 text-fg2" : "border-0 bg-transparent text-fg-null"}`} data-day={candidate} data-testid="day-cell" disabled={!hasData} key={candidate} onClick={() => setDay(candidate)} type="button">{candidate.slice(-2)}</button>
           })}
         </div>
       </div>
       <div aria-label={t("hour.hours")} className="ml-[9px] mt-[7px] grid grid-cols-3 content-start gap-1 max-[760px]:ml-0 max-[760px]:mt-2" data-testid="hour-grid" role="group">
         {dayHours.map((candidate, index) => {
           const clock = time.hourLabel(candidate)
-          return <button aria-label={clock} aria-pressed={candidate === hour} className="h-[31px] cursor-pointer whitespace-nowrap border border-line2 bg-s2 px-0.5 text-xs text-fg3 hover:bg-s3 hover:text-fg aria-pressed:border-accent2 aria-pressed:bg-s4 aria-pressed:text-accent3 aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent-line)]" data-instant={candidate} data-testid="hour-cell" key={candidate} onClick={() => { changeHour(candidate); setOpen(false); trigger.current?.focus() }} onKeyDown={(event) => { const next = pickerFocusIndex(index, event.key, dayHours.length); if (next !== null) { event.preventDefault(); hourCells.current[next]?.focus() } }} ref={(node) => { hourCells.current[index] = node }} tabIndex={candidate === hour || hour !== null && time.dayKey(hour) !== day && index === 0 ? 0 : -1} type="button">{clock}</button>
+          return <button aria-label={clock} aria-pressed={candidate === hour} className="h-[33px] cursor-pointer whitespace-nowrap border border-line2 bg-s2 px-0.5 font-sans text-md font-[560] tabular-nums text-fg3 hover:bg-s3 hover:text-fg aria-pressed:border-accent2 aria-pressed:bg-s4 aria-pressed:text-accent3 aria-pressed:shadow-[inset_0_0_0_1px_var(--color-accent-line)]" data-instant={candidate} data-testid="hour-cell" key={candidate} onClick={() => { changeHour(candidate); setOpen(false); trigger.current?.focus() }} onKeyDown={(event) => { const next = pickerFocusIndex(index, event.key, dayHours.length); if (next !== null) { event.preventDefault(); hourCells.current[next]?.focus() } }} ref={(node) => { hourCells.current[index] = node }} tabIndex={candidate === hour || hour !== null && time.dayKey(hour) !== day && index === 0 ? 0 : -1} type="button">{clock}</button>
         })}
       </div>
     </div>, document.body)}

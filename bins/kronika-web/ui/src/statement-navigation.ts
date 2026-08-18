@@ -7,7 +7,6 @@ export interface ActivityStatementTarget {
   readonly dbId: string
   readonly origin: "activity"
   readonly queryId: string
-  readonly topLevel: true
 }
 
 export interface PlanStatementTarget {
@@ -44,15 +43,13 @@ export function statementTargetForActivity(row: DataRow): ActivityStatementTarge
   const queryId = rawText(value(row, "query_id"))
   const dbId = rawText(value(row, "datid"))
   if (queryId === null || queryId === "0" || dbId === null || dbId === "0") return null
-  return { dbId, origin: "activity", queryId, topLevel: true }
+  return { dbId, origin: "activity", queryId }
 }
 
 export function statementTargetFilters(target: StatementTarget): Readonly<Record<string, string>> {
   return {
     dbid: target.dbId,
     queryid: target.queryId,
-    ...(target.origin === "activity"
-      ? { toplevel: "true" }
-      : { userid: target.userId }),
+    ...(target.origin === "activity" ? {} : { userid: target.userId }),
   }
 }

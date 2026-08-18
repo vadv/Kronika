@@ -30,6 +30,7 @@ export interface EntityColumn {
   readonly filterValue?: (row: DataRow) => string | null
   readonly sortValue?: (row: DataRow) => string | number | boolean | null
   readonly rate?: boolean
+  readonly valueScale?: number | null
   readonly kind?: "id" | "number" | "estimated_rows" | "text" | "timestamp" | "bytes" | "kib" | "milliseconds" | "duration" | "microseconds" | "percent" | "cores" | "boolean"
   readonly width?: number
   readonly sticky?: boolean | string
@@ -45,6 +46,7 @@ export interface TableOrder {
 export function EntityTable({
   className,
   columns: fields,
+  contentSized = false,
   contextLabel,
   empty,
   finding,
@@ -70,6 +72,7 @@ export function EntityTable({
 }: {
   readonly className?: string | undefined
   readonly columns: readonly EntityColumn[]
+  readonly contentSized?: boolean | undefined
   readonly contextLabel?: string | undefined
   readonly empty: string
   readonly finding?: Finding | null | undefined
@@ -103,7 +106,7 @@ export function EntityTable({
     cell: ({ row }) => {
       const stored = value(row.original, field.field)
       if (stored === null && field.renderNull !== undefined) return field.renderNull(row.original)
-      return field.render === undefined ? <Cell at={row.original.relation ? row.original.timestamp : null} cell={stored} kind={field.kind} locale={locale} rate={field.rate} t={t} /> : field.render(row.original)
+      return field.render === undefined ? <Cell at={row.original.relation ? row.original.timestamp : null} cell={stored} field={field.field} kind={field.kind} locale={locale} rate={field.rate} t={t} valueScale={field.valueScale} /> : field.render(row.original)
     },
     header: () => t(field.label),
     id: field.field,
@@ -183,10 +186,11 @@ export function EntityTable({
     if (locatedIndex >= 0) virtual.scrollToIndex(locatedIndex, { align: "center" })
   }, [finding, locatedIndex, virtual])
   const width = table.getTotalSize()
+  const contentHeight = contentSized && rendered.length > 0 ? Math.min(310, 26 + rendered.length * 23) : undefined
   return <section className={`entity-table min-w-0 overflow-hidden bg-s1 pg-stretch [.charts-hidden_.entity-panels_&]:flex [.charts-hidden_.entity-panels_&]:flex-col${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
     {status !== undefined && <div className="flex min-h-[26px] flex-wrap items-center gap-x-[14px] gap-y-[3px] border-b border-line2 bg-[color-mix(in_srgb,var(--color-s2)_82%,transparent)] px-[7px] py-1 text-xs text-fg3 [&_strong]:font-[650] [&_strong]:text-fg2" data-testid="table-status">{status}</div>}
     {(onPattern !== undefined || contextLabel !== undefined) && <TableFilter context={contextLabel} kept={serverSorted === true ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} t={t} total={rows.length} />}
-    <div aria-label={label} className="entity-scroll relative h-[min(310px,36vh)] min-h-[154px] overflow-auto [scroll-padding-inline-end:15px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent [.process-table_&]:h-[min(570px,calc(100vh-370px))] [.process-table_&]:min-h-[300px] [.pg-entity-layout_&]:h-[min(560px,calc(100dvh-475px))] [.pg-entity-layout_&]:min-h-[100px] [.pg-table-shell_.pg-entity-layout_&]:h-auto [.pg-table-shell_.pg-entity-layout_&]:min-h-0 [.pg-table-shell_.pg-entity-layout_&]:flex-1 charts-hidden:h-auto charts-hidden:min-h-[154px] charts-hidden:flex-auto" ref={parent} role="table" tabIndex={0}>
+    <div aria-label={label} className={`entity-scroll relative h-[min(310px,36vh)] min-h-[154px] overflow-auto [scroll-padding-inline-end:15px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent [.process-table_&]:h-[min(570px,calc(100vh-370px))] [.process-table_&]:min-h-[300px] [.pg-entity-layout_&]:h-[min(560px,calc(100dvh-475px))] [.pg-entity-layout_&]:min-h-[100px] [.pg-table-shell_.pg-entity-layout_&]:h-auto [.pg-table-shell_.pg-entity-layout_&]:min-h-0 [.pg-table-shell_.pg-entity-layout_&]:flex-1${contentHeight === undefined ? " charts-hidden:h-auto charts-hidden:min-h-[154px] charts-hidden:flex-auto" : " !min-h-0"}`} ref={parent} role="table" style={contentHeight === undefined ? undefined : { height: contentHeight }} tabIndex={0}>
       <div className="entity-head sticky top-0 z-30 flex h-head min-w-full bg-s2 coarse:h-9 [&_[role=columnheader]]:select-none" ref={head} role="row" style={{ width }}>
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {
           const sorted = header.column.getIsSorted()
@@ -300,7 +304,7 @@ export function unit(base: string, rate: boolean | undefined, perSecond = "/s"):
   return rate === true ? `${base}${perSecond}` : base
 }
 
-function Cell({ at, cell, kind = "text", locale, rate, t }: { readonly at: number | null; readonly cell: Cell; readonly kind?: EntityColumn["kind"]; readonly locale: Locale; readonly rate?: boolean | undefined; readonly t: Translate }) {
+function Cell({ at, cell, field, kind = "text", locale, rate, t, valueScale }: { readonly at: number | null; readonly cell: Cell; readonly field: string; readonly kind?: EntityColumn["kind"]; readonly locale: Locale; readonly rate?: boolean | undefined; readonly t: Translate; readonly valueScale?: number | null | undefined }) {
   const time = useDisplayTime()
   if (cell === null) return <span className="text-fg-null">—</span>
   if (kind === "timestamp") {
@@ -310,26 +314,34 @@ function Cell({ at, cell, kind = "text", locale, rate, t }: { readonly at: numbe
     return <time className="entity-value block w-full overflow-hidden text-ellipsis whitespace-nowrap" title={exact}>{at === null ? exact : humanDuration((at - timestamp) / 1_000, locale)}</time>
   }
   if (kind === "estimated_rows") return <EstimatedRows cell={cell} locale={locale} t={t} />
-  const output = cellAriaValue(cell, { field: "", kind, ...(rate === undefined ? {} : { rate }) }, locale, t)
+  const output = cellAriaValue(cell, { field, kind, ...(rate === undefined ? {} : { rate }), ...(valueScale === undefined ? {} : { valueScale }) }, locale, t)
   const className = `entity-value block w-full overflow-hidden text-ellipsis whitespace-nowrap${kind === "id" ? " text-fg2" : kind === "text" ? " text-fg" : ""}`
   return <span className={className} title={kind === "bytes" || kind === "text" ? output : undefined}>{output}</span>
 }
 
-export function cellAriaValue(cell: Cell, field: Pick<EntityColumn, "field" | "kind" | "rate">, locale: Locale, t: Translate): string {
+export function cellAriaValue(cell: Cell, field: Pick<EntityColumn, "field" | "kind" | "rate" | "valueScale">, locale: Locale, t: Translate): string {
   const per = t("unit.per_second")
   if (cell === null) return "—"
+  const number = asNumber(cell)
+  const scaled = field.valueScale === null || field.valueScale !== undefined && number === null
+    ? null
+    : field.valueScale === undefined ? cell : number! * field.valueScale
   if (field.kind === "id") return identifier(cell)
-  if (field.kind === "bytes") return unit(humanBytes(cell, locale), field.rate, per)
+  if (field.kind === "bytes") return humanBytes(scaled, locale, field.field.endsWith("_per_call") || field.field === "blocks_per_call" ? t("unit.per_call") : field.rate === true ? per : "")
   if (field.kind === "kib") return unit(humanBytes(asNumber(cell) === null ? null : asNumber(cell)! * 1024, locale), field.rate, per)
-  if (field.kind === "milliseconds") return measure(cell, locale, unit(t("unit.ms"), field.rate, per))
-  if (field.kind === "duration") return humanDuration(cell, locale)
-  if (field.kind === "microseconds") return measure(cell, locale, unit(t("unit.us"), field.rate, per))
+  if (field.kind === "milliseconds" || field.kind === "duration") return humanDuration(cell, locale, "milliseconds", durationSuffix(field, t))
+  if (field.kind === "microseconds") return humanDuration(cell, locale, "microseconds", durationSuffix(field, t))
   if (field.kind === "percent") return humanPercent(cell, locale, field.rate === true ? per : "")
   if (field.kind === "cores") return humanCores(cell, locale, field.rate === true ? per : "")
   if (field.kind === "boolean") return cell === true ? locale === "ru" ? "да" : "true" : cell === false ? locale === "ru" ? "нет" : "false" : rawText(cell) ?? "—"
   if (field.kind === "estimated_rows") return estimatedRows(cell, locale, t)?.primary ?? "—"
   if (field.kind === "number") return measure(cell, locale, unit("", field.rate, per))
   return rawText(cell) ?? "—"
+}
+
+function durationSuffix(field: Pick<EntityColumn, "field" | "rate">, t: Translate): string {
+  if (field.field.endsWith("_per_call")) return t("unit.per_call")
+  return field.rate === true || field.field.endsWith("_per_second") ? t("unit.per_second") : ""
 }
 
 export function EstimatedRows({ cell, locale, t }: { readonly cell: Cell; readonly locale: Locale; readonly t: Translate }) {

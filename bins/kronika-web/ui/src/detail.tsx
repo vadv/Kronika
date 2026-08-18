@@ -236,7 +236,7 @@ export function processChartPoints(
 
 export function processChartUnit(kind: Field["kind"], t: Translate, ticksPerSecond: number | null): string {
   if (kind === "cores") return ticksPerSecond !== null && ticksPerSecond > 0 ? t("unit.cores").trim() : `ticks${t("unit.per_second")}`
-  if (kind === "ns") return t("unit.ms_per_second").trim()
+  if (kind === "ns") return ""
   if (kind === "kib") return "B"
   if (kind === "bytes") return `B${t("unit.per_second")}`
   if (kind === "rate") return `#${t("unit.per_second")}`
@@ -251,7 +251,7 @@ function formatProcessChartValue(
   ticksPerSecond: number | null,
 ): string {
   if (kind === "cores" && ticksPerSecond !== null && ticksPerSecond > 0) return humanCores(reading, locale, t("unit.cores"))
-  if (kind === "ns") return measure(reading, locale, t("unit.ms_per_second"))
+  if (kind === "ns") return humanDuration(reading, locale, "milliseconds", t("unit.per_second"))
   if (kind === "kib") return humanBytes(reading, locale)
   if (kind === "bytes") return humanBytes(reading, locale, t("unit.per_second"))
   return formatCell(kind, reading, locale, t, ticksPerSecond)

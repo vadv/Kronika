@@ -14,12 +14,13 @@ pub(super) fn collect_process_sections(
     scope: u8,
     ts: i64,
     due: &DueSet,
+    collect_cgroups: bool,
     os: &mut OsSources,
 ) -> Vec<String> {
     let hot_due = due.has(SourceKind::OsProcesses);
     let status_due = due.has(SourceKind::OsProcessStatus);
     let mapping_due = due.has(SourceKind::OsCgroupMapping);
-    let cgroup_due = due.has(SourceKind::OsCgroup);
+    let cgroup_due = collect_cgroups;
     if !hot_due && !status_due && !mapping_due && !cgroup_due {
         return Vec::new();
     }

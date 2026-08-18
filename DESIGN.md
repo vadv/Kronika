@@ -153,12 +153,23 @@ The collector decides at collection time whether it is on a VM or inside a
 container, and records the answer in the `instance_metadata` section that every
 segment carries. It does not guess, and web does not re-derive it.
 
-On each cgroup collection tick, `os_cgroup_context` records cgroup version, the
-collector's exact CPU, memory, and I/O paths from `/proc/self/cgroup`, and the
-effective cpuset CPU count when the exact matching kernel file is usable. It
-also records the tightest CPU quota/period ratio and memory limit that apply to
-that membership. The hierarchy starts at the configured cgroup root and ends at
-the exact membership path. Every cgroup v2 control file that exists on this path
+The recorded environment gates cgroup collection. On a machine, including a
+VM, the collector emits no `os_cgroup_context`, `os_cgroup_cpu`,
+`os_cgroup_memory`, `os_cgroup_io`, or `os_cgroup_pids` rows. The presence of a
+cgroup hierarchy is never used as a virtualization signal. Inside a container,
+each cgroup tick records context and controller rows only for cgroups that
+directly contain a live process visible in that namespace. It never walks
+inactive nodes or ancestor trees. The pass is limited to 512 controller/path
+candidates, 512 KiB of candidate paths, and 1,024 I/O cgroup/device rows per
+tick. An exceeded candidate bound omits the workload sections atomically; an
+exceeded I/O-row bound omits I/O only.
+
+Inside a container, `os_cgroup_context` records cgroup version, the collector's
+exact CPU, memory, and I/O paths from `/proc/self/cgroup`, and the effective
+cpuset CPU count when the exact matching kernel file is usable. It also records
+the tightest CPU quota/period ratio and memory limit that apply to that
+membership. The hierarchy starts at the configured cgroup root and ends at the
+exact membership path. Every cgroup v2 control file that exists on this path
 must be valid. For a non-root membership only, a missing control file at the
 mount root means that true root is unbounded; every descendant is required. A
 different root read error, or a missing root file for root membership, leaves
@@ -178,10 +189,12 @@ count or host `/proc` value never substitutes for cgroup capacity or use. Local
 cgroup rows continue to record the leaf controller files and do not relabel
 them as effective hierarchical limits.
 
-Web loads this bounded context row first, then requests CPU, memory, and I/O
-snapshots with exact server-side `cgroup_path` and `scope` filters. The three
-controller paths remain independent for cgroup v1. Unfiltered cgroup trees are
-never materialized in `HourData`.
+Web reads `instance_metadata.environment`. It hides Cgroups and requests no
+cgroup snapshots for a machine. In a container it exposes CPU, Memory, I/O and
+Tasks and loads the complete already-bounded direct-live rows recorded in that
+namespace; the context row decorates only the collector's matching controller
+row. The controller paths remain independent for cgroup v1. A recursive cgroup
+tree is never materialized in `HourData`.
 
 Where it runs decides which pressure rows describe it: host-scoped
 `/proc/pressure` for a machine, and pressure from its own cgroup for a
@@ -492,7 +505,7 @@ System presents host CPU from `/proc/stat` as user plus nice, system,
 interrupts, I/O wait, stolen, and idle shares. Used core equivalents exclude
 idle and I/O wait; available host capacity is the recorded online logical CPU
 count. CPU history plots these shares together with used and available core
-equivalents on labelled scales. A collector cgroup is a separate table: used,
+equivalents on labelled scales. In a container, cgroups are separate tables: used,
 user, and system core equivalents come from cgroup counter deltas, and capacity
 is the smaller of the validated effective quota and the exact effective cpuset
 when both are finite. A coherently unlimited quota leaves the cpuset as
@@ -513,15 +526,17 @@ Host memory uses non-overlapping anonymous, file-cache-plus-buffer,
 reclaimable-slab, unreclaimable-slab, free, and residual categories. The
 kernel's available-memory estimate is shown separately because it overlaps
 reclaimable memory. Memory history plots the non-overlapping categories, total,
-and the separate available estimate together with exact units. Collector-cgroup
-memory separately shows current use, the finite effective hierarchical limit,
-anonymous, file, slab, other kernel, and residual charged memory. Slab is
+and the separate available estimate together with exact units. Container cgroup
+memory separately shows current use, anonymous, file, slab, other kernel, and
+residual charged memory; the collector row also receives the finite effective
+hierarchical limit. Slab is
 subtracted from kernel memory before both are displayed. The leaf's local
 memory setting remains available as source data but is not shown as the
 effective limit.
 
-System tables contain devices, the collector cgroup, mounts, interfaces and CPU
-topology. Block devices are identified by `major:minor`. Average read and write
+System tables contain devices, mounts, interfaces and CPU topology, plus
+direct-live cgroups only in a recorded container environment. Block devices are
+identified by `major:minor`. Average read and write
 latency is `delta(operation_time_ms) / delta(completed_operations)` and is
 `null` without a usable predecessor or when the operation delta is zero. Host
 I/O PSI stays explicitly host-wide and is not presented as device latency;
@@ -543,11 +558,28 @@ health equal to OS health. A selected Linux process links to the nearest
 role, application, client, state, wait, query and times. Locale changes are
 immediate and persist locally.
 
+Every displayed duration uses one adaptive formatter across tables, details,
+current readings, axes, hover and statistics. It chooses ns, µs, ms, s, min or
+h from magnitude and preserves semantic denominators such as `/s` and `/call`;
+stored values, transport, sorting and calculations keep their exact base unit.
+PostgreSQL block and buffer counters are converted with the exact recorded
+`block_size` setting and displayed as adaptive bytes/s or bytes/call. Without
+that setting the converted reading is unavailable. Buffer hits remain buffer
+activity and are not relabelled as physical disk I/O.
+
+Shared charts reserve room at the end for the last time label, keep series
+names with the aligned statistics, and place percentile columns without
+colliding with the plot edge. Sparse tables are content-sized instead of
+reserving large framed boards. A boundary is draggable only when it controls a
+real split; otherwise the layout stays light. The exact current `pg_wal` file
+size is a subordinate value with optional history, not a primary overview
+chart.
+
 PostgreSQL related-row navigation is confined to the PostgreSQL feature area
 and stored in the URL. For PostgreSQL 14–18 an Activity row can open every
 retained `pg_stat_statements` row at the unchanged cursor whose `dbid` and
-nonzero signed `queryid` match the row's nullable `datid` and `query_id`, with
-`toplevel=true`; it deliberately does not filter by role. A plan row uses the
+nonzero signed `queryid` match the row's nullable `datid` and `query_id`; it
+deliberately does not filter by role or top-level status. A plan row uses the
 layout's available shared database, role and query identifiers, while vadv
 uses only its nonzero last-attributed `queryid_stat_statements`. These actions
 show related cumulative rows, select none automatically and make no claim

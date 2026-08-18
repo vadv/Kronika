@@ -222,6 +222,7 @@ export function relationDisplayFields(section: RelationSection, lensName: Relati
 }
 
 export function relationHelpKey(section: RelationSection, field: string): string | undefined {
+  if (/(?:^|_)blks_(?:read|hit)$/.test(field)) return "pg.help.relation.buffer_bytes"
   if (["seq_scan", "idx_scan"].includes(field)) return "pg.help.relation.scan_rate"
   if (field === "idx_tup_read") return "pg.help.relation.index_entries_rate"
   if (field === "idx_tup_fetch") return "pg.help.relation.rows_fetched_rate"

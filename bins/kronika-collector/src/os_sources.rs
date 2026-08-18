@@ -237,11 +237,12 @@ pub(crate) fn collect_os_sources(
     in_container: bool,
     due: &DueSet,
 ) -> OsSources {
+    let cgroup_due = in_container && due.has(SourceKind::OsCgroup);
     if !due.has(SourceKind::OsCore)
         && !due.has(SourceKind::OsMountTopo)
         && !due.has(SourceKind::OsProcesses)
         && !due.has(SourceKind::OsProcessStatus)
-        && !due.has(SourceKind::OsCgroup)
+        && !cgroup_due
         && !due.has(SourceKind::OsCgroupMapping)
     {
         return OsSources::empty();
@@ -288,17 +289,19 @@ pub(crate) fn collect_os_sources(
 
     let entity_scope = os_entity_scope(in_container);
     let process_memberships =
-        process::collect_process_sections(fs, interner, entity_scope, ts, due, &mut os);
-    cgroups::collect_cgroup_sections(
-        &sys,
-        interner,
-        entity_scope,
-        ts,
-        fs,
-        due,
-        &process_memberships,
-        &mut os,
-    );
+        process::collect_process_sections(fs, interner, entity_scope, ts, due, cgroup_due, &mut os);
+    if cgroup_due {
+        cgroups::collect_cgroup_sections(
+            &sys,
+            interner,
+            entity_scope,
+            ts,
+            fs,
+            due,
+            &process_memberships,
+            &mut os,
+        );
+    }
 
     os
 }
@@ -311,6 +314,11 @@ const fn os_entity_scope(in_container: bool) -> u8 {
     } else {
         OsScope::Host.as_u8()
     }
+}
+
+#[cfg(test)]
+pub(crate) fn collects_cgroup_metrics(in_container: bool, due: &DueSet) -> bool {
+    in_container && due.has(SourceKind::OsCgroup)
 }
 
 /// Intern one OS string, logging degradation and returning `None` on failure

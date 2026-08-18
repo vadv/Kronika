@@ -1722,10 +1722,14 @@ fn bounded_cgroup_hour_reports_collection_and_production_writer_costs() {
         .iter()
         .map(|path| std::fs::metadata(path).expect("stat cgroup segment").len())
         .sum::<u64>();
+    let marginal_zms_bytes = section_bytes.saturating_add(
+        u64::try_from(completed_paths.len().saturating_mul(4)).unwrap_or(u64::MAX)
+            * u64::try_from(ENTRY_LEN).unwrap_or(0),
+    );
     assert!(raw_wal_bytes < 64 * 1024 * 1024);
     assert!(zms_bytes < 16 * 1024 * 1024);
     println!(
-        "os_cgroup_cost candidates={} io_rows={} total_rows={} raw_wal_bytes={} cpu_raw_section_bytes={} memory_raw_section_bytes={} io_raw_section_bytes={} pids_raw_section_bytes={} zms_section_bytes={} marginal_zms_bytes={} zms_bytes={} collection_elapsed_us={} collection_cpu_ticks={} collection_peak_rss_kib={} writer_elapsed_us={} writer_cpu_ticks={} writer_peak_rss_kib={}",
+        "os_cgroup_cost environment=container candidates={} io_rows={} total_rows={} raw_wal_bytes={} cpu_raw_section_bytes={} memory_raw_section_bytes={} io_raw_section_bytes={} pids_raw_section_bytes={} zms_section_bytes={} marginal_zms_bytes={} zms_bytes={} machine_raw_wal_bytes=0 machine_marginal_zms_bytes=0 raw_wal_reduction_bytes={} marginal_zms_reduction_bytes={} collection_elapsed_us={} collection_cpu_ticks={} collection_peak_rss_kib={} writer_elapsed_us={} writer_cpu_ticks={} writer_peak_rss_kib={}",
         expected_candidates,
         expected_io,
         expected_candidates
@@ -1749,11 +1753,10 @@ fn bounded_cgroup_hour_reports_collection_and_production_writer_costs() {
             .copied()
             .unwrap_or_default(),
         section_bytes,
-        section_bytes.saturating_add(
-            u64::try_from(completed_paths.len().saturating_mul(4)).unwrap_or(u64::MAX)
-                * u64::try_from(ENTRY_LEN).unwrap_or(0),
-        ),
+        marginal_zms_bytes,
         zms_bytes,
+        raw_wal_bytes,
+        marginal_zms_bytes,
         collection_elapsed_us,
         collection_cpu_ticks,
         collection_rss_kib,

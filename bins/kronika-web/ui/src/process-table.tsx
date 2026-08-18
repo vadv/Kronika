@@ -9,9 +9,9 @@ import {
   cores,
   humanBytes,
   humanCores,
+  humanDuration,
   identifier,
   measure,
-  millisecondsPerSecond,
   processCommand,
   processDefaultSort,
   processKey,
@@ -175,7 +175,7 @@ export function processSummaryOutput(reading: number | null, metric: ProcessSumm
   if (metric.kind === "B") return humanBytes(reading, locale)
   if (metric.kind === "B/s") return humanBytes(reading, locale, t("unit.per_second"))
   if (metric.kind === "cores") return humanCores(reading, locale)
-  if (metric.kind === "ms/s") return measure(reading, locale, t("unit.ms_per_second"))
+  if (metric.kind === "ms/s") return humanDuration(reading, locale, "milliseconds", t("unit.per_second"))
   return measure(reading, locale, metric.kind === "1/s" ? t("unit.per_second") : "")
 }
 
@@ -186,7 +186,7 @@ export function processSummaryFormat(metric: ProcessSummaryMetric, t: Translate)
 export function processSummaryUnit(metric: ProcessSummaryMetric, locale: Locale, t: Translate): string {
   if (metric.kind === "B" || metric.kind === "B/s") return metric.kind
   if (metric.kind === "cores") return t("unit.cores").trim()
-  if (metric.kind === "ms/s") return t("unit.ms_per_second").trim()
+  if (metric.kind === "ms/s") return ""
   if (metric.kind === "1/s") return `1${t("unit.per_second")}`
   return locale === "ru" ? "количество" : "count"
 }
@@ -279,7 +279,7 @@ export function formatCell(kind: Field["kind"], cell: Cell, locale: Locale, t: T
     case "cores": return cores(cell, locale, ticksPerSecond, "")
     case "kib": return humanBytes(kib(asNumber(cell)), locale)
     case "bytes": return humanBytes(cell, locale, t("unit.per_second"))
-    case "ns": return millisecondsPerSecond(cell, locale) + t("unit.ms_per_second")
+    case "ns": return humanDuration(cell, locale, "nanoseconds", t("unit.per_second"))
     case "id": return identifier(cell)
     case "command": return ""
   }

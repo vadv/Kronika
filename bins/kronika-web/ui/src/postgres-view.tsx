@@ -39,7 +39,7 @@ export const ACTIVITY_COLUMNS: readonly EntityColumn[] = [
 ]
 
 export const ACTIVITY_DETAIL_COLUMNS: readonly EntityColumn[] = [
-  ...ACTIVITY_COLUMNS, ACTIVITY_BACKEND_TYPE, pgId("leader_pid", "pg.leader_pid", 105), pgId("datid", "pg.datid", 105), pgId("query_id", "pg.query_id", 150),
+  ...ACTIVITY_COLUMNS, ACTIVITY_BACKEND_TYPE, pgId("leader_pid", "pg.leader_pid", 105), pgId("query_id", "pg.query_id", 150),
   pgNumber("backend_xmin_age", "pg.backend_xmin_age", 145), pgNumber("backend_xid_age", "pg.backend_xid_age", 145),
   duration("backend_age_ms", 145), duration("state_duration_ms", 155),
 ]
@@ -75,11 +75,11 @@ const STATEMENT_DERIVED_COLUMNS: readonly EntityColumn[] = [
 ]
 
 export const STATEMENT_LENSES: Readonly<Record<StatementLens, readonly string[]>> = {
-  load: ["query", "datname", "usename", "queryid", "toplevel", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"],
-  per_call: ["query", "datname", "usename", "queryid", "toplevel", "mean_exec_ms_per_call", "rows_per_call", "blocks_per_call", "calls_per_second"],
-  io: ["query", "datname", "usename", "queryid", "toplevel", "shared_blks_read", "shared_blks_hit", "hit_pct", "blocks_per_call", "shared_blks_dirtied", "shared_blks_written", "local_blks_read", "temp_blks_read", "temp_blks_written"],
-  resources: ["query", "datname", "usename", "queryid", "toplevel", "wal_bytes", "wal_per_call", "temp_blks_written", "planning_ms_per_second", "plan_time_pct", "calls_per_second", "execution_ms_per_second"],
-  stability: ["query", "datname", "usename", "queryid", "toplevel", "cv", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "stddev_exec_time_ms", "calls_per_second"],
+  load: ["query", "datname", "usename", "queryid", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"],
+  per_call: ["query", "datname", "usename", "queryid", "mean_exec_ms_per_call", "rows_per_call", "blocks_per_call", "calls_per_second"],
+  io: ["query", "datname", "usename", "queryid", "shared_blks_read", "shared_blks_hit", "hit_pct", "blocks_per_call", "shared_blks_dirtied", "shared_blks_written", "local_blks_read", "temp_blks_read", "temp_blks_written"],
+  resources: ["query", "datname", "usename", "queryid", "wal_bytes", "wal_per_call", "temp_blks_written", "planning_ms_per_second", "plan_time_pct", "calls_per_second", "execution_ms_per_second"],
+  stability: ["query", "datname", "usename", "queryid", "cv", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "stddev_exec_time_ms", "calls_per_second"],
 }
 
 const PLAN_SUMMARY_COLUMN: EntityColumn = {
@@ -101,8 +101,8 @@ const PLAN_QUERY_ID: EntityColumn = {
 }
 const PLAN_LAST_QUERY_ID: EntityColumn = {
   ...id("queryid_stat_statements", 190),
-  available: (row) => row.typeId === "1004001" && Object.hasOwn(row.values, "queryid_stat_statements"),
-  render: (row) => row.typeId !== "1004001" ? "—" : rawText(value(row, "queryid_stat_statements")) ?? "—",
+  available: (row) => row.typeId === "1004001" && nonzeroId(value(row, "queryid_stat_statements")),
+  render: (row) => row.typeId !== "1004001" || !nonzeroId(value(row, "queryid_stat_statements")) ? "—" : rawText(value(row, "queryid_stat_statements")) ?? "—",
 }
 
 export const PLAN_COLUMNS: readonly EntityColumn[] = [
@@ -139,12 +139,12 @@ export const PLAN_LENSES: Readonly<Record<PlanLens, readonly string[]>> = {
 const STATEMENT_ALL_COLUMNS = [...STATEMENT_COLUMNS, ...STATEMENT_DERIVED_COLUMNS]
 const PLAN_ALL_COLUMNS = [...PLAN_COLUMNS, ...PLAN_DERIVED_COLUMNS]
 
-export function statementColumns(lens: StatementLens): readonly EntityColumn[] {
-  return columnsInOrder(STATEMENT_ALL_COLUMNS, STATEMENT_LENSES[lens])
+export function statementColumns(lens: StatementLens, blockSize: number | null = null): readonly EntityColumn[] {
+  return postgresByteColumns(columnsInOrder(STATEMENT_ALL_COLUMNS, STATEMENT_LENSES[lens]), blockSize)
 }
 
-export function planColumns(lens: PlanLens): readonly EntityColumn[] {
-  return columnsInOrder(PLAN_ALL_COLUMNS, PLAN_LENSES[lens])
+export function planColumns(lens: PlanLens, blockSize: number | null = null): readonly EntityColumn[] {
+  return postgresByteColumns(columnsInOrder(PLAN_ALL_COLUMNS, PLAN_LENSES[lens]), blockSize)
 }
 
 function columnsInOrder(columns: readonly EntityColumn[], fields: readonly string[]): readonly EntityColumn[] {
@@ -261,6 +261,7 @@ export function PostgresView({
   readonly t: Translate
 }) {
   const available = (name: string) => data.availableSections.includes(name)
+  const blockSize = postgresBlockSize(data.sections.pg_settings ?? [], cursor)
   useEffect(() => {
     const tab = TABS.find((candidate) => candidate.id === section)
     if (tab === undefined || tab.id === "plans" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)) return
@@ -275,18 +276,18 @@ export function PostgresView({
         return <button aria-current={section === tab.id ? "page" : undefined} className={tab.divide === true ? "ml-2 border-l border-line4" : undefined} disabled={!enabled} key={tab.id} onClick={() => { if (section !== tab.id) onOrder(null); onSection(tab.id) }} title={enabled ? undefined : t("pg.no_section_data")} type="button"><span>{t(`pg.section.${tab.id}`)}</span></button>
       })}
     </nav>
-    {section === "overview" && <Overview cursor={cursor} data={data} historyRevision={historyRevision} tablesLoading={tablesLoading} hour={hour} locale={locale} onCursor={onCursor} t={t} />}
+    {section === "overview" && <Overview blockSize={blockSize} cursor={cursor} data={data} historyRevision={historyRevision} tablesLoading={tablesLoading} hour={hour} locale={locale} onCursor={onCursor} t={t} />}
     {section === "activity" && available("pg_stat_activity") && <ActivityView context={context} tablesLoading={tablesLoading} onContextClear={onContextClear} onCursor={onCursor} onOpenStatements={onOpenStatements} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} order={order} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_activity" ? focusFinding : null} focus={focus} historyRevision={historyRevision} locale={locale} selectedKey={selectedKey} t={t} />}
-    {section === "activity" && available("pg_stat_progress_vacuum") && <PgPreview cursor={cursor} data={data} tablesLoading={tablesLoading} focus={focusFinding?.logicalName === "pg_stat_progress_vacuum" ? focus : null} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} section="pg_stat_progress_vacuum" t={t} />}
-    {section === "statements" && <><PostgresLensBar active={statementLens} choices={["load", "per_call", "io", "resources", "stability"]} onChange={onStatementLens} prefix="statement" t={t} /><PgEntityView columns={statementColumns(statementLens)} context={context} tablesLoading={tablesLoading} defaultOrder={{ column: statementDefaultOrder(statementLens), descending: true }} densePageState={densePageState} navigationEmpty={statementTarget === null ? undefined : t("pg.query.no_related")} navigationLabel={statementTarget === null ? undefined : statementNavigationLabel(statementTarget, t)} onNavigationClear={onStatementTargetClear} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField={statementLens === "stability" ? "cv" : "mean_exec_ms_per_call"} historyRevision={historyRevision} locale={locale} section="pg_stat_statements" selectedKey={selectedKey} t={t} /></>}
+    {section === "activity" && available("pg_stat_progress_vacuum") && <PgPreview blockSize={blockSize} cursor={cursor} data={data} tablesLoading={tablesLoading} focus={focusFinding?.logicalName === "pg_stat_progress_vacuum" ? focus : null} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} section="pg_stat_progress_vacuum" t={t} />}
+    {section === "statements" && <><PostgresLensBar active={statementLens} choices={["load", "per_call", "io", "resources", "stability"]} onChange={onStatementLens} prefix="statement" t={t} /><PgEntityView columns={statementColumns(statementLens, blockSize)} context={context} tablesLoading={tablesLoading} defaultOrder={{ column: statementDefaultOrder(statementLens), descending: true }} densePageState={densePageState} navigationEmpty={statementTarget === null ? undefined : t("pg.query.no_related")} navigationLabel={statementTarget === null ? undefined : statementNavigationLabel(statementTarget, t)} onNavigationClear={onStatementTargetClear} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_statements" ? focusFinding : null} focus={focus} historyField={statementLens === "stability" ? "cv" : "mean_exec_ms_per_call"} historyRevision={historyRevision} locale={locale} section="pg_stat_statements" selectedKey={selectedKey} t={t} /></>}
     {section === "plans" && available("pg_store_plans_info") && <PlanInfo cursor={cursor} data={data} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} t={t} />}
     {section === "plans" && <PostgresLensBar active={planLens} choices={["load", "timing", "io", "identity"]} onChange={onPlanLens} prefix="plan" t={t} />}
-    {section === "plans" && available("pg_store_plans") && <PgEntityView columns={planColumns(planLens)} context={context} tablesLoading={tablesLoading} defaultOrder={{ column: planDefaultOrder(planLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onOpenStatements={onOpenStatements} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_store_plans" ? focusFinding : null} focus={focus} historyField="mean_exec_ms_per_call" historyRevision={historyRevision} locale={locale} section="pg_store_plans" selectedKey={selectedKey} t={t} />}
+    {section === "plans" && available("pg_store_plans") && <PgEntityView columns={planColumns(planLens, blockSize)} context={context} tablesLoading={tablesLoading} defaultOrder={{ column: planDefaultOrder(planLens), descending: true }} densePageState={densePageState} onContextClear={onContextClear} onCursor={onCursor} onLoadMore={onLoadMore} onRetry={onRetry} onOpenStatements={onOpenStatements} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} pattern={pattern} order={order} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_store_plans" ? focusFinding : null} focus={focus} historyField="mean_exec_ms_per_call" historyRevision={historyRevision} locale={locale} section="pg_store_plans" selectedKey={selectedKey} t={t} />}
     {section === "plans" && !available("pg_store_plans") && <p className="m-0 border border-line2 p-[22px] text-sm text-fg3" data-testid="pg-plans-empty">{t("pg.plans.empty")}</p>}
     {section === "locks" && <PgEntityView columns={LOCK_COLUMNS} context={context} tablesLoading={tablesLoading} onContextClear={onContextClear} onCursor={onCursor} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} order={order} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_locks" ? focusFinding : null} focus={focus} historyField={null} historyRevision={historyRevision} locale={locale} section="pg_locks" selectedKey={selectedKey} t={t} />}
-    {section === "databases" && <PgEntityView columns={DATABASE_COLUMNS} context={context} tablesLoading={tablesLoading} onContextClear={onContextClear} onCursor={onCursor} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} order={order} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_database" ? focusFinding : null} focus={focus} historyField="xact_commit" historyRevision={historyRevision} locale={locale} section="pg_stat_database" selectedKey={selectedKey} t={t} />}
-    {section === "tables" && <PostgresRelationsView cursor={cursor} data={data} tablesLoading={tablesLoading} densePageState={densePageState} filters={relationFilters} historyRevision={historyRevision} hour={hour} lens={relationLens} level={relationLevel} locale={locale} onCursor={onCursor} onLens={onRelationLens} onLoadMore={onLoadMore} onNavigate={onRelationNavigate} onOrder={onOrder} onPattern={onPattern} onRetry={onRetry} onSelectedKey={onRelationSelectedKey} order={order} pattern={pattern} section="pg_stat_user_tables" selectedKey={relationSelectedKey} t={t} />}
-    {section === "indexes" && <PostgresRelationsView cursor={cursor} data={data} tablesLoading={tablesLoading} densePageState={densePageState} filters={relationFilters} historyRevision={historyRevision} hour={hour} lens={relationLens} level={relationLevel} locale={locale} onCursor={onCursor} onLens={onRelationLens} onLoadMore={onLoadMore} onNavigate={onRelationNavigate} onOrder={onOrder} onPattern={onPattern} onRetry={onRetry} onSelectedKey={onRelationSelectedKey} order={order} pattern={pattern} section="pg_stat_user_indexes" selectedKey={relationSelectedKey} t={t} />}
+    {section === "databases" && <PgEntityView columns={postgresByteColumns(DATABASE_COLUMNS, blockSize)} context={context} tablesLoading={tablesLoading} onContextClear={onContextClear} onCursor={onCursor} onOrder={onOrder} onPattern={onPattern} onSelectedKey={onSelectedKey} order={order} pattern={pattern} cursor={cursor} data={data} finding={focusFinding?.logicalName === "pg_stat_database" ? focusFinding : null} focus={focus} historyField="xact_commit" historyRevision={historyRevision} locale={locale} section="pg_stat_database" selectedKey={selectedKey} t={t} />}
+    {section === "tables" && <PostgresRelationsView blockSize={blockSize} cursor={cursor} data={data} tablesLoading={tablesLoading} densePageState={densePageState} filters={relationFilters} historyRevision={historyRevision} hour={hour} lens={relationLens} level={relationLevel} locale={locale} onCursor={onCursor} onLens={onRelationLens} onLoadMore={onLoadMore} onNavigate={onRelationNavigate} onOrder={onOrder} onPattern={onPattern} onRetry={onRetry} onSelectedKey={onRelationSelectedKey} order={order} pattern={pattern} section="pg_stat_user_tables" selectedKey={relationSelectedKey} t={t} />}
+    {section === "indexes" && <PostgresRelationsView blockSize={blockSize} cursor={cursor} data={data} tablesLoading={tablesLoading} densePageState={densePageState} filters={relationFilters} historyRevision={historyRevision} hour={hour} lens={relationLens} level={relationLevel} locale={locale} onCursor={onCursor} onLens={onRelationLens} onLoadMore={onLoadMore} onNavigate={onRelationNavigate} onOrder={onOrder} onPattern={onPattern} onRetry={onRetry} onSelectedKey={onRelationSelectedKey} order={order} pattern={pattern} section="pg_stat_user_indexes" selectedKey={relationSelectedKey} t={t} />}
   </>
 }
 
@@ -297,7 +298,7 @@ export interface ActivityVisibility {
 
 export function statementNavigationLabel(target: StatementTarget, t: Translate): string {
   if (target.origin === "activity") {
-    return t("pg.query.target_activity", { database: target.dbId, query: target.queryId })
+    return t("pg.query.target_activity", { query: target.queryId })
   }
   return t(target.relation === "last" ? "pg.query.target_last" : "pg.query.target_shared", {
     plan: target.planId,
@@ -386,15 +387,15 @@ function PostgresLensBar<L extends string>({ active, choices, onChange, prefix, 
   return <div className="lensbar flex-wrap"><span>{t("pg.lens.label")}</span><div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1 max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group" aria-label={t("pg.lens.label")}>{choices.map((choice) => <button aria-pressed={active === choice} data-testid={`${prefix}-lens-${choice}`} key={choice} onClick={() => onChange(choice)} type="button">{t(`pg.lens.${choice}`)}</button>)}</div><div className="ml-auto flex items-center gap-[5px] text-xs text-fg4 [&_i]:ml-2 [&_i]:inline-block [&_i]:h-1.5 [&_i]:w-1.5 [&_i]:rounded-full" aria-label={t("pg.value.legend")}><i className="bg-ok" />{t("pg.value.good")}<i className="bg-warn" />{t("pg.value.warning")}<i className="bg-bad" />{t("pg.value.critical")}</div></div>
 }
 
-function PgPreview({ columns: prescribedColumns, cursor, data, tablesLoading, focus, historyRevision, hour, locale, onCursor, overview = false, section, t }: { readonly columns?: readonly EntityColumn[] | undefined; readonly cursor: number; readonly data: HourData; readonly tablesLoading: boolean; readonly focus: DataRow | null; readonly historyRevision: number; readonly hour: number; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly overview?: boolean | undefined; readonly section: string; readonly t: Translate }) {
+function PgPreview({ blockSize, columns: prescribedColumns, cursor, data, tablesLoading, focus, historyRevision, hour, locale, onCursor, overview = false, section, t }: { readonly blockSize: number | null; readonly columns?: readonly EntityColumn[] | undefined; readonly cursor: number; readonly data: HourData; readonly tablesLoading: boolean; readonly focus: DataRow | null; readonly historyRevision: number; readonly hour: number; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly overview?: boolean | undefined; readonly section: string; readonly t: Translate }) {
   const allRows = data.sections[section] ?? NO_ROWS
   const rows = snapshot(allRows, cursor)
   const rates = data.rateColumns[section] ?? NO_RATES
-  const columns = useMemo(() => (prescribedColumns ?? (section === "pg_stat_progress_vacuum" ? progressVacuumColumns(rows, rates) : columnsFor(rows))).filter((column) => rows.some((row) => Object.hasOwn(row.values, column.field))).map((column) => ({
+  const columns = useMemo(() => postgresByteColumns((prescribedColumns ?? (section === "pg_stat_progress_vacuum" ? progressVacuumColumns(rows, rates) : columnsFor(rows))).filter((column) => rows.some((row) => Object.hasOwn(row.values, column.field))).map((column) => ({
     ...column,
     ...(overview && prescribedColumns === undefined ? { help: `${overviewFieldKey(column.field)}.help`, label: overviewFieldKey(column.field) } : {}),
     ...(rates.includes(column.field) ? { rate: true } : {}),
-  })), [overview, prescribedColumns, rates, rows, section])
+  })), blockSize), [blockSize, overview, prescribedColumns, rates, rows, section])
   const [selected, setSelected] = useState<DataRow | null>(null)
   useEffect(() => setSelected((current) => selectedEntity(rows, current, section)), [rows, section])
   const selectedKey = selected === null ? null : rowKey(selected)
@@ -427,7 +428,7 @@ function PlanInfo({ cursor, data, historyRevision, hour, locale, onCursor, t }: 
   </section>
 }
 
-function Overview({ cursor, data, historyRevision, hour, locale, onCursor, tablesLoading, t }: { readonly cursor: number; readonly data: HourData; readonly tablesLoading: boolean; readonly historyRevision: number; readonly hour: number; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly t: Translate }) {
+function Overview({ blockSize, cursor, data, historyRevision, hour, locale, onCursor, tablesLoading, t }: { readonly blockSize: number | null; readonly cursor: number; readonly data: HourData; readonly tablesLoading: boolean; readonly historyRevision: number; readonly hour: number; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly t: Translate }) {
   const activity = snapshot(data.sections.pg_stat_activity ?? [], cursor)
   const databases = snapshot(data.sections.pg_stat_database ?? [], cursor)
   const locks = snapshot(data.sections.pg_locks ?? [], cursor)
@@ -447,9 +448,9 @@ function Overview({ cursor, data, historyRevision, hour, locale, onCursor, table
       const rows = snapshot(allRows, cursor)
       if (rows.length === 0) return null
       if (OVERVIEW_SINGLETONS.has(logicalName)) return <OverviewMetrics cursor={cursor} historyRevision={historyRevision} hour={hour} key={logicalName} locale={locale} logicalName={logicalName} onCursor={onCursor} row={rows[0]!} t={t} />
-      return <PgPreview cursor={cursor} data={data} tablesLoading={tablesLoading} focus={null} historyRevision={historyRevision} hour={hour} key={logicalName} locale={locale} onCursor={onCursor} overview section={logicalName} t={t} />
+      return <PgPreview blockSize={blockSize} cursor={cursor} data={data} tablesLoading={tablesLoading} focus={null} historyRevision={historyRevision} hour={hour} key={logicalName} locale={locale} onCursor={onCursor} overview section={logicalName} t={t} />
     })}
-    {databases.length !== 0 && <PgPreview columns={DATABASE_COLUMNS.slice(0, 9)} cursor={cursor} data={data} tablesLoading={tablesLoading} focus={null} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} overview section="pg_stat_database" t={t} />}
+    {databases.length !== 0 && <PgPreview blockSize={blockSize} columns={DATABASE_COLUMNS.slice(0, 9)} cursor={cursor} data={data} tablesLoading={tablesLoading} focus={null} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} overview section="pg_stat_database" t={t} />}
   </section>
 }
 
@@ -473,15 +474,22 @@ export function walStoragePoints(rows: readonly DataRow[]): readonly ChartPoint[
 
 function WalStorage({ cursor, historyRevision, hour, locale, onCursor, row, t }: { readonly cursor: number; readonly historyRevision: number; readonly hour: number; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly row: DataRow; readonly t: Translate }) {
   const chartsVisible = useChartsVisible()
-  const target = chartsVisible ? JSON.stringify([hour, row.typeId, "wal_files_bytes"]) : null
+  const [expanded, setExpanded] = useState(false)
+  const target = chartsVisible && expanded ? JSON.stringify([hour, row.typeId, "wal_files_bytes"]) : null
   const loaded = useHistoryRequest(target, historyRevision, target === null ? null : async (signal) => walStoragePoints(
     await loadSeries(hour, "pg_wal_storage", {}, ["wal_files_bytes"], signal, row.typeId),
   ))
   const history = loaded.value?.length ? loaded.value : walStoragePoints([row])
-  return <ChartOnly><section className="pg-overview-section" data-testid="pg-wal-storage">
-    <h2><LabelHelp helpKey="pg.wal_storage.help" labelKey="pg.wal_storage.label" t={t} /></h2>
-    <SeriesChart cursor={cursor} format={humanBytes} helpKey="pg.wal_storage.help" hour={hour} labelKey="pg.wal_storage.history" locale={locale} onCursor={onCursor} points={history} scale="nonnegative" status={loaded.status} t={t} unit="B" />
-  </section></ChartOnly>
+  return <section className="mt-2 border-y border-line2 bg-s1 px-2 py-1.5" data-testid="pg-wal-storage">
+    <details onToggle={(event) => setExpanded(event.currentTarget.open)}>
+      <summary className="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 text-xs text-fg3 marker:hidden [&::-webkit-details-marker]:hidden">
+        <LabelHelp helpKey="pg.wal_storage.help" labelKey="pg.wal_storage.label" t={t} />
+        <strong className="font-medium tabular-nums text-fg2">{humanBytes(value(row, "wal_files_bytes"), locale)}</strong>
+        <span aria-hidden="true" className="text-accent3">{expanded ? "−" : "+"}</span>
+      </summary>
+      <ChartOnly><div className="mt-1 border-t border-line pt-1"><SeriesChart cursor={cursor} format={humanBytes} helpKey="pg.wal_storage.help" hour={hour} labelKey="pg.wal_storage.history" locale={locale} onCursor={onCursor} points={history} scale="nonnegative" status={loaded.status} t={t} unit="B" /></div></ChartOnly>
+    </details>
+  </section>
 }
 
 function OverviewMetrics({ cursor, historyRevision, hour, locale, logicalName, onCursor, row, t }: { readonly cursor: number; readonly historyRevision: number; readonly hour: number; readonly locale: Locale; readonly logicalName: string; readonly onCursor: (timestamp: number) => void; readonly row: DataRow; readonly t: Translate }) {
@@ -499,7 +507,7 @@ function OverviewMetrics({ cursor, historyRevision, hour, locale, logicalName, o
     <h2>{t(overviewSectionKey(logicalName))}</h2>
     <ChartOnly>{selectedColumn !== undefined && <section className="process-history pg-metric-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]">
       <div aria-label={t("system.history")} className="history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">{chartColumns.map((column) => <button aria-pressed={metricField === column.field} className="min-h-[28px] flex-none cursor-pointer border border-line3 bg-s2 px-[7px] py-1 text-xs text-fg2 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg" data-testid={`pg-overview-chart-${column.field}`} key={column.field} onClick={() => setMetricField(column.field)} type="button">{t(overviewFieldKey(column.field))}</button>)}</div>
-      <SeriesChart cursor={cursor} durationAxis={selectedColumn.kind === "duration"} format={chartFormat(selectedColumn.kind)} helpKey={selectedColumn.help ?? "chart.metric.help"} hour={hour} labelKey={overviewFieldKey(selectedColumn.field)} locale={locale} onCursor={onCursor} points={history.value?.get(selectedColumn.field) ?? []} scale={chartScale(selectedColumn)} status={history.status} t={t} unit={chartUnit(selectedColumn, t("unit.per_second"))} />
+      <SeriesChart cursor={cursor} durationAxis={durationKind(selectedColumn.kind)} format={chartFormat(selectedColumn.kind, columnDenominator(selectedColumn, t))} helpKey={selectedColumn.help ?? "chart.metric.help"} hour={hour} labelKey={overviewFieldKey(selectedColumn.field)} locale={locale} onCursor={onCursor} points={history.value?.get(selectedColumn.field) ?? []} scale={chartScale(selectedColumn)} status={history.status} t={t} tickFormat={chartFormat(selectedColumn.kind, columnDenominator(selectedColumn, t))} unit={chartUnit(selectedColumn, t("unit.per_second"))} />
     </section>}</ChartOnly>
     <dl>{registryCardFields(row).map(([field, cell]) => <div key={field}><dt><LabelHelp helpKey={`${overviewFieldKey(field)}.help`} labelKey={overviewFieldKey(field)} t={t} /></dt><dd>{overviewValue(cell, field, locale, time)}</dd></div>)}</dl>
   </section>
@@ -762,12 +770,12 @@ function PgDetail({ allRows, columns, cursor, historyField, historyRevision, hou
     : `${section}:${rowKey(row)}`
   const detail = useDetailDismiss(onClose, detailIdentity)
   return <aside className="pg-detail" data-testid="pg-detail" ref={detail}>
-    <header className="pg-detail-head"><div><span>{overview ? t(overviewSectionKey(section)) : section === "pg_stat_progress_vacuum" ? section : t(`pg.section.${sectionName(section)}`)}</span><h2>{detailTitle(row, section, t)}</h2></div><div className="flex items-center gap-1.5">{section === "pg_stat_activity" && <button className="min-h-7 cursor-pointer border border-line3 bg-s2 px-2 text-xs uppercase text-accent3 disabled:cursor-not-allowed disabled:text-fg4" disabled={activityTarget === null} onClick={() => { if (activityTarget !== null) onOpenStatements?.(activityTarget) }} title={activityTarget === null ? t("pg.activity.statements_unavailable") : undefined} type="button">{t("pg.activity.open_statements")}</button>}{section === "pg_store_plans" && <button className="min-h-7 cursor-pointer border border-line3 bg-s2 px-2 text-xs uppercase text-accent3 disabled:cursor-not-allowed disabled:text-fg4" disabled={planTarget === null} onClick={() => { if (planTarget !== null) onOpenStatements?.(planTarget) }} title={planTarget === null ? t("pg.plan.query_unavailable") : undefined} type="button">{t("pg.plan.open_query")}</button>}<button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></div></header>
+    <header className="pg-detail-head"><div><span>{overview ? t(overviewSectionKey(section)) : section === "pg_stat_progress_vacuum" ? section : t(`pg.section.${sectionName(section)}`)}</span><h2>{detailTitle(row, section, t)}</h2></div><div className="flex items-center gap-1.5">{section === "pg_stat_activity" && <button className="min-h-7 cursor-pointer border border-accent-line bg-accent-soft px-2 text-xs font-[600] text-accent3 disabled:cursor-not-allowed disabled:border-line3 disabled:bg-s2 disabled:text-fg4" data-testid="pg-activity-related-statements" disabled={activityTarget === null} onClick={() => { if (activityTarget !== null) onOpenStatements?.(activityTarget) }} title={activityTarget === null ? t("pg.activity.statements_unavailable") : undefined} type="button">{t("pg.activity.open_statements", { query: activityTarget?.queryId ?? "—" })}</button>}{section === "pg_store_plans" && <button className="min-h-7 cursor-pointer border border-line3 bg-s2 px-2 text-xs uppercase text-accent3 disabled:cursor-not-allowed disabled:text-fg4" disabled={planTarget === null} onClick={() => { if (planTarget !== null) onOpenStatements?.(planTarget) }} title={planTarget === null ? t("pg.plan.query_unavailable") : undefined} type="button">{t("pg.plan.open_query")}</button>}<button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></div></header>
     {section === "pg_stat_activity" && activityTarget === null && <p className="m-0 border-b border-line2 px-2 py-1.5 text-xs text-fg3" data-testid="pg-activity-statements-unavailable">{t("pg.activity.statements_unavailable")}</p>}
     {section === "pg_store_plans" && planTarget === null && <p className="m-0 border-b border-line2 px-2 py-1.5 text-xs text-fg3" data-testid="pg-plan-query-unavailable">{t("pg.plan.query_unavailable")}</p>}
     <ChartOnly>{activeMetricField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]">
       <div aria-label={t("system.history")} className="history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">{chartColumns.map((column) => <button aria-pressed={activeMetricField === column.field} className="min-h-[28px] flex-none cursor-pointer border border-line3 bg-s2 px-[7px] py-1 text-xs text-fg2 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg" data-testid={`pg-chart-${column.field}`} key={column.field} onClick={() => setMetricField(column.field)} type="button">{t(column.label)}</button>)}</div>
-      <SeriesChart cursor={cursor} durationAxis={historyColumn.kind === "duration"} helpKey={historyColumn.help ?? "chart.metric.help"} hour={hour} labelKey={historyColumn.label} locale={locale} format={chartFormat(historyColumn.kind)} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} status={exactHistory.status} t={t} unit={chartUnit(historyColumn, t("unit.per_second"))} />
+      <SeriesChart cursor={cursor} durationAxis={durationKind(historyColumn.kind)} helpKey={historyColumn.help ?? "chart.metric.help"} hour={hour} labelKey={historyColumn.label} locale={locale} format={chartFormat(historyColumn.kind, columnDenominator(historyColumn, t))} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} status={exactHistory.status} t={t} tickFormat={chartFormat(historyColumn.kind, columnDenominator(historyColumn, t))} unit={chartUnit(historyColumn, t("unit.per_second"))} />
     </section>}</ChartOnly>
     {section === "pg_store_plans"
       ? <PlanView raw={wholeText} t={t} />
@@ -884,7 +892,7 @@ export function denseMetricHistory(rows: readonly DataRow[], typeId: string, col
   }
   return ordered.flatMap((row, index) => {
     const stored = denseDerivedValue(ordered, index, typeId, column.field, dependencies)
-    return stored === undefined ? [] : [{ segmentId: row.segmentId, timestamp: row.timestamp, value: stored }]
+    return stored === undefined ? [] : [{ segmentId: row.segmentId, timestamp: row.timestamp, value: chartPointValue(stored, column) }]
   })
 }
 
@@ -979,6 +987,11 @@ function told(cell: ReturnType<typeof value>): boolean {
   return rawText(cell)?.trim() !== ""
 }
 
+function nonzeroId(cell: ReturnType<typeof value>): boolean {
+  const id = rawText(cell)
+  return id !== null && id !== "" && id !== "0"
+}
+
 export function sameEntity(left: DataRow, right: DataRow, section: string): boolean {
   if (section === "pg_stat_activity") {
     const pid = rawText(value(left, "pid"))
@@ -999,6 +1012,18 @@ export function selectedEntity(rows: readonly DataRow[], current: DataRow | null
 
 export function postgresDatabaseCount(rows: readonly DataRow[]): number {
   return rows.filter((row) => asNumber(value(row, "datid")) !== 0).length
+}
+
+export function postgresBlockSize(rows: readonly DataRow[], cursor: number): number | null {
+  const row = snapshot(rows, cursor).find((candidate) => rawText(value(candidate, "name")) === "block_size")
+  const size = row === undefined ? null : asNumber(value(row, "setting"))
+  return size !== null && Number.isSafeInteger(size) && size > 0 ? size : null
+}
+
+export function postgresByteColumns(columns: readonly EntityColumn[], blockSize: number | null): readonly EntityColumn[] {
+  return columns.map((column) => column.field === "blocks_per_call" || /(?:^|_)blks(?:_|$)/.test(column.field)
+    ? { ...column, kind: "bytes", valueScale: blockSize }
+    : column)
 }
 
 function identityFields(section: string, typeId?: string): readonly string[] {
@@ -1031,14 +1056,17 @@ export function display(cell: ReturnType<typeof value>, column: EntityColumn, lo
   }
   if (column.kind === "id") return rawText(cell) ?? "—"
   const per = t("unit.per_second")
+  const number = asNumber(cell)
+  const scaled = column.valueScale === null || column.valueScale !== undefined && number === null
+    ? null
+    : column.valueScale === undefined ? cell : number! * column.valueScale
   if (column.kind === "bytes") {
-    const output = unit(humanBytes(cell, locale), column.rate, per)
+    const output = humanBytes(scaled, locale, columnDenominator(column, t))
     return <span title={output}>{output}</span>
   }
   if (column.kind === "kib") return unit(humanBytes(asNumber(cell) === null ? null : (asNumber(cell) ?? 0) * 1024, locale), column.rate, per)
-  if (column.kind === "milliseconds") return measure(cell, locale, unit(t("unit.ms"), column.rate, per))
-  if (column.kind === "duration") return humanDuration(cell, locale)
-  if (column.kind === "microseconds") return measure(cell, locale, unit(t("unit.us"), column.rate, per))
+  if (column.kind === "milliseconds" || column.kind === "duration") return humanDuration(cell, locale, "milliseconds", columnDenominator(column, t))
+  if (column.kind === "microseconds") return humanDuration(cell, locale, "microseconds", columnDenominator(column, t))
   if (column.kind === "percent") return humanPercent(cell, locale, column.rate === true ? per : "")
   if (column.kind === "boolean" && typeof cell === "boolean") return locale === "ru" ? cell ? "да" : "нет" : String(cell)
   if (typeof cell === "number") return measure(cell, locale, unit("", column.rate, per))
@@ -1122,8 +1150,8 @@ export function overviewValue(cell: ReturnType<typeof value>, field: string, loc
     return timestamp === null ? "—" : time.timestamp(timestamp)
   }
   if (field === "pid" || field.endsWith("id") || field.endsWith("_id")) return rawText(cell) ?? "—"
-  if (field.endsWith("_time")) return measure(cell, locale, " ms")
-  if (field.endsWith("_us")) return measure(cell, locale, " μs")
+  if (field.endsWith("_time")) return humanDuration(cell, locale)
+  if (field.endsWith("_us")) return humanDuration(cell, locale, "microseconds")
   if (field.endsWith("_bytes")) return humanBytes(cell, locale)
   if (typeof cell === "boolean") return locale === "ru" ? cell ? "да" : "нет" : String(cell)
   if (typeof cell === "number") return measure(cell, locale)
@@ -1150,24 +1178,33 @@ export function chartScale(column: EntityColumn): "percent" | "nonnegative" {
 export function chartUnit(column: EntityColumn, perSecond = "/s"): string {
   const per = column.rate === true ? perSecond : ""
   if (column.kind === "percent") return `%${per}`
-  if (column.kind === "bytes" || column.kind === "kib") return `B${per}`
-  if (column.kind === "milliseconds" || column.kind === "duration" || column.kind === "microseconds") return `ms${per}`
+  if (column.kind === "bytes" || column.kind === "kib") return ""
+  if (durationKind(column.kind)) return per
   return column.rate === true ? perSecond : "count"
 }
 export function chartPointValue(cell: ReturnType<typeof value>, column: EntityColumn | undefined): number | null {
   const number = asNumber(cell)
   if (number === null) return null
-  if (column?.kind === "kib") return number * 1024
-  if (column?.kind === "microseconds") return number / 1_000
-  return number
+  if (column?.valueScale === null) return null
+  const scaled = column?.valueScale === undefined ? number : number * column.valueScale
+  if (column?.kind === "kib") return scaled * 1024
+  if (column?.kind === "microseconds") return scaled / 1_000
+  return scaled
 }
-export function chartFormat(kind: EntityColumn["kind"]): ((value: number, locale: Locale) => string) | undefined {
+export function chartFormat(kind: EntityColumn["kind"], suffix = ""): ((value: number, locale: Locale) => string) | undefined {
   if (kind === "percent") return humanPercent
-  if (kind === "bytes") return (value, locale) => humanBytes(value, locale)
-  if (kind === "kib") return (value, locale) => humanBytes(value, locale)
-  if (kind === "microseconds") return (value, locale) => measure(value, locale, " ms")
-  if (kind === "duration") return humanDuration
+  if (kind === "bytes" || kind === "kib") return (value, locale) => humanBytes(value, locale, suffix)
+  if (durationKind(kind)) return (value, locale) => humanDuration(value, locale, "milliseconds", suffix)
   return undefined
+}
+
+function durationKind(kind: EntityColumn["kind"]): boolean {
+  return kind === "milliseconds" || kind === "duration" || kind === "microseconds"
+}
+
+function columnDenominator(column: Pick<EntityColumn, "field" | "rate">, t: Translate): string {
+  if (column.field.endsWith("_per_call") || column.field === "blocks_per_call") return t("unit.per_call")
+  return column.rate === true || column.field.endsWith("_per_second") ? t("unit.per_second") : ""
 }
 function sectionName(section: string): PostgresSection {
   if (section === "pg_stat_activity") return "activity"

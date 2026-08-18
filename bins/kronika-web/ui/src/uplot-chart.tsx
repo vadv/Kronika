@@ -322,7 +322,7 @@ export function UPlotChart({
   return <figure
     aria-labelledby={expanded ? titleId : undefined}
     aria-modal={expanded ? "true" : undefined}
-    className={`uplot-figure launch-timeline relative m-0 flex min-w-0 max-w-full flex-col overflow-hidden h-[200px] [&.timeline-chart]:h-[128px] [&.timeline-chart]:min-h-[128px] [&.timeline-chart]:basis-[128px] [&.timeline-chart]:px-[7px] [&.timeline-chart]:pb-[3px] [&.timeline-chart]:pt-[4px] [&.uplot-expanded]:fixed [&.uplot-expanded]:inset-0 [&.uplot-expanded]:z-[120] [&.uplot-expanded]:w-dvw [&.uplot-expanded]:overflow-hidden [&.uplot-expanded]:m-0 [&.uplot-expanded]:h-dvh [&.uplot-expanded]:max-w-none [&.uplot-expanded]:bg-bg [&.uplot-expanded]:p-[max(12px,env(safe-area-inset-top,0px))_max(12px,env(safe-area-inset-right,0px))_max(12px,env(safe-area-inset-bottom,0px))_max(12px,env(safe-area-inset-left,0px))] [&.uplot-expanded]:[--chart-marker-end-reserve:52px] [&.timeline-chart.uplot-expanded]:h-dvh [&.timeline-chart.uplot-expanded]:min-h-0 [&.timeline-chart.uplot-expanded]:flex-none [&.timeline-chart]:max-[520px]:h-[128px] [&.timeline-chart]:max-[520px]:px-0.5 [&.uplot-expanded]:max-[520px]:p-[max(8px,env(safe-area-inset-top,0px))_max(4px,env(safe-area-inset-right,0px))_max(8px,env(safe-area-inset-bottom,0px))_max(4px,env(safe-area-inset-left,0px))] [.system-dock_&:not(.uplot-expanded)]:h-80 [.pg-table-shell_.pg-detail_&:not(.uplot-expanded)]:h-[200px] [.pg-table-shell_.pg-detail_&:not(.uplot-expanded)]:max-h-[200px] [.pg-table-shell_.pg-detail_&:not(.uplot-expanded)]:flex-none${className === undefined ? "" : ` ${className}`}${expanded ? " uplot-expanded" : ""}${isolatable ? " uplot-isolatable" : ""}`}
+    className={`uplot-figure launch-timeline relative m-0 flex min-w-0 max-w-full flex-col overflow-hidden ${stats ? "h-[244px]" : "h-[200px]"} [&.timeline-chart]:h-[128px] [&.timeline-chart]:min-h-[128px] [&.timeline-chart]:basis-[128px] [&.timeline-chart]:px-[7px] [&.timeline-chart]:pb-[3px] [&.timeline-chart]:pt-[4px] [&.uplot-expanded]:fixed [&.uplot-expanded]:inset-0 [&.uplot-expanded]:z-[120] [&.uplot-expanded]:w-dvw [&.uplot-expanded]:overflow-hidden [&.uplot-expanded]:m-0 [&.uplot-expanded]:h-dvh [&.uplot-expanded]:max-w-none [&.uplot-expanded]:bg-bg [&.uplot-expanded]:p-[max(12px,env(safe-area-inset-top,0px))_max(12px,env(safe-area-inset-right,0px))_max(12px,env(safe-area-inset-bottom,0px))_max(12px,env(safe-area-inset-left,0px))] [&.uplot-expanded]:[--chart-marker-end-reserve:52px] [&.timeline-chart.uplot-expanded]:h-dvh [&.timeline-chart.uplot-expanded]:min-h-0 [&.timeline-chart.uplot-expanded]:flex-none [&.timeline-chart]:max-[520px]:h-[128px] [&.timeline-chart]:max-[520px]:px-0.5 [&.uplot-expanded]:max-[520px]:p-[max(8px,env(safe-area-inset-top,0px))_max(4px,env(safe-area-inset-right,0px))_max(8px,env(safe-area-inset-bottom,0px))_max(4px,env(safe-area-inset-left,0px))] [.system-dock_&:not(.uplot-expanded)]:h-80 [.pg-table-shell_.pg-detail_&:not(.uplot-expanded)]:h-[200px] [.pg-table-shell_.pg-detail_&:not(.uplot-expanded)]:max-h-[200px] [.pg-table-shell_.pg-detail_&:not(.uplot-expanded)]:flex-none${className === undefined ? "" : ` ${className}`}${expanded ? " uplot-expanded" : ""}${isolatable ? " uplot-isolatable" : ""}`}
     data-testid={testId}
     ref={shell}
     role={expanded ? "dialog" : undefined}
@@ -354,12 +354,12 @@ export function UPlotChart({
     </figcaption>
     <p className="chart-summary absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]" id={summaryId}>{summary}</p>
     <div aria-describedby={summaryId} aria-label={drawnSeries.map(({ label, unit }) => `${label}${unit === "" ? "" : `, ${unit}`}`).join("; ")} className="uplot-host h-[180px] w-full min-w-0 max-w-full min-h-0 flex-auto overflow-hidden [&>.uplot]:h-full [&>.uplot]:!w-full [&_.u-wrap]:max-w-full [.timeline-chart_&]:h-auto [.timeline-chart_&]:min-h-[101px] max-[520px]:[.timeline-chart_&]:h-[101px] [.uplot-expanded_&]:h-auto [.uplot-expanded_&]:flex-auto [.timeline-chart.uplot-expanded_&]:min-h-0" ref={host} role="img" />
-    {stats && <div className="mt-1 h-12 flex-none overflow-auto border-t border-line2 pt-1 text-[11px] tabular-nums text-fg3 [scrollbar-width:thin]" data-testid="chart-stats">
-      {statsRows.length !== 0 && <div className="grid min-w-[390px] grid-cols-[minmax(90px,1.6fr)_repeat(6,minmax(54px,1fr))] gap-x-2 px-1 text-right max-[520px]:min-w-0 max-[520px]:grid-cols-[minmax(90px,1.6fr)_repeat(3,minmax(54px,1fr))] [&>*:first-child]:text-left">
-        <span>{t("chart.stats.series")}</span><span>{t("chart.stats.last")}</span><span>{t("chart.stats.min")}</span><span>{t("chart.stats.max")}</span><span className="max-[520px]:hidden">{t("chart.stats.p50")}</span><span className="max-[520px]:hidden">{t("chart.stats.p90")}</span><span className="max-[520px]:hidden">{t("chart.stats.p99")}</span>
+    {stats && <div className="mt-1 min-h-[46px] flex-none overflow-hidden border-t border-line2 pt-1 text-sm tabular-nums text-fg3" data-testid="chart-stats">
+      {statsRows.length !== 0 && <div className="grid min-w-0 grid-cols-[minmax(90px,1.6fr)_repeat(6,minmax(48px,1fr))] gap-x-2 px-1 text-right max-[760px]:grid-cols-[minmax(82px,1.35fr)_repeat(3,minmax(48px,1fr))] max-[760px]:gap-x-1 [&>*:first-child]:text-left">
+        <span aria-hidden="true" /><span>{t("chart.stats.last")}</span><span className="max-[760px]:hidden">{t("chart.stats.min")}</span><span>{t("chart.stats.max")}</span><span className="max-[760px]:hidden">{t("chart.stats.p50")}</span><span className="max-[760px]:hidden">{t("chart.stats.p90")}</span><span>{t("chart.stats.p99")}</span>
         {statsRows.map(({ line, stats: measured }) => <div className="contents" key={line.id}>
           <strong className="overflow-hidden text-ellipsis whitespace-nowrap text-left font-medium text-fg2"><span aria-hidden="true" className="mr-1 inline-block h-1.5 w-1.5" style={{ backgroundColor: `var(${chartColor(line.color)})` }} />{line.label}</strong>
-          <span className="text-fg2">{line.value(measured.last, locale)}</span><span>{line.value(measured.min, locale)}</span><span>{line.value(measured.max, locale)}</span><span className="max-[520px]:hidden">{line.value(measured.p50, locale)}</span><span className="max-[520px]:hidden">{line.value(measured.p90, locale)}</span><span className="max-[520px]:hidden">{line.value(measured.p99, locale)}</span>
+          <span className="overflow-hidden text-ellipsis whitespace-nowrap text-fg2">{line.value(measured.last, locale)}</span><span className="max-[760px]:hidden">{line.value(measured.min, locale)}</span><span className="overflow-hidden text-ellipsis whitespace-nowrap">{line.value(measured.max, locale)}</span><span className="max-[760px]:hidden">{line.value(measured.p50, locale)}</span><span className="max-[760px]:hidden">{line.value(measured.p90, locale)}</span><span className="overflow-hidden text-ellipsis whitespace-nowrap">{line.value(measured.p99, locale)}</span>
         </div>)}
       </div>}
     </div>}
@@ -452,6 +452,11 @@ export function scaleRange(scale: ChartScale, values: readonly number[]): readon
     return low < 0 ? [-niceCeiling(-low), 0] : [0, niceCeiling(high)]
   }
   return [low < 0 ? -niceCeiling(-low) : 0, high > 0 ? niceCeiling(high) : 0]
+}
+
+export function chartTimeRange(hour: number, end: number, width: number, gutter = 46): [number, number] {
+  const drawable = Math.max(1, width - gutter)
+  return [hour, end + (end - hour) * gutter / drawable]
 }
 
 export function nearestRecordedTimestamp(timestamps: readonly number[], target: number): number | null {
@@ -579,17 +584,17 @@ function chartOptions(
     ms: 1,
     pxAlign: true,
     legend: { show: false },
-    scales: { x: { auto: false, range: [hour, end], time: false }, ...scales },
+    scales: { x: { auto: false, range: chartTimeRange(hour, end, width), time: false }, ...scales },
     axes: [
-      { scale: "x", side: 2, size: 28, space: (_chart, _axis, _scale, _increment, space) => Math.max(84, space), stroke: color("--color-fg3"), grid: { stroke: color("--color-line") }, values: (_chart, splits) => splits.map((timestamp) => axisTimeLabel(timestamp, time)) },
+      { scale: "x", side: 2, size: 30, font: "12px system-ui, sans-serif", space: (_chart, _axis, _scale, _increment, space) => Math.max(84, space), stroke: color("--color-fg3"), grid: { stroke: color("--color-line") }, values: (_chart, splits) => splits.map((timestamp) => timestamp > end ? "" : axisTimeLabel(timestamp, time)) },
       ...partitions.map(({ key, unit }, axisIndex) => {
         const grouped = series.filter((line) => scaleKey(line) === key)
         const line = grouped[0]!
-        return { ...(unit === "" || line.tickAxis === "duration" ? {} : { label: unit }), scale: key, side: axisIndex % 2 === 0 ? 3 : 1, size: 62, stroke: color("--color-fg3"), grid: { stroke: axisIndex === 0 ? color("--color-line") : "transparent" }, values: (_chart: uPlot, splits: number[]) => {
+        return { ...(unit === "" || line.tickAxis === "duration" ? {} : { label: unit }), font: "12px system-ui, sans-serif", scale: key, side: axisIndex % 2 === 0 ? 3 : 1, size: 70, stroke: color("--color-fg3"), grid: { stroke: axisIndex === 0 ? color("--color-line") : "transparent" }, values: (_chart: uPlot, splits: number[]) => {
           // Duration axes read in one unit chosen from the range top.
           if (line.tickAxis === "duration") {
             const peak = Math.max(0, ...splits)
-            return splits.map((value) => humanDurationAxis(value, peak, locale))
+            return splits.map((value) => `${humanDurationAxis(value, peak, locale)}${unit}`)
           }
           return splits.map((value) => (line.tick ?? line.value)(value, locale))
         } }

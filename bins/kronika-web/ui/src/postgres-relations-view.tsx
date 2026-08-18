@@ -35,9 +35,10 @@ import {
 } from "./postgres-relations"
 import { emptyHourStatusKey } from "./refresh"
 import { SeriesChart } from "./series-chart"
-import { chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, display, tableState } from "./postgres-view"
+import { chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, display, postgresByteColumns, tableState } from "./postgres-view"
 
 export interface PostgresRelationsViewProps {
+  readonly blockSize: number | null
   readonly cursor: number
   readonly data: HourData
   readonly densePageState: "idle" | "loading" | "error"
@@ -65,11 +66,11 @@ export interface PostgresRelationsViewProps {
 
 export function PostgresRelationsView(props: PostgresRelationsViewProps) {
   const time = useDisplayTime()
-  const { cursor, data, densePageState, tablesLoading, filters, historyRevision, hour, level, locale, onCursor, onLens, onLoadMore, onNavigate, onOrder, onPattern, onRetry, order, pattern, section, t } = props
+  const { blockSize, cursor, data, densePageState, tablesLoading, filters, historyRevision, hour, level, locale, onCursor, onLens, onLoadMore, onNavigate, onOrder, onPattern, onRetry, order, pattern, section, t } = props
   const lens = isRelationLens(section, props.lens) ? props.lens : section === "pg_stat_user_tables" ? "access" : "usage"
   const rows = useMemo(() => relationDataRows(data.sections[section] ?? [], section, level), [data.sections, level, section])
   const rateFields = data.rateColumns[section] ?? []
-  const columns = useMemo(() => relationColumns(section, lens, level, rateFields, t), [lens, level, rateFields, section, t])
+  const columns = useMemo(() => postgresByteColumns(relationColumns(section, lens, level, rateFields, t), blockSize), [blockSize, lens, level, rateFields, section, t])
   const activeOrder = order !== undefined && columns.some(({ field, sortable }) => field === order.column && sortable === true)
     ? order
     : { column: relationDefaultOrder(section, lens), descending: true }
@@ -113,7 +114,7 @@ export function PostgresRelationsView(props: PostgresRelationsViewProps) {
         t={t}
         testId={section === "pg_stat_user_tables" ? "pg-tables-table" : "pg-indexes-table"}
       />
-      {selected !== null && <RelationDetail cursor={cursor} historyRevision={historyRevision} hour={hour} key={selectedKey} lens={lens} locale={locale} onClose={clearSelection} onCursor={onCursor} onNavigate={navigate} rateFields={rateFields} row={selected} t={t} />}
+      {selected !== null && <RelationDetail blockSize={blockSize} cursor={cursor} historyRevision={historyRevision} hour={hour} key={selectedKey} lens={lens} locale={locale} onClose={clearSelection} onCursor={onCursor} onNavigate={navigate} rateFields={rateFields} row={selected} t={t} />}
     </div>
     {(densePageState !== "idle" || hasMore) && <div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1 max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" data-testid="table-paging"><button disabled={densePageState === "loading"} onClick={densePageState === "error" ? onRetry : onLoadMore} type="button">{densePageState === "loading" ? "…" : densePageState === "error" ? "↻" : "+"}</button></div>}
   </>
@@ -150,7 +151,7 @@ function RelationLenses({ active, onLens, section, t }: { readonly active: Relat
   return <div className="lensbar flex-wrap" data-testid="pg-relation-lenses"><span>{t("pg.lens.label")}</span><div aria-label={t("pg.lens.label")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1 max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">{lenses.map((lens) => <button aria-pressed={lens === active} key={lens} onClick={() => onLens(lens)} type="button">{t(`pg.lens.${lens}`)}</button>)}</div></div>
 }
 
-function RelationDetail({ cursor, historyRevision, hour, lens, locale, onClose, onCursor, onNavigate, rateFields, row, t }: { readonly cursor: number; readonly historyRevision: number; readonly hour: number; readonly lens: RelationLens; readonly locale: Locale; readonly onClose: () => void; readonly onCursor: (timestamp: number) => void; readonly onNavigate: (navigation: RelationNavigation) => void; readonly rateFields: readonly string[]; readonly row: DataRow; readonly t: Translate }) {
+function RelationDetail({ blockSize, cursor, historyRevision, hour, lens, locale, onClose, onCursor, onNavigate, rateFields, row, t }: { readonly blockSize: number | null; readonly cursor: number; readonly historyRevision: number; readonly hour: number; readonly lens: RelationLens; readonly locale: Locale; readonly onClose: () => void; readonly onCursor: (timestamp: number) => void; readonly onNavigate: (navigation: RelationNavigation) => void; readonly rateFields: readonly string[]; readonly row: DataRow; readonly t: Translate }) {
   const chartsVisible = useChartsVisible()
   const detail = useDetailDismiss(onClose, relationRowKey(row))
   const group = row.relation?.group ?? "object"
@@ -158,7 +159,7 @@ function RelationDetail({ cursor, historyRevision, hour, lens, locale, onClose, 
   const definitionTarget = useMemo(() => object && row.logicalName === "pg_stat_user_indexes" ? relationDetailTarget(row) : null, [object, row])
   const [exact, setExact] = useState<DataRow | null>()
   const initialHistoryField = relationHistoryField(row.logicalName as RelationSection, lens)
-  const allColumns = useMemo(() => relationDetailColumns(row.logicalName as RelationSection, lens, group, rateFields), [group, lens, rateFields, row.logicalName])
+  const allColumns = useMemo(() => postgresByteColumns(relationDetailColumns(row.logicalName as RelationSection, lens, group, rateFields), blockSize), [blockSize, group, lens, rateFields, row.logicalName])
   const columns = useMemo(() => allColumns.filter((column) => value(row, column.field) !== null || value(row, `${column.field}_never`) === true), [allColumns, row])
   const physicalFields = useMemo(() => registry.find(({ typeId }) => typeId === row.typeId)?.columns ?? [], [row.typeId])
   const chartColumns = useMemo(() => allColumns.filter((column) => relationChartableColumn(row.logicalName as RelationSection, column, physicalFields, group)), [allColumns, group, physicalFields, row.logicalName])
@@ -203,7 +204,7 @@ function RelationDetail({ cursor, historyRevision, hour, lens, locale, onClose, 
     {drill !== null && <div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1 max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1"><button data-testid="pg-relation-drill" onClick={() => onNavigate(drill)} type="button">{t(row.relation?.group === "database" ? "pg.relation.level.schema" : row.logicalName === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}</button></div>}
     <ChartOnly>{historyField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]">
       <div aria-label={t("system.history")} className="history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">{chartColumns.map((column) => <button aria-pressed={historyField === column.field} className="min-h-[28px] flex-none cursor-pointer border border-line3 bg-s2 px-[7px] py-1 text-xs text-fg2 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg" data-testid={`pg-relation-chart-${column.field}`} key={column.field} onClick={() => setHistoryField(column.field)} type="button">{t(column.label)}</button>)}</div>
-      <SeriesChart cursor={cursor} format={chartFormat(historyColumn.kind)} helpKey={historyColumn.help ?? "chart.metric.help"} hour={hour} labelKey={historyColumn.label} locale={locale} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} status={loadedHistory.status} t={t} unit={chartUnit(historyColumn, t("unit.per_second"))} />
+      <SeriesChart cursor={cursor} durationAxis={historyColumn.kind === "milliseconds" || historyColumn.kind === "duration" || historyColumn.kind === "microseconds"} format={chartFormat(historyColumn.kind, historyColumn.rate === true ? t("unit.per_second") : "")} helpKey={historyColumn.help ?? "chart.metric.help"} hour={hour} labelKey={historyColumn.label} locale={locale} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} status={loadedHistory.status} t={t} tickFormat={chartFormat(historyColumn.kind, historyColumn.rate === true ? t("unit.per_second") : "")} unit={chartUnit(historyColumn, t("unit.per_second"))} />
     </section>}</ChartOnly>
     <dl>{columns.map((column) => {
       const label = t(column.label)

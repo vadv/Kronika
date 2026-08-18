@@ -17,6 +17,7 @@ import {
   viewData,
   resolveLocator,
   PRODUCT_SECTION_GROUPS,
+  POSTGRESQL_CONTEXT_REQUESTS,
   POSTGRESQL_OVERVIEW_REQUESTS,
   type DataRow,
   type SectionRequest,
@@ -73,6 +74,7 @@ import {
   SystemView,
   cgroupSnapshotPlan,
   clearCgroupSnapshotRows,
+  recordedEnvironment,
 } from "./system-view"
 import { Timeline } from "./timeline"
 import { TimezoneSelect } from "./timezone-select"
@@ -94,10 +96,10 @@ const EMPTY_CURRENT_SNAPSHOT: CurrentSnapshot = { data: EMPTY_DATA, target: null
 const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
   host: [...TIMELINE_REQUESTS, ...SYSTEM_REQUESTS],
   processes: [...TIMELINE_REQUESTS, { section: "os_process" }, { section: "pg_stat_activity" }, { section: "instance_metadata" }],
-  "postgresql:overview": [...TIMELINE_REQUESTS, ...POSTGRESQL_OVERVIEW_REQUESTS],
-  "postgresql:activity": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlActivity.map(section)],
-  "postgresql:locks": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlLocks.map(section)],
-  "postgresql:databases": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlDatabases.map(section)],
+  "postgresql:overview": [...TIMELINE_REQUESTS, ...POSTGRESQL_OVERVIEW_REQUESTS, ...POSTGRESQL_CONTEXT_REQUESTS],
+  "postgresql:activity": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlActivity.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
+  "postgresql:locks": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlLocks.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
+  "postgresql:databases": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlDatabases.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
   events: TIMELINE_REQUESTS,
 }
 
@@ -235,14 +237,15 @@ function App({ locale, onLocale, t }: {
     ? `${baseViewKey}:${statementLens}`
     : pgSection === "plans" && visibleSource === "postgresql" ? `${baseViewKey}:${planLens}` : baseViewKey
   const viewRequests = useMemo(() => {
-    if (visibleSource === "postgresql" && pgSection === "statements") return [...TIMELINE_REQUESTS, statementRequest(statementLens)]
+    if (visibleSource === "postgresql" && pgSection === "statements") return [...TIMELINE_REQUESTS, statementRequest(statementLens), ...POSTGRESQL_CONTEXT_REQUESTS]
     if (visibleSource === "postgresql" && pgSection === "plans") return [
       ...TIMELINE_REQUESTS,
       planRequest(planLens),
       PLAN_INFO_REQUEST,
+      ...POSTGRESQL_CONTEXT_REQUESTS,
     ]
     if (activeRelation && visibleSource === "postgresql") {
-      return [...TIMELINE_REQUESTS, relationRequest(relationSectionOf(pgSection), activeRelationLens, relationLevel)]
+      return [...TIMELINE_REQUESTS, relationRequest(relationSectionOf(pgSection), activeRelationLens, relationLevel), ...POSTGRESQL_CONTEXT_REQUESTS]
     }
     return VIEW_REQUESTS[baseViewKey] ?? []
   }, [activeRelation, activeRelationLens, baseViewKey, pgSection, planLens, relationLevel, statementLens, visibleSource])
@@ -266,7 +269,7 @@ function App({ locale, onLocale, t }: {
   const denseOptions = denseRequest === undefined
     ? undefined
     : initialPageOptions(denseRequest, pageContext, densePattern, relationFilters, activeStatementTarget)
-  const cgroupTargetGroups = ordinaryGroups.some((group) => group.requests.some(({ section }) => section === "os_cgroup_context"))
+  const cgroupTargetGroups = visibleSource === "host" && hostSection === "cgroups"
     ? snapshotRequestGroups(segments, cursor, CGROUP_SNAPSHOT_REQUESTS)
     : []
   const snapshotTarget = snapshotGroups.length === 0
@@ -274,6 +277,10 @@ function App({ locale, onLocale, t }: {
     : snapshotTargetKey(snapshotGroups, cursor, cgroupTargetGroups, order, denseOptions)
   const currentData = currentSnapshot.target === snapshotTarget ? currentSnapshot.data : EMPTY_DATA
   const data = useMemo(() => viewData(timelineData, currentData), [currentData, timelineData])
+  const environment = useMemo(() => recordedEnvironment(data, cursor), [cursor, data])
+  const hostSections = environment === "container"
+    ? HOST_SECTIONS
+    : HOST_SECTIONS.filter((section) => section !== "cgroups")
   const drawn = useRef<number | null>(null)
   const selectedHour = useRef(hour)
   selectedHour.current = hour
@@ -431,12 +438,10 @@ function App({ locale, onLocale, t }: {
     const stale = () => controller.signal.aborted || generation !== snapshotGeneration.current
     const loadOrdinarySnapshot = async (ordinary: readonly SnapshotRequestGroup[]): Promise<HourData> => {
       const primary = await loadSnapshotGroups(ordinary, cursor, controller.signal, order ?? undefined)
-      if (stale() || !ordinary.some((group) => group.requests.some(({ section }) => section === "os_cgroup_context"))) return primary
-      const contextSegmentId = primary.sections.os_cgroup_context?.[0]?.segmentId
-      if (contextSegmentId === undefined) return primary
+      if (stale() || cgroupTargetGroups.length === 0) return primary
       const plans = cgroupTargetGroups.map((group) => ({
         anchor: group.anchor,
-        plan: cgroupSnapshotPlan(contextSegmentId, cursor, primary, group.requests),
+        plan: cgroupSnapshotPlan(group.anchor.id, cursor, primary, group.requests),
       }))
       const planKey = JSON.stringify(plans.map(({ anchor, plan }) => [anchor.id, plan.key]))
       cgroupSnapshotKey.current = planKey
@@ -715,6 +720,11 @@ function App({ locale, onLocale, t }: {
     setHostMode(defaultHostMode(next))
     setHostSection(next)
   }, [])
+  useEffect(() => {
+    if (visibleSource === "host" && hostSection === "cgroups" && environment === "machine") {
+      chooseHostSection("overview")
+    }
+  }, [chooseHostSection, environment, hostSection, visibleSource])
   const openStatements = useCallback((target: StatementTarget) => {
     setSource("postgresql")
     setPgSection("statements")
@@ -803,7 +813,7 @@ function App({ locale, onLocale, t }: {
       </nav>
 
       {visibleSource === "host" && <div className="section-tabs flex items-center border border-line3 [&>button]:cursor-pointer [&>button]:border-0 [&>button]:bg-transparent [&>button]:px-[9px] [&>button]:py-[5px] [&>button]:text-xs [&>button]:uppercase [&>button]:text-fg3 [&>button[aria-selected=true]]:bg-s4 [&>button[aria-selected=true]]:text-accent3" role="tablist">
-        {HOST_SECTIONS.map((section) => <button aria-selected={hostSection === section} data-testid={`host-section-${section}`} key={section} onClick={() => chooseHostSection(section)} role="tab" type="button">{t(`section.${section}`)}</button>)}
+        {hostSections.map((section) => <button aria-selected={hostSection === section} data-testid={`host-section-${section}`} key={section} onClick={() => chooseHostSection(section)} role="tab" type="button">{t(`section.${section}`)}</button>)}
       </div>}
 
       <HourPicker availableHours={availableHours} changeHour={changeHour} hour={hour} locale={locale} t={t} />

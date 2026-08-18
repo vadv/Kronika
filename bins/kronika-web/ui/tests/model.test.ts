@@ -142,11 +142,14 @@ test("metric numbers use three significant digits and locale-aware compact scale
   assert.equal(humanPercent(null, "en"), "—")
   assert.equal(humanPercent(4e-7, "en"), "<0.1%")
   assert.equal(humanDuration(999.999, "en"), "1,000 ms")
-  assert.equal(humanDuration(1_234, "en"), "1.2 s")
+  assert.equal(humanDuration(1_234, "en"), "1.23 s")
+  assert.equal(humanDuration(0.025, "en"), "25 µs")
+  assert.equal(humanDuration(16, "en", "microseconds", "/call"), "16 µs/call")
+  assert.equal(humanDuration(3_600, "en", "seconds"), "1 h")
   assert.equal(humanDuration(null, "en"), "—")
   // Axis ticks share one unit chosen from the range top.
-  assert.equal(humanDurationAxis(1_998_000, 3_996_000, "ru"), "33,3 м")
-  assert.equal(humanDurationAxis(0, 3_996_000, "ru"), "0 м")
+  assert.equal(humanDurationAxis(1_998_000, 3_996_000, "ru"), "0,555 ч")
+  assert.equal(humanDurationAxis(0, 3_996_000, "ru"), "0 ч")
   assert.equal(humanDurationAxis(5_400_000, 7_200_000, "en"), "1.5 h")
   assert.equal(humanDurationAxis(1_500, 45_000, "en"), "1.5 s")
   assert.equal(identifier("9007199254740993"), "9007199254740993")
@@ -180,10 +183,10 @@ test("estimated row exact labels use bigint-safe EN and RU plurals", () => {
   }
 })
 
-test("elapsed wall time reads in whole seconds", () => {
+test("elapsed wall time uses the shared adaptive duration scale", () => {
   assert.equal(humanAge(0, "ru"), "0 с")
   assert.equal(humanAge(0.94, "ru"), "0 с")
   assert.equal(humanAge(12.7, "ru"), "12 с")
   assert.equal(humanAge(12.7, "en"), "12 s")
-  assert.equal(humanAge(95, "ru"), "1м 35с")
+  assert.equal(humanAge(95, "ru"), "1,58 мин")
 })

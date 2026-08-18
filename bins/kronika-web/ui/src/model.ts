@@ -130,8 +130,8 @@ export function humanCores(cell: Cell, locale: Locale, suffix = ""): string {
 
 function durationUnits(locale: Locale) {
   return locale === "ru"
-    ? { "hour": "ч", minute: "м", millisecond: "мс", "second": "с" }
-    : { "hour": "h", minute: "m", millisecond: "ms", "second": "s" }
+    ? { "hour": "ч", microsecond: "мкс", millisecond: "мс", minute: "мин", nanosecond: "нс", "second": "с" }
+    : { "hour": "h", microsecond: "µs", millisecond: "ms", minute: "min", nanosecond: "ns", "second": "s" }
 }
 
 // Elapsed wall time is read at a glance, so it stops at whole seconds where a
@@ -142,29 +142,53 @@ export function humanAge(seconds: number, locale: Locale): string {
   return humanDuration(whole * 1_000, locale)
 }
 
-export function humanDuration(cell: Cell, locale: Locale): string {
-  const milliseconds = asNumber(cell)
-  if (milliseconds === null) return "—"
+export type DurationInputUnit = "nanoseconds" | "microseconds" | "milliseconds" | "seconds"
+
+export function humanDuration(cell: Cell, locale: Locale, input: DurationInputUnit = "milliseconds", suffix = ""): string {
+  const stored = asNumber(cell)
+  if (stored === null) return "—"
+  const milliseconds = stored * (input === "nanoseconds" ? 0.000_001 : input === "microseconds" ? 0.001 : input === "seconds" ? 1_000 : 1)
   const units = durationUnits(locale)
-  if (Math.abs(milliseconds) < 1_000) return `${compact(milliseconds, locale)} ${units.millisecond}`
-  if (Math.abs(milliseconds) < 60_000) return `${decimals(Math.trunc(milliseconds / 100) / 10, locale, 1)} ${units.second}`
-  const seconds = Math.floor(Math.abs(milliseconds) / 1_000)
-  const sign = milliseconds < 0 ? "−" : ""
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${sign}${minutes}${units.minute} ${String(seconds % 60).padStart(2, "0")}${units.second}`
-  const hours = Math.floor(minutes / 60)
-  if (hours >= 24) return `${sign}${Math.floor(hours / 24)}${locale === "ru" ? "д" : "d"} ${String(hours % 24).padStart(2, "0")}${units.hour}`
-  return `${sign}${hours}${units.hour} ${String(minutes % 60).padStart(2, "0")}${units.minute}`
+  const magnitude = Math.abs(milliseconds)
+  const [scaled, unit] = magnitude > 0 && magnitude < 0.001
+    ? [milliseconds * 1_000_000, units.nanosecond]
+    : magnitude > 0 && magnitude < 1
+      ? [milliseconds * 1_000, units.microsecond]
+      : magnitude < 1_000
+        ? [milliseconds, units.millisecond]
+        : magnitude < 60_000
+          ? [milliseconds / 1_000, units.second]
+          : magnitude < 3_600_000
+            ? [milliseconds / 60_000, units.minute]
+            : [milliseconds / 3_600_000, units.hour]
+  return `${compact(scaled, locale)} ${unit}${suffix}`
 }
 
 // One unit for the whole axis: composite «33м 20с» / «1ч 06м» ticks read as
 // noise. The unit comes from the top of the range and holds for every tick.
 export function humanDurationAxis(milliseconds: number, rangeMax: number, locale: Locale): string {
+  const magnitude = Math.abs(rangeMax)
+  const input = magnitude > 0 && magnitude < 0.001
+    ? "nanoseconds"
+    : magnitude > 0 && magnitude < 1
+      ? "microseconds"
+      : magnitude < 1_000
+        ? "milliseconds"
+        : magnitude < 60_000
+          ? "seconds"
+          : magnitude < 3_600_000 ? "minutes" : "hours"
   const units = durationUnits(locale)
-  const format = (value: number) => new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(Math.round(value * 10) / 10)
-  if (rangeMax < 90_000) return `${format(milliseconds / 1_000)} ${units.second}`
-  if (rangeMax < 5_400_000) return `${format(milliseconds / 60_000)} ${units.minute}`
-  return `${format(milliseconds / 3_600_000)} ${units.hour}`
+  const divisor = input === "nanoseconds" ? 0.000_001
+    : input === "microseconds" ? 0.001
+      : input === "milliseconds" ? 1
+        : input === "seconds" ? 1_000
+          : input === "minutes" ? 60_000 : 3_600_000
+  const unit = input === "nanoseconds" ? units.nanosecond
+    : input === "microseconds" ? units.microsecond
+      : input === "milliseconds" ? units.millisecond
+        : input === "seconds" ? units.second
+          : input === "minutes" ? units.minute : units.hour
+  return `${compact(milliseconds / divisor, locale)} ${unit}`
 }
 
 export function compact(value: number, locale: Locale): string {

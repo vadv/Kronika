@@ -135,6 +135,19 @@ fn collect_os_sources_no_diskstats_on_mount_topo_only_tick() {
 }
 
 #[test]
+fn cgroup_metrics_follow_the_recorded_container_environment() {
+    use crate::os_sources::collects_cgroup_metrics;
+
+    let due = DueSet::for_test(vec![SourceKind::OsCgroup]);
+    assert!(!collects_cgroup_metrics(false, &due));
+    assert!(collects_cgroup_metrics(true, &due));
+    assert!(!collects_cgroup_metrics(
+        true,
+        &DueSet::for_test(vec![SourceKind::OsCore])
+    ));
+}
+
+#[test]
 fn net_link_facts_read_sysfs_and_fall_back_to_unknown() {
     use crate::os_sources::net_link_facts;
 

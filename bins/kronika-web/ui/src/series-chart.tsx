@@ -34,6 +34,7 @@ export function SeriesChart({
   status = "ready",
   stats = false,
   t,
+  tickFormat,
   unit = "",
   onCursor,
 }: {
@@ -53,6 +54,7 @@ export function SeriesChart({
   readonly status?: HistoryStatus | undefined
   readonly stats?: boolean | undefined
   readonly t: Translate
+  readonly tickFormat?: ((value: number, locale: Locale) => string) | undefined
   readonly unit?: string | undefined
   readonly onCursor?: ((timestamp: number) => void) | undefined
 }) {
@@ -68,11 +70,14 @@ export function SeriesChart({
   const formatter = useRef(formatValue)
   formatter.current = formatValue
   const stableFormat = useMemo(() => (number: number, place: Locale) => formatter.current(number, place), [])
+  const tickFormatter = useRef(tickFormat ?? formatValue)
+  tickFormatter.current = tickFormat ?? formatValue
+  const stableTickFormat = useMemo(() => (number: number, place: Locale) => tickFormatter.current(number, place), [])
   const semantic: SemanticScale = scale === "percent" ? "percent" : scale === "auto" || scale === "signed" ? "signed" : "nonnegative"
   const series = useMemo<readonly RecordedSeries[]>(() => [
-    { color: "cyan", helpKey, id: "primary", label, labelKey, points: visible.points, scale: semantic, tick: stableFormat, tickAxis: durationAxis ? "duration" : undefined, unit, value: stableFormat },
-    ...(visible.second === undefined || secondHelpKey === undefined || secondLabelKey === undefined ? [] : [{ color: "amber" as const, helpKey: secondHelpKey, id: "secondary", label: t(secondLabelKey), labelKey: secondLabelKey, points: visible.second, scale: semantic, tick: stableFormat, tickAxis: (durationAxis ? "duration" : undefined) as "duration" | undefined, unit, value: stableFormat }]),
-  ], [durationAxis, helpKey, label, labelKey, secondHelpKey, secondLabelKey, semantic, stableFormat, t, unit, visible])
+    { color: "cyan", helpKey, id: "primary", label, labelKey, points: visible.points, scale: semantic, tick: stableTickFormat, tickAxis: durationAxis ? "duration" : undefined, unit, value: stableFormat },
+    ...(visible.second === undefined || secondHelpKey === undefined || secondLabelKey === undefined ? [] : [{ color: "amber" as const, helpKey: secondHelpKey, id: "secondary", label: t(secondLabelKey), labelKey: secondLabelKey, points: visible.second, scale: semantic, tick: stableTickFormat, tickAxis: (durationAxis ? "duration" : undefined) as "duration" | undefined, unit, value: stableFormat }]),
+  ], [durationAxis, helpKey, label, labelKey, secondHelpKey, secondLabelKey, semantic, stableFormat, stableTickFormat, t, unit, visible])
   const statusText = status === "loading"
     ? t("history.loading")
     : status === "error" ? t("history.error") : empty ?? t("history.empty")

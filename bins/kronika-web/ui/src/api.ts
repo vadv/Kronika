@@ -25,6 +25,7 @@ const POSTGRESQL_OVERVIEW = [
 export const PRODUCT_SECTION_GROUPS = {
   host: REGISTRY_LOGICAL_NAMES.filter((name) => name === "instance_metadata" || name.startsWith("os_")),
   postgresqlOverview: [...POSTGRESQL_OVERVIEW, "pg_wal_storage"] as const,
+  postgresqlSettings: ["pg_settings"] as const,
   postgresqlActivity: ["pg_stat_activity", "pg_stat_progress_vacuum"] as const,
   postgresqlStatements: ["pg_stat_statements"] as const,
   postgresqlPlans: ["pg_store_plans", "pg_store_plans_info"] as const,
@@ -58,6 +59,10 @@ export const POSTGRESQL_OVERVIEW_REQUESTS: readonly SectionRequest[] = [
   { section: "pg_stat_activity", fields: ["state", "wait_event", "backend_type"] },
   { section: "pg_stat_database" },
   { section: "pg_locks", fields: ["pid"] },
+]
+
+export const POSTGRESQL_CONTEXT_REQUESTS: readonly SectionRequest[] = [
+  { section: "pg_settings", fields: ["name", "setting"] },
 ]
 
 export const TIMELINE_REQUESTS: readonly SectionRequest[] = [{ section: "health" }]

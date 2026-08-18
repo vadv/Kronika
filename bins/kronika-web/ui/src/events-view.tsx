@@ -241,7 +241,7 @@ export function formatMetric(value: number | null, unit: ReturnType<typeof findi
   if (value === null) return "—"
   if (unit === "percent") return humanPercent(value, locale)
   if (unit === "milliseconds") return humanDuration(value, locale)
-  if (unit === "milliseconds_per_call") return `${compact(value, locale)}${t("unit.ms")}${t("unit.per_call")}`
+  if (unit === "milliseconds_per_call") return humanDuration(value, locale, "milliseconds", t("unit.per_call"))
   if (unit === "bytes_per_second") return `${humanBytes(value, locale)}${t("unit.per_second")}`
   return compact(value, locale)
 }
@@ -249,7 +249,7 @@ export function formatMetric(value: number | null, unit: ReturnType<typeof findi
 function metricUnit(unit: ReturnType<typeof findingMetric>["unit"], locale: Locale): string {
   if (unit === "percent") return "%"
   if (unit === "milliseconds") return ""
-  if (unit === "milliseconds_per_call") return "ms/call"
+  if (unit === "milliseconds_per_call") return ""
   if (unit === "bytes_per_second") return "bytes/s"
   if (unit === "count") return locale === "ru" ? "количество" : "count"
   return locale === "ru" ? "значение" : "value"

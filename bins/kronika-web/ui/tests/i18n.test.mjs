@@ -120,8 +120,11 @@ test("plan copy identifies unavailable values and vadv attribution", async () =>
   assert.equal(russian["pg.wal_storage.label"], "Размер файлов в pg_wal")
   assert.equal(russian["pg.wal_storage.history"], "Размер файлов в pg_wal за час")
   assert.equal(russian["pg.wal_storage.help"], "Суммарный размер обычных файлов, видимых в pg_wal у курсора.")
-  assert.match(english["pg.field.queryid_stat_statements.help"], /vadv-only.*last attributed.*not an exact join key/)
-  assert.match(russian["pg.field.queryid_stat_statements.help"], /только в vadv.*последнего запроса.*связанного.*не точный ключ соединения/)
+  assert.match(english["pg.field.queryid_stat_statements.help"], /vadv.*statement rows related to this plan/)
+  assert.match(russian["pg.field.queryid_stat_statements.help"], /vadv.*связанным с этим планом строкам запросов/)
+  for (const text of [...Object.values(english), ...Object.values(russian)]) {
+    assert.doesNotMatch(text, /not an exact join key|не точн(?:ый|ым) ключ соединения/i)
+  }
 })
 
 test("dense-table help is factual, concise, and complete in both locales", async () => {

@@ -143,14 +143,14 @@ test("Host master/detail modes and plan-to-query context are URL-native and rout
   assert.deepEqual(readAddress("?view=pg.statements&stmt_origin=plan&stmt_qid=-42&stmt_dbid=16384&stmt_userid=10&stmt_relation=shared&stmt_source=1003001&stmt_plan=-77").statementTarget, {
     dbId: "16384", origin: "plan", planId: "-77", queryId: "-42", relation: "shared", sourceTypeId: "1003001", userId: "10",
   })
-  const activity = { dbId: "4294967295", origin: "activity" as const, queryId: "-9223372036854775808", topLevel: true as const }
+  const activity = { dbId: "4294967295", origin: "activity" as const, queryId: "-9223372036854775808" }
   const activityQuery = writeAddress({ ...DEFAULT_ADDRESS, view: "pg.statements", statementTarget: activity })
-  assert.equal(activityQuery, "/?view=pg.statements&stmt_origin=activity&stmt_qid=-9223372036854775808&stmt_dbid=4294967295&stmt_top=true")
+  assert.equal(activityQuery, "/?view=pg.statements&stmt_origin=activity&stmt_qid=-9223372036854775808&stmt_dbid=4294967295")
   assert.deepEqual(readAddress(activityQuery.slice(1)).statementTarget, activity)
   const activityRow = writeAddress({ ...DEFAULT_ADDRESS, view: "pg.activity", row: "1700000000000000:1001004:73" })
   assert.equal(activityRow, "/?view=pg.activity&row=1700000000000000%3A1001004%3A73")
   assert.equal(readAddress(activityRow.slice(1)).row, "1700000000000000:1001004:73")
   assert.equal(readAddress("?view=pg.plans&stmt_origin=plan&stmt_qid=42&stmt_dbid=1&stmt_userid=1&stmt_relation=last&stmt_source=1004001&stmt_plan=77").statementTarget, null)
-  assert.equal(readAddress("?view=pg.statements&stmt_origin=activity&stmt_qid=0&stmt_dbid=1&stmt_top=true").statementTarget, null)
-  assert.equal(readAddress("?view=pg.statements&stmt_origin=activity&stmt_qid=42&stmt_dbid=4294967296&stmt_top=true").statementTarget, null)
+  assert.equal(readAddress("?view=pg.statements&stmt_origin=activity&stmt_qid=0&stmt_dbid=1").statementTarget, null)
+  assert.equal(readAddress("?view=pg.statements&stmt_origin=activity&stmt_qid=42&stmt_dbid=4294967296").statementTarget, null)
 })

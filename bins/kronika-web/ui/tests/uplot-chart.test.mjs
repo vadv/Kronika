@@ -4,7 +4,7 @@ import test from "node:test"
 
 import { importModule } from "./import-module.mjs"
 
-const chart = await importModule('export { alignRecordedSeries, axisTimeLabel, chartSecondsUseful, chartStatsRows, chartSummary, compactChartTime, effectiveIsolation, exactReadings, isolatedSampleIndices, nearestRecordedTimestamp, sampleText, scalePartitions, scaleRange, seriesStats } from "../src/uplot-chart.tsx"; export { createDisplayTimeFormatter } from "../src/display-time.ts"; export { compact, humanPercent } from "../src/model.ts"')
+const chart = await importModule('export { alignRecordedSeries, axisTimeLabel, chartSecondsUseful, chartStatsRows, chartSummary, chartTimeRange, compactChartTime, effectiveIsolation, exactReadings, isolatedSampleIndices, nearestRecordedTimestamp, sampleText, scalePartitions, scaleRange, seriesStats } from "../src/uplot-chart.tsx"; export { createDisplayTimeFormatter } from "../src/display-time.ts"; export { compact, humanPercent } from "../src/model.ts"')
 
 const format = (value) => String(value)
 const line = (id, unit, scale, points) => ({ color: "cyan", helpKey: `${id}.help`, id, label: id, labelKey: `${id}.label`, points, scale, unit, value: format })
@@ -167,6 +167,16 @@ test("y-axis labels carry only the unit, series names live in the caption", asyn
   assert.match(source, /\.\.\.\(unit === "" \|\| line\.tickAxis === "duration" \? \{\} : \{ label: unit \}\)/)
   assert.doesNotMatch(source, /label: `\$\{labels\}/)
   assert.match(source, /chart-series-labels/)
+})
+
+test("the shared time scale reserves a stable right-end label gutter", () => {
+  const hour = 1_700_000_000_000
+  const end = hour + 3_600_000
+  const [, wideEnd] = chart.chartTimeRange(hour, end, 1_200)
+  const [, narrowEnd] = chart.chartTimeRange(hour, end, 360)
+  assert.ok(wideEnd > end)
+  assert.ok(narrowEnd > wideEnd)
+  assert.deepEqual(chart.chartTimeRange(hour, end, 1_200, 0), [hour, end])
 })
 
 test("the built-in legend stays hidden and chart titles use portal help metadata", async () => {

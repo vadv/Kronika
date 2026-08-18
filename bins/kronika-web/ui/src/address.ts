@@ -145,9 +145,7 @@ function readStatementTarget(parameters: URLSearchParams): StatementTarget | nul
   const origin = parameters.get("stmt_origin")
   if (queryId === null || queryId === "0" || dbId === null) return null
   if (origin === "activity") {
-    return parameters.get("stmt_top") === "true"
-      ? { dbId, origin, queryId, topLevel: true }
-      : null
+    return { dbId, origin, queryId }
   }
   const userId = oid(parameters.get("stmt_userid"))
   const planId = signed64(parameters.get("stmt_plan"))
@@ -162,10 +160,7 @@ function writeStatementTarget(parameters: URLSearchParams, target: StatementTarg
   parameters.set("stmt_origin", target.origin)
   parameters.set("stmt_qid", target.queryId)
   parameters.set("stmt_dbid", target.dbId)
-  if (target.origin === "activity") {
-    parameters.set("stmt_top", "true")
-    return
-  }
+  if (target.origin === "activity") return
   parameters.set("stmt_userid", target.userId)
   parameters.set("stmt_relation", target.relation)
   parameters.set("stmt_source", target.sourceTypeId)

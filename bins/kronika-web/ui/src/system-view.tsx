@@ -11,7 +11,7 @@ import { contextualRows, type EntityContext } from "./entity-context"
 import { EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import { useHistoryRequest } from "./history-request"
-import { asNumber, humanBytes, humanCores, humanHertz, humanPercent, measure, rawText, shownMoment, snapshot, value, type Locale } from "./model"
+import { asNumber, humanBytes, humanCores, humanDuration, humanHertz, humanPercent, measure, rawText, shownMoment, snapshot, value, type Locale } from "./model"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 import { UPlotChart, type RecordedSeries } from "./uplot-chart"
@@ -71,7 +71,7 @@ export function metricChartUnit(spec: MetricSpec, locale: Locale): string {
   if (spec.unit === " KiB") return "B"
   if (spec.unit === " cores") return "cores"
   if (spec.unit === " MHz") return "MHz"
-  if (spec.unit === " B") return locale === "ru" ? "байты/с" : "bytes/s"
+  if (spec.unit === " B") return ""
   if (spec.id === "network_errors" || spec.id === "network_drops") return locale === "ru" ? "1/с" : "1/s"
   if (metricClass(spec) === "cumulative") return locale === "ru" ? "1/с" : "1/s"
   return locale === "ru" ? "количество" : "count"
@@ -339,6 +339,7 @@ function systemRequests(): readonly SectionRequest[] {
     "cpu_path", "memory_path", "io_path", "cpuset_cpus", "effective_cpu_quota_usec",
     "effective_cpu_period_usec", "effective_memory_max", "cgroup_version", "scope",
   ])
+  need("instance_metadata", ["environment"])
   need("os_cpufreq_policy", [
     "policy_id", "related_cpus", "scaling_driver", "actual_source",
     "cpuinfo_min_freq_hz", "cpuinfo_max_freq_hz", "scope",
@@ -354,7 +355,7 @@ const CGROUP_PATH_FIELDS = {
   os_cgroup_pids: "pids_path",
 } as const
 const ALL_SYSTEM_REQUESTS = systemRequests()
-const CGROUP_SECTIONS = new Set(Object.keys(CGROUP_PATH_FIELDS))
+const CGROUP_SECTIONS = new Set(["os_cgroup_context", ...Object.keys(CGROUP_PATH_FIELDS)])
 
 export const CGROUP_SNAPSHOT_REQUESTS = ALL_SYSTEM_REQUESTS.filter(({ section }) => CGROUP_SECTIONS.has(section))
 export const SYSTEM_REQUESTS = ALL_SYSTEM_REQUESTS.filter(({ section }) => !CGROUP_SECTIONS.has(section))
@@ -365,22 +366,18 @@ export function cgroupSnapshotPlan(
   data: Pick<HourData, "sections">,
   requests: readonly SectionRequest[] = CGROUP_SNAPSHOT_REQUESTS,
 ): CgroupSnapshotPlan {
-  const context = snapshot((data.sections.os_cgroup_context ?? []).filter((row) => row.segmentId === segmentId), cursor)[0] ?? null
-  const cpuPath = rawText(value(context, "cpu_path"))
-  const memoryPath = rawText(value(context, "memory_path"))
-  const ioPath = rawText(value(context, "io_path"))
-  const storedScope = rawText(value(context, "scope"))
-  const scope = storedScope !== null && /^(?:0|[1-9]\d*)$/.test(storedScope) ? storedScope : null
-  const paths = { cpu_path: cpuPath, memory_path: memoryPath, io_path: ioPath, pids_path: null }
-  const key = JSON.stringify([segmentId, cursor, cpuPath, memoryPath, ioPath, scope])
-  const loads = requests.flatMap((request) => {
-    const pathField = CGROUP_PATH_FIELDS[request.section as keyof typeof CGROUP_PATH_FIELDS]
-    const path = pathField === undefined ? null : paths[pathField]
-    return path === null || path === undefined || scope === null
-      ? []
-      : [{ request, filters: { cgroup_path: path, scope } }]
-  })
+  const environment = recordedEnvironment(data, cursor)
+  const key = JSON.stringify([segmentId, cursor, environment])
+  const loads = environment === "container"
+    ? requests.map((request) => ({ request, filters: {} }))
+    : []
   return { key, loads }
+}
+
+export function recordedEnvironment(data: Pick<HourData, "sections">, cursor: number): "machine" | "container" | null {
+  const row = snapshot(data.sections.instance_metadata ?? [], cursor)[0]
+  const environment = asNumber(value(row ?? null, "environment"))
+  return environment === 0 ? "machine" : environment === 1 ? "container" : null
 }
 
 export function clearCgroupSnapshotRows(data: HourData): HourData {
@@ -550,7 +547,7 @@ export function SystemView({
         }} selected={dockShown ? selectedResource : null} t={t} />}
       {dockShown && selectedMetric !== undefined && <SystemDock
         chart={breakdown.length === 0
-          ? <SeriesChart cursor={cursor} empty={t("history.empty")} format={(reading, place) => metricChartValue(reading, place, selectedMetric.spec.unit)} helpKey={selectedMetric.spec.help} hour={hour} labelKey={selectedMetric.spec.label} locale={locale} onCursor={onCursor} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "nonnegative"} second={secondPoints} secondHelpKey={secondLane === null ? undefined : "system.metric.network_tx.help"} secondLabelKey={secondLane === null ? undefined : "system.metric.network_tx.label"} stats status={needsHistory ? loadedHistory.status : "ready"} t={t} unit={metricChartUnit(selectedMetric.spec, locale)} />
+          ? <SeriesChart cursor={cursor} empty={t("history.empty")} format={(reading, place) => metricChartValue(reading, place, selectedMetric.spec.unit)} helpKey={selectedMetric.spec.help} hour={hour} labelKey={selectedMetric.spec.label} locale={locale} onCursor={onCursor} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "nonnegative"} second={secondPoints} secondHelpKey={secondLane === null ? undefined : "system.metric.network_tx.help"} secondLabelKey={secondLane === null ? undefined : "system.metric.network_tx.label"} stats status={needsHistory ? loadedHistory.status : "ready"} t={t} tickFormat={selectedMetric.spec.unit === " B" ? (reading, place) => humanBytes(reading, place, "/s") : undefined} unit={metricChartUnit(selectedMetric.spec, locale)} />
           : <div className="series-chart"><UPlotChart cursor={cursor} hour={hour} isolate={{ anchor: selectedMetric.spec.id }} locale={locale} onCursor={onCursor} reading={currentPointValue(selectedPoints, cursor, locale, selectedMetric.spec.unit)} series={breakdown} stats status={!needsHistory || loadedHistory.status === "ready" ? undefined : <p className={`series-status series-status-${loadedHistory.status}`} role={loadedHistory.status === "error" ? "alert" : "status"}>{t(`history.${loadedHistory.status}`)}</p>} t={t} testId={`system-${selectedMetric.spec.group}-composition`} /></div>}
         group={selectedMetric.spec.group}
         label={`section.${selectedMetric.spec.group}`}
@@ -589,7 +586,7 @@ export function SystemView({
       t={t}
     />}
 
-    <section className="entity-panels mt-2 grid grid-cols-1 gap-2 charts-hidden:min-h-0 charts-hidden:flex-auto charts-hidden:auto-rows-fr">
+    <section className="entity-panels mt-2 grid grid-cols-1 content-start gap-2">
       {SYSTEM_ENTITIES.filter((entity) => sectionEntities(section, mode).includes(entity.section)).map((entity) => {
         const allRows = systemEntityRows(data, entity.section, cursor)
         const activeContext = context?.logicalName === entity.section ? context : null
@@ -599,7 +596,6 @@ export function SystemView({
         if (rows.length === 0 && activeContext === null && !tablesLoading) return null
         if (rows.length === 0 && activeContext === null && !data.availableSections.includes(entity.section)) return null
         const finding = focus?.logicalName === entity.section ? focus : null
-        if (section === "cgroups" && rows.length <= 1) return <p className="table-empty mt-0" data-testid="cgroups-comparison-unavailable" key={entity.section}>{t(rows.length === 1 ? "system.cgroups.collector_only" : "system.cgroups.unavailable")}</p>
         return <SystemEntityPanel
           columns={entity.columns}
           contextLabel={activeContext?.label}
@@ -868,6 +864,7 @@ function SystemEntityPanel({
     <div className={selectedRow === null ? "contents" : "min-w-0 max-[760px]:hidden"}>
     <EntityTable
       columns={columns}
+      contentSized={selectedRow === null}
       contextLabel={contextLabel}
       empty={t("table.no_rows")}
       loading={tablesLoading && rows.length === 0}
@@ -919,6 +916,7 @@ function SystemEntityPanel({
             /></div>
         : selectedColumn !== undefined && <SeriesChart
             cursor={cursor}
+            durationAxis={selectedColumn.kind === "milliseconds" || selectedColumn.kind === "duration"}
             empty={t("status.no_data")}
             format={(reading, place) => entityMetricValue(reading, place, selectedColumn, chartMetadata)}
             helpKey={selectedColumn.help ?? "chart.metric.help"}
@@ -994,9 +992,8 @@ function entityMetricUnit(column: SystemEntityColumn, locale: Locale, metadata: 
   if (column.kind === "cores") return "cores"
   if (column.field === "speed_mbit") return "Mbit/s"
   if (column.field === "mhz_max") return "MHz"
-  if (column.kind === "bytes" || column.kind === "kib") return `${locale === "ru" ? "байты" : "bytes"}${perSecond}`
-  if (column.kind === "milliseconds" || column.kind === "duration") return `${locale === "ru" ? "мс" : "ms"}${perSecond}`
-  if (column.kind === "microseconds") return `${locale === "ru" ? "мкс" : "µs"}${perSecond}`
+  if (column.kind === "bytes" || column.kind === "kib") return ""
+  if (column.kind === "milliseconds" || column.kind === "duration" || column.kind === "microseconds") return perSecond
   if (column.kind === "percent") return "%"
   if (metadata?.unit === "sectors") return `${locale === "ru" ? "секторы" : "sectors"}${perSecond}`
   return metadata?.class === "cumulative" ? (locale === "ru" ? "1/с" : "1/s") : (locale === "ru" ? "количество" : "count")
@@ -1009,8 +1006,8 @@ function entityMetricValue(reading: number, locale: Locale, column: SystemEntity
   if (column.field === "mhz_max") return measure(reading, locale, " MHz")
   if (column.kind === "bytes") return humanBytes(reading, locale, suffix)
   if (column.kind === "kib") return humanBytes(reading * 1024, locale, suffix)
-  if (column.kind === "milliseconds" || column.kind === "duration") return measure(reading, locale, `${locale === "ru" ? " мс" : " ms"}${suffix}`)
-  if (column.kind === "microseconds") return measure(reading, locale, `${locale === "ru" ? " мкс" : " µs"}${suffix}`)
+  if (column.kind === "milliseconds" || column.kind === "duration") return humanDuration(reading, locale, "milliseconds", suffix)
+  if (column.kind === "microseconds") return humanDuration(reading, locale, "microseconds", suffix)
   if (column.kind === "percent") return humanPercent(reading, locale)
   return measure(reading, locale, suffix)
 }
@@ -1554,15 +1551,16 @@ export function fallbackMetric(logicalName: string): string | null {
 
 export function systemEntityRows(data: HourData, section: string, cursor: number): readonly DataRow[] {
   let rows = snapshot(sectionRows(data, section), cursor)
-  const pathField = section === "os_cgroup_cpu" ? "cpu_path" : section === "os_cgroup_memory" ? "memory_path" : section === "os_cgroup_io" ? "io_path" : null
   const context = snapshot(sectionRows(data, "os_cgroup_context"), cursor)[0] ?? null
-  if (pathField !== null) {
-    const path = rawText(value(context, pathField))
-    const scope = rawText(value(context, "scope"))
-    if (path === null || scope === null || !/^(?:0|[1-9]\d*)$/.test(scope)) return []
-    rows = rows.filter((row) => rawText(value(row, "cgroup_path")) === path && rawText(value(row, "scope")) === scope)
-  }
-  return rows.map((row) => decorateSystemRow(row, context))
+  const pathField = section === "os_cgroup_cpu" ? "cpu_path" : section === "os_cgroup_memory" ? "memory_path" : section === "os_cgroup_io" ? "io_path" : null
+  return rows.map((row) => {
+    const collectorContext = context !== null && pathField !== null
+      && rawText(value(row, "cgroup_path")) === rawText(value(context, pathField))
+      && rawText(value(row, "scope")) === rawText(value(context, "scope"))
+      ? context
+      : null
+    return decorateSystemRow(row, collectorContext)
+  })
 }
 
 function decorateSystemRow(row: DataRow, context: DataRow | null): DataRow {

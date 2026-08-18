@@ -62,10 +62,10 @@ test("plan navigation uses shared IDs for OSSC and the last-attributed ID for va
   assert.equal(plans.statementTargetForPlan(row("1004001", { dbid: 7, planid: "22", queryid: 0, queryid_stat_statements: 0, userid: 8 })), null)
 })
 
-test("Activity navigation filters every effective user by database, query ID and top-level semantics", () => {
+test("Activity navigation shows every related statement candidate for database and query ID", () => {
   const target = plans.statementTargetForActivity({ ...row("1001004", { datid: 16384, query_id: "-42" }), logicalName: "pg_stat_activity" })
-  assert.deepEqual(target, { dbId: "16384", origin: "activity", queryId: "-42", topLevel: true })
-  assert.deepEqual(plans.statementTargetFilters(target), { dbid: "16384", queryid: "-42", toplevel: "true" })
+  assert.deepEqual(target, { dbId: "16384", origin: "activity", queryId: "-42" })
+  assert.deepEqual(plans.statementTargetFilters(target), { dbid: "16384", queryid: "-42" })
   assert.equal(plans.statementTargetForActivity({ ...row("1001004", { datid: 16384, query_id: 0 }), logicalName: "pg_stat_activity" }), null)
   assert.equal(plans.statementTargetForActivity({ ...row("1001004", { datid: null, query_id: 42 }), logicalName: "pg_stat_activity" }), null)
 })
