@@ -190,7 +190,6 @@ const TABLE_OBJECT_FIELDS: &[FieldSpec] = &[
 ];
 
 const TABLE_AGGREGATE_FIELDS: &[FieldSpec] = &[
-    field("tablespace", Kind::Text, None),
     count_field("table_count"),
     rate_field("seq_scan"),
     rate_field("seq_tup_read"),
@@ -298,7 +297,6 @@ const INDEX_OBJECT_FIELDS: &[FieldSpec] = &[
 ];
 
 const INDEX_AGGREGATE_FIELDS: &[FieldSpec] = &[
-    field("tablespace", Kind::Text, None),
     count_field("index_count"),
     rate_field("idx_scan"),
     rate_field("idx_tup_read"),
@@ -351,8 +349,8 @@ impl RelationKind {
         }
     }
 
-    const fn fields(self, group: RelationGroup) -> &'static [FieldSpec] {
-        match (self, group) {
+    fn fields(self, group: RelationGroup) -> Vec<FieldSpec> {
+        let base = match (self, group) {
             (Self::Tables, RelationGroup::Object) => TABLE_OBJECT_FIELDS,
             (
                 Self::Tables,
@@ -363,7 +361,14 @@ impl RelationKind {
                 Self::Indexes,
                 RelationGroup::Database | RelationGroup::Schema | RelationGroup::Tablespace,
             ) => INDEX_AGGREGATE_FIELDS,
+        };
+        if group != RelationGroup::Tablespace {
+            return base.to_vec();
         }
+        let mut fields = Vec::with_capacity(base.len().saturating_add(1));
+        fields.push(field("tablespace", Kind::Text, None));
+        fields.extend_from_slice(base);
+        fields
     }
 }
 
@@ -570,8 +575,8 @@ impl GroupKey {
         }))
     }
 
-    fn json(&self, _kind: RelationKind, _group: RelationGroup) -> Value {
-        match self {
+    fn json(&self, kind: RelationKind, group: RelationGroup) -> Value {
+        match self.clone().for_group(kind, group) {
             Self::Database { datid, datname } => json!({
                 "datid": datid.to_string(),
                 "datname": datname,
@@ -621,7 +626,7 @@ impl GroupKey {
         }
     }
 
-    fn for_group(self, kind: RelationKind, group: RelationGroup) -> Self {
+    fn for_group(self, _kind: RelationKind, group: RelationGroup) -> Self {
         match group {
             RelationGroup::Object => self,
             RelationGroup::Database => match self {
@@ -649,13 +654,17 @@ impl GroupKey {
                 },
                 key => key,
             },
-            RelationGroup::Tablespace => {
-                let _ = kind;
-                unreachable!("tablespace keys are formed directly from physical rows")
-            }
+            RelationGroup::Tablespace => match self {
+                key @ Self::Tablespace { .. } => key,
+                _ => unreachable!("tablespace keys are formed directly from physical rows"),
+            },
         }
     }
 
+    #[allow(
+        clippy::unnested_or_patterns,
+        reason = "each tuple arm keeps the requested field name attached to its variants"
+    )]
     fn metric(&self, name: &str) -> Option<Metric> {
         match (self, name) {
             (Self::Database { datid, .. } | Self::Schema { datid, .. }, "datid")
@@ -1059,7 +1068,7 @@ impl BoolAggregate {
         self.known > 0 && !self.unavailable
     }
 
-    fn merge(&mut self, other: Self) {
+    const fn merge(&mut self, other: Self) {
         self.known = self.known.saturating_add(other.known);
         self.truthy = self.truthy.saturating_add(other.truthy);
         self.unavailable |= other.unavailable;
@@ -1907,6 +1916,10 @@ pub(super) fn stream_history(
     clippy::too_many_arguments,
     reason = "the exact cluster-wide stream keeps its source window and output explicit"
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the cross-database as-of reducer keeps scan and emission state adjacent"
+)]
 fn stream_tablespace_history(
     reader: &Reader,
     listed: &[SegmentRef],
@@ -2585,8 +2598,9 @@ fn history_datid(group: RelationGroup, filters: &[Filter]) -> Result<u32, ApiErr
     let required: &[&str] = match group {
         RelationGroup::Database => &["datid"],
         RelationGroup::Schema => &["datid", "schemaname"],
-        RelationGroup::Tablespace => return Err(ApiError::BadFilter("group".to_owned())),
-        RelationGroup::Object => return Err(ApiError::BadFilter("group".to_owned())),
+        RelationGroup::Tablespace | RelationGroup::Object => {
+            return Err(ApiError::BadFilter("group".to_owned()));
+        }
     };
     if filters.len() != required.len()
         || required
@@ -3681,6 +3695,10 @@ mod tests {
                 .any(|field| field.name == "toast_last_autovacuum_latest")
         );
         assert!(!table.iter().any(|field| field.name == "tablespace"));
+        assert_eq!(
+            RelationKind::Tables.fields(RelationGroup::Tablespace)[0].name,
+            "tablespace"
+        );
 
         let index = RelationKind::Indexes.fields(RelationGroup::Database);
         for name in [
@@ -3720,6 +3738,10 @@ mod tests {
             );
         }
         assert!(!index.iter().any(|field| field.name == "indisvalid"));
+        assert_eq!(
+            RelationKind::Indexes.fields(RelationGroup::Tablespace)[0].name,
+            "tablespace"
+        );
     }
 
     #[test]

@@ -4075,6 +4075,10 @@ fn relation_groups_keep_database_scope_and_sum_staggered_rates() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the cluster-wide fixture checks the full filter group sort and page contract together"
+)]
 fn tablespace_snapshot_groups_cluster_wide_by_oid_after_full_filtering() {
     let mut fixture = Fixture::new();
     fixture.append_placed_table_snapshots(&[
@@ -4317,6 +4321,10 @@ fn index_tablespaces_use_each_index_placement_and_keep_missing_labels() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the staggered fixture keeps independent database snapshots and expected points together"
+)]
 fn tablespace_history_is_exact_across_staggered_database_snapshots_and_moves() {
     let mut fixture = Fixture::new();
     fixture.append_placed_table_snapshots(&[

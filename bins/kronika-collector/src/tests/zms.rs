@@ -1231,6 +1231,10 @@ fn relation_tablespace_layouts_report_production_writer_costs() {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the production writer report keeps its byte accounting and reader validation adjacent"
+)]
 fn relation_cost_profile(spec: RelationCostSpec) -> RelationCostReport {
     let artifact_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-artifacts");
     std::fs::create_dir_all(&artifact_root).expect("create relation cost artifact root");
@@ -1326,7 +1330,7 @@ fn relation_cost_profile(spec: RelationCostSpec) -> RelationCostReport {
         for (type_id, section) in stored.sections() {
             if matches!(type_id, 1_013_005..=1_013_008 | 1_014_003..=1_014_004) {
                 let stored_rows = rows.entry(type_id).or_default();
-                *stored_rows = stored_rows.saturating_add(u64::from(section.rows));
+                *stored_rows = stored_rows.saturating_add(section.rows);
                 let stored_bytes = zms_section_bytes.entry(type_id).or_default();
                 *stored_bytes = stored_bytes.saturating_add(section.bytes);
             }
@@ -1417,7 +1421,9 @@ fn relation_table_row(
         .unwrap_or(i64::MAX)
         .saturating_mul(100)
         .saturating_add(object_i64);
-    let parent = object % 97 == 0;
+    let parent = object.is_multiple_of(97);
+    let has_index = !object.is_multiple_of(7);
+    let has_toast = !parent && object.is_multiple_of(4);
     let (tablespace_oid, tablespace) = if parent {
         (None, None)
     } else if high_cardinality {
@@ -1443,8 +1449,8 @@ fn relation_table_row(
         tablespace,
         seq_scan: counter,
         seq_tup_read: counter.saturating_mul(10),
-        idx_scan: (object % 7 != 0).then_some(counter.saturating_mul(2)),
-        idx_tup_fetch: (object % 7 != 0).then_some(counter.saturating_mul(5)),
+        idx_scan: has_index.then_some(counter.saturating_mul(2)),
+        idx_tup_fetch: has_index.then_some(counter.saturating_mul(5)),
         n_tup_ins: counter,
         n_tup_upd: counter / 2,
         n_tup_del: counter / 5,
@@ -1463,7 +1469,7 @@ fn relation_table_row(
         last_analyze: (sample > 0).then_some(ts.saturating_sub(500_000)),
         last_autoanalyze: (sample > 1).then_some(ts.saturating_sub(750_000)),
         last_seq_scan: (sample > 0).then_some(ts.saturating_sub(250_000)),
-        last_idx_scan: (sample > 0 && object % 7 != 0).then_some(ts.saturating_sub(125_000)),
+        last_idx_scan: (sample > 0 && has_index).then_some(ts.saturating_sub(125_000)),
         total_vacuum_time: Some(f64::from(u32::try_from(sample).unwrap_or(u32::MAX))),
         total_autovacuum_time: Some(f64::from(
             u32::try_from(sample.saturating_mul(2)).unwrap_or(u32::MAX),
@@ -1479,11 +1485,10 @@ fn relation_table_row(
         } else {
             object_i64.saturating_add(1).saturating_mul(8_192)
         },
-        toast_bytes: (!parent && object % 4 == 0).then_some(16_384),
-        toast_n_live_tup: (!parent && object % 4 == 0).then_some(100),
-        toast_n_dead_tup: (!parent && object % 4 == 0).then_some(5),
-        toast_last_autovacuum: (!parent && object % 4 == 0 && sample > 0)
-            .then_some(ts.saturating_sub(3_000_000)),
+        toast_bytes: has_toast.then_some(16_384),
+        toast_n_live_tup: has_toast.then_some(100),
+        toast_n_dead_tup: has_toast.then_some(5),
+        toast_last_autovacuum: (has_toast && sample > 0).then_some(ts.saturating_sub(3_000_000)),
         xid_age: (!parent).then_some(object_i64.saturating_mul(10)),
         mxid_age: (!parent).then_some(object_i64),
         reltuples: if parent {
@@ -1493,12 +1498,12 @@ fn relation_table_row(
         },
         heap_blks_read: counter,
         heap_blks_hit: counter.saturating_mul(9),
-        idx_blks_read: (object % 7 != 0).then_some(counter / 2),
-        idx_blks_hit: (object % 7 != 0).then_some(counter.saturating_mul(4)),
-        toast_blks_read: (!parent && object % 4 == 0).then_some(counter / 10),
-        toast_blks_hit: (!parent && object % 4 == 0).then_some(counter),
-        tidx_blks_read: (!parent && object % 4 == 0).then_some(counter / 20),
-        tidx_blks_hit: (!parent && object % 4 == 0).then_some(counter / 2),
+        idx_blks_read: has_index.then_some(counter / 2),
+        idx_blks_hit: has_index.then_some(counter.saturating_mul(4)),
+        toast_blks_read: has_toast.then_some(counter / 10),
+        toast_blks_hit: has_toast.then_some(counter),
+        tidx_blks_read: has_toast.then_some(counter / 20),
+        tidx_blks_hit: has_toast.then_some(counter / 2),
     }
 }
 
@@ -1539,12 +1544,17 @@ fn relation_index_row(
         idx_tup_fetch: counter.saturating_mul(2),
         main_fork_bytes: object_i64.saturating_add(1).saturating_mul(4_096),
         last_idx_scan: (sample > 0).then_some(ts.saturating_sub(125_000)),
-        indisunique: object % 5 == 0,
-        indisprimary: object % 11 == 0,
-        indisvalid: object % 101 != 0,
-        indisexclusion: object % 127 == 0,
-        indisready: object % 103 != 0,
-        amname: if object % 19 == 0 { "hash" } else { "btree" }.to_owned(),
+        indisunique: object.is_multiple_of(5),
+        indisprimary: object.is_multiple_of(11),
+        indisvalid: !object.is_multiple_of(101),
+        indisexclusion: object.is_multiple_of(127),
+        indisready: !object.is_multiple_of(103),
+        amname: if object.is_multiple_of(19) {
+            "hash"
+        } else {
+            "btree"
+        }
+        .to_owned(),
         indexdef: Some(format!(
             "CREATE INDEX index_{object:05} ON schema_{}.table_{:05} USING btree (id)",
             object % 32,
