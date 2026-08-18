@@ -854,6 +854,10 @@ fn wal_storage_hour_reports_raw_and_finished_costs() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the production cost artifact keeps its complete write, readback, and measurement path together"
+)]
 fn activity_datid_hour_reports_production_writer_costs() {
     let directory = tempfile::tempdir().expect("create Activity cost directory");
     let writer = owner(directory.path());
