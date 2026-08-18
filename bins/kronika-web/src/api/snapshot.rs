@@ -516,13 +516,26 @@ fn prepared_search(
             let [logical_name] = request.sections.as_slice() else {
                 return Err(ApiError::BadFilter("search".to_owned()));
             };
-            StructuredSearch::parse(raw, logical_name).map_err(|_diagnostic| {
+            let search = StructuredSearch::parse(raw, logical_name).map_err(|_diagnostic| {
                 if cursor_present {
                     ApiError::BadCursor
                 } else {
                     ApiError::BadFilter("search".to_owned())
                 }
-            })
+            })?;
+            if request
+                .group
+                .is_some_and(|group| group != RelationGroup::Object)
+            {
+                search.validate_grouped_phase().map_err(|_diagnostic| {
+                    if cursor_present {
+                        ApiError::BadCursor
+                    } else {
+                        ApiError::BadFilter("search".to_owned())
+                    }
+                })?;
+            }
+            Ok(search)
         })
         .transpose()?;
     Ok(parsed.map(Box::new))
@@ -2762,7 +2775,7 @@ fn search_matches(
     process_users: Option<&ProcessUsers>,
     search: &StructuredSearch,
 ) -> bool {
-    search.member_clauses().all(|clause| {
+    search.matches_member(|clause| {
         if logical_name == "pg_store_plans"
             && plan.type_id == 1_004_001
             && clause.key == "query_id"

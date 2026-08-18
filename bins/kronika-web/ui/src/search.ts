@@ -5,6 +5,8 @@ import { rawText, value } from "./model"
 export const SEARCH_MAX_EXPRESSION = 1_024
 export const SEARCH_MAX_CLAUSES = 8
 export const SEARCH_MAX_VALUE = 256
+export const SEARCH_MAX_GROUP_DEPTH = 4
+export const SEARCH_MAX_TOKENS = 31
 
 export type SearchSurface =
   | "events"
@@ -40,18 +42,17 @@ export interface SearchQuantity {
 
 export interface SearchClause {
   readonly canonical: string
-  readonly end: number
   readonly field: SearchField
   readonly key: string
   readonly operator: SearchOperator
   readonly quantity?: SearchQuantity | undefined
-  readonly start: number
   readonly value: string
 }
 
 export type SearchExpr =
   | { readonly kind: "predicate"; readonly predicate: SearchClause }
-  | { readonly kind: "and"; readonly terms: readonly SearchExpr[] }
+  | { readonly kind: "and"; readonly left: SearchExpr; readonly right: SearchExpr }
+  | { readonly end: number; readonly kind: "or"; readonly left: SearchExpr; readonly right: SearchExpr; readonly start: number }
 
 export interface SearchQuery {
   readonly canonical: string
@@ -62,22 +63,27 @@ export interface SearchQuery {
 }
 
 export type SearchErrorCode =
-  | "empty_clause"
+  | "empty_group"
   | "expression_too_long"
-  | "expected_and"
+  | "expected_boolean_operator"
   | "expected_colon"
+  | "group_too_deep"
   | "invalid_escape"
   | "invalid_identifier"
   | "invalid_number"
   | "invalid_unit"
   | "malformed_operator"
+  | "missing_operand"
   | "missing_value"
+  | "mixed_phase_or"
   | "negative_not_allowed"
   | "non_integral_base_value"
   | "operator_not_allowed"
   | "out_of_range"
   | "quoted_quantity"
   | "too_many_clauses"
+  | "too_many_tokens"
+  | "unbalanced_parenthesis"
   | "unit_required"
   | "unknown_field"
   | "unsupported_operator"
@@ -170,101 +176,43 @@ export function searchFields(surface: SearchSurface): readonly SearchField[] {
   return SEARCH_FIELDS[surface]
 }
 
-export function parseSearch(input: string, surface: SearchSurface): SearchParseResult {
+export function parseSearch(input: string, surface: SearchSurface, options: { readonly grouped?: boolean } = {}): SearchParseResult {
   if ([...input].length > SEARCH_MAX_EXPRESSION) return failure("expression_too_long", 0, input.length)
   const first = firstNonSpace(input, 0)
-  if (first === input.length) return success("", [], null, false)
-  const future = firstReserved(input)
-  if (future !== null) return failure("unsupported_syntax", future.start, future.end, future.token)
+  if (first === input.length) return success("", [], null, null, false)
+  const unsupported = firstUnsupported(input)
+  if (unsupported !== null) return failure("unsupported_syntax", unsupported.start, unsupported.end, unsupported.token)
   if (!hasStructuredSyntax(input)) {
-    const and = standaloneAnd(input, first)
-    if (and !== null) return failure("expected_colon", and, and + 3, input.slice(and, and + 3))
     const freeText = input.trim()
     if ([...freeText].length > SEARCH_MAX_VALUE) return failure("value_too_long", first, input.length)
-    return success(freeText, [], freeText, false)
+    return success(freeText, [], null, freeText, false)
   }
 
   const byName = new Map(searchFields(surface).flatMap((field) => [field.key, ...field.aliases].map((name) => [name, field] as const)))
-  const clauses: SearchClause[] = []
-  let cursor = first
-  while (cursor < input.length) {
-    if (clauses.length >= SEARCH_MAX_CLAUSES) return failure("too_many_clauses", cursor, input.length)
-    const reserved = reservedAt(input, cursor)
-    if (reserved !== null) return failure("unsupported_syntax", reserved.start, reserved.end, reserved.token)
-    const start = cursor
-    const keyStart = cursor
-    while (cursor < input.length && /[A-Za-z0-9_]/.test(input[cursor]!)) cursor += 1
-    if (cursor === keyStart) return failure("empty_clause", cursor, Math.min(input.length, cursor + 1))
-    const rawKey = input.slice(keyStart, cursor).toLowerCase()
-    const field = byName.get(rawKey)
-    if (field === undefined) return failure("unknown_field", keyStart, cursor, rawKey)
-    cursor = firstNonSpace(input, cursor)
-    const operatorStart = cursor
-    while (cursor < input.length && /[!<>=:]/.test(input[cursor]!)) cursor += 1
-    const rawOperator = input.slice(operatorStart, cursor)
-    if (rawOperator === "") return failure("expected_colon", operatorStart, Math.min(input.length, operatorStart + 1), rawKey)
-    if ([">=", "<=", "==", "!=", "="].includes(rawOperator)) return failure("unsupported_operator", operatorStart, cursor, rawOperator)
-    if (![":", ">", "<"].includes(rawOperator)) return failure("malformed_operator", operatorStart, cursor, rawOperator)
-    const operator = rawOperator as SearchOperator
-    if ((field.kind === "quantity") !== (operator !== ":")) return failure("operator_not_allowed", operatorStart, cursor, rawOperator)
-    cursor = firstNonSpace(input, cursor)
-    if (cursor >= input.length) return failure("missing_value", cursor, cursor, field.key)
-    if (field.kind === "quantity" && input[cursor] === '"') {
-      const quoted = quotedValue(input, cursor)
-      return quoted.ok ? failure("quoted_quantity", quoted.start, quoted.end, field.key) : quoted
+  try {
+    const parser = new SearchParser(input, byName, first)
+    const expr = parser.parse()
+    if (options.grouped === true) {
+      const mixed = groupedPhase(expr)
+      if (!mixed.ok) return mixed
     }
-    const parsed = input[cursor] === '"' ? quotedValue(input, cursor) : bareValue(input, cursor)
-    if (!parsed.ok) return parsed
-    cursor = parsed.end
-    if (parsed.value === "") return failure("missing_value", parsed.start, parsed.end, field.key)
-    if ([...parsed.value].length > SEARCH_MAX_VALUE) return failure("value_too_long", parsed.start, parsed.end)
-
-    let clause: SearchClause
-    if (field.kind === "quantity") {
-      const parenthesis = parsed.value.search(/[()]/)
-      if (parenthesis >= 0) {
-        return failure("unsupported_syntax", parsed.start + parenthesis, parsed.start + parenthesis + 1, parsed.value[parenthesis])
-      }
-      const next = firstNonSpace(input, cursor)
-      if (next > cursor) {
-        const unitEnd = nextSpace(input, next)
-        if (looksLikeUnit(input.slice(next, unitEnd))) return failure("whitespace_before_unit", next, unitEnd, input.slice(next, unitEnd))
-      }
-      const parsedQuantity = parseQuantity(parsed.value, field.quantity!, parsed.start)
-      if (!parsedQuantity.ok) return parsedQuantity
-      const canonical = `${field.key}${operator}${parsedQuantity.canonical}`
-      clause = { canonical, end: cursor, field, key: field.key, operator, quantity: parsedQuantity.quantity, start, value: parsedQuantity.canonical }
-    } else {
-      if (field.kind === "identifier" && !validIdentifier(parsed.value, field.signed === true)) return failure("invalid_identifier", parsed.start, parsed.end, field.key)
-      const canonical = `${field.key}:${canonicalValue(parsed.value, field.kind)}`
-      clause = { canonical, end: cursor, field, key: field.key, operator, start, value: parsed.value }
-    }
-    clauses.push(clause)
-    cursor = firstNonSpace(input, cursor)
-    if (cursor >= input.length) break
-    const future = reservedAt(input, cursor)
-    if (future !== null) return failure("unsupported_syntax", future.start, future.end, future.token)
-    if (input.slice(cursor, cursor + 3).toLowerCase() !== "and"
-      || (cursor > 0 && !/\s/.test(input[cursor - 1]!))
-      || (cursor + 3 < input.length && !/\s/.test(input[cursor + 3]!))) {
-      const tokenEnd = nextSpace(input, cursor)
-      return failure("expected_and", cursor, tokenEnd, input.slice(cursor, tokenEnd))
-    }
-    cursor = firstNonSpace(input, cursor + 3)
-    if (cursor >= input.length) return failure("empty_clause", input.length - 3, input.length, "AND")
+    return success(renderExpr(expr), parser.clauses, expr, null, true)
+  } catch (error) {
+    if (error instanceof SearchParserFailure) return error.result
+    throw error
   }
-  return success(clauses.map(({ canonical }) => canonical).join(" AND "), clauses, null, true)
 }
 
 export function withoutSearchClause(query: SearchQuery, index: number): string {
-  if (!query.structured) return ""
-  return query.clauses.filter((_clause, at) => at !== index).map(({ canonical }) => canonical).join(" AND ")
+  if (!query.structured || query.expr === null) return ""
+  const cursor = { at: 0 }
+  const expr = removePredicate(query.expr, index, cursor)
+  return expr === null ? "" : renderExpr(expr)
 }
 
 export function rowMatchesSearch(row: DataRow, query: SearchQuery, surface: SearchSurface): boolean {
   if (query.canonical === "") return true
-  const clauses = query.structured ? query.clauses : [{ field: searchFields(surface)[0]!, value: query.freeText ?? "" }]
-  return clauses.every((clause) => {
+  const matches = (clause: Pick<SearchClause, "field" | "value">) => {
     if (clause.field.kind === "quantity") return false
     return clause.field.columns.some((column) => {
       if (surface === "pg_store_plans" && clause.field.key === "query_id") {
@@ -277,7 +225,9 @@ export function rowMatchesSearch(row: DataRow, query: SearchQuery, surface: Sear
       if (clause.field.kind === "identifier") return stored === clause.value
       return globMatcher(clause.value)?.(stored) ?? true
     })
-  })
+  }
+  if (!query.structured) return matches({ field: searchFields(surface)[0]!, value: query.freeText ?? "" })
+  return query.expr !== null && evaluateExpr(query.expr, matches)
 }
 
 export function canonicalSearch(clauses: readonly { readonly key: string; readonly operator?: SearchOperator | undefined; readonly value: string }[], surface: SearchSurface): string | null {
@@ -288,6 +238,198 @@ export function canonicalSearch(clauses: readonly { readonly key: string; readon
   }).join(" AND ")
   const parsed = parseSearch(expression, surface)
   return parsed.ok ? parsed.query.canonical : null
+}
+
+class SearchParserFailure {
+  constructor(readonly result: SearchFailure) {
+  }
+}
+
+class SearchParser {
+  readonly clauses: SearchClause[] = []
+  private tokens = 0
+
+  constructor(
+    private readonly input: string,
+    private readonly fields: ReadonlyMap<string, SearchField>,
+    private cursor: number,
+  ) {}
+
+  parse(): SearchExpr {
+    const expr = this.parseOr(0)
+    this.cursor = firstNonSpace(this.input, this.cursor)
+    if (this.cursor === this.input.length) return expr
+    if (this.input[this.cursor] === ")") this.fail("unbalanced_parenthesis", this.cursor, this.cursor + 1, ")")
+    const end = nextToken(this.input, this.cursor)
+    this.fail("expected_boolean_operator", this.cursor, end, this.input.slice(this.cursor, end))
+  }
+
+  private parseOr(depth: number): SearchExpr {
+    let left = this.parseAnd(depth)
+    while (true) {
+      this.cursor = firstNonSpace(this.input, this.cursor)
+      const operator = keywordAt(this.input, this.cursor, "OR")
+      if (operator === null) return left
+      this.consume(operator.start, operator.end)
+      this.cursor = firstNonSpace(this.input, operator.end)
+      this.requireOperand(operator.start, operator.end)
+      const right = this.parseAnd(depth)
+      left = { end: operator.end, kind: "or", left, right, start: operator.start }
+    }
+  }
+
+  private parseAnd(depth: number): SearchExpr {
+    let left = this.parsePrimary(depth)
+    while (true) {
+      this.cursor = firstNonSpace(this.input, this.cursor)
+      const operator = keywordAt(this.input, this.cursor, "AND")
+      if (operator === null) return left
+      this.consume(operator.start, operator.end)
+      this.cursor = firstNonSpace(this.input, operator.end)
+      this.requireOperand(operator.start, operator.end)
+      const right = this.parsePrimary(depth)
+      left = { kind: "and", left, right }
+    }
+  }
+
+  private parsePrimary(depth: number): SearchExpr {
+    this.cursor = firstNonSpace(this.input, this.cursor)
+    const unsupported = keywordAt(this.input, this.cursor, "NOT")
+    if (unsupported !== null) this.fail("unsupported_syntax", unsupported.start, unsupported.end, "NOT")
+    for (const keyword of ["AND", "OR"] as const) {
+      const operator = keywordAt(this.input, this.cursor, keyword)
+      if (operator !== null) this.fail("missing_operand", operator.start, operator.end, keyword)
+    }
+    if (this.input[this.cursor] === ")") this.fail("unbalanced_parenthesis", this.cursor, this.cursor + 1, ")")
+    if (this.input[this.cursor] !== "(") return this.parsePredicate()
+
+    const open = this.cursor
+    this.consume(open, open + 1)
+    if (depth >= SEARCH_MAX_GROUP_DEPTH) this.fail("group_too_deep", open, open + 1, "(")
+    this.cursor = firstNonSpace(this.input, open + 1)
+    if (this.input[this.cursor] === ")") this.fail("empty_group", open, this.cursor + 1, "()")
+    if (this.cursor === this.input.length) this.fail("unbalanced_parenthesis", open, open + 1, "(")
+    const expr = this.parseOr(depth + 1)
+    this.cursor = firstNonSpace(this.input, this.cursor)
+    if (this.input[this.cursor] !== ")") this.fail("unbalanced_parenthesis", open, open + 1, "(")
+    this.consume(this.cursor, this.cursor + 1)
+    this.cursor += 1
+    return expr
+  }
+
+  private parsePredicate(): SearchExpr {
+    if (this.cursor === this.input.length) this.fail("missing_operand", this.cursor, this.cursor)
+    if (this.clauses.length >= SEARCH_MAX_CLAUSES) this.fail("too_many_clauses", this.cursor, this.input.length)
+    const start = this.cursor
+    const keyStart = this.cursor
+    while (this.cursor < this.input.length && /[A-Za-z0-9_]/.test(this.input[this.cursor]!)) this.cursor += 1
+    if (this.cursor === keyStart) this.fail("missing_operand", this.cursor, Math.min(this.input.length, this.cursor + 1))
+    const rawKey = this.input.slice(keyStart, this.cursor).toLowerCase()
+    const field = this.fields.get(rawKey)
+    if (field === undefined) this.fail("unknown_field", keyStart, this.cursor, rawKey)
+    this.cursor = firstNonSpace(this.input, this.cursor)
+    const operatorStart = this.cursor
+    while (this.cursor < this.input.length && /[!<>=:]/.test(this.input[this.cursor]!)) this.cursor += 1
+    const rawOperator = this.input.slice(operatorStart, this.cursor)
+    if (rawOperator === "") this.fail("expected_colon", operatorStart, Math.min(this.input.length, operatorStart + 1), rawKey)
+    if ([">=", "<=", "==", "!=", "="].includes(rawOperator)) this.fail("unsupported_operator", operatorStart, this.cursor, rawOperator)
+    if (![":", ">", "<"].includes(rawOperator)) this.fail("malformed_operator", operatorStart, this.cursor, rawOperator)
+    const operator = rawOperator as SearchOperator
+    if ((field.kind === "quantity") !== (operator !== ":")) this.fail("operator_not_allowed", operatorStart, this.cursor, rawOperator)
+    this.cursor = firstNonSpace(this.input, this.cursor)
+    if (this.cursor >= this.input.length || this.input[this.cursor] === ")") this.fail("missing_value", this.cursor, this.cursor, field.key)
+    if (field.kind === "quantity" && this.input[this.cursor] === '"') {
+      const quoted = quotedValue(this.input, this.cursor)
+      if (!quoted.ok) throw new SearchParserFailure(quoted)
+      this.fail("quoted_quantity", quoted.start, quoted.end, field.key)
+    }
+    const parsed = this.input[this.cursor] === '"' ? quotedValue(this.input, this.cursor) : bareValue(this.input, this.cursor)
+    if (!parsed.ok) throw new SearchParserFailure(parsed)
+    this.cursor = parsed.end
+    if (parsed.value === "") this.fail("missing_value", parsed.start, parsed.end, field.key)
+    if ([...parsed.value].length > SEARCH_MAX_VALUE) this.fail("value_too_long", parsed.start, parsed.end)
+
+    let clause: SearchClause
+    if (field.kind === "quantity") {
+      const next = firstNonSpace(this.input, this.cursor)
+      if (next > this.cursor) {
+        const unitEnd = nextToken(this.input, next)
+        if (looksLikeUnit(this.input.slice(next, unitEnd))) this.fail("whitespace_before_unit", next, unitEnd, this.input.slice(next, unitEnd))
+      }
+      const parsedQuantity = parseQuantity(parsed.value, field.quantity!, parsed.start)
+      if (!parsedQuantity.ok) throw new SearchParserFailure(parsedQuantity)
+      const canonical = `${field.key}${operator}${parsedQuantity.canonical}`
+      clause = { canonical, field, key: field.key, operator, quantity: parsedQuantity.quantity, value: parsedQuantity.canonical }
+    } else {
+      if (field.kind === "identifier" && !validIdentifier(parsed.value, field.signed === true)) this.fail("invalid_identifier", parsed.start, parsed.end, field.key)
+      const canonical = `${field.key}:${canonicalValue(parsed.value, field.kind)}`
+      clause = { canonical, field, key: field.key, operator, value: parsed.value }
+    }
+    this.consume(start, this.cursor)
+    this.clauses.push(clause)
+    return { kind: "predicate", predicate: clause }
+  }
+
+  private requireOperand(operatorStart: number, operatorEnd: number): void {
+    if (this.cursor === this.input.length || this.input[this.cursor] === ")") this.fail("missing_operand", operatorStart, operatorEnd, this.input.slice(operatorStart, operatorEnd).toUpperCase())
+    for (const keyword of ["AND", "OR"] as const) {
+      const next = keywordAt(this.input, this.cursor, keyword)
+      if (next !== null) this.fail("missing_operand", next.start, next.end, keyword)
+    }
+  }
+
+  private consume(start: number, end: number): void {
+    if (this.tokens >= SEARCH_MAX_TOKENS) this.fail("too_many_tokens", start, end, this.input.slice(start, end))
+    this.tokens += 1
+  }
+
+  private fail(code: SearchErrorCode, start: number, end: number, token?: string): never {
+    throw new SearchParserFailure(failure(code, start, end, token))
+  }
+}
+
+type SearchPhase = "member" | "result" | "both"
+
+function groupedPhase(expr: SearchExpr): { readonly ok: true; readonly phase: SearchPhase } | SearchFailure {
+  if (expr.kind === "predicate") return { ok: true, phase: expr.predicate.field.kind === "quantity" ? "result" : "member" }
+  const left = groupedPhase(expr.left)
+  if (!left.ok) return left
+  const right = groupedPhase(expr.right)
+  if (!right.ok) return right
+  if (expr.kind === "or") {
+    if (left.phase !== right.phase || left.phase === "both") return failure("mixed_phase_or", expr.start, expr.end, "OR")
+    return { ok: true, phase: left.phase }
+  }
+  return { ok: true, phase: left.phase === right.phase ? left.phase : "both" }
+}
+
+function renderExpr(expr: SearchExpr, parentPrecedence = 0): string {
+  const precedence = expr.kind === "predicate" ? 3 : expr.kind === "and" ? 2 : 1
+  const rendered = expr.kind === "predicate"
+    ? expr.predicate.canonical
+    : `${renderExpr(expr.left, precedence)} ${expr.kind === "and" ? "AND" : "OR"} ${renderExpr(expr.right, precedence)}`
+  return precedence < parentPrecedence ? `(${rendered})` : rendered
+}
+
+function evaluateExpr(expr: SearchExpr, predicate: (clause: SearchClause) => boolean): boolean {
+  if (expr.kind === "predicate") return predicate(expr.predicate)
+  if (expr.kind === "and") return evaluateExpr(expr.left, predicate) && evaluateExpr(expr.right, predicate)
+  return evaluateExpr(expr.left, predicate) || evaluateExpr(expr.right, predicate)
+}
+
+function removePredicate(expr: SearchExpr, target: number, cursor: { at: number }): SearchExpr | null {
+  if (expr.kind === "predicate") {
+    const remove = cursor.at === target
+    cursor.at += 1
+    return remove ? null : expr
+  }
+  const left = removePredicate(expr.left, target, cursor)
+  const right = removePredicate(expr.right, target, cursor)
+  if (left === null) return right
+  if (right === null) return left
+  return expr.kind === "and"
+    ? { kind: "and", left, right }
+    : { ...expr, left, right }
 }
 
 function parseQuantity(token: string, kind: QuantityKind, offset: number): QuantityParseResult {
@@ -357,12 +499,12 @@ function quotedValue(input: string, quote: number): ValueParseResult {
 
 function bareValue(input: string, start: number): Extract<ValueParseResult, { readonly ok: true }> {
   let end = start
-  while (end < input.length && !/\s/.test(input[end]!)) end += 1
+  while (end < input.length && !/[\s()]/.test(input[end]!)) end += 1
   return { end, ok: true, start, value: input.slice(start, end) }
 }
 
 function canonicalValue(value: string, kind: SearchFieldKind): string {
-  if (kind === "identifier" || /^[^\s:"\\]+$/.test(value)) return value
+  if (kind === "identifier" || /^[^\s():"\\]+$/.test(value)) return value
   return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`
 }
 
@@ -374,9 +516,7 @@ function validIdentifier(input: string, signed: boolean): boolean {
   } catch { return false }
 }
 
-function success(canonical: string, clauses: readonly SearchClause[], freeText: string | null, structured: boolean): SearchParseResult {
-  const terms: SearchExpr[] = clauses.map((predicate) => ({ kind: "predicate", predicate }))
-  const expr: SearchExpr | null = terms.length === 0 ? null : terms.length === 1 ? terms[0]! : { kind: "and", terms }
+function success(canonical: string, clauses: readonly SearchClause[], expr: SearchExpr | null, freeText: string | null, structured: boolean): SearchParseResult {
   return { ok: true, query: { canonical, clauses, expr, freeText, structured } }
 }
 
@@ -391,16 +531,18 @@ function gcd(left: bigint, right: bigint): bigint { while (right !== 0n) { const
 function hasStructuredSyntax(input: string): boolean {
   let quoted = false
   let escaped = false
-  for (const character of input) {
+  for (let cursor = 0; cursor < input.length; cursor += 1) {
+    const character = input[cursor]!
     if (escaped) { escaped = false; continue }
     if (quoted && character === "\\") { escaped = true; continue }
     if (character === '"') { quoted = !quoted; continue }
-    if (!quoted && ":<>!=".includes(character)) return true
+    if (!quoted && ":<>!=()".includes(character)) return true
+    if (!quoted && ["AND", "OR", "NOT"].some((keyword) => keywordAt(input, cursor, keyword) !== null)) return true
   }
   return false
 }
 
-function firstReserved(input: string): { readonly end: number; readonly start: number; readonly token: string } | null {
+function firstUnsupported(input: string): { readonly end: number; readonly start: number; readonly token: string } | null {
   let quoted = false
   let escaped = false
   for (let cursor = 0; cursor < input.length; cursor += 1) {
@@ -409,22 +551,19 @@ function firstReserved(input: string): { readonly end: number; readonly start: n
     if (quoted && character === "\\") { escaped = true; continue }
     if (character === '"') { quoted = !quoted; continue }
     if (!quoted) {
-      const reserved = reservedAt(input, cursor)
-      if (reserved !== null) return reserved
+      const unsupported = keywordAt(input, cursor, "NOT")
+      if (unsupported !== null) return { ...unsupported, token: "NOT" }
     }
   }
   return null
 }
 
-function reservedAt(input: string, start: number): { readonly end: number; readonly start: number; readonly token: string } | null {
-  const character = input[start]
-  if (character === "(" || character === ")") return { end: start + 1, start, token: character }
-  for (const token of ["NOT", "OR"] as const) {
-    if (input.slice(start, start + token.length).toUpperCase() === token
-      && (start === 0 || /\s|\(/.test(input[start - 1]!))
-      && (start + token.length === input.length || /\s|\(|\)/.test(input[start + token.length]!))) return { end: start + token.length, start, token }
-  }
-  return null
+function keywordAt(input: string, start: number, keyword: string): { readonly end: number; readonly start: number } | null {
+  const end = start + keyword.length
+  if (input.slice(start, end).toUpperCase() !== keyword
+    || (start > 0 && !/[\s()]/.test(input[start - 1]!))
+    || (end < input.length && !/[\s()]/.test(input[end]!))) return null
+  return { end, start }
 }
 
 function looksLikeUnit(token: string): boolean {
@@ -432,7 +571,4 @@ function looksLikeUnit(token: string): boolean {
   return BYTE_UNITS.has(token) || DURATION_UNITS.has(token) || token === "/s" || token === "%" || /^[A-Za-z%/]+$/.test(token)
 }
 
-function standaloneAnd(input: string, start: number): number | null {
-  const match = /(?:^|\s)AND(?:\s|$)/i.exec(input.slice(start))
-  return match === null ? null : start + match.index + (match[0].startsWith(" ") ? 1 : 0)
-}
+function nextToken(input: string, start: number): number { let cursor = start; while (cursor < input.length && !/[\s()]/.test(input[cursor]!)) cursor += 1; return cursor }

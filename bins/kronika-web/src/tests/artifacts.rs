@@ -3024,6 +3024,7 @@ fn statement_search_finds_a_match_outside_the_old_first_two_hundred() {
         .expect("search page trailer");
     assert_eq!(page["eligible"], "1");
     assert_eq!(page["returned"], "1");
+
     assert_eq!(page["has_more"], false);
     assert_eq!(page["truncated"], false);
 }
@@ -3051,6 +3052,18 @@ fn structured_statement_search_filters_the_full_set_before_sort_and_page() {
     assert_eq!(page["eligible"], "1");
     assert_eq!(page["returned"], "1");
     assert_eq!(page["has_more"], false);
+
+    let or_target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=pg_stat_statements&field=queryid&field=query&by=queryid&page_size=1&search=query_id%3A0%20OR%20query_id%3A1"
+    );
+    let or_records = stream(fixture.prepare(&or_target, None)).expect("structured statement OR");
+    let or_page = or_records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("structured statement OR trailer");
+    assert_eq!(or_page["eligible"], "2");
+    assert_eq!(or_page["returned"], "1");
+    assert_eq!(or_page["has_more"], true);
 }
 
 #[test]
@@ -4781,6 +4794,10 @@ fn relation_search_runs_before_group_sort_and_page() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture proves grouped comparison behavior across every reducer phase"
+)]
 fn relation_comparison_filters_reduced_hidden_metrics_before_page() {
     const MB: i64 = 1_000_000;
     let mut fixture = Fixture::new();
@@ -4856,6 +4873,18 @@ fn relation_comparison_filters_reduced_hidden_metrics_before_page() {
     assert_eq!(page["eligible"], "1");
     assert_eq!(page["returned"], "1");
 
+    let object_or = stream(fixture.prepare(
+        &format!("{base}&group=object&search=table_name%3Aexact%20OR%20size%3E100MB"),
+        None,
+    ))
+    .expect("object member or metric OR");
+    let object_or_page = object_or
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("object OR trailer");
+    assert_eq!(object_or_page["eligible"], "2");
+    assert_eq!(object_or_page["returned"], "1");
+
     let grouped = stream(fixture.prepare(
         &format!("{base}&group=schema&search=schema%3Apair%20AND%20size%3E100MB"),
         None,
@@ -4871,6 +4900,33 @@ fn relation_comparison_filters_reduced_hidden_metrics_before_page() {
         .expect("relation comparison layout");
     assert_eq!(layout["columns"].as_array().map(Vec::len), Some(1));
     assert_eq!(layout["columns"][0]["name"], "table_count");
+
+    let pre_or = stream(fixture.prepare(
+        &format!("{base}&group=schema&search=%28schema%3Apair%20OR%20schema%3Aboundary%29%20AND%20size%3E100MB"),
+        None,
+    ))
+    .expect("pre-reducer grouped OR");
+    let rows = relation_records(&pre_or);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["key"]["schemaname"], "pair");
+    assert_eq!(rows[0]["values"]["table_count"], "2");
+
+    let post_or = stream(fixture.prepare(
+        &format!("{base}&group=schema&search=schema%3Apair%20AND%20%28size%3E120MB%20OR%20table_count%3E1%29"),
+        None,
+    ))
+    .expect("post-reducer grouped OR");
+    let rows = relation_records(&post_or);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["key"]["schemaname"], "pair");
+
+    let path = format!("/api/segments/{SEGMENT_ID}/snapshot");
+    let query = "at=100&section=pg_stat_user_tables&group=schema&field=table_count&page_size=1&search=schema%3Apair%20OR%20size%3E100MB";
+    let route = crate::route::parse(&path, Some(query)).expect("mixed grouped OR route");
+    assert!(matches!(
+        crate::api::prepare(fixture.root(), SOURCES, route, None),
+        Err(ApiError::BadFilter(parameter)) if parameter == "search"
+    ));
 
     for operator in ["%3E", "%3C"] {
         let boundary = stream(fixture.prepare(

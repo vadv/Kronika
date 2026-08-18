@@ -8,7 +8,8 @@ use serde_json::{Value, json};
 use super::{
     ContributingMoments, GlobPattern, PageOrderValue, PageRankedRow, PageRows, PageStagedRow,
     SearchValue, SnapshotCursor, StructuredSearch, available_field_index, compare_ordered,
-    ordered_cell, rate, record_contributing_moment, snapshot_binding, timed_context_index,
+    ordered_cell, prepared_search, rate, record_contributing_moment, snapshot_binding,
+    timed_context_index,
 };
 use crate::api::query::OutputField;
 use crate::route::{Filter, Order, RelationGroup, SnapshotRequest};
@@ -495,6 +496,24 @@ fn cursor_binding_uses_server_canonical_search() {
 }
 
 #[test]
+fn grouped_requests_reject_mixed_phase_or_before_execution() {
+    let mut grouped = request();
+    grouped.sections = vec!["pg_stat_user_tables".to_owned()];
+    grouped.group = Some(RelationGroup::Schema);
+    grouped.search = Some("schema:public OR size>100MB".to_owned());
+    assert!(prepared_search(&grouped, false).is_err());
+
+    grouped.search = Some("(schema:public OR schema:audit) AND size>100MB".to_owned());
+    assert!(prepared_search(&grouped, false).is_ok());
+    grouped.search = Some("schema:public AND (size>100MB OR buffer_hit<90%)".to_owned());
+    assert!(prepared_search(&grouped, false).is_ok());
+
+    grouped.group = Some(RelationGroup::Object);
+    grouped.search = Some("schema:public OR size>100MB".to_owned());
+    assert!(prepared_search(&grouped, false).is_ok());
+}
+
+#[test]
 fn glob_supports_substrings_wildcards_literals_and_unicode_case() {
     for (pattern, candidate, matches) in [
         ("needle", "a NEEDLE here", true),
@@ -533,7 +552,6 @@ fn structured_search_validates_aliases_types_escaping_and_surface_fields() {
         "query_id:*",
         "query_id:01",
         "query_id:9223372036854775808",
-        "query_id:1 OR query_id:2",
         r#"database:"unterminated"#,
         r#"database:"bad\n""#,
     ] {
@@ -585,7 +603,7 @@ fn structured_search_parses_strict_exact_quantities_and_canonicalizes_them() {
         parsed.canonical(),
         "schema:public AND size>100MB AND seq_scan_rate<0.5/s"
     );
-    assert!(matches!(parsed.expr, super::search::Expr::And(_)));
+    assert!(matches!(parsed.expr, super::search::Expr::And(..)));
     assert!(matches!(
         &parsed.clauses[1].value,
         SearchValue::Quantity(quantity)
@@ -615,7 +633,7 @@ fn structured_search_parses_strict_exact_quantities_and_canonicalizes_them() {
 }
 
 #[test]
-fn structured_search_rejects_atomic_operators_units_and_future_syntax_with_spans() {
+fn structured_search_rejects_atomic_operators_units_and_not_with_spans() {
     for (expression, code, token) in [
         ("size>=100MB", "unsupported_operator", ">="),
         ("size<=100MB", "unsupported_operator", "<="),
@@ -626,13 +644,8 @@ fn structured_search_rejects_atomic_operators_units_and_future_syntax_with_spans
         ("size<>100MB", "malformed_operator", "<>"),
         ("size:100MB", "operator_not_allowed", ":"),
         ("schema>public", "operator_not_allowed", ">"),
-        ("size>100MB OR size<1GB", "unsupported_syntax", "OR"),
         ("NOT size>100MB", "unsupported_syntax", "NOT"),
-        ("(size>100MB)", "unsupported_syntax", "("),
-        ("size>100MB)", "unsupported_syntax", ")"),
-        ("latency OR budget", "unsupported_syntax", "OR"),
         ("NOT latency", "unsupported_syntax", "NOT"),
-        ("latency (budget)", "unsupported_syntax", "("),
         ("size>100 MB", "whitespace_before_unit", "MB"),
     ] {
         let error = StructuredSearch::parse(expression, "pg_stat_user_tables")
@@ -665,5 +678,87 @@ fn structured_search_rejects_atomic_operators_units_and_future_syntax_with_spans
     }
     assert!(
         StructuredSearch::parse(r#"text:"size>100MB OR (later)""#, "pg_stat_user_tables").is_ok()
+    );
+}
+
+#[test]
+fn structured_search_parses_boolean_precedence_groups_and_phase_rules() {
+    let parsed = StructuredSearch::parse(
+        "((schema:public OR schema:audit)) AND (size > 100.000MB OR buffer_hit<90%)",
+        "pg_stat_user_tables",
+    )
+    .expect("valid boolean expression");
+    assert_eq!(
+        parsed.canonical(),
+        "(schema:public OR schema:audit) AND (size>100MB OR buffer_hit<90%)"
+    );
+    assert!(matches!(parsed.expr, super::search::Expr::And(..)));
+    parsed
+        .validate_grouped_phase()
+        .expect("AND may cross the grouped phase boundary");
+    assert!(parsed.matches_member(|clause| {
+        matches!(&clause.value, SearchValue::Pattern(pattern) if pattern.matches("audit"))
+    }));
+    assert!(!parsed.matches_member(|clause| {
+        matches!(&clause.value, SearchValue::Pattern(pattern) if pattern.matches("private"))
+    }));
+
+    let precedence = StructuredSearch::parse(
+        "schema:public OR schema:audit AND table_name:orders",
+        "pg_stat_user_tables",
+    )
+    .expect("valid precedence");
+    assert!(matches!(precedence.expr, super::search::Expr::Or { .. }));
+
+    for expression in [
+        "schema:public OR size>100MB",
+        "(schema:public AND size>100MB) OR schema:audit",
+    ] {
+        let error = StructuredSearch::parse(expression, "pg_stat_user_tables")
+            .expect("syntactically valid")
+            .validate_grouped_phase()
+            .expect_err("mixed grouped OR");
+        assert_eq!(error.code, "mixed_phase_or", "{expression}");
+        assert_eq!(expression.get(error.start..error.end), Some("OR"));
+    }
+}
+
+#[test]
+fn structured_search_boolean_diagnostics_and_bounds_have_exact_spans() {
+    for (expression, code, token) in [
+        ("()", "empty_group", "()"),
+        ("(schema:public", "unbalanced_parenthesis", "("),
+        ("schema:public)", "unbalanced_parenthesis", ")"),
+        ("schema:public AND", "missing_operand", "AND"),
+        ("schema:public OR OR schema:audit", "missing_operand", "OR"),
+        ("AND schema:public", "missing_operand", "AND"),
+        (
+            "schema:public table_name:orders",
+            "expected_boolean_operator",
+            "table_name:orders",
+        ),
+    ] {
+        let error = StructuredSearch::parse(expression, "pg_stat_user_tables")
+            .expect_err("invalid boolean expression");
+        assert_eq!(error.code, code, "{expression}");
+        assert_eq!(expression.get(error.start..error.end), Some(token));
+    }
+
+    let deep = format!("{}schema:public{}", "(".repeat(5), ")".repeat(5));
+    assert_eq!(
+        StructuredSearch::parse(&deep, "pg_stat_user_tables")
+            .expect_err("excessive group nesting")
+            .code,
+        "group_too_deep"
+    );
+    let clauses = std::iter::repeat_n("(schema:public)", super::SEARCH_MAX_CLAUSES)
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    assert!(StructuredSearch::parse(&clauses, "pg_stat_user_tables").is_ok());
+    assert_eq!(
+        StructuredSearch::parse(&format!("({clauses})"), "pg_stat_user_tables")
+            .expect_err("excessive boolean tokens")
+            .code,
+        "too_many_tokens"
     );
 }

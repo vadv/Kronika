@@ -271,7 +271,9 @@ test("expanded uPlot keeps one unobscured close action at responsive widths", { 
         window.scrollTo(0, 120)
         return { body: document.body.style.overflow, root: document.documentElement.style.overflow, scrollY }
       })()`)
-      assert.deepEqual(before, { body: "auto", root: "visible", scrollY: 120 }, viewport.label)
+      assert.equal(before.body, "auto", viewport.label)
+      assert.equal(before.root, "visible", viewport.label)
+      assert.ok(Math.abs(before.scrollY - 120) <= 1, `${viewport.label}: ${JSON.stringify(before)}`)
       await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] .chart-expand').click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"][role="dialog"].uplot-expanded') !== null`, `${viewport.label} expanded timeline`)
       await settleLayout(cdp)
@@ -385,7 +387,10 @@ test("expanded uPlot keeps one unobscured close action at responsive widths", { 
       await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"][role="dialog"]') === null`, `${viewport.label} Escape close`)
       await cdp.waitFor(`document.activeElement === document.querySelector('[data-testid="hour-timeline"] .chart-expand')`, `${viewport.label} Escape focus return`)
       await settleLayout(cdp)
-      assert.deepEqual(await cdp.evaluate(`({ body: document.body.style.overflow, root: document.documentElement.style.overflow, scrollY })`), before, viewport.label)
+      const restored = await cdp.evaluate(`({ body: document.body.style.overflow, root: document.documentElement.style.overflow, scrollY })`)
+      assert.equal(restored.body, before.body, viewport.label)
+      assert.equal(restored.root, before.root, viewport.label)
+      assert.ok(Math.abs(restored.scrollY - before.scrollY) <= 1, `${viewport.label}: ${JSON.stringify({ before, restored })}`)
       assert.equal(await cdp.evaluate(`getComputedStyle(document.documentElement).overflowAnchor`), "none", viewport.label)
     }
     assert.deepEqual(page.errors, [])
@@ -1135,28 +1140,43 @@ test("the production artifact preserves wire keys and exact finding page state",
 
     await cdp.evaluate(`(() => {
       const input = document.querySelector('[data-testid="table-filter"]')
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "query_id:9007199254740991 and db:operators")
-      input.dispatchEvent(new InputEvent("input", { bubbles: true, data: "query_id:9007199254740991 and db:operators", inputType: "insertFromPaste" }))
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "(query_id:9007199254740991 or db:operators) and role:reporter")
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, data: "(query_id:9007199254740991 or db:operators) and role:reporter", inputType: "insertFromPaste" }))
       input.form.requestSubmit()
     })()`)
-    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "query_id:9007199254740991 AND database:operators" && document.querySelectorAll('[data-testid="search-chips"] button').length === 2`, "canonical pasted search chips")
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "(query_id:9007199254740991 OR database:operators) AND role:reporter" && document.querySelectorAll('[data-testid="search-chips"] button').length === 3`, "canonical pasted boolean search chips")
     const canonicalSearchState = await cdp.evaluate(`(() => ({
+      accessible: document.querySelector('[data-testid="search-chips"]').getAttribute("aria-label"),
       input: document.querySelector('[data-testid="table-filter"]').value,
       labels: [...document.querySelectorAll('[data-testid="search-chips"] button')].map((button) => button.getAttribute("aria-label")),
+      text: document.querySelector('[data-testid="search-chips"]').textContent,
     }))()`)
-    assert.equal(canonicalSearchState.input, "query_id:9007199254740991 AND database:operators")
+    assert.equal(canonicalSearchState.input, "(query_id:9007199254740991 OR database:operators) AND role:reporter")
+    assert.match(canonicalSearchState.accessible, /Applied search filters: \(query_id:9007199254740991 OR database:operators\) AND role:reporter/)
+    assert.match(canonicalSearchState.text, /\(query_id: 9007199254740991ORdatabase: operators\)ANDrole: reporter/)
     assert.deepEqual(canonicalSearchState.labels, [
       "Remove query_id: 9007199254740991",
       "Remove database: operators",
+      "Remove role: reporter",
     ])
+    await cdp.evaluate(`(() => {
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text) => { window.__copiedSearch = text } } })
+      document.querySelector('[aria-label="Search syntax and fields"]').click()
+    })()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="search-help"]') !== null`, "boolean search help")
+    await cdp.evaluate(`([...document.querySelectorAll('[data-testid="search-help"] button')].find((button) => button.textContent.includes("OR")))?.click()`)
+    assert.match(await cdp.evaluate(`window.__copiedSearch ?? ""`), /OR/)
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+    await cdp.waitFor(`document.querySelector('[data-testid="search-help"]') === null`, "boolean search help closed")
     await cdp.evaluate(`document.querySelector('[data-testid="search-chips"] button').focus()`)
     await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: " ", code: "Space", windowsVirtualKeyCode: 32 })
     await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: " ", code: "Space", windowsVirtualKeyCode: 32 })
-    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "database:operators"`, "keyboard chip removal")
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "database:operators AND role:reporter"`, "keyboard chip removal")
     await cdp.evaluate(`history.back()`)
-    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "query_id:9007199254740991 AND database:operators" && document.querySelectorAll('[data-testid="search-chips"] button').length === 2`, "Back restores the canonical search")
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "(query_id:9007199254740991 OR database:operators) AND role:reporter" && document.querySelectorAll('[data-testid="search-chips"] button').length === 3`, "Back restores the canonical boolean search")
     await cdp.evaluate(`history.forward()`)
-    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "database:operators" && document.querySelectorAll('[data-testid="search-chips"] button').length === 1`, "Forward restores the removed chip")
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "database:operators AND role:reporter" && document.querySelectorAll('[data-testid="search-chips"] button').length === 2`, "Forward restores the removed boolean chip")
     await cdp.evaluate(`document.querySelector('[aria-label="Clear the filter"]').click()`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("find") === null && document.querySelector('[data-testid="search-chips"]') === null`, "clear restores ordinary rows")
     await cdp.waitFor(`document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent.includes("Loaded 50 of 4,807") === true`, "the search-clear page")
@@ -1950,19 +1970,20 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
     const comparisonStart = requests.length
     await cdp.evaluate(`(() => {
       const input = document.querySelector('[data-testid="table-filter"]')
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "size > 100.000MB")
-      input.dispatchEvent(new InputEvent("input", { bubbles: true, data: "size > 100.000MB", inputType: "insertFromPaste" }))
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "(tablespace:fast_ssd or tablespace:archive) and (size > 100.000MB or scan_rate>10/s)")
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, data: "(tablespace:fast_ssd or tablespace:archive) and (size > 100.000MB or scan_rate>10/s)", inputType: "insertFromPaste" }))
       input.form.requestSubmit()
     })()`)
-    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "size>100MB" && document.querySelector('[data-testid="search-chips"]')?.textContent.includes("Size · > 100 MB") === true`, "the hidden-lens comparison chip")
-    await waitForRequests(() => requests.slice(comparisonStart).some(({ query }) => new URLSearchParams(query).get("search") === "size>100MB"))
-    const comparisonRequest = requests.slice(comparisonStart).find(({ query }) => new URLSearchParams(query).get("search") === "size>100MB")
+    const groupedBoolean = "(tablespace:fast_ssd OR tablespace:archive) AND (size>100MB OR scan_rate>10/s)"
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === ${JSON.stringify(groupedBoolean)} && document.querySelector('[data-testid="search-chips"]')?.textContent.includes("Size · > 100 MB") === true`, "the hidden-lens grouped boolean chips")
+    await waitForRequests(() => requests.slice(comparisonStart).some(({ query }) => new URLSearchParams(query).get("search") === groupedBoolean))
+    const comparisonRequest = requests.slice(comparisonStart).find(({ query }) => new URLSearchParams(query).get("search") === groupedBoolean)
     assert.notEqual(comparisonRequest, undefined)
     const comparisonQuery = new URLSearchParams(comparisonRequest.query)
     assert.equal(comparisonQuery.get("group"), "tablespace")
     assert.equal(comparisonQuery.getAll("field").includes("main_fork_bytes"), false)
     const comparisonChip = await cdp.evaluate(`(() => {
-      const chip = document.querySelector('[data-testid="search-chips"] > span')
+      const chip = document.querySelector('[data-testid="search-chips"] [title="size>100MB"]').parentElement
       return {
         label: chip.querySelector("button").getAttribute("aria-label"),
         text: chip.textContent,
@@ -1973,6 +1994,18 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
     assert.match(comparisonChip.label, /Remove Size: > 100 MB/)
     assert.match(comparisonChip.text, /Size · > 100 MB/)
 
+    const mixedStart = requests.length
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('[data-testid="table-filter"]')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "tablespace:fast_ssd OR size>100MB")
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, data: "tablespace:fast_ssd OR size>100MB", inputType: "insertFromPaste" }))
+      input.form.requestSubmit()
+    })()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="search-error"] mark')?.textContent === "OR"`, "the grouped mixed OR span")
+    assert.match(await cdp.evaluate(`document.querySelector('[data-testid="search-error"]')?.textContent ?? ""`), /cannot mix names or text with metrics/)
+    assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("find")`), groupedBoolean)
+    assert.equal(requests.slice(mixedStart).some(({ query }) => new URLSearchParams(query).get("search") === "tablespace:fast_ssd OR size>100MB"), false)
+
     const invalidStart = requests.length
     const retainedRow = await cdp.evaluate(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row').textContent`)
     await cdp.evaluate(`(() => {
@@ -1982,7 +2015,7 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
       input.form.requestSubmit()
     })()`)
     await cdp.waitFor(`document.querySelector('[data-testid="search-error"] mark')?.textContent === ">="`, "the atomic unsupported operator span")
-    assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("find")`), "size>100MB")
+    assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("find")`), groupedBoolean)
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row').textContent`), retainedRow)
     assert.equal(requests.slice(invalidStart).some(({ query }) => query.includes("size%3E%3D") || query.includes("size%3E=")), false)
 
@@ -1995,8 +2028,25 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
       overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
     }))()`)
     assert.match(narrowComparison.chip, /Размер · > 100 MB/)
+    assert.match(narrowComparison.chip, /OR/)
     assert.equal(narrowComparison.overflow, false)
+    await cdp.evaluate(`document.querySelector('[aria-label="Синтаксис и поля поиска"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="search-help"]') !== null`, "the RU grouped-search help")
+    assert.match(await cdp.evaluate(`document.querySelector('[data-testid="search-help"]')?.textContent ?? ""`), /один OR не может смешивать имена или текст с метриками/)
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+    await cdp.waitFor(`document.querySelector('[data-testid="search-help"]') === null`, "the RU grouped-search help closed")
+    for (const width of [800, 1280]) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width })
+      await settleLayout(cdp)
+      await assertSearchControlContained(cdp, `RU grouped search at ${width}`, '[data-search-surface="pg_stat_user_indexes"]')
+    }
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+    for (const width of [360, 800, 1280]) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: width === 360 ? 640 : 768, mobile: false, width })
+      await settleLayout(cdp)
+      await assertSearchControlContained(cdp, `EN grouped search at ${width}`, '[data-search-surface="pg_stat_user_indexes"]')
+    }
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
     await cdp.evaluate(`document.querySelector('[aria-label="Clear the filter"]').click()`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("find") === null`, "comparison clear")

@@ -3,7 +3,7 @@ import test from "node:test"
 
 import { importModule } from "./import-module.mjs"
 
-const { canonicalSearch, parseSearch, rowMatchesSearch, SEARCH_MAX_CLAUSES, SEARCH_MAX_EXPRESSION, SEARCH_MAX_VALUE, searchFields, withoutSearchClause } = await importModule('export * from "../src/search.ts"')
+const { canonicalSearch, parseSearch, rowMatchesSearch, SEARCH_MAX_CLAUSES, SEARCH_MAX_EXPRESSION, SEARCH_MAX_GROUP_DEPTH, SEARCH_MAX_VALUE, searchFields, withoutSearchClause } = await importModule('export * from "../src/search.ts"')
 
 const row = (logicalName, typeId, values) => ({
   logicalName, ordinal: "1", segmentId: "7", timestamp: 10, typeId, values,
@@ -34,7 +34,7 @@ test("invalid selectors identify the exact offending span and never become text"
   if (unknown.ok) return
   assert.equal(unknown.error.code, "unknown_field")
   assert.equal("query_id:42 AND taname:foo".slice(unknown.error.start, unknown.error.end), "taname")
-  for (const expression of ["query_id:*", "query_id:01", "query_id:42 OR query_id:43", 'database:"open', 'database:"bad\\n"']) {
+  for (const expression of ["query_id:*", "query_id:01", 'database:"open', 'database:"bad\\n"']) {
     assert.equal(parseSearch(expression, "pg_stat_statements").ok, false, expression)
   }
   assert.equal(parseSearch('database:""', "pg_stat_statements").ok, false)
@@ -112,7 +112,7 @@ test("SI, IEC, duration, percentage, and count units retain exact boundaries", (
   ]) assert.equal(parseSearch(expression, "pg_stat_user_tables").ok, false, expression)
 })
 
-test("non-v1 operators are atomic and future syntax is reserved", () => {
+test("non-v1 comparison operators are atomic and NOT stays reserved", () => {
   for (const [expression, code, token] of [
     ["size>=100MB", "unsupported_operator", ">="],
     ["size<=100MB", "unsupported_operator", "<="],
@@ -123,13 +123,8 @@ test("non-v1 operators are atomic and future syntax is reserved", () => {
     ["size<>100MB", "malformed_operator", "<>"],
     ["size:100MB", "operator_not_allowed", ":"],
     ["schema>public", "operator_not_allowed", ">"],
-    ["size>100MB OR size<1GB", "unsupported_syntax", "OR"],
     ["NOT size>100MB", "unsupported_syntax", "NOT"],
-    ["(size>100MB)", "unsupported_syntax", "("],
-    ["size>100MB)", "unsupported_syntax", ")"],
-    ["latency OR budget", "unsupported_syntax", "OR"],
     ["NOT latency", "unsupported_syntax", "NOT"],
-    ["latency (budget)", "unsupported_syntax", "("],
   ]) {
     const parsed = parseSearch(expression, "pg_stat_user_tables")
     assert.equal(parsed.ok, false, expression)
@@ -138,6 +133,80 @@ test("non-v1 operators are atomic and future syntax is reserved", () => {
     assert.equal(expression.slice(parsed.error.start, parsed.error.end), token, expression)
   }
   assert.equal(parseSearch('text:"size>100MB OR (later)"', "pg_stat_user_tables").ok, true)
+})
+
+test("OR and parentheses have canonical precedence and stable clause removal", () => {
+  const precedence = parseSearch("schema:public or schema:audit and table_name:orders", "pg_stat_user_tables")
+  assert.equal(precedence.ok, true)
+  if (!precedence.ok) return
+  assert.equal(precedence.query.canonical, "schema:public OR schema:audit AND table_name:orders")
+  assert.equal(precedence.query.expr.kind, "or")
+  assert.equal(precedence.query.expr.right.kind, "and")
+
+  const grouped = parseSearch("((schema:public OR schema:audit)) AND (size > 100.000MB OR buffer_hit<90%)", "pg_stat_user_tables")
+  assert.equal(grouped.ok, true)
+  if (!grouped.ok) return
+  assert.equal(grouped.query.canonical, "(schema:public OR schema:audit) AND (size>100MB OR buffer_hit<90%)")
+  assert.equal(withoutSearchClause(grouped.query, 0), "schema:audit AND (size>100MB OR buffer_hit<90%)")
+  assert.equal(withoutSearchClause(grouped.query, 3), "(schema:public OR schema:audit) AND size>100MB")
+})
+
+test("boolean diagnostics mark empty, unbalanced, missing, doubled, and trailing syntax exactly", () => {
+  for (const [expression, code, token] of [
+    ["()", "empty_group", "()"],
+    ["(schema:public", "unbalanced_parenthesis", "("],
+    ["schema:public)", "unbalanced_parenthesis", ")"],
+    ["schema:public AND", "missing_operand", "AND"],
+    ["schema:public OR OR schema:audit", "missing_operand", "OR"],
+    ["AND schema:public", "missing_operand", "AND"],
+    ["schema:public table_name:orders", "expected_boolean_operator", "table_name:orders"],
+  ]) {
+    const parsed = parseSearch(expression, "pg_stat_user_tables")
+    assert.equal(parsed.ok, false, expression)
+    if (parsed.ok) continue
+    assert.equal(parsed.error.code, code, expression)
+    assert.equal(expression.slice(parsed.error.start, parsed.error.end), token, expression)
+  }
+})
+
+test("boolean bounds reject excessive nesting and token counts", () => {
+  const nested = `${"(".repeat(SEARCH_MAX_GROUP_DEPTH + 1)}schema:public${")".repeat(SEARCH_MAX_GROUP_DEPTH + 1)}`
+  const deep = parseSearch(nested, "pg_stat_user_tables")
+  assert.equal(deep.ok, false)
+  assert.equal(deep.error.code, "group_too_deep")
+  const clauses = Array.from({ length: SEARCH_MAX_CLAUSES }, () => "(schema:public)").join(" OR ")
+  assert.equal(parseSearch(clauses, "pg_stat_user_tables").ok, true)
+  const tokens = parseSearch(`(${clauses})`, "pg_stat_user_tables")
+  assert.equal(tokens.ok, false)
+  assert.equal(tokens.error.code, "too_many_tokens")
+})
+
+test("grouped relation OR stays wholly before or after reduction", () => {
+  const grouped = { grouped: true }
+  for (const expression of [
+    "(schema:public OR schema:audit) AND size>100MB",
+    "schema:public AND (size>100MB OR buffer_hit<90%)",
+  ]) assert.equal(parseSearch(expression, "pg_stat_user_tables", grouped).ok, true, expression)
+
+  for (const expression of [
+    "schema:public OR size>100MB",
+    "(schema:public AND size>100MB) OR schema:audit",
+  ]) {
+    const parsed = parseSearch(expression, "pg_stat_user_tables", grouped)
+    assert.equal(parsed.ok, false, expression)
+    if (parsed.ok) continue
+    assert.equal(parsed.error.code, "mixed_phase_or", expression)
+    assert.equal(expression.slice(parsed.error.start, parsed.error.end), "OR", expression)
+  }
+  assert.equal(parseSearch("schema:public OR size>100MB", "pg_stat_user_tables").ok, true)
+})
+
+test("client surfaces evaluate OR groups without losing fork transparency", () => {
+  const statement = row("pg_stat_statements", "1002002", { datname: "app", query: "select orders", queryid: "-912345", usename: "reader" })
+  const match = parseSearch("database:other OR (database:app AND query_id:-912345)", "pg_stat_statements")
+  assert.equal(match.ok && rowMatchesSearch(statement, match.query, "pg_stat_statements"), true)
+  const miss = parseSearch("database:other OR query_id:7", "pg_stat_statements")
+  assert.equal(miss.ok && rowMatchesSearch(statement, miss.query, "pg_stat_statements"), false)
 })
 
 test("comparison fields are surface-wide and never expose reducer dependencies", () => {

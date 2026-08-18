@@ -10,7 +10,9 @@ use kronika_reader::{Cell, Dictionary, Reader, Row, Segment, SegmentRef};
 use kronika_registry::{contract, logical_section_name};
 use serde_json::{Map, Value, json};
 
-use super::search::{Quantity, SearchOperator, SearchValue};
+use super::search::{
+    Quantity, SearchClause, SearchOperator, SearchValue, result_field, search_fields,
+};
 use super::{
     ApiError, CounterReadings, Order, OrderedNumber, PageContext, Plan, PreparedSnapshot,
     RelationGroup, SectionPlans, SnapshotCursor, add_ordered, compare_page_order_values,
@@ -688,6 +690,27 @@ impl GroupKey {
         }
     }
 
+    fn search_text(&self, name: &str) -> Option<&str> {
+        match (self, name) {
+            (
+                Self::Database { datname, .. }
+                | Self::Schema { datname, .. }
+                | Self::Table { datname, .. }
+                | Self::Index { datname, .. },
+                "datname",
+            ) => Some(datname),
+            (
+                Self::Schema { schemaname, .. }
+                | Self::Table { schemaname, .. }
+                | Self::Index { schemaname, .. },
+                "schemaname",
+            ) => Some(schemaname),
+            (Self::Table { relname, .. } | Self::Index { relname, .. }, "relname") => Some(relname),
+            (Self::Index { indexrelname, .. }, "indexrelname") => Some(indexrelname),
+            _ => None,
+        }
+    }
+
     #[allow(
         clippy::unnested_or_patterns,
         reason = "each tuple arm keeps the requested field name attached to its variants"
@@ -1335,7 +1358,13 @@ impl Aggregate {
             (None, Some(value)) if self.count == 1 => Some(value),
             _ => None,
         };
-        for name in ["indexrelname", "relname", "tablespace", "amname"] {
+        for name in [
+            "indexrelname",
+            "relname",
+            "tablespace",
+            "amname",
+            "indexdef",
+        ] {
             if let Some(value) = text_cell(row.get(name), dictionary)? {
                 self.texts.entry(name).or_insert(value);
             }
@@ -1366,14 +1395,43 @@ impl Aggregate {
         search: Option<&super::StructuredSearch>,
     ) -> bool {
         search.is_none_or(|search| {
-            search
-                .result_clauses(kind.logical_name())
-                .all(|(clause, field)| {
-                    let SearchValue::Quantity(quantity) = &clause.value else {
-                        return false;
-                    };
-                    self.metric(kind, group, field.metric)
-                        .is_some_and(|metric| metric.matches_quantity(clause.operator, quantity))
+            if group == RelationGroup::Object {
+                search.matches_all(|clause| self.matches_search_clause(kind, group, clause))
+            } else {
+                search.matches_result(|clause| self.matches_search_clause(kind, group, clause))
+            }
+        })
+    }
+
+    fn matches_search_clause(
+        &self,
+        kind: RelationKind,
+        group: RelationGroup,
+        clause: &SearchClause,
+    ) -> bool {
+        if let SearchValue::Quantity(quantity) = &clause.value {
+            let Some(result) = result_field(kind.logical_name(), clause.key) else {
+                return false;
+            };
+            return self
+                .metric(kind, group, result.metric)
+                .is_some_and(|metric| metric.matches_quantity(clause.operator, quantity));
+        }
+        let Some(field) = search_fields(kind.logical_name())
+            .iter()
+            .find(|field| field.key == clause.key)
+        else {
+            return false;
+        };
+        field.columns.iter().any(|column| {
+            self.texts
+                .get(column)
+                .map(String::as_str)
+                .or_else(|| self.key.search_text(column))
+                .is_some_and(|stored| match &clause.value {
+                    SearchValue::Identifier(wanted) => stored == wanted,
+                    SearchValue::Pattern(pattern) => pattern.matches(stored),
+                    SearchValue::Quantity(_) => false,
                 })
         })
     }
@@ -3341,16 +3399,17 @@ fn scan_context(
         for (ordinal, row) in chunk {
             if !context.window.matches(&row)
                 || !context.plan.matches(&row, &dictionary)
-                || prepared.search.as_ref().is_some_and(|search| {
-                    !search_matches(
-                        kind.logical_name(),
-                        context.plan,
-                        &row,
-                        &dictionary,
-                        None,
-                        search,
-                    )
-                })
+                || (group != RelationGroup::Object
+                    && prepared.search.as_ref().is_some_and(|search| {
+                        !search_matches(
+                            kind.logical_name(),
+                            context.plan,
+                            &row,
+                            &dictionary,
+                            None,
+                            search,
+                        )
+                    }))
             {
                 continue;
             }
@@ -4231,6 +4290,49 @@ mod tests {
             RelationGroup::Schema,
             Some(&rejected),
         ));
+        let post_or = super::super::StructuredSearch::parse("size>121MB OR buffer_hit>80%", TABLES)
+            .expect("valid post-reducer OR");
+        assert!(group.matches_result_search(
+            RelationKind::Tables,
+            RelationGroup::Schema,
+            Some(&post_or),
+        ));
+        let rejected_or =
+            super::super::StructuredSearch::parse("size>121MB OR buffer_hit<80%", TABLES)
+                .expect("valid post-reducer OR");
+        assert!(!group.matches_result_search(
+            RelationKind::Tables,
+            RelationGroup::Schema,
+            Some(&rejected_or),
+        ));
+    }
+
+    #[test]
+    fn object_search_evaluates_member_and_quantity_or_after_reduction() {
+        let mut object = aggregate();
+        object.gauges.insert(
+            "main_fork_bytes",
+            Availability::Value(OrderedNumber::Integer(120_000_000)),
+        );
+        object.gauges.insert("toast_bytes", Availability::Empty);
+        for (expression, matches) in [
+            ("schema:private OR size>100MB", true),
+            ("schema:public OR size>121MB", true),
+            ("schema:private OR size>121MB", false),
+            ("schema:public AND size>100MB", true),
+        ] {
+            let parsed = super::super::StructuredSearch::parse(expression, TABLES)
+                .expect("valid object boolean search");
+            assert_eq!(
+                object.matches_result_search(
+                    RelationKind::Tables,
+                    RelationGroup::Object,
+                    Some(&parsed),
+                ),
+                matches,
+                "{expression}"
+            );
+        }
     }
 
     #[test]
