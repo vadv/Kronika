@@ -44,6 +44,7 @@ import { HourPicker } from "./hour-picker"
 import { keyboardTargetOwnsArrows } from "./keyboard"
 import { rowMatchesLocator } from "./locator"
 import { Login } from "./login"
+import { parseSearch, type SearchSurface } from "./search"
 import {
   activityFor,
   asNumber,
@@ -264,7 +265,10 @@ function App({ locale, onLocale, t }: {
   }, [activeRelation, activeRelationLens, baseViewKey, lens, pgSection, planLens, relationLevel, statementLens, visibleSource])
   const [segments, setSegments] = useState<readonly SegmentBound[]>([])
   const densePattern = viewRequests.some((request) => request.pageSize !== undefined) ? find.trim() : ""
-  const requestedSnapshots = viewRequests.filter((request) => request.section !== "health").map((request) => request.pageSize !== undefined && request.section === context?.logicalName
+  const denseCandidate = viewRequests.find((request) => request.pageSize !== undefined)
+  const denseSurface = denseCandidate === undefined ? null : searchSurfaceOf(denseCandidate.section)
+  const denseSearchValid = densePattern === "" || denseSurface === null || parseSearch(densePattern, denseSurface).ok
+  const requestedSnapshots = viewRequests.filter((request) => request.section !== "health" && (request.pageSize === undefined || denseSearchValid)).map((request) => request.pageSize !== undefined && request.section === context?.logicalName
     ? { ...request, typeIds: [context.typeId] } : request)
   const snapshotGroups = snapshotRequestGroups(segments, cursor, requestedSnapshots)
   const denseLoad = snapshotGroups.flatMap((group) => group.requests
@@ -1054,6 +1058,23 @@ function relationFiltersOf(address: ReturnType<typeof readAddress>): Readonly<Re
 function relationSelectedKeyOf(address: ReturnType<typeof readAddress>): string | null {
   const section = pgSectionOf(address.view)
   return section === "tables" || section === "indexes" ? address.row : null
+}
+
+function searchSurfaceOf(section: string): SearchSurface | null {
+  switch (section) {
+    case "events":
+    case "os_process":
+    case "pg_locks":
+    case "pg_stat_activity":
+    case "pg_stat_database":
+    case "pg_stat_statements":
+    case "pg_stat_user_indexes":
+    case "pg_stat_user_tables":
+    case "pg_store_plans":
+      return section
+    default:
+      return null
+  }
 }
 
 function relationFiltersForSection(filters: Readonly<Record<string, string>>, section: "tables" | "indexes"): Readonly<Record<string, string>> {

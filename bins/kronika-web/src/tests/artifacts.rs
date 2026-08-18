@@ -3399,10 +3399,8 @@ fn snapshot_cursor_rejects_every_bound_query_shape_mismatch() {
         let path = format!("/api/segments/{segment_id}/snapshot");
         let query = format!("{query}&cursor={cursor}");
         let route = crate::route::parse(&path, Some(&query)).expect("mismatch route");
-        assert!(matches!(
-            crate::api::prepare(fixture.root(), SOURCES, route, None),
-            Err(ApiError::BadCursor)
-        ));
+        let result = crate::api::prepare(fixture.root(), SOURCES, route, None);
+        assert!(matches!(result, Err(ApiError::BadCursor)), "{query}");
     }
 
     let compatible_size = shape.replacen("page_size=1", "page_size=4", 1);
@@ -4367,6 +4365,23 @@ fn tablespace_snapshot_groups_cluster_wide_by_oid_after_full_filtering() {
     assert_eq!(searched.len(), 1);
     assert_eq!(searched[0]["key"]["tablespace_oid"], "6000");
     assert_eq!(searched[0]["values"]["table_count"], "1");
+
+    let compared = stream(fixture.prepare(
+        &format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=300000000&section=pg_stat_user_tables&group=tablespace&field=table_count&search=size%3E500B"
+        ),
+        None,
+    ))
+    .expect("comparison after tablespace reduction");
+    let compared_rows = relation_records(&compared);
+    assert_eq!(compared_rows.len(), 1);
+    assert_eq!(compared_rows[0]["key"]["tablespace_oid"], "5000");
+    assert_eq!(compared_rows[0]["values"]["table_count"], "3");
+    let page = compared
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("tablespace comparison trailer");
+    assert_eq!(page["eligible"], "1");
 }
 
 #[test]
@@ -4763,6 +4778,113 @@ fn relation_search_runs_before_group_sort_and_page() {
     assert_eq!(page["eligible"], "1");
     assert_eq!(page["returned"], "1");
     assert_eq!(page["has_more"], false);
+}
+
+#[test]
+fn relation_comparison_filters_reduced_hidden_metrics_before_page() {
+    const MB: i64 = 1_000_000;
+    let mut fixture = Fixture::new();
+    fixture.append_placed_table_snapshots(&[
+        (
+            100,
+            1,
+            1,
+            0,
+            "db",
+            "pair",
+            "first",
+            Some(1663),
+            Some("pg_default"),
+            50 * MB,
+            Some(10 * MB),
+        ),
+        (
+            100,
+            1,
+            2,
+            0,
+            "db",
+            "pair",
+            "second",
+            Some(1663),
+            Some("pg_default"),
+            30 * MB,
+            Some(30 * MB),
+        ),
+        (
+            100,
+            1,
+            3,
+            0,
+            "db",
+            "boundary",
+            "exact",
+            Some(1663),
+            Some("pg_default"),
+            100 * MB,
+            None,
+        ),
+        (
+            100,
+            1,
+            999,
+            0,
+            "db",
+            "large",
+            "outside_page",
+            Some(1664),
+            Some("fast"),
+            150 * MB,
+            None,
+        ),
+    ]);
+    fixture.finish();
+
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=pg_stat_user_tables&field=table_count&page_size=1"
+    );
+    let objects =
+        stream(fixture.prepare(&format!("{base}&group=object&search=size%3E100MB"), None))
+            .expect("hidden object size comparison");
+    let rows = relation_records(&objects);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["key"]["relid"], "999");
+    let page = objects
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("object comparison trailer");
+    assert_eq!(page["eligible"], "1");
+    assert_eq!(page["returned"], "1");
+
+    let grouped = stream(fixture.prepare(
+        &format!("{base}&group=schema&search=schema%3Apair%20AND%20size%3E100MB"),
+        None,
+    ))
+    .expect("post-reducer schema size comparison");
+    let rows = relation_records(&grouped);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["key"]["schemaname"], "pair");
+    assert_eq!(rows[0]["values"]["table_count"], "2");
+    let layout = grouped
+        .iter()
+        .find(|record| record["record"] == "relation_layout")
+        .expect("relation comparison layout");
+    assert_eq!(layout["columns"].as_array().map(Vec::len), Some(1));
+    assert_eq!(layout["columns"][0]["name"], "table_count");
+
+    for operator in ["%3E", "%3C"] {
+        let boundary = stream(fixture.prepare(
+            &format!("{base}&group=object&search=table_name%3Aexact%20AND%20size{operator}100MB"),
+            None,
+        ))
+        .expect("exact size boundary comparison");
+        assert!(relation_records(&boundary).is_empty());
+        let page = boundary
+            .iter()
+            .find(|record| record["record"] == "snapshot_page")
+            .expect("boundary comparison trailer");
+        assert_eq!(page["eligible"], "0");
+    }
 }
 
 #[test]

@@ -10,11 +10,12 @@ use kronika_reader::{Cell, Dictionary, Reader, Row, Segment, SegmentRef};
 use kronika_registry::{contract, logical_section_name};
 use serde_json::{Map, Value, json};
 
+use super::search::{Quantity, SearchOperator, SearchValue};
 use super::{
     ApiError, CounterReadings, Order, OrderedNumber, PageContext, Plan, PreparedSnapshot,
     RelationGroup, SectionPlans, SnapshotCursor, add_ordered, compare_page_order_values,
-    counter_delta, identity_of, plans, rate_columns, record, resolved_dictionary, search_matches,
-    stored_bytes,
+    compare_u128_ratios, counter_delta, identity_of, plans, rate_columns, record,
+    resolved_dictionary, search_matches, stored_bytes,
 };
 use crate::api::query;
 use crate::route::{DataRequest, Filter, SegmentRequest, SeriesRequest, SnapshotRequest, Window};
@@ -450,6 +451,32 @@ pub(super) fn output_fields(
         }
     }
     Ok(output)
+}
+
+pub(super) fn snapshot_physical_fields(
+    logical_name: &str,
+    group: RelationGroup,
+    fields: &[String],
+    by: &[String],
+    search: Option<&super::StructuredSearch>,
+) -> Result<Vec<String>, ApiError> {
+    let kind = RelationKind::from_name(logical_name)?;
+    let mut semantic = fields.to_vec();
+    semantic.extend(by.iter().map(|name| sort_name(name).to_owned()));
+    let mut names = history_physical_fields(kind, group, &semantic)
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    names.extend(
+        key_fields(kind, RelationGroup::Object)
+            .iter()
+            .map(|name| (*name).to_owned()),
+    );
+    if let Some(search) = search {
+        for (_clause, field) in search.result_clauses(logical_name) {
+            names.extend(field.dependencies.iter().map(|name| (*name).to_owned()));
+        }
+    }
+    Ok(names.into_iter().collect())
 }
 
 pub(super) fn split_filters(
@@ -1332,6 +1359,25 @@ impl Aggregate {
             })
     }
 
+    fn matches_result_search(
+        &self,
+        kind: RelationKind,
+        group: RelationGroup,
+        search: Option<&super::StructuredSearch>,
+    ) -> bool {
+        search.is_none_or(|search| {
+            search
+                .result_clauses(kind.logical_name())
+                .all(|(clause, field)| {
+                    let SearchValue::Quantity(quantity) = &clause.value else {
+                        return false;
+                    };
+                    self.metric(kind, group, field.metric)
+                        .is_some_and(|metric| metric.matches_quantity(clause.operator, quantity))
+                })
+        })
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "the fixed relation contract keeps every audited reducer in one exhaustive match"
@@ -1689,6 +1735,90 @@ enum Metric {
 }
 
 impl Metric {
+    fn matches_quantity(&self, operator: SearchOperator, quantity: &Quantity) -> bool {
+        let Some(ordering) = self.quantity_ordering(quantity) else {
+            return false;
+        };
+        match operator {
+            SearchOperator::Greater => ordering == Ordering::Greater,
+            SearchOperator::Less => ordering == Ordering::Less,
+            SearchOperator::Colon => false,
+        }
+    }
+
+    fn quantity_ordering(&self, quantity: &Quantity) -> Option<Ordering> {
+        let ordering = match self {
+            Self::Number(OrderedNumber::Integer(value)) | Self::Integer(value) => {
+                let value = u128::try_from(*value).ok()?;
+                compare_u128_ratios(value, 1, quantity.numerator, quantity.denominator)
+            }
+            Self::Number(OrderedNumber::Float(value)) => compare_float(*value, quantity)?,
+            Self::Rate(value) => match value {
+                RateValue::Exact {
+                    numerator,
+                    denominator,
+                } => compare_products(
+                    &[*numerator, 1_000_000, quantity.denominator],
+                    &[*denominator, quantity.numerator],
+                ),
+                RateValue::Float(value) => compare_float(*value * 1_000_000.0, quantity)?,
+            },
+            Self::RateRatio {
+                numerator,
+                denominator,
+                scale,
+            } => match (*numerator, *denominator) {
+                (
+                    RateValue::Exact {
+                        numerator,
+                        denominator: numerator_denominator,
+                    },
+                    RateValue::Exact {
+                        numerator: denominator_numerator,
+                        denominator: denominator_denominator,
+                    },
+                ) if denominator_numerator > 0 => compare_products(
+                    &[
+                        numerator,
+                        denominator_denominator,
+                        exact_scale(*scale)?,
+                        quantity.denominator,
+                    ],
+                    &[
+                        numerator_denominator,
+                        denominator_numerator,
+                        quantity.numerator,
+                    ],
+                ),
+                _ => compare_float(
+                    numerator.per_microsecond() / denominator.per_microsecond() * scale,
+                    quantity,
+                )?,
+            },
+            Self::Ratio {
+                numerator,
+                denominator,
+                scale,
+            } => match (*numerator, *denominator) {
+                (OrderedNumber::Integer(numerator), OrderedNumber::Integer(denominator))
+                    if numerator >= 0 && denominator > 0 =>
+                {
+                    compare_products(
+                        &[
+                            u128::try_from(numerator).ok()?,
+                            exact_scale(*scale)?,
+                            quantity.denominator,
+                        ],
+                        &[u128::try_from(denominator).ok()?, quantity.numerator],
+                    )
+                }
+                _ => compare_float(numerator.as_f64() / denominator.as_f64() * scale, quantity)?,
+            },
+            Self::Timestamp(_) | Self::Boolean(_) | Self::Text(_) => return None,
+        };
+        Some(ordering)
+    }
+
     fn json(&self) -> Value {
         match self {
             Self::Number(OrderedNumber::Integer(value)) | Self::Integer(value) => {
@@ -1748,6 +1878,72 @@ impl Metric {
             Self::Text(value) => Some(super::PageOrderValue::Text(value.as_bytes().to_vec())),
         }
     }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "floating comparison is used only when the authoritative reducer is already inexact"
+)]
+fn compare_float(value: f64, quantity: &Quantity) -> Option<Ordering> {
+    let threshold = quantity.numerator as f64 / quantity.denominator as f64;
+    (value.is_finite() && threshold.is_finite()).then(|| value.total_cmp(&threshold))
+}
+
+const fn exact_scale(scale: f64) -> Option<u128> {
+    match scale.to_bits() {
+        bits if bits == 1.0_f64.to_bits() => Some(1),
+        bits if bits == 100.0_f64.to_bits() => Some(100),
+        _ => None,
+    }
+}
+
+/// Compare products without overflowing. Limbs use base 2^32 so each multiply
+/// and carry fits in `u64`, even when each input factor spans all of `u128`.
+fn compare_products(left: &[u128], right: &[u128]) -> Ordering {
+    product_limbs(left).cmp(&product_limbs(right))
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "each cast deliberately selects one base-2^32 limb after shifting"
+)]
+fn product_limbs(factors: &[u128]) -> Vec<u32> {
+    let mut product = vec![1_u32];
+    for factor in factors {
+        let digits = [
+            *factor as u32,
+            (*factor >> 32) as u32,
+            (*factor >> 64) as u32,
+            (*factor >> 96) as u32,
+        ];
+        let mut multiplied = vec![0_u32; product.len() + digits.len()];
+        for (left_index, left) in product.iter().copied().enumerate() {
+            let mut carry = 0_u64;
+            for (right_index, right) in digits.iter().copied().enumerate() {
+                let index = left_index + right_index;
+                let value =
+                    u64::from(multiplied[index]) + u64::from(left) * u64::from(right) + carry;
+                multiplied[index] = value as u32;
+                carry = value >> 32;
+            }
+            let mut index = left_index + digits.len();
+            while carry > 0 {
+                let value = u64::from(multiplied[index]) + carry;
+                multiplied[index] = value as u32;
+                carry = value >> 32;
+                index += 1;
+                if index == multiplied.len() && carry > 0 {
+                    multiplied.push(0);
+                }
+            }
+        }
+        while multiplied.len() > 1 && multiplied.last() == Some(&0) {
+            multiplied.pop();
+        }
+        product = multiplied;
+    }
+    product.reverse();
+    product
 }
 
 fn finite_json(value: f64) -> Value {
@@ -3007,6 +3203,9 @@ impl PreparedSnapshot {
                 return Ok(());
             }
         }
+        aggregates.retain(|_key, aggregate| {
+            aggregate.matches_result_search(kind, group, self.search.as_deref())
+        });
         let eligible = u64::try_from(aggregates.len()).unwrap_or(u64::MAX);
         let order_by = self.by.first().map(|name| sort_name(name));
         let mut rows = aggregates
@@ -3921,6 +4120,153 @@ mod tests {
                     "toast_buffer_hit_pct"
                 )
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn strict_size_comparisons_use_the_authoritative_reducer_and_exact_boundaries() {
+        let search = |expression: &str, surface: &str| {
+            super::super::StructuredSearch::parse(expression, surface)
+                .expect("valid size comparison")
+        };
+        let mut table = aggregate();
+        table.gauges.insert(
+            "main_fork_bytes",
+            Availability::Value(OrderedNumber::Integer(80_000_000)),
+        );
+        table.gauges.insert(
+            "toast_bytes",
+            Availability::Value(OrderedNumber::Integer(25_000_000)),
+        );
+        assert!(table.matches_result_search(
+            RelationKind::Tables,
+            RelationGroup::Object,
+            Some(&search("size>100MB", TABLES)),
+        ));
+
+        table.gauges.insert(
+            "toast_bytes",
+            Availability::Value(OrderedNumber::Integer(20_000_000)),
+        );
+        for expression in ["size>100MB", "size<100MB", "size>100MiB"] {
+            assert!(!table.matches_result_search(
+                RelationKind::Tables,
+                RelationGroup::Object,
+                Some(&search(expression, TABLES)),
+            ));
+        }
+        for expression in ["size>99999999B", "size<100000001B"] {
+            assert!(table.matches_result_search(
+                RelationKind::Tables,
+                RelationGroup::Object,
+                Some(&search(expression, TABLES)),
+            ));
+        }
+
+        table
+            .gauges
+            .insert("toast_bytes", Availability::Unavailable);
+        assert!(!table.matches_result_search(
+            RelationKind::Tables,
+            RelationGroup::Object,
+            Some(&search("size>0B", TABLES)),
+        ));
+
+        let mut index = aggregate();
+        index.gauges.insert(
+            "main_fork_bytes",
+            Availability::Value(OrderedNumber::Integer(100_000_000)),
+        );
+        for expression in ["size>100MB", "size<100MB"] {
+            assert!(!index.matches_result_search(
+                RelationKind::Indexes,
+                RelationGroup::Object,
+                Some(&search(expression, INDEXES)),
+            ));
+        }
+        assert!(index.matches_result_search(
+            RelationKind::Indexes,
+            RelationGroup::Database,
+            Some(&search("size>99999999B", INDEXES)),
+        ));
+    }
+
+    #[test]
+    fn grouped_comparisons_run_after_sum_and_ratio_reducers() {
+        let parsed = super::super::StructuredSearch::parse("size>100MB AND buffer_hit>80%", TABLES)
+            .expect("valid grouped comparison");
+        let mut group = aggregate();
+        group.gauges.insert(
+            "main_fork_bytes",
+            Availability::Value(OrderedNumber::Integer(120_000_000)),
+        );
+        group.gauges.insert("toast_bytes", Availability::Empty);
+        for (name, delta) in [
+            ("heap_blks_hit", 90),
+            ("heap_blks_read", 10),
+            ("idx_blks_hit", 0),
+            ("idx_blks_read", 0),
+        ] {
+            let mut rate = RateAggregate::default();
+            add_rate(&mut rate, delta);
+            group.rates.insert(name, rate);
+        }
+        for name in [
+            "toast_blks_hit",
+            "toast_blks_read",
+            "tidx_blks_hit",
+            "tidx_blks_read",
+        ] {
+            group.rates.insert(name, RateAggregate::default());
+        }
+        assert!(group.matches_result_search(
+            RelationKind::Tables,
+            RelationGroup::Schema,
+            Some(&parsed),
+        ));
+        let rejected = super::super::StructuredSearch::parse("size>121MB", TABLES)
+            .expect("valid grouped comparison");
+        assert!(!group.matches_result_search(
+            RelationKind::Tables,
+            RelationGroup::Schema,
+            Some(&rejected),
+        ));
+    }
+
+    #[test]
+    fn hidden_search_dependencies_are_exact_and_surface_scoped() {
+        let search =
+            super::super::StructuredSearch::parse("size>100MB AND autovacuum_mean<250ms", TABLES)
+                .expect("valid hidden comparison fields");
+        let physical = snapshot_physical_fields(
+            TABLES,
+            RelationGroup::Tablespace,
+            &["seq_scan".to_owned()],
+            &[],
+            Some(&search),
+        )
+        .expect("physical dependency closure");
+        for required in [
+            "datid",
+            "datname",
+            "schemaname",
+            "relid",
+            "relname",
+            "tablespace_oid",
+            "tablespace",
+            "seq_scan",
+            "main_fork_bytes",
+            "toast_bytes",
+            "total_autovacuum_time",
+            "autovacuum_count",
+        ] {
+            assert!(physical.iter().any(|field| field == required), "{required}");
+        }
+        assert!(!physical.iter().any(|field| field == "idx_scan"));
+        assert!(
+            !physical
+                .iter()
+                .any(|field| field == "displayed_storage_bytes")
         );
     }
 

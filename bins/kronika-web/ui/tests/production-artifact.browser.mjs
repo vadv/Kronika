@@ -1032,7 +1032,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       return { client: document.documentElement.clientWidth, icon: box(icon), input: box(input), label: box(label), nav: [...document.querySelectorAll('.source-tabs button')].map((button) => button.textContent), placeholder: input.placeholder, scroll: document.documentElement.scrollWidth }
     })()`)
     assert.deepEqual(eventSearch.nav, ["Processes", "Host", "PostgreSQL", "Events"])
-    assert.equal(eventSearch.placeholder, "Текст или field:value AND field:value")
+    assert.equal(eventSearch.placeholder, "Текст или field:value AND size>100MB")
     assert.ok(eventSearch.icon.right <= eventSearch.input.left + 1, JSON.stringify(eventSearch))
     assert.ok(eventSearch.label.left >= -1 && eventSearch.label.right <= eventSearch.client + 1 && eventSearch.scroll <= eventSearch.client, JSON.stringify(eventSearch))
     await cdp.evaluate(`document.querySelector('[data-testid="events-console"] [aria-label="Синтаксис и поля поиска"]').click()`)
@@ -1946,6 +1946,60 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
     assert.deepEqual(summary.levels.slice(0, 4), ["Indexes", "Schemas", "Databases", "Tablespaces"])
     const snapshots = requests.filter(({ path, query }) => path === `/api/segments/${SEGMENT}/snapshot` && new URLSearchParams(query).get("group") === "tablespace")
     assert.ok(snapshots.some(({ query }) => new URLSearchParams(query).get("search") === "tablespace:fast_ssd"), JSON.stringify(snapshots))
+
+    const comparisonStart = requests.length
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('[data-testid="table-filter"]')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "size > 100.000MB")
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, data: "size > 100.000MB", inputType: "insertFromPaste" }))
+      input.form.requestSubmit()
+    })()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "size>100MB" && document.querySelector('[data-testid="search-chips"]')?.textContent.includes("Size · > 100 MB") === true`, "the hidden-lens comparison chip")
+    await waitForRequests(() => requests.slice(comparisonStart).some(({ query }) => new URLSearchParams(query).get("search") === "size>100MB"))
+    const comparisonRequest = requests.slice(comparisonStart).find(({ query }) => new URLSearchParams(query).get("search") === "size>100MB")
+    assert.notEqual(comparisonRequest, undefined)
+    const comparisonQuery = new URLSearchParams(comparisonRequest.query)
+    assert.equal(comparisonQuery.get("group"), "tablespace")
+    assert.equal(comparisonQuery.getAll("field").includes("main_fork_bytes"), false)
+    const comparisonChip = await cdp.evaluate(`(() => {
+      const chip = document.querySelector('[data-testid="search-chips"] > span')
+      return {
+        label: chip.querySelector("button").getAttribute("aria-label"),
+        text: chip.textContent,
+        title: chip.querySelector("[title]")?.getAttribute("title"),
+      }
+    })()`)
+    assert.equal(comparisonChip.title, "size>100MB")
+    assert.match(comparisonChip.label, /Remove Size: > 100 MB/)
+    assert.match(comparisonChip.text, /Size · > 100 MB/)
+
+    const invalidStart = requests.length
+    const retainedRow = await cdp.evaluate(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row').textContent`)
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('[data-testid="table-filter"]')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "size>=100MB")
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, data: "size>=100MB", inputType: "insertFromPaste" }))
+      input.form.requestSubmit()
+    })()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="search-error"] mark')?.textContent === ">="`, "the atomic unsupported operator span")
+    assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("find")`), "size>100MB")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row').textContent`), retainedRow)
+    assert.equal(requests.slice(invalidStart).some(({ query }) => query.includes("size%3E%3D") || query.includes("size%3E=")), false)
+
+    await assertSearchControlContained(cdp, "Indexes comparison search", '[data-search-surface="pg_stat_user_indexes"]')
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 640, mobile: false, width: 360 })
+    await settleLayout(cdp)
+    const narrowComparison = await cdp.evaluate(`(() => ({
+      chip: document.querySelector('[data-testid="search-chips"]')?.textContent ?? "",
+      overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    }))()`)
+    assert.match(narrowComparison.chip, /Размер · > 100 MB/)
+    assert.equal(narrowComparison.overflow, false)
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
+    await cdp.evaluate(`document.querySelector('[aria-label="Clear the filter"]').click()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === null`, "comparison clear")
     await cdp.evaluate(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-relation-detail"] .uplot-host canvas') !== null`, "the aggregate history chart")
     await settleLayout(cdp)
@@ -3539,7 +3593,7 @@ async function assertDetailRowsDoNotOverlap(cdp, label) {
   }
 }
 
-async function assertSearchControlContained(cdp, label) {
+async function assertSearchControlContained(cdp, label, selector = '[data-testid="events-console"] [data-search-surface="events"]') {
   for (const locale of ["ru", "en"]) {
     await cdp.evaluate(`document.querySelector('[data-testid="locale-${locale}"]').click()`)
     await cdp.waitFor(`document.documentElement.lang === ${JSON.stringify(locale)}`, `${label} ${locale} locale`)
@@ -3547,7 +3601,7 @@ async function assertSearchControlContained(cdp, label) {
       await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width })
       await settleLayout(cdp)
       const closed = await cdp.evaluate(`(() => {
-        const root = document.querySelector('[data-testid="events-console"] [data-search-surface="events"]')
+        const root = document.querySelector(${JSON.stringify(selector)})
         const parts = [root.querySelector('form'), root.querySelector('input'), root.querySelector('[aria-label="' + (${JSON.stringify(locale)} === 'ru' ? 'Применить поиск' : 'Apply search') + '"]'), root.querySelector('[aria-expanded]')]
         return {
           bounds: parts.map((part) => { const box = part.getBoundingClientRect(); return { left: box.left, right: box.right } }),
@@ -3557,7 +3611,7 @@ async function assertSearchControlContained(cdp, label) {
       })()`)
       assert.ok(closed.bounds.every(({ left, right }) => left >= -1 && right <= closed.viewport + 1)
         && closed.scroll <= closed.viewport, `${label} ${locale} ${width}px control: ${JSON.stringify(closed)}`)
-      await cdp.evaluate(`document.querySelector('[data-testid="events-console"] [aria-expanded]').click()`)
+      await cdp.evaluate(`document.querySelector(${JSON.stringify(selector)}).querySelector('[aria-expanded]').click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="search-help"] [role="dialog"]') !== null`, `${label} ${locale} ${width}px help`)
       const opened = await cdp.evaluate(`(() => {
         const dialog = document.querySelector('[data-testid="search-help"] [role="dialog"]')

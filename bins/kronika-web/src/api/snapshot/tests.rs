@@ -308,7 +308,21 @@ fn relation_search_fields_are_public_and_do_not_expose_oids() {
             .iter()
             .map(|field| field.key)
             .collect::<Vec<_>>(),
-        ["text", "database", "schema", "table_name", "tablespace"]
+        [
+            "text",
+            "database",
+            "schema",
+            "table_name",
+            "tablespace",
+            "size",
+            "table_count",
+            "buffer_hit",
+            "seq_scan_rate",
+            "change_rate",
+            "autovacuum_rate",
+            "autovacuum_mean",
+            "xid_age"
+        ]
     );
     assert_eq!(
         super::search_fields("pg_stat_user_indexes")
@@ -323,7 +337,11 @@ fn relation_search_fields_are_public_and_do_not_expose_oids() {
             "index_name",
             "access_method",
             "definition",
-            "tablespace"
+            "tablespace",
+            "size",
+            "index_count",
+            "buffer_hit",
+            "scan_rate"
         ]
     );
 }
@@ -400,14 +418,24 @@ fn request() -> SnapshotRequest {
     }
 }
 
+fn request_binding(request: &SnapshotRequest) -> u64 {
+    let search = request.search.as_deref().and_then(|raw| {
+        let [logical_name] = request.sections.as_slice() else {
+            return None;
+        };
+        StructuredSearch::parse(raw, logical_name).ok()
+    });
+    snapshot_binding(request, search.as_ref())
+}
+
 #[test]
 fn cursor_binding_covers_query_shape_but_excludes_page_size_and_cursor() {
     let baseline = request();
-    let expected = snapshot_binding(&baseline);
+    let expected = request_binding(&baseline);
     let mut harmless = baseline.clone();
     harmless.page_size = Some(5_000);
     harmless.cursor = Some("opaque".to_owned());
-    assert_eq!(snapshot_binding(&harmless), expected);
+    assert_eq!(request_binding(&harmless), expected);
 
     let mut variants = Vec::new();
     let mut changed = baseline.clone();
@@ -445,8 +473,25 @@ fn cursor_binding_covers_query_shape_but_excludes_page_size_and_cursor() {
     variants.push(changed);
 
     for changed in variants {
-        assert_ne!(snapshot_binding(&changed), expected);
+        assert_ne!(request_binding(&changed), expected);
     }
+}
+
+#[test]
+fn cursor_binding_uses_server_canonical_search() {
+    let mut alias = request();
+    alias.search = Some("db:app and text:orders".to_owned());
+    let mut canonical = alias.clone();
+    canonical.search = Some("database:app AND text:orders".to_owned());
+    assert_eq!(request_binding(&alias), request_binding(&canonical));
+
+    let mut spaced = request();
+    spaced.sections = vec!["pg_stat_user_tables".to_owned()];
+    spaced.group = Some(RelationGroup::Object);
+    spaced.search = Some(" size > 100.000MB ".to_owned());
+    let mut compact = spaced.clone();
+    compact.search = Some("size>100MB".to_owned());
+    assert_eq!(request_binding(&spaced), request_binding(&compact));
 }
 
 #[test]
@@ -527,4 +572,98 @@ fn structured_search_limits_clause_and_value_counts() {
     assert!(StructuredSearch::parse(&clauses, "pg_stat_statements").is_err());
     let value = "x".repeat(super::SEARCH_MAX_VALUE_CHARS + 1);
     assert!(StructuredSearch::parse(&format!("database:{value}"), "pg_stat_statements").is_err());
+}
+
+#[test]
+fn structured_search_parses_strict_exact_quantities_and_canonicalizes_them() {
+    let parsed = StructuredSearch::parse(
+        " schema:public and size > 100.000MB AND seq_scan_rate<0.5/s ",
+        "pg_stat_user_tables",
+    )
+    .expect("valid comparisons");
+    assert_eq!(
+        parsed.canonical(),
+        "schema:public AND size>100MB AND seq_scan_rate<0.5/s"
+    );
+    assert!(matches!(parsed.expr, super::search::Expr::And(_)));
+    assert!(matches!(
+        &parsed.clauses[1].value,
+        SearchValue::Quantity(quantity)
+            if quantity.numerator == 100_000_000 && quantity.denominator == 1
+    ));
+    assert!(matches!(
+        &parsed.clauses[2].value,
+        SearchValue::Quantity(quantity)
+            if quantity.numerator == 1 && quantity.denominator == 2
+    ));
+
+    for (expression, numerator, denominator) in [
+        ("size>100MB", 100_000_000, 1),
+        ("size>100MiB", 104_857_600, 1),
+        ("size>0.5KiB", 512, 1),
+        ("autovacuum_mean<250000us", 250, 1),
+        ("buffer_hit>99.95%", 1_999, 20),
+    ] {
+        let parsed = StructuredSearch::parse(expression, "pg_stat_user_tables")
+            .expect("valid exact quantity");
+        assert!(matches!(
+            &parsed.clauses[0].value,
+            SearchValue::Quantity(quantity)
+                if quantity.numerator == numerator && quantity.denominator == denominator
+        ));
+    }
+}
+
+#[test]
+fn structured_search_rejects_atomic_operators_units_and_future_syntax_with_spans() {
+    for (expression, code, token) in [
+        ("size>=100MB", "unsupported_operator", ">="),
+        ("size<=100MB", "unsupported_operator", "<="),
+        ("size==100MB", "unsupported_operator", "=="),
+        ("size!=100MB", "unsupported_operator", "!="),
+        ("size=100MB", "unsupported_operator", "="),
+        ("size=>100MB", "malformed_operator", "=>"),
+        ("size<>100MB", "malformed_operator", "<>"),
+        ("size:100MB", "operator_not_allowed", ":"),
+        ("schema>public", "operator_not_allowed", ">"),
+        ("size>100MB OR size<1GB", "unsupported_syntax", "OR"),
+        ("NOT size>100MB", "unsupported_syntax", "NOT"),
+        ("(size>100MB)", "unsupported_syntax", "("),
+        ("size>100MB)", "unsupported_syntax", ")"),
+        ("latency OR budget", "unsupported_syntax", "OR"),
+        ("NOT latency", "unsupported_syntax", "NOT"),
+        ("latency (budget)", "unsupported_syntax", "("),
+        ("size>100 MB", "whitespace_before_unit", "MB"),
+    ] {
+        let error = StructuredSearch::parse(expression, "pg_stat_user_tables")
+            .expect_err("invalid comparison");
+        assert_eq!(error.code, code, "{expression}");
+        assert_eq!(
+            expression.get(error.start..error.end),
+            Some(token),
+            "{expression}"
+        );
+    }
+    for expression in [
+        "size>0.1B",
+        "size>100",
+        "size>100mb",
+        r#"size>"100MB""#,
+        "buffer_hit>100.1%",
+        "table_count>1.5",
+        "size>-1MB",
+        "size>1e3MB",
+        "size>1,000MB",
+        "size>1_MB",
+        "size>NaN",
+        "size>Infinity",
+    ] {
+        assert!(
+            StructuredSearch::parse(expression, "pg_stat_user_tables").is_err(),
+            "{expression}"
+        );
+    }
+    assert!(
+        StructuredSearch::parse(r#"text:"size>100MB OR (later)""#, "pg_stat_user_tables").is_ok()
+    );
 }
