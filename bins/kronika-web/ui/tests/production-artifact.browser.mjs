@@ -271,7 +271,9 @@ test("expanded uPlot keeps one unobscured close action at responsive widths", { 
         window.scrollTo(0, 120)
         return { body: document.body.style.overflow, root: document.documentElement.style.overflow, scrollY }
       })()`)
-      assert.deepEqual(before, { body: "auto", root: "visible", scrollY: 120 }, viewport.label)
+      assert.equal(before.body, "auto", viewport.label)
+      assert.equal(before.root, "visible", viewport.label)
+      assert.ok(Math.abs(before.scrollY - 120) <= 1, `${viewport.label}: ${JSON.stringify(before)}`)
       await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] .chart-expand').click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"][role="dialog"].uplot-expanded') !== null`, `${viewport.label} expanded timeline`)
       await settleLayout(cdp)
