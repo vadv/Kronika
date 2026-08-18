@@ -10,15 +10,18 @@ use arrow_ord::sort::{LexicographicalComparator, SortColumn};
 use arrow_select::concat::concat;
 use arrow_select::interleave::interleave;
 use parquet::arrow::arrow_reader::{ArrowReaderOptions, ParquetRecordBatchReaderBuilder};
-use parquet::arrow::arrow_writer::{ArrowColumnWriter, compute_leaves, get_column_writers};
-use parquet::arrow::{ArrowSchemaConverter, ProjectionMask};
+use parquet::arrow::arrow_writer::{
+    ArrowColumnWriter, ArrowWriterOptions, compute_leaves, get_column_writers,
+};
+use parquet::arrow::{ArrowSchemaConverter, ArrowWriter, ProjectionMask};
 use parquet::file::reader::ChunkReader;
 use parquet::file::writer::{SerializedFileWriter, SerializedRowGroupWriter};
 
 use super::{
     CodecError, ColumnType, DECODE_BATCH_SIZE, FINAL_WRITER_PROPS, MAX_LIST_I32_VALUES_PER_SECTION,
-    MAX_ROW_GROUPS, MAX_SECTION_BYTES, MAX_SECTION_ROWS, TypeContract, VerifiedSection,
-    arrow_schema, check_row_cap, final_data_body_bound, schema_matches, validate_list_i32_batch,
+    MAX_ROW_GROUPS, MAX_SECTION_BYTES, MAX_SECTION_ROWS, ParquetRecordBatchReader, TypeContract,
+    VerifiedSection, arrow_schema, check_row_cap, final_data_body_bound, schema_matches,
+    validate_list_i32_batch,
 };
 
 /// Validate one input body before the bounded finalizer reopens it by range.
@@ -78,6 +81,9 @@ where
     }
 
     let order = canonical_order(expected_rows, contract, &mut open)?;
+    if order.is_none() {
+        return encode_ordered_sections_to(type_id, expected_rows, rows, contract, out, &mut open);
+    }
     let schema = arrow_schema(contract);
     let properties = Arc::new(FINAL_WRITER_PROPS.clone());
     let parquet_schema = ArrowSchemaConverter::new()
@@ -138,6 +144,147 @@ where
     row_group.close().map_err(CodecError::from)?;
     file.close().map_err(CodecError::from)?;
     Ok(())
+}
+
+/// Stream sections that are already in canonical order into the final writer.
+///
+/// The writer may retain its bounded row-group state, but each decoded input
+/// batch is released before the next one is opened. Sections that need any
+/// reordering continue through the column-at-a-time path above.
+fn encode_ordered_sections_to<W, R, E>(
+    type_id: u32,
+    expected_rows: &[u32],
+    rows: usize,
+    contract: &TypeContract,
+    out: &mut W,
+    open: &mut impl FnMut(usize) -> Result<R, E>,
+) -> Result<(), E>
+where
+    W: Write + Send,
+    R: ChunkReader + 'static,
+    E: From<CodecError>,
+{
+    let schema = arrow_schema(contract);
+    let options = ArrowWriterOptions::new()
+        .with_properties(FINAL_WRITER_PROPS.clone())
+        .with_skip_arrow_metadata(true);
+    let mut writer = ArrowWriter::try_new_with_options(out, Arc::clone(&schema), options)
+        .map_err(CodecError::from)?;
+    let list_columns = contract
+        .columns
+        .iter()
+        .filter(|column| column.ty == ColumnType::ListI32)
+        .map(|column| column.name)
+        .collect::<Vec<_>>();
+    let mut list_values = vec![0_usize; list_columns.len()];
+    let mut observed_rows = 0_usize;
+
+    for (section_index, &expected) in expected_rows.iter().enumerate() {
+        let source = open(section_index)?;
+        let reader = full_section_reader(source, contract, expected as usize)?;
+        let mut section_rows = 0_usize;
+        for batch in reader {
+            let batch = batch.map_err(CodecError::from)?;
+            section_rows =
+                section_rows
+                    .checked_add(batch.num_rows())
+                    .ok_or(CodecError::TooManyRows {
+                        rows: usize::MAX,
+                        max: MAX_SECTION_ROWS,
+                    })?;
+            observed_rows =
+                observed_rows
+                    .checked_add(batch.num_rows())
+                    .ok_or(CodecError::TooManyRows {
+                        rows: usize::MAX,
+                        max: MAX_SECTION_ROWS,
+                    })?;
+            for (index, &name) in list_columns.iter().enumerate() {
+                list_values[index] = list_values[index]
+                    .checked_add(validate_list_i32_batch(&batch, name)?)
+                    .ok_or(CodecError::TooManyListValues {
+                        name,
+                        values: usize::MAX,
+                        max: MAX_LIST_I32_VALUES_PER_SECTION,
+                    })?;
+                if list_values[index] > MAX_LIST_I32_VALUES_PER_SECTION {
+                    return Err(CodecError::TooManyListValues {
+                        name,
+                        values: list_values[index],
+                        max: MAX_LIST_I32_VALUES_PER_SECTION,
+                    }
+                    .into());
+                }
+            }
+            writer.write(&batch).map_err(CodecError::from)?;
+        }
+        if section_rows != expected as usize {
+            return Err(CodecError::RowCountMismatch {
+                expected: u64::from(expected),
+                got: section_rows as u64,
+            }
+            .into());
+        }
+    }
+    if observed_rows != rows {
+        return Err(CodecError::RowCountMismatch {
+            expected: rows as u64,
+            got: observed_rows as u64,
+        }
+        .into());
+    }
+    let total_list_values = list_values.iter().try_fold(0_usize, |total, &values| {
+        total
+            .checked_add(values)
+            .ok_or(CodecError::TooManyListValues {
+                name: list_columns.first().copied().unwrap_or("ListI32"),
+                values: usize::MAX,
+                max: MAX_LIST_I32_VALUES_PER_SECTION,
+            })
+    })?;
+    final_data_body_bound(type_id, rows, total_list_values)?;
+    writer.close().map_err(CodecError::from)?;
+    Ok(())
+}
+
+fn full_section_reader<R: ChunkReader + 'static>(
+    source: R,
+    contract: &TypeContract,
+    expected_rows: usize,
+) -> Result<ParquetRecordBatchReader, CodecError> {
+    let len = usize::try_from(source.len()).map_err(|_overflow| CodecError::SectionTooLarge {
+        len: usize::MAX,
+        max: MAX_SECTION_BYTES,
+    })?;
+    if len > MAX_SECTION_BYTES {
+        return Err(CodecError::SectionTooLarge {
+            len,
+            max: MAX_SECTION_BYTES,
+        });
+    }
+    let options = ArrowReaderOptions::new().with_skip_arrow_metadata(true);
+    let builder = ParquetRecordBatchReaderBuilder::try_new_with_options(source, options)?;
+    if !schema_matches(builder.schema().as_ref(), contract) {
+        return Err(CodecError::SchemaMismatch);
+    }
+    let groups = builder.metadata().num_row_groups();
+    if groups > MAX_ROW_GROUPS {
+        return Err(CodecError::TooManyRowGroups {
+            groups,
+            max: MAX_ROW_GROUPS,
+        });
+    }
+    let claimed = builder.metadata().file_metadata().num_rows();
+    let claimed = usize::try_from(claimed)
+        .map_err(|_overflow| CodecError::InvalidRowCount { raw: claimed })?;
+    check_row_cap(claimed)?;
+    if claimed != expected_rows {
+        return Err(CodecError::RowCountMismatch {
+            expected: expected_rows as u64,
+            got: claimed as u64,
+        });
+    }
+    Ok(builder.with_batch_size(DECODE_BATCH_SIZE).build()?)
 }
 
 fn contract(type_id: u32) -> Result<&'static TypeContract, CodecError> {

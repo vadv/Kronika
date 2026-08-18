@@ -149,3 +149,51 @@ fn bounded_finalizer_preserves_exact_finished_bytes_with_ties() {
         "bounded finishing must preserve format bytes"
     );
 }
+
+#[test]
+fn streamed_record_batches_preserve_finished_bytes_with_ties() {
+    let rows = (0..8_193)
+        .map(|value| {
+            let tied = value / 2;
+            OsLoadavg {
+                ts: Ts(tied),
+                load1: tied as f64,
+                load5: 2.0,
+                load15: 0.5,
+                running: 2,
+                total: 345,
+                scope: 0,
+            }
+        })
+        .collect::<Vec<_>>();
+    let expected_rows = rows
+        .chunks(1_024)
+        .map(|rows| rows.len() as u32)
+        .collect::<Vec<_>>();
+    let bodies = rows
+        .chunks(1_024)
+        .map(|rows| Bytes::from(OsLoadavg::encode(rows).expect("encode input section")))
+        .collect::<Vec<_>>();
+    let batches = bodies
+        .iter()
+        .flat_map(|body| {
+            decode_any(
+                OsLoadavg::CONTRACT.type_id.get(),
+                VerifiedSection::for_test(body.clone()),
+            )
+            .expect("decode input section")
+            .batches
+        })
+        .collect();
+    let expected = encode_final_batches(OsLoadavg::CONTRACT.type_id.get(), batches)
+        .expect("write reference body");
+    let mut actual = Vec::new();
+    encode_final_sections_to(
+        OsLoadavg::CONTRACT.type_id.get(),
+        &expected_rows,
+        &mut actual,
+        |index| Ok::<_, CodecError>(bodies[index].clone()),
+    )
+    .expect("write streamed final body");
+    assert_eq!(actual, expected);
+}
