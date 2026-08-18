@@ -52,9 +52,10 @@ mod private {
 pub use codec::{
     CodecError, DecodeStats, DecodedSection, FINAL_DATA_PAGE_BYTES, FINAL_ZSTD_LEVEL,
     FinalPlainColumnSize, ListColumn, MAX_DECODED_SECTION_BYTES, MAX_ROW_GROUPS, MAX_SECTION_BYTES,
-    MAX_SECTION_ROWS, VerifiedSection, arrow_schema, encode_final_batches, final_data_body_bound,
-    final_plain_body_bound, final_single_batch_plain_body_bound, nullable_bool, nullable_column,
-    opt_bool, opt_primitive, read_list_i32, required_bool, required_column, write_bool,
+    MAX_SECTION_ROWS, VerifiedSection, arrow_schema, encode_final_batches,
+    encode_final_sections_to, final_data_body_bound, final_plain_body_bound,
+    final_single_batch_plain_body_bound, nullable_bool, nullable_column, opt_bool, opt_primitive,
+    read_list_i32, required_bool, required_column, validate_final_section, write_bool,
     write_bool_nullable, write_list_i32, write_nullable, write_required,
 };
 pub use parquet_preflight::{

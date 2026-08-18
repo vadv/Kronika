@@ -3,6 +3,7 @@
 //! Coalesces collection-window sections by type into a temporary file and
 //! writes the end catalog last.
 
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
@@ -15,14 +16,14 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use kronika_format::{
-    Catalog, ENTRY_LEN, Entry, EntrySnapshot, FORMAT_VERSION, HotMark, MAGIC, META_LEN, PartError,
-    Placement, StrId, TAIL_INDEX_LEN, TailIndex, crc32c, validate_part_catalog,
+    Catalog, Crc32c, ENTRY_LEN, Entry, EntrySnapshot, FORMAT_VERSION, HotMark, MAGIC, META_LEN,
+    PartError, Placement, StrId, TAIL_INDEX_LEN, TailIndex, crc32c, validate_catalog_layout,
 };
 use kronika_layout::{FileIdentity, LayoutError, SegmentAddress, SegmentId, WriterOwner, ZmsTemp};
 use kronika_registry::{
     Bytes, CodecError, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, MAX_DECODED_SECTION_BYTES,
-    MAX_ROW_GROUPS, MAX_SECTION_BYTES, MAX_SECTION_ROWS, VerifiedSection, decode_any,
-    encode_final_batches, final_data_body_bound, validate_plain_parquet_decode_work,
+    MAX_ROW_GROUPS, MAX_SECTION_BYTES, MAX_SECTION_ROWS, VerifiedSection, encode_final_sections_to,
+    validate_final_section, validate_plain_parquet_decode_work,
 };
 use parquet::arrow::arrow_reader::{ArrowReaderOptions, ParquetRecordBatchReaderBuilder};
 
@@ -96,7 +97,9 @@ pub fn write_segment(
         });
     }
     let mut temporary = owner.create_zms_temp(address)?;
-    let summary = write_tmp(journal, &mut temporary)?;
+    let mut spool = owner.create_zms_temp(address)?;
+    let summary = write_tmp(journal, &mut temporary, &mut spool)?;
+    drop(spool);
     let generated = temporary.try_clone_file()?;
     if !validate_segment(&generated, summary)? {
         return Err(WriteError::GeneratedSegmentInvalid);
@@ -159,79 +162,62 @@ struct SegmentPlan {
 /// Write the merged segment to `tmp` and flush the encoder.
 ///
 /// Publication synchronizes the file and its parent directories.
-fn write_tmp(journal: &Journal, temporary: &mut ZmsTemp<'_>) -> Result<WriteSummary, WriteError> {
+fn write_tmp(
+    journal: &Journal,
+    temporary: &mut ZmsTemp<'_>,
+    spool: &mut ZmsTemp<'_>,
+) -> Result<WriteSummary, WriteError> {
     let mut plan = plan_segment(journal)?;
     let strings = plan
         .by_type
         .remove(&DICT_STRINGS_TYPE_ID)
         .unwrap_or_default();
     let blobs = plan.by_type.remove(&DICT_BLOBS_TYPE_ID).unwrap_or_default();
-    let dictionary = normalize_dictionary(journal, &strings, &blobs)?;
 
+    let mut types = plan.by_type.into_iter().collect::<Vec<_>>();
+    types.sort_by_key(|(type_id, descriptors)| {
+        let bytes = descriptors.iter().fold(0_u64, |total, descriptor| {
+            total.saturating_add(descriptor.entry.len)
+        });
+        (Reverse(bytes), *type_id)
+    });
+    let mut spool_out = BufWriter::new(spool.file_mut());
+    let mut spooled = Vec::new();
+    let mut spool_offset = 0_u64;
+
+    for (type_id, descriptors) in types {
+        let section =
+            spool_data_section(journal, type_id, &descriptors, &mut spool_out, spool_offset)?;
+        spool_offset =
+            spool_offset
+                .checked_add(section.len)
+                .ok_or(WriteError::ArithmeticOverflow {
+                    what: "spool offset",
+                })?;
+        spooled.push(section);
+    }
+
+    spool_dictionary_sections(
+        journal,
+        &strings,
+        &blobs,
+        &mut spool_out,
+        &mut spooled,
+        &mut spool_offset,
+    )?;
+    let spool_file = spool_out
+        .into_inner()
+        .map_err(io::IntoInnerError::into_error)?;
+
+    spooled.sort_by_key(|section| section.type_id);
     let mut out = BufWriter::new(temporary.file_mut());
-
     out.write_all(&MAGIC)?;
     let mut offset = MAGIC.len() as u64;
     let mut entries: Vec<Entry> = Vec::new();
-
-    for (type_id, descriptors) in plan.by_type {
-        let declared_rows = aggregate_rows(type_id, &descriptors)?;
-        let mut batches = Vec::<RecordBatch>::new();
-        let mut decoded_rows = 0_usize;
-        let mut list_i32_child_values = 0_usize;
-        for descriptor in descriptors {
-            let decoded = decode_any(type_id, read_verified_body(journal, descriptor)?)?;
-            if decoded.stats.rows != descriptor.entry.rows as usize {
-                return Err(WriteError::RowCountMismatch {
-                    type_id,
-                    declared: descriptor.entry.rows,
-                    decoded: decoded.stats.rows,
-                });
-            }
-            let projected_rows = decoded_rows.checked_add(decoded.stats.rows).ok_or(
-                WriteError::ArithmeticOverflow {
-                    what: "decoded row count",
-                },
-            )?;
-            let projected_list_values = list_i32_child_values
-                .checked_add(decoded.stats.list_i32_child_values)
-                .ok_or(WriteError::ArithmeticOverflow {
-                    what: "decoded ListI32 child count",
-                })?;
-            final_data_body_bound(type_id, projected_rows, projected_list_values)?;
-            decoded_rows = projected_rows;
-            list_i32_child_values = projected_list_values;
-            batches.extend(decoded.batches);
-        }
-        if decoded_rows != declared_rows {
-            return Err(WriteError::RowCountMismatch {
-                type_id,
-                declared: u32::try_from(declared_rows).unwrap_or(u32::MAX),
-                decoded: decoded_rows,
-            });
-        }
-        let body = encode_final_batches(type_id, batches)?;
-        write_section(
-            &mut out,
-            &mut entries,
-            &mut offset,
-            type_id,
-            u32::try_from(declared_rows).map_err(|_error| WriteError::ArithmeticOverflow {
-                what: "section row count",
-            })?,
-            &body,
-        )?;
-    }
-
-    for section in dictionary.sections()? {
-        write_section(
-            &mut out,
-            &mut entries,
-            &mut offset,
-            section.type_id,
-            section.rows,
-            &section.body,
-        )?;
+    let mut copy_buffer = vec![0_u8; COMPARE_BUFFER_BYTES].into_boxed_slice();
+    for section in spooled {
+        copy_spooled_section(spool_file, &mut out, section, &mut copy_buffer)?;
+        push_section_entry(&mut entries, &mut offset, section)?;
     }
 
     let sections = entries.len();
@@ -242,7 +228,7 @@ fn write_tmp(journal: &Journal, temporary: &mut ZmsTemp<'_>) -> Result<WriteSumm
         format_version: FORMAT_VERSION,
         window_count: plan.window_count,
     };
-    out.write_all(&catalog.encode())?;
+    catalog.write_encoded(&mut out)?;
 
     let file = out.into_inner().map_err(io::IntoInnerError::into_error)?;
     let bytes = file.metadata()?.len();
@@ -255,6 +241,196 @@ fn write_tmp(journal: &Journal, temporary: &mut ZmsTemp<'_>) -> Result<WriteSumm
     })
 }
 
+fn spool_data_section(
+    journal: &Journal,
+    type_id: u32,
+    descriptors: &[SectionDescriptor],
+    out: &mut (impl Write + Send),
+    offset: u64,
+) -> Result<SpooledSection, WriteError> {
+    let declared_rows = aggregate_rows(type_id, descriptors)?;
+    let mut rows = Vec::with_capacity(descriptors.len());
+    for &descriptor in descriptors {
+        validate_final_section(
+            type_id,
+            read_verified_body(journal, descriptor)?,
+            descriptor.entry.rows,
+        )?;
+        rows.push(descriptor.entry.rows);
+    }
+    let mut sink = SectionSink::new(out);
+    encode_final_sections_to(
+        type_id,
+        &rows,
+        &mut sink,
+        |index| -> Result<_, WriteError> {
+            Ok(Bytes::from(read_section_body(journal, descriptors[index])?))
+        },
+    )?;
+    let (len, checksum) = sink.finish();
+    check_final_section_len(len)?;
+    Ok(SpooledSection {
+        type_id,
+        rows: u32::try_from(declared_rows).map_err(|_overflow| WriteError::ArithmeticOverflow {
+            what: "section row count",
+        })?,
+        offset,
+        len,
+        crc32c: checksum,
+    })
+}
+
+fn spool_dictionary_sections(
+    journal: &Journal,
+    strings: &[SectionDescriptor],
+    blobs: &[SectionDescriptor],
+    out: &mut impl Write,
+    spooled: &mut Vec<SpooledSection>,
+    offset: &mut u64,
+) -> Result<(), WriteError> {
+    let dictionary = normalize_dictionary(journal, strings, blobs)?;
+    for section in dictionary.sections()? {
+        let len = u64::try_from(section.body.len()).map_err(|_overflow| {
+            WriteError::ArithmeticOverflow {
+                what: "dictionary section length",
+            }
+        })?;
+        check_final_section_len(len)?;
+        out.write_all(&section.body)?;
+        spooled.push(SpooledSection {
+            type_id: section.type_id,
+            rows: section.rows,
+            offset: *offset,
+            len,
+            crc32c: crc32c(&section.body),
+        });
+        *offset = offset
+            .checked_add(len)
+            .ok_or(WriteError::ArithmeticOverflow {
+                what: "spool offset",
+            })?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SpooledSection {
+    type_id: u32,
+    rows: u32,
+    offset: u64,
+    len: u64,
+    crc32c: u32,
+}
+
+struct SectionSink<W> {
+    out: W,
+    len: u64,
+    checksum: Crc32c,
+}
+
+impl<W> SectionSink<W> {
+    const fn new(out: W) -> Self {
+        Self {
+            out,
+            len: 0,
+            checksum: Crc32c::new(),
+        }
+    }
+
+    fn finish(self) -> (u64, u32) {
+        (self.len, self.checksum.finalize())
+    }
+}
+
+impl<W: Write> Write for SectionSink<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let written = self.out.write(buf)?;
+        self.checksum.update(&buf[..written]);
+        self.len = self
+            .len
+            .checked_add(written as u64)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "section length overflow"))?;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
+    }
+}
+
+fn check_final_section_len(len: u64) -> Result<(), WriteError> {
+    let len_usize = usize::try_from(len).map_err(|_overflow| CodecError::SectionTooLarge {
+        len: usize::MAX,
+        max: MAX_SECTION_BYTES,
+    })?;
+    if len_usize == 0 || len_usize > MAX_SECTION_BYTES {
+        return Err(CodecError::SectionTooLarge {
+            len: len_usize,
+            max: MAX_SECTION_BYTES,
+        }
+        .into());
+    }
+    Ok(())
+}
+
+fn copy_spooled_section(
+    spool: &File,
+    out: &mut impl Write,
+    section: SpooledSection,
+    buffer: &mut [u8],
+) -> Result<(), WriteError> {
+    let mut copied = 0_u64;
+    while copied < section.len {
+        let remaining = usize::try_from(section.len - copied).unwrap_or(usize::MAX);
+        let chunk = remaining.min(buffer.len());
+        let at = section
+            .offset
+            .checked_add(copied)
+            .ok_or(WriteError::ArithmeticOverflow {
+                what: "spool read offset",
+            })?;
+        spool.read_exact_at(&mut buffer[..chunk], at)?;
+        out.write_all(&buffer[..chunk])?;
+        copied = copied
+            .checked_add(chunk as u64)
+            .ok_or(WriteError::ArithmeticOverflow {
+                what: "spool copy length",
+            })?;
+    }
+    Ok(())
+}
+
+fn push_section_entry(
+    entries: &mut Vec<Entry>,
+    offset: &mut u64,
+    section: SpooledSection,
+) -> Result<(), WriteError> {
+    if entries
+        .last()
+        .is_some_and(|entry| entry.type_id >= section.type_id)
+    {
+        return Err(CodecError::SchemaMismatch.into());
+    }
+    checked_catalog_entries(entries.len(), 1)?;
+    entries
+        .try_reserve(1)
+        .map_err(WriteError::CatalogAllocation)?;
+    entries.push(Entry {
+        type_id: section.type_id,
+        flags: 0,
+        offset: *offset,
+        len: section.len,
+        rows: section.rows,
+        crc32c: section.crc32c,
+    });
+    *offset = offset
+        .checked_add(section.len)
+        .ok_or(WriteError::ArithmeticOverflow {
+            what: "segment offset",
+        })?;
+    Ok(())
+}
+
 fn plan_segment(journal: &Journal) -> Result<SegmentPlan, WriteError> {
     let mut by_type = BTreeMap::<u32, Vec<SectionDescriptor>>::new();
     let mut section_count = 0_usize;
@@ -265,10 +441,9 @@ fn plan_segment(journal: &Journal) -> Result<SegmentPlan, WriteError> {
             what: "window count",
         })?;
     for &part_ref in journal.parts() {
-        let part = journal.read_part(part_ref)?;
-        // Recheck bodies immediately before publication. The journal may have
-        // changed on disk after append even though its frame remained valid.
-        let catalog = validate_part_catalog(&part).map_err(WriteError::Part)?;
+        // Recheck framing immediately before publication. Each body is CRC
+        // checked separately just before its type is finalized.
+        let catalog = read_part_catalog(journal, part_ref)?;
         if catalog.format_version != FORMAT_VERSION {
             return Err(WriteError::UnsupportedFormat {
                 version: catalog.format_version,
@@ -310,6 +485,42 @@ fn plan_segment(journal: &Journal) -> Result<SegmentPlan, WriteError> {
     })
 }
 
+fn read_part_catalog(journal: &Journal, part: JournalPartRef) -> Result<Catalog, WriteError> {
+    let minimum = MAGIC.len() + META_LEN + TAIL_INDEX_LEN;
+    if part.len() < minimum {
+        return Err(WriteError::Part(PartError::TooShort { actual: part.len() }));
+    }
+    let magic = journal.read_part_range(part, 0, MAGIC.len())?;
+    if magic.as_slice() != MAGIC {
+        let mut actual = [0_u8; 4];
+        actual.copy_from_slice(&magic);
+        return Err(WriteError::Part(PartError::BadMagic { actual }));
+    }
+    let tail_at = part.len() - TAIL_INDEX_LEN;
+    let tail = journal.read_part_range(part, tail_at, TAIL_INDEX_LEN)?;
+    let tail: [u8; TAIL_INDEX_LEN] = tail
+        .try_into()
+        .map_err(|_bytes| WriteError::Part(PartError::TooShort { actual: part.len() }))?;
+    let tail = TailIndex::decode(tail).map_err(|error| WriteError::Part(PartError::Tail(error)))?;
+    let catalog_len = tail.catalog_len as usize;
+    let Some(catalog_at) = tail_at.checked_sub(catalog_len) else {
+        return Err(WriteError::Part(PartError::BadCatalogLen {
+            catalog_len: tail.catalog_len,
+        }));
+    };
+    if catalog_at < MAGIC.len() {
+        return Err(WriteError::Part(PartError::BadCatalogLen {
+            catalog_len: tail.catalog_len,
+        }));
+    }
+    let bytes = journal.read_part_range(part, catalog_at, catalog_len)?;
+    let catalog =
+        Catalog::decode(&bytes).map_err(|error| WriteError::Part(PartError::Catalog(error)))?;
+    validate_catalog_layout(&catalog, catalog_at as u64)
+        .map_err(|error| WriteError::Part(PartError::Layout(error)))?;
+    Ok(catalog)
+}
+
 fn aggregate_rows(type_id: u32, descriptors: &[SectionDescriptor]) -> Result<usize, WriteError> {
     let rows = descriptors.iter().try_fold(0_usize, |rows, descriptor| {
         rows.checked_add(descriptor.entry.rows as usize)
@@ -348,39 +559,23 @@ fn read_verified_body(
         .map_err(WriteError::Codec)
 }
 
-fn write_section(
-    out: &mut impl Write,
-    entries: &mut Vec<Entry>,
-    offset: &mut u64,
-    type_id: u32,
-    rows: u32,
-    body: &[u8],
-) -> Result<(), WriteError> {
-    if entries.last().is_some_and(|entry| entry.type_id >= type_id) {
-        return Err(CodecError::SchemaMismatch.into());
-    }
-    checked_catalog_entries(entries.len(), 1)?;
-    entries
-        .try_reserve(1)
-        .map_err(WriteError::CatalogAllocation)?;
-    let len = u64::try_from(body.len()).map_err(|_error| WriteError::ArithmeticOverflow {
-        what: "section length",
+fn read_section_body(
+    journal: &Journal,
+    descriptor: SectionDescriptor,
+) -> Result<Vec<u8>, WriteError> {
+    let start = usize::try_from(descriptor.entry.offset).map_err(|_overflow| {
+        WriteError::ArithmeticOverflow {
+            what: "section offset",
+        }
     })?;
-    out.write_all(body)?;
-    entries.push(Entry {
-        type_id,
-        flags: 0,
-        offset: *offset,
-        len,
-        rows,
-        crc32c: crc32c(body),
-    });
-    *offset = offset
-        .checked_add(len)
-        .ok_or(WriteError::ArithmeticOverflow {
-            what: "segment offset",
-        })?;
-    Ok(())
+    let len = usize::try_from(descriptor.entry.len).map_err(|_overflow| {
+        WriteError::ArithmeticOverflow {
+            what: "section length",
+        }
+    })?;
+    journal
+        .read_part_range(descriptor.part, start, len)
+        .map_err(WriteError::Journal)
 }
 
 #[cfg(test)]

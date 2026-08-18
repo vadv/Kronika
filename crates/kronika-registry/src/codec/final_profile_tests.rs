@@ -3,7 +3,10 @@ use parquet::basic::{Compression, Encoding};
 use parquet::column::page::Page;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 
-use super::{FINAL_ZSTD_LEVEL, VerifiedSection, encode_final_batches};
+use super::{
+    CodecError, FINAL_ZSTD_LEVEL, VerifiedSection, encode_final_batches, encode_final_sections_to,
+    validate_final_section,
+};
 use crate::os_loadavg::OsLoadavg;
 use crate::{Section, Ts, decode_any};
 
@@ -104,4 +107,45 @@ fn finished_encoding_is_physical_and_boundary_deterministic() {
         }
         assert_eq!(data_pages, 1, "one data page per column chunk");
     }
+}
+
+#[test]
+fn bounded_finalizer_preserves_exact_finished_bytes_with_ties() {
+    let rows = [
+        row(f64::from_bits(0x7ff8_0000_0000_0002)),
+        row(-0.0),
+        row(0.0),
+        row(f64::from_bits(0x7ff8_0000_0000_0001)),
+        row(-0.0),
+    ];
+    let type_id = OsLoadavg::CONTRACT.type_id.get();
+    let bodies = rows
+        .iter()
+        .rev()
+        .map(|row| Bytes::from(OsLoadavg::encode(std::slice::from_ref(row)).expect("encode row")))
+        .collect::<Vec<_>>();
+    let batches = bodies
+        .iter()
+        .flat_map(|body| {
+            decode_any(type_id, VerifiedSection::for_test(body.clone()))
+                .expect("decode row")
+                .batches
+        })
+        .collect();
+    let expected = encode_final_batches(type_id, batches).expect("write legacy final body");
+
+    for body in &bodies {
+        validate_final_section(type_id, VerifiedSection::for_test(body.clone()), 1)
+            .expect("validate input section");
+    }
+    let mut actual = Vec::new();
+    encode_final_sections_to(type_id, &vec![1; bodies.len()], &mut actual, |index| {
+        Ok::<_, CodecError>(bodies[index].clone())
+    })
+    .expect("write bounded final body");
+
+    assert_eq!(
+        actual, expected,
+        "bounded finishing must preserve format bytes"
+    );
 }
