@@ -354,7 +354,7 @@ export function cgroupSnapshotPlan(
   const ioPath = rawText(value(context, "io_path"))
   const storedScope = rawText(value(context, "scope"))
   const scope = storedScope !== null && /^(?:0|[1-9]\d*)$/.test(storedScope) ? storedScope : null
-  const paths = { cpu_path: cpuPath, memory_path: memoryPath, io_path: ioPath }
+  const paths = { cpu_path: cpuPath, memory_path: memoryPath, io_path: ioPath, pids_path: null }
   const key = JSON.stringify([segmentId, cursor, cpuPath, memoryPath, ioPath, scope])
   const loads = requests.flatMap((request) => {
     const pathField = CGROUP_PATH_FIELDS[request.section as keyof typeof CGROUP_PATH_FIELDS]
