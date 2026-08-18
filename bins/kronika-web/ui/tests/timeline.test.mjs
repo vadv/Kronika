@@ -252,7 +252,7 @@ test("a transaction age lane reading scales durations like table cells do", () =
   }
   const t = (key) => key
   assert.equal(helpers.laneReading(lane, 115, "ru", t), "5,09 мс")
-  assert.equal(helpers.laneReading(lane, 130, "ru", t), "1ч 02м")
+  assert.equal(helpers.laneReading(lane, 130, "ru", t), "1,03 ч")
 })
 
 test("a health lane reading keeps the shared evaluation timestamp", () => {

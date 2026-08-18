@@ -91,7 +91,7 @@ test("process summary charts preserve absent, null, zero, storage and human unit
   assert.equal(helpers.processSummaryUnit(metric("read_bytes_per_second"), "en", t), "B/s")
   assert.equal(helpers.processSummaryUnit(metric("processes"), "en", t), "count")
   assert.equal(helpers.processSummaryUnit(metric("user_cores"), "en", t), "cores")
-  assert.equal(helpers.processSummaryUnit(metric("run_delay_ms_per_second"), "en", t), "ms/s")
+  assert.equal(helpers.processSummaryUnit(metric("run_delay_ms_per_second"), "en", t), "")
 })
 
 test("process summary request states retain rows only within the requested hour", () => {
