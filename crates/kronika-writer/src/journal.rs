@@ -278,8 +278,8 @@ impl Journal {
 
     /// Read a bounded byte range relative to one part body.
     ///
-    /// Writing uses this after catalog validation so each Parquet body is read
-    /// once without allocating the rest of its journal part again.
+    /// Writing uses this after catalog validation to read one bounded Parquet
+    /// body without allocating the rest of its journal part.
     pub(crate) fn read_part_range(
         &self,
         part: JournalPartRef,

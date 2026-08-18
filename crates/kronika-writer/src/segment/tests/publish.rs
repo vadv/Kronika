@@ -19,6 +19,25 @@ fn rewriting_the_same_journal_is_idempotent() {
     assert_eq!(second, first);
     assert_eq!(std::fs::read(path).expect("read retry"), bytes);
     assert_eq!(journal.parts().len(), 1, "write never resets the journal");
+    assert_eq!(day_entry_names(&owner), [address().zms_name()]);
+}
+
+fn day_entry_names(owner: &WriterOwner) -> Vec<String> {
+    let path = owner
+        .root()
+        .diagnostic_file_path(address(), kronika_layout::FileKind::Zms);
+    let mut names = std::fs::read_dir(path.parent().expect("segment has a day directory"))
+        .expect("read day directory")
+        .map(|entry| {
+            entry
+                .expect("read day entry")
+                .file_name()
+                .into_string()
+                .expect("fixture entry name is UTF-8")
+        })
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    names
 }
 
 #[test]
@@ -85,4 +104,5 @@ fn body_corruption_after_append_prevents_publication() {
             .exists(),
         "a corrupt journal body must not be published"
     );
+    assert!(day_entry_names(&owner).is_empty());
 }

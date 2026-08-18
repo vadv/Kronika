@@ -81,6 +81,7 @@ mod columns;
 mod decode;
 mod encode;
 mod error;
+mod finalize;
 
 pub use bounds::{
     FinalPlainColumnSize, final_data_body_bound, final_plain_body_bound,
@@ -97,6 +98,7 @@ use decode::{boolean_column, capped_reader};
 pub use encode::encode_final_batches;
 use encode::sort_by_sort_key;
 pub use error::CodecError;
+pub use finalize::{encode_final_sections_to, validate_final_section};
 
 /// Maximum rows in one snapshot section.
 ///
