@@ -457,7 +457,7 @@ test("snapshot pages append once in server order and deduplicate physical coordi
 test("relation pages preserve same-named objects from different databases", async () => {
   const api = await bundledApi()
   const make = (datid: string, datname: string) => ({
-    segmentId: "77", logicalName: "pg_stat_user_indexes", typeId: "1014001", ordinal: datid, timestamp: START,
+    segmentId: "77", logicalName: "pg_stat_user_indexes", typeId: "1014003", ordinal: datid, timestamp: START,
     values: { datid, datname, schemaname: "public", relid: "42", relname: "orders", indexrelid: "43", indexrelname: "orders_pkey" },
     relation: { group: "object" },
   })
@@ -1377,6 +1377,45 @@ test("grouped relation history sends its full identity and parses semantic rows"
         values: { datid: "42", datname: "app", schemaname: "public", dml_total: 7, dead_pct: 12.5 },
       },
     ])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("tablespace history sends only the cluster-wide OID identity", async () => {
+  const api = await bundledApi()
+  Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input), "http://kronika.invalid")
+    assert.equal(url.searchParams.get("group"), "tablespace")
+    assert.equal(url.searchParams.get("where.tablespace_oid"), "16384")
+    assert.equal(url.searchParams.get("where.datid"), null)
+    return ndjson([
+      {
+        record: "relation_layout", logical_name: "pg_stat_user_indexes", group: "tablespace",
+        columns: [{ name: "main_fork_bytes", kind: "number", unit: "bytes", nullable: true }],
+      },
+      { record: "series_segment", segment: { id: "segment-a" } },
+      {
+        record: "relation", logical_name: "pg_stat_user_indexes", group: "tablespace",
+        key: { tablespace_oid: "16384" }, values: { main_fork_bytes: 8192 },
+        sample_from: String(START - 5), sample_to: String(START), source: null,
+      },
+    ])
+  }
+  try {
+    const rows = await api.loadSeries(
+      START,
+      "pg_stat_user_indexes",
+      { tablespace_oid: "16384" },
+      ["main_fork_bytes"],
+      new AbortController().signal,
+      undefined,
+      "tablespace",
+    )
+    assert.deepEqual(rows[0]?.values, { tablespace_oid: "16384", main_fork_bytes: 8192 })
+    assert.deepEqual(rows[0]?.relation, { group: "tablespace" })
   } finally {
     globalThis.fetch = originalFetch
   }

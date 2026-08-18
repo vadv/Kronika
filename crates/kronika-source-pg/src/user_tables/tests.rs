@@ -1,6 +1,6 @@
 use super::{
     UserTablesRow, UserTablesVersion, to_v1, to_v2, to_v3, to_v4, user_tables_query,
-    user_tables_version,
+    user_tables_version, validate_toast_tablespace,
 };
 use crate::test_intern as fake_intern;
 
@@ -12,7 +12,8 @@ fn sample_row() -> UserTablesRow {
         relid: 16_499,
         schemaname: "public".to_owned(),
         relname: "orders".to_owned(),
-        tablespace: "pg_default".to_owned(),
+        tablespace_oid: Some(1_663),
+        tablespace: Some("pg_default".to_owned()),
         seq_scan: 12,
         seq_tup_read: 900,
         idx_scan: Some(4_000),
@@ -114,8 +115,20 @@ fn every_query_carries_the_marker_and_the_views_it_needs() {
         assert!(sql.contains("pg_statio_user_tables"), "{sql}");
         assert!(sql.contains("reltoastrelid"), "{sql}");
         assert!(sql.contains("CASE WHEN c.relkind = 'p' THEN NULL"), "{sql}");
-        assert!(sql.contains("age(c.relfrozenxid)"), "{sql}");
-        assert!(sql.contains("mxid_age(c.relminmxid)"), "{sql}");
+        assert!(sql.contains("pg_catalog.age(c.relfrozenxid)"), "{sql}");
+        assert!(sql.contains("pg_catalog.mxid_age(c.relminmxid)"), "{sql}");
+        assert!(sql.contains("d.dattablespace"), "{sql}");
+        assert!(sql.contains("toast_tablespace_matches_heap"), "{sql}");
+        for catalog in [
+            "pg_catalog.pg_stat_user_tables",
+            "pg_catalog.pg_statio_user_tables",
+            "pg_catalog.pg_stat_all_tables",
+            "pg_catalog.pg_class",
+            "pg_catalog.pg_database",
+            "pg_catalog.pg_tablespace",
+        ] {
+            assert!(sql.contains(catalog), "{sql}");
+        }
     }
 }
 
@@ -125,6 +138,8 @@ fn to_v4_maps_every_column_and_interns_the_names() {
     assert_eq!(r.ts.0, 2_000);
     assert_eq!(r.datname, fake_intern(b"appdb").unwrap());
     assert_eq!(r.relname, fake_intern(b"orders").unwrap());
+    assert_eq!(r.tablespace_oid, Some(1_663));
+    assert_eq!(r.tablespace, Some(fake_intern(b"pg_default").unwrap()));
     assert_eq!(r.seq_scan, 12);
     assert_eq!(r.idx_scan, Some(4_000));
     assert_eq!(r.n_tup_newpage_upd, 8);
@@ -149,6 +164,8 @@ fn a_table_without_indexes_or_toast_keeps_its_nulls() {
 #[test]
 fn a_partitioned_parent_keeps_null_transaction_ages_in_every_layout() {
     let row = UserTablesRow {
+        tablespace_oid: None,
+        tablespace: None,
         xid_age: None,
         mxid_age: None,
         ..sample_row()
@@ -161,6 +178,31 @@ fn a_partitioned_parent_keeps_null_transaction_ages_in_every_layout() {
     assert_eq!((v2.xid_age, v2.mxid_age), (None, None));
     assert_eq!((v3.xid_age, v3.mxid_age), (None, None));
     assert_eq!((v4.xid_age, v4.mxid_age), (None, None));
+    assert_eq!((v1.tablespace_oid, v1.tablespace), (None, None));
+    assert_eq!((v2.tablespace_oid, v2.tablespace), (None, None));
+    assert_eq!((v3.tablespace_oid, v3.tablespace), (None, None));
+    assert_eq!((v4.tablespace_oid, v4.tablespace), (None, None));
+}
+
+#[test]
+fn a_missing_tablespace_name_keeps_the_effective_oid() {
+    let row = UserTablesRow {
+        tablespace: None,
+        ..sample_row()
+    };
+    let mapped = to_v4(&row, fake_intern).expect("intern");
+    assert_eq!(mapped.tablespace_oid, Some(1_663));
+    assert_eq!(mapped.tablespace, None);
+}
+
+#[test]
+fn toast_placement_mismatch_rejects_the_table_section_row() {
+    let error = validate_toast_tablespace(16_499, false).expect_err("mismatch");
+    assert_eq!(
+        error.to_string(),
+        "table 16499 has TOAST storage in a different tablespace"
+    );
+    validate_toast_tablespace(16_499, true).expect("matching placement");
 }
 
 #[test]

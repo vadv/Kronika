@@ -87,12 +87,12 @@ connection is closed.
 | `1_012_001` | `pg_stat_progress_vacuum` | 10–16 | instance | `conditional_full` |
 | `1_012_002` | `pg_stat_progress_vacuum` | 17 | instance | `conditional_full` |
 | `1_012_003` | `pg_stat_progress_vacuum` | 18 | instance | `conditional_full` |
-| `1_013_001` | `pg_stat_user_tables` | 10–12 | each database | `snapshot_full` |
-| `1_013_002` | `pg_stat_user_tables` | 13–15 | each database | `snapshot_full` |
-| `1_013_003` | `pg_stat_user_tables` | 16–17 | each database | `snapshot_full` |
-| `1_013_004` | `pg_stat_user_tables` | 18 | each database | `snapshot_full` |
-| `1_014_001` | `pg_stat_user_indexes` | 10–15 | each database | `snapshot_full` |
-| `1_014_002` | `pg_stat_user_indexes` | 16–18 | each database | `snapshot_full` |
+| `1_013_005` | `pg_stat_user_tables` | 10–12 | each database | `snapshot_full` |
+| `1_013_006` | `pg_stat_user_tables` | 13–15 | each database | `snapshot_full` |
+| `1_013_007` | `pg_stat_user_tables` | 16–17 | each database | `snapshot_full` |
+| `1_013_008` | `pg_stat_user_tables` | 18 | each database | `snapshot_full` |
+| `1_014_003` | `pg_stat_user_indexes` | 10–15 | each database | `snapshot_full` |
+| `1_014_004` | `pg_stat_user_indexes` | 16–18 | each database | `snapshot_full` |
 | `1_017_001` | `pg_stat_checkpointer` | 17 | instance | `snapshot_full` |
 | `1_017_002` | `pg_stat_checkpointer` | 18 | instance | `snapshot_full` |
 | `1_019_001` | `pg_settings` | 10–18 | metric session | `on_change` |
@@ -114,6 +114,12 @@ remain in the snapshot.
 `pg_wal_storage` stores one exact sum of the regular-file sizes returned by
 `pg_ls_waldir()`. It does not inspect subdirectories or infer file purpose from
 names; without permission to execute that function the section is absent.
+The relation sections store the effective cluster-wide tablespace OID and a
+nullable catalog name. A zero `reltablespace` resolves through the connected
+database's actual `dattablespace`, including custom database defaults. A
+storage-less partitioned table parent has no effective placement; index rows
+record the index's own placement independently of the table. Tables retain
+heap main-fork plus TOAST storage and never include user-index bytes.
 
 ## Extension views
 

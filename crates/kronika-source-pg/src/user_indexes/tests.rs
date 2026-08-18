@@ -13,7 +13,8 @@ fn sample_row() -> UserIndexesRow {
         schemaname: "public".to_owned(),
         relname: "orders".to_owned(),
         indexrelname: "orders_pkey".to_owned(),
-        tablespace: "pg_default".to_owned(),
+        tablespace_oid: 1_664,
+        tablespace: Some("pg_default".to_owned()),
         idx_scan: 120,
         idx_tup_read: 3_400,
         idx_tup_fetch: 3_000,
@@ -54,8 +55,9 @@ fn every_query_carries_the_marker_and_the_views_it_needs() {
         assert!(sql.contains("kronika:"), "{sql}");
         assert!(sql.contains("pg_stat_user_indexes"), "{sql}");
         assert!(sql.contains("pg_statio_user_indexes"), "{sql}");
-        assert!(sql.contains("pg_get_indexdef"), "{sql}");
-        assert!(sql.contains("pg_am"), "{sql}");
+        assert!(sql.contains("pg_catalog.pg_get_indexdef"), "{sql}");
+        assert!(sql.contains("pg_catalog.pg_am"), "{sql}");
+        assert!(sql.contains("d.dattablespace"), "{sql}");
     }
 }
 
@@ -64,7 +66,9 @@ fn every_query_bounds_an_individual_index_definition() {
     for version in [UserIndexesVersion::V1, UserIndexesVersion::V2] {
         let sql = user_indexes_query(version);
         assert!(
-            sql.contains("left(pg_get_indexdef(si.indexrelid), 65536) AS indexdef"),
+            sql.contains(
+                "pg_catalog.left(pg_catalog.pg_get_indexdef(si.indexrelid), 65536) AS indexdef"
+            ),
             "{sql}"
         );
     }
@@ -77,6 +81,8 @@ fn to_v2_maps_every_column_and_interns_the_names() {
     assert_eq!(r.datid, 16_400);
     assert_eq!(r.datname, fake_intern(b"appdb").unwrap());
     assert_eq!(r.indexrelname, fake_intern(b"orders_pkey").unwrap());
+    assert_eq!(r.tablespace_oid, 1_664);
+    assert_eq!(r.tablespace, Some(fake_intern(b"pg_default").unwrap()));
     assert_eq!(r.idx_scan, 120);
     assert_eq!(r.main_fork_bytes, 16_384);
     assert_eq!(r.last_idx_scan.map(|ts| ts.0), Some(1_900));
@@ -110,6 +116,17 @@ fn a_concurrently_dropped_index_keeps_a_null_definition_in_both_layouts() {
     };
     assert_eq!(to_v1(&row, fake_intern).expect("intern").indexdef, None);
     assert_eq!(to_v2(&row, fake_intern).expect("intern").indexdef, None);
+}
+
+#[test]
+fn a_missing_tablespace_name_keeps_the_effective_oid() {
+    let row = UserIndexesRow {
+        tablespace: None,
+        ..sample_row()
+    };
+    let mapped = to_v2(&row, fake_intern).expect("intern");
+    assert_eq!(mapped.tablespace_oid, 1_664);
+    assert_eq!(mapped.tablespace, None);
 }
 
 #[test]

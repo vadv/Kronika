@@ -49,16 +49,16 @@ Feature: What a PostgreSQL server reports reaches the segment
       | 1020001 | pg_wal_storage         | 1        |
       | 1005003 | pg_stat_database       | 1        |
       | 1001004 | pg_stat_activity       | 1        |
-      | 1013002 | pg_stat_user_tables    | 1        |
-      | 1014001 | pg_stat_user_indexes   | 1        |
+      | 1013006 | pg_stat_user_tables    | 1        |
+      | 1014003 | pg_stat_user_indexes   | 1        |
     And some segment records these rows
       | type_id | column        | value          |
       | 1019001 | name          | shared_buffers |
       | 1005003 | datname       | postgres       |
-      | 1013002 | relname       | bdd_orders     |
-      | 1013002 | schemaname    | public         |
-      | 1014001 | indexrelname  | bdd_orders_pkey |
-      | 1014001 | amname        | btree          |
+      | 1013006 | relname       | bdd_orders     |
+      | 1013006 | schemaname    | public         |
+      | 1014003 | indexrelname  | bdd_orders_pkey |
+      | 1014003 | amname        | btree          |
     And the shutdown pg_query_summary for logical_application_estimate payload reports consistent traffic and costs
       | field                                       | requirement |
       | interval_ms                                 | positive    |
@@ -95,4 +95,4 @@ Feature: What a PostgreSQL server reports reaches the segment
       | type_id | section             |
       | 1019001 | pg_settings         |
       | 1005003 | pg_stat_database    |
-      | 1013002 | pg_stat_user_tables |
+      | 1013006 | pg_stat_user_tables |

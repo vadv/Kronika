@@ -1,4 +1,4 @@
-//! `pg_stat_user_indexes` collection for types `1_014_001`..`1_014_002`.
+//! `pg_stat_user_indexes` collection for types `1_014_003`..`1_014_004`.
 //!
 //! One row per index of the connected database. The scan counters come from
 //! `pg_stat_user_indexes`, the buffer counters from `pg_statio_user_indexes`,
@@ -17,9 +17,9 @@ use crate::{Session, intern_opt as opt};
 /// The `pg_stat_user_indexes` layout selected by the server major version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserIndexesVersion {
-    /// PG 10-15: type `1_014_001` (base layout).
+    /// PG 10-15: type `1_014_003` (base layout).
     V1,
-    /// PG 16-18: type `1_014_002` (adds `last_idx_scan`).
+    /// PG 16-18: type `1_014_004` (adds `last_idx_scan`).
     V2,
 }
 
@@ -37,30 +37,31 @@ pub const fn user_indexes_version(major: u32) -> UserIndexesVersion {
 const COMMON_COLUMNS: &str = "si.indexrelid, si.relid, \
      si.schemaname::text AS schemaname, si.relname::text AS relname, \
      si.indexrelname::text AS indexrelname, \
-     coalesce(ts.spcname, dts.spcname)::text AS tablespace, \
+     COALESCE(NULLIF(c.reltablespace, 0), d.dattablespace)::oid AS tablespace_oid, \
+     ets.spcname::text AS tablespace, \
      coalesce(si.idx_scan, 0) AS idx_scan, \
      coalesce(si.idx_tup_read, 0) AS idx_tup_read, \
      coalesce(si.idx_tup_fetch, 0) AS idx_tup_fetch, \
-     coalesce(pg_relation_size(si.indexrelid), 0) AS main_fork_bytes, \
+     coalesce(pg_catalog.pg_relation_size(si.indexrelid), 0) AS main_fork_bytes, \
      i.indisunique, i.indisprimary, i.indisvalid, i.indisexclusion, i.indisready, \
      am.amname::text AS amname, \
-     left(pg_get_indexdef(si.indexrelid), 65536) AS indexdef, \
+     pg_catalog.left(pg_catalog.pg_get_indexdef(si.indexrelid), 65536) AS indexdef, \
      coalesce(sio.idx_blks_read, 0) AS idx_blks_read, \
      coalesce(sio.idx_blks_hit, 0) AS idx_blks_hit, \
-     (extract(epoch from statement_timestamp()) * 1e6)::int8 AS ts_us";
+     (extract(epoch from pg_catalog.statement_timestamp()) * 1e6)::int8 AS ts_us";
 
 /// The joins every layout shares.
 ///
 /// `pg_tablespace` is joined twice because `reltablespace` is `0` for a
 /// relation in the database default, which is the tablespace to report.
-const COMMON_FROM: &str = " FROM pg_stat_user_indexes si \
-     JOIN pg_statio_user_indexes sio ON sio.indexrelid = si.indexrelid \
-     JOIN pg_class c ON c.oid = si.indexrelid \
-     JOIN pg_am am ON am.oid = c.relam \
-     JOIN pg_index i ON i.indexrelid = si.indexrelid \
-     LEFT JOIN pg_tablespace ts ON ts.oid = c.reltablespace \
-     LEFT JOIN pg_tablespace dts ON dts.oid = \
-         (SELECT dattablespace FROM pg_database WHERE datname = current_database())";
+const COMMON_FROM: &str = " FROM pg_catalog.pg_stat_user_indexes si \
+     JOIN pg_catalog.pg_statio_user_indexes sio ON sio.indexrelid = si.indexrelid \
+     JOIN pg_catalog.pg_class c ON c.oid = si.indexrelid \
+     JOIN pg_catalog.pg_am am ON am.oid = c.relam \
+     JOIN pg_catalog.pg_index i ON i.indexrelid = si.indexrelid \
+     JOIN pg_catalog.pg_database d ON d.datname = pg_catalog.current_database() \
+     LEFT JOIN pg_catalog.pg_tablespace ets \
+       ON ets.oid = COALESCE(NULLIF(c.reltablespace, 0), d.dattablespace)";
 
 /// The SQL for one layout.
 #[must_use]
@@ -100,8 +101,10 @@ pub struct UserIndexesRow {
     pub relname: String,
     /// Index name.
     pub indexrelname: String,
-    /// Tablespace name.
-    pub tablespace: String,
+    /// Effective tablespace oid.
+    pub tablespace_oid: u32,
+    /// Effective tablespace name; `None` when catalog label resolution is missing.
+    pub tablespace: Option<String>,
     /// Index scans.
     pub idx_scan: i64,
     /// Index entries returned by scans.
@@ -132,7 +135,7 @@ pub struct UserIndexesRow {
     pub idx_blks_hit: i64,
 }
 
-/// Build a `1_014_002` row (PG16+ layout), interning every string.
+/// Build a `1_014_004` row (PG16+ layout), interning every string.
 ///
 /// # Errors
 /// Returns the interner's error.
@@ -149,7 +152,8 @@ pub fn to_v2<E>(
         schemaname: intern(row.schemaname.as_bytes())?,
         relname: intern(row.relname.as_bytes())?,
         indexrelname: intern(row.indexrelname.as_bytes())?,
-        tablespace: intern(row.tablespace.as_bytes())?,
+        tablespace_oid: row.tablespace_oid,
+        tablespace: opt(&mut intern, row.tablespace.as_deref())?,
         idx_scan: row.idx_scan,
         idx_tup_read: row.idx_tup_read,
         idx_tup_fetch: row.idx_tup_fetch,
@@ -167,7 +171,7 @@ pub fn to_v2<E>(
     })
 }
 
-/// Build a `1_014_001` row (PG10-15 base layout).
+/// Build a `1_014_003` row (PG10-15 base layout).
 ///
 /// # Errors
 /// Returns the interner's error.
@@ -184,7 +188,8 @@ pub fn to_v1<E>(
         schemaname: intern(row.schemaname.as_bytes())?,
         relname: intern(row.relname.as_bytes())?,
         indexrelname: intern(row.indexrelname.as_bytes())?,
-        tablespace: intern(row.tablespace.as_bytes())?,
+        tablespace_oid: row.tablespace_oid,
+        tablespace: opt(&mut intern, row.tablespace.as_deref())?,
         idx_scan: row.idx_scan,
         idx_tup_read: row.idx_tup_read,
         idx_tup_fetch: row.idx_tup_fetch,
@@ -216,6 +221,7 @@ fn row_from_pg(
         schemaname: row.try_get("schemaname")?,
         relname: row.try_get("relname")?,
         indexrelname: row.try_get("indexrelname")?,
+        tablespace_oid: row.try_get("tablespace_oid")?,
         tablespace: row.try_get("tablespace")?,
         idx_scan: row.try_get("idx_scan")?,
         idx_tup_read: row.try_get("idx_tup_read")?,

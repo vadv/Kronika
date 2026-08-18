@@ -622,10 +622,16 @@ primary controls directly with a light content-sized boundary. Empty spacer
 tracks and strong nonfunctional splitter bands are forbidden; a visible resize
 handle exists only for a real bounded accessible split.
 
-PostgreSQL Tables and Indexes use lens-specific details at database, schema and
-object level. The dock is one compact two-column operator-fact list plus one
-explicitly selected metric history, not a loose vertical dump of every
-physical field. Tablespace remains an object fact, not a grouping level.
+PostgreSQL Tables and Indexes use lens-specific details at database, schema,
+object and cluster-wide tablespace level. Tablespace identity is its effective
+OID; the nullable name is display only. Tables group heap main-fork plus TOAST
+storage and never user-index bytes, while Indexes use each index's own
+placement. Storage-less partitioned table parents remain visible at the other
+levels but do not enter Tablespace groups. The dock is one compact two-column
+operator-fact list plus one explicitly selected metric history, not a loose
+vertical dump of every physical field. Tablespace history is an exact
+cross-database as-of reduction; it is never approximated from one database or
+the current page.
 
 Every entity table uses one bounded public search language and one URL-owned
 applied expression. Ordinary input without a colon is free text. Structured
