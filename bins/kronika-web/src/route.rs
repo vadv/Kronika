@@ -117,6 +117,7 @@ pub(crate) enum Order {
 pub(crate) enum RelationGroup {
     Database,
     Schema,
+    Tablespace,
     Object,
 }
 
@@ -250,6 +251,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
                 group = Some(match raw_value {
                     "database" => RelationGroup::Database,
                     "schema" => RelationGroup::Schema,
+                    "tablespace" => RelationGroup::Tablespace,
                     "object" => RelationGroup::Object,
                     _ => return Err(RouteError::BadParameter("group".to_owned())),
                 });
@@ -411,6 +413,7 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
                 group = Some(match value.as_str() {
                     "database" => RelationGroup::Database,
                     "schema" => RelationGroup::Schema,
+                    "tablespace" => RelationGroup::Tablespace,
                     "object" => RelationGroup::Object,
                     _ => return Err(RouteError::BadParameter("group".to_owned())),
                 });
@@ -467,6 +470,7 @@ fn validate_relation_series(
     let required: &[&str] = match group {
         RelationGroup::Database => &["datid"],
         RelationGroup::Schema => &["datid", "schemaname"],
+        RelationGroup::Tablespace => &["tablespace_oid"],
         RelationGroup::Object => unreachable!(),
     };
     if filters.len() != required.len()
@@ -475,6 +479,15 @@ fn validate_relation_series(
             .any(|name| !filters.iter().any(|filter| filter.column == *name))
     {
         return Err(RouteError::BadParameter("where".to_owned()));
+    }
+    if group == RelationGroup::Tablespace
+        && filters[0]
+            .value
+            .parse::<u32>()
+            .ok()
+            .is_none_or(|oid| oid == 0)
+    {
+        return Err(RouteError::BadParameter("where.tablespace_oid".to_owned()));
     }
     Ok(())
 }

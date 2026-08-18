@@ -587,8 +587,8 @@ fn derived_page_order(logical_name: &str, plan: &Plan, token: &str) -> Option<Pa
     let supported = match logical_name {
         "pg_stat_statements" => matches!(plan.type_id, 1_002_001..=1_002_006),
         "pg_store_plans" => matches!(plan.type_id, 1_003_001 | 1_004_001 | 1_018_001),
-        "pg_stat_user_tables" => matches!(plan.type_id, 1_013_001..=1_013_004),
-        "pg_stat_user_indexes" => matches!(plan.type_id, 1_014_001..=1_014_002),
+        "pg_stat_user_tables" => matches!(plan.type_id, 1_013_005..=1_013_008),
+        "pg_stat_user_indexes" => matches!(plan.type_id, 1_014_003..=1_014_004),
         _ => false,
     };
     if !supported {
@@ -2799,7 +2799,13 @@ const TABLE_SEARCH_FIELDS: &[SearchField] = &[
     search_string(
         "text",
         &["q"],
-        &["datname", "schemaname", "relname", "tablespace"],
+        &[
+            "datname",
+            "schemaname",
+            "relname",
+            "tablespace_oid",
+            "tablespace",
+        ],
     ),
     search_string("database", &["db"], &["datname"]),
     search_string("schema", &[], &["schemaname"]),
@@ -2815,6 +2821,7 @@ const INDEX_SEARCH_FIELDS: &[SearchField] = &[
             "schemaname",
             "relname",
             "indexrelname",
+            "tablespace_oid",
             "tablespace",
             "amname",
             "indexdef",
@@ -3027,6 +3034,7 @@ fn snapshot_binding(request: &SnapshotRequest) -> u64 {
             match group {
                 RelationGroup::Database => b"database",
                 RelationGroup::Schema => b"schema",
+                RelationGroup::Tablespace => b"tablespace",
                 RelationGroup::Object => b"object",
             },
         );
