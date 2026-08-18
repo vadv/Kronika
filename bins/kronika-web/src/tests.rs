@@ -13,7 +13,7 @@ use super::{
 use crate::api::{ApiError, CachePolicy, Prepared, ResponseMeta};
 use crate::body::StreamHead;
 use crate::config::Account;
-use crate::encoding::AcceptedEncodings;
+use crate::encoding::{AcceptedEncodings, ContentCoding};
 
 mod artifacts;
 mod multi_layout;
@@ -119,7 +119,10 @@ fn the_shell_is_public_even_with_invalid_authorization() {
     let root = public_request(Method::GET, "/");
     assert_eq!(
         route_request(&account(), &root),
-        Ok(RequestTarget::Ui { head: false })
+        Ok(RequestTarget::Ui {
+            head: false,
+            coding: ContentCoding::Identity,
+        })
     );
 
     let mut index = public_request(Method::HEAD, "/index.html");
@@ -129,7 +132,10 @@ fn the_shell_is_public_even_with_invalid_authorization() {
     );
     assert_eq!(
         route_request(&account(), &index),
-        Ok(RequestTarget::Ui { head: true })
+        Ok(RequestTarget::Ui {
+            head: true,
+            coding: ContentCoding::Identity,
+        })
     );
 }
 
@@ -469,11 +475,17 @@ fn route_recognition_precedes_the_method_check() {
 fn only_the_two_exact_ui_paths_admit_get_and_head() {
     assert_eq!(
         route_request(&account(), &request(Method::GET, "/")),
-        Ok(RequestTarget::Ui { head: false })
+        Ok(RequestTarget::Ui {
+            head: false,
+            coding: ContentCoding::Identity,
+        })
     );
     assert_eq!(
         route_request(&account(), &request(Method::HEAD, "/index.html")),
-        Ok(RequestTarget::Ui { head: true })
+        Ok(RequestTarget::Ui {
+            head: true,
+            coding: ContentCoding::Identity,
+        })
     );
     assert!(matches!(
         route_request(&account(), &request(Method::GET, "/api/catalog")),
@@ -502,22 +514,47 @@ fn only_the_two_exact_ui_paths_admit_get_and_head() {
 }
 
 #[test]
-fn a_ui_client_that_refuses_gzip_gets_an_explicit_406() {
-    let mut request = request(Method::GET, "/");
-    request.headers_mut().insert(
-        ACCEPT_ENCODING,
-        hyper::header::HeaderValue::from_static("identity"),
-    );
-    let response = route_request(&account(), &request)
-        .expect_err("identity-only UI request")
-        .response();
-    assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
-    assert_eq!(
-        response.headers().get(VARY),
-        Some(&hyper::header::HeaderValue::from_static(
-            "Authorization, Accept-Encoding"
-        ))
-    );
+fn a_ui_client_that_refuses_every_representation_gets_an_explicit_406() {
+    for value in ["identity;q=0", "*;q=0", "gzip;q=0, identity;q=0"] {
+        let mut request = request(Method::GET, "/");
+        request.headers_mut().insert(
+            ACCEPT_ENCODING,
+            hyper::header::HeaderValue::from_static(value),
+        );
+        let response = route_request(&account(), &request)
+            .expect_err("UI request refuses both representations")
+            .response();
+        assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE, "{value}");
+        assert_eq!(
+            response.headers().get(VARY),
+            Some(&hyper::header::HeaderValue::from_static(
+                "Authorization, Accept-Encoding"
+            )),
+            "{value}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_ordinary_curl_request_receives_readable_identity_html() {
+    let target =
+        route_request(&account(), &public_request(Method::GET, "/")).expect("ordinary curl route");
+    let RequestTarget::Ui { head, coding } = target else {
+        panic!("ordinary curl must select the UI")
+    };
+    assert!(!head);
+    assert_eq!(coding, ContentCoding::Identity);
+
+    let response = crate::ui::response(head, None, coding).expect("identity response");
+    assert!(!response.headers().contains_key(CONTENT_ENCODING));
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("identity body")
+        .to_bytes();
+    assert!(body.starts_with(b"<!doctype html>"));
+    assert_ne!(body.get(..2), Some([0x1f, 0x8b].as_slice()));
 }
 
 #[test]

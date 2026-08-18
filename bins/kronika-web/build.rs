@@ -23,7 +23,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|error| io::Error::new(error.kind(), format!("decode {UI_GZIP}: {error}")))?;
     validate_html(&html)?;
 
-    let etag = format!("\"{}\"", hex(&Sha256::digest(&compressed)));
+    let gzip_etag = etag(&compressed);
+    let identity_etag = etag(html.as_bytes());
     let script_hashes = script_bodies(&html)?
         .into_iter()
         .map(|script| {
@@ -40,10 +41,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
          form-action 'none'; frame-ancestors 'none'; object-src 'none'"
     );
 
-    println!("cargo:rustc-env=KRONIKA_UI_ETAG={etag}");
+    println!("cargo:rustc-env=KRONIKA_UI_GZIP_ETAG={gzip_etag}");
+    println!("cargo:rustc-env=KRONIKA_UI_IDENTITY_ETAG={identity_etag}");
     println!("cargo:rustc-env=KRONIKA_UI_CSP={csp}");
     println!("cargo:rustc-env=KRONIKA_UI_GZIP_LEN={}", compressed.len());
+    println!("cargo:rustc-env=KRONIKA_UI_IDENTITY_LEN={}", html.len());
     Ok(())
+}
+
+fn etag(bytes: &[u8]) -> String {
+    format!("\"{}\"", hex(&Sha256::digest(bytes)))
 }
 
 fn validate_header(bytes: &[u8]) -> io::Result<()> {

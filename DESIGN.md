@@ -471,6 +471,12 @@ gzip artifact. `kronika-web` embeds those exact bytes, so an ordinary Cargo
 build needs no Node installation. Fonts, icons, styles and scripts are local;
 the production document makes no external asset requests.
 
+Web validates and expands that embedded artifact once at startup. A shell
+request without `Accept-Encoding`, or one that selects `identity`, receives
+the readable HTML; a gzip-capable client can receive the original compressed
+bytes. Both representations have their own strong ETag and exact length, and
+responses vary on authorization and content encoding.
+
 English and Russian source dictionaries are flat YAML files. The interface
 build rejects duplicate keys, empty values, unequal key sets and unequal
 placeholders, then generates the compact typed dictionaries shipped in the

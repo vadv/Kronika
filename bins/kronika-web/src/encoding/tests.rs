@@ -15,11 +15,55 @@ fn accepted(value: Option<&str>) -> Option<AcceptedEncodings> {
 }
 
 #[test]
-fn absent_or_positive_gzip_allows_adaptive_compression() {
+fn absent_or_positive_gzip_keeps_api_compression_adaptive() {
     for value in [None, Some("gzip"), Some("GZip; q=0.250"), Some("*")] {
         let encodings = accepted(value).expect("an encoding is acceptable");
         assert_eq!(encodings.for_small(), ContentCoding::Identity, "{value:?}");
         assert_eq!(encodings.for_large(), ContentCoding::Gzip, "{value:?}");
+    }
+}
+
+#[test]
+fn ui_defaults_to_identity_and_uses_explicit_gzip() {
+    assert_eq!(
+        accepted(None).expect("absent header").for_ui(),
+        ContentCoding::Identity
+    );
+    for value in ["", "identity", "gzip;q=0", "gzip;q=0, *;q=1"] {
+        assert_eq!(
+            accepted(Some(value))
+                .expect("identity is acceptable")
+                .for_ui(),
+            ContentCoding::Identity,
+            "{value}"
+        );
+    }
+    for value in ["gzip", "GZip, br", "*", "identity;q=0, *;q=0.5"] {
+        assert_eq!(
+            accepted(Some(value)).expect("gzip is acceptable").for_ui(),
+            ContentCoding::Gzip,
+            "{value}"
+        );
+    }
+}
+
+#[test]
+fn ui_uses_quality_weights_and_prefers_gzip_on_a_tie() {
+    for value in ["gzip;q=0.2, identity;q=0.8", "gzip;q=0.5", "*;q=0.5"] {
+        assert_eq!(
+            accepted(Some(value))
+                .expect("identity is acceptable")
+                .for_ui(),
+            ContentCoding::Identity,
+            "{value}"
+        );
+    }
+    for value in ["gzip;q=0.8, identity;q=0.2", "gzip;q=0.5, identity;q=0.5"] {
+        assert_eq!(
+            accepted(Some(value)).expect("gzip is acceptable").for_ui(),
+            ContentCoding::Gzip,
+            "{value}"
+        );
     }
 }
 
@@ -88,9 +132,7 @@ fn repeated_field_lines_are_combined() {
 }
 
 #[test]
-fn gzip_admission_and_entity_tags_use_the_shared_parser() {
-    assert!(accepted(None).expect("default encodings").allows_gzip());
-    assert!(!accepted(Some("identity")).expect("identity").allows_gzip());
+fn entity_tags_use_weak_comparison() {
     for offered in [
         "\"1234abcd\"",
         "W/\"1234abcd\"",
