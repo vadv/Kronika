@@ -137,17 +137,14 @@ export function relationColumns(section: RelationSection, lens: RelationLens, le
 }
 
 export function relationDetailColumns(section: RelationSection, lens: RelationLens, level: RelationGroup, rateFields: readonly string[] = []): readonly EntityColumn[] {
-  if (level === "tablespace") {
-    return relationFields(section, lens, level).filter((field) => !field.endsWith("_never") && field !== "state_severity").map((field) => relationColumn(section, field, rateFields))
-  }
-  const identity = level === "database" ? 2 : level === "schema" ? 3 : section === "pg_stat_user_tables" ? 6 : lens === "state" ? 7 : 9
+  const identity = level === "tablespace" ? 0 : level === "database" ? 2 : level === "schema" ? 3 : section === "pg_stat_user_tables" ? 6 : lens === "state" ? 7 : 9
   return relationFields(section, lens, level).slice(identity).filter((field) => !field.endsWith("_never") && field !== "state_severity").map((field) => relationColumn(section, field, rateFields))
 }
 
 function RelationLevels({ filters, level, onNavigate, section, t }: { readonly filters: Readonly<Record<string, string>>; readonly level: RelationGroup; readonly onNavigate: (navigation: RelationNavigation) => void; readonly section: RelationSection; readonly t: Translate }) {
   const target = (group: RelationGroup): RelationNavigation => ({ section, group, filters: {}, selectedKey: null })
   return <nav className="lensbar">
-    <div className="lens-tabs max-[760px]:w-full max-[760px]:flex-wrap max-[760px]:[&>button]:flex-none">{(["object", "schema", "database", "tablespace"] as const).map((stored) => <button aria-pressed={stored === level} key={stored} onClick={() => { if (stored !== level || Object.keys(filters).length !== 0) onNavigate(target(stored)) }} type="button">{stored === "object" ? t(section === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes") : t(`pg.relation.level.${stored}`)}</button>)}</div>
+    <div className="lens-tabs flex-wrap [&>button]:flex-none">{(["object", "schema", "database", "tablespace"] as const).map((stored) => <button aria-pressed={stored === level} key={stored} onClick={() => { if (stored !== level || Object.keys(filters).length !== 0) onNavigate(target(stored)) }} type="button">{stored === "object" ? t(section === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes") : t(`pg.relation.level.${stored}`)}</button>)}</div>
     {Object.keys(filters).length !== 0 && <button onClick={() => onNavigate(target("object"))}>{t("pg.relation.scope.all")}</button>}
   </nav>
 }
@@ -214,10 +211,7 @@ function RelationDetail({ blockSize, cursor, historyRevision, hour, lens, locale
     </section>}</ChartOnly>
     <DetailList>{columns.map((column) => {
       const label = t(column.label)
-      const content = column.field === "tablespace_oid"
-        ? <span className="inline-flex items-center gap-[5px]"><span>{scanValue(row, column, locale, t)}</span><button aria-label={t("common.raw")} className="inline-flex cursor-pointer items-center justify-center border border-line4 bg-transparent px-[3px] py-0.5 text-accent3" onClick={() => void navigator.clipboard?.writeText(rawText(value(row, column.field)) ?? "")} type="button"><Copy aria-hidden="true" size={12} /></button></span>
-        : scanValue(row, column, locale, t)
-      return <DetailRow key={column.field} term={column.help === undefined ? label : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}>{content}</DetailRow>
+      return <DetailRow key={column.field} term={column.help === undefined ? label : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}>{scanValue(row, column, locale, t)}</DetailRow>
     })}</DetailList>
     {definitionTarget !== null && <section className="query-block"><span>{t("pg.relation.definition")}{definition !== null && <button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center border border-line4 bg-transparent px-[3px] py-0.5 text-xs uppercase text-accent3" onClick={() => void navigator.clipboard?.writeText(definition)} type="button"><Copy aria-hidden="true" size={12} /></button>}</span><pre data-testid="pg-exact-indexdef">{exact === undefined ? t("status.loading") : definition ?? t("common.unavailable")}</pre></section>}
   </aside>

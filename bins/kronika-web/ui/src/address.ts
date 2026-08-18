@@ -136,9 +136,7 @@ export function writeAddress(address: Address): string {
 }
 
 function oid(stored: string | null): string | null {
-  if (stored === null || !/^[1-9]\d*$/.test(stored)) return null
-  const parsed = BigInt(stored)
-  return parsed <= 4_294_967_295n ? stored : null
+  return stored !== null && /^[1-9]\d*$/.test(stored) && Number(stored) <= 4_294_967_295 ? stored : null
 }
 
 function isPostgresEntityView(view: View): boolean {

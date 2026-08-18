@@ -220,10 +220,7 @@ export function relationDisplayFields(section: RelationSection, lensName: Relati
   const spec = section === "pg_stat_user_tables"
     ? tableDisplayLenses[lensName as TableLens]
     : indexDisplayLenses[lensName as IndexLens]
-  if (group === "tablespace") {
-    const count = section === "pg_stat_user_tables" ? "table_count" : "index_count"
-    return [...identity, count, ...spec.aggregate.filter((field) => field !== count)]
-  }
+  if (group === "tablespace") return [...identity, spec.aggregate[1]!, spec.aggregate[0]!, ...spec.aggregate.slice(2)]
   return [...identity, ...(group === "object" ? spec.object : spec.aggregate)]
 }
 
@@ -426,17 +423,11 @@ export function relationDetailTarget(row: DataRow): RelationDetailTarget {
 export function relationDrill(row: DataRow): RelationNavigation | null {
   const relation = row.relation
   if (relation === undefined || relation.group === "object") return null
-  if (relation.group === "tablespace") {
-    return {
-      section: row.logicalName as RelationSection,
-      group: "object",
-      filters: { tablespace_oid: scalarText(row.values.tablespace_oid) },
-      selectedKey: null,
-    }
-  }
-  const filters = relation.group === "database"
-    ? { datid: scalarText(row.values.datid) }
-    : { datid: scalarText(row.values.datid), schemaname: scalarText(row.values.schemaname) }
+  const filters = relation.group === "tablespace"
+    ? { tablespace_oid: scalarText(row.values.tablespace_oid) }
+    : relation.group === "database"
+      ? { datid: scalarText(row.values.datid) }
+      : { datid: scalarText(row.values.datid), schemaname: scalarText(row.values.schemaname) }
   return { section: row.logicalName as RelationSection, group: relation.group === "database" ? "schema" : "object", filters, selectedKey: null }
 }
 
