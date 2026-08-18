@@ -505,7 +505,7 @@ fn structured_search_validates_aliases_types_escaping_and_surface_fields() {
     assert!(StructuredSearch::parse("select AND orders", "pg_stat_statements").is_err());
 
     let process = StructuredSearch::parse(
-        "username:postgres AND euser:postgres-worker AND uid:26",
+        "username:postgres AND euser:postgres-worker AND uid:26 AND euid:27",
         "os_process",
     )
     .expect("process aliases");
@@ -515,7 +515,7 @@ fn structured_search_validates_aliases_types_escaping_and_surface_fields() {
             .iter()
             .map(|clause| clause.key)
             .collect::<Vec<_>>(),
-        ["user", "effective_user", "user_id"]
+        ["user", "effective_user", "user_id", "effective_user_id"]
     );
 }
 

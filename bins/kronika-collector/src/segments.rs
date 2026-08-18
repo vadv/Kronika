@@ -98,7 +98,7 @@ impl SegmentState {
         &mut self.interner
     }
 
-    pub(crate) fn os_state_mut(&mut self) -> (&mut Interner, &mut UserReferences) {
+    pub(crate) const fn os_state_mut(&mut self) -> (&mut Interner, &mut UserReferences) {
         (&mut self.interner, &mut self.users)
     }
 

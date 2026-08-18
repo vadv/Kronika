@@ -243,8 +243,9 @@ fn read_optional_os_file(fs: &ProcFs, rel: &'static str, type_id: u32) -> Option
 /// The `interner` is the segment's interner: device, interface, and mount
 /// strings are interned here so the built rows already hold their `StrId`s.
 #[allow(
+    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "independent procfs reads with per-source degradation logging kept adjacent"
+    reason = "independent procfs reads share explicit filesystem, scheduler, dictionary, and segment-reference state"
 )]
 pub(crate) fn collect_os_sources(
     fs: &ProcFs,

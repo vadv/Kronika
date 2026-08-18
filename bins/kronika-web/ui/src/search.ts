@@ -93,7 +93,7 @@ const SEARCH_FIELDS: Readonly<Record<SearchSurface, readonly SearchField[]>> = {
     text(["cmdline", "comm", "user", "effective_user"]),
     string("user", ["user"], ["username"]),
     string("effective_user", ["effective_user"], ["euser"]),
-    id("user_id", ["uid"], ["uid"]), id("effective_user_id", ["euid"]),
+    id("user_id", ["uid"], ["uid"]), id("effective_user_id", ["euid"], ["euid"]),
     id("pid", ["pid"]),
     id("parent_pid", ["ppid"]),
     string("command", ["cmdline", "comm"], ["cmd"]),

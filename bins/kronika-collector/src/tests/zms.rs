@@ -1298,6 +1298,10 @@ fn passwd_fixture(entries: usize) -> (PasswdSnapshot, Vec<u32>) {
     (snapshot, uids)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one measurement keeps capture, WAL, finished-segment, reader, CPU, and RSS accounting together"
+)]
 fn user_cost_artifact(
     passwd: PasswdSnapshot,
     uids: &[u32],

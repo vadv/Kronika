@@ -5,8 +5,9 @@ use super::{
 };
 
 #[allow(
+    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "process sections share procfs enumeration and degradation counters"
+    reason = "process sections share procfs enumeration, segment user state, and degradation counters"
 )]
 pub(super) fn collect_process_sections(
     fs: &ProcFs,

@@ -61,8 +61,8 @@ test("each surface exposes only its useful canonical public fields", () => {
   assert.deepEqual(searchFields("os_process").map(({ key }) => key), [
     "text", "user", "effective_user", "user_id", "effective_user_id", "pid", "parent_pid", "command", "state",
   ])
-  const process = parseSearch("username:postgres AND euser:postgres* AND uid:26", "os_process")
-  assert.equal(process.ok && process.query.canonical, "user:postgres AND effective_user:postgres* AND user_id:26")
+  const process = parseSearch("username:postgres AND euser:postgres* AND uid:26 AND euid:27", "os_process")
+  assert.equal(process.ok && process.query.canonical, "user:postgres AND effective_user:postgres* AND user_id:26 AND effective_user_id:27")
 })
 
 test("client matching is conjunctive, globbed only for strings, and fork-transparent", () => {

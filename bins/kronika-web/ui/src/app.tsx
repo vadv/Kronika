@@ -63,7 +63,7 @@ import {
 import { PostgresView, type PostgresSection } from "./postgres-view"
 import { PLAN_INFO_REQUEST, planRequest, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
 import { isRelationLens, relationRequest, type RelationGroup, type RelationLens, type RelationNavigation, type RelationSection } from "./postgres-relations"
-import { EMPTY_PROCESS_SUMMARY, ProcessSummary, ProcessTable, processSummaryReducer, processTableDefaultOrder } from "./process-table"
+import { EMPTY_PROCESS_SUMMARY, LENS_FIELDS, ProcessSummary, ProcessTable, processSummaryReducer, processTableDefaultOrder } from "./process-table"
 import { latestTimelineTimestamp, refreshedCursor, scheduleRefresh } from "./refresh"
 import type { ChartPoint } from "./series-chart"
 import { bootstrapSession, getSessionSnapshot, logout, subscribeSession } from "./session"
@@ -105,13 +105,6 @@ const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
   events: TIMELINE_REQUESTS,
 }
 
-const PROCESS_ORDER: Readonly<Record<string, readonly string[]>> = Object.fromEntries([
-  "pid", "ppid", "gid", "egid", "num_threads", "tty", "exit_signal", "state",
-  "utime", "stime", "rundelay_ns", "blkdelay_ticks", "nvcsw", "nivcsw", "curcpu", "nice", "prio", "rtprio", "policy",
-  "rmem_kb", "vmem_kb", "vswap_kb", "minflt", "majflt",
-  "read_bytes", "write_bytes", "syscr", "syscw", "rchar", "wchar", "cancelled_write_bytes",
-].map((field) => [field, [field]]))
-
 function processRequest(lens: Lens): SectionRequest {
   const selected = processTableDefaultOrder(lens).column
   return {
@@ -119,7 +112,7 @@ function processRequest(lens: Lens): SectionRequest {
     pageSize: 200,
     defaultOrder: [selected],
     fallbackOrder: ["pid"],
-    order: { ...PROCESS_ORDER, command: ["cmdline", "comm"] },
+    order: Object.fromEntries(LENS_FIELDS[lens].map((field) => [field.id, field.id === "command" ? ["cmdline", "comm"] : [field.field ?? field.id]])),
   }
 }
 

@@ -1027,6 +1027,10 @@ impl PreparedSnapshot {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "chunk emission carries the exact source, dictionaries, output sink, and cancellation boundary"
+    )]
     fn emit_context_chunk(
         &self,
         context: &PageContext<'_>,
@@ -2088,6 +2092,10 @@ impl PreparedSnapshot {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "page ranking keeps segment-local user resolution beside existing paging state"
+    )]
     fn rank_page_chunk(
         &self,
         source: &Segment,
@@ -2281,6 +2289,10 @@ impl PreparedSnapshot {
         Ok(collected)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one row renderer combines physical values, rates, coordinates, and segment-local reference data"
+    )]
     fn row_record(
         plan: &Plan,
         row: &Row,

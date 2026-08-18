@@ -28,7 +28,6 @@ export interface Field {
   readonly label: string
   readonly help: string
   readonly kind: "id" | "user" | "command" | "state" | "number" | "rate" | "cores" | "kib" | "bytes" | "ns"
-  readonly identityField?: string
   readonly size: number
   readonly sticky?: "pid" | "command"
 }
@@ -37,8 +36,8 @@ const PID: Field = { id: "pid", field: "pid", label: "col.pid.label", help: "col
 const COMMAND: Field = { id: "command", label: "col.command.label", help: "col.command.help", kind: "command", size: 300, sticky: "command" }
 const STATE: Field = { id: "state", field: "state", label: "col.state.label", help: "col.state.help", kind: "state", size: 60 }
 export const PROCESS_USER_FIELDS: readonly Field[] = [
-  { id: "user", field: "user", identityField: "uid", label: "col.user.label", help: "col.user.help", kind: "user", size: 140 },
-  { id: "effective_user", field: "effective_user", identityField: "euid", label: "col.effective_user.label", help: "col.effective_user.help", kind: "user", size: 160 },
+  { id: "user", field: "user", label: "col.user.label", help: "col.user.help", kind: "user", size: 140 },
+  { id: "effective_user", field: "effective_user", label: "col.effective_user.label", help: "col.effective_user.help", kind: "user", size: 160 },
 ]
 
 export const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
@@ -246,7 +245,7 @@ export function ProcessTable({
     const help = processHeaderHelp(field)
     return {
       field: field.id,
-      ...(field.kind === "command" ? { filterValue: processCommand } : field.kind === "user" ? { filterValue: (row: DataRow) => processUser(row, field) } : {}),
+      ...(field.kind === "command" ? { filterValue: processCommand } : {}),
       ...(help === undefined ? {} : { help }),
       kind: entityKind(field.kind),
       label: field.label,
@@ -315,8 +314,7 @@ export function formatCell(kind: Field["kind"], cell: Cell, locale: Locale, t: T
     case "kib": return humanBytes(kib(asNumber(cell)), locale)
     case "bytes": return humanBytes(cell, locale, t("unit.per_second"))
     case "ns": return humanDuration(cell, locale, "nanoseconds", t("unit.per_second"))
-    case "id": return identifier(cell)
-    case "user": return identifier(cell)
+    case "id": case "user": return identifier(cell)
     case "command": return ""
   }
 }
@@ -328,7 +326,7 @@ export function CellValue({ field, linked, locale, row, t, ticksPerSecond }: { r
 }
 
 export function processUser(row: DataRow, field: Field): string {
-  const uid = identifier(value(row, field.identityField ?? "uid"))
+  const uid = identifier(value(row, field.id === "effective_user" ? "euid" : "uid"))
   const name = field.field === undefined ? null : rawText(value(row, field.field))
   return name === null || name.trim() === "" ? uid : `${name} (${uid})`
 }
