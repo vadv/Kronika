@@ -38,8 +38,8 @@
 | Переменная | По умолчанию, с | Секции |
 | --- | ---: | --- |
 | `KRONIKA_INTERVAL_S` | 5 | Максимальное время сна таймера; `0` отключает таймер, и сбор запускают только сигналы. |
-| `KRONIKA_OS_CORE_INTERVAL_S` | 10 | `1_102`–`1_111`, `1_114`–`1_120`. |
-| `KRONIKA_OS_MOUNTTOPO_INTERVAL_S` | 60 | `1_112`, `1_113`. |
+| `KRONIKA_OS_CORE_INTERVAL_S` | 10 | `1_102`–`1_111`, `1_114`–`1_120`, `1_122`. |
+| `KRONIKA_OS_MOUNTTOPO_INTERVAL_S` | 60 | `1_112`, `1_113`, `1_121`. |
 | `KRONIKA_OS_PROCESS_INTERVAL_S` | 5 | `1_100`. |
 | `KRONIKA_OS_PROCESS_STATUS_INTERVAL_S` | 30 | `1_101`. |
 | `KRONIKA_OS_CGROUP_INTERVAL_S` | 10 | `1_201`–`1_204`. |

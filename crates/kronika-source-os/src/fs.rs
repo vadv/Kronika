@@ -238,6 +238,12 @@ impl SysFs {
         Ok(self.root.join(checked_relative_path(rel)?))
     }
 
+    /// Whether a checked sysfs path currently exists.
+    #[must_use]
+    pub fn exists(&self, rel: &str) -> bool {
+        self.path(rel).is_ok_and(|path| path.exists())
+    }
+
     /// Read immediate children under `<root>/<rel>`.
     ///
     /// # Errors

@@ -159,6 +159,7 @@ fn assert_retained_batch_moves_to_fresh_segment(pressure: Pressure) {
     }
 
     let mut scheduler = Scheduler::new(Intervals::default());
+    let mut cpufreq_collector = kronika_source_os::cpufreq::CpuFreqCollector::default();
     let outcome = append_pending_window(
         &mut journal,
         &owner,
@@ -169,6 +170,7 @@ fn assert_retained_batch_moves_to_fresh_segment(pressure: Pressure) {
         200,
         &mut segment,
         &mut scheduler,
+        &mut cpufreq_collector,
     )
     .expect("retain and append log batch");
 
@@ -243,6 +245,7 @@ fn a_fresh_log_window_append_failure_is_fatal() {
     let config = config(dir.path(), JOURNAL_HEADER_LEN as u64);
     let mut segment = SegmentState::default();
     let mut scheduler = Scheduler::new(Intervals::default());
+    let mut cpufreq_collector = kronika_source_os::cpufreq::CpuFreqCollector::default();
 
     let error = match append_pending_window(
         &mut journal,
@@ -254,6 +257,7 @@ fn a_fresh_log_window_append_failure_is_fatal() {
         200,
         &mut segment,
         &mut scheduler,
+        &mut cpufreq_collector,
     ) {
         Err(error) => error,
         Ok(_outcome) => {
@@ -309,6 +313,7 @@ fn assert_pg_batch_moves_to_fresh_segment(pressure: Pressure) {
     }
 
     let mut scheduler = Scheduler::new(Intervals::default());
+    let mut cpufreq_collector = kronika_source_os::cpufreq::CpuFreqCollector::default();
     let outcome = append_pending_pg_batch(
         &mut journal,
         &owner,
@@ -318,6 +323,7 @@ fn assert_pg_batch_moves_to_fresh_segment(pressure: Pressure) {
         200,
         &mut segment,
         &mut scheduler,
+        &mut cpufreq_collector,
     )
     .expect("retain and append PostgreSQL batch");
 
@@ -367,6 +373,7 @@ fn postgres_batch_is_not_repeated_in_incremental_log_windows() {
     let config = config(dir.path(), JournalConfig::default().max_journal_len as u64);
     let mut segment = SegmentState::default();
     let mut scheduler = Scheduler::new(Intervals::default());
+    let mut cpufreq_collector = kronika_source_os::cpufreq::CpuFreqCollector::default();
 
     append_pending_pg_batch(
         &mut journal,
@@ -377,6 +384,7 @@ fn postgres_batch_is_not_repeated_in_incremental_log_windows() {
         200,
         &mut segment,
         &mut scheduler,
+        &mut cpufreq_collector,
     )
     .expect("append PostgreSQL batch");
     for ts in [201, 202] {
@@ -390,6 +398,7 @@ fn postgres_batch_is_not_repeated_in_incremental_log_windows() {
             ts,
             &mut segment,
             &mut scheduler,
+            &mut cpufreq_collector,
         )
         .expect("append incremental log batch");
         assert!(outcome.accepted);
@@ -436,6 +445,7 @@ fn cached_settings_are_added_once_when_logs_open_a_segment() {
     let config = config(dir.path(), JournalConfig::default().max_journal_len as u64);
     let mut segment = SegmentState::default();
     let mut scheduler = Scheduler::new(Intervals::default());
+    let mut cpufreq_collector = kronika_source_os::cpufreq::CpuFreqCollector::default();
     let settings = [settings_row()];
 
     for ts in [200, 201] {
@@ -449,6 +459,7 @@ fn cached_settings_are_added_once_when_logs_open_a_segment() {
             ts,
             &mut segment,
             &mut scheduler,
+            &mut cpufreq_collector,
         )
         .expect("append log window");
         assert!(outcome.accepted);

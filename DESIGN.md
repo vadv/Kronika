@@ -499,6 +499,16 @@ when both are finite. A coherently unlimited quota leaves the cpuset as
 capacity. Capacity is `null` when the quota hierarchy is unknown or neither
 value supplies a finite bound.
 
+CPU frequency is a temporal CPUFreq-policy gauge in integer hertz. The
+collector prefers `cpuinfo_avg_freq`, otherwise selects `cpuinfo_cur_freq`, and
+keeps that choice for the lifetime of the policy; a failed read is null and
+does not switch source. `scaling_cur_freq` remains a separately named reported
+or requested value. Web draws one series per policy and computes an
+online-CPU-weighted rollup only when every policy at that timestamp uses the
+same actual source. It never copies a policy value into independent logical-CPU
+series or graphs static maximum frequency as current frequency. CPU topology
+and policy membership are a compact cursor-time reference without history.
+
 Host memory uses non-overlapping anonymous, file-cache-plus-buffer,
 reclaimable-slab, unreclaimable-slab, free, and residual categories. The
 kernel's available-memory estimate is shown separately because it overlaps

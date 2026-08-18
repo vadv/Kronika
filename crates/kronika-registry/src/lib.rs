@@ -99,13 +99,14 @@ pub use codec::pgbouncer_events::PgBouncerEvents;
 pub(crate) use codec::{check_row_cap, decode_batches, decode_section, encode_section};
 pub use codec::{
     instance_metadata, os_cgroup_context, os_cgroup_cpu, os_cgroup_io, os_cgroup_mapping,
-    os_cgroup_memory, os_cgroup_pids, os_cpu, os_diskstats, os_interrupts, os_kernel_limits,
-    os_loadavg, os_meminfo, os_mountinfo, os_netdev, os_netstat, os_nfs, os_numa, os_process,
-    os_process_status, os_psi, os_snmp, os_snmp6, os_softirq, os_stat, os_topology, os_vmstat,
-    pg_locks, pg_log, pg_prepared_xacts, pg_settings, pg_stat_activity, pg_stat_archiver,
-    pg_stat_bgwriter, pg_stat_checkpointer, pg_stat_database, pg_stat_io, pg_stat_progress_vacuum,
-    pg_stat_statements, pg_stat_statements_info, pg_stat_user_indexes, pg_stat_user_tables,
-    pg_stat_wal, pg_store_plans, pg_store_plans_info, pg_wal_storage, pgbouncer_events,
+    os_cgroup_memory, os_cgroup_pids, os_cpu, os_cpufreq, os_diskstats, os_interrupts,
+    os_kernel_limits, os_loadavg, os_meminfo, os_mountinfo, os_netdev, os_netstat, os_nfs, os_numa,
+    os_process, os_process_status, os_psi, os_snmp, os_snmp6, os_softirq, os_stat, os_topology,
+    os_vmstat, pg_locks, pg_log, pg_prepared_xacts, pg_settings, pg_stat_activity,
+    pg_stat_archiver, pg_stat_bgwriter, pg_stat_checkpointer, pg_stat_database, pg_stat_io,
+    pg_stat_progress_vacuum, pg_stat_statements, pg_stat_statements_info, pg_stat_user_indexes,
+    pg_stat_user_tables, pg_stat_wal, pg_store_plans, pg_store_plans_info, pg_wal_storage,
+    pgbouncer_events,
 };
 pub use contract::{
     Column, ColumnClass, ColumnType, LintError, Semantics, StrId, Ts, TypeContract, Unit, lint,
@@ -203,6 +204,8 @@ pub const fn registry() -> &'static [TypeContract] {
         os_netstat::OsNetstat::CONTRACT,
         os_mountinfo::OsMountinfo::CONTRACT,
         os_topology::OsTopology::CONTRACT,
+        os_cpufreq::OsCpufreqPolicy::CONTRACT,
+        os_cpufreq::OsCpufreq::CONTRACT,
         os_cgroup_mapping::OsCgroupMapping::CONTRACT,
         os_cgroup_cpu::OsCgroupCpu::CONTRACT,
         os_cgroup_cpu::OsCgroupCpuV2::CONTRACT,

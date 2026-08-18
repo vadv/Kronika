@@ -114,9 +114,18 @@ fn collect_os_sources_no_diskstats_on_mount_topo_only_tick() {
 
     let fs = ProcFs::new(proc_root.to_path_buf());
     let mut interner = Interner::new(kronika_format::DictLimits::default());
+    let mut cpufreq_collector = kronika_source_os::cpufreq::CpuFreqCollector::default();
     let due = DueSet::for_test(vec![SourceKind::OsMountTopo]);
 
-    let os = collect_os_sources(&fs, &mut interner, 0, 0, false, &due);
+    let os = collect_os_sources(
+        &fs,
+        &mut cpufreq_collector,
+        &mut interner,
+        0,
+        0,
+        false,
+        &due,
+    );
 
     assert!(
         os.diskstats_empty(),

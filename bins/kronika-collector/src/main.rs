@@ -165,6 +165,7 @@ async fn run_collector() -> Result<()> {
     let mut sigterm = signal(SignalKind::terminate()).context("install the SIGTERM handler")?;
     let mut sigint = signal(SignalKind::interrupt()).context("install the SIGINT handler")?;
     let mut sched = Scheduler::new(config.intervals);
+    let mut cpufreq_collector = kronika_source_os::cpufreq::CpuFreqCollector::default();
     let mut segment = SegmentState::default();
     let mut rotation = Rotation::new(
         config.retention,
@@ -248,6 +249,7 @@ async fn run_collector() -> Result<()> {
                     &mut segment,
                     &mut sched,
                     &mut pg_telemetry,
+                    &mut cpufreq_collector,
                 )),
                 shutdown,
             )
@@ -274,6 +276,7 @@ async fn run_collector() -> Result<()> {
                 &mut sched,
                 &mut logs,
                 pg_outcome.appended,
+                &mut cpufreq_collector,
             )?);
             stop_if_persistence_unhealthy(&journal)?;
             run_rotation(&mut rotation, &writer_owner, &journal, &written_this_tick);
@@ -325,6 +328,7 @@ async fn run_pg_collection_cycle(
     segment: &mut SegmentState,
     sched: &mut Scheduler,
     telemetry: &mut PgTelemetry,
+    cpufreq_collector: &mut kronika_source_os::cpufreq::CpuFreqCollector,
 ) -> Result<PgCollectionOutcome> {
     let mut outcome = PgCollectionOutcome::default();
     let mut last_ts = None;
@@ -346,6 +350,7 @@ async fn run_pg_collection_cycle(
                     ts,
                     segment,
                     sched,
+                    cpufreq_collector,
                 )?;
                 outcome.written.extend(admitted.written);
                 outcome.appended = true;
@@ -381,6 +386,7 @@ fn append_pending_pg_batch(
     ts: i64,
     segment: &mut SegmentState,
     sched: &mut Scheduler,
+    cpufreq_collector: &mut kronika_source_os::cpufreq::CpuFreqCollector,
 ) -> std::result::Result<PgPendingOutcome, PgAppendError> {
     let mut written = Vec::new();
     let mut encode_elapsed = Duration::ZERO;
@@ -398,6 +404,7 @@ fn append_pending_pg_batch(
             opening_due.as_ref(),
             config,
             ts,
+            cpufreq_collector,
         )
         .map_err(|()| {
             PgAppendError::Fatal(anyhow::anyhow!(
@@ -493,6 +500,7 @@ fn buffer_pg_batch(
     opening_due: Option<&DueSet>,
     config: &Config,
     ts: i64,
+    cpufreq_collector: &mut kronika_source_os::cpufreq::CpuFreqCollector,
 ) -> std::result::Result<SectionBuffers, ()> {
     let fs = ProcFs::from_env();
     let in_container = detect_container(&fs);
@@ -521,6 +529,7 @@ fn buffer_pg_batch(
     if let Some(due) = opening_due {
         let os = collect_os_sources(
             &fs,
+            cpufreq_collector,
             segment.interner_mut(),
             OsScope::Host.as_u8(),
             ts,
@@ -554,6 +563,7 @@ fn run_collection_cycle(
     sched: &mut Scheduler,
     logs: &mut LogSources,
     already_appended: bool,
+    cpufreq_collector: &mut kronika_source_os::cpufreq::CpuFreqCollector,
 ) -> Result<Vec<PathBuf>> {
     let Some(parse_now) = collection_timestamp() else {
         return Ok(Vec::new());
@@ -583,6 +593,7 @@ fn run_collection_cycle(
             ts,
             segment,
             sched,
+            cpufreq_collector,
         )?;
         written.extend(outcome.written);
         appended |= outcome.appended;
@@ -605,6 +616,7 @@ fn run_collection_cycle(
             ts,
             segment,
             sched,
+            cpufreq_collector,
         )?;
         written.extend(outcome.written);
         appended |= outcome.appended;
@@ -641,6 +653,7 @@ fn append_pending_window(
     ts: i64,
     segment: &mut SegmentState,
     sched: &mut Scheduler,
+    cpufreq_collector: &mut kronika_source_os::cpufreq::CpuFreqCollector,
 ) -> Result<PendingWindowOutcome> {
     let mut outcome = PendingWindowOutcome::default();
     let mut attempt_due = due_for_window(segment, due, sched);
@@ -654,6 +667,7 @@ fn append_pending_window(
             opening_settings,
             config,
             ts,
+            cpufreq_collector,
         ) {
             Ok(Some(buffers)) => buffers,
             Ok(None) => {
@@ -755,6 +769,7 @@ fn buffer_window(
     opening_settings: &[kronika_source_pg::settings::SettingsRow],
     config: &Config,
     ts: i64,
+    cpufreq_collector: &mut kronika_source_os::cpufreq::CpuFreqCollector,
 ) -> std::result::Result<Option<SectionBuffers>, BufferFailure> {
     let fs = ProcFs::from_env();
     let in_container = detect_container(&fs);
@@ -779,6 +794,7 @@ fn buffer_window(
 
     let os = collect_os_sources(
         &fs,
+        cpufreq_collector,
         segment.interner_mut(),
         OsScope::Host.as_u8(),
         ts,

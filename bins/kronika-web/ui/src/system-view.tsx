@@ -11,7 +11,7 @@ import { contextualRows, type EntityContext } from "./entity-context"
 import { EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import { useHistoryRequest } from "./history-request"
-import { asNumber, humanBytes, humanCores, humanPercent, measure, rawText, shownMoment, snapshot, value, type Locale } from "./model"
+import { asNumber, humanBytes, humanCores, humanHertz, humanPercent, measure, rawText, shownMoment, snapshot, value, type Locale } from "./model"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 import { UPlotChart, type RecordedSeries } from "./uplot-chart"
@@ -33,6 +33,8 @@ interface MetricSpec {
     | "cpu_idle"
     | "cpu_used_cores"
     | "cpu_capacity"
+    | "cpu_actual_frequency"
+    | "cpu_scaling_frequency"
     | "mem_file_cache"
     | "mem_other"
     | "filesystem_free_min"
@@ -68,6 +70,7 @@ export function metricChartUnit(spec: MetricSpec, locale: Locale): string {
   if (spec.unit === "%") return "%"
   if (spec.unit === " KiB") return "B"
   if (spec.unit === " cores") return "cores"
+  if (spec.unit === " MHz") return "MHz"
   if (spec.unit === " B") return locale === "ru" ? "байты/с" : "bytes/s"
   if (spec.id === "network_errors" || spec.id === "network_drops") return locale === "ru" ? "1/с" : "1/s"
   if (metricClass(spec) === "cumulative") return locale === "ru" ? "1/с" : "1/s"
@@ -98,6 +101,8 @@ export interface CgroupSnapshotPlan {
 export const SYSTEM_METRICS: readonly MetricSpec[] = [
   derivedMetric("cpu_used_cores", "cpu", "system.metric.cpu_used_cores", "cpu_used_cores", "cpu_used_cores", " cores"),
   derivedMetric("cpu_capacity", "cpu", "system.metric.cpu_capacity", "cpu_capacity", "cpu_capacity", " cores"),
+  derivedMetric("cpu_actual_frequency", "cpu", "system.metric.cpu_actual_frequency", "cpu_actual_frequency", "cpu_actual_frequency", " MHz"),
+  derivedMetric("cpu_scaling_frequency", "cpu", "system.metric.cpu_scaling_frequency", "cpu_scaling_frequency", "cpu_scaling_frequency", " MHz"),
   derivedMetric("cpu_user", "cpu", "system.metric.cpu_user", "cpu_user", "cpu_user", "%"),
   derivedMetric("cpu_system", "cpu", "system.metric.cpu_system", "cpu_system", "cpu_system", "%"),
   derivedMetric("cpu_irq", "cpu", "system.metric.cpu_irq", "cpu_irq", "cpu_irq", "%"),
@@ -183,6 +188,8 @@ const DERIVE_INPUTS: Readonly<Record<NonNullable<MetricSpec["derive"]>, readonly
   cpu_idle: ["os_cpu", CPU_FIELDS],
   cpu_used_cores: ["os_cpu", CPU_FIELDS],
   cpu_capacity: ["os_cpu", CPU_FIELDS],
+  cpu_actual_frequency: ["os_cpufreq", ["policy_id", "actual_source", "actual_frequency_hz", "online_cpus"]],
+  cpu_scaling_frequency: ["os_cpufreq", ["policy_id", "scaling_cur_freq_hz", "online_cpus"]],
   mem_file_cache: ["os_meminfo", ["cached", "buffers"]],
   mem_other: ["os_meminfo", ["mem_total", "mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim"]],
   filesystem_free_min: ["os_mountinfo", ["total_bytes", "free_bytes"]],
@@ -327,6 +334,10 @@ function systemRequests(): readonly SectionRequest[] {
     "cpu_path", "memory_path", "io_path", "cpuset_cpus", "effective_cpu_quota_usec",
     "effective_cpu_period_usec", "effective_memory_max", "cgroup_version", "scope",
   ])
+  need("os_cpufreq_policy", [
+    "policy_id", "related_cpus", "scaling_driver", "actual_source",
+    "cpuinfo_min_freq_hz", "cpuinfo_max_freq_hz", "scope",
+  ])
   return [...wanted].map(([section, fields]) => ({ section, fields: [...fields] }))
 }
 
@@ -417,7 +428,11 @@ export function SystemView({
 }) {
   const chartsVisible = useChartsVisible()
   const available = useMemo(() => SYSTEM_METRICS.map((spec) => ({ points: metricPoints(data, spec), spec }))
-    .filter(({ points }) => points.some((point) => point.value !== null && Number.isFinite(point.value))), [data])
+    .filter(({ points, spec }) => points.some((point) => point.value !== null && Number.isFinite(point.value))
+      || (spec.id === "cpu_actual_frequency" && sectionRows(data, "os_cpufreq").some((row) => {
+        const frequency = storedNumber(row, "actual_frequency_hz")
+        return frequency !== undefined && frequency !== null && Number.isFinite(frequency)
+      }))), [data])
   const referenceMode = mode === "topology"
   const sectionMetrics = useMemo(() => referenceMode ? [] : available.filter(({ spec }) => spec.group === section), [available, referenceMode, section])
   const [dismissedOverview, setDismissedOverview] = useState(false)
@@ -514,6 +529,7 @@ export function SystemView({
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   const modes = HOST_MODES[section] ?? []
   const topologyRows = section === "cpu" && mode === "topology" ? systemEntityRows(data, "os_topology", cursor) : []
+  const policyRows = section === "cpu" && mode === "topology" ? systemEntityRows(data, "os_cpufreq_policy", cursor) : []
   return <>
     <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane={selectedMetric === undefined ? "health" : metricLane(selectedMetric.spec)} shownAt={shownAt} t={t} /></ChartOnly>
     {modes.length > 0 && <div aria-label={t(`section.${section}`)} className="lensbar mt-2" data-testid={`host-${section}-modes`} role="group">
@@ -559,7 +575,7 @@ export function SystemView({
           </div>}
     </div>
 
-    {section === "cpu" && mode === "topology" && <CpuTopologyReference rows={topologyRows} t={t} />}
+    {section === "cpu" && mode === "topology" && <CpuTopologyReference locale={locale} policies={policyRows} rows={topologyRows} t={t} />}
     {section === "storage" && mode === "topology" && <StorageTopologyReference
       devices={systemEntityRows(data, "os_diskstats", cursor)}
       mounts={systemEntityRows(data, "os_mountinfo", cursor)}
@@ -603,8 +619,13 @@ export function SystemView({
   </>
 }
 
-function CpuTopologyReference({ rows, t }: { readonly rows: readonly DataRow[]; readonly t: Translate }) {
-  if (rows.length === 0) return <p className="table-empty mt-2">{t("status.no_data")}</p>
+function CpuTopologyReference({ locale, policies, rows, t }: { readonly locale: Locale; readonly policies: readonly DataRow[]; readonly rows: readonly DataRow[]; readonly t: Translate }) {
+  if (rows.length === 0 && policies.length === 0) return <p className="table-empty mt-2">{t("status.no_data")}</p>
+  const policyByCpu = new Map<number, string>()
+  for (const policy of policies) {
+    const id = rawText(value(policy, "policy_id")) ?? "—"
+    for (const cpu of parseCpuList(rawText(value(policy, "related_cpus")))) policyByCpu.set(cpu, id)
+  }
   const groups = new Map<string, DataRow[]>()
   for (const row of rows) {
     const key = [rawText(value(row, "numa_node")) ?? "—", rawText(value(row, "socket_id")) ?? "—", rawText(value(row, "core_id")) ?? "—"].join(":")
@@ -618,10 +639,39 @@ function CpuTopologyReference({ rows, t }: { readonly rows: readonly DataRow[]; 
       {[...groups.entries()].map(([key, members]) => <div className="min-w-0 border-b border-r border-line px-2 py-1.5 text-sm" key={key}>
         <strong className="block font-medium text-fg2">{t("system.topology.group", { group: key })}</strong>
         <span className="text-fg3">{t("system.topology.cpus", { cpus: members.map((row) => rawText(value(row, "cpu_id")) ?? "—").join(", ") })}</span>
+        <span className="block text-fg3">{t("system.topology.policies", { policies: [...new Set(members.flatMap((row) => {
+          const cpu = asNumber(value(row, "cpu_id"))
+          return cpu === null ? [] : [policyByCpu.get(cpu) ?? "—"]
+        }))].join(", ") })}</span>
         <span className="block overflow-hidden text-ellipsis whitespace-nowrap text-fg4">{rawText(value(members[0] ?? null, "model_name")) ?? "—"}</span>
       </div>)}
     </div>
+    {policies.length > 0 && <div className="border-t border-line2" data-testid="cpufreq-policy-reference">
+      {policies.map((policy) => <div className="grid min-h-[34px] grid-cols-[90px_minmax(120px,1fr)_minmax(130px,1fr)_minmax(150px,1.2fr)] items-center border-b border-line px-2 py-1.5 text-sm last:border-b-0 max-[700px]:grid-cols-2 [&>*]:pr-2" key={rawText(value(policy, "policy_id")) ?? policy.ordinal}>
+        <strong className="font-medium text-fg2">{t("system.topology.policy", { policy: rawText(value(policy, "policy_id")) ?? "—" })}</strong>
+        <span className="text-fg3">{rawText(value(policy, "related_cpus")) ?? "—"}</span>
+        <span className="text-fg3">{rawText(value(policy, "scaling_driver")) ?? "—"}</span>
+        <span className="text-fg3">{rawText(value(policy, "actual_source")) ?? t("common.unavailable")} · {humanHertz(value(policy, "cpuinfo_min_freq_hz"), locale)}–{humanHertz(value(policy, "cpuinfo_max_freq_hz"), locale)}</span>
+      </div>)}
+    </div>}
   </section>
+}
+
+function parseCpuList(text: string | null): readonly number[] {
+  if (text === null) return []
+  const cpus = new Set<number>()
+  for (const token of text.split(/[\s,]+/)) {
+    if (token === "") continue
+    const [firstText, lastText = firstText] = token.split("-")
+    const first = Number(firstText)
+    const last = Number(lastText)
+    if (!Number.isSafeInteger(first) || !Number.isSafeInteger(last) || first < 0 || last < first || last - first > 4096) return []
+    for (let cpu = first; cpu <= last; cpu += 1) {
+      cpus.add(cpu)
+      if (cpus.size > 4096) return []
+    }
+  }
+  return [...cpus]
 }
 
 function StorageTopologyReference({ devices, mounts, t }: { readonly devices: readonly DataRow[]; readonly mounts: readonly DataRow[]; readonly t: Translate }) {
@@ -1019,6 +1069,8 @@ export function resourceBreakdownSeries(
   locale: Locale,
   t: Translate,
 ): readonly RecordedSeries[] {
+  if (selectedId === "cpu_actual_frequency") return frequencyBreakdownSeries(rows, "actual_frequency_hz", t)
+  if (selectedId === "cpu_scaling_frequency") return frequencyBreakdownSeries(rows, "scaling_cur_freq_hz", t)
   if (selectedId === "device_busy") return deviceBreakdownSeries(rows, "io_time_ms", 0.1, rates, locale)
   if (selectedId === "device_average_queue") return deviceBreakdownSeries(rows, "io_weighted_time_ms", 0.001, rates, locale)
   const ids: readonly string[] = CPU_BREAKDOWN_IDS.includes(selectedId as typeof CPU_BREAKDOWN_IDS[number])
@@ -1094,6 +1146,8 @@ function derivedPoints(data: HourData, derive: NonNullable<MetricSpec["derive"]>
 }
 
 function derivedRowPoints(rows: readonly DataRow[], derive: NonNullable<MetricSpec["derive"]>, rates: boolean): readonly ChartPoint[] {
+  if (derive === "cpu_actual_frequency") return frequencyPoints(rows, "actual_frequency_hz")
+  if (derive === "cpu_scaling_frequency") return frequencyPoints(rows, "scaling_cur_freq_hz")
   if (derive.startsWith("cpu_")) return cpuPoints(rows, derive, rates)
   if (derive === "mem_file_cache") return buildMetricSamples(rows, (row) => sumStored(row, ["cached", "buffers"]))
   if (derive === "mem_other") return buildMetricSamples(rows, (row) => difference(row, "mem_total", ["mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim"]))
@@ -1115,6 +1169,56 @@ function derivedRowPoints(rows: readonly DataRow[], derive: NonNullable<MetricSp
   if (derive === "network_tx") return cumulativeRate(aggregateRows(rows, (sampleRows) => sumFields(sampleRows, ["tx_bytes"])))
   if (derive === "network_errors") return cumulativeRate(aggregateRows(rows, (sampleRows) => sumFields(sampleRows, ["rx_errs", "tx_errs"])))
   return cumulativeRate(aggregateRows(rows, (sampleRows) => sumFields(sampleRows, ["rx_drop", "tx_drop"])))
+}
+
+function frequencyPoints(rows: readonly DataRow[], field: string): readonly ChartPoint[] {
+  return aggregateRows(rows, (sampleRows) => {
+    let weighted = 0
+    let online = 0
+    let actualSource: string | null = null
+    for (const row of sampleRows) {
+      const frequency = storedNumber(row, field)
+      const count = storedNumber(row, "online_cpus")
+      if (frequency === undefined || count === undefined) return undefined
+      if (frequency === null || count === null || count < 0) return null
+      if (field === "actual_frequency_hz") {
+        const source = rawText(value(row, "actual_source"))
+        if (source === null) return null
+        if (actualSource !== null && actualSource !== source) return null
+        actualSource = source
+      }
+      weighted += frequency * count
+      online += count
+    }
+    return online > 0 ? weighted / online / 1_000_000 : null
+  })
+}
+
+function frequencyBreakdownSeries(rows: readonly DataRow[], field: string, t: Translate): readonly RecordedSeries[] {
+  const metricKey = field === "actual_frequency_hz" ? "system.metric.cpu_actual_frequency" : "system.metric.cpu_scaling_frequency"
+  const policies = new Map<string, DataRow[]>()
+  for (const row of rows) {
+    const id = rawText(value(row, "policy_id"))
+    if (id === null) continue
+    const stored = policies.get(id) ?? []
+    stored.push(row)
+    policies.set(id, stored)
+  }
+  return [...policies.entries()].sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true })).map(([id, policyRows], index) => ({
+    color: BREAKDOWN_COLORS[index % BREAKDOWN_COLORS.length]!,
+    helpKey: `${metricKey}.help`,
+    id: `cpufreq_policy_${id}`,
+    label: t("system.topology.policy", { policy: id }),
+    labelKey: `${metricKey}.label`,
+    points: buildMetricSamples(policyRows, (row) => {
+      const hertz = storedNumber(row, field)
+      return hertz === undefined || hertz === null ? hertz : hertz / 1_000_000
+    }),
+    scale: "nonnegative" as const,
+    tick: (reading: number, place: Locale) => measure(reading, place),
+    unit: "MHz",
+    value: (reading: number, place: Locale) => measure(reading, place, " MHz"),
+  }))
 }
 
 // The rollup peaks across devices at every instant. Counter layouts divide

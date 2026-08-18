@@ -107,6 +107,8 @@ const HELP_SYSTEM = [
   { label: "system.metric.health.label", help: "system.metric.health.help" },
   { label: "system.metric.cpu_used_cores.label", help: "system.metric.cpu_used_cores.help" },
   { label: "system.metric.cpu_capacity.label", help: "system.metric.cpu_capacity.help" },
+  { label: "system.metric.cpu_actual_frequency.label", help: "system.metric.cpu_actual_frequency.help" },
+  { label: "system.metric.cpu_scaling_frequency.label", help: "system.metric.cpu_scaling_frequency.help" },
   { label: "system.metric.cpu_user.label", help: "system.metric.cpu_user.help" },
   { label: "system.metric.cpu_system.label", help: "system.metric.cpu_system.help" },
   { label: "system.metric.cpu_iowait.label", help: "system.metric.cpu_iowait.help" },

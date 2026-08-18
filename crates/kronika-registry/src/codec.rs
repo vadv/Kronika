@@ -33,6 +33,7 @@ pub mod os_cgroup_mapping;
 pub mod os_cgroup_memory;
 pub mod os_cgroup_pids;
 pub mod os_cpu;
+pub mod os_cpufreq;
 pub mod os_diskstats;
 pub mod os_interrupts;
 pub mod os_kernel_limits;

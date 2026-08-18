@@ -72,6 +72,26 @@ test("CPU topology is a static table without selection history", () => {
   assert.deepEqual(helpers.chartableEntityColumns(topology.columns), [])
 })
 
+test("CPU frequency stays policy-scoped and keeps actual separate from scaling", () => {
+  const row = (policy, timestamp, actual, scaling, online) => ({
+    logicalName: "os_cpufreq", ordinal: `${policy}:${timestamp}`, segmentId: "a", timestamp, typeId: "1122001",
+    values: { policy_id: policy, actual_source: policy === 0 ? "cpuinfo_avg_freq" : "cpuinfo_cur_freq", actual_frequency_hz: actual, scaling_cur_freq_hz: scaling, online_cpus: online },
+  })
+  const sections = { os_cpufreq: [
+    row(0, 1, 2_000_000_000, 1_800_000_000, 2), row(4, 1, 3_000_000_000, 2_600_000_000, 1),
+    row(0, 2, null, 1_900_000_000, 2), row(4, 2, 3_100_000_000, 2_700_000_000, 1),
+  ] }
+  const actual = helpers.SYSTEM_METRICS.find(({ id }) => id === "cpu_actual_frequency")
+  const scaling = helpers.SYSTEM_METRICS.find(({ id }) => id === "cpu_scaling_frequency")
+  assert.deepEqual(helpers.metricPoints({ points: [], sections }, actual).map(({ value }) => value), [null, null])
+  const scalingValues = helpers.metricPoints({ points: [], sections }, scaling).map(({ value }) => value)
+  assert.ok(Math.abs(scalingValues[0] - 6_200 / 3) < Number.EPSILON * 2_100)
+  assert.ok(Math.abs(scalingValues[1] - 6_500 / 3) < Number.EPSILON * 2_200)
+  const series = helpers.resourceBreakdownSeries(actual.id, sections.os_cpufreq, false, "en", (key, values) => key === "system.topology.policy" ? `Policy ${values.policy}` : key)
+  assert.deepEqual(series.map(({ label }) => label), ["Policy 0", "Policy 4"])
+  assert.deepEqual(series[0].points.map(({ value }) => value), [2_000, null])
+})
+
 test("system cards derive production values when fixture-only series are absent", () => {
   const cpu = (timestamp, user, system, idle) => ({
     logicalName: "os_cpu", ordinal: String(timestamp), segmentId: "a", timestamp, typeId: "1102001",

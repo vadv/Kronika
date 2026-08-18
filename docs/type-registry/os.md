@@ -50,6 +50,8 @@ The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 | `1_118_001` | `/proc/net/snmp6` | `snapshot_full` | `(ts)` |
 | `1_119_001` | `/proc/net/rpc/nfs` | `snapshot_full` | `(ts)` |
 | `1_120_001` | `/proc/net/rpc/nfsd` | `snapshot_full` | `(ts)` |
+| `1_121_001` | CPUFreq policy membership, driver, source, and hardware range from sysfs | `on_change` | `(policy_id, ts)` |
+| `1_122_001` | CPUFreq policy frequencies, allowed range, and online CPU count from sysfs | `snapshot_full` | `(policy_id, ts)` |
 | `1_200_001` | cgroup: process mapping | `snapshot_full` | `(pid, ts)` |
 | `1_201_001` | cgroup: cpu | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_201_002` | cgroup: cpu with effective cpuset, retained reader layout | `snapshot_full` | `(cgroup_path, ts)` |
@@ -106,6 +108,16 @@ The collection period is not part of a `type_id`. The collector's scheduler
 sets it per source; the intervals and their defaults are listed in the
 [collector README](../../bins/kronika-collector/README.md).
 
+CPUFreq is policy-scoped. `1_121_001` stores exact `related_cpus`, the scaling
+driver, the selected actual-frequency attribute, and hardware min/max in
+integer hertz. `1_122_001` stores one temporal row per policy. The collector
+prefers `cpuinfo_avg_freq`; when that attribute is absent on the policy's first
+observation it selects `cpuinfo_cur_freq` instead. The choice stays fixed while
+the policy exists. A failed later read remains null and never falls through to
+another source. `scaling_cur_freq` is retained separately because it is a
+reported or requested policy value, not necessarily a hardware measurement.
+One policy sample is never copied into per-logical-CPU rows.
+
 ## Bounds
 
 A single procfs read is capped at 4 MiB by a format constant. There is no row
@@ -154,6 +166,7 @@ recorded. `✓` means the data is in a section above.
 | Per-softirq-vector counts | ✓ | — | ✓ | ✓ `1_115` |
 | Model, core, socket, max frequency | ✓ | ✓ | — | ✓ `1_113` |
 | NUMA node per CPU | ✓ | — | — | ✓ `1_113` |
+| CPUFreq policy membership and actual/scaling frequency history | ✓ | — | — | ✓ `1_121`, `1_122` |
 | Instructions and cycles (`perf`) | ✓ | — | — | — (not collected) |
 
 ### Memory and swap

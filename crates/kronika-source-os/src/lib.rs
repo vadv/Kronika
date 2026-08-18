@@ -16,6 +16,7 @@
 //! state, or HTTP serialization.
 
 pub mod cgroup;
+pub mod cpufreq;
 
 mod fs;
 pub use fs::{

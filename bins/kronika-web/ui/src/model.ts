@@ -216,6 +216,15 @@ export function humanBytes(cell: Cell, locale: Locale, suffix = ""): string {
   return `${sign}${output} ${BYTE_UNITS[step]}${suffix}`
 }
 
+export function humanHertz(cell: Cell, locale: Locale): string {
+  const hertz = asNumber(cell)
+  if (hertz === null) return "—"
+  if (Math.abs(hertz) >= 1_000_000_000) return `${compact(hertz / 1_000_000_000, locale)} GHz`
+  if (Math.abs(hertz) >= 1_000_000) return `${compact(hertz / 1_000_000, locale)} MHz`
+  if (Math.abs(hertz) >= 1_000) return `${compact(hertz / 1_000, locale)} kHz`
+  return `${compact(hertz, locale)} Hz`
+}
+
 export function cores(cell: Cell, locale: Locale, ticksPerSecond: number | null, suffix = ""): string {
   const number = asNumber(cell)
   if (number === null || ticksPerSecond === null || ticksPerSecond <= 0) return "—"

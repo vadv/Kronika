@@ -5,7 +5,9 @@ use kronika_format::{ENTRY_LEN, FRAME_HEADER_LEN};
 use kronika_layout::{DataRoot, LayoutLimits, WriterOwner};
 use kronika_reader::{Cell, Reader, Resolved, Row, SegmentKind};
 use kronika_registry::os_cgroup_context::OsCgroupContext;
+use kronika_registry::os_cpufreq::{OsCpufreq, OsCpufreqPolicy};
 use kronika_registry::{PgWalStorage, StrId, Ts, section_name};
+use kronika_source_os::{SysFs, cpufreq};
 use kronika_source_pg::activity::{ActivityRow, ActivityVersion};
 use kronika_source_pg::query::{BATCH_LOGICAL_BYTES, BATCH_ROWS};
 use kronika_source_pg::settings::SettingsRow;
@@ -37,10 +39,14 @@ const PG_STORE_PLANS_VADV_TYPE_ID: u32 = 1_004_001;
 const PG_WAL_STORAGE_TYPE_ID: u32 = 1_020_001;
 const PG_STAT_ACTIVITY_V3_TYPE_ID: u32 = 1_001_004;
 const CGROUP_CONTEXT_TYPE_ID: u32 = 1_205_001;
+const CPUFREQ_POLICY_TYPE_ID: u32 = 1_121_001;
+const CPUFREQ_TYPE_ID: u32 = 1_122_001;
 const WAL_STORAGE_SNAPSHOTS_PER_HOUR: usize = 120;
 const ACTIVITY_SNAPSHOTS_PER_HOUR: usize = 120;
 const ACTIVITY_ROWS_PER_SNAPSHOT: usize = 64;
 const CGROUP_CONTEXT_SNAPSHOTS_PER_HOUR: usize = 360;
+const CPUFREQ_SNAPSHOTS_PER_HOUR: usize = 360;
+const CPUFREQ_POLICY_COUNT: usize = 128;
 const BASE_TS: i64 = 1_700_000_000_000_000;
 const PRE_CHANGE_ZMS_BYTES: u64 = 3_141_820;
 const PRE_CHANGE_DICT_STRINGS_BYTES: u64 = 1_978_136;
@@ -483,6 +489,7 @@ fn statement_sql_timestamp_survives_source_batches_rotation_and_active_reads() {
     let config = config(directory.path(), u64::MAX);
     let mut segment = SegmentState::default();
     let mut scheduler = Scheduler::new(Intervals::default());
+    let mut cpufreq_collector = cpufreq::CpuFreqCollector::default();
     let mut rows = (0..=BATCH_ROWS)
         .map(|query_index| {
             let mut row = statement_row(0, query_index);
@@ -503,6 +510,7 @@ fn statement_sql_timestamp_survives_source_batches_rotation_and_active_reads() {
         BASE_TS + 10,
         &mut segment,
         &mut scheduler,
+        &mut cpufreq_collector,
     )
     .expect("append the first natural SQL timestamp batch");
 
@@ -535,6 +543,7 @@ fn statement_sql_timestamp_survives_source_batches_rotation_and_active_reads() {
         BASE_TS + 20,
         &mut segment,
         &mut scheduler,
+        &mut cpufreq_collector,
     )
     .expect("rotate and append the remaining natural SQL timestamp row");
     assert_eq!(outcome.written.len(), 1);
@@ -990,6 +999,211 @@ fn activity_datid_hour_reports_production_writer_costs() {
         cpu_ticks,
         rss_kib
     );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the CPUFreq acceptance artifact measures bounded sysfs reads and the exact production WAL/ZMS path together"
+)]
+fn cpufreq_hour_reports_collection_and_production_writer_costs() {
+    let sysfs = tempfile::tempdir().expect("create CPUFreq sysfs fixture");
+    write_cpufreq_fixture(sysfs.path(), CPUFREQ_POLICY_COUNT);
+    let sys = SysFs::new(sysfs.path().to_path_buf());
+    let mut cpufreq_collector = cpufreq::CpuFreqCollector::default();
+    let collection_cpu_before = self_cpu_ticks();
+    let collection_started = std::time::Instant::now();
+    for sample in 0..CPUFREQ_SNAPSHOTS_PER_HOUR {
+        let observed = cpufreq_collector
+            .collect(&sys, sample % 6 == 0, true)
+            .expect("collect bounded CPUFreq fixture");
+        assert_eq!(
+            observed.policies.len(),
+            if sample % 6 == 0 {
+                CPUFREQ_POLICY_COUNT
+            } else {
+                0
+            }
+        );
+        assert_eq!(observed.samples.len(), CPUFREQ_POLICY_COUNT);
+    }
+    let collection_elapsed_us =
+        u64::try_from(collection_started.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let collection_cpu_ticks = self_cpu_ticks().saturating_sub(collection_cpu_before);
+    let collection_rss_kib = peak_rss_kib();
+
+    let directory = tempfile::tempdir().expect("create CPUFreq cost directory");
+    let writer = owner(directory.path());
+    let mut journal =
+        Journal::open(&writer, JournalConfig::default()).expect("open CPUFreq journal");
+    let config = config(directory.path(), u64::MAX);
+    let mut segment = SegmentState::default();
+    let writer_cpu_before = self_cpu_ticks();
+    let writer_started = std::time::Instant::now();
+    let mut policy_raw_section_bytes = 0_u64;
+    let mut sample_raw_section_bytes = 0_u64;
+    for sample in 0..CPUFREQ_SNAPSHOTS_PER_HOUR {
+        let sample_i64 = i64::try_from(sample).expect("sample count fits i64");
+        let ts = BASE_TS.saturating_add(sample_i64.saturating_mul(10_000_000));
+        let source = segment
+            .interner_mut()
+            .intern(b"cpuinfo_avg_freq")
+            .map(|id| StrId(id.get()))
+            .expect("intern CPUFreq source");
+        let samples = (0..CPUFREQ_POLICY_COUNT)
+            .map(|policy| {
+                let policy_id = i32::try_from(policy).expect("policy count fits i32");
+                OsCpufreq {
+                    ts: Ts(ts),
+                    policy_id,
+                    actual_source: Some(source),
+                    actual_frequency_hz: Some(
+                        2_000_000_000_i64
+                            .saturating_add(i64::from(policy_id).saturating_mul(1_000_000)),
+                    ),
+                    scaling_cur_freq_hz: Some(1_900_000_000),
+                    scaling_min_freq_hz: Some(800_000_000),
+                    scaling_max_freq_hz: Some(3_600_000_000),
+                    online_cpus: Some(1),
+                    scope: 0,
+                }
+            })
+            .collect::<Vec<_>>();
+        let policies = if sample % 6 == 0 {
+            let driver = segment
+                .interner_mut()
+                .intern(b"intel_pstate")
+                .map(|id| StrId(id.get()))
+                .expect("intern CPUFreq driver");
+            (0..CPUFREQ_POLICY_COUNT)
+                .map(|policy| {
+                    let policy_id = i32::try_from(policy).expect("policy count fits i32");
+                    let related = segment
+                        .interner_mut()
+                        .intern(policy.to_string().as_bytes())
+                        .map(|id| StrId(id.get()))
+                        .expect("intern related CPUs");
+                    OsCpufreqPolicy {
+                        ts: Ts(ts),
+                        policy_id,
+                        related_cpus: Some(related),
+                        scaling_driver: Some(driver),
+                        actual_source: Some(source),
+                        cpuinfo_min_freq_hz: Some(800_000_000),
+                        cpuinfo_max_freq_hz: Some(3_600_000_000),
+                        scope: 0,
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut buffers = SectionBuffers::new();
+        push_os_sources(&mut buffers, &OsSources::cpufreq_only(policies, samples))
+            .expect("buffer CPUFreq rows");
+        let flushed = encode_window(buffers, segment.interner()).expect("encode CPUFreq window");
+        for section in &flushed.summary.sections {
+            let bytes = u64::try_from(section.body_bytes).unwrap_or(u64::MAX);
+            match section.type_id {
+                CPUFREQ_POLICY_TYPE_ID => {
+                    policy_raw_section_bytes = policy_raw_section_bytes.saturating_add(bytes);
+                }
+                CPUFREQ_TYPE_ID => {
+                    sample_raw_section_bytes = sample_raw_section_bytes.saturating_add(bytes);
+                }
+                _ => {}
+            }
+        }
+        let completed = append_window_and_maybe_close(
+            &mut journal,
+            &writer,
+            &config,
+            &mut segment,
+            ts,
+            false,
+            &flushed,
+        )
+        .expect("append CPUFreq window");
+        assert!(completed.is_empty());
+    }
+    let raw_wal_bytes = journal.bytes();
+    let path = close_open_segment(&mut journal, &writer, &mut segment, "test-end")
+        .expect("write CPUFreq cost segment");
+    let writer_elapsed_us = u64::try_from(writer_started.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let writer_cpu_ticks = self_cpu_ticks().saturating_sub(writer_cpu_before);
+    let writer_rss_kib = peak_rss_kib();
+    let reader = Reader::open(directory.path()).expect("open CPUFreq reader");
+    let listing = reader.segments(..).expect("list CPUFreq segment");
+    let stored = reader
+        .open_segment(listing.segments.first().expect("one CPUFreq segment"))
+        .expect("open CPUFreq segment");
+    let policy_rows = stored
+        .rows(CPUFREQ_POLICY_TYPE_ID)
+        .expect("read CPUFreq policy rows");
+    let sample_rows = stored
+        .rows(CPUFREQ_TYPE_ID)
+        .expect("read CPUFreq sample rows");
+    let zms_section_bytes = |wanted| {
+        stored
+            .sections()
+            .find(|(type_id, _)| *type_id == wanted)
+            .map(|(_, section)| section.bytes)
+            .expect("CPUFreq section catalogued")
+    };
+    let policy_zms_section_bytes = zms_section_bytes(CPUFREQ_POLICY_TYPE_ID);
+    let sample_zms_section_bytes = zms_section_bytes(CPUFREQ_TYPE_ID);
+    let section_bytes = policy_zms_section_bytes.saturating_add(sample_zms_section_bytes);
+    let zms_bytes = std::fs::metadata(path).expect("stat CPUFreq segment").len();
+    assert_eq!(policy_rows.len(), CPUFREQ_POLICY_COUNT * 60);
+    assert_eq!(
+        sample_rows.len(),
+        CPUFREQ_POLICY_COUNT * CPUFREQ_SNAPSHOTS_PER_HOUR
+    );
+    assert!(raw_wal_bytes < 32 * 1024 * 1024);
+    assert!(zms_bytes < 4 * 1024 * 1024);
+    assert!(collection_rss_kib <= 25_600);
+    println!(
+        "os_cpufreq_cost policies={} samples={} raw_wal_bytes={} policy_raw_section_bytes={} sample_raw_section_bytes={} policy_zms_section_bytes={} sample_zms_section_bytes={} marginal_zms_bytes={} zms_bytes={} collection_elapsed_us={} collection_cpu_ticks={} collection_peak_rss_kib={} writer_elapsed_us={} writer_cpu_ticks={} writer_peak_rss_kib={}",
+        policy_rows.len(),
+        sample_rows.len(),
+        raw_wal_bytes,
+        policy_raw_section_bytes,
+        sample_raw_section_bytes,
+        policy_zms_section_bytes,
+        sample_zms_section_bytes,
+        section_bytes.saturating_add(2 * u64::try_from(ENTRY_LEN).unwrap_or(0)),
+        zms_bytes,
+        collection_elapsed_us,
+        collection_cpu_ticks,
+        collection_rss_kib,
+        writer_elapsed_us,
+        writer_cpu_ticks,
+        writer_rss_kib,
+    );
+}
+
+fn write_cpufreq_fixture(root: &Path, policies: usize) {
+    let cpu_root = root.join("devices/system/cpu");
+    std::fs::create_dir_all(&cpu_root).expect("create CPU sysfs root");
+    std::fs::write(cpu_root.join("online"), format!("0-{}\n", policies - 1))
+        .expect("write online CPUs");
+    for policy in 0..policies {
+        let path = cpu_root.join(format!("cpufreq/policy{policy}"));
+        std::fs::create_dir_all(&path).expect("create CPUFreq policy");
+        for (name, value) in [
+            ("related_cpus", policy.to_string()),
+            ("affected_cpus", policy.to_string()),
+            ("scaling_driver", "intel_pstate".to_owned()),
+            ("cpuinfo_avg_freq", "2400000".to_owned()),
+            ("cpuinfo_min_freq", "800000".to_owned()),
+            ("cpuinfo_max_freq", "3600000".to_owned()),
+            ("scaling_cur_freq", "2200000".to_owned()),
+            ("scaling_min_freq", "800000".to_owned()),
+            ("scaling_max_freq", "3600000".to_owned()),
+        ] {
+            std::fs::write(path.join(name), value).expect("write CPUFreq attribute");
+        }
+    }
 }
 
 #[test]

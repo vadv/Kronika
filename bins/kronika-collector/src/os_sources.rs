@@ -11,6 +11,7 @@ use kronika_registry::os_cgroup_mapping::OsCgroupMapping;
 use kronika_registry::os_cgroup_memory::OsCgroupMemory;
 use kronika_registry::os_cgroup_pids::OsCgroupPids;
 use kronika_registry::os_cpu::OsCpu;
+use kronika_registry::os_cpufreq::{OsCpufreq, OsCpufreqPolicy};
 use kronika_registry::os_diskstats::OsDiskstats;
 use kronika_registry::os_interrupts::OsInterrupts;
 use kronika_registry::os_kernel_limits::OsKernelLimits;
@@ -52,6 +53,7 @@ use std::time::Instant;
 
 mod buffering;
 mod cgroups;
+mod cpufreq;
 mod process;
 mod procfs_sections;
 mod singletons;
@@ -82,6 +84,8 @@ pub(crate) struct OsSources {
     numa: Vec<OsNuma>,
     mountinfo: Vec<OsMountinfo>,
     topology: Vec<OsTopology>,
+    cpufreq_policy: Vec<OsCpufreqPolicy>,
+    cpufreq: Vec<OsCpufreq>,
     processes: Vec<OsProcess>,
     process_status: Vec<OsProcessStatus>,
     cgroup_mapping: Vec<OsCgroupMapping>,
@@ -115,6 +119,8 @@ impl OsSources {
             numa: Vec::new(),
             mountinfo: Vec::new(),
             topology: Vec::new(),
+            cpufreq_policy: Vec::new(),
+            cpufreq: Vec::new(),
             processes: Vec::new(),
             process_status: Vec::new(),
             cgroup_mapping: Vec::new(),
@@ -141,6 +147,14 @@ impl OsSources {
     pub(crate) const fn cgroup_context_only(row: OsCgroupContext) -> Self {
         let mut sources = Self::empty();
         sources.cgroup_context = Some(row);
+        sources
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cpufreq_only(policies: Vec<OsCpufreqPolicy>, samples: Vec<OsCpufreq>) -> Self {
+        let mut sources = Self::empty();
+        sources.cpufreq_policy = policies;
+        sources.cpufreq = samples;
         sources
     }
 }
@@ -186,6 +200,7 @@ fn read_optional_os_file(fs: &ProcFs, rel: &'static str, type_id: u32) -> Option
 )]
 pub(crate) fn collect_os_sources(
     fs: &ProcFs,
+    cpufreq_collector: &mut kronika_source_os::cpufreq::CpuFreqCollector,
     interner: &mut Interner,
     scope: u8,
     ts: i64,
@@ -204,6 +219,7 @@ pub(crate) fn collect_os_sources(
 
     let mut os = OsSources::empty();
 
+    let sys = SysFs::from_env();
     if due.has(SourceKind::OsCore) {
         singletons::collect_singletons(fs, scope, ts, &mut os);
     }
@@ -219,7 +235,6 @@ pub(crate) fn collect_os_sources(
         let net_scope_id = net_scope(fs).as_u8();
         os.diskstats =
             procfs_sections::collect_diskstats(fs, interner, scope, ts, in_container, &mounts);
-        let sys = SysFs::from_env();
         os.netdev = procfs_sections::collect_netdev(fs, &sys, interner, net_scope_id, ts);
         procfs_sections::collect_net_singletons(fs, net_scope_id, ts, &mut os);
         procfs_sections::collect_kernel_singletons(
@@ -236,21 +251,13 @@ pub(crate) fn collect_os_sources(
 
     if due.has(SourceKind::OsMountTopo) {
         os.mountinfo = collect_mountinfo(interner, scope, ts, &mounts);
-        os.topology =
-            procfs_sections::collect_topology(fs, &SysFs::from_env(), interner, scope, ts);
+        os.topology = procfs_sections::collect_topology(fs, &sys, interner, scope, ts);
     }
+    cpufreq::collect_cpufreq(cpufreq_collector, &sys, interner, scope, ts, due, &mut os);
 
     let entity_scope = os_entity_scope(in_container);
     process::collect_process_sections(fs, interner, entity_scope, ts, due, &mut os);
-    cgroups::collect_cgroup_sections(
-        &SysFs::from_env(),
-        interner,
-        entity_scope,
-        ts,
-        fs,
-        due,
-        &mut os,
-    );
+    cgroups::collect_cgroup_sections(&sys, interner, entity_scope, ts, fs, due, &mut os);
 
     os
 }
