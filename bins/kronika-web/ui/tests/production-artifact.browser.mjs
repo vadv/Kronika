@@ -1896,7 +1896,7 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
   }
 })
 
-test("aggregate relation detail charts exact server history", { timeout: 60_000 }, async () => {
+test("tablespace rollups keep exact history, URL drill, Back, search, and narrow geometry", { timeout: 60_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const requests = []
   const authState = { valid: true }
@@ -1935,8 +1935,17 @@ test("aggregate relation detail charts exact server history", { timeout: 60_000 
     await enablePage(cdp)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
     await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
-    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.indexes&level=database&pg_lens=state` })
-    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-indexes-table"] .entity-row').length === 1`, "the database index aggregate")
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.indexes&level=tablespace&pg_lens=state&find=tablespace%3Afast_ssd` })
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-indexes-table"] .entity-row').length === 1`, "the tablespace index aggregate")
+    const summary = await cdp.evaluate(`(() => ({
+      cells: [...document.querySelector('[data-testid="pg-indexes-table"] .entity-row').querySelectorAll('[role="cell"]')].map((cell) => cell.textContent),
+      levels: [...document.querySelectorAll('.lensbar:first-of-type button')].map((button) => button.textContent),
+    }))()`)
+    assert.equal(summary.cells[0], "fast_ssd")
+    assert.match(summary.cells[1], /363/)
+    assert.deepEqual(summary.levels.slice(0, 4), ["Indexes", "Schemas", "Databases", "Tablespaces"])
+    const snapshots = requests.filter(({ path, query }) => path === `/api/segments/${SEGMENT}/snapshot` && new URLSearchParams(query).get("group") === "tablespace")
+    assert.ok(snapshots.some(({ query }) => new URLSearchParams(query).get("search") === "tablespace:fast_ssd"), JSON.stringify(snapshots))
     await cdp.evaluate(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-relation-detail"] .uplot-host canvas') !== null`, "the aggregate history chart")
     await settleLayout(cdp)
@@ -1944,8 +1953,9 @@ test("aggregate relation detail charts exact server history", { timeout: 60_000 
     const historyRequests = requests.filter(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).has("group"))
     assert.equal(historyRequests.length, 1, JSON.stringify(historyRequests))
     const query = new URLSearchParams(historyRequests[0].query)
-    assert.equal(query.get("group"), "database")
-    assert.equal(query.get("where.datid"), "42")
+    assert.equal(query.get("group"), "tablespace")
+    assert.equal(query.get("where.tablespace_oid"), "1663")
+    assert.equal(query.get("where.datid"), null)
     assert.equal(query.get("where.schemaname"), null)
     assert.equal(query.get("type_id"), null)
     assert.deepEqual(query.getAll("field"), ["index_count", "invalid_count", "unready_count", "unique_count", "primary_count", "exclusion_count"])
@@ -1974,6 +1984,26 @@ test("aggregate relation detail charts exact server history", { timeout: 60_000 
     assert.ok(await cdp.evaluate(`document.querySelector('[role="dialog"] .uplot-host').getBoundingClientRect().width > 900`))
     await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }))`)
     await cdp.waitFor(`document.querySelector('[role="dialog"]') === null`, "the aggregate history close")
+    const detailText = await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-detail"]').textContent`)
+    assert.match(detailText, /fast_ssd/)
+    assert.match(detailText, /1663/)
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-drill"]').click()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get('level') === null && new URL(location.href).searchParams.get('tablespace_oid') === '1663'`, "the exact tablespace member URL")
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-indexes-table"] .entity-row').length === 1`, "the tablespace members")
+    const memberRequests = requests.filter(({ path, query }) => path === `/api/segments/${SEGMENT}/snapshot` && new URLSearchParams(query).get("where.tablespace_oid") === "1663")
+    assert.ok(memberRequests.length > 0, JSON.stringify(requests))
+    await cdp.evaluate(`history.back()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get('level') === 'tablespace' && document.querySelector('[data-testid="pg-relation-detail"]') !== null`, "the selected tablespace restored by Back")
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 844, mobile: false, width: 390 })
+    await settleLayout(cdp)
+    const narrow = await cdp.evaluate(`(() => ({
+      clientWidth: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+      buttons: [...document.querySelectorAll('.lensbar:first-of-type .lens-tabs button')].map((button) => ({ text: button.textContent, width: button.getBoundingClientRect().width })),
+    }))()`)
+    assert.ok(narrow.scrollWidth <= narrow.clientWidth, JSON.stringify(narrow))
+    assert.deepEqual(narrow.buttons.map(({ text }) => text), ["Indexes", "Schemas", "Databases", "Tablespaces"])
+    assert.equal(narrow.buttons.every(({ width }) => width > 55), true, JSON.stringify(narrow))
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
   } finally {
@@ -3591,10 +3621,10 @@ function timelineRecords(hour = HOUR, cgroups = false) {
         logical_name: "os_cgroup_io", physical_name: "os_cgroup_io", type_id: "1203001",
         implementation: "linux", source_family: "system", rows: "4", bytes: "512",
       }] : []), {
-        logical_name: "pg_stat_user_tables", physical_name: "pg_stat_user_tables", type_id: "1013001",
+        logical_name: "pg_stat_user_tables", physical_name: "pg_stat_user_tables", type_id: "1013005",
         implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256",
       }, {
-        logical_name: "pg_stat_user_indexes", physical_name: "pg_stat_user_indexes", type_id: "1014002",
+        logical_name: "pg_stat_user_indexes", physical_name: "pg_stat_user_indexes", type_id: "1014004",
         implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256",
       }],
     },
@@ -3738,6 +3768,8 @@ function relationRecords(url, mode) {
     ? { datid: "42", datname: "artifact_db" }
     : group === "schema"
       ? { datid: "42", datname: "artifact_db", schemaname: "public" }
+      : group === "tablespace"
+        ? { tablespace_oid: "1663" }
       : indexes
         ? { datid: "42", datname: "artifact_db", schemaname: "public", relid: "73", relname: "artifact_table", indexrelid: "74", indexrelname: "artifact_index" }
         : { datid: "42", datname: "artifact_db", schemaname: "public", relid: "73", relname: "artifact_table" }
@@ -3745,24 +3777,26 @@ function relationRecords(url, mode) {
     ? state
       ? group === "object"
         ? [wire("tablespace", "text", "none"), wire("amname", "text", "none"), wire("indisvalid", "bool", "none"), wire("indisready", "bool", "none"), wire("indisunique", "bool", "none"), wire("indisprimary", "bool", "none")]
-        : [wire("index_count"), wire("invalid_count"), wire("unready_count"), wire("unique_count"), wire("primary_count"), wire("exclusion_count")]
+        : [...(group === "tablespace" ? [wire("tablespace", "text", "none")] : []), wire("index_count"), wire("invalid_count"), wire("unready_count"), wire("unique_count"), wire("primary_count"), wire("exclusion_count")]
       : sized
         ? [wire("tablespace", "text", "none"), wire("amname", "text", "none"), wire("main_fork_bytes", "number", "bytes"), wire("idx_blks_read", "number", "per_second"), wire("idx_blks_hit", "number", "per_second"), wire("buffer_hit_pct", "number", "percent")]
         : [wire("tablespace", "text", "none"), wire("amname", "text", "none"), wire("idx_scan", "number", "per_second")]
     : sized
       ? [wire("tablespace", "text", "none"), wire("main_fork_bytes", "number", "bytes"), wire("toast_bytes", "number", "bytes"), wire("reltuples"), wire("toast_n_live_tup"), wire("toast_n_dead_tup")]
-      : [wire("tablespace", "text", "none"), wire("seq_scan", "number", "per_second")]
+      : group === "tablespace"
+        ? [wire("tablespace", "text", "none"), wire("table_count"), wire("seq_scan", "number", "per_second")]
+        : [wire("tablespace", "text", "none"), wire("seq_scan", "number", "per_second")]
   const baseValues = indexes
     ? state
       ? group === "object"
         ? { tablespace: "pg_default", amname: "btree", indisvalid: true, indisready: true, indisunique: true, indisprimary: true }
-        : { index_count: 363, invalid_count: 0, unready_count: 0, unique_count: 223, primary_count: 111, exclusion_count: 0 }
+        : { ...(group === "tablespace" ? { tablespace: "fast_ssd" } : {}), index_count: 363, invalid_count: 0, unready_count: 0, unique_count: 223, primary_count: 111, exclusion_count: 0 }
       : sized
         ? { tablespace: "pg_default", amname: "btree", main_fork_bytes: 524_288, idx_blks_read: 2, idx_blks_hit: 14, buffer_hit_pct: 87.5 }
         : { tablespace: "pg_default", amname: "btree", idx_scan: 3 }
     : sized
       ? { tablespace: "pg_default", main_fork_bytes: 1_048_576, toast_bytes: 131_072, reltuples: "9007199254740993", toast_n_live_tup: "713456", toast_n_dead_tup: "12876" }
-      : { tablespace: "pg_default", seq_scan: 3 }
+      : { tablespace: group === "tablespace" ? "fast_ssd" : "pg_default", ...(group === "tablespace" ? { table_count: 17 } : {}), seq_scan: 3 }
   const rows = Array.from({ length: count }, (_, local) => {
     const index = offset + local
     const key = group !== "object" ? baseKey : indexes
@@ -3771,7 +3805,7 @@ function relationRecords(url, mode) {
     return {
       record: "relation", logical_name: logicalName, group, key, values: baseValues,
       sample_from: String(AT - 5_000_000), sample_to: String(AT),
-      source: group === "object" ? { segment_id: SEGMENT, type_id: indexes ? "1014002" : "1013001", ordinal: String((indexes ? 8 : 7) + index), timestamp: String(AT) } : null,
+      source: group === "object" ? { segment_id: SEGMENT, type_id: indexes ? "1014004" : "1013005", ordinal: String((indexes ? 8 : 7) + index), timestamp: String(AT) } : null,
     }
   })
   const hasMore = mode === "long" && page === null
@@ -3807,12 +3841,12 @@ function aggregateRelationHistoryRecords(url) {
     { record: "series_segment", segment: { id: SEGMENT } },
     {
       record: "relation", logical_name: logicalName, group,
-      key: { datid: "42", datname: "artifact_db" }, values: values(0),
+      key: group === "tablespace" ? { tablespace_oid: "1663" } : { datid: "42", datname: "artifact_db" }, values: values(0),
       sample_from: String(BEFORE_AT - 5_000_000), sample_to: String(BEFORE_AT), source: null,
     },
     {
       record: "relation", logical_name: logicalName, group,
-      key: { datid: "42", datname: "artifact_db" }, values: values(1),
+      key: group === "tablespace" ? { tablespace_oid: "1663" } : { datid: "42", datname: "artifact_db" }, values: values(1),
       sample_from: String(BEFORE_AT), sample_to: String(AT), source: null,
     },
   ]
@@ -3824,8 +3858,8 @@ function wire(name, kind = "number", unit = "count") {
 
 function exactIndexRecords() {
   const columns = ["ts", "datid", "datname", "schemaname", "relid", "relname", "indexrelid", "indexrelname", "indexdef", "idx_scan"]
-  return [{ record: "layout", rates: ["idx_scan"], layout: { type_id: "1014002", logical_name: "pg_stat_user_indexes", columns: columns.map((name) => ({ name })) } }, {
-    record: "row", segment_id: SEGMENT, type_id: "1014002", ordinal: "8", timestamp: String(AT),
+  return [{ record: "layout", rates: ["idx_scan"], layout: { type_id: "1014004", logical_name: "pg_stat_user_indexes", columns: columns.map((name) => ({ name })) } }, {
+    record: "row", segment_id: SEGMENT, type_id: "1014004", ordinal: "8", timestamp: String(AT),
     values: [String(AT), "42", "artifact_db", "public", "73", "artifact_table", "74", "artifact_index", "CREATE UNIQUE INDEX artifact_index ON public.artifact_table USING btree (id)", 15],
   }]
 }
@@ -3957,8 +3991,10 @@ function targetedRelationRecords(url, label, eligible) {
       ? { ...record.key, datname: label }
       : record.group === "schema"
         ? { ...record.key, schemaname: label }
+        : record.group === "tablespace"
+          ? record.key
         : { ...record.key, relname: label }
-    return { ...record, key }
+    return record.group === "tablespace" ? { ...record, key, values: { ...record.values, tablespace: label } } : { ...record, key }
   })
 }
 

@@ -42,6 +42,10 @@ test("aggregate history charts request semantic fields once with complete hierar
   ), layout(layoutRecord("pg_stat_user_tables", "schema", [column("dml_total", "number", "per_second")])))
   assert.deepEqual(view.relationHistoryFilters(database), { datid: "42" })
   assert.deepEqual(view.relationHistoryFilters(schema), { datid: "42", schemaname: "public" })
+  const tablespace = parseRow(relationRecord(
+    "pg_stat_user_tables", "tablespace", { tablespace_oid: "16384" }, { tablespace: "fast_ssd", table_count: 7, dml_total: 11 },
+  ), layout(layoutRecord("pg_stat_user_tables", "tablespace", [column("tablespace", "text", "none"), column("table_count"), column("dml_total", "number", "per_second")])))
+  assert.deepEqual(view.relationHistoryFilters(tablespace), { tablespace_oid: "16384" })
 
   const later = { ...schema, segmentId: "segment-b", timestamp: 3_000_000, values: { ...schema.values, dml_total: 9 } }
   assert.deepEqual(view.relationMetricHistory([later, schema], dml, "schema"), [
@@ -116,6 +120,10 @@ test("relation requests keep hierarchy separate from fixed metric lenses", () =>
   assert.equal(state.fields.includes("invalid_count"), true)
   assert.equal(state.fields.includes("unready_count"), true)
   assert.equal(state.fields.includes("indexdef"), false)
+
+  const tablespace = relation.relationRequest("pg_stat_user_tables", "size_buffers", "tablespace")
+  assert.deepEqual(tablespace.fields.slice(0, 3), ["tablespace", "tablespace_oid", "table_count"])
+  assert.equal(tablespace.fields.includes("datid"), false)
 })
 
 test("relation histories default to each selected lens's meaningful quantitative metric", () => {
@@ -128,25 +136,27 @@ test("relation histories default to each selected lens's meaningful quantitative
 })
 
 test("rendered relation columns hide numeric identity while requests retain it", () => {
-  const hidden = ["datid", "relid", "indexrelid"]
+  const hidden = ["datid", "relid", "indexrelid", "tablespace_oid"]
   for (const section of relation.RELATION_SECTIONS) {
     const lenses = section === "pg_stat_user_tables" ? relation.TABLE_LENSES : relation.INDEX_LENSES
     for (const lens of lenses) {
       for (const group of relation.RELATION_GROUPS) {
         const request = relation.relationRequest(section, lens, group)
-        assert.equal(request.fields.includes("datid"), true, `${section}:${lens}:${group}:datid projection`)
+        assert.equal(request.fields.includes("datid"), group !== "tablespace", `${section}:${lens}:${group}:datid projection`)
+        assert.equal(request.fields.includes("tablespace_oid"), group === "tablespace", `${section}:${lens}:${group}:tablespace projection`)
         assert.equal(request.fields.includes("relid"), group === "object", `${section}:${lens}:${group}:relid projection`)
         assert.equal(request.fields.includes("indexrelid"), section === "pg_stat_user_indexes" && group === "object", `${section}:${lens}:${group}:indexrelid projection`)
         assert.deepEqual(Object.keys(request.order).filter((field) => hidden.includes(field)), [], `${section}:${lens}:${group}:visible sorts`)
         const fields = view.relationColumns(section, lens, group).map(({ field }) => field)
         assert.deepEqual(fields.filter((field) => hidden.includes(field)), [], `${section}:${lens}:${group}`)
-        assert.equal(fields.includes("datname"), true, `${section}:${lens}:${group}:database name`)
-        assert.equal(fields.includes("schemaname"), group !== "database", `${section}:${lens}:${group}:schema name`)
+        assert.equal(fields.includes("datname"), group !== "tablespace", `${section}:${lens}:${group}:database name`)
+        assert.equal(fields.includes("schemaname"), group !== "database" && group !== "tablespace", `${section}:${lens}:${group}:schema name`)
+        assert.equal(fields.includes("tablespace"), group === "tablespace" || group === "object", `${section}:${lens}:${group}:tablespace name`)
         assert.equal(fields.includes("relname"), group === "object", `${section}:${lens}:${group}:table name`)
         assert.equal(fields.includes("indexrelname"), section === "pg_stat_user_indexes" && group === "object", `${section}:${lens}:${group}:index name`)
 
         const detail = view.relationDetailColumns(section, lens, group).map(({ field }) => field)
-        assert.deepEqual(detail.filter((field) => hidden.includes(field)), [], `${section}:${lens}:${group}:detail ids`)
+        assert.deepEqual(detail.filter((field) => hidden.includes(field)), group === "tablespace" ? ["tablespace_oid"] : [], `${section}:${lens}:${group}:detail ids`)
         assert.deepEqual(detail.filter((field) => ["datname", "schemaname", "relname", "indexrelname"].includes(field)), [], `${section}:${lens}:${group}:detail identity`)
       }
     }
@@ -242,17 +252,37 @@ test("same schema names in different databases remain distinct", () => {
   })
 })
 
+test("tablespace identity is OID-only and drills to exact matching objects", () => {
+  const storedLayout = layout(layoutRecord("pg_stat_user_tables", "tablespace", [
+    column("tablespace", "text", "none"), column("table_count", "number", "count", false),
+  ]))
+  const row = parseRow(relationRecord(
+    "pg_stat_user_tables", "tablespace", { tablespace_oid: "16384" }, { tablespace: null, table_count: 4 },
+  ), storedLayout)
+  assert.equal(relation.relationRowKey(row), JSON.stringify(["pg_stat_user_tables", "tablespace", "16384"]))
+  assert.deepEqual(relation.relationDrill(row), {
+    section: "pg_stat_user_tables",
+    group: "object",
+    filters: { tablespace_oid: "16384" },
+    selectedKey: null,
+  })
+  const columns = view.relationColumns("pg_stat_user_tables", "access", "tablespace")
+  assert.deepEqual(columns.slice(0, 2).map(({ field }) => field), ["tablespace", "table_count"])
+  assert.equal(columns[0].renderNull(row), "OID 16384")
+  assert.deepEqual(view.relationDetailColumns("pg_stat_user_tables", "access", "tablespace").slice(0, 3).map(({ field }) => field), ["tablespace", "tablespace_oid", "table_count"])
+})
+
 test("same-named tables and indexes in different databases keep their complete wire identity", () => {
   const storedLayout = layout(layoutRecord("pg_stat_user_tables", "object", []))
   const first = parseRow(relationRecord(
     "pg_stat_user_tables", "object",
     { datid: "11", datname: "one", schemaname: "public", relid: "42", relname: "orders" }, {},
-    { type_id: "1013001", ordinal: "1", timestamp: "2000000" },
+    { type_id: "1013005", ordinal: "1", timestamp: "2000000" },
   ), storedLayout)
   const second = parseRow(relationRecord(
     "pg_stat_user_tables", "object",
     { datid: "12", datname: "two", schemaname: "public", relid: "42", relname: "orders" }, {},
-    { type_id: "1013001", ordinal: "2", timestamp: "2000000" },
+    { type_id: "1013005", ordinal: "2", timestamp: "2000000" },
   ), storedLayout)
   assert.equal(relation.relationRowKey(first), JSON.stringify(["pg_stat_user_tables", "object", "11", "one", "public", "42", "orders"]))
   assert.notEqual(relation.relationRowKey(first), relation.relationRowKey(second))
@@ -261,7 +291,7 @@ test("same-named tables and indexes in different databases keep their complete w
   const indexes = [first, second].map((table, ordinal) => parseRow(relationRecord(
     "pg_stat_user_indexes", "object",
     { ...table.values, indexrelid: "43", indexrelname: "orders_pkey" }, {},
-    { type_id: "1014001", ordinal: String(ordinal), timestamp: "2000000" },
+    { type_id: "1014003", ordinal: String(ordinal), timestamp: "2000000" },
   ), indexLayout))
   assert.equal(relation.relationRowKey(indexes[0]), JSON.stringify(["pg_stat_user_indexes", "object", "11", "one", "public", "42", "orders", "43", "orders_pkey"]))
   assert.notEqual(relation.relationRowKey(indexes[0]), relation.relationRowKey(indexes[1]))
@@ -276,13 +306,13 @@ test("object source locators are exact and index definitions stay lazy and objec
     "object",
     { datid: "42", datname: "app", schemaname: "public", relid: "9001", relname: "orders", indexrelid: "9002", indexrelname: "orders_pkey" },
     { idx_scan: 0 },
-    { type_id: "1014002", ordinal: "17", timestamp: "2000000" },
+    { type_id: "1014004", ordinal: "17", timestamp: "2000000" },
   ), storedLayout)
   const target = relation.relationDetailTarget(row)
   assert.equal(target.at, 2_000_000)
-  assert.equal(target.request.typeId, "1014002")
+  assert.equal(target.request.typeId, "1014004")
   assert.deepEqual(target.request.fields, ["indexdef"])
-  assert.deepEqual(target.options, { typeId: "1014002", rowOrdinal: "17", fullText: true })
+  assert.deepEqual(target.options, { typeId: "1014004", rowOrdinal: "17", fullText: true })
 
   assert.throws(() => relation.parseRelationLayout(layoutRecord(
     "pg_stat_user_indexes", "schema", [column("indexdef", "text", "none")],
@@ -300,7 +330,7 @@ test("table and index navigation uses exact database-scoped table identity", () 
     "pg_stat_user_tables", "object",
     { datid: "42", datname: "app", schemaname: "sales", relid: "9001", relname: "orders" },
     {},
-    { type_id: "1013004", ordinal: "9", timestamp: "2000000" },
+    { type_id: "1013008", ordinal: "9", timestamp: "2000000" },
   ), tableLayout)
   assert.deepEqual(relation.linkedRelation(table), {
     section: "pg_stat_user_indexes",
@@ -314,7 +344,7 @@ test("table and index navigation uses exact database-scoped table identity", () 
     "pg_stat_user_indexes", "object",
     { datid: "42", datname: "app", schemaname: "sales", relid: "9001", relname: "orders", indexrelid: "9002", indexrelname: "orders_pkey" },
     {},
-    { type_id: "1014002", ordinal: "10", timestamp: "2000000" },
+    { type_id: "1014004", ordinal: "10", timestamp: "2000000" },
   ), indexLayout)
   const back = relation.linkedRelation(index)
   assert.deepEqual(back?.filters, { datid: "42", relid: "9001" })
@@ -322,7 +352,7 @@ test("table and index navigation uses exact database-scoped table identity", () 
   const otherDatabase = parseRow(relationRecord(
     "pg_stat_user_tables", "object",
     { datid: "43", datname: "other", schemaname: "sales", relid: "9001", relname: "orders" }, {},
-    { type_id: "1013004", ordinal: "11", timestamp: "2000000" },
+    { type_id: "1013008", ordinal: "11", timestamp: "2000000" },
   ), tableLayout)
   assert.notEqual(back?.selectedKey, relation.relationRowKey(otherDatabase))
 })
@@ -332,7 +362,7 @@ test("detail requests only the exact index definition", () => {
   const row = parseRow(relationRecord(
     "pg_stat_user_indexes", "object",
     { datid: "42", datname: "app", schemaname: "public", relid: "9001", relname: "orders", indexrelid: "9002", indexrelname: "orders_pkey" },
-    {}, { type_id: "1014002", ordinal: "17", timestamp: "2000000" },
+    {}, { type_id: "1014004", ordinal: "17", timestamp: "2000000" },
   ), storedLayout)
   assert.equal(row.segmentId, "1709164800000000")
   assert.deepEqual(relation.relationDetailTarget(row).request.fields, ["indexdef"])
@@ -341,7 +371,7 @@ test("detail requests only the exact index definition", () => {
   const table = parseRow(relationRecord(
     "pg_stat_user_tables", "object",
     { datid: "42", datname: "app", schemaname: "public", relid: "9001", relname: "orders" },
-    {}, { type_id: "1013002", ordinal: "18", timestamp: "2000000" },
+    {}, { type_id: "1013006", ordinal: "18", timestamp: "2000000" },
   ), tableLayout)
   assert.throws(() => relation.relationDetailTarget(table), /index definition source/)
 })
@@ -375,7 +405,7 @@ test("table detail lenses render five distinct semantic field matrices", () => {
     "pg_stat_user_tables", "object",
     { datid: "42", datname: "app", schemaname: "public", relid: "9001", relname: "orders" },
     { heap_blks_read: null, heap_blks_hit: 0 },
-    { type_id: "1013002", ordinal: "18", timestamp: "2000000" },
+    { type_id: "1013006", ordinal: "18", timestamp: "2000000" },
   ), storedLayout)
   assert.equal(row.values.heap_blks_read, null)
   assert.equal(row.values.heap_blks_hit, 0)
@@ -402,12 +432,12 @@ test("object history is reset-safe, layout-safe, and keeps missing values unavai
     values: { idx_scan: value, main_fork_bytes: value },
   })
   const rows = [
-    row(1_000_000, "1014001", 10),
-    row(3_000_000, "1014001", 14),
-    row(5_000_000, "1014001", 3),
-    row(7_000_000, "1014002", 7),
-    row(9_000_000, "1014002", null),
-    row(11_000_000, "1014002", 9),
+    row(1_000_000, "1014003", 10),
+    row(3_000_000, "1014003", 14),
+    row(5_000_000, "1014003", 3),
+    row(7_000_000, "1014004", 7),
+    row(9_000_000, "1014004", null),
+    row(11_000_000, "1014004", 9),
   ]
   assert.deepEqual(relation.relationHistory(rows, "idx_scan").map(({ value }) => value), [null, 2, null, null, null, null])
   assert.deepEqual(relation.relationHistory(rows.slice(0, 3), "main_fork_bytes").map(({ value }) => value), [10, 14, 3])
@@ -416,7 +446,7 @@ test("object history is reset-safe, layout-safe, and keeps missing values unavai
 
 test("object DBA histories recompute exact rates and ratios without crossing identity or resets", () => {
   const table = (timestamp, values, identity = { datid: "42", relid: "9001" }) => ({
-    segmentId: "segment-a", logicalName: "pg_stat_user_tables", typeId: "1013004",
+    segmentId: "segment-a", logicalName: "pg_stat_user_tables", typeId: "1013008",
     ordinal: String(timestamp), timestamp, values: { ...identity, ...values },
   })
   const rows = [
@@ -435,7 +465,7 @@ test("object DBA histories recompute exact rates and ratios without crossing ide
   assert.deepEqual(values("displayed_storage_bytes"), [800, 1_000, 1_000, 2_000])
 
   const index = rows.slice(0, 2).map((row, index) => ({
-    ...row, logicalName: "pg_stat_user_indexes", typeId: "1014002", values: {
+    ...row, logicalName: "pg_stat_user_indexes", typeId: "1014004", values: {
       datid: "42", indexrelid: "9003", idx_scan: index === 0 ? 10 : 12,
       idx_tup_read: index === 0 ? 20 : 28, idx_tup_fetch: index === 0 ? 6 : 10,
       idx_blks_read: index === 0 ? 2 : 4, idx_blks_hit: index === 0 ? 8 : 14,
@@ -453,7 +483,7 @@ test("wire validation rejects mismatched keys, values, intervals, and fake aggre
   assert.throws(() => parseRow({ ...valid, values: {} }, storedLayout), /relation values/)
   assert.throws(() => parseRow({ ...valid, values: { table_count: null } }, storedLayout), /relation null/)
   assert.throws(() => parseRow({ ...valid, sample_from: "3", sample_to: "2" }, storedLayout), /sample interval/)
-  assert.throws(() => parseRow({ ...valid, source: { type_id: "1013001", ordinal: "1", timestamp: "2" } }, storedLayout), /relation source/)
+  assert.throws(() => parseRow({ ...valid, source: { type_id: "1013005", ordinal: "1", timestamp: "2" } }, storedLayout), /relation source/)
 })
 
 test("the relation table exposes complete server-sortable quantitative lenses", () => {
@@ -519,7 +549,9 @@ test("all table and index levels and lenses keep exact meaning-first display ord
       assert.deepEqual(view.relationColumns(section, lens, "object").map(({ field }) => field), [...objectPrefix, ...suffixes.object], `${section}/${lens}/object`)
       assert.deepEqual(view.relationColumns(section, lens, "schema").map(({ field }) => field), ["schemaname", "datname", ...suffixes.aggregate], `${section}/${lens}/schema`)
       assert.deepEqual(view.relationColumns(section, lens, "database").map(({ field }) => field), ["datname", ...suffixes.aggregate], `${section}/${lens}/database`)
-      assert.equal(view.relationColumns(section, lens, "object").some(({ field }) => ["datid", "relid", "indexrelid"].includes(field)), false)
+      assert.deepEqual(view.relationColumns(section, lens, "tablespace").map(({ field }) => field), ["tablespace", count, ...suffixes.aggregate.filter((field) => field !== count)], `${section}/${lens}/tablespace`)
+      assert.equal(view.relationColumns(section, lens, "object").some(({ field }) => ["datid", "relid", "indexrelid", "tablespace_oid"].includes(field)), false)
+      assert.equal(view.relationColumns(section, lens, "tablespace").some(({ field }) => field === "tablespace_oid"), false)
       assert.ok(view.relationColumns(section, lens, "database").some(({ field }) => field === count))
     }
   }
