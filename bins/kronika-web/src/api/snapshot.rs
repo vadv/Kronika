@@ -473,9 +473,10 @@ fn section_plans(
     }
     let mut sections = Vec::with_capacity(request.sections.len());
     for logical_name in &request.sections {
-        let fields = if request.group.is_some() {
+        let fields = if let Some(group) = request.group {
             let wanted = relation::snapshot_physical_fields(
                 logical_name,
+                group,
                 relation_fields,
                 &request.by,
                 search,
@@ -580,8 +581,8 @@ fn derived_page_order(logical_name: &str, plan: &Plan, token: &str) -> Option<Pa
     let supported = match logical_name {
         "pg_stat_statements" => matches!(plan.type_id, 1_002_001..=1_002_006),
         "pg_store_plans" => matches!(plan.type_id, 1_003_001 | 1_004_001 | 1_018_001),
-        "pg_stat_user_tables" => matches!(plan.type_id, 1_013_001..=1_013_004),
-        "pg_stat_user_indexes" => matches!(plan.type_id, 1_014_001..=1_014_002),
+        "pg_stat_user_tables" => matches!(plan.type_id, 1_013_005..=1_013_008),
+        "pg_stat_user_indexes" => matches!(plan.type_id, 1_014_003..=1_014_004),
         _ => false,
     };
     if !supported {
@@ -2761,6 +2762,7 @@ fn snapshot_binding(request: &SnapshotRequest, search: Option<&StructuredSearch>
             match group {
                 RelationGroup::Database => b"database",
                 RelationGroup::Schema => b"schema",
+                RelationGroup::Tablespace => b"tablespace",
                 RelationGroup::Object => b"object",
             },
         );

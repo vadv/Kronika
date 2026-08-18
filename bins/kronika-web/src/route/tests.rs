@@ -129,12 +129,29 @@ fn relation_hour_series_accepts_only_one_exact_aggregate_scope() {
         ]
     );
 
+    let Route::Hour(hour) = parse(
+        "/api/hour",
+        Some(
+            "from=1&to=2&section=pg_stat_user_indexes&group=tablespace&field=main_fork_bytes&where.tablespace_oid=4294967295",
+        ),
+    )
+    .expect("tablespace relation series")
+    else {
+        panic!("hour route");
+    };
+    let series = hour.series.expect("relation series");
+    assert_eq!(series.group, Some(super::RelationGroup::Tablespace));
+    assert_eq!(series.filters[0].column, "tablespace_oid");
+    assert_eq!(series.filters[0].value, "4294967295");
+
     for query in [
         "from=1&to=2&section=pg_stat_user_tables&group=object&field=seq_scan&where.datid=7",
         "from=1&to=2&section=pg_stat_activity&group=database&field=active&where.datid=7",
         "from=1&to=2&section=pg_stat_user_tables&group=database&field=seq_scan",
         "from=1&to=2&section=pg_stat_user_tables&group=schema&field=seq_scan&where.datid=7",
-        "from=1&to=2&section=pg_stat_user_tables&group=database&field=seq_scan&where.datid=7&type_id=1013001",
+        "from=1&to=2&section=pg_stat_user_tables&group=database&field=seq_scan&where.datid=7&type_id=1013005",
+        "from=1&to=2&section=pg_stat_user_tables&group=tablespace&field=seq_scan&where.tablespace_oid=0",
+        "from=1&to=2&section=pg_stat_user_tables&group=tablespace&field=seq_scan&where.tablespace_oid=4294967296",
     ] {
         assert!(
             parse("/api/hour", Some(query)).is_err(),
@@ -193,7 +210,7 @@ fn snapshot_paging_inputs_enable_one_bounded_page() {
     assert_eq!(
         parse(
             "/api/segments/7/snapshot",
-            Some("at=9&section=pg_stat_user_tables&group=object&type_id=1013004"),
+            Some("at=9&section=pg_stat_user_tables&group=object&type_id=1013008"),
         ),
         Err(RouteError::BadParameter("type_id".to_owned())),
     );

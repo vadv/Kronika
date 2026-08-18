@@ -616,6 +616,9 @@ fn structured_search_rejects_atomic_operators_units_and_future_syntax_with_spans
         ("NOT size>100MB", "unsupported_syntax", "NOT"),
         ("(size>100MB)", "unsupported_syntax", "("),
         ("size>100MB)", "unsupported_syntax", ")"),
+        ("latency OR budget", "unsupported_syntax", "OR"),
+        ("NOT latency", "unsupported_syntax", "NOT"),
+        ("latency (budget)", "unsupported_syntax", "("),
         ("size>100 MB", "whitespace_before_unit", "MB"),
     ] {
         let error = StructuredSearch::parse(expression, "pg_stat_user_tables")

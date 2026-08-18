@@ -667,6 +667,7 @@ function App({ locale, onLocale, t }: {
     schema: relationFilters.schemaname ?? null,
     relid: relationFilters.relid ?? null,
     indexrelid: relationFilters.indexrelid ?? null,
+    tablespaceOid: relationFilters.tablespace_oid ?? null,
     sort: order,
     row: activeRelation
       ? relationSelectedKey
@@ -1038,6 +1039,7 @@ function relationFiltersOf(address: ReturnType<typeof readAddress>): Readonly<Re
     ["schemaname", address.schema],
     ["relid", address.relid],
     ["indexrelid", address.indexrelid],
+    ["tablespace_oid", address.tablespaceOid],
   ].flatMap(([name, stored]) => stored === null ? [] : [[name, stored]]))
 }
 

@@ -96,7 +96,7 @@ test("SI, IEC, duration, percentage, and count units retain exact boundaries", (
   }
   for (const expression of [
     "size>0.1B", "size>100", "size>100mb", "size>100 MB", 'size>"100MB"',
-    "buffer_hit>100.1%", "table_count>1.5", "size>-1MB", "size>1e3MB",
+    "buffer_hit>100.1%", "table_count>1.5", "size>-1MB", "size>1e3MB", "size>01MB", "size>1.MB",
     "size>1,000MB", "size>1_MB", "size>NaN", "size>Infinity",
   ]) assert.equal(parseSearch(expression, "pg_stat_user_tables").ok, false, expression)
 })
@@ -116,6 +116,9 @@ test("non-v1 operators are atomic and future syntax is reserved", () => {
     ["NOT size>100MB", "unsupported_syntax", "NOT"],
     ["(size>100MB)", "unsupported_syntax", "("],
     ["size>100MB)", "unsupported_syntax", ")"],
+    ["latency OR budget", "unsupported_syntax", "OR"],
+    ["NOT latency", "unsupported_syntax", "NOT"],
+    ["latency (budget)", "unsupported_syntax", "("],
   ]) {
     const parsed = parseSearch(expression, "pg_stat_user_tables")
     assert.equal(parsed.ok, false, expression)

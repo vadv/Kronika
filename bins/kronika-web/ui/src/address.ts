@@ -8,6 +8,7 @@ export interface Address {
   readonly schema: string | null
   readonly relid: string | null
   readonly indexrelid: string | null
+  readonly tablespaceOid: string | null
   readonly sort: { readonly column: string; readonly descending: boolean } | null
   readonly row: string | null
   readonly find: string
@@ -43,7 +44,7 @@ export type Source = "host" | "processes" | "postgresql" | "events"
 export type PgLens = "load" | "per_call" | "io" | "resources" | "stability" | "timing" | "identity"
   | "access" | "changes" | "maintenance" | "size_buffers" | "freeze"
   | "usage" | "low_activity" | "state"
-export type PgLevel = "database" | "schema" | "object"
+export type PgLevel = "database" | "schema" | "tablespace" | "object"
 
 const VIEWS: readonly View[] = [
   "host.overview", "host.cpu", "host.memory", "host.storage", "host.network", "host.cgroups",
@@ -54,7 +55,7 @@ const VIEWS: readonly View[] = [
 
 const LENSES: readonly Lens[] = ["generic", "cpu", "memory", "disk"]
 const PG_LENSES: readonly PgLens[] = ["load", "per_call", "io", "resources", "stability", "timing", "identity", "access", "changes", "maintenance", "size_buffers", "freeze", "usage", "low_activity", "state"]
-const PG_LEVELS: readonly PgLevel[] = ["database", "schema", "object"]
+const PG_LEVELS: readonly PgLevel[] = ["database", "schema", "tablespace", "object"]
 
 export const DEFAULT_ADDRESS: Address = {
   at: null,
@@ -66,6 +67,7 @@ export const DEFAULT_ADDRESS: Address = {
   schema: null,
   relid: null,
   indexrelid: null,
+  tablespaceOid: null,
   sort: null,
   row: null,
   find: "",
@@ -81,12 +83,11 @@ export function readAddress(search: string): Address {
   const pgLens = parameters.get("pg_lens")
   const pgLevel = PG_LEVELS.find((known) => known === parameters.get("level")) ?? DEFAULT_ADDRESS.pgLevel
   const resolvedView = VIEWS.find((known) => known === view) ?? DEFAULT_ADDRESS.view
-  const oid = (name: string) => /^[1-9]\d*$/.test(parameters.get(name) ?? "") ? parameters.get(name) : null
   const relation = resolvedView === "pg.tables" || resolvedView === "pg.indexes"
   const postgresEntity = isPostgresEntityView(resolvedView)
   const host = resolvedView.startsWith("host.")
   const hostSection = hostSectionOf(resolvedView)
-  const datid = relation && pgLevel !== "database" ? oid("datid") : null
+  const datid = relation && (pgLevel === "schema" || pgLevel === "object") ? oid(parameters.get("datid")) : null
   const sort = parameters.get("sort") ?? ""
   const column = sort.startsWith("-") ? sort.slice(1) : sort
   return {
@@ -97,8 +98,9 @@ export function readAddress(search: string): Address {
     pgLevel: relation ? pgLevel : DEFAULT_ADDRESS.pgLevel,
     datid,
     schema: relation && pgLevel === "object" && datid !== null ? parameters.get("schema") : null,
-    relid: relation && pgLevel === "object" && datid !== null ? oid("relid") : null,
-    indexrelid: resolvedView === "pg.indexes" && pgLevel === "object" && datid !== null ? oid("indexrelid") : null,
+    relid: relation && pgLevel === "object" && datid !== null ? oid(parameters.get("relid")) : null,
+    indexrelid: resolvedView === "pg.indexes" && pgLevel === "object" && datid !== null ? oid(parameters.get("indexrelid")) : null,
+    tablespaceOid: relation && pgLevel === "object" ? oid(parameters.get("tablespace_oid")) : null,
     sort: column === "" ? null : { column, descending: sort.startsWith("-") },
     row: postgresEntity
       ? postgresEntityRow(parameters.get("row"))
@@ -121,6 +123,7 @@ export function writeAddress(address: Address): string {
   if (relation && address.pgLevel === "object" && address.schema !== null) parameters.set("schema", address.schema)
   if (relation && address.pgLevel === "object" && address.relid !== null) parameters.set("relid", address.relid)
   if (address.view === "pg.indexes" && address.pgLevel === "object" && address.indexrelid !== null) parameters.set("indexrelid", address.indexrelid)
+  if (relation && address.pgLevel === "object" && address.tablespaceOid !== null) parameters.set("tablespace_oid", address.tablespaceOid)
   if (address.sort !== null) parameters.set("sort", `${address.sort.descending ? "-" : ""}${address.sort.column}`)
   if ((address.view === "processes" || relation || address.view.startsWith("host.") || address.view === "events"
       || (isPostgresEntityView(address.view) && postgresEntityRow(address.row) !== null))
@@ -133,9 +136,7 @@ export function writeAddress(address: Address): string {
 }
 
 function oid(stored: string | null): string | null {
-  if (stored === null || !/^[1-9]\d*$/.test(stored)) return null
-  const parsed = BigInt(stored)
-  return parsed <= 4_294_967_295n ? stored : null
+  return stored !== null && /^[1-9]\d*$/.test(stored) && Number(stored) <= 4_294_967_295 ? stored : null
 }
 
 function isPostgresEntityView(view: View): boolean {

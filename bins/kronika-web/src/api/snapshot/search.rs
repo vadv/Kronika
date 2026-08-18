@@ -2,7 +2,7 @@ use super::GlobPattern;
 
 pub(super) const SEARCH_MAX_CLAUSES: usize = 8;
 pub(super) const SEARCH_MAX_VALUE_CHARS: usize = 256;
-const SEARCH_MAX_EXPRESSION_BYTES: usize = 1_024;
+const SEARCH_MAX_EXPRESSION_CHARS: usize = 1_024;
 const SEARCH_MAX_SIGNIFICANT_DIGITS: usize = 38;
 const SEARCH_MAX_FRACTIONAL_DIGITS: usize = 9;
 
@@ -95,7 +95,7 @@ impl StructuredSearch {
         reason = "all parser offsets advance only across ASCII grammar bytes or UTF-8 char widths"
     )]
     pub(super) fn parse(raw: &str, logical_name: &str) -> Result<Self, SearchDiagnostic> {
-        if raw.len() > SEARCH_MAX_EXPRESSION_BYTES {
+        if raw.chars().count() > SEARCH_MAX_EXPRESSION_CHARS {
             return Err(diagnostic("expression_too_long", 0, raw.len()));
         }
         let fields = search_fields(logical_name);
@@ -105,6 +105,9 @@ impl StructuredSearch {
         let first = skip_space(raw, 0);
         if first == raw.len() {
             return Err(diagnostic("missing_value", first, first));
+        }
+        if let Some((start, end)) = first_reserved(raw) {
+            return Err(diagnostic("unsupported_syntax", start, end));
         }
         if !has_structured_syntax(raw) {
             if let Some((start, end)) = standalone_and(raw) {
@@ -645,6 +648,23 @@ fn has_structured_syntax(input: &str) -> bool {
         }
     }
     false
+}
+
+fn first_reserved(input: &str) -> Option<(usize, usize)> {
+    let mut quoted = false;
+    let mut escaped = false;
+    for (start, character) in input.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if quoted && character == '\\' {
+            escaped = true;
+        } else if character == '"' {
+            quoted = !quoted;
+        } else if !quoted && let Some(span) = reserved_at(input, start) {
+            return Some(span);
+        }
+    }
+    None
 }
 
 fn reserved_at(input: &str, start: usize) -> Option<(usize, usize)> {

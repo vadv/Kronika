@@ -108,11 +108,30 @@ test("relation drilldown keeps database-scoped identity", () => {
 })
 
 test("relation levels round-trip with or without a drill-down context", () => {
-  for (const pgLevel of ["object", "schema", "database"] as const) {
+  for (const pgLevel of ["object", "schema", "database", "tablespace"] as const) {
     const address = { ...DEFAULT_ADDRESS, view: "pg.indexes" as const, pgLevel, find: "orders*", pgLens: "state" as const }
     const written = writeAddress(address)
     assert.deepEqual(readAddress(written.slice(1)), address)
   }
+})
+
+test("tablespace member filters are validated and URL-native", () => {
+  const address = {
+    ...DEFAULT_ADDRESS,
+    at: 1_700_000_000_000_123,
+    view: "pg.tables" as const,
+    pgLevel: "object" as const,
+    tablespaceOid: "4294967295",
+    find: "table_name:orders*",
+  }
+  const written = writeAddress(address)
+  assert.equal(written, "/?at=1700000000000123&view=pg.tables&tablespace_oid=4294967295&find=table_name%3Aorders*")
+  assert.deepEqual(readAddress(written.slice(1)), address)
+  assert.equal(readAddress("view=pg.tables&tablespace_oid=0").tablespaceOid, null)
+  assert.equal(readAddress("view=pg.tables&tablespace_oid=4294967296").tablespaceOid, null)
+  const group = readAddress("view=pg.tables&level=tablespace&datid=42&tablespace_oid=7")
+  assert.equal(group.datid, null)
+  assert.equal(group.tablespaceOid, null)
 })
 
 test("relation selection is separate from hierarchy filters", () => {

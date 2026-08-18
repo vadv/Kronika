@@ -161,6 +161,8 @@ export function parseSearch(input: string, surface: SearchSurface): SearchParseR
   if (input.length > SEARCH_MAX_EXPRESSION) return failure("expression_too_long", 0, input.length)
   const first = firstNonSpace(input, 0)
   if (first === input.length) return success("", [], null, false)
+  const future = firstReserved(input)
+  if (future !== null) return failure("unsupported_syntax", future.start, future.end, future.token)
   if (!hasStructuredSyntax(input)) {
     const and = standaloneAnd(input, first)
     if (and !== null) return failure("expected_colon", and, and + 3, input.slice(and, and + 3))
@@ -278,6 +280,7 @@ export function canonicalSearch(clauses: readonly { readonly key: string; readon
 function parseQuantity(token: string, kind: QuantityKind, offset: number): QuantityParseResult {
   if (token.startsWith("-")) return failure("negative_not_allowed", offset, offset + Math.max(1, token.length), token)
   if (token.startsWith("+")) return failure("invalid_number", offset, offset + token.length, token)
+  if (/^0\d/.test(token) || /^\d+\.(?:$|[^0-9])/.test(token)) return failure("invalid_number", offset, offset + token.length, token)
   const match = /^(0|[1-9]\d*)(?:\.(\d+))?(.*)$/.exec(token)
   if (match === null || token.includes(",") || token.includes("_") || /^[eE][+-]?\d/.test(match?.[3] ?? "")) return failure("invalid_number", offset, offset + token.length, token)
   const whole = match[1]!
@@ -382,6 +385,22 @@ function hasStructuredSyntax(input: string): boolean {
     if (!quoted && ":<>!=".includes(character)) return true
   }
   return false
+}
+
+function firstReserved(input: string): { readonly end: number; readonly start: number; readonly token: string } | null {
+  let quoted = false
+  let escaped = false
+  for (let cursor = 0; cursor < input.length; cursor += 1) {
+    const character = input[cursor]!
+    if (escaped) { escaped = false; continue }
+    if (quoted && character === "\\") { escaped = true; continue }
+    if (character === '"') { quoted = !quoted; continue }
+    if (!quoted) {
+      const reserved = reservedAt(input, cursor)
+      if (reserved !== null) return reserved
+    }
+  }
+  return null
 }
 
 function reservedAt(input: string, start: number): { readonly end: number; readonly start: number; readonly token: string } | null {

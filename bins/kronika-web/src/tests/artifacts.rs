@@ -46,7 +46,33 @@ type NamedIndexSnapshot<'a> = (
 
 type DmlTableSnapshot<'a> = (i64, u32, u32, [i64; 4], &'a str, &'a str, &'a str);
 
-type SizedTableSnapshot<'a> = (i64, u32, u32, i64, Option<i64>, &'a str, &'a str, &'a str);
+type PlacedTableSnapshot<'a> = (
+    i64,
+    u32,
+    u32,
+    i64,
+    &'a str,
+    &'a str,
+    &'a str,
+    Option<u32>,
+    Option<&'a str>,
+    i64,
+    Option<i64>,
+);
+
+type PlacedIndexSnapshot<'a> = (
+    i64,
+    u32,
+    u32,
+    i64,
+    &'a str,
+    &'a str,
+    &'a str,
+    &'a str,
+    u32,
+    Option<&'a str>,
+    i64,
+);
 
 struct Fixture {
     directory: tempfile::TempDir,
@@ -665,7 +691,7 @@ impl Fixture {
                     .expect("intern table")
                     .get(),
             );
-            row.tablespace = tablespace;
+            row.tablespace = Some(tablespace);
             buffers.push(row).expect("named table row fits");
         }
         let dictionary = dict::encode(interner.window()).expect("encode relation dictionary");
@@ -678,48 +704,41 @@ impl Fixture {
             .expect("append named table snapshots");
     }
 
-    fn append_sized_table_snapshots(&mut self, rows: &[SizedTableSnapshot<'_>]) {
+    fn append_placed_table_snapshots(&mut self, rows: &[PlacedTableSnapshot<'_>]) {
         let mut interner = Interner::new(DictLimits::default());
-        let tablespace = StrId(
-            interner
-                .intern(b"pg_default")
-                .expect("intern tablespace")
-                .get(),
-        );
         let mut buffers = SectionBuffers::new();
-        for &(ts, datid, relid, main, toast, datname, schema, table) in rows {
-            let mut row = user_table(ts, datid, relid, 0);
-            row.main_fork_bytes = main;
-            row.toast_bytes = toast;
-            row.datname = StrId(
-                interner
-                    .intern(datname.as_bytes())
-                    .expect("intern database")
-                    .get(),
-            );
-            row.schemaname = StrId(
-                interner
-                    .intern(schema.as_bytes())
-                    .expect("intern schema")
-                    .get(),
-            );
-            row.relname = StrId(
-                interner
-                    .intern(table.as_bytes())
-                    .expect("intern table")
-                    .get(),
-            );
-            row.tablespace = tablespace;
-            buffers.push(row).expect("sized table row fits");
+        for &(
+            ts,
+            datid,
+            relid,
+            seq_scan,
+            datname,
+            schema,
+            table,
+            tablespace_oid,
+            tablespace,
+            main_fork_bytes,
+            toast_bytes,
+        ) in rows
+        {
+            let mut row = user_table(ts, datid, relid, seq_scan);
+            row.datname = fixture_label(&mut interner, datname);
+            row.schemaname = fixture_label(&mut interner, schema);
+            row.relname = fixture_label(&mut interner, table);
+            row.tablespace_oid = tablespace_oid;
+            row.tablespace = tablespace.map(|label| fixture_label(&mut interner, label));
+            row.main_fork_bytes = main_fork_bytes;
+            row.toast_bytes = toast_bytes;
+            buffers.push(row).expect("placed table row fits");
         }
-        let dictionary = dict::encode(interner.window()).expect("encode sized table dictionary");
+        let dictionary = dict::encode(interner.window()).expect("placed table dictionary");
         let part = buffers
             .flush(&dictionary)
-            .expect("encode sized table snapshots")
-            .expect("nonempty sized table snapshots");
+            .expect("encode placed tables")
+            .expect("nonempty placed tables");
         self.journal
             .append(self.address.id, &part)
-            .expect("append sized table snapshots");
+            .expect("append placed tables");
     }
 
     fn append_dml_table_snapshots(&mut self, rows: &[DmlTableSnapshot<'_>]) {
@@ -755,7 +774,7 @@ impl Fixture {
                     .expect("intern table")
                     .get(),
             );
-            row.tablespace = tablespace;
+            row.tablespace = Some(tablespace);
             buffers.push(row).expect("DML table row fits");
         }
         let dictionary = dict::encode(interner.window()).expect("encode DML relation dictionary");
@@ -781,7 +800,8 @@ impl Fixture {
         });
         for &(ts, datid, relid, counters) in rows {
             let mut row = buffered_user_table(ts, datid, relid, counters);
-            [row.datname, row.schemaname, row.relname, row.tablespace] = labels;
+            [row.datname, row.schemaname, row.relname] = [labels[0], labels[1], labels[2]];
+            row.tablespace = Some(labels[3]);
             buffers.push(row).expect("buffered table row fits");
         }
         let dictionary = dict::encode(interner.window()).expect("encode buffered table dictionary");
@@ -830,7 +850,7 @@ impl Fixture {
                     .expect("intern index")
                     .get(),
             );
-            row.tablespace = tablespace;
+            row.tablespace = Some(tablespace);
             row.amname = amname;
             row.indexdef = Some(StrId(
                 interner
@@ -848,6 +868,44 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append named index snapshots");
+    }
+
+    fn append_placed_index_snapshots(&mut self, rows: &[PlacedIndexSnapshot<'_>]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let mut buffers = SectionBuffers::new();
+        for &(
+            ts,
+            datid,
+            indexrelid,
+            idx_scan,
+            datname,
+            schema,
+            table,
+            index,
+            tablespace_oid,
+            tablespace,
+            main_fork_bytes,
+        ) in rows
+        {
+            let mut row = user_index_v2(ts, datid, indexrelid, idx_scan);
+            row.datname = fixture_label(&mut interner, datname);
+            row.schemaname = fixture_label(&mut interner, schema);
+            row.relname = fixture_label(&mut interner, table);
+            row.indexrelname = fixture_label(&mut interner, index);
+            row.tablespace_oid = tablespace_oid;
+            row.tablespace = tablespace.map(|label| fixture_label(&mut interner, label));
+            row.main_fork_bytes = main_fork_bytes;
+            row.amname = fixture_label(&mut interner, "btree");
+            buffers.push(row).expect("placed index row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("placed index dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode placed indexes")
+            .expect("nonempty placed indexes");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append placed indexes");
     }
 
     fn append_log_error(&mut self, at: i64) {
@@ -968,6 +1026,15 @@ fn diskstats(ts: i64, minor: i32, reads: i64) -> OsDiskstats {
     diskstats_with_device(ts, minor, reads, StrId(999))
 }
 
+fn fixture_label(interner: &mut Interner, value: &str) -> StrId {
+    StrId(
+        interner
+            .intern(value.as_bytes())
+            .expect("intern fixture label")
+            .get(),
+    )
+}
+
 fn user_table(ts: i64, datid: u32, relid: u32, seq_scan: i64) -> PgStatUserTablesV1 {
     PgStatUserTablesV1 {
         ts: Ts(ts),
@@ -976,7 +1043,8 @@ fn user_table(ts: i64, datid: u32, relid: u32, seq_scan: i64) -> PgStatUserTable
         relid,
         schemaname: StrId(902),
         relname: StrId(903),
-        tablespace: StrId(904),
+        tablespace_oid: Some(1_663),
+        tablespace: Some(StrId(904)),
         seq_scan,
         seq_tup_read: 0,
         idx_scan: None,
@@ -1048,7 +1116,8 @@ fn user_index_v1(ts: i64, datid: u32, indexrelid: u32, idx_scan: i64) -> PgStatU
         schemaname: StrId(902),
         relname: StrId(903),
         indexrelname: StrId(905),
-        tablespace: StrId(904),
+        tablespace_oid: 1_663,
+        tablespace: Some(StrId(904)),
         idx_scan,
         idx_tup_read: 0,
         idx_tup_fetch: 0,
@@ -1076,6 +1145,7 @@ fn user_index_v2(ts: i64, datid: u32, indexrelid: u32, idx_scan: i64) -> PgStatU
         schemaname: base.schemaname,
         relname: base.relname,
         indexrelname: base.indexrelname,
+        tablespace_oid: base.tablespace_oid,
         tablespace: base.tablespace,
         idx_scan: base.idx_scan,
         idx_tup_read: base.idx_tup_read,
@@ -3530,7 +3600,7 @@ fn relation_table_buffer_rates_distinguish_values_zero_and_missing_predecessors(
 
 fn assert_exact_buffer_rows(fixture: &Fixture) {
     let exact = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=20000000&section=pg_stat_user_tables&field=datid&field=heap_blks_read&field=heap_blks_hit&type_id=1013001&row_ordinal=1"
+        "/api/segments/{SEGMENT_ID}/snapshot?at=20000000&section=pg_stat_user_tables&field=datid&field=heap_blks_read&field=heap_blks_hit&type_id=1013005&row_ordinal=1"
     );
     let exact = stream(fixture.prepare(&exact, None)).expect("exact partitioned buffer row");
     assert_eq!(
@@ -3540,7 +3610,7 @@ fn assert_exact_buffer_rows(fixture: &Fixture) {
     );
 
     let exact_zero = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=20000000&section=pg_stat_user_tables&field=datid&field=heap_blks_read&type_id=1013001&row_ordinal=3"
+        "/api/segments/{SEGMENT_ID}/snapshot?at=20000000&section=pg_stat_user_tables&field=datid&field=heap_blks_read&type_id=1013005&row_ordinal=3"
     );
     let exact_zero = stream(fixture.prepare(&exact_zero, None)).expect("exact zero buffer row");
     assert_eq!(
@@ -3549,7 +3619,7 @@ fn assert_exact_buffer_rows(fixture: &Fixture) {
     );
 
     let exact_missing = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=20000000&section=pg_stat_user_tables&field=datid&field=heap_blks_read&type_id=1013001&row_ordinal=4"
+        "/api/segments/{SEGMENT_ID}/snapshot?at=20000000&section=pg_stat_user_tables&field=datid&field=heap_blks_read&type_id=1013005&row_ordinal=4"
     );
     let exact_missing =
         stream(fixture.prepare(&exact_missing, None)).expect("exact missing predecessor row");
@@ -4003,6 +4073,393 @@ fn relation_groups_keep_database_scope_and_sum_staggered_rates() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the cluster-wide fixture checks the full filter group sort and page contract together"
+)]
+fn tablespace_snapshot_groups_cluster_wide_by_oid_after_full_filtering() {
+    let mut fixture = Fixture::new();
+    fixture.append_placed_table_snapshots(&[
+        (
+            100_000_000,
+            1,
+            11,
+            10,
+            "first",
+            "public",
+            "orders",
+            Some(5_000),
+            Some("fast"),
+            100,
+            Some(10),
+        ),
+        (
+            100_000_000,
+            1,
+            12,
+            0,
+            "first",
+            "public",
+            "items",
+            Some(5_000),
+            Some("fast"),
+            200,
+            None,
+        ),
+        (
+            100_000_000,
+            1,
+            13,
+            0,
+            "first",
+            "public",
+            "archive",
+            Some(6_000),
+            Some("fast"),
+            400,
+            None,
+        ),
+        (
+            150_000_000,
+            2,
+            21,
+            5,
+            "second",
+            "sales",
+            "events",
+            Some(5_000),
+            Some("old_fast"),
+            300,
+            None,
+        ),
+        (
+            300_000_000,
+            1,
+            11,
+            30,
+            "first",
+            "public",
+            "orders",
+            Some(5_000),
+            Some("fast"),
+            100,
+            Some(10),
+        ),
+        (
+            300_000_000,
+            1,
+            12,
+            20,
+            "first",
+            "public",
+            "items",
+            Some(5_000),
+            Some("fast"),
+            200,
+            None,
+        ),
+        (
+            300_000_000,
+            1,
+            13,
+            10,
+            "first",
+            "public",
+            "archive",
+            Some(6_000),
+            Some("fast"),
+            400,
+            None,
+        ),
+        (
+            300_000_000,
+            1,
+            14,
+            0,
+            "first",
+            "public",
+            "partitioned",
+            None,
+            None,
+            0,
+            None,
+        ),
+        (
+            250_000_000,
+            2,
+            21,
+            15,
+            "second",
+            "sales",
+            "events",
+            Some(5_000),
+            Some("renamed_fast"),
+            300,
+            None,
+        ),
+    ]);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=300000000&section=pg_stat_user_tables&group=tablespace&field=tablespace&field=table_count&field=displayed_storage_bytes&field=seq_scan&by=displayed_storage_bytes&direction=desc"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("tablespace groups");
+    let rows = relation_records(&records);
+    assert_eq!(rows.len(), 2, "same names do not merge different OIDs");
+    assert_eq!(
+        rows[0]["key"],
+        serde_json::json!({"tablespace_oid": "5000"})
+    );
+    assert_eq!(rows[0]["values"]["tablespace"], "fast");
+    assert_eq!(rows[0]["values"]["table_count"], "3");
+    assert_eq!(rows[0]["values"]["displayed_storage_bytes"], "610");
+    assert_eq!(rows[0]["values"]["seq_scan"], 0.3);
+    assert_eq!(rows[1]["key"]["tablespace_oid"], "6000");
+    assert!(rows.iter().all(|row| row["source"].is_null()));
+
+    let filtered = stream(fixture.prepare(
+        &format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=300000000&section=pg_stat_user_tables&group=tablespace&field=table_count&field=displayed_storage_bytes&where.tablespace_oid=5000"
+        ),
+        None,
+    ))
+    .expect("OID-filtered tablespace group");
+    let filtered = relation_records(&filtered);
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0]["key"]["tablespace_oid"], "5000");
+    assert_eq!(filtered[0]["values"]["table_count"], "3");
+
+    let searched = stream(fixture.prepare(
+        &format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=300000000&section=pg_stat_user_tables&group=tablespace&field=tablespace&field=table_count&search=archive"
+        ),
+        None,
+    ))
+    .expect("search before tablespace grouping");
+    let searched = relation_records(&searched);
+    assert_eq!(searched.len(), 1);
+    assert_eq!(searched[0]["key"]["tablespace_oid"], "6000");
+    assert_eq!(searched[0]["values"]["table_count"], "1");
+
+    let compared = stream(fixture.prepare(
+        &format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=300000000&section=pg_stat_user_tables&group=tablespace&field=table_count&search=size%3E500B"
+        ),
+        None,
+    ))
+    .expect("comparison after tablespace reduction");
+    let compared_rows = relation_records(&compared);
+    assert_eq!(compared_rows.len(), 1);
+    assert_eq!(compared_rows[0]["key"]["tablespace_oid"], "5000");
+    assert_eq!(compared_rows[0]["values"]["table_count"], "3");
+    let page = compared
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("tablespace comparison trailer");
+    assert_eq!(page["eligible"], "1");
+}
+
+#[test]
+fn index_tablespaces_use_each_index_placement_and_keep_missing_labels() {
+    let mut fixture = Fixture::new();
+    fixture.append_placed_index_snapshots(&[
+        (
+            100_000_000,
+            1,
+            101,
+            0,
+            "db",
+            "public",
+            "orders",
+            "orders_heap_idx",
+            7_000,
+            Some("heap_ts"),
+            100,
+        ),
+        (
+            100_000_000,
+            1,
+            102,
+            0,
+            "db",
+            "public",
+            "orders",
+            "orders_fast_idx",
+            8_000,
+            None,
+            200,
+        ),
+        (
+            200_000_000,
+            1,
+            101,
+            10,
+            "db",
+            "public",
+            "orders",
+            "orders_heap_idx",
+            7_000,
+            Some("heap_ts"),
+            100,
+        ),
+        (
+            200_000_000,
+            1,
+            102,
+            20,
+            "db",
+            "public",
+            "orders",
+            "orders_fast_idx",
+            8_000,
+            None,
+            200,
+        ),
+    ]);
+    fixture.finish();
+
+    let records = stream(fixture.prepare(
+        &format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=200000000&section=pg_stat_user_indexes&group=tablespace&field=tablespace&field=index_count&field=main_fork_bytes&field=idx_scan&by=main_fork_bytes&direction=desc"
+        ),
+        None,
+    ))
+    .expect("index tablespace groups");
+    let rows = relation_records(&records);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["key"]["tablespace_oid"], "8000");
+    assert_eq!(rows[0]["values"]["tablespace"], Value::Null);
+    assert_eq!(rows[0]["values"]["main_fork_bytes"], "200");
+    assert_eq!(rows[0]["values"]["idx_scan"], 0.2);
+    assert_eq!(rows[1]["key"]["tablespace_oid"], "7000");
+    assert_eq!(rows[1]["values"]["tablespace"], "heap_ts");
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the staggered fixture keeps independent database snapshots and expected points together"
+)]
+fn tablespace_history_is_exact_across_staggered_database_snapshots_and_moves() {
+    let mut fixture = Fixture::new();
+    fixture.append_placed_table_snapshots(&[
+        (
+            0,
+            1,
+            11,
+            0,
+            "first",
+            "public",
+            "orders",
+            Some(5_000),
+            Some("fast"),
+            100,
+            None,
+        ),
+        (
+            10_000_000,
+            2,
+            21,
+            0,
+            "second",
+            "public",
+            "events",
+            Some(5_000),
+            Some("old_fast"),
+            200,
+            None,
+        ),
+        (
+            100_000_000,
+            1,
+            11,
+            10,
+            "first",
+            "public",
+            "orders",
+            Some(5_000),
+            Some("fast"),
+            100,
+            None,
+        ),
+        (
+            110_000_000,
+            2,
+            21,
+            10,
+            "second",
+            "public",
+            "events",
+            Some(5_000),
+            Some("old_fast"),
+            200,
+            None,
+        ),
+        (
+            200_000_000,
+            1,
+            11,
+            30,
+            "first",
+            "public",
+            "orders",
+            Some(5_000),
+            Some("fast"),
+            100,
+            None,
+        ),
+        (
+            250_000_000,
+            2,
+            21,
+            38,
+            "second",
+            "public",
+            "events",
+            Some(5_000),
+            Some("renamed_fast"),
+            200,
+            None,
+        ),
+        (
+            300_000_000,
+            1,
+            11,
+            50,
+            "first",
+            "public",
+            "orders",
+            Some(6_000),
+            Some("archive"),
+            100,
+            None,
+        ),
+    ]);
+    fixture.finish();
+
+    let records = stream(fixture.prepare(
+        "/api/hour?from=200000000&to=300000000&section=pg_stat_user_tables&group=tablespace&field=tablespace&field=table_count&field=main_fork_bytes&field=seq_scan&where.tablespace_oid=5000",
+        None,
+    ))
+    .expect("cross-database tablespace history");
+    let rows = relation_records(&records);
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["source"], Value::Null);
+    assert_eq!(rows[0]["sample_to"], "200000000");
+    assert_eq!(rows[0]["values"]["table_count"], "2");
+    assert_eq!(rows[0]["values"]["main_fork_bytes"], "300");
+    assert_eq!(rows[0]["values"]["seq_scan"], 0.3);
+    assert_eq!(rows[0]["values"]["tablespace"], "fast");
+    assert_eq!(rows[1]["sample_to"], "250000000");
+    assert_eq!(rows[1]["values"]["seq_scan"], 0.4);
+    assert_eq!(rows[1]["values"]["tablespace"], "renamed_fast");
+    assert_eq!(rows[2]["sample_to"], "300000000");
+    assert_eq!(rows[2]["values"]["table_count"], "1");
+    assert_eq!(rows[2]["values"]["main_fork_bytes"], "200");
+    assert_eq!(rows[2]["values"]["seq_scan"], 0.2);
+}
+
+#[test]
 fn relation_group_history_reuses_exact_reducers_across_segments_and_the_full_set() {
     let mut fixture = Fixture::new();
     let mut previous = (1..=205)
@@ -4202,11 +4659,59 @@ fn relation_search_runs_before_group_sort_and_page() {
 fn relation_comparison_filters_reduced_hidden_metrics_before_page() {
     const MB: i64 = 1_000_000;
     let mut fixture = Fixture::new();
-    fixture.append_sized_table_snapshots(&[
-        (100, 1, 1, 50 * MB, Some(10 * MB), "db", "pair", "first"),
-        (100, 1, 2, 30 * MB, Some(30 * MB), "db", "pair", "second"),
-        (100, 1, 3, 100 * MB, None, "db", "boundary", "exact"),
-        (100, 1, 999, 150 * MB, None, "db", "large", "outside_page"),
+    fixture.append_placed_table_snapshots(&[
+        (
+            100,
+            1,
+            1,
+            0,
+            "db",
+            "pair",
+            "first",
+            Some(1663),
+            Some("pg_default"),
+            50 * MB,
+            Some(10 * MB),
+        ),
+        (
+            100,
+            1,
+            2,
+            0,
+            "db",
+            "pair",
+            "second",
+            Some(1663),
+            Some("pg_default"),
+            30 * MB,
+            Some(30 * MB),
+        ),
+        (
+            100,
+            1,
+            3,
+            0,
+            "db",
+            "boundary",
+            "exact",
+            Some(1663),
+            Some("pg_default"),
+            100 * MB,
+            None,
+        ),
+        (
+            100,
+            1,
+            999,
+            0,
+            "db",
+            "large",
+            "outside_page",
+            Some(1664),
+            Some("fast"),
+            150 * MB,
+            None,
+        ),
     ]);
     fixture.finish();
 
