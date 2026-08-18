@@ -49,7 +49,8 @@ test("short PostgreSQL workspaces keep a visible chart path without crushing the
   // A short viewport shrinks the timeline; a very short one hides the plot and
   // leaves a labelled way back into it.
   assert.match(stylesheet, /@utility launch-timeline \{[\s\S]*?max-height: 620px\)[\s\S]*?height: 132px/)
-  assert.match(stylesheet, /@utility launch-timeline \{[\s\S]*?\.uplot-host \{ min-height: 102px/)
+  assert.doesNotMatch(stylesheet, /@utility launch-timeline \{[\s\S]*?\.uplot-host \{ min-height: 102px/)
+  assert.match(chart, /\[\.timeline-chart_&\]:min-h-0/)
   assert.match(stylesheet, /@utility launch-timeline \{[\s\S]*?max-height: 480px\)[\s\S]*?height: 32px/)
   assert.match(stylesheet, /@utility launch-timeline \{[\s\S]*?chart-marker-track"\] \{ display: none/)
   assert.match(stylesheet, /@utility launch-timeline \{[\s\S]*?content: attr\(aria-label\)/)

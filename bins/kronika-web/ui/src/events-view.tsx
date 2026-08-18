@@ -1,4 +1,4 @@
-import { CircleAlert, Diamond, Search, TriangleAlert } from "lucide-react"
+import { CircleAlert, Diamond, TriangleAlert } from "lucide-react"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
@@ -19,9 +19,12 @@ import {
   findingSource,
 } from "./finding-presentation"
 import type { Translate } from "./help"
+import { globMatcher } from "./glob"
 import { asNumber, compact, humanBytes, humanDuration, humanPercent, identifier, type Locale, rawText, shownMoment } from "./model"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
+import { parseSearch } from "./search"
+import { TableFilter } from "./table-filter"
 
 type Filter = "all" | "event" | "known_bad"
 export type FindingResolution = "idle" | "loading" | "ready" | "unavailable"
@@ -44,10 +47,12 @@ export function EventsView({
   onCursor,
   onClose,
   onFinding,
+  onPattern,
   onShowAll,
   resolution,
   resolved,
   scope,
+  pattern,
   selected,
   t,
 }: {
@@ -60,34 +65,42 @@ export function EventsView({
   readonly onCursor: (timestamp: number) => void
   readonly onClose: () => void
   readonly onFinding: (finding: Finding) => void
+  readonly onPattern: (pattern: string) => void
   readonly onShowAll: () => void
   readonly resolution: FindingResolution
   readonly resolved: DataRow | null
   readonly scope: readonly Finding[] | null
+  readonly pattern: string
   readonly selected: Finding | null
   readonly t: Translate
 }) {
   const time = useDisplayTime()
   const [filter, setFilter] = useState<Filter>("all")
-  const [search, setSearch] = useState("")
   useEffect(() => {
     if (scope === null) return
     setFilter("all")
-    setSearch("")
   }, [scope])
+  const parsedSearch = useMemo(() => parseSearch(pattern, "events"), [pattern])
   const visible = useMemo(() => (scope ?? data.findings)
     .filter((finding) => {
       if (filter !== "all" && finding.kind !== filter) return false
-      if (search.trim() === "") return true
+      if (!parsedSearch.ok || parsedSearch.query.canonical === "") return true
       const selectedRow = selected !== null && findingKey(finding) === findingKey(selected) ? resolved : null
-      const haystack = [
-        findingCategory(finding, t), findingSource(finding, t), finding.logicalName,
-        ...Object.values(selectedRow?.values ?? {}).map((cell) => rawText(cell) ?? ""),
-      ].join("\n").toLocaleLowerCase(locale)
-      return haystack.includes(search.trim().toLocaleLowerCase(locale))
+      const text = [findingCategory(finding, t), findingSource(finding, t), finding.logicalName,
+        ...Object.values(selectedRow?.values ?? {}).map((cell) => rawText(cell) ?? "")]
+      const fields: Readonly<Record<string, readonly string[]>> = {
+        text,
+        kind: [finding.kind],
+        source: [findingSource(finding, t), finding.logicalName],
+        category: [findingCategory(finding, t)],
+      }
+      const clauses = parsedSearch.query.structured
+        ? parsedSearch.query.clauses
+        : [{ key: "text", value: parsedSearch.query.freeText ?? "" }]
+      return clauses.every((clause) => fields[clause.key]?.some((candidate) => globMatcher(clause.value)?.(candidate) ?? true) === true)
     })
     .slice()
-    .sort((left, right) => findingOrder(right, left)), [data.findings, filter, locale, resolved, scope, search, selected, t])
+    .sort((left, right) => findingOrder(right, left)), [data.findings, filter, parsedSearch, resolved, scope, selected, t])
   const active = selected !== null && visible.some((finding) => findingKey(finding) === findingKey(selected)) ? selected : null
   const list = useRef<HTMLDivElement>(null)
   const virtual = useVirtualizer({ count: visible.length, estimateSize: () => 50, getScrollElement: () => list.current, overscan: 12 })
@@ -110,11 +123,8 @@ export function EventsView({
         </div>
         <span className="text-xs tabular-nums text-fg3">{t("events.count", { "shown": visible.length, total: original })}{omitted > 0 ? ` · ${t("events.omitted", { count: omitted })}` : ""}</span>
         {scope !== null && <button className="min-h-[29px] cursor-pointer border border-line4 bg-s2 px-[9px] text-xs uppercase text-accent3" onClick={onShowAll} type="button">{t("events.show_all", { count: scope.length })}</button>}
-        <label className="grid h-[29px] grid-cols-[20px_minmax(0,1fr)] items-center border border-line3 px-[5px] text-fg4 max-[760px]:w-full">
-          <span aria-hidden="true" className="grid h-full w-5 place-items-center"><Search size={13} /></span>
-          <input aria-label={t("events.search")} className="h-[27px] min-w-0 w-[min(280px,30vw)] border-0 bg-transparent px-1 text-sm text-fg2 outline-none placeholder:text-fg4 max-[760px]:w-full" onChange={(event) => setSearch(event.target.value)} placeholder={t("events.search")} type="search" value={search} />
-        </label>
       </header>
+      <TableFilter kept={visible.length} onPattern={onPattern} pattern={pattern} surface="events" t={t} total={original} />
       <div className={`grid min-h-[430px] charts-hidden:min-h-0 charts-hidden:flex-1 max-[760px]:grid-cols-[minmax(0,1fr)] ${active === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(360px,.78fr)_minmax(0,1.22fr)]"}`}>
         <div className={`h-[min(570px,calc(100vh-360px))] min-h-[390px] overflow-auto border-line2 charts-hidden:h-auto charts-hidden:min-h-0 max-[760px]:h-[260px] max-[760px]:min-h-[180px] max-[760px]:border-r-0 ${active === null ? "" : "border-r"}`} ref={list} role="list">
           {visible.length === 0 && (loading

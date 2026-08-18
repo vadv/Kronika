@@ -342,6 +342,13 @@ impl RelationKind {
         }
     }
 
+    const fn logical_name(self) -> &'static str {
+        match self {
+            Self::Tables => TABLES,
+            Self::Indexes => INDEXES,
+        }
+    }
+
     const fn fields(self, group: RelationGroup) -> &'static [FieldSpec] {
         match (self, group) {
             (Self::Tables, RelationGroup::Object) => TABLE_OBJECT_FIELDS,
@@ -2315,13 +2322,9 @@ fn scan_context(
         for (ordinal, row) in chunk {
             if !context.window.matches(&row)
                 || !context.plan.matches(&row, &dictionary)
-                || (!prepared.search.is_empty()
-                    && !search_matches(
-                        &row,
-                        &dictionary,
-                        &context.search_columns,
-                        &prepared.search,
-                    ))
+                || prepared.search.as_ref().is_some_and(|search| {
+                    !search_matches(kind.logical_name(), context.plan, &row, &dictionary, search)
+                })
             {
                 continue;
             }
@@ -2658,7 +2661,7 @@ mod tests {
             group: Some(RelationGroup::Object),
             page_size: Some(200),
             cursor: None,
-            search: Vec::new(),
+            search: None,
             text: None,
             filters: vec![Filter {
                 column: "no_scans".to_owned(),

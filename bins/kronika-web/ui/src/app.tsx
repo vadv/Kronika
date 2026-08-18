@@ -67,7 +67,7 @@ import { latestTimelineTimestamp, refreshedCursor, scheduleRefresh } from "./ref
 import type { ChartPoint } from "./series-chart"
 import { bootstrapSession, getSessionSnapshot, logout, subscribeSession } from "./session"
 import { hasPostgresTelemetry } from "./source-availability"
-import { statementTargetFilters, type StatementTarget } from "./statement-navigation"
+import type { RelatedNavigation } from "./statement-navigation"
 import {
   CGROUP_SNAPSHOT_REQUESTS,
   SYSTEM_REQUESTS,
@@ -87,11 +87,13 @@ const EMPTY_DATA: HourData = {
 }
 
 interface CurrentSnapshot {
+  readonly cursor: number | null
   readonly data: HourData
+  readonly denseSection: string | null
   readonly target: string | null
 }
 
-const EMPTY_CURRENT_SNAPSHOT: CurrentSnapshot = { data: EMPTY_DATA, target: null }
+const EMPTY_CURRENT_SNAPSHOT: CurrentSnapshot = { cursor: null, data: EMPTY_DATA, denseSection: null, target: null }
 
 const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
   host: [...TIMELINE_REQUESTS, ...SYSTEM_REQUESTS],
@@ -206,7 +208,6 @@ function App({ locale, onLocale, t }: {
   const [find, setFind] = useState(opened.current.find)
   const [order, setOrder] = useState<TableOrder | null>(opened.current.sort)
   const [selectedKey, setSelectedKey] = useState<string | null>(opened.current.row)
-  const [statementTarget, setStatementTarget] = useState<StatementTarget | null>(opened.current.statementTarget)
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
   const [eventScope, setEventScope] = useState<readonly Finding[] | null>(null)
   const [findingRow, setFindingRow] = useState<DataRow | null>(null)
@@ -265,17 +266,19 @@ function App({ locale, onLocale, t }: {
     }))
     .filter((group) => group.requests.length !== 0)
   const pageContext = denseRequest !== undefined && context?.logicalName === denseRequest.section ? context : null
-  const activeStatementTarget = visibleSource === "postgresql" && pgSection === "statements" ? statementTarget : null
   const denseOptions = denseRequest === undefined
     ? undefined
-    : initialPageOptions(denseRequest, pageContext, densePattern, relationFilters, activeStatementTarget)
+    : initialPageOptions(denseRequest, pageContext, densePattern, relationFilters)
   const cgroupTargetGroups = visibleSource === "host" && hostSection === "cgroups"
     ? snapshotRequestGroups(segments, cursor, CGROUP_SNAPSHOT_REQUESTS)
     : []
   const snapshotTarget = snapshotGroups.length === 0
     ? null
     : snapshotTargetKey(snapshotGroups, cursor, cgroupTargetGroups, order, denseOptions)
-  const currentData = currentSnapshot.target === snapshotTarget ? currentSnapshot.data : EMPTY_DATA
+  const retainsDenseRows = denseRequest !== undefined
+    && currentSnapshot.cursor === cursor
+    && currentSnapshot.denseSection === denseRequest.section
+  const currentData = currentSnapshot.target === snapshotTarget || retainsDenseRows ? currentSnapshot.data : EMPTY_DATA
   const data = useMemo(() => viewData(timelineData, currentData), [currentData, timelineData])
   const environment = useMemo(() => recordedEnvironment(data, cursor), [cursor, data])
   const hostSections = environment === "container"
@@ -466,7 +469,7 @@ function App({ locale, onLocale, t }: {
         void loadOrdinarySnapshot(ordinaryGroups)
         .then((incoming) => {
           if (stale()) return
-          setCurrentSnapshot({ data: incoming, target: snapshotTarget })
+          setCurrentSnapshot({ cursor, data: incoming, denseSection: null, target: snapshotTarget })
           setCursorState("ready")
           setLastUpdated(Date.now() * 1_000)
           if (completesRefresh) finishRefresh(true)
@@ -506,9 +509,11 @@ function App({ locale, onLocale, t }: {
           ]).then(([companion, incoming]) => {
             if (stale()) return
             setCurrentSnapshot((current) => ({
+              cursor,
               data: pageCursor === undefined
                 ? mergeSnapshotData(companion ?? EMPTY_DATA, incoming)
                 : mergeSnapshotData(current.target === snapshotTarget ? current.data : EMPTY_DATA, incoming, pagedRequest.section),
+              denseSection: pagedRequest.section,
               target: snapshotTarget,
             }))
             setDensePageState("idle")
@@ -650,8 +655,7 @@ function App({ locale, onLocale, t }: {
     find,
     metric: source === "host" ? systemMetric : null,
     mode: source === "host" ? hostMode : null,
-    statementTarget: source === "postgresql" && pgSection === "statements" ? statementTarget : null,
-  }), [activeRelation, activeRelationLens, cursor, find, hostMode, hostSection, lens, order, pgSection, planLens, relationFilters, relationLevel, relationSelectedKey, selectedKey, source, statementLens, statementTarget, systemMetric])
+  }), [activeRelation, activeRelationLens, cursor, find, hostMode, hostSection, lens, order, pgSection, planLens, relationFilters, relationLevel, relationSelectedKey, selectedKey, source, statementLens, systemMetric])
   const steps = useRef<string | null>(null)
   useEffect(() => {
     if (window.location.pathname + window.location.search === address) return
@@ -677,7 +681,6 @@ function App({ locale, onLocale, t }: {
       setRelationSelectedKey(relationSelectedKeyOf(opening))
       setOrder(opening.sort)
       setSelectedKey(opening.row)
-      setStatementTarget(opening.statementTarget)
       setFind(opening.find)
       clearEntityContext()
       if (opening.at !== null) {
@@ -707,7 +710,7 @@ function App({ locale, onLocale, t }: {
     if (crossing) setSelectedKey(null)
     setRelationSelectedKey(null)
     setPgSection(next)
-    if (next !== "statements") setStatementTarget(null)
+    if (crossing) setFind("")
     if (next !== "tables" && next !== "indexes") return
     setRelationLens((current) => relationLensOf(next, current))
     setRelationFilters((current) => relationFiltersForSection(current, next))
@@ -725,13 +728,13 @@ function App({ locale, onLocale, t }: {
       chooseHostSection("overview")
     }
   }, [chooseHostSection, environment, hostSection, visibleSource])
-  const openStatements = useCallback((target: StatementTarget) => {
+  const openRelated = useCallback((target: RelatedNavigation) => {
     setSource("postgresql")
-    setPgSection("statements")
-    setStatementLens("load")
-    setStatementTarget(target)
+    setPgSection(target.section)
+    if (target.section === "statements") setStatementLens("load")
+    else setPlanLens("load")
     setSelectedKey(null)
-    setFind("")
+    setFind(target.expression)
     setOrder(null)
   }, [])
   const chooseRelationLens = useCallback((next: RelationLens) => {
@@ -860,11 +863,11 @@ function App({ locale, onLocale, t }: {
         <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} hour={hour} lens={lens} locale={locale} state={processSummary} t={t} />
         <div className={`process-main grid min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)] overflow-hidden max-[1179px]:grid-cols-[minmax(0,1fr)] ${selectedProcess === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)_360px]"}`}>
           <ProcessTable contextLabel={context?.logicalName === "os_process" ? context.label : undefined} finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} onContextClear={clearEntityContext} onOrder={setOrder} onPattern={setFind} onSelect={selectProcess} order={order} pattern={find} rows={processRows} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
-          {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onClose={() => setSelectedKey(null)} onCursor={chooseCursor} process={selectedProcess} processHistory={processHistory.value?.length ? processHistory.value : [selectedProcess]} processHistoryStatus={processHistory.status} t={t} ticksPerSecond={ticksPerSecond} />}
+          {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onClose={() => setSelectedKey(null)} onCursor={chooseCursor} onRelated={openRelated} process={selectedProcess} processHistory={processHistory.value?.length ? processHistory.value : [selectedProcess]} processHistoryStatus={processHistory.status} t={t} ticksPerSecond={ticksPerSecond} />}
         </div>
       </>}
-      {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} tablesLoading={cursorState === "loading"} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onOpenStatements={openStatements} onOrder={setOrder} onPattern={setFind} onSelectedKey={setSelectedKey} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={setRelationSelectedKey} onSection={choosePgSection} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} selectedKey={selectedKey} statementLens={statementLens} statementTarget={activeStatementTarget} onStatementTargetClear={() => setStatementTarget(null)} t={t} />}
-      {!loading && error === null && hour !== null && visibleSource === "events" && <EventsView cursor={cursor} data={data} loading={cursorState === "loading"} history={findingPoints} hour={hour} locale={locale} onClose={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onShowAll={() => { setEventScope(null); setSelectedFinding(null) }} resolution={findingResolution} resolved={findingRow} scope={eventScope} selected={selectedFinding} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} tablesLoading={cursorState === "loading"} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onRelated={openRelated} onOrder={setOrder} onPattern={setFind} onSelectedKey={setSelectedKey} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={setRelationSelectedKey} onSection={choosePgSection} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} selectedKey={selectedKey} statementLens={statementLens} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "events" && <EventsView cursor={cursor} data={data} loading={cursorState === "loading"} history={findingPoints} hour={hour} locale={locale} onClose={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onPattern={setFind} onShowAll={() => { setEventScope(null); setSelectedFinding(null) }} pattern={find} resolution={findingResolution} resolved={findingRow} scope={eventScope} selected={selectedFinding} t={t} />}
     </section>
 
     {helpOpen && <HelpPanel items={helpItems} onClose={() => setHelpOpen(false)} t={t} />}
@@ -952,19 +955,16 @@ function initialPageOptions(
   context: EntityContext | null,
   pattern: string,
   relationFilters: Readonly<Record<string, string>>,
-  statementTarget: StatementTarget | null,
 ): SnapshotOptions {
-  const filters = request.section === "pg_stat_statements" && statementTarget !== null
-    ? sortedFilters(statementTargetFilters(statementTarget))
-    : request.group === undefined
+  const filters = request.group === undefined
       ? context === null ? undefined : sortedFilters(Object.fromEntries(context.identity))
       : Object.keys(relationFilters).length === 0 && request.filters === undefined
         ? undefined
         : sortedFilters({ ...relationFilters, ...request.filters })
   return {
     ...(filters === undefined ? {} : { filters }),
-    ...(request.group === undefined && context !== null && statementTarget === null ? { typeId: context.typeId } : {}),
-    ...(pattern === "" ? {} : { search: [pattern] }),
+    ...(request.group === undefined && context !== null ? { typeId: context.typeId } : {}),
+    ...(pattern === "" ? {} : { search: pattern }),
   }
 }
 

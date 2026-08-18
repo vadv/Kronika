@@ -762,7 +762,7 @@ export interface SnapshotOptions {
   readonly rowOrdinal?: string
   readonly fullText?: boolean
   readonly cursor?: string
-  readonly search?: readonly string[]
+  readonly search?: string
 }
 
 export interface SnapshotOrder {
@@ -1080,7 +1080,7 @@ function snapshotQuery(
     ...(section?.pageSize === undefined || options.rowOrdinal !== undefined ? [] : [`page_size=${section.pageSize}`]),
     ...(options.fullText === true ? [] : [`text=${CELL_TEXT}`]),
     ...(options.cursor === undefined ? [] : [`cursor=${encodeURIComponent(options.cursor)}`]),
-    ...(options.search ?? []).map((pattern) => `search=${encodeURIComponent(pattern)}`),
+    ...(options.search === undefined ? [] : [`search=${encodeURIComponent(options.search)}`]),
     ...Object.entries(options.filters ?? {}).map(([column, value]) =>
       `where.${encodeURIComponent(column)}=${encodeURIComponent(value)}`),
     ...(typeId === undefined ? [] : [`type_id=${encodeURIComponent(typeId)}`]),

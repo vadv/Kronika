@@ -1,55 +1,65 @@
 import type { DataRow } from "./api"
 import { rawText, value } from "./model"
+import { canonicalSearch } from "./search"
 
-export type StatementTarget = ActivityStatementTarget | PlanStatementTarget
-
-export interface ActivityStatementTarget {
-  readonly dbId: string
-  readonly origin: "activity"
-  readonly queryId: string
-}
-
-export interface PlanStatementTarget {
-  readonly dbId: string
-  readonly origin: "plan"
-  readonly planId: string
-  readonly queryId: string
-  readonly relation: "shared" | "last"
-  readonly sourceTypeId: string
-  readonly userId: string
+export interface RelatedNavigation {
+  readonly expression: string
+  readonly queryId?: string | undefined
+  readonly planId?: string | undefined
+  readonly section: "plans" | "statements"
 }
 
 const VADV_PLAN_TYPE_ID = "1004001"
 
-export function statementTargetForPlan(row: DataRow): StatementTarget | null {
-  const vadv = row.typeId === VADV_PLAN_TYPE_ID
-  const queryId = rawText(value(row, vadv ? "queryid_stat_statements" : "queryid"))
-  const dbId = rawText(value(row, "dbid"))
-  const userId = rawText(value(row, "userid"))
-  const planId = rawText(value(row, "planid"))
-  if (queryId === null || queryId === "0" || dbId === null || userId === null || planId === null) return null
-  return {
-    dbId,
-    origin: "plan",
-    planId,
-    queryId,
-    relation: vadv ? "last" : "shared",
-    sourceTypeId: row.typeId,
-    userId,
-  }
+export function statementsForActivity(row: DataRow): RelatedNavigation | null {
+  const queryId = nonzero(row, "query_id")
+  const databaseId = nonzero(row, "datid")
+  const database = rawText(value(row, "datname"))
+  if (queryId === null || databaseId === null || database === null || database === "") return null
+  return related("statements", [{ key: "database", value: database }, { key: "query_id", value: queryId }], queryId)
 }
 
-export function statementTargetForActivity(row: DataRow): ActivityStatementTarget | null {
-  const queryId = rawText(value(row, "query_id"))
-  const dbId = rawText(value(row, "datid"))
-  if (queryId === null || queryId === "0" || dbId === null || dbId === "0") return null
-  return { dbId, origin: "activity", queryId }
+export function statementsForPlan(row: DataRow): RelatedNavigation | null {
+  const queryId = nonzero(row, row.typeId === VADV_PLAN_TYPE_ID ? "queryid_stat_statements" : "queryid")
+  const databaseId = nonzero(row, "dbid")
+  const roleId = nonzero(row, "userid")
+  const database = rawText(value(row, "datname"))
+  const role = rawText(value(row, "usename"))
+  if (queryId === null || databaseId === null || roleId === null || database === null || role === null) return null
+  return related("statements", [
+    { key: "database", value: database }, { key: "role", value: role }, { key: "query_id", value: queryId },
+  ], queryId)
 }
 
-export function statementTargetFilters(target: StatementTarget): Readonly<Record<string, string>> {
-  return {
-    dbid: target.dbId,
-    queryid: target.queryId,
-    ...(target.origin === "activity" ? {} : { userid: target.userId }),
-  }
+export function plansForStatement(row: DataRow): RelatedNavigation | null {
+  const queryId = nonzero(row, "queryid")
+  const databaseId = nonzero(row, "dbid")
+  const roleId = nonzero(row, "userid")
+  const database = rawText(value(row, "datname"))
+  const role = rawText(value(row, "usename"))
+  if (queryId === null || databaseId === null || roleId === null || database === null || role === null) return null
+  return related("plans", [
+    { key: "database", value: database }, { key: "role", value: role }, { key: "query_id", value: queryId },
+  ], queryId)
+}
+
+export function plansForPlanId(row: DataRow): RelatedNavigation | null {
+  const planId = nonzero(row, "planid")
+  if (planId === null) return null
+  const expression = canonicalSearch([{ key: "plan_id", value: planId }], "pg_store_plans")
+  return expression === null ? null : { expression, planId, section: "plans" }
+}
+
+function related(
+  section: RelatedNavigation["section"],
+  clauses: readonly { readonly key: string; readonly value: string }[],
+  queryId: string,
+): RelatedNavigation | null {
+  const expression = canonicalSearch(clauses, section === "plans" ? "pg_store_plans" : "pg_stat_statements")
+  return expression === null ? null : { expression, queryId, section }
+}
+
+function nonzero(row: DataRow, field: string): string | null {
+  const stored = rawText(value(row, field))
+  return stored === null || stored === "0" ? null : stored
 }

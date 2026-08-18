@@ -375,6 +375,16 @@ test("Activity relative-duration histories keep the selected value and later sam
   ])
 })
 
+test("Activity state duration breaks across pure idle but keeps transactional idle", () => {
+  const rows = [
+    activityRow("1", { pid: 274126, state: "active", state_change: "9000000" }, 10_000_000),
+    activityRow("2", { pid: 274126, state: "idle", state_change: "10000000" }, 12_000_000),
+    activityRow("3", { pid: 274126, state: "idle in transaction", state_change: "12000000" }, 15_000_000),
+    activityRow("4", { pid: 274126, state: "idle in transaction (aborted)", state_change: "15000000" }, 19_000_000),
+  ]
+  assert.deepEqual(helpers.activityDurationHistory(rows, "state_duration_ms").map(({ value }) => value), [1_000, null, 3_000, 4_000])
+})
+
 test("elapsed Activity values use compact wall-time formatting", () => {
   assert.equal(helpers.humanDuration(850, "en"), "850 ms")
   assert.equal(helpers.humanDuration(5_200, "en"), "5.2 s")
@@ -628,7 +638,8 @@ test("dense paging resets, ignores stale work, and preserves retry state", async
   assert.match(source, /const generation = \+\+snapshotGeneration\.current/)
   assert.match(source, /const stale = \(\) => controller\.signal\.aborted \|\| generation !== snapshotGeneration\.current/)
   assert.match(source, /const snapshotTarget = [\s\S]*snapshotTargetKey\(snapshotGroups, cursor, cgroupTargetGroups, order, denseOptions\)/)
-  assert.match(source, /const currentData = currentSnapshot\.target === snapshotTarget \? currentSnapshot\.data : EMPTY_DATA/)
+  assert.match(source, /const retainsDenseRows = denseRequest !== undefined[\s\S]*currentSnapshot\.cursor === cursor[\s\S]*currentSnapshot\.denseSection === denseRequest\.section/)
+  assert.match(source, /currentSnapshot\.target === snapshotTarget \|\| retainsDenseRows \? currentSnapshot\.data : EMPTY_DATA/)
   assert.match(source, /let inFlight = false/)
   assert.match(source, /if \(inFlight \|\| stale\(\)\)/)
   assert.match(source, /pageCursor === undefined[\s\S]*mergeSnapshotData\(companion[\s\S]*mergeSnapshotData\(current/)
@@ -656,7 +667,7 @@ test("an off-page finding is contextualized without appending to the ranked page
   const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
   assert.match(source, /contextualRows\(ranked, activeContext, exactFocus\)/)
   assert.doesNotMatch(source, /\[\.\.\.ranked,[^\]]*focus/)
-  assert.match(source, /contextLabel=\{activeContext\?\.label \?\? navigationLabel\}/)
+  assert.match(source, /contextLabel=\{activeContext\?\.label\}/)
 })
 
 test("PostgreSQL detail never opens a row that was not selected", () => {

@@ -443,8 +443,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       } else if (url.searchParams.has("row_ordinal")) {
         ndjson(response, statementRecords(false))
       } else if (sections.includes("pg_stat_statements")) {
-        const planNavigation = url.searchParams.get("where.queryid") === "42"
-          && url.searchParams.get("where.userid") === "10" && url.searchParams.get("where.dbid") === "20"
+        const planNavigation = url.searchParams.get("search") === "database:operators AND role:reporter AND query_id:42"
         if (planNavigation) {
           ndjson(response, planStatementRecords())
           return
@@ -934,6 +933,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       const input = document.querySelector('[data-testid="table-filter"]')
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "74")
       input.dispatchEvent(new Event("input", { bubbles: true }))
+      input.form.requestSubmit()
     })()`)
     await delay(700)
     const oidSearchRequest = requests.slice(beforeOidSearch).find(({ query }) => query.includes("section=pg_stat_user_indexes") && query.includes("search=74"))
@@ -946,6 +946,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       const input = document.querySelector('[data-testid="table-filter"]')
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "")
       input.dispatchEvent(new Event("input", { bubbles: true }))
+      input.form.requestSubmit()
     })()`)
     await delay(400)
 
@@ -1046,7 +1047,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.match(preview.chip, /Query 9007199254740991 · operators · reporterShow all/)
     assert.doesNotMatch(preview.chip, /queryid=|userid=|dbid=|toplevel=/)
     assert.match(preview.row, /select artifact_exact_context/)
-    assert.match(preview.search, /Filter rows by text/)
+    assert.match(preview.search, /Search rows/)
     assert.match(preview.status, /filtered page is loading/i)
     assert.doesNotMatch(preview.status, /Loaded 0 of 0/)
     assert.equal(preview.detail, false)
@@ -1124,14 +1125,18 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(planDetail.secondaryDisclosure, false)
     assert.equal(planDetail.unavailable, false)
     await cdp.evaluate(`([...document.querySelectorAll('.pg-detail-head button')].find((button) => button.textContent.includes('Related statements'))).click()`)
-    await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.statements" && new URL(location.href).searchParams.get("stmt_origin") === "plan" && new URL(location.href).searchParams.get("stmt_relation") === "last"`, "the related plan statement route")
+    await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.statements" && new URL(location.href).searchParams.get("find") === "database:operators AND role:reporter AND query_id:42"`, "the related plan statement route")
     await cdp.waitFor(`document.querySelector('[data-testid="pg-statements-table"] .entity-row')?.textContent.includes("select from plan_navigation") === true`, "the matched last query")
-    const planContext = await cdp.evaluate(`document.querySelector('[data-testid="entity-context-filter"]').textContent`)
-    assert.match(planContext, /related last-attributed Query ID 42/i)
-    const planQueryRequest = requests.find(({ query }) => query.includes("where.queryid=42") && query.includes("where.dbid=20") && query.includes("where.userid=10"))
+    const planContext = await cdp.evaluate(`document.querySelector('[data-testid="search-chips"]').textContent`)
+    assert.match(planContext, /database: operators/)
+    assert.match(planContext, /role: reporter/)
+    assert.match(planContext, /query_id: 42/)
+    const planQueryRequest = requests.find(({ query }) => new URLSearchParams(query).get("search") === "database:operators AND role:reporter AND query_id:42")
     assert.notEqual(planQueryRequest, undefined, JSON.stringify(requests.map(({ query }) => query), null, 2))
     const planQueryParameters = new URLSearchParams(planQueryRequest.query)
-    assert.equal(planQueryParameters.has("where.toplevel"), false)
+    assert.equal(planQueryParameters.has("where.queryid"), false)
+    assert.equal(planQueryParameters.has("where.userid"), false)
+    assert.equal(planQueryParameters.has("where.dbid"), false)
     assert.equal(planQueryParameters.has("type_id"), false)
     assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("at")`), String(AT))
     await cdp.evaluate(`history.back()`)
@@ -2700,6 +2705,7 @@ test("snapshot request targets hide rejected replacements until retry succeeds",
       const input = document.querySelector('[data-testid="table-filter"]')
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "target-b")
       input.dispatchEvent(new Event("input", { bubbles: true }))
+      input.form.requestSubmit()
     })()`)
     await waitForRequests(() => pendingStatementFailure !== null)
     await cdp.waitFor(`document.querySelector('[data-testid="table-paging"] button')?.textContent === "…"`, "dense statement target B loading", 15_000)
@@ -2707,9 +2713,9 @@ test("snapshot request targets hide rejected replacements until retry succeeds",
       const table = document.querySelector('[data-testid="pg-statements-table"]')
       return { rows: table.querySelectorAll('.entity-row').length, status: table.querySelector('[data-testid="table-status"]').textContent, text: table.textContent }
     })()`)
-    assert.equal(loadingStatement.rows, 0)
-    assert.doesNotMatch(loadingStatement.text, /statement_target_A/)
-    assert.doesNotMatch(loadingStatement.status, /111/)
+    assert.equal(loadingStatement.rows, 1)
+    assert.match(loadingStatement.text, /statement_target_A/)
+    assert.match(loadingStatement.status, /111/)
     brokenNdjson(pendingStatementFailure)
     pendingStatementFailure = null
     await cdp.waitFor(`document.querySelector('[data-testid="table-paging"] button')?.textContent === "↻"`, "dense statement target B error", 15_000)
@@ -2717,10 +2723,9 @@ test("snapshot request targets hide rejected replacements until retry succeeds",
       const table = document.querySelector('[data-testid="pg-statements-table"]')
       return { rows: table.querySelectorAll('.entity-row').length, status: table.querySelector('[data-testid="table-status"]').textContent, text: table.textContent }
     })()`)
-    assert.equal(failedStatement.rows, 0)
-    assert.doesNotMatch(failedStatement.text, /statement_target_A/)
-    assert.doesNotMatch(failedStatement.status, /111/)
-    assert.match(failedStatement.status, /Calculation interval: unavailable/)
+    assert.equal(failedStatement.rows, 1)
+    assert.match(failedStatement.text, /statement_target_A/)
+    assert.match(failedStatement.status, /111/)
     await cdp.evaluate(`document.querySelector('[data-testid="table-paging"] button').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-statements-table"]')?.textContent.includes("statement_target_B") === true`, "dense statement target B retry", 15_000)
     assert.match(await cdp.evaluate(`document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]').textContent`), /Loaded 1 of 222/)

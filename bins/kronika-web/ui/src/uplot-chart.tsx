@@ -353,7 +353,7 @@ export function UPlotChart({
       >{expanded ? "×" : "↗"}</button>
     </figcaption>
     <p className="chart-summary absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]" id={summaryId}>{summary}</p>
-    <div aria-describedby={summaryId} aria-label={drawnSeries.map(({ label, unit }) => `${label}${unit === "" ? "" : `, ${unit}`}`).join("; ")} className="uplot-host h-[180px] w-full min-w-0 max-w-full min-h-0 flex-auto overflow-hidden [&>.uplot]:h-full [&>.uplot]:!w-full [&_.u-wrap]:max-w-full [.timeline-chart_&]:h-auto [.timeline-chart_&]:min-h-[101px] max-[520px]:[.timeline-chart_&]:h-[101px] [.uplot-expanded_&]:h-auto [.uplot-expanded_&]:flex-auto [.timeline-chart.uplot-expanded_&]:min-h-0" ref={host} role="img" />
+    <div aria-describedby={summaryId} aria-label={drawnSeries.map(({ label, unit }) => `${label}${unit === "" ? "" : `, ${unit}`}`).join("; ")} className="uplot-host h-[180px] w-full min-w-0 max-w-full min-h-0 flex-auto overflow-hidden [&>.uplot]:h-full [&>.uplot]:!w-full [&_.u-wrap]:max-w-full [.timeline-chart_&]:h-auto [.timeline-chart_&]:min-h-0 [.uplot-expanded_&]:h-auto [.uplot-expanded_&]:flex-auto [.timeline-chart.uplot-expanded_&]:min-h-0" ref={host} role="img" />
     {stats && <div className="mt-1 min-h-[46px] flex-none overflow-hidden border-t border-line2 pt-1 text-sm tabular-nums text-fg3" data-testid="chart-stats">
       {statsRows.length !== 0 && <div className="grid min-w-0 grid-cols-[minmax(90px,1.6fr)_repeat(6,minmax(48px,1fr))] gap-x-2 px-1 text-right max-[760px]:grid-cols-[minmax(82px,1.35fr)_repeat(3,minmax(48px,1fr))] max-[760px]:gap-x-1 [&>*:first-child]:text-left">
         <span aria-hidden="true" /><span>{t("chart.stats.last")}</span><span className="max-[760px]:hidden">{t("chart.stats.min")}</span><span>{t("chart.stats.max")}</span><span className="max-[760px]:hidden">{t("chart.stats.p50")}</span><span className="max-[760px]:hidden">{t("chart.stats.p90")}</span><span>{t("chart.stats.p99")}</span>
@@ -454,8 +454,8 @@ export function scaleRange(scale: ChartScale, values: readonly number[]): readon
   return [low < 0 ? -niceCeiling(-low) : 0, high > 0 ? niceCeiling(high) : 0]
 }
 
-export function chartTimeRange(hour: number, end: number, width: number, gutter = 46): [number, number] {
-  const drawable = Math.max(1, width - gutter)
+export function chartTimeRange(hour: number, end: number, width: number, gutter = 52, sideAxes = 70): [number, number] {
+  const drawable = Math.max(1, width - sideAxes - gutter)
   return [hour, end + (end - hour) * gutter / drawable]
 }
 
@@ -584,7 +584,7 @@ function chartOptions(
     ms: 1,
     pxAlign: true,
     legend: { show: false },
-    scales: { x: { auto: false, range: chartTimeRange(hour, end, width), time: false }, ...scales },
+    scales: { x: { auto: false, range: chartTimeRange(hour, end, width, 52, partitions.length * 70), time: false }, ...scales },
     axes: [
       { scale: "x", side: 2, size: 30, font: "12px system-ui, sans-serif", space: (_chart, _axis, _scale, _increment, space) => Math.max(84, space), stroke: color("--color-fg3"), grid: { stroke: color("--color-line") }, values: (_chart, splits) => splits.map((timestamp) => timestamp > end ? "" : axisTimeLabel(timestamp, time)) },
       ...partitions.map(({ key, unit }, axisIndex) => {

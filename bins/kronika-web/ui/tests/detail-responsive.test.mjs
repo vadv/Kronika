@@ -32,7 +32,7 @@ function blockAfter(marker, source = stylesheet) {
 test("all detail key/value rows share a readable label track and bounded value track", async () => {
   // the shared row pattern lives in @utility detail-row/detail-dt/detail-dd and
   // every detail surface — process dock, PostgreSQL detail, event detail — uses it
-  assert.match(stylesheet, /@utility detail-row \{[^}]*minmax\(10rem, 30%\) minmax\(0, 1fr\)/s)
+  assert.match(stylesheet, /@utility detail-row \{[^}]*minmax\(0, min\(10rem, 40%\)\) minmax\(0, 1fr\)/s)
   assert.match(stylesheet, /@utility detail-dd \{[^}]*overflow-wrap:\s*anywhere;[^}]*text-align:\s*right;/s)
   const composition = await readFile(new URL("../src/detail-list.tsx", import.meta.url), "utf8")
   assert.match(composition, /detail-row max-\[520px\]:detail-row-stacked/)

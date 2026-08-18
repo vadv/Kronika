@@ -54,18 +54,25 @@ test("null and blank plans have an honest unavailable state", () => {
 const row = (typeId, values) => ({ logicalName: "pg_store_plans", ordinal: "0", segmentId: "s", timestamp: 10, typeId, values })
 
 test("plan navigation uses shared IDs for OSSC and the last-attributed ID for vadv", () => {
-  const shared = plans.statementTargetForPlan(row("1003001", { dbid: 7, planid: "22", queryid: "11", userid: 8 }))
-  assert.deepEqual(shared, { dbId: "7", origin: "plan", planId: "22", queryId: "11", relation: "shared", sourceTypeId: "1003001", userId: "8" })
-  const last = plans.statementTargetForPlan(row("1004001", { dbid: 7, planid: "22", queryid: 0, queryid_stat_statements: "33", userid: 8 }))
-  assert.deepEqual(last, { dbId: "7", origin: "plan", planId: "22", queryId: "33", relation: "last", sourceTypeId: "1004001", userId: "8" })
-  assert.deepEqual(plans.statementTargetFilters(last), { dbid: "7", queryid: "33", userid: "8" })
-  assert.equal(plans.statementTargetForPlan(row("1004001", { dbid: 7, planid: "22", queryid: 0, queryid_stat_statements: 0, userid: 8 })), null)
+  const identity = { datname: "app db", dbid: 7, planid: "22", usename: "reader", userid: 8 }
+  const shared = plans.statementsForPlan(row("1003001", { ...identity, queryid: "11" }))
+  assert.deepEqual(shared, { expression: 'database:"app db" AND role:reader AND query_id:11', queryId: "11", section: "statements" })
+  const last = plans.statementsForPlan(row("1004001", { ...identity, queryid: 0, queryid_stat_statements: "33" }))
+  assert.deepEqual(last, { expression: 'database:"app db" AND role:reader AND query_id:33', queryId: "33", section: "statements" })
+  assert.equal(plans.statementsForPlan(row("1004001", { ...identity, queryid: 0, queryid_stat_statements: 0 })), null)
+  assert.deepEqual(plans.plansForPlanId(row("1004001", identity)), { expression: "plan_id:22", planId: "22", section: "plans" })
 })
 
 test("Activity navigation shows every related statement candidate for database and query ID", () => {
-  const target = plans.statementTargetForActivity({ ...row("1001004", { datid: 16384, query_id: "-42" }), logicalName: "pg_stat_activity" })
-  assert.deepEqual(target, { dbId: "16384", origin: "activity", queryId: "-42" })
-  assert.deepEqual(plans.statementTargetFilters(target), { dbid: "16384", queryid: "-42" })
-  assert.equal(plans.statementTargetForActivity({ ...row("1001004", { datid: 16384, query_id: 0 }), logicalName: "pg_stat_activity" }), null)
-  assert.equal(plans.statementTargetForActivity({ ...row("1001004", { datid: null, query_id: 42 }), logicalName: "pg_stat_activity" }), null)
+  const target = plans.statementsForActivity({ ...row("1001004", { datid: 16384, datname: "app", query_id: "-42" }), logicalName: "pg_stat_activity" })
+  assert.deepEqual(target, { expression: "database:app AND query_id:-42", queryId: "-42", section: "statements" })
+  assert.equal(plans.statementsForActivity({ ...row("1001004", { datid: 16384, datname: "app", query_id: 0 }), logicalName: "pg_stat_activity" }), null)
+  assert.equal(plans.statementsForActivity({ ...row("1001004", { datid: null, datname: "app", query_id: 42 }), logicalName: "pg_stat_activity" }), null)
+})
+
+test("Statement navigation opens every matching plan without selecting one", () => {
+  const statement = { ...row("1002002", { datname: "app", dbid: 7, queryid: "-42", usename: "reader", userid: 8 }), logicalName: "pg_stat_statements" }
+  assert.deepEqual(plans.plansForStatement(statement), {
+    expression: "database:app AND role:reader AND query_id:-42", queryId: "-42", section: "plans",
+  })
 })

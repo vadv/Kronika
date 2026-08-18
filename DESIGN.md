@@ -584,8 +584,10 @@ PostgreSQL block and buffer counters are converted with the exact recorded
 that setting the converted reading is unavailable. Buffer hits remain buffer
 activity and are not relabelled as physical disk I/O.
 
-Shared charts reserve room at the end for the last time label, keep series
-names with the aligned statistics, and place percentile columns without
+Shared charts reserve room at the end for the last time label after accounting
+for every visible side axis. The compact 128 px timeline keeps its x-axis,
+cursor and labels inside the figure before the following navigation. Charts
+keep series names with the aligned statistics and place percentile columns without
 colliding with the plot edge. Sparse tables are content-sized instead of
 reserving large framed boards. A boundary is draggable only when it controls a
 real split; otherwise the layout stays light. The exact current `pg_wal` file
@@ -601,15 +603,48 @@ object level. The dock is one compact two-column operator-fact list plus one
 explicitly selected metric history, not a loose vertical dump of every
 physical field. Tablespace remains an object fact, not a grouping level.
 
+Every entity table uses one bounded public search language and one URL-owned
+applied expression. Ordinary input without a colon is free text. Structured
+input is at most eight `field:value` clauses joined only by case-insensitive
+`AND`; string values may be quoted with `\"` and `\\` escapes and may use `*`
+and `?`, while decimal identifiers are exact and never globbed. Each surface
+owns a compact field registry containing canonical names, aliases, type,
+physical projection and help. Aliases canonicalize to the same chip; unknown
+or unavailable fields and malformed selectors are errors, never text
+fallbacks. `query_id` and `plan_id` are the only public plan/query identifier
+spellings, independent of physical extension layout.
+
+The token field keeps an editable draft separate from the last valid applied
+expression. Submission is atomic: an invalid span is marked and announced
+while the URL, request and last successful rows remain unchanged. A valid
+expression becomes removable keyboard controls; manual entry, paste and
+related-row links all produce this same state. Progressive RU/EN help lists
+only the current surface's fields and rules. The server parses and validates
+the same bounded expression, adds only its registered physical projection,
+and filters the complete eligible set before semantic ordering and cursor
+pagination. Search refusal, a successful empty set and transport failure are
+distinct; refresh failure retains the last successful data.
+
 PostgreSQL related-row navigation is confined to the PostgreSQL feature area
-and stored in the URL. For PostgreSQL 14–18 an Activity row can open every
+and stored as that same public expression in the URL. For PostgreSQL 14–18 an
+Activity row, including Activity joined to a selected process, can open every
 retained `pg_stat_statements` row at the unchanged cursor whose `dbid` and
 nonzero signed `queryid` match the row's nullable `datid` and `query_id`; it
-deliberately does not filter by role or top-level status. A plan row uses the
-layout's available shared database, role and query identifiers, while vadv
-uses only its nonzero last-attributed `queryid_stat_statements`. These actions
+deliberately does not filter by role or top-level status. Statements open all
+plans with the available database, role and Query ID, and plans open all
+statements by the corresponding identity. A plan row uses the layout's
+available shared database, role and query identifiers, while the vadv fork of
+`pg_store_plans` uses only its nonzero last-attributed
+`queryid_stat_statements`. These actions
 show related cumulative rows, select none automatically and make no claim
-about one exact execution.
+about one exact execution. Missing or zero IDs are inert; Back restores the
+prior view, cursor and expression.
+
+Activity duration presentation is state-aware. `Query time` exists only for
+`active`. `Time in state` emits an explicit null for pure `idle`, so a long
+idle period cannot draw a line or transition spike; `idle in transaction` and
+`idle in transaction (aborted)` retain their operationally relevant duration.
+History projections include state and preserve null breaks through transitions.
 
 Within the selected calendar hour, PID alone identifies OS process and
 `pg_stat_activity` rows, histories, filters, joins and counter deltas. Process

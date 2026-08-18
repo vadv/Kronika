@@ -25,6 +25,7 @@ import {
 import { activityDurationMs, backendAgeMs, stateDurationMs, transactionDurationMs } from "./postgres-activity"
 import { CellValue, formatCell, LENS_FIELDS, type Field } from "./process-table"
 import { SeriesChart, type ChartPoint } from "./series-chart"
+import { statementsForActivity, type RelatedNavigation } from "./statement-navigation"
 
 interface HistoryField {
   readonly field: string
@@ -101,6 +102,7 @@ export function DetailDock({
   locale,
   onClose,
   onCursor,
+  onRelated,
   process,
   processHistory,
   processHistoryStatus,
@@ -115,6 +117,7 @@ export function DetailDock({
   readonly locale: Locale
   readonly onClose: () => void
   readonly onCursor: (timestamp: number) => void
+  readonly onRelated: (target: RelatedNavigation) => void
   readonly process: DataRow
   readonly processHistory: readonly DataRow[]
   readonly processHistoryStatus: HistoryStatus
@@ -140,6 +143,7 @@ export function DetailDock({
     () => selectedHistory === null ? [] : processChartPoints(selectedHistory, ticksPerSecond),
     [selectedHistory, ticksPerSecond],
   )
+  const relatedActivity = activity === null ? null : statementsForActivity(activity)
   return (
     <aside
       aria-label={t("detail.process.title")}
@@ -206,7 +210,9 @@ export function DetailDock({
             const elapsed = duration(activity)
             return elapsed === null ? [] : [<DetailField help={`pg.field.${field}.help`} key={field} label={`pg.field.${field}.label`} t={t} value={humanDuration(elapsed, locale)} />]
           })}
-          {ACTIVITY_FIELDS.map(([field, key, kind]) => <DetailField help={`${key}.help`} key={field} label={`${key}.label`} t={t} value={formatActivity(value(activity, field), kind, locale, t)} />)}
+          {ACTIVITY_FIELDS.map(([field, key, kind]) => <DetailField help={`${key}.help`} key={field} label={`${key}.label`} t={t} value={field === "query_id" && relatedActivity !== null
+            ? <button aria-label={t("pg.related.open_statements", { id: relatedActivity.queryId ?? "" })} className="cursor-pointer border-0 bg-transparent p-0 text-accent3 underline decoration-dotted underline-offset-2" onClick={() => onRelated(relatedActivity)} type="button">{identifier(value(activity, field))}</button>
+            : formatActivity(value(activity, field), kind, locale, t)} />)}
         </DetailList>
         <section className="mt-2 border border-line3 bg-s1 px-1.5 py-[5px]">
           <span className="flex items-center justify-between text-xs uppercase text-fg3"><LabelHelp helpKey="pg.query.help" labelKey="pg.query.label" t={t} /></span>

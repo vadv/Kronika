@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 
 use super::{
     ContributingMoments, GlobPattern, PageOrderValue, PageRankedRow, PageRows, PageStagedRow,
-    SnapshotCursor, available_field_index, compare_ordered, ordered_cell, rate,
-    record_contributing_moment, snapshot_binding, timed_context_index,
+    SearchValue, SnapshotCursor, StructuredSearch, available_field_index, compare_ordered,
+    ordered_cell, rate, record_contributing_moment, snapshot_binding, timed_context_index,
 };
 use crate::api::query::OutputField;
 use crate::route::{Filter, Order, RelationGroup, SnapshotRequest};
@@ -302,31 +302,28 @@ fn ascending_order_reverses_values_but_keeps_null_last() {
 }
 
 #[test]
-fn relation_search_fields_do_not_depend_on_the_output_projection() {
+fn relation_search_fields_are_public_and_do_not_expose_oids() {
     assert_eq!(
-        super::allowed_search_columns("pg_stat_user_tables"),
-        [
-            "datname",
-            "datid",
-            "schemaname",
-            "relname",
-            "relid",
-            "tablespace"
-        ]
+        super::search_fields("pg_stat_user_tables")
+            .iter()
+            .map(|field| field.key)
+            .collect::<Vec<_>>(),
+        ["text", "database", "schema", "table_name", "tablespace"]
     );
     assert_eq!(
-        super::allowed_search_columns("pg_stat_user_indexes"),
+        super::search_fields("pg_stat_user_indexes")
+            .iter()
+            .map(|field| field.key)
+            .collect::<Vec<_>>(),
         [
-            "datname",
-            "datid",
-            "schemaname",
-            "relname",
-            "relid",
-            "indexrelname",
-            "indexrelid",
-            "tablespace",
-            "amname",
-            "indexdef",
+            "text",
+            "database",
+            "schema",
+            "table_name",
+            "index_name",
+            "access_method",
+            "definition",
+            "tablespace"
         ]
     );
 }
@@ -392,7 +389,7 @@ fn request() -> SnapshotRequest {
         group: None,
         page_size: Some(200),
         cursor: None,
-        search: vec!["needle*".to_owned()],
+        search: Some("needle*".to_owned()),
         text: Some(80),
         filters: vec![Filter {
             column: "dbid".to_owned(),
@@ -435,7 +432,7 @@ fn cursor_binding_covers_query_shape_but_excludes_page_size_and_cursor() {
     changed.group = Some(RelationGroup::Schema);
     variants.push(changed);
     let mut changed = baseline.clone();
-    changed.search.push("second".to_owned());
+    changed.search = Some("second".to_owned());
     variants.push(changed);
     let mut changed = baseline.clone();
     changed.text = Some(81);
@@ -465,4 +462,55 @@ fn glob_supports_substrings_wildcards_literals_and_unicode_case() {
     ] {
         assert_eq!(GlobPattern::new(pattern).matches(candidate), matches);
     }
+}
+
+#[test]
+fn structured_search_validates_aliases_types_escaping_and_surface_fields() {
+    let parsed = StructuredSearch::parse(
+        r#"query_id:-912345 and db:"Sales \"East\"""#,
+        "pg_stat_statements",
+    )
+    .expect("valid structured search");
+    assert_eq!(parsed.clauses.len(), 2);
+    assert_eq!(parsed.clauses[0].key, "query_id");
+    assert!(matches!(
+        &parsed.clauses[0].value,
+        SearchValue::Identifier(value) if value == "-912345"
+    ));
+    assert_eq!(parsed.clauses[1].key, "database");
+    assert!(matches!(
+        &parsed.clauses[1].value,
+        SearchValue::Pattern(pattern) if pattern.matches("Sales \"East\"")
+    ));
+
+    for invalid in [
+        "taname:orders",
+        "query_id:*",
+        "query_id:01",
+        "query_id:9223372036854775808",
+        "query_id:1 OR query_id:2",
+        r#"database:"unterminated"#,
+        r#"database:"bad\n""#,
+    ] {
+        assert!(
+            StructuredSearch::parse(invalid, "pg_stat_statements").is_err(),
+            "{invalid}"
+        );
+    }
+    assert!(StructuredSearch::parse("plan_id:42", "pg_stat_statements").is_err());
+    assert!(StructuredSearch::parse("planid:42", "pg_store_plans").is_err());
+    assert!(StructuredSearch::parse(r#"database:"""#, "pg_stat_statements").is_err());
+    assert!(StructuredSearch::parse("query_id:-0", "pg_stat_statements").is_err());
+    assert!(StructuredSearch::parse("select orders*", "pg_stat_statements").is_ok());
+    assert!(StructuredSearch::parse("select AND orders", "pg_stat_statements").is_err());
+}
+
+#[test]
+fn structured_search_limits_clause_and_value_counts() {
+    let clauses = std::iter::repeat_n("role:reader", super::SEARCH_MAX_CLAUSES + 1)
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    assert!(StructuredSearch::parse(&clauses, "pg_stat_statements").is_err());
+    let value = "x".repeat(super::SEARCH_MAX_VALUE_CHARS + 1);
+    assert!(StructuredSearch::parse(&format!("database:{value}"), "pg_stat_statements").is_err());
 }

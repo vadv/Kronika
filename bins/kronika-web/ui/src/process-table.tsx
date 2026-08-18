@@ -265,6 +265,7 @@ export function ProcessTable({
     rowKey={processKey}
     rowLabel={(row) => t("table.activate", { pid: identifier(value(row, "pid")) })}
     rows={rows}
+    searchSurface="os_process"
     selectedKey={selectedKey}
     t={t}
     testId="process-table"

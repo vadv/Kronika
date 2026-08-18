@@ -1,6 +1,9 @@
-import { Search, X } from "lucide-react"
+import { Check, CircleHelp, Copy, Search, X } from "lucide-react"
+import { useEffect, useId, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 
 import type { Translate } from "./help"
+import { parseSearch, searchFields, type SearchError, type SearchSurface, withoutSearchClause } from "./search"
 
 export function TableFilter({
   context,
@@ -8,6 +11,7 @@ export function TableFilter({
   onContextClear,
   onPattern,
   pattern,
+  surface,
   t,
   total,
 }: {
@@ -16,32 +20,138 @@ export function TableFilter({
   readonly onContextClear?: (() => void) | undefined
   readonly onPattern?: ((pattern: string) => void) | undefined
   readonly pattern: string
+  readonly surface: SearchSurface
   readonly t: Translate
   readonly total: number
 }) {
-  return <div className="flex min-h-[26px] items-center gap-1.5 border-b border-line2 bg-s2 px-[7px] text-fg3">
-    {context !== undefined && <span className="inline-flex max-w-[58%] items-center gap-1.5 overflow-hidden whitespace-nowrap border border-accent2 bg-accent-soft pl-1.5 text-xs text-fg" data-testid="entity-context-filter">
-      <strong className="overflow-hidden text-ellipsis font-semibold">{context}</strong>
-      <button className="inline-flex cursor-pointer items-center gap-[3px] self-stretch border-0 border-l border-accent2 bg-transparent px-[5px] text-fg2" onClick={onContextClear} type="button"><X aria-hidden="true" size={11} />{t("filter.show_all")}</button>
-    </span>}
-    {context !== undefined && onPattern !== undefined && <span className="text-xs uppercase text-fg4">{t("filter.and")}</span>}
-    {onPattern !== undefined && <><label className="grid min-w-0 flex-auto grid-cols-[18px_minmax(0,1fr)] items-center">
-      <span aria-hidden="true" className="grid h-full w-[18px] place-items-center"><Search size={12} /></span>
-      <input
-        aria-label={t("filter.label")}
-        className="min-w-0 w-full border-0 bg-transparent px-1 py-1 text-sm text-fg outline-none [font-family:inherit] placeholder:text-fg4 [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-cancel-button]:appearance-none"
-        data-testid="table-filter"
-        onChange={(event) => onPattern(event.target.value)}
-        placeholder={t("filter.placeholder")}
-        spellCheck={false}
-        title={t("filter.hint")}
-        type="search"
-        value={pattern}
-      />
-    </label>
-    {pattern !== "" && <>
-      {kept >= 0 && <span className="flex-none text-xs tabular-nums text-fg3">{t("filter.kept", { kept: String(kept), total: String(total) })}</span>}
-      <button aria-label={t("filter.clear")} className="inline-flex flex-none cursor-pointer items-center border-0 bg-transparent p-0.5 text-accent3" onClick={() => onPattern("")} type="button"><X aria-hidden="true" size={12} /></button>
-    </>}</>}
+  const [draft, setDraft] = useState(pattern)
+  const [submitted, setSubmitted] = useState(false)
+  const [help, setHelp] = useState(false)
+  const errorId = useId()
+  const helpButton = useRef<HTMLButtonElement>(null)
+  const input = useRef<HTMLInputElement>(null)
+  const draftResult = parseSearch(draft, surface)
+  const appliedResult = parseSearch(pattern, surface)
+  const invalidApplied = draft === pattern && pattern !== "" && !appliedResult.ok
+  const error = (submitted || invalidApplied) && !draftResult.ok ? draftResult.error : null
+  const applied = appliedResult.ok ? appliedResult.query : null
+  useEffect(() => {
+    setDraft(pattern)
+    setSubmitted(false)
+  }, [pattern, surface])
+  useEffect(() => {
+    if (!help) return
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setHelp(false)
+    }
+    window.addEventListener("keydown", close)
+    return () => window.removeEventListener("keydown", close)
+  }, [help])
+  const apply = () => {
+    setSubmitted(true)
+    if (!draftResult.ok) return
+    setDraft(draftResult.query.canonical)
+    setSubmitted(false)
+    onPattern?.(draftResult.query.canonical)
+  }
+  const clear = () => {
+    setDraft("")
+    setSubmitted(false)
+    onPattern?.("")
+    input.current?.focus()
+  }
+  return <div className="border-b border-line2 bg-s2 px-[7px] py-1 text-fg3" data-search-surface={surface}>
+    <div className="flex min-h-[28px] min-w-0 flex-wrap items-center gap-1.5">
+      {context !== undefined && <span className="inline-flex max-w-[58%] items-center gap-1.5 overflow-hidden whitespace-nowrap border border-accent2 bg-accent-soft pl-1.5 text-xs text-fg" data-testid="entity-context-filter">
+        <strong className="overflow-hidden text-ellipsis font-semibold">{context}</strong>
+        <button className="inline-flex cursor-pointer items-center gap-[3px] self-stretch border-0 border-l border-accent2 bg-transparent px-[5px] text-fg2" onClick={onContextClear} type="button"><X aria-hidden="true" size={11} />{t("filter.show_all")}</button>
+      </span>}
+      {context !== undefined && onPattern !== undefined && <span className="text-xs uppercase text-fg4">{t("filter.and")}</span>}
+      {onPattern !== undefined && <form className="flex min-w-[210px] flex-1 items-center" onSubmit={(event) => { event.preventDefault(); apply() }}>
+        <label className={`grid min-w-0 flex-1 grid-cols-[18px_minmax(0,1fr)] items-center border ${error === null ? "border-line3" : "border-bad bg-[color-mix(in_srgb,var(--color-bad)_8%,transparent)]"}`}>
+          <span aria-hidden="true" className="grid h-full w-[18px] place-items-center"><Search size={12} /></span>
+          <input
+            aria-describedby={error === null ? undefined : errorId}
+            aria-invalid={error === null ? undefined : true}
+            aria-label={t("filter.label")}
+            className="min-w-0 w-full border-0 bg-transparent px-1 py-1 text-sm text-fg outline-none [font-family:inherit] placeholder:text-fg4 [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-cancel-button]:appearance-none"
+            data-testid="table-filter"
+            onChange={(event) => { setDraft(event.target.value); setSubmitted(false) }}
+            onKeyDown={(event) => {
+              if (event.key !== "Backspace" || draft !== "" || applied?.structured !== true || applied.clauses.length === 0) return
+              event.preventDefault()
+              const next = withoutSearchClause(applied, applied.clauses.length - 1)
+              setDraft(next)
+              onPattern(next)
+            }}
+            placeholder={t("filter.placeholder")}
+            ref={input}
+            spellCheck={false}
+            type="search"
+            value={draft}
+          />
+        </label>
+        <button aria-label={t("filter.apply")} className="ml-1 inline-flex h-[27px] flex-none cursor-pointer items-center border border-line4 bg-s3 px-1.5 text-accent3" type="submit"><Check aria-hidden="true" size={13} /></button>
+      </form>}
+      {onPattern !== undefined && <button aria-expanded={help} aria-label={t("filter.help.open")} className="inline-flex h-7 w-7 flex-none cursor-pointer items-center justify-center border border-line3 bg-transparent text-accent3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => setHelp((open) => !open)} ref={helpButton} type="button"><CircleHelp aria-hidden="true" size={14} /></button>}
+      {pattern !== "" && <>
+        {kept >= 0 && <span className="flex-none text-xs tabular-nums text-fg3">{t("filter.kept", { kept: String(kept), total: String(total) })}</span>}
+        <button aria-label={t("filter.clear")} className="inline-flex flex-none cursor-pointer items-center border-0 bg-transparent p-0.5 text-accent3" onClick={clear} type="button"><X aria-hidden="true" size={12} /></button>
+      </>}
+    </div>
+    {applied?.structured === true && applied.clauses.length > 0 && <div aria-label={t("filter.tokens")} className="mt-1 flex min-w-0 flex-wrap gap-1" data-testid="search-chips">
+      {applied.clauses.map((clause, index) => <span className="inline-flex max-w-full items-center border border-accent2 bg-accent-soft text-xs text-fg" key={`${clause.key}:${clause.value}:${index}`}>
+        <span className="max-w-[240px] overflow-hidden text-ellipsis whitespace-nowrap px-1.5 py-0.5"><strong>{clause.key}</strong>: {clause.value}</span>
+        <button aria-label={t("filter.token.remove", { field: clause.key, value: clause.value })} className="inline-flex self-stretch cursor-pointer items-center border-0 border-l border-accent2 bg-transparent px-1 text-fg2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => onPattern?.(withoutSearchClause(applied, index))} type="button"><X aria-hidden="true" size={11} /></button>
+      </span>)}
+    </div>}
+    {error !== null && <SearchErrorMessage draft={draft} error={error} id={errorId} t={t} />}
+    {help && typeof document !== "undefined" && createPortal(<SearchHelp onClose={() => { setHelp(false); queueMicrotask(() => helpButton.current?.focus()) }} surface={surface} t={t} />, document.body)}
   </div>
+}
+
+function SearchErrorMessage({ draft, error, id, t }: { readonly draft: string; readonly error: SearchError; readonly id: string; readonly t: Translate }) {
+  const marked = draft.slice(error.start, Math.max(error.start + 1, error.end)) || " "
+  return <div className="mt-1 text-xs leading-normal text-bad" data-testid="search-error" id={id} role="alert">
+    <span>{t(`filter.error.${error.code}`, { token: error.token ?? marked })}</span>
+    <code aria-hidden="true" className="ml-2 whitespace-pre-wrap text-fg3"><span>{draft.slice(0, error.start)}</span><mark className="bg-[color-mix(in_srgb,var(--color-bad)_28%,transparent)] text-bad underline decoration-wavy">{marked}</mark><span>{draft.slice(error.end)}</span></code>
+  </div>
+}
+
+function SearchHelp({ onClose, surface, t }: { readonly onClose: () => void; readonly surface: SearchSurface; readonly t: Translate }) {
+  const fields = searchFields(surface)
+  const examples = searchExamples(surface)
+  const dialog = useRef<HTMLElement>(null)
+  const close = useRef<HTMLButtonElement>(null)
+  useEffect(() => { close.current?.focus() }, [])
+  return <div className="fixed inset-0 z-[1100] flex items-start justify-end bg-[color-mix(in_srgb,var(--color-shadow)_34%,transparent)] p-2" data-testid="search-help" onKeyDown={(event) => {
+    if (event.key !== "Tab") return
+    const focusable = [...(dialog.current?.querySelectorAll<HTMLElement>("button") ?? [])]
+    if (focusable.length === 0) return
+    const index = focusable.indexOf(document.activeElement as HTMLElement)
+    const next = event.shiftKey ? (index <= 0 ? focusable.length - 1 : index - 1) : (index < 0 || index === focusable.length - 1 ? 0 : index + 1)
+    event.preventDefault()
+    focusable[next]?.focus()
+  }} onPointerDown={(event) => { if (event.currentTarget === event.target) onClose() }}>
+    <aside aria-label={t("filter.help.title")} aria-modal="true" className="max-h-[calc(100dvh_-_16px)] w-[min(430px,calc(100vw_-_16px))] overflow-auto border border-line4 bg-s1 p-3 text-sm text-fg shadow-[0_8px_24px_var(--color-shadow-a)]" ref={dialog} role="dialog">
+      <header className="flex items-center justify-between gap-2"><h2 className="m-0 text-md">{t("filter.help.title")}</h2><button aria-label={t("help.close")} className="icon-button" onClick={onClose} ref={close} type="button">×</button></header>
+      <p className="leading-relaxed text-fg2">{t("filter.help.grammar")}</p>
+      <p className="leading-relaxed text-fg3">{t("filter.help.rules")}</p>
+      <h3 className="mt-3 text-xs uppercase tracking-[.05em] text-fg3">{t("filter.help.fields")}</h3>
+      <dl className="m-0 grid gap-2">
+        {fields.map((field) => <div className="border-t border-line2 pt-2" key={field.key}><dt><code className="text-accent3">{field.key}</code>{field.aliases.length === 0 ? null : <span className="ml-2 text-xs text-fg4">{t("filter.help.aliases", { aliases: field.aliases.join(", ") })}</span>}</dt><dd className="m-0 mt-1 text-fg3">{t(field.help)}</dd></div>)}
+      </dl>
+      <h3 className="mt-3 text-xs uppercase tracking-[.05em] text-fg3">{t("filter.help.examples")}</h3>
+      <div className="grid gap-1.5">{examples.map((example) => <button className="flex min-w-0 cursor-pointer items-center justify-between gap-2 border border-line3 bg-s2 px-2 py-1.5 text-left text-fg2" key={example} onClick={() => void navigator.clipboard?.writeText(example)} type="button"><code className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{example}</code><Copy aria-label={t("filter.help.copy")} className="flex-none text-accent3" size={13} /></button>)}</div>
+    </aside>
+  </div>
+}
+
+function searchExamples(surface: SearchSurface): readonly string[] {
+  if (surface === "pg_store_plans") return ["plan_id:3704532795 AND query_id:-912345", 'database:app AND text:"nested loop"']
+  if (surface === "pg_stat_statements" || surface === "pg_stat_activity") return ["query_id:-912345", 'database:app AND text:"select orders*"']
+  if (surface === "pg_stat_user_tables" || surface === "pg_stat_user_indexes") return ["table_name:orders AND schema:public", 'database:app AND schema:"Sales Data"']
+  if (surface === "os_process") return ["pid:4242", "command:postgres*"]
+  if (surface === "events") return ["kind:event AND source:postgres*", 'text:"lock timeout"']
+  return ["database:app", "state:active"]
 }

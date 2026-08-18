@@ -7,8 +7,7 @@ const MAX_QUERY_BYTES: usize = 64 * 1024;
 const MAX_SECTION_BYTES: usize = 128;
 const MAX_SNAPSHOT_SECTIONS: usize = 16;
 const MAX_SNAPSHOT_PAGE_SIZE: usize = 5_000;
-const MAX_SEARCH_PATTERNS: usize = 8;
-const MAX_SEARCH_PATTERN_CHARS: usize = 256;
+const MAX_SEARCH_EXPRESSION_CHARS: usize = 1_024;
 const MAX_FIELDS: usize = 256;
 const MAX_FILTERS: usize = 64;
 const MAX_ORDER_FIELDS: usize = 16;
@@ -40,7 +39,7 @@ pub(crate) struct SnapshotRequest {
     /// Present only for the paged single-section form.
     pub(crate) page_size: Option<usize>,
     pub(crate) cursor: Option<String>,
-    pub(crate) search: Vec<String>,
+    pub(crate) search: Option<String>,
     pub(crate) text: Option<usize>,
     pub(crate) filters: Vec<Filter>,
     pub(crate) type_id: Option<u32>,
@@ -208,7 +207,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
     let mut group = None;
     let mut page_size = None;
     let mut cursor = None;
-    let mut search = Vec::new();
+    let mut search = None;
     let mut text = None;
     let mut filters: Vec<Filter> = Vec::new();
     let mut type_id = None;
@@ -278,9 +277,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
                 }
                 cursor = Some(value);
             }
-            "search" => {
-                push_snapshot_search(&mut search, raw_value)?;
-            }
+            "search" if search.is_none() => search = Some(snapshot_search(raw_value)?),
             other => {
                 let name = decoded("parameter", other, true)?;
                 let Some(column) = name.strip_prefix("where.") else {
@@ -301,7 +298,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
     }
     let paged = page_size.is_some()
         || cursor.is_some()
-        || !search.is_empty()
+        || search.is_some()
         || !by.is_empty()
         || direction.is_some()
         || group.is_some();
@@ -331,17 +328,13 @@ fn snapshot_page_size(raw: &str) -> Result<usize, RouteError> {
         .ok_or_else(|| RouteError::BadParameter("page_size".to_owned()))
 }
 
-fn push_snapshot_search(search: &mut Vec<String>, raw: &str) -> Result<(), RouteError> {
+fn snapshot_search(raw: &str) -> Result<String, RouteError> {
     let value = decoded("search", raw, true)?;
     let value = value.trim();
-    if value.is_empty()
-        || value.chars().count() > MAX_SEARCH_PATTERN_CHARS
-        || search.len() >= MAX_SEARCH_PATTERNS
-    {
+    if value.is_empty() || value.chars().count() > MAX_SEARCH_EXPRESSION_CHARS {
         return Err(RouteError::BadParameter("search".to_owned()));
     }
-    search.push(value.to_owned());
-    Ok(())
+    Ok(value.to_owned())
 }
 
 fn validate_snapshot_shape(

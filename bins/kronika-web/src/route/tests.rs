@@ -1,7 +1,6 @@
 use super::{
-    ActiveCursor, DEFAULT_SNAPSHOT_PAGE_SIZE, DataRequest, Filter, MAX_SEARCH_PATTERN_CHARS,
-    MAX_SEARCH_PATTERNS, MAX_SNAPSHOT_PAGE_SIZE, Order, Route, RouteError, SegmentRequest, Window,
-    parse,
+    ActiveCursor, DEFAULT_SNAPSHOT_PAGE_SIZE, DataRequest, Filter, MAX_SEARCH_EXPRESSION_CHARS,
+    MAX_SNAPSHOT_PAGE_SIZE, Order, Route, RouteError, SegmentRequest, Window, parse,
 };
 
 #[test]
@@ -213,7 +212,7 @@ fn snapshot_paging_inputs_enable_one_bounded_page() {
     .expect("searched page") else {
         panic!("snapshot route");
     };
-    assert_eq!(searched.search, ["slow query"]);
+    assert_eq!(searched.search.as_deref(), Some("slow query"));
     assert_eq!(searched.page_size, Some(DEFAULT_SNAPSHOT_PAGE_SIZE));
 
     let Route::Snapshot(resumed) = parse(
@@ -288,35 +287,24 @@ fn snapshot_page_size_is_positive_and_bounded() {
 }
 
 #[test]
-fn snapshot_search_is_repeatable_trimmed_and_bounded() {
+fn snapshot_search_is_single_trimmed_and_bounded() {
     let path = "/api/segments/7/snapshot";
     let prefix = "at=9&section=pg_stat_statements&field=query";
-    let searches = (0..MAX_SEARCH_PATTERNS)
-        .map(|index| format!("search=term{index}"))
-        .collect::<Vec<_>>()
-        .join("&");
-    let query = format!("{prefix}&{searches}");
-    let Route::Snapshot(snapshot) = parse(path, Some(&query)).expect("maximum search patterns")
-    else {
-        panic!("snapshot route");
-    };
-    assert_eq!(snapshot.search.len(), MAX_SEARCH_PATTERNS);
-
-    let unicode_boundary = "Ж".repeat(MAX_SEARCH_PATTERN_CHARS);
+    let unicode_boundary = "Ж".repeat(MAX_SEARCH_EXPRESSION_CHARS);
     let query = format!("{prefix}&search=++{unicode_boundary}++");
     let Route::Snapshot(snapshot) = parse(path, Some(&query)).expect("Unicode scalar boundary")
     else {
         panic!("snapshot route");
     };
-    assert_eq!(snapshot.search, [unicode_boundary]);
+    assert_eq!(snapshot.search, Some(unicode_boundary));
 
-    let too_many = format!("{prefix}&{searches}&search=one-too-many");
-    let too_long = "Ж".repeat(MAX_SEARCH_PATTERN_CHARS + 1);
+    let repeated = format!("{prefix}&search=first&search=second");
+    let too_long = "Ж".repeat(MAX_SEARCH_EXPRESSION_CHARS + 1);
     for query in [
         format!("{prefix}&search="),
         format!("{prefix}&search=+++"),
         format!("{prefix}&search={too_long}"),
-        too_many,
+        repeated,
     ] {
         assert_eq!(
             parse(path, Some(&query)),
@@ -339,7 +327,7 @@ fn snapshot_shares_only_a_projection_between_sections() {
     assert_eq!(projected.fields, ["user", "mem_total"]);
     assert_eq!(projected.page_size, None);
     assert_eq!(projected.cursor, None);
-    assert!(projected.search.is_empty());
+    assert!(projected.search.is_none());
     assert!(projected.by.is_empty());
 
     let Route::Snapshot(filtered) = parse(

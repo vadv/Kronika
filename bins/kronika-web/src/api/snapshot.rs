@@ -36,7 +36,7 @@ pub(crate) struct PreparedSnapshot {
     page_size: Option<usize>,
     cursor: Option<SnapshotCursor>,
     binding: u64,
-    search: Vec<GlobPattern>,
+    search: Option<StructuredSearch>,
     text: Option<usize>,
     row_ordinal: Option<u64>,
 }
@@ -155,6 +155,7 @@ struct SectionPlans {
 struct PageContext<'a> {
     context_index: usize,
     plan: &'a Plan,
+    logical_name: &'a str,
     source: &'a SegmentRef,
     rows: u64,
     window: RowWindow,
@@ -286,6 +287,40 @@ enum GlobToken {
     Literal(char),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StructuredSearch {
+    clauses: Vec<SearchClause>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SearchClause {
+    key: &'static str,
+    value: SearchValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SearchValue {
+    Identifier(String),
+    Pattern(GlobPattern),
+}
+
+#[derive(Clone, Copy)]
+struct SearchField {
+    key: &'static str,
+    aliases: &'static [&'static str],
+    columns: &'static [&'static str],
+    kind: SearchFieldKind,
+}
+
+#[derive(Clone, Copy)]
+enum SearchFieldKind {
+    Identifier { signed: bool },
+    String,
+}
+
+const SEARCH_MAX_CLAUSES: usize = 8;
+const SEARCH_MAX_VALUE_CHARS: usize = 256;
+
 const SNAPSHOT_CHUNK_ROWS: usize = 16;
 
 #[cfg(test)]
@@ -370,7 +405,17 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
     let (physical_filters, relation_filters) = relation::split_filters(&request)?;
     let mut physical_request = request.clone();
     physical_request.filters = physical_filters;
-    let sections = section_plans(&segment, &physical_request)?;
+    let search = request
+        .search
+        .as_deref()
+        .map(|raw| {
+            let [logical_name] = request.sections.as_slice() else {
+                return Err(ApiError::BadFilter("search".to_owned()));
+            };
+            StructuredSearch::parse(raw, logical_name)
+        })
+        .transpose()?;
+    let sections = section_plans(&segment, &physical_request, search.as_ref())?;
     let has_relation = sections
         .iter()
         .any(|section| SnapshotViewSpec::for_logical_name(&section.logical_name).is_some());
@@ -402,7 +447,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
     } else {
         Vec::new()
     };
-    validate_search_projection(&request, &sections)?;
+    validate_search_projection(search.as_ref(), &sections)?;
     validate_exact_locator(&segment, &request, &sections)?;
     drop(segment);
     Ok(PreparedSnapshot {
@@ -420,11 +465,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
         page_size: request.page_size,
         cursor: parsed,
         binding,
-        search: request
-            .search
-            .iter()
-            .map(|raw| GlobPattern::new(raw))
-            .collect(),
+        search,
         text: request.text,
         row_ordinal: request.row_ordinal,
     })
@@ -433,6 +474,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
 fn section_plans(
     segment: &Segment,
     request: &SnapshotRequest,
+    search: Option<&StructuredSearch>,
 ) -> Result<Vec<SectionPlans>, ApiError> {
     let shared_projection = request.sections.len() > 1 && !request.fields.is_empty();
     if shared_projection {
@@ -475,8 +517,8 @@ fn section_plans(
                     if plan.contract.column("stats_since").is_some() {
                         plan.add_projection_columns(&["stats_since"]);
                     }
-                    if !request.search.is_empty() {
-                        plan.add_projection_columns(&search_columns(logical_name, plan));
+                    if let Some(search) = search {
+                        plan.add_projection_columns(&search_columns(logical_name, plan, search));
                     }
                 }
                 sections.push(SectionPlans {
@@ -699,19 +741,18 @@ fn derived_page_order(logical_name: &str, plan: &Plan, token: &str) -> Option<Pa
 }
 
 fn validate_search_projection(
-    request: &SnapshotRequest,
+    search: Option<&StructuredSearch>,
     sections: &[SectionPlans],
 ) -> Result<(), ApiError> {
-    if request.page_size.is_some() {
+    if let Some(search) = search {
         let [section] = sections else {
-            return Err(ApiError::BadCursor);
+            return Err(ApiError::BadFilter("search".to_owned()));
         };
-        if !request.search.is_empty()
-            && !section
-                .plans
-                .iter()
-                .any(|plan| !search_columns(&section.logical_name, plan).is_empty())
-        {
+        if !section.plans.iter().any(|plan| {
+            search.clauses.iter().all(|clause| {
+                !search_clause_columns(&section.logical_name, plan, clause.key).is_empty()
+            })
+        }) {
             return Err(ApiError::BadFilter("search".to_owned()));
         }
     }
@@ -1270,6 +1311,7 @@ impl PreparedSnapshot {
                 contexts.push(PageContext {
                     context_index: layout_index,
                     plan,
+                    logical_name: &section.logical_name,
                     source: &self.anchor,
                     rows: rows_of(&self.anchor, plan.type_id).unwrap_or(0),
                     window: RowWindow::Untimed,
@@ -1279,11 +1321,9 @@ impl PreparedSnapshot {
                     sample_from: None,
                     sample_to: None,
                     order: page_order(&section.logical_name, plan, &self.by),
-                    search_columns: if self.search.is_empty() {
-                        Vec::new()
-                    } else {
-                        search_columns(&section.logical_name, plan)
-                    },
+                    search_columns: self.search.as_ref().map_or_else(Vec::new, |search| {
+                        search_columns(&section.logical_name, plan, search)
+                    }),
                 });
                 continue;
             };
@@ -1348,6 +1388,7 @@ impl PreparedSnapshot {
             contexts.push(PageContext {
                 context_index: timed_context_index(layout_index, source_index, self.source_count()),
                 plan,
+                logical_name: &section.logical_name,
                 source: source_ref,
                 rows: rows_of(source_ref, plan.type_id).unwrap_or(0),
                 window: RowWindow::Shared {
@@ -1360,11 +1401,9 @@ impl PreparedSnapshot {
                 sample_from: moments.previous,
                 sample_to: Some(moments.current),
                 order: order.clone(),
-                search_columns: if self.search.is_empty() {
-                    Vec::new()
-                } else {
-                    search_columns(&section.logical_name, plan)
-                },
+                search_columns: self.search.as_ref().map_or_else(Vec::new, |search| {
+                    search_columns(&section.logical_name, plan, search)
+                }),
             });
         }
         Ok(contexts)
@@ -1625,6 +1664,7 @@ impl PreparedSnapshot {
                 self.relation_predecessors.len(),
             ),
             plan,
+            logical_name: &section.logical_name,
             source: source_ref,
             rows: rows_of(source_ref, plan.type_id).unwrap_or(0),
             window: RowWindow::Partitioned {
@@ -1638,11 +1678,9 @@ impl PreparedSnapshot {
             sample_from: rate_state.sample_from,
             sample_to: rate_state.sample_to,
             order,
-            search_columns: if self.search.is_empty() {
-                Vec::new()
-            } else {
-                search_columns(&section.logical_name, plan)
-            },
+            search_columns: self.search.as_ref().map_or_else(Vec::new, |search| {
+                search_columns(&section.logical_name, plan, search)
+            }),
         })
     }
 
@@ -1921,8 +1959,9 @@ impl PreparedSnapshot {
     ) -> Option<PageRankedRow> {
         if !context.window.matches(&row)
             || !context.plan.matches(&row, dictionary)
-            || !self.search.is_empty()
-                && !search_matches(&row, dictionary, &context.search_columns, &self.search)
+            || self.search.as_ref().is_some_and(|search| {
+                !search_matches(context.logical_name, context.plan, &row, dictionary, search)
+            })
         {
             return None;
         }
@@ -2456,64 +2495,332 @@ fn ratio_order_value(
     }
 }
 
-fn search_columns(logical_name: &str, plan: &Plan) -> Vec<&'static str> {
-    allowed_search_columns(logical_name)
+fn search_columns(logical_name: &str, plan: &Plan, search: &StructuredSearch) -> Vec<&'static str> {
+    let mut columns = Vec::new();
+    for clause in &search.clauses {
+        for column in search_clause_columns(logical_name, plan, clause.key) {
+            if !columns.contains(&column) {
+                columns.push(column);
+            }
+        }
+    }
+    columns
+}
+
+fn search_clause_columns(logical_name: &str, plan: &Plan, key: &str) -> Vec<&'static str> {
+    let Some(field) = search_fields(logical_name)
+        .iter()
+        .find(|field| field.key == key)
+    else {
+        return Vec::new();
+    };
+    let wanted = if logical_name == "pg_store_plans" && key == "query_id" {
+        if plan.type_id == 1_004_001 {
+            &["queryid_stat_statements"] as &[&str]
+        } else {
+            &["queryid"] as &[&str]
+        }
+    } else {
+        field.columns
+    };
+    wanted
         .iter()
         .filter_map(|name| plan.contract.column(name).map(|column| column.name))
         .collect()
 }
 
-fn allowed_search_columns(logical_name: &str) -> &'static [&'static str] {
+fn search_matches(
+    logical_name: &str,
+    plan: &Plan,
+    row: &Row,
+    dictionary: &Dictionary,
+    search: &StructuredSearch,
+) -> bool {
+    search.clauses.iter().all(|clause| {
+        if logical_name == "pg_store_plans"
+            && plan.type_id == 1_004_001
+            && clause.key == "query_id"
+            && matches!(&clause.value, SearchValue::Identifier(value) if value == "0")
+        {
+            return false;
+        }
+        search_clause_columns(logical_name, plan, clause.key)
+            .iter()
+            .any(|column| {
+                row.get(column)
+                    .and_then(|value| searchable_text(value, dictionary))
+                    .is_some_and(|text| match &clause.value {
+                        SearchValue::Identifier(wanted) => text == *wanted,
+                        SearchValue::Pattern(pattern) => pattern.matches(&text),
+                    })
+            })
+    })
+}
+
+impl StructuredSearch {
+    fn parse(raw: &str, logical_name: &str) -> Result<Self, ApiError> {
+        let fields = search_fields(logical_name);
+        if fields.is_empty() {
+            return Err(ApiError::BadFilter("search".to_owned()));
+        }
+        let input = raw.trim();
+        if input.is_empty() {
+            return Err(ApiError::BadFilter("search".to_owned()));
+        }
+        if !input.contains(':') {
+            if input
+                .split_whitespace()
+                .any(|token| token.eq_ignore_ascii_case("AND"))
+                || input.chars().count() > SEARCH_MAX_VALUE_CHARS
+            {
+                return Err(ApiError::BadFilter("search".to_owned()));
+            }
+            return Ok(Self {
+                clauses: vec![SearchClause {
+                    key: "text",
+                    value: SearchValue::Pattern(GlobPattern::new(input)),
+                }],
+            });
+        }
+        let mut clauses = Vec::new();
+        let mut cursor = skip_search_space(input, 0);
+        while cursor < input.len() {
+            if clauses.len() >= SEARCH_MAX_CLAUSES {
+                return Err(ApiError::BadFilter("search".to_owned()));
+            }
+            let key_start = cursor;
+            while input
+                .as_bytes()
+                .get(cursor)
+                .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+            {
+                cursor += 1;
+            }
+            if cursor == key_start {
+                return Err(ApiError::BadFilter("search".to_owned()));
+            }
+            let raw_key = &input[key_start..cursor];
+            let Some(field) = fields.iter().find(|field| {
+                field.key.eq_ignore_ascii_case(raw_key)
+                    || field
+                        .aliases
+                        .iter()
+                        .any(|alias| alias.eq_ignore_ascii_case(raw_key))
+            }) else {
+                return Err(ApiError::BadFilter("search".to_owned()));
+            };
+            cursor = skip_search_space(input, cursor);
+            if input.as_bytes().get(cursor) != Some(&b':') {
+                return Err(ApiError::BadFilter("search".to_owned()));
+            }
+            cursor = skip_search_space(input, cursor + 1);
+            let (value, next) = parse_search_value(input, cursor)?;
+            cursor = next;
+            if value.is_empty() || value.chars().count() > SEARCH_MAX_VALUE_CHARS {
+                return Err(ApiError::BadFilter("search".to_owned()));
+            }
+            let value = match field.kind {
+                SearchFieldKind::String => SearchValue::Pattern(GlobPattern::new(&value)),
+                SearchFieldKind::Identifier { signed } => {
+                    if !valid_search_identifier(&value, signed) {
+                        return Err(ApiError::BadFilter("search".to_owned()));
+                    }
+                    SearchValue::Identifier(value)
+                }
+            };
+            clauses.push(SearchClause {
+                key: field.key,
+                value,
+            });
+            cursor = skip_search_space(input, cursor);
+            if cursor == input.len() {
+                break;
+            }
+            let rest = &input[cursor..];
+            if rest.len() < 3
+                || !rest[..3].eq_ignore_ascii_case("AND")
+                || rest
+                    .as_bytes()
+                    .get(3)
+                    .is_none_or(|byte| !byte.is_ascii_whitespace())
+            {
+                return Err(ApiError::BadFilter("search".to_owned()));
+            }
+            cursor = skip_search_space(input, cursor + 3);
+            if cursor == input.len() {
+                return Err(ApiError::BadFilter("search".to_owned()));
+            }
+        }
+        Ok(Self { clauses })
+    }
+}
+
+fn parse_search_value(input: &str, start: usize) -> Result<(String, usize), ApiError> {
+    if start >= input.len() {
+        return Err(ApiError::BadFilter("search".to_owned()));
+    }
+    if input.as_bytes()[start] != b'"' {
+        let mut end = start;
+        while input
+            .as_bytes()
+            .get(end)
+            .is_some_and(|byte| !byte.is_ascii_whitespace())
+        {
+            end += 1;
+        }
+        return (end > start)
+            .then(|| (input[start..end].to_owned(), end))
+            .ok_or_else(|| ApiError::BadFilter("search".to_owned()));
+    }
+    let mut value = String::new();
+    let mut cursor = start + 1;
+    while cursor < input.len() {
+        let character = input[cursor..]
+            .chars()
+            .next()
+            .ok_or_else(|| ApiError::BadFilter("search".to_owned()))?;
+        if character == '"' {
+            return Ok((value, cursor + 1));
+        }
+        if character == '\\' {
+            let escaped = input[cursor + 1..]
+                .chars()
+                .next()
+                .filter(|escaped| *escaped == '"' || *escaped == '\\')
+                .ok_or_else(|| ApiError::BadFilter("search".to_owned()))?;
+            value.push(escaped);
+            cursor += 1 + escaped.len_utf8();
+        } else {
+            value.push(character);
+            cursor += character.len_utf8();
+        }
+    }
+    Err(ApiError::BadFilter("search".to_owned()))
+}
+
+fn skip_search_space(input: &str, mut cursor: usize) -> usize {
+    while input
+        .as_bytes()
+        .get(cursor)
+        .is_some_and(u8::is_ascii_whitespace)
+    {
+        cursor += 1;
+    }
+    cursor
+}
+
+fn valid_search_identifier(value: &str, signed: bool) -> bool {
+    if signed {
+        if value == "-0" {
+            return false;
+        }
+        let decimal = value.strip_prefix('-').unwrap_or(value);
+        if decimal.is_empty()
+            || (decimal.len() > 1 && decimal.starts_with('0'))
+            || !decimal.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return false;
+        }
+        value.parse::<i64>().is_ok()
+    } else {
+        if value.is_empty()
+            || (value.len() > 1 && value.starts_with('0'))
+            || !value.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return false;
+        }
+        value.parse::<u64>().is_ok()
+    }
+}
+
+fn search_fields(logical_name: &str) -> &'static [SearchField] {
     match logical_name {
-        "pg_stat_statements" => &[
-            "query", "queryid", "dbid", "userid", "datname", "usename", "toplevel",
-        ],
-        "pg_store_plans" => &[
-            "plan",
-            "planid",
-            "queryid",
-            "queryid_stat_statements",
-            "dbid",
-            "userid",
-            "datname",
-            "usename",
-        ],
-        "pg_stat_user_tables" => &[
-            "datname",
-            "datid",
-            "schemaname",
-            "relname",
-            "relid",
-            "tablespace",
-        ],
-        "pg_stat_user_indexes" => &[
-            "datname",
-            "datid",
-            "schemaname",
-            "relname",
-            "relid",
-            "indexrelname",
-            "indexrelid",
-            "tablespace",
-            "amname",
-            "indexdef",
-        ],
+        "pg_stat_statements" => STATEMENT_SEARCH_FIELDS,
+        "pg_store_plans" => PLAN_SEARCH_FIELDS,
+        "pg_stat_user_tables" => TABLE_SEARCH_FIELDS,
+        "pg_stat_user_indexes" => INDEX_SEARCH_FIELDS,
         _ => &[],
     }
 }
 
-fn search_matches(
-    row: &Row,
-    dictionary: &Dictionary,
-    columns: &[&'static str],
-    patterns: &[GlobPattern],
-) -> bool {
-    columns.iter().any(|column| {
-        row.get(column)
-            .and_then(|value| searchable_text(value, dictionary))
-            .is_some_and(|text| patterns.iter().any(|pattern| pattern.matches(&text)))
-    })
+const fn search_string(
+    key: &'static str,
+    aliases: &'static [&'static str],
+    columns: &'static [&'static str],
+) -> SearchField {
+    SearchField {
+        key,
+        aliases,
+        columns,
+        kind: SearchFieldKind::String,
+    }
 }
+
+const fn search_id(
+    key: &'static str,
+    aliases: &'static [&'static str],
+    columns: &'static [&'static str],
+    signed: bool,
+) -> SearchField {
+    SearchField {
+        key,
+        aliases,
+        columns,
+        kind: SearchFieldKind::Identifier { signed },
+    }
+}
+
+const STATEMENT_SEARCH_FIELDS: &[SearchField] = &[
+    search_string("text", &["q"], &["query", "datname", "usename"]),
+    search_id("query_id", &[], &["queryid"], true),
+    search_string("database", &["db"], &["datname"]),
+    search_string("role", &["user"], &["usename"]),
+];
+const PLAN_SEARCH_FIELDS: &[SearchField] = &[
+    search_string("text", &["q"], &["plan", "datname", "usename"]),
+    search_id(
+        "query_id",
+        &[],
+        &["queryid", "queryid_stat_statements"],
+        true,
+    ),
+    search_id("plan_id", &[], &["planid"], true),
+    search_string("database", &["db"], &["datname"]),
+    search_string("role", &["user"], &["usename"]),
+];
+const TABLE_SEARCH_FIELDS: &[SearchField] = &[
+    search_string(
+        "text",
+        &["q"],
+        &["datname", "schemaname", "relname", "tablespace"],
+    ),
+    search_string("database", &["db"], &["datname"]),
+    search_string("schema", &[], &["schemaname"]),
+    search_string("table_name", &["table"], &["relname"]),
+    search_string("tablespace", &[], &["tablespace"]),
+];
+const INDEX_SEARCH_FIELDS: &[SearchField] = &[
+    search_string(
+        "text",
+        &["q"],
+        &[
+            "datname",
+            "schemaname",
+            "relname",
+            "indexrelname",
+            "tablespace",
+            "amname",
+            "indexdef",
+        ],
+    ),
+    search_string("database", &["db"], &["datname"]),
+    search_string("schema", &[], &["schemaname"]),
+    search_string("table_name", &["table"], &["relname"]),
+    search_string("index_name", &["index"], &["indexrelname"]),
+    search_string("access_method", &["method"], &["amname"]),
+    search_string("definition", &[], &["indexdef"]),
+    search_string("tablespace", &[], &["tablespace"]),
+];
 
 fn searchable_text(value: &Cell, dictionary: &Dictionary) -> Option<String> {
     match value {

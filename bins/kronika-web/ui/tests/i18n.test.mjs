@@ -137,8 +137,8 @@ test("plan copy identifies unavailable values and vadv attribution", async () =>
   assert.equal(russian["pg.wal_storage.label"], "Размер файлов в pg_wal")
   assert.equal(russian["pg.wal_storage.history"], "Размер файлов в pg_wal за час")
   assert.equal(russian["pg.wal_storage.help"], "Суммарный размер обычных файлов, видимых в pg_wal у курсора.")
-  assert.match(english["pg.field.queryid_stat_statements.help"], /vadv.*statement rows related to this plan/)
-  assert.match(russian["pg.field.queryid_stat_statements.help"], /vadv.*связанным с этим планом строкам запросов/)
+  assert.match(english["pg.field.queryid_stat_statements.help"], /vadv fork of pg_store_plans/)
+  assert.match(russian["pg.field.queryid_stat_statements.help"], /форком pg_store_plans от vadv/)
   for (const text of [...Object.values(english), ...Object.values(russian)]) {
     assert.doesNotMatch(text, /not an exact join key|не точн(?:ый|ым) ключ соединения/i)
   }
@@ -188,7 +188,7 @@ test("dense-table help is factual, concise, and complete in both locales", async
   }
 
   assert.match(english["pg.field.calls_per_second.help"], /times per second this statement ran.*call frequency or the weight/i)
-  assert.match(english["pg.field.execution_ms_per_second.help"], /wall-clock second.*exceed 1000.*overlap/i)
+  assert.match(english["pg.field.execution_ms_per_second.help"], /1000 ms\/s.*one execution-second.*serial CPU-bound.*concurrent calls add.*not summed worker CPU/i)
   assert.match(english["pg.field.mean_exec_ms_per_call.help"], /one execution took on average.*unavailable without calls/i)
   assert.match(english["pg.field.rows_per_second.help"], /rows per second the statement returns or affects/i)
   assert.equal(english["pg.field.statement_database.help"], "Database associated with this physical statement entry.")

@@ -124,8 +124,7 @@ test("relation selection is separate from hierarchy filters", () => {
   assert.equal(readAddress("view=pg.statements&row=hidden").row, null)
 })
 
-test("Host master/detail modes and plan-to-query context are URL-native and route-scoped", () => {
-  const target = { dbId: "16384", origin: "plan" as const, planId: "77", queryId: "42", relation: "last" as const, sourceTypeId: "1004001", userId: "10" }
+test("Host master/detail modes and structured related search are URL-native and route-scoped", () => {
   const host = writeAddress({ ...DEFAULT_ADDRESS, view: "host.overview", metric: "cpu_used_cores" })
   assert.equal(host, "/?view=host.overview&metric=cpu_used_cores")
   assert.equal(readAddress(host.slice(1)).metric, "cpu_used_cores")
@@ -137,20 +136,11 @@ test("Host master/detail modes and plan-to-query context are URL-native and rout
   assert.equal(readAddress("?view=host.storage&mode=made-up").mode, "io")
   assert.equal(readAddress("?view=host.cpu&mode=topology").mode, "topology")
 
-  const query = writeAddress({ ...DEFAULT_ADDRESS, at: 1_700_000_000_000_000, view: "pg.statements", statementTarget: target })
-  assert.equal(query, "/?at=1700000000000000&view=pg.statements&stmt_origin=plan&stmt_qid=42&stmt_dbid=16384&stmt_userid=10&stmt_relation=last&stmt_source=1004001&stmt_plan=77")
-  assert.deepEqual(readAddress(query).statementTarget, target)
-  assert.deepEqual(readAddress("?view=pg.statements&stmt_origin=plan&stmt_qid=-42&stmt_dbid=16384&stmt_userid=10&stmt_relation=shared&stmt_source=1003001&stmt_plan=-77").statementTarget, {
-    dbId: "16384", origin: "plan", planId: "-77", queryId: "-42", relation: "shared", sourceTypeId: "1003001", userId: "10",
-  })
-  const activity = { dbId: "4294967295", origin: "activity" as const, queryId: "-9223372036854775808" }
-  const activityQuery = writeAddress({ ...DEFAULT_ADDRESS, view: "pg.statements", statementTarget: activity })
-  assert.equal(activityQuery, "/?view=pg.statements&stmt_origin=activity&stmt_qid=-9223372036854775808&stmt_dbid=4294967295")
-  assert.deepEqual(readAddress(activityQuery.slice(1)).statementTarget, activity)
+  const find = "database:app AND role:reader AND query_id:-9223372036854775808"
+  const query = writeAddress({ ...DEFAULT_ADDRESS, at: 1_700_000_000_000_000, view: "pg.statements", find })
+  assert.equal(query, "/?at=1700000000000000&view=pg.statements&find=database%3Aapp+AND+role%3Areader+AND+query_id%3A-9223372036854775808")
+  assert.equal(readAddress(query).find, find)
   const activityRow = writeAddress({ ...DEFAULT_ADDRESS, view: "pg.activity", row: "1700000000000000:1001004:73" })
   assert.equal(activityRow, "/?view=pg.activity&row=1700000000000000%3A1001004%3A73")
   assert.equal(readAddress(activityRow.slice(1)).row, "1700000000000000:1001004:73")
-  assert.equal(readAddress("?view=pg.plans&stmt_origin=plan&stmt_qid=42&stmt_dbid=1&stmt_userid=1&stmt_relation=last&stmt_source=1004001&stmt_plan=77").statementTarget, null)
-  assert.equal(readAddress("?view=pg.statements&stmt_origin=activity&stmt_qid=0&stmt_dbid=1").statementTarget, null)
-  assert.equal(readAddress("?view=pg.statements&stmt_origin=activity&stmt_qid=42&stmt_dbid=4294967296").statementTarget, null)
 })

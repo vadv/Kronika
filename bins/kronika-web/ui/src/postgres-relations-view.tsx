@@ -109,6 +109,7 @@ export function PostgresRelationsView(props: PostgresRelationsViewProps) {
         rowKey={relationRowKey}
         rowLabel={relationRowLabel}
         rows={rows}
+        searchSurface={section}
         selectedKey={selectedKey}
         serverSorted
         status={status}

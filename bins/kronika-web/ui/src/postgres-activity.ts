@@ -19,6 +19,7 @@ export function transactionDurationMs(row: DataRow): number | null {
 }
 
 export function stateDurationMs(row: DataRow): number | null {
+  if (rawText(value(row, "state")) === "idle") return null
   return elapsedSince(row, "state_change")
 }
 
@@ -41,7 +42,7 @@ export function activityDurationHistory(rows: readonly DataRow[], field: Activit
   const ordered = rows.slice().sort((left, right) => left.timestamp - right.timestamp || left.ordinal.localeCompare(right.ordinal))
   return buildMetricSamples(ordered, (row) => {
     if (!Object.hasOwn(row.values, source)) return undefined
-    if (field === "query_duration_ms" && !Object.hasOwn(row.values, "state")) return undefined
+    if ((field === "query_duration_ms" || field === "state_duration_ms") && !Object.hasOwn(row.values, "state")) return undefined
     return activityDuration(row, field)
   })
 }

@@ -252,7 +252,7 @@ test("a curated snapshot follows the registry layout and physical order", async 
     assert.equal(url.searchParams.has("top"), false)
     assert.equal(url.searchParams.has("type_id"), false)
     assert.equal(url.searchParams.get("cursor"), "opaque+/=")
-    assert.deepEqual(url.searchParams.getAll("search"), ["vacuum*", "db?name"])
+    assert.equal(url.searchParams.get("search"), "database:app AND text:vacuum*")
     assert.equal(url.searchParams.get("text"), "160")
     assert.equal(url.searchParams.has("plan"), false)
     return ndjson([
@@ -290,7 +290,7 @@ test("a curated snapshot follows the registry layout and physical order", async 
     const hour = await api.loadSnapshot("77", START, requests, new AbortController().signal, {
       column: "wal_demand", descending: true,
     }, {
-      cursor: "opaque+/=", search: ["vacuum*", "db?name"],
+      cursor: "opaque+/=", search: "database:app AND text:vacuum*",
     })
     assert.equal(hour.sections.pg_stat_statements?.length, 2)
     assert.deepEqual(hour.rateColumns.pg_stat_statements, ["calls", "total_time", "total_exec_time"])
@@ -484,9 +484,9 @@ test("paged entity context intersects search and clears independently", async ()
   try {
     await api.loadSnapshot("77", START, [request], new AbortController().signal, undefined, {
       filters: { queryid: "9007199254740997", userid: "10", dbid: "11" },
-      search: ["vacuum*"], typeId: "1002001",
+      search: "text:vacuum*", typeId: "1002001",
     })
-    await api.loadSnapshot("77", START, [request], new AbortController().signal, undefined, { search: ["vacuum*"] })
+    await api.loadSnapshot("77", START, [request], new AbortController().signal, undefined, { search: "text:vacuum*" })
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -495,7 +495,7 @@ test("paged entity context intersects search and clears independently", async ()
   assert.equal(seen[0]?.searchParams.get("where.queryid"), "9007199254740997")
   assert.equal(seen[0]?.searchParams.get("where.userid"), "10")
   assert.equal(seen[0]?.searchParams.get("where.dbid"), "11")
-  assert.deepEqual(seen.map((url) => url.searchParams.getAll("search")), [["vacuum*"], ["vacuum*"]])
+  assert.deepEqual(seen.map((url) => url.searchParams.get("search")), ["text:vacuum*", "text:vacuum*"])
   assert.equal(seen[1]?.searchParams.has("type_id"), false)
   assert.equal([...seen[1]!.searchParams.keys()].some((key) => key.startsWith("where.")), false)
 })

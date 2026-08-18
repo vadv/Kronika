@@ -1,5 +1,3 @@
-import type { StatementTarget } from "./statement-navigation"
-
 export interface Address {
   readonly at: number | null
   readonly view: View
@@ -15,7 +13,6 @@ export interface Address {
   readonly find: string
   readonly metric: string | null
   readonly mode: HostMode | null
-  readonly statementTarget: StatementTarget | null
 }
 
 export type View =
@@ -74,7 +71,6 @@ export const DEFAULT_ADDRESS: Address = {
   find: "",
   metric: null,
   mode: null,
-  statementTarget: null,
 }
 
 export function readAddress(search: string): Address {
@@ -93,7 +89,6 @@ export function readAddress(search: string): Address {
   const datid = relation && pgLevel !== "database" ? oid("datid") : null
   const sort = parameters.get("sort") ?? ""
   const column = sort.startsWith("-") ? sort.slice(1) : sort
-  const statementTarget = resolvedView === "pg.statements" ? readStatementTarget(parameters) : null
   return {
     at: Number.isSafeInteger(at) && at > 0 ? at : null,
     view: resolvedView,
@@ -111,7 +106,6 @@ export function readAddress(search: string): Address {
     find: parameters.get("find") ?? "",
     metric: host && /^[a-z0-9_.-]+$/.test(parameters.get("metric") ?? "") ? parameters.get("metric") : null,
     mode: hostModeOf(hostSection, parameters.get("mode")),
-    statementTarget,
   }
 }
 
@@ -134,53 +128,14 @@ export function writeAddress(address: Address): string {
   if (address.find !== "") parameters.set("find", address.find)
   if (address.view.startsWith("host.") && address.metric !== null) parameters.set("metric", address.metric)
   if (address.view.startsWith("host.") && address.mode !== null && address.mode !== defaultHostMode(hostSectionOf(address.view))) parameters.set("mode", address.mode)
-  if (address.view === "pg.statements" && address.statementTarget !== null) writeStatementTarget(parameters, address.statementTarget)
   const query = parameters.toString()
   return query === "" ? "/" : `/?${query}`
-}
-
-function readStatementTarget(parameters: URLSearchParams): StatementTarget | null {
-  const queryId = signed64(parameters.get("stmt_qid"))
-  const dbId = oid(parameters.get("stmt_dbid"))
-  const origin = parameters.get("stmt_origin")
-  if (queryId === null || queryId === "0" || dbId === null) return null
-  if (origin === "activity") {
-    return { dbId, origin, queryId }
-  }
-  const userId = oid(parameters.get("stmt_userid"))
-  const planId = signed64(parameters.get("stmt_plan"))
-  const sourceTypeId = unsignedDecimal(parameters.get("stmt_source"))
-  const relation = parameters.get("stmt_relation")
-  if (origin !== "plan" || userId === null || planId === null || sourceTypeId === null
-    || (relation !== "shared" && relation !== "last")) return null
-  return { dbId, origin, planId, queryId, relation, sourceTypeId, userId }
-}
-
-function writeStatementTarget(parameters: URLSearchParams, target: StatementTarget): void {
-  parameters.set("stmt_origin", target.origin)
-  parameters.set("stmt_qid", target.queryId)
-  parameters.set("stmt_dbid", target.dbId)
-  if (target.origin === "activity") return
-  parameters.set("stmt_userid", target.userId)
-  parameters.set("stmt_relation", target.relation)
-  parameters.set("stmt_source", target.sourceTypeId)
-  parameters.set("stmt_plan", target.planId)
-}
-
-function unsignedDecimal(stored: string | null): string | null {
-  return stored !== null && /^\d+$/.test(stored) ? stored : null
 }
 
 function oid(stored: string | null): string | null {
   if (stored === null || !/^[1-9]\d*$/.test(stored)) return null
   const parsed = BigInt(stored)
   return parsed <= 4_294_967_295n ? stored : null
-}
-
-function signed64(stored: string | null): string | null {
-  if (stored === null || !/^-?\d+$/.test(stored)) return null
-  const parsed = BigInt(stored)
-  return parsed >= -9_223_372_036_854_775_808n && parsed <= 9_223_372_036_854_775_807n ? stored : null
 }
 
 function isPostgresEntityView(view: View): boolean {

@@ -16,6 +16,7 @@ import { useDisplayTime } from "./display-time-context"
 import { globMatcher } from "./glob"
 import { LabelHelp, type Translate } from "./help"
 import { rowMatchesLocator } from "./locator"
+import { parseSearch, rowMatchesSearch, type SearchSurface } from "./search"
 import { TableFilter } from "./table-filter"
 import { asNumber, estimatedRows, humanBytes, humanCores, humanDuration, humanPercent, identifier, measure, rawText, value, type Locale } from "./model"
 import { semanticValueTone } from "./value-tone"
@@ -65,6 +66,7 @@ export function EntityTable({
   rowKey = defaultKey,
   rowLabel,
   rows,
+  searchSurface,
   selectedKey,
   status,
   testId,
@@ -91,6 +93,7 @@ export function EntityTable({
   readonly rowKey?: (row: DataRow) => string
   readonly rowLabel?: ((row: DataRow) => string) | undefined
   readonly rows: readonly DataRow[]
+  readonly searchSurface?: SearchSurface | undefined
   readonly selectedKey?: string | null
   readonly status?: ReactNode | undefined
   readonly testId?: string
@@ -121,8 +124,8 @@ export function EntityTable({
     ...(field.sortValue === undefined ? {} : { sortUndefined: "last" as const }),
   })), [fields, locale, serverSorted, t])
   const data = useMemo(
-    () => filterTableRows(rows, fields, pattern, serverSorted === true),
-    [fields, pattern, rows, serverSorted],
+    () => filterTableRows(rows, fields, pattern, serverSorted === true, searchSurface),
+    [fields, pattern, rows, searchSurface, serverSorted],
   )
   const table = useReactTable({
     columns,
@@ -189,7 +192,7 @@ export function EntityTable({
   const contentHeight = contentSized && rendered.length > 0 ? Math.min(310, 26 + rendered.length * 23) : undefined
   return <section className={`entity-table min-w-0 overflow-hidden bg-s1 pg-stretch [.charts-hidden_.entity-panels_&]:flex [.charts-hidden_.entity-panels_&]:flex-col${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
     {status !== undefined && <div className="flex min-h-[26px] flex-wrap items-center gap-x-[14px] gap-y-[3px] border-b border-line2 bg-[color-mix(in_srgb,var(--color-s2)_82%,transparent)] px-[7px] py-1 text-xs text-fg3 [&_strong]:font-[650] [&_strong]:text-fg2" data-testid="table-status">{status}</div>}
-    {(onPattern !== undefined || contextLabel !== undefined) && <TableFilter context={contextLabel} kept={serverSorted === true ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} t={t} total={rows.length} />}
+    {(onPattern !== undefined || contextLabel !== undefined) && <TableFilter context={contextLabel} kept={serverSorted === true ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} surface={searchSurface ?? "os_process"} t={t} total={rows.length} />}
     <div aria-label={label} className={`entity-scroll relative h-[min(310px,36vh)] min-h-[154px] overflow-auto [scroll-padding-inline-end:15px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent [.process-table_&]:h-auto [.process-table_&]:min-h-0 [.process-table_&]:flex-1 [.pg-entity-layout_&]:h-[min(560px,calc(100dvh-475px))] [.pg-entity-layout_&]:min-h-[100px] [.pg-table-shell_.pg-entity-layout_&]:h-auto [.pg-table-shell_.pg-entity-layout_&]:min-h-0 [.pg-table-shell_.pg-entity-layout_&]:flex-1${contentHeight === undefined ? " charts-hidden:h-auto charts-hidden:min-h-[154px] charts-hidden:flex-auto" : " !min-h-0"}`} ref={parent} role="table" style={contentHeight === undefined ? undefined : { height: contentHeight }} tabIndex={0}>
       <div className="entity-head sticky top-0 z-30 flex h-head min-w-full bg-s2 coarse:h-9 [&_[role=columnheader]]:select-none" ref={head} role="row" style={{ width }}>
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {
@@ -280,8 +283,14 @@ export function filterTableRows(
   fields: readonly EntityColumn[],
   pattern: string,
   serverFiltered: boolean,
+  surface?: SearchSurface,
 ): DataRow[] {
   if (serverFiltered) return [...rows]
+  if (surface !== undefined) {
+    const parsed = parseSearch(pattern, surface)
+    if (!parsed.ok) return [...rows]
+    return rows.filter((row) => rowMatchesSearch(row, parsed.query, surface))
+  }
   const match = globMatcher(pattern)
   if (match === null) return [...rows]
   const searchable = fields.filter((field) => field.filterValue !== undefined || field.kind === undefined || field.kind === "text" || field.kind === "id")
