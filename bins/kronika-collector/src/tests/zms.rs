@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use kronika_format::{ENTRY_LEN, FRAME_HEADER_LEN};
+use kronika_format::{ENTRY_LEN, FRAME_HEADER_LEN, JOURNAL_HEADER_LEN};
 use kronika_layout::{DataRoot, LayoutLimits, WriterOwner};
 use kronika_reader::{Cell, Reader, Resolved, Row, SegmentKind};
 use kronika_registry::os_block_topology::OsBlockTopology;
@@ -19,6 +19,8 @@ use kronika_source_pg::query::{BATCH_LOGICAL_BYTES, BATCH_ROWS};
 use kronika_source_pg::settings::SettingsRow;
 use kronika_source_pg::statements::{StatementsRow, StatementsVersion};
 use kronika_source_pg::store_plans::VadvRow;
+use kronika_source_pg::user_indexes::{UserIndexesRow, UserIndexesVersion};
+use kronika_source_pg::user_tables::{UserTablesRow, UserTablesVersion};
 use kronika_writer::{Journal, JournalConfig, SectionBuffers};
 
 use crate::append_pending_pg_batch;
@@ -71,6 +73,10 @@ const CPUFREQ_COST_TEST: &str =
 const STORAGE_SNAPSHOTS_PER_HOUR: usize = 60;
 const STORAGE_MOUNTS_PER_SNAPSHOT: usize = 64;
 const STORAGE_EDGES_PER_SNAPSHOT: usize = 128;
+const RELATION_REPRESENTATIVE_TABLES: usize = 1_000;
+const RELATION_REPRESENTATIVE_INDEXES: usize = 2_000;
+const RELATION_STRESS_OBJECTS: usize = 5_000;
+const RELATION_SNAPSHOTS: usize = 12;
 const BASE_TS: i64 = 1_700_000_000_000_000;
 const PRE_CHANGE_ZMS_BYTES: u64 = 3_141_820;
 const PRE_CHANGE_DICT_STRINGS_BYTES: u64 = 1_978_136;
@@ -1023,6 +1029,440 @@ fn activity_datid_hour_reports_production_writer_costs() {
         cpu_ticks,
         rss_kib
     );
+}
+
+#[derive(Clone, Copy)]
+struct RelationCostSpec {
+    name: &'static str,
+    tables: usize,
+    indexes: usize,
+    snapshots: usize,
+    high_cardinality: bool,
+    all_layouts: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RelationCostReport {
+    raw_wal_bytes: u64,
+    peak_wal_bytes: u64,
+    zms_bytes: u64,
+    segments: usize,
+    frames: usize,
+    parts: usize,
+    rows: BTreeMap<u32, u64>,
+    raw_section_bytes: BTreeMap<u32, u64>,
+    zms_section_bytes: BTreeMap<u32, u64>,
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the relation format acceptance artifact keeps all six layouts and production WAL/ZMS accounting together"
+)]
+fn relation_tablespace_layouts_report_production_writer_costs() {
+    let profiles = [
+        RelationCostSpec {
+            name: "layout_matrix",
+            tables: RELATION_REPRESENTATIVE_TABLES,
+            indexes: RELATION_REPRESENTATIVE_INDEXES,
+            snapshots: 1,
+            high_cardinality: false,
+            all_layouts: true,
+        },
+        RelationCostSpec {
+            name: "representative_shared",
+            tables: RELATION_REPRESENTATIVE_TABLES,
+            indexes: RELATION_REPRESENTATIVE_INDEXES,
+            snapshots: RELATION_SNAPSHOTS,
+            high_cardinality: false,
+            all_layouts: false,
+        },
+        RelationCostSpec {
+            name: "stress_shared",
+            tables: RELATION_STRESS_OBJECTS,
+            indexes: RELATION_STRESS_OBJECTS,
+            snapshots: RELATION_SNAPSHOTS,
+            high_cardinality: false,
+            all_layouts: false,
+        },
+        RelationCostSpec {
+            name: "stress_high_cardinality",
+            tables: RELATION_STRESS_OBJECTS,
+            indexes: RELATION_STRESS_OBJECTS,
+            snapshots: 2,
+            high_cardinality: true,
+            all_layouts: false,
+        },
+    ];
+    for spec in profiles {
+        let mut byte_baseline = None;
+        for repeat in 0..3 {
+            let cpu_before = self_cpu_ticks();
+            let started = std::time::Instant::now();
+            let report = relation_cost_profile(spec);
+            let elapsed_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            let cpu_ticks = self_cpu_ticks().saturating_sub(cpu_before);
+            let rss_kib = peak_rss_kib();
+            let bytes = (
+                report.raw_wal_bytes,
+                report.zms_bytes,
+                report.raw_section_bytes.clone(),
+                report.zms_section_bytes.clone(),
+            );
+            if let Some(expected) = &byte_baseline {
+                assert_eq!(&bytes, expected, "production bytes are deterministic");
+            } else {
+                byte_baseline = Some(bytes);
+            }
+            println!(
+                "pg_relation_tablespace_cost profile={} repeat={} table_rows={} index_rows={} raw_wal_bytes={} peak_wal_bytes={} zms_bytes={} segments={} frames={} parts={} raw_sections={:?} zms_sections={:?} rows={:?} elapsed_us={} cpu_ticks={} peak_rss_kib={}",
+                spec.name,
+                repeat + 1,
+                spec.tables.saturating_mul(spec.snapshots),
+                spec.indexes.saturating_mul(spec.snapshots),
+                report.raw_wal_bytes,
+                report.peak_wal_bytes,
+                report.zms_bytes,
+                report.segments,
+                report.frames,
+                report.parts,
+                report.raw_section_bytes,
+                report.zms_section_bytes,
+                report.rows,
+                elapsed_us,
+                cpu_ticks,
+                rss_kib,
+            );
+            assert_eq!(report.frames, report.parts);
+            assert!(report.segments > 0);
+            assert!(report.raw_wal_bytes >= report.peak_wal_bytes);
+            assert!(report.zms_bytes > 0);
+        }
+    }
+}
+
+fn relation_cost_profile(spec: RelationCostSpec) -> RelationCostReport {
+    let artifact_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-artifacts");
+    std::fs::create_dir_all(&artifact_root).expect("create relation cost artifact root");
+    let directory = tempfile::Builder::new()
+        .prefix("relation-cost-")
+        .tempdir_in(&artifact_root)
+        .expect("create relation cost directory");
+    let writer = owner(directory.path());
+    let mut journal =
+        Journal::open(&writer, JournalConfig::default()).expect("open relation cost journal");
+    let config = config(directory.path(), u64::MAX);
+    let mut segment = SegmentState::default();
+    let table_versions: &[UserTablesVersion] = if spec.all_layouts {
+        &[
+            UserTablesVersion::V1,
+            UserTablesVersion::V2,
+            UserTablesVersion::V3,
+            UserTablesVersion::V4,
+        ]
+    } else {
+        &[UserTablesVersion::V4]
+    };
+    let index_versions: &[UserIndexesVersion] = if spec.all_layouts {
+        &[UserIndexesVersion::V1, UserIndexesVersion::V2]
+    } else {
+        &[UserIndexesVersion::V2]
+    };
+    let mut raw_section_bytes = BTreeMap::<u32, u64>::new();
+    let mut frames = 0_usize;
+    let mut parts = 0_usize;
+    let mut appended_wal_bytes = 0_u64;
+    let mut paths = Vec::new();
+    let mut peak_wal_bytes = journal.bytes();
+    for sample in 0..spec.snapshots {
+        let ts = BASE_TS.saturating_add(
+            i64::try_from(sample)
+                .unwrap_or(i64::MAX)
+                .saturating_mul(30_000_000),
+        );
+        for &version in table_versions {
+            let rows = (0..spec.tables)
+                .map(|object| relation_table_row(ts, sample, object, spec.high_cardinality))
+                .collect();
+            paths.extend(append_relation_cost_batch(
+                &mut journal,
+                &writer,
+                &config,
+                &mut segment,
+                &PgBatch::UserTables(version, rows),
+                ts,
+                &mut raw_section_bytes,
+                &mut frames,
+                &mut parts,
+                &mut appended_wal_bytes,
+            ));
+            peak_wal_bytes = peak_wal_bytes.max(journal.bytes());
+        }
+        for &version in index_versions {
+            let rows = (0..spec.indexes)
+                .map(|object| relation_index_row(ts, sample, object, spec.high_cardinality))
+                .collect();
+            paths.extend(append_relation_cost_batch(
+                &mut journal,
+                &writer,
+                &config,
+                &mut segment,
+                &PgBatch::UserIndexes(version, rows),
+                ts,
+                &mut raw_section_bytes,
+                &mut frames,
+                &mut parts,
+                &mut appended_wal_bytes,
+            ));
+            peak_wal_bytes = peak_wal_bytes.max(journal.bytes());
+        }
+    }
+    paths.push(
+        close_open_segment(&mut journal, &writer, &mut segment, "test-end")
+            .expect("write relation cost segment"),
+    );
+    let raw_wal_bytes = appended_wal_bytes.saturating_add(
+        u64::try_from(paths.len().saturating_mul(JOURNAL_HEADER_LEN)).unwrap_or(u64::MAX),
+    );
+    let reader = Reader::open(directory.path()).expect("open relation cost reader");
+    let listing = reader.segments(..).expect("list relation cost segment");
+    assert_eq!(listing.segments.len(), paths.len());
+    let mut rows = BTreeMap::<u32, u64>::new();
+    let mut zms_section_bytes = BTreeMap::<u32, u64>::new();
+    for reference in &listing.segments {
+        let stored = reader
+            .open_segment(reference)
+            .expect("open relation cost segment");
+        for (type_id, section) in stored.sections() {
+            if matches!(type_id, 1_013_005..=1_013_008 | 1_014_003..=1_014_004) {
+                let stored_rows = rows.entry(type_id).or_default();
+                *stored_rows = stored_rows.saturating_add(u64::from(section.rows));
+                let stored_bytes = zms_section_bytes.entry(type_id).or_default();
+                *stored_bytes = stored_bytes.saturating_add(section.bytes);
+            }
+        }
+    }
+    let zms_bytes = paths.iter().fold(0_u64, |total, path| {
+        total.saturating_add(
+            std::fs::metadata(path)
+                .expect("stat relation cost segment")
+                .len(),
+        )
+    });
+    RelationCostReport {
+        raw_wal_bytes,
+        peak_wal_bytes: u64::try_from(peak_wal_bytes).unwrap_or(u64::MAX),
+        zms_bytes,
+        segments: paths.len(),
+        frames,
+        parts,
+        rows,
+        raw_section_bytes,
+        zms_section_bytes,
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the production append accounting is explicit"
+)]
+fn append_relation_cost_batch(
+    journal: &mut Journal,
+    writer: &WriterOwner,
+    config: &Config,
+    segment: &mut SegmentState,
+    batch: &PgBatch,
+    ts: i64,
+    raw_section_bytes: &mut BTreeMap<u32, u64>,
+    frames: &mut usize,
+    parts: &mut usize,
+    appended_wal_bytes: &mut u64,
+) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for attempt in 0..2 {
+        let mut buffers = SectionBuffers::new();
+        push_pg_batch(&mut buffers, segment.interner_mut(), batch, &[])
+            .expect("buffer relation cost rows");
+        let flushed =
+            encode_window(buffers, segment.interner()).expect("encode relation cost window");
+        let completed =
+            append_window_and_maybe_close(journal, writer, config, segment, ts, false, &flushed)
+                .expect("append relation cost window");
+        let retry = completed
+            .iter()
+            .any(|(_, reason)| matches!(*reason, "format-limit" | "journal-full"));
+        paths.extend(completed.into_iter().map(|(path, _reason)| path));
+        if retry {
+            assert_eq!(attempt, 0, "a fresh segment accepts the relation batch");
+            continue;
+        }
+        for section in &flushed.summary.sections {
+            if matches!(
+                section.type_id,
+                1_013_005..=1_013_008 | 1_014_003..=1_014_004
+            ) {
+                let total = raw_section_bytes.entry(section.type_id).or_default();
+                *total =
+                    total.saturating_add(u64::try_from(section.body_bytes).unwrap_or(u64::MAX));
+            }
+        }
+        *appended_wal_bytes = appended_wal_bytes
+            .saturating_add(u64::try_from(flushed.summary.part_bytes).unwrap_or(u64::MAX))
+            .saturating_add(u64::try_from(FRAME_HEADER_LEN).unwrap_or(u64::MAX));
+        *frames = frames.saturating_add(1);
+        *parts = parts.saturating_add(1);
+        return paths;
+    }
+    unreachable!("the relation batch is appended within two attempts")
+}
+
+fn relation_table_row(
+    ts: i64,
+    sample: usize,
+    object: usize,
+    high_cardinality: bool,
+) -> UserTablesRow {
+    let object_i64 = i64::try_from(object).unwrap_or(i64::MAX);
+    let counter = i64::try_from(sample)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(100)
+        .saturating_add(object_i64);
+    let parent = object % 97 == 0;
+    let (tablespace_oid, tablespace) = if parent {
+        (None, None)
+    } else if high_cardinality {
+        (
+            Some(20_000_u32.saturating_add(u32::try_from(object).unwrap_or(u32::MAX))),
+            Some(format!("tenant_ts_{object:05}")),
+        )
+    } else {
+        match object % 10 {
+            0 => (Some(9_000), Some("db_default_ts".to_owned())),
+            1 => (Some(9_001), Some("heap_ts".to_owned())),
+            _ => (Some(1_663), Some("pg_default".to_owned())),
+        }
+    };
+    UserTablesRow {
+        ts,
+        datid: 16_384_u32.saturating_add(u32::try_from(object % 8).unwrap_or_default()),
+        datname: format!("app_{}", object % 8),
+        relid: 100_000_u32.saturating_add(u32::try_from(object).unwrap_or(u32::MAX)),
+        schemaname: format!("schema_{}", object % 32),
+        relname: format!("table_{object:05}"),
+        tablespace_oid,
+        tablespace,
+        seq_scan: counter,
+        seq_tup_read: counter.saturating_mul(10),
+        idx_scan: (object % 7 != 0).then_some(counter.saturating_mul(2)),
+        idx_tup_fetch: (object % 7 != 0).then_some(counter.saturating_mul(5)),
+        n_tup_ins: counter,
+        n_tup_upd: counter / 2,
+        n_tup_del: counter / 5,
+        n_tup_hot_upd: counter / 4,
+        n_tup_newpage_upd: Some(counter / 8),
+        n_live_tup: object_i64.saturating_mul(1_000),
+        n_dead_tup: object_i64.saturating_mul(10),
+        n_mod_since_analyze: counter,
+        n_ins_since_vacuum: Some(counter),
+        vacuum_count: i64::try_from(sample).unwrap_or(i64::MAX),
+        autovacuum_count: i64::try_from(sample / 2).unwrap_or(i64::MAX),
+        analyze_count: i64::try_from(sample).unwrap_or(i64::MAX),
+        autoanalyze_count: i64::try_from(sample / 2).unwrap_or(i64::MAX),
+        last_vacuum: (sample > 0).then_some(ts.saturating_sub(1_000_000)),
+        last_autovacuum: (sample > 1).then_some(ts.saturating_sub(2_000_000)),
+        last_analyze: (sample > 0).then_some(ts.saturating_sub(500_000)),
+        last_autoanalyze: (sample > 1).then_some(ts.saturating_sub(750_000)),
+        last_seq_scan: (sample > 0).then_some(ts.saturating_sub(250_000)),
+        last_idx_scan: (sample > 0 && object % 7 != 0).then_some(ts.saturating_sub(125_000)),
+        total_vacuum_time: Some(f64::from(u32::try_from(sample).unwrap_or(u32::MAX))),
+        total_autovacuum_time: Some(f64::from(
+            u32::try_from(sample.saturating_mul(2)).unwrap_or(u32::MAX),
+        )),
+        total_analyze_time: Some(f64::from(
+            u32::try_from(sample.saturating_mul(3)).unwrap_or(u32::MAX),
+        )),
+        total_autoanalyze_time: Some(f64::from(
+            u32::try_from(sample.saturating_mul(4)).unwrap_or(u32::MAX),
+        )),
+        main_fork_bytes: if parent {
+            0
+        } else {
+            object_i64.saturating_add(1).saturating_mul(8_192)
+        },
+        toast_bytes: (!parent && object % 4 == 0).then_some(16_384),
+        toast_n_live_tup: (!parent && object % 4 == 0).then_some(100),
+        toast_n_dead_tup: (!parent && object % 4 == 0).then_some(5),
+        toast_last_autovacuum: (!parent && object % 4 == 0 && sample > 0)
+            .then_some(ts.saturating_sub(3_000_000)),
+        xid_age: (!parent).then_some(object_i64.saturating_mul(10)),
+        mxid_age: (!parent).then_some(object_i64),
+        reltuples: if parent {
+            -1
+        } else {
+            object_i64.saturating_mul(1_000)
+        },
+        heap_blks_read: counter,
+        heap_blks_hit: counter.saturating_mul(9),
+        idx_blks_read: (object % 7 != 0).then_some(counter / 2),
+        idx_blks_hit: (object % 7 != 0).then_some(counter.saturating_mul(4)),
+        toast_blks_read: (!parent && object % 4 == 0).then_some(counter / 10),
+        toast_blks_hit: (!parent && object % 4 == 0).then_some(counter),
+        tidx_blks_read: (!parent && object % 4 == 0).then_some(counter / 20),
+        tidx_blks_hit: (!parent && object % 4 == 0).then_some(counter / 2),
+    }
+}
+
+fn relation_index_row(
+    ts: i64,
+    sample: usize,
+    object: usize,
+    high_cardinality: bool,
+) -> UserIndexesRow {
+    let object_i64 = i64::try_from(object).unwrap_or(i64::MAX);
+    let counter = i64::try_from(sample)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(100)
+        .saturating_add(object_i64);
+    let (tablespace_oid, tablespace) = if high_cardinality {
+        (
+            30_000_u32.saturating_add(u32::try_from(object).unwrap_or(u32::MAX)),
+            Some(format!("index_ts_{object:05}")),
+        )
+    } else if object % 10 == 1 {
+        (9_002, Some("index_ts".to_owned()))
+    } else {
+        (1_663, Some("pg_default".to_owned()))
+    };
+    UserIndexesRow {
+        ts,
+        datid: 16_384_u32.saturating_add(u32::try_from(object % 8).unwrap_or_default()),
+        datname: format!("app_{}", object % 8),
+        indexrelid: 200_000_u32.saturating_add(u32::try_from(object).unwrap_or(u32::MAX)),
+        relid: 100_000_u32.saturating_add(u32::try_from(object / 2).unwrap_or(u32::MAX)),
+        schemaname: format!("schema_{}", object % 32),
+        relname: format!("table_{:05}", object / 2),
+        indexrelname: format!("index_{object:05}"),
+        tablespace_oid,
+        tablespace,
+        idx_scan: counter,
+        idx_tup_read: counter.saturating_mul(4),
+        idx_tup_fetch: counter.saturating_mul(2),
+        main_fork_bytes: object_i64.saturating_add(1).saturating_mul(4_096),
+        last_idx_scan: (sample > 0).then_some(ts.saturating_sub(125_000)),
+        indisunique: object % 5 == 0,
+        indisprimary: object % 11 == 0,
+        indisvalid: object % 101 != 0,
+        indisexclusion: object % 127 == 0,
+        indisready: object % 103 != 0,
+        amname: if object % 19 == 0 { "hash" } else { "btree" }.to_owned(),
+        indexdef: Some(format!(
+            "CREATE INDEX index_{object:05} ON schema_{}.table_{:05} USING btree (id)",
+            object % 32,
+            object / 2,
+        )),
+        idx_blks_read: counter / 2,
+        idx_blks_hit: counter.saturating_mul(4),
+    }
 }
 
 #[test]
