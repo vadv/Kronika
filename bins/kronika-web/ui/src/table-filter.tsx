@@ -1,9 +1,9 @@
 import { Search, X } from "lucide-react"
-import { useEffect, useId, useRef, useState } from "react"
+import { useEffect, useId, useRef, useState, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 
 import type { Translate } from "./help"
-import { parseSearch, searchFields, type SearchClause, type SearchError, type SearchSurface, withoutSearchClause } from "./search"
+import { parseSearch, searchFields, type SearchClause, type SearchError, type SearchExpr, type SearchSurface, withoutSearchClause } from "./search"
 
 export function TableFilter({
   context,
@@ -11,7 +11,7 @@ export function TableFilter({
   onContextClear,
   onPattern,
   pattern,
-  groupedRelations = false,
+  grouped = false,
   surface,
   t,
   total,
@@ -21,7 +21,7 @@ export function TableFilter({
   readonly onContextClear?: (() => void) | undefined
   readonly onPattern?: ((pattern: string) => void) | undefined
   readonly pattern: string
-  readonly groupedRelations?: boolean | undefined
+  readonly grouped?: boolean | undefined
   readonly surface: SearchSurface
   readonly t: Translate
   readonly total: number
@@ -32,15 +32,15 @@ export function TableFilter({
   const errorId = useId()
   const helpButton = useRef<HTMLButtonElement>(null)
   const input = useRef<HTMLInputElement>(null)
-  const draftResult = parseSearch(draft, surface, { groupedRelations })
-  const appliedResult = parseSearch(pattern, surface, { groupedRelations })
+  const draftResult = parseSearch(draft, surface, { grouped })
+  const appliedResult = parseSearch(pattern, surface, { grouped })
   const invalidApplied = draft === pattern && pattern !== "" && !appliedResult.ok
   const error = (submitted || invalidApplied) && !draftResult.ok ? draftResult.error : null
   const applied = appliedResult.ok ? appliedResult.query : null
   useEffect(() => {
     setDraft(pattern)
     setSubmitted(false)
-  }, [groupedRelations, pattern, surface])
+  }, [grouped, pattern, surface])
   const apply = () => {
     setSubmitted(true)
     if (!draftResult.ok) return
@@ -94,15 +94,37 @@ export function TableFilter({
         <button aria-label={t("filter.clear")} className="inline-flex flex-none cursor-pointer items-center border-0 bg-transparent p-0.5 text-accent3" onClick={clear} type="button"><X aria-hidden="true" size={12} /></button>
       </>}
     </div>
-    {applied?.structured === true && applied.clauses.length > 0 && <div aria-label={t("filter.tokens")} className="mt-1 flex min-w-0 flex-wrap gap-1" data-testid="search-chips">
-      {applied.clauses.map((clause, index) => <span className="inline-flex max-w-full items-center border border-accent2 bg-accent-soft text-xs text-fg" key={`${clause.key}:${clause.value}:${index}`}>
-        <SearchChip clause={clause} t={t} />
-        <button aria-label={t("filter.token.remove", { field: clause.field.kind === "quantity" ? t(`filter.field.${clause.key}.label`) : clause.key, value: clause.field.kind === "quantity" ? `${clause.operator} ${clause.quantity?.number ?? clause.value} ${clause.quantity?.unit ?? ""}`.trim() : clause.value })} className="inline-flex self-stretch cursor-pointer items-center border-0 border-l border-accent2 bg-transparent px-1 text-fg2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => onPattern?.(withoutSearchClause(applied, index))} type="button"><X aria-hidden="true" size={11} /></button>
-      </span>)}
+    {applied?.structured === true && applied.expr !== null && <div aria-label={`${t("filter.tokens")}: ${applied.canonical}`} className="mt-1 flex min-w-0 flex-wrap items-center gap-1" data-testid="search-chips">
+      <SearchChips expr={applied.expr} onRemove={(index) => onPattern?.(withoutSearchClause(applied, index))} t={t} />
     </div>}
     {error !== null && <SearchErrorMessage draft={draft} error={error} id={errorId} t={t} />}
     {help && typeof document !== "undefined" && createPortal(<SearchHelp onClose={() => { setHelp(false); queueMicrotask(() => helpButton.current?.focus()) }} surface={surface} t={t} />, document.body)}
   </div>
+}
+
+function SearchChips({ expr, onRemove, t }: { readonly expr: SearchExpr; readonly onRemove: (index: number) => void; readonly t: Translate }) {
+  let clauseIndex = 0
+  const render = (current: SearchExpr, parentPrecedence: number, path: string): ReactNode[] => {
+    if (current.kind === "predicate") {
+      const index = clauseIndex
+      clauseIndex += 1
+      const clause = current.predicate
+      return [<span className="inline-flex max-w-full items-center border border-accent2 bg-accent-soft text-xs text-fg" key={`${path}:${clause.key}:${clause.value}`}>
+        <SearchChip clause={clause} t={t} />
+        <button aria-label={t("filter.token.remove", { field: clause.field.kind === "quantity" ? t(`filter.field.${clause.key}.label`) : clause.key, value: clause.field.kind === "quantity" ? `${clause.operator} ${clause.quantity?.number ?? clause.value} ${clause.quantity?.unit ?? ""}`.trim() : clause.value })} className="inline-flex self-stretch cursor-pointer items-center border-0 border-l border-accent2 bg-transparent px-1 text-fg2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => onRemove(index)} type="button"><X aria-hidden="true" size={11} /></button>
+      </span>]
+    }
+    const precedence = current.kind === "and" ? 2 : 1
+    const grouped = precedence < parentPrecedence
+    return [
+      ...(grouped ? ["("] : []),
+      ...render(current.left, precedence, `${path}:left`),
+      current.kind === "and" ? "AND" : "OR",
+      ...render(current.right, precedence, `${path}:right`),
+      ...(grouped ? [")"] : []),
+    ]
+  }
+  return render(expr, 0, "root")
 }
 
 function SearchChip({ clause, t }: { readonly clause: SearchClause; readonly t: Translate }) {

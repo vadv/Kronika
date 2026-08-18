@@ -42,19 +42,17 @@ export interface SearchQuantity {
 
 export interface SearchClause {
   readonly canonical: string
-  readonly end: number
   readonly field: SearchField
   readonly key: string
   readonly operator: SearchOperator
   readonly quantity?: SearchQuantity | undefined
-  readonly start: number
   readonly value: string
 }
 
 export type SearchExpr =
   | { readonly kind: "predicate"; readonly predicate: SearchClause }
   | { readonly kind: "and"; readonly left: SearchExpr; readonly right: SearchExpr }
-  | { readonly kind: "or"; readonly left: SearchExpr; readonly operatorEnd: number; readonly operatorStart: number; readonly right: SearchExpr }
+  | { readonly end: number; readonly kind: "or"; readonly left: SearchExpr; readonly right: SearchExpr; readonly start: number }
 
 export interface SearchQuery {
   readonly canonical: string
@@ -65,11 +63,9 @@ export interface SearchQuery {
 }
 
 export type SearchErrorCode =
-  | "empty_clause"
   | "empty_group"
   | "expression_too_long"
   | "expected_boolean_operator"
-  | "expected_and"
   | "expected_colon"
   | "group_too_deep"
   | "invalid_escape"
@@ -167,7 +163,7 @@ export function searchFields(surface: SearchSurface): readonly SearchField[] {
   return SEARCH_FIELDS[surface]
 }
 
-export function parseSearch(input: string, surface: SearchSurface, options: { readonly groupedRelations?: boolean } = {}): SearchParseResult {
+export function parseSearch(input: string, surface: SearchSurface, options: { readonly grouped?: boolean } = {}): SearchParseResult {
   if ([...input].length > SEARCH_MAX_EXPRESSION) return failure("expression_too_long", 0, input.length)
   const first = firstNonSpace(input, 0)
   if (first === input.length) return success("", [], null, null, false)
@@ -183,7 +179,7 @@ export function parseSearch(input: string, surface: SearchSurface, options: { re
   try {
     const parser = new SearchParser(input, byName, first)
     const expr = parser.parse()
-    if (options.groupedRelations === true) {
+    if (options.grouped === true) {
       const mixed = groupedPhase(expr)
       if (!mixed.ok) return mixed
     }
@@ -231,9 +227,8 @@ export function canonicalSearch(clauses: readonly { readonly key: string; readon
   return parsed.ok ? parsed.query.canonical : null
 }
 
-class SearchParserFailure extends Error {
+class SearchParserFailure {
   constructor(readonly result: SearchFailure) {
-    super(result.error.code)
   }
 }
 
@@ -266,7 +261,7 @@ class SearchParser {
       this.cursor = firstNonSpace(this.input, operator.end)
       this.requireOperand(operator.start, operator.end)
       const right = this.parseAnd(depth)
-      left = { kind: "or", left, operatorEnd: operator.end, operatorStart: operator.start, right }
+      left = { end: operator.end, kind: "or", left, right, start: operator.start }
     }
   }
 
@@ -315,7 +310,7 @@ class SearchParser {
     const start = this.cursor
     const keyStart = this.cursor
     while (this.cursor < this.input.length && /[A-Za-z0-9_]/.test(this.input[this.cursor]!)) this.cursor += 1
-    if (this.cursor === keyStart) this.fail("empty_clause", this.cursor, Math.min(this.input.length, this.cursor + 1))
+    if (this.cursor === keyStart) this.fail("missing_operand", this.cursor, Math.min(this.input.length, this.cursor + 1))
     const rawKey = this.input.slice(keyStart, this.cursor).toLowerCase()
     const field = this.fields.get(rawKey)
     if (field === undefined) this.fail("unknown_field", keyStart, this.cursor, rawKey)
@@ -351,11 +346,11 @@ class SearchParser {
       const parsedQuantity = parseQuantity(parsed.value, field.quantity!, parsed.start)
       if (!parsedQuantity.ok) throw new SearchParserFailure(parsedQuantity)
       const canonical = `${field.key}${operator}${parsedQuantity.canonical}`
-      clause = { canonical, end: this.cursor, field, key: field.key, operator, quantity: parsedQuantity.quantity, start, value: parsedQuantity.canonical }
+      clause = { canonical, field, key: field.key, operator, quantity: parsedQuantity.quantity, value: parsedQuantity.canonical }
     } else {
       if (field.kind === "identifier" && !validIdentifier(parsed.value, field.signed === true)) this.fail("invalid_identifier", parsed.start, parsed.end, field.key)
       const canonical = `${field.key}:${canonicalValue(parsed.value, field.kind)}`
-      clause = { canonical, end: this.cursor, field, key: field.key, operator, start, value: parsed.value }
+      clause = { canonical, field, key: field.key, operator, value: parsed.value }
     }
     this.consume(start, this.cursor)
     this.clauses.push(clause)
@@ -389,7 +384,7 @@ function groupedPhase(expr: SearchExpr): { readonly ok: true; readonly phase: Se
   const right = groupedPhase(expr.right)
   if (!right.ok) return right
   if (expr.kind === "or") {
-    if (left.phase !== right.phase || left.phase === "both") return failure("mixed_phase_or", expr.operatorStart, expr.operatorEnd, "OR")
+    if (left.phase !== right.phase || left.phase === "both") return failure("mixed_phase_or", expr.start, expr.end, "OR")
     return { ok: true, phase: left.phase }
   }
   return { ok: true, phase: left.phase === right.phase ? left.phase : "both" }

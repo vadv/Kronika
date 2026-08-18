@@ -177,7 +177,7 @@ test("boolean bounds reject excessive nesting and token counts", () => {
 })
 
 test("grouped relation OR stays wholly before or after reduction", () => {
-  const grouped = { groupedRelations: true }
+  const grouped = { grouped: true }
   for (const expression of [
     "(schema:public OR schema:audit) AND size>100MB",
     "schema:public AND (size>100MB OR buffer_hit<90%)",

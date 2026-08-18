@@ -154,7 +154,7 @@ test("the human context chip and ordinary search are visibly intersected", async
   assert.match(source, /grid-cols-\[18px_minmax\(0,1fr\)\]/)
   assert.match(source, /place-items-center/)
   assert.match(source, /value=\{draft\}/)
-  assert.match(source, /parseSearch\(draft, surface, \{ groupedRelations \}\)/)
+  assert.match(source, /parseSearch\(draft, surface, \{ grouped \}\)/)
   assert.match(source, /onPattern\?\.\(draftResult\.query\.canonical\)/)
   assert.doesNotMatch(source, /filter\.entity/)
 })
