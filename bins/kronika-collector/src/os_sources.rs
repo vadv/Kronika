@@ -37,7 +37,7 @@ use kronika_source_os::proc::cpuinfo;
 use kronika_source_os::proc::loadavg::parse_loadavg;
 use kronika_source_os::proc::meminfo::parse_meminfo;
 use kronika_source_os::proc::pressure::parse_pressure;
-use kronika_source_os::proc::process::{ProcessError, process_facts, read_process};
+use kronika_source_os::proc::process::{ProcessError, process_facts, read_process_with_cgroup};
 use kronika_source_os::proc::stat::{parse_cpu, parse_stat_misc};
 use kronika_source_os::proc::vmstat::parse_vmstat;
 use kronika_source_os::proc::{
@@ -172,6 +172,21 @@ impl OsSources {
         sources.block_topology = block_topology;
         sources
     }
+
+    #[cfg(test)]
+    pub(crate) fn cgroups_only(
+        cpu: Vec<OsCgroupCpu>,
+        memory: Vec<OsCgroupMemory>,
+        io: Vec<OsCgroupIo>,
+        pids: Vec<OsCgroupPids>,
+    ) -> Self {
+        let mut sources = Self::empty();
+        sources.cgroup_cpu = cpu;
+        sources.cgroup_memory = memory;
+        sources.cgroup_io = io;
+        sources.cgroup_pids = pids;
+        sources
+    }
 }
 
 fn read_optional_os_file(fs: &ProcFs, rel: &'static str, type_id: u32) -> Option<String> {
@@ -272,8 +287,18 @@ pub(crate) fn collect_os_sources(
     cpufreq::collect_cpufreq(cpufreq_collector, &sys, interner, scope, ts, due, &mut os);
 
     let entity_scope = os_entity_scope(in_container);
-    process::collect_process_sections(fs, interner, entity_scope, ts, due, &mut os);
-    cgroups::collect_cgroup_sections(&sys, interner, entity_scope, ts, fs, due, &mut os);
+    let process_memberships =
+        process::collect_process_sections(fs, interner, entity_scope, ts, due, &mut os);
+    cgroups::collect_cgroup_sections(
+        &sys,
+        interner,
+        entity_scope,
+        ts,
+        fs,
+        due,
+        &process_memberships,
+        &mut os,
+    );
 
     os
 }

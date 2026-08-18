@@ -1,4 +1,5 @@
 use super::*;
+use std::fmt::Write as _;
 
 fn fixture_roots() -> (tempfile::TempDir, ProcFs, SysFs) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -98,6 +99,169 @@ fn write_v1_cpu_capacity(dir: &tempfile::TempDir, path: &str, quota: &str, perio
     std::fs::create_dir_all(&cgroup).expect("mkdir v1 CPU cgroup");
     std::fs::write(cgroup.join("cpu.cfs_quota_us"), quota).expect("write v1 CPU quota");
     std::fs::write(cgroup.join("cpu.cfs_period_us"), period).expect("write v1 CPU period");
+}
+
+fn write_process_membership(dir: &tempfile::TempDir, pid: i32, content: &str) {
+    let process = dir.path().join("proc").join(pid.to_string());
+    std::fs::create_dir_all(&process).expect("mkdir process");
+    std::fs::write(process.join("cgroup"), content).expect("write process cgroup membership");
+}
+
+fn write_v2_workload_files(dir: &tempfile::TempDir, path: &str, io_stat: &str) {
+    let workload = fixture_cgroup_path(dir, "", path);
+    std::fs::create_dir_all(&workload).expect("mkdir v2 workload");
+    std::fs::write(
+        workload.join("cpu.stat"),
+        "usage_usec 100\nuser_usec 60\nsystem_usec 40\n",
+    )
+    .expect("write workload cpu.stat");
+    std::fs::write(workload.join("memory.current"), "4096\n")
+        .expect("write workload memory.current");
+    std::fs::write(workload.join("pids.current"), "4\n").expect("write workload pids.current");
+    std::fs::write(workload.join("io.stat"), io_stat).expect("write workload io.stat");
+}
+
+#[test]
+fn workload_collection_uses_only_direct_live_v2_memberships() {
+    let (dir, procfs, sys) = fixture_roots();
+    std::fs::write(
+        dir.path().join("sys/fs/cgroup/cgroup.controllers"),
+        "cpu memory io pids\n",
+    )
+    .expect("write controllers");
+    write_process_membership(&dir, 101, "0::/team/alpha\n");
+    write_process_membership(&dir, 102, "0::/team/alpha\n");
+    write_process_membership(&dir, 201, "0::/team/beta\n");
+    write_v2_workload_files(&dir, "/team/alpha", "8:0 rbytes=1 wbytes=2 rios=3 wios=4\n");
+    write_v2_workload_files(&dir, "/team/beta", "8:1 rbytes=5 wbytes=6 rios=7 wios=8\n");
+    write_v2_workload_files(
+        &dir,
+        "/team/unoccupied",
+        "8:2 rbytes=9 wbytes=10 rios=11 wios=12\n",
+    );
+
+    let rows = collect_workloads(&procfs, &sys, 7, 100).expect("collect workloads");
+
+    assert_eq!(
+        rows.cpu
+            .iter()
+            .map(|row| row.cgroup_path.as_str())
+            .collect::<Vec<_>>(),
+        ["/team/alpha", "/team/beta"]
+    );
+    assert_eq!(rows.memory.len(), 2);
+    assert_eq!(rows.pids.len(), 2);
+    assert_eq!(rows.io.len(), 2);
+    assert!(!rows.io_omitted);
+}
+
+#[test]
+fn workload_candidate_count_overflow_rejects_the_complete_tick() {
+    let (dir, procfs, sys) = fixture_roots();
+    std::fs::write(
+        dir.path().join("sys/fs/cgroup/cgroup.controllers"),
+        "cpu memory io pids\n",
+    )
+    .expect("write controllers");
+    for pid in 1..=MAX_CGROUP_CANDIDATES + 1 {
+        write_process_membership(
+            &dir,
+            i32::try_from(pid).expect("bounded PID fixture"),
+            &format!("0::/workload/{pid}\n"),
+        );
+    }
+
+    let err = collect_workloads(&procfs, &sys, 7, 100).expect_err("candidate limit");
+
+    assert!(err.to_string().contains("membership count exceeds 512"));
+}
+
+#[test]
+fn workload_path_bytes_overflow_rejects_the_complete_tick() {
+    let (dir, procfs, sys) = fixture_roots();
+    std::fs::write(
+        dir.path().join("sys/fs/cgroup/cgroup.controllers"),
+        "cpu memory io pids\n",
+    )
+    .expect("write controllers");
+    let padding = "x".repeat((MAX_CGROUP_PATH_BYTES / MAX_CGROUP_CANDIDATES) + 1);
+    for pid in 1..=MAX_CGROUP_CANDIDATES {
+        write_process_membership(
+            &dir,
+            i32::try_from(pid).expect("bounded PID fixture"),
+            &format!("0::/{padding}/{pid:04}\n"),
+        );
+    }
+
+    let err = collect_workloads(&procfs, &sys, 7, 100).expect_err("path byte limit");
+
+    assert!(
+        err.to_string()
+            .contains("membership paths exceed 524288 bytes")
+    );
+}
+
+#[test]
+fn workload_io_overflow_omits_only_the_complete_io_section() {
+    let (dir, procfs, sys) = fixture_roots();
+    std::fs::write(
+        dir.path().join("sys/fs/cgroup/cgroup.controllers"),
+        "cpu memory io pids\n",
+    )
+    .expect("write controllers");
+    write_process_membership(&dir, 101, "0::/workload\n");
+    let mut io_stat = String::new();
+    for minor in 0..=MAX_CGROUP_IO_ROWS {
+        writeln!(io_stat, "8:{minor} rbytes=1 wbytes=2 rios=3 wios=4").expect("write I/O fixture");
+    }
+    write_v2_workload_files(&dir, "/workload", &io_stat);
+
+    let rows = collect_workloads(&procfs, &sys, 7, 100).expect("collect workloads");
+
+    assert_eq!(rows.cpu.len(), 1);
+    assert_eq!(rows.memory.len(), 1);
+    assert_eq!(rows.pids.len(), 1);
+    assert!(rows.io.is_empty());
+    assert!(rows.io_omitted);
+}
+
+#[test]
+fn workload_v1_keeps_controller_memberships_separate() {
+    let (dir, procfs, sys) = fixture_roots();
+    write_process_membership(
+        &dir,
+        101,
+        "2:cpu,cpuacct:/service/cpu\n3:memory:/service/memory\n\
+         4:blkio:/service/io\n5:pids:/service/tasks\n",
+    );
+    let cpu = fixture_cgroup_path(&dir, "cpu,cpuacct", "/service/cpu");
+    let memory = fixture_cgroup_path(&dir, "memory", "/service/memory");
+    let io = fixture_cgroup_path(&dir, "blkio", "/service/io");
+    let pids = fixture_cgroup_path(&dir, "pids", "/service/tasks");
+    for path in [&cpu, &memory, &io, &pids] {
+        std::fs::create_dir_all(path).expect("mkdir v1 workload");
+    }
+    std::fs::write(cpu.join("cpuacct.usage"), "1000\n").expect("write cpu usage");
+    std::fs::write(cpu.join("cpuacct.stat"), "user 6\nsystem 4\n").expect("write cpu stat");
+    std::fs::write(memory.join("memory.usage_in_bytes"), "4096\n").expect("write memory usage");
+    std::fs::write(pids.join("pids.current"), "9\n").expect("write pids current");
+    std::fs::write(
+        io.join("blkio.throttle.io_service_bytes"),
+        "8:0 Read 1\n8:0 Write 2\n",
+    )
+    .expect("write io bytes");
+    std::fs::write(
+        io.join("blkio.throttle.io_serviced"),
+        "8:0 Read 3\n8:0 Write 4\n",
+    )
+    .expect("write io operations");
+
+    let rows = collect_workloads(&procfs, &sys, 7, 100).expect("collect v1 workloads");
+
+    assert_eq!(rows.cpu[0].cgroup_path, "/service/cpu");
+    assert_eq!(rows.memory[0].cgroup_path, "/service/memory");
+    assert_eq!(rows.io[0].cgroup_path, "/service/io");
+    assert_eq!(rows.pids[0].cgroup_path, "/service/tasks");
 }
 
 #[test]

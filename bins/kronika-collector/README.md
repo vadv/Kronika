@@ -42,7 +42,7 @@ source interval of `0` reads on every timer cycle.
 | `KRONIKA_OS_MOUNTTOPO_INTERVAL_S` | 60 | `1_112`, `1_113`, `1_121`, `1_123`. |
 | `KRONIKA_OS_PROCESS_INTERVAL_S` | 5 | `1_100`. |
 | `KRONIKA_OS_PROCESS_STATUS_INTERVAL_S` | 30 | `1_101`. |
-| `KRONIKA_OS_CGROUP_INTERVAL_S` | 10 | `1_201`–`1_204`. |
+| `KRONIKA_OS_CGROUP_INTERVAL_S` | 30 | `1_201`–`1_204`; direct live process memberships, aligned with cgroup mapping. |
 | `KRONIKA_OS_CGROUP_MAPPING_INTERVAL_S` | 30 | `1_200`. |
 | `KRONIKA_LOG_INTERVAL_S` | 10 | `2_001`–`2_007`, `2_100`. |
 | `KRONIKA_PG_INTERVAL_S` | 30 | `1_001`–`1_012`, `1_015`–`1_017`, `1_019`. |

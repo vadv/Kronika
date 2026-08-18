@@ -11,6 +11,8 @@ pub struct CgroupCollection {
     pub io: Vec<CgroupIoRow>,
     /// PIDs rows.
     pub pids: Vec<CgroupPidsRow>,
+    /// The I/O section was omitted because its hard row ceiling was exceeded.
+    pub io_omitted: bool,
 }
 
 /// The collector process's own cgroup membership at one timestamp.

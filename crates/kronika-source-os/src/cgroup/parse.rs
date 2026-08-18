@@ -110,6 +110,15 @@ pub(super) fn parse_memory_events(content: &str, row: &mut CgroupMemoryRow) {
 /// Parse cgroup v2 `io.stat`.
 #[must_use]
 pub fn parse_io_stat(content: &str, ts: i64, cgroup_path: &str) -> Vec<CgroupIoRow> {
+    parse_io_stat_bounded(content, ts, cgroup_path, usize::MAX).unwrap_or_default()
+}
+
+pub(super) fn parse_io_stat_bounded(
+    content: &str,
+    ts: i64,
+    cgroup_path: &str,
+    limit: usize,
+) -> Option<Vec<CgroupIoRow>> {
     let mut rows = Vec::new();
     for line in content.lines() {
         let mut fields = line.split_whitespace();
@@ -129,22 +138,43 @@ pub fn parse_io_stat(content: &str, ts: i64, cgroup_path: &str) -> Vec<CgroupIoR
             rios: 0,
             wios: 0,
         };
+        let mut present = 0_u8;
         for field in fields {
             let Some((key, value)) = field.split_once('=') else {
                 continue;
             };
-            let value = value.parse().unwrap_or(0);
+            let Ok(value) = value.parse() else {
+                continue;
+            };
             match key {
-                "rbytes" => row.rbytes = value,
-                "wbytes" => row.wbytes = value,
-                "rios" => row.rios = value,
-                "wios" => row.wios = value,
+                "rbytes" => {
+                    row.rbytes = value;
+                    present |= 1;
+                }
+                "wbytes" => {
+                    row.wbytes = value;
+                    present |= 2;
+                }
+                "rios" => {
+                    row.rios = value;
+                    present |= 4;
+                }
+                "wios" => {
+                    row.wios = value;
+                    present |= 8;
+                }
                 _ => {}
             }
         }
+        if present != 15 {
+            continue;
+        }
+        if rows.len() == limit {
+            return None;
+        }
         rows.push(row);
     }
-    rows
+    Some(rows)
 }
 
 /// Parse cgroup v1 blkio service byte/op files.
@@ -155,10 +185,28 @@ pub fn parse_blkio_service_stats(
     ts: i64,
     cgroup_path: &str,
 ) -> Vec<CgroupIoRow> {
-    let mut rows: BTreeMap<(u32, u32), CgroupIoRow> = BTreeMap::new();
-    parse_blkio_service_file(bytes_content, ts, cgroup_path, true, &mut rows);
-    parse_blkio_service_file(ops_content, ts, cgroup_path, false, &mut rows);
-    rows.into_values().collect()
+    parse_blkio_service_stats_bounded(bytes_content, ops_content, ts, cgroup_path, usize::MAX)
+        .unwrap_or_default()
+}
+
+pub(super) fn parse_blkio_service_stats_bounded(
+    bytes_content: &str,
+    ops_content: &str,
+    ts: i64,
+    cgroup_path: &str,
+    limit: usize,
+) -> Option<Vec<CgroupIoRow>> {
+    let mut rows: BTreeMap<(u32, u32), (CgroupIoRow, u8)> = BTreeMap::new();
+    if !parse_blkio_service_file(bytes_content, ts, cgroup_path, true, limit, &mut rows)
+        || !parse_blkio_service_file(ops_content, ts, cgroup_path, false, limit, &mut rows)
+    {
+        return None;
+    }
+    Some(
+        rows.into_values()
+            .filter_map(|(row, present)| (present == 15).then_some(row))
+            .collect(),
+    )
 }
 
 fn parse_blkio_service_file(
@@ -166,8 +214,9 @@ fn parse_blkio_service_file(
     ts: i64,
     cgroup_path: &str,
     bytes: bool,
-    rows: &mut BTreeMap<(u32, u32), CgroupIoRow>,
-) {
+    limit: usize,
+    rows: &mut BTreeMap<(u32, u32), (CgroupIoRow, u8)>,
+) -> bool {
     for line in content.lines() {
         let mut fields = line.split_whitespace();
         let Some(device) = fields.next() else {
@@ -185,24 +234,45 @@ fn parse_blkio_service_file(
         let Some((major, minor)) = parse_device(device) else {
             continue;
         };
-        let row = rows.entry((major, minor)).or_insert_with(|| CgroupIoRow {
-            ts,
-            cgroup_path: cgroup_path.to_owned(),
-            major,
-            minor,
-            rbytes: 0,
-            wbytes: 0,
-            rios: 0,
-            wios: 0,
+        if !rows.contains_key(&(major, minor)) && rows.len() == limit {
+            return false;
+        }
+        let (row, present) = rows.entry((major, minor)).or_insert_with(|| {
+            (
+                CgroupIoRow {
+                    ts,
+                    cgroup_path: cgroup_path.to_owned(),
+                    major,
+                    minor,
+                    rbytes: 0,
+                    wbytes: 0,
+                    rios: 0,
+                    wios: 0,
+                },
+                0,
+            )
         });
         match (op, bytes) {
-            ("Read", true) => row.rbytes = value,
-            ("Write", true) => row.wbytes = value,
-            ("Read", false) => row.rios = value,
-            ("Write", false) => row.wios = value,
+            ("Read", true) => {
+                row.rbytes = value;
+                *present |= 1;
+            }
+            ("Write", true) => {
+                row.wbytes = value;
+                *present |= 2;
+            }
+            ("Read", false) => {
+                row.rios = value;
+                *present |= 4;
+            }
+            ("Write", false) => {
+                row.wios = value;
+                *present |= 8;
+            }
             _ => {}
         }
     }
+    true
 }
 
 fn key_value_lines(content: &str) -> impl Iterator<Item = (&str, i64)> {

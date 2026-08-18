@@ -65,6 +65,18 @@ The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 The collector currently writes the `1_201_001` and `1_202_001` layouts. The
 `002` layouts remain registered because existing WAL and ZMS files carry them.
 
+Workload cgroup sections contain only cgroups named by direct memberships of
+live numeric `/proc/<pid>` entries; collection never recursively attributes an
+ancestor's descendants. V2 uses its unified membership path. V1 keeps CPU,
+memory, block-I/O, and PIDs controller paths separate, and emits a CPU row only
+when `cpu` and `cpuacct` name the same path. A tick accepts at most 512 distinct
+controller/path candidates and 512 KiB of candidate path bytes. Exceeding
+either ceiling omits all workload cgroup sections for that tick. More than
+1,024 cgroup/device rows omits the complete I/O section while retaining the
+independently complete CPU, memory, and PIDs sections. Collection runs on the
+same 30-second cadence as process-to-cgroup mapping.
+The collector reuses the process pass's membership reads on that shared tick.
+
 `os_cgroup_context` records the collector process's exact controller paths from
 `/proc/self/cgroup`. On cgroup v2 the CPU, memory, and I/O paths are the unified
 path. On cgroup v1 they remain controller-specific. `cpuset_cpus` is the count

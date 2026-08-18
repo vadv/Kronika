@@ -1,7 +1,7 @@
 use super::{
     DueSet, Instant, Interner, OsCgroupMapping, OsSources, ProcFs, ProcessError, SourceKind, Ts,
     intern_str, log_collection_finish, log_count_degraded, log_degraded, process_facts,
-    read_process,
+    read_process_with_cgroup,
 };
 
 #[allow(
@@ -15,32 +15,19 @@ pub(super) fn collect_process_sections(
     ts: i64,
     due: &DueSet,
     os: &mut OsSources,
-) {
+) -> Vec<String> {
     let hot_due = due.has(SourceKind::OsProcesses);
     let status_due = due.has(SourceKind::OsProcessStatus);
     let mapping_due = due.has(SourceKind::OsCgroupMapping);
-    if !hot_due && !status_due && !mapping_due {
-        return;
+    let cgroup_due = due.has(SourceKind::OsCgroup);
+    if !hot_due && !status_due && !mapping_due && !cgroup_due {
+        return Vec::new();
     }
 
     let hot_type_id = 1_100_001_u32;
     let status_type_id = 1_101_001_u32;
     let mapping_type_id = 1_200_001_u32;
     let started = Instant::now();
-    let facts = match process_facts(fs) {
-        Ok(facts) => facts,
-        Err(err) => {
-            for type_id in [hot_type_id, status_type_id, mapping_type_id] {
-                if (type_id == hot_type_id && hot_due)
-                    || (type_id == status_type_id && status_due)
-                    || (type_id == mapping_type_id && mapping_due)
-                {
-                    log_degraded(type_id, "process", &err);
-                }
-            }
-            return;
-        }
-    };
     let pids = match fs.pid_dirs() {
         Ok(pids) => pids,
         Err(err) => {
@@ -52,14 +39,43 @@ pub(super) fn collect_process_sections(
                     log_degraded(type_id, "process", &err);
                 }
             }
-            return;
+            return Vec::new();
+        }
+    };
+    let facts = match process_facts(fs) {
+        Ok(facts) => facts,
+        Err(err) => {
+            for type_id in [hot_type_id, status_type_id, mapping_type_id] {
+                if (type_id == hot_type_id && hot_due)
+                    || (type_id == status_type_id && status_due)
+                    || (type_id == mapping_type_id && mapping_due)
+                {
+                    log_degraded(type_id, "process", &err);
+                }
+            }
+            return if cgroup_due {
+                pids.into_iter()
+                    .filter_map(|pid| fs.read_raw(&format!("{pid}/cgroup")).ok())
+                    .collect()
+            } else {
+                Vec::new()
+            };
         }
     };
     let mut skipped = 0_usize;
     let mut io_nulls = 0_usize;
     let mut mapping_nulls = 0_usize;
+    let mut cgroup_memberships = Vec::new();
     for pid in pids {
-        let read = match read_process(fs, pid, facts, ts) {
+        let membership = if mapping_due || cgroup_due {
+            fs.read_raw(&format!("{pid}/cgroup")).ok()
+        } else {
+            None
+        };
+        if cgroup_due && let Some(membership) = &membership {
+            cgroup_memberships.push(membership.clone());
+        }
+        let read = match read_process_with_cgroup(fs, pid, facts, ts, membership) {
             Ok(read) => read,
             Err(ProcessError::Gone(_)) => continue,
             Err(_) => {
@@ -159,4 +175,5 @@ pub(super) fn collect_process_sections(
             started.elapsed(),
         );
     }
+    cgroup_memberships
 }

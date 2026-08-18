@@ -3,6 +3,10 @@ use super::{
     log_collection_finish, log_degraded, process_facts,
 };
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the cgroup pass shares one tick's roots, interner, due set, process memberships, and output"
+)]
 pub(super) fn collect_cgroup_sections(
     sys: &SysFs,
     interner: &mut Interner,
@@ -10,6 +14,7 @@ pub(super) fn collect_cgroup_sections(
     ts: i64,
     fs: &ProcFs,
     due: &DueSet,
+    process_memberships: &[String],
     os: &mut OsSources,
 ) {
     if !due.has(SourceKind::OsCgroup) {
@@ -31,7 +36,38 @@ pub(super) fn collect_cgroup_sections(
     );
     collect_context_section(sys, interner, scope, ts, fs, os);
 
-    let rows = cgroup::collect(sys, ts, clock_ticks);
+    let mut memberships = process_memberships
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let self_membership = fs.read_raw("self/cgroup").ok();
+    if let Some(membership) = self_membership.as_deref() {
+        memberships.push(membership);
+    }
+    let rows = match cgroup::collect_workload_memberships(memberships, sys, ts, clock_ticks) {
+        Ok(rows) => rows,
+        Err(err) => {
+            for (type_id, source) in [
+                (cpu_type_id, "cgroup/cpu"),
+                (memory_type_id, "cgroup/memory"),
+                (io_type_id, "cgroup/io"),
+                (pids_type_id, "cgroup/pids"),
+            ] {
+                log_degraded(type_id, source, &err);
+            }
+            return;
+        }
+    };
+    if rows.io_omitted {
+        log_degraded(
+            io_type_id,
+            "cgroup/io",
+            &std::io::Error::other(format!(
+                "cgroup/device row count exceeds {}",
+                cgroup::MAX_CGROUP_IO_ROWS
+            )),
+        );
+    }
 
     for row in &rows.cpu {
         if let Some(cgroup_path) = intern_str(interner, cpu_type_id, "cgroup/cpu", &row.cgroup_path)
