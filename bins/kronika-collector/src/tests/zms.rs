@@ -51,6 +51,9 @@ const ACTIVITY_ROWS_PER_SNAPSHOT: usize = 64;
 const CGROUP_CONTEXT_SNAPSHOTS_PER_HOUR: usize = 360;
 const CPUFREQ_SNAPSHOTS_PER_HOUR: usize = 360;
 const CPUFREQ_POLICY_COUNT: usize = 128;
+const CPUFREQ_COST_CHILD_ENV: &str = "KRONIKA_CPUFREQ_COST_CHILD";
+const CPUFREQ_COST_TEST: &str =
+    "tests::zms::cpufreq_hour_reports_collection_and_production_writer_costs";
 const STORAGE_SNAPSHOTS_PER_HOUR: usize = 60;
 const STORAGE_MOUNTS_PER_SNAPSHOT: usize = 64;
 const STORAGE_EDGES_PER_SNAPSHOT: usize = 128;
@@ -1014,6 +1017,28 @@ fn activity_datid_hour_reports_production_writer_costs() {
     reason = "the CPUFreq acceptance artifact measures bounded sysfs reads and the exact production WAL/ZMS path together"
 )]
 fn cpufreq_hour_reports_collection_and_production_writer_costs() {
+    if std::env::var_os(CPUFREQ_COST_CHILD_ENV).is_none() {
+        let executable = std::env::current_exe().expect("locate collector test binary");
+        let output = std::process::Command::new(executable)
+            .args([
+                "--exact",
+                CPUFREQ_COST_TEST,
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CPUFREQ_COST_CHILD_ENV, "1")
+            .output()
+            .expect("run isolated CPUFreq cost child");
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "isolated CPUFreq cost child exited with {}",
+            output.status
+        );
+        return;
+    }
+
     let sysfs = tempfile::tempdir().expect("create CPUFreq sysfs fixture");
     write_cpufreq_fixture(sysfs.path(), CPUFREQ_POLICY_COUNT);
     let sys = SysFs::new(sysfs.path().to_path_buf());
@@ -1168,6 +1193,8 @@ fn cpufreq_hour_reports_collection_and_production_writer_costs() {
     );
     assert!(raw_wal_bytes < 32 * 1024 * 1024);
     assert!(zms_bytes < 4 * 1024 * 1024);
+    assert!(collection_rss_kib > 0);
+    assert!(collection_rss_kib <= 25_600);
     println!(
         "os_cpufreq_cost policies={} samples={} raw_wal_bytes={} policy_raw_section_bytes={} sample_raw_section_bytes={} policy_zms_section_bytes={} sample_zms_section_bytes={} marginal_zms_bytes={} zms_bytes={} collection_elapsed_us={} collection_cpu_ticks={} collection_peak_rss_kib={} writer_elapsed_us={} writer_cpu_ticks={} writer_peak_rss_kib={}",
         policy_rows.len(),
