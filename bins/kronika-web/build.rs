@@ -1,12 +1,11 @@
 //! Validates and fingerprints the generated forensic interface bundle.
 
 use std::fs;
-use std::io::Read as _;
-use std::io::{self, ErrorKind};
+use std::io::{self, ErrorKind, Read as _};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use flate2::read::GzDecoder;
+use flate2::bufread::GzDecoder;
 use sha2::{Digest as _, Sha256};
 
 const UI_GZIP: &str = "ui/kronika-ui.html.gz";
@@ -17,15 +16,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|error| io::Error::new(error.kind(), format!("read {UI_GZIP}: {error}")))?;
     validate_header(&compressed)?;
 
-    let mut html = String::new();
-    GzDecoder::new(compressed.as_slice())
-        .read_to_string(&mut html)
-        .map_err(|error| io::Error::new(error.kind(), format!("decode {UI_GZIP}: {error}")))?;
-    validate_html(&html)?;
+    let identity = decode_all(&compressed)?;
+    let html = std::str::from_utf8(&identity)
+        .map_err(|error| invalid(format!("{UI_GZIP} does not contain UTF-8 HTML: {error}")))?;
+    validate_html(html)?;
 
     let gzip_etag = etag(&compressed);
-    let identity_etag = etag(html.as_bytes());
-    let script_hashes = script_bodies(&html)?
+    let identity_hash = hash(&identity);
+    let identity_etag = format!("\"{identity_hash}\"");
+    let script_hashes = script_bodies(html)?
         .into_iter()
         .map(|script| {
             format!(
@@ -43,14 +42,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("cargo:rustc-env=KRONIKA_UI_GZIP_ETAG={gzip_etag}");
     println!("cargo:rustc-env=KRONIKA_UI_IDENTITY_ETAG={identity_etag}");
+    println!("cargo:rustc-env=KRONIKA_UI_IDENTITY_SHA256={identity_hash}");
     println!("cargo:rustc-env=KRONIKA_UI_CSP={csp}");
     println!("cargo:rustc-env=KRONIKA_UI_GZIP_LEN={}", compressed.len());
-    println!("cargo:rustc-env=KRONIKA_UI_IDENTITY_LEN={}", html.len());
+    println!("cargo:rustc-env=KRONIKA_UI_IDENTITY_LEN={}", identity.len());
     Ok(())
 }
 
+fn decode_all(compressed: &[u8]) -> io::Result<Vec<u8>> {
+    let mut decoder = GzDecoder::new(compressed);
+    let mut identity = Vec::new();
+    decoder
+        .read_to_end(&mut identity)
+        .map_err(|error| io::Error::new(error.kind(), format!("decode {UI_GZIP}: {error}")))?;
+    if !decoder.into_inner().is_empty() {
+        return Err(invalid(format!("{UI_GZIP} has trailing bytes")));
+    }
+    Ok(identity)
+}
+
 fn etag(bytes: &[u8]) -> String {
-    format!("\"{}\"", hex(&Sha256::digest(bytes)))
+    format!("\"{}\"", hash(bytes))
+}
+
+fn hash(bytes: &[u8]) -> String {
+    hex(&Sha256::digest(bytes))
 }
 
 fn validate_header(bytes: &[u8]) -> io::Result<()> {

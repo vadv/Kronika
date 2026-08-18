@@ -47,7 +47,6 @@ type WebBody = UnsyncBoxBody<Bytes, BodyError>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    ui::initialize().context("prepare embedded interface")?;
     let config = Arc::new(Config::from_env()?);
     let listener = TcpListener::bind(config.listen)
         .await
