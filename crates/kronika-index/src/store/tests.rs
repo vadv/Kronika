@@ -507,11 +507,14 @@ fn append_direct_fixture(journal: &mut Journal, segment_id: i64, error_category:
             major: 8,
             minor: 1,
             mount_point: label,
+            root: label,
             fstype: label,
             source: label,
             is_k8s_infra: false,
             total_bytes: Some(100),
             free_bytes: Some(10),
+            total_inodes: Some(100),
+            available_inodes: Some(10),
             scope: 0,
         })
         .expect("mount row");
@@ -965,7 +968,7 @@ fn direct_boundaries_and_log_events_use_exact_production_fields() {
     for (logical_name, type_id, field_ordinal, row_ordinal) in [
         ("os_cpu", 1_102_001, 5, 1),
         ("os_loadavg", 1_105_001, 1, 0),
-        ("os_mountinfo", 1_112_001, 8, 0),
+        ("os_mountinfo", 1_112_002, 9, 0),
     ] {
         let selected = resource(directory.path(), &reader, &segment, logical_name)
             .expect("direct finding resource");

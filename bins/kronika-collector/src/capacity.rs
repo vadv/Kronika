@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 const HELPER_ARGUMENT: &str = "--kronika-statvfs-helper";
 const CAPACITY_DEADLINE: Duration = Duration::from_secs(1);
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
-const RECORD_LEN: usize = 1 + 8 + 8;
+const RECORD_LEN: usize = 1 + 8 + 8 + 8 + 8;
 static PENDING_HELPER: Mutex<Option<Child>> = Mutex::new(None);
 
 enum HelperOutcome {
@@ -233,9 +233,15 @@ fn decode_records(
         total.copy_from_slice(&record[1..9]);
         let mut free = [0; 8];
         free.copy_from_slice(&record[9..17]);
+        let mut total_inodes = [0; 8];
+        total_inodes.copy_from_slice(&record[17..25]);
+        let mut available_inodes = [0; 8];
+        available_inodes.copy_from_slice(&record[25..33]);
         capacities[*index] = Some(FsSpace {
             total_bytes: i64::from_le_bytes(total),
             free_bytes: i64::from_le_bytes(free),
+            total_inodes: i64::from_le_bytes(total_inodes),
+            available_inodes: i64::from_le_bytes(available_inodes),
         });
     }
     completed
@@ -247,6 +253,8 @@ fn write_record(writer: &mut impl Write, space: Option<FsSpace>) -> std::io::Res
         record[0] = 1;
         record[1..9].copy_from_slice(&space.total_bytes.to_le_bytes());
         record[9..17].copy_from_slice(&space.free_bytes.to_le_bytes());
+        record[17..25].copy_from_slice(&space.total_inodes.to_le_bytes());
+        record[25..33].copy_from_slice(&space.available_inodes.to_le_bytes());
     }
     writer.write_all(&record)
 }

@@ -39,7 +39,7 @@ source interval of `0` reads on every timer cycle.
 | --- | ---: | --- |
 | `KRONIKA_INTERVAL_S` | 5 | Maximum timer sleep; `0` disables the timer and leaves collection to signals. |
 | `KRONIKA_OS_CORE_INTERVAL_S` | 10 | `1_102`–`1_111`, `1_114`–`1_120`, `1_122`. |
-| `KRONIKA_OS_MOUNTTOPO_INTERVAL_S` | 60 | `1_112`, `1_113`, `1_121`. |
+| `KRONIKA_OS_MOUNTTOPO_INTERVAL_S` | 60 | `1_112`, `1_113`, `1_121`, `1_123`. |
 | `KRONIKA_OS_PROCESS_INTERVAL_S` | 5 | `1_100`. |
 | `KRONIKA_OS_PROCESS_STATUS_INTERVAL_S` | 30 | `1_101`. |
 | `KRONIKA_OS_CGROUP_INTERVAL_S` | 10 | `1_201`–`1_204`. |
@@ -191,13 +191,16 @@ from.
 | `KRONIKA_LOG_LEVEL` | `info` | One of `error`, `warn`, `info`, `debug`, `trace`. |
 | `KRONIKA_PROC_ROOT` | `/proc` | Where procfs is mounted. Setting it also narrows container detection to the cgroup file under that root. |
 | `KRONIKA_SYS_ROOT` | `/sys` | Where sysfs is mounted. |
-| `KRONIKA_STATVFS_FIXTURE` | unset | Test hook: use `path=TOTAL:FREE;...` capacity values instead of calling `statvfs`. |
+| `KRONIKA_STATVFS_FIXTURE` | unset | Test hook: use `path=TOTAL:FREE:INODES:AVAILABLE_INODES;...` values instead of calling `statvfs`. |
 
 Filesystem capacity is queried only for `ext2`, `ext3`, `ext4`, `xfs`,
 `btrfs`, `f2fs`, `zfs`, `tmpfs`, and `overlay`. Network, FUSE/userspace,
 `autofs`, and unknown filesystem types keep nullable capacity fields. One
 helper process handles the allowlisted mounts under a single one-second
 deadline so a blocked capacity query cannot stop later snapshots.
+The mount snapshot stores the exact mount root and both byte and inode
+total/available pairs. Sysfs topology stores only partitions with an exact
+parent block-device identity; layered device ancestry remains unspecified.
 
 ## Run the collector
 

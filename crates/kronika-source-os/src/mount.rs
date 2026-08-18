@@ -202,32 +202,46 @@ pub fn display_path(paths: &[String]) -> Option<&str> {
         .map(String::as_str)
 }
 
-/// Build a registry row for `1_112_001` from a parsed mount entry and optional
+/// Interned string identities used by one mount row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MountStringIds {
+    /// Interned mount point.
+    pub mount_point: StrId,
+    /// Interned filesystem root.
+    pub root: StrId,
+    /// Interned filesystem type.
+    pub fstype: StrId,
+    /// Interned mount source.
+    pub source: StrId,
+}
+
+/// Build a registry row for `1_112_002` from a parsed mount entry and optional
 /// capacity snapshot.
 ///
-/// The caller interns `entry.mount_point`, `entry.fstype`, and `entry.source`
-/// and passes the resulting [`StrId`]s. `space` is `None` when capacity was
-/// skipped or unavailable.
+/// The caller interns `entry.mount_point`, `entry.root`, `entry.fstype`, and
+/// `entry.source` in `strings`. `space` is `None` when capacity was skipped or
+/// unavailable.
 #[must_use]
 pub fn mount_row(
     entry: &MountEntry,
     space: Option<FsSpace>,
     scope: u8,
     ts: i64,
-    mount_point_id: StrId,
-    fstype_id: StrId,
-    source_str_id: StrId,
+    strings: MountStringIds,
 ) -> OsMountinfo {
     OsMountinfo {
         ts: Ts(ts),
         major: entry.major,
         minor: entry.minor,
-        mount_point: mount_point_id,
-        fstype: fstype_id,
-        source: source_str_id,
+        mount_point: strings.mount_point,
+        root: strings.root,
+        fstype: strings.fstype,
+        source: strings.source,
         is_k8s_infra: entry.is_k8s_infra,
         total_bytes: space.map(|s| s.total_bytes),
         free_bytes: space.map(|s| s.free_bytes),
+        total_inodes: space.map(|s| s.total_inodes),
+        available_inodes: space.map(|s| s.available_inodes),
         scope,
     }
 }
@@ -330,7 +344,13 @@ mod tests {
             is_k8s_infra: false,
         };
 
-        let row = mount_row(&entry, None, 2, 1_000_000, StrId(10), StrId(20), StrId(30));
+        let strings = MountStringIds {
+            mount_point: StrId(10),
+            root: StrId(11),
+            fstype: StrId(20),
+            source: StrId(30),
+        };
+        let row = mount_row(&entry, None, 2, 1_000_000, strings);
         assert_eq!(row.total_bytes, None);
         assert_eq!(row.free_bytes, None);
         assert_eq!(row.major, 8);
@@ -339,23 +359,20 @@ mod tests {
         assert_eq!(row.scope, 2);
         assert_eq!(row.ts, Ts(1_000_000));
         assert_eq!(row.mount_point, StrId(10));
+        assert_eq!(row.root, StrId(11));
         assert_eq!(row.fstype, StrId(20));
         assert_eq!(row.source, StrId(30));
 
         let space = FsSpace {
             total_bytes: 500_000_000,
             free_bytes: 200_000_000,
+            total_inodes: 100_000,
+            available_inodes: 40_000,
         };
-        let row2 = mount_row(
-            &entry,
-            Some(space),
-            2,
-            1_000_000,
-            StrId(10),
-            StrId(20),
-            StrId(30),
-        );
+        let row2 = mount_row(&entry, Some(space), 2, 1_000_000, strings);
         assert_eq!(row2.total_bytes, Some(500_000_000));
         assert_eq!(row2.free_bytes, Some(200_000_000));
+        assert_eq!(row2.total_inodes, Some(100_000));
+        assert_eq!(row2.available_inodes, Some(40_000));
     }
 }

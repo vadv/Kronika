@@ -26,6 +26,7 @@ use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersi
 use crate::contract::{ColumnType, TypeContract};
 
 pub mod instance_metadata;
+pub mod os_block_topology;
 pub mod os_cgroup_context;
 pub mod os_cgroup_cpu;
 pub mod os_cgroup_io;

@@ -65,6 +65,9 @@ pub(crate) fn push_os_sources(buffers: &mut SectionBuffers, os: &OsSources) -> R
     for row in &os.topology {
         buffer_row(buffers, *row)?;
     }
+    for row in &os.block_topology {
+        buffer_row(buffers, *row)?;
+    }
     for row in &os.cpufreq_policy {
         buffer_row(buffers, *row)?;
     }

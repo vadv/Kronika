@@ -526,7 +526,11 @@ latency is `delta(operation_time_ms) / delta(completed_operations)` and is
 `null` without a usable predecessor or when the operation delta is zero. Host
 I/O PSI stays explicitly host-wide and is not presented as device latency;
 cgroup I/O throughput and operations remain separate from host diskstats.
-Selecting a metric opens its one-hour history.
+The filesystem table records mount point and root plus exact total/available
+byte and inode pairs. It does not derive used space from availability. Storage
+topology adds only exact sysfs partition-to-parent edges and leaves dm/LVM/MD,
+whole devices, unresolved links, and bind ancestry opaque. Selecting a metric
+opens its one-hour history.
 
 A persisted local preference can remove every large chart panel from the layout,
 so tables immediately use the released viewport height. Process-summary loads

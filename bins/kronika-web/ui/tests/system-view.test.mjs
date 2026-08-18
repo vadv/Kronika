@@ -7,10 +7,10 @@ import { importModule, registryPlugin } from "./import-module.mjs"
 import { parseDictionary, validateDictionaries } from "../scripts/i18n.mjs"
 
 const helpers = await importModule(
-  'export { dockGroupMetrics, effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, clearCgroupSnapshotRows, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, mountPairSeries, resourceBreakdownSeries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
+  'export { dockGroupMetrics, effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, clearCgroupSnapshotRows, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, mountPairSeries, resourceBreakdownSeries, storageTopologyEntries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
   { plugins: [registryPlugin([
     { typeId: "1108001", logicalName: "os_diskstats", identity: ["major", "minor"], columns: ["ts", "major", "minor", "device", "io_in_progress"] },
-    { typeId: "1112001", logicalName: "os_mountinfo", identity: ["major", "minor"], columns: ["ts", "major", "minor", "mount_point", "source", "fstype", "free_bytes", "total_bytes", "is_k8s_infra"] },
+    { typeId: "1112002", logicalName: "os_mountinfo", identity: ["major", "minor", "mount_point"], columns: ["ts", "major", "minor", "mount_point", "root", "fstype", "source", "is_k8s_infra", "total_bytes", "free_bytes", "total_inodes", "available_inodes", "scope"] },
   ])] },
 )
 
@@ -107,8 +107,8 @@ test("system cards derive production values when fixture-only series are absent"
       os_cpu: [cpu(100, 10, 10, 80), { ...cpu(100, 0, 0, 0), values: { cpu_id: 0, scope: 0 } }, cpu(200, 20, 20, 160), { ...cpu(200, 0, 0, 0), values: { cpu_id: 0, scope: 0 } }],
       os_meminfo: [{ logicalName: "os_meminfo", ordinal: "0", segmentId: "a", timestamp: 200, typeId: "1104001", values: { anon_pages: 30, buffers: 5, cached: 20, mem_available: 25, mem_free: 10, mem_total: 100, s_reclaimable: 5, s_unreclaim: 3 } }],
       os_mountinfo: [
-        { logicalName: "os_mountinfo", ordinal: "0", segmentId: "a", timestamp: 200, typeId: "1112001", values: { free_bytes: 50, total_bytes: 100 } },
-        { logicalName: "os_mountinfo", ordinal: "1", segmentId: "a", timestamp: 200, typeId: "1112001", values: { free_bytes: 20, total_bytes: 100 } },
+        { logicalName: "os_mountinfo", ordinal: "0", segmentId: "a", timestamp: 200, typeId: "1112002", values: { free_bytes: 50, total_bytes: 100 } },
+        { logicalName: "os_mountinfo", ordinal: "1", segmentId: "a", timestamp: 200, typeId: "1112002", values: { free_bytes: 20, total_bytes: 100 } },
       ],
       os_diskstats: [
         { logicalName: "os_diskstats", ordinal: "0", segmentId: "a", timestamp: 200, typeId: "1110001", values: { io_in_progress: 2 } },
@@ -348,7 +348,7 @@ test("System entity tables keep exact meaning-first orders and rate presentation
   assert.deepEqual(fields.os_cgroup_cpu, ["cgroup_path", "cgroup_used_cores", "cgroup_user_cores", "cgroup_system_cores", "cgroup_other_cores", "cgroup_capacity", "cgroup_quota", "cpuset_cpus"])
   assert.deepEqual(fields.os_cgroup_memory, ["cgroup_path", "current", "effective_memory_max", "max", "anon", "file", "slab", "kernel_other", "memory_unclassified"])
   assert.deepEqual(fields.os_cgroup_io, ["cgroup_path", "device_id", "rbytes", "wbytes", "rios", "wios"])
-  assert.deepEqual(fields.os_mountinfo, ["mount_point", "source", "fstype", "free_bytes", "total_bytes", "is_k8s_infra"])
+  assert.deepEqual(fields.os_mountinfo, ["mount_point", "root", "source", "fstype", "device_id", "free_bytes", "filesystem_available_percent", "total_bytes", "available_inodes", "inode_available_percent", "total_inodes", "is_k8s_infra"])
   assert.deepEqual(fields.os_netdev, ["iface", "rx_bytes", "tx_bytes", "rx_packets", "tx_packets", "rx_errs", "tx_errs", "rx_drop", "tx_drop", "speed_mbit", "duplex"])
   assert.deepEqual(fields.os_topology, ["cpu_id", "socket_id", "core_id", "numa_node", "model_name", "mhz_max"])
 
@@ -364,13 +364,13 @@ test("hidden mount device IDs remain exact request and history identity", () => 
   assert.ok(request.fields.includes("minor"))
   assert.equal(mount.columns.some(({ field }) => field === "major" || field === "minor"), false)
 
-  const row = { logicalName: "os_mountinfo", ordinal: "0", segmentId: "s", timestamp: 12, typeId: "1112001", values: { major: 8, minor: 1, free_bytes: 4 } }
+  const row = { logicalName: "os_mountinfo", ordinal: "0", segmentId: "s", timestamp: 12, typeId: "1112002", values: { major: 8, minor: 1, mount_point: "/data", free_bytes: 4 } }
   assert.deepEqual(helpers.entityHistoryRequest(row, mount.columns.find(({ field }) => field === "free_bytes")), {
-    fields: ["free_bytes", "major", "minor"],
-    key: '["1112001",[["major","8"],["minor","1"]],"free_bytes"]',
+    fields: ["free_bytes", "major", "minor", "mount_point"],
+    key: '["1112002",[["major","8"],["minor","1"],["mount_point","/data"]],"free_bytes"]',
     section: "os_mountinfo",
-    typeId: "1112001",
-    where: { major: "8", minor: "1" },
+    typeId: "1112002",
+    where: { major: "8", minor: "1", mount_point: "/data" },
   })
 })
 
@@ -382,7 +382,7 @@ test("System entity headers have exact EN/RU help without obvious or orphan entr
   const english = parseDictionary(englishSource, "en.yaml")
   const russian = parseDictionary(russianSource, "ru.yaml")
   validateDictionaries(english, russian)
-  const obvious = new Set(["device", "device_id", "cgroup_path", "mount_point", "fstype", "source", "iface", "cpu_id", "model_name"])
+  const obvious = new Set(["device", "device_id", "cgroup_path", "mount_point", "root", "fstype", "source", "iface", "cpu_id", "model_name"])
   const usedHelp = new Set()
   for (const { columns, section } of helpers.SYSTEM_ENTITIES) for (const column of columns) {
     assert.equal(column.help === undefined, obvious.has(column.field), `${section}/${column.field}`)
@@ -529,7 +529,7 @@ test("registry cumulative fields become reset-safe rates across storage segments
 
 test("a mount history charts exact available against total without inventing used space", () => {
   const row = (timestamp, free, total) => ({
-    logicalName: "os_mountinfo", ordinal: String(timestamp), segmentId: "a", timestamp, typeId: "1102001",
+    logicalName: "os_mountinfo", ordinal: String(timestamp), segmentId: "a", timestamp, typeId: "1112002",
     values: { free_bytes: free, total_bytes: total },
   })
   const t = (key) => key
@@ -542,6 +542,26 @@ test("a mount history charts exact available against total without inventing use
   const broken = helpers.mountPairSeries([row(1_000_000, 1500, 1000)], t)
   assert.deepEqual(broken[0].points.map(({ value }) => value), [1500])
   assert.deepEqual(helpers.mountPairSeries([{ ...row(1_000_000, null, null), values: {} }], t), [])
+})
+
+test("a mount inode history charts exact available against total", () => {
+  const row = (timestamp, available, total) => ({
+    logicalName: "os_mountinfo", ordinal: String(timestamp), segmentId: "a", timestamp, typeId: "1112002",
+    values: { available_inodes: available, total_inodes: total },
+  })
+  const series = helpers.mountPairSeries([row(1_000_000, 300, 1000), row(2_000_000, 250, 1000)], (key) => key, "inodes")
+  assert.deepEqual(series.map(({ id }) => id), ["available_inodes", "total_inodes"])
+  assert.deepEqual(series[0].points.map(({ value }) => value), [300, 250])
+  assert.deepEqual(series[1].points.map(({ value }) => value), [1000, 1000])
+})
+
+test("storage topology exposes only recorded partition parents and mount roots", () => {
+  const row = (logicalName, values) => ({ logicalName, ordinal: "0", segmentId: "a", timestamp: 1, typeId: "0", values })
+  assert.deepEqual(helpers.storageTopologyEntries(
+    [],
+    [row("os_block_topology", { major: 259, minor: 1, parent_major: 259, parent_minor: 0 })],
+    [row("os_mountinfo", { major: 259, minor: 1, mount_point: "/data", root: "/subvol", source: "/dev/nvme0n1p1" })],
+  ), [{ associations: ["/dev/nvme0n1p1 /subvol → /data"], id: "259:1", name: "259:1", parent: "259:0" }])
 })
 
 test("the committed hour supplies only honest System metrics with complete histories", async () => {

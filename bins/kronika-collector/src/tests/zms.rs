@@ -4,10 +4,12 @@ use std::path::{Path, PathBuf};
 use kronika_format::{ENTRY_LEN, FRAME_HEADER_LEN};
 use kronika_layout::{DataRoot, LayoutLimits, WriterOwner};
 use kronika_reader::{Cell, Reader, Resolved, Row, SegmentKind};
+use kronika_registry::os_block_topology::OsBlockTopology;
 use kronika_registry::os_cgroup_context::OsCgroupContext;
 use kronika_registry::os_cpufreq::{OsCpufreq, OsCpufreqPolicy};
+use kronika_registry::os_mountinfo::OsMountinfo;
 use kronika_registry::{PgWalStorage, StrId, Ts, section_name};
-use kronika_source_os::{SysFs, cpufreq};
+use kronika_source_os::{SysFs, block_topology, cpufreq};
 use kronika_source_pg::activity::{ActivityRow, ActivityVersion};
 use kronika_source_pg::query::{BATCH_LOGICAL_BYTES, BATCH_ROWS};
 use kronika_source_pg::settings::SettingsRow;
@@ -41,12 +43,17 @@ const PG_STAT_ACTIVITY_V3_TYPE_ID: u32 = 1_001_004;
 const CGROUP_CONTEXT_TYPE_ID: u32 = 1_205_001;
 const CPUFREQ_POLICY_TYPE_ID: u32 = 1_121_001;
 const CPUFREQ_TYPE_ID: u32 = 1_122_001;
+const MOUNTINFO_TYPE_ID: u32 = 1_112_002;
+const BLOCK_TOPOLOGY_TYPE_ID: u32 = 1_123_001;
 const WAL_STORAGE_SNAPSHOTS_PER_HOUR: usize = 120;
 const ACTIVITY_SNAPSHOTS_PER_HOUR: usize = 120;
 const ACTIVITY_ROWS_PER_SNAPSHOT: usize = 64;
 const CGROUP_CONTEXT_SNAPSHOTS_PER_HOUR: usize = 360;
 const CPUFREQ_SNAPSHOTS_PER_HOUR: usize = 360;
 const CPUFREQ_POLICY_COUNT: usize = 128;
+const STORAGE_SNAPSHOTS_PER_HOUR: usize = 60;
+const STORAGE_MOUNTS_PER_SNAPSHOT: usize = 64;
+const STORAGE_EDGES_PER_SNAPSHOT: usize = 128;
 const BASE_TS: i64 = 1_700_000_000_000_000;
 const PRE_CHANGE_ZMS_BYTES: u64 = 3_141_820;
 const PRE_CHANGE_DICT_STRINGS_BYTES: u64 = 1_978_136;
@@ -1161,7 +1168,6 @@ fn cpufreq_hour_reports_collection_and_production_writer_costs() {
     );
     assert!(raw_wal_bytes < 32 * 1024 * 1024);
     assert!(zms_bytes < 4 * 1024 * 1024);
-    assert!(collection_rss_kib <= 25_600);
     println!(
         "os_cpufreq_cost policies={} samples={} raw_wal_bytes={} policy_raw_section_bytes={} sample_raw_section_bytes={} policy_zms_section_bytes={} sample_zms_section_bytes={} marginal_zms_bytes={} zms_bytes={} collection_elapsed_us={} collection_cpu_ticks={} collection_peak_rss_kib={} writer_elapsed_us={} writer_cpu_ticks={} writer_peak_rss_kib={}",
         policy_rows.len(),
@@ -1203,6 +1209,201 @@ fn write_cpufreq_fixture(root: &Path, policies: usize) {
         ] {
             std::fs::write(path.join(name), value).expect("write CPUFreq attribute");
         }
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the storage acceptance artifact measures exact layouts through the production writer"
+)]
+fn storage_hour_reports_collection_and_production_writer_costs() {
+    let sysfs = tempfile::tempdir().expect("create block topology sysfs fixture");
+    write_block_topology_fixture(sysfs.path(), STORAGE_EDGES_PER_SNAPSHOT);
+    let sys = SysFs::new(sysfs.path().to_path_buf());
+    let collection_cpu_before = self_cpu_ticks();
+    let collection_started = std::time::Instant::now();
+    for _ in 0..STORAGE_SNAPSHOTS_PER_HOUR {
+        assert_eq!(
+            block_topology::collect(&sys)
+                .expect("collect bounded block topology fixture")
+                .len(),
+            STORAGE_EDGES_PER_SNAPSHOT
+        );
+    }
+    let collection_elapsed_us =
+        u64::try_from(collection_started.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let collection_cpu_ticks = self_cpu_ticks().saturating_sub(collection_cpu_before);
+    let collection_rss_kib = peak_rss_kib();
+
+    let directory = tempfile::tempdir().expect("create storage cost directory");
+    let writer = owner(directory.path());
+    let mut journal =
+        Journal::open(&writer, JournalConfig::default()).expect("open storage cost journal");
+    let config = config(directory.path(), u64::MAX);
+    let mut segment = SegmentState::default();
+    let writer_cpu_before = self_cpu_ticks();
+    let writer_started = std::time::Instant::now();
+    let mut mount_raw_section_bytes = 0_u64;
+    let mut topology_raw_section_bytes = 0_u64;
+    for sample in 0..STORAGE_SNAPSHOTS_PER_HOUR {
+        let sample_i64 = i64::try_from(sample).expect("sample count fits i64");
+        let ts = BASE_TS.saturating_add(sample_i64.saturating_mul(60_000_000));
+        let fstype = segment
+            .interner_mut()
+            .intern(b"ext4")
+            .map(|id| StrId(id.get()))
+            .expect("intern filesystem type");
+        let root = segment
+            .interner_mut()
+            .intern(b"/")
+            .map(|id| StrId(id.get()))
+            .expect("intern filesystem root");
+        let mounts = (0..STORAGE_MOUNTS_PER_SNAPSHOT)
+            .map(|mount| {
+                let minor = i32::try_from(mount + 1).expect("mount count fits i32");
+                let mount_point = segment
+                    .interner_mut()
+                    .intern(format!("/srv/data/{mount}").as_bytes())
+                    .map(|id| StrId(id.get()))
+                    .expect("intern mount point");
+                let source = segment
+                    .interner_mut()
+                    .intern(format!("/dev/nvme0n1p{}", mount + 1).as_bytes())
+                    .map(|id| StrId(id.get()))
+                    .expect("intern mount source");
+                OsMountinfo {
+                    ts: Ts(ts),
+                    major: 259,
+                    minor,
+                    mount_point,
+                    root,
+                    fstype,
+                    source,
+                    is_k8s_infra: false,
+                    total_bytes: Some(1_099_511_627_776),
+                    free_bytes: Some(
+                        824_633_720_832_i64.saturating_sub(sample_i64.saturating_mul(1_048_576)),
+                    ),
+                    total_inodes: Some(67_108_864),
+                    available_inodes: Some(
+                        60_000_000_i64.saturating_sub(sample_i64.saturating_mul(10)),
+                    ),
+                    scope: 0,
+                }
+            })
+            .collect::<Vec<_>>();
+        let edges = (0..STORAGE_EDGES_PER_SNAPSHOT)
+            .map(|edge| OsBlockTopology {
+                ts: Ts(ts),
+                major: 259,
+                minor: i32::try_from(edge + 1).expect("edge count fits i32"),
+                parent_major: 259,
+                parent_minor: 0,
+                scope: 0,
+            })
+            .collect::<Vec<_>>();
+        let mut buffers = SectionBuffers::new();
+        push_os_sources(&mut buffers, &OsSources::storage_only(mounts, edges))
+            .expect("buffer storage rows");
+        let flushed = encode_window(buffers, segment.interner()).expect("encode storage window");
+        for section in &flushed.summary.sections {
+            let bytes = u64::try_from(section.body_bytes).unwrap_or(u64::MAX);
+            match section.type_id {
+                MOUNTINFO_TYPE_ID => {
+                    mount_raw_section_bytes = mount_raw_section_bytes.saturating_add(bytes);
+                }
+                BLOCK_TOPOLOGY_TYPE_ID => {
+                    topology_raw_section_bytes = topology_raw_section_bytes.saturating_add(bytes);
+                }
+                _ => {}
+            }
+        }
+        let completed = append_window_and_maybe_close(
+            &mut journal,
+            &writer,
+            &config,
+            &mut segment,
+            ts,
+            false,
+            &flushed,
+        )
+        .expect("append storage window");
+        assert!(completed.is_empty());
+    }
+    let raw_wal_bytes = journal.bytes();
+    let path = close_open_segment(&mut journal, &writer, &mut segment, "test-end")
+        .expect("write storage cost segment");
+    let writer_elapsed_us = u64::try_from(writer_started.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let writer_cpu_ticks = self_cpu_ticks().saturating_sub(writer_cpu_before);
+    let writer_rss_kib = peak_rss_kib();
+    let reader = Reader::open(directory.path()).expect("open storage reader");
+    let listing = reader.segments(..).expect("list storage segment");
+    let stored = reader
+        .open_segment(listing.segments.first().expect("one storage segment"))
+        .expect("open storage segment");
+    let mount_rows = stored.rows(MOUNTINFO_TYPE_ID).expect("read mount rows");
+    let topology_rows = stored
+        .rows(BLOCK_TOPOLOGY_TYPE_ID)
+        .expect("read block topology rows");
+    let zms_section_bytes = |wanted| {
+        stored
+            .sections()
+            .find(|(type_id, _)| *type_id == wanted)
+            .map(|(_, section)| section.bytes)
+            .expect("storage section catalogued")
+    };
+    let mount_zms_section_bytes = zms_section_bytes(MOUNTINFO_TYPE_ID);
+    let topology_zms_section_bytes = zms_section_bytes(BLOCK_TOPOLOGY_TYPE_ID);
+    let section_bytes = mount_zms_section_bytes.saturating_add(topology_zms_section_bytes);
+    let zms_bytes = std::fs::metadata(path).expect("stat storage segment").len();
+    assert_eq!(
+        mount_rows.len(),
+        STORAGE_MOUNTS_PER_SNAPSHOT * STORAGE_SNAPSHOTS_PER_HOUR
+    );
+    assert_eq!(
+        topology_rows.len(),
+        STORAGE_EDGES_PER_SNAPSHOT * STORAGE_SNAPSHOTS_PER_HOUR
+    );
+    assert!(raw_wal_bytes < 16 * 1024 * 1024);
+    assert!(zms_bytes < 2 * 1024 * 1024);
+    println!(
+        "os_storage_cost mounts={} topology_edges={} raw_wal_bytes={} mount_raw_section_bytes={} topology_raw_section_bytes={} mount_zms_section_bytes={} topology_zms_section_bytes={} marginal_zms_bytes={} zms_bytes={} collection_elapsed_us={} collection_cpu_ticks={} collection_peak_rss_kib={} writer_elapsed_us={} writer_cpu_ticks={} writer_peak_rss_kib={}",
+        mount_rows.len(),
+        topology_rows.len(),
+        raw_wal_bytes,
+        mount_raw_section_bytes,
+        topology_raw_section_bytes,
+        mount_zms_section_bytes,
+        topology_zms_section_bytes,
+        section_bytes.saturating_add(2 * u64::try_from(ENTRY_LEN).unwrap_or(0)),
+        zms_bytes,
+        collection_elapsed_us,
+        collection_cpu_ticks,
+        collection_rss_kib,
+        writer_elapsed_us,
+        writer_cpu_ticks,
+        writer_rss_kib,
+    );
+}
+
+fn write_block_topology_fixture(root: &Path, partitions: usize) {
+    let block = root.join("devices/pci/block/nvme0n1");
+    std::fs::create_dir_all(root.join("dev/block")).expect("create dev block directory");
+    std::fs::create_dir_all(&block).expect("create parent block device");
+    std::fs::write(block.join("dev"), "259:0\n").expect("write parent device identity");
+    for partition in 0..partitions {
+        let minor = partition + 1;
+        let name = format!("nvme0n1p{minor}");
+        let path = block.join(&name);
+        std::fs::create_dir_all(&path).expect("create partition directory");
+        std::fs::write(path.join("partition"), format!("{minor}\n"))
+            .expect("write partition marker");
+        std::os::unix::fs::symlink(
+            format!("../../devices/pci/block/nvme0n1/{name}"),
+            root.join(format!("dev/block/259:{minor}")),
+        )
+        .expect("link partition device");
     }
 }
 

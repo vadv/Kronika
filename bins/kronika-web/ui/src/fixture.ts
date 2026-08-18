@@ -277,7 +277,7 @@ function fixturePoints(fixture: RealHourFixture, segmentAt: (timestamp: number) 
     ["health", "0", "os_health", fixture.system["health"]],
     ["os_loadavg", "1105001", "os_load1", fixture.system.load1],
     ["os_meminfo", "1104001", "os_mem_available_percent", fixture.system.memAvailable],
-    ["os_mountinfo", "1112001", "os_min_filesystem_free_percent", fixture.system.minFsFree],
+    ["os_mountinfo", "1112002", "os_min_filesystem_free_percent", fixture.system.minFsFree],
     ["os_vmstat", "1106001", "os_oom_kills", fixture.system.oom],
   ]
   const points = series.flatMap(([logicalName, typeId, name, values]) =>

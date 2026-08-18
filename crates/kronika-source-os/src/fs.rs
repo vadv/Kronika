@@ -13,6 +13,10 @@ pub struct FsSpace {
     pub total_bytes: i64,
     /// Available bytes for unprivileged writes (`f_bavail * f_frsize`).
     pub free_bytes: i64,
+    /// Total filesystem inode/file-serial count (`f_files`).
+    pub total_inodes: i64,
+    /// Inodes/file serials available to unprivileged users (`f_favail`).
+    pub available_inodes: i64,
 }
 
 /// One child directory under a configured filesystem root.
@@ -29,19 +33,21 @@ pub struct DirEntryName {
 /// Saturates to `i64::MAX` when the product exceeds `i64::MAX` so that
 /// very large filesystems never wrap or panic.
 #[must_use]
-pub fn space_from_raw(blocks: u64, bavail: u64, frsize: u64) -> FsSpace {
+pub fn space_from_raw(blocks: u64, bavail: u64, frsize: u64, files: u64, favail: u64) -> FsSpace {
     let saturating_mul =
         |a: u64, b: u64| -> i64 { a.saturating_mul(b).min(i64::MAX as u64).cast_signed() };
     FsSpace {
         total_bytes: saturating_mul(blocks, frsize),
         free_bytes: saturating_mul(bavail, frsize),
+        total_inodes: files.min(i64::MAX as u64).cast_signed(),
+        available_inodes: favail.min(i64::MAX as u64).cast_signed(),
     }
 }
 
 /// Query filesystem capacity for `mount_point`.
 ///
 /// **Env fixture override:** if `KRONIKA_STATVFS_FIXTURE` is set, its value
-/// is parsed as `path1=TOTAL:FREE;path2=TOTAL:FREE` (bytes, decimal). The
+/// is parsed as `path1=TOTAL:FREE:INODES:AVAILABLE_INODES;...` (decimal). The
 /// entry whose path equals `mount_point` is returned; no entry returns `None`.
 /// This lets BDD tests inject deterministic capacity without a real filesystem.
 ///
@@ -54,7 +60,7 @@ pub fn statvfs(mount_point: &str) -> Option<FsSpace> {
     }
     rustix::fs::statvfs(mount_point)
         .ok()
-        .map(|s| space_from_raw(s.f_blocks, s.f_bavail, s.f_frsize))
+        .map(|s| space_from_raw(s.f_blocks, s.f_bavail, s.f_frsize, s.f_files, s.f_favail))
 }
 
 pub(crate) fn parse_fixture(fixture: &str, mount_point: &str) -> Option<FsSpace> {
@@ -66,15 +72,16 @@ pub(crate) fn parse_fixture(fixture: &str, mount_point: &str) -> Option<FsSpace>
         let Some((path, rest)) = entry.split_once('=') else {
             continue;
         };
-        let Some((total_str, free_str)) = rest.split_once(':') else {
+        let fields = rest.split(':').collect::<Vec<_>>();
+        let [total, free, total_inodes, available_inodes] = fields.as_slice() else {
             continue;
         };
         if path == mount_point {
-            let total_bytes = total_str.trim().parse().ok()?;
-            let free_bytes = free_str.trim().parse().ok()?;
             return Some(FsSpace {
-                total_bytes,
-                free_bytes,
+                total_bytes: total.trim().parse().ok()?,
+                free_bytes: free.trim().parse().ok()?,
+                total_inodes: total_inodes.trim().parse().ok()?,
+                available_inodes: available_inodes.trim().parse().ok()?,
             });
         }
     }
@@ -236,6 +243,22 @@ impl SysFs {
     /// Returns an error when `rel` is empty or escapes the configured root.
     pub fn path(&self, rel: &str) -> io::Result<PathBuf> {
         Ok(self.root.join(checked_relative_path(rel)?))
+    }
+
+    /// Resolve a checked sysfs symlink while keeping the result under this root.
+    ///
+    /// # Errors
+    /// Returns an I/O error when either path cannot be resolved or the target
+    /// leaves the configured sysfs root.
+    pub fn canonical_path(&self, rel: &str) -> io::Result<PathBuf> {
+        let root = std::fs::canonicalize(&self.root)?;
+        let target = std::fs::canonicalize(self.root.join(checked_relative_path(rel)?))?;
+        if !target.starts_with(&root) {
+            return Err(io::Error::other(format!(
+                "{rel}: resolved sysfs path leaves the configured root"
+            )));
+        }
+        Ok(target)
     }
 
     /// Whether a checked sysfs path currently exists.

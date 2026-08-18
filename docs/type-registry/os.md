@@ -41,7 +41,7 @@ The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 | `1_109_001` | `/proc/net/dev` plus sysfs link facts | `snapshot_full` | `(iface, ts)` |
 | `1_110_001` | `/proc/net/snmp` | `snapshot_full` | `(ts)` |
 | `1_111_001` | `/proc/net/netstat` | `snapshot_full` | `(ts)` |
-| `1_112_001` | `mountinfo` plus bounded local-filesystem `statvfs` | `on_change` | `(major, minor, mount_point, ts)` |
+| `1_112_002` | `mountinfo` plus bounded local-filesystem byte/inode `statvfs` | `on_change` | `(major, minor, mount_point, ts)` |
 | `1_113_001` | `/proc/cpuinfo` plus sysfs topology | `on_change` | `(cpu_id, ts)` |
 | `1_114_001` | `/proc/interrupts` | `snapshot_full` | `(irq, ts)` |
 | `1_115_001` | `/proc/softirqs` | `snapshot_full` | `(vector, ts)` |
@@ -52,6 +52,7 @@ The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 | `1_120_001` | `/proc/net/rpc/nfsd` | `snapshot_full` | `(ts)` |
 | `1_121_001` | CPUFreq policy membership, driver, source, and hardware range from sysfs | `on_change` | `(policy_id, ts)` |
 | `1_122_001` | CPUFreq policy frequencies, allowed range, and online CPU count from sysfs | `snapshot_full` | `(policy_id, ts)` |
+| `1_123_001` | exact sysfs partition-to-parent block-device edges | `on_change` | `(major, minor, ts)` |
 | `1_200_001` | cgroup: process mapping | `snapshot_full` | `(pid, ts)` |
 | `1_201_001` | cgroup: cpu | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_201_002` | cgroup: cpu with effective cpuset, retained reader layout | `snapshot_full` | `(cgroup_path, ts)` |
@@ -209,6 +210,8 @@ recorded. `✓` means the data is in a section above.
 | LVM and MD devices | ✓ | ✓ | — | ✓ `1_108` (`/proc/diskstats` lists them) |
 | Mount points, filesystem type, source | — | ✓ | ✓ | ✓ `1_112` |
 | Filesystem total and free bytes | — | ✓ | ✓ | ✓ `1_112` |
+| Filesystem root and total/available inodes | — | — | — | ✓ `1_112` |
+| Exact partition-to-parent device edges | — | — | — | ✓ `1_123` |
 | File handles, inodes, dentries | — | — | ✓ | ✓ `1_116` |
 
 Filesystem capacity is populated only for the explicit local allowlist:
@@ -216,6 +219,14 @@ Filesystem capacity is populated only for the explicit local allowlist:
 Network, FUSE/userspace, `autofs`, and unknown types remain `null`. The entire
 capacity pass has a single one-second deadline; results completed before it are
 retained.
+
+`1_112_002` directly replaces the unreleased mount layout. Its identity is
+`(major, minor, mount_point)`, so two mount points exposing the same filesystem
+remain distinct. `root` is mountinfo field 4. Byte availability is `f_bavail`
+and inode availability is `f_favail`; neither is renamed to free or used space.
+`1_123_001` emits only an exact sysfs partition marker and its immediate parent
+device identity. Whole devices, dm/LVM/MD layers, unresolved sysfs links, and
+bind-mount ancestry emit no inferred edge.
 
 ### Network
 

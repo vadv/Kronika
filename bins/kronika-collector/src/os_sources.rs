@@ -4,6 +4,7 @@ use crate::logging::{
 };
 use crate::scheduler::{DueSet, SourceKind};
 use anyhow::Result;
+use kronika_registry::os_block_topology::OsBlockTopology;
 use kronika_registry::os_cgroup_context::OsCgroupContext;
 use kronika_registry::os_cgroup_cpu::OsCgroupCpu;
 use kronika_registry::os_cgroup_io::OsCgroupIo;
@@ -43,14 +44,15 @@ use kronika_source_os::proc::{
     diskstats, interrupts, kernel_limits, net_dev, net_netstat, net_snmp, net_snmp6, nfs,
 };
 use kronika_source_os::{
-    MountEntry, OsScope, ProcFs, SysFs, cgroup, container_device_set, mount_row, net_scope,
-    parse_dev_pair, parse_mountinfo,
+    MountEntry, MountStringIds, OsScope, ProcFs, SysFs, cgroup, container_device_set, mount_row,
+    net_scope, parse_dev_pair, parse_mountinfo,
 };
 use kronika_source_os::{node_id_from_dir, parse_node_meminfo};
 use kronika_writer::{Interner, SectionBuffers};
 use std::io::ErrorKind;
 use std::time::Instant;
 
+mod block_topology;
 mod buffering;
 mod cgroups;
 mod cpufreq;
@@ -84,6 +86,7 @@ pub(crate) struct OsSources {
     numa: Vec<OsNuma>,
     mountinfo: Vec<OsMountinfo>,
     topology: Vec<OsTopology>,
+    block_topology: Vec<OsBlockTopology>,
     cpufreq_policy: Vec<OsCpufreqPolicy>,
     cpufreq: Vec<OsCpufreq>,
     processes: Vec<OsProcess>,
@@ -119,6 +122,7 @@ impl OsSources {
             numa: Vec::new(),
             mountinfo: Vec::new(),
             topology: Vec::new(),
+            block_topology: Vec::new(),
             cpufreq_policy: Vec::new(),
             cpufreq: Vec::new(),
             processes: Vec::new(),
@@ -155,6 +159,17 @@ impl OsSources {
         let mut sources = Self::empty();
         sources.cpufreq_policy = policies;
         sources.cpufreq = samples;
+        sources
+    }
+
+    #[cfg(test)]
+    pub(crate) fn storage_only(
+        mounts: Vec<OsMountinfo>,
+        block_topology: Vec<OsBlockTopology>,
+    ) -> Self {
+        let mut sources = Self::empty();
+        sources.mountinfo = mounts;
+        sources.block_topology = block_topology;
         sources
     }
 }
@@ -252,6 +267,7 @@ pub(crate) fn collect_os_sources(
     if due.has(SourceKind::OsMountTopo) {
         os.mountinfo = collect_mountinfo(interner, scope, ts, &mounts);
         os.topology = procfs_sections::collect_topology(fs, &sys, interner, scope, ts);
+        block_topology::collect_block_topology(&sys, scope, ts, &mut os);
     }
     cpufreq::collect_cpufreq(cpufreq_collector, &sys, interner, scope, ts, due, &mut os);
 
