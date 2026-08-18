@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { importModule, registryPlugin } from "./import-module.mjs"
 
 const helpers = await importModule(
-  'export { FindingMarker, MARKER_CLUSTER_PX, exactValue, findingShape, findingTrack, groupFindings, healthEvaluationAtOrBefore, healthThreshold, healthTimelineSeries, laneReading, sampleWindow, selectedTimelineTimes, timelineDecorations, timelineRecordedTimes } from "../src/timeline.tsx"',
+  'export { FindingMarker, MARKER_CLUSTER_PX, exactValue, findingShape, findingTrack, groupFindings, healthEvaluationAtOrBefore, healthThreshold, healthTimelineSeries, laneReading, sampleWindow, timelineDecorations, timelineNavigationTimes, timelineRecordedTimes } from "../src/timeline.tsx"',
   { plugins: [registryPlugin([{ typeId: "1104001", logicalName: "os_meminfo", columns: ["ts", "mem_total", "mem_free", "mem_available"] }])] },
 )
 
@@ -29,7 +29,7 @@ test("the shared empty timeline uses the hour-aware status", async () => {
   assert.match(source, /t\(emptyHourStatusKey\(hour\)\)/)
 })
 
-test("default arrows and pointer selection are owned by the selected recorded lane", async () => {
+test("the selected lane draws while one explicit domain owns every shared cursor path", async () => {
   const [app, keyboard, timeline] = await Promise.all([
     readFile(new URL("../src/app.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/keyboard.ts", import.meta.url), "utf8"),
@@ -37,7 +37,9 @@ test("default arrows and pointer selection are owned by the selected recorded la
   ])
   assert.doesNotMatch(app, /moveCursor/)
   assert.doesNotMatch(keyboard, /60_000_000|MINUTE/)
-  assert.match(timeline, /selectedTimelineTimes\(lanes, selectedLane\)/)
+  assert.match(timeline, /timelineNavigationTimes\(lanes\)/)
+  assert.match(timeline, /navigationTimestamps=\{cursorTimes\}/)
+  assert.match(timeline, /moveCursor\(cursor, cursorTimes, event\.key\)/)
   assert.match(timeline, /<UPlotChart/)
   assert.match(timeline, /window\.addEventListener\("keydown", move\)/)
 })
@@ -180,7 +182,7 @@ test("health metrics share stored evaluation timestamps and a strict nonfuture c
   assert.equal(osOnly.series.some(({ field }) => field === "postgres_health"), false)
 })
 
-test("the selected lane owns exact heterogeneous timestamps including null observations", () => {
+test("all shared lanes own exact heterogeneous navigation timestamps", () => {
   const health = [{ points: [
     { timestamp: 100, value: 90 },
     { timestamp: 105, value: null },
@@ -194,9 +196,7 @@ test("the selected lane owns exact heterogeneous timestamps including null obser
     { timestamp: 107, value: 21 },
   ] }]
   const lanes = [{ key: "health", series: health }, { key: "cpu_busy", series: cpu }]
-  assert.deepEqual(helpers.selectedTimelineTimes(lanes, "health"), [100, 105, 111, 118])
-  assert.deepEqual(helpers.selectedTimelineTimes(lanes, "cpu_busy"), [102, 107])
-  assert.deepEqual(helpers.selectedTimelineTimes(lanes, "missing"), [100, 105, 111, 118])
+  assert.deepEqual(helpers.timelineNavigationTimes(lanes), [100, 102, 105, 107, 111, 118])
 })
 
 test("timeline distinguishes unavailable edges from the uncollected current-hour tail", () => {
@@ -227,7 +227,7 @@ test("health lane readings use only an exact observation", () => {
   assert.equal(helpers.exactValue(points, 4), null)
 })
 
-test("a lane reading between two samples repeats the previous sample instead of a dash", () => {
+test("a slow lane stays sample-at-or-before at faster cursor positions", () => {
   const lane = {
     key: "pg_running",
     series: [{ color: "cyan", field: "pg_running", points: [

@@ -44,6 +44,7 @@ export function EventsView({
   hour,
   loading = false,
   locale,
+  navigationTimestamps,
   onCursor,
   onClose,
   onFinding,
@@ -62,6 +63,7 @@ export function EventsView({
   readonly hour: number
   readonly loading?: boolean | undefined
   readonly locale: Locale
+  readonly navigationTimestamps: readonly number[]
   readonly onCursor: (timestamp: number) => void
   readonly onClose: () => void
   readonly onFinding: (finding: Finding) => void
@@ -115,7 +117,7 @@ export function EventsView({
     : scope.length
   const omitted = scope === null ? Math.max(0, original - data.findings.length) : 0
   return <>
-    <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane="health" shownAt={shownAt} t={t} /></ChartOnly>
+    <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} primaryLane="health" shownAt={shownAt} t={t} /></ChartOnly>
     <section className="mt-2 charts-hidden:flex charts-hidden:min-h-0 charts-hidden:flex-1 charts-hidden:flex-col" data-testid="events-console">
       <header className="flex min-h-[38px] items-center justify-between border-b border-line2 px-1.5 py-1 max-[760px]:flex-col max-[760px]:items-stretch max-[760px]:gap-[5px]">
         <div className="flex border border-line3" role="group" aria-label={t("events.filters")}>

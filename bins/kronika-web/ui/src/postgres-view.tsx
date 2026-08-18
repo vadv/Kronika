@@ -225,6 +225,7 @@ export function PostgresView({
   historyRevision,
   hour,
   locale,
+  navigationTimestamps,
   onCursor,
   onContextClear,
   onFinding,
@@ -262,6 +263,7 @@ export function PostgresView({
   readonly historyRevision: number
   readonly hour: number
   readonly locale: Locale
+  readonly navigationTimestamps: readonly number[]
   readonly onCursor: (timestamp: number) => void
   readonly onContextClear: () => void
   readonly onFinding: (finding: Finding) => void
@@ -292,7 +294,7 @@ export function PostgresView({
   }, [data.availableSections, onSection, section])
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   return <>
-    <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane={section === "statements" || section === "plans" ? "pg_running" : section === "activity" || section === "locks" ? "pg_waiting" : "health"} shownAt={shownAt} t={t} /></ChartOnly>
+    <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} primaryLane={section === "statements" || section === "plans" ? "pg_running" : section === "activity" || section === "locks" ? "pg_waiting" : "health"} shownAt={shownAt} t={t} /></ChartOnly>
     <nav aria-label={t("pg.sections")} className="pg-tabs !mt-0 flex min-h-[35px] overflow-x-auto border border-t-0 border-line2 bg-s1 [&>button]:flex [&>button]:flex-none [&>button]:cursor-pointer [&>button]:items-center [&>button]:gap-1.5 [&>button]:border-0 [&>button]:border-r [&>button]:border-line2 [&>button]:bg-transparent [&>button]:text-xs [&>button]:uppercase [&>button]:tracking-[.04em] [&>button]:text-fg3 [&>button:disabled]:cursor-not-allowed [&>button:disabled]:opacity-35 [&>button[aria-current=page]]:bg-s4 [&>button[aria-current=page]]:text-accent3 [&>button[aria-current=page]]:shadow-[inset_0_-2px_var(--color-accent)]">
       {TABS.map((tab) => {
         const enabled = tab.id === "plans" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)

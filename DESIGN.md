@@ -504,6 +504,21 @@ Events expands the same findings drawn on the shared healthline. The timeline
 always spans the complete hour, does not connect missing periods and drives
 every view with one cursor. Marker shape identifies log events and threshold
 crossings.
+The selected timeline lane controls only the lines, legend and readings that
+are drawn. Shared cursor navigation instead uses one sorted exact-deduplicated
+union of the timestamps already available to the current screen: every shared
+lane and health point, Process observation moments on Processes (including a
+loaded selected-process history), and the exact per-database Activity moments
+on PostgreSQL Activity. Findings remain directly selectable at their own exact
+timestamp but do not become Arrow stops. Pointer selection, global Left/Right
+and the shared timeline's keyboard control use this same union; an independent
+detail chart keeps its own recorded series as its navigation domain.
+
+The union never rounds, buckets or creates timestamps, and adding a navigation
+timestamp never adds a point to a drawn series. At a faster cursor, a slower
+metric continues to show its last stored sample at or before the cursor without
+interpolation or graph forward-fill. The `at` address and browser history keep
+the exact safe-integer microsecond timestamp.
 That selected hour establishes the civil date for the whole workspace. A
 cursor, snapshot, table interval, detail or chart readout inside the selected
 day shows time only; a value outside that day, or either endpoint of a

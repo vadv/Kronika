@@ -398,6 +398,7 @@ export function SystemView({
   locale,
   metric,
   mode,
+  navigationTimestamps,
   onCursor,
   onContextClear,
   onFinding,
@@ -419,6 +420,7 @@ export function SystemView({
   readonly locale: Locale
   readonly metric: string | null
   readonly mode: HostMode | null
+  readonly navigationTimestamps: readonly number[]
   readonly onCursor: (timestamp: number) => void
   readonly onContextClear: () => void
   readonly onFinding: (finding: Finding) => void
@@ -534,7 +536,7 @@ export function SystemView({
   const topologyRows = section === "cpu" && mode === "topology" ? systemEntityRows(data, "os_topology", cursor) : []
   const policyRows = section === "cpu" && mode === "topology" ? systemEntityRows(data, "os_cpufreq_policy", cursor) : []
   return <>
-    <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane={selectedMetric === undefined ? "health" : metricLane(selectedMetric.spec)} shownAt={shownAt} t={t} /></ChartOnly>
+    <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} primaryLane={selectedMetric === undefined ? "health" : metricLane(selectedMetric.spec)} shownAt={shownAt} t={t} /></ChartOnly>
     {modes.length > 0 && <div aria-label={t(`section.${section}`)} className="lensbar !mt-0 border-t-0" data-testid={`host-${section}-modes`} role="group">
       <div className="lens-tabs">
         {modes.map((choice) => <button aria-pressed={mode === choice} key={choice} onClick={() => onMode(choice)} type="button">{t(`host.mode.${choice}`)}</button>)}

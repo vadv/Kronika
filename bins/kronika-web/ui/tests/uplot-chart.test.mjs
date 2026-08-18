@@ -4,7 +4,7 @@ import test from "node:test"
 
 import { importModule } from "./import-module.mjs"
 
-const chart = await importModule('export { alignRecordedSeries, axisTimeLabel, chartSecondsUseful, chartStatsRows, chartSummary, chartTimeRange, compactChartTime, effectiveIsolation, exactReadings, isolatedSampleIndices, nearestRecordedTimestamp, sampleText, scalePartitions, scaleRange, seriesStats } from "../src/uplot-chart.tsx"; export { createDisplayTimeFormatter } from "../src/display-time.ts"; export { compact, humanPercent } from "../src/model.ts"')
+const chart = await importModule('export { alignRecordedSeries, axisTimeLabel, chartNavigationTimestamps, chartSecondsUseful, chartStatsRows, chartSummary, chartTimeRange, compactChartTime, effectiveIsolation, exactReadings, isolatedSampleIndices, navigationSampleText, nearestRecordedTimestamp, sampleText, scalePartitions, scaleRange, seriesStats } from "../src/uplot-chart.tsx"; export { createDisplayTimeFormatter } from "../src/display-time.ts"; export { compact, humanPercent } from "../src/model.ts"')
 
 const format = (value) => String(value)
 const line = (id, unit, scale, points) => ({ color: "cyan", helpKey: `${id}.help`, id, label: id, labelKey: `${id}.label`, points, scale, unit, value: format })
@@ -59,6 +59,24 @@ test("aligned data distinguishes missing rows, explicit nulls, zero and storage 
   assert.deepEqual(frame.data[2], [undefined, 9, undefined, undefined, undefined])
   assert.deepEqual(frame.isolated.get(1), [0])
   assert.deepEqual(frame.isolated.get(2), [1])
+})
+
+test("an explicit cursor domain does not add samples to the drawn frame", () => {
+  const series = [line("pg_waiting", "count", "nonnegative", [
+    { segmentId: "a", timestamp: 0, value: 1 },
+    { segmentId: "a", timestamp: 30_000_000, value: 2 },
+    { segmentId: "a", timestamp: 60_000_000, value: 3 },
+  ])]
+  const frame = chart.alignRecordedSeries(series)
+  const navigation = chart.chartNavigationTimestamps(frame, [
+    0, 5_000_000, 10_000_000, 15_000_000, 30_000_000, 60_000_000,
+  ], 0, 61_000_000)
+
+  assert.deepEqual(frame.timestamps, [0, 30_000_000, 60_000_000])
+  assert.deepEqual(frame.data[1], [1, 2, 3])
+  assert.deepEqual(navigation, [0, 5_000_000, 10_000_000, 15_000_000, 30_000_000, 60_000_000])
+  const time = chart.createDisplayTimeFormatter("en", "utc", "UTC")
+  assert.match(chart.navigationSampleText(series, frame, navigation, 5_000_000, "en", time), /^00:00:05$/)
 })
 
 test("aligned mode joins identical boundary samples and rejects conflicting values at one timestamp", () => {

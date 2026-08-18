@@ -4,6 +4,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Reac
 import type { DisplayTimeFormatter } from "./display-time"
 import { useDisplayTime } from "./display-time-context"
 import { LabelHelp, type Translate } from "./help"
+import { orderedRecordedTimes } from "./keyboard"
 import { humanDurationAxis, type Locale } from "./model"
 
 export type ChartScale = "percent" | "nonnegative" | "signed"
@@ -120,6 +121,7 @@ export function UPlotChart({
   className,
   decorations = NO_DECORATIONS,
   markerLayer,
+  navigationTimestamps,
   onPlotWidth,
   referenceTimestamp,
   stats = false,
@@ -135,6 +137,7 @@ export function UPlotChart({
   readonly isolate?: SeriesIsolation | undefined
   readonly locale: Locale
   readonly markerLayer?: ReactNode | undefined
+  readonly navigationTimestamps?: readonly number[] | undefined
   readonly onCursor?: ((timestamp: number) => void) | undefined
   readonly onPlotWidth?: ((width: number) => void) | undefined
   readonly reading?: string | undefined
@@ -172,10 +175,14 @@ export function UPlotChart({
     points: line.points.filter(({ timestamp }) => timestamp >= hour && timestamp < end),
   })), [drawnSeries, end, hour])
   const frame = useMemo(() => alignRecordedSeries(visibleSeries), [visibleSeries])
+  const navigationTimes = useMemo(
+    () => chartNavigationTimestamps(frame, navigationTimestamps, hour, end),
+    [end, frame, hour, navigationTimestamps],
+  )
   const [themeRevision, setThemeRevision] = useState(0)
   const exact = hovered === null ? null : exactReadings(frame, drawnSeries, hovered, locale, time)
   const selected = cursor === undefined || cursor < hour || cursor >= end ? null : cursor
-  const keyboardTimestamp = frame.timestamps[keyboardIndex] ?? null
+  const keyboardTimestamp = navigationTimes[keyboardIndex] ?? null
   onCursorRef.current = onCursor
   onPlotWidthRef.current = onPlotWidth
   selectedRef.current = selected
@@ -206,7 +213,7 @@ export function UPlotChart({
     canvas?.setAttribute("aria-hidden", "true")
     const select = (event: PointerEvent) => {
       const bounds = chart.over.getBoundingClientRect()
-      const timestamp = nearestRecordedTimestamp(frame.timestamps, chart.posToVal(event.clientX - bounds.left, "x"))
+      const timestamp = nearestRecordedTimestamp(navigationTimes, chart.posToVal(event.clientX - bounds.left, "x"))
       if (timestamp !== null && timestamp !== selectedRef.current) onCursorRef.current?.(timestamp)
     }
     chart.over.addEventListener("pointerup", select)
@@ -230,7 +237,7 @@ export function UPlotChart({
       chart.destroy()
       plot.current = null
     }
-  }, [decorations, end, expanded, frame, hour, locale, referenceTimestamp, themeRevision, threshold, time, visibleSeries])
+  }, [decorations, end, expanded, frame, hour, locale, navigationTimes, referenceTimestamp, themeRevision, threshold, time, visibleSeries])
 
   useEffect(() => {
     const observer = new MutationObserver(() => setThemeRevision((revision) => revision + 1))
@@ -244,14 +251,14 @@ export function UPlotChart({
 
   useEffect(() => {
     if (selected === null) return
-    const nearest = nearestRecordedTimestamp(frame.timestamps, selected)
-    const index = nearest === null ? -1 : frame.timestamps.indexOf(nearest)
+    const nearest = nearestRecordedTimestamp(navigationTimes, selected)
+    const index = nearest === null ? -1 : navigationTimes.indexOf(nearest)
     if (index >= 0) setKeyboardIndex((current) => current === index ? current : index)
-  }, [frame.timestamps, selected])
+  }, [navigationTimes, selected])
 
   useEffect(() => {
-    setKeyboardIndex((index) => Math.min(index, Math.max(0, frame.timestamps.length - 1)))
-  }, [frame.timestamps.length])
+    setKeyboardIndex((index) => Math.min(index, Math.max(0, navigationTimes.length - 1)))
+  }, [navigationTimes.length])
 
   useEffect(() => {
     if (!expanded) return
@@ -324,6 +331,8 @@ export function UPlotChart({
     aria-modal={expanded ? "true" : undefined}
     className={`uplot-figure launch-timeline relative m-0 flex min-w-0 max-w-full flex-col overflow-hidden ${stats ? "h-[244px]" : "h-[200px]"} [&.timeline-chart]:h-[128px] [&.timeline-chart]:min-h-[128px] [&.timeline-chart]:basis-[128px] [&.timeline-chart]:px-[7px] [&.timeline-chart]:pb-[3px] [&.timeline-chart]:pt-[4px] [&.uplot-expanded]:fixed [&.uplot-expanded]:inset-0 [&.uplot-expanded]:z-[120] [&.uplot-expanded]:w-dvw [&.uplot-expanded]:overflow-hidden [&.uplot-expanded]:m-0 [&.uplot-expanded]:h-dvh [&.uplot-expanded]:max-w-none [&.uplot-expanded]:bg-bg [&.uplot-expanded]:p-[max(12px,env(safe-area-inset-top,0px))_max(12px,env(safe-area-inset-right,0px))_max(12px,env(safe-area-inset-bottom,0px))_max(12px,env(safe-area-inset-left,0px))] [&.uplot-expanded]:[--chart-marker-end-reserve:52px] [&.timeline-chart.uplot-expanded]:h-dvh [&.timeline-chart.uplot-expanded]:min-h-0 [&.timeline-chart.uplot-expanded]:flex-none [&.timeline-chart]:max-[520px]:h-[128px] [&.timeline-chart]:max-[520px]:px-0.5 [&.uplot-expanded]:max-[520px]:p-[max(8px,env(safe-area-inset-top,0px))_max(4px,env(safe-area-inset-right,0px))_max(8px,env(safe-area-inset-bottom,0px))_max(4px,env(safe-area-inset-left,0px))] [.system-dock_&:not(.uplot-expanded)]:h-80 [.pg-table-shell_.pg-detail_&:not(.uplot-expanded)]:h-[200px] [.pg-table-shell_.pg-detail_&:not(.uplot-expanded)]:max-h-[200px] [.pg-table-shell_.pg-detail_&:not(.uplot-expanded)]:flex-none${className === undefined ? "" : ` ${className}`}${expanded ? " uplot-expanded" : ""}${isolatable ? " uplot-isolatable" : ""}`}
     data-testid={testId}
+    data-navigation-count={navigationTimes.length}
+    data-selected-timestamp={selected ?? undefined}
     ref={shell}
     role={expanded ? "dialog" : undefined}
   >
@@ -371,15 +380,15 @@ export function UPlotChart({
     </div>}
     <input
       aria-label={locale === "ru" ? "Точная запись графика" : "Exact chart sample"}
-      aria-valuetext={keyboardTimestamp === null ? undefined : sampleText(series, frame, keyboardTimestamp, locale, time)}
+      aria-valuetext={keyboardTimestamp === null ? undefined : navigationSampleText(series, frame, navigationTimes, keyboardTimestamp, locale, time)}
       className="chart-navigator absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)] focus:left-2 focus:z-[9] focus:h-7 focus:w-[min(320px,calc(100%-16px))] focus:[clip-path:none]"
       data-recorded-timestamp={keyboardTimestamp ?? undefined}
-      disabled={frame.timestamps.length === 0}
-      max={Math.max(0, frame.timestamps.length - 1)}
+      disabled={navigationTimes.length === 0}
+      max={Math.max(0, navigationTimes.length - 1)}
       min="0"
       onChange={(event) => {
         const index = Number(event.currentTarget.value)
-        const timestamp = frame.timestamps[index]
+        const timestamp = navigationTimes[index]
         setKeyboardIndex(index)
         if (timestamp !== undefined) {
           setHovered(timestamp)
@@ -413,6 +422,16 @@ export function alignRecordedSeries(series: readonly RecordedSeries[]): ChartFra
     return column
   })
   return { data: [timestamps, ...columns] as AlignedData, isolated, timestamps }
+}
+
+export function chartNavigationTimestamps(
+  frame: Pick<ChartFrame, "timestamps">,
+  navigationTimestamps: readonly number[] | undefined,
+  hour: number,
+  end: number,
+): readonly number[] {
+  if (navigationTimestamps === undefined) return frame.timestamps
+  return orderedRecordedTimes(navigationTimestamps.filter((timestamp) => timestamp >= hour && timestamp < end))
 }
 
 export function isolatedSampleIndices(values: readonly (number | null | undefined)[]): readonly number[] {
@@ -675,6 +694,18 @@ export function sampleText(series: readonly RecordedSeries[], frame: ChartFrame,
   const exact = exactReadings(frame, series, timestamp, locale, time)
   if (exact === null) return ""
   return `${exact.time}; ${exact.values.map(({ label, output, unit }) => `${label}${unit === "" ? "" : ` (${unit})`}: ${output}`).join("; ")}`
+}
+
+export function navigationSampleText(
+  series: readonly RecordedSeries[],
+  frame: ChartFrame,
+  navigationTimestamps: readonly number[],
+  timestamp: number,
+  locale: Locale,
+  time: Pick<DisplayTimeFormatter, "axis" | "clock">,
+): string {
+  return sampleText(series, frame, timestamp, locale, time)
+    || compactChartTime(timestamp, time, chartSecondsUseful(navigationTimestamps, time))
 }
 
 function compactTimePart(output: string): string {

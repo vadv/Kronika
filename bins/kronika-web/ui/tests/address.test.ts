@@ -20,6 +20,14 @@ test("an address survives a round trip through the query string", () => {
   assert.deepEqual(readAddress(written.slice(1)), address)
 })
 
+test("the cursor address preserves an exact microsecond observation", () => {
+  const at = 1_786_445_580_254_001
+  const written = writeAddress({ ...DEFAULT_ADDRESS, at, view: "pg.activity" })
+
+  assert.equal(written, "/?at=1786445580254001&view=pg.activity")
+  assert.equal(readAddress(written.slice(1)).at, at)
+})
+
 test("a plain screen keeps a plain link", () => {
   assert.equal(writeAddress(DEFAULT_ADDRESS), "/")
   assert.deepEqual(readAddress(""), DEFAULT_ADDRESS)

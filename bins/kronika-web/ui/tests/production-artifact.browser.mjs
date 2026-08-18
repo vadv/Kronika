@@ -4254,6 +4254,145 @@ function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
 
+test("mixed-cadence shared cursor uses one exact domain for pointer and both keyboard paths", { timeout: 90_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const authState = { valid: true }
+  const page = { errors: [], external: [], responses: [] }
+  const base = HOUR + 1_800_000_000
+  const activityOne = base + 1
+  const activityTwo = base + 4_000
+  const five = base + 5_000_000
+  const ten = base + 10_000_000
+  const activityRecords = snapshotRecords().filter((record) => record.record === "layout"
+    ? record.layout.logical_name === "pg_stat_activity"
+    : record.record === "row" && record.type_id === "1001004")
+    .map((record, index) => {
+      if (record.record !== "row") return record
+      const timestamp = index === 1 ? activityOne : activityTwo
+      return { ...record, timestamp: String(timestamp), values: [String(timestamp), ...record.values.slice(1)] }
+    })
+  const timeline = [
+    { record: "hour", from: String(HOUR), to: String(HOUR + HOUR_US - 1), available_hours: [String(HOUR)] },
+    { record: "catalog", from: String(HOUR), to: String(HOUR + HOUR_US - 1), source_families: [{ name: "postgresql", configured: true, present: true, metrics_present: true }] },
+    {
+      record: "finished_segment", id: SEGMENT, min_ts: String(HOUR), max_ts: String(HOUR + HOUR_US - 1),
+      sections: [{ logical_name: "pg_stat_activity", physical_name: "pg_stat_activity", type_id: "1001004", implementation: "postgresql", source_family: "postgresql", rows: "2", bytes: "256" }],
+    },
+    { record: "index", segment: { id: SEGMENT }, logical_name: "health", checksum: null },
+    { record: "point", type_id: "0", series: "os_health", ts: String(base), identity: {}, value: 80 },
+    { record: "point", type_id: "0", series: "overall_health", ts: String(base), identity: {}, value: 75 },
+    ...[-30_000_000, 0, 30_000_000].map((offset, index) => ({ record: "lane", segment_id: SEGMENT, lane: "pg_waiting", ts: String(base + offset), value: index + 1 })),
+    ...[0, 5_000_000, 10_000_000, 15_000_000].map((offset, index) => ({ record: "lane", segment_id: SEGMENT, lane: "cpu_busy", ts: String(base + offset), value: 20 + index })),
+  ]
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/catalog") return ndjson(response, [])
+    if (url.pathname === "/api/hour") return ndjson(response, url.searchParams.has("section") ? [] : timeline)
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, activityRecords)
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("mixed-cadence browser server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
+  const browser = launchBrowser(profile)
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
+    const waitAt = async (timestamp, label) => {
+      await cdp.waitFor(`new URL(location.href).searchParams.get("at") === "${timestamp}"`, label, 15_000)
+      await cdp.waitFor(
+        `document.querySelector('[data-testid="cursor-behind"]') === null && document.querySelector('[data-testid="hour-timeline"]')?.dataset.navigationCount === "8"`,
+        `${label} snapshot`,
+        15_000,
+      )
+      assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"]')?.dataset.selectedTimestamp`), String(timestamp))
+    }
+    for (const width of [800, 1280]) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width })
+      await cdp.send("Page.navigate", { url: `${origin}/?at=${ten}&view=pg.activity` })
+      await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"] .entity-row') !== null`, `${width}px Activity rows`, 15_000)
+      if (await cdp.evaluate(`document.documentElement.lang !== "ru"`)) {
+        await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
+        await cdp.waitFor(`document.documentElement.lang === "ru"`, `${width}px RU locale`)
+      }
+      await waitAt(ten, `${width}px initial cursor`)
+      const geometry = await cdp.evaluate(`(() => {
+        const figure = document.querySelector('[data-testid="hour-timeline"]')
+        const plot = figure.querySelector('.u-over')
+        const tabs = document.querySelector('.pg-tabs')
+        const figureBox = figure.getBoundingClientRect()
+        const plotBox = plot.getBoundingClientRect()
+        const tabsBox = tabs.getBoundingClientRect()
+        return {
+          count: Number(figure.dataset.navigationCount),
+          figureBottom: figureBox.bottom,
+          figureLeft: figureBox.left,
+          figureRight: figureBox.right,
+          plotBottom: plotBox.bottom,
+          plotLeft: plotBox.left,
+          plotRight: plotBox.right,
+          tabsTop: tabsBox.top,
+        }
+      })()`)
+      assert.equal(geometry.count, 8, `${width}:${JSON.stringify(geometry)}`)
+      assert.ok(geometry.figureBottom <= geometry.tabsTop + 0.75, `${width}:${JSON.stringify(geometry)}`)
+      assert.ok(geometry.plotLeft >= geometry.figureLeft && geometry.plotRight <= geometry.figureRight && geometry.plotBottom <= geometry.figureBottom, `${width}:${JSON.stringify(geometry)}`)
+
+      await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'ArrowLeft' }))`)
+      await waitAt(five, `${width}px global five-second cursor`)
+      await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'ArrowLeft' }))`)
+      await waitAt(activityTwo, `${width}px exact second Activity cursor`)
+      await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'ArrowLeft' }))`)
+      await waitAt(activityOne, `${width}px exact first Activity cursor`)
+
+      await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').focus()`)
+      await cdp.send("Input.dispatchKeyEvent", { code: "ArrowRight", key: "ArrowRight", nativeVirtualKeyCode: 39, type: "keyDown", windowsVirtualKeyCode: 39 })
+      await cdp.send("Input.dispatchKeyEvent", { code: "ArrowRight", key: "ArrowRight", nativeVirtualKeyCode: 39, type: "keyUp", windowsVirtualKeyCode: 39 })
+      await waitAt(activityTwo, `${width}px chart keyboard cursor`)
+
+      const point = await cdp.evaluate(`(() => {
+        const figure = document.querySelector('[data-testid="hour-timeline"]')
+        const host = figure.querySelector('.uplot-host').getBoundingClientRect()
+        const plot = figure.querySelector('.u-over').getBoundingClientRect()
+        const extendedEnd = ${HOUR + HOUR_US} + ${HOUR_US} * 52 / Math.max(1, host.width - 122)
+        return {
+          x: plot.left + (${ten} - ${HOUR}) / (extendedEnd - ${HOUR}) * plot.width,
+          y: plot.top + plot.height / 2,
+        }
+      })()`)
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point })
+      await cdp.send("Input.dispatchMouseEvent", { button: "left", buttons: 1, clickCount: 1, type: "mousePressed", ...point })
+      await cdp.send("Input.dispatchMouseEvent", { button: "left", buttons: 0, clickCount: 1, type: "mouseReleased", ...point })
+      await waitAt(ten, `${width}px pointer cursor`)
+    }
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+  } finally {
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await removeBrowserProfile(profile)
+  }
+})
+
 test("narrow controls stay contained and help never changes selection", { timeout: 60_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const authState = { valid: true }
