@@ -23,7 +23,7 @@ use kronika_layout::{FileIdentity, LayoutError, SegmentAddress, SegmentId, Write
 use kronika_registry::{
     Bytes, CodecError, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, MAX_DECODED_SECTION_BYTES,
     MAX_ROW_GROUPS, MAX_SECTION_BYTES, MAX_SECTION_ROWS, VerifiedSection, encode_final_sections_to,
-    validate_final_section, validate_plain_parquet_decode_work,
+    validate_plain_parquet_decode_work,
 };
 use parquet::arrow::arrow_reader::{ArrowReaderOptions, ParquetRecordBatchReaderBuilder};
 
@@ -249,22 +249,27 @@ fn spool_data_section(
     offset: u64,
 ) -> Result<SpooledSection, WriteError> {
     let declared_rows = aggregate_rows(type_id, descriptors)?;
-    let mut rows = Vec::with_capacity(descriptors.len());
-    for &descriptor in descriptors {
-        validate_final_section(
-            type_id,
-            read_verified_body(journal, descriptor)?,
-            descriptor.entry.rows,
-        )?;
-        rows.push(descriptor.entry.rows);
-    }
+    let rows = descriptors
+        .iter()
+        .map(|descriptor| descriptor.entry.rows)
+        .collect::<Vec<_>>();
+    let mut verified = vec![false; descriptors.len()];
     let mut sink = SectionSink::new(out);
     encode_final_sections_to(
         type_id,
         &rows,
         &mut sink,
         |index| -> Result<_, WriteError> {
-            Ok(Bytes::from(read_section_body(journal, descriptors[index])?))
+            let descriptor = descriptors
+                .get(index)
+                .copied()
+                .ok_or(CodecError::SchemaMismatch)?;
+            if verified[index] {
+                Ok(Bytes::from(read_section_body(journal, descriptor)?))
+            } else {
+                verified[index] = true;
+                Ok(read_verified_body(journal, descriptor)?.into_bytes())
+            }
         },
     )?;
     let (len, checksum) = sink.finish();
