@@ -590,7 +590,7 @@ pg.help.relation.indisexclusion: "Показывает, обеспечивает
 pg.field.schemaname.label: "Schema"
 pg.field.relname.label: "Table"
 pg.field.tablespace.label: "Tablespace"
-pg.field.tablespace_oid.label: "OID табличного пространства"
+pg.field.tablespace_oid.label: "Tablespace OID"
 pg.field.table_count.label: "Tables"
 pg.field.index_count.label: "Indexes"
 pg.field.indexrelname.label: "Index"
