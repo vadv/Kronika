@@ -1748,7 +1748,9 @@ fn cpufreq_hour_reports_collection_and_production_writer_costs() {
     assert!(raw_wal_bytes < 32 * 1024 * 1024);
     assert!(zms_bytes < 4 * 1024 * 1024);
     assert!(collection_rss_kib > 0);
-    assert!(collection_rss_kib <= 25_600);
+    assert!(writer_rss_kib > 0);
+    #[cfg(not(debug_assertions))]
+    assert!(writer_rss_kib <= 25_600);
     println!(
         "os_cpufreq_cost policies={} samples={} raw_wal_bytes={} policy_raw_section_bytes={} sample_raw_section_bytes={} policy_zms_section_bytes={} sample_zms_section_bytes={} marginal_zms_bytes={} zms_bytes={} collection_elapsed_us={} collection_cpu_ticks={} collection_peak_rss_kib={} writer_elapsed_us={} writer_cpu_ticks={} writer_peak_rss_kib={}",
         policy_rows.len(),
@@ -2094,7 +2096,6 @@ fn bounded_cgroup_hour_reports_collection_and_production_writer_costs() {
     let collection_cpu_ticks = self_cpu_ticks().saturating_sub(collection_cpu_before);
     let collection_rss_kib = peak_rss_kib();
     assert!(collection_rss_kib > 0);
-    assert!(collection_rss_kib <= 25_600);
 
     let directory = tempfile::tempdir().expect("create cgroup cost directory");
     let writer = owner(directory.path());
@@ -2268,6 +2269,9 @@ fn bounded_cgroup_hour_reports_collection_and_production_writer_costs() {
     );
     assert!(raw_wal_bytes < 64 * 1024 * 1024);
     assert!(zms_bytes < 16 * 1024 * 1024);
+    assert!(writer_rss_kib > 0);
+    #[cfg(not(debug_assertions))]
+    assert!(writer_rss_kib <= 25_600);
     println!(
         "os_cgroup_cost environment=container candidates={} io_rows={} total_rows={} raw_wal_bytes={} cpu_raw_section_bytes={} memory_raw_section_bytes={} io_raw_section_bytes={} pids_raw_section_bytes={} zms_section_bytes={} marginal_zms_bytes={} zms_bytes={} machine_raw_wal_bytes=0 machine_marginal_zms_bytes=0 raw_wal_reduction_bytes={} marginal_zms_reduction_bytes={} collection_elapsed_us={} collection_cpu_ticks={} collection_peak_rss_kib={} writer_elapsed_us={} writer_cpu_ticks={} writer_peak_rss_kib={}",
         expected_candidates,

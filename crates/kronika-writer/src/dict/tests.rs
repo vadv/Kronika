@@ -1,5 +1,5 @@
 use arrow_array::{Array as _, BinaryArray, BooleanArray, FixedSizeBinaryArray, UInt64Array};
-use kronika_format::{DictLimits, Placement};
+use kronika_format::{DictLimits, Placement, crc32c};
 use kronika_registry::{
     Bytes, DICT_BLOBS_TYPE_ID, DICT_STRINGS_TYPE_ID, MAX_DECODED_SECTION_BYTES, MAX_SECTION_BYTES,
     MAX_SECTION_ROWS, plain_parquet_decode_profile,
@@ -12,7 +12,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     FINAL_DICT_WRITE_BATCH_ROWS, FINAL_DICT_WRITER_PROPS, encode, encode_final_entries,
-    final_dictionary_body_bound,
+    encode_final_entries_to, final_dictionary_body_bound,
 };
 use crate::Interner;
 
@@ -216,6 +216,35 @@ fn strings_and_blobs_split_by_placement() {
         .expect("blobs section");
     assert_eq!(blobs.rows, 1);
     assert_eq!(&blobs.body[..4], b"PAR1", "a Parquet body");
+}
+
+#[test]
+fn bounded_dictionary_writer_preserves_exact_finished_bytes() {
+    let mut interner = Interner::new(DictLimits::new(8, 16).expect("limits"));
+    interner.intern(b"short").expect("string");
+    interner
+        .intern(b"a medium blob value")
+        .expect("complete blob");
+    interner
+        .intern(b"a deliberately long blob value")
+        .expect("truncated blob");
+    let expected = encode_final_entries(interner.window().entries()).expect("legacy sections");
+
+    let mut actual = Vec::new();
+    let written = encode_final_entries_to(interner.window().entries(), &mut actual)
+        .expect("bounded sections");
+    assert_eq!(written.len(), expected.len());
+    let mut offset = 0_usize;
+    for (written, expected) in written.iter().zip(expected) {
+        let len = usize::try_from(written.len).expect("test section length fits");
+        let body = &actual[offset..offset + len];
+        assert_eq!(written.type_id, expected.type_id);
+        assert_eq!(written.rows, expected.rows);
+        assert_eq!(written.crc32c, crc32c(body));
+        assert_eq!(body, expected.body, "direct write preserves format bytes");
+        offset += len;
+    }
+    assert_eq!(offset, actual.len());
 }
 
 #[test]
