@@ -77,6 +77,9 @@ const RELATION_REPRESENTATIVE_TABLES: usize = 1_000;
 const RELATION_REPRESENTATIVE_INDEXES: usize = 2_000;
 const RELATION_STRESS_OBJECTS: usize = 5_000;
 const RELATION_SNAPSHOTS: usize = 12;
+const RELATION_COST_PROFILE_ENV: &str = "KRONIKA_RELATION_COST_PROFILE";
+const RELATION_COST_TEST: &str =
+    "tests::zms::relation_tablespace_layouts_report_production_writer_costs";
 const BASE_TS: i64 = 1_700_000_000_000_000;
 const PRE_CHANGE_ZMS_BYTES: u64 = 3_141_820;
 const PRE_CHANGE_DICT_STRINGS_BYTES: u64 = 1_978_136;
@@ -1039,6 +1042,11 @@ struct RelationCostSpec {
     snapshots: usize,
     high_cardinality: bool,
     all_layouts: bool,
+    max_raw_wal_bytes: u64,
+    max_peak_wal_bytes: u64,
+    max_zms_bytes: u64,
+    max_cpu_ticks: u64,
+    max_peak_rss_kib: u64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1068,6 +1076,11 @@ fn relation_tablespace_layouts_report_production_writer_costs() {
             snapshots: 1,
             high_cardinality: false,
             all_layouts: true,
+            max_raw_wal_bytes: 700_000,
+            max_peak_wal_bytes: 700_000,
+            max_zms_bytes: 400_000,
+            max_cpu_ticks: 150,
+            max_peak_rss_kib: 64 * 1_024,
         },
         RelationCostSpec {
             name: "representative_shared",
@@ -1076,6 +1089,11 @@ fn relation_tablespace_layouts_report_production_writer_costs() {
             snapshots: RELATION_SNAPSHOTS,
             high_cardinality: false,
             all_layouts: false,
+            max_raw_wal_bytes: 2_500_000,
+            max_peak_wal_bytes: 2_500_000,
+            max_zms_bytes: 300_000,
+            max_cpu_ticks: 500,
+            max_peak_rss_kib: 72 * 1_024,
         },
         RelationCostSpec {
             name: "stress_shared",
@@ -1084,6 +1102,11 @@ fn relation_tablespace_layouts_report_production_writer_costs() {
             snapshots: RELATION_SNAPSHOTS,
             high_cardinality: false,
             all_layouts: false,
+            max_raw_wal_bytes: 9_000_000,
+            max_peak_wal_bytes: 2_500_000,
+            max_zms_bytes: 2_800_000,
+            max_cpu_ticks: 1_800,
+            max_peak_rss_kib: 96 * 1_024,
         },
         RelationCostSpec {
             name: "stress_high_cardinality",
@@ -1092,52 +1115,119 @@ fn relation_tablespace_layouts_report_production_writer_costs() {
             snapshots: 2,
             high_cardinality: true,
             all_layouts: false,
+            max_raw_wal_bytes: 2_200_000,
+            max_peak_wal_bytes: 2_200_000,
+            max_zms_bytes: 900_000,
+            max_cpu_ticks: 350,
+            max_peak_rss_kib: 96 * 1_024,
         },
     ];
-    for spec in profiles {
-        let mut byte_baseline = None;
-        for repeat in 0..3 {
-            let cpu_before = self_cpu_ticks();
-            let started = std::time::Instant::now();
-            let report = relation_cost_profile(spec);
-            let elapsed_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
-            let cpu_ticks = self_cpu_ticks().saturating_sub(cpu_before);
-            let rss_kib = peak_rss_kib();
-            let bytes = (
-                report.raw_wal_bytes,
-                report.zms_bytes,
-                report.raw_section_bytes.clone(),
-                report.zms_section_bytes.clone(),
-            );
-            if let Some(expected) = &byte_baseline {
-                assert_eq!(&bytes, expected, "production bytes are deterministic");
-            } else {
-                byte_baseline = Some(bytes);
-            }
-            println!(
-                "pg_relation_tablespace_cost profile={} repeat={} table_rows={} index_rows={} raw_wal_bytes={} peak_wal_bytes={} zms_bytes={} segments={} frames={} parts={} raw_sections={:?} zms_sections={:?} rows={:?} elapsed_us={} cpu_ticks={} peak_rss_kib={}",
+    let Some(profile) = std::env::var_os(RELATION_COST_PROFILE_ENV) else {
+        let executable = std::env::current_exe().expect("locate collector test binary");
+        for spec in profiles {
+            let output = std::process::Command::new(&executable)
+                .args([
+                    "--exact",
+                    RELATION_COST_TEST,
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(RELATION_COST_PROFILE_ENV, spec.name)
+                .output()
+                .expect("run isolated relation cost child");
+            print!("{}", String::from_utf8_lossy(&output.stdout));
+            eprint!("{}", String::from_utf8_lossy(&output.stderr));
+            assert!(
+                output.status.success(),
+                "isolated relation cost child for {} exited with {}",
                 spec.name,
-                repeat + 1,
-                spec.tables.saturating_mul(spec.snapshots),
-                spec.indexes.saturating_mul(spec.snapshots),
-                report.raw_wal_bytes,
-                report.peak_wal_bytes,
-                report.zms_bytes,
-                report.segments,
-                report.frames,
-                report.parts,
-                report.raw_section_bytes,
-                report.zms_section_bytes,
-                report.rows,
-                elapsed_us,
-                cpu_ticks,
-                rss_kib,
+                output.status
             );
-            assert_eq!(report.frames, report.parts);
-            assert!(report.segments > 0);
-            assert!(report.raw_wal_bytes >= report.peak_wal_bytes);
-            assert!(report.zms_bytes > 0);
         }
+        return;
+    };
+    let profile = profile.to_string_lossy();
+    let spec = profiles
+        .into_iter()
+        .find(|spec| spec.name == profile)
+        .unwrap_or_else(|| panic!("unknown relation cost profile {profile}"));
+    let mut byte_baseline = None;
+    for repeat in 0..3 {
+        let cpu_before = self_cpu_ticks();
+        let started = std::time::Instant::now();
+        let report = relation_cost_profile(spec);
+        let elapsed_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let cpu_ticks = self_cpu_ticks().saturating_sub(cpu_before);
+        let rss_kib = peak_rss_kib();
+        let bytes = (
+            report.raw_wal_bytes,
+            report.zms_bytes,
+            report.raw_section_bytes.clone(),
+            report.zms_section_bytes.clone(),
+        );
+        if let Some(expected) = &byte_baseline {
+            assert_eq!(&bytes, expected, "production bytes are deterministic");
+        } else {
+            byte_baseline = Some(bytes);
+        }
+        println!(
+            "pg_relation_tablespace_cost profile={} repeat={} table_rows={} index_rows={} raw_wal_bytes={} peak_wal_bytes={} zms_bytes={} segments={} frames={} parts={} raw_sections={:?} zms_sections={:?} rows={:?} elapsed_us={} cpu_ticks={} peak_rss_kib={}",
+            spec.name,
+            repeat + 1,
+            spec.tables.saturating_mul(spec.snapshots),
+            spec.indexes.saturating_mul(spec.snapshots),
+            report.raw_wal_bytes,
+            report.peak_wal_bytes,
+            report.zms_bytes,
+            report.segments,
+            report.frames,
+            report.parts,
+            report.raw_section_bytes,
+            report.zms_section_bytes,
+            report.rows,
+            elapsed_us,
+            cpu_ticks,
+            rss_kib,
+        );
+        assert_eq!(report.frames, report.parts);
+        assert!(report.segments > 0);
+        assert!(report.raw_wal_bytes >= report.peak_wal_bytes);
+        assert!(report.zms_bytes > 0);
+        assert!(
+            report.raw_wal_bytes <= spec.max_raw_wal_bytes,
+            "{} raw WAL bytes {} exceed {}",
+            spec.name,
+            report.raw_wal_bytes,
+            spec.max_raw_wal_bytes
+        );
+        assert!(
+            report.peak_wal_bytes <= spec.max_peak_wal_bytes,
+            "{} peak WAL bytes {} exceed {}",
+            spec.name,
+            report.peak_wal_bytes,
+            spec.max_peak_wal_bytes
+        );
+        assert!(
+            report.zms_bytes <= spec.max_zms_bytes,
+            "{} ZMS bytes {} exceed {}",
+            spec.name,
+            report.zms_bytes,
+            spec.max_zms_bytes
+        );
+        assert!(
+            cpu_ticks <= spec.max_cpu_ticks,
+            "{} CPU ticks {} exceed {}",
+            spec.name,
+            cpu_ticks,
+            spec.max_cpu_ticks
+        );
+        assert!(
+            rss_kib <= spec.max_peak_rss_kib,
+            "{} peak RSS KiB {} exceed {}",
+            spec.name,
+            rss_kib,
+            spec.max_peak_rss_kib
+        );
     }
 }
 
