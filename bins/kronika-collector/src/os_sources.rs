@@ -31,6 +31,7 @@ use kronika_registry::os_snmp6::OsSnmp6;
 use kronika_registry::os_softirq::OsSoftirq;
 use kronika_registry::os_stat::OsStat;
 use kronika_registry::os_topology::OsTopology;
+use kronika_registry::os_user::OsUser;
 use kronika_registry::os_vmstat::OsVmstat;
 use kronika_registry::{StrId, Ts};
 use kronika_source_os::proc::cpuinfo;
@@ -59,11 +60,13 @@ mod cpufreq;
 mod process;
 mod procfs_sections;
 mod singletons;
+mod user_reference;
 
 pub(crate) use buffering::push_os_sources;
 pub(crate) use procfs_sections::collect_mountinfo;
 #[cfg(test)]
 pub(crate) use procfs_sections::{cpu_max_mhz, cpu_numa_node, net_link_facts, resolve_major_zero};
+pub(crate) use user_reference::UserReferences;
 
 /// OS procfs sections collected synchronously in the read phase.
 pub(crate) struct OsSources {
@@ -90,6 +93,8 @@ pub(crate) struct OsSources {
     cpufreq_policy: Vec<OsCpufreqPolicy>,
     cpufreq: Vec<OsCpufreq>,
     processes: Vec<OsProcess>,
+    users: Vec<OsUser>,
+    pending_users: Vec<(u8, u32)>,
     process_status: Vec<OsProcessStatus>,
     cgroup_mapping: Vec<OsCgroupMapping>,
     cgroup_context: Option<OsCgroupContext>,
@@ -126,6 +131,8 @@ impl OsSources {
             cpufreq_policy: Vec::new(),
             cpufreq: Vec::new(),
             processes: Vec::new(),
+            users: Vec::new(),
+            pending_users: Vec::new(),
             process_status: Vec::new(),
             cgroup_mapping: Vec::new(),
             cgroup_context: None,
@@ -135,6 +142,10 @@ impl OsSources {
             cgroup_pids: Vec::new(),
             mount_entries: Vec::new(),
         }
+    }
+
+    pub(crate) fn pending_users(&self) -> &[(u8, u32)] {
+        &self.pending_users
     }
 
     #[cfg(test)]
@@ -170,6 +181,13 @@ impl OsSources {
         let mut sources = Self::empty();
         sources.mountinfo = mounts;
         sources.block_topology = block_topology;
+        sources
+    }
+
+    #[cfg(test)]
+    pub(crate) fn users_only(users: Vec<OsUser>) -> Self {
+        let mut sources = Self::empty();
+        sources.users = users;
         sources
     }
 
@@ -225,13 +243,15 @@ fn read_optional_os_file(fs: &ProcFs, rel: &'static str, type_id: u32) -> Option
 /// The `interner` is the segment's interner: device, interface, and mount
 /// strings are interned here so the built rows already hold their `StrId`s.
 #[allow(
+    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "independent procfs reads with per-source degradation logging kept adjacent"
+    reason = "independent procfs reads share explicit filesystem, scheduler, dictionary, and segment-reference state"
 )]
 pub(crate) fn collect_os_sources(
     fs: &ProcFs,
     cpufreq_collector: &mut kronika_source_os::cpufreq::CpuFreqCollector,
     interner: &mut Interner,
+    users: &mut UserReferences,
     scope: u8,
     ts: i64,
     in_container: bool,
@@ -288,8 +308,16 @@ pub(crate) fn collect_os_sources(
     cpufreq::collect_cpufreq(cpufreq_collector, &sys, interner, scope, ts, due, &mut os);
 
     let entity_scope = os_entity_scope(in_container);
-    let process_memberships =
-        process::collect_process_sections(fs, interner, entity_scope, ts, due, cgroup_due, &mut os);
+    let process_memberships = process::collect_process_sections(
+        fs,
+        interner,
+        users,
+        entity_scope,
+        ts,
+        due,
+        cgroup_due,
+        &mut os,
+    );
     if cgroup_due {
         cgroups::collect_cgroup_sections(
             &sys,

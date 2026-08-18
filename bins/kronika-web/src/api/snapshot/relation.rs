@@ -3143,7 +3143,14 @@ fn scan_context(
             if !context.window.matches(&row)
                 || !context.plan.matches(&row, &dictionary)
                 || prepared.search.as_ref().is_some_and(|search| {
-                    !search_matches(kind.logical_name(), context.plan, &row, &dictionary, search)
+                    !search_matches(
+                        kind.logical_name(),
+                        context.plan,
+                        &row,
+                        &dictionary,
+                        None,
+                        search,
+                    )
                 })
             {
                 continue;

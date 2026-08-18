@@ -14,6 +14,7 @@ use kronika_registry::{
     CodecError, DICT_STRINGS_TYPE_ID, FINAL_DATA_PAGE_BYTES, MAX_SECTION_ROWS, Section, StrId, Ts,
     final_data_body_bound,
 };
+use kronika_source_os::PasswdSnapshot;
 use kronika_writer::{
     FlushSummary, FlushedPart, Interner, Journal, JournalConfig, SectionBuffers,
     SectionFlushSummary,
@@ -67,6 +68,28 @@ fn flushed_window(ts: i64) -> FlushedPart {
         .flush_with_summary(&[])
         .expect("window encodes")
         .expect("one row yields one part")
+}
+
+fn passwd_snapshot() -> PasswdSnapshot {
+    let file = tempfile::NamedTempFile::new().expect("create passwd fixture");
+    fs::write(
+        file.path(),
+        b"postgres:x:26:26::/var/lib/postgresql:/bin/false\n",
+    )
+    .expect("write passwd fixture");
+    PasswdSnapshot::read(file.path()).expect("read passwd fixture")
+}
+
+fn user_window(segment: &mut SegmentState, ts: i64) -> (FlushedPart, Vec<(u8, u32)>) {
+    let (interner, users) = segment.os_state_mut();
+    let (rows, pending) = users.prepare_rows(interner, 0, ts, [26, 26]);
+    assert_eq!(rows.len(), 1);
+    let mut buffers = SectionBuffers::new();
+    for row in rows {
+        buffers.push(row).expect("buffer user reference");
+    }
+    let flushed = encode_window(buffers, segment.interner()).expect("encode user reference");
+    (flushed, pending)
 }
 
 fn cgroup_v2_window() -> FlushedPart {
@@ -726,6 +749,82 @@ fn recovery_publishes_persisted_cgroup_v2_rows() {
         recovered_dictionary.resolve(*cpu_path_id),
         Some(Resolved::Str(b"/m1"))
     );
+}
+
+#[test]
+fn user_reference_survives_recovery_and_is_reemitted_after_forced_rollover() {
+    const USER_TYPE_ID: u32 = 1_124_001;
+    const FIRST_TS: i64 = 1_700_000_000_000_000;
+    const SECOND_TS: i64 = FIRST_TS + 1_000_000;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let snapshot = passwd_snapshot();
+    let (owner, mut journal) = open_journal(dir.path(), JournalConfig::default().max_journal_len);
+    let config = test_config(dir.path());
+    let mut segment = SegmentState::with_user_snapshot(snapshot.clone());
+    let (first, pending) = user_window(&mut segment, FIRST_TS);
+    let finished = append_window_and_maybe_close(
+        &mut journal,
+        &owner,
+        &config,
+        &mut segment,
+        FIRST_TS,
+        false,
+        &first,
+    )
+    .expect("append first user reference");
+    assert!(finished.is_empty());
+    segment.mark_users_recorded(&pending);
+    drop(journal);
+    drop(owner);
+
+    let root = DataRoot::open(dir.path()).expect("reopen test data root");
+    let owner = root
+        .acquire_writer(LayoutLimits::default())
+        .expect("reacquire test writer");
+    let journal_max_bytes =
+        u64::try_from(JournalConfig::default().max_journal_len).expect("journal cap fits u64");
+    let (mut journal, recovered_path) =
+        open_collector_journal(&owner, journal_max_bytes).expect("recover user reference");
+    assert!(recovered_path.is_some());
+    assert!(journal.parts().is_empty());
+
+    let mut segment = SegmentState::with_user_snapshot(snapshot);
+    let (second, pending) = user_window(&mut segment, SECOND_TS);
+    let finished = append_window_and_maybe_close(
+        &mut journal,
+        &owner,
+        &config,
+        &mut segment,
+        SECOND_TS,
+        true,
+        &second,
+    )
+    .expect("append and close second user reference");
+    assert_eq!(finished.len(), 1);
+    assert_eq!(finished[0].1, "forced");
+    assert!(segment.is_empty());
+    assert_eq!(pending, [(0, 26)]);
+
+    let reader = Reader::open(dir.path()).expect("open production reader");
+    let listing = reader.segments(..).expect("list user segments");
+    assert!(listing.warnings.is_empty());
+    assert_eq!(listing.segments.len(), 2);
+    for descriptor in &listing.segments {
+        assert_eq!(descriptor.kind(), SegmentKind::Finished);
+        let stored = reader.open_segment(descriptor).expect("open user segment");
+        let rows = stored.rows(USER_TYPE_ID).expect("decode user rows");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("uid"), Some(&Cell::U32(26)));
+        let Some(Cell::StrId(username)) = rows[0].get("username") else {
+            panic!("user name must remain a dictionary id");
+        };
+        let dictionary = stored.dictionary().expect("decode user dictionary");
+        assert_eq!(
+            dictionary.resolve(*username),
+            Some(Resolved::Str(b"postgres"))
+        );
+    }
 }
 
 #[test]

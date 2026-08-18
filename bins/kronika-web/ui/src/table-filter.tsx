@@ -144,7 +144,7 @@ function searchExamples(surface: SearchSurface): readonly string[] {
   if (surface === "pg_store_plans") return ["plan_id:3704532795 AND query_id:-912345", 'database:app AND text:"nested loop"']
   if (surface === "pg_stat_statements" || surface === "pg_stat_activity") return ["query_id:-912345", 'database:app AND text:"select orders*"']
   if (surface === "pg_stat_user_tables" || surface === "pg_stat_user_indexes") return ["table_name:orders AND schema:public", 'database:app AND schema:"Sales Data"']
-  if (surface === "os_process") return ["pid:4242", "command:postgres*"]
+  if (surface === "os_process") return ["user:postgres", "effective_user:postgres", "command:postgres*"]
   if (surface === "events") return ["kind:event AND source:postgres*", 'text:"lock timeout"']
   return ["database:app", "state:active"]
 }

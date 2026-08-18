@@ -23,7 +23,7 @@ import {
   type Locale,
 } from "./model"
 import { activityDurationMs, backendAgeMs, stateDurationMs, transactionDurationMs } from "./postgres-activity"
-import { CellValue, formatCell, LENS_FIELDS, type Field } from "./process-table"
+import { CellValue, formatCell, LENS_FIELDS, PROCESS_USER_FIELDS, type Field } from "./process-table"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 import { statementsForActivity, type RelatedNavigation } from "./statement-navigation"
 
@@ -164,7 +164,7 @@ export function DetailDock({
       </section>
       <DetailList>
         <DetailField help="col.pid.help" label="col.pid.label" t={t} value={identifier(value(process, "pid"))} />
-        {LENS_FIELDS[lens].filter((field) => field.id !== "command" && field.id !== "pid" && field.field !== undefined && value(process, field.field) !== null).map((field) => <DetailField help={field.help} key={field.id} label={field.label} t={t} value={<CellValue field={field} linked={false} locale={locale} row={process} t={t} ticksPerSecond={ticksPerSecond} />} />)}
+        {processDetailFields(lens, process).map((field) => <DetailField help={field.help} key={field.id} label={field.label} t={t} value={<CellValue field={field} linked={false} locale={locale} row={process} t={t} ticksPerSecond={ticksPerSecond} />} />)}
       </DetailList>
       <ChartOnly><section aria-label={t(`lens.${lens}`)} className="process-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]" data-testid="process-history">
         <div aria-label={t(`lens.${lens}`)} className="history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">
@@ -221,6 +221,11 @@ export function DetailDock({
       </section>}
     </aside>
   )
+}
+
+export function processDetailFields(lens: Lens, process: DataRow): readonly Field[] {
+  const fields = lens === "generic" ? LENS_FIELDS[lens] : [...PROCESS_USER_FIELDS, ...LENS_FIELDS[lens]]
+  return fields.filter((field) => field.id !== "command" && field.id !== "pid" && field.field !== undefined && (field.kind === "user" || value(process, field.field) !== null))
 }
 
 export function processChartPoints(

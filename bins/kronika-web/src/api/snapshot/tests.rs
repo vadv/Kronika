@@ -503,6 +503,20 @@ fn structured_search_validates_aliases_types_escaping_and_surface_fields() {
     assert!(StructuredSearch::parse("query_id:-0", "pg_stat_statements").is_err());
     assert!(StructuredSearch::parse("select orders*", "pg_stat_statements").is_ok());
     assert!(StructuredSearch::parse("select AND orders", "pg_stat_statements").is_err());
+
+    let process = StructuredSearch::parse(
+        "username:postgres AND euser:postgres-worker AND uid:26 AND euid:27",
+        "os_process",
+    )
+    .expect("process aliases");
+    assert_eq!(
+        process
+            .clauses
+            .iter()
+            .map(|clause| clause.key)
+            .collect::<Vec<_>>(),
+        ["user", "effective_user", "user_id", "effective_user_id"]
+    );
 }
 
 #[test]

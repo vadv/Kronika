@@ -2112,27 +2112,51 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
 
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
     await cdp.waitFor(`document.querySelectorAll('[data-testid="process-table"] .entity-row').length > 10`, "the full-height process table")
+    await cdp.waitFor(`[...document.querySelectorAll('[data-testid="process-table"] .entity-row')].some((row) => row.textContent.includes("2686712"))`, "the captured-user process row")
     const processJoinGap = await cdp.evaluate(`(() => {
       const timeline = document.querySelector('.timeline-shell').getBoundingClientRect()
       const controls = document.querySelector('.process-workspace > .lensbar').getBoundingClientRect()
       return controls.top - timeline.bottom
     })()`)
     assert.ok(processJoinGap <= 1, `Process major-region gap ${processJoinGap}px`)
+    const capturedUsers = await cdp.evaluate(`(() => {
+      const table = document.querySelector('[data-testid="process-table"]')
+      const headers = [...table.querySelectorAll('[role="columnheader"]')].map((cell) => cell.querySelector('.entity-sort span')?.textContent.trim() ?? '')
+      const selected = [...table.querySelectorAll('.entity-row')].find((row) => row.textContent.includes('2686712'))
+      return Object.fromEntries([...selected.querySelectorAll('[role="cell"]')].map((cell, index) => [headers[index], cell.textContent.trim()]))
+    })()`)
+    assert.equal(capturedUsers.User, "postgres (26)")
+    assert.equal(capturedUsers["Effective user"], "postgres-worker (27)")
+    await cdp.evaluate(`([...document.querySelectorAll('[data-testid="process-table"] .entity-row')].find((row) => row.textContent.includes("2686712"))).querySelector('[data-testid="process-user-filter-user"]').click()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "user:postgres"`, "resolved real user opens canonical name search")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="process-dock"]') === null`), true)
+    await cdp.evaluate(`document.querySelector('[aria-label="Clear the filter"]').click()`)
+    await delay(400)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === null && [...document.querySelectorAll('[data-testid="process-table"] .entity-row')].some((row) => row.textContent.includes("2686712"))`, "process rows restored after real-user search")
+    await cdp.evaluate(`([...document.querySelectorAll('[data-testid="process-table"] .entity-row')].find((row) => row.textContent.includes("2686712"))).querySelector('[data-testid="process-user-filter-effective_user"]').click()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "effective_user:postgres-worker"`, "resolved effective user opens canonical name search")
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=processes&lens=generic` })
+    await cdp.waitFor(`[...document.querySelectorAll('[data-testid="process-table"] .entity-row')].some((row) => row.textContent.includes("2686712"))`, "ordinary process rows restored after user search")
     await cdp.evaluate(`([...document.querySelectorAll('[data-testid="process-table"] .entity-row')].find((row) => row.textContent.includes("2686712"))).click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-linked-dock"] [data-testid="pg-exact-query"]')?.textContent.includes("select activity_for_2686712") === true`, "the PID-first linked Activity query")
     await cdp.evaluate(`document.querySelector('[data-testid="lens-cpu"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="process-history-metric-majflt"]') !== null`, "Major page faults history")
     const cpuDetail = await cdp.evaluate(`(() => ({
-      labels: [...document.querySelectorAll('[data-testid="pg-linked-dock"] dt')].map((node) => node.textContent),
+      labels: [...document.querySelectorAll('[data-testid="pg-linked-dock"] > dl:first-of-type dt')].map((node) => node.textContent),
       schedulerChips: ["nice", "prio", "rtprio"].filter((field) => document.querySelector('[data-testid="process-history-metric-' + field + '"]') !== null),
       snapshot: document.querySelector('[data-testid="pg-linked-dock"]')?.textContent ?? "",
     }))()`)
     assert.equal(cpuDetail.schedulerChips.length, 0)
     for (const label of ["Nice", "Priority", "RT priority"]) assert.ok(cpuDetail.labels.some((value) => value.startsWith(label)), JSON.stringify(cpuDetail.labels))
+    assert.equal(cpuDetail.labels.filter((value) => value === "User?").length, 1, JSON.stringify(cpuDetail.labels))
+    assert.equal(cpuDetail.labels.filter((value) => value === "Effective user?").length, 1, JSON.stringify(cpuDetail.labels))
+    assert.match(cpuDetail.snapshot, /postgres \(26\)/)
+    assert.match(cpuDetail.snapshot, /postgres-worker \(27\)/)
     assert.doesNotMatch(cpuDetail.snapshot, /\b\d{2}[./]\d{2}[./]2026\b/)
     for (const lens of ["cpu", "memory", "disk", "generic"]) {
       await cdp.evaluate(`document.querySelector('[data-testid="lens-${lens}"]').click()`)
       await settleLayout(cdp)
+      await cdp.waitFor(`document.querySelector('[data-testid="table-paging"]') === null`, `${lens} process page settled`)
       const geometry = await cdp.evaluate(`(() => {
         const box = (node) => { const value = node.getBoundingClientRect(); return { bottom: value.bottom, top: value.top } }
         const main = document.querySelector('.process-main')
@@ -3869,6 +3893,7 @@ function snapshotRecords() {
     "ts", "pid", "comm", "cmdline", "ppid", "uid", "euid", "gid", "egid", "num_threads", "tty", "exit_signal",
     "state", "utime", "stime", "rundelay_ns", "blkdelay_ticks", "nvcsw", "nivcsw", "curcpu", "nice", "prio", "rtprio", "policy",
     "rmem_kb", "vmem_kb", "vswap_kb", "minflt", "majflt", "read_bytes", "write_bytes", "syscr", "syscw", "rchar", "wchar", "cancelled_write_bytes",
+    "user", "effective_user",
   ]
   const columns = [
     "ts", "pid", "leader_pid", "datid", "datname", "usename", "application_name", "client_addr", "backend_type",
@@ -3877,9 +3902,10 @@ function snapshotRecords() {
   ]
   const processValues = (pid, index) => [
     String(AT), pid, pid === 2_686_712 ? "postgres" : `worker-${index}`, pid === 2_686_712 ? "postgres: artifact_db artifact_role 192.0.2.72" : null,
-    1, 1000, 1000, 1000, 1000, 2 + index % 4, 0, 17, index % 3 === 0 ? 82 : 83,
+    1, pid === 2_686_712 ? 26 : 1000, pid === 2_686_712 ? 27 : 1000, 1000, 1000, 2 + index % 4, 0, 17, index % 3 === 0 ? 82 : 83,
     1000 + index, 300 + index, 5_000_000 + index, 12 + index, 50 + index, 3 + index, index % 8, -5, 15, 0, 0,
     1024 + index, 4096 + index, index % 3, 20 + index, 2 + index, 4096 + index, 8192 + index, 4 + index, 5 + index, 16_384 + index, 32_768 + index, 0,
+    pid === 2_686_712 ? "postgres" : "app", pid === 2_686_712 ? "postgres-worker" : "app",
   ]
   return [
     layout("1100001", "os_process", processColumns),

@@ -16,26 +16,30 @@ use thrift as _;
 fn main() -> io::Result<()> {
     let layouts = registry()
         .iter()
+        .filter(|contract| logical_section_name(contract.type_id.get()) != Some("os_user"))
         .map(|contract| {
             json!({
                 "typeId": contract.type_id.get().to_string(),
                 "logicalName": logical_section_name(contract.type_id.get()),
                 "identity": contract.identity,
-                "columns": contract.columns.iter().map(|column| column.name).collect::<Vec<_>>(),
-                "columnMetadata": contract.columns.iter().map(|column| json!({
-                    "name": column.name,
-                    "type": column.ty.code(),
-                    "class": column.class.code(),
-                    "unit": column.unit.map(kronika_registry::Unit::code),
-                })).collect::<Vec<_>>(),
+                "columnMetadata": contract.columns.iter().map(|column| json!([
+                    column.name,
+                    column.ty.code(),
+                    column.class.code(),
+                    column.unit.map(kronika_registry::Unit::code),
+                ])).collect::<Vec<_>>(),
             })
         })
         .collect::<Vec<_>>();
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
-    write!(out, "export const registry = ")?;
+    write!(out, "const stored = ")?;
     serde_json::to_writer(&mut out, &layouts)?;
     writeln!(out, " as const;")?;
+    writeln!(
+        out,
+        "export const registry = stored.map(({{columnMetadata,...layout}}) => ({{...layout,columns:columnMetadata.map(([name]) => name),columnMetadata:columnMetadata.map(([name,type,columnClass,unit]) => ({{name,type,class:columnClass,unit}}))}}));"
+    )?;
     writeln!(
         out,
         "export type RegistryLayout = (typeof registry)[number];"
