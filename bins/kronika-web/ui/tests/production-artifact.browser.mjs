@@ -885,11 +885,14 @@ test("the production artifact preserves wire keys and exact finding page state",
 
     await cdp.evaluate(`([...document.querySelectorAll('[data-testid="pg-tables-table"] .entity-row')].find((row) => row.getAttribute('aria-label') === 'artifact_db.public.artifact_table')).click()`)
     const alignedDetail = await cdp.evaluate(`(() => {
-      const layout = document.querySelector('.pg-entity-layout').getBoundingClientRect()
+      const inspector = document.querySelector('[data-testid="inspector"]').getBoundingClientRect()
+      const body = document.querySelector('.inspector-body').getBoundingClientRect()
       const detail = document.querySelector('[data-testid="pg-relation-detail"]').getBoundingClientRect()
-      return { detailBottom: detail.bottom, detailTop: detail.top, layoutBottom: layout.bottom, layoutTop: layout.top }
+      return { bodyBottom: body.bottom, bodyTop: body.top, detailBottom: detail.bottom, detailTop: detail.top, inspectorBottom: inspector.bottom, inspectorTop: inspector.top, viewport: innerHeight }
     })()`)
-    assert.ok(Math.abs(alignedDetail.detailTop - alignedDetail.layoutTop) <= 1 && Math.abs(alignedDetail.detailBottom - alignedDetail.layoutBottom) <= 1, JSON.stringify(alignedDetail))
+    assert.ok(alignedDetail.inspectorTop >= -1 && alignedDetail.inspectorBottom <= alignedDetail.viewport + 1
+      && alignedDetail.detailTop >= alignedDetail.bodyTop - 1 && alignedDetail.detailBottom <= alignedDetail.bodyBottom + 1,
+    JSON.stringify(alignedDetail))
     await cdp.evaluate(`document.querySelector('[data-testid="locale-ru"]').click()`)
     await cdp.waitFor(`document.documentElement.lang === "ru"`, "the Russian estimate labels")
     const russianEstimate = await cdp.evaluate(`(() => {
@@ -948,7 +951,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     })()`)
     assert.equal(shortTable.rows, 3)
     assert.equal(shortTable.virtual, 69)
-    assert.ok(shortTable.height >= 100 && shortTable.bottom <= shortTable.clientHeight + 1, JSON.stringify(shortTable))
+    assert.ok(Math.abs(shortTable.height - 95) <= 1 && shortTable.bottom <= shortTable.clientHeight + 1, JSON.stringify(shortTable))
 
     const beforeOidSearch = requests.length
     await cdp.evaluate(`(() => {
@@ -1016,9 +1019,9 @@ test("the production artifact preserves wire keys and exact finding page state",
       const size = await cdp.evaluate(`({ clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth })`)
       assert.ok(size.scrollWidth <= size.clientWidth, `${width}px relation overflow: ${JSON.stringify(size)}`)
     }
-    await cdp.evaluate(`document.querySelector(".source-tabs button:nth-child(2)").click(); document.querySelector('[data-testid="locale-ru"]').click()`)
+    await cdp.evaluate(`([...document.querySelectorAll('.source-tabs button')].find((button) => button.textContent.trim() === 'Host')).click(); document.querySelector('[data-testid="locale-ru"]').click()`)
     await cdp.waitFor(`document.querySelector(".section-tabs") !== null`, "the host tabs")
-    await cdp.evaluate(`document.querySelector('.source-tabs button:nth-child(2)').click()`)
+    await cdp.evaluate(`([...document.querySelectorAll('.source-tabs button')].find((button) => button.textContent.trim() === 'Host')).click()`)
     await systemPage
     await cdp.waitFor(`document.querySelector('[data-testid="cursor-behind"]') !== null`, "the crowded Russian loading bar")
     for (const [width, height] of [[1920, 1080], [1366, 768], [1024, 768]]) {
@@ -1050,7 +1053,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       const box = (node) => { const value = node.getBoundingClientRect(); return { left: value.left, right: value.right, width: value.width } }
       return { client: document.documentElement.clientWidth, icon: box(icon), input: box(input), label: box(label), nav: [...document.querySelectorAll('.source-tabs button')].map((button) => button.textContent), placeholder: input.placeholder, scroll: document.documentElement.scrollWidth }
     })()`)
-    assert.deepEqual(eventSearch.nav, ["Processes", "Host", "PostgreSQL", "Events"])
+    assert.deepEqual(eventSearch.nav, ["Host", "Processes", "PostgreSQL", "Events"])
     assert.equal(eventSearch.placeholder, "Текст или field:value AND size>100MB")
     assert.ok(eventSearch.icon.right <= eventSearch.input.left + 1, JSON.stringify(eventSearch))
     assert.ok(eventSearch.label.left >= -1 && eventSearch.label.right <= eventSearch.client + 1 && eventSearch.scroll <= eventSearch.client, JSON.stringify(eventSearch))
@@ -1249,19 +1252,19 @@ test("the production artifact preserves wire keys and exact finding page state",
       await cdp.evaluate("document.fonts.ready.then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))")
       const placement = await cdp.evaluate(`(() => {
         const layout = document.querySelector('[data-testid="pg-entity-layout"]')
-        const main = layout.querySelector('.pg-entity-main').getBoundingClientRect()
+        const workspace = document.querySelector('.workspace').getBoundingClientRect()
         const table = layout.querySelector('[data-testid="pg-statements-table"]').getBoundingClientRect()
         const paging = layout.querySelector('[data-testid="table-paging"]').getBoundingClientRect()
-        const detail = layout.querySelector('[data-testid="pg-detail"]').getBoundingClientRect()
+        const inspector = document.querySelector('[data-testid="inspector"]').getBoundingClientRect()
         return {
-          detail: { left: detail.left, top: detail.top },
-          main: { right: main.right, top: main.top },
+          inspector: { left: inspector.left, top: inspector.top },
           paging: { top: paging.top },
           table: { bottom: table.bottom },
+          workspace: { right: workspace.right, top: workspace.top },
         }
       })()`)
-      assert.ok(Math.abs(placement.detail.top - placement.main.top) <= 1, `${width}px detail row: ${JSON.stringify(placement)}`)
-      assert.ok(placement.detail.left >= placement.main.right - 1, `${width}px detail column: ${JSON.stringify(placement)}`)
+      assert.ok(placement.inspector.top <= placement.workspace.top + 1, `${width}px Inspector starts with workspace: ${JSON.stringify(placement)}`)
+      assert.ok(placement.inspector.left >= placement.workspace.right - 1, `${width}px Inspector beside workspace: ${JSON.stringify(placement)}`)
       assert.ok(placement.paging.top >= placement.table.bottom - 1, `${width}px paging below table: ${JSON.stringify(placement)}`)
     }
 
@@ -1447,9 +1450,10 @@ test("the production artifact preserves wire keys and exact finding page state",
       source: document.querySelector(".source-active")?.textContent ?? null,
     }))()`)
     assert.equal(system.source, "Host")
-    // Overview opens directly on the first factual CPU metric.
-    assert.equal(system.selectedMetric, "true", JSON.stringify(system))
-    assert.equal(system.dock, true, JSON.stringify(system))
+    // Overview selects the first factual CPU metric for the permanent preview
+    // without consuming the shared Inspector.
+    assert.equal(system.selectedMetric, null, JSON.stringify(system))
+    assert.equal(system.dock, false, JSON.stringify(system))
     assert.equal(system.metric, "cpu_used_cores", JSON.stringify(system))
     await cdp.waitFor(`document.querySelector('[data-testid="use-table"]') !== null`, "the System resource table")
     await cdp.evaluate(`document.querySelector('[data-testid="use-row-disk"]').click()`)
@@ -1476,6 +1480,8 @@ test("the production artifact preserves wire keys and exact finding page state",
         const consolePanel = document.querySelector(".system-main")
         const main = document.querySelector(".system-main")
         const history = document.querySelector('[data-testid="system-dock"]')
+        const inspector = document.querySelector('[data-testid="inspector"]')
+        const inspectorBody = inspector.querySelector('.inspector-body')
         const chart = history.querySelector(".uplot-figure")
         const canvas = chart.querySelector("canvas")
         const host = chart.querySelector(".uplot-host")
@@ -1487,7 +1493,7 @@ test("the production artifact preserves wire keys and exact finding page state",
           return Math.max(...row) - Math.min(...row)
         }))
         const summaryBottom = Math.max(...[...document.querySelectorAll(".metric-group")].map((group) => group.getBoundingClientRect().bottom))
-        const contentBottom = Math.max(summaryBottom, history.getBoundingClientRect().bottom)
+        const contentBottom = summaryBottom
         const panels = [document.querySelector(".timeline-shell"), ...document.querySelectorAll(".metric-group"), history]
         const overlaps = []
         for (let left = 0; left < panels.length; left += 1) {
@@ -1521,27 +1527,33 @@ test("the production artifact preserves wire keys and exact finding page state",
           history: historyBounds,
           historyTail: historyBounds.bottom - chartBounds.bottom,
           host: bounds(host),
+          inspector: bounds(inspector),
+          inspectorBody: bounds(inspectorBody),
+          inspectorBodyScrollHeight: inspectorBody.scrollHeight,
           main: bounds(main),
           overlaps,
           plot: bounds(plot),
         })
       }))))`)
       assert.ok(layout.chart.height >= 300 && layout.chart.height <= 360, `${width}x${height} System chart height: ${JSON.stringify(layout)}`)
-      assert.ok(layout.host.height >= 220, `${width}x${height} System chart host height: ${JSON.stringify(layout)}`)
-      assert.ok(layout.plot.height >= 160, `${width}x${height} System plot height: ${JSON.stringify(layout)}`)
-      assert.ok(Math.abs(layout.history.left - layout.main.left) <= 1 && Math.abs(layout.history.right - layout.main.right) <= 1,
-        `${width}x${height} System dock takes the full width: ${JSON.stringify(layout)}`)
-      assert.ok(Math.abs(layout.history.top - layout.main.top) <= 1, `${width}x${height} System dock heads the resource tab: ${JSON.stringify(layout)}`)
+      assert.ok(layout.host.height >= 190, `${width}x${height} System chart host height: ${JSON.stringify(layout)}`)
+      assert.ok(layout.plot.height >= 145, `${width}x${height} System plot height: ${JSON.stringify(layout)}`)
+      assert.ok(layout.main.right <= layout.inspector.left + 1
+        && layout.history.left >= layout.inspectorBody.left - 1 && layout.history.right <= layout.inspectorBody.right + 1,
+      `${width}x${height} System Inspector adjacency: ${JSON.stringify(layout)}`)
+      assert.ok(layout.history.top >= layout.inspectorBody.top - 1
+        && layout.history.bottom <= layout.inspectorBody.top + layout.inspectorBodyScrollHeight + 1,
+        `${width}x${height} System Inspector containment: ${JSON.stringify(layout)}`)
       assert.deepEqual(layout.chartAccess.canvasAriaHidden, "true")
       assert.equal(layout.chartAccess.canvasCount, 1)
       assert.equal(layout.chartAccess.hostRole, "img")
       assert.match(layout.chartAccess.hostLabel, /CPU used.*cores/)
       assert.equal(layout.chartAccess.navigator, true)
       assert.ok(layout.chartAccess.summary.length > 0)
-      assert.ok(layout.history.height - layout.chart.height <= 170 && layout.historyTail >= -1 && layout.historyTail <= 30, `${width}x${height} compact System dock: ${JSON.stringify(layout)}`)
+      assert.ok(layout.history.height - layout.chart.height <= 240 && layout.historyTail >= -1 && layout.historyTail <= 30, `${width}x${height} compact System dock: ${JSON.stringify(layout)}`)
       assert.ok(layout.cardSpread <= 1 && layout.cardSpread > -1, `${width}x${height} ragged System metric row: ${JSON.stringify(layout)}`)
       assert.ok(Math.abs(layout.console.bottom - layout.contentBottom) <= 1.5, `${width}x${height} content-sized System layout: ${JSON.stringify(layout)}`)
-      assert.ok(layout.groupsTop - layout.history.bottom >= 7 && layout.groupsTop - layout.history.bottom <= 10, `${width}x${height} System dock separation: ${JSON.stringify(layout)}`)
+      assert.ok(layout.groupsTop >= layout.main.top - 1, `${width}x${height} System metric hierarchy: ${JSON.stringify(layout)}`)
       assert.ok(layout.chart.left >= layout.history.left - 1 && layout.chart.right <= layout.history.right + 1
         && layout.chart.top >= layout.history.top - 1 && layout.chart.bottom <= layout.history.bottom + 1,
       `${width}x${height} System chart containment: ${JSON.stringify(layout)}`)
@@ -1553,10 +1565,14 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.waitFor(`document.querySelector('[data-testid="use-table"]') !== null`, "the overview resource table")
     const overviewOrder = await cdp.evaluate(`(() => {
       const table = document.querySelector('[data-testid="use-table"]').getBoundingClientRect()
-      const dock = document.querySelector('[data-testid="system-dock"]')?.getBoundingClientRect() ?? null
-      return { gap: dock === null ? null : dock.top - table.bottom }
+      const inspector = document.querySelector('[data-testid="inspector"]')?.getBoundingClientRect() ?? null
+      return { gap: inspector === null ? null : inspector.left - table.right }
     })()`)
-    assert.ok(overviewOrder.gap !== null && Math.abs(overviewOrder.gap - 8) <= 1.5, `overview dock under the resource table: ${JSON.stringify(overviewOrder)}`)
+    assert.equal(overviewOrder.gap, null, `overview navigation closes the prior Inspector: ${JSON.stringify(overviewOrder)}`)
+    await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "CPU metrics after Overview")
+    await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="system-dock"] .uplot-host canvas') !== null`, "CPU Inspector after Overview")
     await cdp.evaluate(`(() => {
       if (window.__kronikaAxisText !== undefined) return
       window.__kronikaAxisText = []
@@ -1644,61 +1660,14 @@ test("the production artifact preserves wire keys and exact finding page state",
       return ratio >= 0.95 && ratio <= 1.05
     })()`, "the restored DPR 1 chart backing store")
 
-    const chartRequestsBeforeExpand = requests.filter(({ path }) => path.startsWith("/api/")).length
-    await cdp.evaluate(`document.querySelector(".system-dock .chart-expand").click()`)
-    await cdp.waitFor(`document.querySelector('.system-dock [role="dialog"][aria-modal="true"].uplot-expanded') !== null`, "the expanded chart dialog")
-    await assertHoverGeometryStable(cdp, '.system-dock [role="dialog"]', "expanded System chart")
-    const expanded = await cdp.evaluate(`(() => {
-      const dialog = document.querySelector('.system-dock [role="dialog"]')
-      const rect = dialog.getBoundingClientRect()
-      return {
-        active: document.activeElement?.className ?? "",
-        clientHeight: document.documentElement.clientHeight,
-        clientWidth: document.documentElement.clientWidth,
-        fullscreen: document.fullscreenElement !== null,
-        height: rect.height,
-        hostHeight: dialog.querySelector('.uplot-host').getBoundingClientRect().height,
-        left: rect.left,
-        top: rect.top,
-        width: rect.width,
-      }
-    })()`)
-    assert.match(expanded.active, /chart-expand/)
-    assert.equal(expanded.fullscreen, false)
-    assert.ok(Math.abs(expanded.left) <= 1 && Math.abs(expanded.top) <= 1, JSON.stringify(expanded))
-    assert.ok(expanded.width >= expanded.clientWidth - 1 && expanded.height >= expanded.clientHeight - 1, JSON.stringify(expanded))
-    assert.ok(expanded.hostHeight > 500, JSON.stringify(expanded))
-    await cdp.evaluate(`(() => {
-      const dialog = document.querySelector('.system-dock [role="dialog"]')
-      const last = dialog.querySelector('input.chart-navigator')
-      last.focus()
-      last.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Tab" }))
-    })()`)
-    // Tab off the last control lands on the dialog's first one, whatever the
-    // chart puts there: a series picker for a composition, a help dot otherwise.
-    const wrapped = await cdp.evaluate(`(() => {
-      const dialog = document.querySelector('.system-dock [role="dialog"]')
-      return {
-        active: document.activeElement?.className ?? null,
-        first: dialog.querySelector("button, input, [tabindex]")?.className ?? null,
-        isFirst: document.activeElement === dialog.querySelector("button, input, [tabindex]"),
-      }
-    })()`)
-    assert.equal(wrapped.isFirst, true, JSON.stringify(wrapped))
-    await cdp.evaluate(`(() => {
-      const dialog = document.querySelector('.system-dock [role="dialog"]')
-      dialog.querySelector("button, input, [tabindex]").dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Tab", shiftKey: true }))
-    })()`)
-    assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector('.system-dock [role="dialog"] input.chart-navigator')`), true)
-    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }))`)
-    await cdp.waitFor(`document.querySelector('.system-dock [role="dialog"]') === null`, "chart dialog Escape close")
-    assert.equal(await cdp.evaluate(`document.activeElement === document.querySelector(".system-dock .chart-expand")`), true)
+    const chartRequestsBeforeInspectorClose = requests.filter(({ path }) => path.startsWith("/api/")).length
+    assert.equal(await cdp.evaluate(`document.querySelector('.system-dock .chart-expand, .system-dock [role="dialog"].uplot-expanded') === null`), true)
     await delay(120)
-    assert.equal(requests.filter(({ path }) => path.startsWith("/api/")).length, chartRequestsBeforeExpand)
+    assert.equal(requests.filter(({ path }) => path.startsWith("/api/")).length, chartRequestsBeforeInspectorClose)
 
     await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }))`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-dock"]') === null`, "the System dock Escape close")
-    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="use-row-disk"]')?.getAttribute("aria-selected")`), "false")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]')?.getAttribute("aria-pressed")`), "false")
 
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="hour-timeline"] input.chart-navigator').dataset.recordedTimestamp`), String(AT))
@@ -1719,7 +1688,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       await cdp.evaluate(`(() => {
         const plot = document.querySelector('[data-testid="hour-timeline"] .u-over')
         const bounds = plot.getBoundingClientRect()
-        const range = ${HOUR_US} * (1 + 52 / Math.max(1, bounds.width))
+        const range = ${HOUR_US} * (1 + 38 / Math.max(1, bounds.width - 38))
         const clientX = bounds.left + (${target} - ${HOUR}) / range * bounds.width
         plot.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX, isPrimary: true, pointerId: 7, pointerType: "mouse" }))
       })()`)
@@ -2229,15 +2198,12 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
       }
     })()`)
     assert.ok(layout.chartWidth > 250 && layout.chartWidth <= layout.detailWidth, JSON.stringify(layout))
-    assert.ok(layout.plotWidth > 250, JSON.stringify(layout))
+    assert.ok(layout.plotWidth > 180, JSON.stringify(layout))
     assert.ok(layout.tableWidth >= 500, JSON.stringify(layout))
     assert.equal(layout.overflow, false)
     assert.equal(layout.selectors.length, 6)
-    await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-detail"] .chart-expand').click()`)
-    await cdp.waitFor(`document.querySelector('[role="dialog"] .uplot-host canvas') !== null`, "the expanded aggregate history")
-    assert.ok(await cdp.evaluate(`document.querySelector('[role="dialog"] .uplot-host').getBoundingClientRect().width > 900`))
-    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }))`)
-    await cdp.waitFor(`document.querySelector('[role="dialog"]') === null`, "the aggregate history close")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector"] [data-testid="pg-relation-detail"] .uplot-host canvas') !== null`), true)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-detail"] .chart-expand, [role="dialog"].uplot-expanded') === null`), true)
     const detailText = await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-detail"]').textContent`)
     assert.match(detailText, /fast_ssd/)
     assert.match(detailText, /1663/)
@@ -2447,7 +2413,7 @@ test.skip("legacy chart visibility preference is replaced by the permanent previ
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1024 })
 
     summaryMode = "fail"
-    await cdp.evaluate(`document.querySelector('.source-tabs button:nth-child(2)').click()`)
+    await cdp.evaluate(`([...document.querySelectorAll('.source-tabs button')].find((button) => button.textContent.trim() === 'Host')).click()`)
     await cdp.waitFor(`document.querySelector('.system-main') !== null`, "Host before same-hour summary remount")
     const hostJoinGap = await cdp.evaluate(`(() => {
       const timeline = document.querySelector('.timeline-shell').getBoundingClientRect()
@@ -2534,7 +2500,7 @@ test.skip("legacy chart visibility preference is replaced by the permanent previ
     await cdp.waitFor(`document.querySelector('[data-testid="process-summary-status"]')?.textContent === "Could not load process totals" && document.querySelector('.process-summary > div:first-child strong')?.textContent === "719"`, "same-hour error with retained totals", 15_000)
 
     summaryMode = "hold"
-    await cdp.evaluate(`document.querySelector('.source-tabs button:nth-child(2)').click()`)
+    await cdp.evaluate(`([...document.querySelectorAll('.source-tabs button')].find((button) => button.textContent.trim() === 'Host')).click()`)
     await cdp.waitFor(`document.querySelector('.system-main') !== null`, "System before held same-hour summary remount")
     await cdp.evaluate(`document.querySelector('[data-testid="process-tab"]').click()`)
     await waitForRequests(() => heldSummaries.length !== 0)
@@ -2690,9 +2656,9 @@ test.skip("legacy chart visibility preference is replaced by the permanent previ
 
     const hiddenSystemSnapshotsBefore = snapshotRequests("os_cpu").length
     const hiddenSystemHistoryBefore = historyRequests("os_cpu").length
-    await cdp.evaluate(`document.querySelector('.source-tabs button:nth-child(2)').click()`)
+    await cdp.evaluate(`([...document.querySelectorAll('.source-tabs button')].find((button) => button.textContent.trim() === 'Host')).click()`)
     await cdp.waitFor(`document.querySelector('.section-tabs [role="tab"]:first-child') !== null`, "Host sections")
-    await cdp.evaluate(`document.querySelector('.source-tabs button:nth-child(2)').click()`)
+    await cdp.evaluate(`([...document.querySelectorAll('.source-tabs button')].find((button) => button.textContent.trim() === 'Host')).click()`)
     await cdp.waitFor(`document.querySelector('.system-main') !== null`, "System with charts hidden")
     await waitForRequests(() => snapshotRequests("os_cpu").length > hiddenSystemSnapshotsBefore)
     await delay(100)
@@ -2783,7 +2749,7 @@ test("PostgreSQL is unavailable without current telemetry and returns for a stor
       }
     })()`)
     assert.deepEqual(unavailable, { pgDisabled: false, pgHealth: false, pgPanels: 1, view: "pg.overview" })
-    await cdp.evaluate(`document.querySelector('.source-tabs button:nth-child(2)').click()`)
+    await cdp.evaluate(`([...document.querySelectorAll('.source-tabs button')].find((button) => button.textContent.trim() === 'Host')).click()`)
     await cdp.waitFor(`document.querySelector('.system-main') !== null`, "the Host destination", 15_000)
     await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]')?.click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "the host CPU cards", 15_000)
@@ -2905,7 +2871,7 @@ test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, as
         row.click()
       })()`)
       await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"] .uplot-figure') !== null`, `${width}x${height} detail chart`, 15_000)
-      await cdp.waitFor(`(() => { const dock = document.querySelector('[data-testid="pg-detail"]'); return dock.scrollHeight > dock.clientHeight })()`, `${width}x${height} dock overflow`, 15_000)
+      await cdp.waitFor(`(() => { const body = document.querySelector('.inspector-body'); return body.scrollHeight > body.clientHeight })()`, `${width}x${height} Inspector overflow`, 15_000)
       await settleLayout(cdp)
       const opened = await cdp.evaluate(viewportDockGeometry())
 
@@ -2922,17 +2888,17 @@ test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, as
       assert.ok(opened.table.scrollWidth > opened.table.clientWidth, `${width}x${height} horizontal table: ${JSON.stringify(opened)}`)
       assert.ok(opened.table.railHeight > 0, `${width}x${height} horizontal rail height: ${JSON.stringify(opened)}`)
       assert.ok(opened.dock.top >= -1 && opened.dock.bottom <= height + 1 && opened.dock.left >= -1 && opened.dock.right <= width + 1, `${width}x${height} dock bounds: ${JSON.stringify(opened)}`)
-      assert.ok(opened.dock.scrollHeight > opened.dock.clientHeight, `${width}x${height} dock scrollport: ${JSON.stringify(opened)}`)
+      assert.ok(opened.body.scrollHeight > opened.body.clientHeight, `${width}x${height} Inspector scrollport: ${JSON.stringify(opened)}`)
       assert.ok(opened.chart.height >= 180 && opened.chart.height <= 220, `${width}x${height} chart cap: ${JSON.stringify(opened)}`)
 
-      await cdp.evaluate(`(() => { const dock = document.querySelector('[data-testid="pg-detail"]'); dock.scrollTop = dock.scrollHeight })()`)
+      await cdp.evaluate(`(() => { const body = document.querySelector('.inspector-body'); body.scrollTop = body.scrollHeight })()`)
       await settleLayout(cdp)
       const scrolled = await cdp.evaluate(viewportDockGeometry())
-      assert.ok(scrolled.dock.scrollTop > 0, `${width}x${height} detail scroll: ${JSON.stringify(scrolled)}`)
+      assert.ok(scrolled.body.scrollTop > 0, `${width}x${height} detail scroll: ${JSON.stringify(scrolled)}`)
       assert.ok(Math.abs(scrolled.table.scrollTop - before.table.scrollTop) <= 1, `${width}x${height} independent table scroll: ${JSON.stringify({ before, scrolled })}`)
       assert.ok(scrolled.header.top >= scrolled.dock.top - 1 && scrolled.header.bottom <= scrolled.dock.bottom + 1, `${width}x${height} sticky header: ${JSON.stringify(scrolled)}`)
       assert.ok(scrolled.close.top >= scrolled.dock.top - 1 && scrolled.close.bottom <= scrolled.dock.bottom + 1, `${width}x${height} visible close: ${JSON.stringify(scrolled)}`)
-      assert.ok(scrolled.lastDetail.top >= scrolled.header.bottom - 1 && scrolled.lastDetail.bottom <= scrolled.dock.bottom + 1, `${width}x${height} reachable detail fields: ${JSON.stringify(scrolled)}`)
+      assert.ok(scrolled.lastDetail.top >= scrolled.body.top - 1 && scrolled.lastDetail.bottom <= scrolled.body.bottom + 1, `${width}x${height} reachable detail fields: ${JSON.stringify(scrolled)}`)
 
       await cdp.evaluate(`document.querySelector('.inspector-close').click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"]') === null`, `${width}x${height} detail close`)
@@ -2943,7 +2909,7 @@ test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, as
       const rail = await cdp.evaluate(`(() => { const scroll = document.querySelector('[data-testid="pg-activity-table"] .entity-scroll'); return { active: document.activeElement === scroll, clientWidth: scroll.clientWidth, left: scroll.scrollLeft, scrollWidth: scroll.scrollWidth } })()`)
       assert.equal(rail.active, true, `${width}x${height} focusable rail`)
       assert.ok(rail.left >= rail.scrollWidth - rail.clientWidth - 1, `${width}x${height} rightmost columns: ${JSON.stringify(rail)}`)
-      measurements.push({ height, width, before, opened, scrolled: { dockScrollTop: scrolled.dock.scrollTop, headerTop: scrolled.header.top } })
+      measurements.push({ height, width, before, opened, scrolled: { bodyScrollTop: scrolled.body.scrollTop, headerTop: scrolled.header.top } })
     }
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
@@ -3746,17 +3712,19 @@ function viewportTableGeometry() {
 function viewportDockGeometry() {
   return `(() => {
     const base = ${viewportTableGeometry()}
-    const dock = document.querySelector('[data-testid="pg-detail"]')
-    const header = dock.querySelector('header')
-    const close = header.querySelector('button')
-    const chart = dock.querySelector('.uplot-figure')
-    const lastDetail = dock.querySelector('dl > div:last-child')
+    const dock = document.querySelector('[data-testid="inspector"]')
+    const body = dock.querySelector('.inspector-body')
+    const header = dock.querySelector('.inspector-head')
+    const close = dock.querySelector('.inspector-close')
+    const chart = body.querySelector('.uplot-figure')
+    const lastDetail = body.querySelector('[data-testid="pg-detail"] dl > div:last-child')
     const rect = (node) => { const bounds = node.getBoundingClientRect(); return { bottom: bounds.bottom, height: bounds.height, left: bounds.left, right: bounds.right, top: bounds.top, width: bounds.width } }
     return {
       ...base,
+      body: { ...rect(body), clientHeight: body.clientHeight, scrollHeight: body.scrollHeight, scrollTop: body.scrollTop },
       chart: rect(chart),
       close: rect(close),
-      dock: { ...rect(dock), clientHeight: dock.clientHeight, scrollHeight: dock.scrollHeight, scrollTop: dock.scrollTop },
+      dock: rect(dock),
       header: rect(header),
       lastDetail: rect(lastDetail),
       selectedPid: document.querySelector('[data-testid="pg-activity-table"] .entity-row[aria-selected="true"] [role="cell"]')?.textContent.trim() ?? null,
@@ -4177,7 +4145,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     socket?.close()
     await stopBrowser(browser)
     await new Promise((resolve) => server.close(resolve))
-    await rm(profile, { recursive: true, force: true })
+    await removeBrowserProfile(profile)
   }
 })
 
@@ -5066,7 +5034,7 @@ test("mixed-cadence shared cursor uses one exact domain for pointer and both key
         const figure = document.querySelector('[data-testid="hour-timeline"]')
         const host = figure.querySelector('.uplot-host').getBoundingClientRect()
         const plot = figure.querySelector('.u-over').getBoundingClientRect()
-        const extendedEnd = ${HOUR + HOUR_US} + ${HOUR_US} * 52 / Math.max(1, host.width - 122)
+        const extendedEnd = ${HOUR + HOUR_US} + ${HOUR_US} * 38 / Math.max(1, host.width - 84)
         return {
           x: plot.left + (${ten} - ${HOUR}) / (extendedEnd - ${HOUR}) * plot.width,
           y: plot.top + plot.height / 2,
@@ -5267,7 +5235,7 @@ test("narrow controls stay contained and help never changes selection", { timeou
 
     await cdp.evaluate(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }))`)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width: 960 })
-    await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[1].click()`)
+    await cdp.evaluate(`([...document.querySelectorAll('.source-tabs button')].find((button) => button.textContent.trim() === 'Host')).click()`)
     await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]')?.click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "the 960px System view", 15_000)
     await settleLayout(cdp)
