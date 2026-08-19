@@ -165,13 +165,15 @@ fn policy_id(name: &str) -> Option<i32> {
 }
 
 fn actual_frequency(sys: &SysFs, root: &str) -> (ActualFrequencySource, Option<i64>) {
-    if let Some(frequency) = read_hz(sys, root, "cpuinfo_avg_freq") {
-        (ActualFrequencySource::CpuinfoAverage, Some(frequency))
-    } else if let Some(frequency) = read_hz(sys, root, "cpuinfo_cur_freq") {
-        (ActualFrequencySource::CpuinfoCurrent, Some(frequency))
-    } else {
-        (ActualFrequencySource::Unavailable, None)
+    for (source, name) in [
+        (ActualFrequencySource::CpuinfoAverage, "cpuinfo_avg_freq"),
+        (ActualFrequencySource::CpuinfoCurrent, "cpuinfo_cur_freq"),
+    ] {
+        if let Some(frequency) = read_hz(sys, root, name) {
+            return (source, Some(frequency));
+        }
     }
+    (ActualFrequencySource::Unavailable, None)
 }
 
 fn read_hz(sys: &SysFs, root: &str, name: &str) -> Option<i64> {
