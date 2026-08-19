@@ -209,7 +209,7 @@ const SEARCH_FIELDS: Readonly<Record<SearchSurface, readonly SearchField[]>> = {
   ],
   pg_store_plans: [
     text(["plan", "datname", "usename"]), id("query_id", ["queryid", "queryid_stat_statements"], [], true), id("plan_id", ["planid"], [], true), string("database", ["datname"], ["db"]), string("role", ["usename"], ["user"]),
-    ...POSTGRES_QUANTITIES, metric("slow_call_rate", "count_rate", "count_rate"),
+    metric("calls", "count", "count"), ...POSTGRES_QUANTITIES, metric("slow_call_rate", "count_rate", "count_rate"),
   ],
   pg_stat_user_tables: [
     text(["datname", "schemaname", "relname", "tablespace"]), string("database", ["datname"], ["db"]), string("schema", ["schemaname"]),

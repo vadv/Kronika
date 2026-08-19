@@ -698,6 +698,7 @@ Indexes использует размещение каждого индекса.
 | --- | --- | --- |
 | Statements и Plans | `call_rate`, `exec_time_rate`, `mean_exec`, `row_rate`, `rows_per_call`, `buffer_hit`, `buffer_per_call`; `shared_buffer_{hit,read,dirty,write}_rate`, `local_buffer_{hit,read,dirty,write}_rate`, `temp_buffer_{read,write}_rate`; `shared_{read,write}_time_rate`, `local_{read,write}_time_rate`, `temp_{read,write}_time_rate`; `exec_cv`, `min_exec_since_reset`, `max_exec_since_reset`, `mean_exec_since_reset`, `stddev_exec_since_reset` | `/s`, duration, ratios без unit, `%`, bytes, byte`/s` либо duration`/s` согласно реестру |
 | Только Statements | `plan_rate`, `wal_rate`, `wal_per_call` | `/s`, byte`/s`, bytes |
+| Только Plans | `calls` | точное целое число |
 | Statements и Plans, если layout хранит planning | `planning_time_rate`, `planning_share` | duration`/s`, `%` |
 | Plans с записанным layout vadv | `slow_call_rate` | `/s` |
 | Processes | `rss`, `vsz`, `swap`, `threads`, `cpu_cores`, `user_cpu_cores`, `system_cpu_cores`, `disk_read_rate`, `disk_write_rate`, `logical_read_rate`, `logical_write_rate`, `read_syscall_rate`, `write_syscall_rate`, `major_fault_rate`, `minor_fault_rate`, `context_switch_rate`, `voluntary_context_switch_rate`, `involuntary_context_switch_rate`, `run_delay`, `block_io_delay` | bytes, count, cores без unit, byte`/s`, `/s` либо duration`/s` |
@@ -716,13 +717,14 @@ planning и execution time.
 `pg_store_plans` сохраняет query/plan identity и правила атрибуции своего
 fork; этот словарь не добавляет join по Plan node или relation.
 
-Интервальные значения PostgreSQL требуют точной непрерывности. Layouts
-Statements с `stats_since` требуют неизменный row epoch; старые layouts —
-одинаковый `pg_stat_statements_info.stats_reset` в обоих snapshots. Plans
-требуют неизменный `first_call` и одинаковый записанный
-`pg_store_plans_info.stats_reset`. Если нужного признака непрерывности нет или
-он изменился, зависящие от него rate, per-call value и interval ratio равны
-null, даже если сырой counter вырос.
+Интервальные значения PostgreSQL используют соседние реальные samples с одной
+публичной identity сущности, положительным интервалом времени и точным
+неотрицательным вычитанием counters. Откат counter даёт null для зависимого
+значения. Необязательные `stats_since`, `first_call`, reset-info sidecars и
+доказательство reset continuity не ограничивают display, search, ordering или
+history: их отсутствие не скрывает полезные записанные данные. Plans показывают
+точный накопительный counter `calls` отдельно от `Calls/s`, а `calls>...` и
+`calls<...` сравнивают целые числа точно до semantic sorting и paging.
 
 Memory gauges процесса переводят записанные KiB в точные bytes. Частоты
 процесса используют только непосредственно предыдущий полный OS-process

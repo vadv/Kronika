@@ -659,9 +659,10 @@ fn quantitative_search_registry_is_surface_wide_and_physical_names_stay_private(
         assert!(statements.contains(&statement_only));
         assert!(!plans.contains(&statement_only));
     }
+    assert!(!statements.contains(&"calls"));
+    assert!(plans.contains(&"calls"));
     assert!(plans.contains(&"slow_call_rate"));
     for physical in [
-        "calls",
         "total_exec_time",
         "shared_blks_read",
         "wal_bytes",

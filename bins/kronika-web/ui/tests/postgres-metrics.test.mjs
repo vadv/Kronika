@@ -88,6 +88,7 @@ test("the three plan layouts and info use their exact physical variants", () => 
     assert.equal(metrics.physicalField(typeId, "local_blk_read_ms_per_second"), local)
     assert.equal(metrics.postgresProjection(typeId).includes("queryid_stat_statements"), isVadv)
     assert.equal(metrics.postgresProjection(typeId).includes("plan"), true)
+    assert.equal(metrics.planRequest("identity").fieldsByType[typeId].filter((field) => field === "calls").length, 1)
   }
   assert.deepEqual(metrics.postgresProjection("1016001"), ["dealloc", "stats_reset"])
   assert.deepEqual(metrics.postgresIdentity("1016001"), [])

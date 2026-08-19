@@ -1339,6 +1339,7 @@ const PLAN_SEARCH_FIELDS: &[SearchField] = &[
     search_id("plan_id", &[], &["planid"], true),
     search_string("database", &["db"], &["datname"]),
     search_string("role", &["user"], &["usename"]),
+    search_quantity("calls", QuantityKind::Count, "calls", &["calls"]),
     search_quantity(
         "call_rate",
         QuantityKind::CountRate,

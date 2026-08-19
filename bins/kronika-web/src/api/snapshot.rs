@@ -176,7 +176,6 @@ struct PageContext<'a> {
     search_columns: Vec<&'static str>,
     clock_ticks_per_second: Option<u128>,
     block_size: Option<u128>,
-    reset_continuous: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -269,27 +268,8 @@ impl PageContext<'_> {
         identity: &[IdentityCell],
     ) -> Option<&'a CounterReadings> {
         let before = self.previous.as_ref()?.get(identity)?;
-        if let Some(column) = self.plan.contract.column("stats_since") {
-            let current = row.get(column.name)?;
-            let previous = before.get(column.name)?;
-            if current != previous {
-                return None;
-            }
-        }
         if let Some(column) = self.plan.contract.column("starttime")
             && row.get(column.name)? != before.get(column.name)?
-        {
-            return None;
-        }
-        if self.logical_name == "pg_store_plans" {
-            let column = self.plan.contract.column("first_call")?;
-            if row.get(column.name)? != before.get(column.name)? || !self.reset_continuous {
-                return None;
-            }
-        }
-        if self.logical_name == "pg_stat_statements"
-            && self.plan.contract.column("stats_since").is_none()
-            && !self.reset_continuous
         {
             return None;
         }
@@ -663,20 +643,15 @@ fn section_plans(
                     if !selected_virtual.is_empty() {
                         plan.add_projection_columns(&["uid", "euid", "scope"]);
                     }
+                    if logical_name == "pg_store_plans" {
+                        plan.add_aliased_output("calls_per_second", "calls");
+                    }
                     let order = page_order(logical_name, plan, &request.by);
                     plan.add_projection_columns(
                         &order.as_ref().map_or_else(Vec::new, PageOrder::columns),
                     );
-                    if plan.contract.column("stats_since").is_some() {
-                        plan.add_projection_columns(&["stats_since"]);
-                    }
                     if logical_name == "os_process" && plan.contract.column("starttime").is_some() {
                         plan.add_projection_columns(&["starttime"]);
-                    }
-                    if logical_name == "pg_store_plans"
-                        && plan.contract.column("first_call").is_some()
-                    {
-                        plan.add_projection_columns(&["first_call"]);
                     }
                     if let Some(search) = search {
                         plan.add_projection_columns(&search_columns(logical_name, plan, search));
@@ -1219,7 +1194,7 @@ impl PreparedSnapshot {
         Ok(emit(record(json!({
             "record": "layout",
             "layout": layout,
-            "rates": rate_columns(plan),
+            "rates": output_rate_fields(plan),
         }))?))
     }
 
@@ -1675,7 +1650,6 @@ impl PreparedSnapshot {
                     } else {
                         None
                     },
-                    reset_continuous: false,
                 });
                 continue;
             };
@@ -1742,7 +1716,6 @@ impl PreparedSnapshot {
                     search_columns: Vec::new(),
                     clock_ticks_per_second: None,
                     block_size: None,
-                    reset_continuous: false,
                 });
             }
         }
@@ -1784,24 +1757,6 @@ impl PreparedSnapshot {
             .previous
             .and_then(|before| moments.current.checked_sub(before))
             .filter(|elapsed| *elapsed > 0);
-        let reset_continuous = if matches!(
-            section.logical_name.as_str(),
-            "pg_stat_statements" | "pg_store_plans"
-        ) {
-            if let Some(before) = moments.previous {
-                matches!(
-                    (
-                        self.reset_epoch_at(&section.logical_name, moments.current)?,
-                        self.reset_epoch_at(&section.logical_name, before)?,
-                    ),
-                    (Some(current), Some(previous)) if current == previous
-                )
-            } else {
-                false
-            }
-        } else {
-            true
-        };
         let mut contexts = Vec::new();
         for source_index in 0..self.source_count() {
             let source_ref = self.source_for(source_index).ok_or(ApiError::BadCursor)?;
@@ -1846,7 +1801,6 @@ impl PreparedSnapshot {
                 } else {
                     None
                 },
-                reset_continuous,
             });
         }
         Ok(contexts)
@@ -1898,43 +1852,6 @@ impl PreparedSnapshot {
             }
         }
         Ok(Some(Moments { current, previous }))
-    }
-
-    fn reset_epoch_at(&self, logical_name: &str, at: i64) -> Result<Option<i64>, ApiError> {
-        let info_name = match logical_name {
-            "pg_stat_statements" => "pg_stat_statements_info",
-            "pg_store_plans" => "pg_store_plans_info",
-            _ => return Ok(None),
-        };
-        let mut selected: Option<(i64, i64)> = None;
-        for source_index in 0..self.source_count() {
-            let source_ref = self.source_for(source_index).ok_or(ApiError::BadCursor)?;
-            let source = self.reader.open_segment(source_ref)?;
-            for (type_id, _rows) in source.sections() {
-                if logical_section_name(type_id) != Some(info_name) {
-                    continue;
-                }
-                source.visit_rows(
-                    type_id,
-                    &["ts", "stats_reset"],
-                    0,
-                    usize::MAX,
-                    |_ordinal, row| {
-                        let (Some(ts), Some(reset)) = (
-                            row_timestamp(&row, "ts"),
-                            row_timestamp(&row, "stats_reset"),
-                        ) else {
-                            return true;
-                        };
-                        if ts <= at && selected.is_none_or(|(chosen, _reset)| ts > chosen) {
-                            selected = Some((ts, reset));
-                        }
-                        true
-                    },
-                )?;
-            }
-        }
-        Ok(selected.map(|(_ts, reset)| reset))
     }
 
     fn partitioned_contexts<'a>(
@@ -2163,7 +2080,6 @@ impl PreparedSnapshot {
             }),
             clock_ticks_per_second: None,
             block_size: None,
-            reset_continuous: true,
         })
     }
 
@@ -2249,14 +2165,8 @@ impl PreparedSnapshot {
     ) -> Result<Readings, ApiError> {
         let mut collected = BTreeMap::new();
         let mut counters = projected_rate_columns(plan);
-        if plan.contract.column("stats_since").is_some() {
-            counters.push("stats_since");
-        }
         if plan.contract.column("starttime").is_some() {
             counters.push("starttime");
-        }
-        if plan.contract.column("first_call").is_some() {
-            counters.push("first_call");
         }
         for column in extra_columns {
             if plan
@@ -2587,14 +2497,8 @@ impl PreparedSnapshot {
         let mut collected = BTreeMap::new();
         let counters = projected_rate_columns(plan);
         let mut counters = counters;
-        if plan.contract.column("stats_since").is_some() {
-            counters.push("stats_since");
-        }
         if plan.contract.column("starttime").is_some() {
             counters.push("starttime");
-        }
-        if plan.contract.column("first_call").is_some() {
-            counters.push("first_call");
         }
         for column in extra_columns {
             if plan
@@ -2678,7 +2582,9 @@ impl PreparedSnapshot {
                 .contract
                 .column(column)
                 .is_some_and(|declared| declared.class == ColumnClass::Cumulative);
-            if is_rate {
+            let exact_plan_calls =
+                matches!(plan.type_id, 1_003_001 | 1_004_001 | 1_018_001) && field.name == "calls";
+            if is_rate && !exact_plan_calls {
                 values.push(rate(stored, before, column, elapsed));
                 continue;
             }
@@ -3335,6 +3241,9 @@ fn postgres_search_metric(
     let execution = preferred_column(context.plan, "total_exec_time", "total_time");
     let mean = preferred_column(context.plan, "mean_exec_time", "mean_time");
     let stddev = preferred_column(context.plan, "stddev_exec_time", "stddev_time");
+    if metric == "calls" {
+        return gauge_metric(row, "calls", 1, 1);
+    }
     let direct_rate = match metric {
         "call_rate" => Some("calls"),
         "exec_time_rate" => execution,
@@ -4386,6 +4295,22 @@ fn rate_columns(plan: &Plan) -> Vec<&'static str> {
             plan.contract
                 .column(column)
                 .is_some_and(|declared| declared.class == ColumnClass::Cumulative)
+        })
+        .collect()
+}
+
+fn output_rate_fields(plan: &Plan) -> Vec<&str> {
+    plan.fields
+        .iter()
+        .filter_map(|field| {
+            let column = field.column?;
+            let cumulative = plan
+                .contract
+                .column(column)
+                .is_some_and(|declared| declared.class == ColumnClass::Cumulative);
+            let exact_plan_calls =
+                matches!(plan.type_id, 1_003_001 | 1_004_001 | 1_018_001) && field.name == "calls";
+            (cumulative && !exact_plan_calls).then_some(field.name.as_str())
         })
         .collect()
 }

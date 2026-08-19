@@ -178,7 +178,7 @@ test("dense-table help is factual, concise, and complete in both locales", async
   validateDictionaries(english, russian)
   const pgFields = new Set([
     "pid", "backend_age_ms", "query_duration_ms", "transaction_duration_ms", "state_duration_ms", "queryid", "planid", "toplevel", "datname", "usename", "query", "plan",
-    "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_call", "blocks_per_call", "hit_pct", "wal_per_call",
+    "calls", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_call", "blocks_per_call", "hit_pct", "wal_per_call",
     "plan_time_pct", "cv", "min_exec_time_ms", "max_exec_time_ms", "mean_exec_ms", "stddev_exec_time_ms", "first_call", "last_call",
     "rows_per_second", "planning_ms_per_second", "shared_blks_hit", "shared_blks_read", "shared_blks_written", "shared_blks_dirtied",
     "local_blks_read", "temp_blks_read", "temp_blks_written", "wal_bytes", "queryid_stat_statements", "cmd_type", "numbackends",
@@ -211,12 +211,14 @@ test("dense-table help is factual, concise, and complete in both locales", async
     }
   }
 
-  assert.match(english["pg.field.calls_per_second.help"], /times per second this statement ran.*call frequency or the weight/i)
+  assert.match(english["pg.field.calls.help"], /exact cumulative counter.*separate from Calls\/s/i)
+  assert.match(english["pg.field.calls_per_second.help"], /times per second this statement or plan ran.*call frequency or the weight/i)
   assert.match(english["pg.field.execution_ms_per_second.help"], /1000 ms\/s.*one execution-second.*serial CPU-bound.*concurrent calls add.*not summed worker CPU/i)
   assert.match(english["pg.field.mean_exec_ms_per_call.help"], /one execution took on average.*unavailable without calls/i)
   assert.match(english["pg.field.rows_per_second.help"], /rows per second the statement returns or affects/i)
   assert.equal(english["pg.field.statement_database.help"], "Database associated with this physical statement entry.")
-  assert.match(russian["pg.field.calls_per_second.help"], /раз в секунду выполнялся.*частота вызовов или тяжесть/i)
+  assert.match(russian["pg.field.calls.help"], /точный накопительный счётчик отделён от Calls\/s/i)
+  assert.match(russian["pg.field.calls_per_second.help"], /раз в секунду выполнялся этот запрос или план.*частота вызовов или тяжесть/i)
 })
 
 test("obsolete status and internal collection copy stay out of the UI", async () => {

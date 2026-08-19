@@ -20,11 +20,9 @@ use kronika_registry::pg_log::{PgLogErrors, PgLogTempFiles};
 use kronika_registry::pg_settings::PgSettings;
 use kronika_registry::pg_stat_activity::PgStatActivityV3;
 use kronika_registry::pg_stat_statements::PgStatStatementsV2;
-use kronika_registry::pg_stat_statements_info::PgStatStatementsInfo;
 use kronika_registry::pg_stat_user_indexes::{PgStatUserIndexesV1, PgStatUserIndexesV2};
 use kronika_registry::pg_stat_user_tables::PgStatUserTablesV1;
 use kronika_registry::pg_store_plans::{PgStorePlansOsscV1, PgStorePlansVadvV1};
-use kronika_registry::pg_store_plans_info::PgStorePlansInfo;
 use kronika_registry::{Section, StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use serde_json::Value;
@@ -607,21 +605,6 @@ impl Fixture {
             ));
             buffers.push(row).expect("boundary statement row fits");
         }
-        let mut moments = rows
-            .iter()
-            .map(|(ts, _queryid, _calls, _time)| *ts)
-            .collect::<Vec<_>>();
-        moments.sort_unstable();
-        moments.dedup();
-        for ts in moments {
-            buffers
-                .push(PgStatStatementsInfo {
-                    ts: Ts(ts),
-                    dealloc: 0,
-                    stats_reset: Ts(50),
-                })
-                .expect("boundary statement reset row fits");
-        }
         let dictionary = dict::encode(interner.window()).expect("boundary statement dictionary");
         let part = buffers
             .flush(&dictionary)
@@ -701,23 +684,7 @@ impl Fixture {
             let mut row = store_plan(ts, queryid, plan_text);
             row.calls = calls;
             row.total_time = total_time;
-            row.first_call = Ts(50);
             buffers.push(row).expect("boundary plan row fits");
-        }
-        let mut moments = rows
-            .iter()
-            .map(|(ts, _queryid, _calls, _time)| *ts)
-            .collect::<Vec<_>>();
-        moments.sort_unstable();
-        moments.dedup();
-        for ts in moments {
-            buffers
-                .push(PgStorePlansInfo {
-                    ts: Ts(ts),
-                    dealloc: 0,
-                    stats_reset: Ts(50),
-                })
-                .expect("boundary plan reset row fits");
         }
         let dictionary = dict::encode(interner.window()).expect("boundary plan dictionary");
         let part = buffers
@@ -780,15 +747,6 @@ impl Fixture {
                 buffers.push(row).expect("ranked statement row fits");
             }
         }
-        for ts in [100, 200] {
-            buffers
-                .push(PgStatStatementsInfo {
-                    ts: Ts(ts),
-                    dealloc: 0,
-                    stats_reset: Ts(50),
-                })
-                .expect("statement reset row fits");
-        }
         let dictionary = dict::encode(interner.window()).expect("ranked statement dictionary");
         let part = buffers
             .flush(&dictionary)
@@ -825,18 +783,8 @@ impl Fixture {
                 row.shared_blks_read = if current { read } else { 0 };
                 row.local_blks_hit = if current { local_hit } else { 0 };
                 row.local_blks_read = if current { local_read } else { 0 };
-                row.first_call = Ts(50);
                 buffers.push(row).expect("ranked plan row fits");
             }
-        }
-        for ts in [100, 200] {
-            buffers
-                .push(PgStorePlansInfo {
-                    ts: Ts(ts),
-                    dealloc: 0,
-                    stats_reset: Ts(50),
-                })
-                .expect("plan reset row fits");
         }
         let dictionary = dict::encode(interner.window()).expect("ranked plan dictionary");
         let part = buffers
@@ -896,49 +844,6 @@ impl Fixture {
             .expect("append block-size setting");
     }
 
-    fn append_postgres_reset_pair(&mut self, resets: Option<[i64; 2]>, plan_first_calls: [i64; 2]) {
-        let mut interner = Interner::new(DictLimits::default());
-        let label = fixture_label(&mut interner, "reset-guard");
-        let mut buffers = SectionBuffers::new();
-        for (index, ts) in [100, 200].into_iter().enumerate() {
-            let current = index == 1;
-            let mut statement = statement(ts, if current { 10 } else { 0 }, 10.0, label);
-            statement.queryid = Some(1);
-            buffers.push(statement).expect("reset statement row fits");
-
-            let mut plan = store_plan(ts, 1, label);
-            plan.calls = if current { 10 } else { 0 };
-            plan.total_time = if current { 10.0 } else { 0.0 };
-            plan.first_call = Ts(plan_first_calls[index]);
-            buffers.push(plan).expect("reset plan row fits");
-
-            if let Some(resets) = resets {
-                buffers
-                    .push(PgStatStatementsInfo {
-                        ts: Ts(ts),
-                        dealloc: 0,
-                        stats_reset: Ts(resets[index]),
-                    })
-                    .expect("statement reset guard fits");
-                buffers
-                    .push(PgStorePlansInfo {
-                        ts: Ts(ts),
-                        dealloc: 0,
-                        stats_reset: Ts(resets[index]),
-                    })
-                    .expect("plan reset guard fits");
-            }
-        }
-        let dictionary = dict::encode(interner.window()).expect("reset guard dictionary");
-        let part = buffers
-            .flush(&dictionary)
-            .expect("encode reset guard")
-            .expect("nonempty reset guard");
-        self.journal
-            .append(self.address.id, &part)
-            .expect("append reset guard");
-    }
-
     fn append_vadv_plan_quantities(&mut self) {
         let mut interner = Interner::new(DictLimits::default());
         let label = fixture_label(&mut interner, "vadv-quantity-plan");
@@ -951,13 +856,6 @@ impl Fixture {
             row.total_time = if current { 75.0 } else { 0.0 };
             row.total_plan_time = if current { 25.0 } else { 0.0 };
             buffers.push(row).expect("vadv quantity plan fits");
-            buffers
-                .push(PgStorePlansInfo {
-                    ts: Ts(ts),
-                    dealloc: 0,
-                    stats_reset: Ts(50),
-                })
-                .expect("vadv reset row fits");
         }
         let dictionary = dict::encode(interner.window()).expect("vadv quantity dictionary");
         let part = buffers
@@ -3648,29 +3546,47 @@ fn quantitative_search_keeps_layout_absence_null() {
 }
 
 #[test]
-fn postgres_quantities_require_exact_reset_continuity() {
-    for (resets, first_calls, statement_matches, plan_matches) in [
-        (None, [50, 50], false, false),
-        (Some([50, 150]), [50, 50], false, false),
-        (Some([50, 50]), [50, 150], true, false),
-        (Some([50, 50]), [50, 50], true, true),
-    ] {
-        let mut fixture = Fixture::new();
-        fixture.append_postgres_reset_pair(resets, first_calls);
-        fixture.finish();
-        for (section, matches) in [
-            ("pg_stat_statements", statement_matches),
-            ("pg_store_plans", plan_matches),
-        ] {
-            let records = stream(fixture.prepare(
-                &format!(
-                    "/api/segments/{SEGMENT_ID}/snapshot?at=200&section={section}&field=queryid&by=queryid&page_size=10&search=call_rate%3E1%2Fs"
-                ),
-                None,
-            ))
-            .expect("reset-continuity search");
-            assert_eq!(!row_records(&records).is_empty(), matches, "{section}");
-        }
+fn postgres_rates_use_adjacent_samples_without_optional_proof_metadata() {
+    let mut fixture = Fixture::new();
+    fixture.append_ranked_statements();
+    fixture.append_ranked_plans();
+    fixture.finish();
+
+    for section in ["pg_stat_statements", "pg_store_plans"] {
+        let records = stream(fixture.prepare(
+            &format!(
+                "/api/segments/{SEGMENT_ID}/snapshot?at=200&section={section}&field=queryid&by=calls&page_size=10&search=call_rate%3E1%2Fs"
+            ),
+            None,
+        ))
+        .expect("data-first PostgreSQL rates");
+        assert_eq!(row_records(&records)[0]["values"][0], "1", "{section}");
+        let page = records
+            .iter()
+            .find(|record| record["record"] == "snapshot_page")
+            .expect("data-first page trailer");
+        assert_eq!(page["eligible"], "3", "{section}");
+        assert_eq!(page["order_by"], serde_json::json!(["calls"]), "{section}");
+    }
+
+    let mut exact_fixture = Fixture::new();
+    exact_fixture.append_plan_snapshots(&[(100, 1, 9_007_199_254_740_993, 1.0), (100, 3, 1, 1.0)]);
+    exact_fixture.finish();
+    for (search, expected) in [("calls%3E9007199254740992", "1"), ("calls%3C2", "3")] {
+        let records = stream(exact_fixture.prepare(
+            &format!(
+                "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=pg_store_plans&field=queryid&by=queryid&page_size=1&search={search}"
+            ),
+            None,
+        ))
+        .expect("exact hidden Calls search");
+        assert_eq!(row_records(&records)[0]["values"][0], expected);
+        let page = records
+            .iter()
+            .find(|record| record["record"] == "snapshot_page")
+            .expect("exact Calls page trailer");
+        assert_eq!(page["eligible"], "1");
+        assert_eq!(page["has_more"], false);
     }
 }
 
@@ -3815,10 +3731,12 @@ fn plan_page_keeps_zero_and_rejects_a_cross_segment_counter_decrease() {
         .into_iter()
         .map(|row| (row["values"][0].as_str().expect("queryid"), row))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(rows["1"]["values"][1], 0.0);
+    assert_eq!(rows["1"]["values"][1], "4");
     assert_eq!(rows["1"]["values"][2], 0.0);
-    assert_eq!(rows["2"]["values"][1], Value::Null);
+    assert_eq!(rows["1"]["values"][3], 0.0);
+    assert_eq!(rows["2"]["values"][1], "5");
     assert_eq!(rows["2"]["values"][2], Value::Null);
+    assert_eq!(rows["2"]["values"][3], Value::Null);
     let page = records
         .iter()
         .find(|record| record["record"] == "snapshot_page")

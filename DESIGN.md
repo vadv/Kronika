@@ -665,6 +665,7 @@ the whole surface, even when a lens does not display the metric:
 | --- | --- | --- |
 | Statements and Plans | `call_rate`, `exec_time_rate`, `mean_exec`, `row_rate`, `rows_per_call`, `buffer_hit`, `buffer_per_call`; `shared_buffer_{hit,read,dirty,write}_rate`, `local_buffer_{hit,read,dirty,write}_rate`, `temp_buffer_{read,write}_rate`; `shared_{read,write}_time_rate`, `local_{read,write}_time_rate`, `temp_{read,write}_time_rate`; `exec_cv`, `min_exec_since_reset`, `max_exec_since_reset`, `mean_exec_since_reset`, `stddev_exec_since_reset` | `/s`, duration, unitless ratios, `%`, bytes, byte`/s`, or duration`/s` as registered |
 | Statements only | `plan_rate`, `wal_rate`, `wal_per_call` | `/s`, byte`/s`, bytes |
+| Plans only | `calls` | exact integer count |
 | Statements and Plans where the recorded layout provides planning | `planning_time_rate`, `planning_share` | duration`/s`, `%` |
 | Plans where the recorded vadv layout provides it | `slow_call_rate` | `/s` |
 | Processes | `rss`, `vsz`, `swap`, `threads`, `cpu_cores`, `user_cpu_cores`, `system_cpu_cores`, `disk_read_rate`, `disk_write_rate`, `logical_read_rate`, `logical_write_rate`, `read_syscall_rate`, `write_syscall_rate`, `major_fault_rate`, `minor_fault_rate`, `context_switch_rate`, `voluntary_context_switch_rate`, `involuntary_context_switch_rate`, `run_delay`, `block_io_delay` | bytes, count, unitless cores, byte`/s`, `/s`, or duration`/s` |
@@ -683,13 +684,14 @@ delta by planning plus execution time.
 `pg_store_plans` keeps its query and plan identities and fork-specific
 attribution rules; this vocabulary does not add a Plan-node or relation join.
 
-PostgreSQL interval values require exact continuity. Statements layouts with
-`stats_since` require the row epoch to remain unchanged; older layouts require
-equal `pg_stat_statements_info.stats_reset` values at both snapshots. Plans
-require unchanged `first_call` and equal recorded
-`pg_store_plans_info.stats_reset` values. If the applicable continuity fact is
-absent or changes, every dependent rate, per-call value, and interval ratio is
-null even when the raw counter increased.
+PostgreSQL interval values use adjacent real samples with the same public
+entity identity, a positive elapsed interval, and exact nonnegative counter
+subtraction. Counter rollback makes the dependent value null. Optional
+`stats_since`, `first_call`, reset-info sidecars, and reset-continuity proof do
+not gate display, search, ordering, or history: their absence does not suppress
+otherwise useful recorded data. Plans expose the exact cumulative `calls`
+counter separately from `Calls/s`, and `calls>...` / `calls<...` compare the
+integer exactly before semantic sorting and paging.
 
 Process memory gauges convert the recorded KiB values to exact bytes. Process
 rates use the immediately preceding complete OS-process snapshot only when PID

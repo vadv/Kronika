@@ -327,6 +327,18 @@ impl Plan {
         }
     }
 
+    /// Add another public reading backed by an already projected column.
+    pub(super) fn add_aliased_output(&mut self, name: &str, column: &'static str) {
+        if self.fields.iter().any(|field| field.name == column)
+            && self.fields.iter().all(|field| field.name != name)
+        {
+            self.fields.push(OutputField {
+                name: name.to_owned(),
+                column: Some(column),
+            });
+        }
+    }
+
     /// Restore caller field order after physical and virtual planning.
     pub(super) fn order_output_fields(&mut self, names: &[String]) {
         self.fields.sort_by_key(|field| {

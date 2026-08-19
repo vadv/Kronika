@@ -112,6 +112,7 @@ const PLAN_LAST_QUERY_ID: EntityColumn = {
 }
 
 export const PLAN_COLUMNS: readonly EntityColumn[] = [
+  { ...number("calls", 120), render: (row) => rawText(value(row, "calls")) ?? "—", sortable: false },
   rateNumber("calls_per_second", 120),
   rateMilliseconds("execution_ms_per_second", 165),
   { ...milliseconds("mean_exec_ms_per_call", 170), physicalField: physicalFields(PG_STORE_PLANS_TYPE_IDS, "mean_exec_ms_per_call") },
@@ -139,7 +140,7 @@ export const PLAN_LENSES: Readonly<Record<PlanLens, readonly string[]>> = {
   load: ["plan_summary", "datname", "usename", "queryid", "queryid_stat_statements", "planid", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"],
   timing: ["plan_summary", "datname", "usename", "queryid", "queryid_stat_statements", "planid", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "stddev_exec_time_ms", "calls_per_second", "first_call", "last_call"],
   io: ["plan_summary", "datname", "usename", "queryid", "queryid_stat_statements", "planid", "shared_blks_read", "shared_blks_hit", "hit_pct", "blocks_per_call", "shared_blks_dirtied", "local_blks_read", "temp_blks_read"],
-  identity: ["plan_summary", "datname", "usename", "queryid", "queryid_stat_statements", "planid", "cmd_type", "calls_per_second"],
+  identity: ["plan_summary", "datname", "usename", "queryid", "queryid_stat_statements", "planid", "cmd_type", "calls", "calls_per_second"],
 }
 
 const STATEMENT_ALL_COLUMNS = [...STATEMENT_COLUMNS, ...STATEMENT_DERIVED_COLUMNS]
@@ -546,15 +547,13 @@ export function overviewChartColumns(row: DataRow): readonly EntityColumn[] {
   })
 }
 
-export function postgresMetricHistory(rows: readonly DataRow[], column: EntityColumn, cumulative: boolean, resetField?: string): readonly ChartPoint[] {
+export function postgresMetricHistory(rows: readonly DataRow[], column: EntityColumn, cumulative: boolean): readonly ChartPoint[] {
   const owned = rows.filter((row) => Object.hasOwn(row.values, column.field))
     .slice().sort((left, right) => left.timestamp - right.timestamp || left.ordinal.localeCompare(right.ordinal))
   if (!cumulative) return buildMetricSamples(owned, (row) => chartPointValue(value(row, column.field), column))
   return owned.map((row, index) => {
     const earlier = owned[index - 1]
-    const reset = resetField !== undefined && earlier !== undefined
-      && rawText(value(earlier, resetField)) !== rawText(value(row, resetField))
-    const stored = earlier === undefined || earlier.typeId !== row.typeId || reset ? null : intervalMetric(earlier, row, column.field)
+    const stored = earlier === undefined || earlier.typeId !== row.typeId ? null : intervalMetric(earlier, row, column.field)
     return { segmentId: row.segmentId, timestamp: row.timestamp, value: chartPointValue(stored, column) }
   })
 }
@@ -562,21 +561,16 @@ export function postgresMetricHistory(rows: readonly DataRow[], column: EntityCo
 export interface PgMetricHistoryColumnPlan {
   readonly column: EntityColumn
   readonly cumulative: boolean
-  readonly resetField: "stats_reset" | undefined
 }
 
 export function pgMetricHistoryPlan(typeId: string, columns: readonly EntityColumn[]): { readonly columns: readonly PgMetricHistoryColumnPlan[]; readonly fields: readonly string[] } {
   const layout = registry.find((candidate) => candidate.typeId === typeId)
-  const hasReset = layout?.columns.includes("stats_reset") === true
   const planned = columns.map((column) => {
     const metadata = layout?.columnMetadata?.find(({ name }) => name === column.field)
     const cumulative = metadata?.class === "cumulative" || (metadata === undefined && column.rate === true)
-    return { column, cumulative, resetField: cumulative && hasReset ? "stats_reset" as const : undefined }
+    return { column, cumulative }
   })
-  const fields = uniqueText([
-    ...columns.map(({ field }) => field),
-    ...(planned.some(({ resetField }) => resetField !== undefined) ? ["stats_reset"] : []),
-  ])
+  const fields = uniqueText(columns.map(({ field }) => field))
   return { columns: planned, fields }
 }
 
@@ -588,7 +582,7 @@ function usePgMetricHistory(hour: number, row: DataRow | null, columns: readonly
   return useHistoryRequest(target, historyRevision, row === null || columns.length === 0 ? null : async (signal) => {
     const plan = pgMetricHistoryPlan(row.typeId, columns)
     const rows = await loadSeries(hour, row.logicalName, {}, plan.fields, signal, row.typeId)
-    return new Map(plan.columns.map(({ column, cumulative, resetField }) => [column.field, postgresMetricHistory(rows, column, cumulative, resetField)]))
+    return new Map(plan.columns.map(({ column, cumulative }) => [column.field, postgresMetricHistory(rows, column, cumulative)]))
   })
 }
 
@@ -833,7 +827,6 @@ export interface PostgresMetricHistoryRequest {
   readonly field: string | null
   readonly fields: readonly string[]
   readonly filters: Readonly<Record<string, string>> | null
-  readonly resetField: string | null
 }
 
 export function postgresMetricHistoryRequest(row: DataRow, section: string, column: EntityColumn): PostgresMetricHistoryRequest {
@@ -843,10 +836,8 @@ export function postgresMetricHistoryRequest(row: DataRow, section: string, colu
   const field = dense ? null : typeof column.physicalField === "string"
     ? column.physicalField
     : column.physicalField?.[row.typeId] ?? column.field
-  const resetField = !dense && column.rate === true && registry.find((layout) => layout.typeId === row.typeId)?.columns.includes("stats_reset") === true
-    ? "stats_reset" : null
   const metricFields = dense ? denseHistoryFields(row.typeId, column.field)
-    : durationField === null ? uniqueText([field!, resetField]) : durationField === "query_start" || durationField === "state_change" ? ["state", durationField] : [durationField]
+    : durationField === null ? [field!] : durationField === "query_start" || durationField === "state_change" ? ["state", durationField] : [durationField]
   const fields = activity ? ["pid", ...metricFields] : metricFields
   const identities = identityFields(section, row.typeId).map((name) => [name, rawText(value(row, name))] as const)
   return {
@@ -857,7 +848,6 @@ export function postgresMetricHistoryRequest(row: DataRow, section: string, colu
     filters: identities.some(([, stored]) => stored === null)
       ? null
       : Object.fromEntries(identities as readonly (readonly [string, string])[]),
-    resetField,
   }
 }
 
@@ -867,7 +857,7 @@ export function postgresMetricHistorySamples(rows: readonly DataRow[], row: Data
   if (request.dense) return denseMetricHistory(entityHistory, row.typeId, column)
   if (request.durationField === null) {
     if (request.field === null) return []
-    return postgresMetricHistory(entityHistory, { ...column, field: request.field }, column.rate === true, request.resetField ?? undefined)
+    return postgresMetricHistory(entityHistory, { ...column, field: request.field }, column.rate === true)
   }
   return activityDurationHistory(entityHistory, column.field as Parameters<typeof activityDurationHistory>[1])
 }

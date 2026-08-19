@@ -70,7 +70,7 @@ test("each surface exposes only its useful canonical public fields", () => {
     "shared_read_time_rate", "shared_write_time_rate", "local_read_time_rate", "local_write_time_rate", "temp_read_time_rate", "temp_write_time_rate",
     "buffer_hit", "buffer_per_call", "exec_cv", "min_exec_since_reset", "max_exec_since_reset", "mean_exec_since_reset", "stddev_exec_since_reset",
   ]
-  assert.deepEqual(searchFields("pg_store_plans").map(({ key }) => key), ["text", "query_id", "plan_id", "database", "role", ...sharedPg, "slow_call_rate"])
+  assert.deepEqual(searchFields("pg_store_plans").map(({ key }) => key), ["text", "query_id", "plan_id", "database", "role", "calls", ...sharedPg, "slow_call_rate"])
   assert.deepEqual(searchFields("pg_stat_statements").map(({ key }) => key), ["text", "query_id", "database", "role", ...sharedPg, "plan_rate", "wal_rate", "wal_per_call"])
   assert.equal(parseSearch("plan_id:42", "pg_stat_statements").ok, false)
   assert.equal(parseSearch("table_name:orders", "pg_stat_user_tables").ok, true)
@@ -134,6 +134,7 @@ test("process and PostgreSQL quantities preserve scalar, rate, load, and per-cal
     ["os_process", "run_delay<250us/s", 1n, 4n, "us/s"],
     ["pg_stat_statements", "exec_time_rate>0.5s/s", 500n, 1n, "s/s"],
     ["pg_stat_statements", "wal_per_call>0.5KiB", 512n, 1n, "KiB"],
+    ["pg_store_plans", "calls>9007199254740993", 9_007_199_254_740_993n, 1n, ""],
     ["pg_store_plans", "rows_per_call<0.125", 1n, 8n, ""],
   ]) {
     const parsed = parseSearch(expression, surface)
