@@ -53,7 +53,7 @@ The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 | `1_121_001` | CPUFreq policy membership, driver, source, and hardware range from sysfs | `on_change` | `(policy_id, ts)` |
 | `1_122_001` | CPUFreq policy frequencies, allowed range, and online CPU count from sysfs | `snapshot_full` | `(policy_id, ts)` |
 | `1_123_001` | exact sysfs partition-to-parent block-device edges | `on_change` | `(major, minor, ts)` |
-| `1_124_001` | observed process UID-to-username references from `/etc/passwd` | `on_change` | `(scope, uid, ts)` |
+| `1_124_002` | observed process UID-to-username references from `/etc/passwd` | `on_change` | `(scope, uid, ts)` |
 | `1_200_001` | cgroup: process mapping | `snapshot_full` | `(pid, ts)` |
 | `1_201_001` | cgroup: cpu | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_201_002` | cgroup: cpu with effective cpuset, retained reader layout | `snapshot_full` | `(cgroup_path, ts)` |
@@ -283,7 +283,7 @@ open segment. Only real and effective UIDs from successfully decoded
 `os_process` rows are candidates. A new UID observed later in the same segment
 is appended through the normal WAL path; a failed append leaves it eligible for
 the next window. The row stores the collection timestamp, UID, interned user
-name, provenance `source=0` (`/etc/passwd`), and scope.
+name, and scope.
 
 The collector reads exactly `/etc/passwd` once per open segment. The read is
 bounded to 256 KiB, each line to 4 KiB, the parsed snapshot to 4,096 entries,

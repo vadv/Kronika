@@ -63,7 +63,7 @@ const CPUFREQ_POLICY_TYPE_ID: u32 = 1_121_001;
 const CPUFREQ_TYPE_ID: u32 = 1_122_001;
 const MOUNTINFO_TYPE_ID: u32 = 1_112_002;
 const BLOCK_TOPOLOGY_TYPE_ID: u32 = 1_123_001;
-const USER_TYPE_ID: u32 = 1_124_001;
+const USER_TYPE_ID: u32 = 1_124_002;
 const USER_COST_CHILD_ENV: &str = "KRONIKA_USER_COST_CHILD";
 const USER_COST_TEST: &str =
     "tests::zms::process_user_references_report_production_storage_and_resource_costs";

@@ -296,7 +296,7 @@ enum GlobToken {
 }
 
 const SNAPSHOT_CHUNK_ROWS: usize = 16;
-const PROCESS_USER_TYPE_ID: u32 = 1_124_001;
+const PROCESS_USER_TYPE_ID: u32 = 1_124_002;
 const PROCESS_VIRTUAL_FIELDS: &[&str] = &["user", "effective_user"];
 const MAX_PROCESS_USERS: usize = 4 * 1024;
 

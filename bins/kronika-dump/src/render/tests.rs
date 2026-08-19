@@ -241,12 +241,11 @@ fn dictionary_section_selectors_dump_their_rows() {
 fn user_reference_dump_resolves_the_captured_name() {
     let (_directory, segment) = user_segment();
     let mut output = Vec::new();
-    section(&mut output, true, &segment, 1_124_001, 0).expect("dump user reference");
+    section(&mut output, true, &segment, 1_124_002, 0).expect("dump user reference");
     let row: serde_json::Value = serde_json::from_slice(&output).expect("user JSON line");
-    assert_eq!(row["type_id"], 1_124_001);
+    assert_eq!(row["type_id"], 1_124_002);
     assert_eq!(row["row"]["uid"], 26);
     assert_eq!(row["row"]["username"], "postgres");
-    assert_eq!(row["row"]["source"], 0);
     assert_eq!(row["row"]["scope"], 0);
 }
 
@@ -348,7 +347,6 @@ fn user_segment() -> (tempfile::TempDir, kronika_reader::Segment) {
             ts: Ts(1_709_164_800_000_000),
             uid: 26,
             username: StrId(username.get()),
-            source: 0,
             scope: 0,
         })
         .expect("buffer user reference");

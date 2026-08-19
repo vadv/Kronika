@@ -1,4 +1,4 @@
-//! Type `1_124_001`: bounded UID-to-name references captured from `/etc/passwd`.
+//! Type `1_124_002`: bounded UID-to-name references captured from `/etc/passwd`.
 
 use crate::{Section, StrId, Ts};
 
@@ -10,7 +10,7 @@ use crate::{Section, StrId, Ts};
 /// deliberately outside this contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Section)]
 #[section(
-    id = 1_124_001,
+    id = 1_124_002,
     name = "os_user",
     semantics = on_change,
     sort_key("scope", "uid", "ts"),
@@ -26,9 +26,6 @@ pub struct OsUser {
     /// User name captured from the collector-visible `/etc/passwd`.
     #[column(l)]
     pub username: StrId,
-    /// Name source (`0` = collector-visible `/etc/passwd`).
-    #[column(l)]
-    pub source: u8,
     /// Source scope. See `kronika_source_os::OsScope`.
     #[column(l)]
     pub scope: u8,
@@ -42,7 +39,7 @@ mod tests {
     #[test]
     fn contract_shape_and_roundtrip() {
         let contract = OsUser::CONTRACT;
-        assert_eq!(contract.type_id.get(), 1_124_001);
+        assert_eq!(contract.type_id.get(), 1_124_002);
         assert_eq!(contract.semantics, Semantics::OnChange);
         assert_eq!(contract.sort_key, ["scope", "uid", "ts"]);
         assert_eq!(contract.identity, ["scope", "uid"]);
@@ -53,14 +50,12 @@ mod tests {
                 ts: Ts(1),
                 uid: 26,
                 username: StrId(10),
-                source: 0,
                 scope: 0,
             },
             OsUser {
                 ts: Ts(2),
                 uid: 1_000,
                 username: StrId(11),
-                source: 0,
                 scope: 3,
             },
         ]);

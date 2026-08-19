@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 /// Maximum distinct `(scope, uid)` references retained in one open segment.
 pub(crate) const MAX_OBSERVED_USERS: usize = 4 * 1024;
-const USER_TYPE_ID: u32 = 1_124_001;
+const USER_TYPE_ID: u32 = 1_124_002;
 
 #[derive(Debug)]
 enum PasswdState {
@@ -97,7 +97,6 @@ impl UserReferences {
                 ts: Ts(ts),
                 uid,
                 username,
-                source: 0,
                 scope: row_scope,
             });
             pending.push((row_scope, uid));

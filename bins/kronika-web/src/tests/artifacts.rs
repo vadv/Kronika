@@ -467,7 +467,6 @@ impl Fixture {
                     ts: Ts(ts),
                     uid,
                     username,
-                    source: 0,
                     scope: 0,
                 })
                 .expect("user row fits");

@@ -753,7 +753,7 @@ fn recovery_publishes_persisted_cgroup_v2_rows() {
 
 #[test]
 fn user_reference_survives_recovery_and_is_reemitted_after_forced_rollover() {
-    const USER_TYPE_ID: u32 = 1_124_001;
+    const USER_TYPE_ID: u32 = 1_124_002;
     const FIRST_TS: i64 = 1_700_000_000_000_000;
     const SECOND_TS: i64 = FIRST_TS + 1_000_000;
 
