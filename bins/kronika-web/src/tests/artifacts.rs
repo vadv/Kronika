@@ -590,6 +590,18 @@ impl Fixture {
             );
             let mut row = statement(ts, calls, total_exec_time, query);
             row.queryid = Some(queryid);
+            row.datname = Some(StrId(
+                interner
+                    .intern(b"operators")
+                    .expect("intern statement database")
+                    .get(),
+            ));
+            row.usename = Some(StrId(
+                interner
+                    .intern(b"reporter")
+                    .expect("intern statement role")
+                    .get(),
+            ));
             buffers.push(row).expect("boundary statement row fits");
         }
         let mut moments = rows
@@ -3653,6 +3665,45 @@ fn vadv_plan_quantities_include_planning_and_slow_calls() {
     let strict = stream(fixture.prepare(&format!("{base}&search=planning_share%3E25%25"), None))
         .expect("strict planning share");
     assert!(row_records(&strict).is_empty());
+}
+
+#[test]
+fn related_statement_search_uses_the_exact_cursor_across_segments() {
+    let mut fixture = Fixture::new();
+    fixture.append_statement_snapshots(&[(100, 42, 10, 10.0), (200, 42, 20, 20.0)]);
+    let current_segment = SEGMENT_ID + 1_000;
+    fixture.finish_and_continue(current_segment);
+    fixture.append_statement_snapshots(&[(200, 99, 30, 30.0), (300, 98, 40, 40.0)]);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{current_segment}/snapshot?at=200&section=pg_stat_statements&field=queryid&field=dbid&field=userid&field=datname&field=usename&field=query&by=queryid&page_size=32&search=database%3Aoperators%20AND%20role%3Areporter%20AND%20query_id%3A42"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("related statement search");
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["segment_id"], SEGMENT_ID.to_string());
+    assert_eq!(rows[0]["timestamp"], "200");
+    assert_eq!(
+        rows[0]["values"],
+        serde_json::json!([
+            "42",
+            73,
+            72,
+            "operators",
+            "reporter",
+            "boundary statement 42"
+        ])
+    );
+    let page = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("related statement page trailer");
+    assert_eq!(page["eligible"], "1");
+    assert_eq!(page["returned"], "1");
+    assert_eq!(page["has_more"], false);
+    assert_eq!(page["from"], "100");
+    assert_eq!(page["to"], "200");
 }
 
 #[test]

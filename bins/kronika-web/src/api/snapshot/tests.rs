@@ -8,13 +8,23 @@ use serde_json::{Value, json};
 use super::{
     ContributingMoments, GlobPattern, PageOrderValue, PageRankedRow, PageRows, PageStagedRow,
     SearchValue, SnapshotCursor, StructuredSearch, available_field_index, compare_ordered,
-    compare_products, ordered_cell, prepared_search, rate, record_contributing_moment,
-    snapshot_binding, timed_context_index,
+    compare_products, ordered_cell, plan_statement_query_id_columns, prepared_search, rate,
+    record_contributing_moment, snapshot_binding, timed_context_index,
 };
 use crate::api::query::OutputField;
 use crate::route::{Filter, Order, RelationGroup, SnapshotRequest};
 
 const COLUMN: &str = "counter";
+
+#[test]
+fn plan_statement_query_id_mapping_is_fork_transparent() {
+    assert_eq!(plan_statement_query_id_columns(1_003_001), ["queryid"]);
+    assert_eq!(plan_statement_query_id_columns(1_018_001), ["queryid"]);
+    assert_eq!(
+        plan_statement_query_id_columns(1_004_001),
+        ["queryid_stat_statements"]
+    );
+}
 
 fn predecessor(value: Cell) -> BTreeMap<&'static str, Cell> {
     BTreeMap::from([(COLUMN, value)])

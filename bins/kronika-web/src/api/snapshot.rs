@@ -3414,11 +3414,7 @@ fn search_clause_columns(logical_name: &str, plan: &Plan, key: &str) -> Vec<&'st
         return Vec::new();
     };
     let wanted: &[&str] = if logical_name == "pg_store_plans" && key == "query_id" {
-        if plan.type_id == 1_004_001 {
-            &["queryid_stat_statements"]
-        } else {
-            &["queryid"]
-        }
+        plan_statement_query_id_columns(plan.type_id)
     } else {
         field.columns
     };
@@ -3426,6 +3422,14 @@ fn search_clause_columns(logical_name: &str, plan: &Plan, key: &str) -> Vec<&'st
         .iter()
         .filter_map(|name| plan.contract.column(name).map(|column| column.name))
         .collect()
+}
+
+fn plan_statement_query_id_columns(type_id: u32) -> &'static [&'static str] {
+    match type_id {
+        1_004_001 => &["queryid_stat_statements"],
+        1_003_001 | 1_018_001 => &["queryid"],
+        _ => &["queryid"],
+    }
 }
 
 fn search_clause_matches(
@@ -3472,8 +3476,6 @@ fn search_clause_matches(
                 .and_then(|value| searchable_text(value, dictionary))
                 .is_some_and(|text| search_value_matches(&text, &clause.value))
         })
-}
-
 fn search_matches(
     logical_name: &str,
     plan: &Plan,

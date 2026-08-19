@@ -2,7 +2,7 @@ import { registry } from "kronika:registry"
 
 import { bundledFixtureHour, bundledFixtureRange } from "./fixture"
 import { rowMatchesLocator } from "./locator"
-import { decoratePostgresIntervalRow, intervalMetric, postgresIdentity, supportsPostgresDerivedOrder, unique } from "./postgres-metrics"
+import { decoratePostgresIntervalRow, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, postgresIdentity, supportsPostgresDerivedOrder, unique } from "./postgres-metrics"
 import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey, relationRateFields, relationRowKey, type RelationGroup, type RelationLayout, type RelationRow } from "./postgres-relations"
 import { apiFetch } from "./session"
 import { readNdjson } from "./wire"
@@ -755,6 +755,13 @@ function hourData(input: {
 }
 
 const CELL_TEXT = 160
+const RELATED_STATEMENT_TEXT_PAGE_SIZE = 32
+const RELATED_STATEMENT_TEXT_FIELDS = [
+  "queryid", "userid", "dbid", "datname", "usename", "query",
+] as const
+const RELATED_STATEMENT_TEXT_FIELDS_BY_TYPE = Object.fromEntries(
+  PG_STAT_STATEMENTS_TYPE_IDS.map((typeId) => [typeId, RELATED_STATEMENT_TEXT_FIELDS]),
+)
 
 export interface SnapshotOptions {
   readonly filters?: Readonly<Record<string, string>>
@@ -932,6 +939,47 @@ export async function loadSnapshotGroups(
     order,
   )))
   return snapshots.reduce((current, incoming) => mergeSnapshotData(current, incoming), emptyHour())
+}
+
+export async function loadRelatedStatementTextRows(
+  segments: readonly SegmentBound[],
+  at: number,
+  search: string,
+  signal: AbortSignal,
+): Promise<readonly DataRow[]> {
+  const [group] = snapshotRequestGroups(segments, at, [{
+    section: "pg_stat_statements",
+    typeIds: PG_STAT_STATEMENTS_TYPE_IDS,
+    fieldsByType: RELATED_STATEMENT_TEXT_FIELDS_BY_TYPE,
+    pageSize: RELATED_STATEMENT_TEXT_PAGE_SIZE,
+    fallbackOrder: ["queryid"],
+  }])
+  const [request] = group?.requests ?? []
+  if (group === undefined || request === undefined) return []
+
+  const rows: DataRow[] = []
+  const cursors = new Set<string>()
+  let cursor: string | undefined
+  while (true) {
+    signal.throwIfAborted()
+    const page = await loadSnapshot(
+      group.anchor.id,
+      at,
+      [request],
+      signal,
+      undefined,
+      { ...(cursor === undefined ? {} : { cursor }), fullText: true, search },
+    )
+    rows.push(...(page.sections.pg_stat_statements ?? []))
+    const metadata = page.snapshotRows.find(({ logicalName }) => logicalName === "pg_stat_statements")
+    if (metadata?.hasMore !== true) return rows
+    const next = metadata.nextCursor
+    if (next === null || cursors.has(next)) {
+      throw new Error("related statement text paging returned an invalid cursor")
+    }
+    cursors.add(next)
+    cursor = next
+  }
 }
 
 function rowValues(columns: readonly string[], cells: readonly unknown[]): Readonly<Record<string, Cell>> {
