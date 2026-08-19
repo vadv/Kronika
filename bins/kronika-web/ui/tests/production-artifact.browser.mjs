@@ -1348,7 +1348,7 @@ test("the production artifact preserves wire keys and exact finding page state",
           }
         })()`)
         assert.deepEqual(textLayout.labels, ["Query", "Execution plan"], `${locale} ${width}px labels`)
-        assert.deepEqual(textLayout.copy, ["Copy", "Copy"], `${locale} ${width}px copy actions`)
+        assert.deepEqual(textLayout.copy, ["Copy"], `${locale} ${width}px copy actions`)
         assert.equal(textLayout.order, true, `${locale} ${width}px text block order`)
         assert.equal(textLayout.whiteSpace, "pre-wrap", `${locale} ${width}px whitespace`)
         assert.ok(textLayout.listClientHeight <= 320 && textLayout.listScrollHeight > textLayout.listClientHeight, `${locale} ${width}px independent query scroll: ${JSON.stringify(textLayout)}`)
