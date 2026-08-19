@@ -109,7 +109,7 @@ function SearchChips({ expr, onRemove, t }: { readonly expr: SearchExpr; readonl
       const index = clauseIndex
       clauseIndex += 1
       const clause = current.predicate
-      return [<span className="inline-flex max-w-full items-center border border-accent2 bg-accent-soft text-xs text-fg" key={`${path}:${clause.key}:${clause.value}`}>
+      return [<span className="inline-flex max-w-full items-center border border-accent2 bg-accent-soft text-xs text-fg" data-search-predicate="" key={`${path}:${clause.key}:${clause.value}`}>
         <SearchChip clause={clause} t={t} />
         <button aria-label={t("filter.token.remove", { field: clause.field.kind === "quantity" ? t(`filter.field.${clause.key}.label`) : clause.key, value: clause.field.kind === "quantity" ? `${clause.operator} ${clause.quantity?.number ?? clause.value} ${clause.quantity?.unit ?? ""}`.trim() : clause.value })} className="inline-flex self-stretch cursor-pointer items-center border-0 border-l border-accent2 bg-transparent px-1 text-fg2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => onRemove(index)} type="button"><X aria-hidden="true" size={11} /></button>
       </span>]
@@ -117,14 +117,20 @@ function SearchChips({ expr, onRemove, t }: { readonly expr: SearchExpr; readonl
     const precedence = current.kind === "and" ? 2 : 1
     const grouped = precedence < parentPrecedence
     return [
-      ...(grouped ? ["("] : []),
+      ...(grouped ? [<SearchSyntaxToken key={`${path}:open`} token="(" />] : []),
       ...render(current.left, precedence, `${path}:left`),
-      current.kind === "and" ? "AND" : "OR",
+      <SearchSyntaxToken key={`${path}:operator`} token={current.kind === "and" ? "AND" : "OR"} />,
       ...render(current.right, precedence, `${path}:right`),
-      ...(grouped ? [")"] : []),
+      ...(grouped ? [<SearchSyntaxToken key={`${path}:close`} token=")" />] : []),
     ]
   }
   return render(expr, 0, "root")
+}
+
+type SearchSyntaxTokenValue = "AND" | "OR" | "(" | ")"
+
+function SearchSyntaxToken({ token }: { readonly token: SearchSyntaxTokenValue }) {
+  return <span className="inline-flex h-[19px] items-center whitespace-nowrap px-0.5 text-[9px] font-medium leading-none text-fg4" data-search-syntax={token === "(" || token === ")" ? "parenthesis" : "connector"}>{token}</span>
 }
 
 function SearchChip({ clause, t }: { readonly clause: SearchClause; readonly t: Translate }) {
