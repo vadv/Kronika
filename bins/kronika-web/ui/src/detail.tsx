@@ -145,7 +145,7 @@ export function DetailDock({
       className="process-detail-dock min-h-0 bg-s2 p-3"
       data-testid={activity === null ? "process-dock" : "pg-linked-dock"}
     >
-      <section className="mt-2 flex items-center gap-1.5 border border-line3 bg-s1 px-1.5 py-[5px]" title={commandPath}>
+      <section className="mt-2 flex items-center gap-1.5 border-y border-line2 bg-s1 px-1.5 py-[5px]" title={commandPath}>
         <code className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-sm leading-[1.5] text-fg [font-family:inherit] hover:overflow-visible hover:whitespace-normal hover:[text-overflow:clip] hover:[overflow-wrap:anywhere]" data-testid="process-cmdline">{processCommand(process)}</code>
         <button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center border border-line4 bg-transparent px-[3px] py-0.5 text-xs uppercase text-accent3" onClick={() => void navigator.clipboard?.writeText(processCommand(process))} type="button"><Copy aria-hidden="true" size={12} /></button>
       </section>
@@ -201,7 +201,7 @@ export function DetailDock({
             ? <button aria-label={t("pg.related.open_statements", { id: relatedActivity.queryId ?? "" })} className="cursor-pointer border-0 bg-transparent p-0 text-accent3 underline decoration-dotted underline-offset-2" onClick={() => onRelated(relatedActivity)} type="button">{identifier(value(activity, field))}</button>
             : formatActivity(value(activity, field), kind, locale, t)} />)}
         </DetailList>
-        <section className="mt-2 border border-line3 bg-s1 px-1.5 py-[5px]">
+        <section className="query-block">
           <span className="flex items-center justify-between text-xs uppercase text-fg3"><LabelHelp helpKey="pg.query.help" labelKey="pg.query.label" t={t} /></span>
           <pre className="mx-0 mb-0 mt-2 max-h-[170px] overflow-auto whitespace-pre-wrap break-words text-sm leading-[1.55] text-event-edge [font:inherit]" data-testid="pg-exact-query">{rawText(value(activity, "query")) ?? "—"}</pre>
         </section>

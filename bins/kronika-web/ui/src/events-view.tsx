@@ -181,8 +181,8 @@ function FindingDetail({ cursor, data, finding, history, hour, locale, onCursor,
     {resolution === "unavailable" && <p className="mt-2.5 text-sm leading-[1.45] text-fg2 [overflow-wrap:anywhere]">{t("events.row_unavailable")}</p>}
     {resolution === "ready" && row !== null && <>
       {entity !== null && <p className="mt-2.5 text-sm leading-[1.45] text-fg2 [overflow-wrap:anywhere]">{entity}</p>}
-      {finding.category !== null && <p className="mt-[9px] inline-block border border-line3 bg-s2 px-[7px] py-[5px] text-xs text-fg2">{t("events.category", { "category": categoryLabel(finding.category, t) })}</p>}
-      {metric.field !== null && <section className="mt-[9px] grid gap-1 border border-line3 bg-s2 px-[9px] py-[7px]" aria-label={t("events.change")}>
+      {finding.category !== null && <p className="mt-[9px] inline-block bg-s3 px-[7px] py-[5px] text-xs text-fg2">{t("events.category", { "category": categoryLabel(finding.category, t) })}</p>}
+      {metric.field !== null && <section className="mt-[9px] grid gap-1 border-y border-line2 bg-s2 px-[9px] py-[7px]" aria-label={t("events.change")}>
         <span className="text-xs text-fg3">{metric.label}</span>
         <strong className="text-sm tabular-nums text-fg">{readings.previous === null
           ? formatMetric(readings.current, metric.unit, locale, t)
