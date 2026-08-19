@@ -550,9 +550,9 @@ capacity. Capacity is `null` when the quota hierarchy is unknown or neither
 value supplies a finite bound.
 
 CPU frequency is a temporal CPUFreq-policy gauge in integer hertz. The
-collector prefers `cpuinfo_avg_freq`, otherwise selects `cpuinfo_cur_freq`, and
-keeps that choice for the lifetime of the policy; a failed read is null and
-does not switch source. `scaling_cur_freq` remains a separately named reported
+collector uses the first successfully parsed source in each observation,
+preferring `cpuinfo_avg_freq` and then `cpuinfo_cur_freq`; both failed reads
+produce null. `scaling_cur_freq` remains a separately named reported
 or requested value. Web draws one series per policy and computes an
 online-CPU-weighted rollup only when every policy at that timestamp uses the
 same actual source. It never copies a policy value into independent logical-CPU

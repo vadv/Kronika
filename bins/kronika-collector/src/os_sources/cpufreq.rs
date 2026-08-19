@@ -7,7 +7,6 @@ use kronika_source_os::cpufreq;
 /// Collect the complete bounded `CPUFreq` policy set once and expose the
 /// independently paced reference and temporal sections requested by this tick.
 pub(super) fn collect_cpufreq(
-    collector: &mut cpufreq::CpuFreqCollector,
     sys: &SysFs,
     interner: &mut Interner,
     scope: u8,
@@ -21,7 +20,7 @@ pub(super) fn collect_cpufreq(
         return;
     }
     let started = Instant::now();
-    let observed = match collector.collect(sys, emit_reference, emit_samples) {
+    let observed = match cpufreq::collect(sys, emit_reference, emit_samples) {
         Ok(observed) => observed,
         Err(error) => {
             log_degraded(1_122_001, "sysfs/cpufreq", &error);

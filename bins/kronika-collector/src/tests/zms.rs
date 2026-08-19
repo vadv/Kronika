@@ -528,7 +528,6 @@ fn statement_sql_timestamp_survives_source_batches_rotation_and_active_reads() {
     let config = config(directory.path(), u64::MAX);
     let mut segment = SegmentState::default();
     let mut scheduler = Scheduler::new(Intervals::default());
-    let mut cpufreq_collector = cpufreq::CpuFreqCollector::default();
     let mut rows = (0..=BATCH_ROWS)
         .map(|query_index| {
             let mut row = statement_row(0, query_index);
@@ -549,7 +548,6 @@ fn statement_sql_timestamp_survives_source_batches_rotation_and_active_reads() {
         BASE_TS + 10,
         &mut segment,
         &mut scheduler,
-        &mut cpufreq_collector,
     )
     .expect("append the first natural SQL timestamp batch");
 
@@ -582,7 +580,6 @@ fn statement_sql_timestamp_survives_source_batches_rotation_and_active_reads() {
         BASE_TS + 20,
         &mut segment,
         &mut scheduler,
-        &mut cpufreq_collector,
     )
     .expect("rotate and append the remaining natural SQL timestamp row");
     assert_eq!(outcome.written.len(), 1);
@@ -1602,13 +1599,11 @@ fn cpufreq_hour_reports_collection_and_production_writer_costs() {
     let sysfs = tempfile::tempdir().expect("create CPUFreq sysfs fixture");
     write_cpufreq_fixture(sysfs.path(), CPUFREQ_POLICY_COUNT);
     let sys = SysFs::new(sysfs.path().to_path_buf());
-    let mut cpufreq_collector = cpufreq::CpuFreqCollector::default();
     let collection_cpu_before = self_cpu_ticks();
     let collection_started = std::time::Instant::now();
     for sample in 0..CPUFREQ_SNAPSHOTS_PER_HOUR {
-        let observed = cpufreq_collector
-            .collect(&sys, sample % 6 == 0, true)
-            .expect("collect bounded CPUFreq fixture");
+        let observed =
+            cpufreq::collect(&sys, sample % 6 == 0, true).expect("collect bounded CPUFreq fixture");
         assert_eq!(
             observed.policies.len(),
             if sample % 6 == 0 {

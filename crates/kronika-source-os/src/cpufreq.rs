@@ -1,6 +1,6 @@
 //! Bounded Linux `CPUFreq` policy discovery and temporal sampling.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::SysFs;
@@ -18,7 +18,7 @@ pub enum ActualFrequencySource {
     Unavailable = 0,
     /// `cpuinfo_avg_freq`, preferred when the kernel exposes it.
     CpuinfoAverage = 1,
-    /// `cpuinfo_cur_freq`, used only when the average attribute is absent.
+    /// `cpuinfo_cur_freq`, used when the average attribute cannot be read.
     CpuinfoCurrent = 2,
 }
 
@@ -31,7 +31,7 @@ pub struct CpuFreqPolicy {
     pub related_cpus: Option<String>,
     /// Scaling driver name.
     pub scaling_driver: Option<String>,
-    /// Stable attribute selected for actual frequency.
+    /// Attribute successfully read for this observation.
     pub actual_source: ActualFrequencySource,
     /// Hardware minimum frequency, hertz.
     pub cpuinfo_min_freq_hz: Option<i64>,
@@ -44,7 +44,7 @@ pub struct CpuFreqPolicy {
 pub struct CpuFreqSample {
     /// Numeric suffix of `policyX`.
     pub policy_id: i32,
-    /// Stable attribute selected for actual frequency.
+    /// Attribute successfully read for this observation.
     pub actual_source: ActualFrequencySource,
     /// Hardware-derived frequency, hertz.
     pub actual_frequency_hz: Option<i64>,
@@ -67,12 +67,6 @@ pub struct CpuFreqCollection {
     pub samples: Vec<CpuFreqSample>,
 }
 
-/// Cached selection of each present policy's actual-frequency attribute.
-#[derive(Debug, Default)]
-pub struct CpuFreqCollector {
-    actual_sources: BTreeMap<i32, ActualFrequencySource>,
-}
-
 /// A `CPUFreq` directory exceeded the accepted complete policy set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CpuFreqError {
@@ -91,96 +85,78 @@ impl fmt::Display for CpuFreqError {
 
 impl std::error::Error for CpuFreqError {}
 
-impl CpuFreqCollector {
-    /// Read every policy as one complete bounded set.
-    ///
-    /// A missing `CPUFreq` root is ordinary unavailability and returns empty
-    /// sets. The first observed attribute choice is retained while the policy
-    /// exists; a later failed read stays null and never switches source.
-    ///
-    /// # Errors
-    /// Returns an error when the policy ceiling is exceeded.
-    pub fn collect(
-        &mut self,
-        sys: &SysFs,
-        include_reference: bool,
-        include_samples: bool,
-    ) -> Result<CpuFreqCollection, CpuFreqError> {
-        let Ok(entries) = sys.read_dir(POLICY_ROOT) else {
-            return Ok(CpuFreqCollection {
-                policies: Vec::new(),
-                samples: Vec::new(),
-            });
-        };
-        let mut ids = entries
-            .iter()
-            .filter_map(|entry| policy_id(&entry.name))
-            .collect::<Vec<_>>();
-        ids.sort_unstable();
-        ids.dedup();
-        if ids.len() > MAX_CPUFREQ_POLICIES {
-            return Err(CpuFreqError {
-                policies: ids.len(),
-            });
-        }
-        self.actual_sources
-            .retain(|id, _| ids.binary_search(id).is_ok());
-        let online = include_samples
-            .then(|| sys.read("devices/system/cpu/online").ok())
-            .flatten()
-            .and_then(|value| parse_cpu_list(&value));
-        let mut policies = Vec::with_capacity(if include_reference { ids.len() } else { 0 });
-        let mut samples = Vec::with_capacity(if include_samples { ids.len() } else { 0 });
-        for id in ids {
-            let root = format!("{POLICY_ROOT}/policy{id}");
-            let related_text = sys.read(&format!("{root}/related_cpus")).ok();
-            let related = related_text.as_deref().and_then(parse_cpu_list);
-            let actual_source = *self
-                .actual_sources
-                .entry(id)
-                .or_insert_with(|| actual_source(sys, &root));
-            if include_reference {
-                policies.push(CpuFreqPolicy {
-                    policy_id: id,
-                    related_cpus: related_text,
-                    scaling_driver: sys.read(&format!("{root}/scaling_driver")).ok(),
-                    actual_source,
-                    cpuinfo_min_freq_hz: read_hz(sys, &root, "cpuinfo_min_freq"),
-                    cpuinfo_max_freq_hz: read_hz(sys, &root, "cpuinfo_max_freq"),
-                });
-            }
-            if include_samples {
-                let actual_frequency_hz = match actual_source {
-                    ActualFrequencySource::CpuinfoAverage => {
-                        read_hz(sys, &root, "cpuinfo_avg_freq")
-                    }
-                    ActualFrequencySource::CpuinfoCurrent => {
-                        read_hz(sys, &root, "cpuinfo_cur_freq")
-                    }
-                    ActualFrequencySource::Unavailable => None,
-                };
-                let affected = sys
-                    .read(&format!("{root}/affected_cpus"))
-                    .ok()
-                    .and_then(|value| parse_cpu_list(&value));
-                let online_cpus = affected.as_ref().map(cpu_count).or_else(|| {
-                    let related = related.as_ref()?;
-                    let online = online.as_ref()?;
-                    i32::try_from(related.intersection(online).count()).ok()
-                });
-                samples.push(CpuFreqSample {
-                    policy_id: id,
-                    actual_source,
-                    actual_frequency_hz,
-                    scaling_cur_freq_hz: read_hz(sys, &root, "scaling_cur_freq"),
-                    scaling_min_freq_hz: read_hz(sys, &root, "scaling_min_freq"),
-                    scaling_max_freq_hz: read_hz(sys, &root, "scaling_max_freq"),
-                    online_cpus,
-                });
-            }
-        }
-        Ok(CpuFreqCollection { policies, samples })
+/// Read every policy as one complete bounded observation.
+///
+/// A missing `CPUFreq` root is ordinary unavailability and returns empty sets.
+/// Each observation uses the first successfully parsed actual-frequency source.
+///
+/// # Errors
+/// Returns an error when the policy ceiling is exceeded.
+pub fn collect(
+    sys: &SysFs,
+    include_reference: bool,
+    include_samples: bool,
+) -> Result<CpuFreqCollection, CpuFreqError> {
+    let Ok(entries) = sys.read_dir(POLICY_ROOT) else {
+        return Ok(CpuFreqCollection {
+            policies: Vec::new(),
+            samples: Vec::new(),
+        });
+    };
+    let mut ids = entries
+        .iter()
+        .filter_map(|entry| policy_id(&entry.name))
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.len() > MAX_CPUFREQ_POLICIES {
+        return Err(CpuFreqError {
+            policies: ids.len(),
+        });
     }
+    let online = include_samples
+        .then(|| sys.read("devices/system/cpu/online").ok())
+        .flatten()
+        .and_then(|value| parse_cpu_list(&value));
+    let mut policies = Vec::with_capacity(if include_reference { ids.len() } else { 0 });
+    let mut samples = Vec::with_capacity(if include_samples { ids.len() } else { 0 });
+    for id in ids {
+        let root = format!("{POLICY_ROOT}/policy{id}");
+        let related_text = sys.read(&format!("{root}/related_cpus")).ok();
+        let related = related_text.as_deref().and_then(parse_cpu_list);
+        let (actual_source, actual_frequency_hz) = actual_frequency(sys, &root);
+        if include_reference {
+            policies.push(CpuFreqPolicy {
+                policy_id: id,
+                related_cpus: related_text,
+                scaling_driver: sys.read(&format!("{root}/scaling_driver")).ok(),
+                actual_source,
+                cpuinfo_min_freq_hz: read_hz(sys, &root, "cpuinfo_min_freq"),
+                cpuinfo_max_freq_hz: read_hz(sys, &root, "cpuinfo_max_freq"),
+            });
+        }
+        if include_samples {
+            let affected = sys
+                .read(&format!("{root}/affected_cpus"))
+                .ok()
+                .and_then(|value| parse_cpu_list(&value));
+            let online_cpus = affected.as_ref().map(cpu_count).or_else(|| {
+                let related = related.as_ref()?;
+                let online = online.as_ref()?;
+                i32::try_from(related.intersection(online).count()).ok()
+            });
+            samples.push(CpuFreqSample {
+                policy_id: id,
+                actual_source,
+                actual_frequency_hz,
+                scaling_cur_freq_hz: read_hz(sys, &root, "scaling_cur_freq"),
+                scaling_min_freq_hz: read_hz(sys, &root, "scaling_min_freq"),
+                scaling_max_freq_hz: read_hz(sys, &root, "scaling_max_freq"),
+                online_cpus,
+            });
+        }
+    }
+    Ok(CpuFreqCollection { policies, samples })
 }
 
 fn policy_id(name: &str) -> Option<i32> {
@@ -188,13 +164,13 @@ fn policy_id(name: &str) -> Option<i32> {
     (id >= 0).then_some(id)
 }
 
-fn actual_source(sys: &SysFs, root: &str) -> ActualFrequencySource {
-    if sys.exists(&format!("{root}/cpuinfo_avg_freq")) {
-        ActualFrequencySource::CpuinfoAverage
-    } else if sys.exists(&format!("{root}/cpuinfo_cur_freq")) {
-        ActualFrequencySource::CpuinfoCurrent
+fn actual_frequency(sys: &SysFs, root: &str) -> (ActualFrequencySource, Option<i64>) {
+    if let Some(frequency) = read_hz(sys, root, "cpuinfo_avg_freq") {
+        (ActualFrequencySource::CpuinfoAverage, Some(frequency))
+    } else if let Some(frequency) = read_hz(sys, root, "cpuinfo_cur_freq") {
+        (ActualFrequencySource::CpuinfoCurrent, Some(frequency))
     } else {
-        ActualFrequencySource::Unavailable
+        (ActualFrequencySource::Unavailable, None)
     }
 }
 
@@ -239,7 +215,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{ActualFrequencySource, CpuFreqCollector};
+    use super::{ActualFrequencySource, collect};
     use crate::SysFs;
 
     #[test]
@@ -265,9 +241,8 @@ mod tests {
             fs::write(policy.join(name), value).expect("write policy attribute");
         }
 
-        let observed = CpuFreqCollector::default()
-            .collect(&SysFs::new(directory.path().to_path_buf()), true, true)
-            .expect("collect");
+        let observed =
+            collect(&SysFs::new(directory.path().to_path_buf()), true, true).expect("collect");
         assert_eq!(observed.policies.len(), 1);
         assert_eq!(observed.policies[0].policy_id, 2);
         assert_eq!(
@@ -281,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_chosen_average_does_not_fall_through_to_current() {
+    fn a_malformed_average_falls_through_to_current() {
         let directory = tempdir().expect("create CPUFreq root");
         let policy = directory.path().join("devices/system/cpu/cpufreq/policy0");
         fs::create_dir_all(&policy).expect("create policy");
@@ -289,38 +264,32 @@ mod tests {
             .expect("write malformed average");
         fs::write(policy.join("cpuinfo_cur_freq"), "2300000\n").expect("write current");
 
-        let observed = CpuFreqCollector::default()
-            .collect(&SysFs::new(directory.path().to_path_buf()), true, true)
-            .expect("collect");
+        let observed =
+            collect(&SysFs::new(directory.path().to_path_buf()), true, true).expect("collect");
         assert_eq!(
             observed.policies[0].actual_source,
-            ActualFrequencySource::CpuinfoAverage
+            ActualFrequencySource::CpuinfoCurrent
         );
-        assert_eq!(observed.samples[0].actual_frequency_hz, None);
+        assert_eq!(observed.samples[0].actual_frequency_hz, Some(2_300_000_000));
     }
 
     #[test]
-    fn a_policy_keeps_its_selected_source_across_samples() {
+    fn each_observation_uses_the_first_source_it_can_parse() {
         let directory = tempdir().expect("create CPUFreq root");
         let policy = directory.path().join("devices/system/cpu/cpufreq/policy0");
         fs::create_dir_all(&policy).expect("create policy");
         fs::write(policy.join("cpuinfo_avg_freq"), "2400000\n").expect("write average");
         fs::write(policy.join("cpuinfo_cur_freq"), "2300000\n").expect("write current");
         let sys = SysFs::new(directory.path().to_path_buf());
-        let mut collector = CpuFreqCollector::default();
-        let first = collector
-            .collect(&sys, true, true)
-            .expect("collect first sample");
+        let first = collect(&sys, true, true).expect("collect first sample");
         assert_eq!(first.samples[0].actual_frequency_hz, Some(2_400_000_000));
 
         fs::remove_file(policy.join("cpuinfo_avg_freq")).expect("remove chosen average");
-        let second = collector
-            .collect(&sys, true, true)
-            .expect("collect second sample");
+        let second = collect(&sys, true, true).expect("collect second sample");
         assert_eq!(
             second.policies[0].actual_source,
-            ActualFrequencySource::CpuinfoAverage
+            ActualFrequencySource::CpuinfoCurrent
         );
-        assert_eq!(second.samples[0].actual_frequency_hz, None);
+        assert_eq!(second.samples[0].actual_frequency_hz, Some(2_300_000_000));
     }
 }

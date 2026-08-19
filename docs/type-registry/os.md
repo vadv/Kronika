@@ -127,10 +127,10 @@ sets it per source; the intervals and their defaults are listed in the
 CPUFreq is policy-scoped. `1_121_001` stores exact `related_cpus`, the scaling
 driver, the selected actual-frequency attribute, and hardware min/max in
 integer hertz. `1_122_001` stores one temporal row per policy. The collector
-prefers `cpuinfo_avg_freq`; when that attribute is absent on the policy's first
-observation it selects `cpuinfo_cur_freq` instead. The choice stays fixed while
-the policy exists. A failed later read remains null and never falls through to
-another source. `scaling_cur_freq` is retained separately because it is a
+uses the first successfully parsed actual-frequency attribute on every
+observation, preferring `cpuinfo_avg_freq` and then `cpuinfo_cur_freq`. If
+neither can be read, the value and source are null. `scaling_cur_freq` is
+retained separately because it is a
 reported or requested policy value, not necessarily a hardware measurement.
 One policy sample is never copied into per-logical-CPU rows.
 

@@ -249,7 +249,6 @@ fn read_optional_os_file(fs: &ProcFs, rel: &'static str, type_id: u32) -> Option
 )]
 pub(crate) fn collect_os_sources(
     fs: &ProcFs,
-    cpufreq_collector: &mut kronika_source_os::cpufreq::CpuFreqCollector,
     interner: &mut Interner,
     users: &mut UserReferences,
     scope: u8,
@@ -305,7 +304,7 @@ pub(crate) fn collect_os_sources(
         os.topology = procfs_sections::collect_topology(fs, &sys, interner, scope, ts);
         block_topology::collect_block_topology(&sys, scope, ts, &mut os);
     }
-    cpufreq::collect_cpufreq(cpufreq_collector, &sys, interner, scope, ts, due, &mut os);
+    cpufreq::collect_cpufreq(&sys, interner, scope, ts, due, &mut os);
 
     let entity_scope = os_entity_scope(in_container);
     let process_memberships = process::collect_process_sections(
