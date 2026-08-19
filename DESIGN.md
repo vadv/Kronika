@@ -584,10 +584,14 @@ topology adds only exact sysfs partition-to-parent edges and leaves dm/LVM/MD,
 whole devices, unresolved links, and bind ancestry opaque. Selecting a metric
 opens its one-hour history.
 
-A persisted local preference can remove every large chart panel from the layout,
-so tables immediately use the released viewport height. Process-summary loads
-retain the last successful rows and distinguish loading, request failure, and a
-successful empty result. PostgreSQL navigation and visuals are absent when the
+A large chart never occupies the primary workspace. Every main surface instead
+keeps the shared 104 px time preview visible above its table or list. The preview
+has an explicit zero-based or semantic scale, exact sample cursor, recorded
+finding shapes, missing intervals and the uncollected future tail; it is not a
+silent sparkline. Its Chart action opens the full chart in the shared Inspector.
+Process-summary loads retain the last successful rows and distinguish loading,
+request failure, and a successful empty result. PostgreSQL navigation and
+visuals are absent when the
 selected current data has PostgreSQL disabled; a historical hour that contains
 PostgreSQL telemetry remains available, and disabled PostgreSQL leaves overall
 health equal to OS health. A selected Linux process links to the nearest
@@ -595,9 +599,13 @@ health equal to OS health. A selected Linux process links to the nearest
 role, application, client, state, wait, query and times. Locale changes are
 immediate and persist locally.
 
-Processes uses the whole viewport row left after the timeline, controls and
-summary. Its virtual table and adjacent selected-process dock share that row
-and scroll independently on wide screens; the narrow dock remains bounded.
+Processes uses the whole viewport row left after the time preview and compact
+controls. Its four summary readings live in the lens bar instead of a separate
+height band. The virtual table is the primary surface. A selected row uses the
+same Inspector as Host, PostgreSQL and Events: an adjacent resizable region on
+desktop, a right overlay on tablet and a bottom sheet on phone. The table and
+Inspector scroll independently, and closing the Inspector restores the entire
+row without leaving a band.
 CPU history offers temporal counters and gauges, including major page faults,
 but keeps scheduler references such as nice, priority and realtime priority as
 compact cursor-time facts rather than graph choices.
@@ -612,18 +620,24 @@ that setting the converted reading is unavailable. Buffer hits remain buffer
 activity and are not relabelled as physical disk I/O.
 
 Shared charts reserve room at the end for the last time label after accounting
-for every visible side axis. The compact 128 px timeline keeps its x-axis,
-cursor and labels inside the figure before the following navigation. Charts
+for every visible side axis. The compact timeline shell is exactly 104 px; its
+74 px figure keeps the x-axis, cursor and labels inside the instrument before
+the following navigation. Charts
 keep series names with the aligned statistics and place percentile columns without
 colliding with the plot edge. Sparse tables are content-sized instead of
 reserving large framed boards. A boundary is draggable only when it controls a
 real split; otherwise the layout stays light. The exact current `pg_wal` file
 size is a subordinate value with optional history, not a primary overview
 chart.
-The shared Processes, Host and PostgreSQL shells join their timeline and
-primary controls directly with a light content-sized boundary. Empty spacer
-tracks and strong nonfunctional splitter bands are forbidden; a visible resize
-handle exists only for a real bounded accessible split.
+The shared Processes, Host, PostgreSQL and Events shells join the timeline and
+primary controls directly with a light content-sized separator. Surface
+hierarchy comes from Steel background levels, spacing, typography, a selection
+rail and restrained semantic tint rather than a border/card/panel grid. Empty
+spacer tracks and strong nonfunctional splitter bands are forbidden; a visible
+resize handle exists only for the real bounded accessible Inspector split.
+Recorded findings and direct thresholds guide attention with shape, weight and
+a marker rail as well as colour. Ordinary workload volume remains neutral, and
+the interface does not add diagnosis, scoring or causal claims.
 
 PostgreSQL Tables and Indexes use lens-specific details at database, schema,
 object and cluster-wide tablespace level. Tablespace identity is its effective
