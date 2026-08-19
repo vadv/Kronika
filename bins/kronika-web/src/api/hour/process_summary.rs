@@ -52,9 +52,10 @@ fn activity_visit() {
 #[cfg(not(test))]
 const fn activity_visit() {}
 
-const PROCESS_COLUMNS: [&str; 16] = [
+const PROCESS_COLUMNS: [&str; 17] = [
     "ts",
     "pid",
+    "starttime",
     "state",
     "num_threads",
     "utime",
@@ -124,6 +125,7 @@ struct Counters {
 #[derive(Clone, Copy)]
 struct Previous {
     ts: i64,
+    starttime: Option<i128>,
     counters: Counters,
 }
 
@@ -472,9 +474,11 @@ fn summaries(
                 }
                 let counters = counters(&row);
                 let expected = moments.previous.get(&ts).copied().unwrap_or(i64::MIN);
+                let starttime = integer(row.get("starttime"));
                 let predecessor = before
                     .as_ref()
-                    .filter(|stored| stored.ts == expected)
+                    .filter(|stored| stored.ts == expected && stored.starttime == starttime)
+                    .filter(|stored| stored.starttime.is_some())
                     .copied();
                 let seconds = predecessor.and_then(|stored| elapsed_seconds(stored.ts, ts));
                 let pg_pids = activities.range(..=ts).next_back().map(|(_ts, pids)| pids);
@@ -491,7 +495,14 @@ fn summaries(
                 if pg_pids.is_some_and(|pids| pids.contains(&pid)) {
                     summary.postgresql = summary.postgresql.saturating_add(1);
                 }
-                state.insert(pid, Previous { ts, counters });
+                state.insert(
+                    pid,
+                    Previous {
+                        ts,
+                        starttime,
+                        counters,
+                    },
+                );
                 true
             })?;
             if !connected {

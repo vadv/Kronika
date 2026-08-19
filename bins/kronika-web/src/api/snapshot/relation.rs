@@ -1958,7 +1958,9 @@ const fn exact_scale(scale: f64) -> Option<u128> {
 /// Compare products without overflowing. Limbs use base 2^32 so each multiply
 /// and carry fits in `u64`, even when each input factor spans all of `u128`.
 fn compare_products(left: &[u128], right: &[u128]) -> Ordering {
-    product_limbs(left).cmp(&product_limbs(right))
+    let left = product_limbs(left);
+    let right = product_limbs(right);
+    left.len().cmp(&right.len()).then_with(|| left.cmp(&right))
 }
 
 #[expect(
@@ -3687,6 +3689,18 @@ const fn key_fields(kind: RelationKind, group: RelationGroup) -> &'static [&'sta
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_product_comparison_orders_different_limb_lengths() {
+        assert_eq!(
+            compare_products(&[100, 1_000_000], &[1_048_575, 1_000_000]),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_products(&[u128::MAX, u128::MAX], &[u128::MAX, u128::MAX - 1]),
+            Ordering::Greater
+        );
+    }
 
     fn key(datid: u32) -> GroupKey {
         GroupKey::Index {

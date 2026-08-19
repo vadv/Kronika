@@ -658,11 +658,43 @@ means its main fork. Tables additionally register `table_count`, `buffer_hit`,
 `query_id` and `plan_id` remain the only public plan/query identifier
 spellings, independent of physical extension layout.
 
+Dense quantitative surfaces add the following fixed vocabulary. It applies to
+the whole surface, even when a lens does not display the metric:
+
+| Surface | Public fields | Comparison units |
+| --- | --- | --- |
+| Statements and Plans | `call_rate`, `exec_time_rate`, `mean_exec`, `row_rate`, `rows_per_call`; shared/local/temp hit, read, dirty and write rates where recorded; shared/local/temp read and write I/O loads where recorded; `buffer_hit`; `exec_cv`, `min_exec_since_reset`, `max_exec_since_reset`, `mean_exec_since_reset`, `stddev_exec_since_reset` | `/s`, duration`/s`, duration, `/call`, `%`, or a unitless decimal as appropriate |
+| Statements only | `plan_rate`, `planning_time_rate`, `wal_rate`, `wal_per_call` | `/s`, duration`/s`, byte`/s`, byte`/call` |
+| Plans where the recorded fork provides it | `planning_time_rate` | duration`/s` |
+| Processes | `rss`, `virtual_memory`, `swap`, `threads`, `cpu_cores`, `user_cpu_cores`, `system_cpu_cores`, `disk_read_rate`, `disk_write_rate`, `major_fault_rate`, `minor_fault_rate`, `context_switch_rate`, `run_delay` | bytes, count, unitless cores, byte`/s`, `/s`, or duration`/s` |
+
+The shared PostgreSQL names have the same meaning on Statements and Plans.
+Counter rates use the retained interval delta. Mean execution time, rows per
+call and WAL per call divide interval deltas, not rendered rates. Buffer hit is
+the shared hit delta divided by shared hit plus read deltas. Execution
+variability is the recorded standard deviation divided by the recorded mean;
+the four execution-stat fields are the recorded resettable gauges. Block rates
+remain blocks per second; I/O loads and execution/planning loads are
+milliseconds accumulated per wall second in their base comparison unit.
+`pg_store_plans` keeps its query and plan identities and fork-specific
+attribution rules; this vocabulary does not add a Plan-node or relation join.
+
+Process memory gauges convert the recorded KiB values to exact bytes. Process
+rates use the immediately preceding complete OS-process snapshot only when PID
+and recorded `starttime` are both unchanged. Missing predecessors, PID reuse,
+counter rollback, nonpositive intervals, or missing clock frequency make the
+rate null. CPU cores divide exact user/system tick deltas by the recorded clock
+frequency and wall interval; run-delay load converts recorded nanoseconds to
+milliseconds per second. Raw cumulative process counters and a generic delta
+family are not public search fields.
+
 Quantity literals are exact checked decimal values and never pass through a
 JavaScript number. Bytes accept case-sensitive SI `B` through `EB` and IEC
 `KiB` through `EiB`: `100MB` is exactly 100,000,000 bytes and `100MiB` is
 exactly 104,857,600 bytes. Counts are integral and unitless, rates use `/s`,
-durations use `ns`, `us`, `ms`, `s`, `min` or `h`, and percentages use `%`.
+per-call values use `/call`, durations use `ns`, `us`, `ms`, `s`, `min`
+or `h`, duration loads and byte rates append `/s`, byte-per-call values
+append `/call`, and percentages use `%`.
 Signs, exponent notation, grouping and nonfinite values are invalid. Missing
 or unavailable values never become zero and match neither strict operator.
 Displayed humanization does not participate in comparison.
@@ -719,9 +751,11 @@ idle period cannot draw a line or transition spike; `idle in transaction` and
 History projections include state and preserve null breaks through transitions.
 
 Within the selected calendar hour, PID alone identifies OS process and
-`pg_stat_activity` rows, histories, filters, joins and counter deltas. Process
-`starttime` and PostgreSQL `backend_start` remain observed timestamps and do
-not participate in that identity. For a process-to-Activity join, retained
+`pg_stat_activity` rows, histories, filters and joins. Process `starttime`
+and PostgreSQL `backend_start` remain observed timestamps and do not change
+that public identity. Process counter predecessors additionally require exact
+same-PID/same-`starttime`; a reused PID therefore keeps the row identity but
+has null interval rates. For a process-to-Activity join, retained
 rows are filtered by exact PID before the cursor-nearest timestamp is chosen.
 Per-database collection timestamps may differ slightly, so a globally nearer
 row for another PID must never hide or replace the selected backend.

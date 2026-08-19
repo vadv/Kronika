@@ -19,7 +19,15 @@ export type SearchSurface =
   | "pg_stat_user_tables"
   | "pg_store_plans"
 
-export type QuantityKind = "bytes" | "count" | "count_rate" | "duration" | "percentage"
+export type QuantityKind =
+  | "byte_rate"
+  | "bytes"
+  | "count"
+  | "count_rate"
+  | "duration"
+  | "duration_rate"
+  | "percentage"
+  | "scalar"
 export type SearchFieldKind = "identifier" | "quantity" | "string"
 export type SearchOperator = ":" | ">" | "<"
 
@@ -126,7 +134,40 @@ const DURATION_UNITS = new Map<string, readonly [bigint, bigint]>([
 const text = (columns: readonly string[]): SearchField => ({ aliases: ["q"], columns, help: "filter.field.text.help", key: "text", kind: "string" })
 const string = (key: string, columns: readonly string[], aliases: readonly string[] = []): SearchField => ({ aliases, columns, help: `filter.field.${key}.help`, key, kind: "string" })
 const id = (key: string, columns: readonly string[], aliases: readonly string[] = [], signed = false): SearchField => ({ aliases, columns, help: `filter.field.${key}.help`, key, kind: "identifier", signed })
-const quantity = (key: string, kind: QuantityKind): SearchField => ({ aliases: [], columns: [], help: `filter.field.${key}.help`, key, kind: "quantity", quantity: kind })
+const quantity = (key: string, kind: QuantityKind, aliases: readonly string[] = []): SearchField => ({ aliases, columns: [], help: `filter.field.${key}.help`, key, kind: "quantity", quantity: kind })
+
+const POSTGRES_QUANTITIES: readonly SearchField[] = [
+  quantity("call_rate", "count_rate"),
+  quantity("exec_time_rate", "duration_rate"),
+  quantity("mean_exec", "duration"),
+  quantity("row_rate", "count_rate"),
+  quantity("rows_per_call", "scalar"),
+  quantity("planning_time_rate", "duration_rate"),
+  quantity("planning_share", "percentage"),
+  quantity("shared_buffer_hit_rate", "byte_rate"),
+  quantity("shared_buffer_read_rate", "byte_rate"),
+  quantity("shared_buffer_dirty_rate", "byte_rate"),
+  quantity("shared_buffer_write_rate", "byte_rate"),
+  quantity("local_buffer_hit_rate", "byte_rate"),
+  quantity("local_buffer_read_rate", "byte_rate"),
+  quantity("local_buffer_dirty_rate", "byte_rate"),
+  quantity("local_buffer_write_rate", "byte_rate"),
+  quantity("temp_buffer_read_rate", "byte_rate"),
+  quantity("temp_buffer_write_rate", "byte_rate"),
+  quantity("shared_read_time_rate", "duration_rate"),
+  quantity("shared_write_time_rate", "duration_rate"),
+  quantity("local_read_time_rate", "duration_rate"),
+  quantity("local_write_time_rate", "duration_rate"),
+  quantity("temp_read_time_rate", "duration_rate"),
+  quantity("temp_write_time_rate", "duration_rate"),
+  quantity("buffer_hit", "percentage"),
+  quantity("buffer_per_call", "bytes"),
+  quantity("exec_cv", "scalar"),
+  quantity("min_exec_since_reset", "duration"),
+  quantity("max_exec_since_reset", "duration"),
+  quantity("mean_exec_since_reset", "duration"),
+  quantity("stddev_exec_since_reset", "duration"),
+]
 
 const SEARCH_FIELDS: Readonly<Record<SearchSurface, readonly SearchField[]>> = {
   events: [
@@ -143,6 +184,16 @@ const SEARCH_FIELDS: Readonly<Record<SearchSurface, readonly SearchField[]>> = {
     id("parent_pid", ["ppid"]),
     string("command", ["cmdline", "comm"], ["cmd"]),
     string("state", ["state"]),
+    quantity("rss", "bytes", ["resident_memory"]), quantity("vsz", "bytes", ["virtual_memory"]), quantity("swap", "bytes"), quantity("threads", "count"),
+    quantity("cpu_cores", "scalar"), quantity("user_cpu_cores", "scalar"), quantity("system_cpu_cores", "scalar"),
+    quantity("disk_read_rate", "byte_rate", ["read_bytes_rate"]), quantity("disk_write_rate", "byte_rate", ["write_bytes_rate"]),
+    quantity("logical_read_rate", "byte_rate", ["rchar_rate"]), quantity("logical_write_rate", "byte_rate", ["wchar_rate"]),
+    quantity("read_syscall_rate", "count_rate", ["syscr_rate"]), quantity("write_syscall_rate", "count_rate", ["syscw_rate"]),
+    quantity("major_fault_rate", "count_rate", ["majflt_rate"]), quantity("minor_fault_rate", "count_rate", ["minflt_rate"]),
+    quantity("context_switch_rate", "count_rate"),
+    quantity("voluntary_context_switch_rate", "count_rate", ["nvcsw_rate"]),
+    quantity("involuntary_context_switch_rate", "count_rate", ["nivcsw_rate"]),
+    quantity("run_delay", "duration_rate", ["rundelay"]), quantity("block_io_delay", "duration_rate", ["blkdelay"]),
   ],
   pg_stat_activity: [
     text(["query", "datname", "usename", "application_name", "client_addr", "state", "wait_event_type", "wait_event"]),
@@ -150,8 +201,14 @@ const SEARCH_FIELDS: Readonly<Record<SearchSurface, readonly SearchField[]>> = {
     string("application", ["application_name"], ["app"]), string("client", ["client_addr"]), string("backend_type", ["backend_type"], ["backend"]),
     string("state", ["state"]), string("wait_type", ["wait_event_type"]), string("wait_event", ["wait_event"]),
   ],
-  pg_stat_statements: [text(["query", "datname", "usename"]), id("query_id", ["queryid"], [], true), string("database", ["datname"], ["db"]), string("role", ["usename"], ["user"])],
-  pg_store_plans: [text(["plan", "datname", "usename"]), id("query_id", ["queryid", "queryid_stat_statements"], [], true), id("plan_id", ["planid"], [], true), string("database", ["datname"], ["db"]), string("role", ["usename"], ["user"])],
+  pg_stat_statements: [
+    text(["query", "datname", "usename"]), id("query_id", ["queryid"], [], true), string("database", ["datname"], ["db"]), string("role", ["usename"], ["user"]),
+    ...POSTGRES_QUANTITIES, quantity("plan_rate", "count_rate"), quantity("wal_rate", "byte_rate"), quantity("wal_per_call", "bytes"),
+  ],
+  pg_store_plans: [
+    text(["plan", "datname", "usename"]), id("query_id", ["queryid", "queryid_stat_statements"], [], true), id("plan_id", ["planid"], [], true), string("database", ["datname"], ["db"]), string("role", ["usename"], ["user"]),
+    ...POSTGRES_QUANTITIES, quantity("slow_call_rate", "count_rate"),
+  ],
   pg_stat_user_tables: [
     text(["datname", "schemaname", "relname", "tablespace"]), string("database", ["datname"], ["db"]), string("schema", ["schemaname"]),
     string("table_name", ["relname"], ["table"]), string("tablespace", ["tablespace"]), quantity("size", "bytes"), quantity("table_count", "count"),
@@ -450,18 +507,27 @@ function parseQuantity(token: string, kind: QuantityKind, offset: number): Quant
   let numerator = coefficient
   let denominator = scale
 
-  if (kind === "bytes") {
+  if (kind === "bytes" || kind === "byte_rate") {
+    const suffix = kind === "byte_rate" ? "/s" : ""
+    if (suffix !== "" && !unit.endsWith(suffix)) return failure(unit === "" ? "unit_required" : "invalid_unit", offset + token.length - unit.length, offset + token.length, unit)
+    const byteUnit = suffix === "" ? unit : unit.slice(0, -suffix.length)
     if (unit === "") return failure("unit_required", offset + whole.length + (fraction === "" ? 0 : fraction.length + 1), offset + token.length, token)
-    const multiplier = BYTE_UNITS.get(unit)
+    const multiplier = BYTE_UNITS.get(byteUnit)
     if (multiplier === undefined) return failure("invalid_unit", offset + token.length - unit.length, offset + token.length, unit)
     numerator *= multiplier
-    if (numerator % denominator !== 0n) return failure("non_integral_base_value", offset, offset + token.length, token)
-    numerator /= denominator
-    denominator = 1n
-  } else if (kind === "duration") {
+    if (kind === "bytes") {
+      if (numerator % denominator !== 0n) return failure("non_integral_base_value", offset, offset + token.length, token)
+      numerator /= denominator
+      denominator = 1n
+    }
+  } else if (kind === "duration" || kind === "duration_rate") {
     if (unit === "") return failure("unit_required", offset + token.length, offset + token.length, token)
-    const factors = DURATION_UNITS.get(unit)
+    const suffix = kind === "duration_rate" ? "/s" : ""
+    if (suffix !== "" && !unit.endsWith(suffix)) return failure("invalid_unit", offset + token.length - unit.length, offset + token.length, unit)
+    const durationUnit = suffix === "" ? unit : unit.slice(0, -suffix.length)
+    const factors = DURATION_UNITS.get(durationUnit)
     if (factors === undefined) return failure("invalid_unit", offset + token.length - unit.length, offset + token.length, unit)
+    if (kind === "duration_rate" && !["ns", "us", "ms", "s"].includes(durationUnit)) return failure("invalid_unit", offset + token.length - unit.length, offset + token.length, unit)
     numerator *= factors[0]
     denominator *= factors[1]
   } else if (kind === "count") {
@@ -470,10 +536,12 @@ function parseQuantity(token: string, kind: QuantityKind, offset: number): Quant
   } else if (kind === "count_rate") {
     if (unit === "") return failure("unit_required", offset + token.length, offset + token.length, token)
     if (unit !== "/s") return failure("invalid_unit", offset + token.length - unit.length, offset + token.length, unit)
-  } else {
+  } else if (kind === "percentage") {
     if (unit === "") return failure("unit_required", offset + token.length, offset + token.length, token)
     if (unit !== "%") return failure("invalid_unit", offset + token.length - unit.length, offset + token.length, unit)
     if (coefficient > 100n * scale) return failure("out_of_range", offset, offset + token.length, token)
+  } else if (unit !== "") {
+    return failure("invalid_unit", offset + token.length - unit.length, offset + token.length, unit)
   }
   const divisor = gcd(numerator, denominator)
   numerator /= divisor

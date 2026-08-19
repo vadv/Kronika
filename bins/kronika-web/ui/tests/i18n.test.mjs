@@ -42,6 +42,28 @@ test("PostgreSQL buffer and block metric labels stay canonical English in RU", a
   assert.equal(russian["filter.field.buffer_hit.label"], "Попадания в буфер")
 })
 
+test("quantitative search labels and unit tokens stay canonical English in RU", async () => {
+  const [englishSource, russianSource] = await Promise.all([
+    readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8"),
+  ])
+  const english = parseDictionary(englishSource, "en.yaml")
+  const russian = parseDictionary(russianSource, "ru.yaml")
+  const quantitative = [
+    "call_rate", "exec_time_rate", "mean_exec", "row_rate", "rows_per_call", "plan_rate", "planning_time_rate",
+    "shared_buffer_hit_rate", "shared_buffer_read_rate", "shared_buffer_dirty_rate", "shared_buffer_write_rate", "local_buffer_hit_rate", "local_buffer_read_rate",
+    "local_buffer_dirty_rate", "local_buffer_write_rate", "temp_buffer_read_rate", "temp_buffer_write_rate", "shared_read_time_rate", "shared_write_time_rate",
+    "local_read_time_rate", "local_write_time_rate", "temp_read_time_rate", "temp_write_time_rate", "wal_rate", "wal_per_call",
+    "exec_cv", "min_exec_since_reset", "max_exec_since_reset", "mean_exec_since_reset", "stddev_exec_since_reset", "rss", "virtual_memory", "swap", "threads",
+    "cpu_cores", "user_cpu_cores", "system_cpu_cores", "disk_read_rate", "disk_write_rate", "major_fault_rate",
+    "minor_fault_rate", "context_switch_rate", "run_delay",
+  ]
+  for (const field of quantitative) assert.equal(russian[`filter.field.${field}.label`], english[`filter.field.${field}.label`], field)
+  for (const token of ["/s", "/call", "MiB", "ms/s", "CPU", "RSS", "WAL"]) {
+    assert.ok(Object.values(russian).some((value) => value.includes(token)), token)
+  }
+})
+
 test("hour empty states are provisional only while the selected hour is open", async () => {
   const [englishSource, russianSource] = await Promise.all([
     readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
@@ -156,7 +178,7 @@ test("dense-table help is factual, concise, and complete in both locales", async
   const pgFields = new Set([
     "pid", "backend_age_ms", "query_duration_ms", "transaction_duration_ms", "state_duration_ms", "queryid", "planid", "toplevel", "datname", "usename", "query", "plan",
     "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_call", "blocks_per_call", "hit_pct", "wal_per_call",
-    "plan_time_pct", "cv", "min_exec_time_ms", "max_exec_time_ms", "mean_exec_time_ms", "stddev_exec_time_ms", "first_call", "last_call",
+    "plan_time_pct", "cv", "min_exec_time_ms", "max_exec_time_ms", "mean_exec_ms", "stddev_exec_time_ms", "first_call", "last_call",
     "rows_per_second", "planning_ms_per_second", "shared_blks_hit", "shared_blks_read", "shared_blks_written", "shared_blks_dirtied",
     "local_blks_read", "temp_blks_read", "temp_blks_written", "wal_bytes", "queryid_stat_statements", "cmd_type", "numbackends",
     "xact_commit", "xact_rollback", "blks_hit", "blks_read", "tup_returned", "tup_fetched", "tup_inserted", "tup_updated", "tup_deleted",

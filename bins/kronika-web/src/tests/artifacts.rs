@@ -478,6 +478,64 @@ impl Fixture {
             .expect("append process user fixture");
     }
 
+    fn append_quantitative_processes(&mut self) {
+        let mut interner = Interner::new(DictLimits::default());
+        let label = fixture_label(&mut interner, "quantity-worker");
+        let dictionary = dict::encode(interner.window()).expect("process quantity dictionary");
+        let mut buffers = SectionBuffers::new();
+        buffers
+            .push(InstanceMetadata {
+                ts: Ts(2_000_000),
+                hostname: label,
+                kernel_version: label,
+                environment: 0,
+                clock_ticks_per_sec: 100,
+                page_size_bytes: 4_096,
+                boot_id: label,
+                btime: Ts(1),
+                postgresql_enabled: true,
+                postgresql_interval_seconds: 30,
+                postgresql_effective_cpus: Some(2),
+            })
+            .expect("process quantity metadata fits");
+        let large = 1_i64 << 53;
+        for (ts, pid, starttime, ticks, bytes, rss_kib) in [
+            (1_000_000, 1, 10, 0, large, 3_072),
+            (2_000_000, 1, 10, 20, large + 1_048_576, 3_072),
+            (1_000_000, 2, 20, 0, large, 2_048),
+            (2_000_000, 2, 20, 10, large + 100, 2_048),
+            (1_000_000, 3, 30, 0, large, 4_096),
+            (2_000_000, 3, 31, 50, large + 2_097_152, 4_096),
+            (1_000_000, 4, 40, 100, 1_000, 8_192),
+            (2_000_000, 4, 40, 90, 900, 8_192),
+            (2_000_000, 5, 50, 50, large, 8_192),
+        ] {
+            let mut row = process(ts, Some(bytes), label);
+            row.pid = pid;
+            row.starttime = Ts(starttime);
+            row.utime = ticks / 2;
+            row.stime = ticks - row.utime;
+            row.rmem_kb = rss_kib;
+            row.vmem_kb = rss_kib * 2;
+            row.vswap_kb = rss_kib / 4;
+            row.num_threads = u32::try_from(pid + 1).expect("fixture thread count");
+            row.write_bytes = Some(bytes / 2);
+            row.minflt = ticks;
+            row.majflt = ticks / 2;
+            row.nvcsw = ticks;
+            row.nivcsw = ticks;
+            row.rundelay_ns = ticks * 1_000_000;
+            buffers.push(row).expect("process quantity row fits");
+        }
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode process quantities")
+            .expect("nonempty process quantities");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append process quantities");
+    }
+
     fn append_statement_universe(&mut self, rows: i64) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
@@ -2558,18 +2616,18 @@ fn process_summary_series_uses_the_complete_set_and_previous_segment() {
     assert_eq!(values[1], 410.0);
     assert_eq!(values[2], 103.0);
     assert_eq!(values[3], 10.0, "a future activity snapshot is not joined");
-    assert_eq!(values[4], 41.0, "starttime does not split PID counters");
-    assert_eq!(values[5], 82.0);
-    assert_eq!(values[6], 4_100.0);
-    assert_eq!(values[7], 12_300.0);
+    assert_eq!(values[4], 40.8, "PID reuse has no predecessor");
+    assert_eq!(values[5], 81.6);
+    assert_eq!(values[6], 4_080.0);
+    assert_eq!(values[7], 12_240.0);
     assert_eq!(values[8], 22_960.0);
     assert_eq!(values[9], 25_010.0);
     assert_eq!(values[10], 204.0);
-    assert_eq!(values[11], 4_100.0);
-    assert_eq!(values[12], 4_100.0);
+    assert_eq!(values[11], 4_080.0);
+    assert_eq!(values[12], 4_080.0);
     assert_eq!(values[13], Value::Null, "all unavailable values stay null");
-    assert_eq!(values[14], 4_100.0);
-    assert_eq!(values[15], 8_200.0);
+    assert_eq!(values[14], 4_080.0);
+    assert_eq!(values[15], 8_160.0);
     assert_eq!(
         crate::api::process_summary_operations(),
         (4, 2),
@@ -2578,7 +2636,7 @@ fn process_summary_series_uses_the_complete_set_and_previous_segment() {
 }
 
 #[test]
-fn process_snapshot_counter_history_is_pid_only() {
+fn process_snapshot_counter_history_rejects_pid_reuse() {
     let mut fixture = Fixture::new();
     fixture.append_process_summary_snapshot(1_000_000, 1_000, None, 900_000, 0..0, None);
     let current_segment = SEGMENT_ID + 1_000;
@@ -2593,7 +2651,7 @@ fn process_snapshot_counter_history_is_pid_only() {
     .expect("PID-scoped process snapshot");
     let rows = row_records(&records);
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["values"], serde_json::json!([0, 20.0]));
+    assert_eq!(rows[0]["values"], serde_json::json!([0, null]));
 }
 
 #[test]
@@ -3218,6 +3276,88 @@ fn statement_page_composes_every_segment_at_both_selected_moments() {
 }
 
 #[test]
+fn statement_and_plan_quantities_filter_hidden_metrics_before_paging() {
+    let mut fixture = Fixture::new();
+    fixture.append_ranked_statements();
+    fixture.append_ranked_plans();
+    fixture.finish();
+
+    for section in ["pg_stat_statements", "pg_store_plans"] {
+        let base = format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=200&section={section}&field=queryid&by=queryid"
+        );
+        let records = stream(fixture.prepare(
+            &format!("{base}&page_size=1&search=exec_time_rate%3E500000ms%2Fs"),
+            None,
+        ))
+        .expect("hidden execution-load search");
+        assert_eq!(row_records(&records)[0]["values"][0], "1", "{section}");
+        let page = records
+            .iter()
+            .find(|record| record["record"] == "snapshot_page")
+            .expect("quantity page trailer");
+        assert_eq!(page["eligible"], "1", "{section}");
+        assert_eq!(page["has_more"], false, "{section}");
+
+        let strict = stream(fixture.prepare(
+            &format!("{base}&page_size=10&search=mean_exec%3E10ms"),
+            None,
+        ))
+        .expect("strict mean boundary");
+        assert_eq!(row_records(&strict)[0]["values"][0], "2", "{section}");
+
+        let hit = stream(fixture.prepare(
+            &format!("{base}&page_size=10&search=buffer_hit%3E80%25"),
+            None,
+        ))
+        .expect("strict hit boundary");
+        assert_eq!(row_records(&hit)[0]["values"][0], "2", "{section}");
+    }
+
+    let grouped = stream(fixture.prepare(
+        &format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_statements&field=queryid&by=queryid&page_size=10&search=query_id%3A3%20OR%20%28exec_time_rate%3E500000ms%2Fs%20AND%20rows_per_call%3E5%2Fcall%29"
+        ),
+        None,
+    ))
+    .expect("mixed grouped statement search");
+    assert_eq!(
+        row_records(&grouped)
+            .iter()
+            .map(|row| row["values"][0].as_str().expect("query id"))
+            .collect::<Vec<_>>(),
+        ["3", "1"]
+    );
+}
+
+#[test]
+fn quantitative_search_keeps_layout_absence_null() {
+    let mut fixture = Fixture::new();
+    fixture.append_ranked_statements();
+    fixture.append_ranked_plans();
+    fixture.finish();
+
+    for (section, search) in [
+        ("pg_stat_statements", "temp_read_time_rate%3C1ms%2Fs"),
+        ("pg_store_plans", "planning_time_rate%3C1ms%2Fs"),
+    ] {
+        let records = stream(fixture.prepare(
+            &format!(
+                "/api/segments/{SEGMENT_ID}/snapshot?at=200&section={section}&field=queryid&by=queryid&page_size=10&search={search}"
+            ),
+            None,
+        ))
+        .expect("layout-unavailable quantity search");
+        assert!(row_records(&records).is_empty(), "{section}");
+        let page = records
+            .iter()
+            .find(|record| record["record"] == "snapshot_page")
+            .expect("unavailable page trailer");
+        assert_eq!(page["eligible"], "0", "{section}");
+    }
+}
+
+#[test]
 fn plan_page_keeps_zero_and_rejects_a_cross_segment_counter_decrease() {
     let mut fixture = Fixture::new();
     fixture.append_plan_snapshots(&[(100, 1, 4, 40.0), (100, 2, 10, 100.0)]);
@@ -3327,6 +3467,63 @@ fn process_user_search_filters_the_full_set_and_keeps_real_and_effective_names_d
         row_records(&unresolved)[0]["values"],
         serde_json::json!([1, null, null, 9_999, 9_999])
     );
+}
+
+#[test]
+fn process_quantities_use_same_starttime_predecessors_and_exact_counters() {
+    let mut fixture = Fixture::new();
+    fixture.append_quantitative_processes();
+    fixture.finish();
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=2000000&section=os_process&field=pid&field=read_bytes&field=rmem_kb&by=pid&page_size=10"
+    );
+
+    let natural = stream(fixture.prepare(
+        &format!("{base}&search=cpu_cores%3E0.1%20AND%20rss%3E2MiB"),
+        None,
+    ))
+    .expect("natural process quantity search");
+    assert_eq!(
+        row_records(&natural)
+            .iter()
+            .map(|row| row["values"][0].as_i64().expect("pid"))
+            .collect::<Vec<_>>(),
+        [1]
+    );
+
+    let bytes = stream(fixture.prepare(
+        &format!("{base}&search=disk_read_rate%3E1048575B%2Fs"),
+        None,
+    ))
+    .expect("bigint-safe process byte rate");
+    assert_eq!(
+        row_records(&bytes)
+            .iter()
+            .map(|row| row["values"].clone())
+            .collect::<Vec<_>>(),
+        [serde_json::json!([1, 1_048_576.0, "3072"])]
+    );
+
+    let unavailable = stream(fixture.prepare(&format!("{base}&search=cpu_cores%3C1000"), None))
+        .expect("process predecessor exclusions");
+    assert_eq!(
+        row_records(&unavailable)
+            .iter()
+            .map(|row| row["values"][0].as_i64().expect("pid"))
+            .collect::<Vec<_>>(),
+        [2, 1],
+        "PID reuse, rollback, and a missing predecessor stay null"
+    );
+
+    let all = stream(fixture.prepare(&base, None)).expect("unfiltered process quantities");
+    let by_pid = row_records(&all)
+        .into_iter()
+        .map(|row| (row["values"][0].as_i64().expect("pid"), row))
+        .collect::<BTreeMap<_, _>>();
+    for pid in [3, 4, 5] {
+        assert_eq!(by_pid[&pid]["values"][1], Value::Null, "pid {pid}");
+    }
+    assert_eq!(by_pid[&2]["values"][2], "2048");
 }
 
 #[test]

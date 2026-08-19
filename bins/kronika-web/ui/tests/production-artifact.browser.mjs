@@ -1138,6 +1138,42 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(invalidSearch.url, null)
     assert.equal(requests.slice(invalidSearchStart).some(({ query }) => query.includes("taname")), false)
 
+    const quantitativeSearch = "exec_time_rate>500ms/s AND call_rate>1/s"
+    await cdp.evaluate('(() => { const input = document.querySelector("[data-testid=table-filter]"); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "exec_time_rate>500ms/s AND call_rate>1/s"); input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromPaste" })); input.form.requestSubmit() })()')
+    await cdp.waitFor('new URL(location.href).searchParams.get("find") === "exec_time_rate>500ms/s AND call_rate>1/s" && document.querySelectorAll("[data-testid=search-chips] button").length === 2', "quantitative statement chips")
+    const quantitativeState = await cdp.evaluate('(() => ({ aria: document.querySelector("[data-testid=search-chips]")?.getAttribute("aria-label") ?? "", fields: [...document.querySelectorAll("[data-testid=search-chips] strong")].map((field) => field.textContent), text: document.querySelector("[data-testid=search-chips]")?.textContent ?? "" }))()')
+    assert.deepEqual(quantitativeState.fields, ["Execution load", "Calls rate"])
+    assert.match(quantitativeState.text, /> 500 ms\/sANDCalls rate · > 1 \/s/)
+    assert.match(quantitativeState.aria, /exec_time_rate>500ms\/s AND call_rate>1\/s/)
+    await waitForRequests(() => requests.some(({ query }) => new URLSearchParams(query).get("search") === quantitativeSearch))
+
+    const unitErrorStart = requests.length
+    await cdp.evaluate('(() => { const input = document.querySelector("[data-testid=table-filter]"); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "exec_time_rate>500ms"); input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromPaste" })); input.form.requestSubmit() })()')
+    await cdp.waitFor('document.querySelector("[data-testid=search-error]")?.textContent.includes("not valid for this field") === true', "duration-rate unit error")
+    assert.equal(await cdp.evaluate('new URL(location.href).searchParams.get("find")'), quantitativeSearch)
+    assert.equal(requests.slice(unitErrorStart).some(({ query }) => new URLSearchParams(query).get("search") === "exec_time_rate>500ms"), false)
+
+    for (const locale of ["en", "ru"]) {
+      await cdp.evaluate('document.querySelector("[data-testid=locale-' + locale + ']").click()')
+      await cdp.waitFor('document.documentElement.lang === "' + locale + '"', locale + " quantitative help locale")
+      for (const width of [360, 800, 1280]) {
+        await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width })
+        const helpLabel = locale === "en" ? "Search syntax and fields" : "Синтаксис и поля поиска"
+        await cdp.evaluate('document.querySelector("[aria-label=\"' + helpLabel + '\"]").click()')
+        await cdp.waitFor('document.querySelector("[data-testid=search-help]") !== null', locale + " quantitative help at " + width)
+        const help = await cdp.evaluate('(() => { const dialog = document.querySelector("[data-testid=search-help] [role=dialog]"); const bounds = dialog.getBoundingClientRect(); return { fields: dialog.textContent, left: bounds.left, right: bounds.right, scroll: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth } })()')
+        assert.match(help.fields, /exec_time_rate/)
+        assert.match(help.fields, /wal_rate/)
+        assert.doesNotMatch(help.fields, /cpu_cores|rmem_kb|total_exec_time|shared_blks_read/)
+        assert.ok(help.left >= -1 && help.right <= help.viewport + 1 && help.scroll <= help.viewport, locale + " " + width + ": " + JSON.stringify(help))
+        await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+        await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+        await cdp.waitFor('document.querySelector("[data-testid=search-help]") === null', locale + " quantitative help close at " + width)
+      }
+    }
+    await cdp.evaluate('document.querySelector("[data-testid=locale-en]").click()')
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
+
     await cdp.evaluate(`(() => {
       const input = document.querySelector('[data-testid="table-filter"]')
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "(query_id:9007199254740991 or db:operators) and role:reporter")

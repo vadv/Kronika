@@ -63,15 +63,29 @@ test("each surface exposes only its useful canonical public fields", () => {
     "text", "database", "schema", "table_name", "tablespace", "size", "table_count",
     "buffer_hit", "seq_scan_rate", "change_rate", "autovacuum_rate", "autovacuum_mean", "xid_age",
   ])
-  assert.deepEqual(searchFields("pg_store_plans").map(({ key }) => key), ["text", "query_id", "plan_id", "database", "role"])
+  const sharedPg = [
+    "call_rate", "exec_time_rate", "mean_exec", "row_rate", "rows_per_call", "planning_time_rate", "planning_share",
+    "shared_buffer_hit_rate", "shared_buffer_read_rate", "shared_buffer_dirty_rate", "shared_buffer_write_rate",
+    "local_buffer_hit_rate", "local_buffer_read_rate", "local_buffer_dirty_rate", "local_buffer_write_rate", "temp_buffer_read_rate", "temp_buffer_write_rate",
+    "shared_read_time_rate", "shared_write_time_rate", "local_read_time_rate", "local_write_time_rate", "temp_read_time_rate", "temp_write_time_rate",
+    "buffer_hit", "buffer_per_call", "exec_cv", "min_exec_since_reset", "max_exec_since_reset", "mean_exec_since_reset", "stddev_exec_since_reset",
+  ]
+  assert.deepEqual(searchFields("pg_store_plans").map(({ key }) => key), ["text", "query_id", "plan_id", "database", "role", ...sharedPg, "slow_call_rate"])
+  assert.deepEqual(searchFields("pg_stat_statements").map(({ key }) => key), ["text", "query_id", "database", "role", ...sharedPg, "plan_rate", "wal_rate", "wal_per_call"])
   assert.equal(parseSearch("plan_id:42", "pg_stat_statements").ok, false)
   assert.equal(parseSearch("table_name:orders", "pg_stat_user_tables").ok, true)
   assert.equal(searchFields("pg_store_plans").some((field) => field.key.includes("queryid_stat")), false)
   assert.deepEqual(searchFields("os_process").map(({ key }) => key), [
     "text", "user", "effective_user", "user_id", "effective_user_id", "pid", "parent_pid", "command", "state",
+    "rss", "vsz", "swap", "threads", "cpu_cores", "user_cpu_cores", "system_cpu_cores",
+    "disk_read_rate", "disk_write_rate", "logical_read_rate", "logical_write_rate", "read_syscall_rate", "write_syscall_rate",
+    "major_fault_rate", "minor_fault_rate", "context_switch_rate", "voluntary_context_switch_rate", "involuntary_context_switch_rate", "run_delay", "block_io_delay",
   ])
   const process = parseSearch("username:postgres AND euser:postgres* AND uid:26 AND euid:27", "os_process")
   assert.equal(process.ok && process.query.canonical, "user:postgres AND effective_user:postgres* AND user_id:26 AND effective_user_id:27")
+  assert.equal(parseSearch("resident_memory>2MiB", "os_process").query?.canonical, "rss>2MiB")
+  assert.equal(parseSearch("virtual_memory>1GiB", "os_process").query?.canonical, "vsz>1GiB")
+  assert.equal(parseSearch("majflt_rate>1/s", "os_process").query?.canonical, "major_fault_rate>1/s")
 })
 
 test("strict comparisons canonicalize exact quantities without Number conversion", () => {
@@ -110,6 +124,32 @@ test("SI, IEC, duration, percentage, and count units retain exact boundaries", (
     "buffer_hit>100.1%", "table_count>1.5", "size>-1MB", "size>1e3MB", "size>01MB", "size>1.MB",
     "size>1,000MB", "size>1_MB", "size>NaN", "size>Infinity",
   ]) assert.equal(parseSearch(expression, "pg_stat_user_tables").ok, false, expression)
+})
+
+test("process and PostgreSQL quantities preserve scalar, rate, load, and per-call units", () => {
+  for (const [surface, expression, numerator, denominator, unit] of [
+    ["os_process", "cpu_cores>0.1", 1n, 10n, ""],
+    ["os_process", "rss>2MiB", 2_097_152n, 1n, "MiB"],
+    ["os_process", "disk_read_rate>1.5MiB/s", 1_572_864n, 1n, "MiB/s"],
+    ["os_process", "run_delay<250us/s", 1n, 4n, "us/s"],
+    ["pg_stat_statements", "exec_time_rate>0.5s/s", 500n, 1n, "s/s"],
+    ["pg_stat_statements", "wal_per_call>0.5KiB", 512n, 1n, "KiB"],
+    ["pg_store_plans", "rows_per_call<0.125", 1n, 8n, ""],
+  ]) {
+    const parsed = parseSearch(expression, surface)
+    assert.equal(parsed.ok, true, expression)
+    if (!parsed.ok) continue
+    assert.deepEqual(
+      [parsed.query.clauses[0].quantity.numerator, parsed.query.clauses[0].quantity.denominator, parsed.query.clauses[0].quantity.unit],
+      [numerator, denominator, unit],
+      expression,
+    )
+  }
+  for (const [surface, expression] of [
+    ["os_process", "cpu_cores>1core"], ["os_process", "rss>2MiB/s"], ["os_process", "disk_read_rate>1MiB"],
+    ["pg_stat_statements", "exec_time_rate>1ms"], ["pg_stat_statements", "wal_per_call>1MiB/s"],
+    ["pg_store_plans", "rows_per_call>1/s"], ["pg_stat_statements", "exec_time_rate>1min/s"],
+  ]) assert.equal(parseSearch(expression, surface).ok, false, expression)
 })
 
 test("non-v1 comparison operators are atomic and NOT stays reserved", () => {
