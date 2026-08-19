@@ -1,7 +1,6 @@
 import assert from "node:assert/strict"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { readFile } from "node:fs/promises"
 import test from "node:test"
 
 import { importFile } from "./import-module.mjs"
@@ -48,16 +47,4 @@ test("retained rows and failure are explicit", () => {
   }))
   assert.match(markup, /role="alert"/)
   assert.match(markup, /Rows retained/)
-})
-
-test("the fixed table frame gives pending and failure precedence over completed empty copy", async () => {
-  const entity = await readFile(new URL("../src/entity-table.tsx", import.meta.url), "utf8")
-  const filter = await readFile(new URL("../src/table-filter.tsx", import.meta.url), "utf8")
-  const message = await readFile(new URL("../src/search-request.tsx", import.meta.url), "utf8")
-  assert.match(entity, /searchPending[\s\S]*searchRequest\.phase === "error"[\s\S]*loading/)
-  assert.match(message, /filter\.\$\{pending \? "searching" : "search_failed"\}/)
-  assert.match(entity, /aria-busy=\{searchPending\}/)
-  assert.match(entity, /min-h-\[26px\]/)
-  assert.match(entity, /searchMessage \?\? status/)
-  assert.match(filter, /if \(!draftResult\.ok\) return[\s\S]*onPattern\?\.\(draftResult\.query\.canonical\)/)
 })

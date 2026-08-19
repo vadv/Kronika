@@ -1,18 +1,12 @@
 import type { Translate } from "./help"
 import type { SearchSurface } from "./search"
 
-export type SearchRequestPhase = "idle" | "pending" | "error"
-
-export interface SearchRequestState {
-  readonly phase: SearchRequestPhase
-  readonly retained: boolean
-  readonly surface: SearchSurface | null
-}
+export type SearchRequestState =
+  | { readonly phase: "idle" }
+  | { readonly phase: "pending" | "error"; readonly retained: boolean; readonly surface: SearchSurface }
 
 export const IDLE_SEARCH_REQUEST: SearchRequestState = {
   phase: "idle",
-  retained: false,
-  surface: null,
 }
 
 export function beginSearchRequest(surface: SearchSurface, retained: boolean): SearchRequestState {
@@ -23,7 +17,7 @@ export function searchRequestForSurface(
   current: SearchRequestState,
   surface: SearchSurface | null,
 ): SearchRequestState {
-  return surface !== null && current.surface === surface ? current : IDLE_SEARCH_REQUEST
+  return current.phase !== "idle" && surface === current.surface ? current : IDLE_SEARCH_REQUEST
 }
 
 export function SearchRequestMessage({ request, t }: {

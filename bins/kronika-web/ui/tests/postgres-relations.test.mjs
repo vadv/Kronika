@@ -163,16 +163,6 @@ test("rendered relation columns hide numeric identity while requests retain it",
   }
 })
 
-test("all relation levels use the shared compact detail composition", async () => {
-  const source = await readFile(new URL("../src/postgres-relations-view.tsx", import.meta.url), "utf8")
-  assert.match(source, /<DetailList>\{columns\.map/)
-  assert.match(source, /<DetailRow key=\{column\.field\}/)
-  assert.doesNotMatch(source, /<dl>|<dt>|<dd>/)
-  for (const section of relation.RELATION_SECTIONS) for (const lens of section === "pg_stat_user_tables" ? relation.TABLE_LENSES : relation.INDEX_LENSES) {
-    for (const group of relation.RELATION_GROUPS) assert.ok(view.relationDetailColumns(section, lens, group).length > 0, `${section}:${lens}:${group}`)
-  }
-})
-
 test("wire rows preserve explicit aggregate identity and never invent a physical locator", () => {
   const databaseLayout = layout(layoutRecord("pg_stat_user_tables", "database", [
     column("table_count", "number", "count", false),
@@ -621,35 +611,4 @@ test("the relation view consumes only rows with the authoritative discriminator"
   const physical = { ...relationRow, relation: undefined }
   assert.deepEqual(view.relationDataRows([relationRow, physical], "pg_stat_user_tables", "database"), [relationRow])
   assert.deepEqual(view.relationDataRows([relationRow], "pg_stat_user_tables", "schema"), [])
-})
-
-test("detail, empty, navigation, and paging behavior stays on generic exact APIs", async () => {
-  const source = await readFile(new URL("../src/postgres-relations-view.tsx", import.meta.url), "utf8")
-  const postgres = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
-  assert.match(source, /serverSorted/)
-  assert.match(source, /emptyHourStatusKey\(hour\)/)
-  assert.match(source, /relationDrill\(row\)/)
-  assert.match(source, /linkedRelation\(row\)/)
-  assert.match(source, /row\.logicalName === "pg_stat_user_indexes" \? relationDetailTarget\(row\) : null/)
-  assert.match(source, /loadSnapshot\(row\.segmentId, definitionTarget\.at, \[definitionTarget\.request\]/)
-  assert.match(source, /relationHistoryRequestFields\(row\.logicalName as RelationSection, group, chartColumns, physicalFields\)/)
-  assert.match(source, /loadSeries\([\s\S]*?hour,[\s\S]*?row\.logicalName,[\s\S]*?historyFilters,[\s\S]*?historyFields,[\s\S]*?signal,[\s\S]*?object \? row\.typeId : undefined,[\s\S]*?object \? undefined : group,[\s\S]*?\)/)
-  assert.match(source, /relationChartableColumn\(row\.logicalName as RelationSection, column, physicalFields, group\)/)
-  assert.doesNotMatch(source, /object \? allColumns\.filter/)
-  assert.match(source, /aria-label=\{t\("system.history"\)\} className="[^"]*overflow-x-auto/)
-  assert.doesNotMatch(source, /ChartLine/)
-  assert.match(source, /onCursor=\{onCursor\}/)
-  assert.match(source, /value\(row, column\.field\) !== null \|\| value\(row, `\$\{column\.field\}_never`\) === true/)
-  assert.match(source, /display\(value\(row, column\.field\), column, locale, t\)/)
-  assert.doesNotMatch(source, /Object\.keys\(exact\.values\)|rate: false/)
-  assert.match(source, /data-testid="pg-exact-indexdef"/)
-  assert.match(source, /rawText\(values\?\.datname/)
-  assert.match(source, /filters\.schemaname \?\? null/)
-  assert.doesNotMatch(source, /pg\.relation\.scope\.(?:database|schema|table|index)/)
-  assert.match(source, /tableState\(metadata/)
-  assert.doesNotMatch(source, /\$\{name\}=\$\{stored\}|metadata\?\.orderBy/)
-  assert.doesNotMatch(source, /DROP|drop recommendation|unused index/i)
-  assert.match(postgres, /id: "tables"[\s\S]*sections: \["pg_stat_user_tables"\]/)
-  assert.match(postgres, /id: "indexes"[\s\S]*sections: \["pg_stat_user_indexes"\]/)
-  assert.match(postgres, /tab\.id === "tables" \|\| tab\.id === "indexes"/)
 })

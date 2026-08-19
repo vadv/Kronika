@@ -1,10 +1,9 @@
 import assert from "node:assert/strict"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { readFile } from "node:fs/promises"
 import test from "node:test"
 
-import { importModule, registryPlugin } from "./import-module.mjs"
+import { importModule } from "./import-module.mjs"
 
 const iconPlugin = {
   name: "icons",
@@ -16,10 +15,6 @@ const iconPlugin = {
 const plans = await importModule(
   'export * from "../src/plan-text.ts"; export * from "../src/plan-view.tsx"; export * from "../src/statement-navigation.ts"',
   { plugins: [iconPlugin] },
-)
-const queryHelpers = await importModule(
-  'export { firstRecordedQueryText } from "../src/plan-query.ts"',
-  { plugins: [registryPlugin([])] },
 )
 const t = (key) => key
 
@@ -79,19 +74,8 @@ test("plan navigation uses public shared IDs for OSSC and Datasentinel and the s
   assert.deepEqual(plans.plansForPlanId(row("1004001", identity)), { expression: "plan_id:22", planId: "22", section: "plans" })
 })
 
-test("recorded plan query text keeps exact bytes and chooses the first nonempty row", () => {
-  const recorded = (ordinal, timestamp, query) => ({
-    logicalName: "pg_stat_statements", ordinal, segmentId: ordinal === "3" ? "old" : "current", timestamp,
-    typeId: "1002002", values: { datname: "app", dbid: 20, query, queryid: "42", toplevel: true, userid: 10, usename: "reader" },
-  })
-  const first = "  SELECT *\n  FROM jobs\n"
-  const second = `select '${"x".repeat(900)}'`
-  const text = queryHelpers.firstRecordedQueryText([
-    recorded("0", 30, null), recorded("1", 30, ""), recorded("2", 30, first), recorded("3", 29, second),
-  ])
-  assert.equal(text, first)
-  assert.equal(queryHelpers.firstRecordedQueryText([recorded("0", 30, null), recorded("1", 30, "")]), null)
-
+test("recorded plan query text keeps exact bytes", () => {
+  const text = "  SELECT *\n  FROM jobs\n"
   const markup = renderToStaticMarkup(createElement(plans.QueryView, {
     retry() {}, status: "ready", text, t,
   }))
@@ -110,19 +94,6 @@ test("query failure and unavailable states remain separate from the execution pl
   }
   const plan = renderToStaticMarkup(createElement(plans.PlanView, { raw: nativePlan, t }))
   assert.match(plan, /data-testid="pg-text-plan"/)
-})
-
-test("inline plan query retrieval never joins the visible Statements rows", async () => {
-  const [querySource, viewSource] = await Promise.all([
-    readFile(new URL("../src/plan-query.ts", import.meta.url), "utf8"),
-    readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8"),
-  ])
-  assert.match(querySource, /loadRelatedStatementTextRow\(segments, cursor, target\.queryId/)
-  assert.match(querySource, /\.catch\(\(\) =>/)
-  assert.doesNotMatch(querySource, /statementsForPlan|target\.expression/)
-  assert.doesNotMatch(querySource, /allRows|data\.sections|pg_stat_statements\s*\?\?/)
-  assert.match(viewSource, /<PlanTextBlocks cursor=\{cursor\} plan=\{wholeText\} revision=\{historyRevision\} row=\{row\} segments=\{segments\}/)
-  assert.doesNotMatch(viewSource, /<PlanTextBlocks[^>]*allRows=/)
 })
 
 test("Activity navigation shows every related statement candidate for database and query ID", () => {

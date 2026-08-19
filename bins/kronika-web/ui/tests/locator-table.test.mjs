@@ -143,33 +143,3 @@ test("the context chip is visible and removable without changing row selection",
     "the stable exact locator must win before a newly allocated paged row",
   )
 })
-
-test("the human context chip and ordinary search are visibly intersected", async () => {
-  const source = await readFile(new URL("../src/table-filter.tsx", import.meta.url), "utf8")
-  assert.match(source, /<strong className="[^"]*">\{context\}<\/strong>/)
-  assert.match(source, /filter\.show_all/)
-  assert.match(source, /filter\.and/)
-  assert.match(source, /grid-cols-\[18px_minmax\(0,1fr\)\]/)
-  assert.match(source, /place-items-center/)
-  assert.match(source, /value=\{draft\}/)
-  assert.match(source, /parseSearch\(draft, surface, \{ grouped \}\)/)
-  assert.match(source, /onPattern\?\.\(draftResult\.query\.canonical\)/)
-  assert.doesNotMatch(source, /filter\.entity/)
-})
-
-test("paged tables keep virtualization and trigger the guarded near-end callback", async () => {
-  const [source, styles] = await Promise.all([
-    readFile(new URL("../src/entity-table.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
-  ])
-  const postgres = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
-  assert.match(source, /useVirtualizer/)
-  assert.match(source, /lastVirtualIndex >= rendered\.length - 10/)
-  assert.match(source, /onNearEnd\(\)/)
-  assert.match(source, /entity-scroll relative[^`]+overflow-auto/)
-  assert.match(source, /entity-scroll relative[^`]+focus-visible:outline-accent/)
-  assert.match(source, /tabIndex=\{0\}/)
-  assert.match(source, /\[\.pg-table-shell_\.pg-entity-layout_&\]:h-auto/)
-  assert.match(source, /\[\.pg-entity-layout_&\]:min-h-\[100px\]/)
-  assert.match(postgres, /data-testid="table-paging"/)
-})

@@ -967,10 +967,7 @@ export async function loadRelatedStatementTextRow(
     undefined,
     { firstMatch: true, fullText: true, search },
   )
-  return (page.sections.pg_stat_statements ?? []).find((row) => {
-    const text = row.values.query
-    return typeof text === "string" ? text.length > 0 : text !== null && text !== undefined
-  }) ?? null
+  return page.sections.pg_stat_statements?.[0] ?? null
 }
 
 function rowValues(columns: readonly string[], cells: readonly unknown[]): Readonly<Record<string, Cell>> {

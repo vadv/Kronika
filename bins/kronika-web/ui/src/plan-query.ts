@@ -10,14 +10,6 @@ export type PlanQueryTextState =
 
 type LoadedPlanQueryTextState = PlanQueryTextState & { readonly key: string }
 
-export function firstRecordedQueryText(rows: readonly DataRow[]): string | null {
-  for (const row of rows) {
-    const text = rawText(value(row, "query"))
-    if (text !== null && text.length > 0) return text
-  }
-  return null
-}
-
 export function usePlanQueryText(
   row: DataRow,
   cursor: number,
@@ -43,7 +35,7 @@ export function usePlanQueryText(
     void loadRelatedStatementTextRow(segments, cursor, target.queryId, controller.signal)
       .then((row) => {
         if (controller.signal.aborted) return
-        const text = firstRecordedQueryText(row === null ? [] : [row])
+        const text = row === null ? null : rawText(value(row, "query"))
         setLoaded(text === null
           ? { key: requestKey, status: "unavailable", text: null }
           : { key: requestKey, status: "ready", text })
