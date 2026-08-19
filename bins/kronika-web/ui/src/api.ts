@@ -757,7 +757,7 @@ function hourData(input: {
 const CELL_TEXT = 160
 const RELATED_STATEMENT_TEXT_PAGE_SIZE = 32
 const RELATED_STATEMENT_TEXT_FIELDS = [
-  "queryid", "userid", "dbid", "datname", "usename", "toplevel", "query",
+  "queryid", "userid", "dbid", "datname", "usename", "query",
 ] as const
 const RELATED_STATEMENT_TEXT_FIELDS_BY_TYPE = Object.fromEntries(
   PG_STAT_STATEMENTS_TYPE_IDS.map((typeId) => [typeId, RELATED_STATEMENT_TEXT_FIELDS]),

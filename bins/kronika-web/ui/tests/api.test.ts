@@ -1070,7 +1070,7 @@ test("related plan query text is server-filtered before paging across the exact 
     const url = new URL(String(input), "http://kronika.invalid")
     seen.push(url)
     const second = url.searchParams.get("cursor") === "next-page"
-    const columns = ["queryid", "userid", "dbid", "datname", "usename", "toplevel", "query"]
+    const columns = ["queryid", "userid", "dbid", "datname", "usename", "query"]
     return ndjson([
       {
         record: "layout",
@@ -1079,7 +1079,7 @@ test("related plan query text is server-filtered before paging across the exact 
       {
         record: "row", segment_id: second ? "100" : "200", type_id: second ? "1002001" : "1002002",
         ordinal: second ? "17" : "42", timestamp: String(second ? START - 1 : START),
-        values: ["42", "10", "20", "app", "reader", true, second ? "select old segment" : "  select current\nfrom jobs"],
+        values: ["42", "10", "20", "app", "reader", second ? "select old segment" : "  select current\nfrom jobs"],
       },
       {
         record: "snapshot_page", logical_name: "pg_stat_statements", eligible: "2", returned: "1",
@@ -1105,7 +1105,7 @@ test("related plan query text is server-filtered before paging across the exact 
       assert.equal(url.searchParams.get("at"), String(START))
       assert.equal(url.searchParams.get("search"), "database:app AND role:reader AND query_id:42")
       assert.equal(url.searchParams.get("page_size"), "32")
-      assert.deepEqual(url.searchParams.getAll("field"), ["queryid", "userid", "dbid", "datname", "usename", "toplevel", "query"])
+      assert.deepEqual(url.searchParams.getAll("field"), ["queryid", "userid", "dbid", "datname", "usename", "query"])
       assert.equal(url.searchParams.has("text"), false)
       assert.equal(url.searchParams.has("type_id"), false)
       assert.equal([...url.searchParams.keys()].some((key) => key.startsWith("where.")), false)

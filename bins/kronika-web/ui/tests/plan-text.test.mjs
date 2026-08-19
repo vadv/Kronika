@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
+import { readFile } from "node:fs/promises"
 import test from "node:test"
 
 import { importModule, registryPlugin } from "./import-module.mjs"
@@ -111,6 +112,17 @@ test("query failure and unavailable states remain separate from the execution pl
   }
   const plan = renderToStaticMarkup(createElement(plans.PlanView, { raw: nativePlan, t }))
   assert.match(plan, /data-testid="pg-text-plan"/)
+})
+
+test("inline plan query retrieval never joins the visible Statements rows", async () => {
+  const [querySource, viewSource] = await Promise.all([
+    readFile(new URL("../src/plan-query.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8"),
+  ])
+  assert.match(querySource, /loadRelatedStatementTextRows\(segments, cursor, target\.expression/)
+  assert.doesNotMatch(querySource, /allRows|data\.sections|pg_stat_statements\s*\?\?/)
+  assert.match(viewSource, /<PlanTextBlocks cursor=\{cursor\} plan=\{wholeText\} revision=\{historyRevision\} row=\{row\} segments=\{segments\}/)
+  assert.doesNotMatch(viewSource, /<PlanTextBlocks[^>]*allRows=/)
 })
 
 test("Activity navigation shows every related statement candidate for database and query ID", () => {

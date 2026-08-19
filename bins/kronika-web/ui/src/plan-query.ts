@@ -11,7 +11,6 @@ export interface RecordedQueryText {
   readonly role: string | null
   readonly text: string
   readonly timestamp: number
-  readonly topLevel: boolean | null
 }
 
 export type PlanQueryTextState =
@@ -34,7 +33,6 @@ export function recordedQueryTexts(rows: readonly DataRow[]): readonly RecordedQ
       distinct.set(text, { ...earlier, occurrences: earlier.occurrences + 1 })
       continue
     }
-    const topLevel = value(row, "toplevel")
     distinct.set(text, {
       database: rawText(value(row, "datname")),
       occurrences: 1,
@@ -42,7 +40,6 @@ export function recordedQueryTexts(rows: readonly DataRow[]): readonly RecordedQ
       role: rawText(value(row, "usename")),
       text,
       timestamp: row.timestamp,
-      topLevel: typeof topLevel === "boolean" ? topLevel : null,
     })
   }
   return [...distinct.values()]

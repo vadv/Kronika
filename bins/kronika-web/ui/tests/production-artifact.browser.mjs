@@ -411,6 +411,7 @@ test("the production artifact preserves wire keys and exact finding page state",
   let heldSystemPage = null
   let systemPageWasHeld = false
   let relationMode = "single"
+  let inlinePlanQueryMode = "ready"
   let contextPageRequested
   let systemPageRequested
   const contextPage = new Promise((resolve) => { contextPageRequested = resolve })
@@ -450,7 +451,13 @@ test("the production artifact preserves wire keys and exact finding page state",
       } else if (sections.includes("pg_stat_statements")) {
         const planNavigation = url.searchParams.get("search") === "database:operators AND role:reporter AND query_id:42"
         if (planNavigation) {
-          ndjson(response, planStatementRecords())
+          const inline = url.searchParams.get("page_size") === "32" && !url.searchParams.has("text")
+          if (inline && inlinePlanQueryMode === "error") {
+            response.writeHead(503)
+            response.end()
+          } else {
+            ndjson(response, inline ? inlinePlanQueryMode === "empty" ? emptyPlanQueryRecords() : inlinePlanQueryRecords() : planStatementRecords())
+          }
           return
         }
         const filtered = ["queryid", "userid", "dbid", "toplevel"].every((field) => url.searchParams.has(`where.${field}`))
@@ -1227,19 +1234,82 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.evaluate(`history.back()`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.plans" && new URL(location.href).searchParams.get("find") === null`, "Back restores the unfiltered Plans page")
     await cdp.evaluate(`document.querySelector('[data-testid="pg-plans-table"] .entity-row').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="pg-text-plan"]') !== null`, "the native text execution plan")
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-plan-query-view"]')?.dataset.queryStatus === "ready" && document.querySelector('[data-testid="pg-text-plan"]') !== null`, "the related query and native text execution plan")
     const planDetail = await cdp.evaluate(`(() => ({
       copy: document.querySelector('[data-testid="pg-plan-view"] button')?.textContent ?? null,
       bodyCount: document.querySelectorAll('[data-testid="pg-text-plan"]').length,
+      queryBodyCount: document.querySelectorAll('[data-testid="pg-plan-query-text"]').length,
+      queryCopy: [...document.querySelectorAll('[data-testid="pg-plan-query-view"] button')].map((button) => button.textContent),
+      queryText: [...document.querySelectorAll('[data-testid="pg-plan-query-text"] pre')].map((node) => node.textContent),
       secondaryDisclosure: document.querySelector('[data-testid="pg-plan-view"] details') !== null,
       text: document.querySelector('[data-testid="pg-text-plan"]').textContent,
-      unavailable: document.querySelector('[data-testid="pg-plan-query-unavailable"]') !== null,
+      queryBeforePlan: document.querySelector('[data-testid="pg-plan-query-view"]').getBoundingClientRect().top < document.querySelector('[data-testid="pg-plan-view"]').getBoundingClientRect().top,
     }))()`)
     assert.equal(planDetail.text, VADV_TEXT_PLAN)
     assert.equal(planDetail.copy, "Copy")
     assert.equal(planDetail.bodyCount, 1)
+    assert.equal(planDetail.queryBodyCount, 2)
+    assert.deepEqual(planDetail.queryCopy, ["Copy", "Copy"])
+    assert.deepEqual(planDetail.queryText, [INLINE_QUERY_PRIMARY, INLINE_QUERY_SECONDARY])
+    assert.equal(planDetail.queryBeforePlan, true)
     assert.equal(planDetail.secondaryDisclosure, false)
-    assert.equal(planDetail.unavailable, false)
+    await cdp.evaluate(`Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText(value) { globalThis.__copiedPlanQuery = value; return Promise.resolve() } } })`)
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-plan-query-view"] button').click()`)
+    await cdp.waitFor(`globalThis.__copiedPlanQuery === ${JSON.stringify(INLINE_QUERY_PRIMARY)}`, "the exact recorded query copy")
+
+    for (const locale of ["en", "ru"]) {
+      await cdp.evaluate(`document.querySelector('[data-testid="locale-${locale}"]').click()`)
+      await cdp.waitFor(`document.documentElement.lang === ${JSON.stringify(locale)}`, `plan detail ${locale} locale`)
+      for (const width of [360, 800, 1280]) {
+        await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: width === 360 ? 640 : 800, mobile: false, width })
+        await settleLayout(cdp)
+        const textLayout = await cdp.evaluate(`(() => {
+          const query = document.querySelector('[data-testid="pg-plan-query-view"]')
+          const list = document.querySelector('[data-testid="pg-plan-query-list"]')
+          const plan = document.querySelector('[data-testid="pg-plan-view"]')
+          const bounds = (node) => { const rect = node.getBoundingClientRect(); return { bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top } }
+          return {
+            copy: [...query.querySelectorAll('button')].map((button) => button.textContent),
+            labels: [query.querySelector('header strong')?.textContent, plan.querySelector('header strong')?.textContent],
+            listClientHeight: list.clientHeight,
+            listScrollHeight: list.scrollHeight,
+            order: bounds(query).top < bounds(plan).top,
+            overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+            query: bounds(query),
+            plan: bounds(plan),
+            whiteSpace: getComputedStyle(query.querySelector('pre')).whiteSpace,
+          }
+        })()`)
+        assert.deepEqual(textLayout.labels, ["Query", "Execution plan"], `${locale} ${width}px labels`)
+        assert.deepEqual(textLayout.copy, ["Copy", "Copy"], `${locale} ${width}px copy actions`)
+        assert.equal(textLayout.order, true, `${locale} ${width}px text block order`)
+        assert.equal(textLayout.whiteSpace, "pre-wrap", `${locale} ${width}px whitespace`)
+        assert.ok(textLayout.listClientHeight <= 320 && textLayout.listScrollHeight > textLayout.listClientHeight, `${locale} ${width}px independent query scroll: ${JSON.stringify(textLayout)}`)
+        assert.ok(textLayout.query.left >= -1 && textLayout.query.right <= width + 1 && textLayout.plan.left >= -1 && textLayout.plan.right <= width + 1, `${locale} ${width}px block bounds: ${JSON.stringify(textLayout)}`)
+        assert.equal(textLayout.overflow, false, `${locale} ${width}px document overflow`)
+      }
+    }
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
+
+    await cdp.evaluate(`document.querySelector('.pg-detail .pg-detail-head button:last-child').click()`)
+    inlinePlanQueryMode = "error"
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-plans-table"] .entity-row').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-plan-query-view"]')?.dataset.queryStatus === "error"`, "the related query network failure")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="pg-text-plan"]')?.textContent`), VADV_TEXT_PLAN)
+    inlinePlanQueryMode = "ready"
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-plan-query-error"] button').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-plan-query-view"]')?.dataset.queryStatus === "ready"`, "the related query retry")
+
+    await cdp.evaluate(`document.querySelector('.pg-detail .pg-detail-head button:last-child').click()`)
+    inlinePlanQueryMode = "empty"
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-plans-table"] .entity-row').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-plan-query-view"]')?.dataset.queryStatus === "unavailable"`, "the honest related query unavailable state")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="pg-text-plan"]')?.textContent`), VADV_TEXT_PLAN)
+    await cdp.evaluate(`document.querySelector('.pg-detail .pg-detail-head button:last-child').click()`)
+    inlinePlanQueryMode = "ready"
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-plans-table"] .entity-row').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-plan-query-view"]')?.dataset.queryStatus === "ready"`, "the restored related query")
     await cdp.evaluate(`([...document.querySelectorAll('.pg-detail-head button')].find((button) => button.textContent.includes('Related statements'))).click()`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.statements" && new URL(location.href).searchParams.get("find") === "database:operators AND role:reporter AND query_id:42"`, "the related plan statement route")
     await cdp.waitFor(`document.querySelector('[data-testid="pg-statements-table"] .entity-row')?.textContent.includes("select from plan_navigation") === true`, "the matched last query")
@@ -1247,13 +1317,19 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.match(planContext, /database: operators/)
     assert.match(planContext, /role: reporter/)
     assert.match(planContext, /query_id: 42/)
-    const planQueryRequest = requests.find(({ query }) => new URLSearchParams(query).get("search") === "database:operators AND role:reporter AND query_id:42")
+    const planQueryRequest = requests.find(({ query }) => {
+      const parameters = new URLSearchParams(query)
+      return parameters.get("search") === "database:operators AND role:reporter AND query_id:42" && parameters.get("page_size") === "32"
+    })
     assert.notEqual(planQueryRequest, undefined, JSON.stringify(requests.map(({ query }) => query), null, 2))
     const planQueryParameters = new URLSearchParams(planQueryRequest.query)
     assert.equal(planQueryParameters.has("where.queryid"), false)
     assert.equal(planQueryParameters.has("where.userid"), false)
     assert.equal(planQueryParameters.has("where.dbid"), false)
     assert.equal(planQueryParameters.has("type_id"), false)
+    assert.equal(planQueryParameters.has("text"), false)
+    assert.equal(planQueryParameters.get("at"), String(AT))
+    assert.deepEqual(planQueryParameters.getAll("field"), ["queryid", "userid", "dbid", "datname", "usename", "query"])
     assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("at")`), String(AT))
     await cdp.evaluate(`history.back()`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.plans"`, "browser back to Plans")
@@ -4150,6 +4226,15 @@ const VADV_TEXT_PLAN = [
   "        Index Cond: (id > 0)",
 ].join("\n")
 
+const INLINE_QUERY_PRIMARY = [
+  "  SELECT jobs.id, jobs.payload",
+  "  FROM jobs",
+  "  WHERE jobs.state = 'ready'",
+  ...Array.from({ length: 70 }, (_, index) => `    AND jobs.partition_${index} = ${index}`),
+  "  ORDER BY jobs.created_at",
+].join("\n")
+const INLINE_QUERY_SECONDARY = "SELECT jobs.id FROM jobs WHERE jobs.state = 'retry'"
+
 function planRecords() {
   const columns = ["ts", "userid", "dbid", "queryid", "planid", "queryid_stat_statements", "datname", "usename", "plan", "calls", "total_time", "rows"]
   return [
@@ -4164,6 +4249,28 @@ function planStatementRecords() {
     ...record,
     values: record.values.map((stored, index) => index === 1 ? "42" : index === 7 ? "select from plan_navigation" : stored),
   })
+}
+
+function inlinePlanQueryRecords() {
+  const columns = ["queryid", "userid", "dbid", "datname", "usename", "query"]
+  const row = (ordinal, query) => ({
+    record: "row", segment_id: SEGMENT, type_id: "1002003", ordinal, timestamp: String(AT),
+    values: ["42", 10, 20, "operators", "reporter", query],
+  })
+  return [
+    { record: "layout", layout: { type_id: "1002003", logical_name: "pg_stat_statements", columns: columns.map((name) => ({ name })) } },
+    row("301", INLINE_QUERY_PRIMARY),
+    row("302", INLINE_QUERY_PRIMARY),
+    row("303", INLINE_QUERY_SECONDARY),
+    { record: "snapshot_page", logical_name: "pg_stat_statements", eligible: "3", returned: "3", has_more: false, truncated: false, next_cursor: null, page_size: 32, order_by: ["queryid"], order_direction: "desc", from: String(AT - 5_000_000), to: String(AT) },
+  ]
+}
+
+function emptyPlanQueryRecords() {
+  return [{
+    record: "snapshot_page", logical_name: "pg_stat_statements", eligible: "0", returned: "0", has_more: false,
+    truncated: false, next_cursor: null, page_size: 32, order_by: ["queryid"], order_direction: "desc", from: null, to: null,
+  }]
 }
 
 function targetedActivityRecords(query, timestamp) {

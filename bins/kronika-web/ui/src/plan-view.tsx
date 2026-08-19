@@ -40,7 +40,7 @@ export function QueryView({ retry, status, texts, t }: PlanQueryTextState & { re
               role: query.role ?? "—",
               time: time.timestamp(query.timestamp),
               total: String(texts.length),
-            })}{query.topLevel === null ? "" : ` · ${t(query.topLevel ? "pg.query.plan.top_level" : "pg.query.plan.nested")}`}</span>
+            })}</span>
             <button aria-label={t("pg.query.plan.copy_aria", { number: String(index + 1) })} className="inline-flex min-h-7 flex-none cursor-pointer items-center gap-1 border border-line4 bg-s2 px-1.5 py-1 text-xs uppercase text-accent3" onClick={() => void navigator.clipboard?.writeText(query.text)} type="button"><Copy aria-hidden="true" size={12} />{t("pg.plan.copy")}</button>
           </div>
           <pre className="m-0 whitespace-pre-wrap break-words px-2 pb-2 text-sm leading-[1.55] text-event-edge">{query.text}</pre>
