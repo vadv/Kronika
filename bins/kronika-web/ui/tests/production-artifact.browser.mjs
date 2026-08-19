@@ -2947,7 +2947,7 @@ test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, as
   }
 })
 
-test("snapshot request targets hide rejected replacements until retry succeeds", { timeout: 60_000 }, async () => {
+test("structured search pending state and snapshot targets preserve exact newest results", { timeout: 120_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const authState = { valid: true }
   let statementAttempts = 0
@@ -2956,6 +2956,7 @@ test("snapshot request targets hide rejected replacements until retry succeeds",
   let pendingActivityFailure = null
   let pendingStatementFailure = null
   let pendingRelationFailure = null
+  let pendingProcessSearch = null
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
     if (url.pathname === "/") {
@@ -2975,6 +2976,10 @@ test("snapshot request targets hide rejected replacements until retry succeeds",
       if (sections.includes("os_cpu")) {
         if (at === BEFORE_AT) { pendingSystemFailure = response; return }
         return ndjson(response, systemSnapshotRecords(false, at))
+      }
+      if (sections.includes("os_process")) {
+        if (url.searchParams.get("search") === "cpu_cores>1") { pendingProcessSearch = response; return }
+        return ndjson(response, snapshotRecords())
       }
       if (sections.includes("pg_stat_activity")) {
         if (at === BEFORE_AT) { pendingActivityFailure = response; return }
@@ -3074,6 +3079,43 @@ test("snapshot request targets hide rejected replacements until retry succeeds",
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.statements` })
     await cdp.waitFor(`document.querySelector('[data-testid="pg-statements-table"]')?.textContent.includes("statement_target_A") === true`, "dense statement target A", 15_000)
     assert.match(await cdp.evaluate(`document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]').textContent`), /Loaded 1 of 111/)
+    const searchGeometry = async () => cdp.evaluate(`(() => {
+      const table = document.querySelector('[data-testid="pg-statements-table"]')
+      const status = table.querySelector('[data-testid="table-status"]')
+      const scroll = table.querySelector('.entity-scroll')
+      const filter = table.querySelector('[data-search-surface]')
+      const rect = (node) => { const value = node.getBoundingClientRect(); return { bottom: value.bottom, height: value.height, left: value.left, right: value.right, top: value.top, width: value.width } }
+      return {
+        busy: table.getAttribute('aria-busy'),
+        client: document.documentElement.clientWidth,
+        filter: rect(filter),
+        overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        scroll: rect(scroll),
+        status: rect(status),
+        table: rect(table),
+      }
+    })()`)
+    const readySearchGeometry = new Map()
+    for (const locale of ["en", "ru"]) {
+      await cdp.evaluate(`document.querySelector('[data-testid="locale-${locale}"]').click()`)
+      for (const width of [360, 800, 1280]) {
+        await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width })
+        await settleLayout(cdp)
+        readySearchGeometry.set(`${locale}:${width}`, await searchGeometry())
+      }
+    }
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 1280 })
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('[data-testid="table-filter"]')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "target-b AND")
+      input.dispatchEvent(new Event("input", { bubbles: true }))
+      input.form.requestSubmit()
+    })()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="table-filter"]')?.getAttribute("aria-invalid") === "true"`, "invalid search draft")
+    assert.equal(pendingStatementFailure, null)
+    assert.equal(statementAttempts, 0)
+    assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("find")`), null)
     await cdp.evaluate(`(() => {
       const input = document.querySelector('[data-testid="table-filter"]')
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "target-b")
@@ -3081,27 +3123,113 @@ test("snapshot request targets hide rejected replacements until retry succeeds",
       input.form.requestSubmit()
     })()`)
     await waitForRequests(() => pendingStatementFailure !== null)
-    await cdp.waitFor(`document.querySelector('[data-testid="table-paging"] button')?.textContent === "…"`, "dense statement target B loading", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"] [role="status"]') !== null`, "dense statement target B search status", 15_000)
     const loadingStatement = await cdp.evaluate(`(() => {
       const table = document.querySelector('[data-testid="pg-statements-table"]')
-      return { rows: table.querySelectorAll('.entity-row').length, status: table.querySelector('[data-testid="table-status"]').textContent, text: table.textContent }
+      const request = table.querySelector('[data-testid="table-status"] [role]')
+      return {
+        busy: table.getAttribute('aria-busy'),
+        empty: table.querySelector('.table-empty')?.textContent ?? null,
+        live: request?.getAttribute('aria-live'),
+        role: request?.getAttribute('role'),
+        rows: table.querySelectorAll('.entity-row').length,
+        status: table.querySelector('[data-testid="table-status"]').textContent,
+        text: table.textContent,
+      }
     })()`)
     assert.equal(loadingStatement.rows, 1)
+    assert.equal(loadingStatement.busy, "true")
+    assert.equal(loadingStatement.live, "polite")
+    assert.equal(loadingStatement.role, "status")
+    assert.equal(loadingStatement.empty, null)
     assert.match(loadingStatement.text, /statement_target_A/)
-    assert.match(loadingStatement.status, /111/)
+    assert.match(loadingStatement.status, /Searching… Rows retained/)
+    assert.doesNotMatch(loadingStatement.status, /Loaded|111|0 of 0/)
+    for (const locale of ["en", "ru"]) {
+      await cdp.evaluate(`document.querySelector('[data-testid="locale-${locale}"]').click()`)
+      for (const width of [360, 800, 1280]) {
+        await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width })
+        await settleLayout(cdp)
+        const pending = await searchGeometry()
+        const ready = readySearchGeometry.get(`${locale}:${width}`)
+        assert.ok(Math.abs(pending.status.height - ready.status.height) <= 1, `${locale}:${width}:status ${JSON.stringify({ pending, ready })}`)
+        assert.ok(Math.abs(pending.scroll.height - ready.scroll.height) <= 1, `${locale}:${width}:scroll ${JSON.stringify({ pending, ready })}`)
+        assert.equal(pending.busy, "true", `${locale}:${width}:busy`)
+        assert.equal(pending.overflow, false, `${locale}:${width}:overflow ${JSON.stringify(pending)}`)
+        assert.ok(pending.filter.left >= -1 && pending.filter.right <= pending.client + 1, `${locale}:${width}:filter ${JSON.stringify(pending)}`)
+        const statusText = await cdp.evaluate(`document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]').textContent`)
+        assert.match(statusText, locale === "ru" ? /Идёт поиск/ : /Searching/)
+      }
+    }
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 1280 })
     brokenNdjson(pendingStatementFailure)
     pendingStatementFailure = null
-    await cdp.waitFor(`document.querySelector('[data-testid="table-paging"] button')?.textContent === "↻"`, "dense statement target B error", 15_000)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"] [role="alert"]') !== null`, "dense statement target B error", 15_000)
     const failedStatement = await cdp.evaluate(`(() => {
       const table = document.querySelector('[data-testid="pg-statements-table"]')
       return { rows: table.querySelectorAll('.entity-row').length, status: table.querySelector('[data-testid="table-status"]').textContent, text: table.textContent }
     })()`)
     assert.equal(failedStatement.rows, 1)
     assert.match(failedStatement.text, /statement_target_A/)
-    assert.match(failedStatement.status, /111/)
+    assert.match(failedStatement.status, /Search failed. Rows retained./)
+    assert.doesNotMatch(failedStatement.status, /Loaded|111/)
     await cdp.evaluate(`document.querySelector('[data-testid="table-paging"] button').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-statements-table"]')?.textContent.includes("statement_target_B") === true`, "dense statement target B retry", 15_000)
     assert.match(await cdp.evaluate(`document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]').textContent`), /Loaded 1 of 222/)
+
+    await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&find=cpu_cores%3E1` })
+    await waitForRequests(() => pendingProcessSearch !== null)
+    await cdp.waitFor(`document.querySelector('[data-testid="process-table"] [data-testid="table-status"] [role="status"]') !== null`, "initial Process search pending", 15_000)
+    const emptyPendingProcess = await cdp.evaluate(`(() => {
+      const table = document.querySelector('[data-testid="process-table"]')
+      return {
+        busy: table.getAttribute('aria-busy'),
+        empty: table.querySelector('.table-empty')?.textContent ?? null,
+        rows: table.querySelectorAll('.entity-row').length,
+        status: table.querySelector('[data-testid="table-status"]').textContent,
+        text: table.textContent,
+      }
+    })()`)
+    assert.equal(emptyPendingProcess.busy, "true")
+    assert.equal(emptyPendingProcess.rows, 0)
+    assert.match(emptyPendingProcess.empty, /Searching/)
+    assert.match(emptyPendingProcess.status, /^Searching/)
+    assert.doesNotMatch(emptyPendingProcess.text, /No rows match|Loaded 0 of 0/)
+    ndjson(pendingProcessSearch, snapshotRecords())
+    pendingProcessSearch = null
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="process-table"] .entity-row').length > 0 && document.querySelector('[data-testid="process-table"] [data-testid="table-status"] [role]') === null`, "initial Process search success", 15_000)
+
+    await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[2].click()`)
+    await cdp.waitFor(`document.querySelector('.pg-tabs') !== null`, "PostgreSQL surface before Activity", 15_000)
+    await cdp.evaluate(`([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent.includes('Activity'))).click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"]') !== null`, "remembered Activity surface", 15_000)
+    await cdp.evaluate(`document.querySelector('[data-testid="process-tab"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="process-tab"]')?.getAttribute('aria-current') === 'page'`, "Processes before scoped search", 15_000)
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('[data-testid="table-filter"]')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "cpu_cores>1")
+      input.dispatchEvent(new Event("input", { bubbles: true }))
+      input.form.requestSubmit()
+    })()`)
+    await waitForRequests(() => pendingProcessSearch !== null)
+    ndjson(pendingProcessSearch, snapshotRecords())
+    pendingProcessSearch = null
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "cpu_cores>1" && document.querySelector('[data-testid="process-table"] [data-testid="table-status"] [role]') === null`, "applied Process expression", 15_000)
+    await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[2].click()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.activity" && document.querySelector('[data-testid="pg-activity-table"]') !== null`, "Process to Activity navigation", 15_000)
+    const activityNavigation = await cdp.evaluate(`(() => ({
+      error: document.querySelector('[data-testid="search-error"]')?.textContent ?? null,
+      find: new URL(location.href).searchParams.get('find'),
+      input: document.querySelector('[data-testid="table-filter"]')?.value ?? null,
+    }))()`)
+    assert.deepEqual(activityNavigation, { error: null, find: null, input: "" })
+    await cdp.evaluate(`history.back()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "cpu_cores>1" && document.querySelector('[data-testid="process-tab"]')?.getAttribute('aria-current') === 'page'`, "Back restoring Process expression", 15_000)
+    await waitForRequests(() => pendingProcessSearch !== null)
+    assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("find")`), "cpu_cores>1")
+    ndjson(pendingProcessSearch, snapshotRecords())
+    pendingProcessSearch = null
 
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.tables` })
     await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"]')?.textContent.includes("relation_target_A") === true`, "relation target A", 15_000)

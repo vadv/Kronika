@@ -17,6 +17,7 @@ import { globMatcher } from "./glob"
 import { LabelHelp, type Translate } from "./help"
 import { rowMatchesLocator } from "./locator"
 import { parseSearch, rowMatchesSearch, type SearchSurface } from "./search"
+import { IDLE_SEARCH_REQUEST, SearchRequestMessage, type SearchRequestState } from "./search-request"
 import { TableFilter } from "./table-filter"
 import { asNumber, estimatedRows, humanBytes, humanCores, humanDuration, humanPercent, identifier, measure, rawText, value, type Locale } from "./model"
 import { semanticValueTone } from "./value-tone"
@@ -67,6 +68,7 @@ export function EntityTable({
   rowLabel,
   rows,
   searchGrouped = false,
+  searchRequest = IDLE_SEARCH_REQUEST,
   searchSurface,
   selectedKey,
   status,
@@ -95,6 +97,7 @@ export function EntityTable({
   readonly rowLabel?: ((row: DataRow) => string) | undefined
   readonly rows: readonly DataRow[]
   readonly searchGrouped?: boolean | undefined
+  readonly searchRequest?: SearchRequestState | undefined
   readonly searchSurface?: SearchSurface | undefined
   readonly selectedKey?: string | null
   readonly status?: ReactNode | undefined
@@ -192,8 +195,12 @@ export function EntityTable({
   }, [finding, locatedIndex, virtual])
   const width = table.getTotalSize()
   const contentHeight = contentSized && rendered.length > 0 ? Math.min(310, 26 + rendered.length * 23) : undefined
-  return <section className={`entity-table min-w-0 overflow-hidden bg-s1 pg-stretch [.charts-hidden_.entity-panels_&]:flex [.charts-hidden_.entity-panels_&]:flex-col${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
-    {status !== undefined && <div className="flex min-h-[26px] flex-wrap items-center gap-x-[14px] gap-y-[3px] border-b border-line2 bg-[color-mix(in_srgb,var(--color-s2)_82%,transparent)] px-[7px] py-1 text-xs text-fg3 [&_strong]:font-[650] [&_strong]:text-fg2" data-testid="table-status">{status}</div>}
+  const searchPending = searchRequest.phase === "pending"
+  const searchMessage = searchRequest.phase === "pending" || searchRequest.phase === "error"
+    ? <SearchRequestMessage request={searchRequest} t={t} />
+    : null
+  return <section aria-busy={searchPending} className={`entity-table min-w-0 overflow-hidden bg-s1 pg-stretch [.charts-hidden_.entity-panels_&]:flex [.charts-hidden_.entity-panels_&]:flex-col${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
+    {(status !== undefined || searchMessage !== null) && <div className="flex min-h-[26px] min-w-0 items-center gap-x-[14px] overflow-hidden whitespace-nowrap border-b border-line2 bg-[color-mix(in_srgb,var(--color-s2)_82%,transparent)] px-[7px] py-1 text-xs text-fg3 [&_strong]:font-[650] [&_strong]:text-fg2" data-testid="table-status">{searchMessage ?? status}</div>}
     {(onPattern !== undefined || contextLabel !== undefined) && <TableFilter context={contextLabel} grouped={searchGrouped} kept={serverSorted === true ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} surface={searchSurface ?? "os_process"} t={t} total={rows.length} />}
     <div aria-label={label} className={`entity-scroll relative h-[min(310px,36vh)] min-h-[154px] overflow-auto [scroll-padding-inline-end:15px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent [.process-table_&]:h-auto [.process-table_&]:min-h-0 [.process-table_&]:flex-1 [.pg-entity-layout_&]:h-[min(560px,calc(100dvh-475px))] [.pg-entity-layout_&]:min-h-[100px] [.pg-table-shell_.pg-entity-layout_&]:h-auto [.pg-table-shell_.pg-entity-layout_&]:min-h-0 [.pg-table-shell_.pg-entity-layout_&]:flex-1${contentHeight === undefined ? " charts-hidden:h-auto charts-hidden:min-h-[154px] charts-hidden:flex-auto" : " !min-h-0"}`} ref={parent} role="table" style={contentHeight === undefined ? undefined : { height: contentHeight }} tabIndex={0}>
       <div className="entity-head sticky top-0 z-30 flex h-head min-w-full bg-s2 coarse:h-9 [&_[role=columnheader]]:select-none" ref={head} role="row" style={{ width }}>
@@ -212,10 +219,14 @@ export function EntityTable({
         })}
       </div>
       {rendered.length === 0
-        ? loading
+        ? searchPending
+          ? <p aria-hidden="true" className="table-empty">{t("filter.searching")}</p>
+          : searchRequest.phase === "error"
+            ? null
+            : loading
           // Loading and empty are different truths; never report one as the other.
-          ? <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>
-          : <p className="table-empty">{pattern === "" ? empty : t("filter.none")}</p>
+              ? <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>
+              : <p className="table-empty">{pattern === "" ? empty : t("filter.none")}</p>
         : <div className="relative" data-testid="virtual-body" style={{ height: virtual.getTotalSize(), width }}>
           {virtual.getVirtualItems().map((item) => {
             const row = rendered[item.index]

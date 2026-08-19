@@ -21,6 +21,7 @@ import {
   type Locale,
 } from "./model"
 import { canonicalSearch } from "./search"
+import type { SearchRequestState } from "./search-request"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 
 export interface Field {
@@ -217,6 +218,7 @@ export function ProcessTable({
   order,
   pattern,
   rows,
+  searchRequest,
   selectedKey,
   t,
   ticksPerSecond,
@@ -238,6 +240,7 @@ export function ProcessTable({
   readonly onRetry: () => void
   readonly pattern: string
   readonly rows: readonly DataRow[]
+  readonly searchRequest: SearchRequestState
   readonly selectedKey: string | null
   readonly t: Translate
   readonly ticksPerSecond: number | null
@@ -288,6 +291,7 @@ export function ProcessTable({
     rowKey={processKey}
     rowLabel={(row) => t("table.activate", { pid: identifier(value(row, "pid")) })}
     rows={rows}
+    searchRequest={searchRequest}
     searchSurface="os_process"
     serverSorted
     selectedKey={selectedKey}

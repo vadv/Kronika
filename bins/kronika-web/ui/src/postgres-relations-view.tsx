@@ -36,6 +36,7 @@ import {
 } from "./postgres-relations"
 import { emptyHourStatusKey } from "./refresh"
 import { SeriesChart } from "./series-chart"
+import type { SearchRequestState } from "./search-request"
 import { chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, display, postgresByteColumns, tableState } from "./postgres-view"
 
 export interface PostgresRelationsViewProps {
@@ -61,6 +62,7 @@ export interface PostgresRelationsViewProps {
   readonly order?: TableOrder | undefined
   readonly pattern: string
   readonly section: RelationSection
+  readonly searchRequest: SearchRequestState
   readonly selectedKey: string | null
   readonly t: Translate
 }
@@ -109,6 +111,7 @@ export function PostgresRelationsView(props: PostgresRelationsViewProps) {
         rowKey={relationRowKey}
         rowLabel={relationRowLabel}
         rows={rows}
+        searchRequest={props.searchRequest}
         searchGrouped={level !== "object"}
         searchSurface={section}
         selectedKey={selectedKey}
@@ -119,7 +122,7 @@ export function PostgresRelationsView(props: PostgresRelationsViewProps) {
       />
       {selected !== null && <RelationDetail blockSize={blockSize} cursor={cursor} historyRevision={historyRevision} hour={hour} key={selectedKey} lens={lens} locale={locale} onClose={clearSelection} onCursor={onCursor} onNavigate={navigate} rateFields={rateFields} row={selected} t={t} />}
     </div>
-    {(densePageState !== "idle" || hasMore) && <div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1 max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" data-testid="table-paging"><button disabled={densePageState === "loading"} onClick={densePageState === "error" ? onRetry : onLoadMore} type="button">{densePageState === "loading" ? "…" : densePageState === "error" ? "↻" : "+"}</button></div>}
+    {(densePageState !== "idle" || hasMore) && <div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" data-testid="table-paging"><button disabled={densePageState === "loading"} onClick={densePageState === "error" ? onRetry : onLoadMore} type="button">{densePageState === "loading" ? "…" : densePageState === "error" ? "↻" : "+"}</button></div>}
   </>
 }
 
@@ -152,7 +155,7 @@ function RelationLevels({ filters, level, onNavigate, section, t }: { readonly f
 
 function RelationLenses({ active, onLens, section, t }: { readonly active: RelationLens; readonly onLens: (lens: RelationLens) => void; readonly section: RelationSection; readonly t: Translate }) {
   const lenses: readonly RelationLens[] = section === "pg_stat_user_tables" ? TABLE_LENSES : INDEX_LENSES
-  return <div className="lensbar flex-wrap" data-testid="pg-relation-lenses"><span>{t("pg.lens.label")}</span><div aria-label={t("pg.lens.label")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1 max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">{lenses.map((lens) => <button aria-pressed={lens === active} key={lens} onClick={() => onLens(lens)} type="button">{t(`pg.lens.${lens}`)}</button>)}</div></div>
+  return <div className="lensbar flex-wrap" data-testid="pg-relation-lenses"><span>{t("pg.lens.label")}</span><div aria-label={t("pg.lens.label")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">{lenses.map((lens) => <button aria-pressed={lens === active} key={lens} onClick={() => onLens(lens)} type="button">{t(`pg.lens.${lens}`)}</button>)}</div></div>
 }
 
 function RelationDetail({ blockSize, cursor, historyRevision, hour, lens, locale, onClose, onCursor, onNavigate, rateFields, row, t }: { readonly blockSize: number | null; readonly cursor: number; readonly historyRevision: number; readonly hour: number; readonly lens: RelationLens; readonly locale: Locale; readonly onClose: () => void; readonly onCursor: (timestamp: number) => void; readonly onNavigate: (navigation: RelationNavigation) => void; readonly rateFields: readonly string[]; readonly row: DataRow; readonly t: Translate }) {
@@ -204,8 +207,8 @@ function RelationDetail({ blockSize, cursor, historyRevision, hour, lens, locale
   const drill = relationDrill(row)
   return <aside className="pg-detail" data-testid="pg-relation-detail" ref={detail}>
     <header className="pg-detail-head"><h2>{relationRowLabel(row)}</h2><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
-    {linked !== null && <div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1 max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1"><button data-testid="pg-relation-link" onClick={() => onNavigate(linked)} type="button">{t(row.logicalName === "pg_stat_user_tables" ? "pg.relation.indexes" : "pg.relation.table")}</button></div>}
-    {drill !== null && <div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1 max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1"><button data-testid="pg-relation-drill" onClick={() => onNavigate(drill)} type="button">{t(row.relation?.group === "database" ? "pg.relation.level.schema" : row.logicalName === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}</button></div>}
+    {linked !== null && <div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1"><button data-testid="pg-relation-link" onClick={() => onNavigate(linked)} type="button">{t(row.logicalName === "pg_stat_user_tables" ? "pg.relation.indexes" : "pg.relation.table")}</button></div>}
+    {drill !== null && <div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1"><button data-testid="pg-relation-drill" onClick={() => onNavigate(drill)} type="button">{t(row.relation?.group === "database" ? "pg.relation.level.schema" : row.logicalName === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}</button></div>}
     <ChartOnly>{historyField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]">
       <div aria-label={t("system.history")} className="history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">{chartColumns.map((column) => <button aria-pressed={historyField === column.field} className="min-h-[28px] flex-none cursor-pointer border border-line3 bg-s2 px-[7px] py-1 text-xs text-fg2 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg" data-testid={`pg-relation-chart-${column.field}`} key={column.field} onClick={() => setHistoryField(column.field)} type="button">{t(column.label)}</button>)}</div>
       <SeriesChart cursor={cursor} durationAxis={historyColumn.kind === "milliseconds" || historyColumn.kind === "duration" || historyColumn.kind === "microseconds"} format={chartFormat(historyColumn.kind, historyColumn.rate === true ? t("unit.per_second") : "")} helpKey={historyColumn.help ?? "chart.metric.help"} hour={hour} labelKey={historyColumn.label} locale={locale} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} status={loadedHistory.status} t={t} tickFormat={chartFormat(historyColumn.kind, historyColumn.rate === true ? t("unit.per_second") : "")} unit={chartUnit(historyColumn, t("unit.per_second"))} />

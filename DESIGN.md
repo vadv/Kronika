@@ -738,6 +738,26 @@ boolean meaning without exposing a generic query engine. Search refusal, a
 successful empty set and transport failure are distinct; refresh failure
 retains the last successful data.
 
+A valid applied expression that starts a server search owns one explicit
+request state through the complete streamed or paged response. The dense
+search/status lane shows an indeterminate progress bar and localized live
+status until the newest request alone succeeds or fails; an aborted or stale
+response cannot clear it. During that interval completed zero-result copy and
+counts are suppressed. The prior successful rows remain in the fixed table
+frame and are labelled as retained; without prior rows, that frame says that
+search is in progress. Failure ends pending, keeps those rows, and remains
+distinct from a successful empty set. An invalid draft never starts a request.
+
+The URL-owned expression is scoped to one exact entity surface. Ordinary
+primary or PostgreSQL subsection navigation to a different surface omits
+`find`, even when both registries expose the same public field; Back restores
+the prior surface and its URL expression. Navigation within the same surface,
+including lens, sort, hour, cursor and relation-level changes, preserves it.
+Only an explicit related-row action may cross surfaces with a newly generated
+canonical target expression, which replaces rather than carries the source
+expression. A direct URL remains subject to the target surface's exact parser
+and invalid-expression semantics.
+
 Process user names are capture-time reference data, not facts reconstructed
 from the host at query time. Each segment may carry one `os_user` row per
 observed real or effective `(scope, uid)`, with the name interned in that
