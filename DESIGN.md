@@ -164,6 +164,9 @@ candidates, 512 KiB of candidate paths, and 1,024 I/O cgroup/device rows per
 tick. An exceeded candidate bound omits the workload sections atomically; an
 exceeded I/O-row bound omits I/O only.
 
+Valid cgroup I/O counters are recorded independently per device; a missing
+counter does not suppress the other recorded counters in that row.
+
 Inside a container, `os_cgroup_context` records cgroup version, the collector's
 exact CPU, memory, and I/O paths from `/proc/self/cgroup`, and the effective
 cpuset CPU count when the exact matching kernel file is usable. It also records

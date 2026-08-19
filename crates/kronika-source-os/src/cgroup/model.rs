@@ -104,13 +104,13 @@ pub struct CgroupIoRow {
     /// Device minor number.
     pub minor: u32,
     /// Bytes read.
-    pub rbytes: i64,
+    pub rbytes: Option<i64>,
     /// Bytes written.
-    pub wbytes: i64,
+    pub wbytes: Option<i64>,
     /// Read operations.
-    pub rios: i64,
+    pub rios: Option<i64>,
     /// Write operations.
-    pub wios: i64,
+    pub wios: Option<i64>,
 }
 
 /// PID controller metrics for one cgroup.

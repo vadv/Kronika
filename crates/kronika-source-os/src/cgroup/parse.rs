@@ -133,12 +133,11 @@ pub(super) fn parse_io_stat_bounded(
             cgroup_path: cgroup_path.to_owned(),
             major,
             minor,
-            rbytes: 0,
-            wbytes: 0,
-            rios: 0,
-            wios: 0,
+            rbytes: None,
+            wbytes: None,
+            rios: None,
+            wios: None,
         };
-        let mut present = 0_u8;
         for field in fields {
             let Some((key, value)) = field.split_once('=') else {
                 continue;
@@ -148,25 +147,22 @@ pub(super) fn parse_io_stat_bounded(
             };
             match key {
                 "rbytes" => {
-                    row.rbytes = value;
-                    present |= 1;
+                    row.rbytes = Some(value);
                 }
                 "wbytes" => {
-                    row.wbytes = value;
-                    present |= 2;
+                    row.wbytes = Some(value);
                 }
                 "rios" => {
-                    row.rios = value;
-                    present |= 4;
+                    row.rios = Some(value);
                 }
                 "wios" => {
-                    row.wios = value;
-                    present |= 8;
+                    row.wios = Some(value);
                 }
                 _ => {}
             }
         }
-        if present != 15 {
+        if row.rbytes.is_none() && row.wbytes.is_none() && row.rios.is_none() && row.wios.is_none()
+        {
             continue;
         }
         if rows.len() == limit {
@@ -196,17 +192,13 @@ pub(super) fn parse_blkio_service_stats_bounded(
     cgroup_path: &str,
     limit: usize,
 ) -> Option<Vec<CgroupIoRow>> {
-    let mut rows: BTreeMap<(u32, u32), (CgroupIoRow, u8)> = BTreeMap::new();
+    let mut rows = BTreeMap::new();
     if !parse_blkio_service_file(bytes_content, ts, cgroup_path, true, limit, &mut rows)
         || !parse_blkio_service_file(ops_content, ts, cgroup_path, false, limit, &mut rows)
     {
         return None;
     }
-    Some(
-        rows.into_values()
-            .filter_map(|(row, present)| (present == 15).then_some(row))
-            .collect(),
-    )
+    Some(rows.into_values().collect())
 }
 
 fn parse_blkio_service_file(
@@ -215,7 +207,7 @@ fn parse_blkio_service_file(
     cgroup_path: &str,
     bytes: bool,
     limit: usize,
-    rows: &mut BTreeMap<(u32, u32), (CgroupIoRow, u8)>,
+    rows: &mut BTreeMap<(u32, u32), CgroupIoRow>,
 ) -> bool {
     for line in content.lines() {
         let mut fields = line.split_whitespace();
@@ -228,6 +220,9 @@ fn parse_blkio_service_file(
         if op == "Total" {
             continue;
         }
+        if !matches!(op, "Read" | "Write") {
+            continue;
+        }
         let Some(value) = fields.next().and_then(|value| value.parse().ok()) else {
             continue;
         };
@@ -237,37 +232,28 @@ fn parse_blkio_service_file(
         if !rows.contains_key(&(major, minor)) && rows.len() == limit {
             return false;
         }
-        let (row, present) = rows.entry((major, minor)).or_insert_with(|| {
-            (
-                CgroupIoRow {
-                    ts,
-                    cgroup_path: cgroup_path.to_owned(),
-                    major,
-                    minor,
-                    rbytes: 0,
-                    wbytes: 0,
-                    rios: 0,
-                    wios: 0,
-                },
-                0,
-            )
+        let row = rows.entry((major, minor)).or_insert_with(|| CgroupIoRow {
+            ts,
+            cgroup_path: cgroup_path.to_owned(),
+            major,
+            minor,
+            rbytes: None,
+            wbytes: None,
+            rios: None,
+            wios: None,
         });
         match (op, bytes) {
             ("Read", true) => {
-                row.rbytes = value;
-                *present |= 1;
+                row.rbytes = Some(value);
             }
             ("Write", true) => {
-                row.wbytes = value;
-                *present |= 2;
+                row.wbytes = Some(value);
             }
             ("Read", false) => {
-                row.rios = value;
-                *present |= 4;
+                row.rios = Some(value);
             }
             ("Write", false) => {
-                row.wios = value;
-                *present |= 8;
+                row.wios = Some(value);
             }
             _ => {}
         }
@@ -362,8 +348,18 @@ mod tests {
         let rows = parse_io_stat("8:0 rbytes=1 wbytes=2 rios=3 wios=4 dbytes=9\n", 5, "/x");
         assert_eq!(rows.len(), 1);
         assert_eq!((rows[0].major, rows[0].minor), (8, 0));
-        assert_eq!(rows[0].rbytes, 1);
-        assert_eq!(rows[0].wios, 4);
+        assert_eq!(rows[0].rbytes, Some(1));
+        assert_eq!(rows[0].wios, Some(4));
+    }
+
+    #[test]
+    fn io_stat_keeps_a_row_with_partial_counters() {
+        let rows = parse_io_stat("8:0 rbytes=1 wbytes=2 rios=broken\n", 5, "/x");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].rbytes, Some(1));
+        assert_eq!(rows[0].wbytes, Some(2));
+        assert_eq!(rows[0].rios, None);
+        assert_eq!(rows[0].wios, None);
     }
 
     #[test]
@@ -375,9 +371,23 @@ mod tests {
             "/x",
         );
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].rbytes, 4096);
-        assert_eq!(rows[0].wbytes, 8192);
-        assert_eq!(rows[0].rios, 4);
-        assert_eq!(rows[0].wios, 8);
+        assert_eq!(rows[0].rbytes, Some(4096));
+        assert_eq!(rows[0].wbytes, Some(8192));
+        assert_eq!(rows[0].rios, Some(4));
+        assert_eq!(rows[0].wios, Some(8));
+    }
+
+    #[test]
+    fn blkio_parser_keeps_devices_and_files_independently() {
+        let rows = parse_blkio_service_stats(
+            "8:0 Read 4096\n8:1 Write 8192\n",
+            "8:0 Read 4\n8:2 Write 8\n",
+            1,
+            "/x",
+        );
+        assert_eq!(rows.len(), 3);
+        assert_eq!((rows[0].rbytes, rows[0].rios), (Some(4096), Some(4)));
+        assert_eq!((rows[1].wbytes, rows[1].wios), (Some(8192), None));
+        assert_eq!((rows[2].wbytes, rows[2].wios), (None, Some(8)));
     }
 }

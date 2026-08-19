@@ -51,7 +51,7 @@ const PG_STAT_ACTIVITY_V3_TYPE_ID: u32 = 1_001_004;
 const CGROUP_CONTEXT_TYPE_ID: u32 = 1_205_001;
 const CGROUP_CPU_TYPE_ID: u32 = 1_201_001;
 const CGROUP_MEMORY_TYPE_ID: u32 = 1_202_001;
-const CGROUP_IO_TYPE_ID: u32 = 1_203_001;
+const CGROUP_IO_TYPE_ID: u32 = 1_203_002;
 const CGROUP_PIDS_TYPE_ID: u32 = 1_204_001;
 const CGROUP_SNAPSHOTS_PER_HOUR: usize = 120;
 const CGROUP_CANDIDATE_COUNT: usize = cgroup::MAX_CGROUP_CANDIDATES;
@@ -2473,10 +2473,10 @@ fn bounded_cgroup_hour_reports_collection_and_production_writer_costs() {
                     cgroup_path: path,
                     major: 8,
                     minor: u32::try_from(minor).expect("device count fits u32"),
-                    rbytes: counter.saturating_mul(1000),
-                    wbytes: counter.saturating_mul(2000),
-                    rios: counter.saturating_mul(10),
-                    wios: counter.saturating_mul(20),
+                    rbytes: Some(counter.saturating_mul(1000)),
+                    wbytes: Some(counter.saturating_mul(2000)),
+                    rios: Some(counter.saturating_mul(10)),
+                    wios: Some(counter.saturating_mul(20)),
                     scope: 0,
                 });
             }

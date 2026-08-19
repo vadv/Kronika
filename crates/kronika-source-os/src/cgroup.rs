@@ -233,8 +233,10 @@ fn usable_memory_v1(sys: &SysFs, path: &str) -> bool {
 }
 
 fn usable_io_v2(sys: &SysFs, path: &str) -> bool {
-    sys.read(&rel(path, "io.stat"))
-        .is_ok_and(|content| complete_io_stat(&content))
+    sys.read(&rel(path, "io.stat")).is_ok_and(|content| {
+        parse_io_stat_bounded(&content, 0, path, MAX_CGROUP_IO_ROWS)
+            .is_some_and(|rows| !rows.is_empty())
+    })
 }
 
 fn usable_io_v1(sys: &SysFs, path: &str) -> bool {
@@ -242,11 +244,14 @@ fn usable_io_v1(sys: &SysFs, path: &str) -> bool {
         .or_else(|| read_first_v1(sys, BLKIO_V1_DIRS, path, "blkio.io_service_bytes"));
     let operations = read_first_v1(sys, BLKIO_V1_DIRS, path, "blkio.throttle.io_serviced")
         .or_else(|| read_first_v1(sys, BLKIO_V1_DIRS, path, "blkio.io_serviced"));
-    bytes
-        .as_deref()
-        .and_then(complete_blkio_devices)
-        .zip(operations.as_deref().and_then(complete_blkio_devices))
-        .is_some_and(|(bytes, operations)| bytes == operations)
+    parse_blkio_service_stats_bounded(
+        bytes.as_deref().unwrap_or_default(),
+        operations.as_deref().unwrap_or_default(),
+        0,
+        path,
+        MAX_CGROUP_IO_ROWS,
+    )
+    .is_some_and(|rows| !rows.is_empty())
 }
 
 fn numeric_keys(content: &str) -> BTreeSet<&str> {
@@ -267,67 +272,6 @@ fn has_numeric_keys(content: &str, required: &[&str]) -> bool {
 
 fn has_any_key(keys: &BTreeSet<&str>, candidates: &[&str]) -> bool {
     candidates.iter().any(|key| keys.contains(key))
-}
-
-fn complete_io_stat(content: &str) -> bool {
-    let mut rows = 0_usize;
-    for line in content.lines() {
-        let mut fields = line.split_whitespace();
-        let Some(device) = fields.next() else {
-            continue;
-        };
-        if parse_device_pair(device).is_none() {
-            continue;
-        }
-        let keys: BTreeSet<&str> = fields
-            .filter_map(|field| {
-                let (key, value) = field.split_once('=')?;
-                value.parse::<i64>().ok().map(|_value| key)
-            })
-            .collect();
-        if !["rbytes", "wbytes", "rios", "wios"]
-            .iter()
-            .all(|key| keys.contains(key))
-        {
-            return false;
-        }
-        rows = rows.saturating_add(1);
-    }
-    rows != 0
-}
-
-fn complete_blkio_devices(content: &str) -> Option<BTreeSet<(u32, u32)>> {
-    let mut reads = BTreeSet::new();
-    let mut writes = BTreeSet::new();
-    for line in content.lines() {
-        let mut fields = line.split_whitespace();
-        let (Some(device), Some(operation), Some(value)) =
-            (fields.next(), fields.next(), fields.next())
-        else {
-            continue;
-        };
-        let Some(device) = parse_device_pair(device) else {
-            continue;
-        };
-        if value.parse::<i64>().is_err() {
-            continue;
-        }
-        match operation {
-            "Read" => {
-                reads.insert(device);
-            }
-            "Write" => {
-                writes.insert(device);
-            }
-            _ => {}
-        }
-    }
-    (!reads.is_empty() && reads == writes).then_some(reads)
-}
-
-fn parse_device_pair(device: &str) -> Option<(u32, u32)> {
-    let (major, minor) = device.split_once(':')?;
-    Some((major.parse().ok()?, minor.parse().ok()?))
 }
 
 fn parse_self_cgroup(content: &str) -> SelfCgroupPaths {

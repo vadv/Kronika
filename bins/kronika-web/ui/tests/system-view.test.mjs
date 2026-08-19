@@ -242,7 +242,7 @@ test("device latency uses exact reset-safe counter operands and a stable major:m
 })
 
 test("collector cgroup rows keep leaf settings factual and use effective hierarchy capacities", () => {
-  const row = (logicalName, path, values, ordinal = path) => ({ logicalName, ordinal, segmentId: "s", timestamp: 10, typeId: logicalName === "os_cgroup_cpu" ? "1201001" : logicalName === "os_cgroup_memory" ? "1202001" : "1203001", values: { cgroup_path: path, scope: 3, ...values } })
+  const row = (logicalName, path, values, ordinal = path) => ({ logicalName, ordinal, segmentId: "s", timestamp: 10, typeId: logicalName === "os_cgroup_cpu" ? "1201001" : logicalName === "os_cgroup_memory" ? "1202001" : "1203002", values: { cgroup_path: path, scope: 3, ...values } })
   const context = row("os_cgroup_context", "/ignored", {
     cpu_path: "/mine", memory_path: "/mine", io_path: "/mine", cpuset_cpus: 1,
     effective_cpu_quota_usec: 50_000, effective_cpu_period_usec: 100_000, effective_memory_max: 1500,
@@ -320,7 +320,7 @@ test("changing a cgroup snapshot key removes every prior exact entity row", () =
       os_cgroup_context: [{ logicalName: "os_cgroup_context", ordinal: "context", segmentId: "s", timestamp: 1, typeId: "1205001", values: {} }],
       os_cgroup_cpu: [{ logicalName: "os_cgroup_cpu", ordinal: "cpu", segmentId: "s", timestamp: 1, typeId: "1201001", values: {} }],
       os_cgroup_memory: [{ logicalName: "os_cgroup_memory", ordinal: "memory", segmentId: "s", timestamp: 1, typeId: "1202001", values: {} }],
-      os_cgroup_io: [{ logicalName: "os_cgroup_io", ordinal: "io", segmentId: "s", timestamp: 1, typeId: "1203001", values: {} }],
+      os_cgroup_io: [{ logicalName: "os_cgroup_io", ordinal: "io", segmentId: "s", timestamp: 1, typeId: "1203002", values: {} }],
       os_cgroup_pids: [{ logicalName: "os_cgroup_pids", ordinal: "pids", segmentId: "s", timestamp: 1, typeId: "1204001", values: {} }],
     },
   })

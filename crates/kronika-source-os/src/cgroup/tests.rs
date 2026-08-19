@@ -482,7 +482,7 @@ fn missing_self_membership_is_reported_even_on_a_v2_mount() {
 }
 
 #[test]
-fn partial_v1_controller_files_do_not_select_zero_filled_rows() {
+fn partial_v1_io_counters_keep_the_exact_controller_path() {
     let (dir, procfs, sys) = fixture_roots();
     std::fs::write(
         dir.path().join("proc/self/cgroup"),
@@ -509,11 +509,11 @@ fn partial_v1_controller_files_do_not_select_zero_filled_rows() {
     assert_eq!(context.cgroup_version, 1);
     assert_eq!(context.cpu_path, None);
     assert_eq!(context.memory_path, None);
-    assert_eq!(context.io_path, None);
+    assert_eq!(context.io_path.as_deref(), Some("/partial"));
 }
 
 #[test]
-fn partial_v2_controller_files_do_not_select_zero_filled_rows() {
+fn partial_v2_io_counters_keep_the_unified_path() {
     let (dir, procfs, sys) = fixture_roots();
     std::fs::write(dir.path().join("proc/self/cgroup"), "0::/partial\n")
         .expect("write self cgroup");
@@ -534,7 +534,7 @@ fn partial_v2_controller_files_do_not_select_zero_filled_rows() {
     assert_eq!(context.cgroup_version, 2);
     assert_eq!(context.cpu_path, None);
     assert_eq!(context.memory_path, None);
-    assert_eq!(context.io_path, None);
+    assert_eq!(context.io_path.as_deref(), Some("/partial"));
 }
 
 #[test]
@@ -836,8 +836,8 @@ fn collect_v2_reads_every_controller_file() {
     assert_eq!(rows.pids[0].current, 7);
     assert_eq!(rows.pids[0].max, None);
     assert_eq!((rows.io[0].major, rows.io[0].minor), (8, 0));
-    assert_eq!(rows.io[0].rbytes, 1);
-    assert_eq!(rows.io[0].wios, 4);
+    assert_eq!(rows.io[0].rbytes, Some(1));
+    assert_eq!(rows.io[0].wios, Some(4));
 }
 
 #[test]
@@ -915,10 +915,10 @@ fn collect_v1_reads_every_controller_file() {
     assert_eq!(rows.pids[0].current, 9);
     assert_eq!(rows.pids[0].max, Some(128));
     assert_eq!((rows.io[0].major, rows.io[0].minor), (8, 0));
-    assert_eq!(rows.io[0].rbytes, 10);
-    assert_eq!(rows.io[0].wbytes, 20);
-    assert_eq!(rows.io[0].rios, 1);
-    assert_eq!(rows.io[0].wios, 2);
+    assert_eq!(rows.io[0].rbytes, Some(10));
+    assert_eq!(rows.io[0].wbytes, Some(20));
+    assert_eq!(rows.io[0].rios, Some(1));
+    assert_eq!(rows.io[0].wios, Some(2));
 }
 
 #[test]
@@ -957,10 +957,10 @@ fn section_conversions_preserve_metric_fields() {
         cgroup_path: "/workload".to_owned(),
         major: 8,
         minor: 0,
-        rbytes: 1,
-        wbytes: 2,
-        rios: 3,
-        wios: 4,
+        rbytes: Some(1),
+        wbytes: Some(2),
+        rios: Some(3),
+        wios: Some(4),
     };
     let pids = CgroupPidsRow {
         ts: 7,
@@ -1010,8 +1010,8 @@ fn section_conversions_preserve_metric_fields() {
 
     let io_section = to_io_section(&io, 2, cgroup_path);
     assert_eq!((io_section.major, io_section.minor), (8, 0));
-    assert_eq!(io_section.rbytes, 1);
-    assert_eq!(io_section.wios, 4);
+    assert_eq!(io_section.rbytes, Some(1));
+    assert_eq!(io_section.wios, Some(4));
 
     let pids_section = to_pids_section(&pids, 2, cgroup_path);
     assert_eq!(pids_section.current, 9);

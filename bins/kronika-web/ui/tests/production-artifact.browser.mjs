@@ -4104,7 +4104,7 @@ function timelineRecords(hour = HOUR, cgroups = false) {
         logical_name: "os_cgroup_memory", physical_name: "os_cgroup_memory", type_id: "1202001",
         implementation: "linux", source_family: "system", rows: "2", bytes: "256",
       }, {
-        logical_name: "os_cgroup_io", physical_name: "os_cgroup_io", type_id: "1203001",
+        logical_name: "os_cgroup_io", physical_name: "os_cgroup_io", type_id: "1203002",
         implementation: "linux", source_family: "system", rows: "4", bytes: "512",
       }] : []), {
         logical_name: "pg_stat_user_tables", physical_name: "pg_stat_user_tables", type_id: "1013005",
@@ -4220,7 +4220,7 @@ function cgroupSnapshotRecords(url) {
       values: { ts: at, cgroup_path: path, current: 1024, max: 4096, anon: 512, file: 256, kernel: 128, slab: 64, low_events: 0, high_events: 0, max_events: 0, oom_events: 0, oom_kill: 0, scope: 3 },
     },
     os_cgroup_io: {
-      typeId: "1203001",
+      typeId: "1203002",
       values: { ts: at, cgroup_path: path, major: 8, minor: 0, rbytes: 1024, wbytes: 2048, rios: 2, wios: 3, scope: 3 },
     },
   }

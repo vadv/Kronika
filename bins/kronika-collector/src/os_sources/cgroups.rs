@@ -24,7 +24,7 @@ pub(super) fn collect_cgroup_sections(
     let context_type_id = 1_205_001_u32;
     let cpu_type_id = 1_201_001_u32;
     let memory_type_id = 1_202_001_u32;
-    let io_type_id = 1_203_001_u32;
+    let io_type_id = 1_203_002_u32;
     let pids_type_id = 1_204_001_u32;
     let started = Instant::now();
     let clock_ticks = process_facts(fs).map_or_else(

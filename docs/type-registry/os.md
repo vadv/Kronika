@@ -59,7 +59,7 @@ The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 | `1_201_002` | cgroup: cpu with effective cpuset, retained reader layout | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_202_001` | cgroup: memory | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_202_002` | cgroup: memory with shared memory, retained reader layout | `snapshot_full` | `(cgroup_path, ts)` |
-| `1_203_001` | cgroup: io | `snapshot_full` | `(cgroup_path, major, minor, ts)` |
+| `1_203_002` | cgroup: io with independently optional device counters | `snapshot_full` | `(cgroup_path, major, minor, ts)` |
 | `1_204_001` | cgroup: pids | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_205_001` | collector cgroup context | `snapshot_full` | `(ts)` |
 
@@ -77,6 +77,8 @@ either ceiling omits all workload cgroup sections for that tick. More than
 independently complete CPU, memory, and PIDs sections. Collection runs on the
 same 30-second cadence as process-to-cgroup mapping.
 The collector reuses the process pass's membership reads on that shared tick.
+Each valid per-device I/O counter is recorded independently; a missing byte or
+operation counter does not discard the other counters from that device row.
 
 `os_cgroup_context` records the collector process's exact controller paths from
 `/proc/self/cgroup`. On cgroup v2 the CPU, memory, and I/O paths are the unified

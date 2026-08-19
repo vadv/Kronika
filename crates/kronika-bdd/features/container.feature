@@ -27,7 +27,7 @@ Feature: What the collector records about the container it runs in
       | 1200001 | os_cgroup_mapping | 1        |
       | 1201001 | os_cgroup_cpu     | 1        |
       | 1202001 | os_cgroup_memory  | 1        |
-      | 1203001 | os_cgroup_io      | 1        |
+      | 1203002 | os_cgroup_io      | 1        |
       | 1204001 | os_cgroup_pids    | 1        |
       | 1205001 | os_cgroup_context | 1        |
 
