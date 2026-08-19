@@ -3733,6 +3733,20 @@ fn related_statement_search_uses_the_exact_cursor_across_segments() {
     assert_eq!(page["has_more"], false);
     assert_eq!(page["from"], "100");
     assert_eq!(page["to"], "200");
+
+    let first_target = format!(
+        "/api/segments/{current_segment}/snapshot?at=200&section=pg_stat_statements&field=query&page_size=1&search=query_id%3A42&first_match=1"
+    );
+    let first_records =
+        stream(fixture.prepare(&first_target, None)).expect("first Statement text at cursor");
+    let first_rows = row_records(&first_records);
+    assert_eq!(first_rows.len(), 1);
+    assert_eq!(first_rows[0]["segment_id"], SEGMENT_ID.to_string());
+    assert_eq!(first_rows[0]["timestamp"], "200");
+    assert_eq!(
+        first_rows[0]["values"],
+        serde_json::json!(["boundary statement 42"])
+    );
 }
 
 #[test]
