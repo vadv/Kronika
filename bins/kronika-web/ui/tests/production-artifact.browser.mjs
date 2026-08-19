@@ -1166,7 +1166,8 @@ test("the production artifact preserves wire keys and exact finding page state",
       for (const width of [360, 800, 1280]) {
         await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width })
         const helpLabel = locale === "en" ? "Search syntax and fields" : "Синтаксис и поля поиска"
-        await cdp.evaluate('document.querySelector("[aria-label=\"' + helpLabel + '\"]").click()')
+        await cdp.waitFor(`document.querySelector('[aria-label="${helpLabel}"]') !== null`, locale + " quantitative help trigger at " + width)
+        await cdp.evaluate(`document.querySelector('[aria-label="${helpLabel}"]').click()`)
         await cdp.waitFor('document.querySelector("[data-testid=search-help]") !== null', locale + " quantitative help at " + width)
         const help = await cdp.evaluate('(() => { const dialog = document.querySelector("[data-testid=search-help] [role=dialog]"); const bounds = dialog.getBoundingClientRect(); return { fields: dialog.textContent, left: bounds.left, right: bounds.right, scroll: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth } })()')
         assert.match(help.fields, /exec_time_rate/)
@@ -1207,8 +1208,12 @@ test("the production artifact preserves wire keys and exact finding page state",
       document.querySelector('[aria-label="Search syntax and fields"]').click()
     })()`)
     await cdp.waitFor(`document.querySelector('[data-testid="search-help"]') !== null`, "boolean search help")
-    await cdp.evaluate(`([...document.querySelectorAll('[data-testid="search-help"] button')].find((button) => button.textContent.includes("OR")))?.click()`)
-    assert.match(await cdp.evaluate(`window.__copiedSearch ?? ""`), /OR/)
+    const copiedExample = await cdp.evaluate(`(() => {
+      const button = [...document.querySelectorAll('[data-testid="search-help"] button')].find((candidate) => candidate.querySelector("code") !== null)
+      button.click()
+      return button.textContent
+    })()`)
+    assert.equal(await cdp.evaluate(`window.__copiedSearch ?? ""`), copiedExample)
     await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
     await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
     await cdp.waitFor(`document.querySelector('[data-testid="search-help"]') === null`, "boolean search help closed")
@@ -1348,6 +1353,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
 
     await cdp.evaluate(`document.querySelector('.pg-detail .pg-detail-head button:last-child').click()`)
+    const expectedQueryFailureAt = errors.length
     inlinePlanQueryMode = "error"
     await cdp.evaluate(`document.querySelector('[data-testid="pg-plans-table"] .entity-row').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-plan-query-view"]')?.dataset.queryStatus === "error"`, "the related query network failure")
@@ -1355,6 +1361,9 @@ test("the production artifact preserves wire keys and exact finding page state",
     inlinePlanQueryMode = "ready"
     await cdp.evaluate(`document.querySelector('[data-testid="pg-plan-query-error"] button').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-plan-query-view"]')?.dataset.queryStatus === "ready"`, "the related query retry")
+    const expectedQueryFailures = errors.splice(expectedQueryFailureAt)
+    assert.equal(expectedQueryFailures.some((message) => message.startsWith("503:") && message.includes("/snapshot?") && message.includes("query_id%3A42")), true)
+    assert.equal(expectedQueryFailures.every((message) => message.startsWith("503:") || message.includes("Failed to load resource: the server responded with a status of 503")), true)
 
     await cdp.evaluate(`document.querySelector('.pg-detail .pg-detail-head button:last-child').click()`)
     inlinePlanQueryMode = "empty"
@@ -2163,7 +2172,7 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
     assert.equal(narrowComparison.overflow, false)
     await cdp.evaluate(`document.querySelector('[aria-label="Синтаксис и поля поиска"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="search-help"]') !== null`, "the RU grouped-search help")
-    assert.match(await cdp.evaluate(`document.querySelector('[data-testid="search-help"]')?.textContent ?? ""`), /один OR не может смешивать имена или текст с метриками/)
+    assert.match(await cdp.evaluate(`document.querySelector('[data-testid="search-help"]')?.textContent ?? ""`), /OR не смешивает text с metrics/)
     await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
     await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
     await cdp.waitFor(`document.querySelector('[data-testid="search-help"]') === null`, "the RU grouped-search help closed")
@@ -2360,6 +2369,7 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     assert.deepEqual(await cdp.evaluate(`[...document.querySelectorAll('[data-testid="search-chips"] strong')].map((node) => node.textContent)`), ["CPU cores", "RSS"])
     await cdp.evaluate(`document.querySelector('[aria-label="Clear the filter"]').click()`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("find") === null`, "clear quantitative Processes search")
+    await cdp.waitFor(`[...document.querySelectorAll('[data-testid="process-table"] .entity-row')].some((row) => row.textContent.includes("2686712"))`, "captured-user row after quantitative search")
     const processJoinGap = await cdp.evaluate(`(() => {
       const timeline = document.querySelector('.timeline-shell').getBoundingClientRect()
       const controls = document.querySelector('.process-workspace > .lensbar').getBoundingClientRect()
@@ -4631,7 +4641,9 @@ function cdpSession(socket) {
       returnByValue: true,
       userGesture: true,
     })
-    if (response.exceptionDetails !== undefined) throw new Error(response.exceptionDetails.text)
+    if (response.exceptionDetails !== undefined) {
+      throw new Error(response.exceptionDetails.exception?.description ?? response.exceptionDetails.text)
+    }
     return response.result.value
   }
   const waitFor = async (expression, description, timeout = 10_000) => {
