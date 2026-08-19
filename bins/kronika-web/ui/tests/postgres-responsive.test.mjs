@@ -37,7 +37,7 @@ test("every PostgreSQL table view owns the viewport flex chain", () => {
   // all hand their height down instead of growing the page.
   assert.match(stylesheet, /@utility pg-stretch \{[\s\S]*?:is\(\.pg-table-shell\) & \{[^}]*flex: 1 1 0;[^}]*min-height: 0;[^}]*overflow: hidden;/)
   assert.match(postgres, /pg-entity-layout[^"]*\[\.pg-table-shell_&\]:grid-rows-\[minmax\(0,1fr\)\]/)
-  assert.match(entityTable, /className=\{`entity-table[^`]*pg-stretch/)
+  assert.match(entityTable, /contentSized \? "" : " pg-stretch"/)
   assert.match(stylesheet, /\.inspector-body \{[^}]*overflow: auto;/s)
   assert.match(stylesheet, /\.inspector-detail-slot > \.pg-detail \{[^}]*overflow: visible;/s)
 })
@@ -47,4 +47,6 @@ test("short PostgreSQL workspaces keep the honest compact preview", () => {
   assert.match(stylesheet, /\.timeline-preview \{[^}]*height: 104px;/s)
   assert.match(chart, /variant === "preview" \? "h-\[76px\]/)
   assert.doesNotMatch(stylesheet, /\.timeline-preview[\s\S]{0,240}\.uplot-host[^}]*display: none/)
+  assert.match(postgres, /const contentSized = rows\.length < 10 && !canLoadMore/)
+  assert.match(entityTable, /contentSized \? rendered\.length === 0 \? 72 : Math\.min\(310, 26 \+ rendered\.length \* 23\)/)
 })

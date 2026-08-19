@@ -125,8 +125,8 @@ export function EventsView({
     <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onSelectedLane={onSelectedLane} primaryLane="health" selectedLane={selectedLane} shownAt={shownAt} t={t} />
     <section className="mt-2" data-testid="events-console">
       <header className="flex min-h-[38px] items-center justify-between border-b border-line2 px-1.5 py-1 max-[760px]:flex-col max-[760px]:items-stretch max-[760px]:gap-[5px]">
-        <div className="flex border border-line3" role="group" aria-label={t("events.filters")}>
-          {(["all", "event", "known_bad"] as const).map((choice) => <button aria-pressed={filter === choice} className="min-h-[27px] cursor-pointer border-0 bg-transparent px-2.5 text-xs uppercase text-fg3 aria-pressed:bg-s4 aria-pressed:text-accent3" key={choice} onClick={() => setFilter(choice)} type="button">{choice === "all" ? t("events.all") : t(`locator.${choice}`)}</button>)}
+        <div className="lens-tabs flex" role="group" aria-label={t("events.filters")}>
+          {(["all", "event", "known_bad"] as const).map((choice) => <button aria-pressed={filter === choice} className="min-h-[27px]" key={choice} onClick={() => setFilter(choice)} type="button">{choice === "all" ? t("events.all") : t(`locator.${choice}`)}</button>)}
         </div>
         <span className="text-xs tabular-nums text-fg3">{t("events.count", { "shown": visible.length, total: original })}{omitted > 0 ? ` · ${t("events.omitted", { count: omitted })}` : ""}</span>
         {scope !== null && <button className="min-h-[29px] cursor-pointer border border-line4 bg-s2 px-[9px] text-xs uppercase text-accent3" onClick={onShowAll} type="button">{t("events.show_all", { count: scope.length })}</button>}
@@ -143,7 +143,7 @@ export function EventsView({
               if (finding === undefined) return null
               const pressed = active !== null && findingKey(active) === findingKey(finding)
               return <div className="absolute left-0 top-0 w-full border-b border-line" data-testid="event-item" key={findingKey(finding)} role="listitem" style={{ height: item.size, transform: `translateY(${item.start}px)` }}>
-                <button aria-label={`${findingCategory(finding, t)} · ${findingSource(finding, t)} · ${time.timestamp(finding.timestamp)}`} aria-pressed={pressed} className="grid h-full min-h-[44px] w-full cursor-pointer grid-cols-[18px_minmax(0,1fr)_auto] items-center gap-2 border-0 bg-s1 px-[9px] py-1.5 text-left text-fg2 hover:bg-s3 aria-pressed:bg-s4 aria-pressed:shadow-[inset_2px_0_var(--color-accent)]" onClick={() => onFinding(finding)} type="button">
+                <button aria-label={`${findingCategory(finding, t)} · ${findingSource(finding, t)} · ${time.timestamp(finding.timestamp)}`} aria-pressed={pressed} className="event-finding grid h-full min-h-[44px] w-full cursor-pointer grid-cols-[18px_minmax(0,1fr)_auto] items-center gap-2 border-0 bg-s1 px-[9px] py-1.5 text-left text-fg2 hover:bg-s3 aria-pressed:bg-s4" data-kind={finding.kind} onClick={() => onFinding(finding)} type="button">
                   <KindIcon kind={finding.kind} />
                   <span><strong className="block text-xs font-medium uppercase">{findingCategory(finding, t)}</strong><small className="mt-[3px] block text-xs text-fg3">{findingSource(finding, t)}</small></span>
                   <time className="whitespace-nowrap text-xs text-fg3">{time.timestamp(finding.timestamp)}</time>

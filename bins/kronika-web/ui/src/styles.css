@@ -103,16 +103,17 @@
 /* PostgreSQL screen components. Repeated compositions live as utilities so the
    markup stays readable and the rules stay inside the utilities layer. */
 @utility lensbar {
-  align-items: center; background: var(--color-s2); border: 1px solid var(--color-line2); border-bottom: 0; display: flex; gap: 7px; margin-top: 8px; min-height: 27px; padding: 0 6px;
+  align-items: center; background: var(--color-s2); border-bottom: 1px solid var(--color-line2); display: flex; gap: 7px; margin-top: 8px; min-height: 28px; padding: 2px 6px;
   & > span { color: var(--color-fg3); font-size: var(--text-sm); margin-right: 8px; }
 }
 @utility lens-tabs {
-  border: 1px solid var(--color-line3); display: flex;
-  & > button { background: transparent; border: 0; color: var(--color-fg3); cursor: pointer; font-size: var(--text-xs); min-width: 58px; padding: 4px 8px; text-transform: uppercase; }
-  & > button[aria-pressed="true"] { background: var(--color-s4); color: var(--color-accent3); }
+  display: flex; gap: 2px;
+  & > button { background: transparent; border: 0; border-radius: 2px; color: var(--color-fg3); cursor: pointer; font-size: var(--text-xs); min-width: 58px; padding: 4px 8px; text-transform: uppercase; }
+  & > button:hover { background: var(--color-s3); color: var(--color-fg2); }
+  & > button:is([aria-pressed="true"], [aria-selected="true"], [aria-current="page"]) { background: var(--color-s4); box-shadow: inset 0 -2px var(--color-accent); color: var(--color-accent3); }
 }
 @utility query-block {
-  background: var(--color-s1); border: 1px solid var(--color-line3); margin-top: 8px; padding: 5px 6px;
+  background: var(--color-s1); border-block: 1px solid var(--color-line2); margin-top: 8px; padding: 6px 7px;
   & > span { align-items: center; color: var(--color-fg3); display: flex; font-size: var(--text-xs); justify-content: space-between; text-transform: uppercase; }
   & > pre { color: var(--color-event-edge); font: inherit; font-size: var(--text-sm); line-height: 1.55; margin: 8px 0 0; max-height: 170px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 }
@@ -131,12 +132,12 @@
   & button { align-items: center; background: transparent; border: 1px solid var(--color-line3); color: var(--color-fg2); cursor: pointer; display: flex; height: 26px; justify-content: center; width: 26px; }
 }
 @utility pg-overview-section {
-  background: var(--color-s1); border: 1px solid var(--color-line2); margin-top: 8px;
-  & > h2 { background: var(--color-s2); border-bottom: 1px solid var(--color-line2); color: var(--color-fg3); font-size: var(--text-xs); font-weight: 500; letter-spacing: .08em; margin: 0; min-height: 28px; padding: 8px 9px 0; text-transform: uppercase; }
+  background: var(--color-s1); margin-top: 8px;
+  & > h2 { border-bottom: 1px solid var(--color-line2); color: var(--color-fg3); font-size: var(--text-xs); font-weight: 600; letter-spacing: .08em; margin: 0; min-height: 28px; padding: 8px 9px 0; text-transform: uppercase; }
   & > dl { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); margin: 0;
     @media (max-width: 1000px) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     @media (max-width: 760px) { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-  & > dl > div { border-bottom: 1px solid var(--color-line); border-right: 1px solid var(--color-line); min-height: 46px; padding: 7px 8px; }
+  & > dl > div { border-bottom: 1px solid var(--color-line); min-height: 46px; padding: 7px 8px; }
   & dt { color: var(--color-fg3); font-size: var(--text-xs); overflow-wrap: anywhere; text-transform: uppercase; }
   & dd { color: var(--color-fg); font-size: var(--text-sm); margin: 6px 0 0; overflow-wrap: anywhere; }
 }
@@ -145,28 +146,29 @@
    tab strip. Repeated compositions stay named for the same reason as the
    PostgreSQL ones. */
 @utility panel {
-  background: var(--color-s1); border: 1px solid var(--color-line2); min-width: 0;
+  background: var(--color-s1); min-width: 0;
 }
 @utility panel-head {
-  align-items: center; background: var(--color-s2); border-bottom: 1px solid var(--color-line2); color: var(--color-fg3); display: flex;
-  font-size: var(--text-xs); font-weight: 500; gap: 7px; letter-spacing: .08em; min-height: 28px; padding: 0 9px; text-transform: uppercase;
+  align-items: center; border-bottom: 1px solid var(--color-line2); border-left: 2px solid var(--color-accent-line); color: var(--color-fg3); display: flex;
+  font-size: var(--text-xs); font-weight: 600; gap: 7px; letter-spacing: .08em; min-height: 28px; padding: 0 9px; text-transform: uppercase;
   & svg { color: var(--color-fg4); }
 }
 @utility metric-grid {
   display: grid;
-  & > button { background: var(--color-s1); border: 0; border-bottom: 1px solid var(--color-line); border-right: 1px solid var(--color-line); color: var(--color-fg3); cursor: pointer; min-height: 60px; padding: 7px 8px; text-align: left; }
+  & > button { background: var(--color-s1); border: 0; color: var(--color-fg3); cursor: pointer; min-height: 60px; padding: 7px 8px; text-align: left; }
   & > button:hover { background: var(--color-s3); }
   & > button[aria-pressed="true"] { background: var(--color-s4); box-shadow: inset 2px 0 var(--color-accent); color: var(--color-accent3); }
   & > button strong { color: var(--color-fg); display: block; font-size: var(--text-md); font-variant-numeric: tabular-nums; font-weight: 560; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
 @utility pg-tabs {
-  background: var(--color-s1); border: 1px solid var(--color-line2); display: flex; margin-top: 8px; min-height: 35px; overflow-x: auto;
-  & button { align-items: center; background: transparent; border: 0; border-right: 1px solid var(--color-line2); color: var(--color-fg3); cursor: pointer; display: flex; flex: 0 0 auto; font-size: var(--text-xs); gap: 6px; letter-spacing: .04em; padding: 0 13px; text-transform: uppercase; }
+  background: var(--color-s1); border-bottom: 1px solid var(--color-line2); display: flex; gap: 2px; margin-top: 8px; min-height: 35px; overflow-x: auto; padding: 3px 4px 0;
+  & button { align-items: center; background: transparent; border: 0; border-radius: 2px 2px 0 0; color: var(--color-fg3); cursor: pointer; display: flex; flex: 0 0 auto; font-size: var(--text-xs); gap: 6px; letter-spacing: .04em; padding: 0 11px; text-transform: uppercase; }
+  & button:hover { background: var(--color-s3); color: var(--color-fg2); }
   & button[aria-current="page"] { background: var(--color-s4); box-shadow: inset 0 -2px var(--color-accent); color: var(--color-accent3); }
   & button:disabled { cursor: not-allowed; opacity: .35; }
 }
 @utility use-table {
-  background: var(--color-s2); border: 1px solid var(--color-line2); margin-top: 8px;
+  background: var(--color-s2); border-bottom: 1px solid var(--color-line2); margin-top: 8px;
 }
 @utility use-row {
   @media (max-width: 760px) { grid-template-columns: 80px repeat(3, minmax(0, 1fr)); }
@@ -179,18 +181,18 @@
   &[aria-disabled="true"]:hover { background: none; }
 }
 @utility metric-choice {
-  border-bottom: 1px solid var(--color-line); border-right: 1px solid var(--color-line); min-height: 60px; position: relative;
-  & > button { background: var(--color-s1); border: 0; color: var(--color-fg3); cursor: pointer; height: 100%; padding: 7px 27px 7px 8px; text-align: left; width: 100%; }
+  min-height: 60px; position: relative;
+  & > button { background: var(--color-s1); border: 0; border-left: 2px solid transparent; color: var(--color-fg3); cursor: pointer; height: 100%; padding: 7px 27px 7px 8px; text-align: left; width: 100%; }
   & > button:hover { background: var(--color-s3); }
-  & > button[aria-pressed="true"] { background: var(--color-s4); box-shadow: inset 2px 0 var(--color-accent); color: var(--color-accent3); }
+  & > button[aria-pressed="true"] { background: var(--color-s4); border-left-color: var(--color-accent); color: var(--color-accent3); }
   & > button > span { display: block; font-size: var(--text-xs); max-width: 100%; overflow: hidden; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
   & > button strong { color: var(--color-fg); display: block; font-size: var(--text-md); font-variant-numeric: tabular-nums; font-weight: 560; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
 @utility dock-tabs {
-  border: 1px solid var(--color-line3); display: flex; flex-wrap: wrap; gap: 0; overflow: visible; padding: 0;
-  & button { background: transparent; border: 0; border-right: 1px solid var(--color-line); color: var(--color-fg3); cursor: pointer; font-size: var(--text-xs); min-height: 24px; padding: 3px 8px; text-transform: uppercase; }
+  display: flex; flex-wrap: wrap; gap: 2px; overflow: visible; padding: 0;
+  & button { background: transparent; border: 0; border-radius: 2px; color: var(--color-fg3); cursor: pointer; font-size: var(--text-xs); min-height: 24px; padding: 3px 8px; text-transform: uppercase; }
   & button:hover { background: var(--color-s3); }
-  & button[aria-pressed="true"] { background: var(--color-s4); color: var(--color-accent3); }
+  & button[aria-pressed="true"] { background: var(--color-s4); box-shadow: inset 0 -2px var(--color-accent); color: var(--color-accent3); }
 }
 
 /* Shared chrome: the top bar, its tab strips, the help mark and the loading
@@ -211,19 +213,21 @@
   }
 }
 @utility icon-button {
-  align-items: center; background: transparent; border: 1px solid var(--color-line3); cursor: pointer; display: flex; height: 24px; justify-content: center; min-width: 24px;
+  align-items: center; background: transparent; border: 0; border-radius: 2px; color: var(--color-fg3); cursor: pointer; display: flex; height: 24px; justify-content: center; min-width: 24px;
+  &:hover { background: var(--color-s3); color: var(--color-fg); }
 }
 @utility locale-switch {
-  align-items: center; border: 1px solid var(--color-line3); color: var(--color-fg3); display: flex; flex: 0 0 auto; padding-left: 5px;
+  align-items: center; color: var(--color-fg3); display: flex; flex: 0 0 auto; padding-left: 4px;
   & > * + * { margin-left: 6px; }
-  & button { background: transparent; border: 0; color: var(--color-fg4); cursor: pointer; font-size: var(--text-xs); height: 22px; padding: 0 6px; }
+  & button { background: transparent; border: 0; border-radius: 2px; color: var(--color-fg4); cursor: pointer; font-size: var(--text-xs); height: 22px; padding: 0 6px; }
   & button[aria-pressed="true"] { background: var(--color-s4); color: var(--color-accent3); }
 }
 @utility source-tabs {
   align-items: center; display: flex; flex: 0 0 auto; gap: 2px;
-  & button { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--color-fg3); cursor: pointer; font-size: var(--text-xs); letter-spacing: .06em; padding: 8px 9px 6px; text-transform: uppercase; }
+  & button { background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 2px; color: var(--color-fg3); cursor: pointer; font-size: var(--text-xs); letter-spacing: .06em; padding: 7px 9px 6px; text-transform: uppercase; }
+  & button:not(:disabled):hover { background: var(--color-s3); color: var(--color-fg2); }
   & button:disabled { cursor: not-allowed; opacity: .48; }
-  & .source-active { border-bottom-color: var(--color-accent); color: var(--color-accent3); }
+  & .source-active { background: var(--color-s4); border-bottom-color: var(--color-accent); color: var(--color-accent3); }
 }
 @utility top-actions {
   align-items: center; display: flex; margin-left: auto;
@@ -239,7 +243,7 @@
   margin: 0; min-width: 0; padding: 8px 9px 5px; position: relative;
 }
 @utility metric-group {
-  background: var(--color-s1); border: 1px solid var(--color-line2); min-width: 0;
+  background: var(--color-s1); min-width: 0;
 }
 
 :root, [data-theme="dark"] {
@@ -304,16 +308,6 @@
   h1 { font-size: var(--text-sm); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
   h2 { font-size: var(--text-md); }
   }
-
-/* The dock's metric selector is the same tab strip the lens bar uses. */
-/* Grid cells open the dock; the corner marker says so before the click. */
-
-
-
-
-@media (max-width: 1000px) {
-  /* The System dock is not an overlay: it unfolds in the page flow. */
-}
 
 /* Forensic workstation shell. The timeline remains an honest, permanently
    visible instrument; the table receives every remaining pixel. */
@@ -412,7 +406,8 @@
 .inspector-close {
   align-items: center;
   background: transparent;
-  border: 1px solid var(--color-line3);
+  border: 0;
+  border-radius: 2px;
   color: var(--color-fg2);
   cursor: pointer;
   display: flex;
@@ -420,6 +415,7 @@
   justify-content: center;
   width: 24px;
 }
+.inspector-close:hover { background: var(--color-s3); color: var(--color-fg); }
 .inspector-body {
   flex: 1 1 0;
   min-height: 0;
@@ -447,9 +443,14 @@
 .inspector-scrim { display: none; }
 
 .entity-row[aria-selected="true"] .entity-cell:first-child { font-weight: 700; }
-.entity-row[data-locator-row="true"] { background-color: color-mix(in srgb, var(--color-warn) 5%, var(--color-s1)); }
+.entity-row[data-locator-row="true"] { background-color: color-mix(in srgb, var(--color-warn) 6%, var(--color-s1)); font-weight: 560; }
 .value-tone-warning,
-.value-tone-critical { background: color-mix(in srgb, currentColor 4%, transparent); }
+.value-tone-critical { background: color-mix(in srgb, currentColor 5%, transparent); }
+.event-finding { box-shadow: inset 2px 0 var(--finding-edge); }
+.event-finding[data-kind="event"] { --finding-edge: var(--color-event); }
+.event-finding[data-kind="known_bad"] { --finding-edge: var(--color-bad); }
+.event-finding[data-kind="spike"] { --finding-edge: var(--color-warn); }
+.event-finding[aria-pressed="true"] { box-shadow: inset 2px 0 var(--color-accent), inset 5px 0 var(--finding-edge); }
 
 @media (max-width: 1000px) {
   .inspector-scrim {
@@ -480,7 +481,7 @@
 
 @media (max-width: 760px) {
   .lensbar { flex-wrap: wrap; gap: 0; padding: 0; }
-  .lensbar > .lens-tabs { border-width: 0 1px 0 0; flex: 1 0 100%; }
+  .lensbar > .lens-tabs { flex: 1 0 100%; padding: 2px 4px; }
   .process-summary-inline { border-top: 1px solid var(--color-line2); flex-basis: calc(100% - 82px); }
   .process-summary-inline > div { flex-basis: 112px; padding-left: 6px; padding-right: 20px; }
   .lensbar > .snapshot-time { border-top: 1px solid var(--color-line2); margin: 0; padding: 6px; }
@@ -494,6 +495,7 @@
     bottom: 0;
     box-shadow: 0 -12px 28px var(--color-shadow-a);
     left: 0;
+    height: min(480px, calc(100dvh - 82px));
     max-height: min(480px, calc(100dvh - 82px));
     max-width: none;
     right: 0;

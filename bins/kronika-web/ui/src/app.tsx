@@ -974,7 +974,7 @@ function App({ locale, onLocale, t }: {
         {visibleSource === "host" ? ` · ${t(`section.${hostSection}`)}` : ""}
         {visibleSource === "postgresql" ? ` · ${t(`pg.section.${pgSection}`)}` : ""}
       </p>
-      {visibleSource === "host" && <div className="section-tabs flex h-7 flex-none items-center overflow-x-auto border-y border-line2 bg-s2 [&>button]:h-full [&>button]:flex-none [&>button]:cursor-pointer [&>button]:border-0 [&>button]:border-r [&>button]:border-line2 [&>button]:bg-transparent [&>button]:px-[9px] [&>button]:text-xs [&>button]:uppercase [&>button]:text-fg3 [&>button[aria-selected=true]]:bg-s4 [&>button[aria-selected=true]]:shadow-[inset_0_-2px_var(--color-accent)] [&>button[aria-selected=true]]:text-accent3" role="tablist">
+      {visibleSource === "host" && <div className="section-tabs lens-tabs flex h-7 flex-none items-center overflow-x-auto border-b border-line2 bg-s2 px-1" role="tablist">
         {hostSections.map((section) => <button aria-selected={hostSection === section} data-testid={`host-section-${section}`} key={section} onClick={() => chooseHostSection(section)} role="tab" type="button">{t(`section.${section}`)}</button>)}
       </div>}
       {loading && <StateCard busy locale={locale} message={t("status.loading")} progress={loadProgress} t={t} />}

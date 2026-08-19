@@ -168,7 +168,7 @@ export function Timeline({
   }
   return <section aria-label={t("hour.range", { range: time.hourRange(hour).primary })} className={`timeline-shell mt-2 flex flex-col overflow-hidden border-y border-line2 bg-s1 timeline-${presentation}`} data-presentation={presentation}>
     <div className="timeline-rail flex h-7 flex-none border-b border-line2">
-      <div className="flex min-w-0 flex-1 overflow-x-auto">
+      <div className="flex min-w-0 flex-1 gap-0.5 overflow-x-auto px-1">
         {lanes.map((lane) => <LaneLabel
           help={`lane.${lane.key}.help`}
           key={lane.key}
@@ -254,7 +254,7 @@ function toRecordedSeries(lane: TimelineLane, locale: Locale, t: Translate): rea
 }
 
 function LaneLabel({ label, help, onSelect, primary, reading, t }: { readonly label: string; readonly help: string; readonly onSelect: () => void; readonly primary: boolean; readonly reading: string; readonly t: Translate }) {
-  return <div data-primary={primary || undefined} className={`lane-label flex h-7 flex-[1_0_140px] items-center gap-2 border-r border-line px-[7px] text-xs uppercase text-fg3 last:border-r-0 max-[760px]:pl-1 max-[520px]:flex-[0_0_120px] w-auto bg-transparent text-left hover:bg-accent-soft hover:text-accent3${primary ? " bg-s2 text-fg2 shadow-[inset_0_-2px_var(--color-accent)]" : ""}`}>
+  return <div data-primary={primary || undefined} className={`lane-label flex h-7 flex-[1_0_140px] items-center gap-2 rounded-t-[2px] px-[7px] text-xs uppercase text-fg3 max-[760px]:pl-1 max-[520px]:flex-[0_0_120px] w-auto bg-transparent text-left hover:bg-accent-soft hover:text-accent3${primary ? " bg-s3 text-fg2 shadow-[inset_0_-2px_var(--color-accent)]" : ""}`}>
     <button aria-pressed={primary} className="lane-select flex min-w-0 flex-auto cursor-pointer items-center gap-2 self-stretch border-0 bg-transparent p-0 text-left [font-family:inherit]" onClick={onSelect} type="button">
       <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{t(label)}</span>
       <span data-testid="lane-reading" className={`ml-auto flex-none whitespace-nowrap text-right normal-case tabular-nums ${primary ? "text-md font-[620] text-accent3" : "text-sm text-fg"}`}>{reading}</span>

@@ -58,13 +58,13 @@ export function TableFilter({
   }
   return <div className="border-b border-line2 bg-s2 px-[7px] py-1 text-fg3" data-search-surface={surface}>
     <div className="flex min-h-[28px] min-w-0 flex-wrap items-center gap-1.5">
-      {context !== undefined && <span className="inline-flex max-w-[58%] items-center gap-1.5 overflow-hidden whitespace-nowrap border border-accent2 bg-accent-soft pl-1.5 text-xs text-fg" data-testid="entity-context-filter">
+      {context !== undefined && <span className="inline-flex max-w-[58%] items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-[2px] bg-accent-soft pl-1.5 text-xs text-fg" data-testid="entity-context-filter">
         <strong className="overflow-hidden text-ellipsis font-semibold">{context}</strong>
         <button className="inline-flex cursor-pointer items-center gap-[3px] self-stretch border-0 border-l border-accent2 bg-transparent px-[5px] text-fg2" onClick={onContextClear} type="button"><X aria-hidden="true" size={11} />{t("filter.show_all")}</button>
       </span>}
       {context !== undefined && onPattern !== undefined && <span className="text-xs uppercase text-fg4">{t("filter.and")}</span>}
       {onPattern !== undefined && <form className="flex min-w-[210px] flex-1 items-center" onSubmit={(event) => { event.preventDefault(); apply() }}>
-        <label className={`grid min-w-0 flex-1 grid-cols-[18px_minmax(0,1fr)] items-center border ${error === null ? "border-line3" : "border-bad bg-[color-mix(in_srgb,var(--color-bad)_8%,transparent)]"}`}>
+        <label className={`grid min-w-0 flex-1 grid-cols-[18px_minmax(0,1fr)] items-center rounded-[2px] border ${error === null ? "border-line3" : "border-bad bg-[color-mix(in_srgb,var(--color-bad)_8%,transparent)]"}`}>
           <span aria-hidden="true" className="grid h-full w-[18px] place-items-center"><Search size={12} /></span>
           <input
             aria-describedby={error === null ? undefined : errorId}
@@ -88,9 +88,9 @@ export function TableFilter({
             value={draft}
           />
         </label>
-        <button aria-label={t("filter.apply")} className="ml-1 inline-flex h-[27px] flex-none cursor-pointer items-center border border-line4 bg-s3 px-1.5 text-xs font-semibold text-accent3" type="submit">✓</button>
+        <button aria-label={t("filter.apply")} className="ml-1 inline-flex h-[27px] flex-none cursor-pointer items-center rounded-[2px] border-0 bg-s3 px-2 text-xs font-semibold text-accent3 hover:bg-s4" type="submit">✓</button>
       </form>}
-      {onPattern !== undefined && <button aria-expanded={help} aria-label={t("filter.help.open")} className="inline-flex h-7 w-7 flex-none cursor-pointer items-center justify-center border border-line3 bg-transparent text-sm font-semibold text-accent3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => setHelp((open) => !open)} ref={helpButton} type="button">?</button>}
+      {onPattern !== undefined && <button aria-expanded={help} aria-label={t("filter.help.open")} className="inline-flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-[2px] border-0 bg-transparent text-sm font-semibold text-accent3 hover:bg-s3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => setHelp((open) => !open)} ref={helpButton} type="button">?</button>}
       {pattern !== "" && <>
         {kept >= 0 && <span className="flex-none text-xs tabular-nums text-fg3">{t("filter.kept", { kept: String(kept), total: String(total) })}</span>}
         <button aria-label={t("filter.clear")} className="inline-flex flex-none cursor-pointer items-center border-0 bg-transparent p-0.5 text-accent3" onClick={clear} type="button"><X aria-hidden="true" size={12} /></button>
@@ -112,7 +112,7 @@ function SearchChips({ expr, onRemove, t }: { readonly expr: SearchExpr; readonl
       const index = clauseIndex
       clauseIndex += 1
       const clause = current.predicate
-      return [<span className="inline-flex max-w-full items-center border border-accent2 bg-accent-soft text-xs text-fg" data-search-predicate="" key={`${path}:${clause.key}:${clause.value}`}>
+      return [<span className="inline-flex h-[19px] max-w-full items-center rounded-[2px] bg-accent-soft text-xs text-fg" data-search-predicate="" key={`${path}:${clause.key}:${clause.value}`}>
         <SearchChip clause={clause} t={t} />
         <button aria-label={t("filter.token.remove", { field: clause.field.kind === "quantity" ? t(`filter.field.${clause.key}.label`) : clause.key, value: clause.field.kind === "quantity" ? `${clause.operator} ${clause.quantity?.number ?? clause.value} ${clause.quantity?.unit ?? ""}`.trim() : clause.value })} className="inline-flex self-stretch cursor-pointer items-center border-0 border-l border-accent2 bg-transparent px-1 text-fg2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" onClick={() => onRemove(index)} type="button"><X aria-hidden="true" size={11} /></button>
       </span>]

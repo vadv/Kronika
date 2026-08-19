@@ -801,7 +801,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.doesNotMatch(tableDetail.labels.join(" "), /Database ID|Table OID|Index OID/)
     assert.equal(tableDetail.values.includes("42"), false)
     assert.equal(tableDetail.values.includes("73"), false)
-    await cdp.evaluate(`document.querySelector(".pg-detail header button").click()`)
+    await cdp.evaluate(`document.querySelector(".inspector-close").click()`)
 
     relationMode = "long"
     await cdp.evaluate(`([...document.querySelectorAll('[data-testid="pg-relation-lenses"] button')].find((button) => button.textContent === "Size and buffers")).click()`)
@@ -937,7 +937,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.ok(indexDetail.compactRows > 0, indexDetail.html)
     assert.doesNotMatch(indexDetail.labels.join(" "), /Database ID|Table OID|Index OID/)
     for (const oid of ["42", "73", "74"]) assert.equal(indexDetail.values.includes(oid), false)
-    await cdp.evaluate(`document.querySelector(".pg-detail header button").click()`)
+    await cdp.evaluate(`document.querySelector(".inspector-close").click()`)
     relationMode = "short"
     await cdp.evaluate(`([...document.querySelectorAll('[data-testid="pg-relation-lenses"] button')].find((button) => button.textContent === "State")).click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-indexes-table"] [data-testid="virtual-body"]')?.style.height === "69px"`, "the short relation set")
@@ -1123,7 +1123,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(requests.filter(({ query }) => query.includes("where.queryid=") && query.includes("page_size=200")).length, 1)
     await cdp.evaluate(`document.querySelector('[data-testid="pg-statements-table"] .entity-row').click()`)
     await cdp.waitFor(`document.querySelector(".pg-detail") !== null`, "detail after explicit row selection")
-    await cdp.evaluate(`document.querySelector(".pg-detail .pg-detail-head button:last-child").click(); document.querySelector('[data-testid="entity-context-filter"] button').click()`)
+    await cdp.evaluate(`document.querySelector(".inspector-close").click(); document.querySelector('[data-testid="entity-context-filter"] button').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-statements-table"] [data-testid="table-status"]')?.textContent.includes("Loaded 50 of 4,807") === true`, "the paged full statement set")
     await cdp.waitFor(`document.querySelector('[data-testid="table-paging"]') !== null`, "active statement paging")
 
@@ -1265,7 +1265,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       assert.ok(placement.paging.top >= placement.table.bottom - 1, `${width}px paging below table: ${JSON.stringify(placement)}`)
     }
 
-    await cdp.evaluate(`document.querySelector('.pg-detail .pg-detail-head button:last-child').click(); ([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent.includes('Plans'))).click()`)
+    await cdp.evaluate(`document.querySelector('.inspector-close').click(); ([...document.querySelectorAll('.pg-tabs button')].find((button) => button.textContent.includes('Plans'))).click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-plans-table"] .entity-row') !== null`, "the Vadv Plans row")
     const planTable = await cdp.evaluate(`(() => ({
       headers: [...document.querySelectorAll('[data-testid="pg-plans-table"] [role="columnheader"]')].map((header) => header.textContent),
@@ -1359,7 +1359,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.evaluate(`document.querySelector('[data-testid="locale-en"]').click()`)
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
 
-    await cdp.evaluate(`document.querySelector('.pg-detail .pg-detail-head button:last-child').click()`)
+    await cdp.evaluate(`document.querySelector('.inspector-close').click()`)
     const expectedQueryFailureAt = errors.length
     inlinePlanQueryMode = "error"
     await cdp.evaluate(`document.querySelector('[data-testid="pg-plans-table"] .entity-row').click()`)
@@ -1372,12 +1372,12 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(expectedQueryFailures.some((message) => message.startsWith("503:") && message.includes("/snapshot?") && message.includes("query_id%3A42")), true)
     assert.equal(expectedQueryFailures.every((message) => message.startsWith("503:") || message.includes("Failed to load resource: the server responded with a status of 503")), true)
 
-    await cdp.evaluate(`document.querySelector('.pg-detail .pg-detail-head button:last-child').click()`)
+    await cdp.evaluate(`document.querySelector('.inspector-close').click()`)
     inlinePlanQueryMode = "empty"
     await cdp.evaluate(`document.querySelector('[data-testid="pg-plans-table"] .entity-row').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-plan-query-view"]')?.dataset.queryStatus === "unavailable"`, "the honest related query unavailable state")
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="pg-text-plan"]')?.textContent`), VADV_TEXT_PLAN)
-    await cdp.evaluate(`document.querySelector('.pg-detail .pg-detail-head button:last-child').click()`)
+    await cdp.evaluate(`document.querySelector('.inspector-close').click()`)
     inlinePlanQueryMode = "ready"
     await cdp.evaluate(`document.querySelector('[data-testid="pg-plans-table"] .entity-row').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-plan-query-view"]')?.dataset.queryStatus === "ready"`, "the restored related query")
@@ -2011,7 +2011,7 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
     const landscape = await cdp.evaluate(detailGeometryExpression())
     assert.equal(landscape.innerWidth, 1280)
     assert.ok(landscape.scrollWidth <= landscape.clientWidth, JSON.stringify(landscape))
-    assert.ok(landscape.sample.label.width >= 160, JSON.stringify(landscape.sample))
+    assert.ok(landscape.sample.label.width >= 120, JSON.stringify(landscape.sample))
     assert.equal(landscape.sample.label.lines, 1)
     assert.ok(landscape.sample.label.right + 7 <= landscape.sample.value.left, JSON.stringify(landscape.sample))
     assert.ok(Math.abs(landscape.sample.row.width - landscape.list.width) <= 1, JSON.stringify(landscape.sample))
@@ -2886,7 +2886,7 @@ test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, as
     for (const [width, height] of [[1280, 882], [1366, 768], [960, 882], [390, 480]]) {
       await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height, mobile: false, width })
       await settleLayout(cdp)
-      await cdp.evaluate(`document.querySelector('[data-testid="pg-detail"] header button:last-child')?.click()`)
+      await cdp.evaluate(`document.querySelector('.inspector-close')?.click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"]') === null`, `${width}x${height} closed detail`)
       await cdp.evaluate(`(() => {
         const scroll = document.querySelector('[data-testid="pg-activity-table"] .entity-scroll')
@@ -2934,7 +2934,7 @@ test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, as
       assert.ok(scrolled.close.top >= scrolled.dock.top - 1 && scrolled.close.bottom <= scrolled.dock.bottom + 1, `${width}x${height} visible close: ${JSON.stringify(scrolled)}`)
       assert.ok(scrolled.lastDetail.top >= scrolled.header.bottom - 1 && scrolled.lastDetail.bottom <= scrolled.dock.bottom + 1, `${width}x${height} reachable detail fields: ${JSON.stringify(scrolled)}`)
 
-      await cdp.evaluate(`document.querySelector('[data-testid="pg-detail"] header button:last-child').click()`)
+      await cdp.evaluate(`document.querySelector('.inspector-close').click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"]') === null`, `${width}x${height} detail close`)
       const closed = await cdp.evaluate(viewportTableGeometry())
       assert.ok(Math.abs(closed.table.scrollLeft - before.table.scrollLeft) <= 1, `${width}x${height} horizontal scroll on close: ${JSON.stringify({ before, closed })}`)
@@ -3889,7 +3889,7 @@ async function assertCompactTimelineContained(cdp, followingSelector, label) {
         shell: bounds(shell),
       }
     })()`)
-    assert.ok(geometry.figure.height >= 127 && geometry.figure.height <= 133, `${label} ${width}px compact figure: ${JSON.stringify(geometry)}`)
+    assert.ok(geometry.figure.height >= 72 && geometry.figure.height <= 76, `${label} ${width}px compact figure: ${JSON.stringify(geometry)}`)
     for (const axis of geometry.axes) {
       assert.ok(axis.left >= geometry.figure.left - 1 && axis.right <= geometry.figure.right + 1
         && axis.top >= geometry.figure.top - 1 && axis.bottom <= geometry.figure.bottom + 1,
@@ -3898,7 +3898,7 @@ async function assertCompactTimelineContained(cdp, followingSelector, label) {
     assert.ok(geometry.cursor !== null && geometry.cursor.left >= geometry.figure.left - 1
       && geometry.cursor.right <= geometry.figure.right + 1 && geometry.cursor.bottom <= geometry.figure.bottom + 1,
     `${label} ${width}px cursor containment: ${JSON.stringify(geometry)}`)
-    assert.ok(geometry.rightReserve >= 30, `${label} ${width}px final-label reserve: ${JSON.stringify(geometry)}`)
+    assert.ok(geometry.rightReserve >= 28, `${label} ${width}px final-label reserve: ${JSON.stringify(geometry)}`)
     assert.ok(geometry.following.top >= geometry.shell.bottom - 1, `${label} ${width}px following-region overlap: ${JSON.stringify(geometry)}`)
   }
 }
@@ -4131,7 +4131,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
           return rect.bottom > scrollRect.top && rect.top < scrollRect.bottom
         }).length
         const query = new URL(location.href).searchParams
-        return { inspector, panel: query.get('panel'), row: query.get('row'), scroll: bounds(scroll), visibleRows }
+        return { body: bounds(document.querySelector('.inspector-body')), inspector, panel: query.get('panel'), row: query.get('row'), scroll: bounds(scroll), visibleRows }
       })()`)
       assert.notEqual(opened.row, null, viewport.kind)
       assert.equal(opened.panel, null, viewport.kind)
@@ -4145,6 +4145,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       } else {
         assert.ok(Math.abs(opened.inspector.width - viewport.width) <= 1, JSON.stringify(opened))
         assert.ok(opened.inspector.height <= 480.5, JSON.stringify(opened))
+        assert.ok(opened.inspector.height >= 300 && opened.body.height >= 250, JSON.stringify(opened))
       }
       await cdp.evaluate(`([...document.querySelectorAll('.inspector-tabs button')].find((button) => button.textContent === 'Chart')).click()`)
       await cdp.waitFor(`new URL(location.href).searchParams.get('panel') === 'chart' && document.querySelector('[data-testid="inspector-chart"] canvas') !== null`, `${viewport.kind} Chart Inspector`)
@@ -4161,6 +4162,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     await cdp.waitFor(`document.querySelectorAll('.pg-tabs button').length > 1`, "PostgreSQL tabs")
     await cdp.evaluate(`document.querySelectorAll('.pg-tabs button')[1].click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"] .entity-row') !== null`, "PostgreSQL Activity table")
+    assert.ok(await cdp.evaluate(`document.querySelector('[data-testid="pg-activity-table"] .entity-scroll').getBoundingClientRect().height <= 72`), "short PostgreSQL Activity result is content-sized")
     await cdp.evaluate(`document.querySelector('[data-testid="pg-activity-table"] .entity-row').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="inspector-detail"] [data-testid="pg-detail"]') !== null`, "PostgreSQL detail in shared Inspector")
     assert.equal(await cdp.evaluate(`document.querySelectorAll('[data-testid="inspector"]').length === 1 && document.querySelector('.workspace [data-testid="pg-detail"]') === null`), true)

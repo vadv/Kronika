@@ -97,6 +97,7 @@ export function PostgresRelationsView(props: PostgresRelationsViewProps) {
     <div className="pg-entity-layout mt-2 grid min-w-0 grid-cols-[minmax(0,1fr)] [.pg-table-shell_&]:min-h-0 [.pg-table-shell_&]:flex-1 [.pg-table-shell_&]:grid-rows-[minmax(0,1fr)] [.pg-table-shell_&]:overflow-hidden" data-pg-section={section === "pg_stat_user_tables" ? "tables" : "indexes"}>
       <EntityTable
         columns={columns}
+        contentSized={rows.length < 10 && !hasMore}
         loading={tablesLoading}
         empty={t(emptyHourStatusKey(hour))}
         label={t(section === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}

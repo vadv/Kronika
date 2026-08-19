@@ -194,12 +194,12 @@ export function EntityTable({
     if (locatedIndex >= 0) virtual.scrollToIndex(locatedIndex, { align: "center" })
   }, [finding, locatedIndex, virtual])
   const width = table.getTotalSize()
-  const contentHeight = contentSized && rendered.length > 0 ? Math.min(310, 26 + rendered.length * 23) : undefined
+  const contentHeight = contentSized ? rendered.length === 0 ? 72 : Math.min(310, 26 + rendered.length * 23) : undefined
   const searchPending = searchRequest.phase === "pending"
   const searchMessage = searchRequest.phase === "pending" || searchRequest.phase === "error"
     ? <SearchRequestMessage request={searchRequest} t={t} />
     : null
-  return <section aria-busy={searchPending} className={`entity-table min-w-0 overflow-hidden bg-s1 pg-stretch${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
+  return <section aria-busy={searchPending} className={`entity-table min-w-0 overflow-hidden bg-s1${contentSized ? "" : " pg-stretch"}${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
     {(status !== undefined || searchMessage !== null) && onPattern === undefined && contextLabel === undefined && <div className="flex min-h-[26px] min-w-0 items-center gap-x-[14px] overflow-hidden whitespace-nowrap border-b border-line2 bg-[color-mix(in_srgb,var(--color-s2)_82%,transparent)] px-[7px] py-1 text-xs text-fg3 [&_strong]:font-[650] [&_strong]:text-fg2" data-testid="table-status">{searchMessage ?? status}</div>}
     {(onPattern !== undefined || contextLabel !== undefined) && <TableFilter context={contextLabel} grouped={searchGrouped} kept={serverSorted === true ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} status={searchMessage ?? status} surface={searchSurface ?? "os_process"} t={t} total={rows.length} />}
     <div aria-label={label} className={`entity-scroll relative h-[min(310px,36vh)] min-h-[154px] overflow-auto [scroll-padding-inline-end:15px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent [.process-table_&]:h-auto [.process-table_&]:min-h-0 [.process-table_&]:flex-1 [.pg-entity-layout_&]:h-[min(560px,calc(100dvh-475px))] [.pg-entity-layout_&]:min-h-[100px] [.pg-table-shell_.pg-entity-layout_&]:h-auto [.pg-table-shell_.pg-entity-layout_&]:min-h-0 [.pg-table-shell_.pg-entity-layout_&]:flex-1${contentHeight === undefined ? "" : " !min-h-0"}`} ref={parent} role="table" style={contentHeight === undefined ? undefined : { height: contentHeight }} tabIndex={0}>
@@ -272,11 +272,11 @@ export function EntityTable({
 // accent stripe alongside.
 const LOCATOR_ROW: Readonly<Record<string, string>> = {
   known_bad: "shadow-[inset_3px_0_var(--color-bad)] aria-selected:shadow-[inset_2px_0_var(--color-accent),inset_5px_0_var(--color-bad)]",
-  spike: "shadow-[inset_0_0_0_1px_var(--color-warn)] aria-selected:shadow-[inset_2px_0_var(--color-accent),inset_0_0_0_1px_var(--color-warn)]",
+  spike: "shadow-[inset_3px_0_var(--color-warn)] aria-selected:shadow-[inset_2px_0_var(--color-accent),inset_5px_0_var(--color-warn)]",
 }
 const LOCATOR_CELL: Readonly<Record<string, string>> = {
-  known_bad: "bg-[color-mix(in_srgb,var(--color-bad)_22%,transparent)] text-fg-hi [&_.entity-value]:text-fg-hi",
-  spike: "outline outline-1 -outline-offset-2 outline-warn",
+  known_bad: "bg-[color-mix(in_srgb,var(--color-bad)_18%,transparent)] font-[700] text-fg-hi [&_.entity-value]:text-fg-hi",
+  spike: "bg-[color-mix(in_srgb,var(--color-warn)_12%,transparent)] font-[650] text-fg-hi [&_.entity-value]:text-fg-hi",
 }
 const VALUE_TONE: Readonly<Record<string, string>> = {
   good: "[&_.entity-value]:text-ok",

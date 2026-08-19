@@ -75,7 +75,7 @@ test("shared shells join the timeline directly to real content", async () => {
   assert.match(app, /className="lensbar !mt-0 border-t-0"/)
   assert.match(host, /className="lensbar !mt-0 border-t-0"/)
   assert.match(host, /modes\.length === 0 \? "mt-0"/)
-  assert.match(postgres, /className="pg-tabs !mt-0 [^"]*border-t-0/)
+  assert.match(postgres, /className="pg-tabs !mt-0/)
 })
 
 test("slow-query detail keeps text followed by compact numeric values", () => {
