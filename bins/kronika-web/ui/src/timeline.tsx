@@ -38,6 +38,7 @@ interface TimelineLane {
 }
 
 export type FindingShape = "circle" | "diamond" | "triangle"
+export type TimelinePresentation = "preview" | "inspector"
 
 export function Timeline({
   cursor,
@@ -49,7 +50,11 @@ export function Timeline({
   navigationTimestamps,
   onCursor,
   onFinding,
+  onOpenChart,
+  onSelectedLane,
   primaryLane = "health",
+  presentation = "preview",
+  selectedLane: controlledLane,
   shownAt,
   t,
 }: {
@@ -62,7 +67,11 @@ export function Timeline({
   readonly navigationTimestamps?: readonly number[] | undefined
   readonly onCursor: (timestamp: number) => void
   readonly onFinding: (finding: Finding, grouped?: readonly Finding[]) => void
+  readonly onOpenChart?: (() => void) | undefined
+  readonly onSelectedLane?: ((lane: string) => void) | undefined
   readonly primaryLane?: string | undefined
+  readonly presentation?: TimelinePresentation | undefined
+  readonly selectedLane?: string | undefined
   readonly shownAt?: number | null
   readonly t: Translate
 }) {
@@ -87,7 +96,12 @@ export function Timeline({
       ? lane.series.some((line) => line.points.length !== 0)
       : lane.series.some((line) => line.points.some((point) => point.value !== null)))
   }, [healthTrack, lanePoints])
-  const [selectedLane, setSelectedLane] = useState(primaryLane)
+  const [localLane, setLocalLane] = useState(primaryLane)
+  const selectedLane = controlledLane ?? localLane
+  const setSelectedLane = (lane: string) => {
+    if (controlledLane === undefined) setLocalLane(lane)
+    onSelectedLane?.(lane)
+  }
   const previousPrimary = useRef(primaryLane)
   useEffect(() => {
     if (previousPrimary.current === primaryLane) return
@@ -152,17 +166,20 @@ export function Timeline({
       ? <section className="flex min-h-[46px] items-center justify-center border-y border-line2 bg-s1 text-sm text-fg4" data-testid="timeline-empty">{t(emptyHourStatusKey(hour))}</section>
       : <section className="flex min-h-[46px] items-center justify-center border-y border-line2 bg-s1 text-sm text-fg4" data-testid="timeline-empty">{t("status.no_data")}</section>
   }
-  return <section aria-label={t("hour.range", { range: time.hourRange(hour).primary })} className="timeline-shell mt-2 flex flex-col overflow-hidden border-y border-line2 bg-s1">
-    <div className="flex flex-none overflow-x-auto border-b border-line2">
-      {lanes.map((lane) => <LaneLabel
-        help={`lane.${lane.key}.help`}
-        key={lane.key}
-        label={`lane.${lane.key}.label`}
-        onSelect={() => setSelectedLane(lane.key)}
-        primary={lane.key === selected.key}
-        reading={laneReading(lane, cursor, locale, t)}
-        t={t}
-      />)}
+  return <section aria-label={t("hour.range", { range: time.hourRange(hour).primary })} className={`timeline-shell mt-2 flex flex-col overflow-hidden border-y border-line2 bg-s1 timeline-${presentation}`} data-presentation={presentation}>
+    <div className="timeline-rail flex h-7 flex-none border-b border-line2">
+      <div className="flex min-w-0 flex-1 overflow-x-auto">
+        {lanes.map((lane) => <LaneLabel
+          help={`lane.${lane.key}.help`}
+          key={lane.key}
+          label={`lane.${lane.key}.label`}
+          onSelect={() => setSelectedLane(lane.key)}
+          primary={lane.key === selected.key}
+          reading={laneReading(lane, cursor, locale, t)}
+          t={t}
+        />)}
+      </div>
+      {presentation === "preview" && onOpenChart !== undefined && <button aria-label={t("inspector.open_chart")} className="timeline-open-chart" onClick={onOpenChart} title={t("inspector.open_chart")} type="button"><span aria-hidden="true">↗</span><span>{t("inspector.chart")}</span></button>}
     </div>
     <UPlotChart
       className="timeline-chart"
@@ -180,6 +197,7 @@ export function Timeline({
       t={t}
       testId="hour-timeline"
       threshold={threshold}
+      variant={presentation}
     />
   </section>
 }
@@ -236,7 +254,7 @@ function toRecordedSeries(lane: TimelineLane, locale: Locale, t: Translate): rea
 }
 
 function LaneLabel({ label, help, onSelect, primary, reading, t }: { readonly label: string; readonly help: string; readonly onSelect: () => void; readonly primary: boolean; readonly reading: string; readonly t: Translate }) {
-  return <div data-primary={primary || undefined} className={`lane-label flex min-h-[34px] flex-[1_0_140px] items-center gap-2 border-r border-line px-[9px] text-sm uppercase text-fg3 last:border-r-0 max-[760px]:pl-0.5 max-[760px]:text-xs max-[520px]:flex-[0_0_124px] w-auto bg-transparent text-left hover:bg-accent-soft hover:text-accent3${primary ? " bg-s2 text-fg2 shadow-[inset_0_-2px_var(--color-accent)]" : ""}`}>
+  return <div data-primary={primary || undefined} className={`lane-label flex h-7 flex-[1_0_140px] items-center gap-2 border-r border-line px-[7px] text-xs uppercase text-fg3 last:border-r-0 max-[760px]:pl-1 max-[520px]:flex-[0_0_120px] w-auto bg-transparent text-left hover:bg-accent-soft hover:text-accent3${primary ? " bg-s2 text-fg2 shadow-[inset_0_-2px_var(--color-accent)]" : ""}`}>
     <button aria-pressed={primary} className="lane-select flex min-w-0 flex-auto cursor-pointer items-center gap-2 self-stretch border-0 bg-transparent p-0 text-left [font-family:inherit]" onClick={onSelect} type="button">
       <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{t(label)}</span>
       <span data-testid="lane-reading" className={`ml-auto flex-none whitespace-nowrap text-right normal-case tabular-nums ${primary ? "text-md font-[620] text-accent3" : "text-sm text-fg"}`}>{reading}</span>

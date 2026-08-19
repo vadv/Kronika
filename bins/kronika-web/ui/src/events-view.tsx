@@ -3,7 +3,6 @@ import { useVirtualizer } from "@tanstack/react-virtual"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { Cell, DataRow, Finding, HourData } from "./api"
-import { ChartOnly } from "./chart-visibility"
 import { useDetailDismiss } from "./detail-dismiss"
 import { DetailList, DetailRow } from "./detail-list"
 import { useDisplayTime } from "./display-time-context"
@@ -117,8 +116,8 @@ export function EventsView({
     : scope.length
   const omitted = scope === null ? Math.max(0, original - data.findings.length) : 0
   return <>
-    <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} primaryLane="health" shownAt={shownAt} t={t} /></ChartOnly>
-    <section className="mt-2 charts-hidden:flex charts-hidden:min-h-0 charts-hidden:flex-1 charts-hidden:flex-col" data-testid="events-console">
+    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} primaryLane="health" shownAt={shownAt} t={t} />
+    <section className="mt-2" data-testid="events-console">
       <header className="flex min-h-[38px] items-center justify-between border-b border-line2 px-1.5 py-1 max-[760px]:flex-col max-[760px]:items-stretch max-[760px]:gap-[5px]">
         <div className="flex border border-line3" role="group" aria-label={t("events.filters")}>
           {(["all", "event", "known_bad"] as const).map((choice) => <button aria-pressed={filter === choice} className="min-h-[27px] cursor-pointer border-0 bg-transparent px-2.5 text-xs uppercase text-fg3 aria-pressed:bg-s4 aria-pressed:text-accent3" key={choice} onClick={() => setFilter(choice)} type="button">{choice === "all" ? t("events.all") : t(`locator.${choice}`)}</button>)}
@@ -127,8 +126,8 @@ export function EventsView({
         {scope !== null && <button className="min-h-[29px] cursor-pointer border border-line4 bg-s2 px-[9px] text-xs uppercase text-accent3" onClick={onShowAll} type="button">{t("events.show_all", { count: scope.length })}</button>}
       </header>
       <TableFilter kept={visible.length} onPattern={onPattern} pattern={pattern} surface="events" t={t} total={original} />
-      <div className={`grid min-h-[430px] charts-hidden:min-h-0 charts-hidden:flex-1 max-[760px]:grid-cols-[minmax(0,1fr)] ${active === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(360px,.78fr)_minmax(0,1.22fr)]"}`}>
-        <div className={`h-[min(570px,calc(100vh-360px))] min-h-[390px] overflow-auto border-line2 charts-hidden:h-auto charts-hidden:min-h-0 max-[760px]:h-[260px] max-[760px]:min-h-[180px] max-[760px]:border-r-0 ${active === null ? "" : "border-r"}`} ref={list} role="list">
+      <div className={`grid min-h-[430px] max-[760px]:grid-cols-[minmax(0,1fr)] ${active === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(360px,.78fr)_minmax(0,1.22fr)]"}`}>
+        <div className={`h-[min(570px,calc(100vh-360px))] min-h-[390px] overflow-auto border-line2 max-[760px]:h-[260px] max-[760px]:min-h-[180px] max-[760px]:border-r-0 ${active === null ? "" : "border-r"}`} ref={list} role="list">
           {visible.length === 0 && (loading
         ? <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>
         : <div className="table-empty">{t("events.empty")}</div>)}
@@ -172,7 +171,7 @@ function FindingDetail({ cursor, data, finding, history, hour, locale, onClose, 
   const readings = findingReadings(finding, row, points, data)
   const entity = findingEntity(row)
   const detail = useDetailDismiss(onClose, findingKey(finding))
-  return <aside className="h-[min(570px,calc(100vh-360px))] min-h-[390px] overflow-auto p-[11px] charts-hidden:h-auto charts-hidden:min-h-0 max-[760px]:h-auto max-[760px]:min-h-[260px] max-[760px]:border-t max-[760px]:border-line2" data-testid="event-detail" ref={detail}>
+  return <aside className="h-[min(570px,calc(100vh-360px))] min-h-[390px] overflow-auto p-[11px] max-[760px]:h-auto max-[760px]:min-h-[260px] max-[760px]:border-t max-[760px]:border-line2" data-testid="event-detail" ref={detail}>
     <header className="grid grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-[9px] border-b border-line3 pb-[9px]"><KindIcon kind={finding.kind} /><div><span className="text-xs uppercase text-fg3">{findingCategory(finding, t)}</span><h2 className="mt-[3px] text-md">{findingSource(finding, t)}</h2></div><time className="text-xs text-fg2">{time.timestamp(finding.timestamp)}</time></header>
     {resolution === "loading" && <p className="mt-2.5 text-sm leading-[1.45] text-fg2 [overflow-wrap:anywhere]">{t("events.loading_row")}</p>}
     {resolution === "unavailable" && <p className="mt-2.5 text-sm leading-[1.45] text-fg2 [overflow-wrap:anywhere]">{t("events.row_unavailable")}</p>}
@@ -188,7 +187,7 @@ function FindingDetail({ cursor, data, finding, history, hour, locale, onClose, 
       </section>}
       <DetailList>{findingDetailFields(row, finding).map(([field, cell]) => <DetailRow key={field} term={eventFieldLabel(field, t)}>{eventValue(finding, field, cell, locale, t)}</DetailRow>)}</DetailList>
     </>}
-    <ChartOnly>{metric.field !== null && points.some(({ value }) => typeof value === "number" && Number.isFinite(value)) && <SeriesChart
+    {metric.field !== null && points.some(({ value }) => typeof value === "number" && Number.isFinite(value)) && <SeriesChart
       cursor={cursor}
       durationAxis={metric.unit === "milliseconds"}
       format={(number, place) => formatMetric(number, metric.unit, place, t)}
@@ -201,7 +200,7 @@ function FindingDetail({ cursor, data, finding, history, hour, locale, onClose, 
       scale={metric.unit === "percent" || finding.logicalName === "health" ? "percent" : "nonnegative"}
       t={t}
       unit={finding.logicalName === "health" ? "%" : metricUnit(metric.unit, locale)}
-    />}</ChartOnly>
+    />}
   </aside>
 }
 

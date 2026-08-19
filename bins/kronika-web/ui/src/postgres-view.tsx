@@ -4,7 +4,6 @@ import { registry } from "kronika:registry"
 
 import type { DataRow, Finding, HourData, SegmentBound, SnapshotRows } from "./api"
 import { buildMetricSamples } from "./chart"
-import { ChartOnly, useChartsVisible } from "./chart-visibility"
 import { contextMatches, contextualRows, type EntityContext } from "./entity-context"
 import { useDetailDismiss } from "./detail-dismiss"
 import { DetailList, DetailRow } from "./detail-list"
@@ -301,7 +300,7 @@ export function PostgresView({
   }, [data.availableSections, onSection, section])
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
   return <>
-    <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} primaryLane={section === "statements" || section === "plans" ? "pg_running" : section === "activity" || section === "locks" ? "pg_waiting" : "health"} shownAt={shownAt} t={t} /></ChartOnly>
+    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} primaryLane={section === "statements" || section === "plans" ? "pg_running" : section === "activity" || section === "locks" ? "pg_waiting" : "health"} shownAt={shownAt} t={t} />
     <nav aria-label={t("pg.sections")} className="pg-tabs !mt-0 flex min-h-[35px] overflow-x-auto border border-t-0 border-line2 bg-s1 [&>button]:flex [&>button]:flex-none [&>button]:cursor-pointer [&>button]:items-center [&>button]:gap-1.5 [&>button]:border-0 [&>button]:border-r [&>button]:border-line2 [&>button]:bg-transparent [&>button]:text-xs [&>button]:uppercase [&>button]:tracking-[.04em] [&>button]:text-fg3 [&>button:disabled]:cursor-not-allowed [&>button:disabled]:opacity-35 [&>button[aria-current=page]]:bg-s4 [&>button[aria-current=page]]:text-accent3 [&>button[aria-current=page]]:shadow-[inset_0_-2px_var(--color-accent)]">
       {TABS.map((tab) => {
         const enabled = tab.id === "plans" || tab.id === "tables" || tab.id === "indexes" || tab.sections === undefined || tab.sections.some(available)
@@ -424,7 +423,7 @@ function PgPreview({ blockSize, columns: prescribedColumns, cursor, data, tables
   const initialHistory = columns.find(chartableColumn)?.field ?? null
   return <section className="pg-preview panel mt-2">
     <h2 className="panel-head">{overview ? t(overviewSectionKey(section)) : section}</h2>
-    <div className={`pg-entity-layout mt-2 grid min-w-0 [.pg-table-shell_&]:min-h-0 [.pg-table-shell_&]:flex-1 [.pg-table-shell_&]:grid-rows-[minmax(0,1fr)] [.pg-table-shell_&]:overflow-hidden [.charts-hidden.pg-table-shell_&]:flex-auto ${selected === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)_clamp(460px,32vw,600px)]"} max-[1000px]:grid-cols-[minmax(0,1fr)]`}>
+    <div className={`pg-entity-layout mt-2 grid min-w-0 [.pg-table-shell_&]:min-h-0 [.pg-table-shell_&]:flex-1 [.pg-table-shell_&]:grid-rows-[minmax(0,1fr)] [.pg-table-shell_&]:overflow-hidden ${selected === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)_clamp(460px,32vw,600px)]"} max-[1000px]:grid-cols-[minmax(0,1fr)]`}>
       <EntityTable columns={columns} empty={t("table.no_rows")} label={section} loading={tablesLoading} locale={locale} onSelect={setSelected} rows={rows} selectedKey={selectedKey ?? (focus === null ? null : rowKey(focus))} status={initialHistory === null ? undefined : <span>{t("system.history")}</span>} t={t} />
       {selected !== null && <PgDetail allRows={allRows} columns={columns} cursor={cursor} historyField={initialHistory} historyRevision={historyRevision} hour={hour} locale={locale} onClose={() => setSelected(null)} onCursor={onCursor} overview={overview} row={selected} section={section} t={t} />}
     </div>
@@ -446,7 +445,7 @@ function PlanInfo({ cursor, data, historyRevision, hour, locale, onCursor, t }: 
       <div><dt>{t("pg.field.dealloc.label")}</dt><dd>{dealloc === null ? "—" : measure(dealloc, locale, t("unit.per_second"))}</dd></div>
       <div><dt>{t("pg.field.stats_reset.label")}</dt><dd>{display(reset, timestamp("stats_reset"), locale, t)}</dd></div>
     </dl>
-    <ChartOnly><SeriesChart cursor={cursor} helpKey="pg.field.dealloc.help" hour={hour} labelKey="pg.field.dealloc.label" locale={locale} onCursor={onCursor} points={history.value?.get(PLAN_DEALLOC_COLUMN.field) ?? []} scale="nonnegative" status={history.status} t={t} unit={t("unit.per_second")} /></ChartOnly>
+    <SeriesChart cursor={cursor} helpKey="pg.field.dealloc.help" hour={hour} labelKey="pg.field.dealloc.label" locale={locale} onCursor={onCursor} points={history.value?.get(PLAN_DEALLOC_COLUMN.field) ?? []} scale="nonnegative" status={history.status} t={t} unit={t("unit.per_second")} />
   </section>
 }
 
@@ -482,10 +481,10 @@ function OverviewActivityHistory({ cursor, data, hour, locale, onCursor, t }: { 
   const running = data.lanePoints.filter(({ lane }) => lane === "pg_running")
   const waiting = data.lanePoints.filter(({ lane }) => lane === "pg_waiting")
   if (running.length === 0 && waiting.length === 0) return null
-  return <ChartOnly><section className="pg-overview-section" data-testid="pg-overview-activity-history">
+  return <section className="pg-overview-section" data-testid="pg-overview-activity-history">
     <h2>{t("pg.overview.activity_history")}</h2>
     <SeriesChart cursor={cursor} helpKey="lane.pg_running.help" hour={hour} labelKey="pg.overview.running" locale={locale} onCursor={onCursor} points={running} scale="nonnegative" second={waiting} secondHelpKey="lane.pg_waiting.help" secondLabelKey="pg.overview.waiting" t={t} unit="count" />
-  </section></ChartOnly>
+  </section>
 }
 
 export function walStoragePoints(rows: readonly DataRow[]): readonly ChartPoint[] {
@@ -495,9 +494,8 @@ export function walStoragePoints(rows: readonly DataRow[]): readonly ChartPoint[
 }
 
 function WalStorage({ cursor, historyRevision, hour, locale, onCursor, row, t }: { readonly cursor: number; readonly historyRevision: number; readonly hour: number; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly row: DataRow; readonly t: Translate }) {
-  const chartsVisible = useChartsVisible()
   const [expanded, setExpanded] = useState(false)
-  const target = chartsVisible && expanded ? JSON.stringify([hour, row.typeId, "wal_files_bytes"]) : null
+  const target = expanded ? JSON.stringify([hour, row.typeId, "wal_files_bytes"]) : null
   const loaded = useHistoryRequest(target, historyRevision, target === null ? null : async (signal) => walStoragePoints(
     await loadSeries(hour, "pg_wal_storage", {}, ["wal_files_bytes"], signal, row.typeId),
   ))
@@ -509,7 +507,7 @@ function WalStorage({ cursor, historyRevision, hour, locale, onCursor, row, t }:
         <strong className="font-medium tabular-nums text-fg2">{humanBytes(value(row, "wal_files_bytes"), locale)}</strong>
         <span aria-hidden="true" className="text-accent3">{expanded ? "−" : "+"}</span>
       </summary>
-      <ChartOnly><div className="mt-1 border-t border-line pt-1"><SeriesChart cursor={cursor} format={humanBytes} helpKey="pg.wal_storage.help" hour={hour} labelKey="pg.wal_storage.history" locale={locale} onCursor={onCursor} points={history} scale="nonnegative" status={loaded.status} t={t} unit="B" /></div></ChartOnly>
+      <div className="mt-1 border-t border-line pt-1"><SeriesChart cursor={cursor} format={humanBytes} helpKey="pg.wal_storage.help" hour={hour} labelKey="pg.wal_storage.history" locale={locale} onCursor={onCursor} points={history} scale="nonnegative" status={loaded.status} t={t} unit="B" /></div>
     </details>
   </section>
 }
@@ -527,10 +525,10 @@ function OverviewMetrics({ cursor, historyRevision, hour, locale, logicalName, o
   const history = usePgMetricHistory(hour, row, chartColumns, historyRevision)
   return <section className="pg-overview-section">
     <h2>{t(overviewSectionKey(logicalName))}</h2>
-    <ChartOnly>{selectedColumn !== undefined && <section className="process-history pg-metric-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]">
+    {selectedColumn !== undefined && <section className="process-history pg-metric-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]">
       <div aria-label={t("system.history")} className="history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">{chartColumns.map((column) => <button aria-pressed={metricField === column.field} className="min-h-[28px] flex-none cursor-pointer border border-line3 bg-s2 px-[7px] py-1 text-xs text-fg2 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg" data-testid={`pg-overview-chart-${column.field}`} key={column.field} onClick={() => setMetricField(column.field)} type="button">{t(overviewFieldKey(column.field))}</button>)}</div>
       <SeriesChart cursor={cursor} durationAxis={durationKind(selectedColumn.kind)} format={chartFormat(selectedColumn.kind, columnDenominator(selectedColumn, t))} helpKey={selectedColumn.help ?? "chart.metric.help"} hour={hour} labelKey={overviewFieldKey(selectedColumn.field)} locale={locale} onCursor={onCursor} points={history.value?.get(selectedColumn.field) ?? []} scale={chartScale(selectedColumn)} status={history.status} t={t} tickFormat={chartFormat(selectedColumn.kind, columnDenominator(selectedColumn, t))} unit={chartUnit(selectedColumn, t("unit.per_second"))} />
-    </section>}</ChartOnly>
+    </section>}
     <dl>{registryCardFields(row).map(([field, cell]) => <div key={field}><dt><LabelHelp helpKey={`${overviewFieldKey(field)}.help`} labelKey={overviewFieldKey(field)} t={t} /></dt><dd>{overviewValue(cell, field, locale, time)}</dd></div>)}</dl>
   </section>
 }
@@ -575,8 +573,7 @@ export function pgMetricHistoryPlan(typeId: string, columns: readonly EntityColu
 }
 
 function usePgMetricHistory(hour: number, row: DataRow | null, columns: readonly EntityColumn[], historyRevision: number): HistoryState<ReadonlyMap<string, readonly ChartPoint[]>> {
-  const chartsVisible = useChartsVisible()
-  const target = !chartsVisible || row === null || columns.length === 0
+  const target = row === null || columns.length === 0
     ? null
     : JSON.stringify([hour, row.logicalName, row.typeId])
   return useHistoryRequest(target, historyRevision, row === null || columns.length === 0 ? null : async (signal) => {
@@ -704,7 +701,7 @@ function PgEntityView({
     </button>
     : undefined
   const status = historyField === null ? snapshotStatus : <>{snapshotStatus}<span>{t("system.history")}</span></>
-  return <div className={`pg-entity-layout mt-2 grid min-w-0 [.pg-table-shell_&]:min-h-0 [.pg-table-shell_&]:flex-1 [.pg-table-shell_&]:grid-rows-[minmax(0,1fr)] [.pg-table-shell_&]:overflow-hidden [.charts-hidden.pg-table-shell_&]:flex-auto ${selected === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)_clamp(460px,32vw,600px)]"} max-[1000px]:grid-cols-[minmax(0,1fr)]`} data-pg-section={sectionName(section)} data-testid="pg-entity-layout">
+  return <div className={`pg-entity-layout mt-2 grid min-w-0 [.pg-table-shell_&]:min-h-0 [.pg-table-shell_&]:flex-1 [.pg-table-shell_&]:grid-rows-[minmax(0,1fr)] [.pg-table-shell_&]:overflow-hidden ${selected === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)_clamp(460px,32vw,600px)]"} max-[1000px]:grid-cols-[minmax(0,1fr)]`} data-pg-section={sectionName(section)} data-testid="pg-entity-layout">
     <div className="pg-entity-main min-w-0 pg-stretch">
       <EntityTable columns={visibleColumns} contextLabel={activeContext?.label} empty={t("table.no_rows")} loading={tablesLoading} finding={finding} findingField={finding === null || finding === undefined ? null : fieldNameForLocator(finding)} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onContextClear={onContextClear} onNearEnd={densePageState === "idle" && canLoadMore ? onLoadMore : undefined} onOrder={onOrder} onPattern={onPattern} onSelect={(row) => { setSelected(row); onSelectedKey?.(rowKey(row)) }} order={activeOrder} pattern={pattern} searchRequest={searchRequest} searchSurface={section} serverSorted={dense} rows={rows} selectedKey={selectedRowKey} status={status} t={t} testId={`pg-${sectionName(section)}-table`} />
       {paging !== undefined && <div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" data-testid="table-paging">{paging}</div>}
@@ -793,10 +790,10 @@ function PgDetail({ allRows, columns, cursor, historyField, historyRevision, hou
   return <aside className="pg-detail" data-testid="pg-detail" ref={detail}>
     <header className="pg-detail-head"><div><span>{overview ? t(overviewSectionKey(section)) : section === "pg_stat_progress_vacuum" ? section : t(`pg.section.${sectionName(section)}`)}</span><h2>{detailTitle(row, section, t)}</h2></div><div className="flex items-center gap-1.5">{section === "pg_stat_activity" && <button className="min-h-7 cursor-pointer border border-accent-line bg-accent-soft px-2 text-xs font-[600] text-accent3 disabled:cursor-not-allowed disabled:border-line3 disabled:bg-s2 disabled:text-fg4" data-testid="pg-activity-related-statements" disabled={activityTarget === null} onClick={() => { if (activityTarget !== null) onRelated?.(activityTarget) }} title={activityTarget === null ? t("pg.activity.statements_unavailable") : undefined} type="button">{t("pg.activity.open_statements", { query: activityTarget?.queryId ?? "—" })}</button>}{section === "pg_store_plans" && <button className="min-h-7 cursor-pointer border border-line3 bg-s2 px-2 text-xs uppercase text-accent3 disabled:cursor-not-allowed disabled:text-fg4" disabled={planTarget === null} onClick={() => { if (planTarget !== null) onRelated?.(planTarget) }} title={planTarget === null ? t("pg.plan.query_unavailable") : undefined} type="button">{t("pg.plan.open_query")}</button>}{section === "pg_stat_statements" && <button className="min-h-7 cursor-pointer border border-line3 bg-s2 px-2 text-xs uppercase text-accent3 disabled:cursor-not-allowed disabled:text-fg4" data-testid="pg-statement-related-plans" disabled={statementTarget === null} onClick={() => { if (statementTarget !== null) onRelated?.(statementTarget) }} type="button">{t("pg.statement.open_plans")}</button>}<button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></div></header>
     {section === "pg_stat_activity" && activityTarget === null && <p className="m-0 border-b border-line2 px-2 py-1.5 text-xs text-fg3" data-testid="pg-activity-statements-unavailable">{t("pg.activity.statements_unavailable")}</p>}
-    <ChartOnly>{activeMetricField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]">
+    {activeMetricField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]">
       <div aria-label={t("system.history")} className="history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">{chartColumns.map((column) => <button aria-pressed={activeMetricField === column.field} className="min-h-[28px] flex-none cursor-pointer border border-line3 bg-s2 px-[7px] py-1 text-xs text-fg2 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg" data-testid={`pg-chart-${column.field}`} key={column.field} onClick={() => setMetricField(column.field)} type="button">{t(column.label)}</button>)}</div>
       <SeriesChart cursor={cursor} durationAxis={durationKind(historyColumn.kind)} helpKey={historyColumn.help ?? "chart.metric.help"} hour={hour} labelKey={historyColumn.label} locale={locale} format={chartFormat(historyColumn.kind, columnDenominator(historyColumn, t))} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} status={exactHistory.status} t={t} tickFormat={chartFormat(historyColumn.kind, columnDenominator(historyColumn, t))} unit={chartUnit(historyColumn, t("unit.per_second"))} />
-    </section>}</ChartOnly>
+    </section>}
     {section === "pg_store_plans"
       ? <PlanTextBlocks cursor={cursor} plan={wholeText} revision={historyRevision} row={row} segments={segments} t={t} />
       : exactText !== null && <section className="query-block"><span>{t("pg.query.label")}<button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center border border-line4 bg-transparent px-[3px] py-0.5 text-xs uppercase text-accent3" onClick={() => void navigator.clipboard?.writeText(exactText)} type="button"><Copy aria-hidden="true" size={12} /></button></span><pre data-testid="pg-exact-query">{exactText}</pre></section>}
@@ -863,10 +860,9 @@ export function postgresMetricHistorySamples(rows: readonly DataRow[], row: Data
 }
 
 function usePostgresMetricHistory(row: DataRow, section: string, column: EntityColumn | undefined, hour: number, historyRevision: number): HistoryState<readonly ChartPoint[]> {
-  const chartsVisible = useChartsVisible()
   const request = column === undefined ? null : postgresMetricHistoryRequest(row, section, column)
   const filters = request?.filters ?? null
-  const ready = chartsVisible && request !== null && request.fields.length !== 0 && filters !== null
+  const ready = request !== null && request.fields.length !== 0 && filters !== null
   const target = ready ? JSON.stringify([hour, section, row.typeId, filters, column?.field]) : null
   return useHistoryRequest(target, historyRevision, !ready || column === undefined || request === null || filters === null ? null : async (signal) => {
     const rows = section === "pg_stat_activity"

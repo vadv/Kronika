@@ -12,6 +12,7 @@ test("an address survives a round trip through the query string", () => {
     pgLens: "load" as const,
     sort: { column: "utime", descending: true },
     row: "1244346:1784523346370000",
+    panel: "detail" as const,
     find: "postgres*",
   }
   const written = writeAddress(address)
@@ -100,6 +101,7 @@ test("relation drilldown keeps database-scoped identity", () => {
     relid: "24576",
     indexrelid: "24577",
     row: selected,
+    panel: "detail" as const,
   }
   const written = writeAddress(address)
   assert.equal(written, `/?view=pg.indexes&pg_lens=low_activity&datid=16384&schema=public+spaces&relid=24576&indexrelid=24577&${new URLSearchParams({ row: selected })}`)
@@ -170,4 +172,11 @@ test("Host master/detail modes and structured related search are URL-native and 
   const activityRow = writeAddress({ ...DEFAULT_ADDRESS, view: "pg.activity", row: "1700000000000000:1001004:73" })
   assert.equal(activityRow, "/?view=pg.activity&row=1700000000000000%3A1001004%3A73")
   assert.equal(readAddress(activityRow.slice(1)).row, "1700000000000000:1001004:73")
+})
+
+test("Inspector chart and row-only Detail links are URL-native", () => {
+  assert.equal(writeAddress({ ...DEFAULT_ADDRESS, panel: "chart" }), "/?panel=chart")
+  assert.equal(readAddress("panel=chart").panel, "chart")
+  assert.equal(readAddress("row=42:1700000000000000").panel, "detail")
+  assert.equal(readAddress("panel=detail").panel, null)
 })

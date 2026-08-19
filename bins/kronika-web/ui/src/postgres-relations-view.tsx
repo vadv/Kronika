@@ -3,7 +3,6 @@ import { Copy, X } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 
 import { acceptResponse, loadSeries, loadSnapshot, type DataRow, type HourData } from "./api"
-import { ChartOnly, useChartsVisible } from "./chart-visibility"
 import { useDetailDismiss } from "./detail-dismiss"
 import { DetailList, DetailRow } from "./detail-list"
 import { useDisplayTime } from "./display-time-context"
@@ -95,7 +94,7 @@ export function PostgresRelationsView(props: PostgresRelationsViewProps) {
   return <>
     <RelationLevels filters={filters} level={level} onNavigate={navigate} section={section} t={t} />
     <RelationLenses active={lens} onLens={onLens} section={section} t={t} />
-    <div className={`pg-entity-layout mt-2 grid min-w-0 [.pg-table-shell_&]:min-h-0 [.pg-table-shell_&]:flex-1 [.pg-table-shell_&]:grid-rows-[minmax(0,1fr)] [.pg-table-shell_&]:overflow-hidden [.charts-hidden.pg-table-shell_&]:flex-auto ${selected === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)_clamp(460px,32vw,600px)]"} max-[1000px]:grid-cols-[minmax(0,1fr)]`} data-pg-section={section === "pg_stat_user_tables" ? "tables" : "indexes"}>
+    <div className={`pg-entity-layout mt-2 grid min-w-0 [.pg-table-shell_&]:min-h-0 [.pg-table-shell_&]:flex-1 [.pg-table-shell_&]:grid-rows-[minmax(0,1fr)] [.pg-table-shell_&]:overflow-hidden ${selected === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)_clamp(460px,32vw,600px)]"} max-[1000px]:grid-cols-[minmax(0,1fr)]`} data-pg-section={section === "pg_stat_user_tables" ? "tables" : "indexes"}>
       <EntityTable
         columns={columns}
         loading={tablesLoading}
@@ -159,7 +158,6 @@ function RelationLenses({ active, onLens, section, t }: { readonly active: Relat
 }
 
 function RelationDetail({ blockSize, cursor, historyRevision, hour, lens, locale, onClose, onCursor, onNavigate, rateFields, row, t }: { readonly blockSize: number | null; readonly cursor: number; readonly historyRevision: number; readonly hour: number; readonly lens: RelationLens; readonly locale: Locale; readonly onClose: () => void; readonly onCursor: (timestamp: number) => void; readonly onNavigate: (navigation: RelationNavigation) => void; readonly rateFields: readonly string[]; readonly row: DataRow; readonly t: Translate }) {
-  const chartsVisible = useChartsVisible()
   const detail = useDetailDismiss(onClose, relationRowKey(row))
   const group = row.relation?.group ?? "object"
   const object = group === "object"
@@ -187,7 +185,7 @@ function RelationDetail({ blockSize, cursor, historyRevision, hour, lens, locale
     }
     return () => controller.abort()
   }, [definitionTarget, row])
-  const historyTarget = !chartsVisible || historyFields.length === 0
+  const historyTarget = historyFields.length === 0
     ? null
     : JSON.stringify([hour, row.logicalName, row.typeId, group, historyFilters, historyFields])
   const loadedHistory = useHistoryRequest(historyTarget, historyRevision, historyTarget === null ? null : (signal) => loadSeries(
@@ -209,10 +207,10 @@ function RelationDetail({ blockSize, cursor, historyRevision, hour, lens, locale
     <header className="pg-detail-head"><h2>{relationRowLabel(row)}</h2><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
     {linked !== null && <div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1"><button data-testid="pg-relation-link" onClick={() => onNavigate(linked)} type="button">{t(row.logicalName === "pg_stat_user_tables" ? "pg.relation.indexes" : "pg.relation.table")}</button></div>}
     {drill !== null && <div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1"><button data-testid="pg-relation-drill" onClick={() => onNavigate(drill)} type="button">{t(row.relation?.group === "database" ? "pg.relation.level.schema" : row.logicalName === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}</button></div>}
-    <ChartOnly>{historyField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]">
+    {historyField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]">
       <div aria-label={t("system.history")} className="history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">{chartColumns.map((column) => <button aria-pressed={historyField === column.field} className="min-h-[28px] flex-none cursor-pointer border border-line3 bg-s2 px-[7px] py-1 text-xs text-fg2 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg" data-testid={`pg-relation-chart-${column.field}`} key={column.field} onClick={() => setHistoryField(column.field)} type="button">{t(column.label)}</button>)}</div>
       <SeriesChart cursor={cursor} durationAxis={historyColumn.kind === "milliseconds" || historyColumn.kind === "duration" || historyColumn.kind === "microseconds"} format={chartFormat(historyColumn.kind, historyColumn.rate === true ? t("unit.per_second") : "")} helpKey={historyColumn.help ?? "chart.metric.help"} hour={hour} labelKey={historyColumn.label} locale={locale} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} status={loadedHistory.status} t={t} tickFormat={chartFormat(historyColumn.kind, historyColumn.rate === true ? t("unit.per_second") : "")} unit={chartUnit(historyColumn, t("unit.per_second"))} />
-    </section>}</ChartOnly>
+    </section>}
     <DetailList>{columns.map((column) => {
       const label = t(column.label)
       return <DetailRow key={column.field} term={column.help === undefined ? label : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}>{scanValue(row, column, locale, t)}</DetailRow>

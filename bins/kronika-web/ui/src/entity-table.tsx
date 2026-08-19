@@ -199,10 +199,10 @@ export function EntityTable({
   const searchMessage = searchRequest.phase === "pending" || searchRequest.phase === "error"
     ? <SearchRequestMessage request={searchRequest} t={t} />
     : null
-  return <section aria-busy={searchPending} className={`entity-table min-w-0 overflow-hidden bg-s1 pg-stretch [.charts-hidden_.entity-panels_&]:flex [.charts-hidden_.entity-panels_&]:flex-col${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
-    {(status !== undefined || searchMessage !== null) && <div className="flex min-h-[26px] min-w-0 items-center gap-x-[14px] overflow-hidden whitespace-nowrap border-b border-line2 bg-[color-mix(in_srgb,var(--color-s2)_82%,transparent)] px-[7px] py-1 text-xs text-fg3 [&_strong]:font-[650] [&_strong]:text-fg2" data-testid="table-status">{searchMessage ?? status}</div>}
-    {(onPattern !== undefined || contextLabel !== undefined) && <TableFilter context={contextLabel} grouped={searchGrouped} kept={serverSorted === true ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} surface={searchSurface ?? "os_process"} t={t} total={rows.length} />}
-    <div aria-label={label} className={`entity-scroll relative h-[min(310px,36vh)] min-h-[154px] overflow-auto [scroll-padding-inline-end:15px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent [.process-table_&]:h-auto [.process-table_&]:min-h-0 [.process-table_&]:flex-1 [.pg-entity-layout_&]:h-[min(560px,calc(100dvh-475px))] [.pg-entity-layout_&]:min-h-[100px] [.pg-table-shell_.pg-entity-layout_&]:h-auto [.pg-table-shell_.pg-entity-layout_&]:min-h-0 [.pg-table-shell_.pg-entity-layout_&]:flex-1${contentHeight === undefined ? " charts-hidden:h-auto charts-hidden:min-h-[154px] charts-hidden:flex-auto" : " !min-h-0"}`} ref={parent} role="table" style={contentHeight === undefined ? undefined : { height: contentHeight }} tabIndex={0}>
+  return <section aria-busy={searchPending} className={`entity-table min-w-0 overflow-hidden bg-s1 pg-stretch${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
+    {(status !== undefined || searchMessage !== null) && onPattern === undefined && contextLabel === undefined && <div className="flex min-h-[26px] min-w-0 items-center gap-x-[14px] overflow-hidden whitespace-nowrap border-b border-line2 bg-[color-mix(in_srgb,var(--color-s2)_82%,transparent)] px-[7px] py-1 text-xs text-fg3 [&_strong]:font-[650] [&_strong]:text-fg2" data-testid="table-status">{searchMessage ?? status}</div>}
+    {(onPattern !== undefined || contextLabel !== undefined) && <TableFilter context={contextLabel} grouped={searchGrouped} kept={serverSorted === true ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} status={searchMessage ?? status} surface={searchSurface ?? "os_process"} t={t} total={rows.length} />}
+    <div aria-label={label} className={`entity-scroll relative h-[min(310px,36vh)] min-h-[154px] overflow-auto [scroll-padding-inline-end:15px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent [.process-table_&]:h-auto [.process-table_&]:min-h-0 [.process-table_&]:flex-1 [.pg-entity-layout_&]:h-[min(560px,calc(100dvh-475px))] [.pg-entity-layout_&]:min-h-[100px] [.pg-table-shell_.pg-entity-layout_&]:h-auto [.pg-table-shell_.pg-entity-layout_&]:min-h-0 [.pg-table-shell_.pg-entity-layout_&]:flex-1${contentHeight === undefined ? "" : " !min-h-0"}`} ref={parent} role="table" style={contentHeight === undefined ? undefined : { height: contentHeight }} tabIndex={0}>
       <div className="entity-head sticky top-0 z-30 flex h-head min-w-full bg-s2 coarse:h-9 [&_[role=columnheader]]:select-none" ref={head} role="row" style={{ width }}>
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {
           const sorted = header.column.getIsSorted()
@@ -281,7 +281,7 @@ const LOCATOR_CELL: Readonly<Record<string, string>> = {
 const VALUE_TONE: Readonly<Record<string, string>> = {
   good: "[&_.entity-value]:text-ok",
   warning: "[&_.entity-value]:text-warn",
-  critical: "[&_.entity-value]:text-bad",
+  critical: "[&_.entity-value]:font-[700] [&_.entity-value]:text-bad",
   inactive: "[&_.entity-value]:text-fg4",
 }
 
@@ -383,7 +383,7 @@ export function sticky(meta: unknown, head: boolean): string {
   // for the per-table overrides that have not moved onto markup yet.
   // Shared box first, then the head/body difference, then what the process
   // table asks of both. The names stay as hooks for the tests.
-  const box = "flex-none min-w-0 overflow-hidden border-b border-r border-line px-[7px] [.process-table_&]:px-2"
+  const box = "flex-none min-w-0 overflow-hidden border-b border-line px-[7px] [.process-table_&]:px-2"
   const pinned = cell?.sticky === true || typeof cell?.sticky === "string"
   const name = typeof cell?.sticky === "string" ? cell.sticky : ""
   return [

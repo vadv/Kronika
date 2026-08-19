@@ -13,6 +13,7 @@ export function TableFilter({
   pattern,
   grouped = false,
   surface,
+  status,
   t,
   total,
 }: {
@@ -23,6 +24,7 @@ export function TableFilter({
   readonly pattern: string
   readonly grouped?: boolean | undefined
   readonly surface: SearchSurface
+  readonly status?: ReactNode | undefined
   readonly t: Translate
   readonly total: number
 }) {
@@ -93,6 +95,7 @@ export function TableFilter({
         {kept >= 0 && <span className="flex-none text-xs tabular-nums text-fg3">{t("filter.kept", { kept: String(kept), total: String(total) })}</span>}
         <button aria-label={t("filter.clear")} className="inline-flex flex-none cursor-pointer items-center border-0 bg-transparent p-0.5 text-accent3" onClick={clear} type="button"><X aria-hidden="true" size={12} /></button>
       </>}
+      {status !== undefined && <span className="ml-auto flex-none whitespace-nowrap text-xs text-fg3 [&_strong]:font-[650] [&_strong]:text-fg2" data-testid="table-status">{status}</span>}
     </div>
     {applied?.structured === true && applied.expr !== null && <div aria-label={`${t("filter.tokens")}: ${applied.canonical}`} className="mt-1 flex min-w-0 flex-wrap items-center gap-1" data-testid="search-chips">
       <SearchChips expr={applied.expr} onRemove={(index) => onPattern?.(withoutSearchClause(applied, index))} t={t} />

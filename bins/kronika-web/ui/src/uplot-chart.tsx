@@ -1,5 +1,5 @@
 import uPlot, { type AlignedData } from "uplot"
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { DisplayTimeFormatter } from "./display-time"
 import { useDisplayTime } from "./display-time-context"
@@ -53,6 +53,8 @@ export interface ChartThreshold {
   readonly below: number
   readonly seriesId: string
 }
+
+export type ChartVariant = "default" | "preview" | "inspector"
 
 // Many series on one chart read as spaghetti: the legend becomes the picker,
 // one series at a time, with "All" returning the composition.
@@ -129,6 +131,7 @@ export function UPlotChart({
   testId,
   threshold,
   t,
+  variant = "default",
 }: {
   readonly className?: string | undefined
   readonly cursor?: number | undefined
@@ -148,6 +151,7 @@ export function UPlotChart({
   readonly testId?: string | undefined
   readonly threshold?: ChartThreshold | undefined
   readonly t: Translate
+  readonly variant?: ChartVariant | undefined
 }) {
   const time = useDisplayTime()
   const titleId = useId()
@@ -158,12 +162,8 @@ export function UPlotChart({
   const onCursorRef = useRef(onCursor)
   const onPlotWidthRef = useRef(onPlotWidth)
   const selectedRef = useRef<number | null>(null)
-  const [expanded, setExpanded] = useState(false)
   const [hovered, setHovered] = useState<number | null>(null)
   const [keyboardIndex, setKeyboardIndex] = useState(0)
-  const opener = useRef<HTMLButtonElement>(null)
-  const pagePosition = useRef({ left: 0, top: 0 })
-  const returnFocus = useRef(false)
   const end = hour + 3_600_000_000
   const [isolatedChoice, setIsolatedChoice] = useState<string | null | undefined>(undefined)
   const isolatedId = isolate === undefined
@@ -191,7 +191,7 @@ export function UPlotChart({
     const element = host.current
     if (element === null || frame.timestamps.length === 0) return
     const initialBounds = element.getBoundingClientRect()
-    const options = chartOptions(visibleSeries, frame, hour, end, locale, time, decorations, threshold, selectedRef, referenceTimestamp, Math.max(1, Math.round(initialBounds.width)), Math.max(1, Math.round(initialBounds.height)), (chart) => {
+    const options = chartOptions(visibleSeries, frame, hour, end, locale, time, decorations, threshold, selectedRef, referenceTimestamp, Math.max(1, Math.round(initialBounds.width)), Math.max(1, Math.round(initialBounds.height)), variant === "preview", (chart) => {
       const index = chart.cursor.idx
       const timestamp = index === null || index === undefined ? null : frame.timestamps[index] ?? null
       setHovered(timestamp)
@@ -237,7 +237,7 @@ export function UPlotChart({
       chart.destroy()
       plot.current = null
     }
-  }, [decorations, end, expanded, frame, hour, locale, navigationTimes, referenceTimestamp, themeRevision, threshold, time, visibleSeries])
+  }, [decorations, end, frame, hour, locale, navigationTimes, referenceTimestamp, themeRevision, threshold, time, variant, visibleSeries])
 
   useEffect(() => {
     const observer = new MutationObserver(() => setThemeRevision((revision) => revision + 1))
@@ -247,7 +247,7 @@ export function UPlotChart({
 
   useEffect(() => {
     plot.current?.redraw()
-  }, [expanded, frame, referenceTimestamp, selected])
+  }, [frame, referenceTimestamp, selected])
 
   useEffect(() => {
     if (selected === null) return
@@ -260,83 +260,17 @@ export function UPlotChart({
     setKeyboardIndex((index) => Math.min(index, Math.max(0, navigationTimes.length - 1)))
   }, [navigationTimes.length])
 
-  useEffect(() => {
-    if (!expanded) return
-    const rootOverflow = document.documentElement.style.overflow
-    const bodyOverflow = document.body.style.overflow
-    const pageScrollLeft = pagePosition.current.left
-    const pageScrollTop = pagePosition.current.top
-    const blockPageScroll = (event: Event) => event.preventDefault()
-    document.documentElement.style.overflow = "hidden"
-    document.body.style.overflow = "hidden"
-    opener.current?.focus({ preventScroll: true })
-    const keydown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault()
-        collapse()
-        return
-      }
-      if (event.key !== "Tab") return
-      const root = shell.current
-      if (root === null) return
-      const focusable = [...root.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])')]
-      const first = focusable[0]
-      const last = focusable.at(-1)
-      if (first === undefined || last === undefined) return
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault()
-        last.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault()
-        first.focus()
-      }
-    }
-    window.addEventListener("keydown", keydown)
-    window.addEventListener("touchmove", blockPageScroll, { passive: false })
-    window.addEventListener("wheel", blockPageScroll, { passive: false })
-    return () => {
-      document.documentElement.style.overflow = rootOverflow
-      document.body.style.overflow = bodyOverflow
-      window.removeEventListener("keydown", keydown)
-      window.removeEventListener("touchmove", blockPageScroll)
-      window.removeEventListener("wheel", blockPageScroll)
-      window.scrollTo(pageScrollLeft, pageScrollTop)
-    }
-  }, [expanded])
-
-  useLayoutEffect(() => {
-    if (expanded || !returnFocus.current) return
-    returnFocus.current = false
-    opener.current?.focus({ preventScroll: true })
-    window.scrollTo(pagePosition.current.left, pagePosition.current.top)
-  }, [expanded])
-
-  function collapse() {
-    const active = document.activeElement
-    if (active instanceof HTMLElement && shell.current?.contains(active)) active.blur()
-    returnFocus.current = true
-    setExpanded(false)
-  }
-
-  function expand() {
-    pagePosition.current = { left: window.scrollX, top: window.scrollY }
-    setExpanded(true)
-  }
-
   const summary = chartSummary(visibleSeries, frame, hour, end, locale, time)
   const isolatable = isolate !== undefined && series.length > 1
   const statsRows = useMemo(() => stats ? chartStatsRows(visibleSeries, frame) : [], [frame, stats, visibleSeries])
   return <figure
-    aria-labelledby={expanded ? titleId : undefined}
-    aria-modal={expanded ? "true" : undefined}
-    className={`uplot-figure launch-timeline relative m-0 flex min-w-0 max-w-full flex-col overflow-hidden ${stats ? "h-[244px]" : "h-[200px]"} [&.timeline-chart]:h-[128px] [&.timeline-chart]:min-h-[128px] [&.timeline-chart]:basis-[128px] [&.timeline-chart]:px-[7px] [&.timeline-chart]:pb-[3px] [&.timeline-chart]:pt-[4px] [&.uplot-expanded]:fixed [&.uplot-expanded]:inset-0 [&.uplot-expanded]:z-[120] [&.uplot-expanded]:w-dvw [&.uplot-expanded]:overflow-hidden [&.uplot-expanded]:m-0 [&.uplot-expanded]:h-dvh [&.uplot-expanded]:max-w-none [&.uplot-expanded]:bg-bg [&.uplot-expanded]:p-[max(12px,env(safe-area-inset-top,0px))_max(12px,env(safe-area-inset-right,0px))_max(12px,env(safe-area-inset-bottom,0px))_max(12px,env(safe-area-inset-left,0px))] [&.uplot-expanded]:[--chart-marker-end-reserve:52px] [&.timeline-chart.uplot-expanded]:h-dvh [&.timeline-chart.uplot-expanded]:min-h-0 [&.timeline-chart.uplot-expanded]:flex-none [&.timeline-chart]:max-[520px]:h-[128px] [&.timeline-chart]:max-[520px]:px-0.5 [&.uplot-expanded]:max-[520px]:p-[max(8px,env(safe-area-inset-top,0px))_max(4px,env(safe-area-inset-right,0px))_max(8px,env(safe-area-inset-bottom,0px))_max(4px,env(safe-area-inset-left,0px))] [.system-dock_&:not(.uplot-expanded)]:h-80 [.pg-table-shell_.pg-detail_&:not(.uplot-expanded)]:h-[200px] [.pg-table-shell_.pg-detail_&:not(.uplot-expanded)]:max-h-[200px] [.pg-table-shell_.pg-detail_&:not(.uplot-expanded)]:flex-none${className === undefined ? "" : ` ${className}`}${expanded ? " uplot-expanded" : ""}${isolatable ? " uplot-isolatable" : ""}`}
+    className={`uplot-figure launch-timeline relative m-0 flex min-w-0 max-w-full flex-col overflow-hidden ${variant === "preview" ? "h-[76px] min-h-[76px] basis-[76px] px-1 pb-0.5 pt-0.5" : variant === "inspector" ? "h-[248px] min-h-[248px] p-2" : stats ? "h-[244px]" : "h-[200px]"} [.system-dock_&]:h-80 [.pg-table-shell_.pg-detail_&]:h-[200px] [.pg-table-shell_.pg-detail_&]:max-h-[200px] [.pg-table-shell_.pg-detail_&]:flex-none${className === undefined ? "" : ` ${className}`}${isolatable ? " uplot-isolatable" : ""}`}
     data-testid={testId}
     data-navigation-count={navigationTimes.length}
     data-selected-timestamp={selected ?? undefined}
     ref={shell}
-    role={expanded ? "dialog" : undefined}
   >
-    <figcaption className="mb-[5px] grid min-h-[24px] flex-none grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 text-xs uppercase text-fg3 [.uplot-expanded_&]:min-h-11 [.uplot-expanded_&]:grid-cols-[minmax(0,1fr)_auto_44px] [.uplot-isolatable_&]:gap-y-1 max-[520px]:px-1 [.uplot-expanded_&]:max-[520px]:gap-1" id={titleId}>
+    {variant !== "preview" && <figcaption className="mb-[5px] grid min-h-[24px] flex-none grid-cols-[minmax(0,1fr)_auto] items-center gap-2 text-xs uppercase text-fg3 [.uplot-isolatable_&]:gap-y-1 max-[520px]:px-1" id={titleId}>
       <span className={`chart-series-labels flex min-w-0 flex-auto items-center gap-1.5 [&::-webkit-scrollbar]:hidden ${isolatable ? "flex-wrap gap-y-1 overflow-visible whitespace-normal" : "overflow-x-auto whitespace-nowrap [scrollbar-width:none]"}`}>{isolatable && <button
         aria-pressed={isolatedId === null}
         className="series-pick min-h-5 cursor-pointer border border-line3 bg-s2 px-1.5 py-px text-xs text-fg2 hover:bg-s3 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg"
@@ -352,17 +286,10 @@ export function UPlotChart({
           type="button"
         ><span aria-hidden="true" className="mr-1 inline-block h-1.5 w-1.5" style={{ backgroundColor: `var(${chartColor(line.color)})` }} />{line.label}</button><LabelHelp helpKey={line.helpKey} iconOnly labelKey={line.labelKey} t={t} /></span>
         : <span className="inline-flex min-w-0 items-center gap-1" key={line.id}><span aria-hidden="true" className="h-1.5 w-1.5 flex-none" style={{ backgroundColor: `var(${chartColor(line.color)})` }} /><LabelHelp helpKey={line.helpKey} labelKey={line.labelKey} t={t} /></span>)}</span>
-      {reading !== undefined && <strong className={`chart-current col-start-2 min-w-0 flex-none [.timeline-chart_&]:max-w-[55%] [.timeline-chart_&]:overflow-hidden [.timeline-chart_&]:text-ellipsis [.uplot-expanded_&]:max-w-[min(42vw,36rem)] max-[520px]:[.uplot-expanded_&]:max-w-[40vw] overflow-hidden text-ellipsis whitespace-nowrap font-medium normal-case tabular-nums text-fg2 ${isolatable ? "ml-auto max-w-none" : ""}`}>{reading}</strong>}
-      <button
-        aria-label={expanded ? (locale === "ru" ? "Закрыть развёрнутый график" : "Close expanded chart") : (locale === "ru" ? "Развернуть график" : "Expand chart")}
-        className={`chart-expand col-start-3 cursor-pointer border border-line3 bg-s2 p-0 ${expanded ? "inline-flex h-11 min-w-11 items-center justify-center text-lg" : "h-[22px] min-w-[22px]"}`}
-        onClick={() => expanded ? collapse() : expand()}
-        ref={opener}
-        type="button"
-      >{expanded ? "×" : "↗"}</button>
-    </figcaption>
+      {reading !== undefined && <strong className={`chart-current col-start-2 min-w-0 flex-none overflow-hidden text-ellipsis whitespace-nowrap font-medium normal-case tabular-nums text-fg2 ${isolatable ? "ml-auto max-w-none" : ""}`}>{reading}</strong>}
+    </figcaption>}
     <p className="chart-summary absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]" id={summaryId}>{summary}</p>
-    <div aria-describedby={summaryId} aria-label={drawnSeries.map(({ label, unit }) => `${label}${unit === "" ? "" : `, ${unit}`}`).join("; ")} className="uplot-host h-[180px] w-full min-w-0 max-w-full min-h-0 flex-auto overflow-hidden [&>.uplot]:h-full [&>.uplot]:!w-full [&_.u-wrap]:max-w-full [.timeline-chart_&]:h-auto [.timeline-chart_&]:min-h-0 [.uplot-expanded_&]:h-auto [.uplot-expanded_&]:flex-auto [.timeline-chart.uplot-expanded_&]:min-h-0" ref={host} role="img" />
+    <div aria-describedby={summaryId} aria-label={drawnSeries.map(({ label, unit }) => `${label}${unit === "" ? "" : `, ${unit}`}`).join("; ")} className="uplot-host h-[180px] w-full min-w-0 max-w-full min-h-0 flex-auto overflow-hidden [&>.uplot]:h-full [&>.uplot]:!w-full [&_.u-wrap]:max-w-full [.timeline-chart_&]:h-auto [.timeline-chart_&]:min-h-0" ref={host} role="img" />
     {stats && <div className="mt-1 min-h-[46px] flex-none overflow-hidden border-t border-line2 pt-1 text-sm tabular-nums text-fg3" data-testid="chart-stats">
       {statsRows.length !== 0 && <div className="grid min-w-0 grid-cols-[minmax(90px,1.6fr)_repeat(6,minmax(48px,1fr))] gap-x-2 px-1 text-right max-[760px]:grid-cols-[minmax(82px,1.35fr)_repeat(3,minmax(48px,1fr))] max-[760px]:gap-x-1 [&>*:first-child]:text-left">
         <span aria-hidden="true" /><span>{t("chart.stats.last")}</span><span className="max-[760px]:hidden">{t("chart.stats.min")}</span><span>{t("chart.stats.max")}</span><span className="max-[760px]:hidden">{t("chart.stats.p50")}</span><span className="max-[760px]:hidden">{t("chart.stats.p90")}</span><span>{t("chart.stats.p99")}</span>
@@ -526,6 +453,7 @@ function chartOptions(
   referenceTimestamp: number | undefined,
   width: number,
   height: number,
+  compact: boolean,
   onHover: (chart: uPlot) => void,
   onGeometry: (chart: uPlot) => void,
 ): uPlot.Options {
@@ -603,13 +531,13 @@ function chartOptions(
     ms: 1,
     pxAlign: true,
     legend: { show: false },
-    scales: { x: { auto: false, range: chartTimeRange(hour, end, width, 52, partitions.length * 70), time: false }, ...scales },
+    scales: { x: { auto: false, range: chartTimeRange(hour, end, width, compact ? 38 : 52, partitions.length * (compact ? 46 : 70)), time: false }, ...scales },
     axes: [
-      { scale: "x", side: 2, size: 30, font: "12px system-ui, sans-serif", space: (_chart, _axis, _scale, _increment, space) => Math.max(84, space), stroke: color("--color-fg3"), grid: { stroke: color("--color-line") }, values: (_chart, splits) => splits.map((timestamp) => timestamp > end ? "" : axisTimeLabel(timestamp, time)) },
+      { scale: "x", side: 2, size: compact ? 18 : 30, font: compact ? "10px ui-monospace, monospace" : "12px ui-monospace, monospace", space: (_chart, _axis, _scale, _increment, space) => Math.max(compact ? 62 : 84, space), stroke: color("--color-fg3"), grid: { stroke: color("--color-line") }, values: (_chart, splits) => splits.map((timestamp) => timestamp > end ? "" : axisTimeLabel(timestamp, time)) },
       ...partitions.map(({ key, unit }, axisIndex) => {
         const grouped = series.filter((line) => scaleKey(line) === key)
         const line = grouped[0]!
-        return { ...(unit === "" || line.tickAxis === "duration" ? {} : { label: unit }), font: "12px system-ui, sans-serif", scale: key, side: axisIndex % 2 === 0 ? 3 : 1, size: 70, stroke: color("--color-fg3"), grid: { stroke: axisIndex === 0 ? color("--color-line") : "transparent" }, values: (_chart: uPlot, splits: number[]) => {
+        return { ...(!compact && unit !== "" && line.tickAxis !== "duration" ? { label: unit } : {}), font: compact ? "10px ui-monospace, monospace" : "12px ui-monospace, monospace", scale: key, side: axisIndex % 2 === 0 ? 3 : 1, size: compact ? 46 : 70, stroke: color("--color-fg3"), grid: { stroke: axisIndex === 0 ? color("--color-line") : "transparent" }, values: (_chart: uPlot, splits: number[]) => {
           // Duration axes read in one unit chosen from the range top.
           if (line.tickAxis === "duration") {
             const peak = Math.max(0, ...splits)

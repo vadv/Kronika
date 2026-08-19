@@ -5,7 +5,6 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import type { HostMode, HostSection } from "./address"
 import { fieldNameForLocator, loadSeries, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
 import { buildMetricSamples } from "./chart"
-import { ChartOnly, useChartsVisible } from "./chart-visibility"
 import { useDetailDismiss } from "./detail-dismiss"
 import { contextualRows, type EntityContext } from "./entity-context"
 import { EntityTable, type EntityColumn } from "./entity-table"
@@ -431,7 +430,6 @@ export function SystemView({
   readonly tablesLoading?: boolean | undefined
   readonly t: Translate
 }) {
-  const chartsVisible = useChartsVisible()
   const available = useMemo(() => SYSTEM_METRICS.map((spec) => ({ points: metricPoints(data, spec), spec }))
     .filter(({ points, spec }) => points.some((point) => point.value !== null && Number.isFinite(point.value))
       || (spec.id === "cpu_actual_frequency" && sectionRows(data, "os_cpufreq").some((row) => {
@@ -498,7 +496,7 @@ export function SystemView({
     spec: selectedSpec,
   }
   const selectedResource = selectedMetric === undefined ? null : metricResource(selectedMetric.spec)
-  const dockShown = chartsVisible && selectedMetric !== undefined
+  const dockShown = selectedMetric !== undefined
   const dockMeta = useMemo(() => {
     if (selectedMetric === undefined) return { chips: [] as readonly MetricSpec[], chartChip: (id: string) => id }
     const group = selectedMetric.spec.group
@@ -536,7 +534,7 @@ export function SystemView({
   const topologyRows = section === "cpu" && mode === "topology" ? systemEntityRows(data, "os_topology", cursor) : []
   const policyRows = section === "cpu" && mode === "topology" ? systemEntityRows(data, "os_cpufreq_policy", cursor) : []
   return <>
-    <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} primaryLane={selectedMetric === undefined ? "health" : metricLane(selectedMetric.spec)} shownAt={shownAt} t={t} /></ChartOnly>
+    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} primaryLane={selectedMetric === undefined ? "health" : metricLane(selectedMetric.spec)} shownAt={shownAt} t={t} />
     {modes.length > 0 && <div aria-label={t(`section.${section}`)} className="lensbar !mt-0 border-t-0" data-testid={`host-${section}-modes`} role="group">
       <div className="lens-tabs">
         {modes.map((choice) => <button aria-pressed={mode === choice} key={choice} onClick={() => onMode(choice)} type="button">{t(`host.mode.${choice}`)}</button>)}
@@ -824,7 +822,6 @@ function SystemEntityPanel({
   readonly selectedKey: string | null
   readonly t: Translate
 }) {
-  const chartsVisible = useChartsVisible()
   const metricColumns = useMemo(() => chartableEntityColumns(columns), [columns])
   const selectedRow = selectedKey === null ? null : rows.find((row) => entityRowKey(row) === selectedKey) ?? null
   const availableColumns = useMemo(() => selectedRow === null
@@ -849,7 +846,7 @@ function SystemEntityPanel({
   const requestWhere = historyRequest === null ? "{}" : JSON.stringify(historyRequest.where)
   const requestSection = historyRequest?.section ?? ""
   const requestTypeId = historyRequest?.typeId
-  const visibleHistoryKey = chartsVisible ? historyKey : null
+  const visibleHistoryKey = historyKey
   const history = useHistoryRequest(visibleHistoryKey, historyRevision,
     visibleHistoryKey === null || requestSection === "" || requestTypeId === undefined ? null : (signal) => {
     const fields = JSON.parse(requestFields) as readonly string[]
@@ -861,7 +858,7 @@ function SystemEntityPanel({
   const pairSeries = useMemo(() => mountPair ? mountPairSeries(chartRows, t, mountPairKind) : null, [chartRows, mountPair, mountPairKind, t])
   const chartMetadata = selectedRow === null || selectedColumn === undefined || selectedColumn.historyFields !== undefined
     ? null : registryColumn(selectedRow.typeId, physicalField(selectedColumn, selectedRow.typeId))
-  return <section className={`entity-panel panel min-w-0 charts-hidden:flex charts-hidden:flex-col ${selectedRow === null ? "" : "grid grid-cols-[minmax(280px,36%)_minmax(0,1fr)] max-[760px]:grid-cols-1"}`} data-testid={`system-panel-${section}`}>
+  return <section className={`entity-panel panel min-w-0 ${selectedRow === null ? "" : "grid grid-cols-[minmax(280px,36%)_minmax(0,1fr)] max-[760px]:grid-cols-1"}`} data-testid={`system-panel-${section}`}>
     <h2 className={`panel-head ${selectedRow === null ? "" : "col-[1/-1]"}`}><span>{label}</span></h2>
     <div className={selectedRow === null ? "contents" : "min-w-0 max-[760px]:hidden"}>
     <EntityTable
@@ -890,7 +887,7 @@ function SystemEntityPanel({
       testId={`system-${section}`}
     />
     </div>
-    <ChartOnly>{selectedRow !== null && (mountPair || selectedColumn !== undefined) && <section className="system-entity-history min-w-0 border-l border-line2 max-[760px]:border-l-0" data-testid={`system-${section}-history`}>
+    {selectedRow !== null && (mountPair || selectedColumn !== undefined) && <section className="system-entity-history min-w-0 border-l border-line2 max-[760px]:border-l-0" data-testid={`system-${section}-history`}>
       <header className="flex items-start justify-between gap-1.5 px-[7px] pt-1.5">
         {mountPair
           ? <div className="system-history-selector flex max-w-[calc(100%-30px)] overflow-x-auto pb-[3px] [scrollbar-width:thin] [&>button+button]:ml-1 [&>button]:min-h-[27px] [&>button]:flex-none [&>button]:cursor-pointer [&>button]:border [&>button]:border-line3 [&>button]:bg-s2 [&>button]:px-[7px] [&>button]:py-1 [&>button]:text-xs [&>button]:text-fg2 [&>button[aria-pressed=true]]:border-accent [&>button[aria-pressed=true]]:bg-accent-soft [&>button[aria-pressed=true]]:text-fg" role="group">
@@ -932,7 +929,7 @@ function SystemEntityPanel({
             t={t}
             unit={entityMetricUnit(selectedColumn, locale, chartMetadata)}
           />}
-    </section>}</ChartOnly>
+    </section>}
   </section>
 }
 

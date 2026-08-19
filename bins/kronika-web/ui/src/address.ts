@@ -11,10 +11,13 @@ export interface Address {
   readonly tablespaceOid: string | null
   readonly sort: { readonly column: string; readonly descending: boolean } | null
   readonly row: string | null
+  readonly panel: InspectorPanel
   readonly find: string
   readonly metric: string | null
   readonly mode: HostMode | null
 }
+
+export type InspectorPanel = "chart" | "detail" | null
 
 export type View =
   | "host.overview"
@@ -70,6 +73,7 @@ export const DEFAULT_ADDRESS: Address = {
   tablespaceOid: null,
   sort: null,
   row: null,
+  panel: null,
   find: "",
   metric: null,
   mode: null,
@@ -90,6 +94,10 @@ export function readAddress(search: string): Address {
   const datid = relation && (pgLevel === "schema" || pgLevel === "object") ? oid(parameters.get("datid")) : null
   const sort = parameters.get("sort") ?? ""
   const column = sort.startsWith("-") ? sort.slice(1) : sort
+  const row = postgresEntity
+    ? postgresEntityRow(parameters.get("row"))
+    : resolvedView === "processes" || relation || host || resolvedView === "events" ? parameters.get("row") : null
+  const requestedPanel = parameters.get("panel")
   return {
     at: Number.isSafeInteger(at) && at > 0 ? at : null,
     view: resolvedView,
@@ -102,9 +110,10 @@ export function readAddress(search: string): Address {
     indexrelid: resolvedView === "pg.indexes" && pgLevel === "object" && datid !== null ? oid(parameters.get("indexrelid")) : null,
     tablespaceOid: relation && pgLevel === "object" ? oid(parameters.get("tablespace_oid")) : null,
     sort: column === "" ? null : { column, descending: sort.startsWith("-") },
-    row: postgresEntity
-      ? postgresEntityRow(parameters.get("row"))
-      : resolvedView === "processes" || relation || host || resolvedView === "events" ? parameters.get("row") : null,
+    row,
+    // Row-only links predate Inspector and continue to open Detail. Chart is
+    // source-neutral and can therefore be linked without an entity row.
+    panel: requestedPanel === "chart" ? "chart" : row !== null && row !== "" ? "detail" : null,
     find: parameters.get("find") ?? "",
     metric: host && /^[a-z0-9_.-]+$/.test(parameters.get("metric") ?? "") ? parameters.get("metric") : null,
     mode: hostModeOf(hostSection, parameters.get("mode")),
@@ -128,6 +137,7 @@ export function writeAddress(address: Address): string {
   if ((address.view === "processes" || relation || address.view.startsWith("host.") || address.view === "events"
       || (isPostgresEntityView(address.view) && postgresEntityRow(address.row) !== null))
     && address.row !== null && address.row !== "") parameters.set("row", address.row)
+  if (address.panel === "chart") parameters.set("panel", "chart")
   if (address.find !== "") parameters.set("find", address.find)
   if (address.view.startsWith("host.") && address.metric !== null) parameters.set("metric", address.metric)
   if (address.view.startsWith("host.") && address.mode !== null && address.mode !== defaultHostMode(hostSectionOf(address.view))) parameters.set("mode", address.mode)

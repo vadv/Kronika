@@ -610,7 +610,7 @@ test("System keeps the audited groups and opens Overview on factual CPU history"
   assert.match(source, /dockShown && selectedMetric !== undefined && <SystemDock/)
   assert.match(source, /data-testid="system-dock"/)
   assert.match(source, /useDetailDismiss\(onClose, `system:\$\{group\}`\)/)
-  assert.match(source, /chartsVisible && selectedMetric !== undefined/)
+  assert.match(source, /const dockShown = selectedMetric !== undefined/)
   assert.match(source, /SYSTEM_METRICS\.find\(\(spec\) => spec\.id === metric\)/)
   // Entity panels say loading while their snapshot catches up; only a section
   // the hour does not carry at all stays absent.
@@ -619,7 +619,7 @@ test("System keeps the audited groups and opens Overview on factual CPU history"
   // height; opening scrolls it into view, and grid cells carry the open-marker.
   assert.match(source, /scrollIntoView\(\{ block: "nearest" \}\)/)
   assert.match(source, /className="dock-tabs [^"]*overflow-x-auto/)
-  assert.match(await readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8"), /\[\.system-dock_&:not\(\.uplot-expanded\)\]:h-80/)
+  assert.match(await readFile(new URL("../src/uplot-chart.tsx", import.meta.url), "utf8"), /\[\.system-dock_&\]:h-80/)
   assert.match(source, /\[\.metric-groups_&>button\]:after:content-\['↗'\]/)
   assert.doesNotMatch(source, /metric-history|system-console|system-layout/)
   assert.doesNotMatch(styles, /\.metric-history|\.system-console|\.system-layout/)

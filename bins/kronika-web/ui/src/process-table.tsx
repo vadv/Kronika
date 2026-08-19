@@ -154,16 +154,16 @@ export function ProcessSummary({ cursor, dispatch, hour, lens, locale, state, t 
     return () => controller.abort()
   }, [hour])
   const statusKey = status === "loading" ? "process.summary.loading" : status === "error" ? "process.summary.error" : status === "empty" ? "status.no_data" : null
-  return <section aria-label={t("process.summary.title")} className="process-summary grid grid-cols-4 border-l border-line2 max-[760px]:grid-cols-2">
+  return <section aria-label={t("process.summary.title")} className="process-summary-inline flex min-w-0 flex-1 items-center overflow-x-auto" data-status={status}>
     {metrics.map((metric) => {
       const output = processSummaryOutput(readingAt(processSummaryPoints(history, metric), cursor), metric, locale, t)
-      return <div className="relative flex min-h-[42px] min-w-0 items-center gap-2 border-b border-r border-line px-2 pr-7" key={metric.field}>
-        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-xs uppercase text-fg3">{t(metric.key)}</span>
-        <strong className="flex-none text-md font-[560] tabular-nums text-fg">{output}</strong>
+      return <div className="relative flex h-[25px] min-w-0 flex-[1_0_116px] items-baseline gap-1.5 border-l border-line2 px-2 pr-6" key={metric.field}>
+        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[9px] uppercase text-fg4">{t(metric.key)}</span>
+        <strong className="flex-none text-xs font-[650] tabular-nums text-fg">{output}</strong>
         <LabelHelp helpKey={metric.help} iconOnly labelKey={metric.key} t={t} testId={`process-summary-help-${metric.field}`} />
       </div>
     })}
-    {statusKey !== null && <p aria-live="polite" className="col-[1/-1] m-0 min-h-[26px] px-2 py-[7px] text-xs text-fg3" data-testid="process-summary-status">{t(statusKey)}</p>}
+    {statusKey !== null && <p aria-live="polite" className="m-0 flex h-[25px] flex-none items-center border-l border-line2 px-2 text-[9px] uppercase text-fg4" data-testid="process-summary-status">{t(statusKey)}</p>}
   </section>
 }
 
@@ -273,7 +273,7 @@ export function ProcessTable({
   })}</strong>
   return <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
     <EntityTable
-    className="process-table flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-line2 bg-s1"
+    className="process-table flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-s1"
     columns={columns}
     contextLabel={contextLabel}
     empty={t("table.empty")}

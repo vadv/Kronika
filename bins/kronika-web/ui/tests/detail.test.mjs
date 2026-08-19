@@ -117,15 +117,13 @@ test("linked Activity detail shows elapsed values instead of repeatable absolute
   assert.match(source, /value=\{humanDuration\(elapsed, locale\)\}/)
 })
 
-test("Process detail uses the shared Escape and focus-return contract without a duplicate listener", async () => {
+test("Process detail delegates Escape and focus return to the shared Inspector", async () => {
   const fs = await import("node:fs/promises")
-  const [source, dismiss] = await Promise.all([
+  const [source, inspector] = await Promise.all([
     fs.readFile(new URL("../src/detail.tsx", import.meta.url), "utf8"),
-    fs.readFile(new URL("../src/detail-dismiss.ts", import.meta.url), "utf8"),
+    fs.readFile(new URL("../src/inspector.tsx", import.meta.url), "utf8"),
   ])
-  assert.match(source, /const detail = useDetailDismiss\(onClose, pid\)/)
-  assert.match(source, /data-testid=\{activity === null \? "process-dock" : "pg-linked-dock"\}\s+ref=\{detail\}/)
-  assert.doesNotMatch(source, /addEventListener\("keydown"|queueMicrotask/)
-  assert.match(dismiss, /\[role="dialog"\].*\[role="tooltip"\].*\[data-testid="help-panel"\]/)
-  assert.match(dismiss, /close\.current\(\)[\s\S]*requestAnimationFrame\([\s\S]*target\?\.isConnected[\s\S]*target\.focus/)
+  assert.doesNotMatch(source, /useDetailDismiss|addEventListener\("keydown"/)
+  assert.match(inspector, /event\.key === "Escape"/)
+  assert.match(inspector, /opener\.current\.focus\(\{ preventScroll: true \}\)/)
 })

@@ -192,7 +192,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
   }
 })
 
-test("expanded uPlot keeps one unobscured close action at responsive widths", { timeout: 60_000 }, async () => {
+test.skip("legacy fullscreen uPlot is replaced by the shared Inspector", { timeout: 60_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const authState = { valid: true }
   const startFinding = {
@@ -2268,7 +2268,7 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
   }
 })
 
-test("chart preference, detail dismissal, and process summary lifecycle work in the production artifact", { timeout: 90_000 }, async () => {
+test.skip("legacy chart visibility preference is replaced by the permanent preview", { timeout: 90_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const authState = { valid: true }
   const requests = []
@@ -4035,6 +4035,128 @@ async function assertSearchChipHierarchyMatrix(cdp, label) {
     }
   }
 }
+
+test("forensic workstation keeps exact preview and one responsive Inspector", { timeout: 90_000 }, async () => {
+  const html = gunzipSync(await readFile(ARTIFACT))
+  const authState = { valid: true }
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+      response.end(html)
+      return
+    }
+    if (url.pathname === "/auth/session") return answerSession(request, response, authState)
+    if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/catalog") return ndjson(response, [])
+    if (url.pathname === "/api/hour") {
+      const section = url.searchParams.get("section")
+      if (section === "os_process_summary") return ndjson(response, processSummaryRecords(HOUR, 3, 80))
+      if (section === "os_process") return ndjson(response, snapshotRecords())
+      return ndjson(response, section === null ? timelineRecords(HOUR, true) : [])
+    }
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, snapshotRecords())
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("forensic workstation server has no TCP address")
+  const origin = `http://127.0.0.1:${address.port}`
+  const profile = await mkdtemp(join(tmpdir(), "b-"))
+  const browser = launchBrowser(profile)
+  const page = { errors: [], external: [], responses: [] }
+  let socket
+  try {
+    const debugPort = await browserDebugPort(profile, browser)
+    socket = await pageSocket(debugPort)
+    const cdp = cdpSession(socket)
+    trackPage(socket, origin, page)
+    await enablePage(cdp)
+    await cdp.send("Network.setCookie", { name: "kronika_session", url: origin, value: SESSION_COOKIE.slice(SESSION_COOKIE.indexOf("=") + 1) })
+    const viewports = [
+      { height: 800, kind: "desktop", mobile: false, width: 1280 },
+      { height: 900, kind: "tablet", mobile: false, width: 800 },
+      { height: 800, kind: "phone", mobile: true, width: 360 },
+    ]
+    for (const viewport of viewports) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: viewport.height, mobile: viewport.mobile, width: viewport.width })
+      await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&lens=cpu` })
+      await cdp.waitFor(`document.querySelector('.process-summary-inline > div:first-child strong')?.textContent === "1.5"`, `${viewport.kind} process summary`, 15_000)
+      await cdp.waitFor(`document.querySelector('[data-testid="hour-timeline"] canvas') !== null && document.querySelectorAll('[data-testid="process-table"] .entity-row').length > 10`, `${viewport.kind} workstation`)
+      await settleLayout(cdp)
+      const closed = await cdp.evaluate(`(() => {
+        const bounds = (node) => { const rect = node.getBoundingClientRect(); return { bottom: rect.bottom, height: rect.height, left: rect.left, right: rect.right, top: rect.top, width: rect.width } }
+        const topbar = document.querySelector('.topbar')
+        const top = bounds(topbar)
+        const painted = [...topbar.children].filter((node) => getComputedStyle(node).display !== 'none').map(bounds)
+        const scroll = document.querySelector('[data-testid="process-table"] .entity-scroll')
+        const scrollRect = scroll.getBoundingClientRect()
+        const visibleRows = [...document.querySelectorAll('[data-testid="process-table"] .entity-row')].filter((row) => {
+          const rect = row.getBoundingClientRect()
+          return rect.bottom > scrollRect.top && rect.top < scrollRect.bottom
+        }).length
+        return {
+          documentOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+          inspector: document.querySelector('[data-testid="inspector"]') !== null,
+          painted,
+          paintedInside: painted.every((rect) => rect.left >= top.left - .5 && rect.right <= top.right + .5 && rect.top >= top.top - .5 && rect.bottom <= top.bottom + .5),
+          preview: bounds(document.querySelector('.timeline-preview')),
+          scroll: bounds(scroll),
+          top,
+          visibleRows,
+        }
+      })()`)
+      assert.equal(closed.inspector, false, viewport.kind)
+      assert.equal(closed.documentOverflow, false, `${viewport.kind}: ${JSON.stringify(closed)}`)
+      assert.equal(closed.paintedInside, true, `${viewport.kind}: ${JSON.stringify(closed)}`)
+      assert.ok(Math.abs(closed.preview.height - 104) <= .5, `${viewport.kind}: ${JSON.stringify(closed.preview)}`)
+
+      await cdp.evaluate(`document.querySelector('[data-testid="process-table"] .entity-row').click()`)
+      await cdp.waitFor(`document.querySelector('[data-testid="inspector"][data-panel="detail"]') !== null`, `${viewport.kind} Detail Inspector`)
+      await settleLayout(cdp)
+      const opened = await cdp.evaluate(`(() => {
+        const bounds = (node) => { const rect = node.getBoundingClientRect(); return { bottom: rect.bottom, height: rect.height, left: rect.left, right: rect.right, top: rect.top, width: rect.width } }
+        const inspector = bounds(document.querySelector('[data-testid="inspector"]'))
+        const scroll = document.querySelector('[data-testid="process-table"] .entity-scroll')
+        const scrollRect = scroll.getBoundingClientRect()
+        const visibleRows = [...document.querySelectorAll('[data-testid="process-table"] .entity-row')].filter((row) => {
+          const rect = row.getBoundingClientRect()
+          return rect.bottom > scrollRect.top && rect.top < scrollRect.bottom
+        }).length
+        const query = new URL(location.href).searchParams
+        return { inspector, panel: query.get('panel'), row: query.get('row'), scroll: bounds(scroll), visibleRows }
+      })()`)
+      assert.notEqual(opened.row, null, viewport.kind)
+      assert.equal(opened.panel, null, viewport.kind)
+      if (viewport.kind === "desktop") {
+        assert.ok(Math.abs(opened.inspector.width - 360) <= 1, JSON.stringify(opened))
+        assert.ok(Math.abs(opened.scroll.height - closed.scroll.height) <= 1, JSON.stringify({ closed, opened }))
+        assert.equal(opened.visibleRows, closed.visibleRows, JSON.stringify({ closed, opened }))
+      } else if (viewport.kind === "tablet") {
+        assert.ok(Math.abs(opened.inspector.width - 384) <= 1, JSON.stringify(opened))
+        assert.ok(Math.abs(opened.scroll.width - closed.scroll.width) <= 1, JSON.stringify({ closed, opened }))
+      } else {
+        assert.ok(Math.abs(opened.inspector.width - viewport.width) <= 1, JSON.stringify(opened))
+        assert.ok(opened.inspector.height <= 480.5, JSON.stringify(opened))
+      }
+      await cdp.evaluate(`([...document.querySelectorAll('.inspector-tabs button')].find((button) => button.textContent === 'Chart')).click()`)
+      await cdp.waitFor(`new URL(location.href).searchParams.get('panel') === 'chart' && document.querySelector('[data-testid="inspector-chart"] canvas') !== null`, `${viewport.kind} Chart Inspector`)
+      await cdp.evaluate(`document.querySelector('.inspector-close').click()`)
+      await cdp.waitFor(`document.querySelector('[data-testid="inspector"]') === null && new URL(location.href).searchParams.get('row') === null && new URL(location.href).searchParams.get('panel') === null`, `${viewport.kind} closed Inspector`)
+    }
+    assert.deepEqual(page.errors, [])
+    assert.deepEqual(page.external, [])
+  } finally {
+    socket?.close()
+    await stopBrowser(browser)
+    await new Promise((resolve) => server.close(resolve))
+    await rm(profile, { recursive: true, force: true })
+  }
+})
 
 async function assertHoverGeometryStable(cdp, selector, label) {
   const expression = (position) => `(() => {
