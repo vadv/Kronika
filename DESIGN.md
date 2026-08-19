@@ -663,38 +663,56 @@ the whole surface, even when a lens does not display the metric:
 
 | Surface | Public fields | Comparison units |
 | --- | --- | --- |
-| Statements and Plans | `call_rate`, `exec_time_rate`, `mean_exec`, `row_rate`, `rows_per_call`; shared/local/temp hit, read, dirty and write rates where recorded; shared/local/temp read and write I/O loads where recorded; `buffer_hit`; `exec_cv`, `min_exec_since_reset`, `max_exec_since_reset`, `mean_exec_since_reset`, `stddev_exec_since_reset` | `/s`, duration`/s`, duration, `/call`, `%`, or a unitless decimal as appropriate |
-| Statements only | `plan_rate`, `planning_time_rate`, `wal_rate`, `wal_per_call` | `/s`, duration`/s`, byte`/s`, byte`/call` |
-| Plans where the recorded fork provides it | `planning_time_rate` | duration`/s` |
-| Processes | `rss`, `virtual_memory`, `swap`, `threads`, `cpu_cores`, `user_cpu_cores`, `system_cpu_cores`, `disk_read_rate`, `disk_write_rate`, `major_fault_rate`, `minor_fault_rate`, `context_switch_rate`, `run_delay` | bytes, count, unitless cores, byte`/s`, `/s`, or duration`/s` |
+| Statements and Plans | `call_rate`, `exec_time_rate`, `mean_exec`, `row_rate`, `rows_per_call`, `buffer_hit`, `buffer_per_call`; `shared_buffer_{hit,read,dirty,write}_rate`, `local_buffer_{hit,read,dirty,write}_rate`, `temp_buffer_{read,write}_rate`; `shared_{read,write}_time_rate`, `local_{read,write}_time_rate`, `temp_{read,write}_time_rate`; `exec_cv`, `min_exec_since_reset`, `max_exec_since_reset`, `mean_exec_since_reset`, `stddev_exec_since_reset` | `/s`, duration, unitless ratios, `%`, bytes, byte`/s`, or duration`/s` as registered |
+| Statements only | `plan_rate`, `wal_rate`, `wal_per_call` | `/s`, byte`/s`, bytes |
+| Statements and Plans where the recorded layout provides planning | `planning_time_rate`, `planning_share` | duration`/s`, `%` |
+| Plans where the recorded vadv layout provides it | `slow_call_rate` | `/s` |
+| Processes | `rss`, `vsz`, `swap`, `threads`, `cpu_cores`, `user_cpu_cores`, `system_cpu_cores`, `disk_read_rate`, `disk_write_rate`, `logical_read_rate`, `logical_write_rate`, `read_syscall_rate`, `write_syscall_rate`, `major_fault_rate`, `minor_fault_rate`, `context_switch_rate`, `voluntary_context_switch_rate`, `involuntary_context_switch_rate`, `run_delay`, `block_io_delay` | bytes, count, unitless cores, byte`/s`, `/s`, or duration`/s` |
 
 The shared PostgreSQL names have the same meaning on Statements and Plans.
 Counter rates use the retained interval delta. Mean execution time, rows per
 call and WAL per call divide interval deltas, not rendered rates. Buffer hit is
 the shared hit delta divided by shared hit plus read deltas. Execution
-variability is the recorded standard deviation divided by the recorded mean;
-the four execution-stat fields are the recorded resettable gauges. Block rates
-remain blocks per second; I/O loads and execution/planning loads are
-milliseconds accumulated per wall second in their base comparison unit.
+CV is the recorded standard deviation divided by the recorded mean; the four
+explicit `*_since_reset` fields are recorded reset-window gauges. Buffer
+activity rates and per-call values multiply exact block deltas by the recorded
+PostgreSQL `block_size`; a missing block size makes them null. I/O,
+execution, and planning time rates are milliseconds accumulated per wall
+second in the base comparison unit. Planning share divides the planning-time
+delta by planning plus execution time.
 `pg_store_plans` keeps its query and plan identities and fork-specific
 attribution rules; this vocabulary does not add a Plan-node or relation join.
+
+PostgreSQL interval values require exact continuity. Statements layouts with
+`stats_since` require the row epoch to remain unchanged; older layouts require
+equal `pg_stat_statements_info.stats_reset` values at both snapshots. Plans
+require unchanged `first_call` and equal recorded
+`pg_store_plans_info.stats_reset` values. If the applicable continuity fact is
+absent or changes, every dependent rate, per-call value, and interval ratio is
+null even when the raw counter increased.
 
 Process memory gauges convert the recorded KiB values to exact bytes. Process
 rates use the immediately preceding complete OS-process snapshot only when PID
 and recorded `starttime` are both unchanged. Missing predecessors, PID reuse,
 counter rollback, nonpositive intervals, or missing clock frequency make the
 rate null. CPU cores divide exact user/system tick deltas by the recorded clock
-frequency and wall interval; run-delay load converts recorded nanoseconds to
-milliseconds per second. Raw cumulative process counters and a generic delta
-family are not public search fields.
+frequency and wall interval. `run_delay` converts recorded nanoseconds to
+milliseconds per second; `block_io_delay` converts recorded clock ticks the
+same way. The corrected current `os_process` registry records `rchar` and
+`wchar` as bytes, allowing logical I/O rates without publishing those physical
+names. Raw cumulative process counters and a generic delta family are not
+public search fields. Documented aliases are limited to `resident_memory`,
+`virtual_memory`, source mnemonics such as `majflt_rate`, and their equally
+unambiguous counterparts; canonical names are retained in chips and URLs.
 
 Quantity literals are exact checked decimal values and never pass through a
 JavaScript number. Bytes accept case-sensitive SI `B` through `EB` and IEC
 `KiB` through `EiB`: `100MB` is exactly 100,000,000 bytes and `100MiB` is
 exactly 104,857,600 bytes. Counts are integral and unitless, rates use `/s`,
-per-call values use `/call`, durations use `ns`, `us`, `ms`, `s`, `min`
-or `h`, duration loads and byte rates append `/s`, byte-per-call values
-append `/call`, and percentages use `%`.
+and durations use `ns`, `us`, `ms`, `s`, `min` or `h`. Duration rates accept
+only `ns/s`, `us/s`, `ms/s`, or `s/s`; byte rates append `/s`. Per-call scalar
+values are unitless, per-call byte values use ordinary byte units, and
+percentages use `%`.
 Signs, exponent notation, grouping and nonfinite values are invalid. Missing
 or unavailable values never become zero and match neither strict operator.
 Displayed humanization does not participate in comparison.

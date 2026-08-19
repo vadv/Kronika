@@ -50,16 +50,17 @@ test("quantitative search labels and unit tokens stay canonical English in RU", 
   const english = parseDictionary(englishSource, "en.yaml")
   const russian = parseDictionary(russianSource, "ru.yaml")
   const quantitative = [
-    "call_rate", "exec_time_rate", "mean_exec", "row_rate", "rows_per_call", "plan_rate", "planning_time_rate",
+    "call_rate", "exec_time_rate", "mean_exec", "row_rate", "rows_per_call", "plan_rate", "planning_time_rate", "planning_share",
     "shared_buffer_hit_rate", "shared_buffer_read_rate", "shared_buffer_dirty_rate", "shared_buffer_write_rate", "local_buffer_hit_rate", "local_buffer_read_rate",
     "local_buffer_dirty_rate", "local_buffer_write_rate", "temp_buffer_read_rate", "temp_buffer_write_rate", "shared_read_time_rate", "shared_write_time_rate",
-    "local_read_time_rate", "local_write_time_rate", "temp_read_time_rate", "temp_write_time_rate", "wal_rate", "wal_per_call",
-    "exec_cv", "min_exec_since_reset", "max_exec_since_reset", "mean_exec_since_reset", "stddev_exec_since_reset", "rss", "virtual_memory", "swap", "threads",
-    "cpu_cores", "user_cpu_cores", "system_cpu_cores", "disk_read_rate", "disk_write_rate", "major_fault_rate",
-    "minor_fault_rate", "context_switch_rate", "run_delay",
+    "local_read_time_rate", "local_write_time_rate", "temp_read_time_rate", "temp_write_time_rate", "wal_rate", "wal_per_call", "buffer_per_call", "slow_call_rate",
+    "exec_cv", "min_exec_since_reset", "max_exec_since_reset", "mean_exec_since_reset", "stddev_exec_since_reset", "rss", "vsz", "swap", "threads",
+    "cpu_cores", "user_cpu_cores", "system_cpu_cores", "disk_read_rate", "disk_write_rate", "logical_read_rate", "logical_write_rate",
+    "read_syscall_rate", "write_syscall_rate", "major_fault_rate", "minor_fault_rate", "context_switch_rate",
+    "voluntary_context_switch_rate", "involuntary_context_switch_rate", "run_delay", "block_io_delay",
   ]
   for (const field of quantitative) assert.equal(russian[`filter.field.${field}.label`], english[`filter.field.${field}.label`], field)
-  for (const token of ["/s", "/call", "MiB", "ms/s", "CPU", "RSS", "WAL"]) {
+  for (const token of ["/s", "MiB", "ms/s", "CPU", "RSS", "WAL"]) {
     assert.ok(Object.values(russian).some((value) => value.includes(token)), token)
   }
 })

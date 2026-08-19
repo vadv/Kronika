@@ -659,7 +659,11 @@ fn parse_quantity(
                     offset + raw.len(),
                 ));
             }
-            let suffix = if kind == QuantityKind::ByteRate { "/s" } else { "" };
+            let suffix = if kind == QuantityKind::ByteRate {
+                "/s"
+            } else {
+                ""
+            };
             let byte_unit = unit
                 .strip_suffix(suffix)
                 .filter(|unit| !unit.is_empty())

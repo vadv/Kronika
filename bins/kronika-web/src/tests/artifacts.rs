@@ -17,11 +17,14 @@ use kronika_registry::os_process::OsProcess;
 use kronika_registry::os_psi::OsPsi;
 use kronika_registry::os_user::OsUser;
 use kronika_registry::pg_log::{PgLogErrors, PgLogTempFiles};
+use kronika_registry::pg_settings::PgSettings;
 use kronika_registry::pg_stat_activity::PgStatActivityV3;
 use kronika_registry::pg_stat_statements::PgStatStatementsV2;
+use kronika_registry::pg_stat_statements_info::PgStatStatementsInfo;
 use kronika_registry::pg_stat_user_indexes::{PgStatUserIndexesV1, PgStatUserIndexesV2};
 use kronika_registry::pg_stat_user_tables::PgStatUserTablesV1;
-use kronika_registry::pg_store_plans::PgStorePlansOsscV1;
+use kronika_registry::pg_store_plans::{PgStorePlansOsscV1, PgStorePlansVadvV1};
+use kronika_registry::pg_store_plans_info::PgStorePlansInfo;
 use kronika_registry::{Section, StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use serde_json::Value;
@@ -509,6 +512,8 @@ impl Fixture {
             (1_000_000, 4, 40, 100, 1_000, 8_192),
             (2_000_000, 4, 40, 90, 900, 8_192),
             (2_000_000, 5, 50, 50, large, 8_192),
+            (1_000_000, 6, 60, 0, 4_096, 1_024),
+            (2_000_000, 6, 60, 0, 4_096, 1_024),
         ] {
             let mut row = process(ts, Some(bytes), label);
             row.pid = pid;
@@ -525,6 +530,13 @@ impl Fixture {
             row.nvcsw = ticks;
             row.nivcsw = ticks;
             row.rundelay_ns = ticks * 1_000_000;
+            row.blkdelay_ticks = ticks;
+            if pid != 6 {
+                row.syscr = Some(ticks);
+                row.syscw = Some(ticks * 2);
+                row.rchar = Some(bytes + 4_096);
+                row.wchar = Some(bytes / 2 + 8_192);
+            }
             buffers.push(row).expect("process quantity row fits");
         }
         let part = buffers
@@ -580,6 +592,21 @@ impl Fixture {
             row.queryid = Some(queryid);
             buffers.push(row).expect("boundary statement row fits");
         }
+        let mut moments = rows
+            .iter()
+            .map(|(ts, _queryid, _calls, _time)| *ts)
+            .collect::<Vec<_>>();
+        moments.sort_unstable();
+        moments.dedup();
+        for ts in moments {
+            buffers
+                .push(PgStatStatementsInfo {
+                    ts: Ts(ts),
+                    dealloc: 0,
+                    stats_reset: Ts(50),
+                })
+                .expect("boundary statement reset row fits");
+        }
         let dictionary = dict::encode(interner.window()).expect("boundary statement dictionary");
         let part = buffers
             .flush(&dictionary)
@@ -633,7 +660,23 @@ impl Fixture {
             let mut row = store_plan(ts, queryid, plan_text);
             row.calls = calls;
             row.total_time = total_time;
+            row.first_call = Ts(50);
             buffers.push(row).expect("boundary plan row fits");
+        }
+        let mut moments = rows
+            .iter()
+            .map(|(ts, _queryid, _calls, _time)| *ts)
+            .collect::<Vec<_>>();
+        moments.sort_unstable();
+        moments.dedup();
+        for ts in moments {
+            buffers
+                .push(PgStorePlansInfo {
+                    ts: Ts(ts),
+                    dealloc: 0,
+                    stats_reset: Ts(50),
+                })
+                .expect("boundary plan reset row fits");
         }
         let dictionary = dict::encode(interner.window()).expect("boundary plan dictionary");
         let part = buffers
@@ -696,6 +739,15 @@ impl Fixture {
                 buffers.push(row).expect("ranked statement row fits");
             }
         }
+        for ts in [100, 200] {
+            buffers
+                .push(PgStatStatementsInfo {
+                    ts: Ts(ts),
+                    dealloc: 0,
+                    stats_reset: Ts(50),
+                })
+                .expect("statement reset row fits");
+        }
         let dictionary = dict::encode(interner.window()).expect("ranked statement dictionary");
         let part = buffers
             .flush(&dictionary)
@@ -732,8 +784,18 @@ impl Fixture {
                 row.shared_blks_read = if current { read } else { 0 };
                 row.local_blks_hit = if current { local_hit } else { 0 };
                 row.local_blks_read = if current { local_read } else { 0 };
+                row.first_call = Ts(50);
                 buffers.push(row).expect("ranked plan row fits");
             }
+        }
+        for ts in [100, 200] {
+            buffers
+                .push(PgStorePlansInfo {
+                    ts: Ts(ts),
+                    dealloc: 0,
+                    stats_reset: Ts(50),
+                })
+                .expect("plan reset row fits");
         }
         let dictionary = dict::encode(interner.window()).expect("ranked plan dictionary");
         let part = buffers
@@ -743,6 +805,127 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append ranked plans");
+    }
+
+    fn append_postgres_block_size(&mut self, block_size: u128) {
+        let mut interner = Interner::new(DictLimits::default());
+        let intern = |interner: &mut Interner, value: &str| {
+            StrId(
+                interner
+                    .intern(value.as_bytes())
+                    .expect("intern setting")
+                    .get(),
+            )
+        };
+        let name = intern(&mut interner, "block_size");
+        let setting = intern(&mut interner, &block_size.to_string());
+        let database = intern(&mut interner, "postgres");
+        let role = intern(&mut interner, "collector");
+        let source = intern(&mut interner, "default");
+        let context = intern(&mut interner, "internal");
+        let vartype = intern(&mut interner, "integer");
+        let mut buffers = SectionBuffers::new();
+        buffers
+            .push(PgSettings {
+                ts: Ts(200),
+                datid: 1,
+                datname: database,
+                usesysid: 2,
+                usename: role,
+                name,
+                setting,
+                unit: None,
+                source,
+                sourcefile: None,
+                sourceline: None,
+                pending_restart: false,
+                context,
+                vartype,
+                boot_val: Some(setting),
+                reset_val: Some(setting),
+            })
+            .expect("block-size setting row fits");
+        let dictionary = dict::encode(interner.window()).expect("block-size dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode block-size setting")
+            .expect("nonempty block-size setting");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append block-size setting");
+    }
+
+    fn append_postgres_reset_pair(&mut self, resets: Option<[i64; 2]>, plan_first_calls: [i64; 2]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let label = fixture_label(&mut interner, "reset-guard");
+        let mut buffers = SectionBuffers::new();
+        for (index, ts) in [100, 200].into_iter().enumerate() {
+            let current = index == 1;
+            let mut statement = statement(ts, if current { 10 } else { 0 }, 10.0, label);
+            statement.queryid = Some(1);
+            buffers.push(statement).expect("reset statement row fits");
+
+            let mut plan = store_plan(ts, 1, label);
+            plan.calls = if current { 10 } else { 0 };
+            plan.total_time = if current { 10.0 } else { 0.0 };
+            plan.first_call = Ts(plan_first_calls[index]);
+            buffers.push(plan).expect("reset plan row fits");
+
+            if let Some(resets) = resets {
+                buffers
+                    .push(PgStatStatementsInfo {
+                        ts: Ts(ts),
+                        dealloc: 0,
+                        stats_reset: Ts(resets[index]),
+                    })
+                    .expect("statement reset guard fits");
+                buffers
+                    .push(PgStorePlansInfo {
+                        ts: Ts(ts),
+                        dealloc: 0,
+                        stats_reset: Ts(resets[index]),
+                    })
+                    .expect("plan reset guard fits");
+            }
+        }
+        let dictionary = dict::encode(interner.window()).expect("reset guard dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode reset guard")
+            .expect("nonempty reset guard");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append reset guard");
+    }
+
+    fn append_vadv_plan_quantities(&mut self) {
+        let mut interner = Interner::new(DictLimits::default());
+        let label = fixture_label(&mut interner, "vadv-quantity-plan");
+        let mut buffers = SectionBuffers::new();
+        for ts in [100, 200] {
+            let current = ts == 200;
+            let mut row = store_plan_vadv(ts, label);
+            row.calls = if current { 10 } else { 0 };
+            row.slow_log_calls = if current { 4 } else { 0 };
+            row.total_time = if current { 75.0 } else { 0.0 };
+            row.total_plan_time = if current { 25.0 } else { 0.0 };
+            buffers.push(row).expect("vadv quantity plan fits");
+            buffers
+                .push(PgStorePlansInfo {
+                    ts: Ts(ts),
+                    dealloc: 0,
+                    stats_reset: Ts(50),
+                })
+                .expect("vadv reset row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("vadv quantity dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode vadv quantities")
+            .expect("nonempty vadv quantities");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append vadv quantities");
     }
 
     fn append_relation_snapshots(
@@ -1464,6 +1647,46 @@ fn store_plan(ts: i64, queryid: i64, plan: StrId) -> PgStorePlansOsscV1 {
         temp_blk_write_time: 6.5,
         first_call: Ts(ts - 1_000),
         last_call: Ts(ts - 1),
+    }
+}
+
+fn store_plan_vadv(ts: i64, plan: StrId) -> PgStorePlansVadvV1 {
+    PgStorePlansVadvV1 {
+        ts: Ts(ts),
+        userid: 10,
+        dbid: 11,
+        queryid: 1,
+        planid: -7,
+        queryid_stat_statements: 1,
+        datname: None,
+        usename: None,
+        plan: Some(plan),
+        calls: 0,
+        slow_log_calls: 0,
+        total_time: 0.0,
+        min_time: 1.0,
+        max_time: 2.0,
+        mean_time: 1.5,
+        stddev_time: 0.5,
+        rows: 0,
+        shared_blks_hit: 0,
+        shared_blks_read: 0,
+        shared_blks_dirtied: 0,
+        shared_blks_written: 0,
+        local_blks_hit: 0,
+        local_blks_read: 0,
+        local_blks_dirtied: 0,
+        local_blks_written: 0,
+        temp_blks_read: 0,
+        temp_blks_written: 0,
+        blk_read_time: 0.0,
+        blk_write_time: 0.0,
+        first_call: Ts(50),
+        last_call: Ts(ts),
+        total_plan_time: 0.0,
+        min_plan_time: 0.0,
+        max_plan_time: 0.0,
+        mean_plan_time: 0.0,
     }
 }
 
@@ -3280,6 +3503,7 @@ fn statement_and_plan_quantities_filter_hidden_metrics_before_paging() {
     let mut fixture = Fixture::new();
     fixture.append_ranked_statements();
     fixture.append_ranked_plans();
+    fixture.append_postgres_block_size(8_192);
     fixture.finish();
 
     for section in ["pg_stat_statements", "pg_store_plans"] {
@@ -3312,11 +3536,36 @@ fn statement_and_plan_quantities_filter_hidden_metrics_before_paging() {
         ))
         .expect("strict hit boundary");
         assert_eq!(row_records(&hit)[0]["values"][0], "2", "{section}");
+
+        let block_rate = stream(fixture.prepare(
+            &format!(
+                "{base}&page_size=10&search=query_id%3A1%20AND%20shared_buffer_read_rate%3E1638399999B%2Fs"
+            ),
+            None,
+        ))
+        .expect("exact buffer byte-rate boundary");
+        assert_eq!(row_records(&block_rate)[0]["values"][0], "1", "{section}");
+
+        let block_rate_boundary = stream(fixture.prepare(
+            &format!(
+                "{base}&page_size=10&search=query_id%3A1%20AND%20shared_buffer_read_rate%3E1638400000B%2Fs"
+            ),
+            None,
+        ))
+        .expect("strict buffer byte-rate equality");
+        assert!(row_records(&block_rate_boundary).is_empty(), "{section}");
+
+        let per_call = stream(fixture.prepare(
+            &format!("{base}&page_size=10&search=query_id%3A1%20AND%20buffer_per_call%3E81919B"),
+            None,
+        ))
+        .expect("exact buffer bytes per call");
+        assert_eq!(row_records(&per_call)[0]["values"][0], "1", "{section}");
     }
 
     let grouped = stream(fixture.prepare(
         &format!(
-            "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_statements&field=queryid&by=queryid&page_size=10&search=query_id%3A3%20OR%20%28exec_time_rate%3E500000ms%2Fs%20AND%20rows_per_call%3E5%2Fcall%29"
+            "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_statements&field=queryid&by=queryid&page_size=10&search=query_id%3A3%20OR%20%28exec_time_rate%3E500000ms%2Fs%20AND%20rows_per_call%3E5%29"
         ),
         None,
     ))
@@ -3355,6 +3604,55 @@ fn quantitative_search_keeps_layout_absence_null() {
             .expect("unavailable page trailer");
         assert_eq!(page["eligible"], "0", "{section}");
     }
+}
+
+#[test]
+fn postgres_quantities_require_exact_reset_continuity() {
+    for (resets, first_calls, statement_matches, plan_matches) in [
+        (None, [50, 50], false, false),
+        (Some([50, 150]), [50, 50], false, false),
+        (Some([50, 50]), [50, 150], true, false),
+        (Some([50, 50]), [50, 50], true, true),
+    ] {
+        let mut fixture = Fixture::new();
+        fixture.append_postgres_reset_pair(resets, first_calls);
+        fixture.finish();
+        for (section, matches) in [
+            ("pg_stat_statements", statement_matches),
+            ("pg_store_plans", plan_matches),
+        ] {
+            let records = stream(fixture.prepare(
+                &format!(
+                    "/api/segments/{SEGMENT_ID}/snapshot?at=200&section={section}&field=queryid&by=queryid&page_size=10&search=call_rate%3E1%2Fs"
+                ),
+                None,
+            ))
+            .expect("reset-continuity search");
+            assert_eq!(!row_records(&records).is_empty(), matches, "{section}");
+        }
+    }
+}
+
+#[test]
+fn vadv_plan_quantities_include_planning_and_slow_calls() {
+    let mut fixture = Fixture::new();
+    fixture.append_vadv_plan_quantities();
+    fixture.finish();
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_store_plans&field=queryid&by=queryid&page_size=10"
+    );
+    for search in [
+        "planning_time_rate%3E249999ms%2Fs",
+        "planning_share%3E24.9%25",
+        "slow_call_rate%3E39999%2Fs",
+    ] {
+        let records = stream(fixture.prepare(&format!("{base}&search={search}"), None))
+            .expect("vadv quantity search");
+        assert_eq!(row_records(&records)[0]["values"][0], "1", "{search}");
+    }
+    let strict = stream(fixture.prepare(&format!("{base}&search=planning_share%3E25%25"), None))
+        .expect("strict planning share");
+    assert!(row_records(&strict).is_empty());
 }
 
 #[test]
@@ -3504,6 +3802,31 @@ fn process_quantities_use_same_starttime_predecessors_and_exact_counters() {
         [serde_json::json!([1, 1_048_576.0, "3072"])]
     );
 
+    for search in [
+        "logical_read_rate%3E1048575B%2Fs",
+        "read_syscall_rate%3E19%2Fs",
+        "run_delay%3E19ms%2Fs",
+        "block_io_delay%3E199ms%2Fs",
+    ] {
+        let records = stream(fixture.prepare(&format!("{base}&search={search}"), None))
+            .expect("derived process rate");
+        assert_eq!(row_records(&records)[0]["values"][0], 1, "{search}");
+    }
+
+    let exact_zero = stream(fixture.prepare(
+        &format!("{base}&search=pid%3A6%20AND%20cpu_cores%3C0.1"),
+        None,
+    ))
+    .expect("stable zero CPU rate");
+    assert_eq!(row_records(&exact_zero)[0]["values"][0], 6);
+
+    let optional_null = stream(fixture.prepare(
+        &format!("{base}&search=pid%3A6%20AND%20read_syscall_rate%3C1%2Fs"),
+        None,
+    ))
+    .expect("missing optional process I/O");
+    assert!(row_records(&optional_null).is_empty());
+
     let unavailable = stream(fixture.prepare(&format!("{base}&search=cpu_cores%3C1000"), None))
         .expect("process predecessor exclusions");
     assert_eq!(
@@ -3511,7 +3834,7 @@ fn process_quantities_use_same_starttime_predecessors_and_exact_counters() {
             .iter()
             .map(|row| row["values"][0].as_i64().expect("pid"))
             .collect::<Vec<_>>(),
-        [2, 1],
+        [6, 2, 1],
         "PID reuse, rollback, and a missing predecessor stay null"
     );
 

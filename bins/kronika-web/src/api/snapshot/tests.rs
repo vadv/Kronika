@@ -592,6 +592,80 @@ fn structured_search_validates_aliases_types_escaping_and_surface_fields() {
             .collect::<Vec<_>>(),
         ["user", "effective_user", "user_id", "effective_user_id"]
     );
+    for (input, canonical) in [
+        ("resident_memory>2MiB", "rss>2MiB"),
+        ("virtual_memory>1GiB", "vsz>1GiB"),
+        ("majflt_rate>1/s", "major_fault_rate>1/s"),
+        ("rchar_rate>1MiB/s", "logical_read_rate>1MiB/s"),
+        ("blkdelay>50ms/s", "block_io_delay>50ms/s"),
+    ] {
+        assert_eq!(
+            StructuredSearch::parse(input, "os_process")
+                .expect("documented process alias")
+                .canonical(),
+            canonical
+        );
+    }
+    for raw in ["utime>1", "rchar>1MiB", "read_bytes>1MiB", "cpu>0.1"] {
+        assert!(StructuredSearch::parse(raw, "os_process").is_err(), "{raw}");
+    }
+}
+
+#[test]
+fn quantitative_search_registry_is_surface_wide_and_physical_names_stay_private() {
+    let statements = super::search::search_fields("pg_stat_statements")
+        .iter()
+        .map(|field| field.key)
+        .collect::<Vec<_>>();
+    let plans = super::search::search_fields("pg_store_plans")
+        .iter()
+        .map(|field| field.key)
+        .collect::<Vec<_>>();
+    for shared in [
+        "call_rate",
+        "exec_time_rate",
+        "mean_exec",
+        "row_rate",
+        "rows_per_call",
+        "planning_time_rate",
+        "planning_share",
+        "shared_buffer_read_rate",
+        "local_buffer_write_rate",
+        "temp_buffer_read_rate",
+        "shared_read_time_rate",
+        "buffer_hit",
+        "buffer_per_call",
+        "exec_cv",
+        "min_exec_since_reset",
+        "max_exec_since_reset",
+        "mean_exec_since_reset",
+        "stddev_exec_since_reset",
+    ] {
+        assert!(statements.contains(&shared), "Statements: {shared}");
+        assert!(plans.contains(&shared), "Plans: {shared}");
+    }
+    for statement_only in ["plan_rate", "wal_rate", "wal_per_call"] {
+        assert!(statements.contains(&statement_only));
+        assert!(!plans.contains(&statement_only));
+    }
+    assert!(plans.contains(&"slow_call_rate"));
+    for physical in [
+        "calls",
+        "total_exec_time",
+        "shared_blks_read",
+        "wal_bytes",
+        "rmem_kb",
+        "utime",
+        "read_bytes",
+    ] {
+        assert!(!statements.contains(&physical));
+        assert!(!plans.contains(&physical));
+        assert!(
+            !super::search::search_fields("os_process")
+                .iter()
+                .any(|field| field.key == physical)
+        );
+    }
 }
 
 #[test]

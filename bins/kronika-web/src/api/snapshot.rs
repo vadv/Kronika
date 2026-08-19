@@ -647,6 +647,9 @@ fn section_plans(
                     if plan.contract.column("stats_since").is_some() {
                         plan.add_projection_columns(&["stats_since"]);
                     }
+                    if logical_name == "os_process" && plan.contract.column("starttime").is_some() {
+                        plan.add_projection_columns(&["starttime"]);
+                    }
                     if logical_name == "pg_store_plans"
                         && plan.contract.column("first_call").is_some()
                     {
@@ -1685,11 +1688,7 @@ impl PreparedSnapshot {
         Ok(Some(Moments { current, previous }))
     }
 
-    fn reset_epoch_at(
-        &self,
-        logical_name: &str,
-        at: i64,
-    ) -> Result<Option<i64>, ApiError> {
+    fn reset_epoch_at(&self, logical_name: &str, at: i64) -> Result<Option<i64>, ApiError> {
         let info_name = match logical_name {
             "pg_stat_statements" => "pg_stat_statements_info",
             "pg_store_plans" => "pg_store_plans_info",
@@ -2919,8 +2918,7 @@ fn postgres_block_size(segment: &Segment) -> Result<Option<u128>, ApiError> {
         let Some(layout) = contract(type_id) else {
             continue;
         };
-        let (Some(name), Some(setting)) = (layout.column("name"), layout.column("setting"))
-        else {
+        let (Some(name), Some(setting)) = (layout.column("name"), layout.column("setting")) else {
             continue;
         };
         let mut candidates = Vec::new();
@@ -2975,6 +2973,10 @@ enum SearchMetricValue {
 }
 
 impl SearchMetricValue {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "stored floating metrics must be scaled in their native f64 domain"
+    )]
     fn scale(self, numerator_scale: u128, denominator_scale: u128) -> Option<Self> {
         match self {
             Self::Exact {
@@ -2995,6 +2997,10 @@ impl SearchMetricValue {
         }
     }
 
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "stored floating metrics are compared to the closest f64 threshold"
+    )]
     fn matches(&self, operator: SearchOperator, quantity: &Quantity) -> bool {
         let ordering = match self {
             Self::Exact {
@@ -3104,6 +3110,10 @@ fn process_search_metric(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fixed public PostgreSQL metric adapter stays exhaustive and fork-transparent"
+)]
 fn postgres_search_metric(
     context: &PageContext<'_>,
     row: &Row,
@@ -3150,20 +3160,11 @@ fn postgres_search_metric(
         _ => None,
     };
     if let Some(column) = buffer_column {
-        return rate_metric(
-            context,
-            row,
-            identity,
-            &[column],
-            1_000_000,
-            1,
-        )
-        .and_then(|value| value.scale(context.block_size?, 1));
+        return rate_metric(context, row, identity, &[column], 1_000_000, 1)
+            .and_then(|value| value.scale(context.block_size?, 1));
     }
     match metric {
-        "mean_exec" => {
-            counter_ratio_metric(context, row, identity, &[execution?], &["calls"], 1)
-        }
+        "mean_exec" => counter_ratio_metric(context, row, identity, &[execution?], &["calls"], 1),
         "rows_per_call" => counter_ratio_metric(context, row, identity, &["rows"], &["calls"], 1),
         "wal_per_call" => {
             counter_ratio_metric(context, row, identity, &["wal_bytes"], &["calls"], 1)
@@ -3246,6 +3247,10 @@ fn gauge_metric(
     )
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "stored floating counters preserve their recorded f64 arithmetic"
+)]
 fn rate_metric(
     context: &PageContext<'_>,
     row: &Row,
@@ -3303,6 +3308,10 @@ fn value_ratio_metric(
     )
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "stored floating counters preserve their recorded f64 arithmetic"
+)]
 fn ratio_metric(
     numerator: OrderedNumber,
     denominator: OrderedNumber,
@@ -3325,6 +3334,10 @@ fn ratio_metric(
     }
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "stored floating gauges preserve their recorded f64 value"
+)]
 fn ordered_metric(
     value: OrderedNumber,
     numerator_scale: u128,
