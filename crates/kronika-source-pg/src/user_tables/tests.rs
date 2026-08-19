@@ -1,6 +1,6 @@
 use super::{
     UserTablesRow, UserTablesVersion, to_v1, to_v2, to_v3, to_v4, user_tables_query,
-    user_tables_version, validate_toast_tablespace,
+    user_tables_version,
 };
 use crate::test_intern as fake_intern;
 
@@ -118,7 +118,6 @@ fn every_query_carries_the_marker_and_the_views_it_needs() {
         assert!(sql.contains("pg_catalog.age(c.relfrozenxid)"), "{sql}");
         assert!(sql.contains("pg_catalog.mxid_age(c.relminmxid)"), "{sql}");
         assert!(sql.contains("d.dattablespace"), "{sql}");
-        assert!(sql.contains("toast_tablespace_matches_heap"), "{sql}");
         for catalog in [
             "pg_catalog.pg_stat_user_tables",
             "pg_catalog.pg_statio_user_tables",
@@ -193,16 +192,6 @@ fn a_missing_tablespace_name_keeps_the_effective_oid() {
     let mapped = to_v4(&row, fake_intern).expect("intern");
     assert_eq!(mapped.tablespace_oid, Some(1_663));
     assert_eq!(mapped.tablespace, None);
-}
-
-#[test]
-fn toast_placement_mismatch_rejects_the_table_section_row() {
-    let error = validate_toast_tablespace(16_499, false).expect_err("mismatch");
-    assert_eq!(
-        error.to_string(),
-        "table 16499 has TOAST storage in a different tablespace"
-    );
-    validate_toast_tablespace(16_499, true).expect("matching placement");
 }
 
 #[test]

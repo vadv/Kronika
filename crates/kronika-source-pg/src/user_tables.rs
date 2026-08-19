@@ -51,10 +51,6 @@ const COMMON_COLUMNS: &str = "st.relid, \
           ELSE COALESCE(NULLIF(c.reltablespace, 0), d.dattablespace) \
      END::oid AS tablespace_oid, \
      CASE WHEN c.relkind = 'p' THEN NULL ELSE ets.spcname::text END AS tablespace, \
-     CASE WHEN c.reltoastrelid = 0 THEN true \
-          ELSE COALESCE(NULLIF(tc.reltablespace, 0), d.dattablespace) = \
-               COALESCE(NULLIF(c.reltablespace, 0), d.dattablespace) \
-     END AS toast_tablespace_matches_heap, \
      coalesce(st.seq_scan, 0) AS seq_scan, \
      coalesce(st.seq_tup_read, 0) AS seq_tup_read, \
      st.idx_scan, st.idx_tup_fetch, \
@@ -101,7 +97,6 @@ const COMMON_FROM: &str = " FROM pg_catalog.pg_stat_user_tables st \
      JOIN pg_catalog.pg_database d ON d.datname = pg_catalog.current_database() \
      LEFT JOIN pg_catalog.pg_statio_user_tables sio ON sio.relid = st.relid \
      LEFT JOIN pg_catalog.pg_stat_all_tables tst ON tst.relid = c.reltoastrelid \
-     LEFT JOIN pg_catalog.pg_class tc ON tc.oid = c.reltoastrelid \
      LEFT JOIN pg_catalog.pg_tablespace ets \
        ON ets.oid = COALESCE(NULLIF(c.reltablespace, 0), d.dattablespace)";
 
@@ -492,16 +487,11 @@ fn row_from_pg(
     database: &Database,
     version: UserTablesVersion,
 ) -> anyhow::Result<UserTablesRow> {
-    let relid = row.try_get("relid")?;
-    validate_toast_tablespace(
-        relid,
-        row.try_get::<_, bool>("toast_tablespace_matches_heap")?,
-    )?;
     Ok(UserTablesRow {
         ts: row.try_get("ts_us")?,
         datid: database.oid,
         datname: database.name.clone(),
-        relid,
+        relid: row.try_get("relid")?,
         schemaname: row.try_get("schemaname")?,
         relname: row.try_get("relname")?,
         tablespace_oid: row.try_get("tablespace_oid")?,
@@ -570,13 +560,6 @@ fn row_from_pg(
         tidx_blks_read: row.try_get("tidx_blks_read")?,
         tidx_blks_hit: row.try_get("tidx_blks_hit")?,
     })
-}
-
-fn validate_toast_tablespace(relid: u32, matches_heap: bool) -> anyhow::Result<()> {
-    if !matches_heap {
-        anyhow::bail!("table {relid} has TOAST storage in a different tablespace");
-    }
-    Ok(())
 }
 
 /// Collect every table of the database `client` is attached to.
