@@ -179,12 +179,11 @@ function SearchHelp({ onClose, surface, t }: { readonly onClose: () => void; rea
 }
 
 function searchExamples(surface: SearchSurface): readonly string[] {
-  if (surface === "pg_store_plans") return ["exec_time_rate>500ms/s AND call_rate>1/s", "buffer_hit<95% OR rows_per_call>100", "plan_id:3704532795 OR query_id:-912345"]
-  if (surface === "pg_stat_statements") return ["exec_time_rate>500ms/s AND call_rate>1/s", "wal_rate>1MiB/s OR buffer_hit<95%", "mean_exec>100ms AND rows_per_call>10"]
+  if (surface === "pg_store_plans" || surface === "pg_stat_statements") return ["exec_time_rate>500ms/s AND call_rate>1/s"]
   if (surface === "pg_stat_activity") return ["query_id:-912345", 'database:app AND (text:"select orders*" OR text:"update orders*")']
   if (surface === "pg_stat_user_tables") return ["size>100MB", "(schema:public OR schema:audit) AND size>100MiB", "schema:public AND (buffer_hit<90% OR seq_scan_rate>0.5/s)"]
   if (surface === "pg_stat_user_indexes") return ["size>100MB", "(schema:public OR schema:audit) AND buffer_hit<99.5%", "table_name:orders AND (scan_rate>10/s OR size>100MiB)"]
-  if (surface === "os_process") return ["cpu_cores>0.1 AND rss>2MiB", "disk_read_rate>1MB/s OR major_fault_rate>10/s", "command:postgres* AND threads>4"]
+  if (surface === "os_process") return ["cpu_cores>0.1 AND rss>2MiB"]
   if (surface === "events") return ["kind:event AND source:postgres*", 'text:"lock timeout"']
   return ["database:app", "state:active"]
 }
