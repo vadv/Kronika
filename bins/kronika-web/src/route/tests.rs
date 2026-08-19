@@ -253,6 +253,34 @@ fn snapshot_paging_inputs_enable_one_bounded_page() {
 }
 
 #[test]
+fn statement_text_first_match_requires_one_exact_bounded_shape() {
+    let path = "/api/segments/7/snapshot";
+    let valid = "at=9&section=pg_stat_statements&field=query&page_size=1&search=query_id%3A-42&first_match=1";
+    let Route::Snapshot(snapshot) = parse(path, Some(valid)).expect("first Statement text") else {
+        panic!("snapshot route");
+    };
+    assert!(snapshot.first_match);
+    assert_eq!(snapshot.page_size, Some(1));
+    assert_eq!(snapshot.search.as_deref(), Some("query_id:-42"));
+
+    for query in [
+        "at=9&section=pg_stat_statements&field=query&search=query_id%3A42&first_match=1",
+        "at=9&section=pg_stat_statements&field=queryid&field=query&page_size=1&search=query_id%3A42&first_match=1",
+        "at=9&section=pg_store_plans&field=query&page_size=1&search=query_id%3A42&first_match=1",
+        "at=9&section=pg_stat_statements&field=query&by=queryid&page_size=1&search=query_id%3A42&first_match=1",
+        "at=9&section=pg_stat_statements&field=query&page_size=1&cursor=x&search=query_id%3A42&first_match=1",
+        "at=9&section=pg_stat_statements&field=query&page_size=1&search=query_id%3A42&first_match=0",
+        "at=9&section=pg_stat_statements&field=query&page_size=1&search=query_id%3A42&first_match=1&first_match=1",
+    ] {
+        assert_eq!(
+            parse(path, Some(query)),
+            Err(RouteError::BadParameter("first_match".to_owned())),
+            "{query}",
+        );
+    }
+}
+
+#[test]
 fn snapshot_accepts_one_unpaged_exact_locator() {
     let Route::Snapshot(locator) = parse(
         "/api/segments/7/snapshot",

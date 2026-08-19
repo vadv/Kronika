@@ -3780,6 +3780,7 @@ mod tests {
             page_size: Some(200),
             cursor: None,
             search: None,
+            first_match: false,
             text: None,
             filters: vec![Filter {
                 column: "no_scans".to_owned(),
@@ -3841,6 +3842,7 @@ mod tests {
             page_size: Some(200),
             cursor: None,
             search: None,
+            first_match: false,
             text: None,
             filters: vec![Filter {
                 column: "tablespace_oid".to_owned(),

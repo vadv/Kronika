@@ -13,19 +13,12 @@ const iconPlugin = {
     context.onLoad({ filter: /.*/, namespace: "icons" }, () => ({ contents: "export const Copy=()=>null" }))
   },
 }
-const displayTimePlugin = {
-  name: "display-time",
-  setup(context) {
-    context.onResolve({ filter: /display-time-context$/ }, () => ({ namespace: "display-time", path: "display-time" }))
-    context.onLoad({ filter: /.*/, namespace: "display-time" }, () => ({ contents: "export const useDisplayTime=()=>({timestamp:(value)=>String(value)})" }))
-  },
-}
 const plans = await importModule(
   'export * from "../src/plan-text.ts"; export * from "../src/plan-view.tsx"; export * from "../src/statement-navigation.ts"',
-  { plugins: [iconPlugin, displayTimePlugin] },
+  { plugins: [iconPlugin] },
 )
 const queryHelpers = await importModule(
-  'export { recordedQueryTexts } from "../src/plan-query.ts"',
+  'export { firstRecordedQueryText } from "../src/plan-query.ts"',
   { plugins: [registryPlugin([])] },
 )
 const t = (key) => key
@@ -73,6 +66,12 @@ test("plan navigation uses public shared IDs for OSSC and Datasentinel and the s
   }
   const last = plans.statementsForPlan(row("1004001", { ...identity, queryid: 0, queryid_stat_statements: "33" }))
   assert.deepEqual(last, { expression: 'database:"app db" AND role:reader AND query_id:33', queryId: "33", section: "statements" })
+  assert.deepEqual(plans.statementTextForPlan(row("1003001", { queryid: "11" })), { queryId: "11" })
+  assert.deepEqual(plans.statementTextForPlan(row("1018001", { queryid: "22" })), { queryId: "22" })
+  assert.deepEqual(plans.statementTextForPlan(row("1004001", { queryid: "999", queryid_stat_statements: "33" })), { queryId: "33" })
+  assert.equal(plans.statementTextForPlan(row("1004001", { queryid: "999", queryid_stat_statements: 0 })), null)
+  assert.equal(plans.statementTextForPlan(row("1003001", { queryid: 0 })), null)
+  assert.equal(plans.statementTextForPlan(row("1003001", {})), null)
   assert.equal(plans.statementsForPlan(row("1004001", { ...identity, queryid: 0, queryid_stat_statements: 0 })), null)
   assert.equal(plans.statementsForPlan(row("1003001", { ...identity, queryid: 0 })), null)
   assert.equal(plans.statementsForPlan(row("1003001", { ...identity, dbid: 0, queryid: 11 })), null)
@@ -80,33 +79,32 @@ test("plan navigation uses public shared IDs for OSSC and Datasentinel and the s
   assert.deepEqual(plans.plansForPlanId(row("1004001", identity)), { expression: "plan_id:22", planId: "22", section: "plans" })
 })
 
-test("recorded plan query texts keep exact bytes, deduplicate identical rows, and retain every distinct text", () => {
+test("recorded plan query text keeps exact bytes and chooses the first nonempty row", () => {
   const recorded = (ordinal, timestamp, query) => ({
     logicalName: "pg_stat_statements", ordinal, segmentId: ordinal === "3" ? "old" : "current", timestamp,
     typeId: "1002002", values: { datname: "app", dbid: 20, query, queryid: "42", toplevel: true, userid: 10, usename: "reader" },
   })
   const first = "  SELECT *\n  FROM jobs\n"
   const second = `select '${"x".repeat(900)}'`
-  const texts = queryHelpers.recordedQueryTexts([
-    recorded("1", 30, first), recorded("2", 30, first), recorded("3", 29, second), recorded("4", 30, null),
+  const text = queryHelpers.firstRecordedQueryText([
+    recorded("0", 30, null), recorded("1", 30, ""), recorded("2", 30, first), recorded("3", 29, second),
   ])
-  assert.deepEqual(texts.map(({ occurrences, text }) => [occurrences, text]), [[2, first], [1, second]])
-  assert.equal(texts[0]?.database, "app")
-  assert.equal(texts[0]?.role, "reader")
+  assert.equal(text, first)
+  assert.equal(queryHelpers.firstRecordedQueryText([recorded("0", 30, null), recorded("1", 30, "")]), null)
 
   const markup = renderToStaticMarkup(createElement(plans.QueryView, {
-    retry() {}, status: "ready", texts, t,
+    retry() {}, status: "ready", text, t,
   }))
-  assert.equal((markup.match(/data-testid="pg-plan-query-text"/g) ?? []).length, 2)
+  assert.equal((markup.match(/data-testid="pg-plan-query-text"/g) ?? []).length, 1)
   assert.match(markup, /  SELECT \*/)
-  assert.match(markup, /pg\.query\.plan\.identical/)
-  assert.equal((markup.match(/pg\.plan\.copy/g) ?? []).length, 2)
+  assert.doesNotMatch(markup, /app|reader|1\/2|pg\.query\.plan\.identical/)
+  assert.equal((markup.match(/pg\.plan\.copy/g) ?? []).length, 1)
   assert.match(markup, /max-h-\[min\(320px,35vh\)\] overflow-auto/)
 })
 
 test("query failure and unavailable states remain separate from the execution plan", () => {
   for (const status of ["unavailable", "no_bridge", "error"]) {
-    const query = renderToStaticMarkup(createElement(plans.QueryView, { retry() {}, status, texts: [], t }))
+    const query = renderToStaticMarkup(createElement(plans.QueryView, { retry() {}, status, text: null, t }))
     assert.match(query, new RegExp(`data-query-status="${status}"`))
     assert.match(query, new RegExp(`pg\\.query\\.plan\\.${status}`))
   }
@@ -119,7 +117,9 @@ test("inline plan query retrieval never joins the visible Statements rows", asyn
     readFile(new URL("../src/plan-query.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8"),
   ])
-  assert.match(querySource, /loadRelatedStatementTextRows\(segments, cursor, target\.expression/)
+  assert.match(querySource, /loadRelatedStatementTextRow\(segments, cursor, target\.queryId/)
+  assert.match(querySource, /\.catch\(\(\) =>/)
+  assert.doesNotMatch(querySource, /statementsForPlan|target\.expression/)
   assert.doesNotMatch(querySource, /allRows|data\.sections|pg_stat_statements\s*\?\?/)
   assert.match(viewSource, /<PlanTextBlocks cursor=\{cursor\} plan=\{wholeText\} revision=\{historyRevision\} row=\{row\} segments=\{segments\}/)
   assert.doesNotMatch(viewSource, /<PlanTextBlocks[^>]*allRows=/)

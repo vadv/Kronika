@@ -29,7 +29,10 @@ use kronika_registry::{Section, StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use serde_json::Value;
 
-use crate::api::{ApiError, CachePolicy, Prepared, context_operations, reset_context_operations};
+use crate::api::{
+    ApiError, CachePolicy, Prepared, context_operations, first_match_rows, page_operations,
+    reset_context_operations, reset_first_match_rows, reset_page_operations,
+};
 use crate::config::SOURCE_OS;
 use crate::encoding::AcceptedEncodings;
 
@@ -627,6 +630,32 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append boundary statements");
+    }
+
+    fn append_statement_text_matches(
+        &mut self,
+        timestamp: i64,
+        query_id: i64,
+        texts: &[Option<&str>],
+    ) {
+        let mut interner = Interner::new(DictLimits::default());
+        let unused = fixture_label(&mut interner, "unused statement text");
+        let mut buffers = SectionBuffers::new();
+        for (index, text) in texts.iter().enumerate() {
+            let mut row = statement(timestamp, 1, 1.0, unused);
+            row.queryid = Some(query_id);
+            row.dbid = 73_u32.saturating_add(u32::try_from(index).unwrap_or(u32::MAX));
+            row.query = text.map(|text| fixture_label(&mut interner, text));
+            buffers.push(row).expect("statement text row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("statement text dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode statement text matches")
+            .expect("nonempty statement text matches");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append statement text matches");
     }
 
     fn append_plan_universe(&mut self, rows: i64) {
@@ -3385,13 +3414,13 @@ fn numeric_statement_page_scans_the_source_once_without_candidate_dictionary_rea
     fixture.append_statement_universe(205);
     fixture.finish();
 
-    crate::api::reset_page_operations();
+    reset_page_operations();
     let target = format!(
         "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=pg_stat_statements&field=queryid&field=query&field=calls&field=total_exec_time&by=total_exec_time&page_size=200&text=160"
     );
     let records = stream(fixture.prepare(&target, None)).expect("numeric statement page");
     assert_eq!(row_records(&records).len(), 200);
-    assert_eq!(crate::api::page_operations(), (1, 0, 0));
+    assert_eq!(page_operations(), (1, 0, 0));
 }
 
 #[test]
@@ -3704,6 +3733,53 @@ fn related_statement_search_uses_the_exact_cursor_across_segments() {
     assert_eq!(page["has_more"], false);
     assert_eq!(page["from"], "100");
     assert_eq!(page["to"], "200");
+}
+
+#[test]
+fn statement_text_first_match_stops_at_the_first_nonempty_record() {
+    let mut fixture = Fixture::new();
+    let exact = "  SELECT *\n  FROM work_queue\n";
+    let mut texts = vec![None, Some(exact)];
+    texts.extend(std::iter::repeat_n(Some("later collision"), 128));
+    fixture.append_statement_text_matches(200, -42, &texts);
+    fixture.finish();
+
+    reset_first_match_rows();
+    reset_page_operations();
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_statements&field=query&page_size=1&search=query_id%3A-42&first_match=1"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("first Statement text");
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"], serde_json::json!([exact]));
+    assert_eq!(first_match_rows(), 2);
+    assert_eq!(page_operations(), (0, 0, 0));
+    let page = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("first-match trailer");
+    assert_eq!(page["eligible"], "1");
+    assert_eq!(page["returned"], "1");
+    assert_eq!(page["has_more"], false);
+    assert_eq!(page["page_size"], 1);
+    assert_eq!(page["order_by"], serde_json::json!([]));
+}
+
+#[test]
+fn statement_text_first_match_rejects_a_general_search_expression() {
+    let mut fixture = Fixture::new();
+    fixture.append_statement_text_matches(200, 42, &[Some("select 42")]);
+    fixture.finish();
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_statements&field=query&page_size=1&search=database%3Aoperators%20AND%20query_id%3A42&first_match=1"
+    );
+    let (path, query) = target.split_once('?').expect("snapshot target");
+    let route = crate::route::parse(path, Some(query)).expect("strict route shape");
+    assert!(matches!(
+        crate::api::prepare(fixture.root(), SOURCES, route, None),
+        Err(ApiError::BadFilter(name)) if name == "first_match"
+    ));
 }
 
 #[test]

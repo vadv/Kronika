@@ -784,24 +784,31 @@ prior view, cursor and expression.
 
 Plan detail also resolves the recorded related Statement Query text inline,
 before the separately labelled Execution plan. It uses the same public
-fork-transparent identity as related navigation at the exact selected cursor:
-OSSC and Datasentinel use nonzero `dbid`, `userid` and `queryid`; the vadv fork
-uses nonzero `queryid_stat_statements` as the public Query ID together with the
-available database and role identity. The client sends that public expression
-to the paged snapshot endpoint with full text enabled. The server filters the
-complete eligible `pg_stat_statements` set before paging and composes the exact
-as-of moment across its segment sources; the client neither joins the visible
-Statements page nor adds query text to every stored plan row. Pages are fetched
-sequentially with a fixed size, so whole-text reads are never fanned out.
+fork-transparent Query ID mapping, but not the navigation identity: the public
+`query_id` is the normalized query-text hash, so database and role do not take
+part in this internal lookup. OSSC and Datasentinel use nonzero `queryid`; the
+vadv fork uses nonzero `queryid_stat_statements`. The client sends only
+`search=query_id:<id>`, `field=query`, `page_size=1` and `first_match=1` to the
+snapshot endpoint with full text enabled at the unchanged cursor. This strict
+shape is dedicated to inline text resolution and does not change manual
+Statements search.
 
-Recorded query strings pass through without parsing, normalization or
-whitespace loss. Byte-identical strings are displayed once with their retained
-row count; every distinct string is displayed with compact numbering, database,
-role, public Query ID and recorded time so the interface never chooses
-one arbitrarily. The Query block wraps and owns bounded scrolling for long
-text and offers an accessible exact Copy action. A missing bridge, a successful
-empty match and a network failure are different localized states; none removes
-the Execution plan, detail facts, charts, related navigation or Back behavior.
+The server composes the exact selected as-of moment across its segment sources,
+then visits applicable layouts, sources and physical ordinals in stable order.
+It skips null or empty recorded query values and stops decoding immediately at
+the first usable matching text, before the general full-set sort and page path.
+It does not collect later matches, pages, duplicate texts or provenance. The
+client sends one request and renders at most one Query block; accepted hash
+collisions and multiple execution contexts therefore resolve to that stable
+first recorded text. The visible Statements page is never joined and query text
+is not added to stored plan rows.
+
+Recorded query strings pass through without parsing, normalization, shortening
+or whitespace loss, including collector-side truncation metadata. The Query
+block wraps and owns bounded scrolling for long text and offers an accessible
+exact Copy action. A missing bridge, a successful empty match and a network
+failure are different localized states; none removes the Execution plan, detail
+facts, charts, related navigation or Back behavior.
 The visible labels `Query`, `Execution plan` and `Copy` stay English in both
 locales while Russian explanatory text remains natural Russian.
 

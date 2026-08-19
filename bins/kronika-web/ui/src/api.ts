@@ -6,6 +6,7 @@ import { decoratePostgresIntervalRow, intervalMetric, PG_STAT_STATEMENTS_TYPE_ID
 import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey, relationRateFields, relationRowKey, type RelationGroup, type RelationLayout, type RelationRow } from "./postgres-relations"
 import { apiFetch } from "./session"
 import { readNdjson } from "./wire"
+import { canonicalSearch } from "./search"
 
 export type Cell = null | boolean | number | string | readonly number[] | { readonly [key: string]: unknown }
 
@@ -755,10 +756,8 @@ function hourData(input: {
 }
 
 const CELL_TEXT = 160
-const RELATED_STATEMENT_TEXT_PAGE_SIZE = 32
-const RELATED_STATEMENT_TEXT_FIELDS = [
-  "queryid", "userid", "dbid", "datname", "usename", "query",
-] as const
+const RELATED_STATEMENT_TEXT_PAGE_SIZE = 1
+const RELATED_STATEMENT_TEXT_FIELDS = ["query"] as const
 const RELATED_STATEMENT_TEXT_FIELDS_BY_TYPE = Object.fromEntries(
   PG_STAT_STATEMENTS_TYPE_IDS.map((typeId) => [typeId, RELATED_STATEMENT_TEXT_FIELDS]),
 )
@@ -770,6 +769,7 @@ export interface SnapshotOptions {
   readonly fullText?: boolean
   readonly cursor?: string
   readonly search?: string
+  readonly firstMatch?: boolean
 }
 
 export interface SnapshotOrder {
@@ -789,7 +789,7 @@ export async function loadSnapshot(
   const chosen = snapshotOptions(options)
   if (requests.length === 0) return emptyHour()
   if ((chosen.filters !== undefined || chosen.typeId !== undefined || chosen.rowOrdinal !== undefined
-      || chosen.cursor !== undefined || chosen.search !== undefined)
+      || chosen.cursor !== undefined || chosen.search !== undefined || chosen.firstMatch === true)
     && requests.length !== 1) {
     throw new Error("a filtered, searched, paged, or exact snapshot needs one section")
   }
@@ -941,45 +941,36 @@ export async function loadSnapshotGroups(
   return snapshots.reduce((current, incoming) => mergeSnapshotData(current, incoming), emptyHour())
 }
 
-export async function loadRelatedStatementTextRows(
+export async function loadRelatedStatementTextRow(
   segments: readonly SegmentBound[],
   at: number,
-  search: string,
+  queryId: string,
   signal: AbortSignal,
-): Promise<readonly DataRow[]> {
+): Promise<DataRow | null> {
+  const search = canonicalSearch([{ key: "query_id", value: queryId }], "pg_stat_statements")
+  if (search === null) return null
   const [group] = snapshotRequestGroups(segments, at, [{
     section: "pg_stat_statements",
     typeIds: PG_STAT_STATEMENTS_TYPE_IDS,
     fieldsByType: RELATED_STATEMENT_TEXT_FIELDS_BY_TYPE,
     pageSize: RELATED_STATEMENT_TEXT_PAGE_SIZE,
-    fallbackOrder: ["queryid"],
   }])
   const [request] = group?.requests ?? []
-  if (group === undefined || request === undefined) return []
+  if (group === undefined || request === undefined) return null
 
-  const rows: DataRow[] = []
-  const cursors = new Set<string>()
-  let cursor: string | undefined
-  while (true) {
-    signal.throwIfAborted()
-    const page = await loadSnapshot(
-      group.anchor.id,
-      at,
-      [request],
-      signal,
-      undefined,
-      { ...(cursor === undefined ? {} : { cursor }), fullText: true, search },
-    )
-    rows.push(...(page.sections.pg_stat_statements ?? []))
-    const metadata = page.snapshotRows.find(({ logicalName }) => logicalName === "pg_stat_statements")
-    if (metadata?.hasMore !== true) return rows
-    const next = metadata.nextCursor
-    if (next === null || cursors.has(next)) {
-      throw new Error("related statement text paging returned an invalid cursor")
-    }
-    cursors.add(next)
-    cursor = next
-  }
+  signal.throwIfAborted()
+  const page = await loadSnapshot(
+    group.anchor.id,
+    at,
+    [request],
+    signal,
+    undefined,
+    { firstMatch: true, fullText: true, search },
+  )
+  return (page.sections.pg_stat_statements ?? []).find((row) => {
+    const text = row.values.query
+    return typeof text === "string" ? text.length > 0 : text !== null && text !== undefined
+  }) ?? null
 }
 
 function rowValues(columns: readonly string[], cells: readonly unknown[]): Readonly<Record<string, Cell>> {
@@ -1129,6 +1120,7 @@ function snapshotQuery(
     ...(options.fullText === true ? [] : [`text=${CELL_TEXT}`]),
     ...(options.cursor === undefined ? [] : [`cursor=${encodeURIComponent(options.cursor)}`]),
     ...(options.search === undefined ? [] : [`search=${encodeURIComponent(options.search)}`]),
+    ...(options.firstMatch === true ? ["first_match=1"] : []),
     ...Object.entries(options.filters ?? {}).map(([column, value]) =>
       `where.${encodeURIComponent(column)}=${encodeURIComponent(value)}`),
     ...(typeId === undefined ? [] : [`type_id=${encodeURIComponent(typeId)}`]),
@@ -1156,7 +1148,7 @@ function snapshotOptions(
 ): SnapshotOptions {
   if (value === undefined) return {}
   if ("filters" in value || "typeId" in value || "rowOrdinal" in value || "fullText" in value
-    || "cursor" in value || "search" in value) {
+    || "cursor" in value || "search" in value || "firstMatch" in value) {
     return value as SnapshotOptions
   }
   return { filters: value as Readonly<Record<string, string>> }

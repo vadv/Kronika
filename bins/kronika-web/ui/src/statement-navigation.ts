@@ -9,6 +9,10 @@ export interface RelatedNavigation {
   readonly section: "plans" | "statements"
 }
 
+export interface StatementTextTarget {
+  readonly queryId: string
+}
+
 const VADV_PLAN_TYPE_ID = "1004001"
 
 export function statementsForActivity(row: DataRow): RelatedNavigation | null {
@@ -29,6 +33,11 @@ export function statementsForPlan(row: DataRow): RelatedNavigation | null {
   return related("statements", [
     { key: "database", value: database }, { key: "role", value: role }, { key: "query_id", value: queryId },
   ], queryId)
+}
+
+export function statementTextForPlan(row: DataRow): StatementTextTarget | null {
+  const queryId = nonzero(row, row.typeId === VADV_PLAN_TYPE_ID ? "queryid_stat_statements" : "queryid")
+  return queryId === null ? null : { queryId }
 }
 
 export function plansForStatement(row: DataRow): RelatedNavigation | null {

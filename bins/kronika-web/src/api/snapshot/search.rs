@@ -198,6 +198,18 @@ impl StructuredSearch {
             }
         })
     }
+
+    pub(super) fn first_match_query_id(&self) -> Option<i64> {
+        let Expr::Predicate(clause) = &self.expr else {
+            return None;
+        };
+        let SearchValue::Identifier(value) = &clause.value else {
+            return None;
+        };
+        (clause.key == "query_id" && clause.operator == SearchOperator::Colon)
+            .then(|| value.parse().ok())
+            .flatten()
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

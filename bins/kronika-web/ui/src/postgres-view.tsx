@@ -20,7 +20,7 @@ import { activityDurationHistory, activityDurationSource, activityDurationMs, de
 import { decoratePostgresIntervalRow, findingSemanticField, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, PG_STORE_PLANS_TYPE_IDS, physicalField, physicalFields, planDefaultOrder, postgresHistory, postgresIdentity, statementDefaultOrder, unique, type PlanLens, type PostgresSemanticField, type StatementLens } from "./postgres-metrics"
 import { PostgresRelationsView } from "./postgres-relations-view"
 import { PlanSummary, PlanView, QueryView } from "./plan-view"
-import { usePlanQueryTexts } from "./plan-query"
+import { usePlanQueryText } from "./plan-query"
 import { plansForPlanId, plansForStatement, statementsForActivity, statementsForPlan, type RelatedNavigation } from "./statement-navigation"
 import type { RelationGroup, RelationLens, RelationNavigation } from "./postgres-relations"
 import { SeriesChart, type ChartPoint } from "./series-chart"
@@ -813,7 +813,7 @@ function PgDetail({ allRows, columns, cursor, historyField, historyRevision, hou
 const NO_SEGMENTS: readonly SegmentBound[] = []
 
 function PlanTextBlocks({ cursor, plan, revision, row, segments, t }: { readonly cursor: number; readonly plan: string | null; readonly revision: number; readonly row: DataRow; readonly segments: readonly SegmentBound[]; readonly t: Translate }) {
-  const query = usePlanQueryTexts(row, cursor, segments, revision)
+  const query = usePlanQueryText(row, cursor, segments, revision)
   return <>
     <QueryView {...query} t={t} />
     <PlanView raw={plan} t={t} />

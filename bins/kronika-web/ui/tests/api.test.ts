@@ -1051,7 +1051,7 @@ test("snapshot requests choose and group the newest compatible layout anchors", 
   assert.deepEqual(exactOldLayout.map((group) => group.anchor.id), ["100"])
 })
 
-test("related plan query text is server-filtered before paging across the exact segment scope", async () => {
+test("related plan query text uses one bounded query-ID-only first match", async () => {
   const api = await bundledApi()
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
   const segments = [
@@ -1069,49 +1069,42 @@ test("related plan query text is server-filtered before paging across the exact 
   globalThis.fetch = async (input) => {
     const url = new URL(String(input), "http://kronika.invalid")
     seen.push(url)
-    const second = url.searchParams.get("cursor") === "next-page"
-    const columns = ["queryid", "userid", "dbid", "datname", "usename", "query"]
+    const columns = ["query"]
     return ndjson([
       {
-        record: "layout",
-        layout: { type_id: second ? "1002001" : "1002002", logical_name: "pg_stat_statements", columns: columns.map((name) => ({ name })) },
+        record: "layout", layout: { type_id: "1002002", logical_name: "pg_stat_statements", columns: columns.map((name) => ({ name })) },
       },
       {
-        record: "row", segment_id: second ? "100" : "200", type_id: second ? "1002001" : "1002002",
-        ordinal: second ? "17" : "42", timestamp: String(second ? START - 1 : START),
-        values: ["42", "10", "20", "app", "reader", second ? "select old segment" : "  select current\nfrom jobs"],
+        record: "row", segment_id: "200", type_id: "1002002", ordinal: "42", timestamp: String(START),
+        values: ["  select current\nfrom jobs"],
       },
       {
-        record: "snapshot_page", logical_name: "pg_stat_statements", eligible: "2", returned: "1",
-        has_more: !second, truncated: !second, next_cursor: second ? null : "next-page", page_size: 32,
-        order_by: ["queryid"], order_direction: "desc", from: String(START - 1), to: String(START),
+        record: "snapshot_page", logical_name: "pg_stat_statements", eligible: "1", returned: "1",
+        has_more: true, truncated: false, next_cursor: "must-not-be-read", page_size: 1,
+        order_by: [], order_direction: "desc", from: null, to: String(START),
       },
     ])
   }
   try {
-    const rows = await api.loadRelatedStatementTextRows(
-      segments,
-      START,
-      "database:app AND role:reader AND query_id:42",
-      new AbortController().signal,
-    )
-    assert.deepEqual(rows.map((row) => [row.segmentId, row.timestamp, row.values.query]), [
-      ["200", START, "  select current\nfrom jobs"],
-      ["100", START - 1, "select old segment"],
+    const row = await api.loadRelatedStatementTextRow(segments, START, "42", new AbortController().signal)
+    assert.deepEqual(row === null ? null : [row.segmentId, row.timestamp, row.values.query], [
+      "200", START, "  select current\nfrom jobs",
     ])
-    assert.equal(seen.length, 2)
-    for (const url of seen) {
-      assert.equal(url.pathname, "/api/segments/200/snapshot")
-      assert.equal(url.searchParams.get("at"), String(START))
-      assert.equal(url.searchParams.get("search"), "database:app AND role:reader AND query_id:42")
-      assert.equal(url.searchParams.get("page_size"), "32")
-      assert.deepEqual(url.searchParams.getAll("field"), ["queryid", "userid", "dbid", "datname", "usename", "query"])
-      assert.equal(url.searchParams.has("text"), false)
-      assert.equal(url.searchParams.has("type_id"), false)
-      assert.equal([...url.searchParams.keys()].some((key) => key.startsWith("where.")), false)
-    }
-    assert.equal(seen[0]?.searchParams.has("cursor"), false)
-    assert.equal(seen[1]?.searchParams.get("cursor"), "next-page")
+    assert.equal(seen.length, 1)
+    const url = seen[0]
+    assert.equal(url?.pathname, "/api/segments/200/snapshot")
+    assert.equal(url?.searchParams.get("at"), String(START))
+    assert.equal(url?.searchParams.get("search"), "query_id:42")
+    assert.equal(url?.searchParams.get("page_size"), "1")
+    assert.equal(url?.searchParams.get("first_match"), "1")
+    assert.deepEqual(url?.searchParams.getAll("field"), ["query"])
+    assert.equal(url?.searchParams.has("text"), false)
+    assert.equal(url?.searchParams.has("type_id"), false)
+    assert.equal(url?.searchParams.has("cursor"), false)
+    assert.equal(url?.searchParams.has("by"), false)
+    assert.equal(url?.searchParams.get("search")?.includes("database"), false)
+    assert.equal(url?.searchParams.get("search")?.includes("role"), false)
+    assert.equal([...(url?.searchParams.keys() ?? [])].some((key) => key.startsWith("where.")), false)
   } finally {
     globalThis.fetch = originalFetch
   }

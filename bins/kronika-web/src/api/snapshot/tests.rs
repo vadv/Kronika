@@ -431,6 +431,7 @@ fn request() -> SnapshotRequest {
         page_size: Some(200),
         cursor: None,
         search: Some("needle*".to_owned()),
+        first_match: false,
         text: Some(80),
         filters: vec![Filter {
             column: "dbid".to_owned(),

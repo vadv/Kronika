@@ -44,6 +44,7 @@ pub(crate) struct PreparedSnapshot {
     cursor: Option<SnapshotCursor>,
     binding: u64,
     search: Option<Box<StructuredSearch>>,
+    first_match_query_id: Option<i64>,
     text: Option<usize>,
     row_ordinal: Option<u64>,
 }
@@ -388,6 +389,7 @@ thread_local! {
     static PAGE_CHUNK_ROWS: Counter<usize> = const { Counter::new(0) };
     static PAGE_SOURCE_VISITS: Counter<usize> = const { Counter::new(0) };
     static PAGE_CANDIDATE_DICTIONARIES: Counter<usize> = const { Counter::new(0) };
+    static FIRST_MATCH_ROWS: Counter<usize> = const { Counter::new(0) };
     static CONTEXT_CHUNK_ROWS: Counter<usize> = const { Counter::new(0) };
     static CONTEXT_STAGED_ROWS: Counter<usize> = const { Counter::new(0) };
     static CONTEXT_SELECTION_DICTIONARIES: Counter<usize> = const { Counter::new(0) };
@@ -407,6 +409,16 @@ pub(crate) fn page_operations() -> (usize, usize, usize) {
         PAGE_CANDIDATE_DICTIONARIES.get(),
         PAGE_CHUNK_ROWS.get(),
     )
+}
+
+#[cfg(test)]
+pub(crate) fn reset_first_match_rows() {
+    FIRST_MATCH_ROWS.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn first_match_rows() -> usize {
+    FIRST_MATCH_ROWS.get()
 }
 
 #[cfg(test)]
@@ -446,6 +458,16 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
         .map(SnapshotCursor::parse)
         .transpose()?;
     let search = prepared_search(&request, cursor.is_some())?;
+    let first_match_query_id = if request.first_match {
+        Some(
+            search
+                .as_deref()
+                .and_then(StructuredSearch::first_match_query_id)
+                .ok_or_else(|| ApiError::BadFilter("first_match".to_owned()))?,
+        )
+    } else {
+        None
+    };
     let binding = snapshot_binding(&request, search.as_deref());
     let parsed = cursor
         .filter(|cursor| cursor.segment_id == request.segment_id && cursor.binding == binding);
@@ -523,6 +545,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
         cursor: parsed,
         binding,
         search,
+        first_match_query_id,
         text: request.text,
         row_ordinal: request.row_ordinal,
     })
@@ -949,6 +972,9 @@ impl PreparedSnapshot {
         {
             return Ok(());
         }
+        if self.first_match_query_id.is_some() {
+            return self.emit_first_match(emit, cancelled);
+        }
         if self.page_size.is_some() {
             if self.group.is_some() {
                 return self.emit_relation_page(emit, cancelled);
@@ -1374,6 +1400,133 @@ impl PreparedSnapshot {
         Ok(())
     }
 
+    fn emit_first_match(
+        &self,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(), ApiError> {
+        let [section] = self.sections.as_slice() else {
+            return Err(ApiError::BadCursor);
+        };
+        let wanted = self.first_match_query_id.ok_or(ApiError::BadCursor)?;
+        for plan in &section.plans {
+            if cancelled() || !Self::emit_layout(section, plan, emit)? {
+                return Ok(());
+            }
+        }
+        let contexts = self.first_match_contexts(section, cancelled)?;
+        let mut returned = 0_usize;
+        for context in &contexts {
+            let Some((ordinal, row, dictionary)) =
+                self.first_match_row(context, wanted, cancelled)?
+            else {
+                if cancelled() {
+                    return Ok(());
+                }
+                continue;
+            };
+            let value = Self::row_record(
+                context.plan,
+                &row,
+                None,
+                None,
+                RowCoordinate {
+                    segment_id: context.source.id(),
+                    ordinal,
+                },
+                &dictionary,
+                &ProcessUsers::default(),
+                None,
+            )?;
+            if cancelled() || !emit(record(&value)?) {
+                return Ok(());
+            }
+            returned = 1;
+            break;
+        }
+        Self::emit_page_trailer(
+            section,
+            &contexts,
+            &PageMetadata {
+                eligible: u64::from(returned != 0),
+                returned,
+                has_more: false,
+                next_cursor: None,
+                page_size: 1,
+            },
+            self.direction,
+            emit,
+        )
+    }
+
+    fn first_match_row(
+        &self,
+        context: &PageContext<'_>,
+        wanted: i64,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Option<(u64, Row, Dictionary)>, ApiError> {
+        let query_id = context
+            .plan
+            .contract
+            .column("queryid")
+            .ok_or_else(|| ApiError::BadFilter("first_match".to_owned()))?
+            .name;
+        let query = context
+            .plan
+            .contract
+            .column("query")
+            .ok_or_else(|| ApiError::BadFilter("first_match".to_owned()))?
+            .name;
+        let mut projection = vec![query_id, query];
+        if let RowWindow::Shared { timestamp, .. } = context.window {
+            projection.push(timestamp);
+        }
+        projection.sort_unstable();
+        projection.dedup();
+
+        let source = self.reader.open_segment(context.source)?;
+        let mut offset = 0;
+        while offset < context.rows && !cancelled() {
+            let mut candidate = None;
+            source.visit_rows(
+                context.plan.type_id,
+                &projection,
+                offset,
+                usize::MAX,
+                |ordinal, row| {
+                    #[cfg(test)]
+                    FIRST_MATCH_ROWS.set(FIRST_MATCH_ROWS.get() + 1);
+                    if context.window.matches(&row)
+                        && matches!(row.get(query_id), Some(Cell::I64(stored)) if *stored == wanted)
+                    {
+                        candidate = Some((ordinal, row));
+                        return false;
+                    }
+                    !cancelled()
+                },
+            )?;
+            let Some((ordinal, row)) = candidate else {
+                return Ok(None);
+            };
+            offset = ordinal.checked_add(1).unwrap_or(context.rows);
+            let Some(Cell::StrId(id)) = row.get(query) else {
+                continue;
+            };
+            let dictionary = resolved_dictionary(&source, &HashSet::from([*id]))?;
+            let resolved = dictionary.resolve(*id).ok_or_else(|| {
+                ApiError::Unreadable(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("unresolved dictionary id {id}"),
+                )))
+            })?;
+            if stored_bytes(resolved).is_empty() {
+                continue;
+            }
+            return Ok(Some((ordinal, row, dictionary)));
+        }
+        Ok(None)
+    }
+
     fn emit_page_rows(
         &self,
         contexts: &[PageContext<'_>],
@@ -1533,6 +1686,65 @@ impl PreparedSnapshot {
                 timestamp,
                 cancelled,
             )?);
+        }
+        Ok(contexts)
+    }
+
+    fn first_match_contexts<'a>(
+        &'a self,
+        section: &'a SectionPlans,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Vec<PageContext<'a>>, ApiError> {
+        let mut contexts = Vec::new();
+        for (layout_index, plan) in section.plans.iter().enumerate() {
+            if !plan.applies() || cancelled() {
+                continue;
+            }
+            let Some(timestamp) = plan.timestamp else {
+                return Err(ApiError::BadFilter("first_match".to_owned()));
+            };
+            let mut moments = Vec::new();
+            for source_index in 0..self.source_count() {
+                let source_ref = self.source_for(source_index).ok_or(ApiError::BadCursor)?;
+                if rows_of(source_ref, plan.type_id).is_none() {
+                    continue;
+                }
+                let source = self.reader.open_segment(source_ref)?;
+                if let Some(moment) = Self::moments(&source, plan, timestamp, self.at, cancelled)? {
+                    moments.push((source_index, moment.current));
+                }
+            }
+            let Some(current) = moments.iter().map(|(_source, at)| *at).max() else {
+                continue;
+            };
+            for (source_index, at) in moments {
+                if at != current {
+                    continue;
+                }
+                let source = self.source_for(source_index).ok_or(ApiError::BadCursor)?;
+                contexts.push(PageContext {
+                    context_index: timed_context_index(
+                        layout_index,
+                        source_index,
+                        self.source_count(),
+                    ),
+                    plan,
+                    logical_name: &section.logical_name,
+                    source,
+                    rows: rows_of(source, plan.type_id).unwrap_or(0),
+                    window: RowWindow::Shared { timestamp, current },
+                    previous: None,
+                    elapsed: None,
+                    elapsed_by_partition: Arc::new(BTreeMap::new()),
+                    sample_from: None,
+                    sample_to: Some(current),
+                    order: None,
+                    search_columns: Vec::new(),
+                    clock_ticks_per_second: None,
+                    block_size: None,
+                    reset_continuous: false,
+                });
+            }
         }
         Ok(contexts)
     }
@@ -3685,6 +3897,7 @@ fn snapshot_binding(request: &SnapshotRequest, search: Option<&StructuredSearch>
     if let Some(search) = search {
         hash_part(&mut hash, b"search", search.canonical().as_bytes());
     }
+    hash_part(&mut hash, b"first-match", &[u8::from(request.first_match)]);
     for by in &request.by {
         hash_part(&mut hash, b"by", by.as_bytes());
     }

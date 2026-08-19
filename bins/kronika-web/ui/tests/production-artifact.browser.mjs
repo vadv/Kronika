@@ -449,15 +449,22 @@ test("the production artifact preserves wire keys and exact finding page state",
       } else if (url.searchParams.has("row_ordinal")) {
         ndjson(response, statementRecords(false))
       } else if (sections.includes("pg_stat_statements")) {
-        const planNavigation = url.searchParams.get("search") === "database:operators AND role:reporter AND query_id:42"
-        if (planNavigation) {
-          const inline = url.searchParams.get("page_size") === "32" && !url.searchParams.has("text")
-          if (inline && inlinePlanQueryMode === "error") {
+        const inline = url.searchParams.get("search") === "query_id:42"
+          && url.searchParams.get("page_size") === "1"
+          && url.searchParams.get("first_match") === "1"
+          && !url.searchParams.has("text")
+        if (inline) {
+          if (inlinePlanQueryMode === "error") {
             response.writeHead(503)
             response.end()
           } else {
-            ndjson(response, inline ? inlinePlanQueryMode === "empty" ? emptyPlanQueryRecords() : inlinePlanQueryRecords() : planStatementRecords())
+            ndjson(response, inlinePlanQueryMode === "empty" ? emptyPlanQueryRecords() : inlinePlanQueryRecords())
           }
+          return
+        }
+        const planNavigation = url.searchParams.get("search") === "database:operators AND role:reporter AND query_id:42"
+        if (planNavigation) {
+          ndjson(response, planStatementRecords())
           return
         }
         const filtered = ["queryid", "userid", "dbid", "toplevel"].every((field) => url.searchParams.has(`where.${field}`))
@@ -1308,9 +1315,9 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(planDetail.text, VADV_TEXT_PLAN)
     assert.equal(planDetail.copy, "Copy")
     assert.equal(planDetail.bodyCount, 1)
-    assert.equal(planDetail.queryBodyCount, 2)
-    assert.deepEqual(planDetail.queryCopy, ["Copy", "Copy"])
-    assert.deepEqual(planDetail.queryText, [INLINE_QUERY_PRIMARY, INLINE_QUERY_SECONDARY])
+    assert.equal(planDetail.queryBodyCount, 1)
+    assert.deepEqual(planDetail.queryCopy, ["Copy"])
+    assert.deepEqual(planDetail.queryText, [INLINE_QUERY_PRIMARY])
     assert.equal(planDetail.queryBeforePlan, true)
     assert.equal(planDetail.secondaryDisclosure, false)
     await cdp.evaluate(`Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText(value) { globalThis.__copiedPlanQuery = value; return Promise.resolve() } } })`)
@@ -1383,7 +1390,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.match(planContext, /query_id: 42/)
     const planQueryRequest = requests.find(({ query }) => {
       const parameters = new URLSearchParams(query)
-      return parameters.get("search") === "database:operators AND role:reporter AND query_id:42" && parameters.get("page_size") === "32"
+      return parameters.get("search") === "query_id:42" && parameters.get("first_match") === "1"
     })
     assert.notEqual(planQueryRequest, undefined, JSON.stringify(requests.map(({ query }) => query), null, 2))
     const planQueryParameters = new URLSearchParams(planQueryRequest.query)
@@ -1392,8 +1399,10 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(planQueryParameters.has("where.dbid"), false)
     assert.equal(planQueryParameters.has("type_id"), false)
     assert.equal(planQueryParameters.has("text"), false)
+    assert.equal(planQueryParameters.has("cursor"), false)
+    assert.equal(planQueryParameters.get("page_size"), "1")
     assert.equal(planQueryParameters.get("at"), String(AT))
-    assert.deepEqual(planQueryParameters.getAll("field"), ["queryid", "userid", "dbid", "datname", "usename", "query"])
+    assert.deepEqual(planQueryParameters.getAll("field"), ["query"])
     assert.equal(await cdp.evaluate(`new URL(location.href).searchParams.get("at")`), String(AT))
     await cdp.evaluate(`history.back()`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.plans"`, "browser back to Plans")
@@ -4437,8 +4446,6 @@ const INLINE_QUERY_PRIMARY = [
   ...Array.from({ length: 70 }, (_, index) => `    AND jobs.partition_${index} = ${index}`),
   "  ORDER BY jobs.created_at",
 ].join("\n")
-const INLINE_QUERY_SECONDARY = "SELECT jobs.id FROM jobs WHERE jobs.state = 'retry'"
-
 function planRecords() {
   const columns = ["ts", "userid", "dbid", "queryid", "planid", "queryid_stat_statements", "datname", "usename", "plan", "calls", "total_time", "rows"]
   return [
@@ -4456,24 +4463,18 @@ function planStatementRecords() {
 }
 
 function inlinePlanQueryRecords() {
-  const columns = ["queryid", "userid", "dbid", "datname", "usename", "query"]
-  const row = (ordinal, query) => ({
-    record: "row", segment_id: SEGMENT, type_id: "1002003", ordinal, timestamp: String(AT),
-    values: ["42", 10, 20, "operators", "reporter", query],
-  })
+  const columns = ["query"]
   return [
     { record: "layout", layout: { type_id: "1002003", logical_name: "pg_stat_statements", columns: columns.map((name) => ({ name })) } },
-    row("301", INLINE_QUERY_PRIMARY),
-    row("302", INLINE_QUERY_PRIMARY),
-    row("303", INLINE_QUERY_SECONDARY),
-    { record: "snapshot_page", logical_name: "pg_stat_statements", eligible: "3", returned: "3", has_more: false, truncated: false, next_cursor: null, page_size: 32, order_by: ["queryid"], order_direction: "desc", from: String(AT - 5_000_000), to: String(AT) },
+    { record: "row", segment_id: SEGMENT, type_id: "1002003", ordinal: "301", timestamp: String(AT), values: [INLINE_QUERY_PRIMARY] },
+    { record: "snapshot_page", logical_name: "pg_stat_statements", eligible: "1", returned: "1", has_more: false, truncated: false, next_cursor: null, page_size: 1, order_by: [], order_direction: "desc", from: null, to: String(AT) },
   ]
 }
 
 function emptyPlanQueryRecords() {
   return [{
     record: "snapshot_page", logical_name: "pg_stat_statements", eligible: "0", returned: "0", has_more: false,
-    truncated: false, next_cursor: null, page_size: 32, order_by: ["queryid"], order_direction: "desc", from: null, to: null,
+    truncated: false, next_cursor: null, page_size: 1, order_by: [], order_direction: "desc", from: null, to: null,
   }]
 }
 
