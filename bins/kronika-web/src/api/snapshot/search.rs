@@ -57,11 +57,14 @@ pub(super) struct Quantity {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum QuantityKind {
+    ByteRate,
     Bytes,
     Count,
     CountRate,
     Duration,
+    DurationRate,
     Percentage,
+    Scalar,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -648,7 +651,7 @@ fn parse_quantity(
         format!("{whole}.{trimmed}")
     };
     let (mut numerator, mut denominator) = match kind {
-        QuantityKind::Bytes => {
+        QuantityKind::Bytes | QuantityKind::ByteRate => {
             if unit.is_empty() {
                 return Err(diagnostic(
                     "unit_required",
@@ -656,22 +659,37 @@ fn parse_quantity(
                     offset + raw.len(),
                 ));
             }
-            let multiplier = byte_multiplier(unit).ok_or_else(|| {
+            let suffix = if kind == QuantityKind::ByteRate {
+                "/s"
+            } else {
+                ""
+            };
+            let byte_unit = unit
+                .strip_suffix(suffix)
+                .filter(|unit| !unit.is_empty())
+                .ok_or_else(|| {
+                    diagnostic("invalid_unit", offset + number_end, offset + raw.len())
+                })?;
+            let multiplier = byte_multiplier(byte_unit).ok_or_else(|| {
                 diagnostic("invalid_unit", offset + number_end, offset + raw.len())
             })?;
             let scaled = coefficient
                 .checked_mul(multiplier)
                 .ok_or_else(|| diagnostic("out_of_range", offset, offset + raw.len()))?;
-            if scaled % scale != 0 {
+            if kind == QuantityKind::Bytes && scaled % scale != 0 {
                 return Err(diagnostic(
                     "non_integral_base_value",
                     offset,
                     offset + raw.len(),
                 ));
             }
-            (scaled / scale, 1)
+            if kind == QuantityKind::Bytes {
+                (scaled / scale, 1)
+            } else {
+                (scaled, scale)
+            }
         }
-        QuantityKind::Duration => {
+        QuantityKind::Duration | QuantityKind::DurationRate => {
             if unit.is_empty() {
                 return Err(diagnostic(
                     "unit_required",
@@ -679,9 +697,24 @@ fn parse_quantity(
                     offset + raw.len(),
                 ));
             }
-            let (numerator, denominator) = duration_factors(unit).ok_or_else(|| {
-                diagnostic("invalid_unit", offset + number_end, offset + raw.len())
-            })?;
+            let duration_unit = if kind == QuantityKind::DurationRate {
+                unit.strip_suffix("/s").filter(|unit| !unit.is_empty())
+            } else {
+                Some(unit)
+            };
+            let (numerator, denominator) =
+                duration_unit.and_then(duration_factors).ok_or_else(|| {
+                    diagnostic("invalid_unit", offset + number_end, offset + raw.len())
+                })?;
+            if kind == QuantityKind::DurationRate
+                && !matches!(duration_unit, Some("ns" | "us" | "ms" | "s"))
+            {
+                return Err(diagnostic(
+                    "invalid_unit",
+                    offset + number_end,
+                    offset + raw.len(),
+                ));
+            }
             (
                 coefficient
                     .checked_mul(numerator)
@@ -742,6 +775,16 @@ fn parse_quantity(
             }
             if coefficient > 100_u128.saturating_mul(scale) {
                 return Err(diagnostic("out_of_range", offset, offset + raw.len()));
+            }
+            (coefficient, scale)
+        }
+        QuantityKind::Scalar => {
+            if !unit.is_empty() {
+                return Err(diagnostic(
+                    "invalid_unit",
+                    offset + number_end,
+                    offset + raw.len(),
+                ));
             }
             (coefficient, scale)
         }
@@ -956,6 +999,9 @@ fn looks_like_unit(token: &str) -> bool {
         || duration_factors(token).is_some()
         || matches!(token, "/s" | "%")
         || token
+            .strip_suffix("/s")
+            .is_some_and(|unit| byte_multiplier(unit).is_some() || duration_factors(unit).is_some())
+        || token
             .bytes()
             .all(|byte| byte.is_ascii_alphabetic() || matches!(byte, b'/' | b'%'))
 }
@@ -1035,11 +1081,240 @@ const fn search_quantity(
     }
 }
 
+const fn search_quantity_aliases(
+    key: &'static str,
+    aliases: &'static [&'static str],
+    kind: QuantityKind,
+    metric: &'static str,
+    dependencies: &'static [&'static str],
+) -> SearchField {
+    SearchField {
+        key,
+        aliases,
+        columns: &[],
+        kind: SearchFieldKind::Quantity(ResultField {
+            metric,
+            kind,
+            dependencies,
+        }),
+    }
+}
+
 const STATEMENT_SEARCH_FIELDS: &[SearchField] = &[
     search_string("text", &["q"], &["query", "datname", "usename"]),
     search_id("query_id", &[], &["queryid"], true),
     search_string("database", &["db"], &["datname"]),
     search_string("role", &["user"], &["usename"]),
+    search_quantity(
+        "call_rate",
+        QuantityKind::CountRate,
+        "call_rate",
+        &["calls"],
+    ),
+    search_quantity(
+        "exec_time_rate",
+        QuantityKind::DurationRate,
+        "exec_time_rate",
+        &["total_time", "total_exec_time"],
+    ),
+    search_quantity(
+        "mean_exec",
+        QuantityKind::Duration,
+        "mean_exec",
+        &["calls", "total_time", "total_exec_time"],
+    ),
+    search_quantity("row_rate", QuantityKind::CountRate, "row_rate", &["rows"]),
+    search_quantity(
+        "rows_per_call",
+        QuantityKind::Scalar,
+        "rows_per_call",
+        &["calls", "rows"],
+    ),
+    search_quantity(
+        "plan_rate",
+        QuantityKind::CountRate,
+        "plan_rate",
+        &["plans"],
+    ),
+    search_quantity(
+        "planning_time_rate",
+        QuantityKind::DurationRate,
+        "planning_time_rate",
+        &["total_plan_time"],
+    ),
+    search_quantity(
+        "planning_share",
+        QuantityKind::Percentage,
+        "planning_share",
+        &["total_plan_time", "total_time", "total_exec_time"],
+    ),
+    search_quantity(
+        "shared_buffer_hit_rate",
+        QuantityKind::ByteRate,
+        "shared_buffer_hit_rate",
+        &["shared_blks_hit"],
+    ),
+    search_quantity(
+        "shared_buffer_read_rate",
+        QuantityKind::ByteRate,
+        "shared_buffer_read_rate",
+        &["shared_blks_read"],
+    ),
+    search_quantity(
+        "shared_buffer_dirty_rate",
+        QuantityKind::ByteRate,
+        "shared_buffer_dirty_rate",
+        &["shared_blks_dirtied"],
+    ),
+    search_quantity(
+        "shared_buffer_write_rate",
+        QuantityKind::ByteRate,
+        "shared_buffer_write_rate",
+        &["shared_blks_written"],
+    ),
+    search_quantity(
+        "local_buffer_hit_rate",
+        QuantityKind::ByteRate,
+        "local_buffer_hit_rate",
+        &["local_blks_hit"],
+    ),
+    search_quantity(
+        "local_buffer_read_rate",
+        QuantityKind::ByteRate,
+        "local_buffer_read_rate",
+        &["local_blks_read"],
+    ),
+    search_quantity(
+        "local_buffer_dirty_rate",
+        QuantityKind::ByteRate,
+        "local_buffer_dirty_rate",
+        &["local_blks_dirtied"],
+    ),
+    search_quantity(
+        "local_buffer_write_rate",
+        QuantityKind::ByteRate,
+        "local_buffer_write_rate",
+        &["local_blks_written"],
+    ),
+    search_quantity(
+        "temp_buffer_read_rate",
+        QuantityKind::ByteRate,
+        "temp_buffer_read_rate",
+        &["temp_blks_read"],
+    ),
+    search_quantity(
+        "temp_buffer_write_rate",
+        QuantityKind::ByteRate,
+        "temp_buffer_write_rate",
+        &["temp_blks_written"],
+    ),
+    search_quantity(
+        "shared_read_time_rate",
+        QuantityKind::DurationRate,
+        "shared_read_time_rate",
+        &["blk_read_time", "shared_blk_read_time"],
+    ),
+    search_quantity(
+        "shared_write_time_rate",
+        QuantityKind::DurationRate,
+        "shared_write_time_rate",
+        &["blk_write_time", "shared_blk_write_time"],
+    ),
+    search_quantity(
+        "local_read_time_rate",
+        QuantityKind::DurationRate,
+        "local_read_time_rate",
+        &["local_blk_read_time"],
+    ),
+    search_quantity(
+        "local_write_time_rate",
+        QuantityKind::DurationRate,
+        "local_write_time_rate",
+        &["local_blk_write_time"],
+    ),
+    search_quantity(
+        "temp_read_time_rate",
+        QuantityKind::DurationRate,
+        "temp_read_time_rate",
+        &["temp_blk_read_time"],
+    ),
+    search_quantity(
+        "temp_write_time_rate",
+        QuantityKind::DurationRate,
+        "temp_write_time_rate",
+        &["temp_blk_write_time"],
+    ),
+    search_quantity(
+        "wal_rate",
+        QuantityKind::ByteRate,
+        "wal_rate",
+        &["wal_bytes"],
+    ),
+    search_quantity(
+        "wal_per_call",
+        QuantityKind::Bytes,
+        "wal_per_call",
+        &["calls", "wal_bytes"],
+    ),
+    search_quantity(
+        "buffer_hit",
+        QuantityKind::Percentage,
+        "buffer_hit",
+        &["shared_blks_hit", "shared_blks_read"],
+    ),
+    search_quantity(
+        "buffer_per_call",
+        QuantityKind::Bytes,
+        "buffer_per_call",
+        &[
+            "calls",
+            "shared_blks_hit",
+            "shared_blks_read",
+            "shared_blks_dirtied",
+            "shared_blks_written",
+            "local_blks_hit",
+            "local_blks_read",
+            "local_blks_dirtied",
+            "local_blks_written",
+            "temp_blks_read",
+            "temp_blks_written",
+        ],
+    ),
+    search_quantity(
+        "exec_cv",
+        QuantityKind::Scalar,
+        "exec_cv",
+        &[
+            "mean_time",
+            "stddev_time",
+            "mean_exec_time",
+            "stddev_exec_time",
+        ],
+    ),
+    search_quantity(
+        "min_exec_since_reset",
+        QuantityKind::Duration,
+        "min_exec_since_reset",
+        &["min_time", "min_exec_time"],
+    ),
+    search_quantity(
+        "max_exec_since_reset",
+        QuantityKind::Duration,
+        "max_exec_since_reset",
+        &["max_time", "max_exec_time"],
+    ),
+    search_quantity(
+        "mean_exec_since_reset",
+        QuantityKind::Duration,
+        "mean_exec_since_reset",
+        &["mean_time", "mean_exec_time"],
+    ),
+    search_quantity(
+        "stddev_exec_since_reset",
+        QuantityKind::Duration,
+        "stddev_exec_since_reset",
+        &["stddev_time", "stddev_exec_time"],
+    ),
 ];
 const PLAN_SEARCH_FIELDS: &[SearchField] = &[
     search_string("text", &["q"], &["plan", "datname", "usename"]),
@@ -1052,6 +1327,199 @@ const PLAN_SEARCH_FIELDS: &[SearchField] = &[
     search_id("plan_id", &[], &["planid"], true),
     search_string("database", &["db"], &["datname"]),
     search_string("role", &["user"], &["usename"]),
+    search_quantity(
+        "call_rate",
+        QuantityKind::CountRate,
+        "call_rate",
+        &["calls"],
+    ),
+    search_quantity(
+        "exec_time_rate",
+        QuantityKind::DurationRate,
+        "exec_time_rate",
+        &["total_time"],
+    ),
+    search_quantity(
+        "mean_exec",
+        QuantityKind::Duration,
+        "mean_exec",
+        &["calls", "total_time"],
+    ),
+    search_quantity("row_rate", QuantityKind::CountRate, "row_rate", &["rows"]),
+    search_quantity(
+        "rows_per_call",
+        QuantityKind::Scalar,
+        "rows_per_call",
+        &["calls", "rows"],
+    ),
+    search_quantity(
+        "planning_time_rate",
+        QuantityKind::DurationRate,
+        "planning_time_rate",
+        &["total_plan_time"],
+    ),
+    search_quantity(
+        "planning_share",
+        QuantityKind::Percentage,
+        "planning_share",
+        &["total_plan_time", "total_time"],
+    ),
+    search_quantity(
+        "shared_buffer_hit_rate",
+        QuantityKind::ByteRate,
+        "shared_buffer_hit_rate",
+        &["shared_blks_hit"],
+    ),
+    search_quantity(
+        "shared_buffer_read_rate",
+        QuantityKind::ByteRate,
+        "shared_buffer_read_rate",
+        &["shared_blks_read"],
+    ),
+    search_quantity(
+        "shared_buffer_dirty_rate",
+        QuantityKind::ByteRate,
+        "shared_buffer_dirty_rate",
+        &["shared_blks_dirtied"],
+    ),
+    search_quantity(
+        "shared_buffer_write_rate",
+        QuantityKind::ByteRate,
+        "shared_buffer_write_rate",
+        &["shared_blks_written"],
+    ),
+    search_quantity(
+        "local_buffer_hit_rate",
+        QuantityKind::ByteRate,
+        "local_buffer_hit_rate",
+        &["local_blks_hit"],
+    ),
+    search_quantity(
+        "local_buffer_read_rate",
+        QuantityKind::ByteRate,
+        "local_buffer_read_rate",
+        &["local_blks_read"],
+    ),
+    search_quantity(
+        "local_buffer_dirty_rate",
+        QuantityKind::ByteRate,
+        "local_buffer_dirty_rate",
+        &["local_blks_dirtied"],
+    ),
+    search_quantity(
+        "local_buffer_write_rate",
+        QuantityKind::ByteRate,
+        "local_buffer_write_rate",
+        &["local_blks_written"],
+    ),
+    search_quantity(
+        "temp_buffer_read_rate",
+        QuantityKind::ByteRate,
+        "temp_buffer_read_rate",
+        &["temp_blks_read"],
+    ),
+    search_quantity(
+        "temp_buffer_write_rate",
+        QuantityKind::ByteRate,
+        "temp_buffer_write_rate",
+        &["temp_blks_written"],
+    ),
+    search_quantity(
+        "shared_read_time_rate",
+        QuantityKind::DurationRate,
+        "shared_read_time_rate",
+        &["blk_read_time", "shared_blk_read_time"],
+    ),
+    search_quantity(
+        "shared_write_time_rate",
+        QuantityKind::DurationRate,
+        "shared_write_time_rate",
+        &["blk_write_time", "shared_blk_write_time"],
+    ),
+    search_quantity(
+        "local_read_time_rate",
+        QuantityKind::DurationRate,
+        "local_read_time_rate",
+        &["local_blk_read_time"],
+    ),
+    search_quantity(
+        "local_write_time_rate",
+        QuantityKind::DurationRate,
+        "local_write_time_rate",
+        &["local_blk_write_time"],
+    ),
+    search_quantity(
+        "temp_read_time_rate",
+        QuantityKind::DurationRate,
+        "temp_read_time_rate",
+        &["temp_blk_read_time"],
+    ),
+    search_quantity(
+        "temp_write_time_rate",
+        QuantityKind::DurationRate,
+        "temp_write_time_rate",
+        &["temp_blk_write_time"],
+    ),
+    search_quantity(
+        "buffer_hit",
+        QuantityKind::Percentage,
+        "buffer_hit",
+        &["shared_blks_hit", "shared_blks_read"],
+    ),
+    search_quantity(
+        "buffer_per_call",
+        QuantityKind::Bytes,
+        "buffer_per_call",
+        &[
+            "calls",
+            "shared_blks_hit",
+            "shared_blks_read",
+            "shared_blks_dirtied",
+            "shared_blks_written",
+            "local_blks_hit",
+            "local_blks_read",
+            "local_blks_dirtied",
+            "local_blks_written",
+            "temp_blks_read",
+            "temp_blks_written",
+        ],
+    ),
+    search_quantity(
+        "slow_call_rate",
+        QuantityKind::CountRate,
+        "slow_call_rate",
+        &["slow_log_calls"],
+    ),
+    search_quantity(
+        "exec_cv",
+        QuantityKind::Scalar,
+        "exec_cv",
+        &["mean_time", "stddev_time"],
+    ),
+    search_quantity(
+        "min_exec_since_reset",
+        QuantityKind::Duration,
+        "min_exec_since_reset",
+        &["min_time"],
+    ),
+    search_quantity(
+        "max_exec_since_reset",
+        QuantityKind::Duration,
+        "max_exec_since_reset",
+        &["max_time"],
+    ),
+    search_quantity(
+        "mean_exec_since_reset",
+        QuantityKind::Duration,
+        "mean_exec_since_reset",
+        &["mean_time"],
+    ),
+    search_quantity(
+        "stddev_exec_since_reset",
+        QuantityKind::Duration,
+        "stddev_exec_since_reset",
+        &["stddev_time"],
+    ),
 ];
 const TABLE_SEARCH_FIELDS: &[SearchField] = &[
     search_string(
@@ -1162,4 +1630,128 @@ const PROCESS_SEARCH_FIELDS: &[SearchField] = &[
     search_id("parent_pid", &["ppid"], &["ppid"], false),
     search_string("command", &["cmd"], &["comm", "cmdline"]),
     search_string("state", &[], &["state"]),
+    search_quantity_aliases(
+        "rss",
+        &["resident_memory"],
+        QuantityKind::Bytes,
+        "rss",
+        &["rmem_kb"],
+    ),
+    search_quantity_aliases(
+        "vsz",
+        &["virtual_memory"],
+        QuantityKind::Bytes,
+        "vsz",
+        &["vmem_kb"],
+    ),
+    search_quantity("swap", QuantityKind::Bytes, "swap", &["vswap_kb"]),
+    search_quantity("threads", QuantityKind::Count, "threads", &["num_threads"]),
+    search_quantity(
+        "cpu_cores",
+        QuantityKind::Scalar,
+        "cpu_cores",
+        &["utime", "stime", "starttime"],
+    ),
+    search_quantity(
+        "user_cpu_cores",
+        QuantityKind::Scalar,
+        "user_cpu_cores",
+        &["utime", "starttime"],
+    ),
+    search_quantity(
+        "system_cpu_cores",
+        QuantityKind::Scalar,
+        "system_cpu_cores",
+        &["stime", "starttime"],
+    ),
+    search_quantity_aliases(
+        "disk_read_rate",
+        &["read_bytes_rate"],
+        QuantityKind::ByteRate,
+        "disk_read_rate",
+        &["read_bytes", "starttime"],
+    ),
+    search_quantity_aliases(
+        "disk_write_rate",
+        &["write_bytes_rate"],
+        QuantityKind::ByteRate,
+        "disk_write_rate",
+        &["write_bytes", "starttime"],
+    ),
+    search_quantity_aliases(
+        "logical_read_rate",
+        &["rchar_rate"],
+        QuantityKind::ByteRate,
+        "logical_read_rate",
+        &["rchar", "starttime"],
+    ),
+    search_quantity_aliases(
+        "logical_write_rate",
+        &["wchar_rate"],
+        QuantityKind::ByteRate,
+        "logical_write_rate",
+        &["wchar", "starttime"],
+    ),
+    search_quantity_aliases(
+        "read_syscall_rate",
+        &["syscr_rate"],
+        QuantityKind::CountRate,
+        "read_syscall_rate",
+        &["syscr", "starttime"],
+    ),
+    search_quantity_aliases(
+        "write_syscall_rate",
+        &["syscw_rate"],
+        QuantityKind::CountRate,
+        "write_syscall_rate",
+        &["syscw", "starttime"],
+    ),
+    search_quantity_aliases(
+        "major_fault_rate",
+        &["majflt_rate"],
+        QuantityKind::CountRate,
+        "major_fault_rate",
+        &["majflt", "starttime"],
+    ),
+    search_quantity_aliases(
+        "minor_fault_rate",
+        &["minflt_rate"],
+        QuantityKind::CountRate,
+        "minor_fault_rate",
+        &["minflt", "starttime"],
+    ),
+    search_quantity(
+        "context_switch_rate",
+        QuantityKind::CountRate,
+        "context_switch_rate",
+        &["nvcsw", "nivcsw", "starttime"],
+    ),
+    search_quantity_aliases(
+        "voluntary_context_switch_rate",
+        &["nvcsw_rate"],
+        QuantityKind::CountRate,
+        "voluntary_context_switch_rate",
+        &["nvcsw", "starttime"],
+    ),
+    search_quantity_aliases(
+        "involuntary_context_switch_rate",
+        &["nivcsw_rate"],
+        QuantityKind::CountRate,
+        "involuntary_context_switch_rate",
+        &["nivcsw", "starttime"],
+    ),
+    search_quantity_aliases(
+        "run_delay",
+        &["rundelay"],
+        QuantityKind::DurationRate,
+        "run_delay",
+        &["rundelay_ns", "starttime"],
+    ),
+    search_quantity_aliases(
+        "block_io_delay",
+        &["blkdelay"],
+        QuantityKind::DurationRate,
+        "block_io_delay",
+        &["blkdelay_ticks", "starttime"],
+    ),
 ];

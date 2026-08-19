@@ -13,12 +13,15 @@ use std::sync::Arc;
 use std::cell::Cell as Counter;
 
 use kronika_reader::{Cell, Dictionary, Reader, Resolved, Row, Segment, SegmentKind, SegmentRef};
-use kronika_registry::{ColumnClass, ColumnType, contract};
+use kronika_registry::{ColumnClass, ColumnType, contract, logical_section_name};
 use serde_json::{Value, json};
 
+use self::search::{
+    Quantity, SearchClause, SearchOperator, SearchValue, StructuredSearch, result_field,
+    search_fields,
+};
 #[cfg(test)]
 use self::search::{SEARCH_MAX_CLAUSES, SEARCH_MAX_VALUE_CHARS};
-use self::search::{SearchValue, StructuredSearch, search_fields};
 use super::query::{Plan, plans, resolved_dictionary};
 use super::render::{cell, projected_layout, record, shorten};
 use super::{ApiError, CachePolicy, ResponseMeta, explicit_segment_with_listing};
@@ -170,6 +173,9 @@ struct PageContext<'a> {
     sample_to: Option<i64>,
     order: Option<PageOrder>,
     search_columns: Vec<&'static str>,
+    clock_ticks_per_second: Option<u128>,
+    block_size: Option<u128>,
+    reset_continuous: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -268,6 +274,23 @@ impl PageContext<'_> {
             if current != previous {
                 return None;
             }
+        }
+        if let Some(column) = self.plan.contract.column("starttime")
+            && row.get(column.name)? != before.get(column.name)?
+        {
+            return None;
+        }
+        if self.logical_name == "pg_store_plans" {
+            let column = self.plan.contract.column("first_call")?;
+            if row.get(column.name)? != before.get(column.name)? || !self.reset_continuous {
+                return None;
+            }
+        }
+        if self.logical_name == "pg_stat_statements"
+            && self.plan.contract.column("stats_since").is_none()
+            && !self.reset_continuous
+        {
+            return None;
         }
         Some(before)
     }
@@ -624,6 +647,14 @@ fn section_plans(
                     if plan.contract.column("stats_since").is_some() {
                         plan.add_projection_columns(&["stats_since"]);
                     }
+                    if logical_name == "os_process" && plan.contract.column("starttime").is_some() {
+                        plan.add_projection_columns(&["starttime"]);
+                    }
+                    if logical_name == "pg_store_plans"
+                        && plan.contract.column("first_call").is_some()
+                    {
+                        plan.add_projection_columns(&["first_call"]);
+                    }
                     if let Some(search) = search {
                         plan.add_projection_columns(&search_columns(logical_name, plan, search));
                     }
@@ -783,7 +814,7 @@ fn derived_page_order(logical_name: &str, plan: &Plan, token: &str) -> Option<Pa
             name: "cv",
             kind: PageOrderKind::ValueRatio {
                 numerator: vec![column(&["stddev_exec_time", "stddev_time"])?],
-                denominator: vec![column(&["mean_exec_time", "mean_time"])?],
+                denominator: vec![column(&["mean_exec", "mean_time"])?],
             },
         }),
         "derived.dead_pct" => gauges("dead_pct", &["n_dead_tup"], &["n_live_tup", "n_dead_tup"]),
@@ -1478,6 +1509,20 @@ impl PreparedSnapshot {
                     search_columns: self.search.as_ref().map_or_else(Vec::new, |search| {
                         search_columns(&section.logical_name, plan, search)
                     }),
+                    clock_ticks_per_second: if section.logical_name == "os_process" {
+                        clock_ticks_per_second(&self.reader.open_segment(&self.anchor)?)?
+                    } else {
+                        None
+                    },
+                    block_size: if matches!(
+                        section.logical_name.as_str(),
+                        "pg_stat_statements" | "pg_store_plans"
+                    ) {
+                        postgres_block_size(&self.reader.open_segment(&self.anchor)?)?
+                    } else {
+                        None
+                    },
+                    reset_continuous: false,
                 });
                 continue;
             };
@@ -1527,6 +1572,24 @@ impl PreparedSnapshot {
             .previous
             .and_then(|before| moments.current.checked_sub(before))
             .filter(|elapsed| *elapsed > 0);
+        let reset_continuous = if matches!(
+            section.logical_name.as_str(),
+            "pg_stat_statements" | "pg_store_plans"
+        ) {
+            if let Some(before) = moments.previous {
+                matches!(
+                    (
+                        self.reset_epoch_at(&section.logical_name, moments.current)?,
+                        self.reset_epoch_at(&section.logical_name, before)?,
+                    ),
+                    (Some(current), Some(previous)) if current == previous
+                )
+            } else {
+                false
+            }
+        } else {
+            true
+        };
         let mut contexts = Vec::new();
         for source_index in 0..self.source_count() {
             let source_ref = self.source_for(source_index).ok_or(ApiError::BadCursor)?;
@@ -1558,6 +1621,20 @@ impl PreparedSnapshot {
                 search_columns: self.search.as_ref().map_or_else(Vec::new, |search| {
                     search_columns(&section.logical_name, plan, search)
                 }),
+                clock_ticks_per_second: if section.logical_name == "os_process" {
+                    clock_ticks_per_second(&source)?
+                } else {
+                    None
+                },
+                block_size: if matches!(
+                    section.logical_name.as_str(),
+                    "pg_stat_statements" | "pg_store_plans"
+                ) {
+                    postgres_block_size(&source)?
+                } else {
+                    None
+                },
+                reset_continuous,
             });
         }
         Ok(contexts)
@@ -1609,6 +1686,43 @@ impl PreparedSnapshot {
             }
         }
         Ok(Some(Moments { current, previous }))
+    }
+
+    fn reset_epoch_at(&self, logical_name: &str, at: i64) -> Result<Option<i64>, ApiError> {
+        let info_name = match logical_name {
+            "pg_stat_statements" => "pg_stat_statements_info",
+            "pg_store_plans" => "pg_store_plans_info",
+            _ => return Ok(None),
+        };
+        let mut selected: Option<(i64, i64)> = None;
+        for source_index in 0..self.source_count() {
+            let source_ref = self.source_for(source_index).ok_or(ApiError::BadCursor)?;
+            let source = self.reader.open_segment(source_ref)?;
+            for (type_id, _rows) in source.sections() {
+                if logical_section_name(type_id) != Some(info_name) {
+                    continue;
+                }
+                source.visit_rows(
+                    type_id,
+                    &["ts", "stats_reset"],
+                    0,
+                    usize::MAX,
+                    |_ordinal, row| {
+                        let (Some(ts), Some(reset)) = (
+                            row_timestamp(&row, "ts"),
+                            row_timestamp(&row, "stats_reset"),
+                        ) else {
+                            return true;
+                        };
+                        if ts <= at && selected.is_none_or(|(chosen, _reset)| ts > chosen) {
+                            selected = Some((ts, reset));
+                        }
+                        true
+                    },
+                )?;
+            }
+        }
+        Ok(selected.map(|(_ts, reset)| reset))
     }
 
     fn partitioned_contexts<'a>(
@@ -1835,6 +1949,9 @@ impl PreparedSnapshot {
             search_columns: self.search.as_ref().map_or_else(Vec::new, |search| {
                 search_columns(&section.logical_name, plan, search)
             }),
+            clock_ticks_per_second: None,
+            block_size: None,
+            reset_continuous: true,
         })
     }
 
@@ -1919,9 +2036,15 @@ impl PreparedSnapshot {
         cancelled: &impl Fn() -> bool,
     ) -> Result<Readings, ApiError> {
         let mut collected = BTreeMap::new();
-        let mut counters = rate_columns(plan);
+        let mut counters = projected_rate_columns(plan);
         if plan.contract.column("stats_since").is_some() {
             counters.push("stats_since");
+        }
+        if plan.contract.column("starttime").is_some() {
+            counters.push("starttime");
+        }
+        if plan.contract.column("first_call").is_some() {
+            counters.push("first_call");
         }
         for column in extra_columns {
             if plan
@@ -2162,22 +2285,28 @@ impl PreparedSnapshot {
         row: Row,
         dictionary: &Dictionary,
     ) -> Option<PageRankedRow> {
-        if !context.window.matches(&row)
-            || !context.plan.matches(&row, dictionary)
-            || self.search.as_ref().is_some_and(|search| {
-                !search_matches(
-                    context.logical_name,
-                    context.plan,
-                    &row,
-                    dictionary,
-                    Some(process_users),
-                    search,
-                )
-            })
-        {
+        if !context.window.matches(&row) || !context.plan.matches(&row, dictionary) {
             return None;
         }
         let identity = identity_of(context.plan, &row)?;
+        if self.search.as_ref().is_some_and(|search| {
+            !search.matches_all(|clause| {
+                if matches!(clause.value, SearchValue::Quantity(_)) {
+                    result_search_matches(context, &row, &identity, clause)
+                } else {
+                    search_clause_matches(
+                        context.logical_name,
+                        context.plan,
+                        &row,
+                        dictionary,
+                        Some(process_users),
+                        clause,
+                    )
+                }
+            })
+        }) {
+            return None;
+        }
         let value = page_order_value(context, &row, &identity, dictionary);
         Some(PageRankedRow {
             staged: PageStagedRow {
@@ -2244,10 +2373,16 @@ impl PreparedSnapshot {
         cancelled: &impl Fn() -> bool,
     ) -> Result<Readings, ApiError> {
         let mut collected = BTreeMap::new();
-        let counters = rate_columns(plan);
+        let counters = projected_rate_columns(plan);
         let mut counters = counters;
         if plan.contract.column("stats_since").is_some() {
             counters.push("stats_since");
+        }
+        if plan.contract.column("starttime").is_some() {
+            counters.push("starttime");
+        }
+        if plan.contract.column("first_call").is_some() {
+            counters.push("first_call");
         }
         for column in extra_columns {
             if plan
@@ -2745,6 +2880,532 @@ fn search_columns(logical_name: &str, plan: &Plan, search: &StructuredSearch) ->
     columns
 }
 
+fn clock_ticks_per_second(segment: &Segment) -> Result<Option<u128>, ApiError> {
+    for (type_id, _rows) in segment.sections() {
+        if logical_section_name(type_id) != Some("instance_metadata") {
+            continue;
+        }
+        let Some(column) =
+            contract(type_id).and_then(|layout| layout.column("clock_ticks_per_sec"))
+        else {
+            continue;
+        };
+        let mut stored = None;
+        segment.visit_rows(type_id, &[column.name], 0, 1, |_ordinal, row| {
+            stored = row
+                .get(column.name)
+                .and_then(ordered_cell)
+                .and_then(|value| {
+                    let OrderedNumber::Integer(value) = value else {
+                        return None;
+                    };
+                    u128::try_from(value).ok().filter(|value| *value > 0)
+                });
+            false
+        })?;
+        if stored.is_some() {
+            return Ok(stored);
+        }
+    }
+    Ok(None)
+}
+
+fn postgres_block_size(segment: &Segment) -> Result<Option<u128>, ApiError> {
+    for (type_id, _rows) in segment.sections() {
+        if logical_section_name(type_id) != Some("pg_settings") {
+            continue;
+        }
+        let Some(layout) = contract(type_id) else {
+            continue;
+        };
+        let (Some(name), Some(setting)) = (layout.column("name"), layout.column("setting")) else {
+            continue;
+        };
+        let mut candidates = Vec::new();
+        let mut ids = HashSet::new();
+        segment.visit_rows(
+            type_id,
+            &[name.name, setting.name],
+            0,
+            usize::MAX,
+            |_ordinal, row| {
+                let (Some(Cell::StrId(name_id)), Some(Cell::StrId(setting_id))) =
+                    (row.get(name.name), row.get(setting.name))
+                else {
+                    return true;
+                };
+                ids.insert(*name_id);
+                ids.insert(*setting_id);
+                candidates.push((*name_id, *setting_id));
+                true
+            },
+        )?;
+        let dictionary = resolved_dictionary(segment, &ids)?;
+        for (name_id, setting_id) in candidates {
+            let Some(Resolved::Str(name)) = dictionary.resolve(name_id) else {
+                continue;
+            };
+            if name != b"block_size" {
+                continue;
+            }
+            let Some(Resolved::Str(setting)) = dictionary.resolve(setting_id) else {
+                continue;
+            };
+            let Ok(setting) = std::str::from_utf8(setting) else {
+                continue;
+            };
+            if let Ok(value) = setting.parse::<u128>()
+                && value > 0
+            {
+                return Ok(Some(value));
+            }
+        }
+    }
+    Ok(None)
+}
+
+enum SearchMetricValue {
+    Exact {
+        numerator: Vec<u128>,
+        denominator: Vec<u128>,
+    },
+    Float(f64),
+}
+
+impl SearchMetricValue {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "stored floating metrics must be scaled in their native f64 domain"
+    )]
+    fn scale(self, numerator_scale: u128, denominator_scale: u128) -> Option<Self> {
+        match self {
+            Self::Exact {
+                mut numerator,
+                mut denominator,
+            } => {
+                numerator.push(numerator_scale);
+                denominator.push(denominator_scale);
+                Some(Self::Exact {
+                    numerator,
+                    denominator,
+                })
+            }
+            Self::Float(value) => {
+                let scaled = value * numerator_scale as f64 / denominator_scale as f64;
+                scaled.is_finite().then_some(Self::Float(scaled))
+            }
+        }
+    }
+
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "stored floating metrics are compared to the closest f64 threshold"
+    )]
+    fn matches(&self, operator: SearchOperator, quantity: &Quantity) -> bool {
+        let ordering = match self {
+            Self::Exact {
+                numerator,
+                denominator,
+            } => {
+                let mut left = numerator.clone();
+                left.push(quantity.denominator);
+                let mut right = denominator.clone();
+                right.push(quantity.numerator);
+                compare_products(&left, &right)
+            }
+            Self::Float(value) => {
+                let threshold = quantity.numerator as f64 / quantity.denominator as f64;
+                if !value.is_finite() || !threshold.is_finite() {
+                    return false;
+                }
+                value.total_cmp(&threshold)
+            }
+        };
+        match operator {
+            SearchOperator::Greater => ordering == Ordering::Greater,
+            SearchOperator::Less => ordering == Ordering::Less,
+            SearchOperator::Colon => false,
+        }
+    }
+}
+
+fn result_search_matches(
+    context: &PageContext<'_>,
+    row: &Row,
+    identity: &[IdentityCell],
+    clause: &SearchClause,
+) -> bool {
+    let SearchValue::Quantity(quantity) = &clause.value else {
+        return false;
+    };
+    let Some(field) = result_field(context.logical_name, clause.key) else {
+        return false;
+    };
+    search_metric(context, row, identity, field.metric)
+        .is_some_and(|value| value.matches(clause.operator, quantity))
+}
+
+fn search_metric(
+    context: &PageContext<'_>,
+    row: &Row,
+    identity: &[IdentityCell],
+    metric: &str,
+) -> Option<SearchMetricValue> {
+    match context.logical_name {
+        "os_process" => process_search_metric(context, row, identity, metric),
+        "pg_stat_statements" | "pg_store_plans" => {
+            postgres_search_metric(context, row, identity, metric)
+        }
+        _ => None,
+    }
+}
+
+fn process_search_metric(
+    context: &PageContext<'_>,
+    row: &Row,
+    identity: &[IdentityCell],
+    metric: &str,
+) -> Option<SearchMetricValue> {
+    match metric {
+        "rss" => gauge_metric(row, "rmem_kb", 1_024, 1),
+        "vsz" => gauge_metric(row, "vmem_kb", 1_024, 1),
+        "swap" => gauge_metric(row, "vswap_kb", 1_024, 1),
+        "threads" => gauge_metric(row, "num_threads", 1, 1),
+        "cpu_cores" | "user_cpu_cores" | "system_cpu_cores" => {
+            let columns: &[&str] = match metric {
+                "user_cpu_cores" => &["utime"],
+                "system_cpu_cores" => &["stime"],
+                _ => &["utime", "stime"],
+            };
+            let ticks = context.clock_ticks_per_second?;
+            rate_metric(context, row, identity, columns, 1_000_000, ticks)
+        }
+        "disk_read_rate" => rate_metric(context, row, identity, &["read_bytes"], 1_000_000, 1),
+        "disk_write_rate" => rate_metric(context, row, identity, &["write_bytes"], 1_000_000, 1),
+        "logical_read_rate" => rate_metric(context, row, identity, &["rchar"], 1_000_000, 1),
+        "logical_write_rate" => rate_metric(context, row, identity, &["wchar"], 1_000_000, 1),
+        "read_syscall_rate" => rate_metric(context, row, identity, &["syscr"], 1_000_000, 1),
+        "write_syscall_rate" => rate_metric(context, row, identity, &["syscw"], 1_000_000, 1),
+        "major_fault_rate" => rate_metric(context, row, identity, &["majflt"], 1_000_000, 1),
+        "minor_fault_rate" => rate_metric(context, row, identity, &["minflt"], 1_000_000, 1),
+        "context_switch_rate" => {
+            rate_metric(context, row, identity, &["nvcsw", "nivcsw"], 1_000_000, 1)
+        }
+        "voluntary_context_switch_rate" => {
+            rate_metric(context, row, identity, &["nvcsw"], 1_000_000, 1)
+        }
+        "involuntary_context_switch_rate" => {
+            rate_metric(context, row, identity, &["nivcsw"], 1_000_000, 1)
+        }
+        "run_delay" => rate_metric(context, row, identity, &["rundelay_ns"], 1, 1),
+        "block_io_delay" => rate_metric(
+            context,
+            row,
+            identity,
+            &["blkdelay_ticks"],
+            1_000_000_000,
+            context.clock_ticks_per_second?,
+        ),
+        _ => None,
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fixed public PostgreSQL metric adapter stays exhaustive and fork-transparent"
+)]
+fn postgres_search_metric(
+    context: &PageContext<'_>,
+    row: &Row,
+    identity: &[IdentityCell],
+    metric: &str,
+) -> Option<SearchMetricValue> {
+    let execution = preferred_column(context.plan, "total_exec_time", "total_time");
+    let mean = preferred_column(context.plan, "mean_exec_time", "mean_time");
+    let stddev = preferred_column(context.plan, "stddev_exec_time", "stddev_time");
+    let direct_rate = match metric {
+        "call_rate" => Some("calls"),
+        "exec_time_rate" => execution,
+        "row_rate" => Some("rows"),
+        "plan_rate" => Some("plans"),
+        "planning_time_rate" => Some("total_plan_time"),
+        "slow_call_rate" => Some("slow_log_calls"),
+        "shared_read_time_rate" => {
+            preferred_column(context.plan, "shared_blk_read_time", "blk_read_time")
+        }
+        "shared_write_time_rate" => {
+            preferred_column(context.plan, "shared_blk_write_time", "blk_write_time")
+        }
+        "local_read_time_rate" => Some("local_blk_read_time"),
+        "local_write_time_rate" => Some("local_blk_write_time"),
+        "temp_read_time_rate" => Some("temp_blk_read_time"),
+        "temp_write_time_rate" => Some("temp_blk_write_time"),
+        "wal_rate" => Some("wal_bytes"),
+        _ => None,
+    };
+    if let Some(column) = direct_rate {
+        return rate_metric(context, row, identity, &[column], 1_000_000, 1);
+    }
+    let buffer_column = match metric {
+        "shared_buffer_hit_rate" => Some("shared_blks_hit"),
+        "shared_buffer_read_rate" => Some("shared_blks_read"),
+        "shared_buffer_dirty_rate" => Some("shared_blks_dirtied"),
+        "shared_buffer_write_rate" => Some("shared_blks_written"),
+        "local_buffer_hit_rate" => Some("local_blks_hit"),
+        "local_buffer_read_rate" => Some("local_blks_read"),
+        "local_buffer_dirty_rate" => Some("local_blks_dirtied"),
+        "local_buffer_write_rate" => Some("local_blks_written"),
+        "temp_buffer_read_rate" => Some("temp_blks_read"),
+        "temp_buffer_write_rate" => Some("temp_blks_written"),
+        _ => None,
+    };
+    if let Some(column) = buffer_column {
+        return rate_metric(context, row, identity, &[column], 1_000_000, 1)
+            .and_then(|value| value.scale(context.block_size?, 1));
+    }
+    match metric {
+        "mean_exec" => counter_ratio_metric(context, row, identity, &[execution?], &["calls"], 1),
+        "rows_per_call" => counter_ratio_metric(context, row, identity, &["rows"], &["calls"], 1),
+        "wal_per_call" => {
+            counter_ratio_metric(context, row, identity, &["wal_bytes"], &["calls"], 1)
+        }
+        "planning_share" => counter_ratio_metric(
+            context,
+            row,
+            identity,
+            &["total_plan_time"],
+            &["total_plan_time", execution?],
+            100,
+        ),
+        "buffer_hit" => counter_ratio_metric(
+            context,
+            row,
+            identity,
+            &["shared_blks_hit"],
+            &["shared_blks_hit", "shared_blks_read"],
+            100,
+        ),
+        "buffer_per_call" => counter_ratio_metric(
+            context,
+            row,
+            identity,
+            &[
+                "shared_blks_hit",
+                "shared_blks_read",
+                "shared_blks_dirtied",
+                "shared_blks_written",
+                "local_blks_hit",
+                "local_blks_read",
+                "local_blks_dirtied",
+                "local_blks_written",
+                "temp_blks_read",
+                "temp_blks_written",
+            ],
+            &["calls"],
+            context.block_size?,
+        ),
+        "exec_cv" => value_ratio_metric(row, &[stddev?], &[mean?], 1),
+        "min_exec_since_reset" => gauge_metric(
+            row,
+            preferred_column(context.plan, "min_exec_time", "min_time")?,
+            1,
+            1,
+        ),
+        "max_exec_since_reset" => gauge_metric(
+            row,
+            preferred_column(context.plan, "max_exec_time", "max_time")?,
+            1,
+            1,
+        ),
+        "mean_exec_since_reset" => gauge_metric(row, mean?, 1, 1),
+        "stddev_exec_since_reset" => gauge_metric(row, stddev?, 1, 1),
+        _ => None,
+    }
+}
+
+fn preferred_column(
+    plan: &Plan,
+    preferred: &'static str,
+    fallback: &'static str,
+) -> Option<&'static str> {
+    plan.contract
+        .column(preferred)
+        .map(|column| column.name)
+        .or_else(|| plan.contract.column(fallback).map(|column| column.name))
+}
+
+fn gauge_metric(
+    row: &Row,
+    column: &'static str,
+    numerator_scale: u128,
+    denominator_scale: u128,
+) -> Option<SearchMetricValue> {
+    ordered_metric(
+        ordered_cell(row.get(column)?)?,
+        numerator_scale,
+        denominator_scale,
+    )
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "stored floating counters preserve their recorded f64 arithmetic"
+)]
+fn rate_metric(
+    context: &PageContext<'_>,
+    row: &Row,
+    identity: &[IdentityCell],
+    columns: &[&'static str],
+    numerator_scale: u128,
+    denominator_scale: u128,
+) -> Option<SearchMetricValue> {
+    let elapsed = u128::try_from(context.elapsed_for(row)?)
+        .ok()
+        .filter(|value| *value > 0)?;
+    let before = context.predecessor(row, identity)?;
+    let delta = counter_sum(row, before, columns, false)?;
+    match delta {
+        OrderedNumber::Integer(value) if value >= 0 => Some(SearchMetricValue::Exact {
+            numerator: vec![u128::try_from(value).ok()?, numerator_scale],
+            denominator: vec![elapsed, denominator_scale],
+        }),
+        OrderedNumber::Float(value) => {
+            let converted =
+                value * numerator_scale as f64 / elapsed as f64 / denominator_scale as f64;
+            converted
+                .is_finite()
+                .then_some(SearchMetricValue::Float(converted))
+        }
+        OrderedNumber::Integer(_) => None,
+    }
+}
+
+fn counter_ratio_metric(
+    context: &PageContext<'_>,
+    row: &Row,
+    identity: &[IdentityCell],
+    numerator_columns: &[&'static str],
+    denominator_columns: &[&'static str],
+    scale: u128,
+) -> Option<SearchMetricValue> {
+    let _elapsed = context.elapsed_for(row)?;
+    let before = context.predecessor(row, identity)?;
+    let numerator = counter_sum(row, before, numerator_columns, false)?;
+    let denominator = counter_sum(row, before, denominator_columns, false)?;
+    ratio_metric(numerator, denominator, scale)
+}
+
+fn value_ratio_metric(
+    row: &Row,
+    numerator_columns: &[&'static str],
+    denominator_columns: &[&'static str],
+    scale: u128,
+) -> Option<SearchMetricValue> {
+    ratio_metric(
+        value_sum(row, numerator_columns)?,
+        value_sum(row, denominator_columns)?,
+        scale,
+    )
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "stored floating counters preserve their recorded f64 arithmetic"
+)]
+fn ratio_metric(
+    numerator: OrderedNumber,
+    denominator: OrderedNumber,
+    scale: u128,
+) -> Option<SearchMetricValue> {
+    match (numerator, denominator) {
+        (OrderedNumber::Integer(numerator), OrderedNumber::Integer(denominator))
+            if numerator >= 0 && denominator > 0 =>
+        {
+            Some(SearchMetricValue::Exact {
+                numerator: vec![u128::try_from(numerator).ok()?, scale],
+                denominator: vec![u128::try_from(denominator).ok()?],
+            })
+        }
+        (numerator, denominator) => {
+            let denominator = denominator.as_f64();
+            let ratio = numerator.as_f64() / denominator * scale as f64;
+            (denominator > 0.0 && ratio.is_finite()).then_some(SearchMetricValue::Float(ratio))
+        }
+    }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "stored floating gauges preserve their recorded f64 value"
+)]
+fn ordered_metric(
+    value: OrderedNumber,
+    numerator_scale: u128,
+    denominator_scale: u128,
+) -> Option<SearchMetricValue> {
+    match value {
+        OrderedNumber::Integer(value) if value >= 0 => Some(SearchMetricValue::Exact {
+            numerator: vec![u128::try_from(value).ok()?, numerator_scale],
+            denominator: vec![denominator_scale],
+        }),
+        OrderedNumber::Float(value) => {
+            let converted = value * numerator_scale as f64 / denominator_scale as f64;
+            converted
+                .is_finite()
+                .then_some(SearchMetricValue::Float(converted))
+        }
+        OrderedNumber::Integer(_) => None,
+    }
+}
+
+fn compare_products(left: &[u128], right: &[u128]) -> Ordering {
+    let left = product_limbs(left);
+    let right = product_limbs(right);
+    left.len().cmp(&right.len()).then_with(|| left.cmp(&right))
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "each cast selects one base-2^32 limb after shifting"
+)]
+fn product_limbs(factors: &[u128]) -> Vec<u32> {
+    let mut product = vec![1_u32];
+    for factor in factors {
+        let digits = [
+            *factor as u32,
+            (*factor >> 32) as u32,
+            (*factor >> 64) as u32,
+            (*factor >> 96) as u32,
+        ];
+        let mut multiplied = vec![0_u32; product.len() + digits.len()];
+        for (left_index, left) in product.iter().copied().enumerate() {
+            let mut carry = 0_u64;
+            for (right_index, right) in digits.iter().copied().enumerate() {
+                let index = left_index + right_index;
+                let value =
+                    u64::from(multiplied[index]) + u64::from(left) * u64::from(right) + carry;
+                multiplied[index] = value as u32;
+                carry = value >> 32;
+            }
+            let mut index = left_index + digits.len();
+            while carry > 0 {
+                let value = u64::from(multiplied[index]) + carry;
+                multiplied[index] = value as u32;
+                carry = value >> 32;
+                index += 1;
+                if index == multiplied.len() && carry > 0 {
+                    multiplied.push(0);
+                }
+            }
+        }
+        while multiplied.len() > 1 && multiplied.last() == Some(&0) {
+            multiplied.pop();
+        }
+        product = multiplied;
+    }
+    product.iter().rev().copied().collect()
+}
+
 fn search_clause_columns(logical_name: &str, plan: &Plan, key: &str) -> Vec<&'static str> {
     let Some(field) = search_fields(logical_name)
         .iter()
@@ -2767,6 +3428,52 @@ fn search_clause_columns(logical_name: &str, plan: &Plan, key: &str) -> Vec<&'st
         .collect()
 }
 
+fn search_clause_matches(
+    logical_name: &str,
+    plan: &Plan,
+    row: &Row,
+    dictionary: &Dictionary,
+    process_users: Option<&ProcessUsers>,
+    clause: &SearchClause,
+) -> bool {
+    if logical_name == "pg_store_plans"
+        && plan.type_id == 1_004_001
+        && clause.key == "query_id"
+        && matches!(&clause.value, SearchValue::Identifier(value) if value == "0")
+    {
+        return false;
+    }
+    if logical_name == "os_process" {
+        let name_matches = |uid_column| {
+            process_users
+                .and_then(|users| users.for_row(row, uid_column))
+                .is_some_and(|name| search_value_matches(name, &clause.value))
+        };
+        match clause.key {
+            "user" => return name_matches("uid"),
+            "effective_user" => return name_matches("euid"),
+            "text" => {
+                if name_matches("uid") || name_matches("euid") {
+                    return true;
+                }
+                return ["comm", "cmdline"].iter().any(|column| {
+                    row.get(column)
+                        .and_then(|value| searchable_text(value, dictionary))
+                        .is_some_and(|text| search_value_matches(&text, &clause.value))
+                });
+            }
+            _ => {}
+        }
+    }
+    search_clause_columns(logical_name, plan, clause.key)
+        .iter()
+        .any(|column| {
+            row.get(column)
+                .and_then(|value| searchable_text(value, dictionary))
+                .is_some_and(|text| search_value_matches(&text, &clause.value))
+        })
+}
+
 fn search_matches(
     logical_name: &str,
     plan: &Plan,
@@ -2776,42 +3483,7 @@ fn search_matches(
     search: &StructuredSearch,
 ) -> bool {
     search.matches_member(|clause| {
-        if logical_name == "pg_store_plans"
-            && plan.type_id == 1_004_001
-            && clause.key == "query_id"
-            && matches!(&clause.value, SearchValue::Identifier(value) if value == "0")
-        {
-            return false;
-        }
-        if logical_name == "os_process" {
-            let name_matches = |uid_column| {
-                process_users
-                    .and_then(|users| users.for_row(row, uid_column))
-                    .is_some_and(|name| search_value_matches(name, &clause.value))
-            };
-            match clause.key {
-                "user" => return name_matches("uid"),
-                "effective_user" => return name_matches("euid"),
-                "text" => {
-                    if name_matches("uid") || name_matches("euid") {
-                        return true;
-                    }
-                    return ["comm", "cmdline"].iter().any(|column| {
-                        row.get(column)
-                            .and_then(|value| searchable_text(value, dictionary))
-                            .is_some_and(|text| search_value_matches(&text, &clause.value))
-                    });
-                }
-                _ => {}
-            }
-        }
-        search_clause_columns(logical_name, plan, clause.key)
-            .iter()
-            .any(|column| {
-                row.get(column)
-                    .and_then(|value| searchable_text(value, dictionary))
-                    .is_some_and(|text| search_value_matches(&text, &clause.value))
-            })
+        search_clause_matches(logical_name, plan, row, dictionary, process_users, clause)
     })
 }
 
@@ -3494,6 +4166,18 @@ fn rate_columns(plan: &Plan) -> Vec<&'static str> {
     plan.fields
         .iter()
         .filter_map(|field| field.column)
+        .filter(|column| {
+            plan.contract
+                .column(column)
+                .is_some_and(|declared| declared.class == ColumnClass::Cumulative)
+        })
+        .collect()
+}
+
+fn projected_rate_columns(plan: &Plan) -> Vec<&'static str> {
+    plan.projection
+        .iter()
+        .copied()
         .filter(|column| {
             plan.contract
                 .column(column)

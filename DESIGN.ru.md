@@ -690,12 +690,64 @@ Indexes использует размещение каждого индекса.
 по-прежнему называются только `query_id` и `plan_id` независимо от физического
 формата расширения.
 
+Для плотных количественных поверхностей действует следующий фиксированный
+словарь. Он принадлежит всей поверхности, даже если активный lens не показывает
+метрику:
+
+| Поверхность | Публичные поля | Единицы сравнения |
+| --- | --- | --- |
+| Statements и Plans | `call_rate`, `exec_time_rate`, `mean_exec`, `row_rate`, `rows_per_call`, `buffer_hit`, `buffer_per_call`; `shared_buffer_{hit,read,dirty,write}_rate`, `local_buffer_{hit,read,dirty,write}_rate`, `temp_buffer_{read,write}_rate`; `shared_{read,write}_time_rate`, `local_{read,write}_time_rate`, `temp_{read,write}_time_rate`; `exec_cv`, `min_exec_since_reset`, `max_exec_since_reset`, `mean_exec_since_reset`, `stddev_exec_since_reset` | `/s`, duration, ratios без unit, `%`, bytes, byte`/s` либо duration`/s` согласно реестру |
+| Только Statements | `plan_rate`, `wal_rate`, `wal_per_call` | `/s`, byte`/s`, bytes |
+| Statements и Plans, если layout хранит planning | `planning_time_rate`, `planning_share` | duration`/s`, `%` |
+| Plans с записанным layout vadv | `slow_call_rate` | `/s` |
+| Processes | `rss`, `vsz`, `swap`, `threads`, `cpu_cores`, `user_cpu_cores`, `system_cpu_cores`, `disk_read_rate`, `disk_write_rate`, `logical_read_rate`, `logical_write_rate`, `read_syscall_rate`, `write_syscall_rate`, `major_fault_rate`, `minor_fault_rate`, `context_switch_rate`, `voluntary_context_switch_rate`, `involuntary_context_switch_rate`, `run_delay`, `block_io_delay` | bytes, count, cores без unit, byte`/s`, `/s` либо duration`/s` |
+
+Общие имена PostgreSQL имеют одинаковый смысл в Statements и Plans. Частоты
+счётчиков используют дельту сохранённого интервала. Mean execution time, rows
+per call и WAL per call делят интервальные дельты, а не отформатированные
+частоты. Buffer hit — дельта shared hits, делённая на сумму дельт shared hits и
+reads. Execution CV — записанное standard deviation, делённое на записанное
+mean; четыре явно названных `*_since_reset` поля — gauges reset window.
+Buffer rates и per-call values умножают точные дельты blocks на записанный
+PostgreSQL `block_size`; без block size они равны null. I/O, execution и
+planning time rates в базовой единице сравнения означают milliseconds,
+накопленные за wall second. Planning share делит дельту planning time на сумму
+planning и execution time.
+`pg_store_plans` сохраняет query/plan identity и правила атрибуции своего
+fork; этот словарь не добавляет join по Plan node или relation.
+
+Интервальные значения PostgreSQL требуют точной непрерывности. Layouts
+Statements с `stats_since` требуют неизменный row epoch; старые layouts —
+одинаковый `pg_stat_statements_info.stats_reset` в обоих snapshots. Plans
+требуют неизменный `first_call` и одинаковый записанный
+`pg_store_plans_info.stats_reset`. Если нужного признака непрерывности нет или
+он изменился, зависящие от него rate, per-call value и interval ratio равны
+null, даже если сырой counter вырос.
+
+Memory gauges процесса переводят записанные KiB в точные bytes. Частоты
+процесса используют только непосредственно предыдущий полный OS-process
+snapshot и только при неизменных PID и записанном `starttime`. Отсутствующий
+предшественник, повторное использование PID, откат счётчика, неположительный
+интервал или отсутствующая clock frequency дают null. CPU cores делят точные
+дельты user/system ticks на записанную clock frequency и wall interval;
+`run_delay` переводит записанные nanoseconds в milliseconds per second, а
+`block_io_delay` так же переводит записанные clock ticks. Исправленный текущий
+реестр `os_process` объявляет `rchar` и `wchar` как bytes, поэтому logical I/O
+rates доступны без публикации этих физических имён. Сырые накопительные
+process counters и универсальное семейство delta не входят в публичный поиск.
+Разрешённые aliases ограничены `resident_memory`, `virtual_memory`, исходными
+mnemonics вроде `majflt_rate` и столь же однозначными вариантами; chips и URL
+сохраняют canonical names.
+
 Величина — точное проверяемое десятичное значение, которое никогда не проходит
 через JavaScript number. Байты принимают чувствительные к регистру SI-единицы
 от `B` до `EB` и IEC-единицы от `KiB` до `EiB`: `100MB` — ровно
 100 000 000 байт, `100MiB` — ровно 104 857 600 байт. Count задаётся целым
-числом без единицы, rate использует `/s`, duration — `ns`, `us`, `ms`, `s`,
-`min` или `h`, percentage — `%`. Знаки, экспонента, разделители разрядов и
+числом без unit, rate использует `/s`, duration — `ns`, `us`, `ms`, `s`,
+`min` или `h`. Duration rate принимает только `ns/s`, `us/s`, `ms/s` или
+`s/s`, byte rate добавляет `/s`. Per-call scalar не имеет unit, per-call bytes
+используют обычный byte unit, percentage — `%`.
+Знаки, экспонента, разделители разрядов и
 нечисловые значения недопустимы. Отсутствующее или недоступное значение не
 становится нулём и не совпадает ни с одним строгим оператором. Человеческое
 форматирование показаний не участвует в сравнении.
@@ -753,10 +805,13 @@ Statements с соответствующей идентичностью. Для 
 `idle in transaction (aborted)` сохраняют длительность. History проецирует
 state и сохраняет null-разрывы при переходах.
 
-В пределах выбранного календарного часа строки, история, фильтры, соединения и
-дельты счётчиков процессов ОС и `pg_stat_activity` определяются только по PID.
-Поля `starttime` процесса и `backend_start` PostgreSQL остаются наблюдаемыми
-временными метками и не участвуют в идентификации. При соединении процесса с
+В пределах выбранного календарного часа строки, история, фильтры и соединения
+процессов ОС и `pg_stat_activity` определяются только по PID. Поля `starttime`
+процесса и `backend_start` PostgreSQL остаются наблюдаемыми временными метками
+и не меняют публичную идентификацию. Предшественник process counter
+дополнительно требует точного совпадения PID и `starttime`: повторно
+использованный PID сохраняет identity строки, но получает null для interval
+rates. При соединении процесса с
 Activity сохранённые строки сначала фильтруются по точному PID, и только затем
 для этого PID выбирается ближайшая к курсору метка. Метки сбора разных баз
 могут немного различаться, поэтому глобально более близкая строка другого PID

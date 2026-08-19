@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 use super::{
     ContributingMoments, GlobPattern, PageOrderValue, PageRankedRow, PageRows, PageStagedRow,
     SearchValue, SnapshotCursor, StructuredSearch, available_field_index, compare_ordered,
-    ordered_cell, prepared_search, rate, record_contributing_moment, snapshot_binding,
-    timed_context_index,
+    compare_products, ordered_cell, prepared_search, rate, record_contributing_moment,
+    snapshot_binding, timed_context_index,
 };
 use crate::api::query::OutputField;
 use crate::route::{Filter, Order, RelationGroup, SnapshotRequest};
@@ -123,6 +123,18 @@ fn numeric_ordering_preserves_large_integer_precision_and_nulls() {
     );
     assert!(ordered_cell(&Cell::F64(f64::NAN)).is_none());
     assert!(ordered_cell(&Cell::F64(f64::INFINITY)).is_none());
+}
+
+#[test]
+fn exact_product_comparison_orders_different_limb_lengths() {
+    assert_eq!(
+        compare_products(&[100, 1_000_000], &[1_048_575, 1_000_000]),
+        Ordering::Less
+    );
+    assert_eq!(
+        compare_products(&[u128::MAX, u128::MAX], &[u128::MAX, u128::MAX - 1]),
+        Ordering::Greater
+    );
 }
 
 fn ranked(layout_index: usize, ordinal: u64, value: Option<PageOrderValue>) -> PageRankedRow {
@@ -580,6 +592,80 @@ fn structured_search_validates_aliases_types_escaping_and_surface_fields() {
             .collect::<Vec<_>>(),
         ["user", "effective_user", "user_id", "effective_user_id"]
     );
+    for (input, canonical) in [
+        ("resident_memory>2MiB", "rss>2MiB"),
+        ("virtual_memory>1GiB", "vsz>1GiB"),
+        ("majflt_rate>1/s", "major_fault_rate>1/s"),
+        ("rchar_rate>1MiB/s", "logical_read_rate>1MiB/s"),
+        ("blkdelay>50ms/s", "block_io_delay>50ms/s"),
+    ] {
+        assert_eq!(
+            StructuredSearch::parse(input, "os_process")
+                .expect("documented process alias")
+                .canonical(),
+            canonical
+        );
+    }
+    for raw in ["utime>1", "rchar>1MiB", "read_bytes>1MiB", "cpu>0.1"] {
+        assert!(StructuredSearch::parse(raw, "os_process").is_err(), "{raw}");
+    }
+}
+
+#[test]
+fn quantitative_search_registry_is_surface_wide_and_physical_names_stay_private() {
+    let statements = super::search::search_fields("pg_stat_statements")
+        .iter()
+        .map(|field| field.key)
+        .collect::<Vec<_>>();
+    let plans = super::search::search_fields("pg_store_plans")
+        .iter()
+        .map(|field| field.key)
+        .collect::<Vec<_>>();
+    for shared in [
+        "call_rate",
+        "exec_time_rate",
+        "mean_exec",
+        "row_rate",
+        "rows_per_call",
+        "planning_time_rate",
+        "planning_share",
+        "shared_buffer_read_rate",
+        "local_buffer_write_rate",
+        "temp_buffer_read_rate",
+        "shared_read_time_rate",
+        "buffer_hit",
+        "buffer_per_call",
+        "exec_cv",
+        "min_exec_since_reset",
+        "max_exec_since_reset",
+        "mean_exec_since_reset",
+        "stddev_exec_since_reset",
+    ] {
+        assert!(statements.contains(&shared), "Statements: {shared}");
+        assert!(plans.contains(&shared), "Plans: {shared}");
+    }
+    for statement_only in ["plan_rate", "wal_rate", "wal_per_call"] {
+        assert!(statements.contains(&statement_only));
+        assert!(!plans.contains(&statement_only));
+    }
+    assert!(plans.contains(&"slow_call_rate"));
+    for physical in [
+        "calls",
+        "total_exec_time",
+        "shared_blks_read",
+        "wal_bytes",
+        "rmem_kb",
+        "utime",
+        "read_bytes",
+    ] {
+        assert!(!statements.contains(&physical));
+        assert!(!plans.contains(&physical));
+        assert!(
+            !super::search::search_fields("os_process")
+                .iter()
+                .any(|field| field.key == physical)
+        );
+    }
 }
 
 #[test]
@@ -629,6 +715,39 @@ fn structured_search_parses_strict_exact_quantities_and_canonicalizes_them() {
             SearchValue::Quantity(quantity)
                 if quantity.numerator == numerator && quantity.denominator == denominator
         ));
+    }
+}
+
+#[test]
+fn structured_search_parses_process_and_postgres_quantity_units_exactly() {
+    for (surface, expression, numerator, denominator) in [
+        ("os_process", "cpu_cores>0.1", 1, 10),
+        ("os_process", "rss>2MiB", 2_097_152, 1),
+        ("os_process", "disk_read_rate>1.5MiB/s", 1_572_864, 1),
+        ("os_process", "run_delay<250us/s", 1, 4),
+        ("pg_stat_statements", "exec_time_rate>0.5s/s", 500, 1),
+        ("pg_stat_statements", "wal_per_call>0.5KiB", 512, 1),
+        ("pg_store_plans", "rows_per_call<0.125", 1, 8),
+    ] {
+        let parsed = StructuredSearch::parse(expression, surface).expect("valid exact quantity");
+        assert!(matches!(
+            &parsed.clauses[0].value,
+            SearchValue::Quantity(quantity)
+                if quantity.numerator == numerator && quantity.denominator == denominator
+        ));
+    }
+    for (surface, expression) in [
+        ("os_process", "cpu_cores>1core"),
+        ("os_process", "rss>2MiB/s"),
+        ("os_process", "disk_read_rate>1MiB"),
+        ("pg_stat_statements", "exec_time_rate>1ms"),
+        ("pg_stat_statements", "wal_per_call>1MiB/s"),
+        ("pg_store_plans", "rows_per_call>1/s"),
+    ] {
+        assert!(
+            StructuredSearch::parse(expression, surface).is_err(),
+            "{expression}"
+        );
     }
 }
 

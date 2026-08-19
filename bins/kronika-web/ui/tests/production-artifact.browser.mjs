@@ -1138,6 +1138,42 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.equal(invalidSearch.url, null)
     assert.equal(requests.slice(invalidSearchStart).some(({ query }) => query.includes("taname")), false)
 
+    const quantitativeSearch = "exec_time_rate>500ms/s AND call_rate>1/s"
+    await cdp.evaluate('(() => { const input = document.querySelector("[data-testid=table-filter]"); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "exec_time_rate>500ms/s AND call_rate>1/s"); input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromPaste" })); input.form.requestSubmit() })()')
+    await cdp.waitFor('new URL(location.href).searchParams.get("find") === "exec_time_rate>500ms/s AND call_rate>1/s" && document.querySelectorAll("[data-testid=search-chips] button").length === 2', "quantitative statement chips")
+    const quantitativeState = await cdp.evaluate('(() => ({ aria: document.querySelector("[data-testid=search-chips]")?.getAttribute("aria-label") ?? "", fields: [...document.querySelectorAll("[data-testid=search-chips] strong")].map((field) => field.textContent), text: document.querySelector("[data-testid=search-chips]")?.textContent ?? "" }))()')
+    assert.deepEqual(quantitativeState.fields, ["Execution time/s", "Calls/s"])
+    assert.match(quantitativeState.text, /> 500 ms\/sANDCalls\/s · > 1 \/s/)
+    assert.match(quantitativeState.aria, /exec_time_rate>500ms\/s AND call_rate>1\/s/)
+    await waitForRequests(() => requests.some(({ query }) => new URLSearchParams(query).get("search") === quantitativeSearch))
+
+    const unitErrorStart = requests.length
+    await cdp.evaluate('(() => { const input = document.querySelector("[data-testid=table-filter]"); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "exec_time_rate>500ms"); input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromPaste" })); input.form.requestSubmit() })()')
+    await cdp.waitFor('document.querySelector("[data-testid=search-error]")?.textContent.includes("not valid for this field") === true', "duration-rate unit error")
+    assert.equal(await cdp.evaluate('new URL(location.href).searchParams.get("find")'), quantitativeSearch)
+    assert.equal(requests.slice(unitErrorStart).some(({ query }) => new URLSearchParams(query).get("search") === "exec_time_rate>500ms"), false)
+
+    for (const locale of ["en", "ru"]) {
+      await cdp.evaluate('document.querySelector("[data-testid=locale-' + locale + ']").click()')
+      await cdp.waitFor('document.documentElement.lang === "' + locale + '"', locale + " quantitative help locale")
+      for (const width of [360, 800, 1280]) {
+        await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width })
+        const helpLabel = locale === "en" ? "Search syntax and fields" : "Синтаксис и поля поиска"
+        await cdp.evaluate('document.querySelector("[aria-label=\"' + helpLabel + '\"]").click()')
+        await cdp.waitFor('document.querySelector("[data-testid=search-help]") !== null', locale + " quantitative help at " + width)
+        const help = await cdp.evaluate('(() => { const dialog = document.querySelector("[data-testid=search-help] [role=dialog]"); const bounds = dialog.getBoundingClientRect(); return { fields: dialog.textContent, left: bounds.left, right: bounds.right, scroll: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth } })()')
+        assert.match(help.fields, /exec_time_rate/)
+        assert.match(help.fields, /wal_rate/)
+        assert.doesNotMatch(help.fields, /cpu_cores|rmem_kb|total_exec_time|shared_blks_read/)
+        assert.ok(help.left >= -1 && help.right <= help.viewport + 1 && help.scroll <= help.viewport, locale + " " + width + ": " + JSON.stringify(help))
+        await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+        await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+        await cdp.waitFor('document.querySelector("[data-testid=search-help]") === null', locale + " quantitative help close at " + width)
+      }
+    }
+    await cdp.evaluate('document.querySelector("[data-testid=locale-en]").click()')
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
+
     await cdp.evaluate(`(() => {
       const input = document.querySelector('[data-testid="table-filter"]')
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "(query_id:9007199254740991 or db:operators) and role:reporter")
@@ -1222,6 +1258,25 @@ test("the production artifact preserves wire keys and exact finding page state",
     assert.match(planTable.row, /Merge Join.*cost=0\.85\.\.81\.42/)
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="related-planid"]') !== null`), true)
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="related-queryid_stat_statements"]') !== null`), true)
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('[data-testid="table-filter"]')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'planning_share>20% AND call_rate>1/s')
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste' }))
+      input.form.requestSubmit()
+    })()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "planning_share>20% AND call_rate>1/s"`, "quantitative Plans search")
+    await waitForRequests(() => requests.some(({ query }) => new URLSearchParams(query).get("search") === "planning_share>20% AND call_rate>1/s"))
+    assert.deepEqual(await cdp.evaluate(`[...document.querySelectorAll('[data-testid="search-chips"] strong')].map((node) => node.textContent)`), ["Planning share", "Calls/s"])
+    await cdp.evaluate(`document.querySelector('[aria-label="Search syntax and fields"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="search-help"]') !== null`, "Plans quantitative help")
+    const planHelp = await cdp.evaluate(`document.querySelector('[data-testid="search-help"]').textContent`)
+    assert.match(planHelp, /slow_call_rate/)
+    assert.doesNotMatch(planHelp, /wal_rate|cpu_cores|shared_blks_read/)
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
+    await cdp.waitFor(`document.querySelector('[data-testid="search-help"]') === null`, "close Plans quantitative help")
+    await cdp.evaluate(`document.querySelector('[aria-label="Clear the filter"]').click()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === null`, "clear quantitative Plans search")
     await cdp.evaluate(`document.querySelector('[data-testid="related-planid"]').click()`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("view") === "pg.plans" && new URL(location.href).searchParams.get("find") === "plan_id:77"`, "Plan ID opens the shared Plans filter")
     await cdp.evaluate(`history.back()`)
@@ -2218,6 +2273,17 @@ test("chart preference, detail dismissal, and process summary lifecycle work in 
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
     await cdp.waitFor(`document.querySelectorAll('[data-testid="process-table"] .entity-row').length > 10`, "the full-height process table")
     await cdp.waitFor(`[...document.querySelectorAll('[data-testid="process-table"] .entity-row')].some((row) => row.textContent.includes("2686712"))`, "the captured-user process row")
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('[data-testid="table-filter"]')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'cpu_cores>0.1 AND rss>2MiB')
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste' }))
+      input.form.requestSubmit()
+    })()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === "cpu_cores>0.1 AND rss>2MiB"`, "natural quantitative Processes search")
+    await waitForRequests(() => requests.some(({ query }) => new URLSearchParams(query).get("search") === "cpu_cores>0.1 AND rss>2MiB"))
+    assert.deepEqual(await cdp.evaluate(`[...document.querySelectorAll('[data-testid="search-chips"] strong')].map((node) => node.textContent)`), ["CPU cores", "RSS"])
+    await cdp.evaluate(`document.querySelector('[aria-label="Clear the filter"]').click()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get("find") === null`, "clear quantitative Processes search")
     const processJoinGap = await cdp.evaluate(`(() => {
       const timeline = document.querySelector('.timeline-shell').getBoundingClientRect()
       const controls = document.querySelector('.process-workspace > .lensbar').getBoundingClientRect()

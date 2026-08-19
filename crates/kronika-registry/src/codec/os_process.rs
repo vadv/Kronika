@@ -111,10 +111,10 @@ pub struct OsProcess {
     #[column(c, unit = count)]
     pub syscw: Option<i64>,
     /// Characters read, including page-cache hits.
-    #[column(c, unit = pages)]
+    #[column(c, unit = bytes)]
     pub rchar: Option<i64>,
     /// Characters written, including page-cache writes.
-    #[column(c, unit = pages)]
+    #[column(c, unit = bytes)]
     pub wchar: Option<i64>,
     /// Bytes really read from storage.
     #[column(c, unit = bytes)]
@@ -136,7 +136,7 @@ pub struct OsProcess {
 #[cfg(test)]
 mod tests {
     use super::OsProcess;
-    use crate::{Section, StrId, Ts, VerifiedSection, contract::lint};
+    use crate::{Section, StrId, Ts, Unit, VerifiedSection, contract::lint};
 
     fn row(ts: i64, pid: i32, io: bool) -> OsProcess {
         OsProcess {
@@ -192,6 +192,12 @@ mod tests {
         assert_eq!(c.type_id.get(), 1_100_001);
         assert_eq!(c.sort_key, ["pid", "ts"]);
         assert_eq!(c.identity, ["pid"]);
+        for name in ["rchar", "wchar", "read_bytes", "write_bytes"] {
+            assert_eq!(
+                c.column(name).and_then(|column| column.unit),
+                Some(Unit::Bytes)
+            );
+        }
     }
 
     #[test]
