@@ -122,14 +122,7 @@
   :is(.pg-table-shell) & { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; overflow: hidden; }
 }
 @utility pg-detail {
-  background: var(--color-s2); border: 1px solid var(--color-line3); border-left: 0; max-height: min(560px, calc(100vh - 355px)); overflow: auto; padding: 11px;
-  :is(.pg-table-shell) & { max-height: none; min-height: 0; overscroll-behavior: contain; }
-  /* Below the width where the layout folds, the dock stops being a column and
-     becomes an overlay over the table. */
-  @media (max-width: 1000px) {
-    border-left: 1px solid var(--color-line3); bottom: 10px; box-shadow: -15px 0 45px var(--color-shadow-a); max-height: calc(100vh - 160px); max-width: 440px; position: fixed; right: 10px; top: 150px; width: min(440px, calc(100vw - 20px)); z-index: 80;
-    :is(.pg-table-shell) & { max-height: calc(100dvh - 160px); }
-  }
+  background: var(--color-s2); min-height: 0; padding: 11px;
 }
 @utility pg-detail-head {
   align-items: flex-start; background: var(--color-s2); border-bottom: 1px solid var(--color-line3); display: flex; justify-content: space-between; padding-bottom: 9px; position: sticky; top: -11px; z-index: 2;
@@ -434,6 +427,23 @@
   overscroll-behavior: contain;
 }
 .inspector-body > .timeline-shell { min-width: 0; }
+.inspector-detail-slot { min-height: 100%; min-width: 0; }
+.inspector-detail-slot > .pg-detail {
+  border: 0;
+  box-shadow: none;
+  max-height: none;
+  max-width: none;
+  min-height: 0;
+  overflow: visible;
+  position: static;
+  width: auto;
+}
+.inspector-detail-slot > [data-testid="event-detail"] {
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+}
+.inspector-detail-slot > .system-entity-history { padding: 5px 4px 9px; }
 .inspector-scrim { display: none; }
 
 .entity-row[aria-selected="true"] .entity-cell:first-child { font-weight: 700; }

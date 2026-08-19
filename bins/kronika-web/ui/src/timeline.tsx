@@ -163,8 +163,8 @@ export function Timeline({
   })}</>
   if (selected === undefined) {
     return findings.length === 0
-      ? <section className="flex min-h-[46px] items-center justify-center border-y border-line2 bg-s1 text-sm text-fg4" data-testid="timeline-empty">{t(emptyHourStatusKey(hour))}</section>
-      : <section className="flex min-h-[46px] items-center justify-center border-y border-line2 bg-s1 text-sm text-fg4" data-testid="timeline-empty">{t("status.no_data")}</section>
+      ? <section className="flex h-[104px] min-h-[104px] items-center justify-center border-y border-line2 bg-s1 text-sm text-fg4" data-presentation={presentation} data-testid="timeline-empty">{t(emptyHourStatusKey(hour))}</section>
+      : <section className="flex h-[104px] min-h-[104px] items-center justify-center border-y border-line2 bg-s1 text-sm text-fg4" data-presentation={presentation} data-testid="timeline-empty">{t("status.no_data")}</section>
   }
   return <section aria-label={t("hour.range", { range: time.hourRange(hour).primary })} className={`timeline-shell mt-2 flex flex-col overflow-hidden border-y border-line2 bg-s1 timeline-${presentation}`} data-presentation={presentation}>
     <div className="timeline-rail flex h-7 flex-none border-b border-line2">

@@ -1,15 +1,14 @@
 import { registry } from "kronika:registry"
-import { X } from "lucide-react"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { HostMode, HostSection } from "./address"
 import { fieldNameForLocator, loadSeries, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
 import { buildMetricSamples } from "./chart"
-import { useDetailDismiss } from "./detail-dismiss"
 import { contextualRows, type EntityContext } from "./entity-context"
 import { EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import { useHistoryRequest } from "./history-request"
+import { InspectorPortal } from "./inspector"
 import { asNumber, humanBytes, humanCores, humanDuration, humanHertz, humanPercent, measure, rawText, shownMoment, snapshot, value, type Locale } from "./model"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
@@ -401,9 +400,13 @@ export function SystemView({
   onCursor,
   onContextClear,
   onFinding,
+  onOpenChart,
+  onOpenDetail,
   onMetric,
   onMode,
+  onSelectedLane,
   onSelectedKey,
+  selectedLane,
   selectedKey,
   tablesLoading = false,
   t,
@@ -423,9 +426,13 @@ export function SystemView({
   readonly onCursor: (timestamp: number) => void
   readonly onContextClear: () => void
   readonly onFinding: (finding: Finding) => void
+  readonly onOpenChart: () => void
+  readonly onOpenDetail: () => void
   readonly onMetric: (metric: string | null) => void
   readonly onMode: (mode: HostMode | null) => void
+  readonly onSelectedLane: (lane: string) => void
   readonly onSelectedKey: (key: string | null) => void
+  readonly selectedLane: string
   readonly selectedKey: string | null
   readonly tablesLoading?: boolean | undefined
   readonly t: Translate
@@ -467,6 +474,7 @@ export function SystemView({
     setDismissedOverview(false)
     onSelectedKey(null)
     onMetric(id)
+    onOpenDetail()
   }
   const appliedFocus = useRef<Finding | null>(null)
   useEffect(() => {
@@ -496,7 +504,7 @@ export function SystemView({
     spec: selectedSpec,
   }
   const selectedResource = selectedMetric === undefined ? null : metricResource(selectedMetric.spec)
-  const dockShown = selectedMetric !== undefined
+  const dockShown = selectedMetric !== undefined && selectedKey === null
   const dockMeta = useMemo(() => {
     if (selectedMetric === undefined) return { chips: [] as readonly MetricSpec[], chartChip: (id: string) => id }
     const group = selectedMetric.spec.group
@@ -534,7 +542,7 @@ export function SystemView({
   const topologyRows = section === "cpu" && mode === "topology" ? systemEntityRows(data, "os_topology", cursor) : []
   const policyRows = section === "cpu" && mode === "topology" ? systemEntityRows(data, "os_cpufreq_policy", cursor) : []
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} primaryLane={selectedMetric === undefined ? "health" : metricLane(selectedMetric.spec)} shownAt={shownAt} t={t} />
+    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onSelectedLane={onSelectedLane} primaryLane={selectedMetric === undefined ? "health" : metricLane(selectedMetric.spec)} selectedLane={selectedLane} shownAt={shownAt} t={t} />
     {modes.length > 0 && <div aria-label={t(`section.${section}`)} className="lensbar !mt-0 border-t-0" data-testid={`host-${section}-modes`} role="group">
       <div className="lens-tabs">
         {modes.map((choice) => <button aria-pressed={mode === choice} key={choice} onClick={() => onMode(choice)} type="button">{t(`host.mode.${choice}`)}</button>)}
@@ -545,18 +553,16 @@ export function SystemView({
           const target = resourceSelection(available, resource)
           if (target !== null) openMetric(target)
         }} selected={dockShown ? selectedResource : null} t={t} />}
-      {dockShown && selectedMetric !== undefined && <SystemDock
+      {dockShown && selectedMetric !== undefined && <InspectorPortal autoOpen={false} identity={`system:${selectedMetric.spec.id}`} onClose={() => { setDismissedOverview(true); onMetric(null) }} title={t(selectedMetric.spec.label)}><SystemDock
         chart={breakdown.length === 0
           ? <SeriesChart cursor={cursor} empty={t("history.empty")} format={(reading, place) => metricChartValue(reading, place, selectedMetric.spec.unit)} helpKey={selectedMetric.spec.help} hour={hour} labelKey={selectedMetric.spec.label} locale={locale} onCursor={onCursor} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "nonnegative"} second={secondPoints} secondHelpKey={secondLane === null ? undefined : "system.metric.network_tx.help"} secondLabelKey={secondLane === null ? undefined : "system.metric.network_tx.label"} stats status={needsHistory ? loadedHistory.status : "ready"} t={t} tickFormat={selectedMetric.spec.unit === " B" ? (reading, place) => humanBytes(reading, place, "/s") : undefined} unit={metricChartUnit(selectedMetric.spec, locale)} />
           : <div className="series-chart"><UPlotChart cursor={cursor} hour={hour} isolate={{ anchor: selectedMetric.spec.id }} locale={locale} onCursor={onCursor} reading={currentPointValue(selectedPoints, cursor, locale, selectedMetric.spec.unit)} series={breakdown} stats status={!needsHistory || loadedHistory.status === "ready" ? undefined : <p className={`series-status series-status-${loadedHistory.status}`} role={loadedHistory.status === "error" ? "alert" : "status"}>{t(`history.${loadedHistory.status}`)}</p>} t={t} testId={`system-${selectedMetric.spec.group}-composition`} /></div>}
-        group={selectedMetric.spec.group}
         label={`section.${selectedMetric.spec.group}`}
         metrics={dockMeta.chips}
-        onClose={() => { setDismissedOverview(true); onMetric(null) }}
         onSelect={openMetric}
         selected={dockMeta.chartChip(selectedMetric.spec.id)}
         t={t}
-      />}
+      /></InspectorPortal>}
         {available.length === 0 && <p className="table-empty">{t("system.no_metrics")}</p>}
         {sectionMetrics.length > 0
           && <div className="metric-groups grid grid-cols-1 gap-[7px]">
@@ -726,33 +732,22 @@ function StorageTopologyReference({ devices, edges, mounts, t }: { readonly devi
 // lives only inside it — nothing on the page silently swaps its content.
 function SystemDock({
   chart,
-  group,
   label,
   metrics,
-  onClose,
   onSelect,
   selected,
   t,
 }: {
   readonly chart: ReactNode
-  readonly group: MetricSpec["group"]
   readonly label: string
   readonly metrics: readonly MetricSpec[]
-  readonly onClose: () => void
   readonly onSelect: (id: string) => void
   readonly selected: string
   readonly t: Translate
 }) {
-  const detail = useDetailDismiss(onClose, `system:${group}`)
-  // The click may have happened below the fold; bring the opened panel into
-  // view once, minimally.
-  useEffect(() => {
-    detail.current?.scrollIntoView({ block: "nearest" })
-  }, [])
-  return <aside aria-label={t(label)} className="pg-detail system-dock mt-2 max-h-none overflow-visible border border-line3 max-[1000px]:static max-[1000px]:bottom-auto max-[1000px]:right-auto max-[1000px]:top-auto max-[1000px]:w-auto max-[1000px]:max-w-none max-[1000px]:max-h-none max-[1000px]:overflow-visible max-[1000px]:shadow-none" data-testid="system-dock" ref={detail}>
+  return <aside aria-label={t(label)} className="pg-detail system-dock" data-testid="system-dock">
     <header className="pg-detail-head">
       <div><span>{t("system.history")}</span><h2>{t(label)}</h2></div>
-      <button aria-label={t("common.close")} onClick={onClose} type="button"><X aria-hidden="true" size={14} /></button>
     </header>
     <section className="process-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]">
       <div aria-label={t(label)} className="dock-tabs history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">
@@ -858,12 +853,12 @@ function SystemEntityPanel({
   const pairSeries = useMemo(() => mountPair ? mountPairSeries(chartRows, t, mountPairKind) : null, [chartRows, mountPair, mountPairKind, t])
   const chartMetadata = selectedRow === null || selectedColumn === undefined || selectedColumn.historyFields !== undefined
     ? null : registryColumn(selectedRow.typeId, physicalField(selectedColumn, selectedRow.typeId))
-  return <section className={`entity-panel panel min-w-0 ${selectedRow === null ? "" : "grid grid-cols-[minmax(280px,36%)_minmax(0,1fr)] max-[760px]:grid-cols-1"}`} data-testid={`system-panel-${section}`}>
-    <h2 className={`panel-head ${selectedRow === null ? "" : "col-[1/-1]"}`}><span>{label}</span></h2>
-    <div className={selectedRow === null ? "contents" : "min-w-0 max-[760px]:hidden"}>
+  return <section className="entity-panel panel min-w-0" data-testid={`system-panel-${section}`}>
+    <h2 className="panel-head"><span>{label}</span></h2>
+    <div className="contents">
     <EntityTable
       columns={columns}
-      contentSized={selectedRow === null}
+      contentSized
       contextLabel={contextLabel}
       empty={t("table.no_rows")}
       loading={tablesLoading && rows.length === 0}
@@ -887,17 +882,16 @@ function SystemEntityPanel({
       testId={`system-${section}`}
     />
     </div>
-    {selectedRow !== null && (mountPair || selectedColumn !== undefined) && <section className="system-entity-history min-w-0 border-l border-line2 max-[760px]:border-l-0" data-testid={`system-${section}-history`}>
-      <header className="flex items-start justify-between gap-1.5 px-[7px] pt-1.5">
+    {selectedRow !== null && (mountPair || selectedColumn !== undefined) && <InspectorPortal identity={`system:${section}:${entityRowKey(selectedRow)}`} onClose={() => { onSelectedKey(null); onMetric(null) }} title={`${label} · ${entityRowKey(selectedRow)}`}><section className="system-entity-history min-w-0" data-testid={`system-${section}-history`}>
+      <header className="flex items-start px-[7px] pt-1.5">
         {mountPair
-          ? <div className="system-history-selector flex max-w-[calc(100%-30px)] overflow-x-auto pb-[3px] [scrollbar-width:thin] [&>button+button]:ml-1 [&>button]:min-h-[27px] [&>button]:flex-none [&>button]:cursor-pointer [&>button]:border [&>button]:border-line3 [&>button]:bg-s2 [&>button]:px-[7px] [&>button]:py-1 [&>button]:text-xs [&>button]:text-fg2 [&>button[aria-pressed=true]]:border-accent [&>button[aria-pressed=true]]:bg-accent-soft [&>button[aria-pressed=true]]:text-fg" role="group">
+          ? <div className="system-history-selector flex max-w-full overflow-x-auto pb-[3px] [scrollbar-width:thin] [&>button+button]:ml-1 [&>button]:min-h-[27px] [&>button]:flex-none [&>button]:cursor-pointer [&>button]:border [&>button]:border-line3 [&>button]:bg-s2 [&>button]:px-[7px] [&>button]:py-1 [&>button]:text-xs [&>button]:text-fg2 [&>button[aria-pressed=true]]:border-accent [&>button[aria-pressed=true]]:bg-accent-soft [&>button[aria-pressed=true]]:text-fg" role="group">
               <button aria-pressed={mountPairKind === "bytes"} onClick={() => onMetric("free_bytes")} type="button">{t("system.field.free_bytes.label")}</button>
               <button aria-pressed={mountPairKind === "inodes"} onClick={() => onMetric("available_inodes")} type="button">{t("system.field.available_inodes.label")}</button>
             </div>
-          : <div className="system-history-selector flex max-w-[calc(100%-30px)] gap-1 overflow-x-auto pb-[3px] [scrollbar-width:thin] [&>button]:min-h-[27px] [&>button]:flex-none [&>button]:cursor-pointer [&>button]:border [&>button]:border-line3 [&>button]:bg-s2 [&>button]:px-[7px] [&>button]:py-1 [&>button]:text-xs [&>button]:text-fg2 [&>button[aria-pressed=true]]:border-accent [&>button[aria-pressed=true]]:bg-accent-soft [&>button[aria-pressed=true]]:text-fg" role="group">
+          : <div className="system-history-selector flex max-w-full gap-1 overflow-x-auto pb-[3px] [scrollbar-width:thin] [&>button]:min-h-[27px] [&>button]:flex-none [&>button]:cursor-pointer [&>button]:border [&>button]:border-line3 [&>button]:bg-s2 [&>button]:px-[7px] [&>button]:py-1 [&>button]:text-xs [&>button]:text-fg2 [&>button[aria-pressed=true]]:border-accent [&>button[aria-pressed=true]]:bg-accent-soft [&>button[aria-pressed=true]]:text-fg" role="group">
             {availableColumns.map((column) => <button aria-pressed={column.field === selectedColumn?.field} key={column.field} onClick={() => onMetric(column.field)} type="button">{t(column.label)}</button>)}
           </div>}
-        <button aria-label={t("common.close")} className="min-h-[27px] min-w-[27px] flex-none cursor-pointer border border-line3 bg-s2 px-[5px] py-px text-md text-fg2" onClick={() => { onSelectedKey(null); onMetric(null) }} type="button">×</button>
       </header>
       {mountPair
         ? pairSeries === null || (pairSeries.length === 0 && history.status === "ready")
@@ -929,7 +923,7 @@ function SystemEntityPanel({
             t={t}
             unit={entityMetricUnit(selectedColumn, locale, chartMetadata)}
           />}
-    </section>}
+    </section></InspectorPortal>}
   </section>
 }
 

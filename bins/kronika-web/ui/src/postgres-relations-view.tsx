@@ -1,14 +1,14 @@
 import { registry } from "kronika:registry"
-import { Copy, X } from "lucide-react"
+import { Copy } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 
 import { acceptResponse, loadSeries, loadSnapshot, type DataRow, type HourData } from "./api"
-import { useDetailDismiss } from "./detail-dismiss"
 import { DetailList, DetailRow } from "./detail-list"
 import { useDisplayTime } from "./display-time-context"
 import { EntityTable, type EntityColumn, type TableOrder } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import { useHistoryRequest } from "./history-request"
+import { InspectorPortal } from "./inspector"
 import { rawText, value, type Locale } from "./model"
 import {
   INDEX_LENSES,
@@ -94,7 +94,7 @@ export function PostgresRelationsView(props: PostgresRelationsViewProps) {
   return <>
     <RelationLevels filters={filters} level={level} onNavigate={navigate} section={section} t={t} />
     <RelationLenses active={lens} onLens={onLens} section={section} t={t} />
-    <div className={`pg-entity-layout mt-2 grid min-w-0 [.pg-table-shell_&]:min-h-0 [.pg-table-shell_&]:flex-1 [.pg-table-shell_&]:grid-rows-[minmax(0,1fr)] [.pg-table-shell_&]:overflow-hidden ${selected === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)_clamp(460px,32vw,600px)]"} max-[1000px]:grid-cols-[minmax(0,1fr)]`} data-pg-section={section === "pg_stat_user_tables" ? "tables" : "indexes"}>
+    <div className="pg-entity-layout mt-2 grid min-w-0 grid-cols-[minmax(0,1fr)] [.pg-table-shell_&]:min-h-0 [.pg-table-shell_&]:flex-1 [.pg-table-shell_&]:grid-rows-[minmax(0,1fr)] [.pg-table-shell_&]:overflow-hidden" data-pg-section={section === "pg_stat_user_tables" ? "tables" : "indexes"}>
       <EntityTable
         columns={columns}
         loading={tablesLoading}
@@ -119,7 +119,7 @@ export function PostgresRelationsView(props: PostgresRelationsViewProps) {
         t={t}
         testId={section === "pg_stat_user_tables" ? "pg-tables-table" : "pg-indexes-table"}
       />
-      {selected !== null && <RelationDetail blockSize={blockSize} cursor={cursor} historyRevision={historyRevision} hour={hour} key={selectedKey} lens={lens} locale={locale} onClose={clearSelection} onCursor={onCursor} onNavigate={navigate} rateFields={rateFields} row={selected} t={t} />}
+      {selected !== null && <InspectorPortal identity={`postgres:${section}:${selectedKey ?? relationRowKey(selected)}`} onClose={clearSelection} title={relationRowLabel(selected)}><RelationDetail blockSize={blockSize} cursor={cursor} historyRevision={historyRevision} hour={hour} key={selectedKey} lens={lens} locale={locale} onCursor={onCursor} onNavigate={navigate} rateFields={rateFields} row={selected} t={t} /></InspectorPortal>}
     </div>
     {(densePageState !== "idle" || hasMore) && <div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" data-testid="table-paging"><button disabled={densePageState === "loading"} onClick={densePageState === "error" ? onRetry : onLoadMore} type="button">{densePageState === "loading" ? "…" : densePageState === "error" ? "↻" : "+"}</button></div>}
   </>
@@ -157,8 +157,7 @@ function RelationLenses({ active, onLens, section, t }: { readonly active: Relat
   return <div className="lensbar flex-wrap" data-testid="pg-relation-lenses"><span>{t("pg.lens.label")}</span><div aria-label={t("pg.lens.label")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">{lenses.map((lens) => <button aria-pressed={lens === active} key={lens} onClick={() => onLens(lens)} type="button">{t(`pg.lens.${lens}`)}</button>)}</div></div>
 }
 
-function RelationDetail({ blockSize, cursor, historyRevision, hour, lens, locale, onClose, onCursor, onNavigate, rateFields, row, t }: { readonly blockSize: number | null; readonly cursor: number; readonly historyRevision: number; readonly hour: number; readonly lens: RelationLens; readonly locale: Locale; readonly onClose: () => void; readonly onCursor: (timestamp: number) => void; readonly onNavigate: (navigation: RelationNavigation) => void; readonly rateFields: readonly string[]; readonly row: DataRow; readonly t: Translate }) {
-  const detail = useDetailDismiss(onClose, relationRowKey(row))
+function RelationDetail({ blockSize, cursor, historyRevision, hour, lens, locale, onCursor, onNavigate, rateFields, row, t }: { readonly blockSize: number | null; readonly cursor: number; readonly historyRevision: number; readonly hour: number; readonly lens: RelationLens; readonly locale: Locale; readonly onCursor: (timestamp: number) => void; readonly onNavigate: (navigation: RelationNavigation) => void; readonly rateFields: readonly string[]; readonly row: DataRow; readonly t: Translate }) {
   const group = row.relation?.group ?? "object"
   const object = group === "object"
   const definitionTarget = useMemo(() => object && row.logicalName === "pg_stat_user_indexes" ? relationDetailTarget(row) : null, [object, row])
@@ -203,8 +202,8 @@ function RelationDetail({ blockSize, cursor, historyRevision, hour, lens, locale
   const historyColumn = chartColumns.find(({ field }) => field === historyField)
   const history = useMemo(() => historyColumn === undefined ? [] : relationMetricHistory(historyRows, historyColumn, group), [group, historyColumn, historyRows])
   const drill = relationDrill(row)
-  return <aside className="pg-detail" data-testid="pg-relation-detail" ref={detail}>
-    <header className="pg-detail-head"><h2>{relationRowLabel(row)}</h2><button aria-label={t("common.close")} onClick={onClose} type="button"><X size={14} /></button></header>
+  return <aside className="pg-detail" data-testid="pg-relation-detail">
+    <header className="pg-detail-head"><h2>{relationRowLabel(row)}</h2></header>
     {linked !== null && <div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1"><button data-testid="pg-relation-link" onClick={() => onNavigate(linked)} type="button">{t(row.logicalName === "pg_stat_user_tables" ? "pg.relation.indexes" : "pg.relation.table")}</button></div>}
     {drill !== null && <div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1"><button data-testid="pg-relation-drill" onClick={() => onNavigate(drill)} type="button">{t(row.relation?.group === "database" ? "pg.relation.level.schema" : row.logicalName === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}</button></div>}
     {historyField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]">

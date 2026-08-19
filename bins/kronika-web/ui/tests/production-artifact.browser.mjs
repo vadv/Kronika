@@ -4053,7 +4053,10 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       const section = url.searchParams.get("section")
       if (section === "os_process_summary") return ndjson(response, processSummaryRecords(HOUR, 3, 80))
       if (section === "os_process") return ndjson(response, snapshotRecords())
-      return ndjson(response, section === null ? timelineRecords(HOUR, true) : [])
+      return ndjson(response, section === null ? [...timelineRecords(HOUR, true), {
+        record: "finding", logical_name: "pg_log_errors", kind: "event", type_id: "1009001",
+        field_ordinal: 1, row_ordinal: "1", ts: String(AFTER_AT),
+      }] : [])
     }
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, snapshotRecords())
     response.writeHead(404)
@@ -4148,6 +4151,24 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       await cdp.evaluate(`document.querySelector('.inspector-close').click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="inspector"]') === null && new URL(location.href).searchParams.get('row') === null && new URL(location.href).searchParams.get('panel') === null`, `${viewport.kind} closed Inspector`)
     }
+    await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 800, mobile: false, width: 1280 })
+    await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[0].click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="use-row-disk"]') !== null`, "Host resource table")
+    await cdp.evaluate(`document.querySelector('[data-testid="use-row-disk"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="inspector-detail"] [data-testid="system-dock"]') !== null`, "Host detail in shared Inspector")
+    assert.equal(await cdp.evaluate(`document.querySelectorAll('[data-testid="inspector"]').length === 1 && document.querySelector('.workspace [data-testid="system-dock"]') === null`), true)
+    await cdp.evaluate(`document.querySelector('.inspector-close').click(); document.querySelectorAll('.source-tabs button')[2].click()`)
+    await cdp.waitFor(`document.querySelectorAll('.pg-tabs button').length > 1`, "PostgreSQL tabs")
+    await cdp.evaluate(`document.querySelectorAll('.pg-tabs button')[1].click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"] .entity-row') !== null`, "PostgreSQL Activity table")
+    await cdp.evaluate(`document.querySelector('[data-testid="pg-activity-table"] .entity-row').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="inspector-detail"] [data-testid="pg-detail"]') !== null`, "PostgreSQL detail in shared Inspector")
+    assert.equal(await cdp.evaluate(`document.querySelectorAll('[data-testid="inspector"]').length === 1 && document.querySelector('.workspace [data-testid="pg-detail"]') === null`), true)
+    await cdp.evaluate(`document.querySelector('.inspector-close').click(); document.querySelectorAll('.source-tabs button')[3].click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="event-item"] button') !== null`, "Events list")
+    await cdp.evaluate(`document.querySelector('[data-testid="event-item"] button').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="inspector-detail"] [data-testid="event-detail"]') !== null`, "Event detail in shared Inspector")
+    assert.equal(await cdp.evaluate(`document.querySelectorAll('[data-testid="inspector"]').length === 1 && document.querySelector('.workspace [data-testid="event-detail"]') === null`), true)
     assert.deepEqual(page.errors, [])
     assert.deepEqual(page.external, [])
   } finally {

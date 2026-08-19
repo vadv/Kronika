@@ -179,4 +179,7 @@ test("Inspector chart and row-only Detail links are URL-native", () => {
   assert.equal(readAddress("panel=chart").panel, "chart")
   assert.equal(readAddress("row=42:1700000000000000").panel, "detail")
   assert.equal(readAddress("panel=detail").panel, null)
+  const hostDetail = writeAddress({ ...DEFAULT_ADDRESS, view: "host.cpu", metric: "cpu_used_cores", panel: "detail" })
+  assert.equal(hostDetail, "/?view=host.cpu&panel=detail&metric=cpu_used_cores")
+  assert.equal(readAddress(hostDetail.split("?")[1] ?? "").panel, "detail")
 })

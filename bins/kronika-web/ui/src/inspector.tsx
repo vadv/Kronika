@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react"
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type PointerEvent as ReactPointerEvent, type ReactNode } from "react"
+import { createPortal } from "react-dom"
 
 import type { InspectorPanel } from "./address"
 import type { Translate } from "./help"
@@ -7,6 +8,52 @@ const MIN_WIDTH = 320
 const MAX_WIDTH = 520
 const DEFAULT_WIDTH = 360
 const WIDTH_KEY = "kronika.inspector-width"
+
+interface PortalController {
+  readonly target: HTMLElement | null
+  readonly register: (identity: string, dismiss: () => void, title: string, autoOpen: boolean) => () => void
+}
+
+const InspectorPortalContext = createContext<PortalController | null>(null)
+
+export function InspectorPortalProvider({ children, dismissRef, onOpen, onTitle, target }: {
+  readonly children: ReactNode
+  readonly dismissRef: MutableRefObject<(() => void) | null>
+  readonly onOpen: () => void
+  readonly onTitle: (title: string | null) => void
+  readonly target: HTMLElement | null
+}) {
+  const active = useRef<string | null>(null)
+  const callbacks = useRef({ dismissRef, onOpen, onTitle })
+  callbacks.current = { dismissRef, onOpen, onTitle }
+  const register = useMemo(() => (identity: string, dismiss: () => void, title: string, autoOpen: boolean) => {
+    active.current = identity
+    callbacks.current.dismissRef.current = dismiss
+    callbacks.current.onTitle(title)
+    if (autoOpen) callbacks.current.onOpen()
+    return () => {
+      if (active.current !== identity) return
+      active.current = null
+      callbacks.current.dismissRef.current = null
+      callbacks.current.onTitle(null)
+    }
+  }, [])
+  return <InspectorPortalContext.Provider value={{ register, target }}>{children}</InspectorPortalContext.Provider>
+}
+
+export function InspectorPortal({ autoOpen = true, children, identity, onClose, title }: {
+  readonly autoOpen?: boolean | undefined
+  readonly children: ReactNode
+  readonly identity: string
+  readonly onClose: () => void
+  readonly title: string
+}) {
+  const controller = useContext(InspectorPortalContext)
+  const dismiss = useRef(onClose)
+  dismiss.current = onClose
+  useLayoutEffect(() => controller?.register(identity, () => dismiss.current(), title, autoOpen), [autoOpen, controller?.register, identity, title])
+  return controller === null || controller.target === null ? null : createPortal(children, controller.target)
+}
 
 export function loadInspectorWidth(storage: Pick<Storage, "getItem">): number {
   try {
@@ -48,6 +95,7 @@ export function Inspector({
   useLayoutEffect(() => {
     const active = document.activeElement
     if (active instanceof HTMLElement && active !== document.body && !root.current?.contains(active)) opener.current = active
+    requestAnimationFrame(() => root.current?.focus({ preventScroll: true }))
   }, [])
 
   useEffect(() => {
@@ -94,7 +142,7 @@ export function Inspector({
 
   return <>
     <button aria-label={t("inspector.close")} className="inspector-scrim" onClick={onClose} type="button" />
-    <aside aria-label={t("inspector.title")} className="inspector" data-panel={panel} data-testid="inspector" ref={root} role="dialog" style={style}>
+    <aside aria-label={t("inspector.title")} className="inspector" data-panel={panel} data-testid="inspector" ref={root} role="dialog" style={style} tabIndex={-1}>
       <button
         aria-label={t("inspector.resize")}
         aria-orientation="vertical"

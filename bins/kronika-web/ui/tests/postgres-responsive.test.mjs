@@ -11,14 +11,13 @@ const entityTable = await readFile(join(directory, "../src/entity-table.tsx"), "
 const postgres = await readFile(join(directory, "../src/postgres-view.tsx"), "utf8")
 const chart = await readFile(join(directory, "../src/uplot-chart.tsx"), "utf8")
 
-test("PostgreSQL keeps its dock beside the table at 1024 pixels", () => {
-  assert.match(postgres, /grid-cols-\[minmax\(0,1fr\)_clamp\(460px,32vw,600px\)\]/)
+test("PostgreSQL uses the one shared Inspector beside the table above 1000 pixels", () => {
+  assert.match(postgres, /className="pg-entity-layout[^\"]*grid-cols-\[minmax\(0,1fr\)\]/)
   assert.match(postgres, /className="pg-entity-main min-w-0 pg-stretch"/)
-  // The shared Inspector becomes an overlay at 1000px; the older PostgreSQL
-  // entity dock keeps the same transition while it is migrated into it.
+  assert.match(postgres, /<InspectorPortal[\s\S]{0,360}<PgDetail/)
   assert.match(stylesheet, /\.inspector \{[\s\S]*?flex: 0 0 var\(--inspector-width\)/)
-  assert.match(postgres, /max-\[1000px\]:grid-cols-\[minmax\(0,1fr\)\]/)
-  assert.match(stylesheet, /@utility pg-detail \{[\s\S]*?@media \(max-width: 1000px\) \{[^}]*position: fixed;/)
+  assert.match(stylesheet, /@media \(max-width: 1000px\) \{[\s\S]*?\.inspector \{[\s\S]*?position: fixed;/)
+  assert.doesNotMatch(stylesheet, /@utility pg-detail \{[^}]*position: fixed;/)
   assert.doesNotMatch(app, /max-\[1179px\]:fixed/)
 })
 
@@ -39,8 +38,8 @@ test("every PostgreSQL table view owns the viewport flex chain", () => {
   assert.match(stylesheet, /@utility pg-stretch \{[\s\S]*?:is\(\.pg-table-shell\) & \{[^}]*flex: 1 1 0;[^}]*min-height: 0;[^}]*overflow: hidden;/)
   assert.match(postgres, /pg-entity-layout[^"]*\[\.pg-table-shell_&\]:grid-rows-\[minmax\(0,1fr\)\]/)
   assert.match(entityTable, /className=\{`entity-table[^`]*pg-stretch/)
-  assert.match(stylesheet, /@utility pg-detail \{[\s\S]*?:is\(\.pg-table-shell\) & \{[^}]*max-height: none;[^}]*min-height: 0;/)
-  assert.match(chart, /\[\.pg-table-shell_\.pg-detail_&\]:h-\[200px\]/)
+  assert.match(stylesheet, /\.inspector-body \{[^}]*overflow: auto;/s)
+  assert.match(stylesheet, /\.inspector-detail-slot > \.pg-detail \{[^}]*overflow: visible;/s)
 })
 
 test("short PostgreSQL workspaces keep the honest compact preview", () => {

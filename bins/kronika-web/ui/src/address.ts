@@ -97,6 +97,7 @@ export function readAddress(search: string): Address {
   const row = postgresEntity
     ? postgresEntityRow(parameters.get("row"))
     : resolvedView === "processes" || relation || host || resolvedView === "events" ? parameters.get("row") : null
+  const metric = host && /^[a-z0-9_.-]+$/.test(parameters.get("metric") ?? "") ? parameters.get("metric") : null
   const requestedPanel = parameters.get("panel")
   return {
     at: Number.isSafeInteger(at) && at > 0 ? at : null,
@@ -113,9 +114,9 @@ export function readAddress(search: string): Address {
     row,
     // Row-only links predate Inspector and continue to open Detail. Chart is
     // source-neutral and can therefore be linked without an entity row.
-    panel: requestedPanel === "chart" ? "chart" : row !== null && row !== "" ? "detail" : null,
+    panel: requestedPanel === "chart" ? "chart" : row !== null && row !== "" || requestedPanel === "detail" && metric !== null ? "detail" : null,
     find: parameters.get("find") ?? "",
-    metric: host && /^[a-z0-9_.-]+$/.test(parameters.get("metric") ?? "") ? parameters.get("metric") : null,
+    metric,
     mode: hostModeOf(hostSection, parameters.get("mode")),
   }
 }
@@ -138,6 +139,7 @@ export function writeAddress(address: Address): string {
       || (isPostgresEntityView(address.view) && postgresEntityRow(address.row) !== null))
     && address.row !== null && address.row !== "") parameters.set("row", address.row)
   if (address.panel === "chart") parameters.set("panel", "chart")
+  if (address.panel === "detail" && address.row === null && address.metric !== null) parameters.set("panel", "detail")
   if (address.find !== "") parameters.set("find", address.find)
   if (address.view.startsWith("host.") && address.metric !== null) parameters.set("metric", address.metric)
   if (address.view.startsWith("host.") && address.mode !== null && address.mode !== defaultHostMode(hostSectionOf(address.view))) parameters.set("mode", address.mode)

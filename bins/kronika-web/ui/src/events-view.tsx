@@ -3,7 +3,6 @@ import { useVirtualizer } from "@tanstack/react-virtual"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { Cell, DataRow, Finding, HourData } from "./api"
-import { useDetailDismiss } from "./detail-dismiss"
 import { DetailList, DetailRow } from "./detail-list"
 import { useDisplayTime } from "./display-time-context"
 import {
@@ -19,6 +18,7 @@ import {
 } from "./finding-presentation"
 import type { Translate } from "./help"
 import { globMatcher } from "./glob"
+import { InspectorPortal } from "./inspector"
 import { asNumber, compact, humanBytes, humanDuration, humanPercent, identifier, type Locale, rawText, shownMoment } from "./model"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
@@ -47,13 +47,16 @@ export function EventsView({
   onCursor,
   onClose,
   onFinding,
+  onOpenChart,
   onPattern,
   onShowAll,
+  onSelectedLane,
   resolution,
   resolved,
   scope,
   pattern,
   selected,
+  selectedLane,
   t,
 }: {
   readonly cursor: number
@@ -66,13 +69,16 @@ export function EventsView({
   readonly onCursor: (timestamp: number) => void
   readonly onClose: () => void
   readonly onFinding: (finding: Finding) => void
+  readonly onOpenChart: () => void
   readonly onPattern: (pattern: string) => void
   readonly onShowAll: () => void
+  readonly onSelectedLane: (lane: string) => void
   readonly resolution: FindingResolution
   readonly resolved: DataRow | null
   readonly scope: readonly Finding[] | null
   readonly pattern: string
   readonly selected: Finding | null
+  readonly selectedLane: string
   readonly t: Translate
 }) {
   const time = useDisplayTime()
@@ -116,7 +122,7 @@ export function EventsView({
     : scope.length
   const omitted = scope === null ? Math.max(0, original - data.findings.length) : 0
   return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} primaryLane="health" shownAt={shownAt} t={t} />
+    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onSelectedLane={onSelectedLane} primaryLane="health" selectedLane={selectedLane} shownAt={shownAt} t={t} />
     <section className="mt-2" data-testid="events-console">
       <header className="flex min-h-[38px] items-center justify-between border-b border-line2 px-1.5 py-1 max-[760px]:flex-col max-[760px]:items-stretch max-[760px]:gap-[5px]">
         <div className="flex border border-line3" role="group" aria-label={t("events.filters")}>
@@ -126,8 +132,8 @@ export function EventsView({
         {scope !== null && <button className="min-h-[29px] cursor-pointer border border-line4 bg-s2 px-[9px] text-xs uppercase text-accent3" onClick={onShowAll} type="button">{t("events.show_all", { count: scope.length })}</button>}
       </header>
       <TableFilter kept={visible.length} onPattern={onPattern} pattern={pattern} surface="events" t={t} total={original} />
-      <div className={`grid min-h-[430px] max-[760px]:grid-cols-[minmax(0,1fr)] ${active === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(360px,.78fr)_minmax(0,1.22fr)]"}`}>
-        <div className={`h-[min(570px,calc(100vh-360px))] min-h-[390px] overflow-auto border-line2 max-[760px]:h-[260px] max-[760px]:min-h-[180px] max-[760px]:border-r-0 ${active === null ? "" : "border-r"}`} ref={list} role="list">
+      <div className="grid min-h-[430px] grid-cols-[minmax(0,1fr)]">
+        <div className="h-[min(570px,calc(100vh-360px))] min-h-[390px] overflow-auto border-line2 max-[760px]:h-[260px] max-[760px]:min-h-[180px]" ref={list} role="list">
           {visible.length === 0 && (loading
         ? <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>
         : <div className="table-empty">{t("events.empty")}</div>)}
@@ -146,20 +152,19 @@ export function EventsView({
             })}
           </div>
         </div>
-        {active !== null && <FindingDetail cursor={cursor} data={data} finding={active} history={history} hour={hour} locale={locale} onClose={onClose} onCursor={onCursor} resolution={resolution} row={resolved} t={t} />}
+        {active !== null && <InspectorPortal identity={`event:${findingKey(active)}`} onClose={onClose} title={findingSource(active, t)}><FindingDetail cursor={cursor} data={data} finding={active} history={history} hour={hour} locale={locale} onCursor={onCursor} resolution={resolution} row={resolved} t={t} /></InspectorPortal>}
       </div>
     </section>
   </>
 }
 
-function FindingDetail({ cursor, data, finding, history, hour, locale, onClose, onCursor, resolution, row, t }: {
+function FindingDetail({ cursor, data, finding, history, hour, locale, onCursor, resolution, row, t }: {
   readonly cursor: number
   readonly data: HourData
   readonly finding: Finding
   readonly history: readonly ChartPoint[]
   readonly hour: number
   readonly locale: Locale
-  readonly onClose: () => void
   readonly onCursor: (timestamp: number) => void
   readonly resolution: FindingResolution
   readonly row: DataRow | null
@@ -170,8 +175,7 @@ function FindingDetail({ cursor, data, finding, history, hour, locale, onClose, 
   const points = history.length === 0 ? findingHistory(finding, row === null ? [] : [row], data) : history
   const readings = findingReadings(finding, row, points, data)
   const entity = findingEntity(row)
-  const detail = useDetailDismiss(onClose, findingKey(finding))
-  return <aside className="h-[min(570px,calc(100vh-360px))] min-h-[390px] overflow-auto p-[11px] max-[760px]:h-auto max-[760px]:min-h-[260px] max-[760px]:border-t max-[760px]:border-line2" data-testid="event-detail" ref={detail}>
+  return <aside className="p-[11px]" data-testid="event-detail">
     <header className="grid grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-[9px] border-b border-line3 pb-[9px]"><KindIcon kind={finding.kind} /><div><span className="text-xs uppercase text-fg3">{findingCategory(finding, t)}</span><h2 className="mt-[3px] text-md">{findingSource(finding, t)}</h2></div><time className="text-xs text-fg2">{time.timestamp(finding.timestamp)}</time></header>
     {resolution === "loading" && <p className="mt-2.5 text-sm leading-[1.45] text-fg2 [overflow-wrap:anywhere]">{t("events.loading_row")}</p>}
     {resolution === "unavailable" && <p className="mt-2.5 text-sm leading-[1.45] text-fg2 [overflow-wrap:anywhere]">{t("events.row_unavailable")}</p>}

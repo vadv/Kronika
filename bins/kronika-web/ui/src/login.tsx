@@ -43,7 +43,7 @@ export function Login({ expired, locale, onLocale, t }: {
 
   const message = error === null ? expired ? t("auth.expired") : null : t(`auth.${error}`)
   return <main className="grid min-h-screen items-center p-6 max-[760px]:p-2.5">
-    <section className="mx-auto w-full max-w-[440px] border border-line3 bg-s1 p-[18px] shadow-[0_18px_55px_var(--color-shadow-a)] max-[760px]:p-3.5" data-testid="login-card">
+    <section className="mx-auto w-full max-w-[440px] border-y border-line3 bg-s1 p-[18px] max-[760px]:p-3.5" data-testid="login-card">
       <header className="flex min-h-[30px] items-center border-b border-line2 pb-3">
         <span className="mr-2 flex items-center text-accent2"><Activity aria-hidden="true" size={18} /></span>
         <strong className="text-sm tracking-[.06em] text-fg-hi">{t("app.title")}</strong>
