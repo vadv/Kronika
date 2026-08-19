@@ -814,7 +814,7 @@ fn derived_page_order(logical_name: &str, plan: &Plan, token: &str) -> Option<Pa
             name: "cv",
             kind: PageOrderKind::ValueRatio {
                 numerator: vec![column(&["stddev_exec_time", "stddev_time"])?],
-                denominator: vec![column(&["mean_exec", "mean_time"])?],
+                denominator: vec![column(&["mean_exec_time", "mean_time"])?],
             },
         }),
         "derived.dead_pct" => gauges("dead_pct", &["n_dead_tup"], &["n_live_tup", "n_dead_tup"]),
@@ -3424,10 +3424,9 @@ fn search_clause_columns(logical_name: &str, plan: &Plan, key: &str) -> Vec<&'st
         .collect()
 }
 
-fn plan_statement_query_id_columns(type_id: u32) -> &'static [&'static str] {
+const fn plan_statement_query_id_columns(type_id: u32) -> &'static [&'static str] {
     match type_id {
         1_004_001 => &["queryid_stat_statements"],
-        1_003_001 | 1_018_001 => &["queryid"],
         _ => &["queryid"],
     }
 }
@@ -3476,6 +3475,8 @@ fn search_clause_matches(
                 .and_then(|value| searchable_text(value, dictionary))
                 .is_some_and(|text| search_value_matches(&text, &clause.value))
         })
+}
+
 fn search_matches(
     logical_name: &str,
     plan: &Plan,
