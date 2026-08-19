@@ -4,7 +4,7 @@ import test from "node:test"
 
 import { importModule } from "./import-module.mjs"
 
-const chart = await importModule('export { alignRecordedSeries, axisTimeLabel, chartSecondsUseful, chartSummary, compactChartTime, effectiveIsolation, exactReadings, isolatedSampleIndices, nearestRecordedTimestamp, sampleText, scalePartitions, scaleRange, seriesStats } from "../src/uplot-chart.tsx"; export { createDisplayTimeFormatter } from "../src/display-time.ts"; export { compact, humanPercent } from "../src/model.ts"')
+const chart = await importModule('export { alignRecordedSeries, axisTimeLabel, chartNavigationTimestamps, chartSecondsUseful, chartStatsRows, chartSummary, chartTimeRange, compactChartTime, effectiveIsolation, exactReadings, isolatedSampleIndices, navigationSampleText, nearestRecordedTimestamp, sampleText, scalePartitions, scaleRange, seriesStats } from "../src/uplot-chart.tsx"; export { createDisplayTimeFormatter } from "../src/display-time.ts"; export { compact, humanPercent } from "../src/model.ts"')
 
 const format = (value) => String(value)
 const line = (id, unit, scale, points) => ({ color: "cyan", helpKey: `${id}.help`, id, label: id, labelKey: `${id}.label`, points, scale, unit, value: format })
@@ -16,6 +16,18 @@ test("series stats are the nearest-rank percentiles of exactly the drawn samples
   assert.deepEqual(chart.seriesStats(hundred), { last: 100, max: 100, min: 1, p50: 50, p90: 90, p99: 99 })
   // Time order, not size order, picks the last sample; non-finite values drop out.
   assert.deepEqual(chart.seriesStats([9, 1, 5, Number.NaN, 3]), { last: 3, max: 9, min: 1, p50: 3, p90: 9, p99: 9 })
+})
+
+test("statistics stay associated with every visible series", () => {
+  const series = [
+    line("cpu", "%", "percent", [{ segmentId: "a", timestamp: 1, value: 10 }, { segmentId: "a", timestamp: 2, value: 20 }]),
+    line("wait", "%", "percent", [{ segmentId: "a", timestamp: 1, value: null }, { segmentId: "a", timestamp: 2, value: 3 }]),
+  ]
+  const rows = chart.chartStatsRows(series, chart.alignRecordedSeries(series))
+  assert.deepEqual(rows.map(({ line: shown, stats }) => [shown.id, stats]), [
+    ["cpu", { last: 20, max: 20, min: 10, p50: 10, p90: 20, p99: 20 }],
+    ["wait", { last: 3, max: 3, min: 3, p50: 3, p90: 3, p99: 3 }],
+  ])
 })
 
 test("a crowded chart isolates onto its anchor until the operator chooses", () => {
@@ -47,6 +59,24 @@ test("aligned data distinguishes missing rows, explicit nulls, zero and storage 
   assert.deepEqual(frame.data[2], [undefined, 9, undefined, undefined, undefined])
   assert.deepEqual(frame.isolated.get(1), [0])
   assert.deepEqual(frame.isolated.get(2), [1])
+})
+
+test("an explicit cursor domain does not add samples to the drawn frame", () => {
+  const series = [line("pg_waiting", "count", "nonnegative", [
+    { segmentId: "a", timestamp: 0, value: 1 },
+    { segmentId: "a", timestamp: 30_000_000, value: 2 },
+    { segmentId: "a", timestamp: 60_000_000, value: 3 },
+  ])]
+  const frame = chart.alignRecordedSeries(series)
+  const navigation = chart.chartNavigationTimestamps(frame, [
+    0, 5_000_000, 10_000_000, 15_000_000, 30_000_000, 60_000_000,
+  ], 0, 61_000_000)
+
+  assert.deepEqual(frame.timestamps, [0, 30_000_000, 60_000_000])
+  assert.deepEqual(frame.data[1], [1, 2, 3])
+  assert.deepEqual(navigation, [0, 5_000_000, 10_000_000, 15_000_000, 30_000_000, 60_000_000])
+  const time = chart.createDisplayTimeFormatter("en", "utc", "UTC")
+  assert.match(chart.navigationSampleText(series, frame, navigation, 5_000_000, "en", time), /^00:00:05$/)
 })
 
 test("aligned mode joins identical boundary samples and rejects conflicting values at one timestamp", () => {
@@ -155,6 +185,16 @@ test("y-axis labels carry only the unit, series names live in the caption", asyn
   assert.match(source, /\.\.\.\(unit === "" \|\| line\.tickAxis === "duration" \? \{\} : \{ label: unit \}\)/)
   assert.doesNotMatch(source, /label: `\$\{labels\}/)
   assert.match(source, /chart-series-labels/)
+})
+
+test("the shared time scale reserves a stable right-end label gutter", () => {
+  const hour = 1_700_000_000_000
+  const end = hour + 3_600_000
+  const [, wideEnd] = chart.chartTimeRange(hour, end, 1_200)
+  const [, narrowEnd] = chart.chartTimeRange(hour, end, 360)
+  assert.ok(wideEnd > end)
+  assert.ok(narrowEnd > wideEnd)
+  assert.deepEqual(chart.chartTimeRange(hour, end, 1_200, 0), [hour, end])
 })
 
 test("the built-in legend stays hidden and chart titles use portal help metadata", async () => {

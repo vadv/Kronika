@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 
 import { fieldNameForLocator, type DataRow, type Finding, type LanePoint } from "./api"
 import { buildMetricSamples } from "./chart"
+import { mergeObservationTimestamps, observationTimestamps } from "./cursor-timestamps"
 import { useDisplayTime } from "./display-time-context"
 import { findingOrder, findingSummary } from "./finding-presentation"
 import { LabelHelp, type Translate } from "./help"
@@ -45,6 +46,7 @@ export function Timeline({
   hour,
   lanePoints,
   locale,
+  navigationTimestamps,
   onCursor,
   onFinding,
   primaryLane = "health",
@@ -57,6 +59,7 @@ export function Timeline({
   readonly hour: number
   readonly lanePoints: readonly LanePoint[]
   readonly locale: Locale
+  readonly navigationTimestamps?: readonly number[] | undefined
   readonly onCursor: (timestamp: number) => void
   readonly onFinding: (finding: Finding, grouped?: readonly Finding[]) => void
   readonly primaryLane?: string | undefined
@@ -96,21 +99,27 @@ export function Timeline({
     setSelectedLane(lanes.find((lane) => lane.key === primaryLane)?.key ?? lanes[0]?.key ?? "health")
   }, [lanes, primaryLane, selectedLane])
   const selected = lanes.find((lane) => lane.key === selectedLane) ?? lanes[0]
-  const primaryTimes = useMemo(() => selectedTimelineTimes(lanes, selectedLane), [lanes, selectedLane])
+  const laneTimes = useMemo(() => timelineNavigationTimes(lanes), [lanes])
+  const cursorTimes = useMemo(
+    () => navigationTimestamps === undefined
+      ? laneTimes
+      : mergeObservationTimestamps(navigationTimestamps, ...lanes.flatMap((lane) => lane.series.map((line) => line.points))),
+    [laneTimes, navigationTimestamps],
+  )
   const [plotWidth, setPlotWidth] = useState(920)
   const markers = useMemo(() => groupFindings(findings, hour, end, plotWidth), [end, findings, hour, plotWidth])
   useEffect(() => {
     const move = (event: KeyboardEvent) => {
       if (event.defaultPrevented || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")
         || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
-        || keyboardTargetOwnsArrows(event.target) || primaryTimes.length === 0) return
+        || keyboardTargetOwnsArrows(event.target) || cursorTimes.length === 0) return
       event.preventDefault()
-      const timestamp = moveCursor(cursor, primaryTimes, event.key)
+      const timestamp = moveCursor(cursor, cursorTimes, event.key)
       if (timestamp !== cursor) onCursor(timestamp)
     }
     window.addEventListener("keydown", move)
     return () => window.removeEventListener("keydown", move)
-  }, [cursor, onCursor, primaryTimes])
+  }, [cursor, cursorTimes, onCursor])
   const recorded = useMemo(() => selected === undefined ? [] : toRecordedSeries(selected, locale, t), [locale, selected, t])
   const healthAt = selected?.key === "health" ? healthEvaluationAtOrBefore(selected.series, cursor) : null
   const current = (selected?.series ?? []).map((line) => {
@@ -162,6 +171,7 @@ export function Timeline({
       hour={hour}
       locale={locale}
       markerLayer={markerLayer}
+      navigationTimestamps={cursorTimes}
       onCursor={onCursor}
       onPlotWidth={setPlotWidth}
       reading={current}
@@ -178,11 +188,10 @@ export function timelineRecordedTimes(series: readonly { readonly points: readon
   return orderedRecordedTimes(series.flatMap((line) => line.points.map((point) => point.timestamp)))
 }
 
-export function selectedTimelineTimes(
-  lanes: readonly { readonly key: string; readonly series: readonly { readonly points: readonly { readonly timestamp: number }[] }[] }[],
-  selectedLane: string,
+export function timelineNavigationTimes(
+  lanes: readonly { readonly series: readonly { readonly points: readonly { readonly timestamp: number }[] }[] }[],
 ): readonly number[] {
-  return timelineRecordedTimes((lanes.find((lane) => lane.key === selectedLane) ?? lanes[0])?.series ?? [])
+  return observationTimestamps(...lanes.flatMap((lane) => lane.series.map((line) => line.points)))
 }
 
 export function sampleWindow(lanes: readonly { readonly series: readonly { readonly points: readonly SeriesPoint[] }[] }[]): { readonly start: number; readonly end: number } | null {

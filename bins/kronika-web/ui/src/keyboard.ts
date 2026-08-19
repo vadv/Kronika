@@ -3,25 +3,26 @@ export function orderedRecordedTimes(timestamps: readonly number[]): readonly nu
 }
 
 export function moveCursor(cursor: number, timestamps: readonly number[], key: string): number {
-  const ordered = orderedRecordedTimes(timestamps)
-  if (ordered.length === 0 || (key !== "ArrowLeft" && key !== "ArrowRight")) return cursor
+  if (timestamps.length === 0 || (key !== "ArrowLeft" && key !== "ArrowRight")) return cursor
+  let chosen: number | null = null
   if (key === "ArrowLeft") {
-    for (let index = ordered.length - 1; index >= 0; index -= 1) {
-      const timestamp = ordered[index]
-      if (timestamp !== undefined && timestamp < cursor) return timestamp
+    for (const timestamp of timestamps) {
+      if (Number.isSafeInteger(timestamp) && timestamp < cursor && (chosen === null || timestamp > chosen)) chosen = timestamp
     }
-    return cursor
+  } else {
+    for (const timestamp of timestamps) {
+      if (Number.isSafeInteger(timestamp) && timestamp > cursor && (chosen === null || timestamp < chosen)) chosen = timestamp
+    }
   }
-  for (const timestamp of ordered) if (timestamp > cursor) return timestamp
-  return cursor
+  return chosen ?? cursor
 }
 
 export function nearestRecordedTime(timestamps: readonly number[], target: number): number | null {
-  const ordered = orderedRecordedTimes(timestamps)
-  let closest = ordered[0]
-  if (closest === undefined) return null
-  for (const timestamp of ordered.slice(1)) {
-    if (Math.abs(timestamp - target) < Math.abs(closest - target)) closest = timestamp
+  let closest: number | null = null
+  for (const timestamp of timestamps) {
+    if (!Number.isSafeInteger(timestamp)) continue
+    const distance = Math.abs(timestamp - target)
+    if (closest === null || distance < Math.abs(closest - target) || distance === Math.abs(closest - target) && timestamp < closest) closest = timestamp
   }
   return closest
 }

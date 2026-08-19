@@ -1,6 +1,7 @@
 //! Reads one snapshot and derives counter rates.
 
 mod relation;
+mod search;
 
 use std::cmp::Ordering;
 use std::cmp::Reverse;
@@ -12,9 +13,15 @@ use std::sync::Arc;
 use std::cell::Cell as Counter;
 
 use kronika_reader::{Cell, Dictionary, Reader, Resolved, Row, Segment, SegmentKind, SegmentRef};
-use kronika_registry::{ColumnClass, ColumnType, contract};
+use kronika_registry::{ColumnClass, ColumnType, contract, logical_section_name};
 use serde_json::{Value, json};
 
+use self::search::{
+    Quantity, SearchClause, SearchOperator, SearchValue, StructuredSearch, result_field,
+    search_fields,
+};
+#[cfg(test)]
+use self::search::{SEARCH_MAX_CLAUSES, SEARCH_MAX_VALUE_CHARS};
 use super::query::{Plan, plans, resolved_dictionary};
 use super::render::{cell, projected_layout, record, shorten};
 use super::{ApiError, CachePolicy, ResponseMeta, explicit_segment_with_listing};
@@ -36,7 +43,8 @@ pub(crate) struct PreparedSnapshot {
     page_size: Option<usize>,
     cursor: Option<SnapshotCursor>,
     binding: u64,
-    search: Vec<GlobPattern>,
+    search: Option<Box<StructuredSearch>>,
+    first_match_query_id: Option<i64>,
     text: Option<usize>,
     row_ordinal: Option<u64>,
 }
@@ -155,6 +163,7 @@ struct SectionPlans {
 struct PageContext<'a> {
     context_index: usize,
     plan: &'a Plan,
+    logical_name: &'a str,
     source: &'a SegmentRef,
     rows: u64,
     window: RowWindow,
@@ -165,6 +174,8 @@ struct PageContext<'a> {
     sample_to: Option<i64>,
     order: Option<PageOrder>,
     search_columns: Vec<&'static str>,
+    clock_ticks_per_second: Option<u128>,
+    block_size: Option<u128>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -257,12 +268,10 @@ impl PageContext<'_> {
         identity: &[IdentityCell],
     ) -> Option<&'a CounterReadings> {
         let before = self.previous.as_ref()?.get(identity)?;
-        if let Some(column) = self.plan.contract.column("stats_since") {
-            let current = row.get(column.name)?;
-            let previous = before.get(column.name)?;
-            if current != previous {
-                return None;
-            }
+        if let Some(column) = self.plan.contract.column("starttime")
+            && row.get(column.name)? != before.get(column.name)?
+        {
+            return None;
         }
         Some(before)
     }
@@ -287,12 +296,80 @@ enum GlobToken {
 }
 
 const SNAPSHOT_CHUNK_ROWS: usize = 16;
+const PROCESS_USER_TYPE_ID: u32 = 1_124_002;
+const PROCESS_VIRTUAL_FIELDS: &[&str] = &["user", "effective_user"];
+const MAX_PROCESS_USERS: usize = 4 * 1024;
+
+#[derive(Default)]
+struct ProcessUsers {
+    names: HashMap<(u8, u32), String>,
+}
+
+impl ProcessUsers {
+    fn load(segment: &Segment, plan: &Plan) -> Result<Self, ApiError> {
+        if plan.contract.name != "os_process" || segment.rows_of(PROCESS_USER_TYPE_ID).is_none() {
+            return Ok(Self::default());
+        }
+        let mut encoded = Vec::new();
+        let mut ids = HashSet::new();
+        segment.visit_rows(
+            PROCESS_USER_TYPE_ID,
+            &["uid", "username", "scope"],
+            0,
+            MAX_PROCESS_USERS.saturating_add(1),
+            |_ordinal, row| {
+                let (Some(Cell::U32(uid)), Some(Cell::StrId(username)), Some(Cell::U32(scope))) =
+                    (row.get("uid"), row.get("username"), row.get("scope"))
+                else {
+                    return true;
+                };
+                ids.insert(*username);
+                encoded.push((*scope, *uid, *username));
+                encoded.len() <= MAX_PROCESS_USERS
+            },
+        )?;
+        if encoded.len() > MAX_PROCESS_USERS {
+            return Err(ApiError::Unreadable(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "os_user exceeds the per-segment mapping limit",
+            ))));
+        }
+        let dictionary = resolved_dictionary(segment, &ids)?;
+        let mut names = HashMap::with_capacity(encoded.len());
+        for (scope, uid, username) in encoded {
+            let Ok(scope) = u8::try_from(scope) else {
+                continue;
+            };
+            let Some(Resolved::Str(bytes)) = dictionary.resolve(username) else {
+                continue;
+            };
+            let Ok(username) = std::str::from_utf8(bytes) else {
+                continue;
+            };
+            names
+                .entry((scope, uid))
+                .or_insert_with(|| username.to_owned());
+        }
+        Ok(Self { names })
+    }
+
+    fn for_row<'a>(&'a self, row: &Row, uid_column: &str) -> Option<&'a str> {
+        let (Some(Cell::U32(scope)), Some(Cell::U32(uid))) =
+            (row.get("scope"), row.get(uid_column))
+        else {
+            return None;
+        };
+        let scope = u8::try_from(*scope).ok()?;
+        self.names.get(&(scope, *uid)).map(String::as_str)
+    }
+}
 
 #[cfg(test)]
 thread_local! {
     static PAGE_CHUNK_ROWS: Counter<usize> = const { Counter::new(0) };
     static PAGE_SOURCE_VISITS: Counter<usize> = const { Counter::new(0) };
     static PAGE_CANDIDATE_DICTIONARIES: Counter<usize> = const { Counter::new(0) };
+    static FIRST_MATCH_ROWS: Counter<usize> = const { Counter::new(0) };
     static CONTEXT_CHUNK_ROWS: Counter<usize> = const { Counter::new(0) };
     static CONTEXT_STAGED_ROWS: Counter<usize> = const { Counter::new(0) };
     static CONTEXT_SELECTION_DICTIONARIES: Counter<usize> = const { Counter::new(0) };
@@ -312,6 +389,16 @@ pub(crate) fn page_operations() -> (usize, usize, usize) {
         PAGE_CANDIDATE_DICTIONARIES.get(),
         PAGE_CHUNK_ROWS.get(),
     )
+}
+
+#[cfg(test)]
+pub(crate) fn reset_first_match_rows() {
+    FIRST_MATCH_ROWS.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn first_match_rows() -> usize {
+    FIRST_MATCH_ROWS.get()
 }
 
 #[cfg(test)]
@@ -345,12 +432,24 @@ pub(super) fn stream_relation_history(
 pub(crate) use relation::{history_operations, reset_history_operations};
 
 pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedSnapshot, ApiError> {
-    let binding = snapshot_binding(&request);
-    let parsed = request
+    let cursor = request
         .cursor
         .as_deref()
         .map(SnapshotCursor::parse)
-        .transpose()?
+        .transpose()?;
+    let search = prepared_search(&request, cursor.is_some())?;
+    let first_match_query_id = if request.first_match {
+        Some(
+            search
+                .as_deref()
+                .and_then(StructuredSearch::first_match_query_id)
+                .ok_or_else(|| ApiError::BadFilter("first_match".to_owned()))?,
+        )
+    } else {
+        None
+    };
+    let binding = snapshot_binding(&request, search.as_deref());
+    let parsed = cursor
         .filter(|cursor| cursor.segment_id == request.segment_id && cursor.binding == binding);
     if request.cursor.is_some() && parsed.is_none() {
         return Err(ApiError::BadCursor);
@@ -370,7 +469,12 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
     let (physical_filters, relation_filters) = relation::split_filters(&request)?;
     let mut physical_request = request.clone();
     physical_request.filters = physical_filters;
-    let sections = section_plans(&segment, &physical_request)?;
+    let sections = section_plans(
+        &segment,
+        &physical_request,
+        &relation_fields,
+        search.as_deref(),
+    )?;
     let has_relation = sections
         .iter()
         .any(|section| SnapshotViewSpec::for_logical_name(&section.logical_name).is_some());
@@ -402,7 +506,7 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
     } else {
         Vec::new()
     };
-    validate_search_projection(&request, &sections)?;
+    validate_search_projection(search.as_deref(), &sections)?;
     validate_exact_locator(&segment, &request, &sections)?;
     drop(segment);
     Ok(PreparedSnapshot {
@@ -420,19 +524,54 @@ pub(super) fn prepare(root: &Path, request: SnapshotRequest) -> Result<PreparedS
         page_size: request.page_size,
         cursor: parsed,
         binding,
-        search: request
-            .search
-            .iter()
-            .map(|raw| GlobPattern::new(raw))
-            .collect(),
+        search,
+        first_match_query_id,
         text: request.text,
         row_ordinal: request.row_ordinal,
     })
 }
 
+fn prepared_search(
+    request: &SnapshotRequest,
+    cursor_present: bool,
+) -> Result<Option<Box<StructuredSearch>>, ApiError> {
+    let parsed = request
+        .search
+        .as_deref()
+        .map(|raw| {
+            let [logical_name] = request.sections.as_slice() else {
+                return Err(ApiError::BadFilter("search".to_owned()));
+            };
+            let search = StructuredSearch::parse(raw, logical_name).map_err(|_diagnostic| {
+                if cursor_present {
+                    ApiError::BadCursor
+                } else {
+                    ApiError::BadFilter("search".to_owned())
+                }
+            })?;
+            if request
+                .group
+                .is_some_and(|group| group != RelationGroup::Object)
+            {
+                search.validate_grouped_phase().map_err(|_diagnostic| {
+                    if cursor_present {
+                        ApiError::BadCursor
+                    } else {
+                        ApiError::BadFilter("search".to_owned())
+                    }
+                })?;
+            }
+            Ok(search)
+        })
+        .transpose()?;
+    Ok(parsed.map(Box::new))
+}
+
 fn section_plans(
     segment: &Segment,
     request: &SnapshotRequest,
+    relation_fields: &[String],
+    search: Option<&StructuredSearch>,
 ) -> Result<Vec<SectionPlans>, ApiError> {
     let shared_projection = request.sections.len() > 1 && !request.fields.is_empty();
     if shared_projection {
@@ -440,12 +579,15 @@ fn section_plans(
     }
     let mut sections = Vec::with_capacity(request.sections.len());
     for logical_name in &request.sections {
-        let fields = if request.group.is_some() {
-            // Relation reducers need the complete union of columns carried by
-            // the layouts actually present in this segment. An empty generic
-            // projection asks `plans` for exactly that union and keeps older
-            // layouts honest when newer PostgreSQL fields do not exist.
-            Vec::new()
+        let fields = if let Some(group) = request.group {
+            let wanted = relation::snapshot_physical_fields(
+                logical_name,
+                group,
+                relation_fields,
+                &request.by,
+                search,
+            )?;
+            section_projection(segment, logical_name, &wanted)
         } else if shared_projection {
             section_projection(segment, logical_name, &request.fields)
         } else {
@@ -454,12 +596,33 @@ fn section_plans(
         if shared_projection && fields.is_empty() {
             continue;
         }
+        let selected_virtual = if logical_name == "os_process" {
+            if fields.is_empty() {
+                PROCESS_VIRTUAL_FIELDS.to_vec()
+            } else {
+                fields
+                    .iter()
+                    .filter_map(|field| {
+                        PROCESS_VIRTUAL_FIELDS
+                            .contains(&field.as_str())
+                            .then_some(field.as_str())
+                    })
+                    .collect()
+            }
+        } else {
+            Vec::new()
+        };
+        let physical_fields = fields
+            .iter()
+            .filter(|field| !PROCESS_VIRTUAL_FIELDS.contains(&field.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
         let data = DataRequest {
             segment: SegmentRequest {
                 segment_id: request.segment_id,
                 section: logical_name.clone(),
             },
-            fields,
+            fields: physical_fields.clone(),
             filters: request.filters.clone(),
             type_id: request.type_id,
             after: None,
@@ -468,15 +631,30 @@ fn section_plans(
         match plans(segment, &data, true) {
             Ok(mut plans) => {
                 for plan in &mut plans {
+                    if !fields.is_empty() {
+                        plan.retain_output_fields(&physical_fields);
+                    }
+                    for field in &selected_virtual {
+                        plan.add_virtual_output(field);
+                    }
+                    if !fields.is_empty() {
+                        plan.order_output_fields(&fields);
+                    }
+                    if !selected_virtual.is_empty() {
+                        plan.add_projection_columns(&["uid", "euid", "scope"]);
+                    }
+                    if logical_name == "pg_store_plans" {
+                        plan.add_aliased_output("calls_per_second", "calls");
+                    }
                     let order = page_order(logical_name, plan, &request.by);
                     plan.add_projection_columns(
                         &order.as_ref().map_or_else(Vec::new, PageOrder::columns),
                     );
-                    if plan.contract.column("stats_since").is_some() {
-                        plan.add_projection_columns(&["stats_since"]);
+                    if logical_name == "os_process" && plan.contract.column("starttime").is_some() {
+                        plan.add_projection_columns(&["starttime"]);
                     }
-                    if !request.search.is_empty() {
-                        plan.add_projection_columns(&search_columns(logical_name, plan));
+                    if let Some(search) = search {
+                        plan.add_projection_columns(&search_columns(logical_name, plan, search));
                     }
                 }
                 sections.push(SectionPlans {
@@ -545,8 +723,8 @@ fn derived_page_order(logical_name: &str, plan: &Plan, token: &str) -> Option<Pa
     let supported = match logical_name {
         "pg_stat_statements" => matches!(plan.type_id, 1_002_001..=1_002_006),
         "pg_store_plans" => matches!(plan.type_id, 1_003_001 | 1_004_001 | 1_018_001),
-        "pg_stat_user_tables" => matches!(plan.type_id, 1_013_001..=1_013_004),
-        "pg_stat_user_indexes" => matches!(plan.type_id, 1_014_001..=1_014_002),
+        "pg_stat_user_tables" => matches!(plan.type_id, 1_013_005..=1_013_008),
+        "pg_stat_user_indexes" => matches!(plan.type_id, 1_014_003..=1_014_004),
         _ => false,
     };
     if !supported {
@@ -699,19 +877,18 @@ fn derived_page_order(logical_name: &str, plan: &Plan, token: &str) -> Option<Pa
 }
 
 fn validate_search_projection(
-    request: &SnapshotRequest,
+    search: Option<&StructuredSearch>,
     sections: &[SectionPlans],
 ) -> Result<(), ApiError> {
-    if request.page_size.is_some() {
+    if let Some(search) = search {
         let [section] = sections else {
-            return Err(ApiError::BadCursor);
+            return Err(ApiError::BadFilter("search".to_owned()));
         };
-        if !request.search.is_empty()
-            && !section
-                .plans
-                .iter()
-                .any(|plan| !search_columns(&section.logical_name, plan).is_empty())
-        {
+        if !section.plans.iter().any(|plan| {
+            search.member_clauses().all(|clause| {
+                !search_clause_columns(&section.logical_name, plan, clause.key).is_empty()
+            })
+        }) {
             return Err(ApiError::BadFilter("search".to_owned()));
         }
     }
@@ -769,6 +946,9 @@ impl PreparedSnapshot {
             }))?)
         {
             return Ok(());
+        }
+        if self.first_match_query_id.is_some() {
+            return self.emit_first_match(emit, cancelled);
         }
         if self.page_size.is_some() {
             if self.group.is_some() {
@@ -828,6 +1008,7 @@ impl PreparedSnapshot {
             .row_ordinal
             .map_or((0, usize::MAX), |ordinal| (ordinal, 1));
         let source = self.reader.open_segment(context.source)?;
+        let process_users = ProcessUsers::load(&source, context.plan)?;
         let selection_dictionary = context.plan.exact_filter_dictionary(&source)?;
         #[cfg(test)]
         if context.plan.needs_selection_dictionary() {
@@ -852,6 +1033,7 @@ impl PreparedSnapshot {
                     match self.emit_context_chunk(
                         context,
                         &source,
+                        &process_users,
                         &selection_dictionary,
                         &mut chunk,
                         emit,
@@ -876,6 +1058,7 @@ impl PreparedSnapshot {
         self.emit_context_chunk(
             context,
             &source,
+            &process_users,
             &selection_dictionary,
             &mut chunk,
             emit,
@@ -883,10 +1066,15 @@ impl PreparedSnapshot {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "chunk emission carries the exact source, dictionaries, output sink, and cancellation boundary"
+    )]
     fn emit_context_chunk(
         &self,
         context: &PageContext<'_>,
         source: &Segment,
+        process_users: &ProcessUsers,
         selection_dictionary: &Dictionary,
         rows: &mut Vec<(u64, Row)>,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
@@ -929,6 +1117,7 @@ impl PreparedSnapshot {
                     ordinal: staged.ordinal,
                 },
                 &dictionary,
+                process_users,
                 self.text,
             )?;
             if cancelled() || !emit(record(&value)?) {
@@ -981,10 +1170,31 @@ impl PreparedSnapshot {
                 )
             })
             .collect::<Vec<_>>();
+        let mut layout = projected_layout(&section.logical_name, plan.contract, &fields);
+        if section.logical_name == "os_process"
+            && let Some(columns) = layout.get_mut("columns").and_then(Value::as_array_mut)
+        {
+            for column in columns {
+                if column
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| PROCESS_VIRTUAL_FIELDS.contains(&name))
+                {
+                    *column = json!({
+                        "name": column.get("name").cloned().unwrap_or(Value::Null),
+                        "type": "dictionary_value",
+                        "class": "label",
+                        "unit": "none",
+                        "nullable": true,
+                        "available": true,
+                    });
+                }
+            }
+        }
         Ok(emit(record(json!({
             "record": "layout",
-            "layout": projected_layout(&section.logical_name, plan.contract, &fields),
-            "rates": rate_columns(plan),
+            "layout": layout,
+            "rates": output_rate_fields(plan),
         }))?))
     }
 
@@ -1059,6 +1269,7 @@ impl PreparedSnapshot {
         cancelled: &impl Fn() -> bool,
     ) -> Result<bool, ApiError> {
         let dictionary = retained_dictionary(source, &staged)?;
+        let process_users = ProcessUsers::load(source, plan)?;
         for staged in staged {
             let before = rates
                 .previous
@@ -1073,6 +1284,7 @@ impl PreparedSnapshot {
                     ordinal: staged.ordinal,
                 },
                 &dictionary,
+                &process_users,
                 self.text,
             )?;
             if cancelled() || !emit(record(&value)?) {
@@ -1099,9 +1311,17 @@ impl PreparedSnapshot {
         if cancelled() {
             return Ok(());
         }
+        let process_users = contexts
+            .iter()
+            .map(|context| {
+                let source = self.reader.open_segment(context.source)?;
+                ProcessUsers::load(&source, context.plan)
+                    .map(|users| (context.context_index, users))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
         let anchor = self
             .cursor
-            .map(|cursor| self.cursor_anchor(&contexts, cursor))
+            .map(|cursor| self.cursor_anchor(&contexts, &process_users, cursor))
             .transpose()?;
         let page_size = self.page_size.ok_or(ApiError::BadCursor)?;
         let mut page = PageRows::new(page_size.saturating_add(1));
@@ -1109,6 +1329,9 @@ impl PreparedSnapshot {
         for context in &contexts {
             self.scan_page(
                 context,
+                process_users
+                    .get(&context.context_index)
+                    .ok_or(ApiError::BadCursor)?,
                 anchor.as_ref(),
                 &mut page,
                 &mut eligible,
@@ -1133,7 +1356,7 @@ impl PreparedSnapshot {
         });
         ranked.truncate(page_size);
         let returned = ranked.len();
-        if !self.emit_page_rows(&contexts, ranked, emit, cancelled)? {
+        if !self.emit_page_rows(&contexts, &process_users, ranked, emit, cancelled)? {
             return Ok(());
         }
         Self::emit_page_trailer(
@@ -1152,9 +1375,137 @@ impl PreparedSnapshot {
         Ok(())
     }
 
+    fn emit_first_match(
+        &self,
+        emit: &mut impl FnMut(Vec<u8>) -> bool,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<(), ApiError> {
+        let [section] = self.sections.as_slice() else {
+            return Err(ApiError::BadCursor);
+        };
+        let wanted = self.first_match_query_id.ok_or(ApiError::BadCursor)?;
+        for plan in &section.plans {
+            if cancelled() || !Self::emit_layout(section, plan, emit)? {
+                return Ok(());
+            }
+        }
+        let contexts = self.first_match_contexts(section, cancelled)?;
+        let mut returned = 0_usize;
+        for context in &contexts {
+            let Some((ordinal, row, dictionary)) =
+                self.first_match_row(context, wanted, cancelled)?
+            else {
+                if cancelled() {
+                    return Ok(());
+                }
+                continue;
+            };
+            let value = Self::row_record(
+                context.plan,
+                &row,
+                None,
+                None,
+                RowCoordinate {
+                    segment_id: context.source.id(),
+                    ordinal,
+                },
+                &dictionary,
+                &ProcessUsers::default(),
+                None,
+            )?;
+            if cancelled() || !emit(record(&value)?) {
+                return Ok(());
+            }
+            returned = 1;
+            break;
+        }
+        Self::emit_page_trailer(
+            section,
+            &contexts,
+            &PageMetadata {
+                eligible: u64::from(returned != 0),
+                returned,
+                has_more: false,
+                next_cursor: None,
+                page_size: 1,
+            },
+            self.direction,
+            emit,
+        )
+    }
+
+    fn first_match_row(
+        &self,
+        context: &PageContext<'_>,
+        wanted: i64,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Option<(u64, Row, Dictionary)>, ApiError> {
+        let query_id = context
+            .plan
+            .contract
+            .column("queryid")
+            .ok_or_else(|| ApiError::BadFilter("first_match".to_owned()))?
+            .name;
+        let query = context
+            .plan
+            .contract
+            .column("query")
+            .ok_or_else(|| ApiError::BadFilter("first_match".to_owned()))?
+            .name;
+        let mut projection = vec![query_id, query];
+        if let RowWindow::Shared { timestamp, .. } = context.window {
+            projection.push(timestamp);
+        }
+        projection.sort_unstable();
+        projection.dedup();
+
+        let source = self.reader.open_segment(context.source)?;
+        let mut offset = 0;
+        while offset < context.rows && !cancelled() {
+            let mut candidate = None;
+            source.visit_rows(
+                context.plan.type_id,
+                &projection,
+                offset,
+                usize::MAX,
+                |ordinal, row| {
+                    #[cfg(test)]
+                    FIRST_MATCH_ROWS.set(FIRST_MATCH_ROWS.get() + 1);
+                    if context.window.matches(&row)
+                        && matches!(row.get(query_id), Some(Cell::I64(stored)) if *stored == wanted)
+                    {
+                        candidate = Some((ordinal, row));
+                        return false;
+                    }
+                    !cancelled()
+                },
+            )?;
+            let Some((ordinal, row)) = candidate else {
+                return Ok(None);
+            };
+            offset = ordinal.checked_add(1).unwrap_or(context.rows);
+            let Some(Cell::StrId(id)) = row.get(query) else {
+                continue;
+            };
+            let dictionary = resolved_dictionary(&source, &HashSet::from([*id]))?;
+            let resolved = dictionary.resolve(*id).ok_or_else(|| {
+                ApiError::Unreadable(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("unresolved dictionary id {id}"),
+                )))
+            })?;
+            if stored_bytes(resolved).is_empty() {
+                continue;
+            }
+            return Ok(Some((ordinal, row, dictionary)));
+        }
+        Ok(None)
+    }
+
     fn emit_page_rows(
         &self,
         contexts: &[PageContext<'_>],
+        process_users: &HashMap<usize, ProcessUsers>,
         ranked: Vec<PageRankedRow>,
         emit: &mut impl FnMut(Vec<u8>) -> bool,
         cancelled: &impl Fn() -> bool,
@@ -1201,6 +1552,9 @@ impl PreparedSnapshot {
                     ordinal: ranked.staged.ordinal,
                 },
                 dictionary,
+                process_users
+                    .get(&context.context_index)
+                    .ok_or(ApiError::BadCursor)?,
                 self.text,
             )?;
             if cancelled() || !emit(record(&value)?) {
@@ -1270,6 +1624,7 @@ impl PreparedSnapshot {
                 contexts.push(PageContext {
                     context_index: layout_index,
                     plan,
+                    logical_name: &section.logical_name,
                     source: &self.anchor,
                     rows: rows_of(&self.anchor, plan.type_id).unwrap_or(0),
                     window: RowWindow::Untimed,
@@ -1279,10 +1634,21 @@ impl PreparedSnapshot {
                     sample_from: None,
                     sample_to: None,
                     order: page_order(&section.logical_name, plan, &self.by),
-                    search_columns: if self.search.is_empty() {
-                        Vec::new()
+                    search_columns: self.search.as_ref().map_or_else(Vec::new, |search| {
+                        search_columns(&section.logical_name, plan, search)
+                    }),
+                    clock_ticks_per_second: if section.logical_name == "os_process" {
+                        clock_ticks_per_second(&self.reader.open_segment(&self.anchor)?)?
                     } else {
-                        search_columns(&section.logical_name, plan)
+                        None
+                    },
+                    block_size: if matches!(
+                        section.logical_name.as_str(),
+                        "pg_stat_statements" | "pg_store_plans"
+                    ) {
+                        postgres_block_size(&self.reader.open_segment(&self.anchor)?)?
+                    } else {
+                        None
                     },
                 });
                 continue;
@@ -1294,6 +1660,64 @@ impl PreparedSnapshot {
                 timestamp,
                 cancelled,
             )?);
+        }
+        Ok(contexts)
+    }
+
+    fn first_match_contexts<'a>(
+        &'a self,
+        section: &'a SectionPlans,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Vec<PageContext<'a>>, ApiError> {
+        let mut contexts = Vec::new();
+        for (layout_index, plan) in section.plans.iter().enumerate() {
+            if !plan.applies() || cancelled() {
+                continue;
+            }
+            let Some(timestamp) = plan.timestamp else {
+                return Err(ApiError::BadFilter("first_match".to_owned()));
+            };
+            let mut moments = Vec::new();
+            for source_index in 0..self.source_count() {
+                let source_ref = self.source_for(source_index).ok_or(ApiError::BadCursor)?;
+                if rows_of(source_ref, plan.type_id).is_none() {
+                    continue;
+                }
+                let source = self.reader.open_segment(source_ref)?;
+                if let Some(moment) = Self::moments(&source, plan, timestamp, self.at, cancelled)? {
+                    moments.push((source_index, moment.current));
+                }
+            }
+            let Some(current) = moments.iter().map(|(_source, at)| *at).max() else {
+                continue;
+            };
+            for (source_index, at) in moments {
+                if at != current {
+                    continue;
+                }
+                let source = self.source_for(source_index).ok_or(ApiError::BadCursor)?;
+                contexts.push(PageContext {
+                    context_index: timed_context_index(
+                        layout_index,
+                        source_index,
+                        self.source_count(),
+                    ),
+                    plan,
+                    logical_name: &section.logical_name,
+                    source,
+                    rows: rows_of(source, plan.type_id).unwrap_or(0),
+                    window: RowWindow::Shared { timestamp, current },
+                    previous: None,
+                    elapsed: None,
+                    elapsed_by_partition: Arc::new(BTreeMap::new()),
+                    sample_from: None,
+                    sample_to: Some(current),
+                    order: None,
+                    search_columns: Vec::new(),
+                    clock_ticks_per_second: None,
+                    block_size: None,
+                });
+            }
         }
         Ok(contexts)
     }
@@ -1348,6 +1772,7 @@ impl PreparedSnapshot {
             contexts.push(PageContext {
                 context_index: timed_context_index(layout_index, source_index, self.source_count()),
                 plan,
+                logical_name: &section.logical_name,
                 source: source_ref,
                 rows: rows_of(source_ref, plan.type_id).unwrap_or(0),
                 window: RowWindow::Shared {
@@ -1360,10 +1785,21 @@ impl PreparedSnapshot {
                 sample_from: moments.previous,
                 sample_to: Some(moments.current),
                 order: order.clone(),
-                search_columns: if self.search.is_empty() {
-                    Vec::new()
+                search_columns: self.search.as_ref().map_or_else(Vec::new, |search| {
+                    search_columns(&section.logical_name, plan, search)
+                }),
+                clock_ticks_per_second: if section.logical_name == "os_process" {
+                    clock_ticks_per_second(&source)?
                 } else {
-                    search_columns(&section.logical_name, plan)
+                    None
+                },
+                block_size: if matches!(
+                    section.logical_name.as_str(),
+                    "pg_stat_statements" | "pg_store_plans"
+                ) {
+                    postgres_block_size(&source)?
+                } else {
+                    None
                 },
             });
         }
@@ -1592,7 +2028,7 @@ impl PreparedSnapshot {
     )]
     fn partitioned_context<'a>(
         &'a self,
-        section: &SectionPlans,
+        section: &'a SectionPlans,
         layout_index: usize,
         plan: &'a Plan,
         source_kind: PartitionSource,
@@ -1625,6 +2061,7 @@ impl PreparedSnapshot {
                 self.relation_predecessors.len(),
             ),
             plan,
+            logical_name: &section.logical_name,
             source: source_ref,
             rows: rows_of(source_ref, plan.type_id).unwrap_or(0),
             window: RowWindow::Partitioned {
@@ -1638,11 +2075,11 @@ impl PreparedSnapshot {
             sample_from: rate_state.sample_from,
             sample_to: rate_state.sample_to,
             order,
-            search_columns: if self.search.is_empty() {
-                Vec::new()
-            } else {
-                search_columns(&section.logical_name, plan)
-            },
+            search_columns: self.search.as_ref().map_or_else(Vec::new, |search| {
+                search_columns(&section.logical_name, plan, search)
+            }),
+            clock_ticks_per_second: None,
+            block_size: None,
         })
     }
 
@@ -1727,9 +2164,9 @@ impl PreparedSnapshot {
         cancelled: &impl Fn() -> bool,
     ) -> Result<Readings, ApiError> {
         let mut collected = BTreeMap::new();
-        let mut counters = rate_columns(plan);
-        if plan.contract.column("stats_since").is_some() {
-            counters.push("stats_since");
+        let mut counters = projected_rate_columns(plan);
+        if plan.contract.column("starttime").is_some() {
+            counters.push("starttime");
         }
         for column in extra_columns {
             if plan
@@ -1778,6 +2215,7 @@ impl PreparedSnapshot {
     fn cursor_anchor(
         &self,
         contexts: &[PageContext<'_>],
+        process_users: &HashMap<usize, ProcessUsers>,
         cursor: SnapshotCursor,
     ) -> Result<PageRankedRow, ApiError> {
         let context = contexts
@@ -1805,13 +2243,22 @@ impl PreparedSnapshot {
             context,
             std::slice::from_ref(&(ordinal, row.clone())),
         )?;
-        self.page_candidate(context, ordinal, row, &dictionary)
-            .ok_or(ApiError::BadCursor)
+        self.page_candidate(
+            context,
+            process_users
+                .get(&context.context_index)
+                .ok_or(ApiError::BadCursor)?,
+            ordinal,
+            row,
+            &dictionary,
+        )
+        .ok_or(ApiError::BadCursor)
     }
 
     fn scan_page(
         &self,
         context: &PageContext<'_>,
+        process_users: &ProcessUsers,
         anchor: Option<&PageRankedRow>,
         page: &mut PageRows,
         eligible: &mut u64,
@@ -1835,7 +2282,16 @@ impl PreparedSnapshot {
                 0,
                 usize::MAX,
                 |ordinal, row| {
-                    self.rank_page_row(context, anchor, page, eligible, &dictionary, ordinal, row);
+                    self.rank_page_row(
+                        context,
+                        process_users,
+                        anchor,
+                        page,
+                        eligible,
+                        &dictionary,
+                        ordinal,
+                        row,
+                    );
                     !cancelled()
                 },
             )?;
@@ -1855,8 +2311,15 @@ impl PreparedSnapshot {
             |ordinal, row| {
                 chunk.push((ordinal, row));
                 if chunk.len() == SNAPSHOT_CHUNK_ROWS
-                    && let Err(error) =
-                        self.rank_page_chunk(&source, context, anchor, page, eligible, &mut chunk)
+                    && let Err(error) = self.rank_page_chunk(
+                        &source,
+                        context,
+                        process_users,
+                        anchor,
+                        page,
+                        eligible,
+                        &mut chunk,
+                    )
                 {
                     failure = Some(error);
                     return false;
@@ -1868,15 +2331,28 @@ impl PreparedSnapshot {
             return Err(error);
         }
         if !cancelled() && !chunk.is_empty() {
-            self.rank_page_chunk(&source, context, anchor, page, eligible, &mut chunk)?;
+            self.rank_page_chunk(
+                &source,
+                context,
+                process_users,
+                anchor,
+                page,
+                eligible,
+                &mut chunk,
+            )?;
         }
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "page ranking keeps segment-local user resolution beside existing paging state"
+    )]
     fn rank_page_chunk(
         &self,
         source: &Segment,
         context: &PageContext<'_>,
+        process_users: &ProcessUsers,
         anchor: Option<&PageRankedRow>,
         page: &mut PageRows,
         eligible: &mut u64,
@@ -1884,7 +2360,16 @@ impl PreparedSnapshot {
     ) -> Result<(), ApiError> {
         let dictionary = page_dictionary(source, context, chunk)?;
         for (ordinal, row) in chunk.drain(..) {
-            self.rank_page_row(context, anchor, page, eligible, &dictionary, ordinal, row);
+            self.rank_page_row(
+                context,
+                process_users,
+                anchor,
+                page,
+                eligible,
+                &dictionary,
+                ordinal,
+                row,
+            );
         }
         Ok(())
     }
@@ -1896,6 +2381,7 @@ impl PreparedSnapshot {
     fn rank_page_row(
         &self,
         context: &PageContext<'_>,
+        process_users: &ProcessUsers,
         anchor: Option<&PageRankedRow>,
         page: &mut PageRows,
         eligible: &mut u64,
@@ -1903,7 +2389,8 @@ impl PreparedSnapshot {
         ordinal: u64,
         row: Row,
     ) {
-        let Some(candidate) = self.page_candidate(context, ordinal, row, dictionary) else {
+        let Some(candidate) = self.page_candidate(context, process_users, ordinal, row, dictionary)
+        else {
             return;
         };
         *eligible = eligible.saturating_add(1);
@@ -1915,18 +2402,33 @@ impl PreparedSnapshot {
     fn page_candidate(
         &self,
         context: &PageContext<'_>,
+        process_users: &ProcessUsers,
         ordinal: u64,
         row: Row,
         dictionary: &Dictionary,
     ) -> Option<PageRankedRow> {
-        if !context.window.matches(&row)
-            || !context.plan.matches(&row, dictionary)
-            || !self.search.is_empty()
-                && !search_matches(&row, dictionary, &context.search_columns, &self.search)
-        {
+        if !context.window.matches(&row) || !context.plan.matches(&row, dictionary) {
             return None;
         }
         let identity = identity_of(context.plan, &row)?;
+        if self.search.as_ref().is_some_and(|search| {
+            !search.matches_all(|clause| {
+                if matches!(clause.value, SearchValue::Quantity(_)) {
+                    result_search_matches(context, &row, &identity, clause)
+                } else {
+                    search_clause_matches(
+                        context.logical_name,
+                        context.plan,
+                        &row,
+                        dictionary,
+                        Some(process_users),
+                        clause,
+                    )
+                }
+            })
+        }) {
+            return None;
+        }
         let value = page_order_value(context, &row, &identity, dictionary);
         Some(PageRankedRow {
             staged: PageStagedRow {
@@ -1993,10 +2495,10 @@ impl PreparedSnapshot {
         cancelled: &impl Fn() -> bool,
     ) -> Result<Readings, ApiError> {
         let mut collected = BTreeMap::new();
-        let counters = rate_columns(plan);
+        let counters = projected_rate_columns(plan);
         let mut counters = counters;
-        if plan.contract.column("stats_since").is_some() {
-            counters.push("stats_since");
+        if plan.contract.column("starttime").is_some() {
+            counters.push("starttime");
         }
         for column in extra_columns {
             if plan
@@ -2045,6 +2547,10 @@ impl PreparedSnapshot {
         Ok(collected)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one row renderer combines physical values, rates, coordinates, and segment-local reference data"
+    )]
     fn row_record(
         plan: &Plan,
         row: &Row,
@@ -2052,13 +2558,23 @@ impl PreparedSnapshot {
         elapsed: Option<i64>,
         coordinate: RowCoordinate,
         dictionary: &Dictionary,
+        process_users: &ProcessUsers,
         text_limit: Option<usize>,
     ) -> Result<Value, ApiError> {
         let stamped = plan.timestamp.and_then(|column| row_timestamp(row, column));
         let mut values = Vec::with_capacity(plan.fields.len());
         for field in &plan.fields {
             let Some(column) = field.column else {
-                values.push(Value::Null);
+                let uid_column = match field.name.as_str() {
+                    "user" => Some("uid"),
+                    "effective_user" => Some("euid"),
+                    _ => None,
+                };
+                values.push(
+                    uid_column
+                        .and_then(|column| process_users.for_row(row, column))
+                        .map_or(Value::Null, |name| Value::String(name.to_owned())),
+                );
                 continue;
             };
             let stored = row.get(column);
@@ -2066,7 +2582,9 @@ impl PreparedSnapshot {
                 .contract
                 .column(column)
                 .is_some_and(|declared| declared.class == ColumnClass::Cumulative);
-            if is_rate {
+            let exact_plan_calls =
+                matches!(plan.type_id, 1_003_001 | 1_004_001 | 1_018_001) && field.name == "calls";
+            if is_rate && !exact_plan_calls {
                 values.push(rate(stored, before, column, elapsed));
                 continue;
             }
@@ -2456,65 +2974,650 @@ fn ratio_order_value(
     }
 }
 
-fn search_columns(logical_name: &str, plan: &Plan) -> Vec<&'static str> {
-    allowed_search_columns(logical_name)
+fn search_columns(logical_name: &str, plan: &Plan, search: &StructuredSearch) -> Vec<&'static str> {
+    let mut columns = Vec::new();
+    for clause in &search.clauses {
+        let mut wanted = search_clause_columns(logical_name, plan, clause.key);
+        if let Some((_clause, field)) = search
+            .result_clauses(logical_name)
+            .find(|(candidate, _field)| candidate.key == clause.key)
+        {
+            wanted.extend(
+                field
+                    .dependencies
+                    .iter()
+                    .filter_map(|name| plan.contract.column(name).map(|column| column.name)),
+            );
+        }
+        for column in wanted {
+            if !columns.contains(&column) {
+                columns.push(column);
+            }
+        }
+    }
+    columns
+}
+
+fn clock_ticks_per_second(segment: &Segment) -> Result<Option<u128>, ApiError> {
+    for (type_id, _rows) in segment.sections() {
+        if logical_section_name(type_id) != Some("instance_metadata") {
+            continue;
+        }
+        let Some(column) =
+            contract(type_id).and_then(|layout| layout.column("clock_ticks_per_sec"))
+        else {
+            continue;
+        };
+        let mut stored = None;
+        segment.visit_rows(type_id, &[column.name], 0, 1, |_ordinal, row| {
+            stored = row
+                .get(column.name)
+                .and_then(ordered_cell)
+                .and_then(|value| {
+                    let OrderedNumber::Integer(value) = value else {
+                        return None;
+                    };
+                    u128::try_from(value).ok().filter(|value| *value > 0)
+                });
+            false
+        })?;
+        if stored.is_some() {
+            return Ok(stored);
+        }
+    }
+    Ok(None)
+}
+
+fn postgres_block_size(segment: &Segment) -> Result<Option<u128>, ApiError> {
+    for (type_id, _rows) in segment.sections() {
+        if logical_section_name(type_id) != Some("pg_settings") {
+            continue;
+        }
+        let Some(layout) = contract(type_id) else {
+            continue;
+        };
+        let (Some(name), Some(setting)) = (layout.column("name"), layout.column("setting")) else {
+            continue;
+        };
+        let mut candidates = Vec::new();
+        let mut ids = HashSet::new();
+        segment.visit_rows(
+            type_id,
+            &[name.name, setting.name],
+            0,
+            usize::MAX,
+            |_ordinal, row| {
+                let (Some(Cell::StrId(name_id)), Some(Cell::StrId(setting_id))) =
+                    (row.get(name.name), row.get(setting.name))
+                else {
+                    return true;
+                };
+                ids.insert(*name_id);
+                ids.insert(*setting_id);
+                candidates.push((*name_id, *setting_id));
+                true
+            },
+        )?;
+        let dictionary = resolved_dictionary(segment, &ids)?;
+        for (name_id, setting_id) in candidates {
+            let Some(Resolved::Str(name)) = dictionary.resolve(name_id) else {
+                continue;
+            };
+            if name != b"block_size" {
+                continue;
+            }
+            let Some(Resolved::Str(setting)) = dictionary.resolve(setting_id) else {
+                continue;
+            };
+            let Ok(setting) = std::str::from_utf8(setting) else {
+                continue;
+            };
+            if let Ok(value) = setting.parse::<u128>()
+                && value > 0
+            {
+                return Ok(Some(value));
+            }
+        }
+    }
+    Ok(None)
+}
+
+enum SearchMetricValue {
+    Exact {
+        numerator: Vec<u128>,
+        denominator: Vec<u128>,
+    },
+    Float(f64),
+}
+
+impl SearchMetricValue {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "stored floating metrics must be scaled in their native f64 domain"
+    )]
+    fn scale(self, numerator_scale: u128, denominator_scale: u128) -> Option<Self> {
+        match self {
+            Self::Exact {
+                mut numerator,
+                mut denominator,
+            } => {
+                numerator.push(numerator_scale);
+                denominator.push(denominator_scale);
+                Some(Self::Exact {
+                    numerator,
+                    denominator,
+                })
+            }
+            Self::Float(value) => {
+                let scaled = value * numerator_scale as f64 / denominator_scale as f64;
+                scaled.is_finite().then_some(Self::Float(scaled))
+            }
+        }
+    }
+
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "stored floating metrics are compared to the closest f64 threshold"
+    )]
+    fn matches(&self, operator: SearchOperator, quantity: &Quantity) -> bool {
+        let ordering = match self {
+            Self::Exact {
+                numerator,
+                denominator,
+            } => {
+                let mut left = numerator.clone();
+                left.push(quantity.denominator);
+                let mut right = denominator.clone();
+                right.push(quantity.numerator);
+                compare_products(&left, &right)
+            }
+            Self::Float(value) => {
+                let threshold = quantity.numerator as f64 / quantity.denominator as f64;
+                if !value.is_finite() || !threshold.is_finite() {
+                    return false;
+                }
+                value.total_cmp(&threshold)
+            }
+        };
+        match operator {
+            SearchOperator::Greater => ordering == Ordering::Greater,
+            SearchOperator::Less => ordering == Ordering::Less,
+            SearchOperator::Colon => false,
+        }
+    }
+}
+
+fn result_search_matches(
+    context: &PageContext<'_>,
+    row: &Row,
+    identity: &[IdentityCell],
+    clause: &SearchClause,
+) -> bool {
+    let SearchValue::Quantity(quantity) = &clause.value else {
+        return false;
+    };
+    let Some(field) = result_field(context.logical_name, clause.key) else {
+        return false;
+    };
+    search_metric(context, row, identity, field.metric)
+        .is_some_and(|value| value.matches(clause.operator, quantity))
+}
+
+fn search_metric(
+    context: &PageContext<'_>,
+    row: &Row,
+    identity: &[IdentityCell],
+    metric: &str,
+) -> Option<SearchMetricValue> {
+    match context.logical_name {
+        "os_process" => process_search_metric(context, row, identity, metric),
+        "pg_stat_statements" | "pg_store_plans" => {
+            postgres_search_metric(context, row, identity, metric)
+        }
+        _ => None,
+    }
+}
+
+fn process_search_metric(
+    context: &PageContext<'_>,
+    row: &Row,
+    identity: &[IdentityCell],
+    metric: &str,
+) -> Option<SearchMetricValue> {
+    match metric {
+        "rss" => gauge_metric(row, "rmem_kb", 1_024, 1),
+        "vsz" => gauge_metric(row, "vmem_kb", 1_024, 1),
+        "swap" => gauge_metric(row, "vswap_kb", 1_024, 1),
+        "threads" => gauge_metric(row, "num_threads", 1, 1),
+        "cpu_cores" | "user_cpu_cores" | "system_cpu_cores" => {
+            let columns: &[&str] = match metric {
+                "user_cpu_cores" => &["utime"],
+                "system_cpu_cores" => &["stime"],
+                _ => &["utime", "stime"],
+            };
+            let ticks = context.clock_ticks_per_second?;
+            rate_metric(context, row, identity, columns, 1_000_000, ticks)
+        }
+        "disk_read_rate" => rate_metric(context, row, identity, &["read_bytes"], 1_000_000, 1),
+        "disk_write_rate" => rate_metric(context, row, identity, &["write_bytes"], 1_000_000, 1),
+        "logical_read_rate" => rate_metric(context, row, identity, &["rchar"], 1_000_000, 1),
+        "logical_write_rate" => rate_metric(context, row, identity, &["wchar"], 1_000_000, 1),
+        "read_syscall_rate" => rate_metric(context, row, identity, &["syscr"], 1_000_000, 1),
+        "write_syscall_rate" => rate_metric(context, row, identity, &["syscw"], 1_000_000, 1),
+        "major_fault_rate" => rate_metric(context, row, identity, &["majflt"], 1_000_000, 1),
+        "minor_fault_rate" => rate_metric(context, row, identity, &["minflt"], 1_000_000, 1),
+        "context_switch_rate" => {
+            rate_metric(context, row, identity, &["nvcsw", "nivcsw"], 1_000_000, 1)
+        }
+        "voluntary_context_switch_rate" => {
+            rate_metric(context, row, identity, &["nvcsw"], 1_000_000, 1)
+        }
+        "involuntary_context_switch_rate" => {
+            rate_metric(context, row, identity, &["nivcsw"], 1_000_000, 1)
+        }
+        "run_delay" => rate_metric(context, row, identity, &["rundelay_ns"], 1, 1),
+        "block_io_delay" => rate_metric(
+            context,
+            row,
+            identity,
+            &["blkdelay_ticks"],
+            1_000_000_000,
+            context.clock_ticks_per_second?,
+        ),
+        _ => None,
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fixed public PostgreSQL metric adapter stays exhaustive and fork-transparent"
+)]
+fn postgres_search_metric(
+    context: &PageContext<'_>,
+    row: &Row,
+    identity: &[IdentityCell],
+    metric: &str,
+) -> Option<SearchMetricValue> {
+    let execution = preferred_column(context.plan, "total_exec_time", "total_time");
+    let mean = preferred_column(context.plan, "mean_exec_time", "mean_time");
+    let stddev = preferred_column(context.plan, "stddev_exec_time", "stddev_time");
+    if metric == "calls" {
+        return gauge_metric(row, "calls", 1, 1);
+    }
+    let direct_rate = match metric {
+        "call_rate" => Some("calls"),
+        "exec_time_rate" => execution,
+        "row_rate" => Some("rows"),
+        "plan_rate" => Some("plans"),
+        "planning_time_rate" => Some("total_plan_time"),
+        "slow_call_rate" => Some("slow_log_calls"),
+        "shared_read_time_rate" => {
+            preferred_column(context.plan, "shared_blk_read_time", "blk_read_time")
+        }
+        "shared_write_time_rate" => {
+            preferred_column(context.plan, "shared_blk_write_time", "blk_write_time")
+        }
+        "local_read_time_rate" => Some("local_blk_read_time"),
+        "local_write_time_rate" => Some("local_blk_write_time"),
+        "temp_read_time_rate" => Some("temp_blk_read_time"),
+        "temp_write_time_rate" => Some("temp_blk_write_time"),
+        "wal_rate" => Some("wal_bytes"),
+        _ => None,
+    };
+    if let Some(column) = direct_rate {
+        return rate_metric(context, row, identity, &[column], 1_000_000, 1);
+    }
+    let buffer_column = match metric {
+        "shared_buffer_hit_rate" => Some("shared_blks_hit"),
+        "shared_buffer_read_rate" => Some("shared_blks_read"),
+        "shared_buffer_dirty_rate" => Some("shared_blks_dirtied"),
+        "shared_buffer_write_rate" => Some("shared_blks_written"),
+        "local_buffer_hit_rate" => Some("local_blks_hit"),
+        "local_buffer_read_rate" => Some("local_blks_read"),
+        "local_buffer_dirty_rate" => Some("local_blks_dirtied"),
+        "local_buffer_write_rate" => Some("local_blks_written"),
+        "temp_buffer_read_rate" => Some("temp_blks_read"),
+        "temp_buffer_write_rate" => Some("temp_blks_written"),
+        _ => None,
+    };
+    if let Some(column) = buffer_column {
+        return rate_metric(context, row, identity, &[column], 1_000_000, 1)
+            .and_then(|value| value.scale(context.block_size?, 1));
+    }
+    match metric {
+        "mean_exec" => counter_ratio_metric(context, row, identity, &[execution?], &["calls"], 1),
+        "rows_per_call" => counter_ratio_metric(context, row, identity, &["rows"], &["calls"], 1),
+        "wal_per_call" => {
+            counter_ratio_metric(context, row, identity, &["wal_bytes"], &["calls"], 1)
+        }
+        "planning_share" => counter_ratio_metric(
+            context,
+            row,
+            identity,
+            &["total_plan_time"],
+            &["total_plan_time", execution?],
+            100,
+        ),
+        "buffer_hit" => counter_ratio_metric(
+            context,
+            row,
+            identity,
+            &["shared_blks_hit"],
+            &["shared_blks_hit", "shared_blks_read"],
+            100,
+        ),
+        "buffer_per_call" => counter_ratio_metric(
+            context,
+            row,
+            identity,
+            &[
+                "shared_blks_hit",
+                "shared_blks_read",
+                "shared_blks_dirtied",
+                "shared_blks_written",
+                "local_blks_hit",
+                "local_blks_read",
+                "local_blks_dirtied",
+                "local_blks_written",
+                "temp_blks_read",
+                "temp_blks_written",
+            ],
+            &["calls"],
+            context.block_size?,
+        ),
+        "exec_cv" => value_ratio_metric(row, &[stddev?], &[mean?], 1),
+        "min_exec_since_reset" => gauge_metric(
+            row,
+            preferred_column(context.plan, "min_exec_time", "min_time")?,
+            1,
+            1,
+        ),
+        "max_exec_since_reset" => gauge_metric(
+            row,
+            preferred_column(context.plan, "max_exec_time", "max_time")?,
+            1,
+            1,
+        ),
+        "mean_exec_since_reset" => gauge_metric(row, mean?, 1, 1),
+        "stddev_exec_since_reset" => gauge_metric(row, stddev?, 1, 1),
+        _ => None,
+    }
+}
+
+fn preferred_column(
+    plan: &Plan,
+    preferred: &'static str,
+    fallback: &'static str,
+) -> Option<&'static str> {
+    plan.contract
+        .column(preferred)
+        .map(|column| column.name)
+        .or_else(|| plan.contract.column(fallback).map(|column| column.name))
+}
+
+fn gauge_metric(
+    row: &Row,
+    column: &'static str,
+    numerator_scale: u128,
+    denominator_scale: u128,
+) -> Option<SearchMetricValue> {
+    ordered_metric(
+        ordered_cell(row.get(column)?)?,
+        numerator_scale,
+        denominator_scale,
+    )
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "stored floating counters preserve their recorded f64 arithmetic"
+)]
+fn rate_metric(
+    context: &PageContext<'_>,
+    row: &Row,
+    identity: &[IdentityCell],
+    columns: &[&'static str],
+    numerator_scale: u128,
+    denominator_scale: u128,
+) -> Option<SearchMetricValue> {
+    let elapsed = u128::try_from(context.elapsed_for(row)?)
+        .ok()
+        .filter(|value| *value > 0)?;
+    let before = context.predecessor(row, identity)?;
+    let delta = counter_sum(row, before, columns, false)?;
+    match delta {
+        OrderedNumber::Integer(value) if value >= 0 => Some(SearchMetricValue::Exact {
+            numerator: vec![u128::try_from(value).ok()?, numerator_scale],
+            denominator: vec![elapsed, denominator_scale],
+        }),
+        OrderedNumber::Float(value) => {
+            let converted =
+                value * numerator_scale as f64 / elapsed as f64 / denominator_scale as f64;
+            converted
+                .is_finite()
+                .then_some(SearchMetricValue::Float(converted))
+        }
+        OrderedNumber::Integer(_) => None,
+    }
+}
+
+fn counter_ratio_metric(
+    context: &PageContext<'_>,
+    row: &Row,
+    identity: &[IdentityCell],
+    numerator_columns: &[&'static str],
+    denominator_columns: &[&'static str],
+    scale: u128,
+) -> Option<SearchMetricValue> {
+    let _elapsed = context.elapsed_for(row)?;
+    let before = context.predecessor(row, identity)?;
+    let numerator = counter_sum(row, before, numerator_columns, false)?;
+    let denominator = counter_sum(row, before, denominator_columns, false)?;
+    ratio_metric(numerator, denominator, scale)
+}
+
+fn value_ratio_metric(
+    row: &Row,
+    numerator_columns: &[&'static str],
+    denominator_columns: &[&'static str],
+    scale: u128,
+) -> Option<SearchMetricValue> {
+    ratio_metric(
+        value_sum(row, numerator_columns)?,
+        value_sum(row, denominator_columns)?,
+        scale,
+    )
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "stored floating counters preserve their recorded f64 arithmetic"
+)]
+fn ratio_metric(
+    numerator: OrderedNumber,
+    denominator: OrderedNumber,
+    scale: u128,
+) -> Option<SearchMetricValue> {
+    match (numerator, denominator) {
+        (OrderedNumber::Integer(numerator), OrderedNumber::Integer(denominator))
+            if numerator >= 0 && denominator > 0 =>
+        {
+            Some(SearchMetricValue::Exact {
+                numerator: vec![u128::try_from(numerator).ok()?, scale],
+                denominator: vec![u128::try_from(denominator).ok()?],
+            })
+        }
+        (numerator, denominator) => {
+            let denominator = denominator.as_f64();
+            let ratio = numerator.as_f64() / denominator * scale as f64;
+            (denominator > 0.0 && ratio.is_finite()).then_some(SearchMetricValue::Float(ratio))
+        }
+    }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "stored floating gauges preserve their recorded f64 value"
+)]
+fn ordered_metric(
+    value: OrderedNumber,
+    numerator_scale: u128,
+    denominator_scale: u128,
+) -> Option<SearchMetricValue> {
+    match value {
+        OrderedNumber::Integer(value) if value >= 0 => Some(SearchMetricValue::Exact {
+            numerator: vec![u128::try_from(value).ok()?, numerator_scale],
+            denominator: vec![denominator_scale],
+        }),
+        OrderedNumber::Float(value) => {
+            let converted = value * numerator_scale as f64 / denominator_scale as f64;
+            converted
+                .is_finite()
+                .then_some(SearchMetricValue::Float(converted))
+        }
+        OrderedNumber::Integer(_) => None,
+    }
+}
+
+fn compare_products(left: &[u128], right: &[u128]) -> Ordering {
+    let left = product_limbs(left);
+    let right = product_limbs(right);
+    left.len().cmp(&right.len()).then_with(|| left.cmp(&right))
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "each cast selects one base-2^32 limb after shifting"
+)]
+fn product_limbs(factors: &[u128]) -> Vec<u32> {
+    let mut product = vec![1_u32];
+    for factor in factors {
+        let digits = [
+            *factor as u32,
+            (*factor >> 32) as u32,
+            (*factor >> 64) as u32,
+            (*factor >> 96) as u32,
+        ];
+        let mut multiplied = vec![0_u32; product.len() + digits.len()];
+        for (left_index, left) in product.iter().copied().enumerate() {
+            let mut carry = 0_u64;
+            for (right_index, right) in digits.iter().copied().enumerate() {
+                let index = left_index + right_index;
+                let value =
+                    u64::from(multiplied[index]) + u64::from(left) * u64::from(right) + carry;
+                multiplied[index] = value as u32;
+                carry = value >> 32;
+            }
+            let mut index = left_index + digits.len();
+            while carry > 0 {
+                let value = u64::from(multiplied[index]) + carry;
+                multiplied[index] = value as u32;
+                carry = value >> 32;
+                index += 1;
+                if index == multiplied.len() && carry > 0 {
+                    multiplied.push(0);
+                }
+            }
+        }
+        while multiplied.len() > 1 && multiplied.last() == Some(&0) {
+            multiplied.pop();
+        }
+        product = multiplied;
+    }
+    product.iter().rev().copied().collect()
+}
+
+fn search_clause_columns(logical_name: &str, plan: &Plan, key: &str) -> Vec<&'static str> {
+    let Some(field) = search_fields(logical_name)
+        .iter()
+        .find(|field| field.key == key)
+    else {
+        return Vec::new();
+    };
+    let wanted: &[&str] = if logical_name == "pg_store_plans" && key == "query_id" {
+        plan_statement_query_id_columns(plan.type_id)
+    } else {
+        field.columns
+    };
+    wanted
         .iter()
         .filter_map(|name| plan.contract.column(name).map(|column| column.name))
         .collect()
 }
 
-fn allowed_search_columns(logical_name: &str) -> &'static [&'static str] {
-    match logical_name {
-        "pg_stat_statements" => &[
-            "query", "queryid", "dbid", "userid", "datname", "usename", "toplevel",
-        ],
-        "pg_store_plans" => &[
-            "plan",
-            "planid",
-            "queryid",
-            "queryid_stat_statements",
-            "dbid",
-            "userid",
-            "datname",
-            "usename",
-        ],
-        "pg_stat_user_tables" => &[
-            "datname",
-            "datid",
-            "schemaname",
-            "relname",
-            "relid",
-            "tablespace",
-        ],
-        "pg_stat_user_indexes" => &[
-            "datname",
-            "datid",
-            "schemaname",
-            "relname",
-            "relid",
-            "indexrelname",
-            "indexrelid",
-            "tablespace",
-            "amname",
-            "indexdef",
-        ],
-        _ => &[],
+const fn plan_statement_query_id_columns(type_id: u32) -> &'static [&'static str] {
+    match type_id {
+        1_004_001 => &["queryid_stat_statements"],
+        _ => &["queryid"],
     }
 }
 
-fn search_matches(
+fn search_clause_matches(
+    logical_name: &str,
+    plan: &Plan,
     row: &Row,
     dictionary: &Dictionary,
-    columns: &[&'static str],
-    patterns: &[GlobPattern],
+    process_users: Option<&ProcessUsers>,
+    clause: &SearchClause,
 ) -> bool {
-    columns.iter().any(|column| {
-        row.get(column)
-            .and_then(|value| searchable_text(value, dictionary))
-            .is_some_and(|text| patterns.iter().any(|pattern| pattern.matches(&text)))
+    if logical_name == "pg_store_plans"
+        && plan.type_id == 1_004_001
+        && clause.key == "query_id"
+        && matches!(&clause.value, SearchValue::Identifier(value) if value == "0")
+    {
+        return false;
+    }
+    if logical_name == "os_process" {
+        let name_matches = |uid_column| {
+            process_users
+                .and_then(|users| users.for_row(row, uid_column))
+                .is_some_and(|name| search_value_matches(name, &clause.value))
+        };
+        match clause.key {
+            "user" => return name_matches("uid"),
+            "effective_user" => return name_matches("euid"),
+            "text" => {
+                if name_matches("uid") || name_matches("euid") {
+                    return true;
+                }
+                return ["comm", "cmdline"].iter().any(|column| {
+                    row.get(column)
+                        .and_then(|value| searchable_text(value, dictionary))
+                        .is_some_and(|text| search_value_matches(&text, &clause.value))
+                });
+            }
+            _ => {}
+        }
+    }
+    search_clause_columns(logical_name, plan, clause.key)
+        .iter()
+        .any(|column| {
+            row.get(column)
+                .and_then(|value| searchable_text(value, dictionary))
+                .is_some_and(|text| search_value_matches(&text, &clause.value))
+        })
+}
+
+fn search_matches(
+    logical_name: &str,
+    plan: &Plan,
+    row: &Row,
+    dictionary: &Dictionary,
+    process_users: Option<&ProcessUsers>,
+    search: &StructuredSearch,
+) -> bool {
+    search.matches_member(|clause| {
+        search_clause_matches(logical_name, plan, row, dictionary, process_users, clause)
     })
 }
 
+fn search_value_matches(text: &str, value: &SearchValue) -> bool {
+    match value {
+        SearchValue::Identifier(wanted) => text == wanted,
+        SearchValue::Pattern(pattern) => pattern.matches(text),
+        SearchValue::Quantity(_) => false,
+    }
+}
 fn searchable_text(value: &Cell, dictionary: &Dictionary) -> Option<String> {
     match value {
         Cell::I16(value) => Some(value.to_string()),
@@ -2680,7 +3783,7 @@ fn pin(current: SegmentRef, cursor: Option<SnapshotCursor>) -> Result<SegmentRef
     }
 }
 
-fn snapshot_binding(request: &SnapshotRequest) -> u64 {
+fn snapshot_binding(request: &SnapshotRequest, search: Option<&StructuredSearch>) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     hash_part(&mut hash, b"segment", &request.segment_id.to_le_bytes());
     hash_part(&mut hash, b"at", &request.at.to_le_bytes());
@@ -2700,9 +3803,10 @@ fn snapshot_binding(request: &SnapshotRequest) -> u64 {
         hash_part(&mut hash, b"filter-column", filter.column.as_bytes());
         hash_part(&mut hash, b"filter-value", filter.value.as_bytes());
     }
-    for search in &request.search {
-        hash_part(&mut hash, b"search", search.as_bytes());
+    if let Some(search) = search {
+        hash_part(&mut hash, b"search", search.canonical().as_bytes());
     }
+    hash_part(&mut hash, b"first-match", &[u8::from(request.first_match)]);
     for by in &request.by {
         hash_part(&mut hash, b"by", by.as_bytes());
     }
@@ -2713,6 +3817,7 @@ fn snapshot_binding(request: &SnapshotRequest) -> u64 {
             match group {
                 RelationGroup::Database => b"database",
                 RelationGroup::Schema => b"schema",
+                RelationGroup::Tablespace => b"tablespace",
                 RelationGroup::Object => b"object",
             },
         );
@@ -3186,6 +4291,34 @@ fn rate_columns(plan: &Plan) -> Vec<&'static str> {
     plan.fields
         .iter()
         .filter_map(|field| field.column)
+        .filter(|column| {
+            plan.contract
+                .column(column)
+                .is_some_and(|declared| declared.class == ColumnClass::Cumulative)
+        })
+        .collect()
+}
+
+fn output_rate_fields(plan: &Plan) -> Vec<&str> {
+    plan.fields
+        .iter()
+        .filter_map(|field| {
+            let column = field.column?;
+            let cumulative = plan
+                .contract
+                .column(column)
+                .is_some_and(|declared| declared.class == ColumnClass::Cumulative);
+            let exact_plan_calls =
+                matches!(plan.type_id, 1_003_001 | 1_004_001 | 1_018_001) && field.name == "calls";
+            (cumulative && !exact_plan_calls).then_some(field.name.as_str())
+        })
+        .collect()
+}
+
+fn projected_rate_columns(plan: &Plan) -> Vec<&'static str> {
+    plan.projection
+        .iter()
+        .copied()
         .filter(|column| {
             plan.contract
                 .column(column)

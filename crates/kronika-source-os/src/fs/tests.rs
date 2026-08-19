@@ -3,42 +3,50 @@ use std::io::Write;
 
 #[test]
 fn space_from_raw_normal() {
-    let s = space_from_raw(1000, 400, 4096);
+    let s = space_from_raw(1000, 400, 4096, 200, 80);
     assert_eq!(s.total_bytes, 1000 * 4096);
     assert_eq!(s.free_bytes, 400 * 4096);
+    assert_eq!(s.total_inodes, 200);
+    assert_eq!(s.available_inodes, 80);
 }
 
 #[test]
 fn space_from_raw_overflow_saturates() {
-    let s = space_from_raw(u64::MAX, u64::MAX, 4096);
+    let s = space_from_raw(u64::MAX, u64::MAX, 4096, u64::MAX, u64::MAX);
     assert_eq!(s.total_bytes, i64::MAX);
     assert_eq!(s.free_bytes, i64::MAX);
+    assert_eq!(s.total_inodes, i64::MAX);
+    assert_eq!(s.available_inodes, i64::MAX);
 }
 
 #[test]
 fn statvfs_fixture_hit() {
     assert_eq!(
-        parse_fixture("/data=1000:400", "/data"),
+        parse_fixture("/data=1000:400:200:80", "/data"),
         Some(FsSpace {
             total_bytes: 1000,
-            free_bytes: 400
+            free_bytes: 400,
+            total_inodes: 200,
+            available_inodes: 80,
         })
     );
 }
 
 #[test]
 fn statvfs_fixture_miss() {
-    assert_eq!(parse_fixture("/data=1000:400", "/other"), None);
+    assert_eq!(parse_fixture("/data=1000:400:200:80", "/other"), None);
 }
 
 #[test]
 fn statvfs_fixture_multiple_entries() {
-    let fixture = "/data=1000:400;/var=2048:512";
+    let fixture = "/data=1000:400:200:80;/var=2048:512:300:120";
     assert_eq!(
         parse_fixture(fixture, "/var"),
         Some(FsSpace {
             total_bytes: 2048,
-            free_bytes: 512
+            free_bytes: 512,
+            total_inodes: 300,
+            available_inodes: 120,
         })
     );
     assert_eq!(parse_fixture(fixture, "/missing"), None);
@@ -48,14 +56,19 @@ fn statvfs_fixture_multiple_entries() {
 fn statvfs_fixture_malformed_entry_skipped() {
     // A malformed entry before the target must be skipped, not abort the scan.
     assert_eq!(
-        parse_fixture("garbage;/data=1000:400", "/data"),
+        parse_fixture("garbage;/data=1000:400:200:80", "/data"),
         Some(FsSpace {
             total_bytes: 1000,
-            free_bytes: 400
+            free_bytes: 400,
+            total_inodes: 200,
+            available_inodes: 80,
         })
     );
     // A miss still returns None even when malformed entries are present.
-    assert_eq!(parse_fixture("garbage;/data=1000:400", "/other"), None);
+    assert_eq!(
+        parse_fixture("garbage;/data=1000:400:200:80", "/other"),
+        None
+    );
 }
 
 #[test]

@@ -26,6 +26,7 @@ use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersi
 use crate::contract::{ColumnType, TypeContract};
 
 pub mod instance_metadata;
+pub mod os_block_topology;
 pub mod os_cgroup_context;
 pub mod os_cgroup_cpu;
 pub mod os_cgroup_io;
@@ -33,6 +34,7 @@ pub mod os_cgroup_mapping;
 pub mod os_cgroup_memory;
 pub mod os_cgroup_pids;
 pub mod os_cpu;
+pub mod os_cpufreq;
 pub mod os_diskstats;
 pub mod os_interrupts;
 pub mod os_kernel_limits;
@@ -51,6 +53,7 @@ pub mod os_snmp6;
 pub mod os_softirq;
 pub mod os_stat;
 pub mod os_topology;
+pub mod os_user;
 pub mod os_vmstat;
 pub mod pg_locks;
 pub mod pg_log;
@@ -78,6 +81,7 @@ mod columns;
 mod decode;
 mod encode;
 mod error;
+mod finalize;
 
 pub use bounds::{
     FinalPlainColumnSize, final_data_body_bound, final_plain_body_bound,
@@ -94,6 +98,7 @@ use decode::{boolean_column, capped_reader};
 pub use encode::encode_final_batches;
 use encode::sort_by_sort_key;
 pub use error::CodecError;
+pub use finalize::{encode_final_sections_to, validate_final_section};
 
 /// Maximum rows in one snapshot section.
 ///

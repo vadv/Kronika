@@ -12,10 +12,8 @@ interface FixtureTable {
 
 type FixturePoint = readonly [string, number | null, string?]
 
-const FIXTURE_TYPE_NAMES: Readonly<Record<string, string>> = {
-  "1001003": "pg_stat_activity",
+const FIXTURE_NON_TABLE_TYPE_NAMES: Readonly<Record<string, string>> = {
   "1002003": "pg_stat_statements",
-  "1100001": "os_process",
   "1102001": "os_cpu",
   "2001001": "pg_log_errors",
   "2002001": "pg_log_checkpoints",
@@ -85,9 +83,10 @@ export function bundledFixtureHour(start: number): HourData | null {
   ).filter((row) => within(row.timestamp))
   const points = fixturePoints(fixture, segmentAt, activities).filter((point) => within(point.timestamp))
   const lanePoints = fixtureLanePoints(points, activities)
+  const tableTypeNames = fixtureTableTypeNames(fixture)
   const findings = fixture["findings"].map((finding) => ({
     segmentId: finding.segment_id,
-    logicalName: fixtureLogicalName(finding.type_id),
+    logicalName: fixtureLogicalName(tableTypeNames, finding.type_id),
     kind: finding["kind"],
     typeId: finding.type_id,
     timestamp: Number(finding.t),
@@ -278,7 +277,7 @@ function fixturePoints(fixture: RealHourFixture, segmentAt: (timestamp: number) 
     ["health", "0", "os_health", fixture.system["health"]],
     ["os_loadavg", "1105001", "os_load1", fixture.system.load1],
     ["os_meminfo", "1104001", "os_mem_available_percent", fixture.system.memAvailable],
-    ["os_mountinfo", "1112001", "os_min_filesystem_free_percent", fixture.system.minFsFree],
+    ["os_mountinfo", "1112002", "os_min_filesystem_free_percent", fixture.system.minFsFree],
     ["os_vmstat", "1106001", "os_oom_kills", fixture.system.oom],
   ]
   const points = series.flatMap(([logicalName, typeId, name, values]) =>
@@ -339,8 +338,22 @@ function segmentForTimestamp(table: FixtureTable): (timestamp: number) => string
   }
 }
 
-function fixtureLogicalName(typeId: string): string {
-  const logicalName = FIXTURE_TYPE_NAMES[typeId]
+function fixtureTableTypeNames(fixture: RealHourFixture): ReadonlyMap<string, string> {
+  const names = new Map<string, string>()
+  for (const [table, logicalName] of [[fixture.os, "os_process"], [fixture.pg, "pg_stat_activity"]] as const) {
+    for (const snapshot of table.snapshots) {
+      const current = names.get(snapshot.type_id)
+      if (current !== undefined && current !== logicalName) {
+        throw new Error(`fixture type ${snapshot.type_id} has conflicting table layouts`)
+      }
+      names.set(snapshot.type_id, logicalName)
+    }
+  }
+  return names
+}
+
+function fixtureLogicalName(tableTypeNames: ReadonlyMap<string, string>, typeId: string): string {
+  const logicalName = tableTypeNames.get(typeId) ?? FIXTURE_NON_TABLE_TYPE_NAMES[typeId]
   if (logicalName === undefined) throw new Error(`fixture type ${typeId} is not recognized`)
   return logicalName
 }

@@ -48,3 +48,22 @@ test("history placeholders are compact and name loading, error, and empty states
     assert.match(dictionary, /^history\.empty:/m)
   }
 })
+
+test("Boolean connectors and parentheses share one compact muted syntax token", async () => {
+  const source = await readFile(new URL("../src/table-filter.tsx", import.meta.url), "utf8")
+  const chips = source.match(/function SearchChips[\s\S]*?\n}\n\ntype SearchSyntaxTokenValue/)?.[0] ?? ""
+  const syntax = source.match(/type SearchSyntaxTokenValue[\s\S]*?\n}\n\nfunction SearchChip/)?.[0] ?? ""
+
+  assert.match(syntax, /"AND" \| "OR" \| "\(" \| "\)"/)
+  assert.match(syntax, /h-\[19px\]/)
+  assert.match(syntax, /text-\[9px\]/)
+  assert.match(syntax, /font-medium/)
+  assert.match(syntax, /leading-none/)
+  assert.match(syntax, /text-fg4/)
+  assert.doesNotMatch(syntax, /\bborder\b|\bbg-/)
+  assert.match(chips, /data-search-predicate=""/)
+  assert.match(chips, /<SearchSyntaxToken key=\{`\$\{path}:open`\} token="\(" \/>/)
+  assert.match(chips, /<SearchSyntaxToken key=\{`\$\{path}:operator`\} token=\{current\.kind === "and" \? "AND" : "OR"\} \/>/)
+  assert.match(chips, /<SearchSyntaxToken key=\{`\$\{path}:close`\} token="\)" \/>/)
+  assert.doesNotMatch(chips, /grouped \? \["\("\]|grouped \? \["\)"\]/)
+})

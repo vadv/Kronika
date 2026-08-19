@@ -153,12 +153,26 @@ The collector decides at collection time whether it is on a VM or inside a
 container, and records the answer in the `instance_metadata` section that every
 segment carries. It does not guess, and web does not re-derive it.
 
-On each cgroup collection tick, `os_cgroup_context` records cgroup version, the
-collector's exact CPU, memory, and I/O paths from `/proc/self/cgroup`, and the
-effective cpuset CPU count when the exact matching kernel file is usable. It
-also records the tightest CPU quota/period ratio and memory limit that apply to
-that membership. The hierarchy starts at the configured cgroup root and ends at
-the exact membership path. Every cgroup v2 control file that exists on this path
+The recorded environment gates cgroup collection. On a machine, including a
+VM, the collector emits no `os_cgroup_context`, `os_cgroup_cpu`,
+`os_cgroup_memory`, `os_cgroup_io`, or `os_cgroup_pids` rows. The presence of a
+cgroup hierarchy is never used as a virtualization signal. Inside a container,
+each cgroup tick records context and controller rows only for cgroups that
+directly contain a live process visible in that namespace. It never walks
+inactive nodes or ancestor trees. The pass is limited to 512 controller/path
+candidates, 512 KiB of candidate paths, and 1,024 I/O cgroup/device rows per
+tick. An exceeded candidate bound omits the workload sections atomically; an
+exceeded I/O-row bound omits I/O only.
+
+Valid cgroup I/O counters are recorded independently per device; a missing
+counter does not suppress the other recorded counters in that row.
+
+Inside a container, `os_cgroup_context` records cgroup version, the collector's
+exact CPU, memory, and I/O paths from `/proc/self/cgroup`, and the effective
+cpuset CPU count when the exact matching kernel file is usable. It also records
+the tightest CPU quota/period ratio and memory limit that apply to that
+membership. The hierarchy starts at the configured cgroup root and ends at the
+exact membership path. Every cgroup v2 control file that exists on this path
 must be valid. For a non-root membership only, a missing control file at the
 mount root means that true root is unbounded; every descendant is required. A
 different root read error, or a missing root file for root membership, leaves
@@ -178,10 +192,12 @@ count or host `/proc` value never substitutes for cgroup capacity or use. Local
 cgroup rows continue to record the leaf controller files and do not relabel
 them as effective hierarchical limits.
 
-Web loads this bounded context row first, then requests CPU, memory, and I/O
-snapshots with exact server-side `cgroup_path` and `scope` filters. The three
-controller paths remain independent for cgroup v1. Unfiltered cgroup trees are
-never materialized in `HourData`.
+Web reads `instance_metadata.environment`. It hides Cgroups and requests no
+cgroup snapshots for a machine. In a container it exposes CPU, Memory, I/O and
+Tasks and loads the complete already-bounded direct-live rows recorded in that
+namespace; the context row decorates only the collector's matching controller
+row. The controller paths remain independent for cgroup v1. A recursive cgroup
+tree is never materialized in `HourData`.
 
 Where it runs decides which pressure rows describe it: host-scoped
 `/proc/pressure` for a machine, and pressure from its own cgroup for a
@@ -458,6 +474,15 @@ gzip artifact. `kronika-web` embeds those exact bytes, so an ordinary Cargo
 build needs no Node installation. Fonts, icons, styles and scripts are local;
 the production document makes no external asset requests.
 
+The build fully validates and fingerprints that embedded artifact. Web keeps
+only the gzip bytes in steady state. A shell request without `Accept-Encoding`,
+or one that selects `identity`, receives readable HTML decompressed directly
+into bounded response chunks; it never creates or retains the complete identity
+document. HEAD and matching validators use build-time metadata without decoding,
+while a gzip-capable client receives the original bytes without decoding. Both
+representations have their own strong ETag and exact length, and responses vary
+on authorization and content encoding.
+
 English and Russian source dictionaries are flat YAML files. The interface
 build rejects duplicate keys, empty values, unequal key sets and unequal
 placeholders, then generates the compact typed dictionaries shipped in the
@@ -479,6 +504,10 @@ measures, when it grows, and whether a high value is worse or better, in a
 sentence or two, without pointing at another screen. One concept keeps one name
 everywhere; a counter named twice is a defect, and drift in the English
 dictionary is fixed before the Russian one is translated from it.
+The buffer/block byte families are one such contract: labels such as `Shared
+buffer read bytes`, `Shared buffer hit bytes`, and their local, temporary,
+heap, index, and TOAST counterparts remain the same natural English terms in
+both dictionaries; Russian help explains their semantics in Russian.
 
 The interface covers one selected calendar hour. Host contains dense System
 metric groups and virtualized Processes lenses; PostgreSQL contains Overview,
@@ -487,36 +516,73 @@ Events expands the same findings drawn on the shared healthline. The timeline
 always spans the complete hour, does not connect missing periods and drives
 every view with one cursor. Marker shape identifies log events and threshold
 crossings.
+The selected timeline lane controls only the lines, legend and readings that
+are drawn. Shared cursor navigation instead uses one sorted exact-deduplicated
+union of the timestamps already available to the current screen: every shared
+lane and health point, Process observation moments on Processes (including a
+loaded selected-process history), and the exact per-database Activity moments
+on PostgreSQL Activity. Findings remain directly selectable at their own exact
+timestamp but do not become Arrow stops. Pointer selection, global Left/Right
+and the shared timeline's keyboard control use this same union; an independent
+detail chart keeps its own recorded series as its navigation domain.
+
+The union never rounds, buckets or creates timestamps, and adding a navigation
+timestamp never adds a point to a drawn series. At a faster cursor, a slower
+metric continues to show its last stored sample at or before the cursor without
+interpolation or graph forward-fill. The `at` address and browser history keep
+the exact safe-integer microsecond timestamp.
+That selected hour establishes the civil date for the whole workspace. A
+cursor, snapshot, table interval, detail or chart readout inside the selected
+day shows time only; a value outside that day, or either endpoint of a
+cross-day comparison, shows the full date. One contextual formatter owns this
+presentation, while stored instants, addresses, joins and copied exact values
+remain unchanged.
 
 System presents host CPU from `/proc/stat` as user plus nice, system,
 interrupts, I/O wait, stolen, and idle shares. Used core equivalents exclude
 idle and I/O wait; available host capacity is the recorded online logical CPU
 count. CPU history plots these shares together with used and available core
-equivalents on labelled scales. A collector cgroup is a separate table: used,
+equivalents on labelled scales. In a container, cgroups are separate tables: used,
 user, and system core equivalents come from cgroup counter deltas, and capacity
 is the smaller of the validated effective quota and the exact effective cpuset
 when both are finite. A coherently unlimited quota leaves the cpuset as
 capacity. Capacity is `null` when the quota hierarchy is unknown or neither
 value supplies a finite bound.
 
+CPU frequency is a temporal CPUFreq-policy gauge in integer hertz. The
+collector uses the first successfully parsed source in each observation,
+preferring `cpuinfo_avg_freq` and then `cpuinfo_cur_freq`; both failed reads
+produce null. `scaling_cur_freq` remains a separately named reported
+or requested value. Web draws one series per policy and computes an
+online-CPU-weighted rollup only when every policy at that timestamp uses the
+same actual source. It never copies a policy value into independent logical-CPU
+series or graphs static maximum frequency as current frequency. CPU topology
+and policy membership are a compact cursor-time reference without history.
+
 Host memory uses non-overlapping anonymous, file-cache-plus-buffer,
 reclaimable-slab, unreclaimable-slab, free, and residual categories. The
 kernel's available-memory estimate is shown separately because it overlaps
 reclaimable memory. Memory history plots the non-overlapping categories, total,
-and the separate available estimate together with exact units. Collector-cgroup
-memory separately shows current use, the finite effective hierarchical limit,
-anonymous, file, slab, other kernel, and residual charged memory. Slab is
+and the separate available estimate together with exact units. Container cgroup
+memory separately shows current use, anonymous, file, slab, other kernel, and
+residual charged memory; the collector row also receives the finite effective
+hierarchical limit. Slab is
 subtracted from kernel memory before both are displayed. The leaf's local
 memory setting remains available as source data but is not shown as the
 effective limit.
 
-System tables contain devices, the collector cgroup, mounts, interfaces and CPU
-topology. Block devices are identified by `major:minor`. Average read and write
+System tables contain devices, mounts, interfaces and CPU topology, plus
+direct-live cgroups only in a recorded container environment. Block devices are
+identified by `major:minor`. Average read and write
 latency is `delta(operation_time_ms) / delta(completed_operations)` and is
 `null` without a usable predecessor or when the operation delta is zero. Host
 I/O PSI stays explicitly host-wide and is not presented as device latency;
 cgroup I/O throughput and operations remain separate from host diskstats.
-Selecting a metric opens its one-hour history.
+The filesystem table records mount point and root plus exact total/available
+byte and inode pairs. It does not derive used space from availability. Storage
+topology adds only exact sysfs partition-to-parent edges and leaves dm/LVM/MD,
+whole devices, unresolved links, and bind ancestry opaque. Selecting a metric
+opens its one-hour history.
 
 A persisted local preference can remove every large chart panel from the layout,
 so tables immediately use the released viewport height. Process-summary loads
@@ -529,10 +595,243 @@ health equal to OS health. A selected Linux process links to the nearest
 role, application, client, state, wait, query and times. Locale changes are
 immediate and persist locally.
 
+Processes uses the whole viewport row left after the timeline, controls and
+summary. Its virtual table and adjacent selected-process dock share that row
+and scroll independently on wide screens; the narrow dock remains bounded.
+CPU history offers temporal counters and gauges, including major page faults,
+but keeps scheduler references such as nice, priority and realtime priority as
+compact cursor-time facts rather than graph choices.
+
+Every displayed duration uses one adaptive formatter across tables, details,
+current readings, axes, hover and statistics. It chooses ns, µs, ms, s, min or
+h from magnitude and preserves semantic denominators such as `/s` and `/call`;
+stored values, transport, sorting and calculations keep their exact base unit.
+PostgreSQL block and buffer counters are converted with the exact recorded
+`block_size` setting and displayed as adaptive bytes/s or bytes/call. Without
+that setting the converted reading is unavailable. Buffer hits remain buffer
+activity and are not relabelled as physical disk I/O.
+
+Shared charts reserve room at the end for the last time label after accounting
+for every visible side axis. The compact 128 px timeline keeps its x-axis,
+cursor and labels inside the figure before the following navigation. Charts
+keep series names with the aligned statistics and place percentile columns without
+colliding with the plot edge. Sparse tables are content-sized instead of
+reserving large framed boards. A boundary is draggable only when it controls a
+real split; otherwise the layout stays light. The exact current `pg_wal` file
+size is a subordinate value with optional history, not a primary overview
+chart.
+The shared Processes, Host and PostgreSQL shells join their timeline and
+primary controls directly with a light content-sized boundary. Empty spacer
+tracks and strong nonfunctional splitter bands are forbidden; a visible resize
+handle exists only for a real bounded accessible split.
+
+PostgreSQL Tables and Indexes use lens-specific details at database, schema,
+object and cluster-wide tablespace level. Tablespace identity is its effective
+OID; the nullable name is display only. Tables group heap main-fork plus TOAST
+storage and never user-index bytes, while Indexes use each index's own
+placement. Storage-less partitioned table parents remain visible at the other
+levels but do not enter Tablespace groups. The dock is one compact two-column
+operator-fact list plus one explicitly selected metric history, not a loose
+vertical dump of every physical field. Tablespace history is an exact
+cross-database as-of reduction; it is never approximated from one database or
+the current page.
+
+Every entity table uses one bounded public search language and one URL-owned
+applied expression. Ordinary input without field syntax is free text.
+Structured input is a bounded boolean expression of at most eight predicates,
+31 syntax tokens, four levels of parentheses and 1,024 characters. Binary
+`AND` and `OR` are case-insensitive on input and canonical uppercase on output;
+`AND` binds more tightly than `OR`, parentheses override precedence, and each
+level associates left. Exact IDs and string/glob values keep `field:value`,
+while registered quantities use strictly `field>quantity` or
+`field<quantity`. `>=`, `<=`, `==`, `!=` and `=` are rejected as atomic
+operators. Prefix `NOT` remains reserved outside quoted/text literals and
+returns unsupported syntax. XOR, implicit operators and arbitrary query
+syntax do not exist.
+
+The field registry belongs to the whole entity surface, independent of lens,
+requested projection and visible columns. It contains only curated public
+names, aliases, types, operators, units and help; physical reducer inputs,
+layout names and internal identifiers never become search vocabulary. Thus
+Tables `size` works outside the size lens and means the authoritative
+`displayed_storage_bytes` reducer (main fork plus TOAST), while Indexes `size`
+means its main fork. Tables additionally register `table_count`, `buffer_hit`,
+`seq_scan_rate`, `change_rate`, `autovacuum_rate`, `autovacuum_mean` and
+`xid_age`; Indexes register `index_count`, `buffer_hit` and `scan_rate`.
+`query_id` and `plan_id` remain the only public plan/query identifier
+spellings, independent of physical extension layout.
+
+Dense quantitative surfaces add the following fixed vocabulary. It applies to
+the whole surface, even when a lens does not display the metric:
+
+| Surface | Public fields | Comparison units |
+| --- | --- | --- |
+| Statements and Plans | `call_rate`, `exec_time_rate`, `mean_exec`, `row_rate`, `rows_per_call`, `buffer_hit`, `buffer_per_call`; `shared_buffer_{hit,read,dirty,write}_rate`, `local_buffer_{hit,read,dirty,write}_rate`, `temp_buffer_{read,write}_rate`; `shared_{read,write}_time_rate`, `local_{read,write}_time_rate`, `temp_{read,write}_time_rate`; `exec_cv`, `min_exec_since_reset`, `max_exec_since_reset`, `mean_exec_since_reset`, `stddev_exec_since_reset` | `/s`, duration, unitless ratios, `%`, bytes, byte`/s`, or duration`/s` as registered |
+| Statements only | `plan_rate`, `wal_rate`, `wal_per_call` | `/s`, byte`/s`, bytes |
+| Plans only | `calls` | exact integer count |
+| Statements and Plans where the recorded layout provides planning | `planning_time_rate`, `planning_share` | duration`/s`, `%` |
+| Plans where the recorded vadv layout provides it | `slow_call_rate` | `/s` |
+| Processes | `rss`, `vsz`, `swap`, `threads`, `cpu_cores`, `user_cpu_cores`, `system_cpu_cores`, `disk_read_rate`, `disk_write_rate`, `logical_read_rate`, `logical_write_rate`, `read_syscall_rate`, `write_syscall_rate`, `major_fault_rate`, `minor_fault_rate`, `context_switch_rate`, `voluntary_context_switch_rate`, `involuntary_context_switch_rate`, `run_delay`, `block_io_delay` | bytes, count, unitless cores, byte`/s`, `/s`, or duration`/s` |
+
+The shared PostgreSQL names have the same meaning on Statements and Plans.
+Counter rates use the retained interval delta. Mean execution time, rows per
+call and WAL per call divide interval deltas, not rendered rates. Buffer hit is
+the shared hit delta divided by shared hit plus read deltas. Execution
+CV is the recorded standard deviation divided by the recorded mean; the four
+explicit `*_since_reset` fields are recorded reset-window gauges. Buffer
+activity rates and per-call values multiply exact block deltas by the recorded
+PostgreSQL `block_size`; a missing block size makes them null. I/O,
+execution, and planning time rates are milliseconds accumulated per wall
+second in the base comparison unit. Planning share divides the planning-time
+delta by planning plus execution time.
+`pg_store_plans` keeps its query and plan identities and fork-specific
+attribution rules; this vocabulary does not add a Plan-node or relation join.
+
+PostgreSQL interval values use adjacent real samples with the same public
+entity identity, a positive elapsed interval, and exact nonnegative counter
+subtraction. Counter rollback makes the dependent value null. Optional
+`stats_since`, `first_call`, reset-info sidecars, and reset-continuity proof do
+not gate display, search, ordering, or history: their absence does not suppress
+otherwise useful recorded data. Plans expose the exact cumulative `calls`
+counter separately from `Calls/s`, and `calls>...` / `calls<...` compare the
+integer exactly before semantic sorting and paging.
+
+Process memory gauges convert the recorded KiB values to exact bytes. Process
+rates use the immediately preceding complete OS-process snapshot only when PID
+and recorded `starttime` are both unchanged. Missing predecessors, PID reuse,
+counter rollback, nonpositive intervals, or missing clock frequency make the
+rate null. CPU cores divide exact user/system tick deltas by the recorded clock
+frequency and wall interval. `run_delay` converts recorded nanoseconds to
+milliseconds per second; `block_io_delay` converts recorded clock ticks the
+same way. The corrected current `os_process` registry records `rchar` and
+`wchar` as bytes, allowing logical I/O rates without publishing those physical
+names. Raw cumulative process counters and a generic delta family are not
+public search fields. Documented aliases are limited to `resident_memory`,
+`virtual_memory`, source mnemonics such as `majflt_rate`, and their equally
+unambiguous counterparts; canonical names are retained in chips and URLs.
+
+Quantity literals are exact checked decimal values and never pass through a
+JavaScript number. Bytes accept case-sensitive SI `B` through `EB` and IEC
+`KiB` through `EiB`: `100MB` is exactly 100,000,000 bytes and `100MiB` is
+exactly 104,857,600 bytes. Counts are integral and unitless, rates use `/s`,
+and durations use `ns`, `us`, `ms`, `s`, `min` or `h`. Duration rates accept
+only `ns/s`, `us/s`, `ms/s`, or `s/s`; byte rates append `/s`. Per-call scalar
+values are unitless, per-call byte values use ordinary byte units, and
+percentages use `%`.
+Signs, exponent notation, grouping and nonfinite values are invalid. Missing
+or unavailable values never become zero and match neither strict operator.
+Displayed humanization does not participate in comparison.
+
+The token field keeps an editable draft separate from the last valid applied
+expression. Submission is atomic: an invalid span is marked and announced
+while the URL, request and last successful rows remain unchanged. A valid
+expression becomes removable keyboard controls whose comparison form uses the
+localized semantic label plus the exact operator and threshold; manual entry,
+paste and related-row links all produce this same state. Progressive RU/EN
+help lists the complete current surface registry and rules. The server parses
+and validates the same bounded expression and loads the exact hidden
+dependency closure. At object level the complete boolean expression is
+evaluated only after the object reducer has made identity, text and metrics
+available. At database, schema and tablespace levels, string/member predicates
+select physical contributors before aggregation and quantity/result predicates
+compare the authoritative grouped reducer after aggregation and before
+semantic ordering, cursor validation and pagination. `AND` can join these two
+parts. Every `OR` subtree must stay wholly on one side: member-only alternatives
+run before the reducer, result-only alternatives run after it, and a mixed
+alternative is rejected atomically as `mixed_phase_or`. This preserves exact
+boolean meaning without exposing a generic query engine. Search refusal, a
+successful empty set and transport failure are distinct; refresh failure
+retains the last successful data.
+
+A valid applied expression that starts a server search owns one explicit
+request state through the complete streamed or paged response. The dense
+search/status lane shows an indeterminate progress bar and localized live
+status until the newest request alone succeeds or fails; an aborted or stale
+response cannot clear it. During that interval completed zero-result copy and
+counts are suppressed. The prior successful rows remain in the fixed table
+frame and are labelled as retained; without prior rows, that frame says that
+search is in progress. Failure ends pending, keeps those rows, and remains
+distinct from a successful empty set. An invalid draft never starts a request.
+
+The URL-owned expression is scoped to one exact entity surface. Ordinary
+primary or PostgreSQL subsection navigation to a different surface omits
+`find`, even when both registries expose the same public field; Back restores
+the prior surface and its URL expression. Navigation within the same surface,
+including lens, sort, hour, cursor and relation-level changes, preserves it.
+Only an explicit related-row action may cross surfaces with a newly generated
+canonical target expression, which replaces rather than carries the source
+expression. A direct URL remains subject to the target surface's exact parser
+and invalid-expression semantics.
+
+Process user names are capture-time reference data, not facts reconstructed
+from the host at query time. Each segment may carry one `os_user` row per
+observed real or effective `(scope, uid)`, with the name interned in that
+segment's string dictionary. Process reads join only within that segment.
+`user` and `effective_user` search the resolved names before ordering and
+pagination, while `user_id` and `effective_user_id` retain exact numeric
+semantics. An unresolved UID remains visible as a number and never triggers a
+live identity lookup.
+
+PostgreSQL related-row navigation is confined to the PostgreSQL feature area
+and stored as that same public expression in the URL. For PostgreSQL 14–18 an
+Activity row, including Activity joined to a selected process, can open every
+retained `pg_stat_statements` row at the unchanged cursor whose `dbid` and
+nonzero signed `queryid` match the row's nullable `datid` and `query_id`; it
+deliberately does not filter by role or top-level status. Statements open all
+plans with the available database, role and Query ID, and plans open all
+statements by the corresponding identity. A plan row uses the layout's
+available shared database, role and query identifiers, while the vadv fork of
+`pg_store_plans` uses only its nonzero last-attributed
+`queryid_stat_statements`. These actions
+show related cumulative rows, select none automatically and make no claim
+about one exact execution. Missing or zero IDs are inert; Back restores the
+prior view, cursor and expression.
+
+Plan detail also resolves the recorded related Statement Query text inline,
+before the separately labelled Execution plan. It uses the same public
+fork-transparent Query ID mapping, but not the navigation identity: the public
+`query_id` is the normalized query-text hash, so database and role do not take
+part in this internal lookup. OSSC and Datasentinel use nonzero `queryid`; the
+vadv fork uses nonzero `queryid_stat_statements`. The client sends only
+`search=query_id:<id>`, `field=query`, `page_size=1` and `first_match=1` to the
+snapshot endpoint with full text enabled at the unchanged cursor. This strict
+shape is dedicated to inline text resolution and does not change manual
+Statements search.
+
+The server composes the exact selected as-of moment across its segment sources,
+then visits applicable layouts, sources and physical ordinals in stable order.
+It skips null or empty recorded query values and stops decoding immediately at
+the first usable matching text, before the general full-set sort and page path.
+It does not collect later matches, pages, duplicate texts or provenance. The
+client sends one request and renders at most one Query block; accepted hash
+collisions and multiple execution contexts therefore resolve to that stable
+first recorded text. The visible Statements page is never joined and query text
+is not added to stored plan rows.
+
+Recorded query strings pass through without parsing, normalization, shortening
+or whitespace loss, including collector-side truncation metadata. The Query
+block wraps and owns bounded scrolling for long text and offers an accessible
+exact Copy action. A missing bridge, a successful empty match and a network
+failure are different localized states; none removes the Execution plan, detail
+facts, charts, related navigation or Back behavior.
+The visible labels `Query`, `Execution plan` and `Copy` stay English in both
+locales while Russian explanatory text remains natural Russian.
+
+Activity duration presentation is state-aware. `Query time` exists only for
+`active`. `Time in state` emits an explicit null for pure `idle`, so a long
+idle period cannot draw a line or transition spike; `idle in transaction` and
+`idle in transaction (aborted)` retain their operationally relevant duration.
+History projections include state and preserve null breaks through transitions.
+
 Within the selected calendar hour, PID alone identifies OS process and
-`pg_stat_activity` rows, histories, filters, joins and counter deltas. Process
-`starttime` and PostgreSQL `backend_start` remain observed timestamps and do
-not participate in that identity.
+`pg_stat_activity` rows, histories, filters and joins. Process `starttime`
+and PostgreSQL `backend_start` remain observed timestamps and do not change
+that public identity. Process counter predecessors additionally require exact
+same-PID/same-`starttime`; a reused PID therefore keeps the row identity but
+has null interval rates. For a process-to-Activity join, retained
+rows are filtered by exact PID before the cursor-nearest timestamp is chosen.
+Per-database collection timestamps may differ slightly, so a globally nearer
+row for another PID must never hide or replace the selected backend.
 
 ### Segment resources
 

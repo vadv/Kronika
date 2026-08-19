@@ -52,6 +52,21 @@ pub fn read_process(
     facts: ProcessFacts,
     ts: i64,
 ) -> Result<ProcessRead, ProcessError> {
+    let cgroup_membership = read_cgroup_membership(fs, pid);
+    read_process_with_cgroup(fs, pid, facts, ts, cgroup_membership)
+}
+
+/// Read one process while reusing an optional, already-read cgroup membership.
+///
+/// # Errors
+/// Returns [`ProcessError`] under the same conditions as [`read_process`].
+pub fn read_process_with_cgroup(
+    fs: &ProcFs,
+    pid: i32,
+    facts: ProcessFacts,
+    ts: i64,
+    cgroup_membership: Option<String>,
+) -> Result<ProcessRead, ProcessError> {
     let stat_path = format!("{pid}/stat");
     let stat_content = read_required(fs, pid, &stat_path)?;
     let stat = parse_stat(&stat_content).map_err(|source| ProcessError::Parse {
@@ -71,12 +86,15 @@ pub fn read_process(
     let cmdline = read_cmdline(fs, pid);
     let comm = read_comm(fs, pid).unwrap_or_else(|| stat.comm.clone());
     let starttime = process_starttime_usec(facts, stat.starttime_ticks);
-    let cgroup = read_cgroup_path(fs, pid).map(|cgroup_path| ProcessCgroupRow {
-        ts,
-        pid,
-        starttime,
-        cgroup_path,
-    });
+    let cgroup = cgroup_membership
+        .as_deref()
+        .and_then(parse_cgroup_path)
+        .map(|cgroup_path| ProcessCgroupRow {
+            ts,
+            pid,
+            starttime,
+            cgroup_path,
+        });
 
     let hot = ProcessHotRow {
         ts,
@@ -121,6 +139,7 @@ pub fn read_process(
         hot,
         status,
         cgroup,
+        cgroup_membership,
     })
 }
 
@@ -203,7 +222,6 @@ fn read_comm(fs: &ProcFs, pid: i32) -> Option<String> {
     (!comm.is_empty()).then_some(comm)
 }
 
-fn read_cgroup_path(fs: &ProcFs, pid: i32) -> Option<String> {
-    let content = fs.read_raw(&format!("{pid}/cgroup")).ok()?;
-    parse_cgroup_path(&content)
+fn read_cgroup_membership(fs: &ProcFs, pid: i32) -> Option<String> {
+    fs.read_raw(&format!("{pid}/cgroup")).ok()
 }

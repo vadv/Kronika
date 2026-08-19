@@ -5,8 +5,9 @@ use hyper::header::ACCEPT_ENCODING;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AcceptedEncodings {
-    gzip: bool,
-    identity: bool,
+    gzip: u16,
+    identity: u16,
+    header_present: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,8 +19,9 @@ pub(crate) enum ContentCoding {
 impl Default for AcceptedEncodings {
     fn default() -> Self {
         Self {
-            gzip: true,
-            identity: true,
+            gzip: 1_000,
+            identity: 1_000,
+            header_present: false,
         }
     }
 }
@@ -54,13 +56,17 @@ impl AcceptedEncodings {
             return Some(Self::default());
         }
 
-        let gzip = gzip.or(wildcard).is_some_and(|quality| quality > 0);
-        let identity = identity.map_or_else(|| wildcard != Some(0), |quality| quality > 0);
-        (gzip || identity).then_some(Self { gzip, identity })
+        let gzip = gzip.or(wildcard).unwrap_or(0);
+        let identity = identity.unwrap_or_else(|| if wildcard == Some(0) { 0 } else { 1_000 });
+        (gzip > 0 || identity > 0).then_some(Self {
+            gzip,
+            identity,
+            header_present: true,
+        })
     }
 
     pub(super) const fn for_large(self) -> ContentCoding {
-        if self.gzip {
+        if self.gzip > 0 {
             ContentCoding::Gzip
         } else {
             ContentCoding::Identity
@@ -68,15 +74,19 @@ impl AcceptedEncodings {
     }
 
     pub(super) const fn for_small(self) -> ContentCoding {
-        if self.identity {
+        if self.identity > 0 {
             ContentCoding::Identity
         } else {
             ContentCoding::Gzip
         }
     }
 
-    pub(crate) const fn allows_gzip(self) -> bool {
-        self.gzip
+    pub(super) const fn for_ui(self) -> ContentCoding {
+        if !self.header_present || self.identity > self.gzip {
+            ContentCoding::Identity
+        } else {
+            ContentCoding::Gzip
+        }
     }
 }
 

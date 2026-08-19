@@ -1,4 +1,6 @@
-use crate::os_sources::{collect_mountinfo, collect_os_sources, cpu_max_mhz, resolve_major_zero};
+use crate::os_sources::{
+    UserReferences, collect_mountinfo, collect_os_sources, cpu_max_mhz, resolve_major_zero,
+};
 use crate::scheduler::{DueSet, SourceKind};
 use kronika_source_os::{MountEntry, ProcFs, SysFs};
 use kronika_writer::Interner;
@@ -114,15 +116,29 @@ fn collect_os_sources_no_diskstats_on_mount_topo_only_tick() {
 
     let fs = ProcFs::new(proc_root.to_path_buf());
     let mut interner = Interner::new(kronika_format::DictLimits::default());
+    let mut users = UserReferences::default();
     let due = DueSet::for_test(vec![SourceKind::OsMountTopo]);
 
-    let os = collect_os_sources(&fs, &mut interner, 0, 0, false, &due);
+    let os = collect_os_sources(&fs, &mut interner, &mut users, 0, 0, false, &due);
 
     assert!(
         os.diskstats_empty(),
         "diskstats must not be emitted on an OsMountTopo-only tick"
     );
     assert!(!os.mountinfo_empty(), "mountinfo rows must still be built");
+}
+
+#[test]
+fn cgroup_metrics_follow_the_recorded_container_environment() {
+    use crate::os_sources::collects_cgroup_metrics;
+
+    let due = DueSet::for_test(vec![SourceKind::OsCgroup]);
+    assert!(!collects_cgroup_metrics(false, &due));
+    assert!(collects_cgroup_metrics(true, &due));
+    assert!(!collects_cgroup_metrics(
+        true,
+        &DueSet::for_test(vec![SourceKind::OsCore])
+    ));
 }
 
 #[test]

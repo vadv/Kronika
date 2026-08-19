@@ -7,8 +7,7 @@ const MAX_QUERY_BYTES: usize = 64 * 1024;
 const MAX_SECTION_BYTES: usize = 128;
 const MAX_SNAPSHOT_SECTIONS: usize = 16;
 const MAX_SNAPSHOT_PAGE_SIZE: usize = 5_000;
-const MAX_SEARCH_PATTERNS: usize = 8;
-const MAX_SEARCH_PATTERN_CHARS: usize = 256;
+const MAX_SEARCH_EXPRESSION_CHARS: usize = 1_024;
 const MAX_FIELDS: usize = 256;
 const MAX_FILTERS: usize = 64;
 const MAX_ORDER_FIELDS: usize = 16;
@@ -40,7 +39,9 @@ pub(crate) struct SnapshotRequest {
     /// Present only for the paged single-section form.
     pub(crate) page_size: Option<usize>,
     pub(crate) cursor: Option<String>,
-    pub(crate) search: Vec<String>,
+    pub(crate) search: Option<String>,
+    /// Dedicated bounded Statement query-text lookup.
+    pub(crate) first_match: bool,
     pub(crate) text: Option<usize>,
     pub(crate) filters: Vec<Filter>,
     pub(crate) type_id: Option<u32>,
@@ -118,6 +119,7 @@ pub(crate) enum Order {
 pub(crate) enum RelationGroup {
     Database,
     Schema,
+    Tablespace,
     Object,
 }
 
@@ -208,7 +210,8 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
     let mut group = None;
     let mut page_size = None;
     let mut cursor = None;
-    let mut search = Vec::new();
+    let mut search = None;
+    let mut first_match = None;
     let mut text = None;
     let mut filters: Vec<Filter> = Vec::new();
     let mut type_id = None;
@@ -251,6 +254,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
                 group = Some(match raw_value {
                     "database" => RelationGroup::Database,
                     "schema" => RelationGroup::Schema,
+                    "tablespace" => RelationGroup::Tablespace,
                     "object" => RelationGroup::Object,
                     _ => return Err(RouteError::BadParameter("group".to_owned())),
                 });
@@ -278,8 +282,12 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
                 }
                 cursor = Some(value);
             }
-            "search" => {
-                push_snapshot_search(&mut search, raw_value)?;
+            "search" if search.is_none() => search = Some(snapshot_search(raw_value)?),
+            "first_match" if first_match.is_none() => {
+                if raw_value != "1" {
+                    return Err(RouteError::BadParameter("first_match".to_owned()));
+                }
+                first_match = Some(true);
             }
             other => {
                 let name = decoded("parameter", other, true)?;
@@ -299,9 +307,26 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
             }
         }
     }
+    let first_match = first_match.unwrap_or(false);
+    if first_match
+        && (sections.as_slice() != ["pg_stat_statements"]
+            || fields.as_slice() != ["query"]
+            || page_size != Some(1)
+            || cursor.is_some()
+            || search.is_none()
+            || text.is_some()
+            || !filters.is_empty()
+            || type_id.is_some()
+            || row_ordinal.is_some()
+            || !by.is_empty()
+            || direction.is_some()
+            || group.is_some())
+    {
+        return Err(RouteError::BadParameter("first_match".to_owned()));
+    }
     let paged = page_size.is_some()
         || cursor.is_some()
-        || !search.is_empty()
+        || search.is_some()
         || !by.is_empty()
         || direction.is_some()
         || group.is_some();
@@ -317,6 +342,7 @@ fn parse_snapshot(segment_id: i64, query: &str) -> Result<SnapshotRequest, Route
         page_size: paged.then_some(page_size.unwrap_or(DEFAULT_SNAPSHOT_PAGE_SIZE)),
         cursor,
         search,
+        first_match,
         text,
         filters,
         type_id,
@@ -331,17 +357,13 @@ fn snapshot_page_size(raw: &str) -> Result<usize, RouteError> {
         .ok_or_else(|| RouteError::BadParameter("page_size".to_owned()))
 }
 
-fn push_snapshot_search(search: &mut Vec<String>, raw: &str) -> Result<(), RouteError> {
+fn snapshot_search(raw: &str) -> Result<String, RouteError> {
     let value = decoded("search", raw, true)?;
     let value = value.trim();
-    if value.is_empty()
-        || value.chars().count() > MAX_SEARCH_PATTERN_CHARS
-        || search.len() >= MAX_SEARCH_PATTERNS
-    {
+    if value.is_empty() || value.chars().count() > MAX_SEARCH_EXPRESSION_CHARS {
         return Err(RouteError::BadParameter("search".to_owned()));
     }
-    search.push(value.to_owned());
-    Ok(())
+    Ok(value.to_owned())
 }
 
 fn validate_snapshot_shape(
@@ -418,6 +440,7 @@ fn parse_hour(query: &str) -> Result<HourRequest, RouteError> {
                 group = Some(match value.as_str() {
                     "database" => RelationGroup::Database,
                     "schema" => RelationGroup::Schema,
+                    "tablespace" => RelationGroup::Tablespace,
                     "object" => RelationGroup::Object,
                     _ => return Err(RouteError::BadParameter("group".to_owned())),
                 });
@@ -474,6 +497,7 @@ fn validate_relation_series(
     let required: &[&str] = match group {
         RelationGroup::Database => &["datid"],
         RelationGroup::Schema => &["datid", "schemaname"],
+        RelationGroup::Tablespace => &["tablespace_oid"],
         RelationGroup::Object => unreachable!(),
     };
     if filters.len() != required.len()
@@ -482,6 +506,15 @@ fn validate_relation_series(
             .any(|name| !filters.iter().any(|filter| filter.column == *name))
     {
         return Err(RouteError::BadParameter("where".to_owned()));
+    }
+    if group == RelationGroup::Tablespace
+        && filters[0]
+            .value
+            .parse::<u32>()
+            .ok()
+            .is_none_or(|oid| oid == 0)
+    {
+        return Err(RouteError::BadParameter("where.tablespace_oid".to_owned()));
     }
     Ok(())
 }

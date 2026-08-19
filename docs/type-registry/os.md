@@ -41,7 +41,7 @@ The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 | `1_109_001` | `/proc/net/dev` plus sysfs link facts | `snapshot_full` | `(iface, ts)` |
 | `1_110_001` | `/proc/net/snmp` | `snapshot_full` | `(ts)` |
 | `1_111_001` | `/proc/net/netstat` | `snapshot_full` | `(ts)` |
-| `1_112_001` | `mountinfo` plus bounded local-filesystem `statvfs` | `on_change` | `(major, minor, mount_point, ts)` |
+| `1_112_002` | `mountinfo` plus bounded local-filesystem byte/inode `statvfs` | `on_change` | `(major, minor, mount_point, ts)` |
 | `1_113_001` | `/proc/cpuinfo` plus sysfs topology | `on_change` | `(cpu_id, ts)` |
 | `1_114_001` | `/proc/interrupts` | `snapshot_full` | `(irq, ts)` |
 | `1_115_001` | `/proc/softirqs` | `snapshot_full` | `(vector, ts)` |
@@ -50,17 +50,35 @@ The filesystem roots are overridable with `KRONIKA_PROC_ROOT` (default
 | `1_118_001` | `/proc/net/snmp6` | `snapshot_full` | `(ts)` |
 | `1_119_001` | `/proc/net/rpc/nfs` | `snapshot_full` | `(ts)` |
 | `1_120_001` | `/proc/net/rpc/nfsd` | `snapshot_full` | `(ts)` |
+| `1_121_001` | CPUFreq policy membership, driver, source, and hardware range from sysfs | `on_change` | `(policy_id, ts)` |
+| `1_122_001` | CPUFreq policy frequencies, allowed range, and online CPU count from sysfs | `snapshot_full` | `(policy_id, ts)` |
+| `1_123_001` | exact sysfs partition-to-parent block-device edges | `on_change` | `(major, minor, ts)` |
+| `1_124_002` | observed process UID-to-username references from `/etc/passwd` | `on_change` | `(scope, uid, ts)` |
 | `1_200_001` | cgroup: process mapping | `snapshot_full` | `(pid, ts)` |
 | `1_201_001` | cgroup: cpu | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_201_002` | cgroup: cpu with effective cpuset, retained reader layout | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_202_001` | cgroup: memory | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_202_002` | cgroup: memory with shared memory, retained reader layout | `snapshot_full` | `(cgroup_path, ts)` |
-| `1_203_001` | cgroup: io | `snapshot_full` | `(cgroup_path, major, minor, ts)` |
+| `1_203_002` | cgroup: io with independently optional device counters | `snapshot_full` | `(cgroup_path, major, minor, ts)` |
 | `1_204_001` | cgroup: pids | `snapshot_full` | `(cgroup_path, ts)` |
 | `1_205_001` | collector cgroup context | `snapshot_full` | `(ts)` |
 
 The collector currently writes the `1_201_001` and `1_202_001` layouts. The
 `002` layouts remain registered because existing WAL and ZMS files carry them.
+
+Workload cgroup sections contain only cgroups named by direct memberships of
+live numeric `/proc/<pid>` entries; collection never recursively attributes an
+ancestor's descendants. V2 uses its unified membership path. V1 keeps CPU,
+memory, block-I/O, and PIDs controller paths separate, and emits a CPU row only
+when `cpu` and `cpuacct` name the same path. A tick accepts at most 512 distinct
+controller/path candidates and 512 KiB of candidate path bytes. Exceeding
+either ceiling omits all workload cgroup sections for that tick. More than
+1,024 cgroup/device rows omits the complete I/O section while retaining the
+independently complete CPU, memory, and PIDs sections. Collection runs on the
+same 30-second cadence as process-to-cgroup mapping.
+The collector reuses the process pass's membership reads on that shared tick.
+Each valid per-device I/O counter is recorded independently; a missing byte or
+operation counter does not discard the other counters from that device row.
 
 `os_cgroup_context` records the collector process's exact controller paths from
 `/proc/self/cgroup`. On cgroup v2 the CPU, memory, and I/O paths are the unified
@@ -106,11 +124,22 @@ The collection period is not part of a `type_id`. The collector's scheduler
 sets it per source; the intervals and their defaults are listed in the
 [collector README](../../bins/kronika-collector/README.md).
 
+CPUFreq is policy-scoped. `1_121_001` stores exact `related_cpus`, the scaling
+driver, the selected actual-frequency attribute, and hardware min/max in
+integer hertz. `1_122_001` stores one temporal row per policy. The collector
+uses the first successfully parsed actual-frequency attribute on every
+observation, preferring `cpuinfo_avg_freq` and then `cpuinfo_cur_freq`. If
+neither can be read, the value and source are null. `scaling_cur_freq` is
+retained separately because it is a
+reported or requested policy value, not necessarily a hardware measurement.
+One policy sample is never copied into per-logical-CPU rows.
+
 ## Bounds
 
-A single procfs read is capped at 4 MiB by a format constant. There is no row
-cap on a source: a host with thirty thousand processes produces thirty thousand
-rows. The `segment_write_finish` log record reports peak RSS as `rss_kib`.
+A single procfs read is capped at 4 MiB by a format constant. Process snapshots
+have no row cap: a host with thirty thousand processes produces thirty thousand
+rows. User-reference capture is separately capped as described below. The
+`segment_write_finish` log record reports peak RSS as `rss_kib`.
 
 ## Units
 
@@ -154,6 +183,7 @@ recorded. `✓` means the data is in a section above.
 | Per-softirq-vector counts | ✓ | — | ✓ | ✓ `1_115` |
 | Model, core, socket, max frequency | ✓ | ✓ | — | ✓ `1_113` |
 | NUMA node per CPU | ✓ | — | — | ✓ `1_113` |
+| CPUFreq policy membership and actual/scaling frequency history | ✓ | — | — | ✓ `1_121`, `1_122` |
 | Instructions and cycles (`perf`) | ✓ | — | — | — (not collected) |
 
 ### Memory and swap
@@ -196,6 +226,8 @@ recorded. `✓` means the data is in a section above.
 | LVM and MD devices | ✓ | ✓ | — | ✓ `1_108` (`/proc/diskstats` lists them) |
 | Mount points, filesystem type, source | — | ✓ | ✓ | ✓ `1_112` |
 | Filesystem total and free bytes | — | ✓ | ✓ | ✓ `1_112` |
+| Filesystem root and total/available inodes | — | — | — | ✓ `1_112` |
+| Exact partition-to-parent device edges | — | — | — | ✓ `1_123` |
 | File handles, inodes, dentries | — | — | ✓ | ✓ `1_116` |
 
 Filesystem capacity is populated only for the explicit local allowlist:
@@ -203,6 +235,14 @@ Filesystem capacity is populated only for the explicit local allowlist:
 Network, FUSE/userspace, `autofs`, and unknown types remain `null`. The entire
 capacity pass has a single one-second deadline; results completed before it are
 retained.
+
+`1_112_002` directly replaces the unreleased mount layout. Its identity is
+`(major, minor, mount_point)`, so two mount points exposing the same filesystem
+remain distinct. `root` is mountinfo field 4. Byte availability is `f_bavail`
+and inode availability is `f_favail`; neither is renamed to free or used space.
+`1_123_001` emits only an exact sysfs partition marker and its immediate parent
+device identity. Whole devices, dm/LVM/MD layers, unresolved sysfs links, and
+bind-mount ancestry emit no inferred edge.
 
 ### Network
 
@@ -227,6 +267,7 @@ retained.
 | Metric | atop | predecessor | internal | Kronika |
 | --- | :-: | :-: | :-: | :-: |
 | Identity: pid, ppid, uid, gid, name, command line, start time | ✓ | ✓ | ✓ | ✓ `1_100` |
+| Real and effective user names, with numeric UID retained | ✓ | ✓ | ✓ | ✓ `1_100`, `1_124` |
 | State, threads, priority, nice, policy, real-time priority, current CPU | ✓ | ✓ | ✓ | ✓ `1_100` |
 | User and system CPU time | ✓ | ✓ | ✓ | ✓ `1_100` |
 | Run-queue delay and block-I/O delay | ✓ | ✓ | ✓ | ✓ `1_100` |
@@ -238,6 +279,27 @@ retained.
 | File descriptor table size | — | — | — | ✓ `1_101` |
 | cgroup of a process | ✓ | ✓ | ✓ | ✓ `1_200` |
 | Per-thread rows, `wchan`, proportional set size | ✓ | — | — | — (not collected) |
+
+`os_user` records at most one mapping for each observed `(scope, uid)` in an
+open segment. Only real and effective UIDs from successfully decoded
+`os_process` rows are candidates. A new UID observed later in the same segment
+is appended through the normal WAL path; a failed append leaves it eligible for
+the next window. The row stores the collection timestamp, UID, interned user
+name, and scope.
+
+The collector reads exactly `/etc/passwd` once per open segment. The read is
+bounded to 256 KiB, each line to 4 KiB, the parsed snapshot to 4,096 entries,
+and each user name to 256 bytes. Malformed or overlong entries are skipped;
+an oversized file or entry count disables only user-name enrichment for that
+segment. There is no NSS, LDAP, SSSD, or web-service lookup. Missing and
+dynamic users therefore remain numeric in the API and interface.
+
+Readers join `os_process` only to `os_user` and `dict.strings` from the same
+segment, keyed by `(scope, uid)`. Human-facing `user` and `effective_user`
+search selectors are resolved by the server before ordering and pagination;
+`user_id` and `effective_user_id` remain exact numeric selectors. Ordinary
+text search covers command plus both resolved names. No query path consults
+the live host identity database.
 
 ### cgroup and container
 

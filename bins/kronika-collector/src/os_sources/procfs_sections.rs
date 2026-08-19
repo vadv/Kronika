@@ -1,9 +1,9 @@
 use super::{
-    Instant, Interner, MountEntry, OsDiskstats, OsInterrupts, OsKernelLimits, OsMountinfo,
-    OsNetdev, OsNuma, OsSoftirq, OsSources, OsTopology, ProcFs, SysFs, Ts, container_device_set,
-    cpuinfo, diskstats, intern_str, interrupts, kernel_limits, log_collection_finish, log_degraded,
-    mount_row, net_dev, net_netstat, net_snmp, net_snmp6, nfs, node_id_from_dir, parse_dev_pair,
-    parse_mountinfo, parse_node_meminfo, read_optional_os_file,
+    Instant, Interner, MountEntry, MountStringIds, OsDiskstats, OsInterrupts, OsKernelLimits,
+    OsMountinfo, OsNetdev, OsNuma, OsSoftirq, OsSources, OsTopology, ProcFs, SysFs, Ts,
+    container_device_set, cpuinfo, diskstats, intern_str, interrupts, kernel_limits,
+    log_collection_finish, log_degraded, mount_row, net_dev, net_netstat, net_snmp, net_snmp6, nfs,
+    node_id_from_dir, parse_dev_pair, parse_mountinfo, parse_node_meminfo, read_optional_os_file,
 };
 
 /// Read and parse `/proc/diskstats`, interning device names into rows.
@@ -284,7 +284,7 @@ pub(crate) fn cpu_numa_node(sys: &SysFs, cpu_id: i32) -> i32 {
 /// Read and parse `/proc/self/mountinfo`, resolving `major == 0` subvolume
 /// devices via `/sys`.
 pub(super) fn mountinfo_entries(fs: &ProcFs) -> Vec<MountEntry> {
-    let type_id = 1_112_001_u32;
+    let type_id = 1_112_002_u32;
     let Some(content) = read_optional_os_file(fs, "self/mountinfo", type_id) else {
         return Vec::new();
     };
@@ -324,13 +324,14 @@ pub(crate) fn collect_mountinfo(
     ts: i64,
     entries: &[MountEntry],
 ) -> Vec<OsMountinfo> {
-    let type_id = 1_112_001_u32;
+    let type_id = 1_112_002_u32;
     let started = Instant::now();
     let capacities = crate::capacity::collect(entries);
     let mut rows = Vec::new();
     for (entry, space) in entries.iter().zip(capacities) {
-        let (Some(mount_point), Some(fstype), Some(source)) = (
+        let (Some(mount_point), Some(root), Some(fstype), Some(source)) = (
             intern_str(interner, type_id, "self/mountinfo", &entry.mount_point),
+            intern_str(interner, type_id, "self/mountinfo", &entry.root),
             intern_str(interner, type_id, "self/mountinfo", &entry.fstype),
             intern_str(interner, type_id, "self/mountinfo", &entry.source),
         ) else {
@@ -341,9 +342,12 @@ pub(crate) fn collect_mountinfo(
             space,
             scope,
             ts,
-            mount_point,
-            fstype,
-            source,
+            MountStringIds {
+                mount_point,
+                root,
+                fstype,
+                source,
+            },
         ));
     }
     log_collection_finish(type_id, "procfs", rows.len(), started.elapsed());

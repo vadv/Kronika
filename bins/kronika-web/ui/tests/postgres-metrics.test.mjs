@@ -88,6 +88,7 @@ test("the three plan layouts and info use their exact physical variants", () => 
     assert.equal(metrics.physicalField(typeId, "local_blk_read_ms_per_second"), local)
     assert.equal(metrics.postgresProjection(typeId).includes("queryid_stat_statements"), isVadv)
     assert.equal(metrics.postgresProjection(typeId).includes("plan"), true)
+    assert.equal(metrics.planRequest("identity").fieldsByType[typeId].filter((field) => field === "calls").length, 1)
   }
   assert.deepEqual(metrics.postgresProjection("1016001"), ["dealloc", "stats_reset"])
   assert.deepEqual(metrics.postgresIdentity("1016001"), [])
@@ -236,6 +237,7 @@ test("plan lenses keep bounded rows and direct per-plan statistics", () => {
     assert.ok(timing.fieldsByType["1003001"].includes(field))
   }
   assert.equal(timing.fieldsByType["1003001"].includes("queryid_stat_statements"), false)
+  assert.equal(timing.fieldsByType["1004001"].includes("queryid_stat_statements"), true)
   assert.deepEqual(timing.order.mean_exec_time_ms, ["mean_time"])
   assert.deepEqual(timing.order.first_call, ["first_call"])
   const identity = metrics.planRequest("identity")

@@ -2,10 +2,11 @@ import { registry } from "kronika:registry"
 
 import { bundledFixtureHour, bundledFixtureRange } from "./fixture"
 import { rowMatchesLocator } from "./locator"
-import { decoratePostgresIntervalRow, intervalMetric, postgresIdentity, supportsPostgresDerivedOrder, unique } from "./postgres-metrics"
+import { decoratePostgresIntervalRow, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, postgresIdentity, supportsPostgresDerivedOrder, unique } from "./postgres-metrics"
 import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey, relationRateFields, relationRowKey, type RelationGroup, type RelationLayout, type RelationRow } from "./postgres-relations"
 import { apiFetch } from "./session"
 import { readNdjson } from "./wire"
+import { canonicalSearch } from "./search"
 
 export type Cell = null | boolean | number | string | readonly number[] | { readonly [key: string]: unknown }
 
@@ -25,6 +26,7 @@ const POSTGRESQL_OVERVIEW = [
 export const PRODUCT_SECTION_GROUPS = {
   host: REGISTRY_LOGICAL_NAMES.filter((name) => name === "instance_metadata" || name.startsWith("os_")),
   postgresqlOverview: [...POSTGRESQL_OVERVIEW, "pg_wal_storage"] as const,
+  postgresqlSettings: ["pg_settings"] as const,
   postgresqlActivity: ["pg_stat_activity", "pg_stat_progress_vacuum"] as const,
   postgresqlStatements: ["pg_stat_statements"] as const,
   postgresqlPlans: ["pg_store_plans", "pg_store_plans_info"] as const,
@@ -58,6 +60,10 @@ export const POSTGRESQL_OVERVIEW_REQUESTS: readonly SectionRequest[] = [
   { section: "pg_stat_activity", fields: ["state", "wait_event", "backend_type"] },
   { section: "pg_stat_database" },
   { section: "pg_locks", fields: ["pid"] },
+]
+
+export const POSTGRESQL_CONTEXT_REQUESTS: readonly SectionRequest[] = [
+  { section: "pg_settings", fields: ["name", "setting"] },
 ]
 
 export const TIMELINE_REQUESTS: readonly SectionRequest[] = [{ section: "health" }]
@@ -221,7 +227,7 @@ export interface ResolvedLocator {
 }
 
 export const ACTIVITY_FIELDS = [
-  "pid", "leader_pid", "datname", "usename", "application_name", "client_addr", "backend_type",
+  "pid", "leader_pid", "datid", "datname", "usename", "application_name", "client_addr", "backend_type",
   "state", "wait_event_type", "wait_event", "query", "query_id", "backend_xid_age",
   "backend_xmin_age", "backend_start", "xact_start", "query_start", "state_change",
 ] as const
@@ -750,6 +756,11 @@ function hourData(input: {
 }
 
 const CELL_TEXT = 160
+const RELATED_STATEMENT_TEXT_PAGE_SIZE = 1
+const RELATED_STATEMENT_TEXT_FIELDS = ["query"] as const
+const RELATED_STATEMENT_TEXT_FIELDS_BY_TYPE = Object.fromEntries(
+  PG_STAT_STATEMENTS_TYPE_IDS.map((typeId) => [typeId, RELATED_STATEMENT_TEXT_FIELDS]),
+)
 
 export interface SnapshotOptions {
   readonly filters?: Readonly<Record<string, string>>
@@ -757,7 +768,8 @@ export interface SnapshotOptions {
   readonly rowOrdinal?: string
   readonly fullText?: boolean
   readonly cursor?: string
-  readonly search?: readonly string[]
+  readonly search?: string
+  readonly firstMatch?: boolean
 }
 
 export interface SnapshotOrder {
@@ -777,7 +789,7 @@ export async function loadSnapshot(
   const chosen = snapshotOptions(options)
   if (requests.length === 0) return emptyHour()
   if ((chosen.filters !== undefined || chosen.typeId !== undefined || chosen.rowOrdinal !== undefined
-      || chosen.cursor !== undefined || chosen.search !== undefined)
+      || chosen.cursor !== undefined || chosen.search !== undefined || chosen.firstMatch === true)
     && requests.length !== 1) {
     throw new Error("a filtered, searched, paged, or exact snapshot needs one section")
   }
@@ -929,6 +941,35 @@ export async function loadSnapshotGroups(
   return snapshots.reduce((current, incoming) => mergeSnapshotData(current, incoming), emptyHour())
 }
 
+export async function loadRelatedStatementTextRow(
+  segments: readonly SegmentBound[],
+  at: number,
+  queryId: string,
+  signal: AbortSignal,
+): Promise<DataRow | null> {
+  const search = canonicalSearch([{ key: "query_id", value: queryId }], "pg_stat_statements")
+  if (search === null) return null
+  const [group] = snapshotRequestGroups(segments, at, [{
+    section: "pg_stat_statements",
+    typeIds: PG_STAT_STATEMENTS_TYPE_IDS,
+    fieldsByType: RELATED_STATEMENT_TEXT_FIELDS_BY_TYPE,
+    pageSize: RELATED_STATEMENT_TEXT_PAGE_SIZE,
+  }])
+  const [request] = group?.requests ?? []
+  if (group === undefined || request === undefined) return null
+
+  signal.throwIfAborted()
+  const page = await loadSnapshot(
+    group.anchor.id,
+    at,
+    [request],
+    signal,
+    undefined,
+    { firstMatch: true, fullText: true, search },
+  )
+  return page.sections.pg_stat_statements?.[0] ?? null
+}
+
 function rowValues(columns: readonly string[], cells: readonly unknown[]): Readonly<Record<string, Cell>> {
   return Object.fromEntries(columns.flatMap((name, index) => name === "ts"
     ? []
@@ -1075,7 +1116,8 @@ function snapshotQuery(
     ...(section?.pageSize === undefined || options.rowOrdinal !== undefined ? [] : [`page_size=${section.pageSize}`]),
     ...(options.fullText === true ? [] : [`text=${CELL_TEXT}`]),
     ...(options.cursor === undefined ? [] : [`cursor=${encodeURIComponent(options.cursor)}`]),
-    ...(options.search ?? []).map((pattern) => `search=${encodeURIComponent(pattern)}`),
+    ...(options.search === undefined ? [] : [`search=${encodeURIComponent(options.search)}`]),
+    ...(options.firstMatch === true ? ["first_match=1"] : []),
     ...Object.entries(options.filters ?? {}).map(([column, value]) =>
       `where.${encodeURIComponent(column)}=${encodeURIComponent(value)}`),
     ...(typeId === undefined ? [] : [`type_id=${encodeURIComponent(typeId)}`]),
@@ -1103,7 +1145,7 @@ function snapshotOptions(
 ): SnapshotOptions {
   if (value === undefined) return {}
   if ("filters" in value || "typeId" in value || "rowOrdinal" in value || "fullText" in value
-    || "cursor" in value || "search" in value) {
+    || "cursor" in value || "search" in value || "firstMatch" in value) {
     return value as SnapshotOptions
   }
   return { filters: value as Readonly<Record<string, string>> }

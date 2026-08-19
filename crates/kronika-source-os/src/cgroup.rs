@@ -18,12 +18,20 @@ pub use sections::{
 };
 
 use parse::{
-    parse_cpuacct_stat, parse_i64, parse_memory_events, parse_memory_stat_v1, parse_memory_stat_v2,
-    parse_optional_max, parse_v1_cpu_stat, parse_v1_memory_limit,
+    parse_blkio_service_stats_bounded, parse_cpuacct_stat, parse_i64, parse_io_stat_bounded,
+    parse_memory_events, parse_memory_stat_v1, parse_memory_stat_v2, parse_optional_max,
+    parse_v1_cpu_stat, parse_v1_memory_limit,
 };
 
 const CGROUP_ROOT: &str = "fs/cgroup";
 const DEFAULT_CPU_PERIOD_USEC: i64 = 100_000;
+
+/// Maximum distinct direct controller/path memberships accepted in one tick.
+pub const MAX_CGROUP_CANDIDATES: usize = 512;
+/// Maximum bytes across distinct direct controller/path memberships in one tick.
+pub const MAX_CGROUP_PATH_BYTES: usize = 512 * 1024;
+/// Maximum cgroup/device I/O rows accepted in one tick.
+pub const MAX_CGROUP_IO_ROWS: usize = 1024;
 
 const CPU_V1_DIRS: &[&str] = &["cpu,cpuacct", "cpuacct,cpu", "cpu", "cpuacct", ""];
 const CPU_QUOTA_V1_DIRS: &[&str] = &["cpu,cpuacct", "cpuacct,cpu", "cpu", ""];
@@ -51,7 +59,56 @@ struct SelfCgroupPaths {
     cpuacct: Option<String>,
     memory: Option<String>,
     io: Option<String>,
+    pids: Option<String>,
     cpuset: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct WorkloadCgroupPaths {
+    unified: BTreeSet<String>,
+    cpu: BTreeSet<String>,
+    memory: BTreeSet<String>,
+    io: BTreeSet<String>,
+    pids: BTreeSet<String>,
+    candidates: usize,
+    path_bytes: usize,
+}
+
+impl WorkloadCgroupPaths {
+    fn insert(&mut self, controller: CgroupController, path: &str) -> io::Result<()> {
+        let paths = match controller {
+            CgroupController::Unified => &mut self.unified,
+            CgroupController::Cpu => &mut self.cpu,
+            CgroupController::Memory => &mut self.memory,
+            CgroupController::Io => &mut self.io,
+            CgroupController::Pids => &mut self.pids,
+        };
+        if !paths.insert(path.to_owned()) {
+            return Ok(());
+        }
+        self.candidates = self.candidates.saturating_add(1);
+        self.path_bytes = self.path_bytes.saturating_add(path.len());
+        if self.candidates > MAX_CGROUP_CANDIDATES {
+            return Err(io::Error::other(format!(
+                "direct cgroup membership count exceeds {MAX_CGROUP_CANDIDATES}"
+            )));
+        }
+        if self.path_bytes > MAX_CGROUP_PATH_BYTES {
+            return Err(io::Error::other(format!(
+                "direct cgroup membership paths exceed {MAX_CGROUP_PATH_BYTES} bytes"
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CgroupController {
+    Unified,
+    Cpu,
+    Memory,
+    Io,
+    Pids,
 }
 
 /// Collect the process's exact cgroup paths, effective cpuset, and capacity.
@@ -176,8 +233,10 @@ fn usable_memory_v1(sys: &SysFs, path: &str) -> bool {
 }
 
 fn usable_io_v2(sys: &SysFs, path: &str) -> bool {
-    sys.read(&rel(path, "io.stat"))
-        .is_ok_and(|content| complete_io_stat(&content))
+    sys.read(&rel(path, "io.stat")).is_ok_and(|content| {
+        parse_io_stat_bounded(&content, 0, path, MAX_CGROUP_IO_ROWS)
+            .is_some_and(|rows| !rows.is_empty())
+    })
 }
 
 fn usable_io_v1(sys: &SysFs, path: &str) -> bool {
@@ -185,11 +244,14 @@ fn usable_io_v1(sys: &SysFs, path: &str) -> bool {
         .or_else(|| read_first_v1(sys, BLKIO_V1_DIRS, path, "blkio.io_service_bytes"));
     let operations = read_first_v1(sys, BLKIO_V1_DIRS, path, "blkio.throttle.io_serviced")
         .or_else(|| read_first_v1(sys, BLKIO_V1_DIRS, path, "blkio.io_serviced"));
-    bytes
-        .as_deref()
-        .and_then(complete_blkio_devices)
-        .zip(operations.as_deref().and_then(complete_blkio_devices))
-        .is_some_and(|(bytes, operations)| bytes == operations)
+    parse_blkio_service_stats_bounded(
+        bytes.as_deref().unwrap_or_default(),
+        operations.as_deref().unwrap_or_default(),
+        0,
+        path,
+        MAX_CGROUP_IO_ROWS,
+    )
+    .is_some_and(|rows| !rows.is_empty())
 }
 
 fn numeric_keys(content: &str) -> BTreeSet<&str> {
@@ -210,67 +272,6 @@ fn has_numeric_keys(content: &str, required: &[&str]) -> bool {
 
 fn has_any_key(keys: &BTreeSet<&str>, candidates: &[&str]) -> bool {
     candidates.iter().any(|key| keys.contains(key))
-}
-
-fn complete_io_stat(content: &str) -> bool {
-    let mut rows = 0_usize;
-    for line in content.lines() {
-        let mut fields = line.split_whitespace();
-        let Some(device) = fields.next() else {
-            continue;
-        };
-        if parse_device_pair(device).is_none() {
-            continue;
-        }
-        let keys: BTreeSet<&str> = fields
-            .filter_map(|field| {
-                let (key, value) = field.split_once('=')?;
-                value.parse::<i64>().ok().map(|_value| key)
-            })
-            .collect();
-        if !["rbytes", "wbytes", "rios", "wios"]
-            .iter()
-            .all(|key| keys.contains(key))
-        {
-            return false;
-        }
-        rows = rows.saturating_add(1);
-    }
-    rows != 0
-}
-
-fn complete_blkio_devices(content: &str) -> Option<BTreeSet<(u32, u32)>> {
-    let mut reads = BTreeSet::new();
-    let mut writes = BTreeSet::new();
-    for line in content.lines() {
-        let mut fields = line.split_whitespace();
-        let (Some(device), Some(operation), Some(value)) =
-            (fields.next(), fields.next(), fields.next())
-        else {
-            continue;
-        };
-        let Some(device) = parse_device_pair(device) else {
-            continue;
-        };
-        if value.parse::<i64>().is_err() {
-            continue;
-        }
-        match operation {
-            "Read" => {
-                reads.insert(device);
-            }
-            "Write" => {
-                writes.insert(device);
-            }
-            _ => {}
-        }
-    }
-    (!reads.is_empty() && reads == writes).then_some(reads)
-}
-
-fn parse_device_pair(device: &str) -> Option<(u32, u32)> {
-    let (major, minor) = device.split_once(':')?;
-    Some((major.parse().ok()?, minor.parse().ok()?))
 }
 
 fn parse_self_cgroup(content: &str) -> SelfCgroupPaths {
@@ -295,6 +296,7 @@ fn parse_self_cgroup(content: &str) -> SelfCgroupPaths {
                 "cpuacct" => set_exact_path(&mut paths.cpuacct, &path),
                 "memory" => set_exact_path(&mut paths.memory, &path),
                 "blkio" => set_exact_path(&mut paths.io, &path),
+                "pids" => set_exact_path(&mut paths.pids, &path),
                 "cpuset" => set_exact_path(&mut paths.cpuset, &path),
                 _ => {}
             }
@@ -585,6 +587,88 @@ pub fn collect(sys: &SysFs, ts: i64, clock_ticks_per_sec: i64) -> CgroupCollecti
     }
 }
 
+/// Collect bounded metrics for cgroups that contain at least one live process.
+///
+/// Membership comes from numeric `/proc/<pid>/cgroup` files. It is direct: no
+/// cgroup hierarchy traversal or recursive attribution is performed. Candidate
+/// overflow rejects the complete workload tick. I/O row overflow rejects only
+/// the I/O section so independently complete CPU, memory, and task rows remain.
+///
+/// # Errors
+/// Returns the procfs directory error or a hard candidate/path ceiling error.
+pub fn collect_workloads(
+    procfs: &ProcFs,
+    sys: &SysFs,
+    ts: i64,
+    clock_ticks_per_sec: i64,
+) -> io::Result<CgroupCollection> {
+    let mut memberships = Vec::new();
+    for pid in procfs.pid_dirs()? {
+        let Ok(content) = procfs.read_raw(&format!("{pid}/cgroup")) else {
+            // Processes can exit between enumerating /proc and reading their
+            // membership. The remaining live snapshot is still coherent.
+            continue;
+        };
+        memberships.push(content);
+    }
+    if let Ok(content) = procfs.read_raw("self/cgroup") {
+        memberships.push(content);
+    }
+    collect_workload_memberships(
+        memberships.iter().map(String::as_str),
+        sys,
+        ts,
+        clock_ticks_per_sec,
+    )
+}
+
+/// Collect bounded metrics from already-read direct process memberships.
+///
+/// This is the production entry point used to reuse the process collector's
+/// `/proc/<pid>/cgroup` reads.
+///
+/// # Errors
+/// Returns a hard candidate/path ceiling error.
+pub fn collect_workload_memberships<I, S>(
+    memberships: I,
+    sys: &SysFs,
+    ts: i64,
+    clock_ticks_per_sec: i64,
+) -> io::Result<CgroupCollection>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let unified_v2 = is_v2(sys);
+    let mut paths = WorkloadCgroupPaths::default();
+    for content in memberships {
+        let parsed = parse_self_cgroup(content.as_ref());
+        if unified_v2 {
+            if let Some(path) = parsed.unified {
+                paths.insert(CgroupController::Unified, &path)?;
+            }
+            continue;
+        }
+        if let Some(path) = matching_cpu_path(parsed.cpu, parsed.cpuacct) {
+            paths.insert(CgroupController::Cpu, &path)?;
+        }
+        if let Some(path) = parsed.memory {
+            paths.insert(CgroupController::Memory, &path)?;
+        }
+        if let Some(path) = parsed.io {
+            paths.insert(CgroupController::Io, &path)?;
+        }
+        if let Some(path) = parsed.pids {
+            paths.insert(CgroupController::Pids, &path)?;
+        }
+    }
+    Ok(if unified_v2 {
+        collect_v2_paths(sys, ts, paths.unified)
+    } else {
+        collect_v1_paths(sys, ts, clock_ticks_per_sec, paths)
+    })
+}
+
 fn is_v2(sys: &SysFs) -> bool {
     sys.read(&rel("/", "cgroup.controllers")).is_ok()
         || sys.read(&rel("/", "cpu.stat")).is_ok()
@@ -593,7 +677,14 @@ fn is_v2(sys: &SysFs) -> bool {
 }
 
 fn collect_v2(sys: &SysFs, ts: i64) -> CgroupCollection {
-    let paths = discover_v2_paths(sys);
+    collect_v2_paths(sys, ts, discover_v2_paths(sys))
+}
+
+fn collect_v2_paths(
+    sys: &SysFs,
+    ts: i64,
+    paths: impl IntoIterator<Item = String>,
+) -> CgroupCollection {
     let mut out = CgroupCollection::default();
     for path in paths {
         if let Some(cpu) = read_cpu_v2(sys, ts, &path) {
@@ -605,8 +696,14 @@ fn collect_v2(sys: &SysFs, ts: i64) -> CgroupCollection {
         if let Some(pids) = read_pids_v2(sys, ts, &path) {
             out.pids.push(pids);
         }
-        if let Ok(content) = sys.read(&rel(&path, "io.stat")) {
-            out.io.extend(parse_io_stat(&content, ts, &path));
+        if !out.io_omitted
+            && let Ok(content) = sys.read(&rel(&path, "io.stat"))
+        {
+            let remaining = MAX_CGROUP_IO_ROWS.saturating_sub(out.io.len());
+            append_bounded_io(
+                &mut out,
+                parse_io_stat_bounded(&content, ts, &path, remaining),
+            );
         }
     }
     out
@@ -614,31 +711,70 @@ fn collect_v2(sys: &SysFs, ts: i64) -> CgroupCollection {
 
 fn collect_v1(sys: &SysFs, ts: i64, clock_ticks_per_sec: i64) -> CgroupCollection {
     let paths = discover_v1_paths(sys);
+    let workload_paths = WorkloadCgroupPaths {
+        cpu: paths.iter().cloned().collect(),
+        memory: paths.iter().cloned().collect(),
+        io: paths.iter().cloned().collect(),
+        pids: paths.into_iter().collect(),
+        ..WorkloadCgroupPaths::default()
+    };
+    collect_v1_paths(sys, ts, clock_ticks_per_sec, workload_paths)
+}
+
+fn collect_v1_paths(
+    sys: &SysFs,
+    ts: i64,
+    clock_ticks_per_sec: i64,
+    paths: WorkloadCgroupPaths,
+) -> CgroupCollection {
     let mut out = CgroupCollection::default();
-    for path in paths {
+    for path in paths.cpu {
         if let Some(cpu) = read_cpu_v1(sys, ts, &path, clock_ticks_per_sec) {
             out.cpu.push(cpu);
         }
+    }
+    for path in paths.memory {
         if let Some(memory) = read_memory_v1(sys, ts, &path) {
             out.memory.push(memory);
         }
+    }
+    for path in paths.pids {
         if let Some(pids) = read_pids_v1(sys, ts, &path) {
             out.pids.push(pids);
+        }
+    }
+    for path in paths.io {
+        if out.io_omitted {
+            break;
         }
         let bytes = read_first_v1(sys, BLKIO_V1_DIRS, &path, "blkio.throttle.io_service_bytes")
             .or_else(|| read_first_v1(sys, BLKIO_V1_DIRS, &path, "blkio.io_service_bytes"));
         let ops = read_first_v1(sys, BLKIO_V1_DIRS, &path, "blkio.throttle.io_serviced")
             .or_else(|| read_first_v1(sys, BLKIO_V1_DIRS, &path, "blkio.io_serviced"));
         if bytes.is_some() || ops.is_some() {
-            out.io.extend(parse_blkio_service_stats(
-                bytes.as_deref().unwrap_or_default(),
-                ops.as_deref().unwrap_or_default(),
-                ts,
-                &path,
-            ));
+            let remaining = MAX_CGROUP_IO_ROWS.saturating_sub(out.io.len());
+            append_bounded_io(
+                &mut out,
+                parse_blkio_service_stats_bounded(
+                    bytes.as_deref().unwrap_or_default(),
+                    ops.as_deref().unwrap_or_default(),
+                    ts,
+                    &path,
+                    remaining,
+                ),
+            );
         }
     }
     out
+}
+
+fn append_bounded_io(out: &mut CgroupCollection, rows: Option<Vec<CgroupIoRow>>) {
+    if let Some(rows) = rows {
+        out.io.extend(rows);
+    } else {
+        out.io.clear();
+        out.io_omitted = true;
+    }
 }
 
 fn read_cpu_v2(sys: &SysFs, ts: i64, path: &str) -> Option<CgroupCpuRow> {

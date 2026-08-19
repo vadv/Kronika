@@ -26,6 +26,8 @@ fn completed_records_survive_an_incomplete_tail() {
     let expected = FsSpace {
         total_bytes: 100,
         free_bytes: 40,
+        total_inodes: 20,
+        available_inodes: 8,
     };
     let mut response = Vec::new();
     write_record(&mut response, Some(expected)).expect("complete record");

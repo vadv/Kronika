@@ -1,11 +1,20 @@
+use std::sync::Arc;
+
+use arrow_array::RecordBatch;
+use arrow_schema::{Field, Schema};
 use bytes::Bytes;
+use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, Encoding};
 use parquet::column::page::Page;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 
-use super::{FINAL_ZSTD_LEVEL, VerifiedSection, encode_final_batches};
+use super::{
+    CodecError, FINAL_ZSTD_LEVEL, VerifiedSection, encode_final_batches, encode_final_sections_to,
+    validate_final_section,
+};
+use crate::os_cpufreq::OsCpufreq;
 use crate::os_loadavg::OsLoadavg;
-use crate::{Section, Ts, decode_any};
+use crate::{Section, StrId, Ts, decode_any};
 
 fn row(load1: f64) -> OsLoadavg {
     OsLoadavg {
@@ -19,7 +28,7 @@ fn row(load1: f64) -> OsLoadavg {
     }
 }
 
-fn decoded_batches(rows: &[OsLoadavg]) -> Vec<arrow_array::RecordBatch> {
+fn decoded_batches(rows: &[OsLoadavg]) -> Vec<RecordBatch> {
     let body = OsLoadavg::encode(rows).expect("encode input section");
     decode_any(
         OsLoadavg::CONTRACT.type_id.get(),
@@ -104,4 +113,187 @@ fn finished_encoding_is_physical_and_boundary_deterministic() {
         }
         assert_eq!(data_pages, 1, "one data page per column chunk");
     }
+}
+
+#[test]
+fn bounded_finalizer_preserves_exact_finished_bytes_with_ties() {
+    let rows = [
+        row(f64::from_bits(0x7ff8_0000_0000_0002)),
+        row(-0.0),
+        row(0.0),
+        row(f64::from_bits(0x7ff8_0000_0000_0001)),
+        row(-0.0),
+    ];
+    let type_id = OsLoadavg::CONTRACT.type_id.get();
+    let bodies = rows
+        .iter()
+        .rev()
+        .map(|row| Bytes::from(OsLoadavg::encode(std::slice::from_ref(row)).expect("encode row")))
+        .collect::<Vec<_>>();
+    let batches = bodies
+        .iter()
+        .flat_map(|body| {
+            decode_any(type_id, VerifiedSection::for_test(body.clone()))
+                .expect("decode row")
+                .batches
+        })
+        .collect();
+    let expected = encode_final_batches(type_id, batches).expect("write legacy final body");
+
+    for body in &bodies {
+        validate_final_section(type_id, VerifiedSection::for_test(body.clone()), 1)
+            .expect("validate input section");
+    }
+    let mut actual = Vec::new();
+    encode_final_sections_to(type_id, &vec![1; bodies.len()], &mut actual, |index| {
+        Ok::<_, CodecError>(bodies[index].clone())
+    })
+    .expect("write bounded final body");
+
+    assert_eq!(
+        actual, expected,
+        "bounded finishing must preserve format bytes"
+    );
+}
+
+#[test]
+fn bounded_finalizer_rejects_renamed_contract_column() {
+    let batch = decoded_batches(&[row(1.0)])
+        .pop()
+        .expect("one encoded batch");
+    let fields = batch
+        .schema()
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            Field::new(
+                if index == 0 { "wrong_ts" } else { field.name() },
+                field.data_type().clone(),
+                field.is_nullable(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let schema = Arc::new(Schema::new(fields));
+    let renamed = RecordBatch::try_new(Arc::clone(&schema), batch.columns().to_vec())
+        .expect("build renamed batch");
+    let mut body = Vec::new();
+    let mut writer = ArrowWriter::try_new(&mut body, schema, None).expect("open Parquet writer");
+    writer.write(&renamed).expect("write renamed batch");
+    writer.close().expect("close renamed body");
+
+    let error = encode_final_sections_to(
+        OsLoadavg::CONTRACT.type_id.get(),
+        &[1],
+        &mut Vec::new(),
+        |_index| Ok::<_, CodecError>(Bytes::from(body.clone())),
+    )
+    .expect_err("renamed contract column must be rejected");
+    assert!(matches!(error, CodecError::SchemaMismatch));
+}
+
+#[test]
+fn streamed_record_batches_preserve_finished_bytes_with_ties() {
+    let rows = (0..8_193_i32)
+        .map(|value| {
+            let tied = value / 2;
+            OsLoadavg {
+                ts: Ts(i64::from(tied)),
+                load1: f64::from(tied),
+                load5: 2.0,
+                load15: 0.5,
+                running: 2,
+                total: 345,
+                scope: 0,
+            }
+        })
+        .collect::<Vec<_>>();
+    let expected_rows = rows
+        .chunks(1_024)
+        .map(|rows| u32::try_from(rows.len()).expect("test chunk length fits u32"))
+        .collect::<Vec<_>>();
+    let bodies = rows
+        .chunks(1_024)
+        .map(|rows| Bytes::from(OsLoadavg::encode(rows).expect("encode input section")))
+        .collect::<Vec<_>>();
+    let batches = bodies
+        .iter()
+        .flat_map(|body| {
+            decode_any(
+                OsLoadavg::CONTRACT.type_id.get(),
+                VerifiedSection::for_test(body.clone()),
+            )
+            .expect("decode input section")
+            .batches
+        })
+        .collect();
+    let expected = encode_final_batches(OsLoadavg::CONTRACT.type_id.get(), batches)
+        .expect("write reference body");
+    let mut actual = Vec::new();
+    encode_final_sections_to(
+        OsLoadavg::CONTRACT.type_id.get(),
+        &expected_rows,
+        &mut actual,
+        |index| Ok::<_, CodecError>(bodies[index].clone()),
+    )
+    .expect("write streamed final body");
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn cpufreq_sections_preserve_finished_bytes_and_bound_metadata() {
+    let bodies = (0..360_i64)
+        .map(|tick| {
+            let rows = (0..128_i32)
+                .map(|policy_id| OsCpufreq {
+                    ts: Ts(tick * 1_000_000),
+                    policy_id,
+                    actual_source: Some(StrId(1)),
+                    actual_frequency_hz: Some(2_200_000_000),
+                    scaling_cur_freq_hz: Some(2_100_000_000),
+                    scaling_min_freq_hz: Some(800_000_000),
+                    scaling_max_freq_hz: Some(3_600_000_000),
+                    online_cpus: Some(1),
+                    scope: 0,
+                })
+                .collect::<Vec<_>>();
+            Bytes::from(OsCpufreq::encode(&rows).expect("encode CPUFreq section"))
+        })
+        .collect::<Vec<_>>();
+    let metadata_bytes = bodies
+        .iter()
+        .map(|body| {
+            SerializedFileReader::new(body.clone())
+                .expect("read CPUFreq metadata")
+                .metadata()
+                .memory_size()
+        })
+        .sum::<usize>();
+    assert!(
+        metadata_bytes > super::finalize::MAX_CACHED_METADATA_BYTES,
+        "the profile must exercise cache-cap fallback"
+    );
+
+    let batches = bodies
+        .iter()
+        .flat_map(|body| {
+            decode_any(
+                OsCpufreq::CONTRACT.type_id.get(),
+                VerifiedSection::for_test(body.clone()),
+            )
+            .expect("decode CPUFreq input")
+            .batches
+        })
+        .collect();
+    let expected = encode_final_batches(OsCpufreq::CONTRACT.type_id.get(), batches)
+        .expect("write reference CPUFreq body");
+    let mut actual = Vec::new();
+    encode_final_sections_to(
+        OsCpufreq::CONTRACT.type_id.get(),
+        &vec![128; bodies.len()],
+        &mut actual,
+        |index| Ok::<_, CodecError>(bodies[index].clone()),
+    )
+    .expect("write bounded CPUFreq body");
+    assert_eq!(actual, expected);
 }

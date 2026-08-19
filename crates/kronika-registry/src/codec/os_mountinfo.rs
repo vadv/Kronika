@@ -1,4 +1,4 @@
-//! Type `1_112_001`: mount table from `/proc/self/mountinfo`.
+//! Type `1_112_002`: mount table from `/proc/self/mountinfo`.
 
 use crate::{Section, StrId, Ts};
 
@@ -10,7 +10,7 @@ use crate::{Section, StrId, Ts};
 /// the mount point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Section)]
 #[section(
-    id = 1_112_001,
+    id = 1_112_002,
     name = "os_mountinfo",
     semantics = on_change,
     sort_key("major", "minor", "mount_point", "ts"),
@@ -29,6 +29,9 @@ pub struct OsMountinfo {
     /// Mount point path, as a string dictionary reference.
     #[column(l)]
     pub mount_point: StrId,
+    /// Filesystem root exposed by this mount (`mountinfo` field 4).
+    #[column(l)]
+    pub root: StrId,
     /// Filesystem type (e.g. `ext4`, `btrfs`), as a string dictionary reference.
     #[column(l)]
     pub fstype: StrId,
@@ -44,6 +47,12 @@ pub struct OsMountinfo {
     /// Available bytes for unprivileged writes; `None` when skipped or unavailable.
     #[column(g, unit = bytes)]
     pub free_bytes: Option<i64>,
+    /// Total filesystem inode/file-serial count; `None` when unavailable.
+    #[column(g, unit = count)]
+    pub total_inodes: Option<i64>,
+    /// Inodes/file serials available to unprivileged users; `None` when unavailable.
+    #[column(g, unit = count)]
+    pub available_inodes: Option<i64>,
     /// Source scope (`0=host`). See `kronika_source_os::OsScope`.
     #[column(l)]
     pub scope: u8,
@@ -60,11 +69,14 @@ mod tests {
             major,
             minor,
             mount_point: StrId(10),
+            root: StrId(13),
             fstype: StrId(11),
             source: StrId(12),
             is_k8s_infra: false,
             total_bytes: Some(10_000_000_000),
             free_bytes: Some(5_000_000_000),
+            total_inodes: Some(1_000_000),
+            available_inodes: Some(500_000),
             scope: 0,
         }
     }
@@ -75,11 +87,14 @@ mod tests {
             major: 0,
             minor: 35,
             mount_point: StrId(20),
+            root: StrId(23),
             fstype: StrId(21),
             source: StrId(22),
             is_k8s_infra: true,
             total_bytes: None,
             free_bytes: None,
+            total_inodes: None,
+            available_inodes: None,
             scope: 0,
         }
     }
@@ -92,7 +107,7 @@ mod tests {
     #[test]
     fn contract_shape() {
         let c = OsMountinfo::CONTRACT;
-        assert_eq!(c.type_id.get(), 1_112_001);
+        assert_eq!(c.type_id.get(), 1_112_002);
         assert_eq!(c.sort_key, ["major", "minor", "mount_point", "ts"]);
         assert_eq!(c.identity, ["major", "minor", "mount_point"]);
     }
@@ -115,6 +130,8 @@ mod tests {
             decoded[0].free_bytes, None,
             "free_bytes must be None, not 0"
         );
+        assert_eq!(decoded[0].total_inodes, None);
+        assert_eq!(decoded[0].available_inodes, None);
     }
 
     #[test]
@@ -122,11 +139,15 @@ mod tests {
         let zero_row = OsMountinfo {
             total_bytes: Some(0),
             free_bytes: Some(0),
+            total_inodes: Some(0),
+            available_inodes: Some(0),
             ..full_row(10, 8, 2)
         };
         let bytes = OsMountinfo::encode(&[zero_row]).expect("encode");
         let decoded = OsMountinfo::decode(VerifiedSection::for_test(bytes.into())).expect("decode");
         assert_eq!(decoded[0].total_bytes, Some(0));
         assert_eq!(decoded[0].free_bytes, Some(0));
+        assert_eq!(decoded[0].total_inodes, Some(0));
+        assert_eq!(decoded[0].available_inodes, Some(0));
     }
 }

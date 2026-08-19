@@ -5,7 +5,8 @@
 //! Datasentinel interfaces carry plan text in their zero-argument results.
 //! Datasentinel additionally reports relation OIDs and command type. The vadv
 //! interface carries an internal query id plus a separate `pg_stat_statements`
-//! id and exposes plan text through a four-key function.
+//! id and materializes human-readable plan text through its keyed getter and
+//! native text converter.
 //!
 //! Rows are streamed in bounded collector batches. `PostgreSQL` truncates each
 //! plan text before it crosses the connection.
@@ -30,7 +31,7 @@ pub enum Flavour {
     OsscCompatible,
     /// Datasentinel's zero-argument interface with relation and command data.
     Datasentinel,
-    /// The vadv interface with two query ids and a keyed plan getter.
+    /// The vadv interface with two query ids and native plan-text materialization.
     Vadv,
 }
 
@@ -51,6 +52,7 @@ pub fn capability(entry: &InventoryEntry) -> Option<StorePlansCapability> {
     }
     let flavour = if entry.store_plans_bool_arg
         && entry.store_plans_key_getter
+        && entry.store_plans_text_converter
         && entry.store_plans_vadv_columns
     {
         Flavour::Vadv
@@ -109,8 +111,9 @@ pub fn store_plans_query(capability: &StorePlansCapability) -> String {
                 .to_owned(),
             format!("{}(false)", capability.schema.qualify(EXTENSION)),
             format!(
-                ", left({}(s.userid, s.dbid, s.queryid, s.planid), 65536) AS plan",
-                capability.schema.qualify("pg_store_plans_get_plan")
+                ", left({}({}(s.userid, s.dbid, s.queryid, s.planid)), 65536) AS plan",
+                capability.schema.qualify("pg_store_plans_textplan"),
+                capability.schema.qualify("pg_store_plans_get_plan"),
             ),
         ),
     };
@@ -147,7 +150,7 @@ pub struct OsscRow {
     pub datname: Option<String>,
     /// Role name resolved from `userid`.
     pub usename: Option<String>,
-    /// Server-truncated plan text.
+    /// Server-truncated human-readable plan text.
     pub plan: Option<String>,
     /// Executions.
     pub calls: i64,
@@ -237,7 +240,7 @@ pub struct VadvRow {
     pub datname: Option<String>,
     /// Role name resolved from `userid`.
     pub usename: Option<String>,
-    /// Server-truncated plan text.
+    /// Server-truncated human-readable plan text.
     pub plan: Option<String>,
     /// Executions.
     pub calls: i64,
@@ -604,7 +607,7 @@ pub async fn collect_datasentinel<E>(
     .await
 }
 
-/// Collect every vadv entry and its bounded plan text in one set-based query.
+/// Collect every vadv entry and its bounded human-readable plan text in one set-based query.
 ///
 /// # Errors
 /// Returns a [`BatchError`] when the query, row decoding, or batch sink fails.

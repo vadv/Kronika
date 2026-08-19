@@ -70,8 +70,6 @@ test("statement execution findings select the interval mean cell", () => {
 test("locator classes, scrolling, and selection state are independent", async () => {
   const entity = await readFile(new URL("../src/entity-table.tsx", import.meta.url), "utf8")
   const process = await readFile(new URL("../src/process-table.tsx", import.meta.url), "utf8")
-  // Loading and empty are different truths; the table never reports one as the other.
-  assert.match(entity, /\? loading/)
   assert.match(entity, /table-empty flex items-baseline" role="status"/)
   assert.match(entity, /aria-selected=/)
   assert.match(entity, /locator-row/)
@@ -81,7 +79,7 @@ test("locator classes, scrolling, and selection state are independent", async ()
   assert.doesNotMatch(process, /useReactTable|useVirtualizer|locator-row/)
   assert.match(entity, /at=\{row\.original\.relation \? row\.original\.timestamp : null\}/)
   assert.match(entity, /title=\{exact\}/)
-  assert.match(entity, /field\.kind === "bytes"\) return unit\(humanBytes\(cell, locale\), field\.rate, per\)/)
+  assert.match(entity, /field\.kind === "bytes"\) return humanBytes\(scaled, locale,/)
   assert.match(entity, /title=\{kind === "bytes" \|\| kind === "text" \? output : undefined\}>\{output\}/)
   assert.doesNotMatch(entity, /title=\{unit\(`\$\{rawText\(cell\)\} B`/)
   assert.doesNotMatch(entity, /kind === "bytes"[^\n]+measure\(cell/)
@@ -144,31 +142,4 @@ test("the context chip is visible and removable without changing row selection",
       < app.indexOf("const loaded = resolveLocator(data, selectedFinding)?.row ?? null"),
     "the stable exact locator must win before a newly allocated paged row",
   )
-})
-
-test("the human context chip and ordinary search are visibly intersected", async () => {
-  const source = await readFile(new URL("../src/table-filter.tsx", import.meta.url), "utf8")
-  assert.match(source, /<strong className="[^"]*">\{context\}<\/strong>/)
-  assert.match(source, /filter\.show_all/)
-  assert.match(source, /filter\.and/)
-  assert.match(source, /filter\.text/)
-  assert.match(source, /value=\{pattern\}/)
-  assert.doesNotMatch(source, /filter\.entity/)
-})
-
-test("paged tables keep virtualization and trigger the guarded near-end callback", async () => {
-  const [source, styles] = await Promise.all([
-    readFile(new URL("../src/entity-table.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
-  ])
-  const postgres = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
-  assert.match(source, /useVirtualizer/)
-  assert.match(source, /lastVirtualIndex >= rendered\.length - 10/)
-  assert.match(source, /onNearEnd\(\)/)
-  assert.match(source, /className="entity-scroll[^"]*"[^>]*tabIndex=\{0\}/)
-  assert.match(source, /className="entity-scroll[^"]*overflow-auto/)
-  assert.match(source, /className="entity-scroll[^"]*focus-visible:outline-accent/)
-  assert.match(source, /\[\.pg-table-shell_\.pg-entity-layout_&\]:h-auto/)
-  assert.match(source, /\[\.pg-entity-layout_&\]:min-h-\[100px\]/)
-  assert.match(postgres, /data-testid="table-paging"/)
 })

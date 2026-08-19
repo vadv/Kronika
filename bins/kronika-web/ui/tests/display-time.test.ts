@@ -33,6 +33,28 @@ test("mode switching formats the same exact instant and omits subseconds", () =>
   assert.doesNotMatch(utc.timestamp(instant), /\.987|654/)
 })
 
+test("selected-day context removes only an unambiguous repeated civil date", () => {
+  const formatter = createDisplayTimeFormatter("en", "browser", "Europe/Moscow")
+  const hour = Date.UTC(2026, 7, 18, 8) * 1_000
+  const sameDay = Date.UTC(2026, 7, 18, 8, 15, 47) * 1_000
+  const previousDay = Date.UTC(2026, 7, 17, 20, 15, 47) * 1_000
+  assert.equal(formatter.timestamp(sameDay, hour), "11:15:47")
+  assert.equal(formatter.timestamp(previousDay, hour), "08/17/2026 · 23:15:47")
+  assert.equal(formatter.timestamp(sameDay), "08/18/2026 · 11:15:47")
+  assert.deepEqual(formatter.range(sameDay - 60_000_000, sameDay - 30_000_000, hour), { from: "11:14:47", to: "11:15:17" })
+})
+
+test("cross-day comparisons show both full dates instead of one ambiguous endpoint", () => {
+  const formatter = createDisplayTimeFormatter("en", "utc")
+  const hour = Date.UTC(2026, 7, 18, 23) * 1_000
+  const from = Date.UTC(2026, 7, 18, 23, 59, 50) * 1_000
+  const to = Date.UTC(2026, 7, 19, 0, 0, 10) * 1_000
+  assert.deepEqual(formatter.range(from, to, hour), {
+    from: "08/18/2026 · 23:59:50",
+    to: "08/19/2026 · 00:00:10",
+  })
+})
+
 test("civil grouping follows date boundaries and a half-hour browser offset", () => {
   const instant = Date.UTC(2026, 7, 14, 1) * 1_000
   const losAngeles = createDisplayTimeFormatter("en", "browser", "America/Los_Angeles")

@@ -1,4 +1,4 @@
-//! Type `1_014_001`..`1_014_002`: `pg_stat_user_indexes`.
+//! Type `1_014_003`..`1_014_004`: `pg_stat_user_indexes`.
 //!
 //! Per-index statistics, one row per selected index per database. In PG 10-18
 //! the column set grows once: `last_idx_scan` arrives in PG16. PG17 and PG18 add
@@ -12,7 +12,7 @@
 
 use crate::{Section, StrId, Ts};
 
-/// Type `1_014_002`: `pg_stat_user_indexes` on PG 16-18 (V1 plus `last_idx_scan`).
+/// Type `1_014_004`: `pg_stat_user_indexes` on PG 16-18 (V1 plus `last_idx_scan`).
 ///
 /// One row per selected index per database. `last_idx_scan` is `None` when the
 /// index has never been scanned. Every column is an integer, `StrId`, or `bool`,
@@ -23,7 +23,7 @@ use crate::{Section, StrId, Ts};
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Section)]
 #[section(
-    id = 1_014_002,
+    id = 1_014_004,
     name = "pg_stat_user_indexes",
     semantics = snapshot_full,
     sort_key("datid", "indexrelid", "ts"),
@@ -54,9 +54,12 @@ pub struct PgStatUserIndexesV2 {
     /// Index name.
     #[column(l)]
     pub indexrelname: StrId,
-    /// Tablespace name; the current database default when `reltablespace = 0`.
+    /// Effective tablespace oid.
     #[column(l)]
-    pub tablespace: StrId,
+    pub tablespace_oid: u32,
+    /// Effective tablespace name; `None` when catalog label resolution is missing.
+    #[column(l)]
+    pub tablespace: Option<StrId>,
     /// Index scans.
     #[column(c, unit = count)]
     pub idx_scan: i64,
@@ -101,7 +104,7 @@ pub struct PgStatUserIndexesV2 {
     pub idx_blks_hit: i64,
 }
 
-/// Type `1_014_001`: `pg_stat_user_indexes` on PG 10-15 (base layout, no
+/// Type `1_014_003`: `pg_stat_user_indexes` on PG 10-15 (base layout, no
 /// `last_idx_scan`). Column meanings match [`PgStatUserIndexesV2`] for fields
 /// present in this layout.
 #[allow(
@@ -110,7 +113,7 @@ pub struct PgStatUserIndexesV2 {
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Section)]
 #[section(
-    id = 1_014_001,
+    id = 1_014_003,
     name = "pg_stat_user_indexes",
     semantics = snapshot_full,
     sort_key("datid", "indexrelid", "ts"),
@@ -141,9 +144,12 @@ pub struct PgStatUserIndexesV1 {
     /// Index name.
     #[column(l)]
     pub indexrelname: StrId,
-    /// Tablespace name; the current database default when `reltablespace = 0`.
+    /// Effective tablespace oid.
     #[column(l)]
-    pub tablespace: StrId,
+    pub tablespace_oid: u32,
+    /// Effective tablespace name; `None` when catalog label resolution is missing.
+    #[column(l)]
+    pub tablespace: Option<StrId>,
     /// Index scans.
     #[column(c, unit = count)]
     pub idx_scan: i64,
@@ -200,7 +206,8 @@ mod tests {
             schemaname: StrId(2),
             relname: StrId(3),
             indexrelname: StrId(u64::from(indexrelid) | 1),
-            tablespace: StrId(4),
+            tablespace_oid: 1_663,
+            tablespace: Some(StrId(4)),
             idx_scan: 120,
             idx_tup_read: 3_400,
             idx_tup_fetch: 3_000,
@@ -221,11 +228,16 @@ mod tests {
     #[test]
     fn v2_contract_shape() {
         let c = PgStatUserIndexesV2::CONTRACT;
-        assert_eq!(c.type_id.get(), 1_014_002);
-        assert_eq!(c.columns.len(), 23);
+        assert_eq!(c.type_id.get(), 1_014_004);
+        assert_eq!(c.columns.len(), 24);
         assert_eq!(c.sort_key, ["datid", "indexrelid", "ts"]);
         assert_eq!(c.column("ts").map(|col| col.nullable), Some(false));
         assert_eq!(c.column("indexrelid").map(|col| col.nullable), Some(false));
+        assert_eq!(
+            c.column("tablespace_oid").map(|col| col.nullable),
+            Some(false)
+        );
+        assert_eq!(c.column("tablespace").map(|col| col.nullable), Some(true));
         assert_eq!(c.column("idx_scan").map(|col| col.nullable), Some(false));
         assert_eq!(
             c.column("last_idx_scan").map(|col| col.nullable),
@@ -250,8 +262,8 @@ mod tests {
     #[test]
     fn v1_is_base_layout() {
         let c = PgStatUserIndexesV1::CONTRACT;
-        assert_eq!(c.type_id.get(), 1_014_001);
-        assert_eq!(c.columns.len(), 22);
+        assert_eq!(c.type_id.get(), 1_014_003);
+        assert_eq!(c.columns.len(), 23);
         assert_eq!(c.sort_key, ["datid", "indexrelid", "ts"]);
         assert!(c.column("last_idx_scan").is_none());
         assert!(c.column("main_fork_bytes").is_some());

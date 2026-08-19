@@ -4,13 +4,13 @@ import test from "node:test"
 
 import { importModule, registryPlugin } from "./import-module.mjs"
 
-const helpers = await importModule('export { LENS_FIELDS, PROCESS_SUMMARY_FIELDS, PROCESS_SUMMARY_METRICS, processSummaryFormat, processSummaryOutput, processSummaryPoints, processSummaryReducer, processSummaryUnit } from "../src/process-table.tsx"; export { sticky, stickyOffsets } from "../src/entity-table.tsx"', { plugins: [registryPlugin([])] })
+const helpers = await importModule('export { LENS_FIELDS, PROCESS_SUMMARY_FIELDS, PROCESS_SUMMARY_METRICS, PROCESS_USER_FIELDS, processSummaryFormat, processSummaryOutput, processSummaryPoints, processSummaryReducer, processSummaryUnit, processTableDefaultOrder, processUser, processUserSearch } from "../src/process-table.tsx"; export { sticky, stickyOffsets } from "../src/entity-table.tsx"', { plugins: [registryPlugin([])] })
 const { LENS_FIELDS } = helpers
 
 test("process lenses keep identity first, lens metrics next, and state last", () => {
   const fields = (lens) => LENS_FIELDS[lens].map(({ id }) => id)
   assert.deepEqual(fields("generic"), [
-    "pid", "command", "ppid", "uid", "euid", "gid", "egid", "num_threads", "tty", "exit_signal", "state",
+    "pid", "command", "ppid", "user", "effective_user", "gid", "egid", "num_threads", "tty", "exit_signal", "state",
   ])
   assert.deepEqual(fields("cpu"), [
     "pid", "command", "utime", "stime", "rundelay_ns", "blkdelay_ticks", "nvcsw", "nivcsw",
@@ -23,6 +23,18 @@ test("process lenses keep identity first, lens metrics next, and state last", ()
     "pid", "command", "read_bytes", "write_bytes", "syscr", "syscw", "rchar", "wchar",
     "cancelled_write_bytes", "blkdelay_ticks", "state",
   ])
+})
+
+test("process users retain exact numeric identity and honest unresolved fallback", () => {
+  const [user, effective] = helpers.PROCESS_USER_FIELDS
+  const row = (values) => ({ logicalName: "os_process", ordinal: "1", segmentId: "a", timestamp: 1, typeId: "1100001", values })
+  assert.equal(helpers.processUser(row({ uid: 26, user: "postgres" }), user), "postgres (26)")
+  assert.equal(helpers.processUser(row({ euid: 9999, effective_user: null }), effective), "9999")
+  assert.equal(helpers.processUserSearch(row({ uid: 26, user: "postgres" }), user), "user:postgres")
+  assert.equal(helpers.processUserSearch(row({ euid: 27, effective_user: "postgres worker" }), effective), 'effective_user:"postgres worker"')
+  assert.equal(helpers.processUserSearch(row({ euid: 9999, effective_user: null }), effective), null)
+  assert.deepEqual(helpers.processTableDefaultOrder("generic"), { column: "pid", descending: false })
+  assert.deepEqual(helpers.processTableDefaultOrder("disk"), { column: "read_bytes", descending: true })
 })
 
 test("process sticky headers share live offsets and stacking classes with their cells", async () => {
@@ -43,7 +55,7 @@ test("process sticky headers share live offsets and stacking classes with their 
   assert.match(source, /max-\[760px\]:static/)
 })
 
-test("all sixteen process cards use the exact complete-set history projection", async () => {
+test("all sixteen process aggregate readings use the exact complete-set history projection", async () => {
   assert.deepEqual(helpers.PROCESS_SUMMARY_FIELDS, [
     "processes", "threads", "runnable", "postgresql",
     "user_cores", "system_cores", "run_delay_ms_per_second", "context_switches_per_second",
@@ -91,7 +103,7 @@ test("process summary charts preserve absent, null, zero, storage and human unit
   assert.equal(helpers.processSummaryUnit(metric("read_bytes_per_second"), "en", t), "B/s")
   assert.equal(helpers.processSummaryUnit(metric("processes"), "en", t), "count")
   assert.equal(helpers.processSummaryUnit(metric("user_cores"), "en", t), "cores")
-  assert.equal(helpers.processSummaryUnit(metric("run_delay_ms_per_second"), "en", t), "ms/s")
+  assert.equal(helpers.processSummaryUnit(metric("run_delay_ms_per_second"), "en", t), "")
 })
 
 test("process summary request states retain rows only within the requested hour", () => {

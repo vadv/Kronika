@@ -5,6 +5,7 @@ import type { Cell, DataRow } from "./api"
 import { buildMetricSamples } from "./chart"
 import { ChartOnly } from "./chart-visibility"
 import { useDetailDismiss } from "./detail-dismiss"
+import { DetailList, DetailRow } from "./detail-list"
 import { useDisplayTime } from "./display-time-context"
 import { LabelHelp, type Translate } from "./help"
 import type { HistoryStatus } from "./history-request"
@@ -22,8 +23,9 @@ import {
   type Locale,
 } from "./model"
 import { activityDurationMs, backendAgeMs, stateDurationMs, transactionDurationMs } from "./postgres-activity"
-import { CellValue, formatCell, LENS_FIELDS, type Field } from "./process-table"
+import { CellValue, formatCell, LENS_FIELDS, PROCESS_USER_FIELDS, type Field } from "./process-table"
 import { SeriesChart, type ChartPoint } from "./series-chart"
+import { statementsForActivity, type RelatedNavigation } from "./statement-navigation"
 
 interface HistoryField {
   readonly field: string
@@ -49,9 +51,6 @@ const PROCESS_HISTORY: Readonly<Record<Lens, readonly HistoryField[]>> = {
     { counter: true, field: "nivcsw", key: "col.nivcsw", kind: "rate" },
     { counter: true, field: "minflt", key: "col.minflt", kind: "rate" },
     { counter: true, field: "majflt", key: "col.majflt", kind: "rate" },
-    { field: "nice", key: "col.nice", kind: "number", scale: "signed", unit: "priority" },
-    { field: "prio", key: "col.prio", kind: "number", unit: "priority" },
-    { field: "rtprio", key: "col.rtprio", kind: "number", unit: "priority" },
   ],
   memory: [
     { field: "rmem_kb", key: "col.rmem", kind: "kib" },
@@ -103,6 +102,7 @@ export function DetailDock({
   locale,
   onClose,
   onCursor,
+  onRelated,
   process,
   processHistory,
   processHistoryStatus,
@@ -117,6 +117,7 @@ export function DetailDock({
   readonly locale: Locale
   readonly onClose: () => void
   readonly onCursor: (timestamp: number) => void
+  readonly onRelated: (target: RelatedNavigation) => void
   readonly process: DataRow
   readonly processHistory: readonly DataRow[]
   readonly processHistoryStatus: HistoryStatus
@@ -142,10 +143,11 @@ export function DetailDock({
     () => selectedHistory === null ? [] : processChartPoints(selectedHistory, ticksPerSecond),
     [selectedHistory, ticksPerSecond],
   )
+  const relatedActivity = activity === null ? null : statementsForActivity(activity)
   return (
     <aside
       aria-label={t("detail.process.title")}
-      className="overflow-y-auto border border-line3 border-l-0 bg-s2 p-[13px] max-h-[min(570px,calc(100vh-370px))] max-[1179px]:fixed max-[1179px]:bottom-2.5 max-[1179px]:right-2.5 max-[1179px]:top-[150px] max-[1179px]:z-80 max-[1179px]:w-[min(430px,calc(100vw-20px))] max-[1179px]:max-w-[430px] max-[1179px]:max-h-[calc(100vh-160px)] max-[1179px]:border-l max-[1179px]:shadow-[-15px_0_45px_var(--color-shadow-a)]"
+      className="h-full min-h-0 overflow-y-auto border border-line3 border-l-0 bg-s2 p-[13px] max-[1179px]:fixed max-[1179px]:bottom-2.5 max-[1179px]:right-2.5 max-[1179px]:top-[150px] max-[1179px]:z-80 max-[1179px]:h-auto max-[1179px]:w-[min(430px,calc(100vw-20px))] max-[1179px]:max-h-[calc(100dvh-160px)] max-[1179px]:max-w-[430px] max-[1179px]:border-l max-[1179px]:shadow-[-15px_0_45px_var(--color-shadow-a)]"
       data-testid={activity === null ? "process-dock" : "pg-linked-dock"}
       ref={detail}
     >
@@ -160,10 +162,10 @@ export function DetailDock({
         <code className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-sm leading-[1.5] text-fg [font-family:inherit] hover:overflow-visible hover:whitespace-normal hover:[text-overflow:clip] hover:[overflow-wrap:anywhere]" data-testid="process-cmdline">{processCommand(process)}</code>
         <button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center border border-line4 bg-transparent px-[3px] py-0.5 text-xs uppercase text-accent3" onClick={() => void navigator.clipboard?.writeText(processCommand(process))} type="button"><Copy aria-hidden="true" size={12} /></button>
       </section>
-      <dl className="m-0 mt-2">
+      <DetailList>
         <DetailField help="col.pid.help" label="col.pid.label" t={t} value={identifier(value(process, "pid"))} />
-        {LENS_FIELDS[lens].filter((field) => field.id !== "command" && field.id !== "pid" && field.field !== undefined && value(process, field.field) !== null).map((field) => <DetailField help={field.help} key={field.id} label={field.label} t={t} value={<CellValue field={field} linked={false} locale={locale} row={process} t={t} ticksPerSecond={ticksPerSecond} />} />)}
-      </dl>
+        {processDetailFields(lens, process).map((field) => <DetailField help={field.help} key={field.id} label={field.label} t={t} value={<CellValue field={field} linked={false} locale={locale} row={process} t={t} ticksPerSecond={ticksPerSecond} />} />)}
+      </DetailList>
       <ChartOnly><section aria-label={t(`lens.${lens}`)} className="process-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]" data-testid="process-history">
         <div aria-label={t(`lens.${lens}`)} className="history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">
           {selectableHistory.map((series) => (
@@ -202,14 +204,16 @@ export function DetailDock({
         <div className="flex items-center">
           <h3 className="m-0 text-sm font-[560] text-fg">{t("detail.pg_pid", { pid: identifier(value(activity, "pid")) })}</h3>
         </div>
-        <dl className="m-0 mt-2">
+        <DetailList>
           <DetailField help="detail.pg_snapshot.help" label="detail.pg_snapshot.label" t={t} value={activityTime === null ? "—" : <Timestamp raw={activityTime} t={t} />} />
           {ACTIVITY_DURATIONS.flatMap(([field, duration]) => {
             const elapsed = duration(activity)
             return elapsed === null ? [] : [<DetailField help={`pg.field.${field}.help`} key={field} label={`pg.field.${field}.label`} t={t} value={humanDuration(elapsed, locale)} />]
           })}
-          {ACTIVITY_FIELDS.map(([field, key, kind]) => <DetailField help={`${key}.help`} key={field} label={`${key}.label`} t={t} value={formatActivity(value(activity, field), kind, locale, t)} />)}
-        </dl>
+          {ACTIVITY_FIELDS.map(([field, key, kind]) => <DetailField help={`${key}.help`} key={field} label={`${key}.label`} t={t} value={field === "query_id" && relatedActivity !== null
+            ? <button aria-label={t("pg.related.open_statements", { id: relatedActivity.queryId ?? "" })} className="cursor-pointer border-0 bg-transparent p-0 text-accent3 underline decoration-dotted underline-offset-2" onClick={() => onRelated(relatedActivity)} type="button">{identifier(value(activity, field))}</button>
+            : formatActivity(value(activity, field), kind, locale, t)} />)}
+        </DetailList>
         <section className="mt-2 border border-line3 bg-s1 px-1.5 py-[5px]">
           <span className="flex items-center justify-between text-xs uppercase text-fg3"><LabelHelp helpKey="pg.query.help" labelKey="pg.query.label" t={t} /></span>
           <pre className="mx-0 mb-0 mt-2 max-h-[170px] overflow-auto whitespace-pre-wrap break-words text-sm leading-[1.55] text-event-edge [font:inherit]" data-testid="pg-exact-query">{rawText(value(activity, "query")) ?? "—"}</pre>
@@ -217,6 +221,11 @@ export function DetailDock({
       </section>}
     </aside>
   )
+}
+
+export function processDetailFields(lens: Lens, process: DataRow): readonly Field[] {
+  const fields = lens === "generic" ? LENS_FIELDS[lens] : [...PROCESS_USER_FIELDS, ...LENS_FIELDS[lens]]
+  return fields.filter((field) => field.id !== "command" && field.id !== "pid" && field.field !== undefined && (field.kind === "user" || value(process, field.field) !== null))
 }
 
 export function processChartPoints(
@@ -236,7 +245,7 @@ export function processChartPoints(
 
 export function processChartUnit(kind: Field["kind"], t: Translate, ticksPerSecond: number | null): string {
   if (kind === "cores") return ticksPerSecond !== null && ticksPerSecond > 0 ? t("unit.cores").trim() : `ticks${t("unit.per_second")}`
-  if (kind === "ns") return t("unit.ms_per_second").trim()
+  if (kind === "ns") return ""
   if (kind === "kib") return "B"
   if (kind === "bytes") return `B${t("unit.per_second")}`
   if (kind === "rate") return `#${t("unit.per_second")}`
@@ -251,14 +260,14 @@ function formatProcessChartValue(
   ticksPerSecond: number | null,
 ): string {
   if (kind === "cores" && ticksPerSecond !== null && ticksPerSecond > 0) return humanCores(reading, locale, t("unit.cores"))
-  if (kind === "ns") return measure(reading, locale, t("unit.ms_per_second"))
+  if (kind === "ns") return humanDuration(reading, locale, "milliseconds", t("unit.per_second"))
   if (kind === "kib") return humanBytes(reading, locale)
   if (kind === "bytes") return humanBytes(reading, locale, t("unit.per_second"))
   return formatCell(kind, reading, locale, t, ticksPerSecond)
 }
 
 function DetailField({ help, label, t, value: output }: { readonly help: string; readonly label: string; readonly t: Translate; readonly value: ReactNode }) {
-  return <div className="detail-row max-[520px]:detail-row-stacked"><dt className="detail-dt"><LabelHelp helpKey={help} labelKey={label} t={t} /></dt><dd className="detail-dd text-sm max-[520px]:text-left">{output}</dd></div>
+  return <DetailRow term={<LabelHelp helpKey={help} labelKey={label} t={t} />} valueClassName="text-sm">{output}</DetailRow>
 }
 
 function Timestamp({ cell, raw, t }: { readonly cell?: Cell; readonly raw?: number; readonly t: Translate }) {

@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState, type Dispatch } from "react"
 
-import { acceptResponse, loadSeries, type Cell, type DataRow, type Finding } from "./api"
+import { acceptResponse, loadSeries, type Cell, type DataRow, type Finding, type SnapshotRows } from "./api"
 import { buildMetricSamples } from "./chart"
-import { ChartOnly } from "./chart-visibility"
 import { EntityTable, type EntityColumn, type TableOrder } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import {
@@ -10,11 +9,10 @@ import {
   cores,
   humanBytes,
   humanCores,
+  humanDuration,
   identifier,
   measure,
-  millisecondsPerSecond,
   processCommand,
-  processDefaultSort,
   processKey,
   rawText,
   stateText,
@@ -22,6 +20,8 @@ import {
   type Lens,
   type Locale,
 } from "./model"
+import { canonicalSearch } from "./search"
+import type { SearchRequestState } from "./search-request"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 
 export interface Field {
@@ -29,7 +29,7 @@ export interface Field {
   readonly field?: string
   readonly label: string
   readonly help: string
-  readonly kind: "id" | "command" | "state" | "number" | "rate" | "cores" | "kib" | "bytes" | "ns"
+  readonly kind: "id" | "user" | "command" | "state" | "number" | "rate" | "cores" | "kib" | "bytes" | "ns"
   readonly size: number
   readonly sticky?: "pid" | "command"
 }
@@ -37,11 +37,15 @@ export interface Field {
 const PID: Field = { id: "pid", field: "pid", label: "col.pid.label", help: "col.pid.help", kind: "id", size: 62, sticky: "pid" }
 const COMMAND: Field = { id: "command", label: "col.command.label", help: "col.command.help", kind: "command", size: 300, sticky: "command" }
 const STATE: Field = { id: "state", field: "state", label: "col.state.label", help: "col.state.help", kind: "state", size: 60 }
+export const PROCESS_USER_FIELDS: readonly Field[] = [
+  { id: "user", field: "user", label: "col.user.label", help: "col.user.help", kind: "user", size: 140 },
+  { id: "effective_user", field: "effective_user", label: "col.effective_user.label", help: "col.effective_user.help", kind: "user", size: 160 },
+]
 
 export const LENS_FIELDS: Readonly<Record<Lens, readonly Field[]>> = {
   generic: [
     PID, COMMAND,
-    idField("ppid", "col.ppid", 70), idField("uid", "col.uid", 70), idField("euid", "col.euid", 70),
+    idField("ppid", "col.ppid", 70), ...PROCESS_USER_FIELDS,
     idField("gid", "col.gid", 70), idField("egid", "col.egid", 70),
     numberField("num_threads", "col.threads", 84), idField("tty", "col.tty", 70),
     idField("exit_signal", "col.exit_signal", 70), STATE,
@@ -130,21 +134,18 @@ export function processSummaryReducer(state: ProcessSummaryState, action: Proces
   return { hour: action.hour, history: action.rows, status: action.rows.length === 0 ? "empty" : "ready" }
 }
 
-export function ProcessSummary({ cursor, dispatch, hour, lens, locale, onCursor, state, t }: {
+export function ProcessSummary({ cursor, dispatch, hour, lens, locale, state, t }: {
   readonly cursor: number
   readonly dispatch: Dispatch<ProcessSummaryAction>
   readonly hour: number
   readonly lens: Lens
   readonly locale: Locale
-  readonly onCursor: (timestamp: number) => void
   readonly state: ProcessSummaryState
   readonly t: Translate
 }) {
   const metrics = PROCESS_SUMMARY_METRICS[lens]
-  const [selected, setSelected] = useState(metrics[0]!.field)
   const history = state.hour === hour ? state.history : []
   const status = state.hour === hour ? state.status : "loading"
-  const active = metrics.find(({ field }) => field === selected) ?? metrics[0]!
   useEffect(() => {
     const controller = new AbortController()
     dispatch({ hour, type: "loading" })
@@ -152,22 +153,17 @@ export function ProcessSummary({ cursor, dispatch, hour, lens, locale, onCursor,
       (rows) => dispatch({ hour, type: "loaded", rows }), () => dispatch({ hour, type: "error" }))
     return () => controller.abort()
   }, [hour])
-  const activePoints = useMemo(() => processSummaryPoints(history, active), [active, history])
   const statusKey = status === "loading" ? "process.summary.loading" : status === "error" ? "process.summary.error" : status === "empty" ? "status.no_data" : null
-  return <section aria-label={t("process.summary.title")} className="process-summary metric-grid grid-cols-4 border-l border-line2 max-[760px]:grid-cols-2 [&>button_span]:block [&>button_span]:max-w-full [&>button_span]:overflow-hidden [&>button_span]:text-ellipsis [&>button_span]:whitespace-nowrap [&>button_span]:text-xs [&>button_span]:uppercase">
+  return <section aria-label={t("process.summary.title")} className="process-summary grid grid-cols-4 border-l border-line2 max-[760px]:grid-cols-2">
     {metrics.map((metric) => {
       const output = processSummaryOutput(readingAt(processSummaryPoints(history, metric), cursor), metric, locale, t)
-      return <div className="metric-choice" key={metric.field}>
-        <button aria-pressed={active.field === metric.field} onClick={() => setSelected(metric.field)} type="button">
-          <span>{t(metric.key)}</span><strong>{output}</strong>
-        </button>
+      return <div className="relative flex min-h-[42px] min-w-0 items-center gap-2 border-b border-r border-line px-2 pr-7" key={metric.field}>
+        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-xs uppercase text-fg3">{t(metric.key)}</span>
+        <strong className="flex-none text-md font-[560] tabular-nums text-fg">{output}</strong>
         <LabelHelp helpKey={metric.help} iconOnly labelKey={metric.key} t={t} testId={`process-summary-help-${metric.field}`} />
       </div>
     })}
     {statusKey !== null && <p aria-live="polite" className="col-[1/-1] m-0 min-h-[26px] px-2 py-[7px] text-xs text-fg3" data-testid="process-summary-status">{t(statusKey)}</p>}
-    <ChartOnly>{history.length !== 0 && <div className="col-[1/-1] min-w-0 border-b border-line2" data-testid="process-summary-history">
-      <SeriesChart cursor={cursor} empty={t("status.no_data")} format={processSummaryFormat(active, t)} helpKey={active.help} hour={hour} labelKey={active.key} locale={locale} onCursor={onCursor} points={activePoints} t={t} unit={processSummaryUnit(active, locale, t)} />
-    </div>}</ChartOnly>
   </section>
 }
 
@@ -184,7 +180,7 @@ export function processSummaryOutput(reading: number | null, metric: ProcessSumm
   if (metric.kind === "B") return humanBytes(reading, locale)
   if (metric.kind === "B/s") return humanBytes(reading, locale, t("unit.per_second"))
   if (metric.kind === "cores") return humanCores(reading, locale)
-  if (metric.kind === "ms/s") return measure(reading, locale, t("unit.ms_per_second"))
+  if (metric.kind === "ms/s") return humanDuration(reading, locale, "milliseconds", t("unit.per_second"))
   return measure(reading, locale, metric.kind === "1/s" ? t("unit.per_second") : "")
 }
 
@@ -195,7 +191,7 @@ export function processSummaryFormat(metric: ProcessSummaryMetric, t: Translate)
 export function processSummaryUnit(metric: ProcessSummaryMetric, locale: Locale, t: Translate): string {
   if (metric.kind === "B" || metric.kind === "B/s") return metric.kind
   if (metric.kind === "cores") return t("unit.cores").trim()
-  if (metric.kind === "ms/s") return t("unit.ms_per_second").trim()
+  if (metric.kind === "ms/s") return ""
   if (metric.kind === "1/s") return `1${t("unit.per_second")}`
   return locale === "ru" ? "количество" : "count"
 }
@@ -208,16 +204,21 @@ export function ProcessTable({
   contextLabel,
   finding,
   findingField,
+  densePageState,
   lens,
   linkedPids,
   locale,
+  metadata,
+  onLoadMore,
   onOrder,
   onContextClear,
   onPattern,
   onSelect,
+  onRetry,
   order,
   pattern,
   rows,
+  searchRequest,
   selectedKey,
   t,
   ticksPerSecond,
@@ -225,16 +226,21 @@ export function ProcessTable({
   readonly contextLabel?: string | undefined
   readonly finding?: Finding | null
   readonly findingField?: string | null | undefined
+  readonly densePageState: "idle" | "loading" | "error"
   readonly lens: Lens
   readonly linkedPids: ReadonlySet<number>
   readonly locale: Locale
+  readonly metadata?: SnapshotRows | undefined
+  readonly onLoadMore: () => void
   readonly onOrder: (order: TableOrder | null) => void
   readonly onContextClear?: (() => void) | undefined
   readonly onPattern: (pattern: string) => void
   readonly order: TableOrder | null
   readonly onSelect: (row: DataRow) => void
+  readonly onRetry: () => void
   readonly pattern: string
   readonly rows: readonly DataRow[]
+  readonly searchRequest: SearchRequestState
   readonly selectedKey: string | null
   readonly t: Translate
   readonly ticksPerSecond: number | null
@@ -247,17 +253,27 @@ export function ProcessTable({
       ...(help === undefined ? {} : { help }),
       kind: entityKind(field.kind),
       label: field.label,
-      render: (row) => <CellValue field={field} locale={locale} linked={linkedPids.has(asNumber(value(row, "pid")) ?? -1)} row={row} t={t} ticksPerSecond={ticksPerSecond} />,
+      render: (row) => <CellValue field={field} locale={locale} linked={linkedPids.has(asNumber(value(row, "pid")) ?? -1)} onSearch={onPattern} row={row} t={t} ticksPerSecond={ticksPerSecond} />,
       sortValue: (row) => sortable(row, field),
+      sortable: field.kind !== "user",
       ...(field.sticky === undefined ? {} : { sticky: `sticky-${field.sticky}` }),
       width: field.size,
     }
-  }), [lens, linkedPids, locale, t, ticksPerSecond])
-  const defaultOrder = lens === "generic"
-    ? { column: "pid", descending: false }
-    : { column: processDefaultSort(lens, rows), descending: true }
-  return <EntityTable
-    className="process-table min-w-0 overflow-hidden border border-line2 bg-s1 charts-hidden:flex charts-hidden:flex-col"
+  }), [lens, linkedPids, locale, onPattern, t, ticksPerSecond])
+  const activeOrder = order ?? processTableDefaultOrder(lens)
+  const canLoadMore = metadata?.hasMore === true && metadata.nextCursor !== null
+  const paging = densePageState !== "idle" || canLoadMore
+    ? <button disabled={densePageState === "loading"} onClick={densePageState === "error" ? onRetry : onLoadMore} type="button">
+      {densePageState === "loading" ? "…" : densePageState === "error" ? "↻" : "+"}
+    </button>
+    : undefined
+  const status = <strong>{t("pg.table.shown", {
+    returned: new Intl.NumberFormat(locale).format(rows.length),
+    eligible: new Intl.NumberFormat(locale).format(metadata?.eligible ?? rows.length),
+  })}</strong>
+  return <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+    <EntityTable
+    className="process-table flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-line2 bg-s1"
     columns={columns}
     contextLabel={contextLabel}
     empty={t("table.empty")}
@@ -265,19 +281,33 @@ export function ProcessTable({
     findingField={findingField}
     label={t("table.processes")}
     locale={locale}
+    onNearEnd={densePageState === "idle" && canLoadMore ? onLoadMore : undefined}
     onOrder={onOrder}
     onContextClear={onContextClear}
     onPattern={onPattern}
     onSelect={onSelect}
-    order={order ?? defaultOrder}
+    order={activeOrder}
     pattern={pattern}
     rowKey={processKey}
     rowLabel={(row) => t("table.activate", { pid: identifier(value(row, "pid")) })}
     rows={rows}
+    searchRequest={searchRequest}
+    searchSurface="os_process"
+    serverSorted
     selectedKey={selectedKey}
+    status={status}
     t={t}
     testId="process-table"
-  />
+    />
+    {paging !== undefined && <div className="lens-tabs flex-none" data-testid="table-paging">{paging}</div>}
+  </div>
+}
+
+export function processTableDefaultOrder(lens: Lens): TableOrder {
+  if (lens === "generic") return { column: "pid", descending: false }
+  if (lens === "memory") return { column: "rmem_kb", descending: true }
+  if (lens === "disk") return { column: "read_bytes", descending: true }
+  return { column: "utime", descending: true }
 }
 
 export function formatCell(kind: Field["kind"], cell: Cell, locale: Locale, t: Translate, ticksPerSecond: number | null): string {
@@ -288,20 +318,37 @@ export function formatCell(kind: Field["kind"], cell: Cell, locale: Locale, t: T
     case "cores": return cores(cell, locale, ticksPerSecond, "")
     case "kib": return humanBytes(kib(asNumber(cell)), locale)
     case "bytes": return humanBytes(cell, locale, t("unit.per_second"))
-    case "ns": return millisecondsPerSecond(cell, locale) + t("unit.ms_per_second")
-    case "id": return identifier(cell)
+    case "ns": return humanDuration(cell, locale, "nanoseconds", t("unit.per_second"))
+    case "id": case "user": return identifier(cell)
     case "command": return ""
   }
 }
 
-export function CellValue({ field, linked, locale, row, t, ticksPerSecond }: { readonly field: Field; readonly linked: boolean; readonly locale: Locale; readonly row: DataRow; readonly t: Translate; readonly ticksPerSecond: number | null }) {
+export function CellValue({ field, linked, locale, onSearch, row, t, ticksPerSecond }: { readonly field: Field; readonly linked: boolean; readonly locale: Locale; readonly onSearch?: ((pattern: string) => void) | undefined; readonly row: DataRow; readonly t: Translate; readonly ticksPerSecond: number | null }) {
   const cell = field.field === undefined ? null : value(row, field.field)
-  const output = field.kind === "command" ? processCommand(row) : formatCell(field.kind, cell, locale, t, ticksPerSecond)
-  return <span className={`block overflow-hidden text-ellipsis whitespace-nowrap ${field.kind === "command" ? "w-full text-fg" : "numeric-cell tabular-nums"}`} title={output}>{field.kind === "command" && linked && <span className="mr-1.5 inline-block border border-accent-line bg-accent-soft px-1 py-0.5 align-[1px] text-xs font-bold tracking-[.06em] text-accent2">PG</span>}{output}</span>
+  const output = field.kind === "command" ? processCommand(row) : field.kind === "user" ? processUser(row, field) : formatCell(field.kind, cell, locale, t, ticksPerSecond)
+  const userSearch = field.kind === "user" ? processUserSearch(row, field) : null
+  return <span className={`block overflow-hidden text-ellipsis whitespace-nowrap ${field.kind === "command" || field.kind === "user" ? "w-full text-fg" : "numeric-cell tabular-nums"}`} title={output}>{field.kind === "command" && linked && <span className="mr-1.5 inline-block border border-accent-line bg-accent-soft px-1 py-0.5 align-[1px] text-xs font-bold tracking-[.06em] text-accent2">PG</span>}{userSearch !== null && onSearch !== undefined
+    ? <button className="max-w-full cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap border-0 bg-transparent p-0 text-left text-accent3 underline decoration-dotted underline-offset-2" data-testid={`process-user-filter-${field.id}`} onClick={(event) => { event.stopPropagation(); onSearch(userSearch) }} type="button">{output}</button>
+    : output}</span>
+}
+
+export function processUser(row: DataRow, field: Field): string {
+  const uid = identifier(value(row, field.id === "effective_user" ? "euid" : "uid"))
+  const name = field.field === undefined ? null : rawText(value(row, field.field))
+  return name === null || name.trim() === "" ? uid : `${name} (${uid})`
+}
+
+export function processUserSearch(row: DataRow, field: Field): string | null {
+  if (field.kind !== "user" || field.field === undefined) return null
+  const name = rawText(value(row, field.field))
+  if (name === null || name.trim() === "") return null
+  return canonicalSearch([{ key: field.id, value: name }], "os_process")
 }
 
 function sortable(row: DataRow, field: Field): string | number | null {
   if (field.kind === "command") return processCommand(row)
+  if (field.kind === "user") return processUser(row, field)
   const cell = field.field === undefined ? null : value(row, field.field)
   if (field.kind === "state") return stateText(cell)
   if (field.kind === "id" && field.id !== "pid") return rawText(cell)
@@ -310,7 +357,7 @@ function sortable(row: DataRow, field: Field): string | number | null {
 
 function entityKind(kind: Field["kind"]): NonNullable<EntityColumn["kind"]> {
   if (kind === "id") return "id"
-  if (kind === "command" || kind === "state") return "text"
+  if (kind === "command" || kind === "state" || kind === "user") return "text"
   return "number"
 }
 

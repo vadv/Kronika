@@ -57,11 +57,12 @@ export async function dictionaryModule(directory) {
   const keys = validateDictionaries(english, russian)
     .sort((left, right) => compare(reversed(russian[left]), reversed(russian[right])) || compare(reversed(english[left]), reversed(english[right])) || compare(left, right))
   const keyType = keys.map(JSON.stringify).join("|")
-  const messages = [keys.map((key) => russian[key]), keys.map((key) => english[key])]
-  if (keys.some((key) => key.includes(",")) || messages.flat().some((message) => message.includes("\t"))) {
+  const common = keys.map((key) => english[key])
+  const russianOverrides = keys.map((key) => russian[key] === english[key] ? "" : russian[key])
+  if (keys.some((key) => key.includes(",")) || [...common, ...russianOverrides].some((message) => message.includes("\t"))) {
     throw new Error("translation dictionaries contain reserved separators")
   }
-  return `const messages=${JSON.stringify(messages.flat().join("\t"))}.split("\\t"),indexes=new Map(${JSON.stringify(keys.join(","))}.split(",").map((key,index)=>[key,index]));export type TranslationKey=${keyType};export const translation=(locale:"en"|"ru",key:string)=>messages[indexes.get(key)!+(locale==="ru"?0:${keys.length})];`
+  return `const common=${JSON.stringify(common.join("\t"))}.split("\\t"),russian=${JSON.stringify(russianOverrides.join("\t"))}.split("\\t"),indexes=new Map(${JSON.stringify(keys.join(","))}.split(",").map((key,index)=>[key,index]));export type TranslationKey=${keyType};export const translation=(locale:"en"|"ru",key:string)=>{const index=indexes.get(key)!;return locale==="ru"&&russian[index]||common[index]};`
 }
 
 function compare(left, right) {

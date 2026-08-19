@@ -6,7 +6,7 @@ import { importModule, registryPlugin } from "./import-module.mjs"
 const layouts = [
   layout("1100001", "os_process", ["pid"], ["ts", "pid", "starttime", "read_bytes"]),
   layout("1108001", "os_diskstats", ["major", "minor"], ["ts", "major", "minor", "device"]),
-  layout("1001003", "pg_stat_activity", ["pid"], ["ts", "pid", "backend_start", "query"]),
+  layout("1001004", "pg_stat_activity", ["pid"], ["ts", "pid", "backend_start", "query"]),
   layout("1002001", "pg_stat_statements", ["queryid", "userid", "dbid"], ["ts", "queryid", "userid", "dbid", "query", "total_time"]),
   layout("1002003", "pg_stat_statements", ["queryid", "userid", "dbid", "toplevel"], ["ts", "queryid", "userid", "dbid", "toplevel", "query", "total_exec_time"]),
   layout("1003001", "pg_store_plans", ["userid", "dbid", "queryid", "planid"], ["ts", "userid", "dbid", "queryid", "planid", "plan", "total_time"]),
@@ -47,7 +47,7 @@ test("context keeps exact identities while process and Activity use PID only", (
   const plan = row("pg_store_plans", "1003001", "4", { userid: "10", dbid: "11", queryid: "9", planid: "12", datname: "app", usename: "reporter", plan: "Scan t" })
   const database = row("pg_stat_database", "1005001", "5", { datid: "16384", datname: "app" })
   const device = row("os_diskstats", "1108001", "6", { major: 8, minor: 1, device: "sda1" })
-  const activity = row("pg_stat_activity", "1001003", "7", { pid: 42, backend_start: "9007199254740999", query: "select 1" })
+  const activity = row("pg_stat_activity", "1001004", "7", { pid: 42, backend_start: "9007199254740999", query: "select 1" })
 
   const processContext = helpers.entityContext(finding(process), process)
   assert.equal(processContext.label, "PID 41")

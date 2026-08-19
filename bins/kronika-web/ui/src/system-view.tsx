@@ -2,7 +2,7 @@ import { registry } from "kronika:registry"
 import { X } from "lucide-react"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
-import type { HostSection } from "./address"
+import type { HostMode, HostSection } from "./address"
 import { fieldNameForLocator, loadSeries, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
 import { buildMetricSamples } from "./chart"
 import { ChartOnly, useChartsVisible } from "./chart-visibility"
@@ -11,7 +11,7 @@ import { contextualRows, type EntityContext } from "./entity-context"
 import { EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import { useHistoryRequest } from "./history-request"
-import { asNumber, humanBytes, humanCores, humanPercent, measure, rawText, shownMoment, snapshot, value, type Locale } from "./model"
+import { asNumber, humanBytes, humanCores, humanDuration, humanHertz, humanPercent, measure, rawText, shownMoment, snapshot, value, type Locale } from "./model"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 import { UPlotChart, type RecordedSeries } from "./uplot-chart"
@@ -33,6 +33,8 @@ interface MetricSpec {
     | "cpu_idle"
     | "cpu_used_cores"
     | "cpu_capacity"
+    | "cpu_actual_frequency"
+    | "cpu_scaling_frequency"
     | "mem_file_cache"
     | "mem_other"
     | "filesystem_free_min"
@@ -68,7 +70,8 @@ export function metricChartUnit(spec: MetricSpec, locale: Locale): string {
   if (spec.unit === "%") return "%"
   if (spec.unit === " KiB") return "B"
   if (spec.unit === " cores") return "cores"
-  if (spec.unit === " B") return locale === "ru" ? "байты/с" : "bytes/s"
+  if (spec.unit === " MHz") return "MHz"
+  if (spec.unit === " B") return ""
   if (spec.id === "network_errors" || spec.id === "network_drops") return locale === "ru" ? "1/с" : "1/s"
   if (metricClass(spec) === "cumulative") return locale === "ru" ? "1/с" : "1/s"
   return locale === "ru" ? "количество" : "count"
@@ -98,6 +101,8 @@ export interface CgroupSnapshotPlan {
 export const SYSTEM_METRICS: readonly MetricSpec[] = [
   derivedMetric("cpu_used_cores", "cpu", "system.metric.cpu_used_cores", "cpu_used_cores", "cpu_used_cores", " cores"),
   derivedMetric("cpu_capacity", "cpu", "system.metric.cpu_capacity", "cpu_capacity", "cpu_capacity", " cores"),
+  derivedMetric("cpu_actual_frequency", "cpu", "system.metric.cpu_actual_frequency", "cpu_actual_frequency", "cpu_actual_frequency", " MHz"),
+  derivedMetric("cpu_scaling_frequency", "cpu", "system.metric.cpu_scaling_frequency", "cpu_scaling_frequency", "cpu_scaling_frequency", " MHz"),
   derivedMetric("cpu_user", "cpu", "system.metric.cpu_user", "cpu_user", "cpu_user", "%"),
   derivedMetric("cpu_system", "cpu", "system.metric.cpu_system", "cpu_system", "cpu_system", "%"),
   derivedMetric("cpu_irq", "cpu", "system.metric.cpu_irq", "cpu_irq", "cpu_irq", "%"),
@@ -147,14 +152,32 @@ const BREAKDOWN_COLORS: readonly RecordedSeries["color"][] = ["cyan", "green", "
 
 // The mount history request fetches both sides of the pair at once.
 const MOUNT_PAIR_COLUMN: SystemEntityColumn = { ...bytes("free_bytes"), historyFields: ["free_bytes", "total_bytes"] }
+const MOUNT_INODE_PAIR_COLUMN: SystemEntityColumn = { ...number("available_inodes"), historyFields: ["available_inodes", "total_inodes"] }
 
-// A section owns its entity panels: what the resource is made of.
-const SECTION_ENTITIES: Readonly<Record<HostSection, readonly string[]>> = {
-  overview: ["os_topology"],
-  cpu: ["os_cgroup_cpu"],
-  memory: ["os_cgroup_memory"],
-  storage: ["os_diskstats", "os_mountinfo", "os_cgroup_io"],
-  network: ["os_netdev"],
+const HOST_MODES: Partial<Readonly<Record<HostSection, readonly HostMode[]>>> = {
+  cpu: ["history", "topology"],
+  storage: ["io", "filesystems", "topology"],
+  cgroups: ["cpu", "memory", "io", "tasks"],
+}
+
+// Resource tabs own one operator question at a time. Static topology never
+// masquerades as temporal history, and cgroup accounting never appears under
+// host block-device or memory totals.
+function sectionEntities(section: HostSection, mode: HostMode | null): readonly string[] {
+  if (section === "cpu") return []
+  if (section === "storage") {
+    if (mode === "filesystems") return ["os_mountinfo"]
+    if (mode === "topology") return []
+    return ["os_diskstats"]
+  }
+  if (section === "cgroups") {
+    if (mode === "memory") return ["os_cgroup_memory"]
+    if (mode === "io") return ["os_cgroup_io"]
+    if (mode === "tasks") return ["os_cgroup_pids"]
+    return ["os_cgroup_cpu"]
+  }
+  if (section === "network") return ["os_netdev"]
+  return []
 }
 
 const DERIVE_INPUTS: Readonly<Record<NonNullable<MetricSpec["derive"]>, readonly [string, readonly string[]]>> = {
@@ -166,6 +189,8 @@ const DERIVE_INPUTS: Readonly<Record<NonNullable<MetricSpec["derive"]>, readonly
   cpu_idle: ["os_cpu", CPU_FIELDS],
   cpu_used_cores: ["os_cpu", CPU_FIELDS],
   cpu_capacity: ["os_cpu", CPU_FIELDS],
+  cpu_actual_frequency: ["os_cpufreq", ["policy_id", "actual_source", "actual_frequency_hz", "online_cpus"]],
+  cpu_scaling_frequency: ["os_cpufreq", ["policy_id", "scaling_cur_freq_hz", "online_cpus"]],
   mem_file_cache: ["os_meminfo", ["cached", "buffers"]],
   mem_other: ["os_meminfo", ["mem_total", "mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim"]],
   filesystem_free_min: ["os_mountinfo", ["total_bytes", "free_bytes"]],
@@ -268,8 +293,16 @@ export const SYSTEM_ENTITIES: readonly {
     columns: [text("cgroup_path", 240, true), virtualText("device_id", ["major", "minor"]), rateBytes("rbytes"), rateBytes("wbytes"), rateNumber("rios"), rateNumber("wios")],
   },
   {
+    section: "os_cgroup_pids", label: "system.entities.cgroup_tasks",
+    columns: [text("cgroup_path", 240, true), physicalNumber("tasks_current", "current"), physicalNumber("tasks_max", "max")],
+  },
+  {
     section: "os_mountinfo", label: "system.entities.mounts",
-    columns: [text("mount_point", 240, true), text("source", 180), text("fstype", 120), bytes("free_bytes"), bytes("total_bytes"), boolean("is_k8s_infra")],
+    columns: [
+      text("mount_point", 240, true), text("root", 160), text("source", 180), text("fstype", 120), virtualText("device_id", ["major", "minor"]),
+      bytes("free_bytes"), derivedPercent("filesystem_available_percent", ["free_bytes", "total_bytes"], (rows) => gaugePercentPoints(rows, "free_bytes", "total_bytes")), bytes("total_bytes"),
+      number("available_inodes"), derivedPercent("inode_available_percent", ["available_inodes", "total_inodes"], (rows) => gaugePercentPoints(rows, "available_inodes", "total_inodes")), number("total_inodes"), boolean("is_k8s_infra"),
+    ],
   },
   {
     section: "os_netdev", label: "system.entities.network",
@@ -277,7 +310,8 @@ export const SYSTEM_ENTITIES: readonly {
   },
   {
     section: "os_topology", label: "system.entities.topology",
-    columns: [id("cpu_id", 90, true), id("socket_id"), id("core_id"), id("numa_node"), text("model_name", 300), number("mhz_max")],
+    columns: [id("cpu_id", 90, true), id("socket_id"), id("core_id"), id("numa_node"), text("model_name", 300), number("mhz_max")]
+      .map((column) => ({ ...column, chartable: false })),
   },
 ]
 
@@ -300,11 +334,17 @@ function systemRequests(): readonly SectionRequest[] {
     ...panel.columns.flatMap((column) => column.historyFields ?? [column.field]),
     ...registry.filter((layout) => layout.logicalName === panel.section).flatMap((layout) => layout.identity),
   ])
-  for (const section of ["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"]) need(section, ["cgroup_path", "scope"])
+  for (const section of ["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io", "os_cgroup_pids"]) need(section, ["cgroup_path", "scope"])
   need("os_cgroup_context", [
     "cpu_path", "memory_path", "io_path", "cpuset_cpus", "effective_cpu_quota_usec",
     "effective_cpu_period_usec", "effective_memory_max", "cgroup_version", "scope",
   ])
+  need("instance_metadata", ["environment"])
+  need("os_cpufreq_policy", [
+    "policy_id", "related_cpus", "scaling_driver", "actual_source",
+    "cpuinfo_min_freq_hz", "cpuinfo_max_freq_hz", "scope",
+  ])
+  need("os_block_topology", ["major", "minor", "parent_major", "parent_minor", "scope"])
   return [...wanted].map(([section, fields]) => ({ section, fields: [...fields] }))
 }
 
@@ -312,9 +352,10 @@ const CGROUP_PATH_FIELDS = {
   os_cgroup_cpu: "cpu_path",
   os_cgroup_memory: "memory_path",
   os_cgroup_io: "io_path",
+  os_cgroup_pids: "pids_path",
 } as const
 const ALL_SYSTEM_REQUESTS = systemRequests()
-const CGROUP_SECTIONS = new Set(Object.keys(CGROUP_PATH_FIELDS))
+const CGROUP_SECTIONS = new Set(["os_cgroup_context", ...Object.keys(CGROUP_PATH_FIELDS)])
 
 export const CGROUP_SNAPSHOT_REQUESTS = ALL_SYSTEM_REQUESTS.filter(({ section }) => CGROUP_SECTIONS.has(section))
 export const SYSTEM_REQUESTS = ALL_SYSTEM_REQUESTS.filter(({ section }) => !CGROUP_SECTIONS.has(section))
@@ -325,22 +366,18 @@ export function cgroupSnapshotPlan(
   data: Pick<HourData, "sections">,
   requests: readonly SectionRequest[] = CGROUP_SNAPSHOT_REQUESTS,
 ): CgroupSnapshotPlan {
-  const context = snapshot((data.sections.os_cgroup_context ?? []).filter((row) => row.segmentId === segmentId), cursor)[0] ?? null
-  const cpuPath = rawText(value(context, "cpu_path"))
-  const memoryPath = rawText(value(context, "memory_path"))
-  const ioPath = rawText(value(context, "io_path"))
-  const storedScope = rawText(value(context, "scope"))
-  const scope = storedScope !== null && /^(?:0|[1-9]\d*)$/.test(storedScope) ? storedScope : null
-  const paths = { cpu_path: cpuPath, memory_path: memoryPath, io_path: ioPath }
-  const key = JSON.stringify([segmentId, cursor, cpuPath, memoryPath, ioPath, scope])
-  const loads = requests.flatMap((request) => {
-    const pathField = CGROUP_PATH_FIELDS[request.section as keyof typeof CGROUP_PATH_FIELDS]
-    const path = pathField === undefined ? null : paths[pathField]
-    return path === null || scope === null
-      ? []
-      : [{ request, filters: { cgroup_path: path, scope } }]
-  })
+  const environment = recordedEnvironment(data, cursor)
+  const key = JSON.stringify([segmentId, cursor, environment])
+  const loads = environment === "container"
+    ? requests.map((request) => ({ request, filters: {} }))
+    : []
   return { key, loads }
+}
+
+export function recordedEnvironment(data: Pick<HourData, "sections">, cursor: number): "machine" | "container" | null {
+  const row = snapshot(data.sections.instance_metadata ?? [], cursor)[0]
+  const environment = asNumber(value(row ?? null, "environment"))
+  return environment === 0 ? "machine" : environment === 1 ? "container" : null
 }
 
 export function clearCgroupSnapshotRows(data: HourData): HourData {
@@ -359,9 +396,16 @@ export function SystemView({
   historyRevision,
   hour,
   locale,
+  metric,
+  mode,
+  navigationTimestamps,
   onCursor,
   onContextClear,
   onFinding,
+  onMetric,
+  onMode,
+  onSelectedKey,
+  selectedKey,
   tablesLoading = false,
   t,
 }: {
@@ -374,29 +418,57 @@ export function SystemView({
   readonly historyRevision: number
   readonly hour: number
   readonly locale: Locale
+  readonly metric: string | null
+  readonly mode: HostMode | null
+  readonly navigationTimestamps: readonly number[]
   readonly onCursor: (timestamp: number) => void
   readonly onContextClear: () => void
   readonly onFinding: (finding: Finding) => void
+  readonly onMetric: (metric: string | null) => void
+  readonly onMode: (mode: HostMode | null) => void
+  readonly onSelectedKey: (key: string | null) => void
+  readonly selectedKey: string | null
   readonly tablesLoading?: boolean | undefined
   readonly t: Translate
 }) {
   const chartsVisible = useChartsVisible()
   const available = useMemo(() => SYSTEM_METRICS.map((spec) => ({ points: metricPoints(data, spec), spec }))
-    .filter(({ points }) => points.some((point) => point.value !== null && Number.isFinite(point.value))), [data])
-  const sectionMetrics = useMemo(() => available.filter(({ spec }) => spec.group === section), [available, section])
-  const [selected, setSelected] = useState(available[0]?.spec.id ?? "")
-  const [dockOpen, setDockOpen] = useState(false)
-  // Only an empty startup selection is auto-resolved. A chosen metric stays
-  // chosen across refresh swaps that briefly hide its section — the dock must
-  // not abandon the resource mid-read.
+    .filter(({ points, spec }) => points.some((point) => point.value !== null && Number.isFinite(point.value))
+      || (spec.id === "cpu_actual_frequency" && sectionRows(data, "os_cpufreq").some((row) => {
+        const frequency = storedNumber(row, "actual_frequency_hz")
+        return frequency !== undefined && frequency !== null && Number.isFinite(frequency)
+      }))), [data])
+  const referenceMode = mode === "topology"
+  const sectionMetrics = useMemo(() => referenceMode ? [] : available.filter(({ spec }) => spec.group === section), [available, referenceMode, section])
+  const [dismissedOverview, setDismissedOverview] = useState(false)
+  const autoMetric = useRef<string | null>(null)
+  // Overview opens on the first metric that has a factual sample. A metric in
+  // the address is an explicit operator choice and is never replaced here.
   useEffect(() => {
     const first = available[0]
-    if (selected !== "" || first === undefined) return
-    setSelected(first.spec.id)
-  }, [available, selected])
+    if (section !== "overview" || dismissedOverview || first === undefined) return
+    if (metric === null) {
+      autoMetric.current = first.spec.id
+      onMetric(first.spec.id)
+      return
+    }
+    if (autoMetric.current !== metric) {
+      autoMetric.current = null
+      return
+    }
+    if (first.spec.id !== metric) {
+      autoMetric.current = first.spec.id
+      onMetric(first.spec.id)
+    }
+  }, [available, dismissedOverview, metric, onMetric, section])
+  useEffect(() => {
+    if (section !== "overview") setDismissedOverview(false)
+  }, [section])
   const openMetric = (id: string) => {
-    setSelected(id)
-    setDockOpen(true)
+    autoMetric.current = null
+    setDismissedOverview(false)
+    onSelectedKey(null)
+    onMetric(id)
   }
   const appliedFocus = useRef<Finding | null>(null)
   useEffect(() => {
@@ -414,11 +486,11 @@ export function SystemView({
       ?? (fallback === null ? undefined : available.find(({ spec }) => spec.id === fallback))
     if (match !== undefined) {
       appliedFocus.current = focus
-      setSelected(match.spec.id)
-      setDockOpen(true)
+      autoMetric.current = null
+      onMetric(match.spec.id)
     }
-  }, [available, data, focus])
-  const selectedSpec = SYSTEM_METRICS.find((spec) => spec.id === selected) ?? available[0]?.spec
+  }, [available, data, focus, onMetric])
+  const selectedSpec = metric === null ? undefined : SYSTEM_METRICS.find((spec) => spec.id === metric)
   // The spec comes from the static catalog so the dock keeps its frame while
   // its section is mid-reload; the points honestly empty out for that window.
   const selectedMetric = selectedSpec === undefined ? undefined : {
@@ -426,7 +498,7 @@ export function SystemView({
     spec: selectedSpec,
   }
   const selectedResource = selectedMetric === undefined ? null : metricResource(selectedMetric.spec)
-  const dockShown = chartsVisible && dockOpen && selectedMetric !== undefined
+  const dockShown = chartsVisible && selectedMetric !== undefined
   const dockMeta = useMemo(() => {
     if (selectedMetric === undefined) return { chips: [] as readonly MetricSpec[], chartChip: (id: string) => id }
     const group = selectedMetric.spec.group
@@ -460,22 +532,30 @@ export function SystemView({
   const secondLane = selectedMetric === undefined ? null : secondMetricLane(selectedMetric.spec)
   const secondPoints = useMemo(() => secondLane === null ? undefined : laneChartPoints(data, secondLane), [data, secondLane])
   const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
+  const modes = HOST_MODES[section] ?? []
+  const topologyRows = section === "cpu" && mode === "topology" ? systemEntityRows(data, "os_topology", cursor) : []
+  const policyRows = section === "cpu" && mode === "topology" ? systemEntityRows(data, "os_cpufreq_policy", cursor) : []
   return <>
-    <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={onCursor} onFinding={onFinding} primaryLane={selectedMetric === undefined ? "health" : metricLane(selectedMetric.spec)} shownAt={shownAt} t={t} /></ChartOnly>
-    <div className="system-main mt-2 min-w-0 [&>.use-table]:mt-0 [&>.metric-groups]:mt-2 [&>.table-empty]:mt-2">
+    <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} primaryLane={selectedMetric === undefined ? "health" : metricLane(selectedMetric.spec)} shownAt={shownAt} t={t} /></ChartOnly>
+    {modes.length > 0 && <div aria-label={t(`section.${section}`)} className="lensbar !mt-0 border-t-0" data-testid={`host-${section}-modes`} role="group">
+      <div className="lens-tabs">
+        {modes.map((choice) => <button aria-pressed={mode === choice} key={choice} onClick={() => onMode(choice)} type="button">{t(`host.mode.${choice}`)}</button>)}
+      </div>
+    </div>}
+    <div className={`${modes.length === 0 ? "mt-0" : "mt-2"} system-main min-w-0 [&>.use-table]:mt-0 [&>.metric-groups]:mt-2 [&>.table-empty]:mt-2`}>
         {section === "overview" && <UseTable canOpen={(resource) => resourceSelection(available, resource) !== null} cursor={cursor} lanePoints={data.lanePoints} locale={locale} onSelect={(resource) => {
           const target = resourceSelection(available, resource)
           if (target !== null) openMetric(target)
         }} selected={dockShown ? selectedResource : null} t={t} />}
       {dockShown && selectedMetric !== undefined && <SystemDock
         chart={breakdown.length === 0
-          ? <SeriesChart cursor={cursor} empty={t("history.empty")} format={(reading, place) => metricChartValue(reading, place, selectedMetric.spec.unit)} helpKey={selectedMetric.spec.help} hour={hour} labelKey={selectedMetric.spec.label} locale={locale} onCursor={onCursor} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "nonnegative"} second={secondPoints} secondHelpKey={secondLane === null ? undefined : "system.metric.network_tx.help"} secondLabelKey={secondLane === null ? undefined : "system.metric.network_tx.label"} stats status={needsHistory ? loadedHistory.status : "ready"} t={t} unit={metricChartUnit(selectedMetric.spec, locale)} />
+          ? <SeriesChart cursor={cursor} empty={t("history.empty")} format={(reading, place) => metricChartValue(reading, place, selectedMetric.spec.unit)} helpKey={selectedMetric.spec.help} hour={hour} labelKey={selectedMetric.spec.label} locale={locale} onCursor={onCursor} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "nonnegative"} second={secondPoints} secondHelpKey={secondLane === null ? undefined : "system.metric.network_tx.help"} secondLabelKey={secondLane === null ? undefined : "system.metric.network_tx.label"} stats status={needsHistory ? loadedHistory.status : "ready"} t={t} tickFormat={selectedMetric.spec.unit === " B" ? (reading, place) => humanBytes(reading, place, "/s") : undefined} unit={metricChartUnit(selectedMetric.spec, locale)} />
           : <div className="series-chart"><UPlotChart cursor={cursor} hour={hour} isolate={{ anchor: selectedMetric.spec.id }} locale={locale} onCursor={onCursor} reading={currentPointValue(selectedPoints, cursor, locale, selectedMetric.spec.unit)} series={breakdown} stats status={!needsHistory || loadedHistory.status === "ready" ? undefined : <p className={`series-status series-status-${loadedHistory.status}`} role={loadedHistory.status === "error" ? "alert" : "status"}>{t(`history.${loadedHistory.status}`)}</p>} t={t} testId={`system-${selectedMetric.spec.group}-composition`} /></div>}
         group={selectedMetric.spec.group}
         label={`section.${selectedMetric.spec.group}`}
         metrics={dockMeta.chips}
-        onClose={() => setDockOpen(false)}
-        onSelect={setSelected}
+        onClose={() => { setDismissedOverview(true); onMetric(null) }}
+        onSelect={openMetric}
         selected={dockMeta.chartChip(selectedMetric.spec.id)}
         t={t}
       />}
@@ -500,8 +580,16 @@ export function SystemView({
           </div>}
     </div>
 
-    <section className="entity-panels mt-2 grid grid-cols-2 gap-2 max-[1000px]:grid-cols-1 charts-hidden:min-h-0 charts-hidden:flex-auto charts-hidden:auto-rows-fr">
-      {SYSTEM_ENTITIES.filter((entity) => SECTION_ENTITIES[section].includes(entity.section)).map((entity) => {
+    {section === "cpu" && mode === "topology" && <CpuTopologyReference locale={locale} policies={policyRows} rows={topologyRows} t={t} />}
+    {section === "storage" && mode === "topology" && <StorageTopologyReference
+      devices={systemEntityRows(data, "os_diskstats", cursor)}
+      edges={systemEntityRows(data, "os_block_topology", cursor)}
+      mounts={systemEntityRows(data, "os_mountinfo", cursor)}
+      t={t}
+    />}
+
+    <section className="entity-panels mt-2 grid grid-cols-1 content-start gap-2">
+      {SYSTEM_ENTITIES.filter((entity) => sectionEntities(section, mode).includes(entity.section)).map((entity) => {
         const allRows = systemEntityRows(data, entity.section, cursor)
         const activeContext = context?.logicalName === entity.section ? context : null
         const rows = contextualRows(allRows, activeContext, activeContext === null ? null : contextRow)
@@ -522,14 +610,117 @@ export function SystemView({
           locale={locale}
           onContextClear={activeContext === null ? undefined : onContextClear}
           onCursor={onCursor}
+          onMetric={onMetric}
+          onSelectedKey={onSelectedKey}
           rows={rows}
           section={entity.section}
+          selectedField={metric}
+          selectedKey={selectedKey}
           tablesLoading={tablesLoading}
           t={t}
         />
       })}
     </section>
   </>
+}
+
+function CpuTopologyReference({ locale, policies, rows, t }: { readonly locale: Locale; readonly policies: readonly DataRow[]; readonly rows: readonly DataRow[]; readonly t: Translate }) {
+  if (rows.length === 0 && policies.length === 0) return <p className="table-empty mt-2">{t("status.no_data")}</p>
+  const policyByCpu = new Map<number, string>()
+  for (const policy of policies) {
+    const id = rawText(value(policy, "policy_id")) ?? "—"
+    for (const cpu of parseCpuList(rawText(value(policy, "related_cpus")))) policyByCpu.set(cpu, id)
+  }
+  const groups = new Map<string, DataRow[]>()
+  for (const row of rows) {
+    const key = [rawText(value(row, "numa_node")) ?? "—", rawText(value(row, "socket_id")) ?? "—", rawText(value(row, "core_id")) ?? "—"].join(":")
+    const stored = groups.get(key) ?? []
+    stored.push(row)
+    groups.set(key, stored)
+  }
+  return <section className="panel mt-2" data-testid="cpu-topology-reference">
+    <h2 className="panel-head">{t("system.entities.topology")}</h2>
+    <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))]">
+      {[...groups.entries()].map(([key, members]) => <div className="min-w-0 border-b border-r border-line px-2 py-1.5 text-sm" key={key}>
+        <strong className="block font-medium text-fg2">{t("system.topology.group", { group: key })}</strong>
+        <span className="text-fg3">{t("system.topology.cpus", { cpus: members.map((row) => rawText(value(row, "cpu_id")) ?? "—").join(", ") })}</span>
+        <span className="block text-fg3">{t("system.topology.policies", { policies: [...new Set(members.flatMap((row) => {
+          const cpu = asNumber(value(row, "cpu_id"))
+          return cpu === null ? [] : [policyByCpu.get(cpu) ?? "—"]
+        }))].join(", ") })}</span>
+        <span className="block overflow-hidden text-ellipsis whitespace-nowrap text-fg4">{rawText(value(members[0] ?? null, "model_name")) ?? "—"}</span>
+      </div>)}
+    </div>
+    {policies.length > 0 && <div className="border-t border-line2" data-testid="cpufreq-policy-reference">
+      {policies.map((policy) => <div className="grid min-h-[34px] grid-cols-[90px_minmax(120px,1fr)_minmax(130px,1fr)_minmax(150px,1.2fr)] items-center border-b border-line px-2 py-1.5 text-sm last:border-b-0 max-[700px]:grid-cols-2 [&>*]:pr-2" key={rawText(value(policy, "policy_id")) ?? policy.ordinal}>
+        <strong className="font-medium text-fg2">{t("system.topology.policy", { policy: rawText(value(policy, "policy_id")) ?? "—" })}</strong>
+        <span className="text-fg3">{rawText(value(policy, "related_cpus")) ?? "—"}</span>
+        <span className="text-fg3">{rawText(value(policy, "scaling_driver")) ?? "—"}</span>
+        <span className="text-fg3">{rawText(value(policy, "actual_source")) ?? t("common.unavailable")} · {humanHertz(value(policy, "cpuinfo_min_freq_hz"), locale)}–{humanHertz(value(policy, "cpuinfo_max_freq_hz"), locale)}</span>
+      </div>)}
+    </div>}
+  </section>
+}
+
+function parseCpuList(text: string | null): readonly number[] {
+  if (text === null) return []
+  const cpus = new Set<number>()
+  for (const token of text.split(/[\s,]+/)) {
+    if (token === "") continue
+    const [firstText, lastText = firstText] = token.split("-")
+    const first = Number(firstText)
+    const last = Number(lastText)
+    if (!Number.isSafeInteger(first) || !Number.isSafeInteger(last) || first < 0 || last < first || last - first > 4096) return []
+    for (let cpu = first; cpu <= last; cpu += 1) {
+      cpus.add(cpu)
+      if (cpus.size > 4096) return []
+    }
+  }
+  return [...cpus]
+}
+
+export function storageTopologyEntries(devices: readonly DataRow[], edges: readonly DataRow[], mounts: readonly DataRow[]): readonly {
+  readonly associations: readonly string[]
+  readonly id: string
+  readonly name: string
+  readonly parent: string | null
+}[] {
+  const names = new Map(devices.flatMap((row) => {
+    const id = deviceId(row)
+    return id === null ? [] : [[id, rawText(value(row, "device")) ?? id] as const]
+  }))
+  const mappings = new Map<string, DataRow[]>()
+  const parents = new Map(edges.flatMap((row) => {
+    const child = deviceId(row)
+    const parentMajor = rawText(value(row, "parent_major"))
+    const parentMinor = rawText(value(row, "parent_minor"))
+    return child === null || parentMajor === null || parentMinor === null ? [] : [[child, `${parentMajor}:${parentMinor}`] as const]
+  }))
+  for (const row of mounts) {
+    const id = deviceId(row) ?? "—"
+    const stored = mappings.get(id) ?? []
+    stored.push(row)
+    mappings.set(id, stored)
+  }
+  return [...new Set([...names.keys(), ...mappings.keys(), ...parents.keys()])].sort().map((id) => ({
+    associations: (mappings.get(id) ?? []).map((row) => `${rawText(value(row, "source")) ?? "—"} ${rawText(value(row, "root")) ?? "—"} → ${rawText(value(row, "mount_point")) ?? "—"}`),
+    id,
+    name: names.get(id) ?? id,
+    parent: parents.get(id) ?? null,
+  }))
+}
+
+function StorageTopologyReference({ devices, edges, mounts, t }: { readonly devices: readonly DataRow[]; readonly edges: readonly DataRow[]; readonly mounts: readonly DataRow[]; readonly t: Translate }) {
+  const entries = storageTopologyEntries(devices, edges, mounts)
+  if (entries.length === 0) return <p className="table-empty mt-2">{t("status.no_data")}</p>
+  return <section className="panel mt-2" data-testid="storage-topology-reference">
+    <h2 className="panel-head">{t("host.mode.topology")}</h2>
+    <p className="m-0 border-b border-line px-2 py-1.5 text-sm text-fg3">{t("system.storage.topology_scope")}</p>
+    {entries.map((entry) => <div className="grid min-h-[34px] grid-cols-[minmax(110px,180px)_minmax(0,1fr)] items-start border-b border-line px-2 py-1.5 text-sm last:border-b-0 [&>*+*]:ml-2 max-[520px]:grid-cols-1 max-[520px]:[&>*+*]:ml-0 max-[520px]:[&>*+*]:mt-2" key={entry.id}>
+      <strong className="font-medium tabular-nums text-fg2">{entry.name} · {entry.id}{entry.parent === null ? "" : ` → ${entry.parent}`}</strong>
+      <span className="min-w-0 text-fg3">{entry.associations.join(" · ") || t("system.storage.topology_opaque")}</span>
+    </div>)}
+  </section>
 }
 
 // The dock is the System counterpart of the PostgreSQL detail panel: a click
@@ -574,23 +765,23 @@ function SystemDock({
   </aside>
 }
 
-// A mount's free and total bytes are one fact: how full the filesystem is.
-// The pair charts together — used space against the total ceiling — instead of
-// two switchable single-series charts that make the operator subtract in their
-// head. Used is derived elementarily, total − free, the way df reports it.
-export function mountPairSeries(rows: readonly DataRow[], t: Translate): readonly RecordedSeries[] {
-  const total = buildMetricSamples(rows, (row) => storedNumber(row, "total_bytes"))
-  const used = buildMetricSamples(rows, (row) => {
-    const capacity = storedNumber(row, "total_bytes")
-    const free = storedNumber(row, "free_bytes")
-    if (capacity === undefined || free === undefined) return undefined
-    return capacity === null || free === null || capacity < free ? null : capacity - free
-  })
-  if (!used.some((point) => point.value !== null) && !total.some((point) => point.value !== null)) return []
-  const format = (reading: number, place: Locale) => humanBytes(reading, place)
+// `free_bytes` stores statvfs.f_bavail: capacity available to an unprivileged
+// writer. It is not f_bfree, so Total − Available must never be called Used.
+// Chart the two exact stored facts without inventing allocated/reserved space.
+export function mountPairSeries(rows: readonly DataRow[], t: Translate, kind: "bytes" | "inodes" = "bytes"): readonly RecordedSeries[] {
+  const totalField = kind === "bytes" ? "total_bytes" : "total_inodes"
+  const availableField = kind === "bytes" ? "free_bytes" : "available_inodes"
+  const total = buildMetricSamples(rows, (row) => storedNumber(row, totalField))
+  const available = buildMetricSamples(rows, (row) => storedNumber(row, availableField))
+  if (!available.some((point) => point.value !== null) && !total.some((point) => point.value !== null)) return []
+  const format = (reading: number, place: Locale) => kind === "bytes" ? humanBytes(reading, place) : measure(reading, place)
+  const availableMeta = kind === "bytes"
+    ? { helpKey: "system.field.available_bytes.help", id: "available_bytes", labelKey: "system.field.available_bytes.label" }
+    : { helpKey: "system.field.available_inodes.help", id: "available_inodes", labelKey: "system.field.available_inodes.label" }
+  const totalKey = kind === "bytes" ? "system.field.total_bytes" : "system.field.total_inodes"
   return [
-    { color: "cyan", helpKey: "system.field.used_bytes.help", id: "used_bytes", label: t("system.field.used_bytes.label"), labelKey: "system.field.used_bytes.label", points: used, scale: "nonnegative", tick: format, unit: "B", value: format },
-    { color: "gray", helpKey: "system.field.total_bytes.help", id: "total_bytes", label: t("system.field.total_bytes.label"), labelKey: "system.field.total_bytes.label", points: total, scale: "nonnegative", tick: format, unit: "B", value: format },
+    { color: "cyan", helpKey: availableMeta.helpKey, id: availableMeta.id, label: t(availableMeta.labelKey), labelKey: availableMeta.labelKey, points: available, scale: "nonnegative", tick: format, unit: kind === "bytes" ? "B" : "count", value: format },
+    { color: "gray", helpKey: `${totalKey}.help`, id: totalField, label: t(`${totalKey}.label`), labelKey: `${totalKey}.label`, points: total, scale: "nonnegative", tick: format, unit: kind === "bytes" ? "B" : "count", value: format },
   ]
 }
 
@@ -606,8 +797,12 @@ function SystemEntityPanel({
   locale,
   onContextClear,
   onCursor,
+  onMetric,
+  onSelectedKey,
   rows,
   section,
+  selectedField,
+  selectedKey,
   t,
 }: {
   readonly columns: readonly SystemEntityColumn[]
@@ -620,30 +815,34 @@ function SystemEntityPanel({
   readonly locale: Locale
   readonly onContextClear?: (() => void) | undefined
   readonly onCursor: (timestamp: number) => void
+  readonly onMetric: (field: string | null) => void
+  readonly onSelectedKey: (key: string | null) => void
   readonly rows: readonly DataRow[]
   readonly tablesLoading?: boolean | undefined
   readonly section: string
+  readonly selectedField: string | null
+  readonly selectedKey: string | null
   readonly t: Translate
 }) {
   const chartsVisible = useChartsVisible()
   const metricColumns = useMemo(() => chartableEntityColumns(columns), [columns])
-  const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const selectedRow = selectedKey === null ? null : rows.find((row) => entityRowKey(row) === selectedKey) ?? null
   const availableColumns = useMemo(() => selectedRow === null
     ? []
     : metricColumns.filter((column) => Object.hasOwn(selectedRow.values, physicalField(column, selectedRow.typeId))), [metricColumns, selectedRow])
-  const [selectedField, setSelectedField] = useState("")
   useEffect(() => {
-    if (selectedKey !== null && selectedRow === null) setSelectedKey(null)
-  }, [selectedKey, selectedRow])
+    if (selectedKey !== null && selectedRow === null && !tablesLoading) onSelectedKey(null)
+  }, [onSelectedKey, selectedKey, selectedRow, tablesLoading])
   useEffect(() => {
+    if (selectedRow === null) return
     if (availableColumns.some((column) => column.field === selectedField)) return
-    setSelectedField(availableColumns[0]?.field ?? "")
-  }, [availableColumns, selectedField])
+    onMetric(availableColumns[0]?.field ?? null)
+  }, [availableColumns, onMetric, selectedField, selectedRow])
   const selectedColumn = availableColumns.find((column) => column.field === selectedField) ?? availableColumns[0]
   const mountPair = section === "os_mountinfo" && selectedRow !== null
     && Object.hasOwn(selectedRow.values, "free_bytes") && Object.hasOwn(selectedRow.values, "total_bytes")
-  const requestColumn = mountPair ? MOUNT_PAIR_COLUMN : selectedColumn
+  const mountPairKind = mountPair && ["available_inodes", "inode_available_percent", "total_inodes"].includes(selectedColumn?.field ?? "") ? "inodes" : "bytes"
+  const requestColumn = mountPair ? (mountPairKind === "inodes" ? MOUNT_INODE_PAIR_COLUMN : MOUNT_PAIR_COLUMN) : selectedColumn
   const historyRequest = selectedRow === null || requestColumn === undefined ? null : entityHistoryRequest(selectedRow, requestColumn)
   const historyKey = historyRequest === null ? null : `${hour}:${historyRequest.key}`
   const requestFields = historyRequest === null ? "[]" : JSON.stringify(historyRequest.fields)
@@ -659,13 +858,15 @@ function SystemEntityPanel({
   })
   const chartRows = history.value?.length ? history.value : selectedRow === null ? [] : [selectedRow]
   const chartPoints = useMemo(() => selectedColumn === undefined ? [] : entityMetricPoints(chartRows, selectedColumn), [chartRows, selectedColumn])
-  const pairSeries = useMemo(() => mountPair ? mountPairSeries(chartRows, t) : null, [chartRows, mountPair, t])
+  const pairSeries = useMemo(() => mountPair ? mountPairSeries(chartRows, t, mountPairKind) : null, [chartRows, mountPair, mountPairKind, t])
   const chartMetadata = selectedRow === null || selectedColumn === undefined || selectedColumn.historyFields !== undefined
     ? null : registryColumn(selectedRow.typeId, physicalField(selectedColumn, selectedRow.typeId))
-  return <section className="entity-panel panel min-w-0 charts-hidden:flex charts-hidden:flex-col" data-testid={`system-panel-${section}`}>
-    <h2 className="panel-head"><span>{label}</span></h2>
+  return <section className={`entity-panel panel min-w-0 charts-hidden:flex charts-hidden:flex-col ${selectedRow === null ? "" : "grid grid-cols-[minmax(280px,36%)_minmax(0,1fr)] max-[760px]:grid-cols-1"}`} data-testid={`system-panel-${section}`}>
+    <h2 className={`panel-head ${selectedRow === null ? "" : "col-[1/-1]"}`}><span>{label}</span></h2>
+    <div className={selectedRow === null ? "contents" : "min-w-0 max-[760px]:hidden"}>
     <EntityTable
       columns={columns}
+      contentSized={selectedRow === null}
       contextLabel={contextLabel}
       empty={t("table.no_rows")}
       loading={tablesLoading && rows.length === 0}
@@ -676,10 +877,10 @@ function SystemEntityPanel({
       onContextClear={onContextClear}
       {...(metricColumns.length === 0 ? {} : { onSelect: (row: DataRow) => {
         const key = entityRowKey(row)
-        setSelectedKey(key)
+        onSelectedKey(key)
         if (key !== selectedKey) {
           const first = metricColumns.find((column) => Object.hasOwn(row.values, physicalField(column, row.typeId)))
-          setSelectedField(first?.field ?? "")
+          onMetric(first?.field ?? null)
         }
       } })}
       rowKey={entityRowKey}
@@ -688,14 +889,18 @@ function SystemEntityPanel({
       t={t}
       testId={`system-${section}`}
     />
-    <ChartOnly>{selectedRow !== null && (mountPair || selectedColumn !== undefined) && <section className="system-entity-history min-w-0 border border-t-0 border-line2" data-testid={`system-${section}-history`}>
+    </div>
+    <ChartOnly>{selectedRow !== null && (mountPair || selectedColumn !== undefined) && <section className="system-entity-history min-w-0 border-l border-line2 max-[760px]:border-l-0" data-testid={`system-${section}-history`}>
       <header className="flex items-start justify-between gap-1.5 px-[7px] pt-1.5">
         {mountPair
-          ? <div className="system-history-selector flex max-w-[calc(100%-30px)] gap-1 overflow-x-auto pb-[3px] [scrollbar-width:thin] [&>button]:min-h-[27px] [&>button]:flex-none [&>button]:cursor-pointer [&>button]:border [&>button]:border-line3 [&>button]:bg-s2 [&>button]:px-[7px] [&>button]:py-1 [&>button]:text-xs [&>button]:text-fg2 [&>button[aria-pressed=true]]:border-accent [&>button[aria-pressed=true]]:bg-accent-soft [&>button[aria-pressed=true]]:text-fg" role="group" />
+          ? <div className="system-history-selector flex max-w-[calc(100%-30px)] overflow-x-auto pb-[3px] [scrollbar-width:thin] [&>button+button]:ml-1 [&>button]:min-h-[27px] [&>button]:flex-none [&>button]:cursor-pointer [&>button]:border [&>button]:border-line3 [&>button]:bg-s2 [&>button]:px-[7px] [&>button]:py-1 [&>button]:text-xs [&>button]:text-fg2 [&>button[aria-pressed=true]]:border-accent [&>button[aria-pressed=true]]:bg-accent-soft [&>button[aria-pressed=true]]:text-fg" role="group">
+              <button aria-pressed={mountPairKind === "bytes"} onClick={() => onMetric("free_bytes")} type="button">{t("system.field.free_bytes.label")}</button>
+              <button aria-pressed={mountPairKind === "inodes"} onClick={() => onMetric("available_inodes")} type="button">{t("system.field.available_inodes.label")}</button>
+            </div>
           : <div className="system-history-selector flex max-w-[calc(100%-30px)] gap-1 overflow-x-auto pb-[3px] [scrollbar-width:thin] [&>button]:min-h-[27px] [&>button]:flex-none [&>button]:cursor-pointer [&>button]:border [&>button]:border-line3 [&>button]:bg-s2 [&>button]:px-[7px] [&>button]:py-1 [&>button]:text-xs [&>button]:text-fg2 [&>button[aria-pressed=true]]:border-accent [&>button[aria-pressed=true]]:bg-accent-soft [&>button[aria-pressed=true]]:text-fg" role="group">
-            {availableColumns.map((column) => <button aria-pressed={column.field === selectedColumn?.field} key={column.field} onClick={() => setSelectedField(column.field)} type="button">{t(column.label)}</button>)}
+            {availableColumns.map((column) => <button aria-pressed={column.field === selectedColumn?.field} key={column.field} onClick={() => onMetric(column.field)} type="button">{t(column.label)}</button>)}
           </div>}
-        <button aria-label={t("common.close")} className="min-h-[27px] min-w-[27px] flex-none cursor-pointer border border-line3 bg-s2 px-[5px] py-px text-md text-fg2" onClick={() => setSelectedKey(null)} type="button">×</button>
+        <button aria-label={t("common.close")} className="min-h-[27px] min-w-[27px] flex-none cursor-pointer border border-line3 bg-s2 px-[5px] py-px text-md text-fg2" onClick={() => { onSelectedKey(null); onMetric(null) }} type="button">×</button>
       </header>
       {mountPair
         ? pairSeries === null || (pairSeries.length === 0 && history.status === "ready")
@@ -705,7 +910,7 @@ function SystemEntityPanel({
               hour={hour}
               locale={locale}
               onCursor={onCursor}
-              reading={(() => { const stored = readingAt(pairSeries?.[0]?.points ?? [], cursor); return stored === null ? "—" : humanBytes(stored, locale) })()}
+              reading={(() => { const stored = readingAt(pairSeries?.[0]?.points ?? [], cursor); return stored === null ? "—" : mountPairKind === "bytes" ? humanBytes(stored, locale) : measure(stored, locale) })()}
               series={pairSeries ?? []}
               status={history.status === "ready" ? undefined : <p className={`series-status series-status-${history.status}`} role={history.status === "error" ? "alert" : "status"}>{t(`history.${history.status}`)}</p>}
               t={t}
@@ -713,6 +918,7 @@ function SystemEntityPanel({
             /></div>
         : selectedColumn !== undefined && <SeriesChart
             cursor={cursor}
+            durationAxis={selectedColumn.kind === "milliseconds" || selectedColumn.kind === "duration"}
             empty={t("status.no_data")}
             format={(reading, place) => entityMetricValue(reading, place, selectedColumn, chartMetadata)}
             helpKey={selectedColumn.help ?? "chart.metric.help"}
@@ -788,9 +994,8 @@ function entityMetricUnit(column: SystemEntityColumn, locale: Locale, metadata: 
   if (column.kind === "cores") return "cores"
   if (column.field === "speed_mbit") return "Mbit/s"
   if (column.field === "mhz_max") return "MHz"
-  if (column.kind === "bytes" || column.kind === "kib") return `${locale === "ru" ? "байты" : "bytes"}${perSecond}`
-  if (column.kind === "milliseconds" || column.kind === "duration") return `${locale === "ru" ? "мс" : "ms"}${perSecond}`
-  if (column.kind === "microseconds") return `${locale === "ru" ? "мкс" : "µs"}${perSecond}`
+  if (column.kind === "bytes" || column.kind === "kib") return ""
+  if (column.kind === "milliseconds" || column.kind === "duration" || column.kind === "microseconds") return perSecond
   if (column.kind === "percent") return "%"
   if (metadata?.unit === "sectors") return `${locale === "ru" ? "секторы" : "sectors"}${perSecond}`
   return metadata?.class === "cumulative" ? (locale === "ru" ? "1/с" : "1/s") : (locale === "ru" ? "количество" : "count")
@@ -803,8 +1008,8 @@ function entityMetricValue(reading: number, locale: Locale, column: SystemEntity
   if (column.field === "mhz_max") return measure(reading, locale, " MHz")
   if (column.kind === "bytes") return humanBytes(reading, locale, suffix)
   if (column.kind === "kib") return humanBytes(reading * 1024, locale, suffix)
-  if (column.kind === "milliseconds" || column.kind === "duration") return measure(reading, locale, `${locale === "ru" ? " мс" : " ms"}${suffix}`)
-  if (column.kind === "microseconds") return measure(reading, locale, `${locale === "ru" ? " мкс" : " µs"}${suffix}`)
+  if (column.kind === "milliseconds" || column.kind === "duration") return humanDuration(reading, locale, "milliseconds", suffix)
+  if (column.kind === "microseconds") return humanDuration(reading, locale, "microseconds", suffix)
   if (column.kind === "percent") return humanPercent(reading, locale)
   return measure(reading, locale, suffix)
 }
@@ -901,6 +1106,8 @@ export function resourceBreakdownSeries(
   locale: Locale,
   t: Translate,
 ): readonly RecordedSeries[] {
+  if (selectedId === "cpu_actual_frequency") return frequencyBreakdownSeries(rows, "actual_frequency_hz", t)
+  if (selectedId === "cpu_scaling_frequency") return frequencyBreakdownSeries(rows, "scaling_cur_freq_hz", t)
   if (selectedId === "device_busy") return deviceBreakdownSeries(rows, "io_time_ms", 0.1, rates, locale)
   if (selectedId === "device_average_queue") return deviceBreakdownSeries(rows, "io_weighted_time_ms", 0.001, rates, locale)
   const ids: readonly string[] = CPU_BREAKDOWN_IDS.includes(selectedId as typeof CPU_BREAKDOWN_IDS[number])
@@ -976,6 +1183,8 @@ function derivedPoints(data: HourData, derive: NonNullable<MetricSpec["derive"]>
 }
 
 function derivedRowPoints(rows: readonly DataRow[], derive: NonNullable<MetricSpec["derive"]>, rates: boolean): readonly ChartPoint[] {
+  if (derive === "cpu_actual_frequency") return frequencyPoints(rows, "actual_frequency_hz")
+  if (derive === "cpu_scaling_frequency") return frequencyPoints(rows, "scaling_cur_freq_hz")
   if (derive.startsWith("cpu_")) return cpuPoints(rows, derive, rates)
   if (derive === "mem_file_cache") return buildMetricSamples(rows, (row) => sumStored(row, ["cached", "buffers"]))
   if (derive === "mem_other") return buildMetricSamples(rows, (row) => difference(row, "mem_total", ["mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim"]))
@@ -997,6 +1206,56 @@ function derivedRowPoints(rows: readonly DataRow[], derive: NonNullable<MetricSp
   if (derive === "network_tx") return cumulativeRate(aggregateRows(rows, (sampleRows) => sumFields(sampleRows, ["tx_bytes"])))
   if (derive === "network_errors") return cumulativeRate(aggregateRows(rows, (sampleRows) => sumFields(sampleRows, ["rx_errs", "tx_errs"])))
   return cumulativeRate(aggregateRows(rows, (sampleRows) => sumFields(sampleRows, ["rx_drop", "tx_drop"])))
+}
+
+function frequencyPoints(rows: readonly DataRow[], field: string): readonly ChartPoint[] {
+  return aggregateRows(rows, (sampleRows) => {
+    let weighted = 0
+    let online = 0
+    let actualSource: string | null = null
+    for (const row of sampleRows) {
+      const frequency = storedNumber(row, field)
+      const count = storedNumber(row, "online_cpus")
+      if (frequency === undefined || count === undefined) return undefined
+      if (frequency === null || count === null || count < 0) return null
+      if (field === "actual_frequency_hz") {
+        const source = rawText(value(row, "actual_source"))
+        if (source === null) return null
+        if (actualSource !== null && actualSource !== source) return null
+        actualSource = source
+      }
+      weighted += frequency * count
+      online += count
+    }
+    return online > 0 ? weighted / online / 1_000_000 : null
+  })
+}
+
+function frequencyBreakdownSeries(rows: readonly DataRow[], field: string, t: Translate): readonly RecordedSeries[] {
+  const metricKey = field === "actual_frequency_hz" ? "system.metric.cpu_actual_frequency" : "system.metric.cpu_scaling_frequency"
+  const policies = new Map<string, DataRow[]>()
+  for (const row of rows) {
+    const id = rawText(value(row, "policy_id"))
+    if (id === null) continue
+    const stored = policies.get(id) ?? []
+    stored.push(row)
+    policies.set(id, stored)
+  }
+  return [...policies.entries()].sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true })).map(([id, policyRows], index) => ({
+    color: BREAKDOWN_COLORS[index % BREAKDOWN_COLORS.length]!,
+    helpKey: `${metricKey}.help`,
+    id: `cpufreq_policy_${id}`,
+    label: t("system.topology.policy", { policy: id }),
+    labelKey: `${metricKey}.label`,
+    points: buildMetricSamples(policyRows, (row) => {
+      const hertz = storedNumber(row, field)
+      return hertz === undefined || hertz === null ? hertz : hertz / 1_000_000
+    }),
+    scale: "nonnegative" as const,
+    tick: (reading: number, place: Locale) => measure(reading, place),
+    unit: "MHz",
+    value: (reading: number, place: Locale) => measure(reading, place, " MHz"),
+  }))
 }
 
 // The rollup peaks across devices at every instant. Counter layouts divide
@@ -1144,6 +1403,13 @@ function exactCounterRatePoints(rows: readonly DataRow[], field: string, scale: 
   return exactDeltaPoints(rows, [field], ([delta], elapsed) => Number(delta!) * scale * 1_000_000 / elapsed)
 }
 
+function gaugePercentPoints(rows: readonly DataRow[], numerator: string, denominator: string): readonly ChartPoint[] {
+  return buildMetricSamples(rows, (row) => {
+    const result = ratio(row, numerator, denominator)
+    return result === null ? null : result * 100
+  })
+}
+
 function latencyPoints(rows: readonly DataRow[], operations: string, duration: string): readonly ChartPoint[] {
   return exactDeltaPoints(rows, [operations, duration], ([count, time]) => count! === 0n ? null : Number(time!) / Number(count!))
 }
@@ -1287,15 +1553,16 @@ export function fallbackMetric(logicalName: string): string | null {
 
 export function systemEntityRows(data: HourData, section: string, cursor: number): readonly DataRow[] {
   let rows = snapshot(sectionRows(data, section), cursor)
-  const pathField = section === "os_cgroup_cpu" ? "cpu_path" : section === "os_cgroup_memory" ? "memory_path" : section === "os_cgroup_io" ? "io_path" : null
   const context = snapshot(sectionRows(data, "os_cgroup_context"), cursor)[0] ?? null
-  if (pathField !== null) {
-    const path = rawText(value(context, pathField))
-    const scope = rawText(value(context, "scope"))
-    if (path === null || scope === null || !/^(?:0|[1-9]\d*)$/.test(scope)) return []
-    rows = rows.filter((row) => rawText(value(row, "cgroup_path")) === path && rawText(value(row, "scope")) === scope)
-  }
-  return rows.map((row) => decorateSystemRow(row, context))
+  const pathField = section === "os_cgroup_cpu" ? "cpu_path" : section === "os_cgroup_memory" ? "memory_path" : section === "os_cgroup_io" ? "io_path" : null
+  return rows.map((row) => {
+    const collectorContext = context !== null && pathField !== null
+      && rawText(value(row, "cgroup_path")) === rawText(value(context, pathField))
+      && rawText(value(row, "scope")) === rawText(value(context, "scope"))
+      ? context
+      : null
+    return decorateSystemRow(row, collectorContext)
+  })
 }
 
 function decorateSystemRow(row: DataRow, context: DataRow | null): DataRow {
@@ -1309,6 +1576,11 @@ function decorateSystemRow(row: DataRow, context: DataRow | null): DataRow {
     values.write_latency_ms = ratio(row, "write_time_ms", "writes")
     values.device_busy = scaled(row, "io_time_ms", 0.1)
     values.average_queue = scaled(row, "io_weighted_time_ms", 0.001)
+  } else if (row.logicalName === "os_mountinfo") {
+    const availableBytes = ratio(row, "free_bytes", "total_bytes")
+    const availableInodes = ratio(row, "available_inodes", "total_inodes")
+    values.filesystem_available_percent = availableBytes === null ? null : availableBytes * 100
+    values.inode_available_percent = availableInodes === null ? null : availableInodes * 100
   } else if (row.logicalName === "os_cgroup_cpu") {
     values.cgroup_used_cores = scaled(row, "usage_usec", 0.000_001)
     values.cgroup_user_cores = scaled(row, "user_usec", 0.000_001)
@@ -1399,12 +1671,13 @@ function pressureMetric(id: string, group: HostSection, label: string, resource:
 
 function point(source: Point): ChartPoint { return source }
 function systemColumn(field: string, kind: NonNullable<EntityColumn["kind"]>, width: number, sticky = false): SystemEntityColumn {
-  const obvious = new Set(["device", "device_id", "cgroup_path", "mount_point", "fstype", "source", "iface", "cpu_id", "model_name"])
+  const obvious = new Set(["device", "device_id", "cgroup_path", "mount_point", "root", "fstype", "source", "iface", "cpu_id", "model_name"])
   return { field, label: `system.field.${field}.label`, ...(obvious.has(field) ? {} : { help: `system.field.${field}.help` }), kind, width, sticky }
 }
 function text(field: string, width = 130, sticky = false): SystemEntityColumn { return systemColumn(field, "text", width, sticky) }
 function virtualText(field: string, fields: readonly string[]): SystemEntityColumn { return { ...text(field, 90), chartable: false, historyFields: fields } }
 function number(field: string, width = 126): SystemEntityColumn { return systemColumn(field, "number", width) }
+function physicalNumber(field: string, physicalField: string, width = 126): SystemEntityColumn { return { ...number(field, width), physicalField } }
 function id(field: string, width = 110, sticky = false): SystemEntityColumn { return systemColumn(field, "id", width, sticky) }
 function bytes(field: string, width = 145): SystemEntityColumn { return systemColumn(field, "bytes", width) }
 function boolean(field: string, width = 130): SystemEntityColumn { return systemColumn(field, "boolean", width) }

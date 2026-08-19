@@ -4,6 +4,7 @@ use crate::logging::{
 };
 use crate::scheduler::{DueSet, SourceKind};
 use anyhow::Result;
+use kronika_registry::os_block_topology::OsBlockTopology;
 use kronika_registry::os_cgroup_context::OsCgroupContext;
 use kronika_registry::os_cgroup_cpu::OsCgroupCpu;
 use kronika_registry::os_cgroup_io::OsCgroupIo;
@@ -11,6 +12,7 @@ use kronika_registry::os_cgroup_mapping::OsCgroupMapping;
 use kronika_registry::os_cgroup_memory::OsCgroupMemory;
 use kronika_registry::os_cgroup_pids::OsCgroupPids;
 use kronika_registry::os_cpu::OsCpu;
+use kronika_registry::os_cpufreq::{OsCpufreq, OsCpufreqPolicy};
 use kronika_registry::os_diskstats::OsDiskstats;
 use kronika_registry::os_interrupts::OsInterrupts;
 use kronika_registry::os_kernel_limits::OsKernelLimits;
@@ -29,37 +31,42 @@ use kronika_registry::os_snmp6::OsSnmp6;
 use kronika_registry::os_softirq::OsSoftirq;
 use kronika_registry::os_stat::OsStat;
 use kronika_registry::os_topology::OsTopology;
+use kronika_registry::os_user::OsUser;
 use kronika_registry::os_vmstat::OsVmstat;
 use kronika_registry::{StrId, Ts};
 use kronika_source_os::proc::cpuinfo;
 use kronika_source_os::proc::loadavg::parse_loadavg;
 use kronika_source_os::proc::meminfo::parse_meminfo;
 use kronika_source_os::proc::pressure::parse_pressure;
-use kronika_source_os::proc::process::{ProcessError, process_facts, read_process};
+use kronika_source_os::proc::process::{ProcessError, process_facts, read_process_with_cgroup};
 use kronika_source_os::proc::stat::{parse_cpu, parse_stat_misc};
 use kronika_source_os::proc::vmstat::parse_vmstat;
 use kronika_source_os::proc::{
     diskstats, interrupts, kernel_limits, net_dev, net_netstat, net_snmp, net_snmp6, nfs,
 };
 use kronika_source_os::{
-    MountEntry, OsScope, ProcFs, SysFs, cgroup, container_device_set, mount_row, net_scope,
-    parse_dev_pair, parse_mountinfo,
+    MountEntry, MountStringIds, OsScope, ProcFs, SysFs, cgroup, container_device_set, mount_row,
+    net_scope, parse_dev_pair, parse_mountinfo,
 };
 use kronika_source_os::{node_id_from_dir, parse_node_meminfo};
 use kronika_writer::{Interner, SectionBuffers};
 use std::io::ErrorKind;
 use std::time::Instant;
 
+mod block_topology;
 mod buffering;
 mod cgroups;
+mod cpufreq;
 mod process;
 mod procfs_sections;
 mod singletons;
+mod user_reference;
 
 pub(crate) use buffering::push_os_sources;
 pub(crate) use procfs_sections::collect_mountinfo;
 #[cfg(test)]
 pub(crate) use procfs_sections::{cpu_max_mhz, cpu_numa_node, net_link_facts, resolve_major_zero};
+pub(crate) use user_reference::UserReferences;
 
 /// OS procfs sections collected synchronously in the read phase.
 pub(crate) struct OsSources {
@@ -82,7 +89,12 @@ pub(crate) struct OsSources {
     numa: Vec<OsNuma>,
     mountinfo: Vec<OsMountinfo>,
     topology: Vec<OsTopology>,
+    block_topology: Vec<OsBlockTopology>,
+    cpufreq_policy: Vec<OsCpufreqPolicy>,
+    cpufreq: Vec<OsCpufreq>,
     processes: Vec<OsProcess>,
+    users: Vec<OsUser>,
+    pending_users: Vec<(u8, u32)>,
     process_status: Vec<OsProcessStatus>,
     cgroup_mapping: Vec<OsCgroupMapping>,
     cgroup_context: Option<OsCgroupContext>,
@@ -115,7 +127,12 @@ impl OsSources {
             numa: Vec::new(),
             mountinfo: Vec::new(),
             topology: Vec::new(),
+            block_topology: Vec::new(),
+            cpufreq_policy: Vec::new(),
+            cpufreq: Vec::new(),
             processes: Vec::new(),
+            users: Vec::new(),
+            pending_users: Vec::new(),
             process_status: Vec::new(),
             cgroup_mapping: Vec::new(),
             cgroup_context: None,
@@ -125,6 +142,10 @@ impl OsSources {
             cgroup_pids: Vec::new(),
             mount_entries: Vec::new(),
         }
+    }
+
+    pub(crate) fn pending_users(&self) -> &[(u8, u32)] {
+        &self.pending_users
     }
 
     #[cfg(test)]
@@ -141,6 +162,47 @@ impl OsSources {
     pub(crate) const fn cgroup_context_only(row: OsCgroupContext) -> Self {
         let mut sources = Self::empty();
         sources.cgroup_context = Some(row);
+        sources
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cpufreq_only(policies: Vec<OsCpufreqPolicy>, samples: Vec<OsCpufreq>) -> Self {
+        let mut sources = Self::empty();
+        sources.cpufreq_policy = policies;
+        sources.cpufreq = samples;
+        sources
+    }
+
+    #[cfg(test)]
+    pub(crate) fn storage_only(
+        mounts: Vec<OsMountinfo>,
+        block_topology: Vec<OsBlockTopology>,
+    ) -> Self {
+        let mut sources = Self::empty();
+        sources.mountinfo = mounts;
+        sources.block_topology = block_topology;
+        sources
+    }
+
+    #[cfg(test)]
+    pub(crate) fn users_only(users: Vec<OsUser>) -> Self {
+        let mut sources = Self::empty();
+        sources.users = users;
+        sources
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cgroups_only(
+        cpu: Vec<OsCgroupCpu>,
+        memory: Vec<OsCgroupMemory>,
+        io: Vec<OsCgroupIo>,
+        pids: Vec<OsCgroupPids>,
+    ) -> Self {
+        let mut sources = Self::empty();
+        sources.cgroup_cpu = cpu;
+        sources.cgroup_memory = memory;
+        sources.cgroup_io = io;
+        sources.cgroup_pids = pids;
         sources
     }
 }
@@ -181,22 +243,25 @@ fn read_optional_os_file(fs: &ProcFs, rel: &'static str, type_id: u32) -> Option
 /// The `interner` is the segment's interner: device, interface, and mount
 /// strings are interned here so the built rows already hold their `StrId`s.
 #[allow(
+    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "independent procfs reads with per-source degradation logging kept adjacent"
+    reason = "independent procfs reads share explicit filesystem, scheduler, dictionary, and segment-reference state"
 )]
 pub(crate) fn collect_os_sources(
     fs: &ProcFs,
     interner: &mut Interner,
+    users: &mut UserReferences,
     scope: u8,
     ts: i64,
     in_container: bool,
     due: &DueSet,
 ) -> OsSources {
+    let cgroup_due = in_container && due.has(SourceKind::OsCgroup);
     if !due.has(SourceKind::OsCore)
         && !due.has(SourceKind::OsMountTopo)
         && !due.has(SourceKind::OsProcesses)
         && !due.has(SourceKind::OsProcessStatus)
-        && !due.has(SourceKind::OsCgroup)
+        && !cgroup_due
         && !due.has(SourceKind::OsCgroupMapping)
     {
         return OsSources::empty();
@@ -204,6 +269,7 @@ pub(crate) fn collect_os_sources(
 
     let mut os = OsSources::empty();
 
+    let sys = SysFs::from_env();
     if due.has(SourceKind::OsCore) {
         singletons::collect_singletons(fs, scope, ts, &mut os);
     }
@@ -219,7 +285,6 @@ pub(crate) fn collect_os_sources(
         let net_scope_id = net_scope(fs).as_u8();
         os.diskstats =
             procfs_sections::collect_diskstats(fs, interner, scope, ts, in_container, &mounts);
-        let sys = SysFs::from_env();
         os.netdev = procfs_sections::collect_netdev(fs, &sys, interner, net_scope_id, ts);
         procfs_sections::collect_net_singletons(fs, net_scope_id, ts, &mut os);
         procfs_sections::collect_kernel_singletons(
@@ -236,21 +301,34 @@ pub(crate) fn collect_os_sources(
 
     if due.has(SourceKind::OsMountTopo) {
         os.mountinfo = collect_mountinfo(interner, scope, ts, &mounts);
-        os.topology =
-            procfs_sections::collect_topology(fs, &SysFs::from_env(), interner, scope, ts);
+        os.topology = procfs_sections::collect_topology(fs, &sys, interner, scope, ts);
+        block_topology::collect_block_topology(&sys, scope, ts, &mut os);
     }
+    cpufreq::collect_cpufreq(&sys, interner, scope, ts, due, &mut os);
 
     let entity_scope = os_entity_scope(in_container);
-    process::collect_process_sections(fs, interner, entity_scope, ts, due, &mut os);
-    cgroups::collect_cgroup_sections(
-        &SysFs::from_env(),
+    let process_memberships = process::collect_process_sections(
+        fs,
         interner,
+        users,
         entity_scope,
         ts,
-        fs,
         due,
+        cgroup_due,
         &mut os,
     );
+    if cgroup_due {
+        cgroups::collect_cgroup_sections(
+            &sys,
+            interner,
+            entity_scope,
+            ts,
+            fs,
+            due,
+            &process_memberships,
+            &mut os,
+        );
+    }
 
     os
 }
@@ -263,6 +341,11 @@ const fn os_entity_scope(in_container: bool) -> u8 {
     } else {
         OsScope::Host.as_u8()
     }
+}
+
+#[cfg(test)]
+pub(crate) fn collects_cgroup_metrics(in_container: bool, due: &DueSet) -> bool {
+    in_container && due.has(SourceKind::OsCgroup)
 }
 
 /// Intern one OS string, logging degradation and returning `None` on failure

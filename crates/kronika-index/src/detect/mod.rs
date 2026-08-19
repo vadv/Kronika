@@ -20,7 +20,7 @@ const OS_CPU: u32 = 1_102_001;
 const OS_MEMINFO: u32 = 1_104_001;
 const OS_LOADAVG: u32 = 1_105_001;
 const OS_VMSTAT: u32 = 1_106_001;
-const OS_MOUNTINFO: u32 = 1_112_001;
+const OS_MOUNTINFO: u32 = 1_112_002;
 const PG_LOG_SLOW_QUERIES: u32 = 2_004_001;
 const PG_LOG_EVENT_LAYOUTS: [u32; 6] = [
     PG_LOG_ERRORS_TYPE_ID,
@@ -37,7 +37,7 @@ const CPU_IDLE_FIELD: u16 = 5;
 const MEM_AVAILABLE_FIELD: u16 = 3;
 const LOAD1_FIELD: u16 = 1;
 const OOM_KILL_FIELD: u16 = 11;
-const MOUNT_FREE_BYTES_FIELD: u16 = 8;
+const MOUNT_FREE_BYTES_FIELD: u16 = 9;
 const SLOW_QUERY_DURATION_FIELD: u16 = 6;
 const DATABASE_DEADLOCKS_FIELD: u16 = 16;
 const EVENT_TIMESTAMP_FIELD: u16 = 0;
@@ -191,7 +191,9 @@ pub(crate) fn finding_layout(type_id: u32) -> bool {
                 | OS_LOADAVG
                 | OS_VMSTAT
                 | OS_MOUNTINFO
-                | 1_001_001..=1_001_003
+                | 1_001_001
+                | 1_001_002
+                | 1_001_004
                 | 1_005_001..=1_005_004
         )
 }
@@ -232,7 +234,7 @@ const fn database_layouts() -> [u32; 4] {
 }
 
 const fn activity_layouts() -> [u32; 3] {
-    [1_001_001, 1_001_002, 1_001_003]
+    [1_001_001, 1_001_002, 1_001_004]
 }
 
 #[cfg(test)]

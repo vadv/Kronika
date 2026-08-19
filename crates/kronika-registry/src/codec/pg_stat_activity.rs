@@ -1,11 +1,11 @@
-//! Type `1_001_001` / `1_001_002` / `1_001_003`: `pg_stat_activity`.
+//! Type `1_001_001` / `1_001_002` / `1_001_004`: `pg_stat_activity`.
 //!
 //! One snapshot row per backend. The view gained `leader_pid` in PG13 and
 //! `query_id` in PG14, so the source maps to three layout versions.
 
 use crate::{Section, StrId, Ts};
 
-/// Type `1_001_003`: `pg_stat_activity` on PG 14-18 (V2 plus `query_id`).
+/// Type `1_001_004`: `pg_stat_activity` on PG 14-18 (V2 plus database and query IDs).
 ///
 /// One row per backend in a full snapshot. Background backends (`walwriter`,
 /// `checkpointer`, autovacuum, …) have no database, role, state, or running
@@ -14,7 +14,7 @@ use crate::{Section, StrId, Ts};
 /// transactions, and `backend_xmin_age` is the vacuum-holdback signal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Section)]
 #[section(
-    id = 1_001_003,
+    id = 1_001_004,
     name = "pg_stat_activity",
     semantics = snapshot_full,
     sort_key("pid", "ts"),
@@ -30,6 +30,9 @@ pub struct PgStatActivityV3 {
     /// Parallel-group leader pid; `None` outside a parallel query.
     #[column(l)]
     pub leader_pid: Option<i32>,
+    /// Database OID; `None` for shared/background backends.
+    #[column(l)]
+    pub datid: Option<u32>,
     /// Database name; `None` for background backends.
     #[column(l)]
     pub datname: Option<StrId>,
@@ -234,6 +237,7 @@ mod tests {
             ts: Ts(ts),
             pid,
             leader_pid: None,
+            datid: Some(u32::MAX),
             datname: Some(StrId(1)),
             usename: Some(StrId(2)),
             application_name: StrId(3),
@@ -243,7 +247,7 @@ mod tests {
             wait_event_type: Some(StrId(7)),
             wait_event: Some(StrId(8)),
             query: Some(StrId(9)),
-            query_id: Some(424_242),
+            query_id: Some(i64::MIN),
             backend_xid_age: Some(10),
             backend_xmin_age: Some(20),
             backend_start: Ts(ts - 9_000),
@@ -259,6 +263,7 @@ mod tests {
             ts: Ts(ts),
             pid,
             leader_pid: None,
+            datid: None,
             datname: None,
             usename: None,
             application_name: StrId(0),
@@ -281,8 +286,8 @@ mod tests {
     #[test]
     fn v3_contract_shape_matches_the_registry() {
         let c = PgStatActivityV3::CONTRACT;
-        assert_eq!(c.type_id.get(), 1_001_003);
-        assert_eq!(c.columns.len(), 19);
+        assert_eq!(c.type_id.get(), 1_001_004);
+        assert_eq!(c.columns.len(), 20);
         assert_eq!(c.sort_key, ["pid", "ts"]);
         assert_eq!(c.identity, ["pid"]);
         // `pid` and `ts` form the sort key and are never null.
@@ -295,6 +300,7 @@ mod tests {
         assert_eq!(c.column("query_start").map(|col| col.nullable), Some(true));
         // Version-specific columns present on V3.
         assert_eq!(c.column("leader_pid").map(|col| col.nullable), Some(true));
+        assert_eq!(c.column("datid").map(|col| col.nullable), Some(true));
         assert_eq!(c.column("query_id").map(|col| col.nullable), Some(true));
         // backend_xmin_age is a gauge that may be absent.
         assert_eq!(

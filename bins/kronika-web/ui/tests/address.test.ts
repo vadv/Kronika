@@ -20,6 +20,14 @@ test("an address survives a round trip through the query string", () => {
   assert.deepEqual(readAddress(written.slice(1)), address)
 })
 
+test("the cursor address preserves an exact microsecond observation", () => {
+  const at = 1_786_445_580_254_001
+  const written = writeAddress({ ...DEFAULT_ADDRESS, at, view: "pg.activity" })
+
+  assert.equal(written, "/?at=1786445580254001&view=pg.activity")
+  assert.equal(readAddress(written.slice(1)).at, at)
+})
+
 test("a plain screen keeps a plain link", () => {
   assert.equal(writeAddress(DEFAULT_ADDRESS), "/")
   assert.deepEqual(readAddress(""), DEFAULT_ADDRESS)
@@ -100,11 +108,30 @@ test("relation drilldown keeps database-scoped identity", () => {
 })
 
 test("relation levels round-trip with or without a drill-down context", () => {
-  for (const pgLevel of ["object", "schema", "database"] as const) {
+  for (const pgLevel of ["object", "schema", "database", "tablespace"] as const) {
     const address = { ...DEFAULT_ADDRESS, view: "pg.indexes" as const, pgLevel, find: "orders*", pgLens: "state" as const }
     const written = writeAddress(address)
     assert.deepEqual(readAddress(written.slice(1)), address)
   }
+})
+
+test("tablespace member filters are validated and URL-native", () => {
+  const address = {
+    ...DEFAULT_ADDRESS,
+    at: 1_700_000_000_000_123,
+    view: "pg.tables" as const,
+    pgLevel: "object" as const,
+    tablespaceOid: "4294967295",
+    find: "table_name:orders*",
+  }
+  const written = writeAddress(address)
+  assert.equal(written, "/?at=1700000000000123&view=pg.tables&tablespace_oid=4294967295&find=table_name%3Aorders*")
+  assert.deepEqual(readAddress(written.slice(1)), address)
+  assert.equal(readAddress("view=pg.tables&tablespace_oid=0").tablespaceOid, null)
+  assert.equal(readAddress("view=pg.tables&tablespace_oid=4294967296").tablespaceOid, null)
+  const group = readAddress("view=pg.tables&level=tablespace&datid=42&tablespace_oid=7")
+  assert.equal(group.datid, null)
+  assert.equal(group.tablespaceOid, null)
 })
 
 test("relation selection is separate from hierarchy filters", () => {
@@ -122,4 +149,25 @@ test("relation selection is separate from hierarchy filters", () => {
   assert.match(written, /row=/)
   assert.equal(readAddress(written.slice(1)).row, selected)
   assert.equal(readAddress("view=pg.statements&row=hidden").row, null)
+})
+
+test("Host master/detail modes and structured related search are URL-native and route-scoped", () => {
+  const host = writeAddress({ ...DEFAULT_ADDRESS, view: "host.overview", metric: "cpu_used_cores" })
+  assert.equal(host, "/?view=host.overview&metric=cpu_used_cores")
+  assert.equal(readAddress(host.slice(1)).metric, "cpu_used_cores")
+  assert.equal(readAddress("?view=host.cpu&metric=cpu_user").metric, "cpu_user")
+  const filesystem = writeAddress({ ...DEFAULT_ADDRESS, view: "host.storage", mode: "filesystems", row: "mount:8:1:/", metric: "free_bytes" })
+  assert.equal(filesystem, "/?view=host.storage&row=mount%3A8%3A1%3A%2F&metric=free_bytes&mode=filesystems")
+  assert.equal(readAddress(filesystem.slice(1)).mode, "filesystems")
+  assert.equal(readAddress(filesystem.slice(1)).row, "mount:8:1:/")
+  assert.equal(readAddress("?view=host.storage&mode=made-up").mode, "io")
+  assert.equal(readAddress("?view=host.cpu&mode=topology").mode, "topology")
+
+  const find = "database:app AND role:reader AND query_id:-9223372036854775808"
+  const query = writeAddress({ ...DEFAULT_ADDRESS, at: 1_700_000_000_000_000, view: "pg.statements", find })
+  assert.equal(query, "/?at=1700000000000000&view=pg.statements&find=database%3Aapp+AND+role%3Areader+AND+query_id%3A-9223372036854775808")
+  assert.equal(readAddress(query).find, find)
+  const activityRow = writeAddress({ ...DEFAULT_ADDRESS, view: "pg.activity", row: "1700000000000000:1001004:73" })
+  assert.equal(activityRow, "/?view=pg.activity&row=1700000000000000%3A1001004%3A73")
+  assert.equal(readAddress(activityRow.slice(1)).row, "1700000000000000:1001004:73")
 })

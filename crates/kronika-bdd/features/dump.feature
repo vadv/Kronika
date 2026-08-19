@@ -25,7 +25,7 @@ Feature: Reading a data directory back with the dumper
       | KRONIKA_SEGMENT_MAX_BYTES | 1     |
     When it runs for 3 seconds
     Then the dumper prints the rows of section 1107001
-    And column mount_point of section 1112001 starts with / rather than an id
+    And column mount_point of section 1112002 starts with / rather than an id
 
   Scenario: The dumper builds a health point for every pressure snapshot
     Given a collector with these settings

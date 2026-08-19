@@ -17,6 +17,7 @@ import {
   viewData,
   resolveLocator,
   PRODUCT_SECTION_GROUPS,
+  POSTGRESQL_CONTEXT_REQUESTS,
   POSTGRESQL_OVERVIEW_REQUESTS,
   type DataRow,
   type SectionRequest,
@@ -29,11 +30,12 @@ import {
 } from "./api"
 import { ChartOnly, ChartVisibilityProvider, loadChartVisibility } from "./chart-visibility"
 import type { TableOrder } from "./entity-table"
-import { HOST_SECTIONS, hostSectionOf, pgSectionOf, readAddress, sourceOf, stepOf, viewOf, writeAddress, type HostSection, type PgLens, type Source } from "./address"
+import { defaultHostMode, HOST_SECTIONS, hostSectionOf, pgSectionOf, readAddress, sourceOf, stepOf, viewOf, writeAddress, type HostMode, type HostSection, type PgLens, type Source } from "./address"
 import { DetailDock, PROCESS_HISTORY_FIELDS } from "./detail"
 import { loadDisplayTimeZone, saveDisplayTimeZone, type DisplayTimeZone } from "./display-time"
-import { DisplayTimeProvider, useDisplayTime } from "./display-time-context"
+import { DisplayTimeProvider, DisplayTimeScope, useDisplayTime } from "./display-time-context"
 import { contextualRows, entityContext, findingRoute, hostSectionForFinding, type EntityContext } from "./entity-context"
+import { mergeObservationTimestamps, observationTimestamps } from "./cursor-timestamps"
 import { EventsView, type FindingResolution } from "./events-view"
 import { findingHistory, findingHistoryRequest, findingProjection } from "./finding-presentation"
 import { HelpPanel, type Translate } from "./help"
@@ -42,6 +44,9 @@ import { HourPicker } from "./hour-picker"
 import { keyboardTargetOwnsArrows } from "./keyboard"
 import { rowMatchesLocator } from "./locator"
 import { Login } from "./login"
+import { parseSearch, type SearchSurface } from "./search"
+import { findAfterSurfaceNavigation, searchSurfaceForLocation, searchSurfaceForSection } from "./search-navigation"
+import { beginSearchRequest, IDLE_SEARCH_REQUEST, searchRequestForSurface, type SearchRequestState } from "./search-request"
 import {
   activityFor,
   asNumber,
@@ -61,17 +66,19 @@ import {
 import { PostgresView, type PostgresSection } from "./postgres-view"
 import { PLAN_INFO_REQUEST, planRequest, statementRequest, type PlanLens, type StatementLens } from "./postgres-metrics"
 import { isRelationLens, relationRequest, type RelationGroup, type RelationLens, type RelationNavigation, type RelationSection } from "./postgres-relations"
-import { EMPTY_PROCESS_SUMMARY, ProcessSummary, ProcessTable, processSummaryReducer } from "./process-table"
+import { EMPTY_PROCESS_SUMMARY, LENS_FIELDS, ProcessSummary, ProcessTable, processSummaryReducer, processTableDefaultOrder } from "./process-table"
 import { latestTimelineTimestamp, refreshedCursor, scheduleRefresh } from "./refresh"
 import type { ChartPoint } from "./series-chart"
 import { bootstrapSession, getSessionSnapshot, logout, subscribeSession } from "./session"
 import { hasPostgresTelemetry } from "./source-availability"
+import type { RelatedNavigation } from "./statement-navigation"
 import {
   CGROUP_SNAPSHOT_REQUESTS,
   SYSTEM_REQUESTS,
   SystemView,
   cgroupSnapshotPlan,
   clearCgroupSnapshotRows,
+  recordedEnvironment,
 } from "./system-view"
 import { Timeline } from "./timeline"
 import { TimezoneSelect } from "./timezone-select"
@@ -84,20 +91,32 @@ const EMPTY_DATA: HourData = {
 }
 
 interface CurrentSnapshot {
+  readonly cursor: number | null
   readonly data: HourData
+  readonly denseSection: string | null
   readonly target: string | null
 }
 
-const EMPTY_CURRENT_SNAPSHOT: CurrentSnapshot = { data: EMPTY_DATA, target: null }
+const EMPTY_CURRENT_SNAPSHOT: CurrentSnapshot = { cursor: null, data: EMPTY_DATA, denseSection: null, target: null }
 
 const VIEW_REQUESTS: Readonly<Record<string, readonly SectionRequest[]>> = {
   host: [...TIMELINE_REQUESTS, ...SYSTEM_REQUESTS],
-  processes: [...TIMELINE_REQUESTS, { section: "os_process" }, { section: "pg_stat_activity" }, { section: "instance_metadata" }],
-  "postgresql:overview": [...TIMELINE_REQUESTS, ...POSTGRESQL_OVERVIEW_REQUESTS],
-  "postgresql:activity": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlActivity.map(section)],
-  "postgresql:locks": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlLocks.map(section)],
-  "postgresql:databases": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlDatabases.map(section)],
+  "postgresql:overview": [...TIMELINE_REQUESTS, ...POSTGRESQL_OVERVIEW_REQUESTS, ...POSTGRESQL_CONTEXT_REQUESTS],
+  "postgresql:activity": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlActivity.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
+  "postgresql:locks": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlLocks.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
+  "postgresql:databases": [...TIMELINE_REQUESTS, ...PRODUCT_SECTION_GROUPS.postgresqlDatabases.map(section), ...POSTGRESQL_CONTEXT_REQUESTS],
   events: TIMELINE_REQUESTS,
+}
+
+function processRequest(lens: Lens): SectionRequest {
+  const selected = processTableDefaultOrder(lens).column
+  return {
+    section: "os_process",
+    pageSize: 200,
+    defaultOrder: [selected],
+    fallbackOrder: ["pid"],
+    order: Object.fromEntries(LENS_FIELDS[lens].map((field) => [field.id, field.id === "command" ? ["cmdline", "comm"] : [field.field ?? field.id]])),
+  }
 }
 
 function section(name: string): SectionRequest { return { section: name } }
@@ -106,6 +125,8 @@ const HELP_SYSTEM = [
   { label: "system.metric.health.label", help: "system.metric.health.help" },
   { label: "system.metric.cpu_used_cores.label", help: "system.metric.cpu_used_cores.help" },
   { label: "system.metric.cpu_capacity.label", help: "system.metric.cpu_capacity.help" },
+  { label: "system.metric.cpu_actual_frequency.label", help: "system.metric.cpu_actual_frequency.help" },
+  { label: "system.metric.cpu_scaling_frequency.label", help: "system.metric.cpu_scaling_frequency.help" },
   { label: "system.metric.cpu_user.label", help: "system.metric.cpu_user.help" },
   { label: "system.metric.cpu_system.label", help: "system.metric.cpu_system.help" },
   { label: "system.metric.cpu_iowait.label", help: "system.metric.cpu_iowait.help" },
@@ -183,7 +204,9 @@ function App({ locale, onLocale, t }: {
   const [error, setError] = useState<string | null>(null)
   const [source, setSource] = useState<Source>(sourceOf(opened.current.view))
   const [hostSection, setHostSection] = useState<HostSection>(hostSectionOf(opened.current.view))
-  const visibleSource: Source = source === "postgresql" && !pgPresent ? "host" : source
+  const [hostMode, setHostMode] = useState<HostMode | null>(opened.current.mode)
+  const [systemMetric, setSystemMetric] = useState<string | null>(opened.current.metric)
+  const visibleSource = source
   const [pgSection, setPgSection] = useState<PostgresSection>(pgSectionOf(opened.current.view))
   const [statementLens, setStatementLens] = useState<StatementLens>(statementLensOf(opened.current.pgLens))
   const [planLens, setPlanLens] = useState<PlanLens>(planLensOf(opened.current.pgLens))
@@ -197,6 +220,7 @@ function App({ locale, onLocale, t }: {
   const [lens, setLens] = useState<Lens>(opened.current.lens)
   const [processSummary, dispatchProcessSummary] = useReducer(processSummaryReducer, EMPTY_PROCESS_SUMMARY)
   const [find, setFind] = useState(opened.current.find)
+  const [searchRequest, setSearchRequest] = useState<SearchRequestState>(IDLE_SEARCH_REQUEST)
   const [order, setOrder] = useState<TableOrder | null>(opened.current.sort)
   const [selectedKey, setSelectedKey] = useState<string | null>(opened.current.row)
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null)
@@ -229,20 +253,27 @@ function App({ locale, onLocale, t }: {
     ? `${baseViewKey}:${statementLens}`
     : pgSection === "plans" && visibleSource === "postgresql" ? `${baseViewKey}:${planLens}` : baseViewKey
   const viewRequests = useMemo(() => {
-    if (visibleSource === "postgresql" && pgSection === "statements") return [...TIMELINE_REQUESTS, statementRequest(statementLens)]
+    if (visibleSource === "processes") return [...TIMELINE_REQUESTS, processRequest(lens), { section: "pg_stat_activity" }, { section: "instance_metadata" }]
+    if (visibleSource === "postgresql" && pgSection === "statements") return [...TIMELINE_REQUESTS, statementRequest(statementLens), ...POSTGRESQL_CONTEXT_REQUESTS]
     if (visibleSource === "postgresql" && pgSection === "plans") return [
       ...TIMELINE_REQUESTS,
       planRequest(planLens),
       PLAN_INFO_REQUEST,
+      ...POSTGRESQL_CONTEXT_REQUESTS,
     ]
     if (activeRelation && visibleSource === "postgresql") {
-      return [...TIMELINE_REQUESTS, relationRequest(relationSectionOf(pgSection), activeRelationLens, relationLevel)]
+      return [...TIMELINE_REQUESTS, relationRequest(relationSectionOf(pgSection), activeRelationLens, relationLevel), ...POSTGRESQL_CONTEXT_REQUESTS]
     }
     return VIEW_REQUESTS[baseViewKey] ?? []
-  }, [activeRelation, activeRelationLens, baseViewKey, pgSection, planLens, relationLevel, statementLens, visibleSource])
+  }, [activeRelation, activeRelationLens, baseViewKey, lens, pgSection, planLens, relationLevel, statementLens, visibleSource])
   const [segments, setSegments] = useState<readonly SegmentBound[]>([])
   const densePattern = viewRequests.some((request) => request.pageSize !== undefined) ? find.trim() : ""
-  const requestedSnapshots = viewRequests.filter((request) => request.section !== "health").map((request) => request.pageSize !== undefined && request.section === context?.logicalName
+  const denseCandidate = viewRequests.find((request) => request.pageSize !== undefined)
+  const denseSurface = denseCandidate === undefined ? null : searchSurfaceForSection(denseCandidate.section)
+  const denseSearchValid = densePattern === "" || denseSurface === null || parseSearch(densePattern, denseSurface, {
+    grouped: denseCandidate !== undefined && "group" in denseCandidate && denseCandidate.group !== undefined && denseCandidate.group !== "object",
+  }).ok
+  const requestedSnapshots = viewRequests.filter((request) => request.section !== "health" && (request.pageSize === undefined || denseSearchValid)).map((request) => request.pageSize !== undefined && request.section === context?.logicalName
     ? { ...request, typeIds: [context.typeId] } : request)
   const snapshotGroups = snapshotRequestGroups(segments, cursor, requestedSnapshots)
   const denseLoad = snapshotGroups.flatMap((group) => group.requests
@@ -259,14 +290,22 @@ function App({ locale, onLocale, t }: {
   const denseOptions = denseRequest === undefined
     ? undefined
     : initialPageOptions(denseRequest, pageContext, densePattern, relationFilters)
-  const cgroupTargetGroups = ordinaryGroups.some((group) => group.requests.some(({ section }) => section === "os_cgroup_context"))
+  const requestOrder = visibleSource === "processes" ? order ?? processTableDefaultOrder(lens) : order
+  const cgroupTargetGroups = visibleSource === "host" && hostSection === "cgroups"
     ? snapshotRequestGroups(segments, cursor, CGROUP_SNAPSHOT_REQUESTS)
     : []
   const snapshotTarget = snapshotGroups.length === 0
     ? null
-    : snapshotTargetKey(snapshotGroups, cursor, cgroupTargetGroups, order, denseOptions)
-  const currentData = currentSnapshot.target === snapshotTarget ? currentSnapshot.data : EMPTY_DATA
+    : snapshotTargetKey(snapshotGroups, cursor, cgroupTargetGroups, requestOrder, denseOptions)
+  const retainsDenseRows = denseRequest !== undefined
+    && currentSnapshot.cursor === cursor
+    && currentSnapshot.denseSection === denseRequest.section
+  const currentData = currentSnapshot.target === snapshotTarget || retainsDenseRows ? currentSnapshot.data : EMPTY_DATA
   const data = useMemo(() => viewData(timelineData, currentData), [currentData, timelineData])
+  const environment = useMemo(() => recordedEnvironment(data, cursor), [cursor, data])
+  const hostSections = environment === "container"
+    ? HOST_SECTIONS
+    : HOST_SECTIONS.filter((section) => section !== "cgroups")
   const drawn = useRef<number | null>(null)
   const selectedHour = useRef(hour)
   selectedHour.current = hour
@@ -398,6 +437,21 @@ function App({ locale, onLocale, t }: {
   } | null>(null)
   useEffect(() => {
     const generation = ++snapshotGeneration.current
+    const tracksInitialSearch = denseRequest !== undefined
+      && denseSurface !== null
+      && denseSearchValid
+      && snapshotTarget !== null
+      && (densePattern !== "" || (searchRequest.phase === "pending" && searchRequest.surface === denseSurface))
+    const retainedSearchRows = denseRequest !== undefined
+      && retainsDenseRows
+      && (denseRequest.section === "os_process"
+        ? currentSnapshot.data.processes.length !== 0
+        : (currentSnapshot.data.sections[denseRequest.section]?.length ?? 0) !== 0)
+    if (tracksInitialSearch && denseSurface !== null) {
+      setSearchRequest(beginSearchRequest(denseSurface, retainedSearchRows))
+    } else if (denseSurface === null || !denseSearchValid) {
+      setSearchRequest(IDLE_SEARCH_REQUEST)
+    }
     cgroupSnapshotKey.current = null
     setCurrentSnapshot((current) => current.target === snapshotTarget
       ? { ...current, data: clearCgroupSnapshotRows(current.data) }
@@ -423,13 +477,11 @@ function App({ locale, onLocale, t }: {
     const controller = new AbortController()
     const stale = () => controller.signal.aborted || generation !== snapshotGeneration.current
     const loadOrdinarySnapshot = async (ordinary: readonly SnapshotRequestGroup[]): Promise<HourData> => {
-      const primary = await loadSnapshotGroups(ordinary, cursor, controller.signal, order ?? undefined)
-      if (stale() || !ordinary.some((group) => group.requests.some(({ section }) => section === "os_cgroup_context"))) return primary
-      const contextSegmentId = primary.sections.os_cgroup_context?.[0]?.segmentId
-      if (contextSegmentId === undefined) return primary
+      const primary = await loadSnapshotGroups(ordinary, cursor, controller.signal, requestOrder ?? undefined)
+      if (stale() || cgroupTargetGroups.length === 0) return primary
       const plans = cgroupTargetGroups.map((group) => ({
         anchor: group.anchor,
-        plan: cgroupSnapshotPlan(contextSegmentId, cursor, primary, group.requests),
+        plan: cgroupSnapshotPlan(group.anchor.id, cursor, primary, group.requests),
       }))
       const planKey = JSON.stringify(plans.map(({ anchor, plan }) => [anchor.id, plan.key]))
       cgroupSnapshotKey.current = planKey
@@ -454,7 +506,7 @@ function App({ locale, onLocale, t }: {
         void loadOrdinarySnapshot(ordinaryGroups)
         .then((incoming) => {
           if (stale()) return
-          setCurrentSnapshot({ data: incoming, target: snapshotTarget })
+          setCurrentSnapshot({ cursor, data: incoming, denseSection: null, target: snapshotTarget })
           setCursorState("ready")
           setLastUpdated(Date.now() * 1_000)
           if (completesRefresh) finishRefresh(true)
@@ -484,23 +536,30 @@ function App({ locale, onLocale, t }: {
           inFlight = true
           action.failed = undefined
           setDensePageState("loading")
+          const tracksPageSearch = denseSurface !== null && (pageCursor === undefined ? tracksInitialSearch : densePattern !== "")
+          if (tracksPageSearch && denseSurface !== null) {
+            setSearchRequest(beginSearchRequest(denseSurface, pageCursor === undefined ? retainedSearchRows : true))
+          }
           const options = {
             ...denseOptions,
             ...(pageCursor === undefined ? {} : { cursor: pageCursor }),
           }
           void Promise.all([
             pageCursor === undefined ? base : Promise.resolve(null),
-            loadSnapshot(denseLoad.anchor.id, cursor, [pagedRequest], controller.signal, order ?? undefined, options),
+            loadSnapshot(denseLoad.anchor.id, cursor, [pagedRequest], controller.signal, requestOrder ?? undefined, options),
           ]).then(([companion, incoming]) => {
             if (stale()) return
             setCurrentSnapshot((current) => ({
+              cursor,
               data: pageCursor === undefined
                 ? mergeSnapshotData(companion ?? EMPTY_DATA, incoming)
                 : mergeSnapshotData(current.target === snapshotTarget ? current.data : EMPTY_DATA, incoming, pagedRequest.section),
+              denseSection: pagedRequest.section,
               target: snapshotTarget,
             }))
             setDensePageState("idle")
             setCursorState("ready")
+            if (tracksPageSearch) setSearchRequest(IDLE_SEARCH_REQUEST)
             setLastUpdated(Date.now() * 1_000)
             if (completesRefresh && pageCursor === undefined) finishRefresh(true)
           }).catch((reason: unknown) => {
@@ -508,6 +567,9 @@ function App({ locale, onLocale, t }: {
             action.failed = pageCursor
             setDensePageState("error")
             setCursorState("ready")
+            if (tracksPageSearch && denseSurface !== null) {
+              setSearchRequest({ phase: "error", retained: pageCursor !== undefined || retainedSearchRows, surface: denseSurface })
+            }
             if (completesRefresh && pageCursor === undefined) finishRefresh(false)
             console.error("kronika: snapshot page failed", reason)
           }).finally(() => { inFlight = false })
@@ -620,6 +682,37 @@ function App({ locale, onLocale, t }: {
     processHistoryKey === null || hour === null || selectedPid === null
       ? null
       : (signal) => loadSeries(hour, "os_process", { pid: selectedPid }, PROCESS_HISTORY_FIELDS, signal))
+  const sharedNavigationTimestamps = useMemo(
+    () => observationTimestamps(data.lanePoints, data.health),
+    [data.health, data.lanePoints],
+  )
+  const navigationTimestamps = useMemo(() => {
+    if (visibleSource === "processes") {
+      const summary = processSummary.hour === hour ? processSummary.history : []
+      return mergeObservationTimestamps(sharedNavigationTimestamps, summary, data.processes, processHistory.value ?? [])
+    }
+    if (visibleSource === "postgresql" && pgSection === "activity") {
+      return mergeObservationTimestamps(sharedNavigationTimestamps, data.activities)
+    }
+    return sharedNavigationTimestamps
+  }, [data.activities, data.processes, hour, pgSection, processHistory.value, processSummary.history, processSummary.hour, sharedNavigationTimestamps, visibleSource])
+  const activeSearchSurface = searchSurfaceForLocation(source, pgSection)
+  const visibleSearchRequest = searchRequestForSurface(searchRequest, activeSearchSurface)
+  const applyFind = useCallback((next: string) => {
+    if (next === find) return
+    setFind(next)
+    if (activeSearchSurface === null || denseSurface !== activeSearchSurface) return
+    setSearchRequest(beginSearchRequest(activeSearchSurface, searchRowsAvailable(data, activeSearchSurface)))
+  }, [activeSearchSurface, data, denseSurface, find])
+  const navigateSearchSurface = useCallback((targetSurface: ReturnType<typeof searchSurfaceForLocation>, targetFind?: string) => {
+    const next = findAfterSurfaceNavigation(activeSearchSurface, targetSurface, find, targetFind)
+    if (next !== find) setFind(next)
+    if (targetFind !== undefined && targetSurface !== null && next !== find) {
+      setSearchRequest(beginSearchRequest(targetSurface, targetSurface === activeSearchSurface && searchRowsAvailable(data, targetSurface)))
+      return
+    }
+    if (targetSurface !== activeSearchSurface) setSearchRequest(IDLE_SEARCH_REQUEST)
+  }, [activeSearchSurface, data, find])
   const address = useMemo(() => writeAddress({
     at: cursor === 0 ? null : cursor,
     view: viewOf(source, hostSection, pgSection),
@@ -631,12 +724,15 @@ function App({ locale, onLocale, t }: {
     schema: relationFilters.schemaname ?? null,
     relid: relationFilters.relid ?? null,
     indexrelid: relationFilters.indexrelid ?? null,
+    tablespaceOid: relationFilters.tablespace_oid ?? null,
     sort: order,
     row: activeRelation
       ? relationSelectedKey
-      : selectedKey,
+      : source === "host" || source === "processes" || source === "postgresql" || source === "events" ? selectedKey : null,
     find,
-  }), [activeRelation, activeRelationLens, cursor, find, hostSection, lens, order, pgSection, planLens, relationFilters, relationLevel, relationSelectedKey, selectedKey, source, statementLens])
+    metric: source === "host" ? systemMetric : null,
+    mode: source === "host" ? hostMode : null,
+  }), [activeRelation, activeRelationLens, cursor, find, hostMode, hostSection, lens, order, pgSection, planLens, relationFilters, relationLevel, relationSelectedKey, selectedKey, source, statementLens, systemMetric])
   const steps = useRef<string | null>(null)
   useEffect(() => {
     if (window.location.pathname + window.location.search === address) return
@@ -649,6 +745,8 @@ function App({ locale, onLocale, t }: {
       const opening = readAddress(window.location.search)
       setSource(sourceOf(opening.view))
       setHostSection(hostSectionOf(opening.view))
+      setHostMode(opening.mode)
+      setSystemMetric(opening.metric)
       setPgSection(pgSectionOf(opening.view))
       setLens(opening.lens)
       setStatementLens(statementLensOf(opening.pgLens))
@@ -661,6 +759,7 @@ function App({ locale, onLocale, t }: {
       setOrder(opening.sort)
       setSelectedKey(opening.row)
       setFind(opening.find)
+      setSearchRequest(IDLE_SEARCH_REQUEST)
       clearEntityContext()
       if (opening.at !== null) {
         followsLatest.current = false
@@ -676,23 +775,45 @@ function App({ locale, onLocale, t }: {
     const nextSection = navigation.section === "pg_stat_user_tables" ? "tables" : "indexes"
     const crossing = nextSection !== pgSection
     const nextLens = relationLensOf(nextSection, activeRelationLens)
+    navigateSearchSurface(searchSurfaceForSection(nextSection))
     setPgSection(nextSection)
     setRelationLens(nextLens)
     setRelationLevel(navigation.group)
     setRelationFilters(navigation.filters)
     setRelationSelectedKey(navigation.selectedKey)
-    if (crossing) setFind("")
     setOrder((current) => current !== null && !crossing && Object.hasOwn(relationRequest(navigation.section, nextLens, navigation.group).order ?? {}, current.column) ? current : null)
-  }, [activeRelationLens, pgSection])
+  }, [activeRelationLens, navigateSearchSurface, pgSection])
   const choosePgSection = useCallback((next: PostgresSection) => {
     const crossing = next !== pgSection
+    if (crossing) setSelectedKey(null)
     setRelationSelectedKey(null)
+    navigateSearchSurface(searchSurfaceForSection(next))
     setPgSection(next)
     if (next !== "tables" && next !== "indexes") return
     setRelationLens((current) => relationLensOf(next, current))
     setRelationFilters((current) => relationFiltersForSection(current, next))
-    if (crossing && relationSection) setFind("")
-  }, [pgSection, relationSection])
+  }, [navigateSearchSurface, pgSection])
+  const chooseHostSection = useCallback((next: HostSection) => {
+    setSystemFocus(null)
+    setSystemMetric(null)
+    setSelectedKey(null)
+    setHostMode(defaultHostMode(next))
+    setHostSection(next)
+  }, [])
+  useEffect(() => {
+    if (visibleSource === "host" && hostSection === "cgroups" && environment === "machine") {
+      chooseHostSection("overview")
+    }
+  }, [chooseHostSection, environment, hostSection, visibleSource])
+  const openRelated = useCallback((target: RelatedNavigation) => {
+    navigateSearchSurface(searchSurfaceForSection(target.section), target.expression)
+    setSource("postgresql")
+    setPgSection(target.section)
+    if (target.section === "statements") setStatementLens("load")
+    else setPlanLens("load")
+    setSelectedKey(null)
+    setOrder(null)
+  }, [navigateSearchSurface])
   const chooseRelationLens = useCallback((next: RelationLens) => {
     if (next !== relationLens) setOrder(null)
     setRelationLens(next)
@@ -714,6 +835,7 @@ function App({ locale, onLocale, t }: {
       setSelectedFinding(null)
       setFindingResolution("idle")
       setEventScope(grouped)
+      navigateSearchSurface("events")
       setSource("events")
       return
     }
@@ -727,6 +849,7 @@ function App({ locale, onLocale, t }: {
     }
     const route = findingRoute(finding)
     if (route === "processes") {
+      navigateSearchSurface("os_process")
       setSource("processes")
       setLens(processLens(fieldNameForLocator(finding)))
       setSystemFocus(null)
@@ -734,12 +857,14 @@ function App({ locale, onLocale, t }: {
       return
     }
     if (route === "system") {
+      navigateSearchSurface(null)
       setSource("host")
       setHostSection(hostSectionForFinding(finding))
       setSystemFocus(finding)
       return
     }
     if (route !== "events") {
+      navigateSearchSurface(searchSurfaceForSection(route))
       setSource("postgresql")
       setPgSection(route)
       if (route === "statements") setStatementLens("load")
@@ -748,44 +873,39 @@ function App({ locale, onLocale, t }: {
       setFindingRow(resolved?.row ?? null)
       return
     }
+    navigateSearchSurface("events")
     setSource("events")
-  }, [data])
+  }, [data, navigateSearchSurface])
   const eventsPresent = data.findings.length !== 0
   const helpItems = visibleSource === "postgresql"
     ? HELP_POSTGRESQL
     : visibleSource === "events"
       ? HELP_EVENTS
       : visibleSource === "processes" ? HELP_PROCESS : HELP_SYSTEM
-  useEffect(() => {
-    if (loading) return
-    if (source === "postgresql" && !pgPresent) setSource("host")
-    if (source === "events" && !eventsPresent) setSource("host")
-  }, [eventsPresent, loading, pgPresent, source])
-
   const stretchPostgres = visibleSource === "postgresql" && pgSection !== "overview"
   const cursorTime = cursor === 0 ? null : time.clock(cursor)
   const updatedClock = lastUpdated === null ? null : time.clock(lastUpdated)
-  return <ChartVisibilityProvider value={chartsVisible}><main className={`app-shell min-h-screen${stretchPostgres || !chartsVisible ? " flex h-dvh min-h-0 flex-col overflow-hidden" : ""}${stretchPostgres ? " pg-table-shell" : ""}${chartsVisible ? "" : " charts-hidden"}`}>
+  return <DisplayTimeScope hour={hour}><ChartVisibilityProvider value={chartsVisible}><main className={`app-shell min-h-screen${stretchPostgres || visibleSource === "processes" || !chartsVisible ? " flex h-dvh min-h-0 flex-col overflow-hidden" : ""}${stretchPostgres ? " pg-table-shell" : ""}${chartsVisible ? "" : " charts-hidden"}`}>
     <header className="topbar max-[1179px]:flex-wrap max-[1179px]:gap-y-1 max-[1179px]:px-2 max-[1179px]:py-1 [.pg-table-shell>&]:flex-none">
       <span className="flex flex-none items-center text-accent2"><Activity aria-hidden="true" size={15} strokeWidth={2} /></span>
       <h1>{t("app.title")}</h1>
 
       <nav aria-label={t("nav.sources")} className="source-tabs max-[760px]:overflow-x-auto">
-        <button aria-current={visibleSource === "host" ? "page" : undefined} className={visibleSource === "host" ? "source-active" : undefined} onClick={() => setSource("host")} type="button">{t("nav.host")}</button>
-        <button aria-current={visibleSource === "processes" ? "page" : undefined} className={visibleSource === "processes" ? "source-active" : undefined} data-testid="process-tab" onClick={() => setSource("processes")} type="button">{t("nav.processes")}</button>
-        <button aria-current={visibleSource === "postgresql" ? "page" : undefined} className={visibleSource === "postgresql" ? "source-active" : undefined} disabled={!pgPresent} onClick={() => setSource("postgresql")} title={pgPresent ? undefined : t("nav.no_data")} type="button">{t("nav.postgresql")}</button>
-        {eventsPresent && <button aria-current={visibleSource === "events" ? "page" : undefined} className={visibleSource === "events" ? "source-active" : undefined} onClick={() => { setEventScope(null); setSelectedFinding(null); setSource("events") }} type="button">{t("nav.events")}</button>}
+        <button aria-current={visibleSource === "processes" ? "page" : undefined} className={visibleSource === "processes" ? "source-active" : undefined} data-testid="process-tab" onClick={() => { navigateSearchSurface("os_process"); setSelectedKey(null); setSource("processes") }} type="button">{t("nav.processes")}</button>
+        <button aria-current={visibleSource === "host" ? "page" : undefined} className={visibleSource === "host" ? "source-active" : undefined} onClick={() => { navigateSearchSurface(null); setSystemFocus(null); setSelectedKey(null); setSource("host") }} type="button">{t("nav.host")}</button>
+        <button aria-current={visibleSource === "postgresql" ? "page" : undefined} className={visibleSource === "postgresql" ? "source-active" : undefined} onClick={() => { navigateSearchSurface(searchSurfaceForSection(pgSection)); setSelectedKey(null); setSource("postgresql") }} title={pgPresent ? undefined : t("nav.no_data")} type="button">{t("nav.postgresql")}</button>
+        <button aria-current={visibleSource === "events" ? "page" : undefined} className={visibleSource === "events" ? "source-active" : undefined} onClick={() => { navigateSearchSurface("events"); setEventScope(null); setSelectedFinding(null); setSource("events") }} title={eventsPresent ? undefined : t("nav.no_data")} type="button">{t("nav.events")}</button>
       </nav>
 
       {visibleSource === "host" && <div className="section-tabs flex items-center border border-line3 [&>button]:cursor-pointer [&>button]:border-0 [&>button]:bg-transparent [&>button]:px-[9px] [&>button]:py-[5px] [&>button]:text-xs [&>button]:uppercase [&>button]:text-fg3 [&>button[aria-selected=true]]:bg-s4 [&>button[aria-selected=true]]:text-accent3" role="tablist">
-        {HOST_SECTIONS.map((section) => <button aria-selected={hostSection === section} data-testid={`host-section-${section}`} key={section} onClick={() => setHostSection(section)} role="tab" type="button">{t(`section.${section}`)}</button>)}
+        {hostSections.map((section) => <button aria-selected={hostSection === section} data-testid={`host-section-${section}`} key={section} onClick={() => chooseHostSection(section)} role="tab" type="button">{t(`section.${section}`)}</button>)}
       </div>}
 
       <HourPicker availableHours={availableHours} changeHour={changeHour} hour={hour} locale={locale} t={t} />
       <div aria-live="polite" className="cursor-time max-[760px]:order-9">
         <TimeValue label={t("hour.cursor_label")} output={cursorTime} testId="cursor-time" />
         {lastUpdated !== null && updatedClock !== null && <UpdatedAge at={lastUpdated} clock={updatedClock} locale={locale} t={t} />}
-        {cursorState === "loading" && <span className="flex items-center gap-1.5 text-xs uppercase text-fg3" data-testid="cursor-behind" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none animate-loading-spin motion-reduce:animate-none" />{t("status.updating")}</span>}
+        {cursorState === "loading" && <span className="flex items-center gap-1.5 text-xs uppercase text-fg3" data-testid="cursor-behind" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none" />{t("status.updating")}</span>}
         {cursorState === "missing" && <span className="cursor-missing ml-2 text-xs uppercase text-warn" data-testid="cursor-behind">{t("status.no_sample")}</span>}
         {refreshFailed && <span>{t("refresh.error")}</span>}
       </div>
@@ -805,7 +925,7 @@ function App({ locale, onLocale, t }: {
       </div>
     </header>
 
-    <section className={`workspace px-2.5 pb-5 pt-2 max-[760px]:px-2 charts-hidden:flex charts-hidden:min-h-0 charts-hidden:flex-auto charts-hidden:flex-col${stretchPostgres ? " pg-table-workspace flex min-h-0 flex-1 flex-col overflow-hidden [&>.timeline-shell]:flex-none [&>.pg-tabs]:flex-none [&>.lensbar]:flex-none [&>[data-testid=table-paging]]:flex-none" : ""}`}>
+    <section className={`workspace px-2.5 pb-5 pt-2 max-[760px]:px-2 charts-hidden:flex charts-hidden:min-h-0 charts-hidden:flex-auto charts-hidden:flex-col${stretchPostgres ? " pg-table-workspace flex min-h-0 flex-1 flex-col overflow-hidden [&>.timeline-shell]:flex-none [&>.pg-tabs]:flex-none [&>.lensbar]:flex-none [&>[data-testid=table-paging]]:flex-none" : ""}${visibleSource === "processes" ? " process-workspace flex min-h-0 flex-1 flex-col overflow-hidden [&>.timeline-shell]:flex-none [&>.lensbar]:flex-none [&>.process-summary]:flex-none" : ""}`}>
       <p aria-live="polite" className="absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]">
         {t(`nav.${visibleSource}`)}
         {visibleSource === "host" ? ` · ${t(`section.${hostSection}`)}` : ""}
@@ -813,27 +933,27 @@ function App({ locale, onLocale, t }: {
       </p>
       {loading && <StateCard busy locale={locale} message={t("status.loading")} progress={loadProgress} t={t} />}
       {!loading && error !== null && <StateCard locale={locale} message={t("status.error")} t={t} />}
-      {!loading && error === null && hour !== null && visibleSource === "host" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} section={hostSection} t={t} tablesLoading={cursorState === "loading"} />}
+      {!loading && error === null && hour !== null && visibleSource === "host" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} metric={systemMetric} mode={hostMode} navigationTimestamps={navigationTimestamps} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onMetric={setSystemMetric} onMode={(next) => { setHostMode(next); setSystemMetric(null); setSelectedKey(null) }} onSelectedKey={setSelectedKey} section={hostSection} selectedKey={selectedKey} t={t} tablesLoading={cursorState === "loading"} />}
       {!loading && error === null && hour !== null && visibleSource === "processes" && <>
-        <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} primaryLane={lens === "cpu" ? "cpu_busy" : lens === "memory" ? "memory" : lens === "disk" ? "io_stall" : "health"} shownAt={shownAt} t={t} /></ChartOnly>
-        <div className="lensbar">
-          <div aria-label={t("nav.processes")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1 max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">
+        <ChartOnly><Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} primaryLane={lens === "cpu" ? "cpu_busy" : lens === "memory" ? "memory" : lens === "disk" ? "io_stall" : "health"} shownAt={shownAt} t={t} /></ChartOnly>
+        <div className="lensbar !mt-0 border-t-0">
+          <div aria-label={t("nav.processes")} className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" role="group">
             {(["cpu", "memory", "disk", "generic"] as const).map((choice) => <button aria-pressed={lens === choice} data-testid={`lens-${choice}`} key={choice} onClick={() => { if (choice !== lens) setOrder(null); setLens(choice) }} type="button">{t(`lens.${choice}`)}</button>)}
           </div>
-          <span>{processRows[0] === undefined ? t("status.no_data") : time.timestamp(processRows[0].timestamp)}</span>
+          <span>{processRows[0] === undefined ? t("status.no_data") : time.timestamp(processRows[0].timestamp, hour)}</span>
         </div>
-        <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} hour={hour} lens={lens} locale={locale} onCursor={chooseCursor} state={processSummary} t={t} />
-        <div className={`grid min-w-0 charts-hidden:min-h-0 charts-hidden:flex-auto max-[1179px]:grid-cols-[minmax(0,1fr)] ${selectedProcess === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)_360px]"}`}>
-          <ProcessTable contextLabel={context?.logicalName === "os_process" ? context.label : undefined} finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} onContextClear={clearEntityContext} onOrder={setOrder} onPattern={setFind} onSelect={selectProcess} order={order} pattern={find} rows={processRows} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
-          {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onClose={() => setSelectedKey(null)} onCursor={chooseCursor} process={selectedProcess} processHistory={processHistory.value?.length ? processHistory.value : [selectedProcess]} processHistoryStatus={processHistory.status} t={t} ticksPerSecond={ticksPerSecond} />}
+        <ProcessSummary cursor={cursor} dispatch={dispatchProcessSummary} hour={hour} lens={lens} locale={locale} state={processSummary} t={t} />
+        <div className={`process-main grid min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)] overflow-hidden max-[1179px]:grid-cols-[minmax(0,1fr)] ${selectedProcess === null ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)_360px]"}`}>
+          <ProcessTable contextLabel={context?.logicalName === "os_process" ? context.label : undefined} densePageState={densePageState} finding={selectedFinding?.logicalName === "os_process" ? selectedFinding : null} findingField={selectedFinding?.logicalName === "os_process" ? fieldNameForLocator(selectedFinding) : null} lens={lens} linkedPids={linkedPids} locale={locale} metadata={denseMetadata} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onOrder={setOrder} onPattern={applyFind} onRetry={retryDense} onSelect={selectProcess} order={requestOrder} pattern={find} rows={processRows} searchRequest={visibleSearchRequest} selectedKey={selectedKey} t={t} ticksPerSecond={ticksPerSecond} />
+          {selectedProcess !== null && <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onClose={() => setSelectedKey(null)} onCursor={chooseCursor} onRelated={openRelated} process={selectedProcess} processHistory={processHistory.value?.length ? processHistory.value : [selectedProcess]} processHistoryStatus={processHistory.status} t={t} ticksPerSecond={ticksPerSecond} />}
         </div>
       </>}
-      {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} tablesLoading={cursorState === "loading"} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onOrder={setOrder} onPattern={setFind} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} onCursor={chooseCursor} onFinding={selectFinding} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={setRelationSelectedKey} onSection={choosePgSection} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} statementLens={statementLens} t={t} />}
-      {!loading && error === null && hour !== null && visibleSource === "events" && <EventsView cursor={cursor} data={data} loading={cursorState === "loading"} history={findingPoints} hour={hour} locale={locale} onClose={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onShowAll={() => { setEventScope(null); setSelectedFinding(null) }} resolution={findingResolution} resolved={findingRow} scope={eventScope} selected={selectedFinding} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "postgresql" && <PostgresView context={context} densePageState={densePageState} searchRequest={visibleSearchRequest} tablesLoading={cursorState === "loading"} onContextClear={clearEntityContext} onLoadMore={loadMoreDense} onRetry={retryDense} onRelated={openRelated} onOrder={setOrder} onPattern={applyFind} onSelectedKey={setSelectedKey} order={order ?? undefined} pattern={find} cursor={cursor} data={data} focus={pgFocus} focusFinding={selectedFinding} historyRevision={refreshVersion} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onPlanLens={(next) => { setOrder(null); setPlanLens(next) }} onRelationLens={chooseRelationLens} onRelationNavigate={navigateRelation} onRelationSelectedKey={setRelationSelectedKey} onSection={choosePgSection} onStatementLens={(next) => { setOrder(null); setStatementLens(next) }} planLens={planLens} relationFilters={relationFilters} relationLens={activeRelationLens} relationLevel={relationLevel} relationSelectedKey={relationSelectedKey} section={pgSection} segments={segments} selectedKey={selectedKey} statementLens={statementLens} t={t} />}
+      {!loading && error === null && hour !== null && visibleSource === "events" && <EventsView cursor={cursor} data={data} loading={cursorState === "loading"} history={findingPoints} hour={hour} locale={locale} navigationTimestamps={navigationTimestamps} onClose={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onPattern={applyFind} onShowAll={() => { setEventScope(null); setSelectedFinding(null) }} pattern={find} resolution={findingResolution} resolved={findingRow} scope={eventScope} selected={selectedFinding} t={t} />}
     </section>
 
     {helpOpen && <HelpPanel items={helpItems} onClose={() => setHelpOpen(false)} t={t} />}
-  </main></ChartVisibilityProvider>
+  </main></ChartVisibilityProvider></DisplayTimeScope>
 }
 
 function TimeValue({ label, output, testId }: { readonly label: string; readonly output: string | null; readonly testId: string }) {
@@ -899,7 +1019,7 @@ function StateCard({ busy = false, locale, message, progress, t }: {
   return <div className="grid min-h-[calc(100dvh-35px)] place-items-center p-4">
     <div className="w-full max-w-[440px] border border-line2 bg-s1 px-6 py-7 text-center shadow-[0_18px_55px_var(--color-shadow-a)]" data-testid="state-card" {...(busy ? { role: "status" } : {})}>
       <p className="m-0 text-xs uppercase tracking-[.1em] text-fg4">KRONIKA</p>
-      <h2 className="mt-2">{busy && <span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none animate-loading-spin motion-reduce:animate-none" />}{message}</h2>
+      <h2 className="mt-2">{busy && <span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none" />}{message}</h2>
       {progress !== undefined && <p className="mt-2.5 text-xs tabular-nums text-fg3" data-testid="loading-detail">{progressDetail(progress, now, locale, t)}</p>}
     </div>
   </div>
@@ -919,14 +1039,14 @@ function initialPageOptions(
   relationFilters: Readonly<Record<string, string>>,
 ): SnapshotOptions {
   const filters = request.group === undefined
-    ? context === null ? undefined : sortedFilters(Object.fromEntries(context.identity))
-    : Object.keys(relationFilters).length === 0 && request.filters === undefined
-      ? undefined
-      : sortedFilters({ ...relationFilters, ...request.filters })
+      ? context === null ? undefined : sortedFilters(Object.fromEntries(context.identity))
+      : Object.keys(relationFilters).length === 0 && request.filters === undefined
+        ? undefined
+        : sortedFilters({ ...relationFilters, ...request.filters })
   return {
     ...(filters === undefined ? {} : { filters }),
     ...(request.group === undefined && context !== null ? { typeId: context.typeId } : {}),
-    ...(pattern === "" ? {} : { search: [pattern] }),
+    ...(pattern === "" ? {} : { search: pattern }),
   }
 }
 
@@ -981,12 +1101,18 @@ function relationFiltersOf(address: ReturnType<typeof readAddress>): Readonly<Re
     ["schemaname", address.schema],
     ["relid", address.relid],
     ["indexrelid", address.indexrelid],
+    ["tablespace_oid", address.tablespaceOid],
   ].flatMap(([name, stored]) => stored === null ? [] : [[name, stored]]))
 }
 
 function relationSelectedKeyOf(address: ReturnType<typeof readAddress>): string | null {
   const section = pgSectionOf(address.view)
   return section === "tables" || section === "indexes" ? address.row : null
+}
+
+function searchRowsAvailable(data: HourData, surface: SearchSurface): boolean {
+  if (surface === "os_process") return data.processes.length !== 0
+  return (data.sections[surface]?.length ?? 0) !== 0
 }
 
 function relationFiltersForSection(filters: Readonly<Record<string, string>>, section: "tables" | "indexes"): Readonly<Record<string, string>> {

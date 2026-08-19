@@ -370,6 +370,12 @@ The snapshot section contains two logical `StrId` values represented
 as `u64`, while the dictionary contains one record with the `postgres` bytes.
 The catalog points to the dictionary body:
 
+The `os_user` reference section uses this same representation: it stores one
+interned user name for an observed UID and process rows keep their numeric real
+and effective UIDs. Repeated processes therefore do not repeat the name. The
+reference row and its `dict.strings` entry travel through the ordinary journal
+and ZMS writer, so restart recovery and dictionary normalization are unchanged.
+
 ```text
 ZMS catalog entry: type_id=3_001_001, offset=X, len=T
                             |

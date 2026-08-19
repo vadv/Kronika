@@ -65,7 +65,7 @@ pub struct PgStorePlansVadvV1 {
     /// `pg_roles` row.
     #[column(l)]
     pub usename: Option<StrId>,
-    /// Plan text fetched via `pg_store_plans_get_plan`; `None` when unavailable.
+    /// Human-readable plan text materialized by the extension; `None` when unavailable.
     #[column(l)]
     pub plan: Option<StrId>,
     /// Executions accumulated for this plan entry.
@@ -302,7 +302,7 @@ pub struct PgStorePlansOsscV1 {
     /// `pg_roles` row.
     #[column(l)]
     pub usename: Option<StrId>,
-    /// Plan text from the view, server-truncated per row; `None` when the
+    /// Human-readable plan text from the view, server-truncated per row; `None` when the
     /// server does not expose text for this entry.
     #[column(l)]
     pub plan: Option<StrId>,
@@ -418,7 +418,7 @@ pub struct PgStorePlansDatasentinelV1 {
     /// Role name resolved from `userid`.
     #[column(l)]
     pub usename: Option<StrId>,
-    /// Server-truncated plan text.
+    /// Server-truncated human-readable plan text.
     #[column(l)]
     pub plan: Option<StrId>,
     /// Relation OIDs in `PostgreSQL` `oid[]` text form, at most 48 elements.

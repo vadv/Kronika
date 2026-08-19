@@ -40,6 +40,16 @@ test("activity linking uses the cursor-nearest PG snapshot and exact PID", () =>
   assert.equal(processCommand(process), "worker")
 })
 
+test("activity linking filters exact PID before choosing its nearest per-database snapshot", () => {
+  const process = { ...row(300), values: { pid: 77, comm: "postgres", cmdline: null } }
+  const matching = { ...row(286), values: { pid: 77, datname: "app", query: "select exact_backend" } }
+  const globallyCloserOtherDatabase = { ...row(299), ordinal: "1", values: { pid: 78, datname: "postgres", query: "select wrong_backend" } }
+  const linked = activityFor(process, [globallyCloserOtherDatabase, matching], 300)
+  assert.equal(linked.snapshotTime, 286)
+  assert.equal(linked.row?.values.query, "select exact_backend")
+  assert.equal(activityFor({ ...process, values: { pid: 79 } }, [globallyCloserOtherDatabase, matching], 300).row, null)
+})
+
 test("finding fields select the matching process lens", () => {
   assert.equal(processLens("read_bytes"), "disk")
   assert.equal(processLens("rmem_kb"), "memory")
@@ -142,11 +152,14 @@ test("metric numbers use three significant digits and locale-aware compact scale
   assert.equal(humanPercent(null, "en"), "—")
   assert.equal(humanPercent(4e-7, "en"), "<0.1%")
   assert.equal(humanDuration(999.999, "en"), "1,000 ms")
-  assert.equal(humanDuration(1_234, "en"), "1.2 s")
+  assert.equal(humanDuration(1_234, "en"), "1.23 s")
+  assert.equal(humanDuration(0.025, "en"), "25 µs")
+  assert.equal(humanDuration(16, "en", "microseconds", "/call"), "16 µs/call")
+  assert.equal(humanDuration(3_600, "en", "seconds"), "1 h")
   assert.equal(humanDuration(null, "en"), "—")
   // Axis ticks share one unit chosen from the range top.
-  assert.equal(humanDurationAxis(1_998_000, 3_996_000, "ru"), "33,3 м")
-  assert.equal(humanDurationAxis(0, 3_996_000, "ru"), "0 м")
+  assert.equal(humanDurationAxis(1_998_000, 3_996_000, "ru"), "0,555 ч")
+  assert.equal(humanDurationAxis(0, 3_996_000, "ru"), "0 ч")
   assert.equal(humanDurationAxis(5_400_000, 7_200_000, "en"), "1.5 h")
   assert.equal(humanDurationAxis(1_500, 45_000, "en"), "1.5 s")
   assert.equal(identifier("9007199254740993"), "9007199254740993")
@@ -180,10 +193,10 @@ test("estimated row exact labels use bigint-safe EN and RU plurals", () => {
   }
 })
 
-test("elapsed wall time reads in whole seconds", () => {
+test("elapsed wall time uses the shared adaptive duration scale", () => {
   assert.equal(humanAge(0, "ru"), "0 с")
   assert.equal(humanAge(0.94, "ru"), "0 с")
   assert.equal(humanAge(12.7, "ru"), "12 с")
   assert.equal(humanAge(12.7, "en"), "12 s")
-  assert.equal(humanAge(95, "ru"), "1м 35с")
+  assert.equal(humanAge(95, "ru"), "1,58 мин")
 })

@@ -15,17 +15,22 @@ use kronika_registry::os_diskstats::OsDiskstats;
 use kronika_registry::os_netdev::OsNetdev;
 use kronika_registry::os_process::OsProcess;
 use kronika_registry::os_psi::OsPsi;
+use kronika_registry::os_user::OsUser;
 use kronika_registry::pg_log::{PgLogErrors, PgLogTempFiles};
+use kronika_registry::pg_settings::PgSettings;
 use kronika_registry::pg_stat_activity::PgStatActivityV3;
 use kronika_registry::pg_stat_statements::PgStatStatementsV2;
 use kronika_registry::pg_stat_user_indexes::{PgStatUserIndexesV1, PgStatUserIndexesV2};
 use kronika_registry::pg_stat_user_tables::PgStatUserTablesV1;
-use kronika_registry::pg_store_plans::PgStorePlansOsscV1;
+use kronika_registry::pg_store_plans::{PgStorePlansOsscV1, PgStorePlansVadvV1};
 use kronika_registry::{Section, StrId, Ts};
 use kronika_writer::{Interner, Journal, JournalConfig, SectionBuffers, dict, write_segment};
 use serde_json::Value;
 
-use crate::api::{ApiError, CachePolicy, Prepared, context_operations, reset_context_operations};
+use crate::api::{
+    ApiError, CachePolicy, Prepared, context_operations, first_match_rows, page_operations,
+    reset_context_operations, reset_first_match_rows, reset_page_operations,
+};
 use crate::config::SOURCE_OS;
 use crate::encoding::AcceptedEncodings;
 
@@ -45,6 +50,34 @@ type NamedIndexSnapshot<'a> = (
 );
 
 type DmlTableSnapshot<'a> = (i64, u32, u32, [i64; 4], &'a str, &'a str, &'a str);
+
+type PlacedTableSnapshot<'a> = (
+    i64,
+    u32,
+    u32,
+    i64,
+    &'a str,
+    &'a str,
+    &'a str,
+    Option<u32>,
+    Option<&'a str>,
+    i64,
+    Option<i64>,
+);
+
+type PlacedIndexSnapshot<'a> = (
+    i64,
+    u32,
+    u32,
+    i64,
+    &'a str,
+    &'a str,
+    &'a str,
+    &'a str,
+    u32,
+    Option<&'a str>,
+    i64,
+);
 
 struct Fixture {
     directory: tempfile::TempDir,
@@ -400,6 +433,121 @@ impl Fixture {
             .expect("append process summary snapshot");
     }
 
+    fn append_user_processes(
+        &mut self,
+        ts: i64,
+        processes: &[(i32, u32, u32)],
+        names: &[(u32, &str)],
+    ) {
+        let mut interner = Interner::new(DictLimits::default());
+        let command = StrId(
+            interner
+                .intern(b"fixture-worker")
+                .expect("intern command")
+                .get(),
+        );
+        let mut buffers = SectionBuffers::new();
+        for &(pid, uid, euid) in processes {
+            let mut row = process(ts, None, command);
+            row.pid = pid;
+            row.starttime = Ts(SEGMENT_ID - 1_000_000 + i64::from(pid));
+            row.uid = uid;
+            row.euid = euid;
+            buffers.push(row).expect("process row fits");
+        }
+        for &(uid, name) in names {
+            let username = StrId(
+                interner
+                    .intern(name.as_bytes())
+                    .expect("intern user name")
+                    .get(),
+            );
+            buffers
+                .push(OsUser {
+                    ts: Ts(ts),
+                    uid,
+                    username,
+                    scope: 0,
+                })
+                .expect("user row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("encode process user dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode process user fixture")
+            .expect("nonempty process user fixture");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append process user fixture");
+    }
+
+    fn append_quantitative_processes(&mut self) {
+        let mut interner = Interner::new(DictLimits::default());
+        let label = fixture_label(&mut interner, "quantity-worker");
+        let dictionary = dict::encode(interner.window()).expect("process quantity dictionary");
+        let mut buffers = SectionBuffers::new();
+        buffers
+            .push(InstanceMetadata {
+                ts: Ts(2_000_000),
+                hostname: label,
+                kernel_version: label,
+                environment: 0,
+                clock_ticks_per_sec: 100,
+                page_size_bytes: 4_096,
+                boot_id: label,
+                btime: Ts(1),
+                postgresql_enabled: true,
+                postgresql_interval_seconds: 30,
+                postgresql_effective_cpus: Some(2),
+            })
+            .expect("process quantity metadata fits");
+        let large = 1_i64 << 53;
+        for (ts, pid, starttime, ticks, bytes, rss_kib) in [
+            (1_000_000, 1, 10, 0, large, 3_072),
+            (2_000_000, 1, 10, 20, large + 1_048_576, 3_072),
+            (1_000_000, 2, 20, 0, large, 2_048),
+            (2_000_000, 2, 20, 10, large + 100, 2_048),
+            (1_000_000, 3, 30, 0, large, 4_096),
+            (2_000_000, 3, 31, 50, large + 2_097_152, 4_096),
+            (1_000_000, 4, 40, 100, 1_000, 8_192),
+            (2_000_000, 4, 40, 90, 900, 8_192),
+            (2_000_000, 5, 50, 50, large, 8_192),
+            (1_000_000, 6, 60, 0, 4_096, 1_024),
+            (2_000_000, 6, 60, 0, 4_096, 1_024),
+        ] {
+            let mut row = process(ts, Some(bytes), label);
+            row.pid = pid;
+            row.starttime = Ts(starttime);
+            row.utime = ticks / 2;
+            row.stime = ticks - row.utime;
+            row.rmem_kb = rss_kib;
+            row.vmem_kb = rss_kib * 2;
+            row.vswap_kb = rss_kib / 4;
+            row.num_threads = u32::try_from(pid + 1).expect("fixture thread count");
+            row.write_bytes = Some(bytes / 2);
+            row.minflt = ticks;
+            row.majflt = ticks / 2;
+            row.nvcsw = ticks;
+            row.nivcsw = ticks;
+            row.rundelay_ns = ticks * 1_000_000;
+            row.blkdelay_ticks = ticks;
+            if pid != 6 {
+                row.syscr = Some(ticks);
+                row.syscw = Some(ticks * 2);
+                row.rchar = Some(bytes + 4_096);
+                row.wchar = Some(bytes / 2 + 8_192);
+            }
+            buffers.push(row).expect("process quantity row fits");
+        }
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode process quantities")
+            .expect("nonempty process quantities");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append process quantities");
+    }
+
     fn append_statement_universe(&mut self, rows: i64) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
@@ -442,6 +590,18 @@ impl Fixture {
             );
             let mut row = statement(ts, calls, total_exec_time, query);
             row.queryid = Some(queryid);
+            row.datname = Some(StrId(
+                interner
+                    .intern(b"operators")
+                    .expect("intern statement database")
+                    .get(),
+            ));
+            row.usename = Some(StrId(
+                interner
+                    .intern(b"reporter")
+                    .expect("intern statement role")
+                    .get(),
+            ));
             buffers.push(row).expect("boundary statement row fits");
         }
         let dictionary = dict::encode(interner.window()).expect("boundary statement dictionary");
@@ -452,6 +612,32 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append boundary statements");
+    }
+
+    fn append_statement_text_matches(
+        &mut self,
+        timestamp: i64,
+        query_id: i64,
+        texts: &[Option<&str>],
+    ) {
+        let mut interner = Interner::new(DictLimits::default());
+        let unused = fixture_label(&mut interner, "unused statement text");
+        let mut buffers = SectionBuffers::new();
+        for (index, text) in texts.iter().enumerate() {
+            let mut row = statement(timestamp, 1, 1.0, unused);
+            row.queryid = Some(query_id);
+            row.dbid = 73_u32.saturating_add(u32::try_from(index).unwrap_or(u32::MAX));
+            row.query = text.map(|text| fixture_label(&mut interner, text));
+            buffers.push(row).expect("statement text row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("statement text dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode statement text matches")
+            .expect("nonempty statement text matches");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append statement text matches");
     }
 
     fn append_plan_universe(&mut self, rows: i64) {
@@ -609,6 +795,77 @@ impl Fixture {
             .expect("append ranked plans");
     }
 
+    fn append_postgres_block_size(&mut self, block_size: u128) {
+        let mut interner = Interner::new(DictLimits::default());
+        let intern = |interner: &mut Interner, value: &str| {
+            StrId(
+                interner
+                    .intern(value.as_bytes())
+                    .expect("intern setting")
+                    .get(),
+            )
+        };
+        let name = intern(&mut interner, "block_size");
+        let setting = intern(&mut interner, &block_size.to_string());
+        let database = intern(&mut interner, "postgres");
+        let role = intern(&mut interner, "collector");
+        let source = intern(&mut interner, "default");
+        let context = intern(&mut interner, "internal");
+        let vartype = intern(&mut interner, "integer");
+        let mut buffers = SectionBuffers::new();
+        buffers
+            .push(PgSettings {
+                ts: Ts(200),
+                datid: 1,
+                datname: database,
+                usesysid: 2,
+                usename: role,
+                name,
+                setting,
+                unit: None,
+                source,
+                sourcefile: None,
+                sourceline: None,
+                pending_restart: false,
+                context,
+                vartype,
+                boot_val: Some(setting),
+                reset_val: Some(setting),
+            })
+            .expect("block-size setting row fits");
+        let dictionary = dict::encode(interner.window()).expect("block-size dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode block-size setting")
+            .expect("nonempty block-size setting");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append block-size setting");
+    }
+
+    fn append_vadv_plan_quantities(&mut self) {
+        let mut interner = Interner::new(DictLimits::default());
+        let label = fixture_label(&mut interner, "vadv-quantity-plan");
+        let mut buffers = SectionBuffers::new();
+        for ts in [100, 200] {
+            let current = ts == 200;
+            let mut row = store_plan_vadv(ts, label);
+            row.calls = if current { 10 } else { 0 };
+            row.slow_log_calls = if current { 4 } else { 0 };
+            row.total_time = if current { 75.0 } else { 0.0 };
+            row.total_plan_time = if current { 25.0 } else { 0.0 };
+            buffers.push(row).expect("vadv quantity plan fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("vadv quantity dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode vadv quantities")
+            .expect("nonempty vadv quantities");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append vadv quantities");
+    }
+
     fn append_relation_snapshots(
         &mut self,
         tables: &[(i64, u32, u32, i64)],
@@ -663,7 +920,7 @@ impl Fixture {
                     .expect("intern table")
                     .get(),
             );
-            row.tablespace = tablespace;
+            row.tablespace = Some(tablespace);
             buffers.push(row).expect("named table row fits");
         }
         let dictionary = dict::encode(interner.window()).expect("encode relation dictionary");
@@ -674,6 +931,43 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append named table snapshots");
+    }
+
+    fn append_placed_table_snapshots(&mut self, rows: &[PlacedTableSnapshot<'_>]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let mut buffers = SectionBuffers::new();
+        for &(
+            ts,
+            datid,
+            relid,
+            seq_scan,
+            datname,
+            schema,
+            table,
+            tablespace_oid,
+            tablespace,
+            main_fork_bytes,
+            toast_bytes,
+        ) in rows
+        {
+            let mut row = user_table(ts, datid, relid, seq_scan);
+            row.datname = fixture_label(&mut interner, datname);
+            row.schemaname = fixture_label(&mut interner, schema);
+            row.relname = fixture_label(&mut interner, table);
+            row.tablespace_oid = tablespace_oid;
+            row.tablespace = tablespace.map(|label| fixture_label(&mut interner, label));
+            row.main_fork_bytes = main_fork_bytes;
+            row.toast_bytes = toast_bytes;
+            buffers.push(row).expect("placed table row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("placed table dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode placed tables")
+            .expect("nonempty placed tables");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append placed tables");
     }
 
     fn append_dml_table_snapshots(&mut self, rows: &[DmlTableSnapshot<'_>]) {
@@ -709,7 +1003,7 @@ impl Fixture {
                     .expect("intern table")
                     .get(),
             );
-            row.tablespace = tablespace;
+            row.tablespace = Some(tablespace);
             buffers.push(row).expect("DML table row fits");
         }
         let dictionary = dict::encode(interner.window()).expect("encode DML relation dictionary");
@@ -735,7 +1029,8 @@ impl Fixture {
         });
         for &(ts, datid, relid, counters) in rows {
             let mut row = buffered_user_table(ts, datid, relid, counters);
-            [row.datname, row.schemaname, row.relname, row.tablespace] = labels;
+            [row.datname, row.schemaname, row.relname] = [labels[0], labels[1], labels[2]];
+            row.tablespace = Some(labels[3]);
             buffers.push(row).expect("buffered table row fits");
         }
         let dictionary = dict::encode(interner.window()).expect("encode buffered table dictionary");
@@ -784,7 +1079,7 @@ impl Fixture {
                     .expect("intern index")
                     .get(),
             );
-            row.tablespace = tablespace;
+            row.tablespace = Some(tablespace);
             row.amname = amname;
             row.indexdef = Some(StrId(
                 interner
@@ -802,6 +1097,44 @@ impl Fixture {
         self.journal
             .append(self.address.id, &part)
             .expect("append named index snapshots");
+    }
+
+    fn append_placed_index_snapshots(&mut self, rows: &[PlacedIndexSnapshot<'_>]) {
+        let mut interner = Interner::new(DictLimits::default());
+        let mut buffers = SectionBuffers::new();
+        for &(
+            ts,
+            datid,
+            indexrelid,
+            idx_scan,
+            datname,
+            schema,
+            table,
+            index,
+            tablespace_oid,
+            tablespace,
+            main_fork_bytes,
+        ) in rows
+        {
+            let mut row = user_index_v2(ts, datid, indexrelid, idx_scan);
+            row.datname = fixture_label(&mut interner, datname);
+            row.schemaname = fixture_label(&mut interner, schema);
+            row.relname = fixture_label(&mut interner, table);
+            row.indexrelname = fixture_label(&mut interner, index);
+            row.tablespace_oid = tablespace_oid;
+            row.tablespace = tablespace.map(|label| fixture_label(&mut interner, label));
+            row.main_fork_bytes = main_fork_bytes;
+            row.amname = fixture_label(&mut interner, "btree");
+            buffers.push(row).expect("placed index row fits");
+        }
+        let dictionary = dict::encode(interner.window()).expect("placed index dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode placed indexes")
+            .expect("nonempty placed indexes");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append placed indexes");
     }
 
     fn append_log_error(&mut self, at: i64) {
@@ -922,6 +1255,15 @@ fn diskstats(ts: i64, minor: i32, reads: i64) -> OsDiskstats {
     diskstats_with_device(ts, minor, reads, StrId(999))
 }
 
+fn fixture_label(interner: &mut Interner, value: &str) -> StrId {
+    StrId(
+        interner
+            .intern(value.as_bytes())
+            .expect("intern fixture label")
+            .get(),
+    )
+}
+
 fn user_table(ts: i64, datid: u32, relid: u32, seq_scan: i64) -> PgStatUserTablesV1 {
     PgStatUserTablesV1 {
         ts: Ts(ts),
@@ -930,7 +1272,8 @@ fn user_table(ts: i64, datid: u32, relid: u32, seq_scan: i64) -> PgStatUserTable
         relid,
         schemaname: StrId(902),
         relname: StrId(903),
-        tablespace: StrId(904),
+        tablespace_oid: Some(1_663),
+        tablespace: Some(StrId(904)),
         seq_scan,
         seq_tup_read: 0,
         idx_scan: None,
@@ -1002,7 +1345,8 @@ fn user_index_v1(ts: i64, datid: u32, indexrelid: u32, idx_scan: i64) -> PgStatU
         schemaname: StrId(902),
         relname: StrId(903),
         indexrelname: StrId(905),
-        tablespace: StrId(904),
+        tablespace_oid: 1_663,
+        tablespace: Some(StrId(904)),
         idx_scan,
         idx_tup_read: 0,
         idx_tup_fetch: 0,
@@ -1030,6 +1374,7 @@ fn user_index_v2(ts: i64, datid: u32, indexrelid: u32, idx_scan: i64) -> PgStatU
         schemaname: base.schemaname,
         relname: base.relname,
         indexrelname: base.indexrelname,
+        tablespace_oid: base.tablespace_oid,
         tablespace: base.tablespace,
         idx_scan: base.idx_scan,
         idx_tup_read: base.idx_tup_read,
@@ -1243,6 +1588,46 @@ fn store_plan(ts: i64, queryid: i64, plan: StrId) -> PgStorePlansOsscV1 {
     }
 }
 
+fn store_plan_vadv(ts: i64, plan: StrId) -> PgStorePlansVadvV1 {
+    PgStorePlansVadvV1 {
+        ts: Ts(ts),
+        userid: 10,
+        dbid: 11,
+        queryid: 1,
+        planid: -7,
+        queryid_stat_statements: 1,
+        datname: None,
+        usename: None,
+        plan: Some(plan),
+        calls: 0,
+        slow_log_calls: 0,
+        total_time: 0.0,
+        min_time: 1.0,
+        max_time: 2.0,
+        mean_time: 1.5,
+        stddev_time: 0.5,
+        rows: 0,
+        shared_blks_hit: 0,
+        shared_blks_read: 0,
+        shared_blks_dirtied: 0,
+        shared_blks_written: 0,
+        local_blks_hit: 0,
+        local_blks_read: 0,
+        local_blks_dirtied: 0,
+        local_blks_written: 0,
+        temp_blks_read: 0,
+        temp_blks_written: 0,
+        blk_read_time: 0.0,
+        blk_write_time: 0.0,
+        first_call: Ts(50),
+        last_call: Ts(ts),
+        total_plan_time: 0.0,
+        min_plan_time: 0.0,
+        max_plan_time: 0.0,
+        mean_plan_time: 0.0,
+    }
+}
+
 #[test]
 fn real_rows_keep_js_unsafe_integers_and_truncated_blob_metadata_lossless() {
     let mut fixture = Fixture::new();
@@ -1320,6 +1705,7 @@ fn activity(ts: i64, pid: i32, state: StrId, query: StrId) -> PgStatActivityV3 {
         ts: Ts(ts),
         pid,
         leader_pid: None,
+        datid: None,
         datname: None,
         usename: None,
         application_name: state,
@@ -2391,18 +2777,18 @@ fn process_summary_series_uses_the_complete_set_and_previous_segment() {
     assert_eq!(values[1], 410.0);
     assert_eq!(values[2], 103.0);
     assert_eq!(values[3], 10.0, "a future activity snapshot is not joined");
-    assert_eq!(values[4], 41.0, "starttime does not split PID counters");
-    assert_eq!(values[5], 82.0);
-    assert_eq!(values[6], 4_100.0);
-    assert_eq!(values[7], 12_300.0);
+    assert_eq!(values[4], 40.8, "PID reuse has no predecessor");
+    assert_eq!(values[5], 81.6);
+    assert_eq!(values[6], 4_080.0);
+    assert_eq!(values[7], 12_240.0);
     assert_eq!(values[8], 22_960.0);
     assert_eq!(values[9], 25_010.0);
     assert_eq!(values[10], 204.0);
-    assert_eq!(values[11], 4_100.0);
-    assert_eq!(values[12], 4_100.0);
+    assert_eq!(values[11], 4_080.0);
+    assert_eq!(values[12], 4_080.0);
     assert_eq!(values[13], Value::Null, "all unavailable values stay null");
-    assert_eq!(values[14], 4_100.0);
-    assert_eq!(values[15], 8_200.0);
+    assert_eq!(values[14], 4_080.0);
+    assert_eq!(values[15], 8_160.0);
     assert_eq!(
         crate::api::process_summary_operations(),
         (4, 2),
@@ -2411,7 +2797,7 @@ fn process_summary_series_uses_the_complete_set_and_previous_segment() {
 }
 
 #[test]
-fn process_snapshot_counter_history_is_pid_only() {
+fn process_snapshot_counter_history_rejects_pid_reuse() {
     let mut fixture = Fixture::new();
     fixture.append_process_summary_snapshot(1_000_000, 1_000, None, 900_000, 0..0, None);
     let current_segment = SEGMENT_ID + 1_000;
@@ -2426,7 +2812,7 @@ fn process_snapshot_counter_history_is_pid_only() {
     .expect("PID-scoped process snapshot");
     let rows = row_records(&records);
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["values"], serde_json::json!([0, 20.0]));
+    assert_eq!(rows[0]["values"], serde_json::json!([0, null]));
 }
 
 #[test]
@@ -2857,8 +3243,66 @@ fn statement_search_finds_a_match_outside_the_old_first_two_hundred() {
         .expect("search page trailer");
     assert_eq!(page["eligible"], "1");
     assert_eq!(page["returned"], "1");
+
     assert_eq!(page["has_more"], false);
     assert_eq!(page["truncated"], false);
+}
+
+#[test]
+fn structured_statement_search_filters_the_full_set_before_sort_and_page() {
+    let mut fixture = Fixture::new();
+    fixture.append_statement_universe(205);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=pg_stat_statements&field=queryid&field=query&by=queryid&page_size=200&search=query_id%3A0%20AND%20text%3A%22owner%20blocker-needle%20outside%20page%20one%22"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("structured statement search");
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0]["values"],
+        serde_json::json!(["0", "owner blocker-needle outside page one"])
+    );
+    let page = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("structured statement page trailer");
+    assert_eq!(page["eligible"], "1");
+    assert_eq!(page["returned"], "1");
+    assert_eq!(page["has_more"], false);
+
+    let or_target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=pg_stat_statements&field=queryid&field=query&by=queryid&page_size=1&search=query_id%3A0%20OR%20query_id%3A1"
+    );
+    let or_records = stream(fixture.prepare(&or_target, None)).expect("structured statement OR");
+    let or_page = or_records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("structured statement OR trailer");
+    assert_eq!(or_page["eligible"], "2");
+    assert_eq!(or_page["returned"], "1");
+    assert_eq!(or_page["has_more"], true);
+}
+
+#[test]
+fn structured_statement_search_preserves_bigint_text_across_the_api() {
+    let mut fixture = Fixture::new();
+    fixture.append_statement_snapshots(&[
+        (100, 9_007_199_254_740_993, 1, 1.0),
+        (100, -9_007_199_254_740_993, 1, 1.0),
+    ]);
+    fixture.finish();
+
+    for query_id in ["9007199254740993", "-9007199254740993"] {
+        let target = format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=pg_stat_statements&field=queryid&by=queryid&page_size=1&search=query_id%3A{query_id}"
+        );
+        let records = stream(fixture.prepare(&target, None)).expect("exact bigint search");
+        let rows = row_records(&records);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["values"][0], query_id);
+    }
 }
 
 #[test]
@@ -2867,13 +3311,13 @@ fn numeric_statement_page_scans_the_source_once_without_candidate_dictionary_rea
     fixture.append_statement_universe(205);
     fixture.finish();
 
-    crate::api::reset_page_operations();
+    reset_page_operations();
     let target = format!(
         "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=pg_stat_statements&field=queryid&field=query&field=calls&field=total_exec_time&by=total_exec_time&page_size=200&text=160"
     );
     let records = stream(fixture.prepare(&target, None)).expect("numeric statement page");
     assert_eq!(row_records(&records).len(), 200);
-    assert_eq!(crate::api::page_operations(), (1, 0, 0));
+    assert_eq!(page_operations(), (1, 0, 0));
 }
 
 #[test]
@@ -2993,6 +3437,281 @@ fn statement_page_composes_every_segment_at_both_selected_moments() {
 }
 
 #[test]
+fn statement_and_plan_quantities_filter_hidden_metrics_before_paging() {
+    let mut fixture = Fixture::new();
+    fixture.append_ranked_statements();
+    fixture.append_ranked_plans();
+    fixture.append_postgres_block_size(8_192);
+    fixture.finish();
+
+    for section in ["pg_stat_statements", "pg_store_plans"] {
+        let base = format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=200&section={section}&field=queryid&by=queryid"
+        );
+        let records = stream(fixture.prepare(
+            &format!("{base}&page_size=1&search=exec_time_rate%3E500000ms%2Fs"),
+            None,
+        ))
+        .expect("hidden execution-load search");
+        assert_eq!(row_records(&records)[0]["values"][0], "1", "{section}");
+        let page = records
+            .iter()
+            .find(|record| record["record"] == "snapshot_page")
+            .expect("quantity page trailer");
+        assert_eq!(page["eligible"], "1", "{section}");
+        assert_eq!(page["has_more"], false, "{section}");
+
+        let strict = stream(fixture.prepare(
+            &format!("{base}&page_size=10&search=mean_exec%3E10ms"),
+            None,
+        ))
+        .expect("strict mean boundary");
+        assert_eq!(row_records(&strict)[0]["values"][0], "2", "{section}");
+
+        let hit = stream(fixture.prepare(
+            &format!("{base}&page_size=10&search=buffer_hit%3E80%25"),
+            None,
+        ))
+        .expect("strict hit boundary");
+        assert_eq!(row_records(&hit)[0]["values"][0], "2", "{section}");
+
+        let block_rate = stream(fixture.prepare(
+            &format!(
+                "{base}&page_size=10&search=query_id%3A1%20AND%20shared_buffer_read_rate%3E1638399999B%2Fs"
+            ),
+            None,
+        ))
+        .expect("exact buffer byte-rate boundary");
+        assert_eq!(row_records(&block_rate)[0]["values"][0], "1", "{section}");
+
+        let block_rate_boundary = stream(fixture.prepare(
+            &format!(
+                "{base}&page_size=10&search=query_id%3A1%20AND%20shared_buffer_read_rate%3E1638400000B%2Fs"
+            ),
+            None,
+        ))
+        .expect("strict buffer byte-rate equality");
+        assert!(row_records(&block_rate_boundary).is_empty(), "{section}");
+
+        let per_call = stream(fixture.prepare(
+            &format!("{base}&page_size=10&search=query_id%3A1%20AND%20buffer_per_call%3E81919B"),
+            None,
+        ))
+        .expect("exact buffer bytes per call");
+        assert_eq!(row_records(&per_call)[0]["values"][0], "1", "{section}");
+    }
+
+    let grouped = stream(fixture.prepare(
+        &format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_statements&field=queryid&by=queryid&page_size=10&search=query_id%3A3%20OR%20%28exec_time_rate%3E500000ms%2Fs%20AND%20rows_per_call%3E5%29"
+        ),
+        None,
+    ))
+    .expect("mixed grouped statement search");
+    assert_eq!(
+        row_records(&grouped)
+            .iter()
+            .map(|row| row["values"][0].as_str().expect("query id"))
+            .collect::<Vec<_>>(),
+        ["3", "1"]
+    );
+}
+
+#[test]
+fn quantitative_search_keeps_layout_absence_null() {
+    let mut fixture = Fixture::new();
+    fixture.append_ranked_statements();
+    fixture.append_ranked_plans();
+    fixture.finish();
+
+    for (section, search) in [
+        ("pg_stat_statements", "temp_read_time_rate%3C1ms%2Fs"),
+        ("pg_store_plans", "planning_time_rate%3C1ms%2Fs"),
+    ] {
+        let records = stream(fixture.prepare(
+            &format!(
+                "/api/segments/{SEGMENT_ID}/snapshot?at=200&section={section}&field=queryid&by=queryid&page_size=10&search={search}"
+            ),
+            None,
+        ))
+        .expect("layout-unavailable quantity search");
+        assert!(row_records(&records).is_empty(), "{section}");
+        let page = records
+            .iter()
+            .find(|record| record["record"] == "snapshot_page")
+            .expect("unavailable page trailer");
+        assert_eq!(page["eligible"], "0", "{section}");
+    }
+}
+
+#[test]
+fn postgres_rates_use_adjacent_samples_without_optional_proof_metadata() {
+    let mut fixture = Fixture::new();
+    fixture.append_ranked_statements();
+    fixture.append_ranked_plans();
+    fixture.finish();
+
+    for section in ["pg_stat_statements", "pg_store_plans"] {
+        let records = stream(fixture.prepare(
+            &format!(
+                "/api/segments/{SEGMENT_ID}/snapshot?at=200&section={section}&field=queryid&by=calls&page_size=10&search=call_rate%3E1%2Fs"
+            ),
+            None,
+        ))
+        .expect("data-first PostgreSQL rates");
+        assert_eq!(row_records(&records)[0]["values"][0], "1", "{section}");
+        let page = records
+            .iter()
+            .find(|record| record["record"] == "snapshot_page")
+            .expect("data-first page trailer");
+        assert_eq!(page["eligible"], "3", "{section}");
+        assert_eq!(page["order_by"], serde_json::json!(["calls"]), "{section}");
+    }
+
+    let mut exact_fixture = Fixture::new();
+    exact_fixture.append_plan_snapshots(&[(100, 1, 9_007_199_254_740_993, 1.0), (100, 3, 1, 1.0)]);
+    exact_fixture.finish();
+    for (search, expected) in [("calls%3E9007199254740992", "1"), ("calls%3C2", "3")] {
+        let records = stream(exact_fixture.prepare(
+            &format!(
+                "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=pg_store_plans&field=queryid&by=queryid&page_size=1&search={search}"
+            ),
+            None,
+        ))
+        .expect("exact hidden Calls search");
+        assert_eq!(row_records(&records)[0]["values"][0], expected);
+        let page = records
+            .iter()
+            .find(|record| record["record"] == "snapshot_page")
+            .expect("exact Calls page trailer");
+        assert_eq!(page["eligible"], "1");
+        assert_eq!(page["has_more"], false);
+    }
+}
+
+#[test]
+fn vadv_plan_quantities_include_planning_and_slow_calls() {
+    let mut fixture = Fixture::new();
+    fixture.append_vadv_plan_quantities();
+    fixture.finish();
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_store_plans&field=queryid&by=queryid&page_size=10"
+    );
+    for search in [
+        "planning_time_rate%3E249999ms%2Fs",
+        "planning_share%3E24.9%25",
+        "slow_call_rate%3E39999%2Fs",
+    ] {
+        let records = stream(fixture.prepare(&format!("{base}&search={search}"), None))
+            .expect("vadv quantity search");
+        assert_eq!(row_records(&records)[0]["values"][0], "1", "{search}");
+    }
+    let strict = stream(fixture.prepare(&format!("{base}&search=planning_share%3E25%25"), None))
+        .expect("strict planning share");
+    assert!(row_records(&strict).is_empty());
+}
+
+#[test]
+fn related_statement_search_uses_the_exact_cursor_across_segments() {
+    let mut fixture = Fixture::new();
+    fixture.append_statement_snapshots(&[(100, 42, 10, 10.0), (200, 42, 20, 20.0)]);
+    let current_segment = SEGMENT_ID + 1_000;
+    fixture.finish_and_continue(current_segment);
+    fixture.append_statement_snapshots(&[(200, 99, 30, 30.0), (300, 98, 40, 40.0)]);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{current_segment}/snapshot?at=200&section=pg_stat_statements&field=queryid&field=dbid&field=userid&field=datname&field=usename&field=query&by=queryid&page_size=32&search=database%3Aoperators%20AND%20role%3Areporter%20AND%20query_id%3A42"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("related statement search");
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["segment_id"], SEGMENT_ID.to_string());
+    assert_eq!(rows[0]["timestamp"], "200");
+    assert_eq!(
+        rows[0]["values"],
+        serde_json::json!([
+            "42",
+            73,
+            72,
+            "operators",
+            "reporter",
+            "boundary statement 42"
+        ])
+    );
+    let page = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("related statement page trailer");
+    assert_eq!(page["eligible"], "1");
+    assert_eq!(page["returned"], "1");
+    assert_eq!(page["has_more"], false);
+    assert_eq!(page["from"], "100");
+    assert_eq!(page["to"], "200");
+
+    let first_target = format!(
+        "/api/segments/{current_segment}/snapshot?at=200&section=pg_stat_statements&field=query&page_size=1&search=query_id%3A42&first_match=1"
+    );
+    let first_records =
+        stream(fixture.prepare(&first_target, None)).expect("first Statement text at cursor");
+    let first_rows = row_records(&first_records);
+    assert_eq!(first_rows.len(), 1);
+    assert_eq!(first_rows[0]["segment_id"], SEGMENT_ID.to_string());
+    assert_eq!(first_rows[0]["timestamp"], "200");
+    assert_eq!(
+        first_rows[0]["values"],
+        serde_json::json!(["boundary statement 42"])
+    );
+}
+
+#[test]
+fn statement_text_first_match_stops_at_the_first_nonempty_record() {
+    let mut fixture = Fixture::new();
+    let exact = "  SELECT *\n  FROM work_queue\n";
+    let mut texts = vec![None, Some(exact)];
+    texts.extend(std::iter::repeat_n(Some("later collision"), 128));
+    fixture.append_statement_text_matches(200, -42, &texts);
+    fixture.finish();
+
+    reset_first_match_rows();
+    reset_page_operations();
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_statements&field=query&page_size=1&search=query_id%3A-42&first_match=1"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("first Statement text");
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["values"], serde_json::json!([exact]));
+    assert_eq!(first_match_rows(), 2);
+    assert_eq!(page_operations(), (0, 0, 0));
+    let page = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("first-match trailer");
+    assert_eq!(page["eligible"], "1");
+    assert_eq!(page["returned"], "1");
+    assert_eq!(page["has_more"], false);
+    assert_eq!(page["page_size"], 1);
+    assert_eq!(page["order_by"], serde_json::json!([]));
+}
+
+#[test]
+fn statement_text_first_match_rejects_a_general_search_expression() {
+    let mut fixture = Fixture::new();
+    fixture.append_statement_text_matches(200, 42, &[Some("select 42")]);
+    fixture.finish();
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_statements&field=query&page_size=1&search=database%3Aoperators%20AND%20query_id%3A42&first_match=1"
+    );
+    let (path, query) = target.split_once('?').expect("snapshot target");
+    let route = crate::route::parse(path, Some(query)).expect("strict route shape");
+    assert!(matches!(
+        crate::api::prepare(fixture.root(), SOURCES, route, None),
+        Err(ApiError::BadFilter(name)) if name == "first_match"
+    ));
+}
+
+#[test]
 fn plan_page_keeps_zero_and_rejects_a_cross_segment_counter_decrease() {
     let mut fixture = Fixture::new();
     fixture.append_plan_snapshots(&[(100, 1, 4, 40.0), (100, 2, 10, 100.0)]);
@@ -3011,10 +3730,12 @@ fn plan_page_keeps_zero_and_rejects_a_cross_segment_counter_decrease() {
         .into_iter()
         .map(|row| (row["values"][0].as_str().expect("queryid"), row))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(rows["1"]["values"][1], 0.0);
+    assert_eq!(rows["1"]["values"][1], "4");
     assert_eq!(rows["1"]["values"][2], 0.0);
-    assert_eq!(rows["2"]["values"][1], Value::Null);
+    assert_eq!(rows["1"]["values"][3], 0.0);
+    assert_eq!(rows["2"]["values"][1], "5");
     assert_eq!(rows["2"]["values"][2], Value::Null);
+    assert_eq!(rows["2"]["values"][3], Value::Null);
     let page = records
         .iter()
         .find(|record| record["record"] == "snapshot_page")
@@ -3054,12 +3775,169 @@ fn plan_search_finds_a_match_outside_the_old_first_two_hundred() {
 }
 
 #[test]
+fn process_user_search_filters_the_full_set_and_keeps_real_and_effective_names_distinct() {
+    let mut fixture = Fixture::new();
+    let processes = (0..205)
+        .map(|pid| {
+            if pid == 0 {
+                (pid, 26, 27)
+            } else if pid == 1 {
+                (pid, 9_999, 9_999)
+            } else {
+                (pid, 1_000, 1_000)
+            }
+        })
+        .collect::<Vec<_>>();
+    fixture.append_user_processes(
+        100,
+        &processes,
+        &[(26, "postgres"), (27, "postgres-worker"), (1_000, "app")],
+    );
+    fixture.finish();
+
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=os_process&field=pid&field=user&field=effective_user&field=uid&field=euid&by=pid&page_size=1"
+    );
+    let records = stream(fixture.prepare(&format!("{base}&search=username%3Apostgres"), None))
+        .expect("real user search");
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0]["values"],
+        serde_json::json!([0, "postgres", "postgres-worker", 26, 27])
+    );
+    let page = records
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("process page trailer");
+    assert_eq!(page["eligible"], "1");
+
+    let effective =
+        stream(fixture.prepare(&format!("{base}&search=euser%3Apostgres-worker"), None))
+            .expect("effective user search");
+    assert_eq!(row_records(&effective)[0]["values"][0], 0);
+
+    let unresolved = stream(fixture.prepare(&format!("{base}&search=user_id%3A9999"), None))
+        .expect("numeric unresolved user search");
+    assert_eq!(
+        row_records(&unresolved)[0]["values"],
+        serde_json::json!([1, null, null, 9_999, 9_999])
+    );
+}
+
+#[test]
+fn process_quantities_use_same_starttime_predecessors_and_exact_counters() {
+    let mut fixture = Fixture::new();
+    fixture.append_quantitative_processes();
+    fixture.finish();
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=2000000&section=os_process&field=pid&field=read_bytes&field=rmem_kb&by=pid&page_size=10"
+    );
+
+    let natural = stream(fixture.prepare(
+        &format!("{base}&search=cpu_cores%3E0.1%20AND%20rss%3E2MiB"),
+        None,
+    ))
+    .expect("natural process quantity search");
+    assert_eq!(
+        row_records(&natural)
+            .iter()
+            .map(|row| row["values"][0].as_i64().expect("pid"))
+            .collect::<Vec<_>>(),
+        [1]
+    );
+
+    let bytes = stream(fixture.prepare(
+        &format!("{base}&search=disk_read_rate%3E1048575B%2Fs"),
+        None,
+    ))
+    .expect("bigint-safe process byte rate");
+    assert_eq!(
+        row_records(&bytes)
+            .iter()
+            .map(|row| row["values"].clone())
+            .collect::<Vec<_>>(),
+        [serde_json::json!([1, 1_048_576.0, "3072"])]
+    );
+
+    for search in [
+        "logical_read_rate%3E1048575B%2Fs",
+        "read_syscall_rate%3E19%2Fs",
+        "run_delay%3E19ms%2Fs",
+        "block_io_delay%3E199ms%2Fs",
+    ] {
+        let records = stream(fixture.prepare(&format!("{base}&search={search}"), None))
+            .expect("derived process rate");
+        assert_eq!(row_records(&records)[0]["values"][0], 1, "{search}");
+    }
+
+    let exact_zero = stream(fixture.prepare(
+        &format!("{base}&search=pid%3A6%20AND%20cpu_cores%3C0.1"),
+        None,
+    ))
+    .expect("stable zero CPU rate");
+    assert_eq!(row_records(&exact_zero)[0]["values"][0], 6);
+
+    let optional_null = stream(fixture.prepare(
+        &format!("{base}&search=pid%3A6%20AND%20read_syscall_rate%3C1%2Fs"),
+        None,
+    ))
+    .expect("missing optional process I/O");
+    assert!(row_records(&optional_null).is_empty());
+
+    let unavailable = stream(fixture.prepare(&format!("{base}&search=cpu_cores%3C1000"), None))
+        .expect("process predecessor exclusions");
+    assert_eq!(
+        row_records(&unavailable)
+            .iter()
+            .map(|row| row["values"][0].as_i64().expect("pid"))
+            .collect::<Vec<_>>(),
+        [6, 2, 1],
+        "PID reuse, rollback, and a missing predecessor stay null"
+    );
+
+    let all = stream(fixture.prepare(&base, None)).expect("unfiltered process quantities");
+    let by_pid = row_records(&all)
+        .into_iter()
+        .map(|row| (row["values"][0].as_i64().expect("pid"), row))
+        .collect::<BTreeMap<_, _>>();
+    for pid in [3, 4, 5] {
+        assert_eq!(by_pid[&pid]["values"][1], Value::Null, "pid {pid}");
+    }
+    assert_eq!(by_pid[&2]["values"][2], "2048");
+}
+
+#[test]
+fn process_user_join_uses_the_mapping_from_each_historical_segment() {
+    let mut fixture = Fixture::new();
+    fixture.append_user_processes(100, &[(10, 26, 26)], &[(26, "old-name")]);
+    let second_segment = SEGMENT_ID + 1_000;
+    fixture.finish_and_continue(second_segment);
+    fixture.append_user_processes(200, &[(10, 26, 26)], &[(26, "new-name")]);
+    fixture.finish();
+
+    for (segment, at, expected) in [
+        (SEGMENT_ID, 100, "old-name"),
+        (second_segment, 200, "new-name"),
+    ] {
+        let target = format!(
+            "/api/segments/{segment}/snapshot?at={at}&section=os_process&field=pid&field=user&field=uid&by=pid&page_size=10"
+        );
+        let records = stream(fixture.prepare(&target, None)).expect("historical process snapshot");
+        assert_eq!(
+            row_records(&records)[0]["values"],
+            serde_json::json!([10, expected, 26])
+        );
+    }
+}
+
+#[test]
 fn snapshot_cursor_rejects_every_bound_query_shape_mismatch() {
     let mut fixture = Fixture::new();
     fixture.append_statement_universe(5);
     fixture.finish();
     let path = format!("/api/segments/{SEGMENT_ID}/snapshot");
-    let shape = "at=100&section=pg_stat_statements&field=queryid&field=query&by=queryid&by=userid&page_size=1&search=fixture&search=statement&text=80&where.dbid=73&where.userid=72&type_id=1002002";
+    let shape = "at=100&section=pg_stat_statements&field=queryid&field=query&by=queryid&by=userid&page_size=1&search=text%3Afixture%20AND%20text%3Astatement&text=80&where.dbid=73&where.userid=72&type_id=1002002";
     let first = stream(fixture.prepare(&format!("{path}?{shape}"), None)).expect("bound page");
     let cursor = first
         .iter()
@@ -3085,8 +3963,8 @@ fn snapshot_cursor_rejects_every_bound_query_shape_mismatch() {
         (
             SEGMENT_ID,
             shape.replacen(
-                "search=fixture&search=statement",
-                "search=statement&search=fixture",
+                "search=text%3Afixture%20AND%20text%3Astatement",
+                "search=text%3Astatement%20AND%20text%3Afixture",
                 1,
             ),
         ),
@@ -3112,10 +3990,8 @@ fn snapshot_cursor_rejects_every_bound_query_shape_mismatch() {
         let path = format!("/api/segments/{segment_id}/snapshot");
         let query = format!("{query}&cursor={cursor}");
         let route = crate::route::parse(&path, Some(&query)).expect("mismatch route");
-        assert!(matches!(
-            crate::api::prepare(fixture.root(), SOURCES, route, None),
-            Err(ApiError::BadCursor)
-        ));
+        let result = crate::api::prepare(fixture.root(), SOURCES, route, None);
+        assert!(matches!(result, Err(ApiError::BadCursor)), "{query}");
     }
 
     let compatible_size = shape.replacen("page_size=1", "page_size=4", 1);
@@ -3440,7 +4316,7 @@ fn relation_table_buffer_rates_distinguish_values_zero_and_missing_predecessors(
 
 fn assert_exact_buffer_rows(fixture: &Fixture) {
     let exact = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=20000000&section=pg_stat_user_tables&field=datid&field=heap_blks_read&field=heap_blks_hit&type_id=1013001&row_ordinal=1"
+        "/api/segments/{SEGMENT_ID}/snapshot?at=20000000&section=pg_stat_user_tables&field=datid&field=heap_blks_read&field=heap_blks_hit&type_id=1013005&row_ordinal=1"
     );
     let exact = stream(fixture.prepare(&exact, None)).expect("exact partitioned buffer row");
     assert_eq!(
@@ -3450,7 +4326,7 @@ fn assert_exact_buffer_rows(fixture: &Fixture) {
     );
 
     let exact_zero = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=20000000&section=pg_stat_user_tables&field=datid&field=heap_blks_read&type_id=1013001&row_ordinal=3"
+        "/api/segments/{SEGMENT_ID}/snapshot?at=20000000&section=pg_stat_user_tables&field=datid&field=heap_blks_read&type_id=1013005&row_ordinal=3"
     );
     let exact_zero = stream(fixture.prepare(&exact_zero, None)).expect("exact zero buffer row");
     assert_eq!(
@@ -3459,7 +4335,7 @@ fn assert_exact_buffer_rows(fixture: &Fixture) {
     );
 
     let exact_missing = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=20000000&section=pg_stat_user_tables&field=datid&field=heap_blks_read&type_id=1013001&row_ordinal=4"
+        "/api/segments/{SEGMENT_ID}/snapshot?at=20000000&section=pg_stat_user_tables&field=datid&field=heap_blks_read&type_id=1013005&row_ordinal=4"
     );
     let exact_missing =
         stream(fixture.prepare(&exact_missing, None)).expect("exact missing predecessor row");
@@ -3913,6 +4789,393 @@ fn relation_groups_keep_database_scope_and_sum_staggered_rates() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the cluster-wide fixture checks the full filter group sort and page contract together"
+)]
+fn tablespace_snapshot_groups_cluster_wide_by_oid_after_full_filtering() {
+    let mut fixture = Fixture::new();
+    fixture.append_placed_table_snapshots(&[
+        (
+            100_000_000,
+            1,
+            11,
+            10,
+            "first",
+            "public",
+            "orders",
+            Some(5_000),
+            Some("fast"),
+            100,
+            Some(10),
+        ),
+        (
+            100_000_000,
+            1,
+            12,
+            0,
+            "first",
+            "public",
+            "items",
+            Some(5_000),
+            Some("fast"),
+            200,
+            None,
+        ),
+        (
+            100_000_000,
+            1,
+            13,
+            0,
+            "first",
+            "public",
+            "archive",
+            Some(6_000),
+            Some("fast"),
+            400,
+            None,
+        ),
+        (
+            150_000_000,
+            2,
+            21,
+            5,
+            "second",
+            "sales",
+            "events",
+            Some(5_000),
+            Some("old_fast"),
+            300,
+            None,
+        ),
+        (
+            300_000_000,
+            1,
+            11,
+            30,
+            "first",
+            "public",
+            "orders",
+            Some(5_000),
+            Some("fast"),
+            100,
+            Some(10),
+        ),
+        (
+            300_000_000,
+            1,
+            12,
+            20,
+            "first",
+            "public",
+            "items",
+            Some(5_000),
+            Some("fast"),
+            200,
+            None,
+        ),
+        (
+            300_000_000,
+            1,
+            13,
+            10,
+            "first",
+            "public",
+            "archive",
+            Some(6_000),
+            Some("fast"),
+            400,
+            None,
+        ),
+        (
+            300_000_000,
+            1,
+            14,
+            0,
+            "first",
+            "public",
+            "partitioned",
+            None,
+            None,
+            0,
+            None,
+        ),
+        (
+            250_000_000,
+            2,
+            21,
+            15,
+            "second",
+            "sales",
+            "events",
+            Some(5_000),
+            Some("renamed_fast"),
+            300,
+            None,
+        ),
+    ]);
+    fixture.finish();
+
+    let target = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=300000000&section=pg_stat_user_tables&group=tablespace&field=tablespace&field=table_count&field=displayed_storage_bytes&field=seq_scan&by=displayed_storage_bytes&direction=desc"
+    );
+    let records = stream(fixture.prepare(&target, None)).expect("tablespace groups");
+    let rows = relation_records(&records);
+    assert_eq!(rows.len(), 2, "same names do not merge different OIDs");
+    assert_eq!(
+        rows[0]["key"],
+        serde_json::json!({"tablespace_oid": "5000"})
+    );
+    assert_eq!(rows[0]["values"]["tablespace"], "fast");
+    assert_eq!(rows[0]["values"]["table_count"], "3");
+    assert_eq!(rows[0]["values"]["displayed_storage_bytes"], "610");
+    assert_eq!(rows[0]["values"]["seq_scan"], 0.3);
+    assert_eq!(rows[1]["key"]["tablespace_oid"], "6000");
+    assert!(rows.iter().all(|row| row["source"].is_null()));
+
+    let filtered = stream(fixture.prepare(
+        &format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=300000000&section=pg_stat_user_tables&group=tablespace&field=table_count&field=displayed_storage_bytes&where.tablespace_oid=5000"
+        ),
+        None,
+    ))
+    .expect("OID-filtered tablespace group");
+    let filtered = relation_records(&filtered);
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0]["key"]["tablespace_oid"], "5000");
+    assert_eq!(filtered[0]["values"]["table_count"], "3");
+
+    let searched = stream(fixture.prepare(
+        &format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=300000000&section=pg_stat_user_tables&group=tablespace&field=tablespace&field=table_count&search=archive"
+        ),
+        None,
+    ))
+    .expect("search before tablespace grouping");
+    let searched = relation_records(&searched);
+    assert_eq!(searched.len(), 1);
+    assert_eq!(searched[0]["key"]["tablespace_oid"], "6000");
+    assert_eq!(searched[0]["values"]["table_count"], "1");
+
+    let compared = stream(fixture.prepare(
+        &format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=300000000&section=pg_stat_user_tables&group=tablespace&field=table_count&search=size%3E500B"
+        ),
+        None,
+    ))
+    .expect("comparison after tablespace reduction");
+    let compared_rows = relation_records(&compared);
+    assert_eq!(compared_rows.len(), 1);
+    assert_eq!(compared_rows[0]["key"]["tablespace_oid"], "5000");
+    assert_eq!(compared_rows[0]["values"]["table_count"], "3");
+    let page = compared
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("tablespace comparison trailer");
+    assert_eq!(page["eligible"], "1");
+}
+
+#[test]
+fn index_tablespaces_use_each_index_placement_and_keep_missing_labels() {
+    let mut fixture = Fixture::new();
+    fixture.append_placed_index_snapshots(&[
+        (
+            100_000_000,
+            1,
+            101,
+            0,
+            "db",
+            "public",
+            "orders",
+            "orders_heap_idx",
+            7_000,
+            Some("heap_ts"),
+            100,
+        ),
+        (
+            100_000_000,
+            1,
+            102,
+            0,
+            "db",
+            "public",
+            "orders",
+            "orders_fast_idx",
+            8_000,
+            None,
+            200,
+        ),
+        (
+            200_000_000,
+            1,
+            101,
+            10,
+            "db",
+            "public",
+            "orders",
+            "orders_heap_idx",
+            7_000,
+            Some("heap_ts"),
+            100,
+        ),
+        (
+            200_000_000,
+            1,
+            102,
+            20,
+            "db",
+            "public",
+            "orders",
+            "orders_fast_idx",
+            8_000,
+            None,
+            200,
+        ),
+    ]);
+    fixture.finish();
+
+    let records = stream(fixture.prepare(
+        &format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=200000000&section=pg_stat_user_indexes&group=tablespace&field=tablespace&field=index_count&field=main_fork_bytes&field=idx_scan&by=main_fork_bytes&direction=desc"
+        ),
+        None,
+    ))
+    .expect("index tablespace groups");
+    let rows = relation_records(&records);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["key"]["tablespace_oid"], "8000");
+    assert_eq!(rows[0]["values"]["tablespace"], Value::Null);
+    assert_eq!(rows[0]["values"]["main_fork_bytes"], "200");
+    assert_eq!(rows[0]["values"]["idx_scan"], 0.2);
+    assert_eq!(rows[1]["key"]["tablespace_oid"], "7000");
+    assert_eq!(rows[1]["values"]["tablespace"], "heap_ts");
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the staggered fixture keeps independent database snapshots and expected points together"
+)]
+fn tablespace_history_is_exact_across_staggered_database_snapshots_and_moves() {
+    let mut fixture = Fixture::new();
+    fixture.append_placed_table_snapshots(&[
+        (
+            0,
+            1,
+            11,
+            0,
+            "first",
+            "public",
+            "orders",
+            Some(5_000),
+            Some("fast"),
+            100,
+            None,
+        ),
+        (
+            10_000_000,
+            2,
+            21,
+            0,
+            "second",
+            "public",
+            "events",
+            Some(5_000),
+            Some("old_fast"),
+            200,
+            None,
+        ),
+        (
+            100_000_000,
+            1,
+            11,
+            10,
+            "first",
+            "public",
+            "orders",
+            Some(5_000),
+            Some("fast"),
+            100,
+            None,
+        ),
+        (
+            110_000_000,
+            2,
+            21,
+            10,
+            "second",
+            "public",
+            "events",
+            Some(5_000),
+            Some("old_fast"),
+            200,
+            None,
+        ),
+        (
+            200_000_000,
+            1,
+            11,
+            30,
+            "first",
+            "public",
+            "orders",
+            Some(5_000),
+            Some("fast"),
+            100,
+            None,
+        ),
+        (
+            250_000_000,
+            2,
+            21,
+            38,
+            "second",
+            "public",
+            "events",
+            Some(5_000),
+            Some("renamed_fast"),
+            200,
+            None,
+        ),
+        (
+            300_000_000,
+            1,
+            11,
+            50,
+            "first",
+            "public",
+            "orders",
+            Some(6_000),
+            Some("archive"),
+            100,
+            None,
+        ),
+    ]);
+    fixture.finish();
+
+    let records = stream(fixture.prepare(
+        "/api/hour?from=200000000&to=300000000&section=pg_stat_user_tables&group=tablespace&field=tablespace&field=table_count&field=main_fork_bytes&field=seq_scan&where.tablespace_oid=5000",
+        None,
+    ))
+    .expect("cross-database tablespace history");
+    let rows = relation_records(&records);
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["source"], Value::Null);
+    assert_eq!(rows[0]["sample_to"], "200000000");
+    assert_eq!(rows[0]["values"]["table_count"], "2");
+    assert_eq!(rows[0]["values"]["main_fork_bytes"], "300");
+    assert_eq!(rows[0]["values"]["seq_scan"], 0.3);
+    assert_eq!(rows[0]["values"]["tablespace"], "fast");
+    assert_eq!(rows[1]["sample_to"], "250000000");
+    assert_eq!(rows[1]["values"]["seq_scan"], 0.4);
+    assert_eq!(rows[1]["values"]["tablespace"], "renamed_fast");
+    assert_eq!(rows[2]["sample_to"], "300000000");
+    assert_eq!(rows[2]["values"]["table_count"], "1");
+    assert_eq!(rows[2]["values"]["main_fork_bytes"], "200");
+    assert_eq!(rows[2]["values"]["seq_scan"], 0.2);
+}
+
+#[test]
 fn relation_group_history_reuses_exact_reducers_across_segments_and_the_full_set() {
     let mut fixture = Fixture::new();
     let mut previous = (1..=205)
@@ -4093,7 +5356,7 @@ fn relation_search_runs_before_group_sort_and_page() {
     fixture.finish();
 
     let target = format!(
-        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_tables&group=object&field=seq_scan&by=seq_scan&page_size=200&search=needle_outside"
+        "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_tables&group=object&field=seq_scan&by=seq_scan&page_size=200&search=table_name%3Aneedle_outside_unfiltered_page%20AND%20schema%3Apublic"
     );
     let records = stream(fixture.prepare(&target, None)).expect("searched relation page");
     let rows = relation_records(&records);
@@ -4106,6 +5369,156 @@ fn relation_search_runs_before_group_sort_and_page() {
     assert_eq!(page["eligible"], "1");
     assert_eq!(page["returned"], "1");
     assert_eq!(page["has_more"], false);
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture proves grouped comparison behavior across every reducer phase"
+)]
+fn relation_comparison_filters_reduced_hidden_metrics_before_page() {
+    const MB: i64 = 1_000_000;
+    let mut fixture = Fixture::new();
+    fixture.append_placed_table_snapshots(&[
+        (
+            100,
+            1,
+            1,
+            0,
+            "db",
+            "pair",
+            "first",
+            Some(1663),
+            Some("pg_default"),
+            50 * MB,
+            Some(10 * MB),
+        ),
+        (
+            100,
+            1,
+            2,
+            0,
+            "db",
+            "pair",
+            "second",
+            Some(1663),
+            Some("pg_default"),
+            30 * MB,
+            Some(30 * MB),
+        ),
+        (
+            100,
+            1,
+            3,
+            0,
+            "db",
+            "boundary",
+            "exact",
+            Some(1663),
+            Some("pg_default"),
+            100 * MB,
+            None,
+        ),
+        (
+            100,
+            1,
+            999,
+            0,
+            "db",
+            "large",
+            "outside_page",
+            Some(1664),
+            Some("fast"),
+            150 * MB,
+            None,
+        ),
+    ]);
+    fixture.finish();
+
+    let base = format!(
+        "/api/segments/{SEGMENT_ID}/snapshot?at=100&section=pg_stat_user_tables&field=table_count&page_size=1"
+    );
+    let objects =
+        stream(fixture.prepare(&format!("{base}&group=object&search=size%3E100MB"), None))
+            .expect("hidden object size comparison");
+    let rows = relation_records(&objects);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["key"]["relid"], "999");
+    let page = objects
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("object comparison trailer");
+    assert_eq!(page["eligible"], "1");
+    assert_eq!(page["returned"], "1");
+
+    let object_or = stream(fixture.prepare(
+        &format!("{base}&group=object&search=table_name%3Aexact%20OR%20size%3E100MB"),
+        None,
+    ))
+    .expect("object member or metric OR");
+    let object_or_page = object_or
+        .iter()
+        .find(|record| record["record"] == "snapshot_page")
+        .expect("object OR trailer");
+    assert_eq!(object_or_page["eligible"], "2");
+    assert_eq!(object_or_page["returned"], "1");
+
+    let grouped = stream(fixture.prepare(
+        &format!("{base}&group=schema&search=schema%3Apair%20AND%20size%3E100MB"),
+        None,
+    ))
+    .expect("post-reducer schema size comparison");
+    let rows = relation_records(&grouped);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["key"]["schemaname"], "pair");
+    assert_eq!(rows[0]["values"]["table_count"], "2");
+    let layout = grouped
+        .iter()
+        .find(|record| record["record"] == "relation_layout")
+        .expect("relation comparison layout");
+    assert_eq!(layout["columns"].as_array().map(Vec::len), Some(1));
+    assert_eq!(layout["columns"][0]["name"], "table_count");
+
+    let pre_or = stream(fixture.prepare(
+        &format!("{base}&group=schema&search=%28schema%3Apair%20OR%20schema%3Aboundary%29%20AND%20size%3E100MB"),
+        None,
+    ))
+    .expect("pre-reducer grouped OR");
+    let rows = relation_records(&pre_or);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["key"]["schemaname"], "pair");
+    assert_eq!(rows[0]["values"]["table_count"], "2");
+
+    let post_or = stream(fixture.prepare(
+        &format!("{base}&group=schema&search=schema%3Apair%20AND%20%28size%3E120MB%20OR%20table_count%3E1%29"),
+        None,
+    ))
+    .expect("post-reducer grouped OR");
+    let rows = relation_records(&post_or);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["key"]["schemaname"], "pair");
+
+    let path = format!("/api/segments/{SEGMENT_ID}/snapshot");
+    let query = "at=100&section=pg_stat_user_tables&group=schema&field=table_count&page_size=1&search=schema%3Apair%20OR%20size%3E100MB";
+    let route = crate::route::parse(&path, Some(query)).expect("mixed grouped OR route");
+    assert!(matches!(
+        crate::api::prepare(fixture.root(), SOURCES, route, None),
+        Err(ApiError::BadFilter(parameter)) if parameter == "search"
+    ));
+
+    for operator in ["%3E", "%3C"] {
+        let boundary = stream(fixture.prepare(
+            &format!("{base}&group=object&search=table_name%3Aexact%20AND%20size{operator}100MB"),
+            None,
+        ))
+        .expect("exact size boundary comparison");
+        assert!(relation_records(&boundary).is_empty());
+        let page = boundary
+            .iter()
+            .find(|record| record["record"] == "snapshot_page")
+            .expect("boundary comparison trailer");
+        assert_eq!(page["eligible"], "0");
+    }
 }
 
 #[test]

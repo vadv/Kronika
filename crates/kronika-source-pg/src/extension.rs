@@ -198,6 +198,13 @@ const INVENTORY_QUERY: &str = marked!(
                       WHERE f.extension_oid = i.extension_oid \
                         AND f.proname = 'pg_store_plans_get_plan'), false) \
                 AS store_plans_key_getter, \
+            coalesce((SELECT bool_or(f.can_execute AND NOT f.proretset \
+                                    AND f.prorettype = 'pg_catalog.text'::pg_catalog.regtype \
+                                    AND f.proargtypes = '25'::pg_catalog.oidvector) \
+                      FROM function_capabilities f \
+                      WHERE f.extension_oid = i.extension_oid \
+                        AND f.proname = 'pg_store_plans_textplan'), false) \
+                AS store_plans_text_converter, \
             coalesce((SELECT bool_or(f.ossc_columns \
                                     AND f.proargtypes = ''::pg_catalog.oidvector) \
                       FROM function_capabilities f \
@@ -288,6 +295,8 @@ pub struct InventoryEntry {
     pub store_plans_bool_arg: bool,
     /// Whether the executable four-key plan getter exists.
     pub store_plans_key_getter: bool,
+    /// Whether the executable one-text-argument plan converter exists.
+    pub store_plans_text_converter: bool,
     /// Whether the zero-argument reader has every OSSC-compatible output.
     pub store_plans_ossc_columns: bool,
     /// Whether the boolean reader has every vadv output.
@@ -354,6 +363,7 @@ fn entry_from_row(row: &SimpleQueryRow) -> Result<InventoryEntry> {
         store_plans_zero_arg: boolean(row, "store_plans_zero_arg")?,
         store_plans_bool_arg: boolean(row, "store_plans_bool_arg")?,
         store_plans_key_getter: boolean(row, "store_plans_key_getter")?,
+        store_plans_text_converter: boolean(row, "store_plans_text_converter")?,
         store_plans_ossc_columns: boolean(row, "store_plans_ossc_columns")?,
         store_plans_vadv_columns: boolean(row, "store_plans_vadv_columns")?,
         store_plans_datasentinel_columns: boolean(row, "store_plans_datasentinel_columns")?,

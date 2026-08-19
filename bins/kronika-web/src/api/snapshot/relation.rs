@@ -10,11 +10,14 @@ use kronika_reader::{Cell, Dictionary, Reader, Row, Segment, SegmentRef};
 use kronika_registry::{contract, logical_section_name};
 use serde_json::{Map, Value, json};
 
+use super::search::{
+    Quantity, SearchClause, SearchOperator, SearchValue, result_field, search_fields,
+};
 use super::{
     ApiError, CounterReadings, Order, OrderedNumber, PageContext, Plan, PreparedSnapshot,
     RelationGroup, SectionPlans, SnapshotCursor, add_ordered, compare_page_order_values,
-    counter_delta, identity_of, plans, rate_columns, record, resolved_dictionary, search_matches,
-    stored_bytes,
+    compare_u128_ratios, counter_delta, identity_of, plans, rate_columns, record,
+    resolved_dictionary, search_matches, stored_bytes,
 };
 use crate::api::query;
 use crate::route::{DataRequest, Filter, SegmentRequest, SeriesRequest, SnapshotRequest, Window};
@@ -342,17 +345,33 @@ impl RelationKind {
         }
     }
 
-    const fn fields(self, group: RelationGroup) -> &'static [FieldSpec] {
-        match (self, group) {
-            (Self::Tables, RelationGroup::Object) => TABLE_OBJECT_FIELDS,
-            (Self::Tables, RelationGroup::Database | RelationGroup::Schema) => {
-                TABLE_AGGREGATE_FIELDS
-            }
-            (Self::Indexes, RelationGroup::Object) => INDEX_OBJECT_FIELDS,
-            (Self::Indexes, RelationGroup::Database | RelationGroup::Schema) => {
-                INDEX_AGGREGATE_FIELDS
-            }
+    const fn logical_name(self) -> &'static str {
+        match self {
+            Self::Tables => TABLES,
+            Self::Indexes => INDEXES,
         }
+    }
+
+    fn fields(self, group: RelationGroup) -> Vec<FieldSpec> {
+        let base = match (self, group) {
+            (Self::Tables, RelationGroup::Object) => TABLE_OBJECT_FIELDS,
+            (
+                Self::Tables,
+                RelationGroup::Database | RelationGroup::Schema | RelationGroup::Tablespace,
+            ) => TABLE_AGGREGATE_FIELDS,
+            (Self::Indexes, RelationGroup::Object) => INDEX_OBJECT_FIELDS,
+            (
+                Self::Indexes,
+                RelationGroup::Database | RelationGroup::Schema | RelationGroup::Tablespace,
+            ) => INDEX_AGGREGATE_FIELDS,
+        };
+        if group != RelationGroup::Tablespace {
+            return base.to_vec();
+        }
+        let mut fields = Vec::with_capacity(base.len().saturating_add(1));
+        fields.push(field("tablespace", Kind::Text, None));
+        fields.extend_from_slice(base);
+        fields
     }
 }
 
@@ -436,6 +455,32 @@ pub(super) fn output_fields(
     Ok(output)
 }
 
+pub(super) fn snapshot_physical_fields(
+    logical_name: &str,
+    group: RelationGroup,
+    fields: &[String],
+    by: &[String],
+    search: Option<&super::StructuredSearch>,
+) -> Result<Vec<String>, ApiError> {
+    let kind = RelationKind::from_name(logical_name)?;
+    let mut semantic = fields.to_vec();
+    semantic.extend(by.iter().map(|name| sort_name(name).to_owned()));
+    let mut names = history_physical_fields(kind, group, &semantic)
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    names.extend(
+        key_fields(kind, RelationGroup::Object)
+            .iter()
+            .map(|name| (*name).to_owned()),
+    );
+    if let Some(search) = search {
+        for (_clause, field) in search.result_clauses(logical_name) {
+            names.extend(field.dependencies.iter().map(|name| (*name).to_owned()));
+        }
+    }
+    Ok(names.into_iter().collect())
+}
+
 pub(super) fn split_filters(
     request: &SnapshotRequest,
 ) -> Result<(Vec<Filter>, Vec<Filter>), ApiError> {
@@ -448,6 +493,11 @@ pub(super) fn split_filters(
     let mut physical = Vec::new();
     let mut derived = Vec::new();
     for filter in &request.filters {
+        if filter.column == "tablespace_oid"
+            && filter.value.parse::<u32>().ok().is_none_or(|oid| oid == 0)
+        {
+            return Err(ApiError::BadFilter(filter.column.clone()));
+        }
         if filter.column == "no_scans" {
             if section != INDEXES || filter.value != "true" {
                 return Err(ApiError::BadFilter(filter.column.clone()));
@@ -461,14 +511,35 @@ pub(super) fn split_filters(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct GroupKey {
-    datid: u32,
-    datname: String,
-    schemaname: Option<String>,
-    relid: Option<u32>,
-    relname: Option<String>,
-    indexrelid: Option<u32>,
-    indexrelname: Option<String>,
+enum GroupKey {
+    Database {
+        datid: u32,
+        datname: String,
+    },
+    Schema {
+        datid: u32,
+        datname: String,
+        schemaname: String,
+    },
+    Tablespace {
+        tablespace_oid: u32,
+    },
+    Table {
+        datid: u32,
+        datname: String,
+        schemaname: String,
+        relid: u32,
+        relname: String,
+    },
+    Index {
+        datid: u32,
+        datname: String,
+        schemaname: String,
+        relid: u32,
+        relname: String,
+        indexrelid: u32,
+        indexrelname: String,
+    },
 }
 
 impl GroupKey {
@@ -478,45 +549,51 @@ impl GroupKey {
         row: &Row,
         dictionary: &Dictionary,
     ) -> Result<Option<Self>, ApiError> {
+        if group == RelationGroup::Tablespace {
+            return Ok(unsigned_cell(row.get("tablespace_oid"))
+                .map(|tablespace_oid| Self::Tablespace { tablespace_oid }));
+        }
         let (Some(datid), Some(datname)) = (
             unsigned_cell(row.get("datid")),
             text_cell(row.get("datname"), dictionary)?,
         ) else {
             return Ok(None);
         };
-        let schemaname = if group == RelationGroup::Database {
-            None
-        } else {
-            text_cell(row.get("schemaname"), dictionary)?
-        };
-        if group != RelationGroup::Database && schemaname.is_none() {
-            return Ok(None);
+        if group == RelationGroup::Database {
+            return Ok(Some(Self::Database { datid, datname }));
         }
-        let object = group == RelationGroup::Object;
-        let relid = object.then(|| unsigned_cell(row.get("relid"))).flatten();
-        let relname = if object {
-            text_cell(row.get("relname"), dictionary)?
-        } else {
-            None
-        };
-        if object && (relid.is_none() || relname.is_none()) {
+        let Some(schemaname) = text_cell(row.get("schemaname"), dictionary)? else {
             return Ok(None);
-        }
-        let (indexrelid, indexrelname) = if kind == RelationKind::Indexes && object {
-            (
-                unsigned_cell(row.get("indexrelid")),
-                text_cell(row.get("indexrelname"), dictionary)?,
-            )
-        } else {
-            (None, None)
         };
-        if kind == RelationKind::Indexes
-            && object
-            && (indexrelid.is_none() || indexrelname.is_none())
-        {
-            return Ok(None);
+        if group == RelationGroup::Schema {
+            return Ok(Some(Self::Schema {
+                datid,
+                datname,
+                schemaname,
+            }));
         }
-        Ok(Some(Self {
+        let (Some(relid), Some(relname)) = (
+            unsigned_cell(row.get("relid")),
+            text_cell(row.get("relname"), dictionary)?,
+        ) else {
+            return Ok(None);
+        };
+        if kind == RelationKind::Tables {
+            return Ok(Some(Self::Table {
+                datid,
+                datname,
+                schemaname,
+                relid,
+                relname,
+            }));
+        }
+        let (Some(indexrelid), Some(indexrelname)) = (
+            unsigned_cell(row.get("indexrelid")),
+            text_cell(row.get("indexrelname"), dictionary)?,
+        ) else {
+            return Ok(None);
+        };
+        Ok(Some(Self::Index {
             datid,
             datname,
             schemaname,
@@ -528,70 +605,151 @@ impl GroupKey {
     }
 
     fn json(&self, kind: RelationKind, group: RelationGroup) -> Value {
-        let mut key = Map::new();
-        key.insert("datid".to_owned(), Value::String(self.datid.to_string()));
-        key.insert("datname".to_owned(), Value::String(self.datname.clone()));
-        if group != RelationGroup::Database
-            && let Some(value) = &self.schemaname
-        {
-            key.insert("schemaname".to_owned(), Value::String(value.clone()));
+        match self.clone().for_group(kind, group) {
+            Self::Database { datid, datname } => json!({
+                "datid": datid.to_string(),
+                "datname": datname,
+            }),
+            Self::Schema {
+                datid,
+                datname,
+                schemaname,
+            } => json!({
+                "datid": datid.to_string(),
+                "datname": datname,
+                "schemaname": schemaname,
+            }),
+            Self::Tablespace { tablespace_oid } => {
+                json!({ "tablespace_oid": tablespace_oid.to_string() })
+            }
+            Self::Table {
+                datid,
+                datname,
+                schemaname,
+                relid,
+                relname,
+            } => json!({
+                "datid": datid.to_string(),
+                "datname": datname,
+                "schemaname": schemaname,
+                "relid": relid.to_string(),
+                "relname": relname,
+            }),
+            Self::Index {
+                datid,
+                datname,
+                schemaname,
+                relid,
+                relname,
+                indexrelid,
+                indexrelname,
+            } => json!({
+                "datid": datid.to_string(),
+                "datname": datname,
+                "schemaname": schemaname,
+                "relid": relid.to_string(),
+                "relname": relname,
+                "indexrelid": indexrelid.to_string(),
+                "indexrelname": indexrelname,
+            }),
         }
-        if group == RelationGroup::Object {
-            if let Some(value) = self.relid {
-                key.insert("relid".to_owned(), Value::String(value.to_string()));
-            }
-            if let Some(value) = &self.relname {
-                key.insert("relname".to_owned(), Value::String(value.clone()));
-            }
-            if kind == RelationKind::Indexes {
-                if let Some(value) = self.indexrelid {
-                    key.insert("indexrelid".to_owned(), Value::String(value.to_string()));
-                }
-                if let Some(value) = &self.indexrelname {
-                    key.insert("indexrelname".to_owned(), Value::String(value.clone()));
-                }
-            }
-        }
-        Value::Object(key)
     }
 
-    fn for_group(mut self, kind: RelationKind, group: RelationGroup) -> Self {
+    fn for_group(self, _kind: RelationKind, group: RelationGroup) -> Self {
         match group {
-            RelationGroup::Database => {
-                self.schemaname = None;
-                self.relid = None;
-                self.relname = None;
-                self.indexrelid = None;
-                self.indexrelname = None;
-            }
-            RelationGroup::Schema => {
-                self.relid = None;
-                self.relname = None;
-                self.indexrelid = None;
-                self.indexrelname = None;
-            }
-            RelationGroup::Object if kind == RelationKind::Tables => {
-                self.indexrelid = None;
-                self.indexrelname = None;
-            }
-            RelationGroup::Object => {}
+            RelationGroup::Object => self,
+            RelationGroup::Database => match self {
+                Self::Table { datid, datname, .. } | Self::Index { datid, datname, .. } => {
+                    Self::Database { datid, datname }
+                }
+                key => key,
+            },
+            RelationGroup::Schema => match self {
+                Self::Table {
+                    datid,
+                    datname,
+                    schemaname,
+                    ..
+                }
+                | Self::Index {
+                    datid,
+                    datname,
+                    schemaname,
+                    ..
+                } => Self::Schema {
+                    datid,
+                    datname,
+                    schemaname,
+                },
+                key => key,
+            },
+            RelationGroup::Tablespace => match self {
+                key @ Self::Tablespace { .. } => key,
+                _ => unreachable!("tablespace keys are formed directly from physical rows"),
+            },
         }
-        self
     }
 
-    fn metric(&self, name: &str) -> Option<Metric> {
-        match name {
-            "datid" => Some(Metric::Integer(i128::from(self.datid))),
-            "datname" => Some(Metric::Text(self.datname.clone())),
-            "schemaname" => self.schemaname.clone().map(Metric::Text),
-            "relid" => self.relid.map(|value| Metric::Integer(i128::from(value))),
-            "relname" => self.relname.clone().map(Metric::Text),
-            "indexrelid" => self
-                .indexrelid
-                .map(|value| Metric::Integer(i128::from(value))),
-            "indexrelname" => self.indexrelname.clone().map(Metric::Text),
+    fn search_text(&self, name: &str) -> Option<&str> {
+        match (self, name) {
+            (
+                Self::Database { datname, .. }
+                | Self::Schema { datname, .. }
+                | Self::Table { datname, .. }
+                | Self::Index { datname, .. },
+                "datname",
+            ) => Some(datname),
+            (
+                Self::Schema { schemaname, .. }
+                | Self::Table { schemaname, .. }
+                | Self::Index { schemaname, .. },
+                "schemaname",
+            ) => Some(schemaname),
+            (Self::Table { relname, .. } | Self::Index { relname, .. }, "relname") => Some(relname),
+            (Self::Index { indexrelname, .. }, "indexrelname") => Some(indexrelname),
             _ => None,
         }
+    }
+
+    #[allow(
+        clippy::unnested_or_patterns,
+        reason = "each tuple arm keeps the requested field name attached to its variants"
+    )]
+    fn metric(&self, name: &str) -> Option<Metric> {
+        match (self, name) {
+            (Self::Database { datid, .. } | Self::Schema { datid, .. }, "datid")
+            | (Self::Table { datid, .. } | Self::Index { datid, .. }, "datid") => {
+                Some(Metric::Integer(i128::from(*datid)))
+            }
+            (Self::Database { datname, .. } | Self::Schema { datname, .. }, "datname")
+            | (Self::Table { datname, .. } | Self::Index { datname, .. }, "datname") => {
+                Some(Metric::Text(datname.clone()))
+            }
+            (Self::Schema { schemaname, .. }, "schemaname")
+            | (Self::Table { schemaname, .. } | Self::Index { schemaname, .. }, "schemaname") => {
+                Some(Metric::Text(schemaname.clone()))
+            }
+            (Self::Tablespace { tablespace_oid }, "tablespace_oid") => {
+                Some(Metric::Integer(i128::from(*tablespace_oid)))
+            }
+            (Self::Table { relid, .. } | Self::Index { relid, .. }, "relid") => {
+                Some(Metric::Integer(i128::from(*relid)))
+            }
+            (Self::Table { relname, .. } | Self::Index { relname, .. }, "relname") => {
+                Some(Metric::Text(relname.clone()))
+            }
+            (Self::Index { indexrelid, .. }, "indexrelid") => {
+                Some(Metric::Integer(i128::from(*indexrelid)))
+            }
+            (Self::Index { indexrelname, .. }, "indexrelname") => {
+                Some(Metric::Text(indexrelname.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    const fn is_tablespace(&self) -> bool {
+        matches!(self, Self::Tablespace { .. })
     }
 }
 
@@ -629,6 +787,14 @@ impl Availability {
             Self::Value(value) => Some(value),
             Self::Empty | Self::Unavailable => None,
         }
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.add(match other {
+            Self::Empty => Input::Neutral,
+            Self::Value(value) => Input::Value(value),
+            Self::Unavailable => Input::Unavailable,
+        });
     }
 }
 
@@ -823,6 +989,20 @@ impl RateAggregate {
     const fn value(self) -> Option<RateValue> {
         if self.unavailable { None } else { self.value }
     }
+
+    fn merge(&mut self, other: Self) {
+        if self.unavailable || other.unavailable {
+            self.unavailable = true;
+            self.value = None;
+            return;
+        }
+        if let Some(value) = other.value {
+            self.value = self.value.map_or(Some(value), |known| known.add(value));
+            if self.value.is_none() {
+                self.unavailable = true;
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -851,6 +1031,13 @@ impl MaximumAggregate {
 
     const fn exact(self) -> Option<i128> {
         if self.unavailable { None } else { self.maximum }
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.unavailable |= other.unavailable;
+        if let Some(value) = other.maximum {
+            self.maximum = Some(self.maximum.map_or(value, |known| known.max(value)));
+        }
     }
 }
 
@@ -886,6 +1073,20 @@ impl TimestampAggregate {
     const fn exact(self) -> bool {
         self.applicable > 0 && !self.unavailable
     }
+
+    fn merge(&mut self, other: Self) {
+        self.applicable = self.applicable.saturating_add(other.applicable);
+        self.unavailable |= other.unavailable;
+        self.oldest = match (self.oldest, other.oldest) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (left, right) => left.or(right),
+        };
+        self.latest = match (self.latest, other.latest) {
+            (Some(left), Some(right)) => Some(left.max(right)),
+            (left, right) => left.or(right),
+        };
+        self.never = self.never.saturating_add(other.never);
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -916,8 +1117,15 @@ impl BoolAggregate {
     const fn exact(self) -> bool {
         self.known > 0 && !self.unavailable
     }
+
+    const fn merge(&mut self, other: Self) {
+        self.known = self.known.saturating_add(other.known);
+        self.truthy = self.truthy.saturating_add(other.truthy);
+        self.unavailable |= other.unavailable;
+    }
 }
 
+#[derive(Clone)]
 struct Aggregate {
     key: GroupKey,
     count: u64,
@@ -930,6 +1138,7 @@ struct Aggregate {
     timestamps: BTreeMap<&'static str, TimestampAggregate>,
     flags: BTreeMap<&'static str, BoolAggregate>,
     texts: BTreeMap<&'static str, String>,
+    tablespace_label_timestamp: Option<i64>,
     identifiers: BTreeMap<&'static str, i128>,
     no_scans: BoolAggregate,
     state_severity: Option<i128>,
@@ -949,6 +1158,7 @@ impl Aggregate {
             timestamps: BTreeMap::new(),
             flags: BTreeMap::new(),
             texts: BTreeMap::new(),
+            tablespace_label_timestamp: None,
             identifiers: BTreeMap::new(),
             no_scans: BoolAggregate::default(),
             state_severity: None,
@@ -978,11 +1188,80 @@ impl Aggregate {
         if let Some(from) = elapsed.and_then(|elapsed| source.timestamp.checked_sub(elapsed)) {
             self.from = Some(self.from.map_or(from, |oldest| oldest.min(from)));
         }
+        if self.key.is_tablespace()
+            && let Some(label) = text_cell(row.get("tablespace"), dictionary)?
+        {
+            let replace = self.tablespace_label_timestamp.is_none_or(|timestamp| {
+                source.timestamp > timestamp
+                    || source.timestamp == timestamp
+                        && self
+                            .texts
+                            .get("tablespace")
+                            .is_none_or(|current| label.as_bytes() < current.as_bytes())
+            });
+            if replace {
+                self.tablespace_label_timestamp = Some(source.timestamp);
+                self.texts.insert("tablespace", label);
+            }
+        }
         match kind {
             RelationKind::Tables => self.add_table(plan, row, before, elapsed, dictionary)?,
             RelationKind::Indexes => self.add_index(plan, row, before, elapsed, dictionary)?,
         }
         Ok(())
+    }
+
+    fn merge(&mut self, other: &Self) {
+        self.count = self.count.saturating_add(other.count);
+        self.source = self.source.min(other.source);
+        self.from = match (self.from, other.from) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (left, right) => left.or(right),
+        };
+        self.to = match (self.to, other.to) {
+            (Some(left), Some(right)) => Some(left.max(right)),
+            (left, right) => left.or(right),
+        };
+        for (&name, rate) in &other.rates {
+            self.rates.entry(name).or_default().merge(*rate);
+        }
+        for (&name, gauge) in &other.gauges {
+            self.gauges.entry(name).or_default().merge(*gauge);
+        }
+        for (&name, maximum) in &other.maxima {
+            self.maxima.entry(name).or_default().merge(*maximum);
+        }
+        for (&name, timestamp) in &other.timestamps {
+            self.timestamps.entry(name).or_default().merge(*timestamp);
+        }
+        for (&name, flag) in &other.flags {
+            self.flags.entry(name).or_default().merge(*flag);
+        }
+        self.no_scans.merge(other.no_scans);
+        self.state_severity = match (self.state_severity, other.state_severity) {
+            (Some(left), Some(right)) => Some(left.max(right)),
+            _ => None,
+        };
+        if let Some(timestamp) = other.tablespace_label_timestamp
+            && let Some(label) = other.texts.get("tablespace")
+        {
+            self.update_tablespace_label(timestamp, label.clone());
+        }
+    }
+
+    fn update_tablespace_label(&mut self, timestamp: i64, label: String) {
+        let replace = self.tablespace_label_timestamp.is_none_or(|known| {
+            timestamp > known
+                || timestamp == known
+                    && self
+                        .texts
+                        .get("tablespace")
+                        .is_none_or(|current| label.as_bytes() < current.as_bytes())
+        });
+        if replace {
+            self.tablespace_label_timestamp = Some(timestamp);
+            self.texts.insert("tablespace", label);
+        }
     }
 
     fn add_table(
@@ -1079,7 +1358,13 @@ impl Aggregate {
             (None, Some(value)) if self.count == 1 => Some(value),
             _ => None,
         };
-        for name in ["indexrelname", "relname", "tablespace", "amname"] {
+        for name in [
+            "indexrelname",
+            "relname",
+            "tablespace",
+            "amname",
+            "indexdef",
+        ] {
             if let Some(value) = text_cell(row.get(name), dictionary)? {
                 self.texts.entry(name).or_insert(value);
             }
@@ -1101,6 +1386,54 @@ impl Aggregate {
                     .is_some_and(|metric| metric_is_zero(&metric)),
                 _ => false,
             })
+    }
+
+    fn matches_result_search(
+        &self,
+        kind: RelationKind,
+        group: RelationGroup,
+        search: Option<&super::StructuredSearch>,
+    ) -> bool {
+        search.is_none_or(|search| {
+            if group == RelationGroup::Object {
+                search.matches_all(|clause| self.matches_search_clause(kind, group, clause))
+            } else {
+                search.matches_result(|clause| self.matches_search_clause(kind, group, clause))
+            }
+        })
+    }
+
+    fn matches_search_clause(
+        &self,
+        kind: RelationKind,
+        group: RelationGroup,
+        clause: &SearchClause,
+    ) -> bool {
+        if let SearchValue::Quantity(quantity) = &clause.value {
+            let Some(result) = result_field(kind.logical_name(), clause.key) else {
+                return false;
+            };
+            return self
+                .metric(kind, group, result.metric)
+                .is_some_and(|metric| metric.matches_quantity(clause.operator, quantity));
+        }
+        let Some(field) = search_fields(kind.logical_name())
+            .iter()
+            .find(|field| field.key == clause.key)
+        else {
+            return false;
+        };
+        field.columns.iter().any(|column| {
+            self.texts
+                .get(column)
+                .map(String::as_str)
+                .or_else(|| self.key.search_text(column))
+                .is_some_and(|stored| match &clause.value {
+                    SearchValue::Identifier(wanted) => stored == wanted,
+                    SearchValue::Pattern(pattern) => pattern.matches(stored),
+                    SearchValue::Quantity(_) => false,
+                })
+        })
     }
 
     #[expect(
@@ -1126,7 +1459,9 @@ impl Aggregate {
             return Some(Metric::Integer(maximum));
         }
         if let Some(value) = self.texts.get(name) {
-            return (group == RelationGroup::Object).then(|| Metric::Text(value.clone()));
+            return (group == RelationGroup::Object
+                || group == RelationGroup::Tablespace && name == "tablespace")
+                .then(|| Metric::Text(value.clone()));
         }
         if let Some(value) = self.identifiers.get(name) {
             return (group == RelationGroup::Object).then_some(Metric::Integer(*value));
@@ -1458,6 +1793,90 @@ enum Metric {
 }
 
 impl Metric {
+    fn matches_quantity(&self, operator: SearchOperator, quantity: &Quantity) -> bool {
+        let Some(ordering) = self.quantity_ordering(quantity) else {
+            return false;
+        };
+        match operator {
+            SearchOperator::Greater => ordering == Ordering::Greater,
+            SearchOperator::Less => ordering == Ordering::Less,
+            SearchOperator::Colon => false,
+        }
+    }
+
+    fn quantity_ordering(&self, quantity: &Quantity) -> Option<Ordering> {
+        let ordering = match self {
+            Self::Number(OrderedNumber::Integer(value)) | Self::Integer(value) => {
+                let value = u128::try_from(*value).ok()?;
+                compare_u128_ratios(value, 1, quantity.numerator, quantity.denominator)
+            }
+            Self::Number(OrderedNumber::Float(value)) => compare_float(*value, quantity)?,
+            Self::Rate(value) => match value {
+                RateValue::Exact {
+                    numerator,
+                    denominator,
+                } => compare_products(
+                    &[*numerator, 1_000_000, quantity.denominator],
+                    &[*denominator, quantity.numerator],
+                ),
+                RateValue::Float(value) => compare_float(*value * 1_000_000.0, quantity)?,
+            },
+            Self::RateRatio {
+                numerator,
+                denominator,
+                scale,
+            } => match (*numerator, *denominator) {
+                (
+                    RateValue::Exact {
+                        numerator,
+                        denominator: numerator_denominator,
+                    },
+                    RateValue::Exact {
+                        numerator: denominator_numerator,
+                        denominator: denominator_denominator,
+                    },
+                ) if denominator_numerator > 0 => compare_products(
+                    &[
+                        numerator,
+                        denominator_denominator,
+                        exact_scale(*scale)?,
+                        quantity.denominator,
+                    ],
+                    &[
+                        numerator_denominator,
+                        denominator_numerator,
+                        quantity.numerator,
+                    ],
+                ),
+                _ => compare_float(
+                    numerator.per_microsecond() / denominator.per_microsecond() * scale,
+                    quantity,
+                )?,
+            },
+            Self::Ratio {
+                numerator,
+                denominator,
+                scale,
+            } => match (*numerator, *denominator) {
+                (OrderedNumber::Integer(numerator), OrderedNumber::Integer(denominator))
+                    if numerator >= 0 && denominator > 0 =>
+                {
+                    compare_products(
+                        &[
+                            u128::try_from(numerator).ok()?,
+                            exact_scale(*scale)?,
+                            quantity.denominator,
+                        ],
+                        &[u128::try_from(denominator).ok()?, quantity.numerator],
+                    )
+                }
+                _ => compare_float(numerator.as_f64() / denominator.as_f64() * scale, quantity)?,
+            },
+            Self::Timestamp(_) | Self::Boolean(_) | Self::Text(_) => return None,
+        };
+        Some(ordering)
+    }
+
     fn json(&self) -> Value {
         match self {
             Self::Number(OrderedNumber::Integer(value)) | Self::Integer(value) => {
@@ -1519,6 +1938,74 @@ impl Metric {
     }
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "floating comparison is used only when the authoritative reducer is already inexact"
+)]
+fn compare_float(value: f64, quantity: &Quantity) -> Option<Ordering> {
+    let threshold = quantity.numerator as f64 / quantity.denominator as f64;
+    (value.is_finite() && threshold.is_finite()).then(|| value.total_cmp(&threshold))
+}
+
+const fn exact_scale(scale: f64) -> Option<u128> {
+    match scale.to_bits() {
+        bits if bits == 1.0_f64.to_bits() => Some(1),
+        bits if bits == 100.0_f64.to_bits() => Some(100),
+        _ => None,
+    }
+}
+
+/// Compare products without overflowing. Limbs use base 2^32 so each multiply
+/// and carry fits in `u64`, even when each input factor spans all of `u128`.
+fn compare_products(left: &[u128], right: &[u128]) -> Ordering {
+    let left = product_limbs(left);
+    let right = product_limbs(right);
+    left.len().cmp(&right.len()).then_with(|| left.cmp(&right))
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "each cast deliberately selects one base-2^32 limb after shifting"
+)]
+fn product_limbs(factors: &[u128]) -> Vec<u32> {
+    let mut product = vec![1_u32];
+    for factor in factors {
+        let digits = [
+            *factor as u32,
+            (*factor >> 32) as u32,
+            (*factor >> 64) as u32,
+            (*factor >> 96) as u32,
+        ];
+        let mut multiplied = vec![0_u32; product.len() + digits.len()];
+        for (left_index, left) in product.iter().copied().enumerate() {
+            let mut carry = 0_u64;
+            for (right_index, right) in digits.iter().copied().enumerate() {
+                let index = left_index + right_index;
+                let value =
+                    u64::from(multiplied[index]) + u64::from(left) * u64::from(right) + carry;
+                multiplied[index] = value as u32;
+                carry = value >> 32;
+            }
+            let mut index = left_index + digits.len();
+            while carry > 0 {
+                let value = u64::from(multiplied[index]) + carry;
+                multiplied[index] = value as u32;
+                carry = value >> 32;
+                index += 1;
+                if index == multiplied.len() && carry > 0 {
+                    multiplied.push(0);
+                }
+            }
+        }
+        while multiplied.len() > 1 && multiplied.last() == Some(&0) {
+            multiplied.pop();
+        }
+        product = multiplied;
+    }
+    product.reverse();
+    product
+}
+
 fn finite_json(value: f64) -> Value {
     if value.is_finite() {
         json!(value)
@@ -1567,6 +2054,11 @@ pub(super) fn stream_history(
     )?;
     if fields.is_empty() || request.type_id.is_some() {
         return Err(ApiError::BadFilter("group".to_owned()));
+    }
+    if group == RelationGroup::Tablespace {
+        return stream_tablespace_history(
+            reader, listed, window, request, kind, &fields, emit, cancelled,
+        );
     }
     let datid = history_datid(group, &request.filters)?;
     let Some((from, to)) = window.from.zip(window.to) else {
@@ -1676,6 +2168,594 @@ pub(super) fn stream_history(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the exact cluster-wide stream keeps its source window and output explicit"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the cross-database as-of reducer keeps scan and emission state adjacent"
+)]
+fn stream_tablespace_history(
+    reader: &Reader,
+    listed: &[SegmentRef],
+    window: Window,
+    request: &SeriesRequest,
+    kind: RelationKind,
+    fields: &[String],
+    emit: &mut impl FnMut(Vec<u8>) -> bool,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(), ApiError> {
+    let tablespace_oid = history_tablespace_oid(&request.filters)?;
+    let section = SectionPlans {
+        logical_name: request.section.clone(),
+        plans: Vec::new(),
+    };
+    if cancelled()
+        || !emit(relation_layout(
+            &section,
+            kind,
+            RelationGroup::Tablespace,
+            fields,
+        )?)
+    {
+        return Ok(());
+    }
+    let Some((from, to)) = window.from.zip(window.to) else {
+        return Ok(());
+    };
+    let (refs, datids) =
+        tablespace_history_segments(reader, listed, &request.section, from, to, cancelled)?;
+    if datids.is_empty() || cancelled() {
+        return Ok(());
+    }
+    let physical_fields = history_physical_fields(kind, RelationGroup::Tablespace, fields);
+    let mut sources = Vec::with_capacity(refs.len());
+    for segment_ref in refs {
+        if cancelled() {
+            return Ok(());
+        }
+        let segment = reader.open_segment(&segment_ref)?;
+        let projected = physical_fields
+            .iter()
+            .filter(|name| {
+                segment
+                    .layouts(&request.section)
+                    .filter_map(|(type_id, _section)| contract(type_id))
+                    .any(|layout| layout.column(name).is_some())
+            })
+            .cloned()
+            .collect();
+        let data = DataRequest {
+            segment: SegmentRequest {
+                segment_id: segment_ref.id(),
+                section: request.section.clone(),
+            },
+            fields: projected,
+            filters: Vec::new(),
+            type_id: None,
+            after: None,
+        };
+        match plans(&segment, &data, true) {
+            Ok(plans) => sources.push(HistorySegment {
+                segment: segment_ref,
+                plans,
+            }),
+            Err(ApiError::NoSuchSection) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    let selected =
+        selected_tablespace_history_layouts(reader, &sources, &datids, from, to, cancelled)?;
+    let mut previous = BTreeMap::<(u32, Vec<super::IdentityCell>), HistoryPrevious>::new();
+    let mut contributions = BTreeMap::<(i64, u32), Aggregate>::new();
+    let mut event_sources = BTreeMap::<(i64, u32), Source>::new();
+    for source in &sources {
+        if cancelled() {
+            return Ok(());
+        }
+        let segment = reader.open_segment(&source.segment)?;
+        for plan in &source.plans {
+            scan_tablespace_history_plan(
+                &segment,
+                plan,
+                kind,
+                tablespace_oid,
+                to,
+                &datids,
+                &selected,
+                &mut previous,
+                &mut contributions,
+                &mut event_sources,
+                cancelled,
+            )?;
+            if cancelled() {
+                return Ok(());
+            }
+        }
+    }
+    let mut current = BTreeMap::<u32, Aggregate>::new();
+    let events = selected.keys().copied().collect::<Vec<_>>();
+    let mut cursor = 0;
+    let mut emitted_segment = None;
+    while cursor < events.len() {
+        let timestamp = events[cursor].0;
+        let mut event_source = None;
+        while cursor < events.len() && events[cursor].0 == timestamp {
+            let event = events[cursor];
+            if let Some(aggregate) = contributions.remove(&event) {
+                current.insert(event.1, aggregate);
+            } else {
+                current.remove(&event.1);
+            }
+            if let Some(source) = event_sources.get(&event).copied() {
+                event_source = Some(event_source.map_or(source, |known: Source| known.min(source)));
+            }
+            cursor += 1;
+        }
+        if timestamp < from || timestamp > to {
+            continue;
+        }
+        let Some(mut aggregate) = current.values().next().cloned() else {
+            continue;
+        };
+        for member in current.values().skip(1) {
+            aggregate.merge(member);
+        }
+        let Some(mut source) = event_source else {
+            continue;
+        };
+        source.timestamp = timestamp;
+        aggregate.source = source;
+        aggregate.to = Some(timestamp);
+        if emitted_segment != Some(source.segment_id) {
+            emitted_segment = Some(source.segment_id);
+            if !emit(record(json!({
+                "record": "series_segment",
+                "segment": { "id": source.segment_id.to_string() },
+            }))?) {
+                return Ok(());
+            }
+        }
+        let metrics = fields
+            .iter()
+            .map(|name| {
+                (
+                    name.clone(),
+                    aggregate.metric(kind, RelationGroup::Tablespace, name),
+                )
+            })
+            .collect();
+        let row = RelationRow {
+            key: aggregate.key,
+            metrics,
+            sort: None,
+            source,
+            from: aggregate.from,
+            to: aggregate.to,
+        };
+        if cancelled()
+            || !emit(relation_record(
+                &section,
+                kind,
+                RelationGroup::Tablespace,
+                &row,
+                false,
+            )?)
+        {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+fn history_tablespace_oid(filters: &[Filter]) -> Result<u32, ApiError> {
+    if filters.len() != 1 || filters[0].column != "tablespace_oid" {
+        return Err(ApiError::BadFilter("where".to_owned()));
+    }
+    filters[0]
+        .value
+        .parse::<u32>()
+        .ok()
+        .filter(|oid| *oid != 0)
+        .ok_or_else(|| ApiError::BadFilter("tablespace_oid".to_owned()))
+}
+
+fn tablespace_history_segments(
+    reader: &Reader,
+    listed: &[SegmentRef],
+    logical_name: &str,
+    from: i64,
+    to: i64,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(Vec<SegmentRef>, HashSet<u32>), ApiError> {
+    let has_section = |segment: &SegmentRef| {
+        segment
+            .sections()
+            .iter()
+            .any(|section| logical_section_name(section.type_id) == Some(logical_name))
+    };
+    let mut selected = listed
+        .iter()
+        .filter(|segment| {
+            has_section(segment) && segment.max_ts() >= from && segment.min_ts() <= to
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut predecessors = BTreeMap::<(u32, u32), Vec<i64>>::new();
+    for segment_ref in &selected {
+        collect_tablespace_moments(
+            reader,
+            segment_ref,
+            logical_name,
+            from,
+            to,
+            true,
+            &mut predecessors,
+            cancelled,
+        )?;
+    }
+    for segment_ref in &selected {
+        collect_tablespace_moments(
+            reader,
+            segment_ref,
+            logical_name,
+            from,
+            to,
+            false,
+            &mut predecessors,
+            cancelled,
+        )?;
+    }
+    let required = predecessors.keys().copied().collect::<Vec<_>>();
+    let selected_ids = selected.iter().map(SegmentRef::id).collect::<HashSet<_>>();
+    let mut candidates = listed
+        .iter()
+        .filter(|segment| {
+            has_section(segment) && segment.min_ts() < from && !selected_ids.contains(&segment.id())
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_unstable_by_key(|segment| (segment.max_ts(), segment.id()));
+    for candidate in candidates.into_iter().rev() {
+        if cancelled()
+            || required.iter().all(|pair| {
+                predecessors
+                    .get(pair)
+                    .is_some_and(|moments| moments.len() >= 2)
+            })
+        {
+            break;
+        }
+        let changed = collect_tablespace_moments(
+            reader,
+            candidate,
+            logical_name,
+            from,
+            to,
+            false,
+            &mut predecessors,
+            cancelled,
+        )?;
+        if changed {
+            selected.push((*candidate).clone());
+        }
+    }
+    selected.sort_unstable_by_key(SegmentRef::id);
+    selected.dedup_by_key(|segment| segment.id());
+    let datids = required
+        .into_iter()
+        .map(|(datid, _type_id)| datid)
+        .collect();
+    Ok((selected, datids))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "moment discovery keeps its exact time bounds and predecessor state explicit"
+)]
+fn collect_tablespace_moments(
+    reader: &Reader,
+    segment_ref: &SegmentRef,
+    logical_name: &str,
+    from: i64,
+    to: i64,
+    discover: bool,
+    moments: &mut BTreeMap<(u32, u32), Vec<i64>>,
+    cancelled: &impl Fn() -> bool,
+) -> Result<bool, ApiError> {
+    let segment = reader.open_segment(segment_ref)?;
+    let mut changed = false;
+    for (type_id, _section) in segment.layouts(logical_name) {
+        let Some(timestamp) = contract(type_id).and_then(|layout| {
+            layout
+                .columns
+                .iter()
+                .find(|column| column.class == kronika_registry::ColumnClass::Timestamp)
+                .map(|column| column.name)
+        }) else {
+            continue;
+        };
+        segment.visit_rows(
+            type_id,
+            &[timestamp, "datid"],
+            0,
+            usize::MAX,
+            |_ordinal, row| {
+                if cancelled() {
+                    return false;
+                }
+                let (Some(datid), Some(stored)) = (
+                    unsigned_cell(row.get("datid")),
+                    timestamp_cell(row.get(timestamp)),
+                ) else {
+                    return true;
+                };
+                let key = (datid, type_id);
+                if discover && (from..=to).contains(&stored) {
+                    moments.entry(key).or_default();
+                }
+                if stored < from
+                    && let Some(known) = moments.get_mut(&key)
+                    && !known.contains(&stored)
+                {
+                    known.push(stored);
+                    known.sort_unstable_by(|left, right| right.cmp(left));
+                    known.truncate(2);
+                    changed = true;
+                }
+                true
+            },
+        )?;
+    }
+    Ok(changed)
+}
+
+fn selected_tablespace_history_layouts(
+    reader: &Reader,
+    sources: &[HistorySegment],
+    datids: &HashSet<u32>,
+    from: i64,
+    to: i64,
+    cancelled: &impl Fn() -> bool,
+) -> Result<BTreeMap<(i64, u32), HistoryMoment>, ApiError> {
+    let mut by_layout = BTreeMap::<(u32, u32), std::collections::BTreeSet<i64>>::new();
+    for source in sources {
+        if cancelled() {
+            break;
+        }
+        let segment = reader.open_segment(&source.segment)?;
+        for plan in &source.plans {
+            let Some(timestamp) = plan.timestamp else {
+                continue;
+            };
+            #[cfg(test)]
+            HISTORY_SELECTION_VISITS.set(HISTORY_SELECTION_VISITS.get().saturating_add(1));
+            segment.visit_rows(
+                plan.type_id,
+                &[timestamp, "datid"],
+                0,
+                usize::MAX,
+                |_ordinal, row| {
+                    let (Some(datid), Some(stored)) = (
+                        unsigned_cell(row.get("datid")),
+                        timestamp_cell(row.get(timestamp)),
+                    ) else {
+                        return !cancelled();
+                    };
+                    if datids.contains(&datid) && stored <= to {
+                        by_layout
+                            .entry((datid, plan.type_id))
+                            .or_default()
+                            .insert(stored);
+                    }
+                    !cancelled()
+                },
+            )?;
+        }
+    }
+    let mut selected = BTreeMap::<(i64, u32), HistoryMoment>::new();
+    let mut seeds = BTreeMap::<u32, (i64, HistoryMoment)>::new();
+    for ((datid, type_id), moments) in &by_layout {
+        let mut previous = None;
+        for timestamp in moments {
+            let candidate = HistoryMoment {
+                type_id: *type_id,
+                previous,
+            };
+            if (from..=to).contains(timestamp) {
+                selected
+                    .entry((*timestamp, *datid))
+                    .and_modify(|chosen| {
+                        if candidate.type_id > chosen.type_id {
+                            *chosen = candidate;
+                        }
+                    })
+                    .or_insert(candidate);
+            } else if *timestamp < from {
+                seeds
+                    .entry(*datid)
+                    .and_modify(|chosen| {
+                        if *timestamp > chosen.0
+                            || *timestamp == chosen.0 && candidate.type_id > chosen.1.type_id
+                        {
+                            *chosen = (*timestamp, candidate);
+                        }
+                    })
+                    .or_insert((*timestamp, candidate));
+            }
+            previous = Some(*timestamp);
+        }
+    }
+    for (datid, (timestamp, moment)) in seeds {
+        selected.insert((timestamp, datid), moment);
+    }
+    Ok(selected)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one scan keeps exact object predecessors, event membership, and source coordinates"
+)]
+fn scan_tablespace_history_plan(
+    segment: &Segment,
+    plan: &Plan,
+    kind: RelationKind,
+    tablespace_oid: u32,
+    to: i64,
+    datids: &HashSet<u32>,
+    selected: &BTreeMap<(i64, u32), HistoryMoment>,
+    previous: &mut BTreeMap<(u32, Vec<super::IdentityCell>), HistoryPrevious>,
+    contributions: &mut BTreeMap<(i64, u32), Aggregate>,
+    event_sources: &mut BTreeMap<(i64, u32), Source>,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(), ApiError> {
+    if plan.timestamp.is_none() {
+        return Ok(());
+    }
+    #[cfg(test)]
+    HISTORY_SOURCE_VISITS.set(HISTORY_SOURCE_VISITS.get().saturating_add(1));
+    let counters = rate_columns(plan);
+    let mut chunk = Vec::with_capacity(super::SNAPSHOT_CHUNK_ROWS);
+    let mut failure = None;
+    segment.visit_rows(
+        plan.type_id,
+        &plan.projection,
+        0,
+        usize::MAX,
+        |ordinal, row| {
+            chunk.push((ordinal, row));
+            if chunk.len() == super::SNAPSHOT_CHUNK_ROWS
+                && let Err(error) = process_tablespace_history_chunk(
+                    segment,
+                    plan,
+                    kind,
+                    tablespace_oid,
+                    to,
+                    datids,
+                    selected,
+                    &counters,
+                    previous,
+                    contributions,
+                    event_sources,
+                    &mut chunk,
+                )
+            {
+                failure = Some(error);
+                return false;
+            }
+            !cancelled()
+        },
+    )?;
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    if !cancelled() && !chunk.is_empty() {
+        process_tablespace_history_chunk(
+            segment,
+            plan,
+            kind,
+            tablespace_oid,
+            to,
+            datids,
+            selected,
+            &counters,
+            previous,
+            contributions,
+            event_sources,
+            &mut chunk,
+        )?;
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the bounded chunk shares exact predecessor and per-database aggregate state"
+)]
+fn process_tablespace_history_chunk(
+    segment: &Segment,
+    plan: &Plan,
+    kind: RelationKind,
+    tablespace_oid: u32,
+    to: i64,
+    datids: &HashSet<u32>,
+    selected: &BTreeMap<(i64, u32), HistoryMoment>,
+    counters: &[&'static str],
+    previous: &mut BTreeMap<(u32, Vec<super::IdentityCell>), HistoryPrevious>,
+    contributions: &mut BTreeMap<(i64, u32), Aggregate>,
+    event_sources: &mut BTreeMap<(i64, u32), Source>,
+    chunk: &mut Vec<(u64, Row)>,
+) -> Result<(), ApiError> {
+    let dictionary = query::chunk_dictionary(segment, chunk)?;
+    for (ordinal, row) in chunk.drain(..) {
+        let (Some(datid), Some(timestamp), Some(identity)) = (
+            unsigned_cell(row.get("datid")),
+            plan.timestamp
+                .and_then(|name| timestamp_cell(row.get(name))),
+            identity_of(plan, &row),
+        ) else {
+            continue;
+        };
+        if !datids.contains(&datid) || timestamp > to {
+            continue;
+        }
+        let history_key = (plan.type_id, identity);
+        let before = previous.get(&history_key);
+        if before.is_some_and(|stored| stored.timestamp >= timestamp) {
+            continue;
+        }
+        let event = (timestamp, datid);
+        let moment = selected.get(&event).copied();
+        let required_previous = moment
+            .filter(|moment| moment.type_id == plan.type_id)
+            .and_then(|moment| moment.previous);
+        let elapsed = required_previous
+            .and_then(|stored| timestamp.checked_sub(stored))
+            .filter(|elapsed| *elapsed > 0);
+        let exact_before = before.filter(|stored| Some(stored.timestamp) == required_previous);
+        if moment.is_some_and(|moment| moment.type_id == plan.type_id) {
+            let source = Source {
+                segment_id: segment.id(),
+                context_index: 0,
+                ordinal,
+                type_id: plan.type_id,
+                timestamp,
+            };
+            event_sources
+                .entry(event)
+                .and_modify(|known| *known = (*known).min(source))
+                .or_insert(source);
+            if unsigned_cell(row.get("tablespace_oid")) == Some(tablespace_oid) {
+                let key = GroupKey::Tablespace { tablespace_oid };
+                contributions
+                    .entry(event)
+                    .or_insert_with(|| Aggregate::new(key, source))
+                    .add(
+                        kind,
+                        plan,
+                        &row,
+                        exact_before.map(|stored| &stored.readings),
+                        elapsed,
+                        &dictionary,
+                        source,
+                    )?;
+            }
+        }
+        let readings = counters
+            .iter()
+            .filter_map(|name| row.get(name).cloned().map(|value| (*name, value)))
+            .collect();
+        previous.insert(
+            history_key,
+            HistoryPrevious {
+                timestamp,
+                readings,
+            },
+        );
+    }
+    Ok(())
+}
+
 fn history_physical_fields(
     kind: RelationKind,
     group: RelationGroup,
@@ -1685,6 +2765,7 @@ fn history_physical_fields(
     let keys: &[&str] = match group {
         RelationGroup::Database => &["datid", "datname"],
         RelationGroup::Schema => &["datid", "datname", "schemaname"],
+        RelationGroup::Tablespace => &["datid", "tablespace_oid", "tablespace"],
         RelationGroup::Object => &[],
     };
     names.extend(keys.iter().copied());
@@ -1773,7 +2854,9 @@ fn history_datid(group: RelationGroup, filters: &[Filter]) -> Result<u32, ApiErr
     let required: &[&str] = match group {
         RelationGroup::Database => &["datid"],
         RelationGroup::Schema => &["datid", "schemaname"],
-        RelationGroup::Object => return Err(ApiError::BadFilter("group".to_owned())),
+        RelationGroup::Tablespace | RelationGroup::Object => {
+            return Err(ApiError::BadFilter("group".to_owned()));
+        }
     };
     if filters.len() != required.len()
         || required
@@ -2180,6 +3263,9 @@ impl PreparedSnapshot {
                 return Ok(());
             }
         }
+        aggregates.retain(|_key, aggregate| {
+            aggregate.matches_result_search(kind, group, self.search.as_deref())
+        });
         let eligible = u64::try_from(aggregates.len()).unwrap_or(u64::MAX);
         let order_by = self.by.first().map(|name| sort_name(name));
         let mut rows = aggregates
@@ -2315,13 +3401,17 @@ fn scan_context(
         for (ordinal, row) in chunk {
             if !context.window.matches(&row)
                 || !context.plan.matches(&row, &dictionary)
-                || (!prepared.search.is_empty()
-                    && !search_matches(
-                        &row,
-                        &dictionary,
-                        &context.search_columns,
-                        &prepared.search,
-                    ))
+                || (group != RelationGroup::Object
+                    && prepared.search.as_ref().is_some_and(|search| {
+                        !search_matches(
+                            kind.logical_name(),
+                            context.plan,
+                            &row,
+                            &dictionary,
+                            None,
+                            search,
+                        )
+                    }))
             {
                 continue;
             }
@@ -2366,7 +3456,14 @@ fn scan_context(
                     continue;
                 }
             }
-            let key = object_key.for_group(kind, group);
+            let key = if group == RelationGroup::Tablespace {
+                let Some(key) = GroupKey::from_row(kind, group, &row, &dictionary)? else {
+                    continue;
+                };
+                key
+            } else {
+                object_key.for_group(kind, group)
+            };
             aggregates
                 .entry(key.clone())
                 .or_insert_with(|| Aggregate::new(key, source))
@@ -2543,6 +3640,7 @@ const fn group_name(group: RelationGroup) -> &'static str {
     match group {
         RelationGroup::Database => "database",
         RelationGroup::Schema => "schema",
+        RelationGroup::Tablespace => "tablespace",
         RelationGroup::Object => "object",
     }
 }
@@ -2572,6 +3670,7 @@ const fn key_fields(kind: RelationKind, group: RelationGroup) -> &'static [&'sta
     match (kind, group) {
         (_, RelationGroup::Database) => &["datid", "datname"],
         (_, RelationGroup::Schema) => &["datid", "datname", "schemaname"],
+        (_, RelationGroup::Tablespace) => &["tablespace_oid"],
         (RelationKind::Tables, RelationGroup::Object) => {
             &["datid", "datname", "schemaname", "relid", "relname"]
         }
@@ -2591,15 +3690,37 @@ const fn key_fields(kind: RelationKind, group: RelationGroup) -> &'static [&'sta
 mod tests {
     use super::*;
 
+    #[test]
+    fn exact_product_comparison_orders_different_limb_lengths() {
+        assert_eq!(
+            compare_products(&[100, 1_000_000], &[1_048_575, 1_000_000]),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_products(&[u128::MAX, u128::MAX], &[u128::MAX, u128::MAX - 1]),
+            Ordering::Greater
+        );
+    }
+
     fn key(datid: u32) -> GroupKey {
-        GroupKey {
+        GroupKey::Index {
             datid,
             datname: format!("db{datid}"),
-            schemaname: Some("public".to_owned()),
-            relid: Some(10 + datid),
-            relname: Some(format!("table{datid}")),
-            indexrelid: Some(20 + datid),
-            indexrelname: Some(format!("index{datid}")),
+            schemaname: "public".to_owned(),
+            relid: 10 + datid,
+            relname: format!("table{datid}"),
+            indexrelid: 20 + datid,
+            indexrelname: format!("index{datid}"),
+        }
+    }
+
+    fn table_key(datid: u32) -> GroupKey {
+        GroupKey::Table {
+            datid,
+            datname: format!("db{datid}"),
+            schemaname: "public".to_owned(),
+            relid: 10 + datid,
+            relname: format!("table{datid}"),
         }
     }
 
@@ -2608,7 +3729,7 @@ mod tests {
             segment_id: 7,
             context_index,
             ordinal,
-            type_id: 1_014_002,
+            type_id: 1_014_004,
             timestamp: 42,
         }
     }
@@ -2658,7 +3779,8 @@ mod tests {
             group: Some(RelationGroup::Object),
             page_size: Some(200),
             cursor: None,
-            search: Vec::new(),
+            search: None,
+            first_match: false,
             text: None,
             filters: vec![Filter {
                 column: "no_scans".to_owned(),
@@ -2708,8 +3830,40 @@ mod tests {
     }
 
     #[test]
+    fn tablespace_oid_filter_requires_a_nonzero_u32() {
+        let mut request = SnapshotRequest {
+            segment_id: 1,
+            at: 2,
+            sections: vec![TABLES.to_owned()],
+            fields: Vec::new(),
+            by: Vec::new(),
+            direction: Order::Asc,
+            group: Some(RelationGroup::Object),
+            page_size: Some(200),
+            cursor: None,
+            search: None,
+            first_match: false,
+            text: None,
+            filters: vec![Filter {
+                column: "tablespace_oid".to_owned(),
+                value: u32::MAX.to_string(),
+            }],
+            type_id: None,
+            row_ordinal: None,
+        };
+        assert_eq!(split_filters(&request).unwrap().0, request.filters);
+        for value in ["0", "4294967296", "not-an-oid"] {
+            request.filters[0].value = value.to_owned();
+            assert!(matches!(
+                split_filters(&request),
+                Err(ApiError::BadFilter(name)) if name == "tablespace_oid"
+            ));
+        }
+    }
+
+    #[test]
     fn object_keys_are_minimal_and_display_identity_is_a_value() {
-        let table_key = key(7).json(RelationKind::Tables, RelationGroup::Object);
+        let table_key = table_key(7).json(RelationKind::Tables, RelationGroup::Object);
         assert_eq!(
             table_key
                 .as_object()
@@ -2765,7 +3919,10 @@ mod tests {
     fn database_schema_and_object_keys_keep_database_scope() {
         let first = key(1);
         let second = key(2);
-        assert_eq!(first.schemaname, second.schemaname);
+        assert_eq!(
+            first.metric("schemaname").unwrap().json(),
+            second.metric("schemaname").unwrap().json()
+        );
         assert_ne!(
             first, second,
             "the same schema name in two databases is distinct"
@@ -2819,6 +3976,10 @@ mod tests {
                 .any(|field| field.name == "toast_last_autovacuum_latest")
         );
         assert!(!table.iter().any(|field| field.name == "tablespace"));
+        assert_eq!(
+            RelationKind::Tables.fields(RelationGroup::Tablespace)[0].name,
+            "tablespace"
+        );
 
         let index = RelationKind::Indexes.fields(RelationGroup::Database);
         for name in [
@@ -2858,6 +4019,10 @@ mod tests {
             );
         }
         assert!(!index.iter().any(|field| field.name == "indisvalid"));
+        assert_eq!(
+            RelationKind::Indexes.fields(RelationGroup::Tablespace)[0].name,
+            "tablespace"
+        );
     }
 
     #[test]
@@ -3030,6 +4195,196 @@ mod tests {
                     "toast_buffer_hit_pct"
                 )
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn strict_size_comparisons_use_the_authoritative_reducer_and_exact_boundaries() {
+        let search = |expression: &str, surface: &str| {
+            super::super::StructuredSearch::parse(expression, surface)
+                .expect("valid size comparison")
+        };
+        let mut table = aggregate();
+        table.gauges.insert(
+            "main_fork_bytes",
+            Availability::Value(OrderedNumber::Integer(80_000_000)),
+        );
+        table.gauges.insert(
+            "toast_bytes",
+            Availability::Value(OrderedNumber::Integer(25_000_000)),
+        );
+        assert!(table.matches_result_search(
+            RelationKind::Tables,
+            RelationGroup::Object,
+            Some(&search("size>100MB", TABLES)),
+        ));
+
+        table.gauges.insert(
+            "toast_bytes",
+            Availability::Value(OrderedNumber::Integer(20_000_000)),
+        );
+        for expression in ["size>100MB", "size<100MB", "size>100MiB"] {
+            assert!(!table.matches_result_search(
+                RelationKind::Tables,
+                RelationGroup::Object,
+                Some(&search(expression, TABLES)),
+            ));
+        }
+        for expression in ["size>99999999B", "size<100000001B"] {
+            assert!(table.matches_result_search(
+                RelationKind::Tables,
+                RelationGroup::Object,
+                Some(&search(expression, TABLES)),
+            ));
+        }
+
+        table
+            .gauges
+            .insert("toast_bytes", Availability::Unavailable);
+        assert!(!table.matches_result_search(
+            RelationKind::Tables,
+            RelationGroup::Object,
+            Some(&search("size>0B", TABLES)),
+        ));
+
+        let mut index = aggregate();
+        index.gauges.insert(
+            "main_fork_bytes",
+            Availability::Value(OrderedNumber::Integer(100_000_000)),
+        );
+        for expression in ["size>100MB", "size<100MB"] {
+            assert!(!index.matches_result_search(
+                RelationKind::Indexes,
+                RelationGroup::Object,
+                Some(&search(expression, INDEXES)),
+            ));
+        }
+        assert!(index.matches_result_search(
+            RelationKind::Indexes,
+            RelationGroup::Database,
+            Some(&search("size>99999999B", INDEXES)),
+        ));
+    }
+
+    #[test]
+    fn grouped_comparisons_run_after_sum_and_ratio_reducers() {
+        let parsed = super::super::StructuredSearch::parse("size>100MB AND buffer_hit>80%", TABLES)
+            .expect("valid grouped comparison");
+        let mut group = aggregate();
+        group.gauges.insert(
+            "main_fork_bytes",
+            Availability::Value(OrderedNumber::Integer(120_000_000)),
+        );
+        group.gauges.insert("toast_bytes", Availability::Empty);
+        for (name, delta) in [
+            ("heap_blks_hit", 90),
+            ("heap_blks_read", 10),
+            ("idx_blks_hit", 0),
+            ("idx_blks_read", 0),
+        ] {
+            let mut rate = RateAggregate::default();
+            add_rate(&mut rate, delta);
+            group.rates.insert(name, rate);
+        }
+        for name in [
+            "toast_blks_hit",
+            "toast_blks_read",
+            "tidx_blks_hit",
+            "tidx_blks_read",
+        ] {
+            group.rates.insert(name, RateAggregate::default());
+        }
+        assert!(group.matches_result_search(
+            RelationKind::Tables,
+            RelationGroup::Schema,
+            Some(&parsed),
+        ));
+        let rejected = super::super::StructuredSearch::parse("size>121MB", TABLES)
+            .expect("valid grouped comparison");
+        assert!(!group.matches_result_search(
+            RelationKind::Tables,
+            RelationGroup::Schema,
+            Some(&rejected),
+        ));
+        let post_or = super::super::StructuredSearch::parse("size>121MB OR buffer_hit>80%", TABLES)
+            .expect("valid post-reducer OR");
+        assert!(group.matches_result_search(
+            RelationKind::Tables,
+            RelationGroup::Schema,
+            Some(&post_or),
+        ));
+        let rejected_or =
+            super::super::StructuredSearch::parse("size>121MB OR buffer_hit<80%", TABLES)
+                .expect("valid post-reducer OR");
+        assert!(!group.matches_result_search(
+            RelationKind::Tables,
+            RelationGroup::Schema,
+            Some(&rejected_or),
+        ));
+    }
+
+    #[test]
+    fn object_search_evaluates_member_and_quantity_or_after_reduction() {
+        let mut object = aggregate();
+        object.gauges.insert(
+            "main_fork_bytes",
+            Availability::Value(OrderedNumber::Integer(120_000_000)),
+        );
+        object.gauges.insert("toast_bytes", Availability::Empty);
+        for (expression, matches) in [
+            ("schema:private OR size>100MB", true),
+            ("schema:public OR size>121MB", true),
+            ("schema:private OR size>121MB", false),
+            ("schema:public AND size>100MB", true),
+        ] {
+            let parsed = super::super::StructuredSearch::parse(expression, TABLES)
+                .expect("valid object boolean search");
+            assert_eq!(
+                object.matches_result_search(
+                    RelationKind::Tables,
+                    RelationGroup::Object,
+                    Some(&parsed),
+                ),
+                matches,
+                "{expression}"
+            );
+        }
+    }
+
+    #[test]
+    fn hidden_search_dependencies_are_exact_and_surface_scoped() {
+        let search =
+            super::super::StructuredSearch::parse("size>100MB AND autovacuum_mean<250ms", TABLES)
+                .expect("valid hidden comparison fields");
+        let physical = snapshot_physical_fields(
+            TABLES,
+            RelationGroup::Tablespace,
+            &["seq_scan".to_owned()],
+            &[],
+            Some(&search),
+        )
+        .expect("physical dependency closure");
+        for required in [
+            "datid",
+            "datname",
+            "schemaname",
+            "relid",
+            "relname",
+            "tablespace_oid",
+            "tablespace",
+            "seq_scan",
+            "main_fork_bytes",
+            "toast_bytes",
+            "total_autovacuum_time",
+            "autovacuum_count",
+        ] {
+            assert!(physical.iter().any(|field| field == required), "{required}");
+        }
+        assert!(!physical.iter().any(|field| field == "idx_scan"));
+        assert!(
+            !physical
+                .iter()
+                .any(|field| field == "displayed_storage_bytes")
         );
     }
 

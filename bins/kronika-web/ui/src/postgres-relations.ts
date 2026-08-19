@@ -2,7 +2,7 @@ import type { Cell, DataRow, SectionRequest, SnapshotOptions } from "./api"
 import { intervalMetric } from "./postgres-metrics"
 
 export const RELATION_SECTIONS = ["pg_stat_user_tables", "pg_stat_user_indexes"] as const
-export const RELATION_GROUPS = ["database", "schema", "object"] as const
+export const RELATION_GROUPS = ["database", "schema", "tablespace", "object"] as const
 export const TABLE_LENSES = ["access", "changes", "maintenance", "size_buffers", "freeze"] as const
 export const INDEX_LENSES = ["usage", "low_activity", "size_buffers", "state"] as const
 
@@ -212,16 +212,20 @@ export function relationDisplayFields(section: RelationSection, lensName: Relati
     ? ["datname"]
     : group === "schema"
       ? ["schemaname", "datname"]
+      : group === "tablespace"
+        ? ["tablespace"]
       : section === "pg_stat_user_tables"
         ? ["relname", "datname", "schemaname"]
         : ["indexrelname", "datname", "schemaname", "relname"]
   const spec = section === "pg_stat_user_tables"
     ? tableDisplayLenses[lensName as TableLens]
     : indexDisplayLenses[lensName as IndexLens]
+  if (group === "tablespace") return [...identity, spec.aggregate[1]!, spec.aggregate[0]!, ...spec.aggregate.slice(2)]
   return [...identity, ...(group === "object" ? spec.object : spec.aggregate)]
 }
 
 export function relationHelpKey(section: RelationSection, field: string): string | undefined {
+  if (/(?:^|_)blks_(?:read|hit)$/.test(field)) return "pg.help.relation.buffer_bytes"
   if (["seq_scan", "idx_scan"].includes(field)) return "pg.help.relation.scan_rate"
   if (field === "idx_tup_read") return "pg.help.relation.index_entries_rate"
   if (field === "idx_tup_fetch") return "pg.help.relation.rows_fetched_rate"
@@ -398,7 +402,7 @@ export function relationRowKey(row: DataRow): string {
 }
 
 export function isRelationId(field: string): boolean {
-  return field === "datid" || field === "relid" || field === "indexrelid"
+  return field === "datid" || field === "relid" || field === "indexrelid" || field === "tablespace_oid"
 }
 
 export function relationDetailTarget(row: DataRow): RelationDetailTarget {
@@ -419,9 +423,11 @@ export function relationDetailTarget(row: DataRow): RelationDetailTarget {
 export function relationDrill(row: DataRow): RelationNavigation | null {
   const relation = row.relation
   if (relation === undefined || relation.group === "object") return null
-  const filters = relation.group === "database"
-    ? { datid: scalarText(row.values.datid) }
-    : { datid: scalarText(row.values.datid), schemaname: scalarText(row.values.schemaname) }
+  const filters = relation.group === "tablespace"
+    ? { tablespace_oid: scalarText(row.values.tablespace_oid) }
+    : relation.group === "database"
+      ? { datid: scalarText(row.values.datid) }
+      : { datid: scalarText(row.values.datid), schemaname: scalarText(row.values.schemaname) }
   return { section: row.logicalName as RelationSection, group: relation.group === "database" ? "schema" : "object", filters, selectedKey: null }
 }
 
@@ -560,6 +566,7 @@ function identityFields(section: RelationSection, group: RelationGroup): readonl
   const count = section === "pg_stat_user_tables" ? "table_count" : "index_count"
   if (group === "database") return ["datname", "datid", count]
   if (group === "schema") return ["schemaname", "datname", "datid", count]
+  if (group === "tablespace") return ["tablespace", "tablespace_oid", count]
   return section === "pg_stat_user_tables"
     ? ["relname", "schemaname", "datname", "datid", "relid", "tablespace"]
     : ["indexrelname", "relname", "schemaname", "datname", "datid", "indexrelid", "relid", "tablespace", "amname"]
@@ -591,6 +598,8 @@ function relationKeyNames(section: RelationSection, group: RelationGroup): reado
     ? ["datid", "datname"]
     : group === "schema"
       ? ["datid", "datname", "schemaname"]
+      : group === "tablespace"
+        ? ["tablespace_oid"]
       : section === "pg_stat_user_tables"
         ? ["datid", "datname", "schemaname", "relid", "relname"]
         : ["datid", "datname", "schemaname", "relid", "relname", "indexrelid", "indexrelname"]

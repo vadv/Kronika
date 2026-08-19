@@ -11,6 +11,8 @@ pub struct CgroupCollection {
     pub io: Vec<CgroupIoRow>,
     /// PIDs rows.
     pub pids: Vec<CgroupPidsRow>,
+    /// The I/O section was omitted because its hard row ceiling was exceeded.
+    pub io_omitted: bool,
 }
 
 /// The collector process's own cgroup membership at one timestamp.
@@ -102,13 +104,13 @@ pub struct CgroupIoRow {
     /// Device minor number.
     pub minor: u32,
     /// Bytes read.
-    pub rbytes: i64,
+    pub rbytes: Option<i64>,
     /// Bytes written.
-    pub wbytes: i64,
+    pub wbytes: Option<i64>,
     /// Read operations.
-    pub rios: i64,
+    pub rios: Option<i64>,
     /// Write operations.
-    pub wios: i64,
+    pub wios: Option<i64>,
 }
 
 /// PID controller metrics for one cgroup.

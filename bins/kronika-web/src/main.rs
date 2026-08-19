@@ -40,7 +40,7 @@ use tokio::sync::{mpsc, oneshot};
 use api::{ApiError, CachePolicy};
 use body::{BodyError, BodyItem, BodyProducer, ChannelBody, StreamHead};
 use config::Config;
-use encoding::AcceptedEncodings;
+use encoding::{AcceptedEncodings, ContentCoding};
 use route::RouteError;
 
 type WebBody = UnsyncBoxBody<Bytes, BodyError>;
@@ -78,7 +78,11 @@ async fn answer(
     };
     let if_none_match = if_none_match_values(request.headers());
     Ok(match target {
-        RequestTarget::Ui { head } => ui::response(head, if_none_match.as_deref()),
+        RequestTarget::Ui { head, coding } => ui::response(head, if_none_match.as_deref(), coding)
+            .unwrap_or_else(|error| {
+                eprintln!("kronika-web: serve embedded interface: {error}");
+                failed()
+            }),
         RequestTarget::Session(session) => {
             session_response(&config.account, config.cookie_secure, session).unwrap_or_else(failed)
         }
@@ -107,11 +111,9 @@ fn route_request_at<B>(
         }
         let accepted = AcceptedEncodings::from_headers(request.headers())
             .ok_or(RequestError::UiEncodingNotAcceptable)?;
-        if !accepted.allows_gzip() {
-            return Err(RequestError::UiEncodingNotAcceptable);
-        }
         return Ok(RequestTarget::Ui {
             head: request.method() == Method::HEAD,
+            coding: accepted.for_ui(),
         });
     }
     if path == "/auth/session" && request.uri().query().is_none() {
@@ -155,6 +157,7 @@ fn route_request_at<B>(
 enum RequestTarget {
     Ui {
         head: bool,
+        coding: ContentCoding,
     },
     Session(SessionTarget),
     Api {
@@ -441,7 +444,7 @@ fn response_from_meta(head: StreamHead, receiver: mpsc::Receiver<BodyItem>) -> R
             HeaderValue::from_static("application/x-ndjson; charset=utf-8"),
         );
     }
-    if let Some(coding) = head.coding.and_then(encoding::ContentCoding::header) {
+    if let Some(coding) = head.coding.and_then(ContentCoding::header) {
         response
             .headers_mut()
             .insert(CONTENT_ENCODING, HeaderValue::from_static(coding));

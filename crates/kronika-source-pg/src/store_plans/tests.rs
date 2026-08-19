@@ -16,6 +16,7 @@ fn inventory(extversion: &str) -> InventoryEntry {
         store_plans_zero_arg: false,
         store_plans_bool_arg: false,
         store_plans_key_getter: false,
+        store_plans_text_converter: false,
         store_plans_ossc_columns: false,
         store_plans_vadv_columns: false,
         store_plans_datasentinel_columns: false,
@@ -157,7 +158,23 @@ fn exact_catalog_capabilities_not_extversion_select_the_interface() {
     let mut vadv = inventory("1.9");
     vadv.store_plans_bool_arg = true;
     vadv.store_plans_key_getter = true;
+    vadv.store_plans_text_converter = true;
     vadv.store_plans_vadv_columns = true;
+    assert_eq!(
+        capability(&vadv).map(|found| found.flavour),
+        Some(Flavour::Vadv)
+    );
+}
+
+#[test]
+fn vadv_requires_its_native_text_converter() {
+    let mut vadv = inventory("2.0");
+    vadv.store_plans_bool_arg = true;
+    vadv.store_plans_key_getter = true;
+    vadv.store_plans_vadv_columns = true;
+    assert!(capability(&vadv).is_none());
+
+    vadv.store_plans_text_converter = true;
     assert_eq!(
         capability(&vadv).map(|found| found.flavour),
         Some(Flavour::Vadv)
@@ -220,12 +237,12 @@ fn a_read_is_complete_schema_qualified_and_sorted_by_identity() {
 }
 
 #[test]
-fn vadv_uses_one_query_and_the_exact_four_key_plan_getter() {
+fn vadv_schema_qualifies_and_nests_the_native_text_path() {
     let sql = store_plans_query(&vadv_capability());
     assert!(sql.contains("\"pg_store_plans\"(false)"), "{sql}");
     assert!(
         sql.contains(
-            "\"pg_store_plans_get_plan\"(s.userid, s.dbid, s.queryid, s.planid), 65536) AS plan"
+            "left(\"plans schema\".\"pg_store_plans_textplan\"(\"plans schema\".\"pg_store_plans_get_plan\"(s.userid, s.dbid, s.queryid, s.planid)), 65536) AS plan"
         ),
         "{sql}"
     );
@@ -238,6 +255,7 @@ fn ossc_and_datasentinel_use_the_proved_zero_argument_interface() {
         let sql = store_plans_query(&capability);
         assert!(sql.contains("\"pg_store_plans\"()"), "{sql}");
         assert!(!sql.contains("pg_store_plans_get_plan"), "{sql}");
+        assert!(!sql.contains("pg_store_plans_textplan"), "{sql}");
     }
 }
 

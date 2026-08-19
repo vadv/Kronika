@@ -64,7 +64,7 @@ impl Default for Intervals {
             os_mount_topo: 60,
             os_processes: 5,
             os_process_status: 30,
-            os_cgroup: 10,
+            os_cgroup: 30,
             os_cgroup_mapping: 30,
             logs: 10,
             pg: 30,

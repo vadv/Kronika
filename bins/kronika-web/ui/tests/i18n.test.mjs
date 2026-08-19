@@ -24,6 +24,47 @@ test("locale validation checks key and placeholder parity", () => {
   )
 })
 
+test("PostgreSQL buffer and block metric labels stay canonical English in RU", async () => {
+  const [englishSource, russianSource] = await Promise.all([
+    readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8"),
+  ])
+  const english = parseDictionary(englishSource, "en.yaml")
+  const russian = parseDictionary(russianSource, "ru.yaml")
+  validateDictionaries(english, russian)
+  const keys = Object.keys(english).filter((key) => !key.startsWith("filter.field.") && key.endsWith(".label") && /(?:blks|blocks|buffer_hit)/.test(key))
+  assert.ok(keys.length >= 29)
+  for (const key of keys) assert.equal(russian[key], english[key], key)
+  assert.equal(english["pg.field.shared_blks_read.label"], "Shared buffer read bytes")
+  assert.equal(english["pg.field.shared_blks_hit.label"], "Shared buffer hit bytes")
+  assert.equal(english["pg.field.temp_blks_written.label"], "Temp buffer written bytes")
+  assert.match(russian["pg.field.shared_blks_read.help"], /[А-Яа-яЁё]/u)
+  assert.equal(russian["filter.field.buffer_hit.label"], "Попадания в буфер")
+})
+
+test("quantitative search labels and unit tokens stay canonical English in RU", async () => {
+  const [englishSource, russianSource] = await Promise.all([
+    readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../i18n/ru.yaml", import.meta.url), "utf8"),
+  ])
+  const english = parseDictionary(englishSource, "en.yaml")
+  const russian = parseDictionary(russianSource, "ru.yaml")
+  const quantitative = [
+    "call_rate", "exec_time_rate", "mean_exec", "row_rate", "rows_per_call", "plan_rate", "planning_time_rate", "planning_share",
+    "shared_buffer_hit_rate", "shared_buffer_read_rate", "shared_buffer_dirty_rate", "shared_buffer_write_rate", "local_buffer_hit_rate", "local_buffer_read_rate",
+    "local_buffer_dirty_rate", "local_buffer_write_rate", "temp_buffer_read_rate", "temp_buffer_write_rate", "shared_read_time_rate", "shared_write_time_rate",
+    "local_read_time_rate", "local_write_time_rate", "temp_read_time_rate", "temp_write_time_rate", "wal_rate", "wal_per_call", "buffer_per_call", "slow_call_rate",
+    "exec_cv", "min_exec_since_reset", "max_exec_since_reset", "mean_exec_since_reset", "stddev_exec_since_reset", "rss", "vsz", "swap", "threads",
+    "cpu_cores", "user_cpu_cores", "system_cpu_cores", "disk_read_rate", "disk_write_rate", "logical_read_rate", "logical_write_rate",
+    "read_syscall_rate", "write_syscall_rate", "major_fault_rate", "minor_fault_rate", "context_switch_rate",
+    "voluntary_context_switch_rate", "involuntary_context_switch_rate", "run_delay", "block_io_delay",
+  ]
+  for (const field of quantitative) assert.equal(russian[`filter.field.${field}.label`], english[`filter.field.${field}.label`], field)
+  for (const token of ["/s", "MiB", "ms/s", "CPU", "RSS", "WAL"]) {
+    assert.ok(Object.values(russian).some((value) => value.includes(token)), token)
+  }
+})
+
 test("hour empty states are provisional only while the selected hour is open", async () => {
   const [englishSource, russianSource] = await Promise.all([
     readFile(new URL("../i18n/en.yaml", import.meta.url), "utf8"),
@@ -57,6 +98,7 @@ test("project dictionaries cover the active UI keys", async () => {
     "help.tsx",
     "hour-picker.tsx",
     "postgres-view.tsx",
+    "plan-view.tsx",
     "process-table.tsx",
     "system-view.tsx",
     "timeline.tsx",
@@ -107,6 +149,9 @@ test("plan copy identifies unavailable values and vadv attribution", async () =>
   assert.equal(russian["common.unavailable"], "—")
   assert.equal(english["pg.section.plans"], "Plans")
   assert.equal(russian["pg.section.plans"], "Plans")
+  for (const key of ["nav.host", "nav.processes", "nav.postgresql", "nav.events"]) {
+    assert.equal(russian[key], english[key])
+  }
   assert.equal(russian["pg.activity.idle"], "Idle")
   assert.equal(russian["pg.field.query_duration_ms.label"], "Query time")
   assert.equal(russian["pg.field.transaction_duration_ms.label"], "Xact time")
@@ -116,8 +161,11 @@ test("plan copy identifies unavailable values and vadv attribution", async () =>
   assert.equal(russian["pg.wal_storage.label"], "Размер файлов в pg_wal")
   assert.equal(russian["pg.wal_storage.history"], "Размер файлов в pg_wal за час")
   assert.equal(russian["pg.wal_storage.help"], "Суммарный размер обычных файлов, видимых в pg_wal у курсора.")
-  assert.match(english["pg.field.queryid_stat_statements.help"], /vadv-only.*last attributed.*not an exact join key/)
-  assert.match(russian["pg.field.queryid_stat_statements.help"], /только в vadv.*последнего запроса.*связанного.*не точный ключ соединения/)
+  assert.match(english["pg.field.queryid_stat_statements.help"], /vadv fork of pg_store_plans/)
+  assert.match(russian["pg.field.queryid_stat_statements.help"], /форком pg_store_plans от vadv/)
+  for (const text of [...Object.values(english), ...Object.values(russian)]) {
+    assert.doesNotMatch(text, /not an exact join key|не точн(?:ый|ым) ключ соединения/i)
+  }
 })
 
 test("dense-table help is factual, concise, and complete in both locales", async () => {
@@ -130,8 +178,8 @@ test("dense-table help is factual, concise, and complete in both locales", async
   validateDictionaries(english, russian)
   const pgFields = new Set([
     "pid", "backend_age_ms", "query_duration_ms", "transaction_duration_ms", "state_duration_ms", "queryid", "planid", "toplevel", "datname", "usename", "query", "plan",
-    "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_call", "blocks_per_call", "hit_pct", "wal_per_call",
-    "plan_time_pct", "cv", "min_exec_time_ms", "max_exec_time_ms", "mean_exec_time_ms", "stddev_exec_time_ms", "first_call", "last_call",
+    "calls", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_call", "blocks_per_call", "hit_pct", "wal_per_call",
+    "plan_time_pct", "cv", "min_exec_time_ms", "max_exec_time_ms", "mean_exec_ms", "stddev_exec_time_ms", "first_call", "last_call",
     "rows_per_second", "planning_ms_per_second", "shared_blks_hit", "shared_blks_read", "shared_blks_written", "shared_blks_dirtied",
     "local_blks_read", "temp_blks_read", "temp_blks_written", "wal_bytes", "queryid_stat_statements", "cmd_type", "numbackends",
     "xact_commit", "xact_rollback", "blks_hit", "blks_read", "tup_returned", "tup_fetched", "tup_inserted", "tup_updated", "tup_deleted",
@@ -163,12 +211,14 @@ test("dense-table help is factual, concise, and complete in both locales", async
     }
   }
 
-  assert.match(english["pg.field.calls_per_second.help"], /times per second this statement ran.*call frequency or the weight/i)
-  assert.match(english["pg.field.execution_ms_per_second.help"], /wall-clock second.*exceed 1000.*overlap/i)
+  assert.match(english["pg.field.calls.help"], /exact cumulative counter.*separate from Calls\/s/i)
+  assert.match(english["pg.field.calls_per_second.help"], /times per second this statement or plan ran.*call frequency or the weight/i)
+  assert.match(english["pg.field.execution_ms_per_second.help"], /1000 ms\/s.*one execution-second.*serial CPU-bound.*concurrent calls add.*not summed worker CPU/i)
   assert.match(english["pg.field.mean_exec_ms_per_call.help"], /one execution took on average.*unavailable without calls/i)
   assert.match(english["pg.field.rows_per_second.help"], /rows per second the statement returns or affects/i)
   assert.equal(english["pg.field.statement_database.help"], "Database associated with this physical statement entry.")
-  assert.match(russian["pg.field.calls_per_second.help"], /раз в секунду выполнялся.*частота вызовов или тяжесть/i)
+  assert.match(russian["pg.field.calls.help"], /точный накопительный счётчик отделён от Calls\/s/i)
+  assert.match(russian["pg.field.calls_per_second.help"], /раз в секунду выполнялся этот запрос или план.*частота вызовов или тяжесть/i)
 })
 
 test("obsolete status and internal collection copy stay out of the UI", async () => {

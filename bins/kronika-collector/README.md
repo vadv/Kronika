@@ -38,11 +38,11 @@ source interval of `0` reads on every timer cycle.
 | Variable | Default, s | Sections |
 | --- | ---: | --- |
 | `KRONIKA_INTERVAL_S` | 5 | Maximum timer sleep; `0` disables the timer and leaves collection to signals. |
-| `KRONIKA_OS_CORE_INTERVAL_S` | 10 | `1_102`–`1_111`, `1_114`–`1_120`. |
-| `KRONIKA_OS_MOUNTTOPO_INTERVAL_S` | 60 | `1_112`, `1_113`. |
+| `KRONIKA_OS_CORE_INTERVAL_S` | 10 | `1_102`–`1_111`, `1_114`–`1_120`, `1_122`. |
+| `KRONIKA_OS_MOUNTTOPO_INTERVAL_S` | 60 | `1_112`, `1_113`, `1_121`, `1_123`. |
 | `KRONIKA_OS_PROCESS_INTERVAL_S` | 5 | `1_100`. |
 | `KRONIKA_OS_PROCESS_STATUS_INTERVAL_S` | 30 | `1_101`. |
-| `KRONIKA_OS_CGROUP_INTERVAL_S` | 10 | `1_201`–`1_204`. |
+| `KRONIKA_OS_CGROUP_INTERVAL_S` | 30 | `1_201`–`1_204`; direct live process memberships, aligned with cgroup mapping. |
 | `KRONIKA_OS_CGROUP_MAPPING_INTERVAL_S` | 30 | `1_200`. |
 | `KRONIKA_LOG_INTERVAL_S` | 10 | `2_001`–`2_007`, `2_100`. |
 | `KRONIKA_PG_INTERVAL_S` | 30 | `1_001`–`1_012`, `1_015`–`1_017`, `1_019`. |
@@ -75,8 +75,10 @@ installation on the next pass.
 layout per column set. `pg_store_plans` is identified by its callable interface
 and result columns rather than `extversion`: the collector keeps separate OSSC
 and Datasentinel layouts for their zero-argument readers, and recognizes the
-vadv boolean reader with its four-key plan getter. It also discovers the exact
-readable `pg_stat_statements_info` and `pg_store_plans_info` views. Each info
+vadv boolean reader only with its four-key plan getter and executable native
+text converter. The collector composes those functions in the discovered
+schema so every stored `plan` is bounded human-readable text. It also discovers
+the exact readable `pg_stat_statements_info` and `pg_store_plans_info` views. Each info
 view is selected independently of its main statistics reader. The complete
 layout map is in
 [PostgreSQL metric types](../../docs/type-registry/postgresql-metrics.md).
@@ -189,13 +191,16 @@ from.
 | `KRONIKA_LOG_LEVEL` | `info` | One of `error`, `warn`, `info`, `debug`, `trace`. |
 | `KRONIKA_PROC_ROOT` | `/proc` | Where procfs is mounted. Setting it also narrows container detection to the cgroup file under that root. |
 | `KRONIKA_SYS_ROOT` | `/sys` | Where sysfs is mounted. |
-| `KRONIKA_STATVFS_FIXTURE` | unset | Test hook: use `path=TOTAL:FREE;...` capacity values instead of calling `statvfs`. |
+| `KRONIKA_STATVFS_FIXTURE` | unset | Test hook: use `path=TOTAL:FREE:INODES:AVAILABLE_INODES;...` values instead of calling `statvfs`. |
 
 Filesystem capacity is queried only for `ext2`, `ext3`, `ext4`, `xfs`,
 `btrfs`, `f2fs`, `zfs`, `tmpfs`, and `overlay`. Network, FUSE/userspace,
 `autofs`, and unknown filesystem types keep nullable capacity fields. One
 helper process handles the allowlisted mounts under a single one-second
 deadline so a blocked capacity query cannot stop later snapshots.
+The mount snapshot stores the exact mount root and both byte and inode
+total/available pairs. Sysfs topology stores only partitions with an exact
+parent block-device identity; layered device ancestry remains unspecified.
 
 ## Run the collector
 

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use kronika_format::{JOURNAL_HEADER_LEN, validate_part};
+use kronika_format::{FRAME_HEADER_LEN, JOURNAL_HEADER_LEN, RESET_MARKER_LEN, validate_part};
 use kronika_layout::{DataRoot, LayoutLimits, WriterOwner};
 use kronika_registry::Ts;
 use kronika_registry::os_loadavg::OsLoadavg;
@@ -20,6 +20,7 @@ const INSTANCE_METADATA_TYPE_ID: u32 = 1_021_002;
 const PGBOUNCER_TYPE_ID: u32 = 2_100_001;
 const PG_ARCHIVER_TYPE_ID: u32 = 1_008_001;
 const PG_SETTINGS_TYPE_ID: u32 = 1_019_001;
+const TEST_JOURNAL_MAX: usize = 64 * 1024;
 
 #[derive(Clone, Copy)]
 enum Pressure {
@@ -65,6 +66,16 @@ fn first_window(segment: &SegmentState) -> kronika_writer::FlushedPart {
         })
         .expect("buffer first row");
     encode_window(buffers, segment.interner()).expect("encode first window")
+}
+
+fn fill_journal_to_pressure(journal: &mut Journal, part: &kronika_writer::FlushedPart, max: usize) {
+    let segment_id = journal.segment_id().expect("old segment id");
+    let frame_len = FRAME_HEADER_LEN + part.body.len();
+    while journal.bytes() + frame_len + RESET_MARKER_LEN <= max {
+        journal
+            .append(segment_id, &part.body)
+            .expect("fill old journal near its cap");
+    }
 }
 
 fn log_rows() -> LogRows {
@@ -124,7 +135,7 @@ fn assert_retained_batch_moves_to_fresh_segment(pressure: Pressure) {
     let first = first_window(&segment);
     let max = match pressure {
         Pressure::Format => JournalConfig::default().max_journal_len,
-        Pressure::Journal => 20 * 1024,
+        Pressure::Journal => TEST_JOURNAL_MAX,
     };
     let owner = owner(dir.path());
     let mut journal = Journal::open(
@@ -148,14 +159,7 @@ fn assert_retained_batch_moves_to_fresh_segment(pressure: Pressure) {
     .expect("append old segment row");
     match pressure {
         Pressure::Format => segment.force_format_limit(),
-        Pressure::Journal => {
-            let segment_id = journal.segment_id().expect("old segment id");
-            for _ in 0..7 {
-                journal
-                    .append(segment_id, &first.body)
-                    .expect("fill old journal near its cap");
-            }
-        }
+        Pressure::Journal => fill_journal_to_pressure(&mut journal, &first, max),
     }
 
     let mut scheduler = Scheduler::new(Intervals::default());
@@ -274,7 +278,7 @@ fn assert_pg_batch_moves_to_fresh_segment(pressure: Pressure) {
     let first = first_window(&segment);
     let max = match pressure {
         Pressure::Format => JournalConfig::default().max_journal_len,
-        Pressure::Journal => 16 * 1024,
+        Pressure::Journal => TEST_JOURNAL_MAX,
     };
     let owner = owner(dir.path());
     let mut journal = Journal::open(
@@ -298,14 +302,7 @@ fn assert_pg_batch_moves_to_fresh_segment(pressure: Pressure) {
     .expect("append old segment row");
     match pressure {
         Pressure::Format => segment.force_format_limit(),
-        Pressure::Journal => {
-            let segment_id = journal.segment_id().expect("old segment id");
-            for _ in 0..7 {
-                journal
-                    .append(segment_id, &first.body)
-                    .expect("fill old journal near its cap");
-            }
-        }
+        Pressure::Journal => fill_journal_to_pressure(&mut journal, &first, max),
     }
 
     let mut scheduler = Scheduler::new(Intervals::default());

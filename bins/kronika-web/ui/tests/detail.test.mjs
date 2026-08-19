@@ -17,7 +17,7 @@ test("a counter is drawn as the rate between two readings", () => {
   ], "cpu")
 
   assert.deepEqual(series.map((item) => item.field), [
-    "utime", "stime", "rundelay_ns", "blkdelay_ticks", "nvcsw", "nivcsw", "minflt", "majflt", "nice", "prio", "rtprio",
+    "utime", "stime", "rundelay_ns", "blkdelay_ticks", "nvcsw", "nivcsw", "minflt", "majflt",
   ])
   assert.deepEqual(series[1].points.map((point) => point.value), [null, 4, 16])
 })
@@ -83,17 +83,22 @@ test("process detail mounts one selected chart and exposes metric actions", asyn
   assert.equal(source.match(/<SeriesChart/g)?.length, 1)
 })
 
-test("all meaningful CPU numeric fields have history and nice uses a signed scale", () => {
-  for (const field of ["nice", "prio", "rtprio"]) assert.ok(detail.PROCESS_HISTORY_FIELDS.includes(field), field)
-  const rows = [
-    row(1, { nice: -5, prio: 15, rtprio: 0 }),
-    row(2, { nice: 0, prio: 20, rtprio: 1 }),
-  ]
-  const byField = new Map(detail.processLensHistory(rows, "cpu").map((series) => [series.field, series]))
-  assert.deepEqual(byField.get("nice").points.map(({ value }) => value), [-5, 0])
-  assert.equal(byField.get("nice").scale, "signed")
-  assert.equal(byField.get("prio").unit, "priority")
-  assert.equal(byField.get("rtprio").unit, "priority")
+test("process details expose each user identity exactly once in every lens", () => {
+  const process = row(1, { pid: 77, uid: 26, euid: 27, user: "postgres", effective_user: "worker", utime: 10, rmem_kb: 20, read_bytes: 30 })
+  for (const lens of ["generic", "cpu", "memory", "disk"]) {
+    const ids = detail.processDetailFields(lens, process).map(({ id }) => id)
+    assert.equal(ids.filter((id) => id === "user").length, 1, lens)
+    assert.equal(ids.filter((id) => id === "effective_user").length, 1, lens)
+    assert.equal(new Set(ids).size, ids.length, lens)
+  }
+})
+
+test("scheduler references stay in CPU detail while temporal fault metrics stay chartable", async () => {
+  for (const field of ["nice", "prio", "rtprio"]) assert.equal(detail.PROCESS_HISTORY_FIELDS.includes(field), false, field)
+  assert.equal(detail.PROCESS_HISTORY_FIELDS.includes("majflt"), true)
+  const processSource = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../src/process-table.tsx", import.meta.url), "utf8"))
+  const cpuFields = /cpu:\s*\[([\s\S]*?)\],\s*memory:/.exec(processSource)?.[1] ?? ""
+  for (const field of ["nice", "prio", "rtprio"]) assert.match(cpuFields, new RegExp(`"${field}"`), field)
 })
 
 test("process history requests project PID without process start time", async () => {

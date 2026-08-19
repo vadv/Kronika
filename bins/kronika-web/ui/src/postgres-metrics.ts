@@ -48,7 +48,7 @@ const BLOCK_COUNTERS = [
 
 const DIRECT_ORDER_FIELDS = [
   ...BLOCK_COUNTERS, "plans", "wal_bytes", "wal_records", "wal_fpi", "wal_buffers_full",
-  "slow_log_calls", "stats_since", "first_call", "last_call",
+  "slow_log_calls", "stats_since", "first_call", "last_call", "queryid", "queryid_stat_statements", "planid",
 ] as const
 
 const STATEMENT_FIELDS = [
@@ -304,10 +304,10 @@ const STATEMENT_LENS_FIELDS: Readonly<Record<StatementLens, readonly string[]>> 
 }
 
 const PLAN_LENS_FIELDS: Readonly<Record<PlanLens, readonly string[]>> = {
-  load: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"],
-  timing: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", "min_time", "max_time", "mean_time", "stddev_time", "first_call", "last_call"],
-  io: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", "shared_blks_read", "shared_blks_hit", "shared_blks_dirtied", "local_blks_hit", "local_blks_read", "temp_blks_read"],
-  identity: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls_per_second", "cmd_type", "relids", "queryid_stat_statements"],
+  load: ["userid", "dbid", "queryid", "queryid_stat_statements", "planid", "datname", "usename", "plan", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"],
+  timing: ["userid", "dbid", "queryid", "queryid_stat_statements", "planid", "datname", "usename", "plan", "calls_per_second", "min_time", "max_time", "mean_time", "stddev_time", "first_call", "last_call"],
+  io: ["userid", "dbid", "queryid", "queryid_stat_statements", "planid", "datname", "usename", "plan", "calls_per_second", "shared_blks_read", "shared_blks_hit", "shared_blks_dirtied", "local_blks_hit", "local_blks_read", "temp_blks_read"],
+  identity: ["userid", "dbid", "queryid", "planid", "datname", "usename", "plan", "calls", "calls_per_second", "cmd_type", "relids", "queryid_stat_statements"],
 }
 
 export function statementRequest(lens: StatementLens): PostgresSectionRequest {
@@ -374,7 +374,8 @@ export function decoratePostgresIntervalRow(row: DataRow): DataRow {
   for (const semantic of SEMANTIC_FIELDS) {
     if (semantic === "mean_exec_ms_per_call") continue
     const physical = aliases[semantic]
-    if (physical !== undefined && Object.hasOwn(row.values, physical)) values[semantic] = finiteRate(row.values[physical])
+    if (Object.hasOwn(row.values, semantic)) values[semantic] = finiteRate(row.values[semantic])
+    else if (physical !== undefined && Object.hasOwn(row.values, physical)) values[semantic] = finiteRate(row.values[physical])
   }
   const calls = finiteRate(values.calls_per_second)
   const execution = finiteRate(values.execution_ms_per_second)

@@ -110,6 +110,15 @@ pub(super) fn parse_memory_events(content: &str, row: &mut CgroupMemoryRow) {
 /// Parse cgroup v2 `io.stat`.
 #[must_use]
 pub fn parse_io_stat(content: &str, ts: i64, cgroup_path: &str) -> Vec<CgroupIoRow> {
+    parse_io_stat_bounded(content, ts, cgroup_path, usize::MAX).unwrap_or_default()
+}
+
+pub(super) fn parse_io_stat_bounded(
+    content: &str,
+    ts: i64,
+    cgroup_path: &str,
+    limit: usize,
+) -> Option<Vec<CgroupIoRow>> {
     let mut rows = Vec::new();
     for line in content.lines() {
         let mut fields = line.split_whitespace();
@@ -124,27 +133,44 @@ pub fn parse_io_stat(content: &str, ts: i64, cgroup_path: &str) -> Vec<CgroupIoR
             cgroup_path: cgroup_path.to_owned(),
             major,
             minor,
-            rbytes: 0,
-            wbytes: 0,
-            rios: 0,
-            wios: 0,
+            rbytes: None,
+            wbytes: None,
+            rios: None,
+            wios: None,
         };
         for field in fields {
             let Some((key, value)) = field.split_once('=') else {
                 continue;
             };
-            let value = value.parse().unwrap_or(0);
+            let Ok(value) = value.parse() else {
+                continue;
+            };
             match key {
-                "rbytes" => row.rbytes = value,
-                "wbytes" => row.wbytes = value,
-                "rios" => row.rios = value,
-                "wios" => row.wios = value,
+                "rbytes" => {
+                    row.rbytes = Some(value);
+                }
+                "wbytes" => {
+                    row.wbytes = Some(value);
+                }
+                "rios" => {
+                    row.rios = Some(value);
+                }
+                "wios" => {
+                    row.wios = Some(value);
+                }
                 _ => {}
             }
         }
+        if row.rbytes.is_none() && row.wbytes.is_none() && row.rios.is_none() && row.wios.is_none()
+        {
+            continue;
+        }
+        if rows.len() == limit {
+            return None;
+        }
         rows.push(row);
     }
-    rows
+    Some(rows)
 }
 
 /// Parse cgroup v1 blkio service byte/op files.
@@ -155,10 +181,24 @@ pub fn parse_blkio_service_stats(
     ts: i64,
     cgroup_path: &str,
 ) -> Vec<CgroupIoRow> {
-    let mut rows: BTreeMap<(u32, u32), CgroupIoRow> = BTreeMap::new();
-    parse_blkio_service_file(bytes_content, ts, cgroup_path, true, &mut rows);
-    parse_blkio_service_file(ops_content, ts, cgroup_path, false, &mut rows);
-    rows.into_values().collect()
+    parse_blkio_service_stats_bounded(bytes_content, ops_content, ts, cgroup_path, usize::MAX)
+        .unwrap_or_default()
+}
+
+pub(super) fn parse_blkio_service_stats_bounded(
+    bytes_content: &str,
+    ops_content: &str,
+    ts: i64,
+    cgroup_path: &str,
+    limit: usize,
+) -> Option<Vec<CgroupIoRow>> {
+    let mut rows = BTreeMap::new();
+    if !parse_blkio_service_file(bytes_content, ts, cgroup_path, true, limit, &mut rows)
+        || !parse_blkio_service_file(ops_content, ts, cgroup_path, false, limit, &mut rows)
+    {
+        return None;
+    }
+    Some(rows.into_values().collect())
 }
 
 fn parse_blkio_service_file(
@@ -166,8 +206,9 @@ fn parse_blkio_service_file(
     ts: i64,
     cgroup_path: &str,
     bytes: bool,
+    limit: usize,
     rows: &mut BTreeMap<(u32, u32), CgroupIoRow>,
-) {
+) -> bool {
     for line in content.lines() {
         let mut fields = line.split_whitespace();
         let Some(device) = fields.next() else {
@@ -179,30 +220,45 @@ fn parse_blkio_service_file(
         if op == "Total" {
             continue;
         }
+        if !matches!(op, "Read" | "Write") {
+            continue;
+        }
         let Some(value) = fields.next().and_then(|value| value.parse().ok()) else {
             continue;
         };
         let Some((major, minor)) = parse_device(device) else {
             continue;
         };
+        if !rows.contains_key(&(major, minor)) && rows.len() == limit {
+            return false;
+        }
         let row = rows.entry((major, minor)).or_insert_with(|| CgroupIoRow {
             ts,
             cgroup_path: cgroup_path.to_owned(),
             major,
             minor,
-            rbytes: 0,
-            wbytes: 0,
-            rios: 0,
-            wios: 0,
+            rbytes: None,
+            wbytes: None,
+            rios: None,
+            wios: None,
         });
         match (op, bytes) {
-            ("Read", true) => row.rbytes = value,
-            ("Write", true) => row.wbytes = value,
-            ("Read", false) => row.rios = value,
-            ("Write", false) => row.wios = value,
+            ("Read", true) => {
+                row.rbytes = Some(value);
+            }
+            ("Write", true) => {
+                row.wbytes = Some(value);
+            }
+            ("Read", false) => {
+                row.rios = Some(value);
+            }
+            ("Write", false) => {
+                row.wios = Some(value);
+            }
             _ => {}
         }
     }
+    true
 }
 
 fn key_value_lines(content: &str) -> impl Iterator<Item = (&str, i64)> {
@@ -292,8 +348,18 @@ mod tests {
         let rows = parse_io_stat("8:0 rbytes=1 wbytes=2 rios=3 wios=4 dbytes=9\n", 5, "/x");
         assert_eq!(rows.len(), 1);
         assert_eq!((rows[0].major, rows[0].minor), (8, 0));
-        assert_eq!(rows[0].rbytes, 1);
-        assert_eq!(rows[0].wios, 4);
+        assert_eq!(rows[0].rbytes, Some(1));
+        assert_eq!(rows[0].wios, Some(4));
+    }
+
+    #[test]
+    fn io_stat_keeps_a_row_with_partial_counters() {
+        let rows = parse_io_stat("8:0 rbytes=1 wbytes=2 rios=broken\n", 5, "/x");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].rbytes, Some(1));
+        assert_eq!(rows[0].wbytes, Some(2));
+        assert_eq!(rows[0].rios, None);
+        assert_eq!(rows[0].wios, None);
     }
 
     #[test]
@@ -305,9 +371,23 @@ mod tests {
             "/x",
         );
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].rbytes, 4096);
-        assert_eq!(rows[0].wbytes, 8192);
-        assert_eq!(rows[0].rios, 4);
-        assert_eq!(rows[0].wios, 8);
+        assert_eq!(rows[0].rbytes, Some(4096));
+        assert_eq!(rows[0].wbytes, Some(8192));
+        assert_eq!(rows[0].rios, Some(4));
+        assert_eq!(rows[0].wios, Some(8));
+    }
+
+    #[test]
+    fn blkio_parser_keeps_devices_and_files_independently() {
+        let rows = parse_blkio_service_stats(
+            "8:0 Read 4096\n8:1 Write 8192\n",
+            "8:0 Read 4\n8:2 Write 8\n",
+            1,
+            "/x",
+        );
+        assert_eq!(rows.len(), 3);
+        assert_eq!((rows[0].rbytes, rows[0].rios), (Some(4096), Some(4)));
+        assert_eq!((rows[1].wbytes, rows[1].wios), (Some(8192), None));
+        assert_eq!((rows[2].wbytes, rows[2].wios), (None, Some(8)));
     }
 }

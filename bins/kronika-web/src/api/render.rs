@@ -31,6 +31,7 @@ pub(super) fn projected_layout(
                 || json!({ "name": name, "available": false }),
                 |column| {
                     let mut value = column_value(column);
+                    value.insert("name".to_owned(), json!(name));
                     value.insert("available".to_owned(), json!(true));
                     Value::Object(value)
                 },

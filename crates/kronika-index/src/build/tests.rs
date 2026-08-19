@@ -195,7 +195,7 @@ fn simultaneous_different_activity_layouts_are_unknown_not_double_counted() {
         }],
     );
     activity.insert(
-        1_001_003,
+        1_001_004,
         vec![ActiveBackendPoint {
             timestamp: 10,
             count: 3,

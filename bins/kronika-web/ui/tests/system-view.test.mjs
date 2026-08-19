@@ -7,10 +7,10 @@ import { importModule, registryPlugin } from "./import-module.mjs"
 import { parseDictionary, validateDictionaries } from "../scripts/i18n.mjs"
 
 const helpers = await importModule(
-  'export { dockGroupMetrics, effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, clearCgroupSnapshotRows, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, mountPairSeries, resourceBreakdownSeries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
+  'export { dockGroupMetrics, effectiveCpuCapacity, cgroupSnapshotPlan, chartableEntityColumns, clearCgroupSnapshotRows, currentValue, entityHistoryRequest, fallbackMetric, hasMetric, metricChartUnit, metricChartValue, metricHistoryPoints, metricHistoryRequest, metricPoints, metricRequestKey, mountPairSeries, recordedEnvironment, resourceBreakdownSeries, storageTopologyEntries, systemEntityRows, CGROUP_SNAPSHOT_REQUESTS, SYSTEM_ENTITIES, SYSTEM_METRICS, SYSTEM_REQUESTS } from "../src/system-view.tsx"; export { bundledFixtureHour } from "../src/fixture.ts"',
   { plugins: [registryPlugin([
     { typeId: "1108001", logicalName: "os_diskstats", identity: ["major", "minor"], columns: ["ts", "major", "minor", "device", "io_in_progress"] },
-    { typeId: "1112001", logicalName: "os_mountinfo", identity: ["major", "minor"], columns: ["ts", "major", "minor", "mount_point", "source", "fstype", "free_bytes", "total_bytes", "is_k8s_infra"] },
+    { typeId: "1112002", logicalName: "os_mountinfo", identity: ["major", "minor", "mount_point"], columns: ["ts", "major", "minor", "mount_point", "root", "fstype", "source", "is_k8s_infra", "total_bytes", "free_bytes", "total_inodes", "available_inodes", "scope"] },
   ])] },
 )
 
@@ -65,6 +65,33 @@ test("system histories omit rows whose layout does not own the selected field", 
   assert.deepEqual(helpers.metricPoints(direct, { ...spec, field: "oom_kill", section: "os_vmstat", series: "missing" }).map((point) => [point.timestamp, point.value]), [[1, 1], [3, null]])
 })
 
+test("CPU topology is a static table without selection history", () => {
+  const topology = helpers.SYSTEM_ENTITIES.find(({ section }) => section === "os_topology")
+  assert.ok(topology)
+  assert.equal(topology.columns.every(({ chartable }) => chartable === false), true)
+  assert.deepEqual(helpers.chartableEntityColumns(topology.columns), [])
+})
+
+test("CPU frequency stays policy-scoped and keeps actual separate from scaling", () => {
+  const row = (policy, timestamp, actual, scaling, online) => ({
+    logicalName: "os_cpufreq", ordinal: `${policy}:${timestamp}`, segmentId: "a", timestamp, typeId: "1122001",
+    values: { policy_id: policy, actual_source: policy === 0 ? "cpuinfo_avg_freq" : "cpuinfo_cur_freq", actual_frequency_hz: actual, scaling_cur_freq_hz: scaling, online_cpus: online },
+  })
+  const sections = { os_cpufreq: [
+    row(0, 1, 2_000_000_000, 1_800_000_000, 2), row(4, 1, 3_000_000_000, 2_600_000_000, 1),
+    row(0, 2, null, 1_900_000_000, 2), row(4, 2, 3_100_000_000, 2_700_000_000, 1),
+  ] }
+  const actual = helpers.SYSTEM_METRICS.find(({ id }) => id === "cpu_actual_frequency")
+  const scaling = helpers.SYSTEM_METRICS.find(({ id }) => id === "cpu_scaling_frequency")
+  assert.deepEqual(helpers.metricPoints({ points: [], sections }, actual).map(({ value }) => value), [null, null])
+  const scalingValues = helpers.metricPoints({ points: [], sections }, scaling).map(({ value }) => value)
+  assert.ok(Math.abs(scalingValues[0] - 6_200 / 3) < Number.EPSILON * 2_100)
+  assert.ok(Math.abs(scalingValues[1] - 6_500 / 3) < Number.EPSILON * 2_200)
+  const series = helpers.resourceBreakdownSeries(actual.id, sections.os_cpufreq, false, "en", (key, values) => key === "system.topology.policy" ? `Policy ${values.policy}` : key)
+  assert.deepEqual(series.map(({ label }) => label), ["Policy 0", "Policy 4"])
+  assert.deepEqual(series[0].points.map(({ value }) => value), [2_000, null])
+})
+
 test("system cards derive production values when fixture-only series are absent", () => {
   const cpu = (timestamp, user, system, idle) => ({
     logicalName: "os_cpu", ordinal: String(timestamp), segmentId: "a", timestamp, typeId: "1102001",
@@ -80,8 +107,8 @@ test("system cards derive production values when fixture-only series are absent"
       os_cpu: [cpu(100, 10, 10, 80), { ...cpu(100, 0, 0, 0), values: { cpu_id: 0, scope: 0 } }, cpu(200, 20, 20, 160), { ...cpu(200, 0, 0, 0), values: { cpu_id: 0, scope: 0 } }],
       os_meminfo: [{ logicalName: "os_meminfo", ordinal: "0", segmentId: "a", timestamp: 200, typeId: "1104001", values: { anon_pages: 30, buffers: 5, cached: 20, mem_available: 25, mem_free: 10, mem_total: 100, s_reclaimable: 5, s_unreclaim: 3 } }],
       os_mountinfo: [
-        { logicalName: "os_mountinfo", ordinal: "0", segmentId: "a", timestamp: 200, typeId: "1112001", values: { free_bytes: 50, total_bytes: 100 } },
-        { logicalName: "os_mountinfo", ordinal: "1", segmentId: "a", timestamp: 200, typeId: "1112001", values: { free_bytes: 20, total_bytes: 100 } },
+        { logicalName: "os_mountinfo", ordinal: "0", segmentId: "a", timestamp: 200, typeId: "1112002", values: { free_bytes: 50, total_bytes: 100 } },
+        { logicalName: "os_mountinfo", ordinal: "1", segmentId: "a", timestamp: 200, typeId: "1112002", values: { free_bytes: 20, total_bytes: 100 } },
       ],
       os_diskstats: [
         { logicalName: "os_diskstats", ordinal: "0", segmentId: "a", timestamp: 200, typeId: "1110001", values: { io_in_progress: 2 } },
@@ -215,7 +242,7 @@ test("device latency uses exact reset-safe counter operands and a stable major:m
 })
 
 test("collector cgroup rows keep leaf settings factual and use effective hierarchy capacities", () => {
-  const row = (logicalName, path, values, ordinal = path) => ({ logicalName, ordinal, segmentId: "s", timestamp: 10, typeId: logicalName === "os_cgroup_cpu" ? "1201001" : logicalName === "os_cgroup_memory" ? "1202001" : "1203001", values: { cgroup_path: path, scope: 3, ...values } })
+  const row = (logicalName, path, values, ordinal = path) => ({ logicalName, ordinal, segmentId: "s", timestamp: 10, typeId: logicalName === "os_cgroup_cpu" ? "1201001" : logicalName === "os_cgroup_memory" ? "1202001" : "1203002", values: { cgroup_path: path, scope: 3, ...values } })
   const context = row("os_cgroup_context", "/ignored", {
     cpu_path: "/mine", memory_path: "/mine", io_path: "/mine", cpuset_cpus: 1,
     effective_cpu_quota_usec: 50_000, effective_cpu_period_usec: 100_000, effective_memory_max: 1500,
@@ -227,11 +254,13 @@ test("collector cgroup rows keep leaf settings factual and use effective hierarc
     os_cgroup_io: [row("os_cgroup_io", "/mine", { major: 8, minor: 0, rbytes: 10, wbytes: 20, rios: 1, wios: 2 })],
   } }
   const cpu = helpers.systemEntityRows(source, "os_cgroup_cpu", 10)
-  assert.equal(cpu.length, 1)
-  assert.equal(cpu[0].values.cgroup_used_cores, 1.5)
-  assert.equal(cpu[0].values.cgroup_other_cores, 0.1)
-  assert.equal(cpu[0].values.cgroup_quota, 2)
-  assert.equal(cpu[0].values.cgroup_capacity, 0.5)
+  assert.equal(cpu.length, 2)
+  const collector = cpu.find(({ values }) => values.cgroup_path === "/mine")
+  assert.equal(collector.values.cgroup_used_cores, 1.5)
+  assert.equal(collector.values.cgroup_other_cores, 0.1)
+  assert.equal(collector.values.cgroup_quota, 2)
+  assert.equal(collector.values.cgroup_capacity, 0.5)
+  assert.equal(cpu.find(({ values }) => values.cgroup_path === "/other").values.cgroup_capacity, null)
   const columns = helpers.SYSTEM_ENTITIES.find(({ section }) => section === "os_cgroup_cpu").columns
   for (const field of ["cgroup_used_cores", "cgroup_user_cores", "cgroup_system_cores", "cgroup_other_cores", "cgroup_capacity", "cgroup_quota"]) {
     assert.equal(columns.find((column) => column.field === field).kind, "cores", field)
@@ -253,34 +282,34 @@ test("collector cgroup rows keep leaf settings factual and use effective hierarc
   assert.equal(malformedMemory.values.effective_memory_max, null)
 })
 
-test("System loads cgroup entities only through exact controller-specific plans", () => {
-  for (const section of ["os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io"]) {
+test("System loads cgroups only for the recorded container environment", () => {
+  for (const section of ["os_cgroup_context", "os_cgroup_cpu", "os_cgroup_memory", "os_cgroup_io", "os_cgroup_pids"]) {
     assert.equal(helpers.SYSTEM_REQUESTS.some((request) => request.section === section), false)
     const request = helpers.CGROUP_SNAPSHOT_REQUESTS.find((candidate) => candidate.section === section)
-    assert.ok(request.fields.includes("cgroup_path"), section)
-    assert.ok(request.fields.includes("scope"), section)
+    assert.ok(request, section)
   }
-  assert.equal(helpers.SYSTEM_REQUESTS.some(({ section }) => section === "os_cgroup_context"), true)
+  assert.equal(helpers.SYSTEM_REQUESTS.some(({ section, fields }) => section === "instance_metadata" && fields.includes("environment")), true)
 
-  const context = {
-    logicalName: "os_cgroup_context", ordinal: "context", segmentId: "segment-a", timestamp: 10, typeId: "1205001",
-    values: { cpu_path: "/cpu/collector", memory_path: "/memory/collector", io_path: "/io/collector", scope: 3 },
-  }
-  const source = { sections: { os_cgroup_context: [context] } }
-  const plan = helpers.cgroupSnapshotPlan("segment-a", 12, source)
-  assert.equal(plan.key, '["segment-a",12,"/cpu/collector","/memory/collector","/io/collector","3"]')
-  assert.deepEqual(Object.fromEntries(plan.loads.map(({ filters, request }) => [request.section, filters])), {
-    os_cgroup_cpu: { cgroup_path: "/cpu/collector", scope: "3" },
-    os_cgroup_memory: { cgroup_path: "/memory/collector", scope: "3" },
-    os_cgroup_io: { cgroup_path: "/io/collector", scope: "3" },
+  const metadata = (environment) => ({
+    logicalName: "instance_metadata", ordinal: "metadata", segmentId: "segment-a", timestamp: 10, typeId: "1021002",
+    values: { environment },
   })
+  const machine = { sections: { instance_metadata: [metadata(0)] } }
+  assert.equal(helpers.recordedEnvironment(machine, 12), "machine")
+  assert.deepEqual(helpers.cgroupSnapshotPlan("segment-a", 12, machine).loads, [])
 
-  const wrongSegment = helpers.cgroupSnapshotPlan("segment-b", 12, source)
-  assert.deepEqual(wrongSegment.loads, [])
-  const unusableScope = helpers.cgroupSnapshotPlan("segment-a", 12, {
-    sections: { os_cgroup_context: [{ ...context, values: { ...context.values, scope: null } }] },
-  })
-  assert.deepEqual(unusableScope.loads, [])
+  const container = { sections: { instance_metadata: [metadata(1)] } }
+  assert.equal(helpers.recordedEnvironment(container, 12), "container")
+  const plan = helpers.cgroupSnapshotPlan("segment-a", 12, container)
+  assert.equal(plan.key, '["segment-a",12,"container"]')
+  assert.deepEqual(plan.loads.map(({ filters, request }) => [request.section, filters]), [
+    ["os_cgroup_cpu", {}],
+    ["os_cgroup_memory", {}],
+    ["os_cgroup_io", {}],
+    ["os_cgroup_pids", {}],
+    ["os_cgroup_context", {}],
+  ])
+  assert.equal(helpers.recordedEnvironment({ sections: {} }, 12), null)
 })
 
 test("changing a cgroup snapshot key removes every prior exact entity row", () => {
@@ -291,14 +320,16 @@ test("changing a cgroup snapshot key removes every prior exact entity row", () =
       os_cgroup_context: [{ logicalName: "os_cgroup_context", ordinal: "context", segmentId: "s", timestamp: 1, typeId: "1205001", values: {} }],
       os_cgroup_cpu: [{ logicalName: "os_cgroup_cpu", ordinal: "cpu", segmentId: "s", timestamp: 1, typeId: "1201001", values: {} }],
       os_cgroup_memory: [{ logicalName: "os_cgroup_memory", ordinal: "memory", segmentId: "s", timestamp: 1, typeId: "1202001", values: {} }],
-      os_cgroup_io: [{ logicalName: "os_cgroup_io", ordinal: "io", segmentId: "s", timestamp: 1, typeId: "1203001", values: {} }],
+      os_cgroup_io: [{ logicalName: "os_cgroup_io", ordinal: "io", segmentId: "s", timestamp: 1, typeId: "1203002", values: {} }],
+      os_cgroup_pids: [{ logicalName: "os_cgroup_pids", ordinal: "pids", segmentId: "s", timestamp: 1, typeId: "1204001", values: {} }],
     },
   })
   assert.equal(cleared.sections.os_cpu, preserved)
-  assert.equal(cleared.sections.os_cgroup_context.length, 1)
+  assert.equal(cleared.sections.os_cgroup_context, undefined)
   assert.equal(cleared.sections.os_cgroup_cpu, undefined)
   assert.equal(cleared.sections.os_cgroup_memory, undefined)
   assert.equal(cleared.sections.os_cgroup_io, undefined)
+  assert.equal(cleared.sections.os_cgroup_pids, undefined)
 })
 
 test("System never depends on process rows loaded by another view", async () => {
@@ -321,7 +352,7 @@ test("System entity tables keep exact meaning-first orders and rate presentation
   assert.deepEqual(fields.os_cgroup_cpu, ["cgroup_path", "cgroup_used_cores", "cgroup_user_cores", "cgroup_system_cores", "cgroup_other_cores", "cgroup_capacity", "cgroup_quota", "cpuset_cpus"])
   assert.deepEqual(fields.os_cgroup_memory, ["cgroup_path", "current", "effective_memory_max", "max", "anon", "file", "slab", "kernel_other", "memory_unclassified"])
   assert.deepEqual(fields.os_cgroup_io, ["cgroup_path", "device_id", "rbytes", "wbytes", "rios", "wios"])
-  assert.deepEqual(fields.os_mountinfo, ["mount_point", "source", "fstype", "free_bytes", "total_bytes", "is_k8s_infra"])
+  assert.deepEqual(fields.os_mountinfo, ["mount_point", "root", "source", "fstype", "device_id", "free_bytes", "filesystem_available_percent", "total_bytes", "available_inodes", "inode_available_percent", "total_inodes", "is_k8s_infra"])
   assert.deepEqual(fields.os_netdev, ["iface", "rx_bytes", "tx_bytes", "rx_packets", "tx_packets", "rx_errs", "tx_errs", "rx_drop", "tx_drop", "speed_mbit", "duplex"])
   assert.deepEqual(fields.os_topology, ["cpu_id", "socket_id", "core_id", "numa_node", "model_name", "mhz_max"])
 
@@ -337,13 +368,13 @@ test("hidden mount device IDs remain exact request and history identity", () => 
   assert.ok(request.fields.includes("minor"))
   assert.equal(mount.columns.some(({ field }) => field === "major" || field === "minor"), false)
 
-  const row = { logicalName: "os_mountinfo", ordinal: "0", segmentId: "s", timestamp: 12, typeId: "1112001", values: { major: 8, minor: 1, free_bytes: 4 } }
+  const row = { logicalName: "os_mountinfo", ordinal: "0", segmentId: "s", timestamp: 12, typeId: "1112002", values: { major: 8, minor: 1, mount_point: "/data", free_bytes: 4 } }
   assert.deepEqual(helpers.entityHistoryRequest(row, mount.columns.find(({ field }) => field === "free_bytes")), {
-    fields: ["free_bytes", "major", "minor"],
-    key: '["1112001",[["major","8"],["minor","1"]],"free_bytes"]',
+    fields: ["free_bytes", "major", "minor", "mount_point"],
+    key: '["1112002",[["major","8"],["minor","1"],["mount_point","/data"]],"free_bytes"]',
     section: "os_mountinfo",
-    typeId: "1112001",
-    where: { major: "8", minor: "1" },
+    typeId: "1112002",
+    where: { major: "8", minor: "1", mount_point: "/data" },
   })
 })
 
@@ -355,7 +386,7 @@ test("System entity headers have exact EN/RU help without obvious or orphan entr
   const english = parseDictionary(englishSource, "en.yaml")
   const russian = parseDictionary(russianSource, "ru.yaml")
   validateDictionaries(english, russian)
-  const obvious = new Set(["device", "device_id", "cgroup_path", "mount_point", "fstype", "source", "iface", "cpu_id", "model_name"])
+  const obvious = new Set(["device", "device_id", "cgroup_path", "mount_point", "root", "fstype", "source", "iface", "cpu_id", "model_name"])
   const usedHelp = new Set()
   for (const { columns, section } of helpers.SYSTEM_ENTITIES) for (const column of columns) {
     assert.equal(column.help === undefined, obvious.has(column.field), `${section}/${column.field}`)
@@ -390,8 +421,8 @@ test("System history requests are selected-metric keys with exact physical input
   assert.equal(helpers.metricChartUnit({ ...spec, unit: " KiB" }, "en"), "B")
   assert.equal(helpers.metricChartValue(16_777_216, "en", " KiB"), "16 GiB")
   assert.equal(helpers.metricChartValue(256, "ru", " KiB"), "256 KiB")
-  assert.equal(helpers.metricChartUnit({ ...spec, unit: " B" }, "en"), "bytes/s")
-  assert.equal(helpers.metricChartUnit({ ...spec, unit: " B" }, "ru"), "байты/с")
+  assert.equal(helpers.metricChartUnit({ ...spec, unit: " B" }, "en"), "")
+  assert.equal(helpers.metricChartUnit({ ...spec, unit: " B" }, "ru"), "")
   assert.equal(helpers.metricChartUnit({ ...spec, id: "network_errors" }, "en"), "1/s")
   assert.equal(helpers.metricChartUnit({ ...spec, id: "network_drops" }, "ru"), "1/с")
 })
@@ -500,20 +531,41 @@ test("registry cumulative fields become reset-safe rates across storage segments
   assert.equal(rateHelpers.metricChartUnit(spec, "en"), "1/s")
 })
 
-test("a mount history is one used-against-total pair, not two switchable singles", () => {
+test("a mount history charts exact available against total without inventing used space", () => {
   const row = (timestamp, free, total) => ({
-    logicalName: "os_mountinfo", ordinal: String(timestamp), segmentId: "a", timestamp, typeId: "1102001",
+    logicalName: "os_mountinfo", ordinal: String(timestamp), segmentId: "a", timestamp, typeId: "1112002",
     values: { free_bytes: free, total_bytes: total },
   })
   const t = (key) => key
   const series = helpers.mountPairSeries([row(1_000_000, 300, 1000), row(2_000_000, 250, 1000)], t)
-  assert.deepEqual(series.map(({ id }) => id), ["used_bytes", "total_bytes"])
-  assert.deepEqual(series[0].points.map(({ value }) => value), [700, 750])
+  assert.deepEqual(series.map(({ id }) => id), ["available_bytes", "total_bytes"])
+  assert.deepEqual(series[0].points.map(({ value }) => value), [300, 250])
   assert.deepEqual(series[1].points.map(({ value }) => value), [1000, 1000])
-  // A filesystem reporting more free than it holds is a read error, not a negative used.
+  // The exact available gauge is preserved even when the source is internally
+  // inconsistent; the UI does not manufacture an allocated-space result.
   const broken = helpers.mountPairSeries([row(1_000_000, 1500, 1000)], t)
-  assert.deepEqual(broken[0].points.map(({ value }) => value), [null])
+  assert.deepEqual(broken[0].points.map(({ value }) => value), [1500])
   assert.deepEqual(helpers.mountPairSeries([{ ...row(1_000_000, null, null), values: {} }], t), [])
+})
+
+test("a mount inode history charts exact available against total", () => {
+  const row = (timestamp, available, total) => ({
+    logicalName: "os_mountinfo", ordinal: String(timestamp), segmentId: "a", timestamp, typeId: "1112002",
+    values: { available_inodes: available, total_inodes: total },
+  })
+  const series = helpers.mountPairSeries([row(1_000_000, 300, 1000), row(2_000_000, 250, 1000)], (key) => key, "inodes")
+  assert.deepEqual(series.map(({ id }) => id), ["available_inodes", "total_inodes"])
+  assert.deepEqual(series[0].points.map(({ value }) => value), [300, 250])
+  assert.deepEqual(series[1].points.map(({ value }) => value), [1000, 1000])
+})
+
+test("storage topology exposes only recorded partition parents and mount roots", () => {
+  const row = (logicalName, values) => ({ logicalName, ordinal: "0", segmentId: "a", timestamp: 1, typeId: "0", values })
+  assert.deepEqual(helpers.storageTopologyEntries(
+    [],
+    [row("os_block_topology", { major: 259, minor: 1, parent_major: 259, parent_minor: 0 })],
+    [row("os_mountinfo", { major: 259, minor: 1, mount_point: "/data", root: "/subvol", source: "/dev/nvme0n1p1" })],
+  ), [{ associations: ["/dev/nvme0n1p1 /subvol → /data"], id: "259:1", name: "259:1", parent: "259:0" }])
 })
 
 test("the committed hour supplies only honest System metrics with complete histories", async () => {
@@ -538,28 +590,28 @@ test("the committed hour supplies only honest System metrics with complete histo
   Reflect.deleteProperty(globalThis, "__KRONIKA_REAL_HOUR__")
 })
 
-test("System keeps the audited balanced groups and opens charts only inside the dock", async () => {
+test("System keeps the audited groups and opens Overview on factual CPU history", async () => {
   const [source, styles] = await Promise.all([
     readFile(new URL("../src/system-view.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
   ])
-  // One section at a time, and each section owns the entities that make up its
-  // resource.
-  assert.match(source, /SECTION_ENTITIES: Readonly<Record<HostSection, readonly string\[\]>>/)
-  assert.match(source, /storage: \["os_diskstats", "os_mountinfo", "os_cgroup_io"\]/)
-  assert.match(source, /const sectionMetrics = useMemo\(\(\) => available\.filter\(\(\{ spec \}\) => spec\.group === section\)/)
-  // The dock, not a standing console chart: closed by default, opened by a Use
-  // row or a metric chip, dismissed like the PostgreSQL detail panel.
-  assert.match(source, /useState\(false\)/)
+  // One operator question at a time: cgroup accounting is dedicated, and
+  // Storage separates device I/O, filesystems and topology.
+  assert.match(source, /storage: \["io", "filesystems", "topology"\]/)
+  assert.match(source, /cgroups: \["cpu", "memory", "io", "tasks"\]/)
+  assert.match(source, /if \(section === "storage"\)[\s\S]*mode === "filesystems"[\s\S]*\["os_mountinfo"\]/)
+  assert.doesNotMatch(source, /storage: \["os_diskstats", "os_mountinfo", "os_cgroup_io"\]/)
+  assert.match(source, /const sectionMetrics = useMemo\(\(\) => referenceMode \? \[\] : available\.filter/)
+  // Overview resolves its first factual metric while an explicit URL metric
+  // remains authoritative. The chart still lives only in the dock.
+  assert.match(source, /section !== "overview" \|\| dismissedOverview \|\| first === undefined/)
+  assert.match(source, /if \(metric === null\) \{[\s\S]*autoMetric\.current = first\.spec\.id[\s\S]*onMetric\(first\.spec\.id\)/)
+  assert.match(source, /if \(autoMetric\.current !== metric\) \{[\s\S]*autoMetric\.current = null/)
   assert.match(source, /dockShown && selectedMetric !== undefined && <SystemDock/)
   assert.match(source, /data-testid="system-dock"/)
   assert.match(source, /useDetailDismiss\(onClose, `system:\$\{group\}`\)/)
-  assert.match(source, /chartsVisible && dockOpen/)
-  // A chosen metric survives a refresh swap that briefly hides its section:
-  // only the empty startup selection auto-resolves, and the dock reads the
-  // spec from the static catalog, not from the presence of points.
-  assert.match(source, /selected !== "" \|\| first === undefined/)
-  assert.match(source, /SYSTEM_METRICS\.find\(\(spec\) => spec\.id === selected\)/)
+  assert.match(source, /chartsVisible && selectedMetric !== undefined/)
+  assert.match(source, /SYSTEM_METRICS\.find\(\(spec\) => spec\.id === metric\)/)
   // Entity panels say loading while their snapshot catches up; only a section
   // the hour does not carry at all stays absent.
   assert.match(source, /rows\.length === 0 && activeContext === null && !tablesLoading/)

@@ -28,7 +28,7 @@ const TEST_REGISTRY = [
   layout("1020001", "pg_wal_storage", [], ["ts", "wal_files_bytes"]),
 ]
 const helpers = await importModule(
-  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, PROGRESS_VACUUM_FIELDS, progressVacuumColumns, registryCardFields, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows, walStoragePoints } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
+  'export { ACTIVITY_COLUMNS, ACTIVITY_DEFAULT_ORDER, ACTIVITY_DETAIL_COLUMNS, activityColumns, activityDurationHistory, activityDurationMs, chartColumnAvailable, chartFormat, chartPointValue, chartScale, chartUnit, chartableColumn, columnsFor, DATABASE_COLUMNS, denseHistoryFields, denseMetricHistory, isIdleActivity, isSystemActivity, isTimestampField, LOCK_COLUMNS, overviewBackendCounts, overviewValue, PLAN_COLUMNS, planColumns, postgresBlockSize, postgresByteColumns, postgresDatabaseCount, postgresMetricHistory, postgresMetricHistoryRequest, postgresMetricHistorySamples, PROGRESS_VACUUM_FIELDS, progressVacuumColumns, registryCardFields, sameEntity, selectedEntity, STATEMENT_COLUMNS, statementColumns, tableState, transactionDurationMs, visibleActivityRows, walStoragePoints } from "../src/postgres-view.tsx"; export { decoratePostgresIntervalRow, findingSemanticField, physicalField, planDefaultOrder, planRequest, postgresIdentity, postgresProjection, statementDefaultOrder, statementRequest } from "../src/postgres-metrics.ts"; export { humanDuration } from "../src/model.ts"',
   { plugins: [registryPlugin(TEST_REGISTRY)] },
 )
 
@@ -69,14 +69,14 @@ function row(typeId, values, logicalName = "pg_stat_statements") {
 }
 
 function activityRow(ordinal, values, timestamp = 10_000_000) {
-  return { logicalName: "pg_stat_activity", ordinal, segmentId: "a", timestamp, typeId: "1001003", values }
+  return { logicalName: "pg_stat_activity", ordinal, segmentId: "a", timestamp, typeId: "1001004", values }
 }
 
 test("PostgreSQL durations are not formatted as Unix timestamps", () => {
   assert.equal(helpers.isTimestampField("write_time"), false)
   assert.equal(helpers.isTimestampField("stats_reset"), true)
   assert.equal(helpers.overviewValue(123.4, "write_time", "en"), "123 ms")
-  assert.equal(helpers.overviewValue(123.4, "max_age_us", "en"), "123 μs")
+  assert.equal(helpers.overviewValue(123.4, "max_age_us", "en"), "123 µs")
   assert.equal(helpers.overviewValue(123.4, "wal_bytes", "en"), "123 B")
   assert.equal(helpers.overviewValue(true, "datallowconn", "ru"), "да")
   assert.equal(helpers.columnsFor([row("1", { write_time: 123.4 })])[0].kind, "milliseconds")
@@ -92,8 +92,9 @@ test("PostgreSQL chart actions accept only numeric values and declare semantic u
   }
   assert.equal(helpers.chartUnit({ field: "calls", kind: "number", rate: true }), "/s")
   assert.equal(helpers.chartUnit({ field: "rows", kind: "number" }), "count")
-  assert.equal(helpers.chartUnit({ field: "wal", kind: "bytes", rate: true }), "B/s")
-  assert.equal(helpers.chartUnit({ field: "latency", kind: "milliseconds" }), "ms")
+  assert.equal(helpers.chartUnit({ field: "wal", kind: "bytes", rate: true }), "")
+  assert.equal(helpers.chartUnit({ field: "latency", kind: "milliseconds" }), "")
+  assert.equal(helpers.chartUnit({ field: "latency", kind: "milliseconds", rate: true }), "/s")
   assert.equal(helpers.chartUnit({ field: "cpu", kind: "percent" }), "%")
   assert.equal(helpers.chartPointValue(2, { field: "buffers", kind: "kib" }), 2048)
   assert.equal(helpers.chartPointValue(2500, { field: "latency", kind: "microseconds" }), 2.5)
@@ -103,6 +104,20 @@ test("PostgreSQL chart actions accept only numeric values and declare semantic u
   assert.equal(helpers.chartScale({ field: "calls", kind: "number" }), "nonnegative")
   assert.equal(helpers.chartFormat("percent")(0.099, "en"), "<0.1%")
   assert.equal(helpers.chartFormat("percent")(12, "ru"), "12 %")
+})
+
+test("PostgreSQL block counters use the recorded exact block size and human byte dimensions", () => {
+  const settings = [row("settings", { name: "block_size", setting: "8192" }, "pg_settings")]
+  assert.equal(helpers.postgresBlockSize(settings, 1), 8192)
+  assert.equal(helpers.postgresBlockSize([row("settings", { name: "block_size", setting: "invalid" }, "pg_settings")], 1), null)
+
+  const io = helpers.statementColumns("io", 8192)
+  const read = io.find(({ field }) => field === "shared_blks_read")
+  const perCall = io.find(({ field }) => field === "blocks_per_call")
+  assert.deepEqual([read.kind, read.valueScale, perCall.kind, perCall.valueScale], ["bytes", 8192, "bytes", 8192])
+  assert.equal(helpers.chartPointValue(787, read), 6_447_104)
+  assert.equal(helpers.chartFormat("bytes", "/s")(6_447_104, "en"), "6.1 MiB/s")
+  assert.equal(helpers.statementColumns("io").find(({ field }) => field === "shared_blks_read").valueScale, null)
 })
 
 test("PostgreSQL generic histories preserve absent, null, zero, storage, and counter semantics", () => {
@@ -117,12 +132,12 @@ test("PostgreSQL generic histories preserve absent, null, zero, storage, and cou
   ]
   assert.deepEqual(helpers.postgresMetricHistory(rows, { field: "writes", kind: "number", rate: true }, true).map(({ value }) => value), [null, 3, null, null, 2])
   assert.deepEqual(helpers.postgresMetricHistory(rows, { field: "latency_ms", kind: "milliseconds" }, false).map(({ value }) => value), [3, null, 0])
-  const resetRows = [
+  const proofRows = [
     stored("a", 1_000_000, { writes: 100, stats_reset: "500000" }),
     stored("a", 2_000_000, { writes: 110, stats_reset: "500000" }),
     stored("a", 3_000_000, { writes: 120, stats_reset: "2500000" }),
   ]
-  assert.deepEqual(helpers.postgresMetricHistory(resetRows, { field: "writes", kind: "number", rate: true }, true, "stats_reset").map(({ value }) => value), [null, 10, null])
+  assert.deepEqual(helpers.postgresMetricHistory(proofRows, { field: "writes", kind: "number", rate: true }, true).map(({ value }) => value), [null, 10, 10])
 })
 
 test("dense statement histories cover per-call and percentage lens metrics", () => {
@@ -160,19 +175,19 @@ test("overview cards expose only numeric measurements and mark cumulative units 
   assert.match(source, /<PlanInfo cursor=\{cursor\} data=\{data\} historyRevision=\{historyRevision\} hour=\{hour\}/)
 })
 
-test("one overview history request covers every chart field and shares a single stats_reset", async () => {
+test("one overview history request covers every chart field without proof-only dependencies", async () => {
   const rate = (field) => ({ field, kind: "number", label: field, rate: true, sortable: true, width: 125 })
   const gauge = { field: "latency_ms", kind: "milliseconds", label: "latency_ms", width: 145 }
 
   const info = overviewHelpers.pgMetricHistoryPlan("info-1", [rate("dealloc")])
-  assert.deepEqual(info.fields, ["dealloc", "stats_reset"])
-  assert.deepEqual(info.columns.map(({ cumulative, resetField }) => [cumulative, resetField ?? null]), [[true, "stats_reset"]])
+  assert.deepEqual(info.fields, ["dealloc"])
+  assert.deepEqual(info.columns.map(({ cumulative }) => cumulative), [true])
 
   const mixed = overviewHelpers.pgMetricHistoryPlan("overview-1", [rate("writes"), gauge])
   assert.deepEqual(mixed.fields, ["writes", "latency_ms"])
-  assert.deepEqual(mixed.columns.map(({ column, cumulative, resetField }) => [column.field, cumulative, resetField ?? null]), [
-    ["writes", true, null],
-    ["latency_ms", false, null],
+  assert.deepEqual(mixed.columns.map(({ column, cumulative }) => [column.field, cumulative]), [
+    ["writes", true],
+    ["latency_ms", false],
   ])
 
   const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
@@ -360,15 +375,25 @@ test("Activity relative-duration histories keep the selected value and later sam
   ])
 })
 
+test("Activity state duration breaks across pure idle but keeps transactional idle", () => {
+  const rows = [
+    activityRow("1", { pid: 274126, state: "active", state_change: "9000000" }, 10_000_000),
+    activityRow("2", { pid: 274126, state: "idle", state_change: "10000000" }, 12_000_000),
+    activityRow("3", { pid: 274126, state: "idle in transaction", state_change: "12000000" }, 15_000_000),
+    activityRow("4", { pid: 274126, state: "idle in transaction (aborted)", state_change: "15000000" }, 19_000_000),
+  ]
+  assert.deepEqual(helpers.activityDurationHistory(rows, "state_duration_ms").map(({ value }) => value), [1_000, null, 3_000, 4_000])
+})
+
 test("elapsed Activity values use compact wall-time formatting", () => {
   assert.equal(helpers.humanDuration(850, "en"), "850 ms")
   assert.equal(helpers.humanDuration(5_200, "en"), "5.2 s")
-  assert.equal(helpers.humanDuration(59_999, "en"), "59.9 s")
-  assert.equal(helpers.humanDuration(60_000, "en"), "1m 00s")
-  assert.equal(helpers.humanDuration(194_000, "en"), "3m 14s")
-  assert.equal(helpers.humanDuration(7_560_000, "en"), "2h 06m")
-  assert.equal(helpers.humanDuration(163_800_000, "en"), "1d 21h")
-  assert.equal(helpers.humanDuration(-3_600_000, "ru"), "−1ч 00м")
+  assert.equal(helpers.humanDuration(59_999, "en"), "60 s")
+  assert.equal(helpers.humanDuration(60_000, "en"), "1 min")
+  assert.equal(helpers.humanDuration(194_000, "en"), "3.23 min")
+  assert.equal(helpers.humanDuration(7_560_000, "en"), "2.1 h")
+  assert.equal(helpers.humanDuration(163_800_000, "en"), "45.5 h")
+  assert.equal(helpers.humanDuration(-3_600_000, "ru"), "-1 ч")
   assert.equal(helpers.humanDuration(5_200, "ru"), "5,2 с")
   assert.equal(helpers.humanDuration(null, "ru"), "—")
 })
@@ -424,12 +449,23 @@ test("plan layouts expose plan identity and only their available semantics", () 
     assert.equal(helpers.physicalField(typeId, "shared_blk_read_ms_per_second"), sharedRead)
     assert.equal(helpers.physicalField(typeId, "planning_ms_per_second"), planning)
     assert.equal(helpers.postgresProjection(typeId).includes("queryid_stat_statements"), lastAttribution)
-    const decorated = helpers.decoratePostgresIntervalRow(row(typeId, { calls: 2, total_time: 18 }, "pg_store_plans"))
+    const decorated = helpers.decoratePostgresIntervalRow(row(typeId, { calls: "9007199254740993", calls_per_second: 2, total_time: 18 }, "pg_store_plans"))
+    assert.equal(decorated.values.calls, "9007199254740993")
+    assert.equal(decorated.values.calls_per_second, 2)
     assert.equal(decorated.values.execution_ms_per_second, 18)
     assert.equal(decorated.values.mean_exec_ms_per_call, 9)
   }
   assert.deepEqual(helpers.postgresProjection("1016001"), ["dealloc", "stats_reset"])
-  assert.equal(helpers.PLAN_COLUMNS.at(-1)?.field, "queryid_stat_statements")
+  assert.equal(helpers.PLAN_COLUMNS.some(({ field }) => field === "queryid_stat_statements"), true)
+  const queryId = helpers.PLAN_COLUMNS.find(({ field }) => field === "queryid")
+  const lastQueryId = helpers.PLAN_COLUMNS.find(({ field }) => field === "queryid_stat_statements")
+  const exact = row("1003001", { queryid: "17" }, "pg_store_plans")
+  const vadv = row("1004001", { queryid: 0, queryid_stat_statements: "29" }, "pg_store_plans")
+  assert.equal(queryId.available(exact), true)
+  assert.equal(queryId.available(vadv), false)
+  assert.equal(lastQueryId.available(exact), false)
+  assert.equal(lastQueryId.available(vadv), true)
+  assert.equal(lastQueryId.render(vadv), "29")
 })
 
 test("dense PostgreSQL columns and the Plans tab stay available by section", async () => {
@@ -438,7 +474,7 @@ test("dense PostgreSQL columns and the Plans tab stay available by section", asy
   for (const field of ["calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second", "shared_blks_read", "wal_bytes", "planning_ms_per_second"]) {
     assert.equal(statementFields.includes(field), true)
   }
-  for (const field of ["planid", "queryid", "plan", "calls_per_second", "execution_ms_per_second", "rows_per_second", "queryid_stat_statements"]) {
+  for (const field of ["planid", "queryid", "plan_summary", "calls", "calls_per_second", "execution_ms_per_second", "rows_per_second", "queryid_stat_statements"]) {
     assert.equal(planFields.includes(field), true)
   }
   const source = await readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8")
@@ -459,15 +495,15 @@ test("dense PostgreSQL columns and the Plans tab stay available by section", asy
 
 test("every PostgreSQL dense table and lens has an exact meaning-first order", () => {
   const fields = (columns) => columns.map(({ field }) => field)
-  assert.deepEqual(fields(helpers.statementColumns("load")), ["query", "datname", "usename", "queryid", "toplevel", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"])
-  assert.deepEqual(fields(helpers.statementColumns("per_call")), ["query", "datname", "usename", "queryid", "toplevel", "mean_exec_ms_per_call", "rows_per_call", "blocks_per_call", "calls_per_second"])
-  assert.deepEqual(fields(helpers.statementColumns("io")), ["query", "datname", "usename", "queryid", "toplevel", "shared_blks_read", "shared_blks_hit", "hit_pct", "blocks_per_call", "shared_blks_dirtied", "shared_blks_written", "local_blks_read", "temp_blks_read", "temp_blks_written"])
-  assert.deepEqual(fields(helpers.statementColumns("resources")), ["query", "datname", "usename", "queryid", "toplevel", "wal_bytes", "wal_per_call", "temp_blks_written", "planning_ms_per_second", "plan_time_pct", "calls_per_second", "execution_ms_per_second"])
-  assert.deepEqual(fields(helpers.statementColumns("stability")), ["query", "datname", "usename", "queryid", "toplevel", "cv", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "stddev_exec_time_ms", "calls_per_second"])
-  assert.deepEqual(fields(helpers.planColumns("load")), ["plan", "datname", "usename", "queryid", "planid", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"])
-  assert.deepEqual(fields(helpers.planColumns("timing")), ["plan", "datname", "usename", "queryid", "planid", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "stddev_exec_time_ms", "calls_per_second", "first_call", "last_call"])
-  assert.deepEqual(fields(helpers.planColumns("io")), ["plan", "datname", "usename", "queryid", "planid", "shared_blks_read", "shared_blks_hit", "hit_pct", "blocks_per_call", "shared_blks_dirtied", "local_blks_read", "temp_blks_read"])
-  assert.deepEqual(fields(helpers.planColumns("identity")), ["plan", "datname", "usename", "queryid", "planid", "cmd_type", "queryid_stat_statements", "calls_per_second"])
+  assert.deepEqual(fields(helpers.statementColumns("load")), ["query", "datname", "usename", "queryid", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"])
+  assert.deepEqual(fields(helpers.statementColumns("per_call")), ["query", "datname", "usename", "queryid", "mean_exec_ms_per_call", "rows_per_call", "blocks_per_call", "calls_per_second"])
+  assert.deepEqual(fields(helpers.statementColumns("io")), ["query", "datname", "usename", "queryid", "shared_blks_read", "shared_blks_hit", "hit_pct", "blocks_per_call", "shared_blks_dirtied", "shared_blks_written", "local_blks_read", "temp_blks_read", "temp_blks_written"])
+  assert.deepEqual(fields(helpers.statementColumns("resources")), ["query", "datname", "usename", "queryid", "wal_bytes", "wal_per_call", "temp_blks_written", "planning_ms_per_second", "plan_time_pct", "calls_per_second", "execution_ms_per_second"])
+  assert.deepEqual(fields(helpers.statementColumns("stability")), ["query", "datname", "usename", "queryid", "cv", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "stddev_exec_time_ms", "calls_per_second"])
+  assert.deepEqual(fields(helpers.planColumns("load")), ["plan_summary", "datname", "usename", "queryid", "queryid_stat_statements", "planid", "calls_per_second", "execution_ms_per_second", "mean_exec_ms_per_call", "rows_per_second"])
+  assert.deepEqual(fields(helpers.planColumns("timing")), ["plan_summary", "datname", "usename", "queryid", "queryid_stat_statements", "planid", "mean_exec_time_ms", "min_exec_time_ms", "max_exec_time_ms", "stddev_exec_time_ms", "calls_per_second", "first_call", "last_call"])
+  assert.deepEqual(fields(helpers.planColumns("io")), ["plan_summary", "datname", "usename", "queryid", "queryid_stat_statements", "planid", "shared_blks_read", "shared_blks_hit", "hit_pct", "blocks_per_call", "shared_blks_dirtied", "local_blks_read", "temp_blks_read"])
+  assert.deepEqual(fields(helpers.planColumns("identity")), ["plan_summary", "datname", "usename", "queryid", "queryid_stat_statements", "planid", "cmd_type", "calls", "calls_per_second"])
   assert.deepEqual(fields(helpers.LOCK_COLUMNS), ["pid", "datname", "usename", "query", "application_name", "lock_target", "lock_relname", "lock_locktype", "lock_mode", "blocked_by", "state", "wait_event_type", "wait_event", "waitstart"])
   assert.deepEqual(fields(helpers.DATABASE_COLUMNS), ["datname", "numbackends", "xact_commit", "xact_rollback", "sessions", "tup_returned", "tup_fetched", "tup_inserted", "tup_updated", "tup_deleted", "blks_read", "blks_hit", "blk_read_time", "blk_write_time", "temp_files", "temp_bytes", "conflicts", "deadlocks", "frozen_xid_age"])
   for (const lens of ["load", "per_call", "io", "resources", "stability"]) assert.deepEqual(fields(helpers.statementColumns(lens)).slice(0, 2), ["query", "datname"])
@@ -538,7 +574,7 @@ test("dense numeric columns advertise server sorting and text identities do not"
   ]
   for (const [columns, request] of lenses) {
     for (const column of columns) {
-      const quantitative = ["number", "bytes", "milliseconds", "percent", "timestamp"].includes(column.kind)
+      const quantitative = column.field !== "calls" && ["number", "id", "bytes", "milliseconds", "percent", "timestamp"].includes(column.kind)
       assert.equal(column.sortable === true, quantitative, column.field)
       if (quantitative) assert.ok(request.order[column.field]?.length > 0, column.field)
     }
@@ -603,8 +639,9 @@ test("dense paging resets, ignores stale work, and preserves retry state", async
   const source = await readFile(new URL("../src/app.tsx", import.meta.url), "utf8")
   assert.match(source, /const generation = \+\+snapshotGeneration\.current/)
   assert.match(source, /const stale = \(\) => controller\.signal\.aborted \|\| generation !== snapshotGeneration\.current/)
-  assert.match(source, /const snapshotTarget = [\s\S]*snapshotTargetKey\(snapshotGroups, cursor, cgroupTargetGroups, order, denseOptions\)/)
-  assert.match(source, /const currentData = currentSnapshot\.target === snapshotTarget \? currentSnapshot\.data : EMPTY_DATA/)
+  assert.match(source, /const requestOrder = visibleSource === "processes"[\s\S]*const snapshotTarget = [\s\S]*snapshotTargetKey\(snapshotGroups, cursor, cgroupTargetGroups, requestOrder, denseOptions\)/)
+  assert.match(source, /const retainsDenseRows = denseRequest !== undefined[\s\S]*currentSnapshot\.cursor === cursor[\s\S]*currentSnapshot\.denseSection === denseRequest\.section/)
+  assert.match(source, /currentSnapshot\.target === snapshotTarget \|\| retainsDenseRows \? currentSnapshot\.data : EMPTY_DATA/)
   assert.match(source, /let inFlight = false/)
   assert.match(source, /if \(inFlight \|\| stale\(\)\)/)
   assert.match(source, /pageCursor === undefined[\s\S]*mergeSnapshotData\(companion[\s\S]*mergeSnapshotData\(current/)

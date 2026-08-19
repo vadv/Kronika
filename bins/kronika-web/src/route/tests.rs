@@ -1,7 +1,6 @@
 use super::{
-    ActiveCursor, DEFAULT_SNAPSHOT_PAGE_SIZE, DataRequest, Filter, MAX_SEARCH_PATTERN_CHARS,
-    MAX_SEARCH_PATTERNS, MAX_SNAPSHOT_PAGE_SIZE, Order, Route, RouteError, SegmentRequest, Window,
-    parse,
+    ActiveCursor, DEFAULT_SNAPSHOT_PAGE_SIZE, DataRequest, Filter, MAX_SEARCH_EXPRESSION_CHARS,
+    MAX_SNAPSHOT_PAGE_SIZE, Order, Route, RouteError, SegmentRequest, Window, parse,
 };
 
 #[test]
@@ -130,12 +129,29 @@ fn relation_hour_series_accepts_only_one_exact_aggregate_scope() {
         ]
     );
 
+    let Route::Hour(hour) = parse(
+        "/api/hour",
+        Some(
+            "from=1&to=2&section=pg_stat_user_indexes&group=tablespace&field=main_fork_bytes&where.tablespace_oid=4294967295",
+        ),
+    )
+    .expect("tablespace relation series")
+    else {
+        panic!("hour route");
+    };
+    let series = hour.series.expect("relation series");
+    assert_eq!(series.group, Some(super::RelationGroup::Tablespace));
+    assert_eq!(series.filters[0].column, "tablespace_oid");
+    assert_eq!(series.filters[0].value, "4294967295");
+
     for query in [
         "from=1&to=2&section=pg_stat_user_tables&group=object&field=seq_scan&where.datid=7",
         "from=1&to=2&section=pg_stat_activity&group=database&field=active&where.datid=7",
         "from=1&to=2&section=pg_stat_user_tables&group=database&field=seq_scan",
         "from=1&to=2&section=pg_stat_user_tables&group=schema&field=seq_scan&where.datid=7",
-        "from=1&to=2&section=pg_stat_user_tables&group=database&field=seq_scan&where.datid=7&type_id=1013001",
+        "from=1&to=2&section=pg_stat_user_tables&group=database&field=seq_scan&where.datid=7&type_id=1013005",
+        "from=1&to=2&section=pg_stat_user_tables&group=tablespace&field=seq_scan&where.tablespace_oid=0",
+        "from=1&to=2&section=pg_stat_user_tables&group=tablespace&field=seq_scan&where.tablespace_oid=4294967296",
     ] {
         assert!(
             parse("/api/hour", Some(query)).is_err(),
@@ -194,7 +210,7 @@ fn snapshot_paging_inputs_enable_one_bounded_page() {
     assert_eq!(
         parse(
             "/api/segments/7/snapshot",
-            Some("at=9&section=pg_stat_user_tables&group=object&type_id=1013004"),
+            Some("at=9&section=pg_stat_user_tables&group=object&type_id=1013008"),
         ),
         Err(RouteError::BadParameter("type_id".to_owned())),
     );
@@ -213,7 +229,7 @@ fn snapshot_paging_inputs_enable_one_bounded_page() {
     .expect("searched page") else {
         panic!("snapshot route");
     };
-    assert_eq!(searched.search, ["slow query"]);
+    assert_eq!(searched.search.as_deref(), Some("slow query"));
     assert_eq!(searched.page_size, Some(DEFAULT_SNAPSHOT_PAGE_SIZE));
 
     let Route::Snapshot(resumed) = parse(
@@ -234,6 +250,34 @@ fn snapshot_paging_inputs_enable_one_bounded_page() {
         panic!("snapshot route");
     };
     assert_eq!(sized.page_size, Some(17));
+}
+
+#[test]
+fn statement_text_first_match_requires_one_exact_bounded_shape() {
+    let path = "/api/segments/7/snapshot";
+    let valid = "at=9&section=pg_stat_statements&field=query&page_size=1&search=query_id%3A-42&first_match=1";
+    let Route::Snapshot(snapshot) = parse(path, Some(valid)).expect("first Statement text") else {
+        panic!("snapshot route");
+    };
+    assert!(snapshot.first_match);
+    assert_eq!(snapshot.page_size, Some(1));
+    assert_eq!(snapshot.search.as_deref(), Some("query_id:-42"));
+
+    for query in [
+        "at=9&section=pg_stat_statements&field=query&search=query_id%3A42&first_match=1",
+        "at=9&section=pg_stat_statements&field=queryid&field=query&page_size=1&search=query_id%3A42&first_match=1",
+        "at=9&section=pg_store_plans&field=query&page_size=1&search=query_id%3A42&first_match=1",
+        "at=9&section=pg_stat_statements&field=query&by=queryid&page_size=1&search=query_id%3A42&first_match=1",
+        "at=9&section=pg_stat_statements&field=query&page_size=1&cursor=x&search=query_id%3A42&first_match=1",
+        "at=9&section=pg_stat_statements&field=query&page_size=1&search=query_id%3A42&first_match=0",
+        "at=9&section=pg_stat_statements&field=query&page_size=1&search=query_id%3A42&first_match=1&first_match=1",
+    ] {
+        assert_eq!(
+            parse(path, Some(query)),
+            Err(RouteError::BadParameter("first_match".to_owned())),
+            "{query}",
+        );
+    }
 }
 
 #[test]
@@ -288,35 +332,24 @@ fn snapshot_page_size_is_positive_and_bounded() {
 }
 
 #[test]
-fn snapshot_search_is_repeatable_trimmed_and_bounded() {
+fn snapshot_search_is_single_trimmed_and_bounded() {
     let path = "/api/segments/7/snapshot";
     let prefix = "at=9&section=pg_stat_statements&field=query";
-    let searches = (0..MAX_SEARCH_PATTERNS)
-        .map(|index| format!("search=term{index}"))
-        .collect::<Vec<_>>()
-        .join("&");
-    let query = format!("{prefix}&{searches}");
-    let Route::Snapshot(snapshot) = parse(path, Some(&query)).expect("maximum search patterns")
-    else {
-        panic!("snapshot route");
-    };
-    assert_eq!(snapshot.search.len(), MAX_SEARCH_PATTERNS);
-
-    let unicode_boundary = "Ж".repeat(MAX_SEARCH_PATTERN_CHARS);
+    let unicode_boundary = "Ж".repeat(MAX_SEARCH_EXPRESSION_CHARS);
     let query = format!("{prefix}&search=++{unicode_boundary}++");
     let Route::Snapshot(snapshot) = parse(path, Some(&query)).expect("Unicode scalar boundary")
     else {
         panic!("snapshot route");
     };
-    assert_eq!(snapshot.search, [unicode_boundary]);
+    assert_eq!(snapshot.search, Some(unicode_boundary));
 
-    let too_many = format!("{prefix}&{searches}&search=one-too-many");
-    let too_long = "Ж".repeat(MAX_SEARCH_PATTERN_CHARS + 1);
+    let repeated = format!("{prefix}&search=first&search=second");
+    let too_long = "Ж".repeat(MAX_SEARCH_EXPRESSION_CHARS + 1);
     for query in [
         format!("{prefix}&search="),
         format!("{prefix}&search=+++"),
         format!("{prefix}&search={too_long}"),
-        too_many,
+        repeated,
     ] {
         assert_eq!(
             parse(path, Some(&query)),
@@ -339,7 +372,7 @@ fn snapshot_shares_only_a_projection_between_sections() {
     assert_eq!(projected.fields, ["user", "mem_total"]);
     assert_eq!(projected.page_size, None);
     assert_eq!(projected.cursor, None);
-    assert!(projected.search.is_empty());
+    assert!(projected.search.is_none());
     assert!(projected.by.is_empty());
 
     let Route::Snapshot(filtered) = parse(

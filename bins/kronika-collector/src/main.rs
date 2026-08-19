@@ -366,6 +366,11 @@ struct PgPendingOutcome {
     opening_os_collected: bool,
 }
 
+struct BufferedWindow {
+    buffers: SectionBuffers,
+    pending_users: Vec<(u8, u32)>,
+}
+
 /// Retain one `PostgreSQL` batch through a pre-append close and encode it once
 /// more against the new segment dictionary before the stream may advance.
 #[allow(
@@ -391,7 +396,7 @@ fn append_pending_pg_batch(
             .then(|| sched.recollection_due(&DueSet::default(), Instant::now()));
         let includes_settings = matches!(batch, PgBatch::Settings(_))
             || (segment.needs_pg_settings() && !opening_settings.is_empty());
-        let buffers = buffer_pg_batch(
+        let buffered = buffer_pg_batch(
             segment,
             batch,
             opening_settings,
@@ -405,7 +410,7 @@ fn append_pending_pg_batch(
             ))
         })?;
         let encode_started = Instant::now();
-        let flushed = match encode_window(buffers, segment.interner()) {
+        let flushed = match encode_window(buffered.buffers, segment.interner()) {
             Ok(flushed) => flushed,
             Err(err) => {
                 log_event(
@@ -453,6 +458,9 @@ fn append_pending_pg_batch(
         if includes_settings && !segment.is_empty() {
             segment.mark_pg_settings_present();
         }
+        if !segment.is_empty() {
+            segment.mark_users_recorded(&buffered.pending_users);
+        }
         let frame_bytes = encoded_bytes
             .saturating_add(u64::try_from(kronika_format::FRAME_HEADER_LEN).unwrap_or(u64::MAX));
         return Ok(PgPendingOutcome {
@@ -493,10 +501,11 @@ fn buffer_pg_batch(
     opening_due: Option<&DueSet>,
     config: &Config,
     ts: i64,
-) -> std::result::Result<SectionBuffers, ()> {
+) -> std::result::Result<BufferedWindow, ()> {
     let fs = ProcFs::from_env();
     let in_container = detect_container(&fs);
     let mut buffers = SectionBuffers::new();
+    let mut pending_users = Vec::new();
     if segment.is_empty() {
         let facts = collect_instance().map_err(|err| {
             log_buffer_failure(&err);
@@ -519,14 +528,19 @@ fn buffer_pg_batch(
         &[]
     };
     if let Some(due) = opening_due {
-        let os = collect_os_sources(
-            &fs,
-            segment.interner_mut(),
-            OsScope::Host.as_u8(),
-            ts,
-            in_container,
-            due,
-        );
+        let os = {
+            let (interner, users) = segment.os_state_mut();
+            collect_os_sources(
+                &fs,
+                interner,
+                users,
+                OsScope::Host.as_u8(),
+                ts,
+                in_container,
+                due,
+            )
+        };
+        pending_users.extend_from_slice(os.pending_users());
         push_os_sources(&mut buffers, &os).map_err(|err| {
             log_buffer_failure(&err);
         })?;
@@ -534,7 +548,10 @@ fn buffer_pg_batch(
     push_pg_batch(&mut buffers, segment.interner_mut(), batch, settings).map_err(|err| {
         log_buffer_failure(&err);
     })?;
-    Ok(buffers)
+    Ok(BufferedWindow {
+        buffers,
+        pending_users,
+    })
 }
 
 /// One collection cycle: read the due sources, append bounded windows, and
@@ -647,7 +664,7 @@ fn append_pending_window(
     for attempt in 0..2 {
         let fresh_segment = segment.is_empty();
         let includes_settings = segment.needs_pg_settings() && !opening_settings.is_empty();
-        let buffers = match buffer_window(
+        let buffered = match buffer_window(
             segment,
             &attempt_due,
             log_rows,
@@ -655,7 +672,7 @@ fn append_pending_window(
             config,
             ts,
         ) {
-            Ok(Some(buffers)) => buffers,
+            Ok(Some(buffered)) => buffered,
             Ok(None) => {
                 outcome.accepted = true;
                 return Ok(outcome);
@@ -667,7 +684,7 @@ fn append_pending_window(
                 return Ok(outcome);
             }
         };
-        let flushed = match encode_window(buffers, segment.interner()) {
+        let flushed = match encode_window(buffered.buffers, segment.interner()) {
             Ok(flushed) => flushed,
             Err(err) => {
                 log_event(
@@ -712,6 +729,9 @@ fn append_pending_window(
                 if includes_settings && !segment.is_empty() {
                     segment.mark_pg_settings_present();
                 }
+                if !segment.is_empty() {
+                    segment.mark_users_recorded(&buffered.pending_users);
+                }
                 outcome.accepted = true;
                 outcome.appended = true;
                 return Ok(outcome);
@@ -755,7 +775,7 @@ fn buffer_window(
     opening_settings: &[kronika_source_pg::settings::SettingsRow],
     config: &Config,
     ts: i64,
-) -> std::result::Result<Option<SectionBuffers>, BufferFailure> {
+) -> std::result::Result<Option<BufferedWindow>, BufferFailure> {
     let fs = ProcFs::from_env();
     let in_container = detect_container(&fs);
     let mut buffers = SectionBuffers::new();
@@ -777,14 +797,18 @@ fn buffer_window(
         }
     }
 
-    let os = collect_os_sources(
-        &fs,
-        segment.interner_mut(),
-        OsScope::Host.as_u8(),
-        ts,
-        in_container,
-        due,
-    );
+    let os = {
+        let (interner, users) = segment.os_state_mut();
+        collect_os_sources(
+            &fs,
+            interner,
+            users,
+            OsScope::Host.as_u8(),
+            ts,
+            in_container,
+            due,
+        )
+    };
     let settings = if segment.needs_pg_settings() {
         opening_settings
     } else {
@@ -800,7 +824,10 @@ fn buffer_window(
     if buffers.is_empty() {
         return Ok(None);
     }
-    Ok(Some(buffers))
+    Ok(Some(BufferedWindow {
+        buffers,
+        pending_users: os.pending_users().to_vec(),
+    }))
 }
 
 fn log_buffer_failure(err: &anyhow::Error) {
