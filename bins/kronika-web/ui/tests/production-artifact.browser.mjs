@@ -2102,6 +2102,7 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
       await settleLayout(cdp)
       await assertSearchControlContained(cdp, `EN grouped search at ${width}`, '[data-search-surface="pg_stat_user_indexes"]')
     }
+    await assertSearchChipHierarchyMatrix(cdp, "grouped search chip hierarchy")
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
     await cdp.evaluate(`document.querySelector('[aria-label="Clear the filter"]').click()`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("find") === null`, "comparison clear")
@@ -3740,6 +3741,74 @@ async function assertSearchControlContained(cdp, label, selector = '[data-testid
       await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
       await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 })
       await cdp.waitFor(`document.querySelector('[data-testid="search-help"]') === null`, `${label} ${locale} ${width}px help close`)
+    }
+  }
+}
+
+async function assertSearchChipHierarchy(cdp, label) {
+  const geometry = await cdp.evaluate(`(() => {
+    const root = document.querySelector('[data-testid="search-chips"]')
+    const predicates = [...root.querySelectorAll('[data-search-predicate]')]
+    const syntax = [...root.querySelectorAll('[data-search-syntax]')]
+    const bounds = (node) => {
+      const rect = node.getBoundingClientRect()
+      return { bottom: rect.bottom, height: rect.height, top: rect.top }
+    }
+    const predicateStyle = getComputedStyle(predicates[0])
+    const syntaxStyles = syntax.map((token) => getComputedStyle(token))
+    const children = [...root.children]
+    const lineCenters = []
+    for (const child of children) {
+      const rect = child.getBoundingClientRect()
+      const center = rect.top + rect.height / 2
+      if (!lineCenters.some((candidate) => Math.abs(candidate - center) <= 1)) lineCenters.push(center)
+    }
+    const predicateHeight = predicates[0].getBoundingClientRect().height
+    const rowGap = Number.parseFloat(getComputedStyle(root).rowGap)
+    return {
+      allChildrenAreElements: [...root.childNodes].every((node) => node.nodeType === Node.ELEMENT_NODE),
+      childHeights: children.map((child) => child.getBoundingClientRect().height),
+      lineCount: lineCenters.length,
+      predicate: {
+        color: predicateStyle.color,
+        fontSize: Number.parseFloat(predicateStyle.fontSize),
+        height: predicateHeight,
+      },
+      rootHeight: root.getBoundingClientRect().height,
+      rowGap,
+      syntax: syntax.map((token, index) => ({
+        background: syntaxStyles[index].backgroundColor,
+        border: [syntaxStyles[index].borderTopWidth, syntaxStyles[index].borderRightWidth, syntaxStyles[index].borderBottomWidth, syntaxStyles[index].borderLeftWidth],
+        color: syntaxStyles[index].color,
+        fontSize: Number.parseFloat(syntaxStyles[index].fontSize),
+        geometry: bounds(token),
+        kind: token.getAttribute("data-search-syntax"),
+        text: token.textContent,
+      })),
+      text: root.textContent,
+    }
+  })()`)
+  assert.equal(geometry.allChildrenAreElements, true, `${label}: ${JSON.stringify(geometry)}`)
+  assert.match(geometry.text, /^\(tablespace: fast_ssdORtablespace: archive\)AND\(.+OR.+\)$/)
+  assert.deepEqual(geometry.syntax.map(({ text }) => text), ["(", "OR", ")", "AND", "(", "OR", ")"], `${label}: ${JSON.stringify(geometry)}`)
+  assert.deepEqual(geometry.syntax.map(({ kind }) => kind), ["parenthesis", "connector", "parenthesis", "connector", "parenthesis", "connector", "parenthesis"], `${label}: ${JSON.stringify(geometry)}`)
+  assert.equal(geometry.predicate.fontSize, 10, `${label}: ${JSON.stringify(geometry)}`)
+  assert.ok(geometry.syntax.every(({ fontSize }) => fontSize < geometry.predicate.fontSize), `${label}: ${JSON.stringify(geometry)}`)
+  assert.ok(geometry.syntax.every(({ color }) => color !== geometry.predicate.color), `${label}: ${JSON.stringify(geometry)}`)
+  assert.ok(geometry.syntax.every(({ background, border }) => background === "rgba(0, 0, 0, 0)" && border.every((width) => width === "0px")), `${label}: ${JSON.stringify(geometry)}`)
+  assert.ok(geometry.syntax.every(({ geometry: token }) => Math.abs(token.height - geometry.predicate.height) <= 0.5), `${label}: ${JSON.stringify(geometry)}`)
+  assert.ok(geometry.childHeights.every((height) => height <= geometry.predicate.height + 0.5), `${label}: ${JSON.stringify(geometry)}`)
+  assert.ok(geometry.rootHeight <= geometry.lineCount * geometry.predicate.height + Math.max(geometry.lineCount - 1, 0) * geometry.rowGap + 1, `${label}: ${JSON.stringify(geometry)}`)
+}
+
+async function assertSearchChipHierarchyMatrix(cdp, label) {
+  for (const locale of ["ru", "en"]) {
+    await cdp.evaluate(`document.querySelector('[data-testid="locale-${locale}"]').click()`)
+    await cdp.waitFor(`document.documentElement.lang === ${JSON.stringify(locale)}`, `${label} ${locale} locale`)
+    for (const width of [360, 800, 1280]) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: width === 360 ? 640 : 768, mobile: false, width })
+      await settleLayout(cdp)
+      await assertSearchChipHierarchy(cdp, `${label} ${locale} ${width}px`)
     }
   }
 }
