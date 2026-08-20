@@ -1541,9 +1541,21 @@ const fn try_another_database(completion: QueryCompletion, admitted: bool) -> bo
 fn settings_equal_ignoring_ts(left: &[SettingsRow], right: &[SettingsRow]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right).all(|(left, right)| {
-            let mut normalized = left.clone();
-            normalized.ts = right.ts;
-            &normalized == right
+            left.datid == right.datid
+                && left.datname == right.datname
+                && left.usesysid == right.usesysid
+                && left.usename == right.usename
+                && left.name == right.name
+                && left.setting == right.setting
+                && left.unit == right.unit
+                && left.source == right.source
+                && left.sourcefile == right.sourcefile
+                && left.sourceline == right.sourceline
+                && left.pending_restart == right.pending_restart
+                && left.context == right.context
+                && left.vartype == right.vartype
+                && left.boot_val == right.boot_val
+                && left.reset_val == right.reset_val
         })
 }
 
