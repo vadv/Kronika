@@ -522,6 +522,21 @@ Events expands the same findings drawn on the shared healthline. The timeline
 always spans the complete hour, does not connect missing periods and drives
 every view with one cursor. Marker shape identifies log events and threshold
 crossings.
+
+The Statements page opens with an hour activity ledger above its table: the
+server's ranked heatmap for one curated cut — execution time, calls, rows,
+shared blocks read or dirtied, temp blocks written, WAL bytes — drawn as one
+strip per statement with the hour total and the at-cursor reading beside it. A
+pinned totals band shows the whole instance's rhythm and a pinned others band
+carries everything beyond the ranked rows. Cells share one global color scale
+by default with an explicit per-row alternative; a missing interval draws
+nothing and a real zero draws the faintest step. The strips follow the shared
+cursor, a cell click moves it, a row click filters the table to that statement,
+and an explicit control expands the ledger to full screen with more ranked
+rows. Block counters scale to bytes with the recorded block size and stay
+block counts without one. Query text never travels with the ranking response:
+the loaded table page labels most ranked rows and the rest fetch one bounded
+text row each.
 The selected timeline lane controls only the lines, legend and readings that
 are drawn. Shared cursor navigation instead uses one sorted exact-deduplicated
 union of the timestamps already available to the current screen: every shared
@@ -934,9 +949,12 @@ The small static data client composes segment resources into `listMetrics`,
 configured source families, co-shipped registry metadata and layouts found in
 the catalog. `listSeries` discovers identities and applies exact label filters.
 The other calls request every intersecting segment and combine finished and
-active representations by `SegmentId`. `heatmap` derives the ranked top view in
-the client; HTTP has no top entity. Health is an ordinary indexed time series
-available through `history` and section indexes.
+active representations by `SegmentId`. `heatmap` asks the server for the ranked
+top view: the server scans the window next to the segments and answers with the
+ranked identities, their cells and their last-seen labels, so the response
+stays kilobytes at any entity count. The bundled-fixture build derives the same
+shape in the client from its embedded rows. Health is an ordinary indexed time
+series available through `history` and section indexes.
 
 History can select several fields and series. The client requests every segment
 that intersects the window. Neither client nor server applies an implicit limit
@@ -961,6 +979,11 @@ Ranking uses the whole requested window and does not change with the number of
 columns. The first pass scans the whole window and selects the top K identities.
 Only the second pass allocates the K-by-column result and fills its cells. The
 requested K limits the returned identities, not the work needed to rank them.
+A counter ranks by its whole-window delta and a gauge by its whole-window
+maximum. The response also carries a totals band — the per-column sum of every
+entity's cell — and an others band equal to totals minus the ranked rows, so
+the ranked strips always reconcile with the whole instance. Both bands are
+plain arithmetic on the same cells.
 Long ranges use segment-grain `.idx` for fields in the summary allowlist.
 Other fields, sub-segment resolution and partial boundary segments use
 projected raw samples.

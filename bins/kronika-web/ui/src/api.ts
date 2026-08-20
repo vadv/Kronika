@@ -1,6 +1,7 @@
 import { registry } from "kronika:registry"
 
 import { bundledFixtureHour, bundledFixtureRange } from "./fixture"
+import { heatmap, type HeatmapBand, type HeatmapSample, type HeatmapView, type HeatmapViewRow } from "./heatmap"
 import { rowMatchesLocator } from "./locator"
 import { decoratePostgresIntervalRow, intervalMetric, PG_STAT_STATEMENTS_TYPE_IDS, postgresIdentity, supportsPostgresDerivedOrder, unique } from "./postgres-metrics"
 import { parseRelationLayout, parseRelationRow, relationGroup, relationLayoutKey, relationRateFields, relationRowKey, type RelationGroup, type RelationLayout, type RelationRow } from "./postgres-relations"
@@ -450,6 +451,137 @@ export async function loadSeries(
     }
   }
   return rows
+}
+
+// The ranked top view of one section over the hour. The server derives it
+// next to the segments and answers with kilobytes; the bundled fixture
+// derives the same shape locally through the heatmap module.
+export async function loadHeatmap(
+  selectedHour: number,
+  section: string,
+  field: string,
+  labels: readonly string[],
+  columns: number,
+  top: number,
+  signal: AbortSignal,
+): Promise<HeatmapView> {
+  signal.throwIfAborted()
+  const from = floorHour(selectedHour)
+  const to = from + 3_600_000_000 - 1
+  if (bundledFixtureRange() !== null) return fixtureHeatmap(from, section, field, labels, columns, top)
+  const query = [
+    `from=${from}`,
+    `to=${to}`,
+    `section=${encodeURIComponent(section)}`,
+    `field=${encodeURIComponent(field)}`,
+    `columns=${columns}`,
+    `top=${top}`,
+    ...labels.map((name) => `label=${encodeURIComponent(name)}`),
+  ].join("&")
+  const records = await request(`/api/heatmap?${query}`, signal)
+  const cells = (stored: unknown): (number | null)[] => Array.isArray(stored)
+    ? stored.map((cell) => typeof cell === "number" && Number.isFinite(cell) ? cell : null)
+    : []
+  const total = (stored: unknown): number | null => typeof stored === "number" && Number.isFinite(stored) ? stored : null
+  const texts = (stored: unknown): (string | null)[] => Array.isArray(stored)
+    ? stored.map((entry) => entry === null || entry === undefined ? null : typeof entry === "object" ? null : String(entry))
+    : []
+  let cumulative = true
+  let intervals: { start: number; end: number }[] = []
+  let entityCount = 0
+  let othersCount = 0
+  const rows: HeatmapViewRow[] = []
+  let totalsBand: HeatmapBand = { total: null, cells: [] }
+  let othersBand: HeatmapBand = { total: null, cells: [] }
+  for (const record of records) {
+    if (record.record === "heatmap") {
+      cumulative = record["class"] === "cumulative"
+      entityCount = Number(record["entity_count"] ?? 0)
+      othersCount = Number(record["others_count"] ?? 0)
+      intervals = Array.isArray(record["intervals"])
+        ? record["intervals"].map((interval) => ({
+          start: integer((interval as { readonly start: unknown }).start, "heatmap interval start"),
+          end: integer((interval as { readonly end: unknown }).end, "heatmap interval end"),
+        }))
+        : []
+    } else if (record.record === "heatmap_row") {
+      rows.push({
+        typeId: requiredText(record.type_id, "heatmap row type_id"),
+        identity: texts(record["identity"]),
+        labels: texts(record["labels"]),
+        total: total(record["total"]),
+        cells: cells(record["cells"]),
+      })
+    } else if (record.record === "heatmap_band") {
+      const band = { total: total(record["total"]), cells: cells(record["cells"]) }
+      if (record["band"] === "totals") totalsBand = band
+      else othersBand = band
+    }
+  }
+  return { cumulative, intervals, rows, totals: totalsBand, others: othersBand, othersCount, entityCount }
+}
+
+// The fixture branch runs the same contract locally: group the bundled hour's
+// rows into per-entity samples and derive the ranked view in the client.
+function fixtureHeatmap(
+  from: number,
+  section: string,
+  field: string,
+  labels: readonly string[],
+  columns: number,
+  top: number,
+): HeatmapView {
+  const fixture = bundledFixtureHour(from)
+  const rows = fixture === null ? [] : fixture.sections[section] ?? []
+  const cumulative = registry.some((layout) => layout.logicalName === section
+    && (layout.columnMetadata ?? []).some((column) => column.name === field && column.class === "cumulative"))
+  const samples: HeatmapSample[] = []
+  const firstRow = new Map<string, { readonly typeId: string; readonly identity: readonly (string | null)[] }>()
+  const lastLabels = new Map<string, { ts: number; values: (string | null)[] }>()
+  for (const row of rows) {
+    const layout = REGISTRY_BY_TYPE_ID.get(row.typeId)
+    if (layout === undefined || layout.logicalName !== section) continue
+    const identity = layout.identity.map((name) => {
+      const stored = row.values[name]
+      return stored === null || stored === undefined || typeof stored === "object" ? null : String(stored)
+    })
+    const entity = JSON.stringify([row.typeId, ...identity])
+    if (!firstRow.has(entity)) firstRow.set(entity, { typeId: row.typeId, identity })
+    const raw = row.values[field]
+    const numeric = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : null
+    samples.push({
+      entity,
+      timestamp: row.timestamp,
+      value: numeric !== null && Number.isFinite(numeric) ? numeric : null,
+    })
+    const seen = lastLabels.get(entity)
+    if (seen === undefined || row.timestamp >= seen.ts) {
+      lastLabels.set(entity, {
+        ts: row.timestamp,
+        values: labels.map((name, index) => {
+          const stored = row.values[name]
+          if (stored !== null && stored !== undefined && typeof stored !== "object") return String(stored)
+          return seen?.values[index] ?? null
+        }),
+      })
+    }
+  }
+  const derived = heatmap(samples, cumulative, from, columns, top)
+  return {
+    cumulative,
+    intervals: [...derived.intervals],
+    rows: derived.rows.map((row) => ({
+      typeId: firstRow.get(row.entity)?.typeId ?? "",
+      identity: firstRow.get(row.entity)?.identity ?? [],
+      labels: lastLabels.get(row.entity)?.values ?? labels.map(() => null),
+      total: row.total,
+      cells: row.cells,
+    })),
+    totals: { total: derived.totalsTotal, cells: [...derived.totals] },
+    others: { total: derived.othersTotal, cells: [...derived.others] },
+    othersCount: derived.othersCount,
+    entityCount: derived.entityCount,
+  }
 }
 
 export function acceptResponse<T>(promise: Promise<T>, signal: AbortSignal, apply: (value: T) => void, reject?: () => void): void {

@@ -9,6 +9,11 @@ const MAX_SNAPSHOT_SECTIONS: usize = 16;
 const MAX_SNAPSHOT_PAGE_SIZE: usize = 5_000;
 const MAX_SEARCH_EXPRESSION_CHARS: usize = 1_024;
 const MAX_FIELDS: usize = 256;
+const DEFAULT_HEATMAP_COLUMNS: usize = 60;
+const MAX_HEATMAP_COLUMNS: usize = 1_440;
+const DEFAULT_HEATMAP_TOP: usize = 25;
+const MAX_HEATMAP_TOP: usize = 500;
+const MAX_HEATMAP_LABELS: usize = 8;
 const MAX_FILTERS: usize = 64;
 const MAX_ORDER_FIELDS: usize = 16;
 
@@ -25,6 +30,20 @@ pub(crate) enum Route {
     /// One stable page of physical rows in one explicit segment.
     Rows(RowsRequest),
     Snapshot(Box<SnapshotRequest>),
+    /// The ranked top view of one section over one window.
+    Heatmap(HeatmapRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HeatmapRequest {
+    pub(crate) from: i64,
+    pub(crate) to: i64,
+    pub(crate) section: String,
+    pub(crate) field: String,
+    pub(crate) columns: usize,
+    pub(crate) top: usize,
+    pub(crate) labels: Vec<String>,
+    pub(crate) type_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +185,9 @@ pub(crate) fn parse(path: &str, query: Option<&str>) -> Result<Route, RouteError
     }
     if path == "/api/hour" {
         return parse_hour(query).map(Route::Hour);
+    }
+    if path == "/api/heatmap" {
+        return parse_heatmap(query).map(Route::Heatmap);
     }
     let tail = path
         .strip_prefix("/api/segments/")
@@ -396,6 +418,73 @@ fn validate_snapshot_shape(
         return Err(RouteError::BadParameter("group".to_owned()));
     }
     Ok(())
+}
+
+fn parse_heatmap(query: &str) -> Result<HeatmapRequest, RouteError> {
+    let mut from = None;
+    let mut to = None;
+    let mut section = None;
+    let mut field = None;
+    let mut columns = None;
+    let mut top = None;
+    let mut labels: Vec<String> = Vec::new();
+    let mut type_id = None;
+    for (raw_name, raw_value) in pairs(query)? {
+        let name = decoded("parameter", raw_name, true)?;
+        let value = decoded(&name, raw_value, true)?;
+        match name.as_str() {
+            "from" if from.is_none() => from = Some(number("from", &value)?),
+            "to" if to.is_none() => to = Some(number("to", &value)?),
+            "section" if section.is_none() => {
+                if value.is_empty() || value.len() > MAX_SECTION_BYTES {
+                    return Err(RouteError::BadParameter("section".to_owned()));
+                }
+                section = Some(value);
+            }
+            "field" if field.is_none() => {
+                if value.is_empty() {
+                    return Err(RouteError::BadParameter("field".to_owned()));
+                }
+                field = Some(value);
+            }
+            "columns" if columns.is_none() => {
+                columns = Some(bounded("columns", &value, MAX_HEATMAP_COLUMNS)?);
+            }
+            "top" if top.is_none() => top = Some(bounded("top", &value, MAX_HEATMAP_TOP)?),
+            "label" => {
+                if value.is_empty() || labels.contains(&value) || labels.len() >= MAX_HEATMAP_LABELS
+                {
+                    return Err(RouteError::BadParameter("label".to_owned()));
+                }
+                labels.push(value);
+            }
+            "type_id" if type_id.is_none() => type_id = Some(unsigned_32("type_id", &value)?),
+            _ => return Err(RouteError::BadParameter(name)),
+        }
+    }
+    let from = from.ok_or_else(|| RouteError::BadParameter("from".to_owned()))?;
+    let to = to.ok_or_else(|| RouteError::BadParameter("to".to_owned()))?;
+    if from > to {
+        return Err(RouteError::BadParameter("from".to_owned()));
+    }
+    Ok(HeatmapRequest {
+        from,
+        to,
+        section: section.ok_or_else(|| RouteError::BadParameter("section".to_owned()))?,
+        field: field.ok_or_else(|| RouteError::BadParameter("field".to_owned()))?,
+        columns: columns.unwrap_or(DEFAULT_HEATMAP_COLUMNS),
+        top: top.unwrap_or(DEFAULT_HEATMAP_TOP),
+        labels,
+        type_id,
+    })
+}
+
+fn bounded(name: &str, value: &str, cap: usize) -> Result<usize, RouteError> {
+    value
+        .parse::<usize>()
+        .ok()
+        .filter(|parsed| (1..=cap).contains(parsed))
+        .ok_or_else(|| RouteError::BadParameter(name.to_owned()))
 }
 
 fn parse_catalog(query: &str) -> Result<Window, RouteError> {

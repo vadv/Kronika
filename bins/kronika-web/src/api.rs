@@ -9,6 +9,7 @@ use kronika_reader::{Reader, ReaderError, SegmentRef};
 use crate::route::{ActiveCursor, Route};
 
 mod catalog;
+mod heatmap;
 mod history;
 mod hour;
 mod index;
@@ -72,6 +73,7 @@ pub(crate) enum Prepared {
     Catalog(catalog::PreparedCatalog),
     Index(index::PreparedIndex),
     History(history::PreparedHistory),
+    Heatmap(heatmap::PreparedHeatmap),
     Hour(hour::PreparedHour),
     Rows(rows::PreparedRows),
     Snapshot(snapshot::PreparedSnapshot),
@@ -85,6 +87,7 @@ impl Prepared {
             Self::Catalog(_prepared) => catalog::PreparedCatalog::meta(),
             Self::Index(prepared) => prepared.meta(),
             Self::History(prepared) => prepared.meta(),
+            Self::Heatmap(prepared) => prepared.meta(),
             Self::Hour(prepared) => prepared.meta(),
             Self::Rows(prepared) => prepared.meta(),
             Self::Snapshot(prepared) => prepared.meta(),
@@ -102,6 +105,7 @@ impl Prepared {
             Self::Catalog(prepared) => prepared.stream(emit, cancelled),
             Self::Index(prepared) => prepared.stream(emit, cancelled),
             Self::History(prepared) => prepared.stream(emit, cancelled),
+            Self::Heatmap(prepared) => prepared.stream(emit, cancelled),
             Self::Hour(prepared) => prepared.stream(emit, cancelled),
             Self::Rows(prepared) => prepared.stream(emit, cancelled),
             Self::Snapshot(prepared) => prepared.stream(emit, cancelled),
@@ -230,6 +234,7 @@ pub(crate) fn prepare_with_demo(
         }
         Route::Index(request) => index::prepare(root, request, if_none_match),
         Route::History(request) => history::prepare(root, request).map(Prepared::History),
+        Route::Heatmap(request) => heatmap::prepare(root, request).map(Prepared::Heatmap),
         Route::Hour(request) => {
             hour::prepare(root, request, sources, synthetic_demo).map(Prepared::Hour)
         }

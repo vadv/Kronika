@@ -52,6 +52,7 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
       const hour = Number(url.searchParams.get("from") ?? HOUR)
@@ -93,6 +94,27 @@ test("display timezone and human chart precision stay global", { timeout: 60_000
     await cdp.send("Page.navigate", { url: `${origin}/?at=${AT}&view=pg.statements` })
     await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-statements-table"] .entity-row').length >= 1`, "the focused Statements path", 15_000)
     await settleLayout(cdp)
+
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="statements-activity"] [data-testid="activity-row"]').length === 2`, "the ranked activity ledger", 15_000)
+    const ledger = await cdp.evaluate(`(() => ({
+      top: document.querySelector('[data-testid="statements-activity"] header span')?.textContent ?? "",
+      totals: document.querySelector('[data-testid="activity-row-totals"]') !== null,
+      others: document.querySelector('[data-testid="activity-row-others"]')?.textContent ?? "",
+      cells: document.querySelectorAll('[data-testid="activity-row"] rect').length,
+    }))()`)
+    assert.equal(ledger.totals, true)
+    assert.match(ledger.top, /2/)
+    assert.match(ledger.others, /1/)
+    assert.equal(ledger.cells, 6)
+    await cdp.evaluate(`document.querySelector('[data-testid="activity-cut-wal_bytes"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="activity-cut-wal_bytes"]')?.getAttribute("aria-pressed") === "true"`, "the WAL cut")
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="statements-activity"] [data-testid="activity-row"]').length === 2`, "the reranked ledger", 15_000)
+    await cdp.evaluate(`document.querySelector('[data-testid="activity-maximize"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="activity-overlay"]') !== null`, "the full-screen ledger")
+    await cdp.evaluate(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`)
+    await cdp.waitFor(`document.querySelector('[data-testid="activity-overlay"]') === null`, "the restored ledger")
+    await cdp.evaluate(`document.querySelector('[data-testid="activity-cut-exec_time"]').click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="activity-cut-exec_time"]')?.getAttribute("aria-pressed") === "true"`, "the default cut back")
     const browserMode = await cdp.evaluate(`(() => ({
       at: new URL(location.href).searchParams.get("at"),
       cursor: document.querySelector('[data-testid="cursor-time"]')?.textContent ?? "",
@@ -216,6 +238,7 @@ test.skip("legacy fullscreen uPlot is replaced by the shared Inspector", { timeo
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") return ndjson(response, [
       ...timelineRecords().filter(({ record }) => record !== "finding"),
@@ -432,6 +455,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       unauthorized(response)
       return
     }
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") {
       ndjson(response, [])
       return
@@ -1781,6 +1805,7 @@ test("the minified artifact restores and clears its opaque browser session", { t
       ndjson(response, url.searchParams.getAll("section").includes("pg_stat_activity") ? snapshotRecords() : [])
       return
     }
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") {
       ndjson(response, [])
       return
@@ -1934,6 +1959,7 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
       unauthorized(response)
       return
     }
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") {
       ndjson(response, [])
       return
@@ -2064,6 +2090,7 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") return ndjson(response, url.searchParams.has("group") ? aggregateRelationHistoryRecords(url) : timelineRecords(HOUR))
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, relationRecords(url, "single"))
@@ -2277,6 +2304,7 @@ test.skip("legacy chart visibility preference is replaced by the permanent previ
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
       const hour = Number(url.searchParams.get("from") ?? HOUR)
@@ -2734,6 +2762,7 @@ test("PostgreSQL is unavailable without current telemetry and returns for a stor
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") return ndjson(response, sourceTimelineRecords(historical))
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) {
@@ -2837,6 +2866,7 @@ test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, as
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
       return ndjson(response, url.searchParams.get("section") === "pg_stat_activity"
@@ -2980,6 +3010,7 @@ test("structured search pending state and snapshot targets preserve exact newest
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
       return ndjson(response, url.searchParams.has("section") ? [] : snapshotTargetTimelineRecords())
@@ -3297,6 +3328,7 @@ test("production health keeps staggered components on one stored evaluation", { 
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
       if (url.searchParams.has("section")) return ndjson(response, [])
@@ -3401,6 +3433,7 @@ test("production System projections show exact CPU memory and device readings", 
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
       const section = url.searchParams.get("section")
@@ -4143,6 +4176,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
       const section = url.searchParams.get("section")
@@ -4951,6 +4985,33 @@ function targetedRelationRecords(url, label, eligible) {
   })
 }
 
+
+// Every focused server answers the activity ledger's ranking request with one
+// small deterministic heatmap so the Statements page renders without noise.
+function answerHeatmap(url, response) {
+  const from = Number(url.searchParams.get("from") ?? "0")
+  const to = Number(url.searchParams.get("to") ?? "0")
+  const columns = Number(url.searchParams.get("columns") ?? "60")
+  const labels = url.searchParams.getAll("label")
+  const span = to - from + 1
+  const intervals = Array.from({ length: columns }, (_at, index) => ({
+    start: String(from + Math.floor((index * span) / columns)),
+    end: String(from + Math.floor(((index + 1) * span) / columns) - 1),
+  }))
+  const cells = Array.from({ length: columns }, (_at, index) => index < 3 ? (index + 1) * 0.5 : null)
+  return ndjson(response, [
+    {
+      record: "heatmap", from: String(from), to: String(to), section: "pg_stat_statements",
+      field: url.searchParams.get("field") ?? "", class: "cumulative", labels,
+      top: 2, entity_count: 3, others_count: 1, out_of_order: "0", intervals,
+    },
+    { record: "heatmap_row", type_id: "1002006", identity: ["101", "10", "5", "true"], labels: labels.map(() => "demo"), total: 120, cells },
+    { record: "heatmap_row", type_id: "1002006", identity: ["102", "10", "5", "true"], labels: labels.map(() => "demo"), total: 60, cells },
+    { record: "heatmap_band", band: "totals", total: 200, cells },
+    { record: "heatmap_band", band: "others", total: 20, cells },
+  ])
+}
+
 function ndjson(response, records) {
   response.writeHead(200, {
     "Cache-Control": "no-store",
@@ -5284,6 +5345,7 @@ test("mixed-cadence shared cursor uses one exact domain for pointer and both key
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") return ndjson(response, url.searchParams.has("section") ? [] : timeline)
     if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, activityRecords)
@@ -5397,6 +5459,7 @@ test("narrow controls stay contained and help never changes selection", { timeou
     }
     if (url.pathname === "/auth/session") return answerSession(request, response, authState)
     if (url.pathname.startsWith("/api/") && !browserIsAuthenticated(request, authState)) return unauthorized(response)
+    if (url.pathname === "/api/heatmap") return answerHeatmap(url, response)
     if (url.pathname === "/api/catalog") return ndjson(response, [])
     if (url.pathname === "/api/hour") {
       if (url.searchParams.has("section") && historyFailure) return ndjson(response, [{ record: "error", error: "history unavailable" }])

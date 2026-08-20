@@ -65,6 +65,13 @@
   --color-series-5: #d55181;
   --color-series-6: #35a0bd;
   --color-series-7: #e66767;
+  --color-heat-zero: #101b25;
+  --color-heat-1: #16293a;
+  --color-heat-2: #1c3a54;
+  --color-heat-3: #234e71;
+  --color-heat-4: #2d6590;
+  --color-heat-5: #3c80b2;
+  --color-heat-6: #55a2d8;
   --color-chart-future: #111820c7;
   --color-chart-unavailable: #18212ba8;
   --color-chart-threshold: #f43f5e1c;
@@ -201,6 +208,63 @@
 @utility use-table {
   background: var(--color-s2); border-bottom: 1px solid var(--color-line2); margin-top: 8px;
 }
+@utility activity-block {
+  background: var(--color-s1);
+  border: 1px solid var(--color-line2);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+@utility activity-row {
+  @media (max-width: 760px) { grid-template-columns: 110px minmax(0, 1fr) 76px; & > strong:last-child { display: none; } }
+  align-items: center;
+  border-top: 1px solid var(--color-line);
+  display: grid;
+  grid-template-columns: minmax(150px, 300px) minmax(0, 1fr) 96px 96px;
+  min-height: 26px;
+  &:first-child { border-top: 0; }
+}
+@utility activity-row-link {
+  cursor: pointer;
+  transition: background-color 80ms var(--ease-out);
+  &:hover { background: var(--color-s3); }
+}
+@utility activity-strip {
+  display: block;
+  height: 18px;
+  min-width: 0;
+  width: 100%;
+}
+@utility activity-overlay {
+  background: var(--color-bg);
+  display: flex;
+  flex-direction: column;
+  inset: 0;
+  padding: 16px 20px;
+  position: fixed;
+  z-index: 60;
+  & > .activity-block { display: flex; flex-direction: column; min-height: 0; }
+}
+@utility activity-cursor {
+  fill: none;
+  stroke: var(--color-cursor);
+  stroke-width: 1.25;
+}
+@utility activity-cursor-halo {
+  fill: none;
+  stroke: var(--color-s1);
+  stroke-width: 3.5;
+}
+
+.activity-max .activity-strip { height: 26px; }
+.activity-max .activity-row { grid-template-columns: minmax(220px, 460px) minmax(0, 1fr) 110px 110px; min-height: 34px; }
+.heat-0 { fill: var(--color-heat-zero); }
+.heat-1 { fill: var(--color-heat-1); }
+.heat-2 { fill: var(--color-heat-2); }
+.heat-3 { fill: var(--color-heat-3); }
+.heat-4 { fill: var(--color-heat-4); }
+.heat-5 { fill: var(--color-heat-5); }
+.heat-6 { fill: var(--color-heat-6); }
+
 @utility use-row {
   @media (max-width: 760px) { grid-template-columns: 80px repeat(3, minmax(0, 1fr)); }
   border-bottom: 1px solid var(--color-line); cursor: pointer; display: grid; grid-template-columns: minmax(96px, 130px) repeat(3, minmax(0, 1fr)); transition: background-color 80ms var(--ease-out);
@@ -306,6 +370,13 @@
   --color-series-5: #ad3a6d;
   --color-series-6: #0c7fa6;
   --color-series-7: #c14b4b;
+  --color-heat-zero: #eef3f8;
+  --color-heat-1: #d8e6f2;
+  --color-heat-2: #b7d1e8;
+  --color-heat-3: #8fb6d9;
+  --color-heat-4: #6396c4;
+  --color-heat-5: #3e74a8;
+  --color-heat-6: #1f4f80;
   --color-chart-future: #e5e7ebc7;
   --color-chart-unavailable: #dce1e8a8;
   --color-chart-threshold: #b4231818;
