@@ -1,7 +1,6 @@
 import { registry } from "kronika:registry"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 
-import type { HostMode, HostSection } from "./address"
 import { fieldNameForLocator, loadSeries, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
 import { buildMetricSamples } from "./chart"
 import { contextualRows, type EntityContext } from "./entity-context"
@@ -14,11 +13,11 @@ import { asNumber, humanBytes, humanCores, humanDuration, humanHertz, humanPerce
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
 import { UPlotChart, type RecordedSeries } from "./uplot-chart"
-import { UseTable, type UseResourceKey } from "./use-table"
+import { UseTable, type LedgerKey, type UseResourceKey } from "./use-table"
 
 interface MetricSpec {
   readonly id: string
-  readonly group: HostSection
+  readonly group: SystemGroup
   readonly label: string
   readonly help: string
   readonly section?: string
@@ -155,16 +154,10 @@ const BREAKDOWN_COLORS: readonly RecordedSeries["color"][] = ["cyan", "amber", "
 const MOUNT_PAIR_COLUMN: SystemEntityColumn = { ...bytes("free_bytes"), historyFields: ["free_bytes", "total_bytes"] }
 const MOUNT_INODE_PAIR_COLUMN: SystemEntityColumn = { ...number("available_inodes"), historyFields: ["available_inodes", "total_inodes"] }
 
-const HOST_MODES: Partial<Readonly<Record<HostSection, readonly HostMode[]>>> = {
-  cpu: ["history", "topology"],
-  storage: ["io", "filesystems", "topology"],
-  cgroups: ["cpu", "memory", "io", "tasks"],
-}
-
 // Resource tabs own one operator question at a time. Static topology never
 // masquerades as temporal history, and cgroup accounting never appears under
 // host block-device or memory totals.
-function sectionEntities(section: HostSection, mode: HostMode | null): readonly string[] {
+function sectionEntities(section: string, mode: HostMode | null): readonly string[] {
   if (section === "cpu") return []
   if (section === "storage") {
     if (mode === "filesystems") return ["os_mountinfo"]
@@ -214,6 +207,28 @@ const RESOURCE_GROUP: Readonly<Record<UseResourceKey, MetricSpec["group"]>> = {
   memory: "memory",
   disk: "storage",
   network: "network",
+}
+
+export type SystemGroup = "cpu" | "memory" | "storage" | "network"
+type HostMode = "topology" | "io" | "filesystems" | "cpu" | "memory" | "tasks"
+
+// The ledger rows map onto metric groups and entity sections; cgroups is a
+// tables-only row in a container environment.
+const LEDGER_SECTION: Readonly<Record<LedgerKey, string>> = {
+  cpu: "cpu",
+  memory: "memory",
+  disk: "storage",
+  network: "network",
+  cgroups: "cgroups",
+}
+const LEDGER_MODES: Partial<Readonly<Record<LedgerKey, readonly HostMode[]>>> = {
+  cpu: ["topology"],
+  disk: ["io", "filesystems", "topology"],
+  cgroups: ["cpu", "memory", "io", "tasks"],
+}
+const LEDGER_DEFAULT_MODE: Partial<Readonly<Record<LedgerKey, HostMode>>> = {
+  cgroups: "cpu",
+  disk: "io",
 }
 
 const RESOURCE_LANE: Readonly<Record<UseResourceKey, string>> = {
@@ -393,20 +408,16 @@ export function SystemView({
   cursor,
   data,
   focus,
-  section,
   historyRevision,
   hour,
   locale,
   metric,
-  mode,
   navigationTimestamps,
   onCursor,
   onContextClear,
   onFinding,
   onOpenChart,
-  onOpenDetail,
   onMetric,
-  onMode,
   onSelectedLane,
   onSelectedKey,
   selectedLane,
@@ -419,20 +430,16 @@ export function SystemView({
   readonly cursor: number
   readonly data: HourData
   readonly focus: Finding | null
-  readonly section: HostSection
   readonly historyRevision: number
   readonly hour: number
   readonly locale: Locale
   readonly metric: string | null
-  readonly mode: HostMode | null
   readonly navigationTimestamps: readonly number[]
   readonly onCursor: (timestamp: number) => void
   readonly onContextClear: () => void
   readonly onFinding: (finding: Finding) => void
   readonly onOpenChart: () => void
-  readonly onOpenDetail: () => void
   readonly onMetric: (metric: string | null) => void
-  readonly onMode: (mode: HostMode | null) => void
   readonly onSelectedLane: (lane: string) => void
   readonly onSelectedKey: (key: string | null) => void
   readonly selectedLane: string
@@ -446,38 +453,25 @@ export function SystemView({
         const frequency = storedNumber(row, "actual_frequency_hz")
         return frequency !== undefined && frequency !== null && Number.isFinite(frequency)
       }))), [data])
-  const referenceMode = mode === "topology"
-  const sectionMetrics = useMemo(() => referenceMode ? [] : available.filter(({ spec }) => spec.group === section), [available, referenceMode, section])
-  const [dismissedOverview, setDismissedOverview] = useState(false)
-  const autoMetric = useRef<string | null>(null)
-  // Overview opens on the first metric that has a factual sample. A metric in
-  // the address is an explicit operator choice and is never replaced here.
-  useEffect(() => {
-    const first = available[0]
-    if (section !== "overview" || dismissedOverview || first === undefined) return
-    if (metric === null) {
-      autoMetric.current = first.spec.id
-      onMetric(first.spec.id)
-      return
-    }
-    if (autoMetric.current !== metric) {
-      autoMetric.current = null
-      return
-    }
-    if (first.spec.id !== metric) {
-      autoMetric.current = first.spec.id
-      onMetric(first.spec.id)
-    }
-  }, [available, dismissedOverview, metric, onMetric, section])
-  useEffect(() => {
-    if (section !== "overview") setDismissedOverview(false)
-  }, [section])
-  const openMetric = (id: string) => {
-    autoMetric.current = null
-    setDismissedOverview(false)
+  const selectedSpec = metric === null ? undefined : SYSTEM_METRICS.find((spec) => spec.id === metric)
+  // Ledger disclosure lives here; the chosen metric stays in the address. A
+  // deep-linked metric opens its own row.
+  const [expanded, setExpanded] = useState<ReadonlySet<LedgerKey>>(() => {
+    const key = selectedSpec === undefined ? null : metricResource(selectedSpec)
+    return new Set<LedgerKey>(key === null ? [] : [key])
+  })
+  const [groupMetric, setGroupMetric] = useState<Readonly<Record<string, string>>>({})
+  const [groupMode, setGroupMode] = useState<Readonly<Record<string, HostMode | null>>>({})
+  const toggleRow = (key: LedgerKey) => setExpanded((current) => {
+    const next = new Set(current)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    return next
+  })
+  const chooseMetric = (key: LedgerKey, id: string) => {
+    setGroupMetric((current) => ({ ...current, [key]: id }))
     onSelectedKey(null)
     onMetric(id)
-    onOpenDetail()
   }
   const appliedFocus = useRef<Finding | null>(null)
   useEffect(() => {
@@ -495,140 +489,159 @@ export function SystemView({
       ?? (fallback === null ? undefined : available.find(({ spec }) => spec.id === fallback))
     if (match !== undefined) {
       appliedFocus.current = focus
-      autoMetric.current = null
+      const key = metricResource(match.spec)
+      if (key !== null) {
+        setExpanded((current) => current.has(key) ? current : new Set([...current, key]))
+        setGroupMetric((current) => ({ ...current, [key]: match.spec.id }))
+      }
       onMetric(match.spec.id)
     }
   }, [available, data, focus, onMetric])
-  const selectedSpec = metric === null ? undefined : SYSTEM_METRICS.find((spec) => spec.id === metric)
-  // The spec comes from the static catalog so the dock keeps its frame while
+  const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
+  const cgroupsPresent = data.availableSections.some((name) => CGROUP_SECTIONS.has(name))
+  const withContent = useMemo(() => new Set((Object.keys(RESOURCE_GROUP) as UseResourceKey[]).filter((key) =>
+    available.some(({ spec }) => spec.group === RESOURCE_GROUP[key])
+      || sectionEntities(LEDGER_SECTION[key], LEDGER_DEFAULT_MODE[key] ?? null).some((name) => data.availableSections.includes(name)))), [available, data.availableSections])
+  const chartMetricFor = (key: LedgerKey): string | null => {
+    if (key === "cgroups") return null
+    return groupMetric[key] ?? resourceSelection(available, key)
+  }
+  const renderExpansion = (key: LedgerKey) => {
+    const sectionName = LEDGER_SECTION[key]
+    const modes = LEDGER_MODES[key] ?? []
+    const mode = groupMode[key] === undefined ? LEDGER_DEFAULT_MODE[key] ?? null : groupMode[key]!
+    const entities = sectionEntities(sectionName, mode)
+    const chartMetric = chartMetricFor(key)
+    return <div className="grid min-w-0 gap-2 px-2 pb-2 pt-2">
+      {chartMetric !== null && <SystemGroupChart available={available} cursor={cursor} data={data} groupKey={key} historyRevision={historyRevision} hour={hour} locale={locale} metricId={chartMetric} onCursor={onCursor} onSelect={(id) => chooseMetric(key, id)} t={t} />}
+      {modes.length > 0 && <div aria-label={t(`section.${sectionName}`)} className="dock-tabs" data-testid={`host-${sectionName}-modes`} role="group">
+        {modes.map((choice) => <button aria-pressed={mode === choice} key={choice} onClick={() => setGroupMode((current) => ({ ...current, [key]: key === "cpu" && current[key] === choice ? null : choice }))} type="button">{t(`host.mode.${choice}`)}</button>)}
+      </div>}
+      {sectionName === "cpu" && mode === "topology" && <CpuTopologyReference locale={locale} policies={systemEntityRows(data, "os_cpufreq_policy", cursor)} rows={systemEntityRows(data, "os_topology", cursor)} t={t} />}
+      {sectionName === "storage" && mode === "topology" && <StorageTopologyReference
+        devices={systemEntityRows(data, "os_diskstats", cursor)}
+        edges={systemEntityRows(data, "os_block_topology", cursor)}
+        mounts={systemEntityRows(data, "os_mountinfo", cursor)}
+        t={t}
+      />}
+      {entities.length > 0 && <section className="entity-panels grid grid-cols-1 content-start gap-2">
+        {SYSTEM_ENTITIES.filter((entity) => entities.includes(entity.section)).map((entity) => {
+          const allRows = systemEntityRows(data, entity.section, cursor)
+          const activeContext = context?.logicalName === entity.section ? context : null
+          const rows = contextualRows(allRows, activeContext, activeContext === null ? null : contextRow)
+          // A section the hour carries is loading, not absent, while its
+          // snapshot catches up; a section without rows stays honestly absent.
+          if (rows.length === 0 && activeContext === null && !tablesLoading) return null
+          if (rows.length === 0 && activeContext === null && !data.availableSections.includes(entity.section)) return null
+          const finding = focus?.logicalName === entity.section ? focus : null
+          return <SystemEntityPanel
+            columns={entity.columns}
+            contextLabel={activeContext?.label}
+            cursor={cursor}
+            finding={finding}
+            historyRevision={historyRevision}
+            hour={hour}
+            key={entity.section}
+            label={t(entity.label)}
+            locale={locale}
+            onContextClear={activeContext === null ? undefined : onContextClear}
+            onCursor={onCursor}
+            onMetric={onMetric}
+            onSelectedKey={onSelectedKey}
+            rows={rows}
+            section={entity.section}
+            selectedField={metric}
+            selectedKey={selectedKey}
+            tablesLoading={tablesLoading}
+            t={t}
+          />
+        })}
+      </section>}
+    </div>
+  }
+  return <>
+    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onSelectedLane={onSelectedLane} primaryLane={selectedSpec === undefined ? "health" : metricLane(selectedSpec)} selectedLane={selectedLane} shownAt={shownAt} t={t} />
+    <div className="system-main mt-0 min-w-0">
+      <UseTable cgroups={cgroupsPresent} cursor={cursor} expanded={expanded} hour={hour} lanePoints={data.lanePoints} locale={locale} onToggle={toggleRow} renderExpansion={renderExpansion} t={t} withContent={withContent} />
+      {available.length === 0 && <p className="table-empty">{t("system.no_metrics")}</p>}
+    </div>
+  </>
+}
+
+// One expanded row's chart: the group's metric chips and the composition or
+// single-series history that used to hide inside the Inspector dock.
+function SystemGroupChart({
+  available,
+  cursor,
+  data,
+  groupKey,
+  historyRevision,
+  hour,
+  locale,
+  metricId,
+  onCursor,
+  onSelect,
+  t,
+}: {
+  readonly available: readonly { readonly points: readonly ChartPoint[]; readonly spec: MetricSpec }[]
+  readonly cursor: number
+  readonly data: HourData
+  readonly groupKey: LedgerKey
+  readonly historyRevision: number
+  readonly hour: number
+  readonly locale: Locale
+  readonly metricId: string
+  readonly onCursor: (timestamp: number) => void
+  readonly onSelect: (id: string) => void
+  readonly t: Translate
+}) {
+  const selectedSpec = SYSTEM_METRICS.find((spec) => spec.id === metricId) ?? SYSTEM_METRICS[0]!
+  // The spec comes from the static catalog so the chart keeps its frame while
   // its section is mid-reload; the points honestly empty out for that window.
-  const selectedMetric = selectedSpec === undefined ? undefined : {
+  const selectedMetric = {
     points: available.find(({ spec }) => spec.id === selectedSpec.id)?.points ?? [],
     spec: selectedSpec,
   }
-  const selectedResource = selectedMetric === undefined ? null : metricResource(selectedMetric.spec)
-  const dockShown = selectedMetric !== undefined && selectedKey === null
-  const dockMeta = useMemo(() => {
-    if (selectedMetric === undefined) return { chips: [] as readonly MetricSpec[], chartChip: (id: string) => id }
+  const meta = useMemo(() => {
     const group = selectedMetric.spec.group
     const lane = (Object.keys(RESOURCE_GROUP) as UseResourceKey[]).find((key) => RESOURCE_GROUP[key] === group)
     return dockGroupMetrics(available.filter(({ spec }) => spec.group === group).map(({ spec }) => spec), lane === undefined ? undefined : RESOURCE_LANE[lane])
-  }, [available, selectedMetric])
-  const fallbackPoints = selectedMetric?.points ?? []
-  const request = useMemo(() => selectedMetric === undefined ? null : metricHistoryRequest(selectedMetric.spec), [selectedMetric])
-  const requestKey = request === null || selectedMetric === undefined ? null : metricRequestKey(hour, selectedMetric.spec, request)
-  const needsHistory = dockShown && request !== null && requestKey !== null && distinctTimes(fallbackPoints) <= 1
+  }, [available, selectedMetric.spec.group])
+  const fallbackPoints = selectedMetric.points
+  const request = useMemo(() => metricHistoryRequest(selectedMetric.spec), [selectedMetric.spec])
+  const requestKey = request === null ? null : metricRequestKey(hour, selectedMetric.spec, request)
+  const needsHistory = request !== null && requestKey !== null && distinctTimes(fallbackPoints) <= 1
   const loadedHistory = useHistoryRequest(needsHistory ? requestKey : null, historyRevision,
     !needsHistory || request === null ? null : (signal) => loadSeries(hour, request.section, request.where, request.fields, signal))
   const selectedPoints = useMemo(() => {
-    if (selectedMetric === undefined || loadedHistory.value === null) return fallbackPoints
+    if (loadedHistory.value === null) return fallbackPoints
     const loadedPoints = metricHistoryPoints(selectedMetric.spec, loadedHistory.value)
     return loadedPoints.length === 0 ? fallbackPoints : loadedPoints
-  }, [fallbackPoints, loadedHistory.value, selectedMetric])
+  }, [fallbackPoints, loadedHistory.value, selectedMetric.spec])
   const historyRows = loadedHistory.value !== null && loadedHistory.value.length !== 0
     ? loadedHistory.value
     : request === null ? [] : sectionRows(data, request.section)
   const historyUsesRates = loadedHistory.value === null
     && request !== null
     && (data.rateColumns?.[request.section] ?? []).length !== 0
-  const breakdown = useMemo(() => selectedMetric === undefined ? [] : resourceBreakdownSeries(
+  const breakdown = useMemo(() => resourceBreakdownSeries(
     selectedMetric.spec.id,
     historyRows,
     historyUsesRates,
     locale,
     t,
-  ), [historyRows, historyUsesRates, locale, selectedMetric, t])
-  const secondLane = selectedMetric === undefined ? null : secondMetricLane(selectedMetric.spec)
+  ), [historyRows, historyUsesRates, locale, selectedMetric.spec.id, t])
+  const secondLane = secondMetricLane(selectedMetric.spec)
   const secondPoints = useMemo(() => secondLane === null ? undefined : laneChartPoints(data, secondLane), [data, secondLane])
-  const shownAt = useMemo(() => shownMoment(data.sections, cursor), [cursor, data.sections])
-  const modes = HOST_MODES[section] ?? []
-  const topologyRows = section === "cpu" && mode === "topology" ? systemEntityRows(data, "os_topology", cursor) : []
-  const policyRows = section === "cpu" && mode === "topology" ? systemEntityRows(data, "os_cpufreq_policy", cursor) : []
-  return <>
-    <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={onCursor} onFinding={onFinding} onOpenChart={onOpenChart} onSelectedLane={onSelectedLane} primaryLane={selectedMetric === undefined ? "health" : metricLane(selectedMetric.spec)} selectedLane={selectedLane} shownAt={shownAt} t={t} />
-    {modes.length > 0 && <div aria-label={t(`section.${section}`)} className="lensbar !mt-0 border-t-0" data-testid={`host-${section}-modes`} role="group">
-      <div className="lens-tabs">
-        {modes.map((choice) => <button aria-pressed={mode === choice} key={choice} onClick={() => onMode(choice)} type="button">{t(`host.mode.${choice}`)}</button>)}
-      </div>
-    </div>}
-    <div className={`${modes.length === 0 ? "mt-0" : "mt-2"} system-main min-w-0 [&>.use-table]:mt-0 [&>.metric-groups]:mt-2 [&>.table-empty]:mt-2`}>
-        {section === "overview" && <UseTable canOpen={(resource) => resourceSelection(available, resource) !== null} cursor={cursor} lanePoints={data.lanePoints} locale={locale} onSelect={(resource) => {
-          const target = resourceSelection(available, resource)
-          if (target !== null) openMetric(target)
-        }} selected={dockShown ? selectedResource : null} t={t} />}
-      {dockShown && selectedMetric !== undefined && <InspectorPortal autoOpen={false} identity={`system:${selectedMetric.spec.id}`} onClose={() => { setDismissedOverview(true); onMetric(null) }} title={t(selectedMetric.spec.label)}><SystemDock
-        chart={breakdown.length === 0
-          ? <SeriesChart cursor={cursor} empty={t("history.empty")} format={(reading, place) => metricChartValue(reading, place, selectedMetric.spec.unit)} helpKey={selectedMetric.spec.help} hour={hour} labelKey={selectedMetric.spec.label} locale={locale} onCursor={onCursor} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "nonnegative"} second={secondPoints} secondHelpKey={secondLane === null ? undefined : "system.metric.network_tx.help"} secondLabelKey={secondLane === null ? undefined : "system.metric.network_tx.label"} stats status={needsHistory ? loadedHistory.status : "ready"} t={t} tickFormat={selectedMetric.spec.unit === " B" ? (reading, place) => humanBytes(reading, place, "/s") : undefined} unit={metricChartUnit(selectedMetric.spec, locale)} />
-          : <div className="series-chart"><UPlotChart cursor={cursor} hour={hour} isolate={{ anchor: selectedMetric.spec.id }} locale={locale} onCursor={onCursor} reading={currentPointValue(selectedPoints, cursor, locale, selectedMetric.spec.unit)} series={breakdown} stats status={!needsHistory || loadedHistory.status === "ready" ? undefined : <p className={`series-status series-status-${loadedHistory.status}`} role={loadedHistory.status === "error" ? "alert" : "status"}>{t(`history.${loadedHistory.status}`)}</p>} t={t} testId={`system-${selectedMetric.spec.group}-composition`} /></div>}
-        label={`section.${selectedMetric.spec.group}`}
-        metrics={dockMeta.chips}
-        onSelect={openMetric}
-        selected={dockMeta.chartChip(selectedMetric.spec.id)}
-        t={t}
-      /></InspectorPortal>}
-        {available.length === 0 && <p className="table-empty">{t("system.no_metrics")}</p>}
-        {sectionMetrics.length > 0
-          && <div className="metric-groups grid grid-cols-1 gap-[7px]">
-                <section className="metric-group panel" data-testid={`system-group-${section}`}>
-                  <h2 className="panel-head"><span>{t(`section.${section}`)}</span></h2>
-                  <div className="metric-grid grid-cols-4 max-[1000px]:grid-cols-2">
-                    {sectionMetrics.map(({ points, spec }) => {
-                      const output = currentPointValue(points, cursor, locale, spec.unit)
-                      return <div className="metric-choice [.metric-groups_&>button]:after:absolute [.metric-groups_&>button]:after:bottom-[5px] [.metric-groups_&>button]:after:right-[7px] [.metric-groups_&>button]:after:text-[11px] [.metric-groups_&>button]:after:text-fg4 [.metric-groups_&>button]:after:opacity-55 [.metric-groups_&>button]:after:content-['↗'] [.metric-groups_&>button:hover]:after:text-accent3 [.metric-groups_&>button:hover]:after:opacity-100 [.metric-groups_&>button:focus-visible]:after:text-accent3 [.metric-groups_&>button:focus-visible]:after:opacity-100 [.metric-groups_&>button_strong]:pr-3.5" key={spec.id}>
-                        <button aria-pressed={dockShown && selectedMetric?.spec.id === spec.id} data-testid={`system-metric-${spec.id}`} onClick={() => openMetric(spec.id)} type="button">
-                          <span>{t(spec.label)}</span>
-                          <strong title={output}>{output}</strong>
-                        </button>
-                        <LabelHelp helpKey={spec.help} iconOnly labelKey={spec.label} t={t} testId={`system-metric-help-${spec.id}`} />
-                      </div>
-                    })}
-                  </div>
-                </section>
-          </div>}
+  if (SYSTEM_METRICS.every((spec) => spec.id !== metricId)) return null
+  return <div className="grid min-w-0 gap-[7px]" data-testid={`system-group-chart-${groupKey}`}>
+    <div aria-label={t(`section.${selectedMetric.spec.group}`)} className="dock-tabs history-selector flex max-w-full flex-wrap gap-[5px] p-px" role="group">
+      {meta.chips.map((spec) => <button aria-pressed={spec.id === meta.chartChip(metricId)} data-testid={`system-metric-${spec.id}`} key={spec.id} onClick={() => onSelect(spec.id)} type="button">{t(spec.label)}</button>)}
     </div>
-
-    {section === "cpu" && mode === "topology" && <CpuTopologyReference locale={locale} policies={policyRows} rows={topologyRows} t={t} />}
-    {section === "storage" && mode === "topology" && <StorageTopologyReference
-      devices={systemEntityRows(data, "os_diskstats", cursor)}
-      edges={systemEntityRows(data, "os_block_topology", cursor)}
-      mounts={systemEntityRows(data, "os_mountinfo", cursor)}
-      t={t}
-    />}
-
-    <section className="entity-panels mt-2 grid grid-cols-1 content-start gap-2">
-      {SYSTEM_ENTITIES.filter((entity) => sectionEntities(section, mode).includes(entity.section)).map((entity) => {
-        const allRows = systemEntityRows(data, entity.section, cursor)
-        const activeContext = context?.logicalName === entity.section ? context : null
-        const rows = contextualRows(allRows, activeContext, activeContext === null ? null : contextRow)
-        // A section the hour carries is loading, not absent, while its
-        // snapshot catches up; a section without rows stays honestly absent.
-        if (rows.length === 0 && activeContext === null && !tablesLoading) return null
-        if (rows.length === 0 && activeContext === null && !data.availableSections.includes(entity.section)) return null
-        const finding = focus?.logicalName === entity.section ? focus : null
-        return <SystemEntityPanel
-          columns={entity.columns}
-          contextLabel={activeContext?.label}
-          cursor={cursor}
-          finding={finding}
-          historyRevision={historyRevision}
-          hour={hour}
-          key={entity.section}
-          label={t(entity.label)}
-          locale={locale}
-          onContextClear={activeContext === null ? undefined : onContextClear}
-          onCursor={onCursor}
-          onMetric={onMetric}
-          onSelectedKey={onSelectedKey}
-          rows={rows}
-          section={entity.section}
-          selectedField={metric}
-          selectedKey={selectedKey}
-          tablesLoading={tablesLoading}
-          t={t}
-        />
-      })}
-    </section>
-  </>
+    {breakdown.length === 0
+      ? <SeriesChart cursor={cursor} empty={t("history.empty")} format={(reading, place) => metricChartValue(reading, place, selectedMetric.spec.unit)} helpKey={selectedMetric.spec.help} hour={hour} labelKey={selectedMetric.spec.label} locale={locale} onCursor={onCursor} points={selectedPoints} scale={selectedMetric.spec.unit === "%" ? "percent" : "nonnegative"} second={secondPoints} secondHelpKey={secondLane === null ? undefined : "system.metric.network_tx.help"} secondLabelKey={secondLane === null ? undefined : "system.metric.network_tx.label"} stats status={needsHistory ? loadedHistory.status : "ready"} t={t} tickFormat={selectedMetric.spec.unit === " B" ? (reading, place) => humanBytes(reading, place, "/s") : undefined} unit={metricChartUnit(selectedMetric.spec, locale)} />
+      : <div className="series-chart"><UPlotChart cursor={cursor} hour={hour} isolate={{ anchor: selectedMetric.spec.id }} locale={locale} onCursor={onCursor} reading={currentPointValue(selectedPoints, cursor, locale, selectedMetric.spec.unit)} series={breakdown} stats status={!needsHistory || loadedHistory.status === "ready" ? undefined : <p className={`series-status series-status-${loadedHistory.status}`} role={loadedHistory.status === "error" ? "alert" : "status"}>{t(`history.${loadedHistory.status}`)}</p>} t={t} testId={`system-${selectedMetric.spec.group}-composition`} /></div>}
+  </div>
 }
 
 function CpuTopologyReference({ locale, policies, rows, t }: { readonly locale: Locale; readonly policies: readonly DataRow[]; readonly rows: readonly DataRow[]; readonly t: Translate }) {
@@ -733,34 +746,6 @@ function StorageTopologyReference({ devices, edges, mounts, t }: { readonly devi
 // The dock is the System counterpart of the PostgreSQL detail panel: a click
 // on a Use row or a metric chip opens it on the resource's group, and the chart
 // lives only inside it — nothing on the page silently swaps its content.
-function SystemDock({
-  chart,
-  label,
-  metrics,
-  onSelect,
-  selected,
-  t,
-}: {
-  readonly chart: ReactNode
-  readonly label: string
-  readonly metrics: readonly MetricSpec[]
-  readonly onSelect: (id: string) => void
-  readonly selected: string
-  readonly t: Translate
-}) {
-  return <aside aria-label={t(label)} className="pg-detail system-dock" data-testid="system-dock">
-    <header className="pg-detail-head">
-      <div><span>{t("system.history")}</span><h2>{t(label)}</h2></div>
-    </header>
-    <InspectorChartPortal identity="system:dock"><section className="process-history system-dock grid min-w-0 gap-[7px]">
-      <div aria-label={t(label)} className="dock-tabs history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">
-        {metrics.map((spec) => <button aria-pressed={spec.id === selected} data-testid={`system-dock-metric-${spec.id}`} key={spec.id} onClick={() => onSelect(spec.id)} type="button">{t(spec.label)}</button>)}
-      </div>
-      {chart}
-    </section></InspectorChartPortal>
-  </aside>
-}
-
 // `free_bytes` stores statvfs.f_bavail: capacity available to an unprivileged
 // writer. It is not f_bfree, so Total − Available must never be called Used.
 // Chart the two exact stored facts without inventing allocated/reserved space.
@@ -1662,7 +1647,7 @@ function derivedMetric(id: string, group: MetricSpec["group"], label: string, se
   return { id, group, label: `${label}.label`, help: `${label}.help`, series, derive, unit }
 }
 
-function pressureMetric(id: string, group: HostSection, label: string, resource: number): MetricSpec {
+function pressureMetric(id: string, group: SystemGroup, label: string, resource: number): MetricSpec {
   return { id, group, label: `${label}.label`, help: `${label}.help`, section: "os_psi", field: "some_avg10", resource, unit: "%" }
 }
 

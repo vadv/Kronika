@@ -8,7 +8,6 @@ test("metric selection and help use sibling controls", async () => {
     readFile(new URL("../src/system-view.tsx", import.meta.url), "utf8"),
   ])
   assert.match(timeline, /className="lane-select[^"]*"[\s\S]*?<\/button>\s*<LabelHelp[^>]*iconOnly/)
-  assert.match(system, /className="metric-choice[^"]*"[\s\S]*?<\/button>\s*<LabelHelp[^>]*iconOnly/)
   assert.doesNotMatch(timeline, /<button(?:(?!<\/button>)[\s\S])*<LabelHelp/)
   assert.doesNotMatch(system, /<button(?:(?!<\/button>)[\s\S])*<LabelHelp/)
 })

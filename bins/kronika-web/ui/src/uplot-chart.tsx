@@ -6,6 +6,7 @@ import { useDisplayTime } from "./display-time-context"
 import { LabelHelp, type Translate } from "./help"
 import { orderedRecordedTimes } from "./keyboard"
 import { humanDurationAxis, type Locale } from "./model"
+import { niceCeiling } from "./spark"
 
 export type ChartScale = "percent" | "nonnegative" | "signed"
 
@@ -268,7 +269,7 @@ export function UPlotChart({
   const isolatable = isolate !== undefined && series.length > 1
   const statsRows = useMemo(() => stats ? chartStatsRows(visibleSeries, frame) : [], [frame, stats, visibleSeries])
   return <figure
-    className={`uplot-figure launch-timeline relative m-0 flex min-w-0 max-w-full flex-col overflow-hidden ${variant === "preview" ? "h-[94px] min-h-[94px] basis-[94px] px-1 pb-0.5 pt-0.5" : variant === "inspector" ? "h-[300px] min-h-[300px] p-2" : stats ? "h-[244px]" : "h-[200px]"} [.system-dock_&]:h-80 [.pg-table-shell_.pg-detail_&]:h-[200px] [.pg-table-shell_.pg-detail_&]:max-h-[200px] [.pg-table-shell_.pg-detail_&]:flex-none${className === undefined ? "" : ` ${className}`}${isolatable ? " uplot-isolatable" : ""}`}
+    className={`uplot-figure launch-timeline relative m-0 flex min-w-0 max-w-full flex-col overflow-hidden ${variant === "preview" ? "h-[94px] min-h-[94px] basis-[94px] px-1 pb-0.5 pt-0.5" : variant === "inspector" ? "h-[300px] min-h-[300px] p-2" : stats ? "h-[244px]" : "h-[200px]"} [.pg-table-shell_.pg-detail_&]:h-[200px] [.pg-table-shell_.pg-detail_&]:max-h-[200px] [.pg-table-shell_.pg-detail_&]:flex-none${className === undefined ? "" : ` ${className}`}${isolatable ? " uplot-isolatable" : ""}`}
     data-testid={testId}
     data-navigation-count={navigationTimes.length}
     data-selected-timestamp={selected ?? undefined}
@@ -659,9 +660,4 @@ function compactTimePart(output: string): string {
   return output.trim().split(/\s+/)[0] ?? output
 }
 
-function niceCeiling(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) return 1
-  const magnitude = 10 ** Math.floor(Math.log10(value))
-  const normalized = value / magnitude
-  return (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10) * magnitude
-}
+

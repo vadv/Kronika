@@ -56,12 +56,15 @@ test("a process row never leaks into a PostgreSQL address", () => {
 })
 
 test("an unreadable value falls back instead of failing", () => {
-  const address = readAddress("at=tomorrow&view=host.klingon&lens=quantum&sort=")
+  const address = readAddress("at=tomorrow&view=hostile.klingon&lens=quantum&sort=")
 
   assert.equal(address.at, null)
   assert.equal(address.view, "processes")
   assert.equal(address.lens, "cpu")
   assert.equal(address.sort, null)
+  // Links written before the Host ledger keep landing on the Host page.
+  assert.equal(readAddress("view=host.cpu").view, "host")
+  assert.equal(readAddress("view=host.overview&metric=cpu_user").metric, "cpu_user")
 })
 
 test("ascending sort has no marker and descending has a minus", () => {
@@ -77,7 +80,7 @@ test("PostgreSQL plans have a stable address", () => {
   assert.equal(readAddress("view=pg.plans").view, "pg.plans")
   assert.equal(sourceOf(address.view), "postgresql")
   assert.equal(pgSectionOf(address.view), "plans")
-  assert.equal(viewOf("postgresql", "processes", "plans"), "pg.plans")
+  assert.equal(viewOf("postgresql", "plans"), "pg.plans")
 })
 
 test("PostgreSQL lenses survive navigation only on their tables", () => {
@@ -85,7 +88,7 @@ test("PostgreSQL lenses survive navigation only on their tables", () => {
   assert.equal(readAddress("view=pg.statements&pg_lens=stability").pgLens, "stability")
   assert.equal(writeAddress({ ...DEFAULT_ADDRESS, view: "pg.plans", pgLens: "timing" }), "/?view=pg.plans&pg_lens=timing")
   assert.equal(readAddress("view=pg.plans&pg_lens=timing").pgLens, "timing")
-  assert.equal(writeAddress({ ...DEFAULT_ADDRESS, view: "host.overview", pgLens: "io" }), "/?view=host.overview")
+  assert.equal(writeAddress({ ...DEFAULT_ADDRESS, view: "host", pgLens: "io" }), "/?view=host")
   assert.equal(readAddress("view=pg.plans&pg_lens=regression").pgLens, "load")
 })
 
@@ -154,16 +157,12 @@ test("relation selection is separate from hierarchy filters", () => {
 })
 
 test("Host master/detail modes and structured related search are URL-native and route-scoped", () => {
-  const host = writeAddress({ ...DEFAULT_ADDRESS, view: "host.overview", metric: "cpu_used_cores" })
-  assert.equal(host, "/?view=host.overview&metric=cpu_used_cores")
+  const host = writeAddress({ ...DEFAULT_ADDRESS, view: "host", metric: "cpu_used_cores" })
+  assert.equal(host, "/?view=host&metric=cpu_used_cores")
   assert.equal(readAddress(host.slice(1)).metric, "cpu_used_cores")
-  assert.equal(readAddress("?view=host.cpu&metric=cpu_user").metric, "cpu_user")
-  const filesystem = writeAddress({ ...DEFAULT_ADDRESS, view: "host.storage", mode: "filesystems", row: "mount:8:1:/", metric: "free_bytes" })
-  assert.equal(filesystem, "/?view=host.storage&row=mount%3A8%3A1%3A%2F&metric=free_bytes&mode=filesystems")
-  assert.equal(readAddress(filesystem.slice(1)).mode, "filesystems")
-  assert.equal(readAddress(filesystem.slice(1)).row, "mount:8:1:/")
-  assert.equal(readAddress("?view=host.storage&mode=made-up").mode, "io")
-  assert.equal(readAddress("?view=host.cpu&mode=topology").mode, "topology")
+  const mount = writeAddress({ ...DEFAULT_ADDRESS, view: "host", row: "mount:8:1:/", metric: "free_bytes" })
+  assert.equal(mount, "/?view=host&row=mount%3A8%3A1%3A%2F&metric=free_bytes")
+  assert.equal(readAddress(mount.slice(1)).row, "mount:8:1:/")
 
   const find = "database:app AND role:reader AND query_id:-9223372036854775808"
   const query = writeAddress({ ...DEFAULT_ADDRESS, at: 1_700_000_000_000_000, view: "pg.statements", find })
@@ -179,7 +178,9 @@ test("Inspector chart and row-only Detail links are URL-native", () => {
   assert.equal(readAddress("panel=chart").panel, "chart")
   assert.equal(readAddress("row=42:1700000000000000").panel, "detail")
   assert.equal(readAddress("panel=detail").panel, null)
-  const hostDetail = writeAddress({ ...DEFAULT_ADDRESS, view: "host.cpu", metric: "cpu_used_cores", panel: "detail" })
-  assert.equal(hostDetail, "/?view=host.cpu&panel=detail&metric=cpu_used_cores")
-  assert.equal(readAddress(hostDetail.split("?")[1] ?? "").panel, "detail")
+  // A metric-only Detail link predates the ledger: the metric survives, the
+  // panel does not open without a row.
+  const hostDetail = writeAddress({ ...DEFAULT_ADDRESS, view: "host", metric: "cpu_used_cores", panel: "detail" })
+  assert.equal(hostDetail, "/?view=host&metric=cpu_used_cores")
+  assert.equal(readAddress(hostDetail.split("?")[1] ?? "").panel, null)
 })

@@ -18,7 +18,8 @@ test("the resource table selects a resource per row and keeps the network pair i
   const source = await readFile(new URL("../src/use-table.tsx", import.meta.url), "utf8")
   assert.equal(source.includes("<SeriesChart"), false)
   assert.match(source, /data-testid=\{`use-row-\$\{resource\.key\}`\}/)
-  assert.match(source, /aria-selected=\{selected === resource\.key\}/)
+  assert.match(source, /aria-expanded=\{open\}/)
+  assert.match(source, /<SparkCell /)
   assert.match(source, /cell\.second === undefined \? null : currentLaneReading/)
 })
 

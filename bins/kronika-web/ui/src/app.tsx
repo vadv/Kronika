@@ -29,11 +29,11 @@ import {
   type TimelineData,
 } from "./api"
 import type { TableOrder } from "./entity-table"
-import { defaultHostMode, HOST_SECTIONS, hostSectionOf, pgSectionOf, readAddress, sourceOf, stepOf, viewOf, writeAddress, type HostMode, type HostSection, type InspectorPanel, type PgLens, type Source } from "./address"
+import { pgSectionOf, readAddress, sourceOf, stepOf, viewOf, writeAddress, type InspectorPanel, type PgLens, type Source } from "./address"
 import { DetailDock, PROCESS_HISTORY_FIELDS } from "./detail"
 import { loadDisplayTimeZone, saveDisplayTimeZone, type DisplayTimeZone } from "./display-time"
 import { DisplayTimeProvider, DisplayTimeScope, useDisplayTime } from "./display-time-context"
-import { contextualRows, entityContext, findingRoute, hostSectionForFinding, type EntityContext } from "./entity-context"
+import { contextualRows, entityContext, findingRoute, type EntityContext } from "./entity-context"
 import { mergeObservationTimestamps, observationTimestamps } from "./cursor-timestamps"
 import { EventsView, type FindingResolution } from "./events-view"
 import { findingHistory, findingHistoryRequest, findingProjection } from "./finding-presentation"
@@ -203,8 +203,6 @@ function App({ locale, onLocale, t }: {
   const loadThrottle = useRef(0)
   const [error, setError] = useState<string | null>(null)
   const [source, setSource] = useState<Source>(sourceOf(opened.current.view))
-  const [hostSection, setHostSection] = useState<HostSection>(hostSectionOf(opened.current.view))
-  const [hostMode, setHostMode] = useState<HostMode | null>(opened.current.mode)
   const [systemMetric, setSystemMetric] = useState<string | null>(opened.current.metric)
   const visibleSource = source
   const [pgSection, setPgSection] = useState<PostgresSection>(pgSectionOf(opened.current.view))
@@ -294,7 +292,7 @@ function App({ locale, onLocale, t }: {
     ? undefined
     : initialPageOptions(denseRequest, pageContext, densePattern, relationFilters)
   const requestOrder = visibleSource === "processes" ? order ?? processTableDefaultOrder(lens) : order
-  const cgroupTargetGroups = visibleSource === "host" && hostSection === "cgroups"
+  const cgroupTargetGroups = visibleSource === "host" && timelineData.availableSections.some((name) => name.startsWith("os_cgroup"))
     ? snapshotRequestGroups(segments, cursor, CGROUP_SNAPSHOT_REQUESTS)
     : []
   const snapshotTarget = snapshotGroups.length === 0
@@ -306,9 +304,6 @@ function App({ locale, onLocale, t }: {
   const currentData = currentSnapshot.target === snapshotTarget || retainsDenseRows ? currentSnapshot.data : EMPTY_DATA
   const data = useMemo(() => viewData(timelineData, currentData), [currentData, timelineData])
   const environment = useMemo(() => recordedEnvironment(data, cursor), [cursor, data])
-  const hostSections = environment === "container"
-    ? HOST_SECTIONS
-    : HOST_SECTIONS.filter((section) => section !== "cgroups")
   const drawn = useRef<number | null>(null)
   const selectedHour = useRef(hour)
   selectedHour.current = hour
@@ -721,7 +716,7 @@ function App({ locale, onLocale, t }: {
   }, [activeSearchSurface, data, find])
   const address = useMemo(() => writeAddress({
     at: cursor === 0 ? null : cursor,
-    view: viewOf(source, hostSection, pgSection),
+    view: viewOf(source, pgSection),
     lens,
     pgLens: activeRelation
       ? activeRelationLens : source === "postgresql" && pgSection === "plans" ? planLens : statementLens,
@@ -738,8 +733,7 @@ function App({ locale, onLocale, t }: {
     panel: inspectorPanel,
     find,
     metric: source === "host" ? systemMetric : null,
-    mode: source === "host" ? hostMode : null,
-  }), [activeRelation, activeRelationLens, cursor, find, hostMode, hostSection, inspectorPanel, lens, order, pgSection, planLens, relationFilters, relationLevel, relationSelectedKey, selectedKey, source, statementLens, systemMetric])
+  }), [activeRelation, activeRelationLens, cursor, find, inspectorPanel, lens, order, pgSection, planLens, relationFilters, relationLevel, relationSelectedKey, selectedKey, source, statementLens, systemMetric])
   const steps = useRef<string | null>(null)
   useEffect(() => {
     if (window.location.pathname + window.location.search === address) return
@@ -751,8 +745,6 @@ function App({ locale, onLocale, t }: {
     const back = () => {
       const opening = readAddress(window.location.search)
       setSource(sourceOf(opening.view))
-      setHostSection(hostSectionOf(opening.view))
-      setHostMode(opening.mode)
       setSystemMetric(opening.metric)
       setPgSection(pgSectionOf(opening.view))
       setLens(opening.lens)
@@ -804,19 +796,6 @@ function App({ locale, onLocale, t }: {
     setRelationLens((current) => relationLensOf(next, current))
     setRelationFilters((current) => relationFiltersForSection(current, next))
   }, [navigateSearchSurface, pgSection])
-  const chooseHostSection = useCallback((next: HostSection) => {
-    setSystemFocus(null)
-    setSystemMetric(null)
-    setSelectedKey(null)
-    setInspectorPanel(null)
-    setHostMode(defaultHostMode(next))
-    setHostSection(next)
-  }, [])
-  useEffect(() => {
-    if (visibleSource === "host" && hostSection === "cgroups" && environment === "machine") {
-      chooseHostSection("overview")
-    }
-  }, [chooseHostSection, environment, hostSection, visibleSource])
   const openRelated = useCallback((target: RelatedNavigation) => {
     navigateSearchSurface(searchSurfaceForSection(target.section), target.expression)
     setSource("postgresql")
@@ -877,9 +856,8 @@ function App({ locale, onLocale, t }: {
     if (route === "system") {
       navigateSearchSurface(null)
       setSource("host")
-      setHostSection(hostSectionForFinding(finding))
       setSystemFocus(finding)
-      setInspectorPanel("detail")
+      setInspectorPanel(null)
       return
     }
     if (route !== "events") {
@@ -975,15 +953,11 @@ function App({ locale, onLocale, t }: {
     <section className={`workspace min-h-0 min-w-0 flex-1 px-2.5 pb-2 pt-2 max-[760px]:px-2${stretchPostgres ? " pg-table-workspace flex flex-col overflow-hidden [&>.timeline-shell]:flex-none [&>.pg-tabs]:flex-none [&>.lensbar]:flex-none [&>[data-testid=table-paging]]:flex-none" : " overflow-auto"}${visibleSource === "processes" ? " process-workspace flex flex-col overflow-hidden [&>.timeline-shell]:flex-none [&>.lensbar]:flex-none" : ""}`}>
       <p aria-live="polite" className="absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]">
         {t(`nav.${visibleSource}`)}
-        {visibleSource === "host" ? ` · ${t(`section.${hostSection}`)}` : ""}
         {visibleSource === "postgresql" ? ` · ${t(`pg.section.${pgSection}`)}` : ""}
       </p>
-      {visibleSource === "host" && <div className="section-tabs lens-tabs flex h-7 flex-none items-center overflow-x-auto border-b border-line2 bg-s2 px-1" role="tablist">
-        {hostSections.map((section) => <button aria-selected={hostSection === section} data-testid={`host-section-${section}`} key={section} onClick={() => chooseHostSection(section)} role="tab" type="button">{t(`section.${section}`)}</button>)}
-      </div>}
       {loading && <HourSkeleton locale={locale} progress={loadProgress} t={t} />}
       {!loading && error !== null && <StateCard message={t("status.error")} />}
-      {!loading && error === null && hour !== null && visibleSource === "host" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} metric={systemMetric} mode={hostMode} navigationTimestamps={navigationTimestamps} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onMetric={setSystemMetric} onMode={(next) => { setHostMode(next); setSystemMetric(null); setSelectedKey(null); setInspectorPanel(null) }} onOpenChart={openChart} onOpenDetail={openPortalDetail} onSelectedKey={selectDetailKey} onSelectedLane={setTimelineLane} section={hostSection} selectedKey={selectedKey} selectedLane={timelineLane} t={t} tablesLoading={cursorState === "loading"} />}
+      {!loading && error === null && hour !== null && visibleSource === "host" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} metric={systemMetric} navigationTimestamps={navigationTimestamps} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onMetric={setSystemMetric} onOpenChart={openChart} onSelectedKey={selectDetailKey} onSelectedLane={setTimelineLane} selectedKey={selectedKey} selectedLane={timelineLane} t={t} tablesLoading={cursorState === "loading"} />}
       {!loading && error === null && hour !== null && visibleSource === "processes" && <>
         <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onSelectedLane={setTimelineLane} primaryLane={timelinePrimary} selectedLane={timelineLane} shownAt={shownAt} t={t} />
         <div className="lensbar !mt-0 border-t-0">

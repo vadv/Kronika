@@ -220,6 +220,7 @@ system.metric.network_drops.help: "Входящие и исходящие пак
 system.history: "История за час"
 use.title: "Resources"
 use.resource: "Resource"
+use.cgroups_hint: "Контрольные группы контейнера: только таблицы, без хостовых рядов"
 use.utilisation: "Utilisation"
 use.saturation: "Saturation"
 use.errors: "Errors"

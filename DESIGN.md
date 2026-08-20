@@ -509,8 +509,14 @@ buffer read bytes`, `Shared buffer hit bytes`, and their local, temporary,
 heap, index, and TOAST counterparts remain the same natural English terms in
 both dictionaries; Russian help explains their semantics in Russian.
 
-The interface covers one selected calendar hour. Host contains dense System
-metric groups and virtualized Processes lenses; PostgreSQL contains Overview,
+The interface covers one selected calendar hour. Host is one
+utilisation/saturation/errors ledger: a row per resource whose cells carry the
+hour's shape at sparkline size with the cursor reading beside it, expanding in
+place — several rows at once — into the group's metric chips, its inline
+composition chart with measured statistics, its entity tables and its
+topology references. There are no per-resource tabs and no overview apart
+from the ledger itself; a metric link opens its row. Processes keeps its
+virtualized lenses; PostgreSQL contains Overview,
 Activity, Statements, Locks and Databases whenever their sections are present.
 Events expands the same findings drawn on the shared healthline. The timeline
 always spans the complete hour, does not connect missing periods and drives

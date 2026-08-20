@@ -1,11 +1,15 @@
-import { useMemo } from "react"
+import { ChevronDown, ChevronRight } from "lucide-react"
+import { useMemo, type ReactNode } from "react"
 
 import type { LanePoint } from "./api"
 import { LabelHelp, type Translate } from "./help"
 import { humanBytes, humanPercent, measure, type Locale } from "./model"
 import { readingAt, type ChartPoint } from "./series-chart"
+import { SparkCell } from "./spark-cell"
+import { sparkScaleMax } from "./spark"
 
 export type UseResourceKey = "cpu" | "memory" | "disk" | "network"
+export type LedgerKey = UseResourceKey | "cgroups"
 
 export interface UseCell {
   readonly lane: string
@@ -49,70 +53,84 @@ export const USE_RESOURCES: readonly UseResource[] = [
 
 export const USE_COLUMNS = ["utilisation", "saturation", "errors"] as const
 
-// The grid is the host overview: a row is one resource, a click chooses the
-// resource whose submetrics the detail area below charts and lists. Cells stay
-// static readings; the per-cell chart moved to the submetric chips.
+// The ledger IS the Host page: a row is one resource, its cells carry the
+// hour's shape with the reading at the cursor, and expanding a row discloses
+// the group's chart, metric chips and entity tables in place. Expansion is
+// disclosure, not navigation — several rows open side by side.
 export function UseTable({
-  canOpen,
+  cgroups,
   cursor,
+  expanded,
+  hour,
   lanePoints,
   locale,
-  onSelect,
-  selected,
+  onToggle,
+  renderExpansion,
+  withContent,
   t,
 }: {
-  readonly canOpen?: (resource: UseResourceKey) => boolean
+  readonly cgroups: boolean
   readonly cursor: number
+  readonly expanded: ReadonlySet<LedgerKey>
+  readonly hour: number
   readonly lanePoints: readonly LanePoint[]
   readonly locale: Locale
-  readonly onSelect: (resource: UseResourceKey) => void
-  readonly selected: UseResourceKey | null
+  readonly onToggle: (key: LedgerKey) => void
+  readonly renderExpansion: (key: LedgerKey) => ReactNode
+  readonly withContent: ReadonlySet<UseResourceKey>
   readonly t: Translate
 }) {
-  const shown = useMemo(() => shownUseResources(lanePoints), [lanePoints])
-  if (shown.length === 0) return null
-  return <section aria-label={t("use.title")} className="use-table" data-testid="use-table" role="table">
-    <header className="grid grid-cols-[minmax(96px,130px)_repeat(3,minmax(0,1fr))] border-b border-line2 text-xs font-medium text-fg3 [&>span]:px-2 [&>span]:py-[5px] max-[760px]:grid-cols-[80px_repeat(3,minmax(0,1fr))] max-[760px]:[&>span]:px-[5px]" role="row">
-      <span role="columnheader">{t("use.resource")}</span>
-      {USE_COLUMNS.map((column) => <span key={column} role="columnheader">{t(`use.${column}`)}</span>)}
+  // A row exists when the hour carries anything for its resource: lane
+  // readings, group metrics or entity tables. Cells without a lane stay "—".
+  const shown = useMemo(() => USE_RESOURCES.filter((resource) =>
+    withContent.has(resource.key) || shownUseResources(lanePoints).includes(resource)), [lanePoints, withContent])
+  const end = hour + 3_600_000_000
+  if (shown.length === 0 && !cgroups) return null
+  return <section aria-label={t("use.title")} className="use-table" data-testid="use-table">
+    <header className="grid grid-cols-[minmax(96px,130px)_repeat(3,minmax(0,1fr))] border-b border-line2 text-xs font-medium text-fg3 [&>span]:px-2 [&>span]:py-[5px] max-[760px]:grid-cols-[80px_repeat(3,minmax(0,1fr))] max-[760px]:[&>span]:px-[5px]">
+      <span>{t("use.resource")}</span>
+      {USE_COLUMNS.map((column) => <span key={column}>{t(`use.${column}`)}</span>)}
     </header>
     {shown.map((resource) => {
-      // A row whose group has no metrics to chart stays honest: no pointer, no
-      // dead click.
-      const openable = canOpen?.(resource.key) ?? true
-      return <div
-        aria-disabled={!openable}
-        aria-selected={selected === resource.key}
-        className="use-row"
-        data-testid={`use-row-${resource.key}`}
-        key={resource.key}
-        onClick={openable ? () => onSelect(resource.key) : undefined}
-        onKeyDown={openable ? (event) => {
-          if (event.key !== "Enter" && event.key !== " ") return
-          event.preventDefault()
-          onSelect(resource.key)
-        } : undefined}
-        role="row"
-        tabIndex={openable ? 0 : undefined}
-      >
-      <span className="use-resource self-center px-2 py-[7px] text-sm font-medium text-fg2 max-[760px]:px-[5px]" role="cell">{t(`use.resource.${resource.key}`)}</span>
-      {USE_COLUMNS.map((column) => {
-        const cell = resource[column]
-        if (cell === null || !laneHasReading(lanePoints, cell.lane)) {
-          return <span className="use-cell relative flex min-w-0 items-center justify-center text-fg4" key={column} role="cell" title={t("use.not_measured")}>—</span>
-        }
-        const primary = currentLaneReading(lanePoints, cell.lane, cursor, locale, cell.kind, t("unit.per_second"))
-        const secondary = cell.second === undefined ? null : currentLaneReading(lanePoints, cell.second, cursor, locale, cell.kind, t("unit.per_second"))
-        return <span className="use-cell relative min-w-0" key={column} role="cell">
-          <span className="use-cell-body flex min-h-[38px] items-baseline justify-between gap-[7px] py-1.5 pl-2 pr-[26px] text-fg3 max-[760px]:min-w-0 max-[760px]:flex-col max-[760px]:items-start max-[760px]:gap-0.5 max-[760px]:px-[5px] max-[760px]:[&_strong]:max-w-full max-[760px]:[&_strong]:overflow-hidden max-[760px]:[&_strong]:text-ellipsis [&>span]:min-w-0 [&>span]:overflow-hidden [&>span]:text-ellipsis [&>span]:whitespace-nowrap [&>span]:text-xs [&_strong]:flex-none [&_strong]:whitespace-nowrap [&_strong]:text-sm [&_strong]:font-medium [&_strong]:tabular-nums [&_strong]:text-fg2">
-            <span>{t(`use.lane.${cell.lane}`)}</span>
-            <strong>{[primary, ...(secondary === null ? [] : [secondary])].join(" · ")}</strong>
-          </span>
-          <LabelHelp helpKey={useLaneHelp(cell.lane)} iconOnly labelKey={`use.lane.${cell.lane}`} t={t} />
-        </span>
-      })}
-    </div>
+      const open = expanded.has(resource.key)
+      return <div data-testid={`use-group-${resource.key}`} key={resource.key}>
+        <div aria-selected={open} className="use-row" data-testid={`use-row-${resource.key}`}>
+          <button aria-expanded={open} className="use-resource flex cursor-pointer items-center gap-1 self-stretch border-0 bg-transparent px-2 py-[7px] text-left font-sans text-sm font-medium text-fg2 max-[760px]:px-[5px]" data-testid={`use-toggle-${resource.key}`} onClick={() => onToggle(resource.key)} type="button">
+            {open ? <ChevronDown aria-hidden="true" className="flex-none text-fg4" size={13} /> : <ChevronRight aria-hidden="true" className="flex-none text-fg4" size={13} />}
+            {t(`use.resource.${resource.key}`)}
+          </button>
+          {USE_COLUMNS.map((column) => {
+            const cell = resource[column]
+            if (cell === null || !laneHasReading(lanePoints, cell.lane)) {
+              return <span className="use-cell relative flex min-w-0 items-center justify-center text-fg4" key={column} title={t("use.not_measured")}>—</span>
+            }
+            const points = laneSeriesPoints(lanePoints, cell.lane)
+            const second = cell.second === undefined ? undefined : laneSeriesPoints(lanePoints, cell.second)
+            const primary = currentLaneReading(lanePoints, cell.lane, cursor, locale, cell.kind, t("unit.per_second"))
+            const secondary = cell.second === undefined ? null : currentLaneReading(lanePoints, cell.second, cursor, locale, cell.kind, t("unit.per_second"))
+            return <span className="use-cell relative min-w-0 py-1.5 pl-2 pr-[24px] max-[760px]:px-[5px]" key={column}>
+              <span className="flex items-baseline justify-between gap-[7px] [&>span]:min-w-0 [&>span]:overflow-hidden [&>span]:text-ellipsis [&>span]:whitespace-nowrap [&>span]:font-sans [&>span]:text-xs [&>span]:text-fg3 [&_strong]:flex-none [&_strong]:whitespace-nowrap [&_strong]:font-mono [&_strong]:text-xs [&_strong]:font-normal [&_strong]:tabular-nums [&_strong]:text-fg2">
+                <span>{t(`use.lane.${cell.lane}`)}</span>
+                <strong>{[primary, ...(secondary === null ? [] : [secondary])].join(" · ")}</strong>
+              </span>
+              <SparkCell cursor={cursor} end={end} hour={hour} max={sparkScaleMax(cell.kind, [points, ...(second === undefined ? [] : [second])])} points={points} second={second} />
+              <LabelHelp helpKey={useLaneHelp(cell.lane)} iconOnly labelKey={`use.lane.${cell.lane}`} t={t} />
+            </span>
+          })}
+        </div>
+        {open && <div className="use-expansion border-b border-line2 bg-s1" data-testid={`use-expansion-${resource.key}`}>{renderExpansion(resource.key)}</div>}
+      </div>
     })}
+    {cgroups && <div data-testid="use-group-cgroups">
+      <div aria-selected={expanded.has("cgroups")} className="use-row grid-cols-[minmax(96px,130px)_minmax(0,1fr)]" data-testid="use-row-cgroups">
+        <button aria-expanded={expanded.has("cgroups")} className="use-resource flex cursor-pointer items-center gap-1 self-stretch border-0 bg-transparent px-2 py-[7px] text-left font-sans text-sm font-medium text-fg2 max-[760px]:px-[5px]" data-testid="use-toggle-cgroups" onClick={() => onToggle("cgroups")} type="button">
+          {expanded.has("cgroups") ? <ChevronDown aria-hidden="true" className="flex-none text-fg4" size={13} /> : <ChevronRight aria-hidden="true" className="flex-none text-fg4" size={13} />}
+          {t("section.cgroups")}
+        </button>
+        <span className="use-cell flex min-w-0 items-center px-2 font-sans text-xs text-fg4">{t("use.cgroups_hint")}</span>
+      </div>
+      {expanded.has("cgroups") && <div className="use-expansion border-b border-line2 bg-s1" data-testid="use-expansion-cgroups">{renderExpansion("cgroups")}</div>}
+    </div>}
   </section>
 }
 

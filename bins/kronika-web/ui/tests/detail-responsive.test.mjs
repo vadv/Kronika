@@ -73,8 +73,7 @@ test("shared shells join the timeline directly to real content", async () => {
     readFile(new URL("../src/postgres-view.tsx", import.meta.url), "utf8"),
   ])
   assert.match(app, /className="lensbar !mt-0 border-t-0"/)
-  assert.match(host, /className="lensbar !mt-0 border-t-0"/)
-  assert.match(host, /modes\.length === 0 \? "mt-0"/)
+  assert.match(host, /className="system-main mt-0 min-w-0"/)
   assert.match(postgres, /className="pg-tabs !mt-0/)
 })
 
