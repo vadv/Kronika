@@ -265,7 +265,7 @@ export function EntityTable({
                 <div aria-hidden="true" data-testid="table-skeleton">
                   {Array.from({ length: 8 }, (_, rowIndex) => <div className="flex h-row items-center border-b border-line" key={rowIndex} style={{ width: contentWidth }}>
                     {table.getVisibleLeafColumns().map((column, columnIndex) => <span className="px-[7px]" key={column.id} style={{ width: column.getSize() }}>
-                      <span className="block h-2 animate-skeleton rounded-[3px] bg-s3 motion-reduce:animate-none" style={{ animationDelay: `${rowIndex * 90}ms`, width: `${45 + (rowIndex * 7 + columnIndex * 13) % 40}%` }} />
+                      <span className="block h-2 animate-skeleton rounded-[3px] bg-s3 motion-reduce:animate-none" style={{ animationDelay: `${rowIndex * -90}ms`, width: `${45 + (rowIndex * 7 + columnIndex * 13) % 40}%` }} />
                     </span>)}
                   </div>)}
                 </div>

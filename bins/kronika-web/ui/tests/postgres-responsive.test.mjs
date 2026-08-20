@@ -60,7 +60,7 @@ test("only long PostgreSQL table views own the viewport flex chain", () => {
 test("short PostgreSQL workspaces keep the honest compact preview", () => {
   assert.match(app, /\[&>\.timeline-shell\]:flex-none/)
   assert.match(stylesheet, /\.timeline-preview \{[^}]*height: 124px;/s)
-  assert.match(chart, /variant === "preview" \? "h-\[76px\]/)
+  assert.match(chart, /variant === "preview" \? "h-\[94px\]/)
   assert.doesNotMatch(stylesheet, /\.timeline-preview[\s\S]{0,240}\.uplot-host[^}]*display: none/)
   assert.match(postgres, /const contentSized = displayedRows\.length < 10 && !canLoadMore/)
   assert.match(entityTable, /const \[headHeight, setHeadHeight\] = useState\(28\)/)

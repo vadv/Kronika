@@ -146,7 +146,9 @@ const CPU_FIELDS = ["cpu_id", "scope", "user", "nice", "system", "idle", "iowait
 const MEMORY_FIELDS = ["mem_total", "mem_available", "mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim"] as const
 const CPU_BREAKDOWN_IDS = ["cpu_used_cores", "cpu_capacity", "cpu_user", "cpu_system", "cpu_irq", "cpu_iowait", "cpu_steal", "cpu_idle"] as const
 const MEMORY_BREAKDOWN_IDS = ["mem_total", "mem_available", "mem_anon", "mem_file_cache", "mem_s_reclaimable", "mem_s_unreclaim", "mem_free", "mem_other"] as const
-const BREAKDOWN_COLORS: readonly RecordedSeries["color"][] = ["cyan", "green", "blue", "amber", "violet", "red", "gray", "rose"]
+// Token order series-1..7 plus the neutral total: the palette was validated
+// for colour-vision separation in exactly this adjacency.
+const BREAKDOWN_COLORS: readonly RecordedSeries["color"][] = ["cyan", "amber", "green", "violet", "red", "blue", "gray", "rose"]
 
 // The mount history request fetches both sides of the pair at once.
 const MOUNT_PAIR_COLUMN: SystemEntityColumn = { ...bytes("free_bytes"), historyFields: ["free_bytes", "total_bytes"] }

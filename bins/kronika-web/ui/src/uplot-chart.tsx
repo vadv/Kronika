@@ -268,7 +268,7 @@ export function UPlotChart({
   const isolatable = isolate !== undefined && series.length > 1
   const statsRows = useMemo(() => stats ? chartStatsRows(visibleSeries, frame) : [], [frame, stats, visibleSeries])
   return <figure
-    className={`uplot-figure launch-timeline relative m-0 flex min-w-0 max-w-full flex-col overflow-hidden ${variant === "preview" ? "h-[76px] min-h-[76px] basis-[76px] px-1 pb-0.5 pt-0.5" : variant === "inspector" ? "h-[300px] min-h-[300px] p-2" : stats ? "h-[244px]" : "h-[200px]"} [.system-dock_&]:h-80 [.pg-table-shell_.pg-detail_&]:h-[200px] [.pg-table-shell_.pg-detail_&]:max-h-[200px] [.pg-table-shell_.pg-detail_&]:flex-none${className === undefined ? "" : ` ${className}`}${isolatable ? " uplot-isolatable" : ""}`}
+    className={`uplot-figure launch-timeline relative m-0 flex min-w-0 max-w-full flex-col overflow-hidden ${variant === "preview" ? "h-[94px] min-h-[94px] basis-[94px] px-1 pb-0.5 pt-0.5" : variant === "inspector" ? "h-[300px] min-h-[300px] p-2" : stats ? "h-[244px]" : "h-[200px]"} [.system-dock_&]:h-80 [.pg-table-shell_.pg-detail_&]:h-[200px] [.pg-table-shell_.pg-detail_&]:max-h-[200px] [.pg-table-shell_.pg-detail_&]:flex-none${className === undefined ? "" : ` ${className}`}${isolatable ? " uplot-isolatable" : ""}`}
     data-testid={testId}
     data-navigation-count={navigationTimes.length}
     data-selected-timestamp={selected ?? undefined}
@@ -290,21 +290,21 @@ export function UPlotChart({
           type="button"
         ><span aria-hidden="true" className="mr-1 inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: `var(${chartColor(line.color)})` }} />{line.label}</button><LabelHelp helpKey={line.helpKey} iconOnly labelKey={line.labelKey} t={t} /></span>
         : <span className="inline-flex min-w-0 items-center gap-1" key={line.id}><span aria-hidden="true" className="h-1.5 w-1.5 flex-none rounded-full" style={{ backgroundColor: `var(${chartColor(line.color)})` }} /><LabelHelp helpKey={line.helpKey} labelKey={line.labelKey} t={t} /></span>)}</span>
-      {reading !== undefined && <strong className={`chart-current col-start-2 min-w-0 flex-none overflow-hidden text-ellipsis whitespace-nowrap font-medium normal-case tabular-nums text-fg2 ${isolatable ? "ml-auto max-w-none" : ""}`}>{reading}</strong>}
+      {reading !== undefined && <strong className={`chart-current col-start-2 min-w-0 flex-none overflow-hidden text-ellipsis whitespace-nowrap font-mono font-normal tabular-nums text-fg2 ${isolatable ? "ml-auto max-w-none" : ""}`}>{reading}</strong>}
     </figcaption>}
     <p className="chart-summary absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]" id={summaryId}>{summary}</p>
     <div aria-describedby={summaryId} aria-label={drawnSeries.map(({ label, unit }) => `${label}${unit === "" ? "" : `, ${unit}`}`).join("; ")} className="uplot-host h-[180px] w-full min-w-0 max-w-full min-h-0 flex-auto overflow-hidden [&>.uplot]:h-full [&>.uplot]:!w-full [&_.u-wrap]:max-w-full [.timeline-chart_&]:h-auto [.timeline-chart_&]:min-h-0" ref={host} role="img" />
     {stats && <div className="mt-1 min-h-[46px] flex-none overflow-hidden border-t border-line2 pt-1 font-mono text-sm tabular-nums text-fg3" data-testid="chart-stats">
-      {statsRows.length !== 0 && <div className="grid min-w-0 grid-cols-[minmax(90px,1.6fr)_repeat(6,minmax(48px,1fr))] gap-x-2 px-1 text-right max-[760px]:grid-cols-[minmax(82px,1.35fr)_repeat(3,minmax(48px,1fr))] max-[760px]:gap-x-1 [&>*:first-child]:text-left">
-        <span aria-hidden="true" /><span>{t("chart.stats.last")}</span><span className="max-[760px]:hidden">{t("chart.stats.min")}</span><span>{t("chart.stats.max")}</span><span className="max-[760px]:hidden">{t("chart.stats.p50")}</span><span className="max-[760px]:hidden">{t("chart.stats.p90")}</span><span>{t("chart.stats.p99")}</span>
+      {statsRows.length !== 0 && <div className={`grid min-w-0 gap-x-2 px-1 text-right [&>*:first-child]:text-left ${variant === "inspector" ? "grid-cols-[minmax(82px,1.35fr)_repeat(3,minmax(48px,1fr))] gap-x-1" : "grid-cols-[minmax(90px,1.6fr)_repeat(6,minmax(48px,1fr))] max-[760px]:grid-cols-[minmax(82px,1.35fr)_repeat(3,minmax(48px,1fr))] max-[760px]:gap-x-1"}`}>
+        <span aria-hidden="true" /><span>{t("chart.stats.last")}</span><span className={variant === "inspector" ? "hidden" : "max-[760px]:hidden"}>{t("chart.stats.min")}</span><span>{t("chart.stats.max")}</span><span className={variant === "inspector" ? "hidden" : "max-[760px]:hidden"}>{t("chart.stats.p50")}</span><span className={variant === "inspector" ? "hidden" : "max-[760px]:hidden"}>{t("chart.stats.p90")}</span><span>{t("chart.stats.p99")}</span>
         {statsRows.map(({ line, stats: measured }) => <div className="contents" key={line.id}>
-          <strong className="overflow-hidden text-ellipsis whitespace-nowrap text-left font-medium text-fg2"><span aria-hidden="true" className="mr-1 inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: `var(${chartColor(line.color)})` }} />{line.label}</strong>
-          <span className="overflow-hidden text-ellipsis whitespace-nowrap text-fg2">{line.value(measured.last, locale)}</span><span className="max-[760px]:hidden">{line.value(measured.min, locale)}</span><span className="overflow-hidden text-ellipsis whitespace-nowrap">{line.value(measured.max, locale)}</span><span className="max-[760px]:hidden">{line.value(measured.p50, locale)}</span><span className="max-[760px]:hidden">{line.value(measured.p90, locale)}</span><span className="overflow-hidden text-ellipsis whitespace-nowrap">{line.value(measured.p99, locale)}</span>
+          <strong className="overflow-hidden text-ellipsis whitespace-nowrap text-left font-sans font-medium text-fg2"><span aria-hidden="true" className="mr-1 inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: `var(${chartColor(line.color)})` }} />{line.label}</strong>
+          <span className="overflow-hidden text-ellipsis whitespace-nowrap text-fg2">{line.value(measured.last, locale)}</span><span className={variant === "inspector" ? "hidden" : "max-[760px]:hidden"}>{line.value(measured.min, locale)}</span><span className="overflow-hidden text-ellipsis whitespace-nowrap">{line.value(measured.max, locale)}</span><span className={variant === "inspector" ? "hidden" : "max-[760px]:hidden"}>{line.value(measured.p50, locale)}</span><span className={variant === "inspector" ? "hidden" : "max-[760px]:hidden"}>{line.value(measured.p90, locale)}</span><span className="overflow-hidden text-ellipsis whitespace-nowrap">{line.value(measured.p99, locale)}</span>
         </div>)}
       </div>}
     </div>}
     {status !== undefined && <div className="uplot-status pointer-events-none absolute bottom-7 right-0 z-[8] flex items-center justify-center left-[var(--chart-plot-left,0)] top-[var(--chart-plot-top,26px)] [&_[data-testid=series-status]]:min-h-0 [&_[data-testid=series-status]]:border [&_[data-testid=series-status]]:border-line2 [&_[data-testid=series-status]]:bg-s2 [&_[data-testid=series-status]]:px-[9px] [&_[data-testid=series-status]]:py-[3px]">{status}</div>}
-    {markerLayer !== undefined && <div className="pointer-events-none absolute z-[7] h-[18px] left-[var(--chart-plot-left,62px)] top-[max(0px,calc(var(--chart-plot-top,44px)_-_20px))] w-[max(1px,calc(var(--chart-plot-width,calc(100%_-_70px))_-_var(--chart-marker-end-reserve,0px)))]" data-testid="chart-marker-track">{markerLayer}</div>}
+    {markerLayer !== undefined && <div className="pointer-events-none absolute z-[7] left-[var(--chart-plot-left,62px)] w-[max(1px,calc(var(--chart-plot-width,calc(100%_-_70px))_-_var(--chart-marker-end-reserve,0px)))]" data-testid="chart-marker-track" style={{ height: MARKER_LANE_PX - 2, top: `max(0px, calc(var(--chart-plot-top, 44px) - ${MARKER_LANE_PX}px))` }}>{markerLayer}</div>}
     {exact !== null && <div aria-hidden="true" className="chart-tooltip pointer-events-none absolute right-2 z-[9] grid max-w-[min(340px,calc(100%_-_16px))] gap-[3px] rounded-[var(--radius-md)] border border-line3 bg-s2/95 px-2 py-1.5 font-sans text-xs shadow-[var(--shadow-pop)] top-[calc(var(--chart-plot-top,26px)+6px)] [&_span]:flex [&_span]:justify-between [&_span]:gap-3 [&_strong]:font-mono [&_strong]:font-normal [&_strong]:tabular-nums [&_strong]:text-fg [&_time]:flex [&_time]:justify-between [&_time]:gap-2 [&_time_strong]:font-sans [&_time_strong]:font-medium" data-testid="chart-hover-readout">
       <time><strong>{exact.time}</strong></time>
       {exact.values.map(({ label, output, unit }) => <span key={label}>{label}{unit === "" ? "" : ` (${unit})`}<strong>{output}</strong></span>)}
@@ -534,6 +534,9 @@ function chartOptions(
   }
   const singleSeries = series.length === 1
   const areaFill = (chart: uPlot, base: string) => {
+    // Alpha suffixes only compose with 6-digit hex tokens; anything else
+    // draws the plain colour instead of a broken gradient.
+    if (!/^#[0-9a-fA-F]{6}$/.test(base)) return base
     const gradient = chart.ctx.createLinearGradient(0, chart.bbox.top, 0, chart.bbox.top + chart.bbox.height)
     gradient.addColorStop(0, `${base}2b`)
     gradient.addColorStop(1, `${base}00`)
@@ -594,8 +597,8 @@ function chartColor(tone: RecordedSeries["color"]): string {
   if (tone === "violet") return "--color-series-4"
   if (tone === "green") return "--color-series-3"
   if (tone === "red") return "--color-series-5"
-  if (tone === "blue") return "--color-accent2"
-  if (tone === "rose") return "--color-bad-edge"
+  if (tone === "blue") return "--color-series-6"
+  if (tone === "rose") return "--color-series-7"
   return "--color-fg3"
 }
 

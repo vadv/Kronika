@@ -309,7 +309,7 @@ test("timeline controls stay above a full-width plot without a redundant time ti
   assert.match(styles, /\.timeline-lane-label\[data-primary="true"\] \{[^}]*flex:/s)
   assert.match(styles, /\.timeline-open-chart \{[^}]*flex: 0 0 64px;[^}]*width: 64px;/s)
   assert.match(styles, /\.timeline-preview \{[^}]*height: 124px;/s)
-  assert.match(chart, /variant === "preview" \? "h-\[76px\]/)
+  assert.match(chart, /variant === "preview" \? "h-\[94px\]/)
   assert.doesNotMatch(styles, /timeline-shell[^}]*uplot-host \{ min-height:/)
   // The lane strip renders above the plot; comparing by a class name that no
   // longer exists made this pass on two -1s.

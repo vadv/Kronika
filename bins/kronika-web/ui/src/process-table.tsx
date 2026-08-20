@@ -158,12 +158,12 @@ export function ProcessSummary({ cursor, dispatch, hour, lens, locale, state, t 
     {metrics.map((metric) => {
       const output = processSummaryOutput(readingAt(processSummaryPoints(history, metric), cursor), metric, locale, t)
       return <div className="relative flex h-[25px] min-w-0 flex-[1_0_116px] items-baseline gap-1.5 px-2 pr-6" key={metric.field}>
-        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[10px] font-medium text-fg4">{t(metric.key)}</span>
+        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-xs font-medium text-fg4">{t(metric.key)}</span>
         <strong className="flex-none font-mono text-xs tabular-nums text-fg">{output}</strong>
         <LabelHelp helpKey={metric.help} iconOnly labelKey={metric.key} t={t} testId={`process-summary-help-${metric.field}`} />
       </div>
     })}
-    {statusKey !== null && <p aria-live="polite" className="m-0 flex h-[25px] flex-none items-center px-2 text-[10px] font-medium text-fg4" data-testid="process-summary-status">{t(statusKey)}</p>}
+    {statusKey !== null && <p aria-live="polite" className="m-0 flex h-[25px] flex-none items-center px-2 text-xs font-medium text-fg4" data-testid="process-summary-status">{t(statusKey)}</p>}
   </section>
 }
 

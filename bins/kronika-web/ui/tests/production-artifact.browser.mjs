@@ -806,7 +806,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     relationMode = "long"
     await cdp.evaluate(`([...document.querySelectorAll('[data-testid="pg-relation-lenses"] button')].find((button) => button.textContent === "Size and buffers")).click()`)
     await cdp.waitFor(`(() => { const node = document.querySelector('[data-testid="pg-tables-table"] .entity-scroll'); return node !== null && node.scrollWidth > node.clientWidth })()`, "the wide size and buffers table")
-    await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"] [data-testid="virtual-body"]')?.style.height === "4600px"`, "the long virtual relation table")
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"] [data-testid="virtual-body"]')?.style.height === "4800px"`, "the long virtual relation table")
     const estimate = await cdp.evaluate(`(() => {
       const node = [...document.querySelectorAll('[data-testid="pg-tables-table"] [title]')].find((cell) => cell.title.includes('9,007,199,254,740,993'))
       return node === undefined ? null : { label: node.getAttribute('aria-label'), text: node.textContent, title: node.title }
@@ -849,7 +849,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       assert.ok(initial.bodyScrollWidth > initial.bodyClientWidth, `${width}px wide table: ${JSON.stringify(initial)}`)
       // The virtualizer fills the scroll body: as many rows as fit, no gap.
       assert.ok(initial.visibleRows >= Math.floor(initial.bodyHeight / initial.rowHeight) - 1, `${width}x${height} visible rows: ${JSON.stringify(initial)}`)
-      assert.equal(initial.virtualHeight, 4600, `${width}x${height} virtual height`)
+      assert.equal(initial.virtualHeight, 4800, `${width}x${height} virtual height`)
       assert.ok(initial.contentBottom <= initial.clientHeight && initial.clientHeight - initial.contentBottom <= 24, `${width}x${height} remaining viewport: ${JSON.stringify(initial)}`)
       assert.equal(initial.railTabIndex, 0, `${width}px focusable horizontal rail`)
       assert.ok(initial.railHeight > 0 && initial.railVisible, `${width}px visible horizontal rail: ${JSON.stringify(initial)}`)
@@ -878,7 +878,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     }
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
     await cdp.evaluate(`(() => { const body = document.querySelector('[data-testid="pg-tables-table"] .entity-scroll'); body.scrollTop = body.scrollHeight })()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"] [data-testid="virtual-body"]')?.style.height === "4715px"`, "the one guarded relation cursor page")
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"] [data-testid="virtual-body"]')?.style.height === "4920px"`, "the one guarded relation cursor page")
     const cursorPages = requests.filter(({ query }) => new URLSearchParams(query).get("cursor") === "viewport-page-two")
     assert.equal(cursorPages.length, 1, JSON.stringify(cursorPages))
     await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-scroll').scrollTop = 0`)
@@ -944,7 +944,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.evaluate(`document.querySelector(".inspector-close").click()`)
     relationMode = "short"
     await cdp.evaluate(`([...document.querySelectorAll('[data-testid="pg-relation-lenses"] button')].find((button) => button.textContent === "State")).click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="pg-indexes-table"] [data-testid="virtual-body"]')?.style.height === "69px"`, "the short relation set")
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-indexes-table"] [data-testid="virtual-body"]')?.style.height === "72px"`, "the short relation set")
     const shortTable = await cdp.evaluate(`(() => {
       const body = document.querySelector('[data-testid="pg-indexes-table"] .entity-scroll')
       const bounds = body.getBoundingClientRect()
@@ -965,7 +965,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       }
     })()`)
     assert.equal(shortTable.rows, 3)
-    assert.equal(shortTable.virtual, 69)
+    assert.equal(shortTable.virtual, 72)
     assert.equal(shortTable.axis, "horizontal")
     assert.equal(shortTable.overflowY, "hidden")
     assert.equal(shortTable.verticalOwner, false)
@@ -2218,7 +2218,7 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
       }
     })()`)
     assert.ok(layout.chartWidth > 250 && layout.chartWidth <= layout.detailWidth, JSON.stringify(layout))
-    assert.ok(layout.plotWidth > 180, JSON.stringify(layout))
+    assert.ok(layout.plotWidth > 176, JSON.stringify(layout))
     assert.ok(layout.tableWidth >= 500, JSON.stringify(layout))
     assert.equal(layout.overflow, false)
     assert.equal(layout.selectors.length, 6)
@@ -3959,7 +3959,7 @@ async function assertCompactTimelineContained(cdp, followingSelector, label) {
         shell: bounds(shell),
       }
     })()`)
-    assert.ok(geometry.figure.height >= 72 && geometry.figure.height <= 76, `${label} ${width}px compact figure: ${JSON.stringify(geometry)}`)
+    assert.ok(geometry.figure.height >= 92 && geometry.figure.height <= 96, `${label} ${width}px compact figure: ${JSON.stringify(geometry)}`)
     for (const axis of geometry.axes) {
       assert.ok(axis.left >= geometry.figure.left - 1 && axis.right <= geometry.figure.right + 1
         && axis.top >= geometry.figure.top - 1 && axis.bottom <= geometry.figure.bottom + 1,
@@ -4085,7 +4085,7 @@ async function assertSearchChipHierarchy(cdp, label) {
   assert.match(geometry.text, /^\(tablespace: fast_ssdORtablespace: archive\)AND\(.+OR.+\)$/)
   assert.deepEqual(geometry.syntax.map(({ text }) => text), ["(", "OR", ")", "AND", "(", "OR", ")"], `${label}: ${JSON.stringify(geometry)}`)
   assert.deepEqual(geometry.syntax.map(({ kind }) => kind), ["parenthesis", "connector", "parenthesis", "connector", "parenthesis", "connector", "parenthesis"], `${label}: ${JSON.stringify(geometry)}`)
-  assert.equal(geometry.predicate.fontSize, 10, `${label}: ${JSON.stringify(geometry)}`)
+  assert.equal(geometry.predicate.fontSize, 11, `${label}: ${JSON.stringify(geometry)}`)
   assert.ok(geometry.syntax.every(({ fontSize }) => fontSize < geometry.predicate.fontSize), `${label}: ${JSON.stringify(geometry)}`)
   assert.ok(geometry.syntax.every(({ color }) => color !== geometry.predicate.color), `${label}: ${JSON.stringify(geometry)}`)
   assert.ok(geometry.syntax.every(({ background, border }) => background === "rgba(0, 0, 0, 0)" && border.every((width) => width === "0px")), `${label}: ${JSON.stringify(geometry)}`)
@@ -4206,7 +4206,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       assert.equal(closed.inspector, false, viewport.kind)
       assert.equal(closed.documentOverflow, false, `${viewport.kind}: ${JSON.stringify(closed)}`)
       assert.equal(closed.paintedInside, true, `${viewport.kind}: ${JSON.stringify(closed)}`)
-      assert.ok(Math.abs(closed.preview.height - 104) <= .5, `${viewport.kind}: ${JSON.stringify(closed.preview)}`)
+      assert.ok(Math.abs(closed.preview.height - 124) <= .5, `${viewport.kind}: ${JSON.stringify(closed.preview)}`)
 
       await cdp.evaluate(`document.querySelector('[data-testid="process-table"] .entity-row').click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="inspector"][data-panel="detail"]') !== null`, `${viewport.kind} Detail Inspector`)
@@ -4293,7 +4293,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       assert.equal(chartGeometry.laneButtons, 0, `${viewport.kind}: ${JSON.stringify(chartGeometry)}`)
       assert.ok(chartGeometry.picker.left >= chartGeometry.body.left - .5 && chartGeometry.picker.right <= chartGeometry.body.left + chartGeometry.body.clientWidth + .5, `${viewport.kind}: ${JSON.stringify(chartGeometry)}`)
       assert.ok(chartGeometry.figure.right <= chartGeometry.body.left + chartGeometry.body.clientWidth + .5, `${viewport.kind}: ${JSON.stringify(chartGeometry)}`)
-      assert.ok(Math.abs(chartGeometry.preview.height - 104) <= .5, `${viewport.kind}: ${JSON.stringify(chartGeometry.preview)}`)
+      assert.ok(Math.abs(chartGeometry.preview.height - 124) <= .5, `${viewport.kind}: ${JSON.stringify(chartGeometry.preview)}`)
       assert.equal(chartGeometry.preview.ownerCount, 0, `${viewport.kind}: ${JSON.stringify(chartGeometry.preview)}`)
       assert.equal(chartGeometry.preview.actionAtEdge, true, `${viewport.kind}: ${JSON.stringify(chartGeometry.preview)}`)
       assert.equal(chartGeometry.preview.labelsInside, true, `${viewport.kind}: ${JSON.stringify(chartGeometry.preview)}`)
@@ -4305,7 +4305,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       } else {
         assert.equal(chartGeometry.preview.lanesDisplay, "flex", JSON.stringify(chartGeometry.preview))
         assert.equal(chartGeometry.preview.pickerDisplay, "none", JSON.stringify(chartGeometry.preview))
-        assert.ok(Math.abs(chartGeometry.preview.action.width - 60) <= 1, JSON.stringify(chartGeometry.preview))
+        assert.ok(Math.abs(chartGeometry.preview.action.width - 64) <= 1, JSON.stringify(chartGeometry.preview))
       }
       const legend = await cdp.evaluate(`(() => {
         const figure = document.querySelector('[data-testid="inspector-chart"] .uplot-figure')
@@ -4375,13 +4375,13 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     assert.equal(classicPreview.classicRail, 15, JSON.stringify(classicPreview))
     assert.equal(classicPreview.panel, "chart", JSON.stringify(classicPreview))
     assert.match(classicPreview.url, /view=pg\.activity/)
-    assert.ok(Math.abs(classicPreview.height - 104) <= .5, JSON.stringify(classicPreview))
+    assert.ok(Math.abs(classicPreview.height - 124) <= .5, JSON.stringify(classicPreview))
     assert.equal(classicPreview.laneOverflowX, "hidden", JSON.stringify(classicPreview))
     assert.ok(classicPreview.laneScrollWidth <= classicPreview.laneClientWidth + 1, JSON.stringify(classicPreview))
     assert.equal(classicPreview.ownerCount, 0, JSON.stringify(classicPreview))
     assert.equal(classicPreview.labelsInside, true, JSON.stringify(classicPreview))
     assert.equal(classicPreview.actionAtEdge, true, JSON.stringify(classicPreview))
-    assert.ok(Math.abs(classicPreview.actionWidth - 60) <= 1, JSON.stringify(classicPreview))
+    assert.ok(Math.abs(classicPreview.actionWidth - 64) <= 1, JSON.stringify(classicPreview))
     await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[0].click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="use-row-disk"]') !== null`, "Host resource table")
     await cdp.evaluate(`document.querySelector('[data-testid="use-row-disk"]').click()`)

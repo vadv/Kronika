@@ -146,7 +146,7 @@ export function DetailDock({
       data-testid={activity === null ? "process-dock" : "pg-linked-dock"}
     >
       <section className="mt-2 flex items-center gap-1.5 border-y border-line2 bg-s1 px-1.5 py-[5px]" title={commandPath}>
-        <code className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-sm leading-[1.5] text-fg [font-family:inherit] hover:overflow-visible hover:whitespace-normal hover:[text-overflow:clip] hover:[overflow-wrap:anywhere]" data-testid="process-cmdline">{processCommand(process)}</code>
+        <code className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-sm leading-[1.5] text-fg font-mono hover:overflow-visible hover:whitespace-normal hover:[text-overflow:clip] hover:[overflow-wrap:anywhere]" data-testid="process-cmdline">{processCommand(process)}</code>
         <button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center rounded-[var(--radius-xs)] border-0 bg-transparent p-1 text-accent3 transition-colors hover:bg-s3" onClick={() => void navigator.clipboard?.writeText(processCommand(process))} type="button"><Copy aria-hidden="true" size={12} /></button>
       </section>
       <DetailList>
