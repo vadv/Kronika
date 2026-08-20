@@ -295,7 +295,9 @@ enum GlobToken {
     Literal(char),
 }
 
-const SNAPSHOT_CHUNK_ROWS: usize = 16;
+// One bounded batch covers the maximum public page while amortizing projected
+// section and dictionary reads for snapshot and relation-history consumers.
+const SNAPSHOT_CHUNK_ROWS: usize = 1_024;
 const PROCESS_USER_TYPE_ID: u32 = 1_124_002;
 const PROCESS_VIRTUAL_FIELDS: &[&str] = &["user", "effective_user"];
 const MAX_PROCESS_USERS: usize = 4 * 1024;

@@ -933,6 +933,33 @@ impl Fixture {
             .expect("append named table snapshots");
     }
 
+    fn append_large_named_table_snapshots(&mut self, objects: u32) {
+        let mut interner = Interner::new(DictLimits::default());
+        let database = fixture_label(&mut interner, "fixture_db");
+        let schema = fixture_label(&mut interner, "public");
+        let tablespace = fixture_label(&mut interner, "pg_default");
+        let mut buffers = SectionBuffers::new();
+        for relid in 0..objects {
+            let relation = fixture_label(&mut interner, &format!("relation_{relid:05}"));
+            for (timestamp, seq_scan) in [(100, i64::from(relid)), (200, i64::from(relid) + 10)] {
+                let mut row = user_table(timestamp, 1, relid + 1, seq_scan);
+                row.datname = database;
+                row.schemaname = schema;
+                row.relname = relation;
+                row.tablespace = Some(tablespace);
+                buffers.push(row).expect("large named table row fits");
+            }
+        }
+        let dictionary = dict::encode(interner.window()).expect("large relation dictionary");
+        let part = buffers
+            .flush(&dictionary)
+            .expect("encode large relation fixture")
+            .expect("nonempty large relation fixture");
+        self.journal
+            .append(self.address.id, &part)
+            .expect("append large relation fixture");
+    }
+
     fn append_placed_table_snapshots(&mut self, rows: &[PlacedTableSnapshot<'_>]) {
         let mut interner = Interner::new(DictLimits::default());
         let mut buffers = SectionBuffers::new();
@@ -4241,7 +4268,7 @@ fn a_cgroup_snapshot_applies_the_exact_path_and_scope_filters() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["values"], serde_json::json!(["/collector", 3]));
     let (maximum_chunk, staged, selection_dictionaries) = context_operations();
-    assert_eq!(maximum_chunk, 16);
+    assert_eq!(maximum_chunk, 1_024);
     assert_eq!(staged, 1);
     assert_eq!(selection_dictionaries, 1);
 }
@@ -4726,6 +4753,38 @@ fn relation_object_snapshots_keep_each_database_predecessor_across_segments() {
         .collect::<BTreeMap<_, _>>();
     assert_eq!(index_rates["1"], serde_json::json!(0.3));
     assert_eq!(index_rates["2"], serde_json::json!(0.2));
+}
+
+#[test]
+fn relation_snapshot_and_history_cross_the_bounded_chunk_without_loss() {
+    const OBJECTS: u32 = 513;
+    let mut fixture = Fixture::new();
+    fixture.append_large_named_table_snapshots(OBJECTS);
+    fixture.finish();
+
+    let snapshot = stream(fixture.prepare(
+        &format!(
+            "/api/segments/{SEGMENT_ID}/snapshot?at=200&section=pg_stat_user_tables&group=object&field=seq_scan&page_size=1000&where.datid=1"
+        ),
+        None,
+    ))
+    .expect("relation snapshot across a chunk boundary");
+    let snapshot_rows = relation_records(&snapshot);
+    assert_eq!(snapshot_rows.len(), OBJECTS as usize);
+    assert!(
+        snapshot_rows
+            .iter()
+            .all(|row| row["values"]["seq_scan"] == 100_000.0)
+    );
+
+    let history = stream(fixture.prepare(
+        "/api/hour?from=200&to=200&section=pg_stat_user_tables&group=database&field=seq_scan&where.datid=1",
+        None,
+    ))
+    .expect("relation history across a chunk boundary");
+    let history_rows = relation_records(&history);
+    assert_eq!(history_rows.len(), 1);
+    assert_eq!(history_rows[0]["values"]["seq_scan"], 51_300_000.0);
 }
 
 #[test]
