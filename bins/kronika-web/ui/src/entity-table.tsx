@@ -257,7 +257,7 @@ export function EntityTable({
         ? searchPending
           ? <p aria-hidden="true" className="table-empty">{t("filter.searching")}</p>
           : searchRequest.phase === "error"
-            ? null
+            ? <div className="table-empty" role="alert">{searchMessage}</div>
             : loading
           // Loading and empty are different truths; never report one as the other.
               ? <div role="status">

@@ -638,7 +638,11 @@ for every visible side axis. The compact timeline shell is exactly 124 px; its
 never occlude the drawn lines — and the x-axis, cursor and labels inside the
 instrument before the following navigation. A marker cluster names the kinds
 present by shape and sizes the cluster with one count; the per-kind split
-lives in the accessible name and the events console. Charts
+lives in the accessible name and the events console. While the Inspector holds
+the full chart, the preview yields its figure and keeps its rail, so the plot
+and its marker lane exist once on screen. While the hour itself loads, the
+workspace paints its own shape — the timeline band, one status line carrying
+the received bytes and elapsed time, and table rows — not a modal card. Charts
 keep series names with the aligned statistics and place percentile columns without
 colliding with the plot edge. Sparse tables are content-sized instead of
 reserving large framed boards. Their required horizontal rail does not create

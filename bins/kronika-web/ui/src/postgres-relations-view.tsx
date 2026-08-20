@@ -98,7 +98,7 @@ export function PostgresRelationsView(props: PostgresRelationsViewProps) {
       <EntityTable
         columns={columns}
         contentSized={rows.length < 10 && !hasMore}
-        loading={tablesLoading}
+        loading={tablesLoading || rows.length === 0 && densePageState === "loading"}
         empty={t(emptyHourStatusKey(hour))}
         label={t(section === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}
         locale={locale}

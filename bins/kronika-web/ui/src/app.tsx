@@ -39,6 +39,7 @@ import { EventsView, type FindingResolution } from "./events-view"
 import { findingHistory, findingHistoryRequest, findingProjection } from "./finding-presentation"
 import { HelpPanel, type Translate } from "./help"
 import { useHistoryRequest } from "./history-request"
+import { HourSkeleton, type LoadProgress } from "./hour-skeleton"
 import { HourPicker } from "./hour-picker"
 import { Inspector, InspectorPortalProvider } from "./inspector"
 import { keyboardTargetOwnsArrows } from "./keyboard"
@@ -52,7 +53,6 @@ import {
   asNumber,
   floorHour,
   humanAge,
-  humanBytes,
   interpolate,
   processKey,
   processLens,
@@ -930,7 +930,7 @@ function App({ locale, onLocale, t }: {
     ? lens === "cpu" ? "cpu_busy" : lens === "memory" ? "memory" : lens === "disk" ? "io_stall" : "health"
     : visibleSource === "postgresql" ? pgSection === "statements" || pgSection === "plans" ? "pg_running" : pgSection === "activity" || pgSection === "locks" ? "pg_waiting" : "health"
       : "health"
-  return <DisplayTimeScope hour={hour}><main className={`app-shell flex h-dvh min-h-0 flex-col overflow-hidden${stretchPostgres ? " pg-table-shell" : ""}${inspectorOpen ? " inspector-open" : ""}`}>
+  return <DisplayTimeScope hour={hour}><main className={`app-shell flex h-dvh min-h-0 flex-col overflow-hidden${stretchPostgres ? " pg-table-shell" : ""}${inspectorOpen ? " inspector-open" : ""}${inspectorOpen && inspectorPanel === "chart" ? " inspector-chart-open" : ""}`}>
     <header className="topbar [.pg-table-shell>&]:flex-none">
       <span className="flex flex-none items-center text-accent2"><Activity aria-hidden="true" size={15} strokeWidth={2} /></span>
       <h1>{t("app.title")}</h1>
@@ -977,8 +977,8 @@ function App({ locale, onLocale, t }: {
       {visibleSource === "host" && <div className="section-tabs lens-tabs flex h-7 flex-none items-center overflow-x-auto border-b border-line2 bg-s2 px-1" role="tablist">
         {hostSections.map((section) => <button aria-selected={hostSection === section} data-testid={`host-section-${section}`} key={section} onClick={() => chooseHostSection(section)} role="tab" type="button">{t(`section.${section}`)}</button>)}
       </div>}
-      {loading && <StateCard busy locale={locale} message={t("status.loading")} progress={loadProgress} t={t} />}
-      {!loading && error !== null && <StateCard locale={locale} message={t("status.error")} t={t} />}
+      {loading && <HourSkeleton locale={locale} progress={loadProgress} t={t} />}
+      {!loading && error !== null && <StateCard message={t("status.error")} />}
       {!loading && error === null && hour !== null && visibleSource === "host" && <SystemView context={context} contextRow={contextRow} cursor={cursor} data={data} focus={systemFocus} historyRevision={refreshVersion} hour={hour} locale={locale} metric={systemMetric} mode={hostMode} navigationTimestamps={navigationTimestamps} onContextClear={clearEntityContext} onCursor={chooseCursor} onFinding={selectFinding} onMetric={setSystemMetric} onMode={(next) => { setHostMode(next); setSystemMetric(null); setSelectedKey(null); setInspectorPanel(null) }} onOpenChart={openChart} onOpenDetail={openPortalDetail} onSelectedKey={selectDetailKey} onSelectedLane={setTimelineLane} section={hostSection} selectedKey={selectedKey} selectedLane={timelineLane} t={t} tablesLoading={cursorState === "loading"} />}
       {!loading && error === null && hour !== null && visibleSource === "processes" && <>
         <Timeline cursor={cursor} findings={data.findings} health={data.health} hour={hour} lanePoints={data.lanePoints} locale={locale} navigationTimestamps={navigationTimestamps} onCursor={chooseCursor} onFinding={selectFinding} onOpenChart={openChart} onSelectedLane={setTimelineLane} primaryLane={timelinePrimary} selectedLane={timelineLane} shownAt={shownAt} t={t} />
@@ -1034,12 +1034,6 @@ function UpdatedAge({ at, clock, locale, t }: { readonly at: number; readonly cl
   return <span className="flex items-baseline gap-1 border-l border-line3 pl-[9px] text-xs text-fg4" data-testid="updated-time" title={`${t("refresh.updated")} ${clock}`}><b className="font-sans font-medium text-fg4 max-[900px]:hidden">{t("refresh.updated")}</b>{t("refresh.ago", { age })}</span>
 }
 
-interface LoadProgress {
-  readonly received: number
-  readonly startedAt: number
-  readonly lastSeconds: number | null
-}
-
 // The previous completed initial load is a fact from this browser, shown as
 // history — never as a promise about the current one.
 const LOAD_SECONDS_KEY = "kronika.hourload-seconds"
@@ -1063,32 +1057,12 @@ function writeLastLoadSeconds(seconds: number): void {
   }
 }
 
-function StateCard({ busy = false, locale, message, progress, t }: {
-  readonly busy?: boolean
-  readonly locale: Locale
-  readonly message: string
-  readonly progress?: LoadProgress | undefined
-  readonly t: Translate
-}) {
-  const [now, setNow] = useState(() => Date.now() * 1_000)
-  useEffect(() => {
-    if (progress === undefined) return
-    const timer = setInterval(() => setNow(Date.now() * 1_000), 500)
-    return () => clearInterval(timer)
-  }, [progress === undefined]) // eslint-disable-line react-hooks/exhaustive-deps
-  return <div className="grid min-h-[calc(100dvh-35px)] place-items-center p-4">
-    <div className="w-full max-w-[620px] border-y border-line3 bg-s1 px-3 py-3" data-testid="state-card" role={busy ? "status" : "alert"}>
-      <div className="flex items-center gap-2 border-l-2 border-accent pl-2.5"><span className="text-xs uppercase tracking-[.1em] text-fg4">KRONIKA</span><h2 className="text-sm">{busy && <span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none" />}{message}</h2></div>
-      {progress !== undefined && <p className="mb-0 ml-[55px] mt-1.5 text-xs tabular-nums text-fg3" data-testid="loading-detail">{progressDetail(progress, now, locale, t)}</p>}
+function StateCard({ message }: { readonly message: string }) {
+  return <div className="grid min-h-[calc(100dvh-40px)] place-items-center p-4">
+    <div className="w-full max-w-[620px] rounded-[var(--radius-md)] border border-line2 bg-s1 px-3 py-3" data-testid="state-card" role="alert">
+      <div className="flex items-center gap-2 border-l-2 border-accent pl-2.5"><span className="text-xs uppercase tracking-[.1em] text-fg4">KRONIKA</span><h2 className="text-sm">{message}</h2></div>
     </div>
   </div>
-}
-
-function progressDetail(progress: LoadProgress, now: number, locale: Locale, t: Translate): string {
-  const elapsed = humanAge(Math.max(0, (now - progress.startedAt) / 1_000_000), locale)
-  const parts = [t("status.loading_received", { bytes: humanBytes(progress.received, locale) }), elapsed]
-  if (progress.lastSeconds !== null) parts.push(t("status.loading_last", { age: humanAge(progress.lastSeconds, locale) }))
-  return parts.join(" · ")
 }
 
 function initialPageOptions(

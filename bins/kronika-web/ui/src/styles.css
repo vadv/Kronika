@@ -432,6 +432,16 @@
 .timeline-open-chart:hover { background: var(--color-s3); }
 .snapshot-time { flex: 0 0 auto; white-space: nowrap; }
 
+/* While the Inspector holds the full chart, the preview yields its figure and
+   keeps its rail: the plot and its marker lane exist once. */
+.inspector-chart-open .timeline-preview {
+  flex-basis: 30px;
+  height: 30px;
+  min-height: 30px;
+}
+.inspector-chart-open .timeline-preview .timeline-rail { border-bottom: 0; }
+.inspector-chart-open .timeline-preview .uplot-figure { display: none; }
+
 .inspector {
   background: var(--color-s2);
   border-left: 1px solid var(--color-line3);

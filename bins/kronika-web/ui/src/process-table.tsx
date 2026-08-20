@@ -275,6 +275,7 @@ export function ProcessTable({
     <EntityTable
     className="process-table flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-s1"
     columns={columns}
+    loading={rows.length === 0 && densePageState === "loading"}
     contextLabel={contextLabel}
     empty={t("table.empty")}
     finding={finding}
