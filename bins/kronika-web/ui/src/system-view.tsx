@@ -870,7 +870,7 @@ function SystemEntityPanel({
       testId={`system-${section}`}
     />
     </div>
-    {selectedRow !== null && (mountPair || selectedColumn !== undefined) && <InspectorPortal identity={`system:${section}:${entityRowKey(selectedRow)}`} onClose={() => { onSelectedKey(null); onMetric(null) }} title={`${label} · ${entityRowKey(selectedRow)}`}><aside className="p-[11px]" data-testid={`system-${section}-detail`}>
+    {selectedRow !== null && (mountPair || selectedColumn !== undefined) && <InspectorPortal identity={`system:${section}:${entityRowKey(selectedRow)}`} onClose={() => { onSelectedKey(null); onMetric(null) }} title={`${label} · ${entityRowLabel(selectedRow)}`}><aside className="p-[11px]" data-testid={`system-${section}-detail`}>
       <DetailList>{columns.filter((column) => (column.available?.(selectedRow) ?? true) && value(selectedRow, column.field) !== null).map((column) => <DetailRow key={column.field} term={column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}>{column.render === undefined ? cellAriaValue(value(selectedRow, column.field), column, locale, t) : column.render(selectedRow)}</DetailRow>)}</DetailList>
       <InspectorChartPortal identity={`system:${section}:${entityRowKey(selectedRow)}:history`}><section className="system-entity-history min-w-0" data-testid={`system-${section}-history`}>
       <header className="flex items-start px-[7px] pt-1.5">
@@ -900,7 +900,7 @@ function SystemEntityPanel({
         : selectedColumn !== undefined && <SeriesChart
             cursor={cursor}
             durationAxis={selectedColumn.kind === "milliseconds" || selectedColumn.kind === "duration"}
-            empty={t("status.no_data")}
+            empty={t("history.empty")}
             format={(reading, place) => entityMetricValue(reading, place, selectedColumn, chartMetadata)}
             helpKey={selectedColumn.help ?? "chart.metric.help"}
             hour={hour}
@@ -958,6 +958,16 @@ function entityMetricPoints(rows: readonly DataRow[], column: SystemEntityColumn
   return first !== undefined && registryColumn(first.typeId, physicalField(column, first.typeId))?.class === "cumulative"
     ? cumulativeRate(points)
     : points
+}
+
+// The identity columns name the row for humans; the JSON composite stays a
+// React key and never reaches a title.
+function entityRowLabel(row: DataRow): string {
+  const layout = registry.find((candidate) => candidate.typeId === row.typeId && candidate.logicalName === row.logicalName)
+  const parts = layout === undefined ? [] : layout.identity
+    .map((field) => rawText(value(row, field)))
+    .filter((part): part is string => part !== null && part !== "")
+  return parts.length === 0 ? entityRowKey(row) : parts.join(" · ")
 }
 
 function entityRowKey(row: DataRow): string {
