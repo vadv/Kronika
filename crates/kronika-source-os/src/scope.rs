@@ -70,7 +70,7 @@ pub fn detect_container(fs: &ProcFs) -> bool {
 ///
 /// Pure function; tests can avoid env/filesystem non-determinism.
 #[must_use]
-pub(crate) const fn scope_for_net(in_container: bool) -> OsScope {
+pub const fn net_scope(in_container: bool) -> OsScope {
     if in_container {
         OsScope::PodNet
     } else {
@@ -78,18 +78,9 @@ pub(crate) const fn scope_for_net(in_container: bool) -> OsScope {
     }
 }
 
-/// Scope for `/proc/net/*` sections.
-///
-/// Returns `PodNet` inside a container (the file describes the pod's network
-/// namespace, not the node's), `Host` otherwise.
-#[must_use]
-pub fn net_scope(fs: &ProcFs) -> OsScope {
-    scope_for_net(detect_container(fs))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{OsScope, detect_container_from_cgroup, scope_for_net};
+    use super::{OsScope, detect_container_from_cgroup, net_scope};
 
     #[test]
     fn scope_encodes_as_stable_u8() {
@@ -109,8 +100,8 @@ mod tests {
     }
 
     #[test]
-    fn scope_for_net_maps_container_flag() {
-        assert_eq!(scope_for_net(true), OsScope::PodNet);
-        assert_eq!(scope_for_net(false), OsScope::Host);
+    fn net_scope_maps_container_flag() {
+        assert_eq!(net_scope(true), OsScope::PodNet);
+        assert_eq!(net_scope(false), OsScope::Host);
     }
 }

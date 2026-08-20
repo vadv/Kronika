@@ -219,8 +219,6 @@ pub struct ProcessRead {
     pub status: ProcessStatusRow,
     /// Optional cgroup mapping.
     pub cgroup: Option<ProcessCgroupRow>,
-    /// Raw direct controller memberships from the same `/proc/<pid>` read.
-    pub cgroup_membership: Option<String>,
 }
 
 /// Why one process could not be read.

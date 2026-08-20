@@ -75,7 +75,7 @@ struct WorkloadCgroupPaths {
 }
 
 impl WorkloadCgroupPaths {
-    fn insert(&mut self, controller: CgroupController, path: &str) -> io::Result<()> {
+    fn insert(&mut self, controller: CgroupController, path: String) -> io::Result<()> {
         let paths = match controller {
             CgroupController::Unified => &mut self.unified,
             CgroupController::Cpu => &mut self.cpu,
@@ -83,11 +83,12 @@ impl WorkloadCgroupPaths {
             CgroupController::Io => &mut self.io,
             CgroupController::Pids => &mut self.pids,
         };
-        if !paths.insert(path.to_owned()) {
+        let path_len = path.len();
+        if !paths.insert(path) {
             return Ok(());
         }
         self.candidates = self.candidates.saturating_add(1);
-        self.path_bytes = self.path_bytes.saturating_add(path.len());
+        self.path_bytes = self.path_bytes.saturating_add(path_len);
         if self.candidates > MAX_CGROUP_CANDIDATES {
             return Err(io::Error::other(format!(
                 "direct cgroup membership count exceeds {MAX_CGROUP_CANDIDATES}"
@@ -109,6 +110,83 @@ enum CgroupController {
     Memory,
     Io,
     Pids,
+}
+
+/// Bounded, deduplicated direct cgroup paths observed while processes are read.
+///
+/// Raw `/proc/<pid>/cgroup` strings are parsed immediately and are not retained.
+/// A hard candidate/path limit failure is remembered and returned by
+/// [`collect`](Self::collect), so process collection can continue independently.
+#[derive(Debug)]
+pub struct WorkloadMemberships {
+    unified_v2: bool,
+    paths: WorkloadCgroupPaths,
+    error: Option<io::Error>,
+}
+
+impl WorkloadMemberships {
+    /// Create an empty accumulator for the cgroup hierarchy exposed by `sys`.
+    #[must_use]
+    pub fn new(sys: &SysFs) -> Self {
+        Self {
+            unified_v2: is_v2(sys),
+            paths: WorkloadCgroupPaths::default(),
+            error: None,
+        }
+    }
+
+    /// Parse one process's direct controller memberships into the bounded set.
+    pub fn observe(&mut self, content: &str) {
+        if self.error.is_some() {
+            return;
+        }
+        if let Err(error) = self.observe_inner(content) {
+            self.error = Some(error);
+        }
+    }
+
+    fn observe_inner(&mut self, content: &str) -> io::Result<()> {
+        let parsed = parse_self_cgroup(content);
+        if self.unified_v2 {
+            if let Some(path) = parsed.unified {
+                self.paths.insert(CgroupController::Unified, path)?;
+            }
+            return Ok(());
+        }
+        if let Some(path) = matching_cpu_path(parsed.cpu, parsed.cpuacct) {
+            self.paths.insert(CgroupController::Cpu, path)?;
+        }
+        if let Some(path) = parsed.memory {
+            self.paths.insert(CgroupController::Memory, path)?;
+        }
+        if let Some(path) = parsed.io {
+            self.paths.insert(CgroupController::Io, path)?;
+        }
+        if let Some(path) = parsed.pids {
+            self.paths.insert(CgroupController::Pids, path)?;
+        }
+        Ok(())
+    }
+
+    /// Read metrics for the distinct direct paths observed so far.
+    ///
+    /// # Errors
+    /// Returns the first hard candidate/path ceiling failure.
+    pub fn collect(
+        self,
+        sys: &SysFs,
+        ts: i64,
+        clock_ticks_per_sec: i64,
+    ) -> io::Result<CgroupCollection> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        Ok(if self.unified_v2 {
+            collect_v2_paths(sys, ts, self.paths.unified)
+        } else {
+            collect_v1_paths(sys, ts, clock_ticks_per_sec, self.paths)
+        })
+    }
 }
 
 /// Collect the process's exact cgroup paths, effective cpuset, and capacity.
@@ -602,24 +680,19 @@ pub fn collect_workloads(
     ts: i64,
     clock_ticks_per_sec: i64,
 ) -> io::Result<CgroupCollection> {
-    let mut memberships = Vec::new();
+    let mut memberships = WorkloadMemberships::new(sys);
     for pid in procfs.pid_dirs()? {
         let Ok(content) = procfs.read_raw(&format!("{pid}/cgroup")) else {
             // Processes can exit between enumerating /proc and reading their
             // membership. The remaining live snapshot is still coherent.
             continue;
         };
-        memberships.push(content);
+        memberships.observe(&content);
     }
     if let Ok(content) = procfs.read_raw("self/cgroup") {
-        memberships.push(content);
+        memberships.observe(&content);
     }
-    collect_workload_memberships(
-        memberships.iter().map(String::as_str),
-        sys,
-        ts,
-        clock_ticks_per_sec,
-    )
+    memberships.collect(sys, ts, clock_ticks_per_sec)
 }
 
 /// Collect bounded metrics from already-read direct process memberships.
@@ -639,34 +712,11 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    let unified_v2 = is_v2(sys);
-    let mut paths = WorkloadCgroupPaths::default();
+    let mut observed = WorkloadMemberships::new(sys);
     for content in memberships {
-        let parsed = parse_self_cgroup(content.as_ref());
-        if unified_v2 {
-            if let Some(path) = parsed.unified {
-                paths.insert(CgroupController::Unified, &path)?;
-            }
-            continue;
-        }
-        if let Some(path) = matching_cpu_path(parsed.cpu, parsed.cpuacct) {
-            paths.insert(CgroupController::Cpu, &path)?;
-        }
-        if let Some(path) = parsed.memory {
-            paths.insert(CgroupController::Memory, &path)?;
-        }
-        if let Some(path) = parsed.io {
-            paths.insert(CgroupController::Io, &path)?;
-        }
-        if let Some(path) = parsed.pids {
-            paths.insert(CgroupController::Pids, &path)?;
-        }
+        observed.observe(content.as_ref());
     }
-    Ok(if unified_v2 {
-        collect_v2_paths(sys, ts, paths.unified)
-    } else {
-        collect_v1_paths(sys, ts, clock_ticks_per_sec, paths)
-    })
+    observed.collect(sys, ts, clock_ticks_per_sec)
 }
 
 fn is_v2(sys: &SysFs) -> bool {

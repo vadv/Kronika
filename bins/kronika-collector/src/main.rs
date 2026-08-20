@@ -159,6 +159,7 @@ fn main() -> Result<()> {
 async fn run_collector() -> Result<()> {
     let config = Config::from_env()?;
     let (writer_owner, mut journal, mut logs, mut pg) = initialize_collector(&config)?;
+    let in_container = detect_container(&ProcFs::from_env());
     let mut pg_telemetry = PgTelemetry::new(Instant::now());
 
     let mut sigusr2 = signal(SignalKind::user_defined2()).context("install the SIGUSR2 handler")?;
@@ -244,6 +245,7 @@ async fn run_collector() -> Result<()> {
                     &mut journal,
                     &writer_owner,
                     &config,
+                    in_container,
                     &due,
                     &mut segment,
                     &mut sched,
@@ -268,6 +270,7 @@ async fn run_collector() -> Result<()> {
                 &mut journal,
                 &writer_owner,
                 &config,
+                in_container,
                 &collection_due,
                 opening_settings.as_deref().unwrap_or(&[]),
                 &mut segment,
@@ -321,6 +324,7 @@ async fn run_pg_collection_cycle(
     journal: &mut Journal,
     writer_owner: &WriterOwner,
     config: &Config,
+    in_container: bool,
     due: &DueSet,
     segment: &mut SegmentState,
     sched: &mut Scheduler,
@@ -341,6 +345,7 @@ async fn run_pg_collection_cycle(
                     journal,
                     writer_owner,
                     config,
+                    in_container,
                     &batch,
                     settings.as_deref().unwrap_or(&[]),
                     ts,
@@ -381,6 +386,7 @@ fn append_pending_pg_batch(
     journal: &mut Journal,
     writer_owner: &WriterOwner,
     config: &Config,
+    in_container: bool,
     batch: &PgBatch,
     opening_settings: &[kronika_source_pg::settings::SettingsRow],
     ts: i64,
@@ -402,6 +408,7 @@ fn append_pending_pg_batch(
             opening_settings,
             opening_due.as_ref(),
             config,
+            in_container,
             ts,
         )
         .map_err(|()| {
@@ -500,10 +507,10 @@ fn buffer_pg_batch(
     opening_settings: &[kronika_source_pg::settings::SettingsRow],
     opening_due: Option<&DueSet>,
     config: &Config,
+    in_container: bool,
     ts: i64,
 ) -> std::result::Result<BufferedWindow, ()> {
     let fs = ProcFs::from_env();
-    let in_container = detect_container(&fs);
     let mut buffers = SectionBuffers::new();
     let mut pending_users = Vec::new();
     if segment.is_empty() {
@@ -565,6 +572,7 @@ fn run_collection_cycle(
     journal: &mut Journal,
     writer_owner: &WriterOwner,
     config: &Config,
+    in_container: bool,
     due: &DueSet,
     opening_settings: &[kronika_source_pg::settings::SettingsRow],
     segment: &mut SegmentState,
@@ -594,6 +602,7 @@ fn run_collection_cycle(
             journal,
             writer_owner,
             config,
+            in_container,
             &batch_due,
             rows,
             opening_settings,
@@ -616,6 +625,7 @@ fn run_collection_cycle(
             journal,
             writer_owner,
             config,
+            in_container,
             due,
             &LogRows::default(),
             opening_settings,
@@ -652,6 +662,7 @@ fn append_pending_window(
     journal: &mut Journal,
     writer_owner: &WriterOwner,
     config: &Config,
+    in_container: bool,
     due: &DueSet,
     log_rows: &LogRows,
     opening_settings: &[kronika_source_pg::settings::SettingsRow],
@@ -670,6 +681,7 @@ fn append_pending_window(
             log_rows,
             opening_settings,
             config,
+            in_container,
             ts,
         ) {
             Ok(Some(buffered)) => buffered,
@@ -774,10 +786,10 @@ fn buffer_window(
     log_rows: &LogRows,
     opening_settings: &[kronika_source_pg::settings::SettingsRow],
     config: &Config,
+    in_container: bool,
     ts: i64,
 ) -> std::result::Result<Option<BufferedWindow>, BufferFailure> {
     let fs = ProcFs::from_env();
-    let in_container = detect_container(&fs);
     let mut buffers = SectionBuffers::new();
     if segment.is_empty() {
         let facts = collect_instance().map_err(|err| {

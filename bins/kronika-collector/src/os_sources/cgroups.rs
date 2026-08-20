@@ -14,7 +14,7 @@ pub(super) fn collect_cgroup_sections(
     ts: i64,
     fs: &ProcFs,
     due: &DueSet,
-    process_memberships: &[String],
+    mut process_memberships: cgroup::WorkloadMemberships,
     os: &mut OsSources,
 ) {
     if !due.has(SourceKind::OsCgroup) {
@@ -36,15 +36,10 @@ pub(super) fn collect_cgroup_sections(
     );
     collect_context_section(sys, interner, scope, ts, fs, os);
 
-    let mut memberships = process_memberships
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>();
-    let self_membership = fs.read_raw("self/cgroup").ok();
-    if let Some(membership) = self_membership.as_deref() {
-        memberships.push(membership);
+    if let Ok(membership) = fs.read_raw("self/cgroup") {
+        process_memberships.observe(&membership);
     }
-    let rows = match cgroup::collect_workload_memberships(memberships, sys, ts, clock_ticks) {
+    let rows = match process_memberships.collect(sys, ts, clock_ticks) {
         Ok(rows) => rows,
         Err(err) => {
             for (type_id, source) in [
