@@ -25,6 +25,7 @@ import { semanticValueTone } from "./value-tone"
 // Matches --spacing-row: virtualized offsets and the content-sized height
 // are computed from the same number the CSS row height uses.
 const ROW_PX = 24
+const SKELETON_ROWS = 8
 
 export interface EntityColumn {
   readonly field: string
@@ -228,7 +229,7 @@ export function EntityTable({
     observer.observe(root)
     return () => observer.disconnect()
   }, [contentSized, rendered.length, width])
-  const contentHeight = contentSized ? (rendered.length === 0 ? 72 : Math.min(310, headHeight + rendered.length * ROW_PX)) + horizontalRailHeight : undefined
+  const contentHeight = contentSized ? (rendered.length === 0 ? (loading ? headHeight + SKELETON_ROWS * ROW_PX : 72) : Math.min(310, headHeight + rendered.length * ROW_PX)) + horizontalRailHeight : undefined
   const virtualHeight = contentSized ? rendered.length * ROW_PX : virtual.getTotalSize()
   const searchPending = searchRequest.phase === "pending"
   const searchMessage = searchRequest.phase === "pending" || searchRequest.phase === "error"
@@ -263,7 +264,7 @@ export function EntityTable({
               ? <div role="status">
                 <p className="absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]">{t("table.loading")}</p>
                 <div aria-hidden="true" data-testid="table-skeleton">
-                  {Array.from({ length: 8 }, (_, rowIndex) => <div className="flex h-row items-center border-b border-line" key={rowIndex} style={{ width: contentWidth }}>
+                  {Array.from({ length: SKELETON_ROWS }, (_, rowIndex) => <div className="flex h-row items-center border-b border-line" key={rowIndex} style={{ width: contentWidth }}>
                     {table.getVisibleLeafColumns().map((column, columnIndex) => <span className="px-[7px]" key={column.id} style={{ width: column.getSize() }}>
                       <span className="block h-2 animate-skeleton rounded-[3px] bg-s3 motion-reduce:animate-none" style={{ animationDelay: `${rowIndex * -90}ms`, width: `${45 + (rowIndex * 7 + columnIndex * 13) % 40}%` }} />
                     </span>)}
