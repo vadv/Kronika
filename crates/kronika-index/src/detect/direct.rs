@@ -595,9 +595,13 @@ fn active_snapshots(segment: &Segment, type_id: u32) -> Result<Vec<(i64, u32, u3
         return Ok(Vec::new());
     }
     let mut ids = HashSet::new();
-    segment.visit_rows(type_id, &["state"], 0, usize::MAX, |_ordinal, row| {
-        if let Some(Cell::StrId(id)) = row.get("state") {
+    let mut samples = Vec::new();
+    segment.visit_rows(type_id, &["ts", "state"], 0, usize::MAX, |ordinal, row| {
+        if let (Some(Cell::Ts(timestamp)), Some(Cell::StrId(id)), Some(ordinal)) =
+            (row.get("ts"), row.get("state"), u32::try_from(ordinal).ok())
+        {
             ids.insert(*id);
+            samples.push((*timestamp, *id, ordinal));
         }
         true
     })?;
@@ -613,20 +617,13 @@ fn active_snapshots(segment: &Segment, type_id: u32) -> Result<Vec<(i64, u32, u3
         }
     }
     let mut snapshots = BTreeMap::<i64, (Option<u32>, u32)>::new();
-    segment.visit_rows(type_id, &["ts", "state"], 0, usize::MAX, |ordinal, row| {
-        let Some(Cell::Ts(timestamp)) = row.get("ts") else {
-            return true;
-        };
-        let sample = snapshots.entry(*timestamp).or_default();
-        if row
-            .get("state")
-            .is_some_and(|cell| matches!(cell, Cell::StrId(id) if active_ids.contains(id)))
-        {
-            sample.0 = sample.0.or_else(|| u32::try_from(ordinal).ok());
+    for (timestamp, state, ordinal) in samples {
+        if active_ids.contains(&state) {
+            let sample = snapshots.entry(timestamp).or_default();
+            sample.0 = sample.0.or(Some(ordinal));
             sample.1 = sample.1.saturating_add(1);
         }
-        true
-    })?;
+    }
     Ok(snapshots
         .into_iter()
         .filter_map(|(timestamp, (ordinal, count))| {

@@ -570,10 +570,19 @@ fn active_backend_points(
     type_id: u32,
 ) -> Result<Vec<ActiveBackendPoint>, BuildError> {
     let mut ids = HashSet::new();
-    segment.visit_rows(type_id, &["state"], 0, usize::MAX, |_ordinal, row| {
-        if let Some(Cell::StrId(id)) = row.get("state") {
-            ids.insert(*id);
-        }
+    let mut samples = Vec::new();
+    segment.visit_rows(type_id, &["ts", "state"], 0, usize::MAX, |_ordinal, row| {
+        let Some(Cell::Ts(timestamp)) = row.get("ts") else {
+            return true;
+        };
+        let state = match row.get("state") {
+            Some(Cell::StrId(id)) => {
+                ids.insert(*id);
+                Some(*id)
+            }
+            _ => None,
+        };
+        samples.push((*timestamp, state));
         true
     })?;
     let dictionary = segment.dictionary_for(&ids)?;
@@ -589,19 +598,12 @@ fn active_backend_points(
     }
 
     let mut counts = BTreeMap::<i64, u32>::new();
-    segment.visit_rows(type_id, &["ts", "state"], 0, usize::MAX, |_ordinal, row| {
-        let Some(Cell::Ts(timestamp)) = row.get("ts") else {
-            return true;
-        };
-        let count = counts.entry(*timestamp).or_default();
-        if row
-            .get("state")
-            .is_some_and(|cell| matches!(cell, Cell::StrId(id) if active_ids.contains(id)))
-        {
+    for (timestamp, state) in samples {
+        let count = counts.entry(timestamp).or_default();
+        if state.is_some_and(|id| active_ids.contains(&id)) {
             *count = count.saturating_add(1);
         }
-        true
-    })?;
+    }
     Ok(counts
         .into_iter()
         .map(|(timestamp, count)| ActiveBackendPoint { timestamp, count })
