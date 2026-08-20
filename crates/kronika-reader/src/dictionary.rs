@@ -12,7 +12,7 @@ use kronika_registry::{
 };
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::{
-    ArrowReaderOptions, ParquetRecordBatchReaderBuilder, RowSelection,
+    ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder, RowSelection,
 };
 
 #[derive(Debug, Clone)]
@@ -53,7 +53,9 @@ impl Dictionary {
         section: VerifiedSection,
         expected_rows: u64,
     ) -> Result<(), CodecError> {
-        let reader = dictionary_builder(section.into_bytes(), type_id, expected_rows)?.build()?;
+        let (builder, _metadata) =
+            dictionary_builder(section.into_bytes(), type_id, expected_rows)?;
+        let reader = builder.build()?;
         for batch in reader {
             let batch = batch?;
             let ids = required_array::<UInt64Array>(&batch, "str_id")?;
@@ -112,7 +114,7 @@ impl Dictionary {
             return Ok(());
         }
         let bytes = section.into_bytes();
-        let id_builder = dictionary_builder(bytes.clone(), type_id, expected_rows)?;
+        let (id_builder, metadata) = dictionary_builder(bytes.clone(), type_id, expected_rows)?;
         let total_rows = usize::try_from(id_builder.metadata().file_metadata().num_rows())
             .map_err(|_overflow| CodecError::SchemaMismatch)?;
         let id_mask = ProjectionMask::roots(id_builder.parquet_schema(), [0]);
@@ -133,8 +135,7 @@ impl Dictionary {
             return Ok(());
         }
         let selection = RowSelection::from_consecutive_ranges(ranges.into_iter(), total_rows);
-        let options = ArrowReaderOptions::new().with_skip_arrow_metadata(true);
-        let reader = ParquetRecordBatchReaderBuilder::try_new_with_options(bytes, options)?
+        let reader = ParquetRecordBatchReaderBuilder::new_with_metadata(bytes, metadata)
             .with_row_selection(selection)
             .build()?;
         for batch in reader {
@@ -189,7 +190,7 @@ fn dictionary_builder(
     bytes: Bytes,
     type_id: u32,
     expected_rows: u64,
-) -> Result<ParquetRecordBatchReaderBuilder<Bytes>, CodecError> {
+) -> Result<(ParquetRecordBatchReaderBuilder<Bytes>, ArrowReaderMetadata), CodecError> {
     let profile = plain_parquet_decode_profile(bytes.as_ref(), MAX_DECODED_SECTION_BYTES)?;
     let got = u64::try_from(profile.rows).map_err(|_overflow| CodecError::SchemaMismatch)?;
     if got != expected_rows {
@@ -199,9 +200,10 @@ fn dictionary_builder(
         });
     }
     let options = ArrowReaderOptions::new().with_skip_arrow_metadata(true);
-    let builder = ParquetRecordBatchReaderBuilder::try_new_with_options(bytes, options)?;
+    let metadata = ArrowReaderMetadata::load(&bytes, options)?;
+    let builder = ParquetRecordBatchReaderBuilder::new_with_metadata(bytes, metadata.clone());
     if dictionary_schema_matches(builder.schema(), type_id) {
-        Ok(builder)
+        Ok((builder, metadata))
     } else {
         Err(CodecError::SchemaMismatch)
     }
