@@ -222,7 +222,16 @@ pub(crate) fn prepare(
 }
 
 fn explicit_segment(root: &Path, id: i64) -> Result<(Reader, SegmentRef), ApiError> {
-    let (reader, segment, _segments) = explicit_segment_with_listing(root, id)?;
+    let started = std::time::Instant::now();
+    let reader = Reader::open(root)?;
+    let listing = reader.catalog_segment(id)?;
+    log_warnings(&listing.warnings);
+    let segment = listing
+        .segments
+        .into_iter()
+        .next()
+        .ok_or(ApiError::NoSuchSegment)?;
+    log_segment_open(&segment, started.elapsed());
     Ok((reader, segment))
 }
 
@@ -240,6 +249,11 @@ fn explicit_segment_with_listing(
         .position(|segment| segment.id() == id)
         .ok_or(ApiError::NoSuchSegment)?;
     let segment = segments.remove(index);
+    log_segment_open(&segment, started.elapsed());
+    Ok((reader, segment, segments))
+}
+
+fn log_segment_open(segment: &SegmentRef, elapsed: std::time::Duration) {
     eprintln!(
         "kronika-web: segment_open id={} kind={} sections={} elapsed_us={}",
         segment.id(),
@@ -248,9 +262,8 @@ fn explicit_segment_with_listing(
             kronika_reader::SegmentKind::Active => "active",
         },
         segment.sections().len(),
-        started.elapsed().as_micros(),
+        elapsed.as_micros(),
     );
-    Ok((reader, segment, segments))
 }
 
 fn active_tail(

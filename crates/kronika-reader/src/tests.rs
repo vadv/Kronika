@@ -598,6 +598,25 @@ fn range_discovery_checks_bodies_only_after_selection() {
         "the production row path must reject the damaged selected body"
     );
 
+    let exact = reader
+        .catalog_segment(second_address.id.get())
+        .expect("exact catalog discovery");
+    assert_eq!(
+        exact
+            .segments
+            .iter()
+            .map(super::SegmentRef::id)
+            .collect::<Vec<_>>(),
+        [second_address.id.get()]
+    );
+    assert!(
+        reader
+            .catalog_segment(second_address.id.get() + 1)
+            .expect("missing exact catalog")
+            .segments
+            .is_empty()
+    );
+
     let with_predecessor = reader
         .catalog_segments_with_predecessor(200..=200)
         .expect("bounded catalogs with predecessor");

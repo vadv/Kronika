@@ -209,6 +209,56 @@ impl Reader {
         self.list_segments(range, false, false)
     }
 
+    /// Find one segment by its stable id without opening unrelated catalogs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the directory or the selected segment catalog
+    /// cannot be read safely.
+    pub fn catalog_segment(&self, id: i64) -> Result<Listing, ReaderError> {
+        let scan = self.dir.scan_catalogs()?;
+        let mut segments = Vec::with_capacity(1);
+        if let Some(unit) = scan
+            .finished
+            .iter()
+            .find(|unit| unit.address.id.get() == id)
+        {
+            let file = self.dir.open_finished(unit)?;
+            let catalog = read_catalog(&file)?;
+            self.dir.validate_finished_file(&file, unit)?;
+            segments.push(SegmentRef {
+                source: SegmentSource::Finished(unit.clone()),
+                provenance: Arc::clone(&self.provenance),
+                segment_id: unit.address.id.get(),
+                min_ts: unit.summary.min_ts,
+                max_ts: unit.summary.max_ts,
+                captured_bytes: unit.identity.len,
+                sections: sections_of(std::iter::once(&catalog)).into(),
+            });
+        } else if scan
+            .active
+            .first()
+            .is_some_and(|part| part.segment_id.get() == id)
+            && let Some(snapshot) = self.dir.open_active_snapshot(&scan)?
+        {
+            let (min_ts, max_ts) = active_bounds(snapshot.parts()).unwrap_or((0, 0));
+            let sections = sections_of(snapshot.parts().iter().map(|part| &part.catalog)).into();
+            segments.push(SegmentRef {
+                segment_id: snapshot.segment_id().get(),
+                source: SegmentSource::Active(snapshot),
+                provenance: Arc::clone(&self.provenance),
+                min_ts,
+                max_ts,
+                captured_bytes: scan.valid_len,
+                sections,
+            });
+        }
+        Ok(Listing {
+            segments,
+            warnings: scan.warnings,
+        })
+    }
+
     /// List segment catalogs in `range` plus the closest finished predecessor.
     ///
     /// The predecessor is selected from scan summaries before section catalogs
