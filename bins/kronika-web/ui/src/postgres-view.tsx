@@ -1,4 +1,4 @@
-import { Copy } from "lucide-react"
+import { ChevronDown, ChevronRight, Copy } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 import { registry } from "kronika:registry"
 
@@ -468,7 +468,7 @@ function Overview({ blockSize, cursor, data, historyRevision, hour, locale, onCu
   const walStorage = snapshot(data.sections.pg_wal_storage ?? [], cursor)[0]
   const overviewSections = groupSections(data.pgOverview.filter(({ logicalName }) => logicalName !== "pg_wal_storage"))
   return <section className="mt-2 p-2">
-    <div className="overview-metrics grid grid-cols-[repeat(auto-fit,minmax(130px,1fr))] border-b border-line2 bg-s1 max-[1000px]:grid-cols-3 max-[760px]:grid-cols-2 [&>article]:min-h-[58px] [&>article]:border-l-2 [&>article]:border-transparent [&>article]:p-2 [&>article:hover]:border-accent-line [&>article:hover]:bg-s3 [&_span]:block [&_span]:font-sans [&_span]:text-xs [&_span]:font-medium [&_span]:text-fg3 [&_strong]:mt-[7px] [&_strong]:block [&_strong]:font-mono [&_strong]:text-lg [&_strong]:font-normal [&_strong]:tabular-nums [&_strong]:text-fg">{totals.map(([label, output]) => <article key={label}><span>{t(label)}</span><strong>{measure(output, locale)}</strong></article>)}</div>
+    <div className="overview-metrics grid grid-cols-[repeat(auto-fit,minmax(150px,220px))] border-b border-line2 bg-s1 max-[1000px]:grid-cols-3 max-[760px]:grid-cols-2 [&>article]:min-h-[58px] [&>article]:border-l-2 [&>article]:border-transparent [&>article]:p-2 [&>article:hover]:border-accent-line [&>article:hover]:bg-s3 [&_span]:block [&_span]:font-sans [&_span]:text-xs [&_span]:font-medium [&_span]:text-fg3 [&_strong]:mt-[7px] [&_strong]:block [&_strong]:font-mono [&_strong]:text-lg [&_strong]:font-normal [&_strong]:tabular-nums [&_strong]:text-fg">{totals.map(([label, output]) => <article key={label}><span>{t(label)}</span><strong>{measure(output, locale)}</strong></article>)}</div>
     <OverviewActivityHistory cursor={cursor} data={data} hour={hour} locale={locale} onCursor={onCursor} t={t} />
     {walStorage !== undefined && <WalStorage cursor={cursor} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} row={walStorage} t={t} />}
     {overviewSections.map(([logicalName, allRows]) => {
@@ -511,7 +511,7 @@ function WalStorage({ cursor, historyRevision, hour, locale, onCursor, row, t }:
       <summary className="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 text-xs text-fg3 marker:hidden [&::-webkit-details-marker]:hidden">
         <LabelHelp helpKey="pg.wal_storage.help" labelKey="pg.wal_storage.label" t={t} />
         <strong className="font-medium tabular-nums text-fg2">{humanBytes(value(row, "wal_files_bytes"), locale)}</strong>
-        <span aria-hidden="true" className="text-accent3">{expanded ? "−" : "+"}</span>
+        <span aria-hidden="true" className="flex text-fg4">{expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span>
       </summary>
       <div className="mt-1 border-t border-line pt-1"><SeriesChart cursor={cursor} format={humanBytes} helpKey="pg.wal_storage.help" hour={hour} labelKey="pg.wal_storage.history" locale={locale} onCursor={onCursor} points={history} scale="nonnegative" status={loaded.status} t={t} unit="B" /></div>
     </details>
@@ -535,7 +535,10 @@ function OverviewMetrics({ cursor, historyRevision, hour, locale, logicalName, o
       <div aria-label={t("system.history")} className="history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">{chartColumns.map((column) => <button aria-pressed={metricField === column.field} className="min-h-[28px] flex-none cursor-pointer rounded-[var(--radius-xs)] border border-line3 bg-s2 px-2 py-1 text-xs text-fg2 transition-colors hover:bg-s3 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg" data-testid={`pg-overview-chart-${column.field}`} key={column.field} onClick={() => setMetricField(column.field)} type="button">{t(overviewFieldKey(column.field))}</button>)}</div>
       <SeriesChart cursor={cursor} durationAxis={durationKind(selectedColumn.kind)} format={chartFormat(selectedColumn.kind, columnDenominator(selectedColumn, t))} helpKey={selectedColumn.help ?? "chart.metric.help"} hour={hour} labelKey={overviewFieldKey(selectedColumn.field)} locale={locale} onCursor={onCursor} points={history.value?.get(selectedColumn.field) ?? []} scale={chartScale(selectedColumn)} status={history.status} t={t} tickFormat={chartFormat(selectedColumn.kind, columnDenominator(selectedColumn, t))} unit={chartUnit(selectedColumn, t("unit.per_second"))} />
     </section>}
-    <dl>{registryCardFields(row).map(([field, cell]) => <div key={field}><dt><LabelHelp helpKey={`${overviewFieldKey(field)}.help`} labelKey={overviewFieldKey(field)} t={t} /></dt><dd>{overviewValue(cell, field, locale, time)}</dd></div>)}</dl>
+    {(() => {
+      const facts = registryCardFields(row).filter(([field]) => !chartColumns.some((column) => column.field === field))
+      return facts.length === 0 ? null : <dl>{facts.map(([field, cell]) => <div key={field}><dt><LabelHelp helpKey={`${overviewFieldKey(field)}.help`} labelKey={overviewFieldKey(field)} t={t} /></dt><dd>{overviewValue(cell, field, locale, time)}</dd></div>)}</dl>
+    })()}
   </section>
 }
 
