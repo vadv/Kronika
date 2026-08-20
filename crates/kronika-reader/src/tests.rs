@@ -617,6 +617,23 @@ fn range_discovery_checks_bodies_only_after_selection() {
             .is_empty()
     );
 
+    let discovery = reader.catalog_discovery().expect("compact discovery");
+    assert_eq!(
+        discovery.ranges().collect::<Vec<_>>(),
+        vec![(100, 100), (200, 200)]
+    );
+    let selected = discovery
+        .segments(200..=200)
+        .expect("materialize selected catalog");
+    assert_eq!(
+        selected
+            .segments
+            .iter()
+            .map(super::SegmentRef::id)
+            .collect::<Vec<_>>(),
+        [second_address.id.get()]
+    );
+
     let with_predecessor = reader
         .catalog_segments_with_predecessor(200..=200)
         .expect("bounded catalogs with predecessor");

@@ -154,6 +154,122 @@ pub struct Listing {
     pub warnings: Vec<StoreWarning>,
 }
 
+/// One catalog-only store scan whose full section catalogs remain unopened.
+///
+/// A caller can inspect all recorded time ranges, choose a window, and then
+/// materialize references only for segments that overlap that window.
+#[derive(Debug)]
+pub struct CatalogDiscovery<'a> {
+    reader: &'a Reader,
+    scan: kronika_store::LocalScan,
+}
+
+impl CatalogDiscovery<'_> {
+    /// Time bounds of every canonical segment found by the scan.
+    pub fn ranges(&self) -> impl Iterator<Item = (i64, i64)> + '_ {
+        let active_id = self.scan.active.first().map(|part| part.segment_id.get());
+        let finished_is_canonical = active_id.is_some_and(|active_id| {
+            self.scan
+                .finished
+                .iter()
+                .any(|unit| unit.address.id.get() == active_id)
+        });
+        let active = (!finished_is_canonical)
+            .then(|| active_bounds(&self.scan.active))
+            .flatten();
+        self.scan
+            .finished
+            .iter()
+            .map(|unit| (unit.summary.min_ts, unit.summary.max_ts))
+            .chain(active)
+    }
+
+    /// Open section catalogs only for segments overlapping `range`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when a selected segment changed or its catalog
+    /// cannot be read safely.
+    pub fn segments<R: RangeBounds<i64>>(self, range: R) -> Result<Listing, ReaderError> {
+        self.list_segments(range, false, false)
+    }
+
+    fn list_segments<R: RangeBounds<i64>>(
+        mut self,
+        range: R,
+        validate_bodies: bool,
+        include_predecessor: bool,
+    ) -> Result<Listing, ReaderError> {
+        let mut segments = Vec::new();
+        let finished = Arc::clone(&self.scan.finished);
+        let predecessor = include_predecessor
+            .then(|| {
+                finished
+                    .iter()
+                    .filter(|unit| before_start(&range, unit.summary.max_ts))
+                    .max_by_key(|unit| (unit.summary.max_ts, unit.address.id))
+                    .map(|unit| unit.address.id)
+            })
+            .flatten();
+        for unit in finished.iter().filter(|unit| {
+            overlaps(&range, unit.summary.min_ts, unit.summary.max_ts)
+                || predecessor == Some(unit.address.id)
+        }) {
+            if validate_bodies && !self.reader.dir.validate_finished(&mut self.scan, unit)? {
+                continue;
+            }
+            let file = self.reader.dir.open_finished(unit)?;
+            let catalog = read_catalog(&file)?;
+            self.reader.dir.validate_finished_file(&file, unit)?;
+            let sections = sections_of(std::iter::once(&catalog)).into();
+            segments.push(SegmentRef {
+                source: SegmentSource::Finished(unit.clone()),
+                provenance: Arc::clone(&self.reader.provenance),
+                segment_id: unit.address.id.get(),
+                min_ts: unit.summary.min_ts,
+                max_ts: unit.summary.max_ts,
+                captured_bytes: unit.identity.len,
+                sections,
+            });
+        }
+        let active_id = self.scan.active.first().map(|part| part.segment_id.get());
+        let finished_is_canonical = active_id.is_some_and(|active_id| {
+            segments
+                .iter()
+                .any(|segment| segment.segment_id == active_id)
+        });
+        let active = if finished_is_canonical {
+            None
+        } else if let Some((min_ts, max_ts)) = active_bounds(&self.scan.active)
+            .filter(|&(min_ts, max_ts)| overlaps(&range, min_ts, max_ts))
+        {
+            self.reader
+                .dir
+                .open_active_snapshot(&self.scan)?
+                .map(|snapshot| (snapshot, min_ts, max_ts))
+        } else {
+            None
+        };
+        if let Some((snapshot, min_ts, max_ts)) = active {
+            let sections = sections_of(snapshot.parts().iter().map(|part| &part.catalog)).into();
+            segments.push(SegmentRef {
+                segment_id: snapshot.segment_id().get(),
+                source: SegmentSource::Active(snapshot),
+                provenance: Arc::clone(&self.reader.provenance),
+                min_ts,
+                max_ts,
+                captured_bytes: self.scan.valid_len,
+                sections,
+            });
+        }
+        segments.sort_by_key(|segment| segment.segment_id);
+        Ok(Listing {
+            segments,
+            warnings: self.scan.warnings,
+        })
+    }
+}
+
 /// An open data directory.
 #[derive(Debug)]
 pub struct Reader {
@@ -192,6 +308,20 @@ impl Reader {
     /// Returns an I/O error when the directory cannot be walked.
     pub fn segments<R: RangeBounds<i64>>(&self, range: R) -> Result<Listing, ReaderError> {
         self.list_segments(range, true, false)
+    }
+
+    /// Scan compact catalog summaries before choosing which full catalogs to
+    /// open.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the directory cannot be walked or a compact
+    /// catalog summary cannot be read safely.
+    pub fn catalog_discovery(&self) -> Result<CatalogDiscovery<'_>, ReaderError> {
+        Ok(CatalogDiscovery {
+            reader: self,
+            scan: self.dir.scan_catalogs()?,
+        })
     }
 
     /// List segment catalogs without reading finished section bodies.
@@ -282,73 +412,8 @@ impl Reader {
         validate_bodies: bool,
         include_predecessor: bool,
     ) -> Result<Listing, ReaderError> {
-        let mut scan = self.dir.scan_catalogs()?;
-        let mut segments = Vec::new();
-        let finished = Arc::clone(&scan.finished);
-        let predecessor = include_predecessor
-            .then(|| {
-                finished
-                    .iter()
-                    .filter(|unit| before_start(&range, unit.summary.max_ts))
-                    .max_by_key(|unit| (unit.summary.max_ts, unit.address.id))
-                    .map(|unit| unit.address.id)
-            })
-            .flatten();
-        for unit in finished.iter().filter(|unit| {
-            overlaps(&range, unit.summary.min_ts, unit.summary.max_ts)
-                || predecessor == Some(unit.address.id)
-        }) {
-            if validate_bodies && !self.dir.validate_finished(&mut scan, unit)? {
-                continue;
-            }
-            let file = self.dir.open_finished(unit)?;
-            let catalog = read_catalog(&file)?;
-            self.dir.validate_finished_file(&file, unit)?;
-            let sections = sections_of(std::iter::once(&catalog)).into();
-            segments.push(SegmentRef {
-                source: SegmentSource::Finished(unit.clone()),
-                provenance: Arc::clone(&self.provenance),
-                segment_id: unit.address.id.get(),
-                min_ts: unit.summary.min_ts,
-                max_ts: unit.summary.max_ts,
-                captured_bytes: unit.identity.len,
-                sections,
-            });
-        }
-        let active_id = scan.active.first().map(|part| part.segment_id.get());
-        let finished_is_canonical = active_id.is_some_and(|active_id| {
-            segments
-                .iter()
-                .any(|segment| segment.segment_id == active_id)
-        });
-        let active = if finished_is_canonical {
-            None
-        } else if let Some((min_ts, max_ts)) =
-            active_bounds(&scan.active).filter(|&(min_ts, max_ts)| overlaps(&range, min_ts, max_ts))
-        {
-            self.dir
-                .open_active_snapshot(&scan)?
-                .map(|snapshot| (snapshot, min_ts, max_ts))
-        } else {
-            None
-        };
-        if let Some((snapshot, min_ts, max_ts)) = active {
-            let sections = sections_of(snapshot.parts().iter().map(|part| &part.catalog)).into();
-            segments.push(SegmentRef {
-                segment_id: snapshot.segment_id().get(),
-                source: SegmentSource::Active(snapshot),
-                provenance: Arc::clone(&self.provenance),
-                min_ts,
-                max_ts,
-                captured_bytes: scan.valid_len,
-                sections,
-            });
-        }
-        segments.sort_by_key(|segment| segment.segment_id);
-        Ok(Listing {
-            segments,
-            warnings: scan.warnings,
-        })
+        self.catalog_discovery()?
+            .list_segments(range, validate_bodies, include_predecessor)
     }
 
     /// Open one of the segments a listing returned.

@@ -1,5 +1,6 @@
 //! Composes one hour of timeline data into one response.
 
+use std::ops::Bound::{Included, Unbounded};
 use std::path::{Path, PathBuf};
 
 use kronika_index::{finding_keys, resource_selected, series_keys};
@@ -52,8 +53,8 @@ pub(super) fn prepare(
     let started = std::time::Instant::now();
     let requested = request.window;
     let reader = Reader::open(root)?;
-    let stored = reader.catalog_segments(..)?;
-    let hours = hours_of(&stored.segments);
+    let discovery = reader.catalog_discovery()?;
+    let hours = hours_of_ranges(discovery.ranges());
     let window = requested.from.map_or_else(
         || latest_hour(&hours),
         |from| Window {
@@ -61,6 +62,14 @@ pub(super) fn prepare(
             to: Some(requested.to.unwrap_or_else(|| hour_end(from))),
         },
     );
+    let stored = if request.series.is_some() {
+        discovery.segments(..)?
+    } else {
+        discovery.segments((
+            window.from.map_or(Unbounded, Included),
+            window.to.map_or(Unbounded, Included),
+        ))?
+    };
     let listed = stored.segments;
     let mut segments = listed
         .iter()
@@ -93,14 +102,6 @@ pub(super) fn prepare(
 
 fn overlaps_window(min_ts: i64, max_ts: i64, window: Window) -> bool {
     window.from.is_none_or(|from| max_ts >= from) && window.to.is_none_or(|to| min_ts <= to)
-}
-
-fn hours_of(segments: &[SegmentRef]) -> Vec<i64> {
-    hours_of_ranges(
-        segments
-            .iter()
-            .map(|segment| (segment.min_ts(), segment.max_ts())),
-    )
 }
 
 fn hours_of_ranges(ranges: impl IntoIterator<Item = (i64, i64)>) -> Vec<i64> {

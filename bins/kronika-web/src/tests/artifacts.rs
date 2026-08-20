@@ -2549,6 +2549,32 @@ fn an_hour_carries_its_segments_and_its_line_in_one_response() {
 }
 
 #[test]
+fn an_hour_lists_all_available_hours_but_only_selected_segments() {
+    let mut fixture = Fixture::new();
+    fixture.append_diskstats(&[(100, 0, 1)]);
+    fixture.finish_and_continue(SEGMENT_ID + 3_600_000_000);
+    fixture.append_diskstats(&[(3_600_000_100, 0, 2)]);
+    fixture.finish();
+
+    let records =
+        stream(fixture.prepare("/api/hour?from=100&to=200", None)).expect("selected hour response");
+    let hour = records
+        .iter()
+        .find(|record| record["record"] == "hour")
+        .expect("hour header");
+    assert_eq!(
+        hour["available_hours"],
+        serde_json::json!(["0", "3600000000"])
+    );
+    let segments = records
+        .iter()
+        .filter(|record| record["record"] == "finished_segment")
+        .map(|record| record["id"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(segments, [SEGMENT_ID.to_string()].map(Value::from));
+}
+
+#[test]
 fn an_hour_keeps_generic_rows_and_lanes_inside_its_inclusive_window() {
     let mut fixture = Fixture::new();
     fixture.append_diskstats(&[(99, 0, 9), (100, 0, 0), (200, 0, 2), (201, 0, 1)]);
