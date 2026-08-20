@@ -27,7 +27,7 @@ test("narrow controls stay bounded and coarse-pointer table help is immediately 
   // fits inside the cell instead of being clipped by the column edge.
   assert.match(help, /coarse:\[\.entity-header-cell>&\]:mr-\[11px\]/)
   assert.match(help, /coarse:\[\.entity-header-cell_&\]:after:-inset-\[11px\]/)
-  assert.match(entityTable, /scroll-padding-inline-end:15px/)
+  assert.match(entityTable, /scroll-padding-inline-end:8px/)
   assert.doesNotMatch(help, /w-11/)
 })
 

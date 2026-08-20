@@ -628,8 +628,11 @@ for every visible side axis. The compact timeline shell is exactly 104 px; its
 the following navigation. Charts
 keep series names with the aligned statistics and place percentile columns without
 colliding with the plot edge. Sparse tables are content-sized instead of
-reserving large framed boards. Short PostgreSQL sibling sections stack directly
-by content; only a long result receives the remaining viewport row, and opening
+reserving large framed boards. Their required horizontal rail does not create
+a vertical scroll owner when every rendered row fits; a stable end gutter keeps
+the final header control and cell clear of the real Inspector splitter. Dense
+tables retain independent vertical scrolling. Short PostgreSQL sibling sections
+stack directly by content; only a long result receives the remaining viewport row, and opening
 the independently scrolling Inspector does not stretch either sibling. A
 boundary is draggable only when it controls a real split; otherwise the layout
 stays light. The exact current `pg_wal` file

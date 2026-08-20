@@ -2861,6 +2861,10 @@ test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, as
       })()`)
       await settleLayout(cdp)
       const before = await cdp.evaluate(viewportTableGeometry())
+      assert.equal(before.table.scrollAxis, "both", `${width}x${height} dense table axis: ${JSON.stringify(before)}`)
+      assert.equal(before.table.overflowY, "auto", `${width}x${height} dense vertical owner: ${JSON.stringify(before)}`)
+      assert.equal(before.table.vertical, true, `${width}x${height} dense vertical overflow: ${JSON.stringify(before)}`)
+      assert.ok(before.table.scrollHeight > before.table.clientHeight, `${width}x${height} dense scroll range: ${JSON.stringify(before)}`)
       await cdp.evaluate(`(() => {
         const scroll = document.querySelector('[data-testid="pg-activity-table"] .entity-scroll')
         const row = [...document.querySelectorAll('[data-testid="pg-activity-table"] .entity-row')].find((candidate) => {
@@ -3700,10 +3704,11 @@ function viewportTableGeometry() {
       return bounds.top >= viewport.top && bounds.bottom <= viewport.bottom
     })
     const rect = (node) => { const bounds = node.getBoundingClientRect(); return { bottom: bounds.bottom, height: bounds.height, left: bounds.left, right: bounds.right, top: bounds.top, width: bounds.width } }
+    const style = getComputedStyle(scroll)
     return {
       document: { clientHeight: document.documentElement.clientHeight, scrollHeight: document.documentElement.scrollHeight },
       layout: rect(layout),
-      table: { ...rect(scroll), clientWidth: scroll.clientWidth, railHeight: scroll.offsetHeight - scroll.clientHeight, scrollHeight: scroll.scrollHeight, scrollLeft: scroll.scrollLeft, scrollTop: scroll.scrollTop, scrollWidth: scroll.scrollWidth },
+      table: { ...rect(scroll), clientHeight: scroll.clientHeight, clientWidth: scroll.clientWidth, overflowY: style.overflowY, railHeight: scroll.offsetHeight - scroll.clientHeight, scrollAxis: scroll.dataset.scrollAxis, scrollHeight: scroll.scrollHeight, scrollLeft: scroll.scrollLeft, scrollTop: scroll.scrollTop, scrollWidth: scroll.scrollWidth, vertical: scroll.scrollHeight > scroll.clientHeight + 1 },
       visiblePid: visible?.querySelector('[role="cell"]')?.textContent.trim() ?? null,
     }
   })()`
@@ -3740,12 +3745,27 @@ function sparsePostgresGeometry() {
     const progressScroll = progress.querySelector('.entity-scroll')
     const workspace = document.querySelector('.workspace')
     const rect = (node) => { const box = node.getBoundingClientRect(); return { bottom: box.bottom, height: box.height, left: box.left, right: box.right, top: box.top, width: box.width } }
-    const measured = (root, scroll) => ({
-      ...rect(root),
-      contentSized: root.dataset.contentSized === 'true',
-      horizontal: scroll.scrollWidth > scroll.clientWidth,
-      scrollHeight: rect(scroll).height,
-    })
+    const measured = (root, scroll) => {
+      const scrollBox = rect(scroll)
+      const style = getComputedStyle(scroll)
+      const rows = [...root.querySelectorAll('.entity-row')].map(rect)
+      return {
+        ...rect(root),
+        allRowsFit: rows.every((row) => row.top >= scrollBox.top - .5 && row.bottom <= scrollBox.top + scroll.clientHeight + .5),
+        clientHeight: scroll.clientHeight,
+        contentSized: root.dataset.contentSized === 'true',
+        horizontal: scroll.scrollWidth > scroll.clientWidth,
+        overflowX: style.overflowX,
+        overflowY: style.overflowY,
+        rows,
+        scrollBox,
+        scrollAxis: scroll.dataset.scrollAxis,
+        scrollHeight: scrollBox.height,
+        scrollContentHeight: scroll.scrollHeight,
+        scrollTop: scroll.scrollTop,
+        vertical: /(auto|scroll)/.test(style.overflowY) && scroll.scrollHeight > scroll.clientHeight + 1,
+      }
+    }
     const activityRect = measured(activity, activityScroll)
     const progressRect = measured(progress, progressScroll)
     return {
@@ -3753,6 +3773,43 @@ function sparsePostgresGeometry() {
       gap: progressRect.top - activityRect.bottom,
       progress: progressRect,
       workspace: rect(workspace),
+    }
+  })()`
+}
+
+function sparsePostgresSeamGeometry() {
+  return `(() => {
+    const table = document.querySelector('[data-testid="pg-activity-table"]')
+    const scroll = table.querySelector('.entity-scroll')
+    const header = table.querySelector('.entity-head [role="columnheader"]:last-child')
+    const cell = table.querySelector('.entity-row [role="cell"]:last-child')
+    const splitter = document.querySelector('.inspector-splitter')
+    const trigger = document.querySelector('.timeline-open-chart')
+    const rect = (node) => { const box = node.getBoundingClientRect(); return { bottom: box.bottom, height: box.height, left: box.left, right: box.right, top: box.top, width: box.width } }
+    const scrollRect = rect(scroll)
+    const splitterRect = rect(splitter)
+    const clientRight = scrollRect.left + scroll.clientLeft + scroll.clientWidth
+    const style = getComputedStyle(scroll)
+    const rows = [...table.querySelectorAll('.entity-row')].map(rect)
+    return {
+      allRowsFit: rows.every((row) => row.top >= scrollRect.top - .5 && row.bottom <= scrollRect.top + scroll.clientHeight + .5),
+      axis: scroll.dataset.scrollAxis,
+      cellEndGap: clientRight - rect(cell).right,
+      chartToSplitter: splitterRect.left - rect(trigger).right,
+      clientHeight: scroll.clientHeight,
+      clientRight,
+      headerEndGap: clientRight - rect(header).right,
+      horizontal: scroll.scrollWidth > scroll.clientWidth + 1,
+      overflowX: style.overflowX,
+      overflowY: style.overflowY,
+      panel: new URL(location.href).searchParams.get('panel'),
+      scroll: scrollRect,
+      scrollHeight: scroll.scrollHeight,
+      scrollLeft: scroll.scrollLeft,
+      scrollWidth: scroll.scrollWidth,
+      seamGap: splitterRect.left - scrollRect.right,
+      splitter: splitterRect,
+      vertical: /(auto|scroll)/.test(style.overflowY) && scroll.scrollHeight > scroll.clientHeight + 1,
     }
   })()`
 }
@@ -4232,6 +4289,33 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     assert.ok(sparseBefore.gap >= 7 && sparseBefore.gap <= 10, JSON.stringify(sparseBefore))
     assert.ok(sparseBefore.progress.bottom < sparseBefore.workspace.bottom - 120, JSON.stringify(sparseBefore))
     assert.ok(sparseBefore.activity.horizontal && sparseBefore.progress.horizontal, JSON.stringify(sparseBefore))
+    assert.equal(sparseBefore.activity.scrollAxis, "horizontal", JSON.stringify(sparseBefore))
+    assert.equal(sparseBefore.progress.scrollAxis, "horizontal", JSON.stringify(sparseBefore))
+    assert.equal(sparseBefore.activity.overflowX, "auto", JSON.stringify(sparseBefore))
+    assert.equal(sparseBefore.activity.overflowY, "hidden", JSON.stringify(sparseBefore))
+    assert.equal(sparseBefore.activity.vertical, false, JSON.stringify(sparseBefore))
+    assert.equal(sparseBefore.progress.vertical, false, JSON.stringify(sparseBefore))
+    assert.equal(sparseBefore.activity.allRowsFit, true, JSON.stringify(sparseBefore))
+    assert.equal(sparseBefore.progress.allRowsFit, true, JSON.stringify(sparseBefore))
+    await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get('panel') === 'chart' && document.querySelector('[data-testid="inspector-chart"] canvas') !== null`, "sparse PostgreSQL Chart Inspector")
+    await cdp.evaluate(`(() => { const scroll = document.querySelector('[data-testid="pg-activity-table"] .entity-scroll'); scroll.scrollLeft = scroll.scrollWidth })()`)
+    await settleLayout(cdp)
+    const sparseSeam = await cdp.evaluate(sparsePostgresSeamGeometry())
+    assert.equal(sparseSeam.panel, "chart", JSON.stringify(sparseSeam))
+    assert.equal(sparseSeam.axis, "horizontal", JSON.stringify(sparseSeam))
+    assert.equal(sparseSeam.overflowX, "auto", JSON.stringify(sparseSeam))
+    assert.equal(sparseSeam.overflowY, "hidden", JSON.stringify(sparseSeam))
+    assert.equal(sparseSeam.vertical, false, JSON.stringify(sparseSeam))
+    assert.equal(sparseSeam.horizontal, true, JSON.stringify(sparseSeam))
+    assert.equal(sparseSeam.allRowsFit, true, JSON.stringify(sparseSeam))
+    assert.ok(sparseSeam.scrollLeft >= sparseSeam.scrollWidth - (sparseSeam.clientRight - sparseSeam.scroll.left) - 1, JSON.stringify(sparseSeam))
+    assert.ok(sparseSeam.headerEndGap >= 7 && sparseSeam.headerEndGap <= 9, JSON.stringify(sparseSeam))
+    assert.ok(sparseSeam.cellEndGap >= 7 && sparseSeam.cellEndGap <= 9, JSON.stringify(sparseSeam))
+    assert.ok(sparseSeam.seamGap >= 6, JSON.stringify(sparseSeam))
+    assert.ok(sparseSeam.chartToSplitter >= 6, JSON.stringify(sparseSeam))
+    await cdp.evaluate(`document.querySelector('.inspector-close').click()`)
+    await cdp.waitFor(`new URL(location.href).searchParams.get('panel') === null && document.querySelector('[data-testid="inspector"]') === null`, "sparse Chart Inspector close")
     await cdp.evaluate(`document.querySelector('[data-testid="pg-activity-table"] .entity-row').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="inspector-detail"] [data-testid="pg-detail"]') !== null`, "PostgreSQL detail in shared Inspector")
     assert.equal(await cdp.evaluate(`document.querySelectorAll('[data-testid="inspector"]').length === 1 && document.querySelector('.workspace [data-testid="pg-detail"]') === null`), true)
