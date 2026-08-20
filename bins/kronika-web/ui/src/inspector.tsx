@@ -11,21 +11,26 @@ const WIDTH_KEY = "kronika.inspector-width"
 
 interface PortalController {
   readonly target: HTMLElement | null
+  readonly chartTarget: HTMLElement | null
   readonly register: (identity: string, dismiss: () => void, title: string, autoOpen: boolean) => () => void
+  readonly registerChart: (identity: string) => () => void
 }
 
 const InspectorPortalContext = createContext<PortalController | null>(null)
 
-export function InspectorPortalProvider({ children, dismissRef, onOpen, onTitle, target }: {
+export function InspectorPortalProvider({ chartTarget, children, dismissRef, onChartAvailable, onOpen, onTitle, target }: {
+  readonly chartTarget: HTMLElement | null
   readonly children: ReactNode
   readonly dismissRef: MutableRefObject<(() => void) | null>
+  readonly onChartAvailable: (available: boolean) => void
   readonly onOpen: () => void
   readonly onTitle: (title: string | null) => void
   readonly target: HTMLElement | null
 }) {
   const active = useRef<string | null>(null)
-  const callbacks = useRef({ dismissRef, onOpen, onTitle })
-  callbacks.current = { dismissRef, onOpen, onTitle }
+  const activeChart = useRef<string | null>(null)
+  const callbacks = useRef({ dismissRef, onChartAvailable, onOpen, onTitle })
+  callbacks.current = { dismissRef, onChartAvailable, onOpen, onTitle }
   const register = useMemo(() => (identity: string, dismiss: () => void, title: string, autoOpen: boolean) => {
     active.current = identity
     callbacks.current.dismissRef.current = dismiss
@@ -38,7 +43,16 @@ export function InspectorPortalProvider({ children, dismissRef, onOpen, onTitle,
       callbacks.current.onTitle(null)
     }
   }, [])
-  return <InspectorPortalContext.Provider value={{ register, target }}>{children}</InspectorPortalContext.Provider>
+  const registerChart = useMemo(() => (identity: string) => {
+    activeChart.current = identity
+    callbacks.current.onChartAvailable(true)
+    return () => {
+      if (activeChart.current !== identity) return
+      activeChart.current = null
+      callbacks.current.onChartAvailable(false)
+    }
+  }, [])
+  return <InspectorPortalContext.Provider value={{ chartTarget, register, registerChart, target }}>{children}</InspectorPortalContext.Provider>
 }
 
 export function InspectorPortal({ autoOpen = true, children, identity, onClose, title }: {
@@ -53,6 +67,19 @@ export function InspectorPortal({ autoOpen = true, children, identity, onClose, 
   dismiss.current = onClose
   useLayoutEffect(() => controller?.register(identity, () => dismiss.current(), title, autoOpen), [autoOpen, controller?.register, identity, title])
   return controller === null || controller.target === null ? null : createPortal(children, controller.target)
+}
+
+// A detail's metric-history section lives on the Inspector's Chart tab, not in
+// the fact list. Registration is unconditional so the Inspector knows an
+// entity chart exists before the tab is opened; the children render only once
+// the tab provides its slot.
+export function InspectorChartPortal({ children, identity }: {
+  readonly children: ReactNode
+  readonly identity: string
+}) {
+  const controller = useContext(InspectorPortalContext)
+  useLayoutEffect(() => controller?.registerChart(identity), [controller?.registerChart, identity])
+  return controller === null || controller.chartTarget === null ? null : createPortal(children, controller.chartTarget)
 }
 
 export function loadInspectorWidth(storage: Pick<Storage, "getItem">): number {
@@ -72,6 +99,8 @@ export function Inspector({
   chart,
   detail,
   detailAvailable,
+  entityChart,
+  entityChartAvailable,
   onClose,
   onPanel,
   panel,
@@ -81,6 +110,8 @@ export function Inspector({
   readonly chart: ReactNode
   readonly detail: ReactNode
   readonly detailAvailable: boolean
+  readonly entityChart: ReactNode
+  readonly entityChartAvailable: boolean
   readonly onClose: () => void
   readonly onPanel: (panel: Exclude<InspectorPanel, null>) => void
   readonly panel: Exclude<InspectorPanel, null>
@@ -168,7 +199,10 @@ export function Inspector({
         <button aria-label={t("common.close")} className="inspector-close" onClick={onClose} type="button">×</button>
       </header>
       <div className="inspector-body" data-testid={`inspector-${panel}`} role="tabpanel">
-        {panel === "detail" && detailAvailable ? detail : chart}
+        {/* The detail stays mounted while the Chart tab is open: the selected
+            entity's history section portals from it into the chart slot. */}
+        {detailAvailable && <div className={panel === "detail" ? "contents" : "hidden"}>{detail}</div>}
+        {(panel === "chart" || !detailAvailable) && (entityChartAvailable && detailAvailable ? entityChart : chart)}
       </div>
     </aside>
   </>

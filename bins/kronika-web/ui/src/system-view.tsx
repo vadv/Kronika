@@ -8,7 +8,7 @@ import { contextualRows, type EntityContext } from "./entity-context"
 import { EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import { useHistoryRequest } from "./history-request"
-import { InspectorPortal } from "./inspector"
+import { InspectorChartPortal, InspectorPortal } from "./inspector"
 import { asNumber, humanBytes, humanCores, humanDuration, humanHertz, humanPercent, measure, rawText, shownMoment, snapshot, value, type Locale } from "./model"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
@@ -751,12 +751,12 @@ function SystemDock({
     <header className="pg-detail-head">
       <div><span>{t("system.history")}</span><h2>{t(label)}</h2></div>
     </header>
-    <section className="process-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]">
+    <InspectorChartPortal identity="system:dock"><section className="process-history system-dock grid min-w-0 gap-[7px]">
       <div aria-label={t(label)} className="dock-tabs history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">
         {metrics.map((spec) => <button aria-pressed={spec.id === selected} data-testid={`system-dock-metric-${spec.id}`} key={spec.id} onClick={() => onSelect(spec.id)} type="button">{t(spec.label)}</button>)}
       </div>
       {chart}
-    </section>
+    </section></InspectorChartPortal>
   </aside>
 }
 

@@ -225,6 +225,8 @@ function App({ locale, onLocale, t }: {
   const [selectedKey, setSelectedKey] = useState<string | null>(opened.current.row)
   const [inspectorPanel, setInspectorPanel] = useState<InspectorPanel>(opened.current.panel)
   const [inspectorDetailRoot, setInspectorDetailRoot] = useState<HTMLElement | null>(null)
+  const [inspectorChartRoot, setInspectorChartRoot] = useState<HTMLElement | null>(null)
+  const [entityChartAvailable, setEntityChartAvailable] = useState(false)
   const [inspectorDetailTitle, setInspectorDetailTitle] = useState<string | null>(null)
   const inspectorDismiss = useRef<(() => void) | null>(null)
   const [timelineLane, setTimelineLane] = useState<string>(opened.current.lens === "memory" ? "memory" : opened.current.lens === "disk" ? "io_stall" : opened.current.lens === "cpu" ? "cpu_busy" : "health")
@@ -907,7 +909,9 @@ function App({ locale, onLocale, t }: {
   const detailAvailable = selectedProcess !== null || inspectorDetailTitle !== null
   const inspectorOpen = inspectorPanel === "chart" || inspectorPanel === "detail" && detailAvailable
   const closeInspector = () => {
-    if (inspectorPanel === "detail") inspectorDismiss.current?.()
+    // Closing destroys the detail whichever tab is active; the registered
+    // dismiss keeps the owning view's selection in step.
+    inspectorDismiss.current?.()
     setInspectorPanel(null)
     if (visibleSource === "processes") setSelectedKey(null)
     if (visibleSource === "postgresql") {
@@ -930,7 +934,7 @@ function App({ locale, onLocale, t }: {
     ? lens === "cpu" ? "cpu_busy" : lens === "memory" ? "memory" : lens === "disk" ? "io_stall" : "health"
     : visibleSource === "postgresql" ? pgSection === "statements" || pgSection === "plans" ? "pg_running" : pgSection === "activity" || pgSection === "locks" ? "pg_waiting" : "health"
       : "health"
-  return <DisplayTimeScope hour={hour}><main className={`app-shell flex h-dvh min-h-0 flex-col overflow-hidden${stretchPostgres ? " pg-table-shell" : ""}${inspectorOpen ? " inspector-open" : ""}${inspectorOpen && inspectorPanel === "chart" ? " inspector-chart-open" : ""}`}>
+  return <DisplayTimeScope hour={hour}><main className={`app-shell flex h-dvh min-h-0 flex-col overflow-hidden${stretchPostgres ? " pg-table-shell" : ""}${inspectorOpen ? " inspector-open" : ""}${inspectorOpen && inspectorPanel === "chart" && !(entityChartAvailable && detailAvailable) ? " inspector-chart-open" : ""}`}>
     <header className="topbar [.pg-table-shell>&]:flex-none">
       <span className="flex flex-none items-center text-accent2"><Activity aria-hidden="true" size={15} strokeWidth={2} /></span>
       <h1>{t("app.title")}</h1>
@@ -966,7 +970,7 @@ function App({ locale, onLocale, t }: {
       </div>
     </header>
 
-    <InspectorPortalProvider dismissRef={inspectorDismiss} onOpen={openPortalDetail} onTitle={setInspectorDetailTitle} target={inspectorDetailRoot}>
+    <InspectorPortalProvider chartTarget={inspectorChartRoot} dismissRef={inspectorDismiss} onChartAvailable={setEntityChartAvailable} onOpen={openPortalDetail} onTitle={setInspectorDetailTitle} target={inspectorDetailRoot}>
     <div className="workspace-frame flex min-h-0 min-w-0 flex-1 overflow-hidden">
     <section className={`workspace min-h-0 min-w-0 flex-1 px-2.5 pb-2 pt-2 max-[760px]:px-2${stretchPostgres ? " pg-table-workspace flex flex-col overflow-hidden [&>.timeline-shell]:flex-none [&>.pg-tabs]:flex-none [&>.lensbar]:flex-none [&>[data-testid=table-paging]]:flex-none" : " overflow-auto"}${visibleSource === "processes" ? " process-workspace flex flex-col overflow-hidden [&>.timeline-shell]:flex-none [&>.lensbar]:flex-none" : ""}`}>
       <p aria-live="polite" className="absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]">
@@ -1003,6 +1007,8 @@ function App({ locale, onLocale, t }: {
         ? <div className="inspector-detail-slot" ref={setInspectorDetailRoot} />
         : <DetailDock activity={joinedActivity.row} activityTime={joinedActivity.snapshotTime} cursor={cursor} hour={hour} lens={lens} locale={locale} onCursor={chooseCursor} onRelated={openRelated} process={selectedProcess} processHistory={processHistory.value?.length ? processHistory.value : [selectedProcess]} processHistoryStatus={processHistory.status} t={t} ticksPerSecond={ticksPerSecond} />}
       detailAvailable={detailAvailable}
+      entityChart={<div className="inspector-chart-slot" ref={setInspectorChartRoot} />}
+      entityChartAvailable={entityChartAvailable}
       onClose={closeInspector}
       onPanel={setInspectorPanel}
       panel={inspectorPanel ?? "chart"}

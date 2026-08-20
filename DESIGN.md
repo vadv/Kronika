@@ -638,9 +638,13 @@ for every visible side axis. The compact timeline shell is exactly 124 px; its
 never occlude the drawn lines — and the x-axis, cursor and labels inside the
 instrument before the following navigation. A marker cluster names the kinds
 present by shape and sizes the cluster with one count; the per-kind split
-lives in the accessible name and the events console. While the Inspector holds
-the full chart, the preview yields its figure and keeps its rail, so the plot
-and its marker lane exist once on screen. While the hour itself loads, the
+lives in the accessible name and the events console. The Inspector's Chart
+panel belongs to the selection: a selected row shows its own metric history
+there, with a wrapped metric-button selector instead of a hidden horizontal
+scrollbar, while the Detail panel keeps the facts. Only without such a history
+does the panel hold the preview's full chart — and then the preview yields its
+figure and keeps its rail, so the plot and its marker lane exist once on
+screen. While the hour itself loads, the
 workspace paints its own shape — the timeline band, one status line carrying
 the received bytes and elapsed time, and table rows — not a modal card. Charts
 keep series names with the aligned statistics and place percentile columns without

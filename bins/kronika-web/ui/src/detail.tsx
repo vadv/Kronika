@@ -6,6 +6,7 @@ import { buildMetricSamples } from "./chart"
 import { DetailList, DetailRow } from "./detail-list"
 import { useDisplayTime } from "./display-time-context"
 import { LabelHelp, type Translate } from "./help"
+import { InspectorChartPortal } from "./inspector"
 import type { HistoryStatus } from "./history-request"
 import {
   asNumber,
@@ -153,7 +154,8 @@ export function DetailDock({
         <DetailField help="col.pid.help" label="col.pid.label" t={t} value={identifier(value(process, "pid"))} />
         {processDetailFields(lens, process).map((field) => <DetailField help={field.help} key={field.id} label={field.label} t={t} value={<CellValue field={field} linked={false} locale={locale} row={process} t={t} ticksPerSecond={ticksPerSecond} />} />)}
       </DetailList>
-      <section aria-label={t(`lens.${lens}`)} className="process-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]" data-testid="process-history">
+      <InspectorChartPortal identity={`process:${identifier(value(process, "pid"))}`}>
+      <section aria-label={t(`lens.${lens}`)} className="process-history grid min-w-0 gap-[7px]" data-testid="process-history">
         <div aria-label={t(`lens.${lens}`)} className="history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">
           {selectableHistory.map((series) => (
             <button
@@ -186,6 +188,7 @@ export function DetailDock({
           />
         )}
       </section>
+      </InspectorChartPortal>
 
       {activity !== null && <section className="mt-[13px] border-t border-line4 pt-3">
         <div className="flex items-center">

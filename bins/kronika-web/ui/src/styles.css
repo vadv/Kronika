@@ -544,6 +544,19 @@
 .inspector-detail-slot > .system-entity-history { padding: 5px 4px 9px; }
 .inspector-scrim { display: none; }
 
+/* The Chart tab slot holds the selected entity's history section. Its metric
+   buttons wrap instead of hiding behind a horizontal scrollbar. */
+.inspector-chart-slot { padding: 10px 8px; }
+.inspector-chart-slot .history-selector { flex-wrap: wrap; overflow-x: visible; }
+
+/* The summary help marks stay reachable but quiet until pointed at. */
+.process-summary-inline .label-help { opacity: .45; transition: opacity 120ms var(--ease-out); }
+.process-summary-inline div:hover > .label-help,
+.process-summary-inline .label-help:focus-within { opacity: 1; }
+
+.lensbar > .snapshot-time { color: var(--color-fg2); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+
 .entity-row[aria-selected="true"] .entity-cell:first-child { color: var(--color-fg-hi); }
 .entity-row[data-locator-row="true"] { background-color: color-mix(in srgb, var(--color-warn) 6%, var(--color-s1)); }
 .value-tone-warning,
@@ -585,7 +598,7 @@
   .lensbar { flex-wrap: wrap; gap: 0; padding: 0; }
   .lensbar > .lens-tabs { flex: 1 0 100%; padding: 2px 4px; }
   .process-summary-inline { border-top: 1px solid var(--color-line2); flex-basis: calc(100% - 82px); }
-  .process-summary-inline > div { flex-basis: 112px; padding-left: 6px; padding-right: 20px; }
+  .process-summary-inline > div { padding-left: 6px; padding-right: 6px; }
   .lensbar > .snapshot-time { border-top: 1px solid var(--color-line2); margin: 0; padding: 6px; }
 }
 

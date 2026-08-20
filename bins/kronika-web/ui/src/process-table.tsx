@@ -154,11 +154,11 @@ export function ProcessSummary({ cursor, dispatch, hour, lens, locale, state, t 
     return () => controller.abort()
   }, [hour])
   const statusKey = status === "loading" ? "process.summary.loading" : status === "error" ? "process.summary.error" : status === "empty" ? "status.no_data" : null
-  return <section aria-label={t("process.summary.title")} className="process-summary-inline flex min-w-0 flex-1 items-center overflow-x-auto" data-status={status}>
+  return <section aria-label={t("process.summary.title")} className="process-summary-inline flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden max-[760px]:flex-wrap max-[760px]:overflow-visible" data-status={status}>
     {metrics.map((metric) => {
       const output = processSummaryOutput(readingAt(processSummaryPoints(history, metric), cursor), metric, locale, t)
-      return <div className="relative flex h-[25px] min-w-0 flex-[1_0_116px] items-baseline gap-1.5 px-2 pr-6" key={metric.field}>
-        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-xs font-medium text-fg4">{t(metric.key)}</span>
+      return <div className="flex h-[25px] flex-none items-baseline gap-1.5 px-2" key={metric.field}>
+        <span className="whitespace-nowrap text-xs font-medium text-fg3">{t(metric.key)}</span>
         <strong className="flex-none font-mono text-xs tabular-nums text-fg">{output}</strong>
         <LabelHelp helpKey={metric.help} iconOnly labelKey={metric.key} t={t} testId={`process-summary-help-${metric.field}`} />
       </div>
