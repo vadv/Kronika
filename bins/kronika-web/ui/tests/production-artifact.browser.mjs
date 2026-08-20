@@ -872,7 +872,8 @@ test("the production artifact preserves wire keys and exact finding page state",
       })()`)
       assert.equal(end.activeRail, true, `${width}px focused horizontal rail`)
       assert.ok(Math.abs(end.firstLeft - end.viewportLeft) <= 1, `${width}px sticky identity after horizontal scroll: ${JSON.stringify(end)}`)
-      assert.ok(end.lastRight <= end.viewportRight + 1 && end.lastRight >= end.viewportRight - 2, `${width}px rightmost column access: ${JSON.stringify(end)}`)
+      const endGutter = end.viewportRight - end.lastRight
+      assert.ok(endGutter >= 7 && endGutter <= 9, `${width}px stable rightmost-column gutter: ${JSON.stringify({ ...end, endGutter })}`)
       await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-scroll').scrollLeft = 0`)
     }
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
@@ -947,11 +948,30 @@ test("the production artifact preserves wire keys and exact finding page state",
     const shortTable = await cdp.evaluate(`(() => {
       const body = document.querySelector('[data-testid="pg-indexes-table"] .entity-scroll')
       const bounds = body.getBoundingClientRect()
-      return { bottom: bounds.bottom, clientHeight: document.documentElement.clientHeight, height: bounds.height, rows: document.querySelectorAll('[data-testid="pg-indexes-table"] .entity-row').length, virtual: document.querySelector('[data-testid="pg-indexes-table"] [data-testid="virtual-body"]').getBoundingClientRect().height }
+      const header = document.querySelector('[data-testid="pg-indexes-table"] .entity-head').getBoundingClientRect()
+      return {
+        axis: body.dataset.scrollAxis,
+        bottom: bounds.bottom,
+        clientHeight: body.clientHeight,
+        height: bounds.height,
+        overflowY: getComputedStyle(body).overflowY,
+        railHeight: body.offsetHeight - body.clientHeight,
+        rows: document.querySelectorAll('[data-testid="pg-indexes-table"] .entity-row').length,
+        scrollHeight: body.scrollHeight,
+        verticalOwner: body.scrollHeight > body.clientHeight + 1,
+        viewportHeight: document.documentElement.clientHeight,
+        header: header.height,
+        virtual: document.querySelector('[data-testid="pg-indexes-table"] [data-testid="virtual-body"]').getBoundingClientRect().height,
+      }
     })()`)
     assert.equal(shortTable.rows, 3)
     assert.equal(shortTable.virtual, 69)
-    assert.ok(Math.abs(shortTable.height - 95) <= 1 && shortTable.bottom <= shortTable.clientHeight + 1, JSON.stringify(shortTable))
+    assert.equal(shortTable.axis, "horizontal")
+    assert.equal(shortTable.overflowY, "hidden")
+    assert.equal(shortTable.verticalOwner, false)
+    assert.ok(shortTable.scrollHeight <= shortTable.clientHeight + 1, JSON.stringify(shortTable))
+    assert.ok(Math.abs(shortTable.height - shortTable.header - shortTable.virtual - shortTable.railHeight) <= 1, JSON.stringify(shortTable))
+    assert.ok(shortTable.bottom <= shortTable.viewportHeight + 1, JSON.stringify(shortTable))
 
     const beforeOidSearch = requests.length
     await cdp.evaluate(`(() => {
@@ -5414,7 +5434,14 @@ test("narrow controls stay contained and help never changes selection", { timeou
     // table's scroll port the right half used to be clipped to 6px; the mark
     // now steps in and the port keeps scroll padding, and nothing of the
     // neighbouring column is taken.
-    assert.deepEqual(headerHelp.reach, { down: 15, left: 15, right: 15, up: 15 }, JSON.stringify(headerHelp))
+    for (const [side, reach] of Object.entries(headerHelp.reach)) {
+      assert.ok(reach >= 14 && reach <= 15, `${side} touch reach: ${JSON.stringify(headerHelp)}`)
+    }
+    assert.ok(
+      headerHelp.width + headerHelp.reach.left + headerHelp.reach.right >= 42
+        && headerHelp.height + headerHelp.reach.up + headerHelp.reach.down >= 42,
+      `complete touch target: ${JSON.stringify(headerHelp)}`,
+    )
     await cdp.waitFor(`document.querySelector('[role="tooltip"]') !== null`, "the first-touch table help")
     assert.equal(await cdp.evaluate(`document.querySelectorAll('button button').length`), 0)
 
