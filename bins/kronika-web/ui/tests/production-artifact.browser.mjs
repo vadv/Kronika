@@ -4032,7 +4032,14 @@ async function assertSearchChipHierarchyMatrix(cdp, label) {
 test("forensic workstation keeps exact preview and one responsive Inspector", { timeout: 90_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const authState = { valid: true }
-  const forensicSnapshots = [...snapshotRecords(), ...progressVacuumRecords(), ...statementRecords(false)]
+  const [activityLayout, activityTemplate] = activityFixtureSeed()
+  const forensicSnapshots = [
+    ...snapshotRecords().filter((record) => (record.record === "layout" ? record.layout.type_id : record.type_id) !== "1001004"),
+    activityLayout,
+    ...Array.from({ length: 12 }, (_, index) => viewportActivityRow(activityTemplate, 3_000 + index, AT, index)),
+    ...progressVacuumRecords(),
+    ...statementRecords(false),
+  ]
   const forensicTimeline = [
     ...timelineRecords(HOUR, true).map((record) => record.record !== "finished_segment" ? record : {
       ...record,
@@ -4210,6 +4217,13 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     await cdp.evaluate(`document.querySelectorAll('.pg-tabs button')[1].click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"] .entity-row') !== null`, "PostgreSQL Activity table")
     await cdp.waitFor(`document.querySelector('[data-pg-section="pg_stat_progress_vacuum"] .entity-row') !== null`, "PostgreSQL VACUUM progress table")
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('[data-testid="table-filter"]')
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'pid:3000')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      input.form.requestSubmit()
+    })()`)
+    await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-activity-table"] .entity-row').length === 1 && document.querySelector('[data-testid="pg-entity-layout"]').dataset.contentSized === 'true'`, "filtered sparse PostgreSQL Activity")
     const sparseBefore = await cdp.evaluate(sparsePostgresGeometry())
     assert.equal(sparseBefore.activity.contentSized, true, JSON.stringify(sparseBefore))
     assert.equal(sparseBefore.progress.contentSized, true, JSON.stringify(sparseBefore))

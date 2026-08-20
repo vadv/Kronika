@@ -8,7 +8,7 @@ import { contextMatches, contextualRows, type EntityContext } from "./entity-con
 import { DetailList, DetailRow } from "./detail-list"
 import { createDisplayTimeFormatter, type DisplayTimeFormatter } from "./display-time"
 import { useDisplayTime } from "./display-time-context"
-import { EntityTable, EstimatedRows, unit, type EntityColumn, type TableOrder } from "./entity-table"
+import { EntityTable, EstimatedRows, filterTableRows, unit, type EntityColumn, type TableOrder } from "./entity-table"
 import type { Translate } from "./help"
 import { acceptResponse, fieldNameForLocator, loadSeries, loadSnapshot } from "./api"
 import { LabelHelp } from "./help"
@@ -701,7 +701,11 @@ function PgEntityView({
     ? tableState(metadata, ranked.length, cursor, pattern, activeOrder, locale, t, time, focusPreview)
     : undefined
   const canLoadMore = metadata?.hasMore === true && metadata.nextCursor !== null
-  const contentSized = rows.length < 10 && !canLoadMore
+  const displayedRows = useMemo(
+    () => filterTableRows(rows, visibleColumns, pattern ?? "", dense, section),
+    [dense, pattern, rows, section, visibleColumns],
+  )
+  const contentSized = displayedRows.length < 10 && !canLoadMore
   const paging = dense && (densePageState !== "idle" || canLoadMore)
     ? <button disabled={densePageState === "loading"} onClick={densePageState === "error" ? onRetry : onLoadMore} type="button">
       {densePageState === "loading" ? "…" : densePageState === "error" ? "↻" : "+"}

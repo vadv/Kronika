@@ -37,6 +37,8 @@ test("only long PostgreSQL table views own the viewport flex chain", () => {
   // remaining row and hands that height through to its scroll port.
   assert.match(stylesheet, /@utility pg-stretch \{[\s\S]*?:is\(\.pg-table-shell\) & \{[^}]*flex: 1 1 0;[^}]*min-height: 0;[^}]*overflow: hidden;/)
   assert.match(stylesheet, /\.pg-table-shell \.pg-entity-fill \{[^}]*flex: 1 1 0;[^}]*grid-template-rows: minmax\(0, 1fr\);[^}]*min-height: 0;[^}]*overflow: hidden;/s)
+  assert.match(postgres, /filterTableRows\(rows, visibleColumns, pattern \?\? "", dense, section\)/)
+  assert.match(postgres, /const contentSized = displayedRows\.length < 10 && !canLoadMore/)
   assert.match(postgres, /contentSized \? "" : " pg-entity-fill"/)
   assert.match(postgres, /data-content-sized=\{contentSized \|\| undefined\}/)
   assert.match(postgres, /className="pg-preview panel mt-2" data-content-sized="true"/)
@@ -51,7 +53,7 @@ test("short PostgreSQL workspaces keep the honest compact preview", () => {
   assert.match(stylesheet, /\.timeline-preview \{[^}]*height: 104px;/s)
   assert.match(chart, /variant === "preview" \? "h-\[76px\]/)
   assert.doesNotMatch(stylesheet, /\.timeline-preview[\s\S]{0,240}\.uplot-host[^}]*display: none/)
-  assert.match(postgres, /const contentSized = rows\.length < 10 && !canLoadMore/)
+  assert.match(postgres, /const contentSized = displayedRows\.length < 10 && !canLoadMore/)
   assert.match(entityTable, /contentSized \? rendered\.length === 0 \? 72 : Math\.min\(310, 26 \+ rendered\.length \* 23\)/)
 })
 
