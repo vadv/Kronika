@@ -168,17 +168,19 @@ export function Timeline({
   }
   return <section aria-label={t("hour.range", { range: time.hourRange(hour).primary })} className={`timeline-shell mt-2 flex flex-col overflow-hidden border-y border-line2 bg-s1 timeline-${presentation}`} data-presentation={presentation}>
     <div className="timeline-rail flex h-7 flex-none border-b border-line2">
-      <div className="flex min-w-0 flex-1 gap-0.5 overflow-x-auto px-1">
-        {lanes.map((lane) => <LaneLabel
-          help={`lane.${lane.key}.help`}
-          key={lane.key}
-          label={`lane.${lane.key}.label`}
-          onSelect={() => setSelectedLane(lane.key)}
-          primary={lane.key === selected.key}
-          reading={laneReading(lane, cursor, locale, t)}
-          t={t}
-        />)}
-      </div>
+      {presentation === "inspector"
+        ? <label className="timeline-metric-picker"><span>{t("inspector.timeline")}</span><select aria-label={t("inspector.timeline")} data-testid="timeline-metric-select" onChange={(event) => setSelectedLane(event.currentTarget.value)} value={selected.key}>{lanes.map((lane) => <option key={lane.key} value={lane.key}>{t(`lane.${lane.key}.label`)}</option>)}</select></label>
+        : <div className="flex min-w-0 flex-1 gap-0.5 overflow-x-auto px-1">
+          {lanes.map((lane) => <LaneLabel
+            help={`lane.${lane.key}.help`}
+            key={lane.key}
+            label={`lane.${lane.key}.label`}
+            onSelect={() => setSelectedLane(lane.key)}
+            primary={lane.key === selected.key}
+            reading={laneReading(lane, cursor, locale, t)}
+            t={t}
+          />)}
+        </div>}
       {presentation === "preview" && onOpenChart !== undefined && <button aria-label={t("inspector.open_chart")} className="timeline-open-chart" onClick={onOpenChart} title={t("inspector.open_chart")} type="button"><span aria-hidden="true">↗</span><span>{t("inspector.chart")}</span></button>}
     </div>
     <UPlotChart

@@ -3732,6 +3732,31 @@ function viewportDockGeometry() {
   })()`
 }
 
+function sparsePostgresGeometry() {
+  return `(() => {
+    const activity = document.querySelector('[data-testid="pg-entity-layout"]')
+    const activityScroll = activity.querySelector('.entity-scroll')
+    const progress = document.querySelector('[data-pg-section="pg_stat_progress_vacuum"]')
+    const progressScroll = progress.querySelector('.entity-scroll')
+    const workspace = document.querySelector('.workspace')
+    const rect = (node) => { const box = node.getBoundingClientRect(); return { bottom: box.bottom, height: box.height, left: box.left, right: box.right, top: box.top, width: box.width } }
+    const measured = (root, scroll) => ({
+      ...rect(root),
+      contentSized: root.dataset.contentSized === 'true',
+      horizontal: scroll.scrollWidth > scroll.clientWidth,
+      scrollHeight: rect(scroll).height,
+    })
+    const activityRect = measured(activity, activityScroll)
+    const progressRect = measured(progress, progressScroll)
+    return {
+      activity: activityRect,
+      gap: progressRect.top - activityRect.bottom,
+      progress: progressRect,
+      workspace: rect(workspace),
+    }
+  })()`
+}
+
 function sourceTimelineRecords(historical) {
   const sections = [{ logical_name: "os_cpu", physical_name: "os_cpu", type_id: "1102001", implementation: "linux", source_family: "system", rows: "1", bytes: "128" }]
   if (historical) sections.push({ logical_name: "pg_stat_activity", physical_name: "pg_stat_activity", type_id: "1001004", implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256" })
@@ -4007,6 +4032,19 @@ async function assertSearchChipHierarchyMatrix(cdp, label) {
 test("forensic workstation keeps exact preview and one responsive Inspector", { timeout: 90_000 }, async () => {
   const html = gunzipSync(await readFile(ARTIFACT))
   const authState = { valid: true }
+  const forensicSnapshots = [...snapshotRecords(), ...progressVacuumRecords(), ...statementRecords(false)]
+  const forensicTimeline = [
+    ...timelineRecords(HOUR, true).map((record) => record.record !== "finished_segment" ? record : {
+      ...record,
+      sections: [...record.sections, {
+        logical_name: "pg_stat_progress_vacuum", physical_name: "pg_stat_progress_vacuum", type_id: "1012003",
+        implementation: "postgresql", source_family: "postgresql", rows: "1", bytes: "256",
+      }],
+    }),
+    { record: "lane", segment_id: SEGMENT, lane: "cpu_busy", ts: String(AT), value: 54 },
+    { record: "lane", segment_id: SEGMENT, lane: "pg_running", ts: String(AT), value: 3 },
+    { record: "lane", segment_id: SEGMENT, lane: "pg_waiting", ts: String(AT), value: 1 },
+  ]
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
     if (url.pathname === "/") {
@@ -4020,13 +4058,13 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     if (url.pathname === "/api/hour") {
       const section = url.searchParams.get("section")
       if (section === "os_process_summary") return ndjson(response, processSummaryRecords(HOUR, 3, 80))
-      if (section === "os_process") return ndjson(response, snapshotRecords())
-      return ndjson(response, section === null ? [...timelineRecords(HOUR, true), {
+      if (section === "os_process") return ndjson(response, forensicSnapshots)
+      return ndjson(response, section === null ? [...forensicTimeline, {
         record: "finding", logical_name: "pg_log_errors", kind: "event", type_id: "1009001",
         field_ordinal: 1, row_ordinal: "1", ts: String(AFTER_AT),
       }] : [])
     }
-    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, snapshotRecords())
+    if (url.pathname === `/api/segments/${SEGMENT}/snapshot`) return ndjson(response, forensicSnapshots)
     response.writeHead(404)
     response.end()
   })
@@ -4117,6 +4155,47 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       }
       await cdp.evaluate(`([...document.querySelectorAll('.inspector-tabs button')].find((button) => button.textContent === 'Chart')).click()`)
       await cdp.waitFor(`new URL(location.href).searchParams.get('panel') === 'chart' && document.querySelector('[data-testid="inspector-chart"] canvas') !== null`, `${viewport.kind} Chart Inspector`)
+      await settleLayout(cdp)
+      const chartGeometry = await cdp.evaluate(`(() => {
+        const dock = document.querySelector('[data-testid="inspector"]')
+        const body = dock.querySelector('.inspector-body')
+        const header = dock.querySelector('.inspector-head')
+        const title = header.querySelector('strong')
+        const rail = body.querySelector('.timeline-rail')
+        const picker = body.querySelector('.timeline-metric-picker')
+        const select = body.querySelector('[data-testid="timeline-metric-select"]')
+        const figure = body.querySelector('.uplot-figure')
+        const rect = (node) => { const box = node.getBoundingClientRect(); return { bottom: box.bottom, height: box.height, left: box.left, right: box.right, top: box.top, width: box.width } }
+        const bodyRect = rect(body)
+        const headerRect = rect(header)
+        const next = [...select.options].find((option) => option.value !== select.value)?.value ?? select.value
+        select.value = next
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+        return {
+          body: { ...bodyRect, clientWidth: body.clientWidth, overflowX: getComputedStyle(body).overflowX, scrollbarGutter: getComputedStyle(body).scrollbarGutter, scrollWidth: body.scrollWidth },
+          figure: rect(figure),
+          header: headerRect,
+          headerChildrenInside: [...header.children].every((child) => { const box = child.getBoundingClientRect(); return box.left >= headerRect.left - .5 && box.right <= headerRect.right + .5 && box.top >= headerRect.top - .5 && box.bottom <= headerRect.bottom + .5 }),
+          laneButtons: body.querySelectorAll('.lane-label').length,
+          optionCount: select.options.length,
+          picker: rect(picker),
+          rail: rect(rail),
+          selected: next,
+          titleFits: title.scrollWidth <= title.clientWidth + 1 && title.scrollHeight <= title.clientHeight + 1,
+        }
+      })()`)
+      await cdp.waitFor(`document.querySelector('[data-testid="timeline-metric-select"]').value === ${JSON.stringify(chartGeometry.selected)}`, `${viewport.kind} metric selection`)
+      assert.equal(chartGeometry.body.overflowX, "hidden", `${viewport.kind}: ${JSON.stringify(chartGeometry)}`)
+      assert.match(chartGeometry.body.scrollbarGutter, /stable/, `${viewport.kind}: ${JSON.stringify(chartGeometry)}`)
+      assert.ok(chartGeometry.body.scrollWidth <= chartGeometry.body.clientWidth + 1, `${viewport.kind}: ${JSON.stringify(chartGeometry)}`)
+      assert.equal(chartGeometry.headerChildrenInside, true, `${viewport.kind}: ${JSON.stringify(chartGeometry)}`)
+      assert.equal(chartGeometry.titleFits, true, `${viewport.kind}: ${JSON.stringify(chartGeometry)}`)
+      assert.ok(chartGeometry.optionCount > 1, `${viewport.kind}: ${JSON.stringify(chartGeometry)}`)
+      assert.equal(chartGeometry.laneButtons, 0, `${viewport.kind}: ${JSON.stringify(chartGeometry)}`)
+      assert.ok(chartGeometry.picker.left >= chartGeometry.body.left - .5 && chartGeometry.picker.right <= chartGeometry.body.left + chartGeometry.body.clientWidth + .5, `${viewport.kind}: ${JSON.stringify(chartGeometry)}`)
+      assert.ok(chartGeometry.figure.right <= chartGeometry.body.left + chartGeometry.body.clientWidth + .5, `${viewport.kind}: ${JSON.stringify(chartGeometry)}`)
+      const fixedHeader = await cdp.evaluate(`(() => { const body = document.querySelector('.inspector-body'); const header = document.querySelector('.inspector-head'); const before = header.getBoundingClientRect().top; body.scrollTop = body.scrollHeight; return { after: header.getBoundingClientRect().top, before } })()`)
+      assert.ok(Math.abs(fixedHeader.after - fixedHeader.before) <= .5, `${viewport.kind}: ${JSON.stringify(fixedHeader)}`)
       await cdp.evaluate(`document.querySelector('.inspector-close').click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="inspector"]') === null && new URL(location.href).searchParams.get('row') === null && new URL(location.href).searchParams.get('panel') === null`, `${viewport.kind} closed Inspector`)
     }
@@ -4130,10 +4209,21 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     await cdp.waitFor(`document.querySelectorAll('.pg-tabs button').length > 1`, "PostgreSQL tabs")
     await cdp.evaluate(`document.querySelectorAll('.pg-tabs button')[1].click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="pg-activity-table"] .entity-row') !== null`, "PostgreSQL Activity table")
-    assert.ok(await cdp.evaluate(`document.querySelector('[data-testid="pg-activity-table"] .entity-scroll').getBoundingClientRect().height <= 72`), "short PostgreSQL Activity result is content-sized")
+    await cdp.waitFor(`document.querySelector('[data-pg-section="pg_stat_progress_vacuum"] .entity-row') !== null`, "PostgreSQL VACUUM progress table")
+    const sparseBefore = await cdp.evaluate(sparsePostgresGeometry())
+    assert.equal(sparseBefore.activity.contentSized, true, JSON.stringify(sparseBefore))
+    assert.equal(sparseBefore.progress.contentSized, true, JSON.stringify(sparseBefore))
+    assert.ok(sparseBefore.activity.scrollHeight <= 72, JSON.stringify(sparseBefore))
+    assert.ok(sparseBefore.progress.scrollHeight <= 72, JSON.stringify(sparseBefore))
+    assert.ok(sparseBefore.gap >= 7 && sparseBefore.gap <= 10, JSON.stringify(sparseBefore))
+    assert.ok(sparseBefore.progress.bottom < sparseBefore.workspace.bottom - 120, JSON.stringify(sparseBefore))
+    assert.ok(sparseBefore.activity.horizontal && sparseBefore.progress.horizontal, JSON.stringify(sparseBefore))
     await cdp.evaluate(`document.querySelector('[data-testid="pg-activity-table"] .entity-row').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="inspector-detail"] [data-testid="pg-detail"]') !== null`, "PostgreSQL detail in shared Inspector")
     assert.equal(await cdp.evaluate(`document.querySelectorAll('[data-testid="inspector"]').length === 1 && document.querySelector('.workspace [data-testid="pg-detail"]') === null`), true)
+    const sparseOpened = await cdp.evaluate(sparsePostgresGeometry())
+    assert.ok(Math.abs(sparseOpened.activity.height - sparseBefore.activity.height) <= 1, JSON.stringify({ sparseBefore, sparseOpened }))
+    assert.ok(Math.abs(sparseOpened.progress.top - sparseBefore.progress.top) <= 1, JSON.stringify({ sparseBefore, sparseOpened }))
     await cdp.evaluate(`document.querySelector('.inspector-close').click(); document.querySelectorAll('.source-tabs button')[3].click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="event-item"] button') !== null`, "Events list")
     await cdp.evaluate(`document.querySelector('[data-testid="event-item"] button').click()`)
@@ -4509,6 +4599,17 @@ function snapshotRecords() {
       ],
     },
   ]
+}
+
+function progressVacuumRecords() {
+  const columns = [
+    "ts", "pid", "datid", "datname", "relid", "is_autovacuum", "phase", "heap_blks_total", "heap_blks_scanned",
+    "heap_blks_vacuumed", "index_vacuum_count", "max_dead_tuple_bytes", "dead_tuple_bytes", "num_dead_item_ids",
+    "indexes_total", "indexes_processed", "delay_time",
+  ]
+  return [layout("1012003", "pg_stat_progress_vacuum", columns), row("1012003", "1", [
+    String(AT), 4343, 20, "operators", 73, true, "vacuuming heap", 8000, 3200, 1200, 1, 67_108_864, 4_194_304, 2400, 5, 2, 17.5,
+  ], AT)]
 }
 
 function activityHistoryRecords(url) {

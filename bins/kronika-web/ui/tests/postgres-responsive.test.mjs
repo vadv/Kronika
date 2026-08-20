@@ -12,8 +12,8 @@ const postgres = await readFile(join(directory, "../src/postgres-view.tsx"), "ut
 const chart = await readFile(join(directory, "../src/uplot-chart.tsx"), "utf8")
 
 test("PostgreSQL uses the one shared Inspector beside the table above 1000 pixels", () => {
-  assert.match(postgres, /className="pg-entity-layout[^\"]*grid-cols-\[minmax\(0,1fr\)\]/)
-  assert.match(postgres, /className="pg-entity-main min-w-0 pg-stretch"/)
+  assert.match(postgres, /className={`pg-entity-layout[^`]*grid-cols-\[minmax\(0,1fr\)\][^`]*pg-entity-fill/)
+  assert.match(postgres, /className={`pg-entity-main min-w-0[^`]*pg-stretch/)
   assert.match(postgres, /<InspectorPortal[\s\S]{0,360}<PgDetail/)
   assert.match(stylesheet, /\.inspector \{[\s\S]*?flex: 0 0 var\(--inspector-width\)/)
   assert.match(stylesheet, /@media \(max-width: 1000px\) \{[\s\S]*?\.inspector \{[\s\S]*?position: fixed;/)
@@ -27,18 +27,22 @@ test("the operator bar wraps before its controls can widen a 1024 pixel page", (
   assert.match(stylesheet, /overflow: hidden;/)
 })
 
-test("every PostgreSQL table view owns the viewport flex chain", () => {
+test("only long PostgreSQL table views own the viewport flex chain", () => {
   assert.match(app, /visibleSource === "postgresql" && pgSection !== "overview"/)
   assert.match(app, /flex h-dvh min-h-0 flex-col overflow-hidden/)
   assert.match(app, /pg-table-shell/)
   assert.match(app, /pg-table-workspace flex flex-col overflow-hidden/)
   assert.match(app, /\[\.pg-table-shell>&\]:flex-none/)
-  // One utility carries the chain: layout, main column, table and scroll port
-  // all hand their height down instead of growing the page.
+  // Sparse siblings stack by content. A long result alone receives the
+  // remaining row and hands that height through to its scroll port.
   assert.match(stylesheet, /@utility pg-stretch \{[\s\S]*?:is\(\.pg-table-shell\) & \{[^}]*flex: 1 1 0;[^}]*min-height: 0;[^}]*overflow: hidden;/)
-  assert.match(postgres, /pg-entity-layout[^"]*\[\.pg-table-shell_&\]:grid-rows-\[minmax\(0,1fr\)\]/)
+  assert.match(stylesheet, /\.pg-table-shell \.pg-entity-fill \{[^}]*flex: 1 1 0;[^}]*grid-template-rows: minmax\(0, 1fr\);[^}]*min-height: 0;[^}]*overflow: hidden;/s)
+  assert.match(postgres, /contentSized \? "" : " pg-entity-fill"/)
+  assert.match(postgres, /data-content-sized=\{contentSized \|\| undefined\}/)
+  assert.match(postgres, /className="pg-preview panel mt-2" data-content-sized="true"/)
+  assert.doesNotMatch(postgres, /className="pg-entity-layout[^\n]*pg-table-shell_&/)
   assert.match(entityTable, /contentSized \? "" : " pg-stretch"/)
-  assert.match(stylesheet, /\.inspector-body \{[^}]*overflow: auto;/s)
+  assert.match(stylesheet, /\.inspector-body \{[^}]*overflow-x: hidden;[^}]*overflow-y: auto;[^}]*scrollbar-gutter: stable;/s)
   assert.match(stylesheet, /\.inspector-detail-slot > \.pg-detail \{[^}]*overflow: visible;/s)
 })
 
@@ -49,4 +53,15 @@ test("short PostgreSQL workspaces keep the honest compact preview", () => {
   assert.doesNotMatch(stylesheet, /\.timeline-preview[\s\S]{0,240}\.uplot-host[^}]*display: none/)
   assert.match(postgres, /const contentSized = rows\.length < 10 && !canLoadMore/)
   assert.match(entityTable, /contentSized \? rendered\.length === 0 \? 72 : Math\.min\(310, 26 \+ rendered\.length \* 23\)/)
+})
+
+test("the shared Chart Inspector uses one compact metric selector and one body scroll axis", async () => {
+  const timeline = await readFile(join(directory, "../src/timeline.tsx"), "utf8")
+  assert.match(app, /presentation="inspector"/)
+  assert.match(timeline, /data-testid="timeline-metric-select"/)
+  assert.match(timeline, /presentation === "inspector"[\s\S]{0,420}<select/)
+  assert.match(stylesheet, /\.timeline-inspector \.timeline-rail \{ height: 34px; min-height: 34px; \}/)
+  assert.match(stylesheet, /\.timeline-metric-picker > select \{[^}]*min-width: 0;[^}]*width: 100%;/s)
+  assert.match(stylesheet, /\.inspector-head \{[^}]*flex: 0 0 auto;[^}]*min-height: 34px;/s)
+  assert.match(stylesheet, /\.inspector-head > strong \{[^}]*overflow-wrap: anywhere;[^}]*white-space: normal;/s)
 })

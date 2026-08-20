@@ -605,7 +605,10 @@ height band. The virtual table is the primary surface. A selected row uses the
 same Inspector as Host, PostgreSQL and Events: an adjacent resizable region on
 desktop, a right overlay on tablet and a bottom sheet on phone. The table and
 Inspector scroll independently, and closing the Inspector restores the entire
-row without leaving a band.
+row without leaving a band. The fixed Inspector header is outside its vertical
+scrollport. Its Chart panel uses one full-width native metric selector rather
+than a second horizontal scrollbar, and the body reserves its own scrollbar
+gutter without exposing horizontal overflow.
 CPU history offers temporal counters and gauges, including major page faults,
 but keeps scheduler references such as nice, priority and realtime priority as
 compact cursor-time facts rather than graph choices.
@@ -625,8 +628,11 @@ for every visible side axis. The compact timeline shell is exactly 104 px; its
 the following navigation. Charts
 keep series names with the aligned statistics and place percentile columns without
 colliding with the plot edge. Sparse tables are content-sized instead of
-reserving large framed boards. A boundary is draggable only when it controls a
-real split; otherwise the layout stays light. The exact current `pg_wal` file
+reserving large framed boards. Short PostgreSQL sibling sections stack directly
+by content; only a long result receives the remaining viewport row, and opening
+the independently scrolling Inspector does not stretch either sibling. A
+boundary is draggable only when it controls a real split; otherwise the layout
+stays light. The exact current `pg_wal` file
 size is a subordinate value with optional history, not a primary overview
 chart.
 The shared Processes, Host, PostgreSQL and Events shells join the timeline and

@@ -427,9 +427,9 @@ function PgPreview({ blockSize, columns: prescribedColumns, cursor, data, tables
   useEffect(() => setSelected((current) => selectedEntity(rows, current, section)), [rows, section])
   const selectedKey = selected === null ? null : rowKey(selected)
   const initialHistory = columns.find(chartableColumn)?.field ?? null
-  return <section className="pg-preview panel mt-2">
+  return <section className="pg-preview panel mt-2" data-content-sized="true" data-pg-section={section}>
     <h2 className="panel-head">{overview ? t(overviewSectionKey(section)) : section}</h2>
-    <div className="pg-entity-layout mt-2 grid min-w-0 grid-cols-[minmax(0,1fr)] [.pg-table-shell_&]:min-h-0 [.pg-table-shell_&]:flex-1 [.pg-table-shell_&]:grid-rows-[minmax(0,1fr)] [.pg-table-shell_&]:overflow-hidden">
+    <div className="pg-entity-layout mt-2 grid min-w-0 grid-cols-[minmax(0,1fr)]">
       <EntityTable columns={columns} contentSized empty={t("table.no_rows")} label={section} loading={tablesLoading} locale={locale} onSelect={setSelected} rows={rows} selectedKey={selectedKey ?? (focus === null ? null : rowKey(focus))} status={initialHistory === null ? undefined : <span>{t("system.history")}</span>} t={t} />
       {selected !== null && <InspectorPortal identity={`postgres:${section}:${rowKey(selected)}`} onClose={() => setSelected(null)} title={detailTitle(selected, section, t)}><PgDetail allRows={allRows} columns={columns} cursor={cursor} historyField={initialHistory} historyRevision={historyRevision} hour={hour} locale={locale} onCursor={onCursor} overview={overview} row={selected} section={section} t={t} /></InspectorPortal>}
     </div>
@@ -708,8 +708,8 @@ function PgEntityView({
     </button>
     : undefined
   const status = historyField === null ? snapshotStatus : <>{snapshotStatus}<span>{t("system.history")}</span></>
-  return <div className="pg-entity-layout mt-2 grid min-w-0 grid-cols-[minmax(0,1fr)] [.pg-table-shell_&]:min-h-0 [.pg-table-shell_&]:flex-1 [.pg-table-shell_&]:grid-rows-[minmax(0,1fr)] [.pg-table-shell_&]:overflow-hidden" data-pg-section={sectionName(section)} data-testid="pg-entity-layout">
-    <div className="pg-entity-main min-w-0 pg-stretch">
+  return <div className={`pg-entity-layout mt-2 grid min-w-0 grid-cols-[minmax(0,1fr)]${contentSized ? "" : " pg-entity-fill"}`} data-content-sized={contentSized || undefined} data-pg-section={sectionName(section)} data-testid="pg-entity-layout">
+    <div className={`pg-entity-main min-w-0${contentSized ? "" : " pg-stretch"}`}>
       <EntityTable columns={visibleColumns} contentSized={contentSized} contextLabel={activeContext?.label} empty={t("table.no_rows")} loading={tablesLoading} finding={finding} findingField={finding === null || finding === undefined ? null : fieldNameForLocator(finding)} label={t(`pg.section.${sectionName(section)}`)} locale={locale} onContextClear={onContextClear} onNearEnd={densePageState === "idle" && canLoadMore ? onLoadMore : undefined} onOrder={onOrder} onPattern={onPattern} onSelect={(row) => { setSelected(row); onSelectedKey?.(rowKey(row)) }} order={activeOrder} pattern={pattern} searchRequest={searchRequest} searchSurface={section} serverSorted={dense} rows={rows} selectedKey={selectedRowKey} status={status} t={t} testId={`pg-${sectionName(section)}-table`} />
       {paging !== undefined && <div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1" data-testid="table-paging">{paging}</div>}
     </div>
