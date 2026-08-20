@@ -18,7 +18,7 @@ import {
 } from "./finding-presentation"
 import type { Translate } from "./help"
 import { globMatcher } from "./glob"
-import { InspectorPortal } from "./inspector"
+import { InspectorChartPortal, InspectorPortal } from "./inspector"
 import { asNumber, compact, humanBytes, humanDuration, humanPercent, identifier, type Locale, rawText, shownMoment } from "./model"
 import { SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
@@ -129,14 +129,14 @@ export function EventsView({
           {(["all", "event", "known_bad"] as const).map((choice) => <button aria-pressed={filter === choice} className="min-h-[27px]" key={choice} onClick={() => setFilter(choice)} type="button">{choice === "all" ? t("events.all") : t(`locator.${choice}`)}</button>)}
         </div>
         <span className="text-xs tabular-nums text-fg3">{t("events.count", { "shown": visible.length, total: original })}{omitted > 0 ? ` · ${t("events.omitted", { count: omitted })}` : ""}</span>
-        {scope !== null && <button className="min-h-[29px] cursor-pointer border border-line4 bg-s2 px-[9px] text-xs uppercase text-accent3" onClick={onShowAll} type="button">{t("events.show_all", { count: scope.length })}</button>}
+        {scope !== null && <button className="min-h-[28px] cursor-pointer rounded-[var(--radius-sm)] border border-line3 bg-s2 px-2.5 text-xs font-medium text-accent3 transition-colors hover:bg-s3" onClick={onShowAll} type="button">{t("events.show_all", { count: scope.length })}</button>}
       </header>
       <TableFilter kept={visible.length} onPattern={onPattern} pattern={pattern} surface="events" t={t} total={original} />
       <div className="grid min-h-[430px] grid-cols-[minmax(0,1fr)]">
         <div className="h-[min(570px,calc(100vh-360px))] min-h-[390px] overflow-auto border-line2 max-[760px]:h-[260px] max-[760px]:min-h-[180px]" ref={list} role="list">
           {visible.length === 0 && (loading
         ? <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>
-        : <div className="table-empty">{t("events.empty")}</div>)}
+        : <div className="table-empty flex items-center gap-2.5">{pattern === "" ? t("events.empty") : <>{t("filter.none")}<button className="cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4" data-testid="events-clear-filter" onClick={() => onPattern("")} type="button">{t("filter.clear")}</button></>}</div>)}
           <div className="relative" style={{ height: virtual.getTotalSize() }}>
             {virtual.getVirtualItems().map((item) => {
               const finding = visible[item.index]
@@ -145,8 +145,8 @@ export function EventsView({
               return <div className="absolute left-0 top-0 w-full border-b border-line" data-testid="event-item" key={findingKey(finding)} role="listitem" style={{ height: item.size, transform: `translateY(${item.start}px)` }}>
                 <button aria-label={`${findingCategory(finding, t)} · ${findingSource(finding, t)} · ${time.timestamp(finding.timestamp)}`} aria-pressed={pressed} className="event-finding grid h-full min-h-[44px] w-full cursor-pointer grid-cols-[18px_minmax(0,1fr)_auto] items-center gap-2 border-0 bg-s1 px-[9px] py-1.5 text-left text-fg2 hover:bg-s3 aria-pressed:bg-s4" data-kind={finding.kind} onClick={() => onFinding(finding)} type="button">
                   <KindIcon kind={finding.kind} />
-                  <span><strong className="block text-xs font-medium uppercase">{findingCategory(finding, t)}</strong><small className="mt-[3px] block text-xs text-fg3">{findingSource(finding, t)}</small></span>
-                  <time className="whitespace-nowrap text-xs text-fg3">{time.timestamp(finding.timestamp)}</time>
+                  <span><strong className="block text-xs font-medium">{findingCategory(finding, t)}</strong><small className="mt-[3px] block text-xs text-fg3">{findingSource(finding, t)}</small></span>
+                  <time className="whitespace-nowrap font-mono text-xs tabular-nums text-fg3">{time.timestamp(finding.timestamp)}</time>
                 </button>
               </div>
             })}
@@ -176,7 +176,7 @@ function FindingDetail({ cursor, data, finding, history, hour, locale, onCursor,
   const readings = findingReadings(finding, row, points, data)
   const entity = findingEntity(row)
   return <aside className="p-[11px]" data-testid="event-detail">
-    <header className="grid grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-[9px] border-b border-line3 pb-[9px]"><KindIcon kind={finding.kind} /><div><span className="text-xs uppercase text-fg3">{findingCategory(finding, t)}</span><h2 className="mt-[3px] text-md">{findingSource(finding, t)}</h2></div><time className="text-xs text-fg2">{time.timestamp(finding.timestamp)}</time></header>
+    <header className="grid grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-[9px] border-b border-line3 pb-[9px]"><KindIcon kind={finding.kind} /><div><span className="text-xs font-medium text-fg3">{findingCategory(finding, t)}</span><h2 className="mt-[3px] text-md">{findingSource(finding, t)}</h2></div><time className="font-mono text-xs tabular-nums text-fg2">{time.timestamp(finding.timestamp)}</time></header>
     {resolution === "loading" && <p className="mt-2.5 text-sm leading-[1.45] text-fg2 [overflow-wrap:anywhere]">{t("events.loading_row")}</p>}
     {resolution === "unavailable" && <p className="mt-2.5 text-sm leading-[1.45] text-fg2 [overflow-wrap:anywhere]">{t("events.row_unavailable")}</p>}
     {resolution === "ready" && row !== null && <>
@@ -191,7 +191,7 @@ function FindingDetail({ cursor, data, finding, history, hour, locale, onCursor,
       </section>}
       <DetailList>{findingDetailFields(row, finding).map(([field, cell]) => <DetailRow key={field} term={eventFieldLabel(field, t)}>{eventValue(finding, field, cell, locale, t)}</DetailRow>)}</DetailList>
     </>}
-    {metric.field !== null && points.some(({ value }) => typeof value === "number" && Number.isFinite(value)) && <SeriesChart
+    {metric.field !== null && points.some(({ value }) => typeof value === "number" && Number.isFinite(value)) && <InspectorChartPortal identity={`event:${findingKey(finding)}:history`}><SeriesChart
       cursor={cursor}
       durationAxis={metric.unit === "milliseconds"}
       format={(number, place) => formatMetric(number, metric.unit, place, t)}
@@ -204,7 +204,7 @@ function FindingDetail({ cursor, data, finding, history, hour, locale, onCursor,
       scale={metric.unit === "percent" || finding.logicalName === "health" ? "percent" : "nonnegative"}
       t={t}
       unit={finding.logicalName === "health" ? "%" : metricUnit(metric.unit, locale)}
-    />}
+    /></InspectorChartPortal>}
   </aside>
 }
 

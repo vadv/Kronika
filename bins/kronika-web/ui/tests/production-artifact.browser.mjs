@@ -806,7 +806,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     relationMode = "long"
     await cdp.evaluate(`([...document.querySelectorAll('[data-testid="pg-relation-lenses"] button')].find((button) => button.textContent === "Size and buffers")).click()`)
     await cdp.waitFor(`(() => { const node = document.querySelector('[data-testid="pg-tables-table"] .entity-scroll'); return node !== null && node.scrollWidth > node.clientWidth })()`, "the wide size and buffers table")
-    await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"] [data-testid="virtual-body"]')?.style.height === "4600px"`, "the long virtual relation table")
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"] [data-testid="virtual-body"]')?.style.height === "4800px"`, "the long virtual relation table")
     const estimate = await cdp.evaluate(`(() => {
       const node = [...document.querySelectorAll('[data-testid="pg-tables-table"] [title]')].find((cell) => cell.title.includes('9,007,199,254,740,993'))
       return node === undefined ? null : { label: node.getAttribute('aria-label'), text: node.textContent, title: node.title }
@@ -849,7 +849,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       assert.ok(initial.bodyScrollWidth > initial.bodyClientWidth, `${width}px wide table: ${JSON.stringify(initial)}`)
       // The virtualizer fills the scroll body: as many rows as fit, no gap.
       assert.ok(initial.visibleRows >= Math.floor(initial.bodyHeight / initial.rowHeight) - 1, `${width}x${height} visible rows: ${JSON.stringify(initial)}`)
-      assert.equal(initial.virtualHeight, 4600, `${width}x${height} virtual height`)
+      assert.equal(initial.virtualHeight, 4800, `${width}x${height} virtual height`)
       assert.ok(initial.contentBottom <= initial.clientHeight && initial.clientHeight - initial.contentBottom <= 24, `${width}x${height} remaining viewport: ${JSON.stringify(initial)}`)
       assert.equal(initial.railTabIndex, 0, `${width}px focusable horizontal rail`)
       assert.ok(initial.railHeight > 0 && initial.railVisible, `${width}px visible horizontal rail: ${JSON.stringify(initial)}`)
@@ -878,7 +878,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     }
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 768, mobile: false, width: 1366 })
     await cdp.evaluate(`(() => { const body = document.querySelector('[data-testid="pg-tables-table"] .entity-scroll'); body.scrollTop = body.scrollHeight })()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"] [data-testid="virtual-body"]')?.style.height === "4715px"`, "the one guarded relation cursor page")
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-tables-table"] [data-testid="virtual-body"]')?.style.height === "4920px"`, "the one guarded relation cursor page")
     const cursorPages = requests.filter(({ query }) => new URLSearchParams(query).get("cursor") === "viewport-page-two")
     assert.equal(cursorPages.length, 1, JSON.stringify(cursorPages))
     await cdp.evaluate(`document.querySelector('[data-testid="pg-tables-table"] .entity-scroll').scrollTop = 0`)
@@ -944,7 +944,7 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.evaluate(`document.querySelector(".inspector-close").click()`)
     relationMode = "short"
     await cdp.evaluate(`([...document.querySelectorAll('[data-testid="pg-relation-lenses"] button')].find((button) => button.textContent === "State")).click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="pg-indexes-table"] [data-testid="virtual-body"]')?.style.height === "69px"`, "the short relation set")
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-indexes-table"] [data-testid="virtual-body"]')?.style.height === "72px"`, "the short relation set")
     const shortTable = await cdp.evaluate(`(() => {
       const body = document.querySelector('[data-testid="pg-indexes-table"] .entity-scroll')
       const bounds = body.getBoundingClientRect()
@@ -965,7 +965,7 @@ test("the production artifact preserves wire keys and exact finding page state",
       }
     })()`)
     assert.equal(shortTable.rows, 3)
-    assert.equal(shortTable.virtual, 69)
+    assert.equal(shortTable.virtual, 72)
     assert.equal(shortTable.axis, "horizontal")
     assert.equal(shortTable.overflowY, "hidden")
     assert.equal(shortTable.verticalOwner, false)
@@ -1484,7 +1484,9 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "the CPU cards", 15_000)
     await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="system-dock"] h2')?.textContent === "CPU" && document.querySelector('[data-testid="system-dock"] .uplot-host canvas') !== null`, "the System dock chart")
+    await cdp.waitFor(`document.querySelector('[data-testid="system-dock"] h2')?.textContent === "CPU"`, "the System dock")
+    await cdp.evaluate(`([...document.querySelectorAll('.inspector-tabs button')].find((button) => button.textContent === 'Chart')).click()`)
+    await cdp.waitFor(`document.querySelector('.inspector-chart-slot .uplot-host canvas') !== null`, "the System dock chart")
     await assertHoverGeometryStable(cdp, '[data-testid="system-cpu-composition"]', "wide System dock")
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 900, mobile: false, width: 420 })
     await settleLayout(cdp)
@@ -1499,7 +1501,7 @@ test("the production artifact preserves wire keys and exact finding page state",
         }
         const consolePanel = document.querySelector(".system-main")
         const main = document.querySelector(".system-main")
-        const history = document.querySelector('[data-testid="system-dock"]')
+        const history = document.querySelector('.inspector-chart-slot')
         const inspector = document.querySelector('[data-testid="inspector"]')
         const inspectorBody = inspector.querySelector('.inspector-body')
         const chart = history.querySelector(".uplot-figure")
@@ -1592,7 +1594,9 @@ test("the production artifact preserves wire keys and exact finding page state",
     await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "CPU metrics after Overview")
     await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="system-dock"] .uplot-host canvas') !== null`, "CPU Inspector after Overview")
+    await cdp.waitFor(`document.querySelector('[data-testid="system-dock"]') !== null`, "CPU dock after Overview")
+    await cdp.evaluate(`([...document.querySelectorAll('.inspector-tabs button')].find((button) => button.textContent === 'Chart')).click()`)
+    await cdp.waitFor(`document.querySelector('.inspector-chart-slot .uplot-host canvas') !== null`, "CPU Inspector after Overview")
     await cdp.evaluate(`(() => {
       if (window.__kronikaAxisText !== undefined) return
       window.__kronikaAxisText = []
@@ -2017,20 +2021,35 @@ test("the slow-query detail keeps readable labels and human event time", { timeo
     assert.equal(landscape.numeric[0]?.text, "3")
     assert.equal(landscape.numeric[1]?.text, "6,29 с")
     assert.equal(landscape.numeric[2]?.text, "12,6 с")
-    assert.equal(landscape.chart.current, "6,29 с")
+    assert.equal(landscape.chart.current, "")
     assert.doesNotMatch(landscape.labels.join("\n"), /,\s*(?:ms|мс)$/imu)
     assert.doesNotMatch(landscape.text, /тыс\.\s*мс/iu)
-    assert.doesNotMatch(landscape.chart.label, /(?:^|[, (])(?:ms|мс)(?:$|[,)])/iu)
+    assert.equal(landscape.chart.label, "")
+
+    await cdp.evaluate(`document.querySelectorAll('.inspector-tabs button')[1].click()`)
+    await cdp.waitFor(`document.querySelector('.inspector-chart-slot .u-over') !== null`, "the selected event Chart")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector-chart"] [data-testid="timeline-metric-select"]') === null`), true)
+    const eventPreviewHeight = await cdp.evaluate(`document.querySelector('.timeline-preview')?.getBoundingClientRect().height ?? null`)
+    if (eventPreviewHeight !== null) assert.ok(Math.abs(eventPreviewHeight - 124) <= .5)
+    const eventChart = await cdp.evaluate(`(() => ({
+      current: document.querySelector('.inspector-chart-slot .chart-current')?.textContent.trim() ?? '',
+      label: document.querySelector('.inspector-chart-slot .uplot-host')?.getAttribute('aria-label') ?? '',
+    }))()`)
+    assert.equal(eventChart.current, "6,29 с")
+    assert.doesNotMatch(eventChart.label, /(?:^|[, (])(?:ms|мс)(?:$|[,)])/iu)
 
     const hoverPoint = await cdp.evaluate(`(() => {
-      const bounds = document.querySelector('[data-testid="event-detail"] .u-over').getBoundingClientRect()
+      const bounds = document.querySelector('.inspector-chart-slot .u-over').getBoundingClientRect()
       return { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 }
     })()`)
     await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...hoverPoint })
-    await cdp.waitFor(`document.querySelector('[data-testid="event-detail"] [data-testid="chart-hover-readout"]') !== null`, "the slow-query human duration hover")
-    const hover = await cdp.evaluate(`document.querySelector('[data-testid="event-detail"] [data-testid="chart-hover-readout"]').textContent`)
+    await cdp.waitFor(`document.querySelector('.inspector-chart-slot [data-testid="chart-hover-readout"]') !== null`, "the slow-query human duration hover")
+    const hover = await cdp.evaluate(`document.querySelector('.inspector-chart-slot [data-testid="chart-hover-readout"]').textContent`)
     assert.match(hover, /6,29\sс/u)
     assert.doesNotMatch(hover, /тыс\.\s*мс|\(мс\)/iu)
+
+    await cdp.evaluate(`document.querySelectorAll('.inspector-tabs button')[0].click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="inspector"][data-panel="detail"]') !== null`, "the selected event Detail")
 
     await cdp.send("Emulation.setDeviceMetricsOverride", { deviceScaleFactor: 1, height: 882, mobile: false, width: 480 })
     await settleLayout(cdp)
@@ -2190,7 +2209,13 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
     await cdp.evaluate(`document.querySelector('[aria-label="Clear the filter"]').click()`)
     await cdp.waitFor(`new URL(location.href).searchParams.get("find") === null`, "comparison clear")
     await cdp.evaluate(`document.querySelector('[data-testid="pg-indexes-table"] .entity-row').click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="pg-relation-detail"] .uplot-host canvas') !== null`, "the aggregate history chart")
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-relation-detail"]') !== null`, "the aggregate detail")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-detail"] .uplot-host') === null`), true)
+    const detailText = await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-detail"]').textContent`)
+    assert.match(detailText, /fast_ssd/)
+    assert.match(detailText, /1663/)
+    await cdp.evaluate(`document.querySelectorAll('.inspector-tabs button')[1].click()`)
+    await cdp.waitFor(`document.querySelector('.inspector-chart-slot .pg-metric-history .uplot-host canvas') !== null`, "the aggregate history Chart")
     await settleLayout(cdp)
 
     const historyRequests = requests.filter(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).has("group"))
@@ -2203,30 +2228,30 @@ test("tablespace rollups keep exact history, URL drill, Back, search, and narrow
     assert.equal(query.get("type_id"), null)
     assert.deepEqual(query.getAll("field"), ["index_count", "invalid_count", "unready_count", "unique_count", "primary_count", "exclusion_count"])
     const layout = await cdp.evaluate(`(() => {
-      const detail = document.querySelector('[data-testid="pg-relation-detail"]')
-      const chart = detail.querySelector('.uplot-host')
-      const plot = detail.querySelector('.u-over')
+      const slot = document.querySelector('.inspector-chart-slot')
+      const chart = slot.querySelector('.uplot-host')
+      const plot = slot.querySelector('.u-over')
       const table = document.querySelector('[data-testid="pg-indexes-table"]')
-      const selectors = [...detail.querySelectorAll('.history-selector button')]
+      const selectors = [...slot.querySelectorAll('.history-selector button')]
       return {
         chartWidth: chart.getBoundingClientRect().width,
-        detailWidth: detail.getBoundingClientRect().width,
+        slotWidth: slot.getBoundingClientRect().width,
         plotWidth: plot.getBoundingClientRect().width,
         tableWidth: table.getBoundingClientRect().width,
         overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
         selectors: selectors.map((button) => button.textContent),
       }
     })()`)
-    assert.ok(layout.chartWidth > 250 && layout.chartWidth <= layout.detailWidth, JSON.stringify(layout))
-    assert.ok(layout.plotWidth > 180, JSON.stringify(layout))
+    assert.ok(layout.chartWidth > 250 && layout.chartWidth <= layout.slotWidth, JSON.stringify(layout))
+    assert.ok(layout.plotWidth > 176, JSON.stringify(layout))
     assert.ok(layout.tableWidth >= 500, JSON.stringify(layout))
     assert.equal(layout.overflow, false)
     assert.equal(layout.selectors.length, 6)
-    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector"] [data-testid="pg-relation-detail"] .uplot-host canvas') !== null`), true)
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector-chart"] [data-testid="timeline-metric-select"]') === null`), true)
+    assert.ok(Math.abs(await cdp.evaluate(`document.querySelector('.timeline-preview').getBoundingClientRect().height`) - 124) <= .5)
     assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-detail"] .chart-expand, [role="dialog"].uplot-expanded') === null`), true)
-    const detailText = await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-detail"]').textContent`)
-    assert.match(detailText, /fast_ssd/)
-    assert.match(detailText, /1663/)
+    await cdp.evaluate(`document.querySelectorAll('.inspector-tabs button')[0].click()`)
+    await cdp.waitFor(`document.querySelector('[data-testid="inspector"][data-panel="detail"]') !== null`, "the aggregate Detail restored")
     await cdp.evaluate(`document.querySelector('[data-testid="pg-relation-drill"]').click()`)
     await cdp.waitFor(`new URL(location.href).searchParams.get('level') === null && new URL(location.href).searchParams.get('tablespace_oid') === '1663'`, "the exact tablespace member URL")
     await cdp.waitFor(`document.querySelectorAll('[data-testid="pg-indexes-table"] .entity-row').length === 1`, "the tablespace members")
@@ -2774,6 +2799,7 @@ test("PostgreSQL is unavailable without current telemetry and returns for a stor
     await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]')?.click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]') !== null`, "the host CPU cards", 15_000)
     await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]').click()`)
+    await cdp.evaluate(`([...document.querySelectorAll('.inspector-tabs button')].find((button) => button.textContent === 'Chart')).click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-cpu-composition"] .u-over') !== null`, "the CPU composition history")
     await cdp.evaluate(`document.querySelector('[data-testid="system-cpu-composition-all"]').click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-cpu-composition-all"]')?.getAttribute("aria-pressed") === "true"`, "the whole CPU composition")
@@ -2894,8 +2920,7 @@ test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, as
         })
         row.click()
       })()`)
-      await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"] .uplot-figure') !== null`, `${width}x${height} detail chart`, 15_000)
-      await cdp.waitFor(`(() => { const body = document.querySelector('.inspector-body'); return body.scrollHeight > body.clientHeight })()`, `${width}x${height} Inspector overflow`, 15_000)
+      await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"]') !== null`, `${width}x${height} detail dock`, 15_000)
       await settleLayout(cdp)
       const opened = await cdp.evaluate(viewportDockGeometry())
 
@@ -2912,17 +2937,27 @@ test("PostgreSQL detail dock stays inside the viewport", { timeout: 60_000 }, as
       assert.ok(opened.table.scrollWidth > opened.table.clientWidth, `${width}x${height} horizontal table: ${JSON.stringify(opened)}`)
       assert.ok(opened.table.railHeight > 0, `${width}x${height} horizontal rail height: ${JSON.stringify(opened)}`)
       assert.ok(opened.dock.top >= -1 && opened.dock.bottom <= height + 1 && opened.dock.left >= -1 && opened.dock.right <= width + 1, `${width}x${height} dock bounds: ${JSON.stringify(opened)}`)
-      assert.ok(opened.body.scrollHeight > opened.body.clientHeight, `${width}x${height} Inspector scrollport: ${JSON.stringify(opened)}`)
-      assert.ok(opened.chart.height >= 180 && opened.chart.height <= 220, `${width}x${height} chart cap: ${JSON.stringify(opened)}`)
+      const detailOverflows = opened.body.scrollHeight > opened.body.clientHeight
 
       await cdp.evaluate(`(() => { const body = document.querySelector('.inspector-body'); body.scrollTop = body.scrollHeight })()`)
       await settleLayout(cdp)
       const scrolled = await cdp.evaluate(viewportDockGeometry())
-      assert.ok(scrolled.body.scrollTop > 0, `${width}x${height} detail scroll: ${JSON.stringify(scrolled)}`)
+      if (detailOverflows) assert.ok(scrolled.body.scrollTop > 0, `${width}x${height} detail scroll: ${JSON.stringify(scrolled)}`)
       assert.ok(Math.abs(scrolled.table.scrollTop - before.table.scrollTop) <= 1, `${width}x${height} independent table scroll: ${JSON.stringify({ before, scrolled })}`)
       assert.ok(scrolled.header.top >= scrolled.dock.top - 1 && scrolled.header.bottom <= scrolled.dock.bottom + 1, `${width}x${height} sticky header: ${JSON.stringify(scrolled)}`)
       assert.ok(scrolled.close.top >= scrolled.dock.top - 1 && scrolled.close.bottom <= scrolled.dock.bottom + 1, `${width}x${height} visible close: ${JSON.stringify(scrolled)}`)
       assert.ok(scrolled.lastDetail.top >= scrolled.body.top - 1 && scrolled.lastDetail.bottom <= scrolled.body.bottom + 1, `${width}x${height} reachable detail fields: ${JSON.stringify(scrolled)}`)
+
+      await cdp.evaluate(`([...document.querySelectorAll('.inspector-tabs button')].find((button) => button.textContent === 'Chart')).click()`)
+      await cdp.waitFor(`document.querySelector('.inspector-chart-slot .uplot-figure') !== null`, `${width}x${height} detail chart`, 15_000)
+      await settleLayout(cdp)
+      const chartTab = await cdp.evaluate(`(() => {
+        const body = document.querySelector('.inspector-body').getBoundingClientRect()
+        const chart = document.querySelector('.inspector-chart-slot .uplot-figure').getBoundingClientRect()
+        return { body: { bottom: body.bottom, left: body.left, right: body.right, top: body.top }, chart: { bottom: chart.bottom, height: chart.height, left: chart.left, right: chart.right, top: chart.top } }
+      })()`)
+      assert.ok(chartTab.chart.height >= 180 && chartTab.chart.height <= 220, `${width}x${height} chart cap: ${JSON.stringify(chartTab)}`)
+      assert.ok(chartTab.chart.left >= chartTab.body.left - 1 && chartTab.chart.right <= chartTab.body.right + 1, `${width}x${height} chart inside the Inspector: ${JSON.stringify(chartTab)}`)
 
       await cdp.evaluate(`document.querySelector('.inspector-close').click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"]') === null`, `${width}x${height} detail close`)
@@ -3431,6 +3466,7 @@ test("production System projections show exact CPU memory and device readings", 
 
     await cdp.evaluate(`document.querySelector('[data-testid="host-section-cpu"]')?.click()`)
     await cdp.evaluate(`document.querySelector('[data-testid="system-metric-cpu_used_cores"]').click()`)
+    await cdp.evaluate(`([...document.querySelectorAll('.inspector-tabs button')].find((button) => button.textContent === 'Chart')).click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-cpu-composition"] .u-over') !== null`, "the CPU contract chart")
     await waitForRequests(() => requests.some(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("section") === "os_cpu"))
     await cdp.evaluate(`document.querySelector('[data-testid="system-cpu-composition-all"]').click()`)
@@ -3457,6 +3493,7 @@ test("production System projections show exact CPU memory and device readings", 
     assert.equal(256 + 192 + 64 + 32 + 128 + 352, 1024)
     await cdp.evaluate(`document.querySelector('[data-testid="host-section-memory"]')?.click()`)
     await cdp.evaluate(`document.querySelector('[data-testid="system-metric-mem_anon"]').click()`)
+    await cdp.evaluate(`([...document.querySelectorAll('.inspector-tabs button')].find((button) => button.textContent === 'Chart')).click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-memory-composition"] .u-over') !== null`, "the memory contract chart")
     await waitForRequests(() => requests.some(({ path, query }) => path === "/api/hour" && new URLSearchParams(query).get("section") === "os_meminfo"))
     await cdp.evaluate(`document.querySelector('[data-testid="system-memory-composition-all"]').click()`)
@@ -3489,7 +3526,12 @@ test("production System projections show exact CPU memory and device readings", 
     assert.equal(sdb["Write latency"], "—")
 
     await cdp.evaluate(`([...document.querySelectorAll('[data-testid="system-os_diskstats"] .entity-row')].find((row) => row.textContent.includes('sda'))).click()`)
-    await cdp.waitFor(`document.querySelector('[data-testid="system-os_diskstats-history"]') !== null`, "the device detail chart")
+    await cdp.waitFor(`document.querySelector('[data-testid="system-os_diskstats-detail"] dl > .detail-row') !== null`, "the device Detail facts")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="system-os_diskstats-detail"] .uplot-host') === null`), true)
+    await cdp.evaluate(`document.querySelectorAll('.inspector-tabs button')[1].click()`)
+    await cdp.waitFor(`document.querySelector('.inspector-chart-slot [data-testid="system-os_diskstats-history"]') !== null`, "the device history Chart")
+    assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector-chart"] [data-testid="timeline-metric-select"]') === null`), true)
+    assert.ok(Math.abs(await cdp.evaluate(`document.querySelector('.timeline-preview').getBoundingClientRect().height`) - 124) <= .5)
     await cdp.evaluate(`([...document.querySelectorAll('[data-testid="system-os_diskstats-history"] .system-history-selector button')].find((button) => button.textContent.includes('Read latency'))).click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="system-os_diskstats-history"] .chart-current')?.textContent === "5 ms"`, "the selected read-latency value", 15_000)
     await hoverContractChart(cdp, "system-os_diskstats-history")
@@ -3742,12 +3784,13 @@ function viewportDockGeometry() {
     const header = dock.querySelector('.inspector-head')
     const close = dock.querySelector('.inspector-close')
     const chart = body.querySelector('.uplot-figure')
+    const zero = { bottom: 0, height: 0, left: 0, right: 0, top: 0, width: 0 }
     const lastDetail = body.querySelector('[data-testid="pg-detail"] dl > div:last-child')
     const rect = (node) => { const bounds = node.getBoundingClientRect(); return { bottom: bounds.bottom, height: bounds.height, left: bounds.left, right: bounds.right, top: bounds.top, width: bounds.width } }
     return {
       ...base,
       body: { ...rect(body), clientHeight: body.clientHeight, scrollHeight: body.scrollHeight, scrollTop: body.scrollTop },
-      chart: rect(chart),
+      chart: chart === null ? zero : rect(chart),
       close: rect(close),
       dock: rect(dock),
       header: rect(header),
@@ -3959,7 +4002,7 @@ async function assertCompactTimelineContained(cdp, followingSelector, label) {
         shell: bounds(shell),
       }
     })()`)
-    assert.ok(geometry.figure.height >= 72 && geometry.figure.height <= 76, `${label} ${width}px compact figure: ${JSON.stringify(geometry)}`)
+    assert.ok(geometry.figure.height >= 92 && geometry.figure.height <= 96, `${label} ${width}px compact figure: ${JSON.stringify(geometry)}`)
     for (const axis of geometry.axes) {
       assert.ok(axis.left >= geometry.figure.left - 1 && axis.right <= geometry.figure.right + 1
         && axis.top >= geometry.figure.top - 1 && axis.bottom <= geometry.figure.bottom + 1,
@@ -4085,7 +4128,7 @@ async function assertSearchChipHierarchy(cdp, label) {
   assert.match(geometry.text, /^\(tablespace: fast_ssdORtablespace: archive\)AND\(.+OR.+\)$/)
   assert.deepEqual(geometry.syntax.map(({ text }) => text), ["(", "OR", ")", "AND", "(", "OR", ")"], `${label}: ${JSON.stringify(geometry)}`)
   assert.deepEqual(geometry.syntax.map(({ kind }) => kind), ["parenthesis", "connector", "parenthesis", "connector", "parenthesis", "connector", "parenthesis"], `${label}: ${JSON.stringify(geometry)}`)
-  assert.equal(geometry.predicate.fontSize, 10, `${label}: ${JSON.stringify(geometry)}`)
+  assert.equal(geometry.predicate.fontSize, 11, `${label}: ${JSON.stringify(geometry)}`)
   assert.ok(geometry.syntax.every(({ fontSize }) => fontSize < geometry.predicate.fontSize), `${label}: ${JSON.stringify(geometry)}`)
   assert.ok(geometry.syntax.every(({ color }) => color !== geometry.predicate.color), `${label}: ${JSON.stringify(geometry)}`)
   assert.ok(geometry.syntax.every(({ background, border }) => background === "rgba(0, 0, 0, 0)" && border.every((width) => width === "0px")), `${label}: ${JSON.stringify(geometry)}`)
@@ -4206,7 +4249,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       assert.equal(closed.inspector, false, viewport.kind)
       assert.equal(closed.documentOverflow, false, `${viewport.kind}: ${JSON.stringify(closed)}`)
       assert.equal(closed.paintedInside, true, `${viewport.kind}: ${JSON.stringify(closed)}`)
-      assert.ok(Math.abs(closed.preview.height - 104) <= .5, `${viewport.kind}: ${JSON.stringify(closed.preview)}`)
+      assert.ok(Math.abs(closed.preview.height - 124) <= .5, `${viewport.kind}: ${JSON.stringify(closed.preview)}`)
 
       await cdp.evaluate(`document.querySelector('[data-testid="process-table"] .entity-row').click()`)
       await cdp.waitFor(`document.querySelector('[data-testid="inspector"][data-panel="detail"]') !== null`, `${viewport.kind} Detail Inspector`)
@@ -4238,6 +4281,13 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
         assert.ok(opened.inspector.height >= 300 && opened.body.height >= 250, JSON.stringify(opened))
       }
       await cdp.evaluate(`([...document.querySelectorAll('.inspector-tabs button')].find((button) => button.textContent === 'Chart')).click()`)
+      await cdp.waitFor(`new URL(location.href).searchParams.get('panel') === 'chart' && document.querySelector('[data-testid="inspector-chart"] .inspector-chart-slot [data-testid="process-history"]') !== null`, `${viewport.kind} entity Chart Inspector`)
+      await settleLayout(cdp)
+      assert.equal(await cdp.evaluate(`document.querySelector('[data-testid="inspector-chart"] [data-testid="timeline-metric-select"]') === null`), true, `${viewport.kind} entity chart replaces the shared timeline`)
+      assert.ok(Math.abs(await cdp.evaluate(`document.querySelector('.timeline-preview').getBoundingClientRect().height`) - 124) <= .5, `${viewport.kind} preview keeps its figure beside the entity chart`)
+      await cdp.evaluate(`document.querySelector('.inspector-close').click()`)
+      await cdp.waitFor(`document.querySelector('[data-testid="inspector"]') === null`, `${viewport.kind} Inspector closed`)
+      await cdp.evaluate(`document.querySelector('[data-testid="charts-toggle"]').click()`)
       await cdp.waitFor(`new URL(location.href).searchParams.get('panel') === 'chart' && document.querySelector('[data-testid="inspector-chart"] canvas') !== null`, `${viewport.kind} Chart Inspector`)
       await settleLayout(cdp)
       const chartGeometry = await cdp.evaluate(`(() => {
@@ -4293,7 +4343,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       assert.equal(chartGeometry.laneButtons, 0, `${viewport.kind}: ${JSON.stringify(chartGeometry)}`)
       assert.ok(chartGeometry.picker.left >= chartGeometry.body.left - .5 && chartGeometry.picker.right <= chartGeometry.body.left + chartGeometry.body.clientWidth + .5, `${viewport.kind}: ${JSON.stringify(chartGeometry)}`)
       assert.ok(chartGeometry.figure.right <= chartGeometry.body.left + chartGeometry.body.clientWidth + .5, `${viewport.kind}: ${JSON.stringify(chartGeometry)}`)
-      assert.ok(Math.abs(chartGeometry.preview.height - 104) <= .5, `${viewport.kind}: ${JSON.stringify(chartGeometry.preview)}`)
+      assert.ok(Math.abs(chartGeometry.preview.height - 30) <= .5, `${viewport.kind}: ${JSON.stringify(chartGeometry.preview)}`)
       assert.equal(chartGeometry.preview.ownerCount, 0, `${viewport.kind}: ${JSON.stringify(chartGeometry.preview)}`)
       assert.equal(chartGeometry.preview.actionAtEdge, true, `${viewport.kind}: ${JSON.stringify(chartGeometry.preview)}`)
       assert.equal(chartGeometry.preview.labelsInside, true, `${viewport.kind}: ${JSON.stringify(chartGeometry.preview)}`)
@@ -4305,7 +4355,7 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
       } else {
         assert.equal(chartGeometry.preview.lanesDisplay, "flex", JSON.stringify(chartGeometry.preview))
         assert.equal(chartGeometry.preview.pickerDisplay, "none", JSON.stringify(chartGeometry.preview))
-        assert.ok(Math.abs(chartGeometry.preview.action.width - 60) <= 1, JSON.stringify(chartGeometry.preview))
+        assert.ok(Math.abs(chartGeometry.preview.action.width - 64) <= 1, JSON.stringify(chartGeometry.preview))
       }
       const legend = await cdp.evaluate(`(() => {
         const figure = document.querySelector('[data-testid="inspector-chart"] .uplot-figure')
@@ -4375,13 +4425,13 @@ test("forensic workstation keeps exact preview and one responsive Inspector", { 
     assert.equal(classicPreview.classicRail, 15, JSON.stringify(classicPreview))
     assert.equal(classicPreview.panel, "chart", JSON.stringify(classicPreview))
     assert.match(classicPreview.url, /view=pg\.activity/)
-    assert.ok(Math.abs(classicPreview.height - 104) <= .5, JSON.stringify(classicPreview))
+    assert.ok(Math.abs(classicPreview.height - 30) <= .5, JSON.stringify(classicPreview))
     assert.equal(classicPreview.laneOverflowX, "hidden", JSON.stringify(classicPreview))
     assert.ok(classicPreview.laneScrollWidth <= classicPreview.laneClientWidth + 1, JSON.stringify(classicPreview))
     assert.equal(classicPreview.ownerCount, 0, JSON.stringify(classicPreview))
     assert.equal(classicPreview.labelsInside, true, JSON.stringify(classicPreview))
     assert.equal(classicPreview.actionAtEdge, true, JSON.stringify(classicPreview))
-    assert.ok(Math.abs(classicPreview.actionWidth - 60) <= 1, JSON.stringify(classicPreview))
+    assert.ok(Math.abs(classicPreview.actionWidth - 64) <= 1, JSON.stringify(classicPreview))
     await cdp.evaluate(`document.querySelectorAll('.source-tabs button')[0].click()`)
     await cdp.waitFor(`document.querySelector('[data-testid="use-row-disk"]') !== null`, "Host resource table")
     await cdp.evaluate(`document.querySelector('[data-testid="use-row-disk"]').click()`)
@@ -5546,10 +5596,12 @@ test("narrow controls stay contained and help never changes selection", { timeou
     await cdp.evaluate(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }))`)
     historyFailure = true
     await cdp.evaluate(`document.querySelector('[data-testid="pg-activity-table"] .entity-row').click()`)
-    await cdp.waitFor(`document.querySelector('.pg-detail [data-testid="series-status"][data-status="error"]') !== null`, "the Activity history error")
-    assert.equal(await cdp.evaluate(`document.querySelector('.pg-detail [data-testid="series-status"][data-status="error"]').textContent`), "Could not load history")
+    await cdp.waitFor(`document.querySelector('[data-testid="pg-detail"]') !== null`, "the Activity detail")
+    await cdp.evaluate(`([...document.querySelectorAll('.inspector-tabs button')].find((button) => button.textContent === 'Chart')).click()`)
+    await cdp.waitFor(`document.querySelector('.inspector-chart-slot [data-testid="series-status"][data-status="error"]') !== null`, "the Activity history error")
+    assert.equal(await cdp.evaluate(`document.querySelector('.inspector-chart-slot [data-testid="series-status"][data-status="error"]').textContent`), "Could not load history")
     const failedHistory = await cdp.evaluate(`(() => {
-      const detail = document.querySelector('.pg-detail')
+      const detail = document.querySelector('.inspector-chart-slot')
       const status = detail.querySelector('[data-testid="series-status"][data-status="error"]').getBoundingClientRect()
       return { chart: detail.querySelector('.uplot-host') !== null, statusHeight: status.height, text: detail.querySelector('.series-chart')?.textContent ?? '' }
     })()`)

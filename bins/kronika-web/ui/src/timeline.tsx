@@ -164,8 +164,8 @@ export function Timeline({
   })}</>
   if (selected === undefined) {
     return findings.length === 0
-      ? <section className="flex h-[104px] min-h-[104px] items-center justify-center border-y border-line2 bg-s1 text-sm text-fg4" data-presentation={presentation} data-testid="timeline-empty">{t(emptyHourStatusKey(hour))}</section>
-      : <section className="flex h-[104px] min-h-[104px] items-center justify-center border-y border-line2 bg-s1 text-sm text-fg4" data-presentation={presentation} data-testid="timeline-empty">{t("status.no_data")}</section>
+      ? <section className="flex h-[124px] min-h-[124px] items-center justify-center border-y border-line2 bg-s1 text-sm text-fg4" data-presentation={presentation} data-testid="timeline-empty">{t(emptyHourStatusKey(hour))}</section>
+      : <section className="flex h-[124px] min-h-[124px] items-center justify-center border-y border-line2 bg-s1 text-sm text-fg4" data-presentation={presentation} data-testid="timeline-empty">{t("status.no_data")}</section>
   }
   return <section aria-label={t("hour.range", { range: time.hourRange(hour).primary })} className={`timeline-shell mt-2 flex flex-col overflow-hidden border-y border-line2 bg-s1 timeline-${presentation}`} data-presentation={presentation}>
     <div className="timeline-rail flex h-7 min-w-0 flex-none overflow-hidden border-b border-line2">
@@ -200,6 +200,7 @@ export function Timeline({
       reading={current}
       referenceTimestamp={shownAt ?? undefined}
       series={recorded}
+      stats={presentation === "inspector"}
       t={t}
       testId="hour-timeline"
       threshold={threshold}
@@ -261,10 +262,10 @@ function toRecordedSeries(lane: TimelineLane, locale: Locale, t: Translate): rea
 
 function LaneLabel({ label, help, onSelect, primary, reading, t }: { readonly label: string; readonly help: string; readonly onSelect: () => void; readonly primary: boolean; readonly reading: string; readonly t: Translate }) {
   const accessible = `${t(label)}: ${reading}`
-  return <div data-primary={primary || undefined} className={`lane-label timeline-lane-label flex h-7 min-w-0 items-center gap-1.5 overflow-hidden rounded-t-[2px] px-[7px] text-left text-xs uppercase text-fg3 hover:bg-accent-soft hover:text-accent3${primary ? " bg-s3 text-fg2 shadow-[inset_0_-2px_var(--color-accent)]" : ""}`} title={accessible}>
+  return <div data-primary={primary || undefined} className={`lane-label timeline-lane-label flex h-7 min-w-0 items-center gap-1.5 overflow-hidden rounded-t-[var(--radius-xs)] px-[7px] text-left font-sans text-xs font-medium text-fg3 hover:bg-accent-soft hover:text-accent3${primary ? " bg-s3 text-fg2 shadow-[inset_0_-2px_var(--color-accent)]" : ""}`} title={accessible}>
     <button aria-label={accessible} aria-pressed={primary} className="lane-select flex min-w-0 flex-auto cursor-pointer items-center gap-1.5 self-stretch overflow-hidden border-0 bg-transparent p-0 text-left [font-family:inherit]" onClick={onSelect} type="button">
       <span className="timeline-lane-name min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{t(label)}</span>
-      <span data-testid="lane-reading" className={`timeline-lane-reading ml-auto min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-right normal-case tabular-nums ${primary ? "text-md font-[620] text-accent3" : "text-sm text-fg"}`} title={reading}>{reading}</span>
+      <span data-testid="lane-reading" className={`timeline-lane-reading ml-auto min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-right font-mono font-normal tabular-nums ${primary ? "text-md text-accent3" : "text-sm text-fg"}`} title={reading}>{reading}</span>
     </button>
     <LabelHelp helpKey={help} iconOnly labelKey={label} t={t} />
   </div>
@@ -315,7 +316,7 @@ export function FindingMarker({ marker, onActivate, share, t, time = String }: {
   const timeSummary = first.timestamp === last.timestamp ? time(first.timestamp) : `${time(first.timestamp)}–${time(last.timestamp)}`
   return <button
     aria-label={`${kindSummary} · ${timeSummary} · ×${count}`}
-    className={`marker-button pointer-events-auto absolute top-[17px] z-[2] flex h-7 w-[82px] -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center overflow-visible border-0 bg-transparent p-0 [&>svg]:[filter:drop-shadow(0_1px_2px_var(--color-shadow))] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-cursor${count === 1 ? ` marker-${first.kind}` : " marker-aggregate"}`}
+    className={`marker-button pointer-events-auto absolute top-1/2 z-[2] flex h-[18px] min-w-[18px] -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center overflow-visible border-0 bg-transparent p-0 [&>svg]:[filter:drop-shadow(0_1px_2px_var(--color-shadow))] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-cursor${count === 1 ? ` marker-${first.kind}` : " marker-aggregate"}`}
     data-marker-composition={marker.composition.map(({ count, kind }) => `${kind}:${count}`).join(" ")}
     data-marker-count={count}
     data-marker-kinds={marker.composition.map(({ kind }) => kind).join(" ")}
@@ -330,11 +331,18 @@ export function FindingMarker({ marker, onActivate, share, t, time = String }: {
   >
     {count === 1
       ? <FindingGlyph kind={first.kind} />
-      : <span aria-hidden="true" className="marker-cluster-badge box-border flex h-[19px] items-center justify-between rounded-[10px] border border-line4 bg-s2 pl-1 pr-[3px] shadow-[0_1px_3px_var(--color-shadow)]" style={{ width: MARKER_CLUSTER_PX - 8 }}>
-        <span className="flex items-center [&_svg]:h-2 [&_svg]:w-2">{marker.composition.map(({ count, kind }) => <span className="flex items-center [&_small]:max-w-2.5 [&_small]:overflow-hidden [&_small]:text-[8px] [&_small]:leading-none [&_small]:text-fg2" key={kind}><FindingGlyph kind={kind} /><small>{count}</small></span>)}</span>
-        <strong className="min-w-[14px] rounded-[7px] bg-s4 px-0.5 text-center text-xs leading-[13px] tabular-nums text-fg">{count}</strong>
+      : <span aria-hidden="true" className="marker-cluster-badge box-border flex h-4 items-center gap-1 rounded-full border border-line3 bg-s2/95 pl-1.5 pr-1.5 shadow-[0_1px_3px_var(--color-shadow)]">
+        <span className="flex items-center gap-0.5 [&_svg]:h-2 [&_svg]:w-2">{marker.composition.map(({ kind }) => <FindingGlyph key={kind} kind={kind} />)}</span>
+        <strong className="font-sans text-[10px] font-semibold leading-none tabular-nums text-fg">{markerCount(count)}</strong>
       </span>}
   </button>
+}
+
+// The badge names the kinds by shape and sizes the cluster by one number; the
+// per-kind split lives in the accessible label and the events console. Counts
+// above 999 stop informing at marker size.
+function markerCount(count: number): string {
+  return count > 999 ? "999+" : String(count)
 }
 
 function series(rows: readonly DataRow[], field: string): readonly SeriesPoint[] {

@@ -8,7 +8,7 @@ import { useDisplayTime } from "./display-time-context"
 import { EntityTable, type EntityColumn, type TableOrder } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import { useHistoryRequest } from "./history-request"
-import { InspectorPortal } from "./inspector"
+import { InspectorChartPortal, InspectorPortal } from "./inspector"
 import { rawText, value, type Locale } from "./model"
 import {
   INDEX_LENSES,
@@ -98,7 +98,7 @@ export function PostgresRelationsView(props: PostgresRelationsViewProps) {
       <EntityTable
         columns={columns}
         contentSized={rows.length < 10 && !hasMore}
-        loading={tablesLoading}
+        loading={tablesLoading || rows.length === 0 && densePageState === "loading"}
         empty={t(emptyHourStatusKey(hour))}
         label={t(section === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}
         locale={locale}
@@ -207,15 +207,15 @@ function RelationDetail({ blockSize, cursor, historyRevision, hour, lens, locale
     <header className="pg-detail-head"><h2>{relationRowLabel(row)}</h2></header>
     {linked !== null && <div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1"><button data-testid="pg-relation-link" onClick={() => onNavigate(linked)} type="button">{t(row.logicalName === "pg_stat_user_tables" ? "pg.relation.indexes" : "pg.relation.table")}</button></div>}
     {drill !== null && <div className="lens-tabs max-[760px]:w-full max-[760px]:[&>button]:min-w-0 max-[760px]:[&>button]:flex-1 max-[760px]:[&>button]:px-1"><button data-testid="pg-relation-drill" onClick={() => onNavigate(drill)} type="button">{t(row.relation?.group === "database" ? "pg.relation.level.schema" : row.logicalName === "pg_stat_user_tables" ? "pg.section.tables" : "pg.section.indexes")}</button></div>}
-    {historyField !== null && historyColumn !== undefined && <section className="process-history pg-metric-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]">
+    {historyField !== null && historyColumn !== undefined && <InspectorChartPortal identity={`pg:${row.logicalName}:${relationRowKey(row)}:history`}><section className="process-history pg-metric-history grid min-w-0 gap-[7px]">
       <div aria-label={t("system.history")} className="history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">{chartColumns.map((column) => <button aria-pressed={historyField === column.field} className="min-h-[28px] flex-none cursor-pointer border border-line3 bg-s2 px-[7px] py-1 text-xs text-fg2 aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg" data-testid={`pg-relation-chart-${column.field}`} key={column.field} onClick={() => setHistoryField(column.field)} type="button">{t(column.label)}</button>)}</div>
       <SeriesChart cursor={cursor} durationAxis={historyColumn.kind === "milliseconds" || historyColumn.kind === "duration" || historyColumn.kind === "microseconds"} format={chartFormat(historyColumn.kind, historyColumn.rate === true ? t("unit.per_second") : "")} helpKey={historyColumn.help ?? "chart.metric.help"} hour={hour} labelKey={historyColumn.label} locale={locale} onCursor={onCursor} points={history} scale={chartScale(historyColumn)} status={loadedHistory.status} t={t} tickFormat={chartFormat(historyColumn.kind, historyColumn.rate === true ? t("unit.per_second") : "")} unit={chartUnit(historyColumn, t("unit.per_second"))} />
-    </section>}
+    </section></InspectorChartPortal>}
     <DetailList>{columns.map((column) => {
       const label = t(column.label)
       return <DetailRow key={column.field} term={column.help === undefined ? label : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}>{scanValue(row, column, locale, t)}</DetailRow>
     })}</DetailList>
-    {definitionTarget !== null && <section className="query-block"><span>{t("pg.relation.definition")}{definition !== null && <button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center border border-line4 bg-transparent px-[3px] py-0.5 text-xs uppercase text-accent3" onClick={() => void navigator.clipboard?.writeText(definition)} type="button"><Copy aria-hidden="true" size={12} /></button>}</span><pre data-testid="pg-exact-indexdef">{exact === undefined ? t("status.loading") : definition ?? t("common.unavailable")}</pre></section>}
+    {definitionTarget !== null && <section className="query-block"><span>{t("pg.relation.definition")}{definition !== null && <button aria-label={t("common.raw")} className="inline-flex flex-none cursor-pointer items-center justify-center rounded-[var(--radius-xs)] border-0 bg-transparent p-1 text-accent3 transition-colors hover:bg-s3" onClick={() => void navigator.clipboard?.writeText(definition)} type="button"><Copy aria-hidden="true" size={12} /></button>}</span><pre data-testid="pg-exact-indexdef">{exact === undefined ? t("status.loading") : definition ?? t("common.unavailable")}</pre></section>}
   </aside>
 }
 

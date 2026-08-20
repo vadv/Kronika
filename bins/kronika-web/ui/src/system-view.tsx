@@ -5,10 +5,11 @@ import type { HostMode, HostSection } from "./address"
 import { fieldNameForLocator, loadSeries, resolveLocator, type Cell, type DataRow, type Finding, type HourData, type Point, type SectionRequest } from "./api"
 import { buildMetricSamples } from "./chart"
 import { contextualRows, type EntityContext } from "./entity-context"
-import { EntityTable, type EntityColumn } from "./entity-table"
+import { DetailList, DetailRow } from "./detail-list"
+import { cellAriaValue, EntityTable, type EntityColumn } from "./entity-table"
 import { LabelHelp, type Translate } from "./help"
 import { useHistoryRequest } from "./history-request"
-import { InspectorPortal } from "./inspector"
+import { InspectorChartPortal, InspectorPortal } from "./inspector"
 import { asNumber, humanBytes, humanCores, humanDuration, humanHertz, humanPercent, measure, rawText, shownMoment, snapshot, value, type Locale } from "./model"
 import { readingAt, SeriesChart, type ChartPoint } from "./series-chart"
 import { Timeline } from "./timeline"
@@ -146,7 +147,9 @@ const CPU_FIELDS = ["cpu_id", "scope", "user", "nice", "system", "idle", "iowait
 const MEMORY_FIELDS = ["mem_total", "mem_available", "mem_free", "cached", "buffers", "anon_pages", "s_reclaimable", "s_unreclaim"] as const
 const CPU_BREAKDOWN_IDS = ["cpu_used_cores", "cpu_capacity", "cpu_user", "cpu_system", "cpu_irq", "cpu_iowait", "cpu_steal", "cpu_idle"] as const
 const MEMORY_BREAKDOWN_IDS = ["mem_total", "mem_available", "mem_anon", "mem_file_cache", "mem_s_reclaimable", "mem_s_unreclaim", "mem_free", "mem_other"] as const
-const BREAKDOWN_COLORS: readonly RecordedSeries["color"][] = ["cyan", "green", "blue", "amber", "violet", "red", "gray", "rose"]
+// Token order series-1..7 plus the neutral total: the palette was validated
+// for colour-vision separation in exactly this adjacency.
+const BREAKDOWN_COLORS: readonly RecordedSeries["color"][] = ["cyan", "amber", "green", "violet", "red", "blue", "gray", "rose"]
 
 // The mount history request fetches both sides of the pair at once.
 const MOUNT_PAIR_COLUMN: SystemEntityColumn = { ...bytes("free_bytes"), historyFields: ["free_bytes", "total_bytes"] }
@@ -749,12 +752,12 @@ function SystemDock({
     <header className="pg-detail-head">
       <div><span>{t("system.history")}</span><h2>{t(label)}</h2></div>
     </header>
-    <section className="process-history mt-2.5 grid min-w-0 gap-[7px] border-t border-line3 pt-[7px]">
+    <InspectorChartPortal identity="system:dock"><section className="process-history system-dock grid min-w-0 gap-[7px]">
       <div aria-label={t(label)} className="dock-tabs history-selector flex max-w-full gap-[5px] overflow-x-auto p-px pb-[3px] [scrollbar-width:thin]" role="group">
         {metrics.map((spec) => <button aria-pressed={spec.id === selected} data-testid={`system-dock-metric-${spec.id}`} key={spec.id} onClick={() => onSelect(spec.id)} type="button">{t(spec.label)}</button>)}
       </div>
       {chart}
-    </section>
+    </section></InspectorChartPortal>
   </aside>
 }
 
@@ -882,7 +885,9 @@ function SystemEntityPanel({
       testId={`system-${section}`}
     />
     </div>
-    {selectedRow !== null && (mountPair || selectedColumn !== undefined) && <InspectorPortal identity={`system:${section}:${entityRowKey(selectedRow)}`} onClose={() => { onSelectedKey(null); onMetric(null) }} title={`${label} · ${entityRowKey(selectedRow)}`}><section className="system-entity-history min-w-0" data-testid={`system-${section}-history`}>
+    {selectedRow !== null && (mountPair || selectedColumn !== undefined) && <InspectorPortal identity={`system:${section}:${entityRowKey(selectedRow)}`} onClose={() => { onSelectedKey(null); onMetric(null) }} title={`${label} · ${entityRowKey(selectedRow)}`}><aside className="p-[11px]" data-testid={`system-${section}-detail`}>
+      <DetailList>{columns.filter((column) => (column.available?.(selectedRow) ?? true) && value(selectedRow, column.field) !== null).map((column) => <DetailRow key={column.field} term={column.help === undefined ? t(column.label) : <LabelHelp helpKey={column.help} labelKey={column.label} t={t} />}>{column.render === undefined ? cellAriaValue(value(selectedRow, column.field), column, locale, t) : column.render(selectedRow)}</DetailRow>)}</DetailList>
+      <InspectorChartPortal identity={`system:${section}:${entityRowKey(selectedRow)}:history`}><section className="system-entity-history min-w-0" data-testid={`system-${section}-history`}>
       <header className="flex items-start px-[7px] pt-1.5">
         {mountPair
           ? <div className="system-history-selector flex max-w-full overflow-x-auto pb-[3px] [scrollbar-width:thin] [&>button+button]:ml-1 [&>button]:min-h-[27px] [&>button]:flex-none [&>button]:cursor-pointer [&>button]:border [&>button]:border-line3 [&>button]:bg-s2 [&>button]:px-[7px] [&>button]:py-1 [&>button]:text-xs [&>button]:text-fg2 [&>button[aria-pressed=true]]:border-accent [&>button[aria-pressed=true]]:bg-accent-soft [&>button[aria-pressed=true]]:text-fg" role="group">
@@ -923,7 +928,8 @@ function SystemEntityPanel({
             t={t}
             unit={entityMetricUnit(selectedColumn, locale, chartMetadata)}
           />}
-    </section></InspectorPortal>}
+      </section></InspectorChartPortal>
+    </aside></InspectorPortal>}
   </section>
 }
 

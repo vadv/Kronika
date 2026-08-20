@@ -70,7 +70,8 @@ test("statement execution findings select the interval mean cell", () => {
 test("locator classes, scrolling, and selection state are independent", async () => {
   const entity = await readFile(new URL("../src/entity-table.tsx", import.meta.url), "utf8")
   const process = await readFile(new URL("../src/process-table.tsx", import.meta.url), "utf8")
-  assert.match(entity, /table-empty flex items-baseline" role="status"/)
+  assert.match(entity, /<div role="status">/)
+  assert.match(entity, /data-testid="table-skeleton"/)
   assert.match(entity, /aria-selected=/)
   assert.match(entity, /locator-row/)
   assert.match(entity, /locator-cell/)

@@ -22,6 +22,11 @@ import { TableFilter } from "./table-filter"
 import { asNumber, estimatedRows, humanBytes, humanCores, humanDuration, humanPercent, identifier, measure, rawText, value, type Locale } from "./model"
 import { semanticValueTone } from "./value-tone"
 
+// Matches --spacing-row: virtualized offsets and the content-sized height
+// are computed from the same number the CSS row height uses.
+const ROW_PX = 24
+const SKELETON_ROWS = 8
+
 export interface EntityColumn {
   readonly field: string
   readonly physicalField?: string | Readonly<Record<string, string>>
@@ -155,7 +160,7 @@ export function EntityTable({
     sticky: isSticky(column.columnDef.meta),
   })))
   const head = useRef<HTMLDivElement>(null)
-  const [headHeight, setHeadHeight] = useState(26)
+  const [headHeight, setHeadHeight] = useState(28)
   const [horizontalRailHeight, setHorizontalRailHeight] = useState(0)
   const automatic = useRef<ColumnSizingState>({})
   useLayoutEffect(() => {
@@ -188,7 +193,7 @@ export function EntityTable({
     setSizing((current) => ({ ...current, [id]: fittedWidth(widestCell(root, index)) }))
   }, [])
   const rendered = table.getRowModel().rows
-  const virtual = useVirtualizer({ count: rendered.length, estimateSize: () => 23, getScrollElement: () => parent.current, overscan: 10 })
+  const virtual = useVirtualizer({ count: rendered.length, estimateSize: () => ROW_PX, getScrollElement: () => parent.current, overscan: 10 })
   const lastVirtualIndex = virtual.getVirtualItems().at(-1)?.index ?? -1
   useEffect(() => {
     if (onNearEnd !== undefined && rendered.length !== 0 && lastVirtualIndex >= rendered.length - 10) onNearEnd()
@@ -224,21 +229,21 @@ export function EntityTable({
     observer.observe(root)
     return () => observer.disconnect()
   }, [contentSized, rendered.length, width])
-  const contentHeight = contentSized ? (rendered.length === 0 ? 72 : Math.min(310, headHeight + rendered.length * 23)) + horizontalRailHeight : undefined
-  const virtualHeight = contentSized ? rendered.length * 23 : virtual.getTotalSize()
+  const contentHeight = contentSized ? (rendered.length === 0 ? (loading ? headHeight + SKELETON_ROWS * ROW_PX : 72) : Math.min(310, headHeight + rendered.length * ROW_PX)) + horizontalRailHeight : undefined
+  const virtualHeight = contentSized ? rendered.length * ROW_PX : virtual.getTotalSize()
   const searchPending = searchRequest.phase === "pending"
   const searchMessage = searchRequest.phase === "pending" || searchRequest.phase === "error"
     ? <SearchRequestMessage request={searchRequest} t={t} />
     : null
   return <section aria-busy={searchPending} className={`entity-table min-w-0 overflow-hidden bg-s1${contentSized ? "" : " pg-stretch"}${className === undefined ? "" : ` ${className}`}`} data-testid={testId}>
-    {(status !== undefined || searchMessage !== null) && onPattern === undefined && contextLabel === undefined && <div className="flex min-h-[26px] min-w-0 items-center gap-x-[14px] overflow-hidden whitespace-nowrap border-b border-line2 bg-[color-mix(in_srgb,var(--color-s2)_82%,transparent)] px-[7px] py-1 text-xs text-fg3 [&_strong]:font-[650] [&_strong]:text-fg2" data-testid="table-status">{searchMessage ?? status}</div>}
+    {(status !== undefined || searchMessage !== null) && onPattern === undefined && contextLabel === undefined && <div className="flex min-h-[26px] min-w-0 items-center gap-x-[14px] overflow-hidden whitespace-nowrap border-b border-line2 bg-[color-mix(in_srgb,var(--color-s2)_82%,transparent)] px-[7px] py-1 text-xs text-fg3 [&_strong]:font-semibold [&_strong]:text-fg2" data-testid="table-status">{searchMessage ?? status}</div>}
     {(onPattern !== undefined || contextLabel !== undefined) && <TableFilter context={contextLabel} grouped={searchGrouped} kept={serverSorted === true ? -1 : data.length} onContextClear={onContextClear} onPattern={onPattern} pattern={pattern} status={searchMessage ?? status} surface={searchSurface ?? "os_process"} t={t} total={rows.length} />}
     <div aria-label={label} className={`entity-scroll relative h-[min(310px,36vh)] min-h-[154px] [scroll-padding-inline-end:8px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent [.process-table_&]:h-auto [.process-table_&]:min-h-0 [.process-table_&]:flex-1 [.pg-entity-layout_&]:h-[min(560px,calc(100dvh-475px))] [.pg-entity-layout_&]:min-h-[100px] [.pg-table-shell_.pg-entity-layout_&]:h-auto [.pg-table-shell_.pg-entity-layout_&]:min-h-0 [.pg-table-shell_.pg-entity-layout_&]:flex-1${contentSized ? " !min-h-0 box-content overflow-x-auto overflow-y-hidden" : " overflow-auto"}`} data-scroll-axis={contentSized ? "horizontal" : "both"} ref={parent} role="table" style={contentHeight === undefined ? undefined : { height: contentHeight }} tabIndex={0}>
       <div className="entity-head sticky top-0 z-30 flex h-head min-w-full bg-s2 pr-2 coarse:h-9 [&_[role=columnheader]]:select-none" ref={head} role="row" style={{ width: contentWidth }}>
         {table.getHeaderGroups()[0]?.headers.map((header, index) => {
           const sorted = header.column.getIsSorted()
           return <div className={sticky(header.column.columnDef.meta, true)} key={header.id} role="columnheader" style={{ left: pinnedLeft.get(header.column.id), width: header.getSize() }}>
-            <button className="entity-sort flex h-full min-w-0 flex-auto cursor-pointer items-center justify-between border-0 bg-transparent p-0 text-left uppercase text-[inherit] disabled:cursor-default [&>span]:overflow-hidden [&>span]:text-ellipsis [&>span]:whitespace-nowrap" disabled={!header.column.getCanSort()} onClick={serverSorted === true
+            <button className="entity-sort flex h-full min-w-0 flex-auto cursor-pointer items-center justify-between border-0 bg-transparent p-0 text-left text-[inherit] disabled:cursor-default [&>span]:overflow-hidden [&>span]:text-ellipsis [&>span]:whitespace-nowrap" disabled={!header.column.getCanSort()} onClick={serverSorted === true
               ? () => onOrder?.(nextServerOrder(order, header.column.id))
               : header.column.getToggleSortingHandler()} type="button">
               <span>{flexRender(header.column.columnDef.header, header.getContext())}</span>
@@ -253,11 +258,20 @@ export function EntityTable({
         ? searchPending
           ? <p aria-hidden="true" className="table-empty">{t("filter.searching")}</p>
           : searchRequest.phase === "error"
-            ? null
+            ? <div className="table-empty" role="alert">{searchMessage}</div>
             : loading
           // Loading and empty are different truths; never report one as the other.
-              ? <p className="table-empty flex items-baseline" role="status"><span aria-hidden="true" className="loading-ring animate-loading-spin motion-reduce:animate-none mr-[7px] h-[11px] w-[11px] align-[-1px]" />{t("table.loading")}</p>
-              : <p className="table-empty">{pattern === "" ? empty : t("filter.none")}</p>
+              ? <div role="status">
+                <p className="absolute m-0 h-px w-px overflow-hidden whitespace-nowrap [clip-path:inset(50%)]">{t("table.loading")}</p>
+                <div aria-hidden="true" data-testid="table-skeleton">
+                  {Array.from({ length: SKELETON_ROWS }, (_, rowIndex) => <div className="flex h-row items-center border-b border-line" key={rowIndex} style={{ width: contentWidth }}>
+                    {table.getVisibleLeafColumns().map((column, columnIndex) => <span className="px-[7px]" key={column.id} style={{ width: column.getSize() }}>
+                      <span className="block h-2 animate-skeleton rounded-[3px] bg-s3 motion-reduce:animate-none" style={{ animationDelay: `${rowIndex * -90}ms`, width: `${45 + (rowIndex * 7 + columnIndex * 13) % 40}%` }} />
+                    </span>)}
+                  </div>)}
+                </div>
+              </div>
+              : <p className="table-empty flex items-center gap-2.5">{pattern === "" ? empty : <>{t("filter.none")}{onPattern !== undefined && <button className="cursor-pointer rounded-[var(--radius-xs)] border-0 bg-s3 px-2 py-1 text-xs font-medium text-accent3 transition-colors hover:bg-s4" data-testid="table-clear-filter" onClick={() => onPattern("")} type="button">{t("filter.clear")}</button>}</>}</p>
         : <div className="relative" data-testid="virtual-body" style={{ height: virtualHeight, width: contentWidth }}>
           {virtual.getVirtualItems().map((item) => {
             const row = rendered[item.index]
@@ -278,7 +292,7 @@ export function EntityTable({
                 onSelect(row.original)
               }}
               role="row"
-              style={{ height: item.size, paddingRight: TABLE_END_GUTTER, transform: `translateY(${contentSized ? item.index * 23 : item.start}px)`, width: contentWidth }}
+              style={{ height: item.size, paddingRight: TABLE_END_GUTTER, transform: `translateY(${contentSized ? item.index * ROW_PX : item.start}px)`, width: contentWidth }}
               tabIndex={onSelect === undefined ? undefined : 0}
             >
               {row.getVisibleCells().map((cell) => {
@@ -306,14 +320,14 @@ const LOCATOR_ROW: Readonly<Record<string, string>> = {
   spike: "shadow-[inset_3px_0_var(--color-warn)] aria-selected:shadow-[inset_2px_0_var(--color-accent),inset_5px_0_var(--color-warn)]",
 }
 const LOCATOR_CELL: Readonly<Record<string, string>> = {
-  known_bad: "bg-[color-mix(in_srgb,var(--color-bad)_18%,transparent)] font-[700] text-fg-hi [&_.entity-value]:text-fg-hi",
-  spike: "bg-[color-mix(in_srgb,var(--color-warn)_12%,transparent)] font-[650] text-fg-hi [&_.entity-value]:text-fg-hi",
+  known_bad: "bg-[color-mix(in_srgb,var(--color-bad)_18%,transparent)] text-fg-hi [&_.entity-value]:text-fg-hi",
+  spike: "bg-[color-mix(in_srgb,var(--color-warn)_12%,transparent)] text-fg-hi [&_.entity-value]:text-fg-hi",
 }
 const TABLE_END_GUTTER = 8
 const VALUE_TONE: Readonly<Record<string, string>> = {
   good: "[&_.entity-value]:text-ok",
   warning: "[&_.entity-value]:text-warn",
-  critical: "[&_.entity-value]:font-[700] [&_.entity-value]:text-bad",
+  critical: "[&_.entity-value]:text-bad",
   inactive: "[&_.entity-value]:text-fg4",
 }
 
@@ -421,8 +435,8 @@ export function sticky(meta: unknown, head: boolean): string {
   return [
     box,
     head
-      ? `entity-header-cell flex items-center text-xs uppercase tracking-[.025em] text-fg3 [.process-table_&]:tracking-[.035em]${pinned ? " bg-s2 z-40" : " relative"}`
-      : "entity-cell flex h-row items-center text-xs tabular-nums text-fg2 [.process-table_&]:text-sm",
+      ? `entity-header-cell flex items-center font-sans text-xs font-medium text-fg3${pinned ? " bg-s2 z-40" : " relative"}`
+      : "entity-cell flex h-row items-center font-mono text-xs tabular-nums text-fg2 [.process-table_&]:text-sm",
     cell?.numeric === true ? "align-right" : "",
     pinned ? "entity-sticky sticky left-0 z-[12] bg-inherit" : "",
     name,
