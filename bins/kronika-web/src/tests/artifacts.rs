@@ -2612,6 +2612,28 @@ fn an_hour_keeps_generic_rows_and_lanes_inside_its_inclusive_window() {
 }
 
 #[test]
+fn history_resolves_dictionary_values_across_bounded_chunks() {
+    let mut fixture = Fixture::new();
+    let source = (0_i32..1_025)
+        .map(|minor| (minor, "nvme0n1"))
+        .collect::<Vec<_>>();
+    fixture.append_named_diskstats(&source);
+    fixture.finish();
+
+    let records = stream(fixture.prepare(
+        &format!("/api/segments/{SEGMENT_ID}/sections/os_diskstats/history?field=device"),
+        None,
+    ))
+    .expect("bounded history response");
+    let rows = row_records(&records);
+    assert_eq!(rows.len(), source.len());
+    assert!(
+        rows.iter()
+            .all(|row| row["values"] == serde_json::json!(["nvme0n1"]))
+    );
+}
+
+#[test]
 fn an_hour_reads_one_index_resource_per_segment_without_statistical_noise() {
     const STEP: i64 = 5 * 60 * 1_000_000;
 

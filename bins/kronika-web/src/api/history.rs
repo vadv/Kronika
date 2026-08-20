@@ -12,7 +12,7 @@ use super::render::{cell, projected_layout, record};
 use super::{ApiError, CachePolicy, ResponseMeta, active_tail, explicit_segment};
 use crate::route::{ActiveCursor, DataRequest, Window};
 
-const ROW_CHUNK_ROWS: usize = 16;
+const ROW_CHUNK_ROWS: usize = 512;
 
 pub(crate) struct PreparedHistory {
     segment: Segment,
