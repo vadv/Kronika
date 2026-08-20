@@ -3563,13 +3563,16 @@ fn search_clause_matches(
             _ => {}
         }
     }
-    search_clause_columns(logical_name, plan, clause.key)
-        .iter()
-        .any(|column| {
-            row.get(column)
-                .and_then(|value| searchable_text(value, dictionary))
-                .is_some_and(|text| search_value_matches(&text, &clause.value))
-        })
+    let columns = if logical_name == "pg_store_plans" && clause.key == "query_id" {
+        plan_statement_query_id_columns(plan.type_id)
+    } else {
+        clause.columns
+    };
+    columns.iter().any(|column| {
+        row.get(column)
+            .and_then(|value| searchable_text(value, dictionary))
+            .is_some_and(|text| search_value_matches(&text, &clause.value))
+    })
 }
 
 fn search_matches(

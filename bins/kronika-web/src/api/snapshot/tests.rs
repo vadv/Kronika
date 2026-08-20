@@ -701,6 +701,7 @@ fn structured_search_parses_strict_exact_quantities_and_canonicalizes_them() {
         parsed.canonical(),
         "schema:public AND size>100MB AND seq_scan_rate<0.5/s"
     );
+    assert_eq!(parsed.clauses[0].columns, ["schemaname"]);
     assert!(matches!(parsed.expr, super::search::Expr::And(..)));
     assert!(matches!(
         &parsed.clauses[1].value,
