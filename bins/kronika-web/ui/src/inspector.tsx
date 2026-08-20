@@ -1,3 +1,4 @@
+import { Maximize2, Minimize2 } from "lucide-react"
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type PointerEvent as ReactPointerEvent, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 
@@ -119,6 +120,7 @@ export function Inspector({
   readonly t: Translate
 }) {
   const [width, setWidth] = useState(() => loadInspectorWidth(localStorage))
+  const [maximized, setMaximized] = useState(false)
   const root = useRef<HTMLElement>(null)
   const opener = useRef<HTMLElement | null>(null)
   const style = { "--inspector-width": `${width}px` } as CSSProperties
@@ -137,6 +139,10 @@ export function Inspector({
     const keydown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !event.defaultPrevented) {
         event.preventDefault()
+        if (maximized) {
+          setMaximized(false)
+          return
+        }
         onClose()
         requestAnimationFrame(() => opener.current?.isConnected && opener.current.focus({ preventScroll: true }))
         return
@@ -156,7 +162,7 @@ export function Inspector({
     }
     window.addEventListener("keydown", keydown)
     return () => window.removeEventListener("keydown", keydown)
-  }, [onClose])
+  }, [maximized, onClose])
 
   const beginResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault()
@@ -173,7 +179,7 @@ export function Inspector({
 
   return <>
     <button aria-label={t("inspector.close")} className="inspector-scrim" onClick={onClose} type="button" />
-    <aside aria-label={t("inspector.title")} className="inspector" data-panel={panel} data-testid="inspector" ref={root} role="dialog" style={style} tabIndex={-1}>
+    <aside aria-label={t("inspector.title")} className={`inspector${maximized ? " inspector-maximized" : ""}`} data-panel={panel} data-testid="inspector" ref={root} role="dialog" style={style} tabIndex={-1}>
       <button
         aria-label={t("inspector.resize")}
         aria-orientation="vertical"
@@ -196,7 +202,10 @@ export function Inspector({
           <button aria-selected={panel === "chart"} onClick={() => onPanel("chart")} role="tab" type="button">{t("inspector.chart")}</button>
         </div>
         <strong title={title}>{title}</strong>
-        <button aria-label={t("common.close")} className="inspector-close" onClick={onClose} type="button">×</button>
+        <div className="flex flex-none items-center gap-1">
+          {panel === "chart" && <button aria-label={t(maximized ? "inspector.restore" : "inspector.maximize")} aria-pressed={maximized} className="inspector-maximize" data-testid="inspector-maximize" onClick={() => setMaximized((current) => !current)} type="button">{maximized ? <Minimize2 aria-hidden="true" size={13} /> : <Maximize2 aria-hidden="true" size={13} />}</button>}
+          <button aria-label={t("common.close")} className="inspector-close" onClick={onClose} type="button">×</button>
+        </div>
       </header>
       <div className="inspector-body" data-testid={`inspector-${panel}`} role="tabpanel">
         {/* The detail stays mounted while the Chart tab is open: the selected

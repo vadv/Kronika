@@ -454,6 +454,31 @@
   width: var(--inspector-width);
   z-index: 45;
 }
+/* The operator-invoked full-screen chart: the Inspector takes the viewport
+   below the top bar and its charts grow to the freed height. Escape or the
+   same control restores the docked width. */
+.inspector.inspector-maximized {
+  border-left: 0;
+  bottom: 0;
+  left: 0;
+  max-width: none;
+  position: fixed;
+  right: 0;
+  top: 40px;
+  width: auto;
+  z-index: 96;
+}
+.inspector-maximized .inspector-splitter { display: none; }
+.inspector-maximized .inspector-body .uplot-figure {
+  height: calc(100dvh - 250px);
+  max-height: none;
+  min-height: 320px;
+}
+@media (max-width: 1000px) {
+  .inspector.inspector-maximized { top: 68px; }
+  .inspector-maximized .inspector-body .uplot-figure { height: calc(100dvh - 280px); }
+}
+
 .inspector-splitter {
   background: transparent;
   border: 0;
@@ -474,7 +499,7 @@
   display: grid;
   flex: 0 0 auto;
   gap: 7px;
-  grid-template-columns: auto minmax(0, 1fr) 26px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   min-height: 34px;
   padding: 4px 6px;
 }
@@ -502,7 +527,8 @@
 }
 .inspector-tabs button[aria-selected="true"] { border-bottom-color: var(--color-accent); color: var(--color-accent3); }
 .inspector-tabs button:disabled { cursor: not-allowed; opacity: .35; }
-.inspector-close {
+.inspector-close,
+.inspector-maximize {
   align-items: center;
   background: transparent;
   border: 0;
@@ -515,7 +541,9 @@
   transition: background-color 120ms var(--ease-out);
   width: 24px;
 }
-.inspector-close:hover { background: var(--color-s3); color: var(--color-fg); }
+.inspector-close:hover,
+.inspector-maximize:hover { background: var(--color-s3); color: var(--color-fg); }
+.inspector-maximize[aria-pressed="true"] { background: var(--color-s4); color: var(--color-accent3); }
 .inspector-body {
   flex: 1 1 0;
   min-height: 0;

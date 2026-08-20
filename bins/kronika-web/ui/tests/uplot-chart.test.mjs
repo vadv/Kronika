@@ -215,7 +215,8 @@ test("full charts live only in the bounded shared Inspector", async () => {
     readFile(new URL("../src/inspector.tsx", import.meta.url), "utf8"),
   ])
   assert.doesNotMatch(source, /uplot-expanded|chart-expand|setExpanded/)
-  assert.match(inspector, /className="inspector"/)
+  assert.match(inspector, /className=\{`inspector\$\{maximized \? " inspector-maximized" : ""\}`\}/)
+  assert.match(inspector, /data-testid="inspector-maximize"/)
   assert.match(inspector, /role="separator"/)
   assert.match(stylesheet, /@media \(max-width: 1000px\)[\s\S]*?\.inspector \{[\s\S]*?position: fixed;/)
   assert.match(stylesheet, /@media \(max-width: 520px\)[\s\S]*?max-height: min\(480px/)

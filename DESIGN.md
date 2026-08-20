@@ -644,7 +644,9 @@ there, with a wrapped metric-button selector instead of a hidden horizontal
 scrollbar, while the Detail panel keeps the facts. Only without such a history
 does the panel hold the preview's full chart — and then the preview yields its
 figure and keeps its rail, so the plot and its marker lane exist once on
-screen. While the hour itself loads, the
+screen. An explicit control on the Inspector expands its chart across the
+viewport below the top bar; Escape or the same control restores the docked
+width. While the hour itself loads, the
 workspace paints its own shape — the timeline band, one status line carrying
 the received bytes and elapsed time, and table rows — not a modal card. Charts
 keep series names with the aligned statistics and place percentile columns without
