@@ -82,8 +82,12 @@ export function UseTable({
 }) {
   // A row exists when the hour carries anything for its resource: lane
   // readings, group metrics or entity tables. Cells without a lane stay "—".
+  const byLane = useMemo(() => lanePointsByLane(lanePoints), [lanePoints])
   const shown = useMemo(() => USE_RESOURCES.filter((resource) =>
-    withContent.has(resource.key) || shownUseResources(lanePoints).includes(resource)), [lanePoints, withContent])
+    withContent.has(resource.key) || USE_COLUMNS.some((column) => {
+      const cell = resource[column]
+      return cell !== null && seriesHasReading(byLane.get(cell.lane) ?? [])
+    })), [byLane, withContent])
   const end = hour + 3_600_000_000
   if (shown.length === 0 && !cgroups) return null
   return <section aria-label={t("use.title")} className="use-table" data-testid="use-table">
@@ -94,20 +98,20 @@ export function UseTable({
     {shown.map((resource) => {
       const open = expanded.has(resource.key)
       return <div data-testid={`use-group-${resource.key}`} key={resource.key}>
-        <div aria-selected={open} className="use-row" data-testid={`use-row-${resource.key}`}>
+        <div className="use-row" data-expanded={open || undefined} data-testid={`use-row-${resource.key}`} onClick={(event) => { if ((event.target as HTMLElement).closest("button, a, [role=tooltip]") !== null) return; onToggle(resource.key) }}>
           <button aria-expanded={open} className="use-resource flex cursor-pointer items-center gap-1 self-stretch border-0 bg-transparent px-2 py-[7px] text-left font-sans text-sm font-medium text-fg2 max-[760px]:px-[5px]" data-testid={`use-toggle-${resource.key}`} onClick={() => onToggle(resource.key)} type="button">
             {open ? <ChevronDown aria-hidden="true" className="flex-none text-fg4" size={13} /> : <ChevronRight aria-hidden="true" className="flex-none text-fg4" size={13} />}
             {t(`use.resource.${resource.key}`)}
           </button>
           {USE_COLUMNS.map((column) => {
             const cell = resource[column]
-            if (cell === null || !laneHasReading(lanePoints, cell.lane)) {
+            const points = cell === null ? [] : byLane.get(cell.lane) ?? []
+            if (cell === null || !seriesHasReading(points)) {
               return <span className="use-cell relative flex min-w-0 items-center justify-center text-fg4" key={column} title={t("use.not_measured")}>—</span>
             }
-            const points = laneSeriesPoints(lanePoints, cell.lane)
-            const second = cell.second === undefined ? undefined : laneSeriesPoints(lanePoints, cell.second)
-            const primary = currentLaneReading(lanePoints, cell.lane, cursor, locale, cell.kind, t("unit.per_second"))
-            const secondary = cell.second === undefined ? null : currentLaneReading(lanePoints, cell.second, cursor, locale, cell.kind, t("unit.per_second"))
+            const second = cell.second === undefined ? undefined : byLane.get(cell.second) ?? []
+            const primary = seriesReading(points, cursor, locale, cell.kind, t("unit.per_second"))
+            const secondary = second === undefined ? null : seriesReading(second, cursor, locale, cell.kind, t("unit.per_second"))
             return <span className="use-cell relative min-w-0 py-1.5 pl-2 pr-[24px] max-[760px]:px-[5px]" key={column}>
               <span className="flex items-baseline justify-between gap-[7px] [&>span]:min-w-0 [&>span]:overflow-hidden [&>span]:text-ellipsis [&>span]:whitespace-nowrap [&>span]:font-sans [&>span]:text-xs [&>span]:text-fg3 [&_strong]:flex-none [&_strong]:whitespace-nowrap [&_strong]:font-mono [&_strong]:text-xs [&_strong]:font-normal [&_strong]:tabular-nums [&_strong]:text-fg2">
                 <span>{t(`use.lane.${cell.lane}`)}</span>
@@ -122,7 +126,7 @@ export function UseTable({
       </div>
     })}
     {cgroups && <div data-testid="use-group-cgroups">
-      <div aria-selected={expanded.has("cgroups")} className="use-row grid-cols-[minmax(96px,130px)_minmax(0,1fr)]" data-testid="use-row-cgroups">
+      <div className="use-row grid-cols-[minmax(96px,130px)_minmax(0,1fr)]" data-expanded={expanded.has("cgroups") || undefined} data-testid="use-row-cgroups" onClick={(event) => { if ((event.target as HTMLElement).closest("button, a, [role=tooltip]") !== null) return; onToggle("cgroups") }}>
         <button aria-expanded={expanded.has("cgroups")} className="use-resource flex cursor-pointer items-center gap-1 self-stretch border-0 bg-transparent px-2 py-[7px] text-left font-sans text-sm font-medium text-fg2 max-[760px]:px-[5px]" data-testid="use-toggle-cgroups" onClick={() => onToggle("cgroups")} type="button">
           {expanded.has("cgroups") ? <ChevronDown aria-hidden="true" className="flex-none text-fg4" size={13} /> : <ChevronRight aria-hidden="true" className="flex-none text-fg4" size={13} />}
           {t("section.cgroups")}
@@ -143,6 +147,32 @@ export function shownUseResources(lanePoints: readonly LanePoint[]): readonly Us
 
 export function laneHasReading(lanePoints: readonly LanePoint[], lane: string): boolean {
   return lanePoints.some((point) => point.lane === lane && point.value !== null && Number.isFinite(point.value))
+}
+
+export function lanePointsByLane(lanePoints: readonly LanePoint[]): ReadonlyMap<string, readonly ChartPoint[]> {
+  const map = new Map<string, ChartPoint[]>()
+  for (const point of lanePoints) {
+    const stored = map.get(point.lane)
+    const entry = { segmentId: point.segmentId, timestamp: point.timestamp, value: point.value }
+    if (stored === undefined) map.set(point.lane, [entry])
+    else stored.push(entry)
+  }
+  return map
+}
+
+export function seriesHasReading(points: readonly ChartPoint[]): boolean {
+  return points.some((point) => point.value !== null && Number.isFinite(point.value))
+}
+
+export function seriesReading(
+  points: readonly ChartPoint[],
+  cursor: number,
+  locale: Locale,
+  kind: UseCell["kind"],
+  perSecond: string,
+): string {
+  const stored = readingAt(points, cursor)
+  return stored === null ? "—" : reading(stored, locale, kind, perSecond)
 }
 
 export function laneSeriesPoints(lanePoints: readonly LanePoint[], lane: string): readonly ChartPoint[] {

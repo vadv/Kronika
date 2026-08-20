@@ -1,3 +1,5 @@
+import { useMemo } from "react"
+
 import { sparkCursorX, sparkGeometry, SPARK_HEIGHT, SPARK_WIDTH } from "./spark"
 import type { ChartPoint } from "./series-chart"
 
@@ -11,8 +13,8 @@ export function SparkCell({ cursor, end, hour, max, points, second }: {
   readonly points: readonly ChartPoint[]
   readonly second?: readonly ChartPoint[] | undefined
 }) {
-  const primary = sparkGeometry(points, hour, end, max)
-  const secondary = second === undefined ? null : sparkGeometry(second, hour, end, max)
+  const primary = useMemo(() => sparkGeometry(points, hour, end, max), [end, hour, max, points])
+  const secondary = useMemo(() => second === undefined ? null : sparkGeometry(second, hour, end, max), [end, hour, max, second])
   const cursorX = sparkCursorX(cursor, hour, end)
   return <svg aria-hidden="true" className="block h-[22px] w-full min-w-0" preserveAspectRatio="none" viewBox={`0 0 ${SPARK_WIDTH} ${SPARK_HEIGHT}`}>
     {secondary !== null && <path d={secondary.path} fill="none" stroke="var(--color-series-2)" strokeWidth={1.4} vectorEffect="non-scaling-stroke" />}

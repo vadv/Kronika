@@ -174,7 +174,9 @@ export function UPlotChart({
   const isolatedId = isolate === undefined
     ? null
     : effectiveIsolation(series.map(({ id }) => id), isolatedChoice, isolate.anchor)
-  const drawnSeries = isolatedId === null ? series : series.filter(({ id }) => id === isolatedId)
+  // A stable identity: filtering per render would rebuild the whole uPlot
+  // instance on every cursor step while a series is isolated.
+  const drawnSeries = useMemo(() => isolatedId === null ? series : series.filter(({ id }) => id === isolatedId), [isolatedId, series])
   const visibleSeries = useMemo(() => drawnSeries.map((line) => ({
     ...line,
     points: line.points.filter(({ timestamp }) => timestamp >= hour && timestamp < end),
